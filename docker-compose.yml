@@ -48,7 +48,7 @@ services:
       - UWSGI_WORKERS=2
       - UWSGI_THREADS=4
     ports:
-      - "8088:8080"
+      - "18233:8080"
     healthcheck:
       # Healthz needs json format, so this also doubles as an integration check.
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/healthz"]
