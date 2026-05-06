@@ -5,12 +5,15 @@ spring:
     # 自动创建的库用了 server 默认字符集也不会影响数据。要求 DB user 具备 CREATE 权限（默认 root 可）。
     # 如果使用受限账号，请提前手工执行：
     #   CREATE DATABASE mateclaw CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-    # characterEncoding=utf8mb4 + connectionCollation=utf8mb4_unicode_ci force
-    # the JDBC connection to negotiate 4-byte UTF-8 end-to-end. With 3-byte
-    # `utf8` the driver rejects emoji and CJK supplementary-plane chars even
-    # when the table charset is utf8mb4, surfacing as
-    # `Data truncation: Incorrect string value` on assistant message INSERT.
-    url: jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:3306}/${DB_NAME:mateclaw}?createDatabaseIfNotExist=true&useUnicode=true&characterEncoding=utf8mb4&connectionCollation=utf8mb4_unicode_ci&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+    # characterEncoding takes a Java NIO charset name (UTF-8), not a MySQL
+    # server charset name (utf8mb4) — passing utf8mb4 here throws
+    # UnsupportedEncodingException at driver init. Java's UTF-8 already
+    # encodes the full Unicode range including supplementary-plane chars
+    # and emoji, so 4-byte characters travel intact. To make the server
+    # treat the connection as utf8mb4, force the connection collation via
+    # connectionCollation=utf8mb4_unicode_ci — that is what prevents the
+    # `Data truncation: Incorrect string value` errors on emoji/CJK ext.
+    url: jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:3306}/${DB_NAME:mateclaw}?createDatabaseIfNotExist=true&useUnicode=true&characterEncoding=UTF-8&connectionCollation=utf8mb4_unicode_ci&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
     driver-class-name: com.mysql.cj.jdbc.Driver
     username: ${DB_USERNAME:root}
     password: ${DB_PASSWORD:mateclaw123}
