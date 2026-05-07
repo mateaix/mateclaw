@@ -129,6 +129,7 @@
                   </svg>
                 </button>
                 <button
+                  v-if="!isSkillRowVirtual(skill)"
                   class="skill-btn"
                   :title="t('skills.actions.configure')"
                   @click="openEditFromCard(skill)"
@@ -139,7 +140,7 @@
                   </svg>
                 </button>
                 <button
-                  v-if="skill.skillType !== 'builtin'"
+                  v-if="skill.skillType !== 'builtin' && !isSkillRowVirtual(skill)"
                   class="skill-btn danger"
                   :title="t('skills.actions.delete')"
                   @click="deleteSkill(skill)"
@@ -740,11 +741,14 @@ const newForm = ref<{ name: string; description: string; icon: string }>({ name:
  *  {@link McpSkillBridge#VIRTUAL_ID_BASE} (= 9e18). The DB update path
  *  doesn't know about them, so the drawer hides the Edit affordance.
  *  Using string-length is robust against JS number precision loss past 2^53. */
-const isVirtualSkill = computed(() => {
-  if (!detailSkill.value?.id) return false
-  const idStr = String(detailSkill.value.id)
+function isVirtualSkillId(id: unknown): boolean {
+  if (id === null || id === undefined) return false
+  const idStr = String(id)
   return idStr.length >= 19 && idStr.startsWith('9')
-})
+}
+/** Per-row check used by the card-level configure / delete buttons. */
+const isSkillRowVirtual = (skill: { id?: unknown } | null | undefined) => isVirtualSkillId(skill?.id)
+const isVirtualSkill = computed(() => isVirtualSkillId(detailSkill.value?.id))
 const isBuiltinDetail = computed(() => detailSkill.value?.skillType === 'builtin' || !!detailSkill.value?.builtin)
 
 /** RFC-090 §4.4 — pre-flight dialog state. */
@@ -1034,9 +1038,14 @@ async function createSkillFromModal() {
 }
 
 /** Old configure-on-card button now lands in the drawer Overview tab in
- *  edit mode — keeps the surface contract but skips the modal trip. */
+ *  edit mode — keeps the surface contract but skips the modal trip.
+ *  Virtual MCP/ACP-derived skills aren't editable; the card-level button
+ *  is hidden for them, but if any other call path reaches here with a
+ *  virtual skill, fall through to view mode rather than opening an edit
+ *  surface that will 4xx on save. */
 function openEditFromCard(skill: Skill) {
-  openDetailDrawer(skill, 'overview', { editIdentity: true })
+  const opts = isSkillRowVirtual(skill) ? undefined : { editIdentity: true }
+  openDetailDrawer(skill, 'overview', opts)
 }
 
 // ==================== Inline edit (Overview / Body) ====================
