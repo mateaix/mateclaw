@@ -68,6 +68,20 @@ public class McpServerEntity {
     /** 远端暴露的工具数量 */
     private Integer toolCount;
 
+    /**
+     * Last successful {@code listTools()} response, serialized as a JSON
+     * array of {@code {name, description, inputSchema}} entries. Refreshed
+     * by {@code McpServerService} after every successful (re)connect; never
+     * cleared on failure so the picker keeps working while the upstream
+     * server is briefly unavailable. Reverse-lookup of a prefixed callback
+     * name to its raw tool name reads from this column.
+     */
+    @TableField(value = "tools_cache_json", updateStrategy = FieldStrategy.ALWAYS)
+    private String toolsCacheJson;
+
+    /** Wall-clock timestamp of the last successful tools-cache write. */
+    private LocalDateTime toolsCacheUpdatedAt;
+
     /** 是否系统内置 */
     private Boolean builtin;
 

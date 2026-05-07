@@ -3,6 +3,7 @@ package vip.mate.tool.mcp.service;
 import cn.hutool.json.JSONUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import io.modelcontextprotocol.spec.McpSchema;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -13,6 +14,7 @@ import vip.mate.tool.mcp.runtime.McpClientManager;
 import vip.mate.tool.mcp.runtime.McpClientManager.ConnectionResult;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.regex.Pattern;
@@ -198,7 +200,7 @@ public class McpServerService {
             try {
                 ConnectionResult result = mcpClientManager.connect(server);
                 if (result.success()) {
-                    updateStatus(server.getId(), "connected", null, result.toolCount());
+                    onConnectSuccess(server.getId());
                 } else {
                     updateStatus(server.getId(), "error", result.message(), 0);
                 }
@@ -226,7 +228,7 @@ public class McpServerService {
             try {
                 ConnectionResult result = mcpClientManager.connect(server);
                 if (result.success()) {
-                    updateStatus(server.getId(), "connected", null, result.toolCount());
+                    onConnectSuccess(server.getId());
                 } else {
                     updateStatus(server.getId(), "error", result.message(), 0);
                 }
@@ -284,7 +286,7 @@ public class McpServerService {
         try {
             ConnectionResult result = mcpClientManager.connect(server);
             if (result.success()) {
-                updateStatus(server.getId(), "connected", null, result.toolCount());
+                onConnectSuccess(server.getId());
             } else {
                 mcpClientManager.remove(server.getId());
                 updateStatus(server.getId(), "error", result.message(), 0);
@@ -300,7 +302,7 @@ public class McpServerService {
         try {
             ConnectionResult result = mcpClientManager.replace(server);
             if (result.success()) {
-                updateStatus(server.getId(), "connected", null, result.toolCount());
+                onConnectSuccess(server.getId());
             } else {
                 mcpClientManager.remove(server.getId());
                 updateStatus(server.getId(), "error", result.message(), 0);
@@ -312,7 +314,29 @@ public class McpServerService {
         }
     }
 
+    /**
+     * Common success path for every connect entry point: snapshot the
+     * just-discovered tools into the {@code tools_cache_json} column in
+     * the same DB roundtrip as the status update, so downstream code that
+     * reads from the entity sees both pieces consistently.
+     *
+     * <p>Cache is only ever overwritten on success — failures preserve the
+     * last successful snapshot, keeping the agent picker rendering
+     * something useful while the upstream server is briefly down.
+     */
+    private void onConnectSuccess(Long serverId) {
+        List<McpSchema.Tool> tools = mcpClientManager.getServerTools(serverId);
+        String cacheJson = serializeToolsCache(tools);
+        updateStatusWithCache(serverId, "connected", null, tools.size(), cacheJson);
+    }
+
     private void updateStatus(Long id, String status, String error, int toolCount) {
+        // Failure paths do NOT touch the tools cache — keep the last
+        // successful snapshot so the picker stays populated.
+        updateStatusWithCache(id, status, error, toolCount, null);
+    }
+
+    private void updateStatusWithCache(Long id, String status, String error, int toolCount, String cacheJson) {
         try {
             LambdaUpdateWrapper<McpServerEntity> wrapper = new LambdaUpdateWrapper<>();
             wrapper.eq(McpServerEntity::getId, id);
@@ -322,11 +346,46 @@ public class McpServerService {
             if ("connected".equals(status)) {
                 wrapper.set(McpServerEntity::getLastConnectedTime, LocalDateTime.now());
             }
+            if (cacheJson != null) {
+                wrapper.set(McpServerEntity::getToolsCacheJson, cacheJson);
+                wrapper.set(McpServerEntity::getToolsCacheUpdatedAt, LocalDateTime.now());
+            }
             wrapper.set(McpServerEntity::getUpdateTime, LocalDateTime.now());
             mcpServerMapper.update(null, wrapper);
         } catch (Exception e) {
             log.warn("Failed to update MCP server status: {}", e.getMessage());
         }
+    }
+
+    /**
+     * Serialize the list returned by the upstream {@code listTools()} call
+     * into a stable JSON shape: an array of {@code {name, description,
+     * inputSchema}} entries. Schema is stored as the JSON text the upstream
+     * surfaces (already a JSON-Schema object) so the picker can show it
+     * verbatim without re-stringifying.
+     */
+    private String serializeToolsCache(List<McpSchema.Tool> tools) {
+        if (tools == null || tools.isEmpty()) {
+            return "[]";
+        }
+        List<Map<String, Object>> rows = new ArrayList<>(tools.size());
+        for (McpSchema.Tool t : tools) {
+            if (t == null || t.name() == null || t.name().isBlank()) continue;
+            Map<String, Object> row = new java.util.LinkedHashMap<>();
+            row.put("name", t.name());
+            row.put("description", t.description() != null ? t.description() : "");
+            // inputSchema in the MCP record is a JsonSchema record; let the
+            // JSON utility serialize it, falling back to "{}" if it can't.
+            try {
+                row.put("inputSchema", t.inputSchema() != null
+                        ? JSONUtil.parse(JSONUtil.toJsonStr(t.inputSchema()))
+                        : "{}");
+            } catch (Exception e) {
+                row.put("inputSchema", "{}");
+            }
+            rows.add(row);
+        }
+        return JSONUtil.toJsonStr(rows);
     }
 
     private void validateServer(McpServerEntity entity) {

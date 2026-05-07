@@ -149,22 +149,77 @@ public class McpClientManager {
     }
 
     /**
-     * 获取所有 active clients 的 ToolCallback 列表
+     * Collect ToolCallbacks from every active MCP client, with each callback's
+     * name rewritten to a server-id-anchored prefix
+     * (see {@link McpToolNameResolver}). Two guarantees:
+     * <ul>
+     *   <li>Two MCP servers can expose the same raw tool name without one
+     *       silently overwriting the other in a name-keyed map downstream.</li>
+     *   <li>If two raw names within the same server happen to hash to the
+     *       same prefixed name, only the first survives —
+     *       {@link McpHashCollisionDetector} flags the second so the picker
+     *       can refuse to bind it.</li>
+     * </ul>
      */
     public List<ToolCallback> getAllToolCallbacks() {
         List<ToolCallback> allCallbacks = new ArrayList<>();
         for (Map.Entry<Long, McpSyncClient> entry : clients.entrySet()) {
+            long serverId = entry.getKey();
             try {
                 SyncMcpToolCallbackProvider provider = new SyncMcpToolCallbackProvider(entry.getValue());
                 ToolCallback[] cbs = provider.getToolCallbacks();
-                if (cbs != null) {
-                    Collections.addAll(allCallbacks, cbs);
+                if (cbs == null || cbs.length == 0) {
+                    continue;
                 }
+                allCallbacks.addAll(wrapServerCallbacks(serverId, cbs));
             } catch (Exception e) {
-                log.warn("Failed to get tool callbacks from MCP server {}: {}", entry.getKey(), e.getMessage());
+                log.warn("Failed to get tool callbacks from MCP server {}: {}", serverId, e.getMessage());
             }
         }
         return allCallbacks;
+    }
+
+    /**
+     * Apply per-server collision detection and wrap each surviving callback
+     * with its prefixed name. Walks {@code cbs} and the matching decision
+     * list in lockstep so that duplicate raw names are honored
+     * one-decision-per-callback — a {@code Map<raw, decision>} would make
+     * every duplicate look up the first (bindable) decision and silently
+     * register two callbacks under the same prefixed name, breaking the
+     * "runtime and picker share one decision" contract.
+     *
+     * <p>Package-private so unit tests can drive it without standing up a
+     * real {@link McpSyncClient}.
+     */
+    static List<ToolCallback> wrapServerCallbacks(long serverId, ToolCallback[] cbs) {
+        List<String> rawNames = new ArrayList<>(cbs.length);
+        for (ToolCallback cb : cbs) {
+            rawNames.add(cb.getToolDefinition() != null ? cb.getToolDefinition().name() : null);
+        }
+        List<McpHashCollisionDetector.Decision> decisions =
+                McpHashCollisionDetector.classify(serverId, rawNames);
+
+        // classify() drops blank/null raws; advance the decision pointer
+        // only when the cb's raw is non-blank so the indices stay aligned.
+        List<ToolCallback> out = new ArrayList<>(cbs.length);
+        int dIdx = 0;
+        for (ToolCallback cb : cbs) {
+            String raw = cb.getToolDefinition() != null ? cb.getToolDefinition().name() : null;
+            if (raw == null || raw.isBlank()) {
+                continue;
+            }
+            if (dIdx >= decisions.size()) {
+                break;
+            }
+            McpHashCollisionDetector.Decision d = decisions.get(dIdx++);
+            if (!d.bindable()) {
+                log.error("Skipping MCP tool callback on server {} (raw='{}', prefixed='{}'): {}",
+                        serverId, raw, d.prefixedName(), d.unavailableReason());
+                continue;
+            }
+            out.add(new PrefixedNameToolCallback(d.prefixedName(), cb));
+        }
+        return out;
     }
 
     /**

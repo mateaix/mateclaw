@@ -10,6 +10,7 @@ import vip.mate.skill.model.SkillEntity;
 import vip.mate.skill.runtime.model.ResolvedSkill;
 import vip.mate.tool.mcp.model.McpServerEntity;
 import vip.mate.tool.mcp.runtime.McpClientManager;
+import vip.mate.tool.mcp.runtime.McpToolNameResolver;
 import vip.mate.tool.mcp.service.McpServerService;
 
 import java.util.ArrayList;
@@ -196,23 +197,29 @@ public class McpSkillBridge {
     }
 
     /**
-     * Auto-generate the §10.2 Q2 minimal manifest from the live MCP
-     * server. Tool list is the union of discovered MCP tools; one
-     * synthetic feature {@code default} carries them so the standard
-     * features-aware gate light up correctly.
+     * Auto-generate the minimal manifest from the MCP server's most-recent
+     * tool snapshot. The tool list is sourced in priority order:
+     * <ol>
+     *   <li>{@code mate_mcp_server.tools_cache_json} — present whenever the
+     *       server has connected at least once. Lets the picker stay
+     *       populated through brief disconnects.</li>
+     *   <li>The runtime in-memory cache (current connection's
+     *       {@code listTools()} result).</li>
+     * </ol>
+     *
+     * <p>Tool names emitted into {@code manifest.allowedTools} go through
+     * {@link McpToolNameResolver#prefixedName(long, String)} so they match
+     * the runtime callback names registered by
+     * {@link McpClientManager#getAllToolCallbacks()}. Without this, a
+     * resolved skill's effective allowlist would carry raw names that
+     * don't appear in any agent's callbacks at chat time, and the LLM
+     * would see no MCP tools even though the bindings were saved.
      */
     private SkillManifest buildManifest(McpServerEntity server) {
-        List<String> toolNames = new ArrayList<>();
-        try {
-            List<McpSchema.Tool> discovered = mcpClientManager.getServerTools(server.getId());
-            for (McpSchema.Tool t : discovered) {
-                if (t == null) continue;
-                String n = t.name();
-                if (n != null && !n.isBlank()) toolNames.add(n);
-            }
-        } catch (Exception e) {
-            log.debug("MCP bridge manifest build: getServerTools({}) failed: {}",
-                    server.getId(), e.getMessage());
+        List<String> rawNames = readToolRawNames(server);
+        List<String> toolNames = new ArrayList<>(rawNames.size());
+        for (String raw : rawNames) {
+            toolNames.add(McpToolNameResolver.prefixedName(server.getId(), raw));
         }
 
         SkillManifest.FeatureDef defaultFeature = SkillManifest.FeatureDef.builder()
@@ -251,6 +258,58 @@ public class McpSkillBridge {
                         .build())
                 .extras(Map.of("mcpServerId", server.getId()))
                 .build();
+    }
+
+    /**
+     * Resolve the raw tool name list for a server with cache-first / live-fallback
+     * semantics. Returns an empty list (never null) so the manifest builder
+     * stays simple.
+     */
+    private List<String> readToolRawNames(McpServerEntity server) {
+        List<String> fromCache = parseCachedToolNames(server.getToolsCacheJson());
+        if (!fromCache.isEmpty()) {
+            return fromCache;
+        }
+        try {
+            List<McpSchema.Tool> discovered = mcpClientManager.getServerTools(server.getId());
+            List<String> names = new ArrayList<>(discovered.size());
+            for (McpSchema.Tool t : discovered) {
+                if (t == null) continue;
+                String n = t.name();
+                if (n != null && !n.isBlank()) names.add(n);
+            }
+            return names;
+        } catch (Exception e) {
+            log.debug("MCP bridge manifest build: getServerTools({}) failed: {}",
+                    server.getId(), e.getMessage());
+            return List.of();
+        }
+    }
+
+    /**
+     * Parse the {@code tools_cache_json} column written by
+     * {@code McpServerService} after each successful connect. Returns an
+     * empty list if the column is null/blank/malformed — the bridge is
+     * required to keep working when the cache hasn't been populated yet
+     * (e.g. first-ever connect just succeeded a moment ago).
+     */
+    private List<String> parseCachedToolNames(String json) {
+        if (json == null || json.isBlank()) {
+            return List.of();
+        }
+        try {
+            cn.hutool.json.JSONArray arr = cn.hutool.json.JSONUtil.parseArray(json);
+            List<String> out = new ArrayList<>(arr.size());
+            for (Object obj : arr) {
+                if (!(obj instanceof cn.hutool.json.JSONObject jo)) continue;
+                String name = jo.getStr("name");
+                if (name != null && !name.isBlank()) out.add(name);
+            }
+            return out;
+        } catch (Exception e) {
+            log.debug("MCP bridge: failed to parse tools_cache_json: {}", e.getMessage());
+            return List.of();
+        }
     }
 
     private String slugify(String raw) {
