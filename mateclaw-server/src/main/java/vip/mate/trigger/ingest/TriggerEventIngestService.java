@@ -2,8 +2,11 @@ package vip.mate.trigger.ingest;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DuplicateKeyException;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import vip.mate.trigger.dispatch.DispatchResult;
 import vip.mate.trigger.dispatch.TriggerDispatcher;
@@ -59,6 +62,26 @@ public class TriggerEventIngestService {
     private final TriggerPatternMatcher patternMatcher;
     private final TriggerRateLimiter rateLimiter = new TriggerRateLimiter();
 
+    /** When true (production default), {@code dispatcher.dispatch} runs on
+     *  a worker thread so the caller (webhook / scheduler / runner) returns
+     *  quickly. When false, ingest runs the workflow inline on the caller
+     *  thread; tests pin to false so they can assert against downstream
+     *  workflow state immediately after {@code ingest()} returns. */
+    @Value("${mateclaw.workflow.trigger.async-dispatch:true}")
+    private boolean asyncDispatch;
+
+    @Value("${mateclaw.workflow.trigger.dispatch-pool-size:8}")
+    private int dispatchPoolSize;
+
+    @Value("${mateclaw.workflow.trigger.dispatch-queue-capacity:256}")
+    private int dispatchQueueCapacity;
+
+    /** Lazy-built bounded thread pool used when {@link #asyncDispatch} is
+     *  true. CallerRunsPolicy is the back-pressure: when the queue is full
+     *  the calling thread runs the dispatch itself, which guarantees no
+     *  silent drop while still capping in-flight work. */
+    private volatile java.util.concurrent.ThreadPoolExecutor dispatchExecutor;
+
     public TriggerEventIngestService(TriggerMapper triggerMapper,
                                      TriggerEventMapper eventMapper,
                                      TriggerDispatcher dispatcher,
@@ -71,6 +94,44 @@ public class TriggerEventIngestService {
         this.botSelfFilter = botSelfFilter;
         this.objectMapper = objectMapper;
         this.patternMatcher = patternMatcher;
+    }
+
+    private java.util.concurrent.ThreadPoolExecutor dispatchExecutor() {
+        java.util.concurrent.ThreadPoolExecutor local = dispatchExecutor;
+        if (local != null) return local;
+        synchronized (this) {
+            if (dispatchExecutor == null) {
+                int size = Math.max(1, dispatchPoolSize);
+                int cap = Math.max(1, dispatchQueueCapacity);
+                dispatchExecutor = new java.util.concurrent.ThreadPoolExecutor(
+                        size, size,
+                        60L, java.util.concurrent.TimeUnit.SECONDS,
+                        new java.util.concurrent.LinkedBlockingQueue<>(cap),
+                        r -> {
+                            Thread t = new Thread(r, "trigger-dispatch-" + System.currentTimeMillis());
+                            t.setDaemon(true);
+                            return t;
+                        },
+                        new java.util.concurrent.ThreadPoolExecutor.CallerRunsPolicy());
+            }
+            return dispatchExecutor;
+        }
+    }
+
+    @PreDestroy
+    void shutdownDispatchExecutor() {
+        java.util.concurrent.ThreadPoolExecutor local = dispatchExecutor;
+        if (local != null) {
+            local.shutdown();
+            try {
+                if (!local.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                    local.shutdownNow();
+                }
+            } catch (InterruptedException e) {
+                local.shutdownNow();
+                Thread.currentThread().interrupt();
+            }
+        }
     }
 
     /**
@@ -119,24 +180,50 @@ public class TriggerEventIngestService {
         if (!rateLimiter.tryAcquire(trigger.getId(), limit, Instant.now())) {
             return IngestResult.dropped(trigger.getId(), Reason.RATE_LIMITED);
         }
-        DispatchResult outcome;
-        try {
-            outcome = dispatcher.dispatch(trigger, envelope.data());
-        } catch (Exception e) {
-            // Belt-and-suspenders — the dispatcher already wraps its own
-            // exceptions, but if anything escapes we mark it as DISPATCH_ERROR
-            // and persist last_error so the UI surfaces *why*.
-            log.error("Trigger {} dispatch threw on event ingest: {}",
-                    trigger.getId(), e.getMessage(), e);
-            persistDispatchOutcome(trigger, DispatchResult.failed("dispatch threw: " + e.getMessage()));
-            return IngestResult.dropped(trigger.getId(), Reason.DISPATCH_ERROR);
+        if (asyncDispatch) {
+            // Async path — submit dispatch to the bounded pool so the
+            // caller (webhook / scheduler / runner thread) returns
+            // quickly. Bookkeeping happens inside the worker, so
+            // last_error / fireCount stay accurate. The IngestResult
+            // signals "accepted, fanning out" rather than "ran to
+            // completion"; that's the honest contract for an async
+            // pipeline. CallerRunsPolicy on the executor means we
+            // self-throttle instead of dropping under back-pressure.
+            try {
+                dispatchExecutor().execute(() -> runDispatchAndPersist(trigger, envelope));
+            } catch (Exception e) {
+                log.error("Trigger {} dispatch submit failed: {}",
+                        trigger.getId(), e.getMessage(), e);
+                persistDispatchOutcome(trigger,
+                        DispatchResult.failed("dispatch submit failed: " + e.getMessage()));
+                return IngestResult.dropped(trigger.getId(), Reason.DISPATCH_ERROR);
+            }
+            return IngestResult.fired(trigger.getId());
         }
-        persistDispatchOutcome(trigger, outcome);
+        // Synchronous path — used by tests and any deployment that
+        // explicitly opts out via mateclaw.workflow.trigger.async-dispatch=false.
+        DispatchResult outcome = runDispatchAndPersist(trigger, envelope);
         return switch (outcome.kind()) {
             case FIRED -> IngestResult.fired(trigger.getId());
             case SKIPPED -> IngestResult.dropped(trigger.getId(), Reason.DISPATCH_SKIPPED);
             case FAILED -> IngestResult.dropped(trigger.getId(), Reason.DISPATCH_ERROR);
         };
+    }
+
+    /** Runs dispatch + bookkeeping on whatever thread invokes it (the
+     *  caller in sync mode, a worker in async mode). Returns the
+     *  outcome so sync callers can map it back to an IngestResult. */
+    private DispatchResult runDispatchAndPersist(TriggerEntity trigger, TriggerEventEnvelope envelope) {
+        DispatchResult outcome;
+        try {
+            outcome = dispatcher.dispatch(trigger, envelope.data());
+        } catch (Exception e) {
+            log.error("Trigger {} dispatch threw on event ingest: {}",
+                    trigger.getId(), e.getMessage(), e);
+            outcome = DispatchResult.failed("dispatch threw: " + e.getMessage());
+        }
+        persistDispatchOutcome(trigger, outcome);
+        return outcome;
     }
 
     /**
@@ -208,6 +295,28 @@ public class TriggerEventIngestService {
         return eventMapper.delete(new LambdaQueryWrapper<TriggerEventEntity>()
                 .lt(TriggerEventEntity::getExpiresAt,
                         LocalDateTime.ofInstant(Instant.now(), ZoneOffset.systemDefault())));
+    }
+
+    /**
+     * Periodic sweep of expired {@code mate_trigger_event} dedup rows.
+     * Default cadence is every 5 minutes, tunable via
+     * {@code mateclaw.workflow.trigger.dedup-sweep-interval-ms}. The
+     * initial delay matches the cadence so a JVM that just started doesn't
+     * race {@code recordDedupRow} for the same window.
+     */
+    @Scheduled(
+            fixedDelayString = "${mateclaw.workflow.trigger.dedup-sweep-interval-ms:300000}",
+            initialDelayString = "${mateclaw.workflow.trigger.dedup-sweep-initial-delay-ms:300000}")
+    public void scheduledSweepExpired() {
+        try {
+            int dropped = sweepExpired();
+            if (dropped > 0) {
+                log.info("[TriggerIngest] swept {} expired dedup rows", dropped);
+            }
+        } catch (Exception e) {
+            // Best-effort — never let the sweep crash the scheduler thread.
+            log.warn("[TriggerIngest] dedup sweep failed: {}", e.getMessage());
+        }
     }
 
     public enum Reason {

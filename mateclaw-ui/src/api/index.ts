@@ -911,6 +911,13 @@ export interface TriggerSummary {
   fireCount: number
   maxFires: number
   lastFiredAt?: string
+  /** Stamp of the last dispatch attempt regardless of outcome (FIRED /
+   *  SKIPPED / FAILED). Distinguishes "never attempted" from
+   *  "attempted but the pre-flight skipped". */
+  lastDispatchedAt?: string
+  /** Most recent dispatch outcome message; null when the last attempt
+   *  fired cleanly. */
+  lastError?: string
   patternVersion: number
   createTime: string
   updateTime: string

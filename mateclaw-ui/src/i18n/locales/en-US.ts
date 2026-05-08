@@ -2077,6 +2077,15 @@ export default {
     },
     targetWorkflowSelect: 'Pick a published workflow',
     targetWorkflowEmpty: 'No published workflows yet.',
+    lastDispatchedAt: 'Last attempt',
+    patternTypeLabels: {
+      cron: 'Cron schedule',
+      channel_message: 'Channel message',
+      content_match: 'Content match',
+      agent_lifecycle: 'Agent lifecycle',
+      workflow_completion: 'Workflow completion',
+      webhook: 'Webhook',
+    },
     patternHints: {
       cron: 'Example: {"cron":"0 0 * * * *","timezone":"UTC"} — every cron change bumps pattern_version.',
       channel_message: 'Optional channelType (e.g. feishu) and senderEquals narrow the match.',

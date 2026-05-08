@@ -1,0 +1,126 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="960" viewBox="0 0 1440 960">
+  <defs>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#1F2933" flood-opacity="0.12"/>
+    </filter>
+    <marker id="arrow-red" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#D71920"/>
+    </marker>
+    <marker id="arrow-gray" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#6F7378"/>
+    </marker>
+    <style>
+      .title { font: 700 34px "Microsoft YaHei", "PingFang SC", Arial, sans-serif; fill: #0B2545; }
+      .subtitle { font: 400 17px "Microsoft YaHei", "PingFang SC", Arial, sans-serif; fill: #6F7378; }
+      .h { font: 700 20px "Microsoft YaHei", "PingFang SC", Arial, sans-serif; fill: #0B2545; }
+      .t { font: 400 15px "Microsoft YaHei", "PingFang SC", Arial, sans-serif; fill: #1F2933; }
+      .s { font: 400 13px "Microsoft YaHei", "PingFang SC", Arial, sans-serif; fill: #6F7378; }
+      .tiny { font: 400 12px "Microsoft YaHei", "PingFang SC", Arial, sans-serif; fill: #6F7378; }
+      .card { fill: white; stroke: #D8DEE6; stroke-width: 1.2; filter: url(#shadow); }
+      .band { fill: #F5F7FA; stroke: #D8DEE6; stroke-width: 1; }
+      .redline { stroke: #D71920; stroke-width: 3; fill: none; marker-end: url(#arrow-red); }
+      .grayline { stroke: #6F7378; stroke-width: 2.2; fill: none; marker-end: url(#arrow-gray); }
+      .dash { stroke: #6F7378; stroke-width: 2; stroke-dasharray: 8 8; fill: none; marker-end: url(#arrow-gray); }
+    </style>
+  </defs>
+  <rect width="100%" height="100%" fill="#FFFFFF"/>
+  <path d="M0 0 H1440 V10 H0 Z" fill="#D71920"/>
+  <path d="M0 10 H1440 V15 H0 Z" fill="#6F7378" opacity="0.55"/>
+  <text x="64" y="72" class="title">核心票务业务流转图</text>
+  <text x="64" y="102" class="subtitle">围绕票库、票柜、票袋、票单、结算、退票和报表的主业务闭环</text>
+
+  <rect x="74" y="150" width="1290" height="700" rx="18" class="band"/>
+  <rect x="104" y="190" width="220" height="126" rx="10" class="card"/>
+<rect x="104" y="190" width="220" height="8" rx="4" fill="#D71920"/>
+<text x="126" y="232" class="h">1. 印制入库</text>
+<text x="126" y="262" class="t">分公司发起印制申请</text>
+<text x="126" y="288" class="t">集团审核</text>
+<text x="126" y="314" class="t">确认后进入票库</text>
+  <rect x="384" y="190" width="220" height="126" rx="10" class="card"/>
+<rect x="384" y="190" width="220" height="8" rx="4" fill="#6F7378"/>
+<text x="406" y="232" class="h">2. 票库管理</text>
+<text x="406" y="262" class="t">票号段入库</text>
+<text x="406" y="288" class="t">库存余额与流水</text>
+<text x="406" y="314" class="t">调拨 / 核销 / 调账</text>
+  <rect x="664" y="190" width="220" height="126" rx="10" class="card"/>
+<rect x="664" y="190" width="220" height="8" rx="4" fill="#2E86C1"/>
+<text x="686" y="232" class="h">3. 配票申请</text>
+<text x="686" y="262" class="t">票务室申请</text>
+<text x="686" y="288" class="t">分公司确认</text>
+<text x="686" y="314" class="t">票库到票柜</text>
+  <rect x="944" y="190" width="220" height="126" rx="10" class="card"/>
+<rect x="944" y="190" width="220" height="8" rx="4" fill="#3FA45B"/>
+<text x="966" y="232" class="h">4. 票柜库存</text>
+<text x="966" y="262" class="t">票务室库存</text>
+<text x="966" y="288" class="t">入库 / 出库查询</text>
+<text x="966" y="314" class="t">票务室调票</text>
+
+  <path d="M324 253 H378" class="redline"/>
+  <path d="M604 253 H658" class="redline"/>
+  <path d="M884 253 H938" class="redline"/>
+
+  <rect x="104" y="400" width="220" height="126" rx="10" class="card"/>
+<rect x="104" y="400" width="220" height="8" rx="4" fill="#3FA45B"/>
+<text x="126" y="442" class="h">5. 票袋管理</text>
+<text x="126" y="472" class="t">绑定线路、售票员</text>
+<text x="126" y="498" class="t">更换线路</text>
+<text x="126" y="524" class="t">票袋库存归属</text>
+  <rect x="384" y="400" width="220" height="126" rx="10" class="card"/>
+<rect x="384" y="400" width="220" height="8" rx="4" fill="#D71920"/>
+<text x="406" y="442" class="h">6. 票单配票</text>
+<text x="406" y="472" class="t">加载票袋数据</text>
+<text x="406" y="498" class="t">录入起号止号</text>
+<text x="406" y="524" class="t">票柜出库到票袋</text>
+  <rect x="664" y="400" width="220" height="126" rx="10" class="card"/>
+<rect x="664" y="400" width="220" height="8" rx="4" fill="#2E86C1"/>
+<text x="686" y="442" class="h">7. 票单结算</text>
+<text x="686" y="472" class="t">录入剩余票号</text>
+<text x="686" y="498" class="t">自动计算张数金额</text>
+<text x="686" y="524" class="t">生成结算记录</text>
+  <rect x="944" y="400" width="220" height="126" rx="10" class="card"/>
+<rect x="944" y="400" width="220" height="8" rx="4" fill="#6F7378"/>
+<text x="966" y="442" class="h">8. 票单查询</text>
+<text x="966" y="472" class="t">配票单 / 结算单</text>
+<text x="966" y="498" class="t">打印、导出</text>
+<text x="966" y="524" class="t">重新结算入口</text>
+
+  <path d="M1054 328 C1054 362 260 362 214 394" class="grayline"/>
+  <path d="M324 463 H378" class="redline"/>
+  <path d="M604 463 H658" class="redline"/>
+  <path d="M884 463 H938" class="redline"/>
+
+  <rect x="104" y="610" width="220" height="126" rx="10" class="card"/>
+<rect x="104" y="610" width="220" height="8" rx="4" fill="#B63A2E"/>
+<text x="126" y="652" class="h">9. 退票处理</text>
+<text x="126" y="682" class="t">票袋退票</text>
+<text x="126" y="708" class="t">票柜退票</text>
+<text x="126" y="734" class="t">库存回写</text>
+  <rect x="384" y="610" width="220" height="126" rx="10" class="card"/>
+<rect x="384" y="610" width="220" height="8" rx="4" fill="#F2C94C"/>
+<text x="406" y="652" class="h">10. 无人售/充值</text>
+<text x="406" y="682" class="t">无人售线路结算</text>
+<text x="406" y="708" class="t">IC卡库存与收入</text>
+<text x="406" y="734" class="t">导入与异常处理</text>
+  <rect x="664" y="610" width="220" height="126" rx="10" class="card"/>
+<rect x="664" y="610" width="220" height="8" rx="4" fill="#2E86C1"/>
+<text x="686" y="652" class="h">11. 报表汇总</text>
+<text x="686" y="682" class="t">日结、月结</text>
+<text x="686" y="708" class="t">收入、清分、趋势</text>
+<text x="686" y="734" class="t">三级数据权限</text>
+  <rect x="944" y="610" width="220" height="126" rx="10" class="card"/>
+<rect x="944" y="610" width="220" height="8" rx="4" fill="#6F7378"/>
+<text x="966" y="652" class="h">12. 审计追溯</text>
+<text x="966" y="682" class="t">库存流水</text>
+<text x="966" y="708" class="t">操作日志</text>
+<text x="966" y="734" class="t">票号查询</text>
+
+  <path d="M214 538 V604" class="grayline"/>
+  <path d="M774 538 V604" class="redline"/>
+  <path d="M884 673 H938" class="grayline"/>
+  <path d="M1054 598 C1054 568 1054 560 1054 538" class="dash"/>
+  <text x="1178" y="557" class="s">异常更正 / 重新结算</text>
+
+  <text x="64" y="925" class="tiny">北京公交集团票务综合管理平台系统升级 | Vibe Coding 实施方案配套设计图</text>
+  <circle cx="1358" cy="904" r="18" fill="#D71920" opacity="0.95"/>
+  <circle cx="1395" cy="904" r="18" fill="#6F7378" opacity="0.78"/>
+</svg>

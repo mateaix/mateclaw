@@ -1,0 +1,116 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="960" viewBox="0 0 1440 960">
+  <defs>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#1F2933" flood-opacity="0.12"/>
+    </filter>
+    <marker id="arrow-red" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#D71920"/>
+    </marker>
+    <marker id="arrow-gray" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#6F7378"/>
+    </marker>
+    <style>
+      .title { font: 700 34px "Microsoft YaHei", "PingFang SC", Arial, sans-serif; fill: #0B2545; }
+      .subtitle { font: 400 17px "Microsoft YaHei", "PingFang SC", Arial, sans-serif; fill: #6F7378; }
+      .h { font: 700 20px "Microsoft YaHei", "PingFang SC", Arial, sans-serif; fill: #0B2545; }
+      .t { font: 400 15px "Microsoft YaHei", "PingFang SC", Arial, sans-serif; fill: #1F2933; }
+      .s { font: 400 13px "Microsoft YaHei", "PingFang SC", Arial, sans-serif; fill: #6F7378; }
+      .tiny { font: 400 12px "Microsoft YaHei", "PingFang SC", Arial, sans-serif; fill: #6F7378; }
+      .card { fill: white; stroke: #D8DEE6; stroke-width: 1.2; filter: url(#shadow); }
+      .band { fill: #F5F7FA; stroke: #D8DEE6; stroke-width: 1; }
+      .redline { stroke: #D71920; stroke-width: 3; fill: none; marker-end: url(#arrow-red); }
+      .grayline { stroke: #6F7378; stroke-width: 2.2; fill: none; marker-end: url(#arrow-gray); }
+      .dash { stroke: #6F7378; stroke-width: 2; stroke-dasharray: 8 8; fill: none; marker-end: url(#arrow-gray); }
+    </style>
+  </defs>
+  <rect width="100%" height="100%" fill="#FFFFFF"/>
+  <path d="M0 0 H1440 V10 H0 Z" fill="#D71920"/>
+  <path d="M0 10 H1440 V15 H0 Z" fill="#6F7378" opacity="0.55"/>
+  <text x="64" y="72" class="title">部署与可运维性架构图</text>
+  <text x="64" y="102" class="subtitle">面向国产化环境的部署、监控、备份、回滚和运维交接设计</text>
+
+  <rect x="70" y="148" width="1300" height="704" rx="18" class="band"/>
+  <text x="102" y="188" class="h">网络与访问区</text>
+  <rect x="104" y="214" width="230" height="116" rx="10" class="card"/>
+<rect x="104" y="214" width="230" height="8" rx="4" fill="#D71920"/>
+<text x="126" y="256" class="h">用户浏览器</text>
+<text x="126" y="286" class="t">集团 / 分公司 / 票务室</text>
+<text x="126" y="312" class="t">内网访问、统一认证</text>
+  <rect x="394" y="214" width="230" height="116" rx="10" class="card"/>
+<rect x="394" y="214" width="230" height="8" rx="4" fill="#6F7378"/>
+<text x="416" y="256" class="h">Nginx / 网关</text>
+<text x="416" y="286" class="t">HTTPS 终止</text>
+<text x="416" y="312" class="t">反向代理、限流</text>
+  <rect x="684" y="214" width="230" height="116" rx="10" class="card"/>
+<rect x="684" y="214" width="230" height="8" rx="4" fill="#2E86C1"/>
+<text x="706" y="256" class="h">应用服务 A</text>
+<text x="706" y="286" class="t">业务 API</text>
+<text x="706" y="312" class="t">前端静态资源</text>
+  <rect x="974" y="214" width="230" height="116" rx="10" class="card"/>
+<rect x="974" y="214" width="230" height="8" rx="4" fill="#2E86C1"/>
+<text x="996" y="256" class="h">应用服务 B</text>
+<text x="996" y="286" class="t">热备 / 横向扩展</text>
+<text x="996" y="312" class="t">版本灰度</text>
+  <path d="M334 272 H388" class="redline"/>
+  <path d="M624 272 H678" class="redline"/>
+  <path d="M914 272 H968" class="grayline"/>
+
+  <text x="102" y="398" class="h">数据与文件区</text>
+  <rect x="104" y="426" width="230" height="128" rx="10" class="card"/>
+<rect x="104" y="426" width="230" height="8" rx="4" fill="#D71920"/>
+<text x="126" y="468" class="h">达梦主库</text>
+<text x="126" y="498" class="t">业务数据写入</text>
+<text x="126" y="524" class="t">库存与单据主数据</text>
+  <rect x="394" y="426" width="230" height="128" rx="10" class="card"/>
+<rect x="394" y="426" width="230" height="8" rx="4" fill="#6F7378"/>
+<text x="416" y="468" class="h">达梦备库</text>
+<text x="416" y="498" class="t">主备同步</text>
+<text x="416" y="524" class="t">故障切换准备</text>
+  <rect x="684" y="426" width="230" height="128" rx="10" class="card"/>
+<rect x="684" y="426" width="230" height="8" rx="4" fill="#3FA45B"/>
+<text x="706" y="468" class="h">Redis</text>
+<text x="706" y="498" class="t">会话、缓存</text>
+<text x="706" y="524" class="t">任务状态、热点字典</text>
+  <rect x="974" y="426" width="230" height="128" rx="10" class="card"/>
+<rect x="974" y="426" width="230" height="8" rx="4" fill="#F2C94C"/>
+<text x="996" y="468" class="h">对象存储</text>
+<text x="996" y="498" class="t">模板、导入文件</text>
+<text x="996" y="524" class="t">导出报表、附件</text>
+  <path d="M334 490 H388" class="grayline"/>
+  <path d="M799 342 V420" class="redline"/>
+  <path d="M1089 342 V420" class="grayline"/>
+
+  <text x="102" y="620" class="h">运维保障区</text>
+  <rect x="104" y="648" width="216" height="124" rx="10" class="card"/>
+<rect x="104" y="648" width="216" height="8" rx="4" fill="#6F7378"/>
+<text x="126" y="690" class="h">日志中心</text>
+<text x="126" y="720" class="t">业务日志、接口日志</text>
+<text x="126" y="746" class="t">登录与操作审计</text>
+  <rect x="360" y="648" width="216" height="124" rx="10" class="card"/>
+<rect x="360" y="648" width="216" height="8" rx="4" fill="#D71920"/>
+<text x="382" y="690" class="h">监控告警</text>
+<text x="382" y="720" class="t">存活、慢SQL、磁盘</text>
+<text x="382" y="746" class="t">异常率、任务失败</text>
+  <rect x="616" y="648" width="216" height="124" rx="10" class="card"/>
+<rect x="616" y="648" width="216" height="8" rx="4" fill="#3FA45B"/>
+<text x="638" y="690" class="h">备份恢复</text>
+<text x="638" y="720" class="t">数据库全量/增量</text>
+<text x="638" y="746" class="t">文件备份、恢复演练</text>
+  <rect x="872" y="648" width="216" height="124" rx="10" class="card"/>
+<rect x="872" y="648" width="216" height="8" rx="4" fill="#2E86C1"/>
+<text x="894" y="690" class="h">CI/CD</text>
+<text x="894" y="720" class="t">构建、测试、制品</text>
+<text x="894" y="746" class="t">部署、版本标记</text>
+  <rect x="1128" y="648" width="216" height="124" rx="10" class="card"/>
+<rect x="1128" y="648" width="216" height="8" rx="4" fill="#B63A2E"/>
+<text x="1150" y="690" class="h">回滚预案</text>
+<text x="1150" y="720" class="t">旧版本保留</text>
+<text x="1150" y="746" class="t">割接窗口、冒烟检查</text>
+  <path d="M684 592 C550 610 465 620 468 642" class="dash"/>
+  <path d="M914 592 C790 610 724 622 724 642" class="dash"/>
+  <path d="M624 272 C520 340 475 380 480 420" class="dash"/>
+
+  <text x="64" y="925" class="tiny">北京公交集团票务综合管理平台系统升级 | Vibe Coding 实施方案配套设计图</text>
+  <circle cx="1358" cy="904" r="18" fill="#D71920" opacity="0.95"/>
+  <circle cx="1395" cy="904" r="18" fill="#6F7378" opacity="0.78"/>
+</svg>

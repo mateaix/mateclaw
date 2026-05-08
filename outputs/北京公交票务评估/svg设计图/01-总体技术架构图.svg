@@ -1,0 +1,121 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="960" viewBox="0 0 1440 960">
+  <defs>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#1F2933" flood-opacity="0.12"/>
+    </filter>
+    <marker id="arrow-red" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#D71920"/>
+    </marker>
+    <marker id="arrow-gray" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#6F7378"/>
+    </marker>
+    <style>
+      .title { font: 700 34px "Microsoft YaHei", "PingFang SC", Arial, sans-serif; fill: #0B2545; }
+      .subtitle { font: 400 17px "Microsoft YaHei", "PingFang SC", Arial, sans-serif; fill: #6F7378; }
+      .h { font: 700 20px "Microsoft YaHei", "PingFang SC", Arial, sans-serif; fill: #0B2545; }
+      .t { font: 400 15px "Microsoft YaHei", "PingFang SC", Arial, sans-serif; fill: #1F2933; }
+      .s { font: 400 13px "Microsoft YaHei", "PingFang SC", Arial, sans-serif; fill: #6F7378; }
+      .tiny { font: 400 12px "Microsoft YaHei", "PingFang SC", Arial, sans-serif; fill: #6F7378; }
+      .card { fill: white; stroke: #D8DEE6; stroke-width: 1.2; filter: url(#shadow); }
+      .band { fill: #F5F7FA; stroke: #D8DEE6; stroke-width: 1; }
+      .redline { stroke: #D71920; stroke-width: 3; fill: none; marker-end: url(#arrow-red); }
+      .grayline { stroke: #6F7378; stroke-width: 2.2; fill: none; marker-end: url(#arrow-gray); }
+      .dash { stroke: #6F7378; stroke-width: 2; stroke-dasharray: 8 8; fill: none; marker-end: url(#arrow-gray); }
+    </style>
+  </defs>
+  <rect width="100%" height="100%" fill="#FFFFFF"/>
+  <path d="M0 0 H1440 V10 H0 Z" fill="#D71920"/>
+  <path d="M0 10 H1440 V15 H0 Z" fill="#6F7378" opacity="0.55"/>
+  <text x="64" y="72" class="title">总体技术架构图</text>
+  <text x="64" y="102" class="subtitle">从用户访问、应用服务、数据存储、外部集成到运维保障的分层架构</text>
+
+  <rect x="58" y="138" width="1324" height="680" rx="18" class="band"/>
+  <text x="92" y="178" class="h">访问与用户层</text>
+  <rect x="88" y="206" width="248" height="138" rx="10" class="card"/>
+<rect x="88" y="206" width="248" height="8" rx="4" fill="#D71920"/>
+<text x="110" y="248" class="h">集团用户</text>
+<text x="110" y="278" class="t">集团管理员 / 操作员</text>
+<text x="110" y="304" class="t">全局管理、报表、审批</text>
+  <rect x="376" y="206" width="248" height="138" rx="10" class="card"/>
+<rect x="376" y="206" width="248" height="8" rx="4" fill="#2E86C1"/>
+<text x="398" y="248" class="h">分公司用户</text>
+<text x="398" y="278" class="t">分公司管理员 / 操作员</text>
+<text x="398" y="304" class="t">本公司业务、审核、统计</text>
+  <rect x="664" y="206" width="248" height="138" rx="10" class="card"/>
+<rect x="664" y="206" width="248" height="8" rx="4" fill="#3FA45B"/>
+<text x="686" y="248" class="h">票务室用户</text>
+<text x="686" y="278" class="t">票柜、票袋、票单</text>
+<text x="686" y="304" class="t">配票、结算、退票</text>
+  <rect x="952" y="206" width="248" height="138" rx="10" class="card"/>
+<rect x="952" y="206" width="248" height="8" rx="4" fill="#F2C94C"/>
+<text x="974" y="248" class="h">移动/内网终端</text>
+<text x="974" y="278" class="t">浏览器访问</text>
+<text x="974" y="304" class="t">打印、导入、导出</text>
+
+  <path d="M212 356 V410" class="redline"/>
+  <path d="M500 356 V410" class="redline"/>
+  <path d="M788 356 V410" class="redline"/>
+  <path d="M1076 356 V410" class="redline"/>
+
+  <text x="92" y="438" class="h">应用与业务服务层</text>
+  <rect x="88" y="466" width="248" height="168" rx="10" class="card"/>
+<rect x="88" y="466" width="248" height="8" rx="4" fill="#D71920"/>
+<text x="110" y="508" class="h">前端应用</text>
+<text x="110" y="538" class="t">Vue3 / TypeScript</text>
+<text x="110" y="564" class="t">菜单导航、表单、报表</text>
+<text x="110" y="590" class="t">打印与导入导出</text>
+  <rect x="376" y="466" width="248" height="168" rx="10" class="card"/>
+<rect x="376" y="466" width="248" height="8" rx="4" fill="#6F7378"/>
+<text x="398" y="508" class="h">网关与认证</text>
+<text x="398" y="538" class="t">统一登录认证</text>
+<text x="398" y="564" class="t">菜单 / 按钮权限</text>
+<text x="398" y="590" class="t">数据范围拦截</text>
+  <rect x="664" y="466" width="248" height="168" rx="10" class="card"/>
+<rect x="664" y="466" width="248" height="8" rx="4" fill="#2E86C1"/>
+<text x="686" y="508" class="h">业务服务</text>
+<text x="686" y="538" class="t">票库、票柜、票单</text>
+<text x="686" y="564" class="t">充值、无人售、退票</text>
+<text x="686" y="590" class="t">审批与状态机</text>
+  <rect x="952" y="466" width="248" height="168" rx="10" class="card"/>
+<rect x="952" y="466" width="248" height="8" rx="4" fill="#3FA45B"/>
+<text x="974" y="508" class="h">报表服务</text>
+<text x="974" y="538" class="t">日结、月结、趋势</text>
+<text x="974" y="564" class="t">Excel 导出</text>
+<text x="974" y="590" class="t">汇总表加速</text>
+
+  <path d="M336 550 H370" class="grayline"/>
+  <path d="M624 550 H658" class="grayline"/>
+  <path d="M912 550 H946" class="grayline"/>
+  <path d="M788 646 V698" class="redline"/>
+
+  <text x="92" y="724" class="h">数据、集成与运维层</text>
+  <rect x="88" y="752" width="220" height="120" rx="10" class="card"/>
+<rect x="88" y="752" width="220" height="8" rx="4" fill="#D71920"/>
+<text x="110" y="794" class="h">达梦数据库</text>
+<text x="110" y="824" class="t">主业务库 / 主备</text>
+<text x="110" y="850" class="t">库存、流水、报表</text>
+  <rect x="342" y="752" width="220" height="120" rx="10" class="card"/>
+<rect x="342" y="752" width="220" height="8" rx="4" fill="#6F7378"/>
+<text x="364" y="794" class="h">Redis / 缓存</text>
+<text x="364" y="824" class="t">会话、字典、短期任务</text>
+<text x="364" y="850" class="t">热点查询缓存</text>
+  <rect x="596" y="752" width="220" height="120" rx="10" class="card"/>
+<rect x="596" y="752" width="220" height="8" rx="4" fill="#F2C94C"/>
+<text x="618" y="794" class="h">文件与对象存储</text>
+<text x="618" y="824" class="t">模板、导入文件</text>
+<text x="618" y="850" class="t">导出报表、附件</text>
+  <rect x="850" y="752" width="220" height="120" rx="10" class="card"/>
+<rect x="850" y="752" width="220" height="8" rx="4" fill="#2E86C1"/>
+<text x="872" y="794" class="h">外部系统集成</text>
+<text x="872" y="824" class="t">IC卡 / 数据湖 / 胆款</text>
+<text x="872" y="850" class="t">银行清分线下导入</text>
+  <rect x="1104" y="752" width="220" height="120" rx="10" class="card"/>
+<rect x="1104" y="752" width="220" height="8" rx="4" fill="#3FA45B"/>
+<text x="1126" y="794" class="h">运维保障</text>
+<text x="1126" y="824" class="t">日志、监控、备份</text>
+<text x="1126" y="850" class="t">灰度、回滚、巡检</text>
+
+  <text x="64" y="925" class="tiny">北京公交集团票务综合管理平台系统升级 | Vibe Coding 实施方案配套设计图</text>
+  <circle cx="1358" cy="904" r="18" fill="#D71920" opacity="0.95"/>
+  <circle cx="1395" cy="904" r="18" fill="#6F7378" opacity="0.78"/>
+</svg>

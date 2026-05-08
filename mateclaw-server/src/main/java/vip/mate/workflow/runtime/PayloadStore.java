@@ -2,7 +2,9 @@ package vip.mate.workflow.runtime;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import vip.mate.workflow.model.WorkflowPayloadEntity;
 import vip.mate.workflow.repository.WorkflowPayloadMapper;
@@ -15,6 +17,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.LocalDateTime;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -38,6 +41,7 @@ import java.util.UUID;
  * v1. The fs tier is what unblocks local dev / docker / private deploys
  * that don't have an object store configured.
  */
+@Slf4j
 @Service
 public class PayloadStore {
 
@@ -50,17 +54,20 @@ public class PayloadStore {
     private final long inlineMaxBytes;
     private final long hardCapBytes;
     private final Path fsRoot;
+    private final long retentionDays;
 
     public PayloadStore(WorkflowPayloadMapper payloadMapper,
                         ObjectMapper objectMapper,
                         @Value("${mateclaw.workflow.payload.inline-max-bytes:262144}") long inlineMaxBytes,
                         @Value("${mateclaw.workflow.payload.hard-cap-bytes:52428800}") long hardCapBytes,
-                        @Value("${mateclaw.workflow.payload.fs.root:./data/workflow-payload}") String fsRoot) {
+                        @Value("${mateclaw.workflow.payload.fs.root:./data/workflow-payload}") String fsRoot,
+                        @Value("${mateclaw.workflow.payload.retention-days:30}") long retentionDays) {
         this.payloadMapper = payloadMapper;
         this.objectMapper = objectMapper;
         this.inlineMaxBytes = inlineMaxBytes;
         this.hardCapBytes = hardCapBytes;
         this.fsRoot = Path.of(fsRoot).toAbsolutePath();
+        this.retentionDays = retentionDays;
     }
 
     /** Store a UTF-8 string payload and return its stable URI. */
@@ -169,6 +176,71 @@ public class PayloadStore {
         } catch (NoSuchAlgorithmException e) {
             // SHA-256 is part of the JCA standard set — should never happen.
             throw new IllegalStateException("SHA-256 not available", e);
+        }
+    }
+
+    /**
+     * Drop payload rows older than {@code retention-days}. Tombstones the
+     * filesystem files for fs-tier payloads in the same pass so the disk
+     * doesn't keep growing once the DB row is gone. Returns the number of
+     * rows actually deleted; primarily for tests + log lines.
+     *
+     * <p>v0 deletes by absolute age rather than walking the
+     * {@code mate_workflow_run} graph — runs that finish stay queryable
+     * for {@code retention-days} from the payload-write timestamp, which
+     * is "good enough" for an alpha. v1 can switch to run-state-driven
+     * GC ({@code state IN ('succeeded','failed') AND completed_at &lt;
+     * threshold}) once the operator UI exposes a "preserve forever" flag
+     * for runs the customer wants kept.
+     */
+    public int sweepExpired() {
+        if (retentionDays <= 0) return 0;
+        LocalDateTime cutoff = LocalDateTime.now().minusDays(retentionDays);
+        List<WorkflowPayloadEntity> stale = payloadMapper.selectList(
+                new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<WorkflowPayloadEntity>()
+                        .lt(WorkflowPayloadEntity::getCreatedAt, cutoff));
+        if (stale.isEmpty()) return 0;
+        int deleted = 0;
+        for (WorkflowPayloadEntity row : stale) {
+            // Best-effort fs cleanup before the row goes — the row IS the
+            // foreign key the file is reachable through; if the row goes
+            // first the file becomes orphaned.
+            if (STORAGE_KIND_FS.equals(row.getStorageKind()) && row.getStorageRef() != null) {
+                try {
+                    Files.deleteIfExists(fsRoot.resolve(row.getStorageRef()));
+                } catch (IOException e) {
+                    log.warn("[PayloadStore] fs delete failed for {}: {}",
+                            row.getStorageRef(), e.getMessage());
+                }
+            }
+            try {
+                payloadMapper.deleteById(row.getId());
+                deleted++;
+            } catch (Exception e) {
+                log.warn("[PayloadStore] db delete failed for payload {}: {}",
+                        row.getPayloadUri(), e.getMessage());
+            }
+        }
+        return deleted;
+    }
+
+    /**
+     * Periodic sweep — runs once an hour by default. Tunable via
+     * {@code mateclaw.workflow.payload.sweep-interval-ms}. Skips a tick
+     * silently when retentionDays = 0 (operator opted out of GC).
+     */
+    @Scheduled(
+            fixedDelayString = "${mateclaw.workflow.payload.sweep-interval-ms:3600000}",
+            initialDelayString = "${mateclaw.workflow.payload.sweep-initial-delay-ms:600000}")
+    public void scheduledSweepExpired() {
+        try {
+            int dropped = sweepExpired();
+            if (dropped > 0) {
+                log.info("[PayloadStore] swept {} expired payload rows (retention={} days)",
+                        dropped, retentionDays);
+            }
+        } catch (Exception e) {
+            log.warn("[PayloadStore] periodic sweep failed: {}", e.getMessage());
         }
     }
 

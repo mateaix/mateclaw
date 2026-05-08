@@ -2089,6 +2089,15 @@ export default {
     },
     targetWorkflowSelect: '选择已发布的工作流',
     targetWorkflowEmpty: '尚无已发布的工作流。',
+    lastDispatchedAt: '最近一次尝试',
+    patternTypeLabels: {
+      cron: '定时任务',
+      channel_message: '渠道消息',
+      content_match: '内容匹配',
+      agent_lifecycle: '智能体生命周期',
+      workflow_completion: '工作流完成',
+      webhook: 'Webhook',
+    },
     patternHints: {
       cron: '示例：{"cron":"0 0 * * * *","timezone":"Asia/Shanghai"} —— 每次修改 cron 都会让 pattern_version 自增。',
       channel_message: '可填 channelType（如 feishu）和 senderEquals 进一步过滤。',

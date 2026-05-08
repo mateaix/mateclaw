@@ -27,16 +27,28 @@
           </thead>
           <tbody>
             <tr v-for="row in triggers" :key="row.id">
-              <td>{{ row.name || t('triggers.unnamed') }}</td>
               <td>
-                <code>{{ row.patternType }}</code>
-                <div class="pattern-detail">{{ row.patternJson }}</div>
+                <div class="trigger-name">{{ row.name || t('triggers.unnamed') }}</div>
+                <div v-if="row.lastError" class="trigger-last-error" :title="row.lastError">
+                  ⚠ {{ truncateError(row.lastError) }}
+                </div>
+              </td>
+              <td>
+                <span class="trigger-type-pill" :title="row.patternType">{{ patternTypeLabel(row.patternType) }}</span>
+                <div class="pattern-summary" :title="row.patternJson">{{ patternSummary(row) }}</div>
               </td>
               <td>{{ formatTarget(row) }}</td>
               <td>{{ t('triggers.rateUnit', { count: row.rateLimitPerMin }) }}</td>
               <td>{{ row.fireCount }}<span v-if="row.maxFires > 0"> / {{ row.maxFires }}</span></td>
               <td>{{ row.patternVersion }}</td>
-              <td>{{ formatTime(row.lastFiredAt) }}</td>
+              <td>
+                <div>{{ formatTime(row.lastFiredAt) }}</div>
+                <div v-if="row.lastDispatchedAt && row.lastDispatchedAt !== row.lastFiredAt"
+                     class="trigger-attempt-time"
+                     :title="t('triggers.lastDispatchedAt')">
+                  {{ formatTime(row.lastDispatchedAt) }}
+                </div>
+              </td>
               <td>
                 <label class="toggle">
                   <input type="checkbox" :checked="row.enabled" @change="toggleEnabled(row)" />
@@ -228,6 +240,58 @@ function formatTime(iso?: string) {
   return iso.replace('T', ' ').slice(0, 19)
 }
 
+function patternTypeLabel(pt: string): string {
+  const key = `triggers.patternTypeLabels.${pt}`
+  const localized = t(key, '')
+  return localized && localized !== key ? localized : pt
+}
+
+/**
+ * Render a one-line, human-readable summary of the pattern_json so the
+ * list reads as a product surface rather than a developer console. The
+ * raw JSON is still available via the row's title attribute (tooltip)
+ * and the edit form's "raw pattern_json (advanced)" details element.
+ */
+function patternSummary(row: TriggerSummary): string {
+  if (!row.patternJson) return '-'
+  let parsed: Record<string, unknown> = {}
+  try { parsed = JSON.parse(row.patternJson) } catch { return row.patternJson }
+  switch (row.patternType) {
+    case 'cron': {
+      const cron = parsed.cron ?? ''
+      const tz = parsed.timezone ?? ''
+      return tz ? `${cron} (${tz})` : `${cron}`
+    }
+    case 'channel_message': {
+      const ch = parsed.channelType ? `${parsed.channelType}` : t('triggers.pattern.channelTypeAny')
+      const sender = parsed.senderEquals ? ` · @${parsed.senderEquals}` : ''
+      return `${ch}${sender}`
+    }
+    case 'content_match': {
+      return parsed.substring ? `"${parsed.substring}"` : '—'
+    }
+    case 'agent_lifecycle': {
+      const aid = parsed.agentId ? `#${parsed.agentId}` : t('triggers.pattern.agentIdPlaceholder')
+      const ph = parsed.phase ? ` · ${parsed.phase}` : ''
+      return `${aid}${ph}`
+    }
+    case 'workflow_completion': {
+      const src = parsed.sourceWorkflowId ? `#${parsed.sourceWorkflowId}` : t('triggers.pattern.sourceWorkflowAny')
+      const st = parsed.stateFilter ? ` · ${parsed.stateFilter}` : ''
+      return `${src}${st}`
+    }
+    case 'webhook':
+      return t('triggers.pattern.webhookHeader')
+    default:
+      return row.patternJson
+  }
+}
+
+function truncateError(msg: string | undefined): string {
+  if (!msg) return ''
+  return msg.length <= 64 ? msg : msg.slice(0, 60) + '…'
+}
+
 function openCreate() {
   editing.value = null
   formState.value = emptyForm()
@@ -337,6 +401,46 @@ watch(workspaceId, reload)
   opacity: 0.7;
   margin-top: 2px;
 }
+.pattern-summary {
+  font-family: 'JetBrains Mono', Consolas, monospace;
+  font-size: 11px;
+  opacity: 0.7;
+  margin-top: 3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 240px;
+}
+.trigger-name {
+  font-weight: 500;
+}
+.trigger-last-error {
+  font-size: 11px;
+  color: var(--mc-danger, #c0392b);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 240px;
+  cursor: help;
+}
+.trigger-attempt-time {
+  font-size: 10px;
+  opacity: 0.55;
+  margin-top: 1px;
+}
+.trigger-type-pill {
+  display: inline-block;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 500;
+  border-radius: 999px;
+  background: var(--mc-bg-muted, rgba(0, 0, 0, 0.06));
+  color: var(--mc-text-secondary, inherit);
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+}
+:lang(zh-CN) .trigger-type-pill { text-transform: none; }
 .empty-row {
   text-align: center;
   opacity: 0.6;
