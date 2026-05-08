@@ -68,8 +68,10 @@
               <select v-model="formState.patternType">
                 <option value="cron">cron</option>
                 <option value="channel_message">channel_message</option>
-                <option value="webhook">webhook</option>
+                <option value="content_match">content_match</option>
+                <option value="agent_lifecycle">agent_lifecycle</option>
                 <option value="workflow_completion">workflow_completion</option>
+                <option value="webhook">webhook</option>
               </select>
             </label>
             <label class="span-2">{{ t('triggers.fields.patternJson') }}
