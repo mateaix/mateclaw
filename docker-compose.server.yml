@@ -1,0 +1,44 @@
+version: '3.8'
+
+# MateClaw 后端服务 - 独立部署
+#
+# 使用方式:
+#   1. cp .env.example .env，配置数据库和 SearXNG 地址
+#   2. docker compose -f docker-compose.server.yml up -d
+#
+# 注意: 如果使用外部 MySQL/SearXNG，需要设置以下环境变量:
+#   - DB_HOST, DB_PORT, DB_NAME, DB_USERNAME, DB_PASSWORD
+#   - SEARXNG_BASE_URL
+#
+services:
+  mateclaw-server:
+    build:
+      context: .
+      dockerfile: mateclaw-server/Dockerfile
+      args:
+        MAVEN_FLAGS: ${MAVEN_FLAGS:-}
+    container_name: mateclaw-server
+    restart: unless-stopped
+    environment:
+      SPRING_PROFILES_ACTIVE: mysql
+      DB_HOST: ${DB_HOST:-mysql}
+      DB_PORT: ${DB_PORT:-3306}
+      DB_NAME: ${DB_NAME:-mateclaw}
+      DB_USERNAME: ${DB_USERNAME:-mateclaw}
+      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required in .env}
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
+      SERPER_API_KEY: ${SERPER_API_KEY:-}
+      JWT_SECRET: ${JWT_SECRET:-}
+      MATECLAW_CORS_ALLOWED_ORIGINS: ${MATECLAW_CORS_ALLOWED_ORIGINS:-}
+      SEARXNG_BASE_URL: ${SEARXNG_BASE_URL:-http://searxng:8080}
+      MATECLAW_BROWSER_CDP_URL: ${MATECLAW_BROWSER_CDP_URL:-}
+      MATECLAW_BROWSER_CHROME_PATH: ${MATECLAW_BROWSER_CHROME_PATH:-}
+      MATECLAW_BROWSER_CHANNEL: ${MATECLAW_BROWSER_CHANNEL:-}
+    shm_size: 2gb
+    ports:
+      - "18080:18088"
+    volumes:
+      - server_data:/app/data
+
+volumes:
+  server_data

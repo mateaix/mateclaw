@@ -8,11 +8,8 @@ FROM node:22-alpine AS frontend-builder
 RUN npm install -g pnpm --silent
 WORKDIR /frontend
 # Install dependencies first (layer cache)
-COPY mateclaw-ui/package.json mateclaw-ui/pnpm-lock.yaml mateclaw-ui/.npmrc ./
-RUN pnpm install --frozen-lockfile --ignore-scripts && pnpm rebuild
-
-# Build with increased Node heap to avoid OOM during vite build
-ENV NODE_OPTIONS="--max-old-space-size=4096"
+COPY mateclaw-ui/package.json mateclaw-ui/pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
 # Copy source and build
 COPY mateclaw-ui/ ./
 # Override outDir: vite.config.ts writes to ../mateclaw-server/…/static which
