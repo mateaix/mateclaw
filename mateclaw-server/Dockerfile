@@ -5,7 +5,11 @@
 #   build container. These files are later copied into the JAR's classpath so
 #   Spring Boot serves the SPA at the root URL.
 FROM node:22-alpine AS frontend-builder
-RUN npm install -g pnpm --silent
+# Pin pnpm to a major version so the Docker build doesn't break when the npm
+# `latest` tag jumps majors. pnpm v10+ blocks dependency lifecycle scripts by
+# default; the allowed packages live under `pnpm.onlyBuiltDependencies` in
+# mateclaw-ui/package.json.
+RUN npm install -g pnpm@10 --silent
 WORKDIR /frontend
 # Install dependencies first (layer cache)
 COPY mateclaw-ui/package.json mateclaw-ui/pnpm-lock.yaml ./
