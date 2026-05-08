@@ -7,7 +7,15 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * 图片生成 Provider 细粒度能力声明
+ * Image generation provider capability declaration.
+ *
+ * <p>The flat top-level fields ({@code supportedSizes}, {@code aspectRatios},
+ * {@code maxCount}, {@code modes}) describe the provider's combined surface
+ * area and remain in use by callers that don't need per-mode granularity.
+ * Newer code should consult the structured {@link Generate} / {@link Edit} /
+ * {@link Geometry} / {@link Output} fields, which let the picker show
+ * "edit supports up to N reference images" or "generate accepts these
+ * formats" without conflating the two modes.
  *
  * @author MateClaw Team
  */
@@ -15,28 +23,86 @@ import java.util.Set;
 @Builder
 public class ImageProviderCapabilities {
 
-    /** 支持的生成模式 */
+    /** Combined modes the provider supports across all its models. */
     @Builder.Default
     private Set<ImageCapability> modes = Set.of(ImageCapability.TEXT_TO_IMAGE);
 
-    /** 支持的图片尺寸，如 ["1024x1024", "1024x1792"] */
+    /** Union of pixel sizes accepted by any model under this provider. */
     @Builder.Default
     private List<String> supportedSizes = List.of("1024x1024");
 
-    /** 支持的画面比例 */
+    /** Union of aspect ratio presets accepted by any model under this provider. */
     @Builder.Default
     private List<String> aspectRatios = List.of("1:1", "16:9", "9:16");
 
-    /** 最大生成数量 */
+    /** Largest {@code n} (image count) any model under this provider accepts. */
     @Builder.Default
     private int maxCount = 1;
 
-    /** 默认模型 */
+    /** Default model id. */
     private String defaultModel;
 
-    /** 可用模型列表 */
+    /** All callable model ids. */
     @Builder.Default
     private List<String> models = List.of();
+
+    /** Per-mode generate capabilities. Optional — falls back to flat fields when absent. */
+    private Generate generate;
+
+    /** Per-mode edit capabilities. {@code null} or {@code enabled=false} means edits unsupported. */
+    private Edit edit;
+
+    /** Geometry surface (sizes / aspect ratios). Optional. */
+    private Geometry geometry;
+
+    /** Output knobs (formats, qualities, backgrounds). Optional. */
+    private Output output;
+
+    @Data
+    @Builder
+    public static class Generate {
+        @Builder.Default
+        private int maxCount = 1;
+        @Builder.Default
+        private boolean supportsSize = true;
+        @Builder.Default
+        private boolean supportsAspectRatio = true;
+    }
+
+    @Data
+    @Builder
+    public static class Edit {
+        @Builder.Default
+        private boolean enabled = false;
+        @Builder.Default
+        private int maxCount = 1;
+        @Builder.Default
+        private int maxInputImages = 1;
+        @Builder.Default
+        private boolean supportsSize = true;
+        @Builder.Default
+        private boolean supportsAspectRatio = true;
+    }
+
+    @Data
+    @Builder
+    public static class Geometry {
+        @Builder.Default
+        private List<String> sizes = List.of();
+        @Builder.Default
+        private List<String> aspectRatios = List.of();
+    }
+
+    @Data
+    @Builder
+    public static class Output {
+        @Builder.Default
+        private List<String> formats = List.of();
+        @Builder.Default
+        private List<String> qualities = List.of();
+        @Builder.Default
+        private List<String> backgrounds = List.of();
+    }
 
     /**
      * Match the requested size against supported sizes by area only.

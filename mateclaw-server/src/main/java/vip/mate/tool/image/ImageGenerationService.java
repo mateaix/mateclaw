@@ -279,7 +279,7 @@ public class ImageGenerationService {
     }
 
     private ImageCapability inferMode(ImageGenerationRequest request) {
-        if (request.getReferenceImageUrl() != null && !request.getReferenceImageUrl().isBlank()) {
+        if (request.getInputImages() != null && !request.getInputImages().isEmpty()) {
             return ImageCapability.IMAGE_EDIT;
         }
         return ImageCapability.TEXT_TO_IMAGE;

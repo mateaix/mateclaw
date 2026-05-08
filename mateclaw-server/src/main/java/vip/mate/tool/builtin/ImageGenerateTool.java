@@ -13,6 +13,7 @@ import vip.mate.task.AsyncTaskService;
 import vip.mate.task.model.AsyncTaskInfo;
 import vip.mate.tool.image.*;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.StringJoiner;
 
@@ -30,19 +31,23 @@ public class ImageGenerateTool {
     private final ImageProviderRegistry providerRegistry;
     private final SystemSettingService systemSettingService;
     private final AsyncTaskService asyncTaskService;
+    private final ImageReferenceLoader imageReferenceLoader;
 
     @vip.mate.tool.ConcurrencyUnsafe("creates async tasks and persists generated artifacts; provider rate limits also forbid parallel calls")
-    @Tool(description = "Image generation tool. Supports actions: generate (default), list (show available providers), "
-            + "status (check task status). Some providers are async (30s-2min), results auto-displayed in conversation.")
+    @Tool(description = "Image generation tool. Supports actions: generate (default — text-to-image, OR image-edit when "
+            + "image/images parameters are set), list (show available providers/models), status (check task status). "
+            + "Reference images may be local paths, http(s) URLs, data: URLs, or msg:<messageId>:<idx> for an attachment "
+            + "from an earlier conversation message. Async providers take 30s-2min; results auto-display in the conversation.")
     public String image_generate(
             @ToolParam(description = "Action type: generate, list, status. Default: generate", required = false) String action,
             @ToolParam(description = "Image content description, be detailed (required for generate)", required = false) String prompt,
+            @ToolParam(description = "Single reference image for edit mode. Path / http(s) URL / data: URL / msg:<messageId>[:<idx>]", required = false) String image,
+            @ToolParam(description = "Multiple reference images for edit mode (provider caps the count). Same formats as 'image'.", required = false) List<String> images,
             @ToolParam(description = "Image size: 1024x1024 / 1024x1792 / 1792x1024", required = false) String size,
             @ToolParam(description = "Aspect ratio: 1:1 / 16:9 / 9:16, default 1:1", required = false) String aspectRatio,
             @ToolParam(description = "Generation count (1-4), default 1", required = false) Integer count,
             @ToolParam(description = "Model name (optional)", required = false) String model,
             @ToolParam(description = "Task ID to check status (for status action)", required = false) String taskId,
-            // RFC-063r §2.5: ToolContext is hidden from the LLM by JsonSchemaGenerator.
             @Nullable ToolContext ctx
     ) {
         String normalizedAction = (action == null || action.isBlank()) ? "generate" : action.trim().toLowerCase();
@@ -50,7 +55,7 @@ public class ImageGenerateTool {
         return switch (normalizedAction) {
             case "list" -> handleListAction();
             case "status" -> handleStatusAction(taskId, ctx);
-            default -> handleGenerateAction(prompt, size, aspectRatio, count, model, ctx);
+            default -> handleGenerateAction(prompt, image, images, size, aspectRatio, count, model, ctx);
         };
     }
 
@@ -120,7 +125,8 @@ public class ImageGenerateTool {
 
     // ==================== action=generate ====================
 
-    private String handleGenerateAction(String prompt, String size, String aspectRatio,
+    private String handleGenerateAction(String prompt, String image, List<String> images,
+                                         String size, String aspectRatio,
                                          Integer count, String model, @Nullable ToolContext ctx) {
         String conversationId = ToolExecutionContext.conversationId(ctx);
         String username = ToolExecutionContext.username(ctx);
@@ -133,12 +139,33 @@ public class ImageGenerateTool {
             return "错误：prompt 为必填参数，请描述你想要生成的图片内容";
         }
 
+        // Combine the singular and plural forms — the agent picks whichever is
+        // ergonomic. Order: image (first) then images[].
+        List<String> referenceInputs = new ArrayList<>();
+        if (image != null && !image.isBlank()) {
+            referenceInputs.add(image);
+        }
+        if (images != null) {
+            for (String s : images) {
+                if (s != null && !s.isBlank()) referenceInputs.add(s);
+            }
+        }
+
+        List<ImageReference> inputImages;
+        try {
+            inputImages = imageReferenceLoader.loadAll(referenceInputs, conversationId);
+        } catch (Exception e) {
+            log.warn("[ImageGenerateTool] Failed to load reference images: {}", e.getMessage());
+            return "错误：无法加载参考图片：" + e.getMessage();
+        }
+
         ImageGenerationRequest request = ImageGenerationRequest.builder()
                 .prompt(prompt)
                 .size(size)
                 .aspectRatio(aspectRatio != null ? aspectRatio : "1:1")
                 .count(count != null ? count : 1)
                 .model(model)
+                .inputImages(inputImages)
                 .build();
 
         ImageGenerationResult result = imageGenerationService.submitGeneration(
