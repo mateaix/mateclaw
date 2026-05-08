@@ -86,6 +86,7 @@ RUN apt-get update \
         fonts-noto-cjk \
         fonts-noto-color-emoji \
         poppler-utils \
+        python3-pip \
         tesseract-ocr \
         tesseract-ocr-chi-sim \
         tzdata \
@@ -95,7 +96,9 @@ RUN apt-get update \
 # BrowserLauncher's BUNDLED strategy will then succeed without extra config.
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
     TZ=Asia/Shanghai \
-    JAVA_TOOL_OPTIONS="-Duser.timezone=Asia/Shanghai"
+    JAVA_TOOL_OPTIONS="-Duser.timezone=Asia/Shanghai" \
+    PIP_INDEX_URL=https://pypi.org/simple \
+    PIP_TRUSTED_HOST=pypi.org
 
 COPY --from=builder /build/target/*.jar app.jar
 EXPOSE 18088
