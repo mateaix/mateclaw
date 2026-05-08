@@ -121,6 +121,25 @@ public class McpSkillBridge {
         }
     }
 
+    /**
+     * 增加一个“仅展示用”的方法，把 prefixed name 反查成 raw name
+     * @param prefixedName
+     * @return
+     */
+    public String decorateToolNameForDisplay(String prefixedName) {
+        McpToolNameResolver.ParsedRef ref = McpToolNameResolver.parse(prefixedName);
+        if (ref == null) return prefixedName;
+
+        McpServerEntity server = mcpServerService.getById(ref.serverId());
+        for (String raw : readToolRawNames(server)) {
+            String rebuilt = McpToolNameResolver.prefixedName(ref.serverId(), raw);
+            if (rebuilt.equals(prefixedName)) {
+                return prefixedName + " (" + raw + ")";
+            }
+        }
+        return prefixedName;
+    }
+
     private List<McpServerEntity> listEnabledServers() {
         try {
             return mcpServerService.listEnabled();

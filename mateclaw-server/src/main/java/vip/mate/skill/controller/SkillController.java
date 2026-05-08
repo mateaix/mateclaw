@@ -1,6 +1,8 @@
 package vip.mate.skill.controller;
 
 import com.baomidou.mybatisplus.core.metadata.IPage;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
@@ -57,6 +59,7 @@ public class SkillController {
     private final AgentBindingService agentBindingService;
     private final vip.mate.skill.mcp.McpSkillBridge mcpSkillBridge;
     private final vip.mate.skill.acp.AcpSkillBridge acpSkillBridge;
+    private final ObjectMapper objectMapper;
 
     @Operation(summary = "获取技能分页列表（RFC-042 §2.1）")
     @GetMapping
@@ -392,8 +395,32 @@ public class SkillController {
 
     @Operation(summary = "获取所有技能的运行时解析状态（管理页面使用）")
     @GetMapping("/runtime/status")
-    public R<List<ResolvedSkill>> getRuntimeStatus() {
-        return R.ok(skillRuntimeService.resolveAllSkillsStatus());
+    public R<List<Map<String, Object>>> getRuntimeStatus() {
+        List<ResolvedSkill> skills = skillRuntimeService.resolveAllSkillsStatus();
+        return R.ok(skills.stream().map(this::toRuntimeStatusView).toList());
+    }
+
+    /**
+     * 把返回给前端的 effectiveAllowedTools 做展示转换
+     * 除显示mcp_<serverId>_<slug>_<hash6>工具名，在后面用括号也显示原始mcp工具名
+     *
+     * @param skill
+     * @return
+     */
+    private Map<String, Object> toRuntimeStatusView(ResolvedSkill skill) {
+        Map<String, Object> view = objectMapper.convertValue(
+                skill,
+                new TypeReference<Map<String, Object>>() {}
+        );
+
+        if ("mcp".equalsIgnoreCase(skill.getSource())) {
+            List<String> displayTools = skill.getEffectiveAllowedTools().stream()
+                    .map(mcpSkillBridge::decorateToolNameForDisplay)
+                    .toList();
+            view.put("effectiveAllowedTools", displayTools);
+        }
+
+        return view;
     }
 
     @Operation(summary = "刷新 active skills 缓存，resync=true 时同步内置技能到 workspace")
