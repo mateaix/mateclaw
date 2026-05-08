@@ -19,15 +19,28 @@ import java.util.UUID;
  * {@code await_approval} — pauses the run pending an external approval
  * decision. Inserts a {@code mate_workflow_run_pause} row keyed by a fresh
  * {@code pauseToken}, then returns {@link StepResult.State#PAUSED} so the
- * runner can short-circuit and mark the run row {@code paused}. Resume is
- * orchestrated by {@code WorkflowResumer} once the external approval (or
- * timeout) lands.
+ * runner can short-circuit and mark the run row {@code paused}.
  *
- * <p>v0 stores no extra approval metadata — the workflow's {@code mate_tool_approval}
- * link will be wired in once the approval-driven resume callback exists.
- * The pause row's {@code resume_deadline} is honoured when the step
+ * <p><b>Resolution path (v0):</b>
+ * <ol>
+ *   <li>Operator UI lists paused runs via {@code GET /api/v1/workflows/runs/paused},
+ *       which returns the run + the active pause record (including the
+ *       {@code pauseToken}).</li>
+ *   <li>Operator picks an outcome and POSTs to
+ *       {@code /api/v1/workflows/runs/{runId}/resume} with the
+ *       {@code pauseToken} and {@code outcome ∈ {approved, rejected, timeout, cancelled}}.</li>
+ *   <li>{@code WorkflowResumer} marks the pause row resolved and advances
+ *       the run state machine.</li>
+ * </ol>
+ *
+ * <p>The pause row's {@code resume_deadline} is honoured when the step
  * declares a {@code timeoutSecs}; otherwise it stays {@code null} and the
  * resumer treats the pause as open-ended.
+ *
+ * <p>The {@code external_approval_id} column on the pause row is reserved
+ * for a future integration that bridges workflow pauses into the
+ * tool-approval inbox; v0 leaves it null and routes resolution through the
+ * pause-token path above.
  */
 @Component
 public class AwaitApprovalStepAdapter implements StepAdapter {
