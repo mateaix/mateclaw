@@ -129,6 +129,9 @@ public class ModelProviderService {
         provider.setBaseUrl(request.getBaseUrl());
         provider.setChatModel(ModelProtocol.resolveChatModel(request.getProtocol(), request.getChatModel()));
         provider.setGenerateKwargs(writeJson(request.getGenerateKwargs()));
+        if (request.getRequireApiKey() != null) {
+            provider.setRequireApiKey(request.getRequireApiKey());
+        }
         // RFC-009 P3.5: only update fallback priority when the caller explicitly
         // sends a value. null leaves it untouched (existing chain unchanged).
         if (request.getFallbackPriority() != null) {
@@ -169,7 +172,7 @@ public class ModelProviderService {
         provider.setSupportModelDiscovery(false);
         provider.setSupportConnectionCheck(false);
         provider.setFreezeUrl(false);
-        provider.setRequireApiKey(true);
+        provider.setRequireApiKey(request.getRequireApiKey() == null || Boolean.TRUE.equals(request.getRequireApiKey()));
         modelProviderMapper.insert(provider);
 
         if (request.getModels() != null) {

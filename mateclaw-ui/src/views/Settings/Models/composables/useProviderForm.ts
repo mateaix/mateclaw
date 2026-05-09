@@ -39,6 +39,7 @@ export function useProviderForm(deps: ListDeps) {
     apiKeyPrefix: 'sk-',
     protocol: 'openai-compatible',
     chatModel: 'OpenAIChatModel',
+    requireApiKey: true,
     generateKwargsText: '{}',
     enableSearch: false,
     searchStrategy: '',
@@ -110,6 +111,7 @@ export function useProviderForm(deps: ListDeps) {
       apiKeyPrefix: 'sk-',
       protocol: 'openai-compatible',
       chatModel: 'OpenAIChatModel',
+      requireApiKey: true,
       generateKwargsText: '{}',
       enableSearch: false,
       searchStrategy: '',
@@ -134,6 +136,7 @@ export function useProviderForm(deps: ListDeps) {
       apiKeyPrefix: provider.apiKeyPrefix || 'sk-',
       protocol,
       chatModel: provider.chatModel || 'OpenAIChatModel',
+      requireApiKey: protocol === 'openai-compatible' ? provider.requireApiKey !== false : true,
       generateKwargsText: JSON.stringify(kwargs, null, 2),
       enableSearch: searchDefault,
       searchStrategy: (kwargs.searchStrategy as string) || '',
@@ -175,12 +178,16 @@ export function useProviderForm(deps: ListDeps) {
     }
     // RFC-009 P3.5: clamp to non-negative, coerce string input back to integer.
     const fallbackPriority = Math.max(0, Math.floor(Number(providerForm.fallbackPriority) || 0))
+    const requireApiKey = providerForm.protocol === 'openai-compatible'
+      ? providerForm.requireApiKey
+      : true
     if (editingProvider.value) {
       await modelApi.updateProviderConfig(editingProvider.value.id, {
         apiKey: providerForm.apiKey,
         baseUrl: providerForm.baseUrl,
         protocol: providerForm.protocol,
         chatModel: protocolToChatModel(providerForm.protocol),
+        requireApiKey,
         generateKwargs: kwargs,
         fallbackPriority,
       })
@@ -192,6 +199,7 @@ export function useProviderForm(deps: ListDeps) {
         apiKeyPrefix: providerForm.apiKeyPrefix,
         protocol: providerForm.protocol,
         chatModel: protocolToChatModel(providerForm.protocol),
+        requireApiKey,
         models: [],
       })
       if (providerForm.apiKey || providerForm.generateKwargsText || fallbackPriority > 0) {
@@ -200,6 +208,7 @@ export function useProviderForm(deps: ListDeps) {
           baseUrl: providerForm.baseUrl,
           protocol: providerForm.protocol,
           chatModel: protocolToChatModel(providerForm.protocol),
+          requireApiKey,
           generateKwargs: kwargs,
           fallbackPriority,
         })

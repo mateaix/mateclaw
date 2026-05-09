@@ -11,6 +11,7 @@ public class ProviderConfigRequest {
     private String protocol;
     private String chatModel;
     private Map<String, Object> generateKwargs;
+    private Boolean requireApiKey;
     /**
      * RFC-009 P3.5: provider's position in the multi-model failover chain.
      * {@code 0} = excluded; positive ints define ascending try-order. When
