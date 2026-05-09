@@ -337,6 +337,12 @@
           >
             <el-icon><RefreshRight /></el-icon>
           </button>
+          <!-- Reply model attribution (assistant only) -->
+          <span
+            v-if="role === 'assistant' && replyModel"
+            class="action-model"
+            :title="replyModelTitle"
+          >{{ replyModel }}</span>
           <!-- 时间戳（inline） -->
           <span class="action-time">{{ formattedTime }}</span>
         </div>
@@ -708,6 +714,16 @@ const formattedTime = computed(() => {
     hour: '2-digit',
     minute: '2-digit',
   })
+})
+
+// Reply model attribution: shows which model produced the assistant message.
+// Empty for streaming (server only emits runtimeModel after persistence) and
+// historical messages prior to MessageVO carrying the field.
+const replyModel = computed(() => props.message.runtimeModel || '')
+const replyModelTitle = computed(() => {
+  const provider = props.message.runtimeProvider
+  const base = t('chat.replyModel', { model: replyModel.value })
+  return provider ? `${base} (${provider})` : base
 })
 
 const formatFileSize = (size: number) => {
@@ -1473,6 +1489,18 @@ watch(isGenerating, (generating) => {
   color: var(--mc-text-tertiary, #94a3b8);
   margin-left: 4px;
   user-select: none;
+}
+
+.action-model {
+  font-size: 11px;
+  color: var(--mc-text-secondary, #64748b);
+  margin-left: 4px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--mc-fill-2, rgba(100, 116, 139, 0.08));
+  font-family: var(--mc-mono-font, ui-monospace, "SF Mono", Menlo, monospace);
+  user-select: text;
+  white-space: nowrap;
 }
 
 /* ==================== 主内容区域 ==================== */

@@ -487,6 +487,8 @@ export function useChat(options: UseChatOptions): UseChatReturn {
         const msg = messages.value[msgIndex]
         if (data.promptTokens !== undefined) msg.promptTokens = data.promptTokens
         if (data.completionTokens !== undefined) msg.completionTokens = data.completionTokens
+        if (data.runtimeModel) msg.runtimeModel = data.runtimeModel
+        if (data.runtimeProvider) msg.runtimeProvider = data.runtimeProvider
         // Replace the local temp ID with the backend-persisted ID so reconcile can match by ID
         if (data.assistantMessageId) {
           msg.id = data.assistantMessageId

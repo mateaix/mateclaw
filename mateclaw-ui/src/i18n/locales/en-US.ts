@@ -148,6 +148,7 @@ export default {
     copy: 'Copy',
     copied: 'Copied',
     regenerate: 'Regenerate',
+    replyModel: 'Reply model: {model}',
     ttsPlay: 'Read Aloud',
     ttsStop: 'Stop Reading',
     conversations: 'Conversations',

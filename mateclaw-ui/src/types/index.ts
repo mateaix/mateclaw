@@ -83,6 +83,9 @@ export interface Message {
   // Token 统计
   promptTokens?: number
   completionTokens?: number
+  // Runtime model attribution (assistant messages): the model that actually produced this reply
+  runtimeModel?: string
+  runtimeProvider?: string
   // 前端临时字段
   streaming?: boolean  // 内部动画控制，UI 渲染以 status 为准
   attachments?: ChatAttachment[]

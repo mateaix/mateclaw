@@ -148,6 +148,7 @@ export default {
     copy: '复制',
     copied: '已复制',
     regenerate: '重新生成',
+    replyModel: '本条回复模型: {model}',
     ttsPlay: '朗读',
     ttsStop: '停止朗读',
     conversations: '会话列表',

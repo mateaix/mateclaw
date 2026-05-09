@@ -1416,6 +1416,14 @@ public class ChatController {
         payload.put("status", status);
         if (savedAssistant != null && savedAssistant.getId() != null) {
             payload.put("assistantMessageId", savedAssistant.getId());
+            // Surface runtime model attribution so the chat bubble can show
+            // which model produced this reply without waiting for a history reload.
+            if (savedAssistant.getRuntimeModel() != null && !savedAssistant.getRuntimeModel().isBlank()) {
+                payload.put("runtimeModel", savedAssistant.getRuntimeModel());
+            }
+            if (savedAssistant.getRuntimeProvider() != null && !savedAssistant.getRuntimeProvider().isBlank()) {
+                payload.put("runtimeProvider", savedAssistant.getRuntimeProvider());
+            }
         }
         if (promptTokens > 0) payload.put("promptTokens", promptTokens);
         if (completionTokens > 0) payload.put("completionTokens", completionTokens);
