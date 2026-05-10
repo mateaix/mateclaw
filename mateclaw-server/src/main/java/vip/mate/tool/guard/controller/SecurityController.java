@@ -138,6 +138,17 @@ public class SecurityController {
         }
     }
 
+    @Operation(summary = "按主键 ID 删除自定义规则（兜底，rule_id 异常时使用）")
+    @DeleteMapping("/guard/rules/by-id/{id}")
+    public R<String> deleteRuleByPk(@PathVariable Long id) {
+        try {
+            ruleService.deleteRuleByPk(id);
+            return R.ok("删除成功");
+        } catch (IllegalArgumentException e) {
+            return R.fail(e.getMessage());
+        }
+    }
+
     // ==================== Audit ====================
 
     @Operation(summary = "审计日志")

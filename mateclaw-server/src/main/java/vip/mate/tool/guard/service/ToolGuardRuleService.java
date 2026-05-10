@@ -64,10 +64,15 @@ public class ToolGuardRuleService {
      * 新增自定义规则
      */
     public ToolGuardRuleEntity createRule(ToolGuardRuleEntity rule) {
-        if (rule == null || rule.getRuleId() == null || rule.getRuleId().isBlank()) {
-            throw new IllegalArgumentException("Rule ID is required");
+        if (rule == null) {
+            throw new IllegalArgumentException("Rule body is required");
         }
+        requireNonBlank(rule.getRuleId(), "Rule ID");
+        requireNonBlank(rule.getName(), "Rule name");
+        requireNonBlank(rule.getPattern(), "Rule pattern");
         rule.setRuleId(rule.getRuleId().trim());
+        rule.setName(rule.getName().trim());
+        rule.setPattern(rule.getPattern().trim());
         rule.setBuiltin(false);
         ruleMapper.insert(rule);
         ruleRegistry.reload();
@@ -75,7 +80,8 @@ public class ToolGuardRuleService {
     }
 
     /**
-     * 更新规则
+     * 更新规则。仅覆盖请求里显式提供的字段；显式传入的关键字段（name / pattern）
+     * 不允许置为空白，避免回写出无意义的"空名空模式"行。
      */
     public ToolGuardRuleEntity updateRule(String ruleId, ToolGuardRuleEntity update) {
         ToolGuardRuleEntity existing = getByRuleId(ruleId);
@@ -83,14 +89,20 @@ public class ToolGuardRuleService {
             throw new IllegalArgumentException("Rule not found: " + ruleId);
         }
 
-        if (update.getName() != null) existing.setName(update.getName());
+        if (update.getName() != null) {
+            requireNonBlank(update.getName(), "Rule name");
+            existing.setName(update.getName().trim());
+        }
         if (update.getDescription() != null) existing.setDescription(update.getDescription());
         if (update.getToolName() != null) existing.setToolName(update.getToolName());
         if (update.getParamName() != null) existing.setParamName(update.getParamName());
         if (update.getCategory() != null) existing.setCategory(update.getCategory());
         if (update.getSeverity() != null) existing.setSeverity(update.getSeverity());
         if (update.getDecision() != null) existing.setDecision(update.getDecision());
-        if (update.getPattern() != null) existing.setPattern(update.getPattern());
+        if (update.getPattern() != null) {
+            requireNonBlank(update.getPattern(), "Rule pattern");
+            existing.setPattern(update.getPattern().trim());
+        }
         if (update.getExcludePattern() != null) existing.setExcludePattern(update.getExcludePattern());
         if (update.getRemediation() != null) existing.setRemediation(update.getRemediation());
         if (update.getEnabled() != null) existing.setEnabled(update.getEnabled());
@@ -99,6 +111,12 @@ public class ToolGuardRuleService {
         ruleMapper.updateById(existing);
         ruleRegistry.reload();
         return existing;
+    }
+
+    private static void requireNonBlank(String value, String fieldLabel) {
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException(fieldLabel + " is required");
+        }
     }
 
     /**
@@ -126,6 +144,26 @@ public class ToolGuardRuleService {
             throw new IllegalArgumentException("Cannot delete builtin rule: " + ruleId);
         }
         ruleMapper.deleteById(existing.getId());
+        ruleRegistry.reload();
+    }
+
+    /**
+     * 按主键 ID 删除自定义规则。兜底通道：当 rule_id 因历史脏数据为空或无法走
+     * /guard/rules/{ruleId} 路径变量时，UI 仍可通过主键删除。
+     */
+    public void deleteRuleByPk(Long id) {
+        if (id == null) {
+            throw new IllegalArgumentException("Rule primary key is required");
+        }
+        ToolGuardRuleEntity existing = ruleMapper.selectById(id);
+        if (existing == null) {
+            throw new IllegalArgumentException("Rule not found: id=" + id);
+        }
+        if (Boolean.TRUE.equals(existing.getBuiltin())) {
+            throw new IllegalArgumentException(
+                    "Cannot delete builtin rule: " + existing.getRuleId());
+        }
+        ruleMapper.deleteById(id);
         ruleRegistry.reload();
     }
 }
