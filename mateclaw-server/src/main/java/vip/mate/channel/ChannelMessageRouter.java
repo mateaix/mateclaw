@@ -270,26 +270,46 @@ public class ChannelMessageRouter {
         synchronized (pendingMessages) {
             PendingMessage existing = pendingMessages.get(conversationId);
             if (existing != null) {
-                // 合并到已有的 pending 消息
-                if (existing.timer != null) {
-                    existing.timer.cancel(false);
-                }
-                existing.appendContent(message.getContent());
-                int mergedLen = existing.getMergedContent().length();
-                long debounceMs = pickDebounceMs(mergedLen);
-                existing.timer = debounceScheduler.schedule(
-                        () -> flushPending(conversationId), debounceMs, TimeUnit.MILLISECONDS);
-                if (debounceMs > DEBOUNCE_MS) {
-                    log.info("[{}] Long-text merger active: conversationId={}, mergedLen={}, debounce={}ms (paste-split suspected)",
-                            channelType, conversationId, mergedLen, debounceMs);
+                // Sender boundary in groups: when a different user sends to the
+                // same group within the debounce window, merging would attribute
+                // both fragments to whoever sent first — the LLM then loses the
+                // ability to tell who asked what. Flush the existing buffer
+                // immediately so each user's text rides its own pending window.
+                // Reentrant on `pendingMessages`, so the inner flushPending's
+                // synchronized block re-acquires safely on the same thread.
+                String existingSender = existing.firstMessage.getSenderId();
+                String incomingSender = message.getSenderId();
+                boolean sameSender = isSameSender(existingSender, incomingSender);
+                if (!sameSender) {
+                    log.info("[{}] Sender boundary in conversation {}: flushing pending from sender={}, accepting new sender={}",
+                            channelType, conversationId, existingSender, incomingSender);
+                    if (existing.timer != null) {
+                        existing.timer.cancel(false);
+                    }
+                    flushPending(conversationId);
+                    // Fall through to create a fresh pending for the new sender.
                 } else {
-                    log.debug("[{}] Message merged with pending (debounce {}ms): conversationId={}",
-                            channelType, debounceMs, conversationId);
+                    // Same sender — original paste-split / rapid-follow merge path.
+                    if (existing.timer != null) {
+                        existing.timer.cancel(false);
+                    }
+                    existing.appendContent(message.getContent());
+                    int mergedLen = existing.getMergedContent().length();
+                    long debounceMs = pickDebounceMs(mergedLen);
+                    existing.timer = debounceScheduler.schedule(
+                            () -> flushPending(conversationId), debounceMs, TimeUnit.MILLISECONDS);
+                    if (debounceMs > DEBOUNCE_MS) {
+                        log.info("[{}] Long-text merger active: conversationId={}, mergedLen={}, debounce={}ms (paste-split suspected)",
+                                channelType, conversationId, mergedLen, debounceMs);
+                    } else {
+                        log.debug("[{}] Message merged with pending (debounce {}ms): conversationId={}",
+                                channelType, debounceMs, conversationId);
+                    }
+                    return;
                 }
-                return;
             }
 
-            // 首条消息，创建 PendingMessage 并设定防抖定时器
+            // 首条消息（或 sender boundary 之后的新 sender），创建 PendingMessage 并设定防抖定时器
             PendingMessage pending = new PendingMessage(message, adapter, channelEntity);
             pendingMessages.put(conversationId, pending);
             int firstLen = message.getContent() != null ? message.getContent().length() : 0;
@@ -569,11 +589,20 @@ public class ChannelMessageRouter {
             }
 
             // 保存用户消息（带 contentParts）
+            // Group sender attribution: tag the persisted content + the
+            // prompt with [@sender] in groups so the LLM can disambiguate
+            // multiple users sharing one conversation. Single chats pass
+            // through unchanged (chatId is null).
             List<MessageContentPart> parts = message.getContentParts();
-            conversationService.saveMessage(conversationId, "user", message.getContent(), parts);
+            String attributedContent = applyGroupTag(message, message.getContent());
+            conversationService.saveMessage(conversationId, "user", attributedContent, parts);
 
             // 构建 prompt（语音输入时注入场景提示词）
             String promptText = buildPromptFromParts(message.getContent(), parts, message.getInputMode());
+            // Re-apply the tag in case the prompt was assembled from
+            // non-text parts (image/file) where buildPromptFromParts
+            // ignored `content`. Idempotent: skips when already prefixed.
+            promptText = applyGroupTag(message, promptText);
 
             // 注册到 ChatStreamTracker：让 graph 节点广播的事件（phase / content_delta / tool_call_* 等）
             // 能被 ChatConsole observer 订阅到。不注册 → broadcast() 会因 state==null 短路丢弃。
@@ -960,9 +989,13 @@ public class ChannelMessageRouter {
 
         conversationService.getOrCreateConversation(conversationId, agentId, username, channelEntity.getWorkspaceId());
         List<MessageContentPart> parts = message.getContentParts();
-        conversationService.saveMessage(conversationId, "user", message.getContent(), parts);
+        // Mirror processMessage's group attribution for the streaming path
+        // (Web channel today; future streaming IM channels inherit it).
+        String attributedContent = applyGroupTag(message, message.getContent());
+        conversationService.saveMessage(conversationId, "user", attributedContent, parts);
 
         String promptText = buildPromptFromParts(message.getContent(), parts, message.getInputMode());
+        promptText = applyGroupTag(message, promptText);
         // RFC-063r §2.5: forward ChatOrigin so tools created during this
         // streaming conversation inherit channel binding.
         ChatOrigin origin = chatOriginFactory.from(
@@ -1028,6 +1061,70 @@ public class ChannelMessageRouter {
     private String buildConversationId(ChannelMessage message) {
         String identifier = message.getChatId() != null ? message.getChatId() : message.getSenderId();
         return message.getChannelType() + ":" + identifier;
+    }
+
+    /**
+     * Build a sender-attribution tag for group messages. Returns
+     * {@code [@senderName]} when the message is from a multi-user channel
+     * context (chatId is set), else {@code null} for 1:1 chats.
+     *
+     * <p>Without this tag, three users asking three different questions in
+     * the same group conversation collapse into an unattributed wall of
+     * "user:" turns and the LLM can no longer tell who is asking what —
+     * it answers based on the most-recent text and ignores the rest.
+     * Single chats are unaffected because chatId is null there.
+     *
+     * <p>Prefer {@code senderName} when populated; otherwise fall back to
+     * {@code senderId}. WeCom currently sets both to the same opaque
+     * openid which is still useful for disambiguation; future channels
+     * (DingTalk, Slack) carry friendlier display names that flow through
+     * unchanged.
+     *
+     * @return sender tag like {@code [@Alice]}, or {@code null} if the
+     *         message is not from a group context.
+     */
+    static String buildGroupTag(ChannelMessage message) {
+        if (message == null) return null;
+        String chatId = message.getChatId();
+        if (chatId == null || chatId.isBlank()) return null;
+        String name = (message.getSenderName() != null && !message.getSenderName().isBlank())
+                ? message.getSenderName() : message.getSenderId();
+        if (name == null || name.isBlank()) return null;
+        return "[@" + name + "]";
+    }
+
+    /**
+     * Apply {@link #buildGroupTag} to {@code content}. Idempotent: if
+     * {@code content} already starts with the tag (e.g. an upstream
+     * adapter has pre-attributed it), returns it unchanged so we don't
+     * double-stamp. No-op for single chats.
+     */
+    static String applyGroupTag(ChannelMessage message, String content) {
+        String tag = buildGroupTag(message);
+        if (tag == null) return content;
+        // Empty content: leave empty rather than persist or prompt with a
+        // bare "[@Alice]" — the message had no payload to attribute.
+        if (content == null || content.isEmpty()) return content;
+        if (content.startsWith(tag)) return content;
+        return tag + " " + content;
+    }
+
+    /**
+     * Decision helper for the debounce merger: should an incoming message
+     * from {@code incomingSender} merge into a pending buffer started by
+     * {@code existingSender}? True only when the senders match — different
+     * senders in the same conversation (a group context) must NOT merge,
+     * else the second user's text gets attributed to the first.
+     *
+     * <p>Null-handling: a null {@code existingSender} means "no buffer to
+     * merge into" so the answer is always false; a null
+     * {@code incomingSender} (rare, but seen in test fixtures) is also
+     * not allowed to silently merge — returning false routes to the
+     * "create new pending" branch which is safe.
+     */
+    static boolean isSameSender(String existingSender, String incomingSender) {
+        if (existingSender == null || incomingSender == null) return false;
+        return existingSender.equals(incomingSender);
     }
 
     /**
