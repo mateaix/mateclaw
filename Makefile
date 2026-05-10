@@ -19,7 +19,7 @@ builder-inspect:
 
 # Docker build targets
 
-IMAGE_TAG := mateclaw-1.0.0
+IMAGE_TAG := mateclaw-1.1.0
 REGISTRY  := connor-mateclaw-registry.zeabur.app/mateclaw/mateclaw-server
 SEARXNG_IMAGE := connor-mateclaw-registry.zeabur.app/searxng/searxng:$(IMAGE_TAG)
 
