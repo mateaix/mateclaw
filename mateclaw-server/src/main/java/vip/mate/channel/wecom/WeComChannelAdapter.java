@@ -201,6 +201,33 @@ public class WeComChannelAdapter extends AbstractChannelAdapter {
     /** 回复上下文：replyToken -> (frameReqId, processingStreamId)，用于 sendContentParts 回写 */
     private final ConcurrentHashMap<String, WeComReplyContext> replyContexts = new ConcurrentHashMap<>();
 
+    /**
+     * Group-chat reply-slot fallback cache: {@code chatId → most recent
+     * inbound frameReqId from that group}.
+     * <p>
+     * The WeCom AI Bot platform <strong>blocks {@code aibot_send_msg} in
+     * group chats</strong> — proactive pushes (cron summaries,
+     * image-generation completions, TTS audio, async-task forwards) must
+     * ride {@code aibot_respond_msg} bound to <em>some</em> prior frame
+     * id. Without this cache every group push silently failed:
+     * {@code sendMessageToChat} fell through to {@code aibot_send_msg},
+     * the platform rejected it, the user saw nothing.
+     * <p>
+     * Populated for group inbound frames only — single-chat
+     * {@code aibot_send_msg} still works, so we don't need a cached
+     * reqId there. {@link #pickGroupReplyReqId(String)} returns the
+     * cached id (or null when there's never been a group inbound), and
+     * the proactive send paths fall through to {@code aibot_send_msg}
+     * when null.
+     * <p>
+     * Bounded LRU at {@link #LAST_CHAT_REQ_IDS_MAX_SIZE} via insertion-
+     * order eviction — long-lived bots in many groups don't unbounded-grow.
+     */
+    private final ConcurrentHashMap<String, String> lastChatReqIds = new ConcurrentHashMap<>();
+
+    /** Max chat-id entries to keep in {@link #lastChatReqIds} before evicting. */
+    private static final int LAST_CHAT_REQ_IDS_MAX_SIZE = 1000;
+
     private record WeComReplyContext(String frameReqId, String processingStreamId) {}
 
     /**
@@ -1000,6 +1027,19 @@ public class WeComChannelAdapter extends AbstractChannelAdapter {
                         contentParts.add(0, MessageContentPart.text(textContent));
                     }
                 }
+                case "appmsg" -> {
+                    // Forwarded WeCom complex messages: PDF / Word / Excel
+                    // transfers, public-account article links, miniprogram
+                    // cards. Without this branch every forwarded PDF /
+                    // article / miniprogram fell into default and got
+                    // silently dropped — bot looked dumb to users.
+                    AppmsgContent appmsg = extractAppmsgContent(body, msgId, senderId, chatId, chatType);
+                    if (appmsg.text() != null && !appmsg.text().isBlank()) {
+                        textContent = appmsg.text();
+                        contentParts.add(0, MessageContentPart.text(textContent));
+                    }
+                    contentParts.addAll(appmsg.attachedParts());
+                }
                 default -> {
                     log.debug("[wecom] Ignoring unsupported message type: {}", msgType);
                     return;
@@ -1068,6 +1108,16 @@ public class WeComChannelAdapter extends AbstractChannelAdapter {
 
             boolean isGroup = "group".equals(chatType);
             String effectiveChatId = isGroup ? chatId : null;
+
+            // Cache the group's most recent inbound frameReqId so future
+            // proactive pushes into this group can ride aibot_respond_msg
+            // (the AI bot platform blocks aibot_send_msg in groups —
+            // without this cache async-task completions and cron summaries
+            // silently fail to deliver).
+            if (isGroup && chatId != null && !chatId.isBlank()
+                    && frameReqId != null && !frameReqId.isBlank()) {
+                rememberGroupReplyReqId(chatId, frameReqId);
+            }
 
             // conversationId 格式：wecom:{userid} 或 wecom:group:{chatid}
             // 由 ChannelMessageRouter.buildConversationId() 根据 channelType + chatId/senderId 构建
@@ -1277,25 +1327,94 @@ public class WeComChannelAdapter extends AbstractChannelAdapter {
     }
 
     /**
-     * 通过 WebSocket send_message 命令主动推送消息
+     * 通过 WebSocket send_message 命令主动推送消息。
+     * <p>
+     * Group fallback: WeCom AI Bot platform rejects {@code aibot_send_msg}
+     * in group chats. When {@code chatId} matches a known group (via
+     * {@link #pickGroupReplyReqId}), ride a cached inbound reqId via
+     * {@code aibot_respond_msg} instead. Single chats still use
+     * {@code aibot_send_msg} (which the platform allows).
      */
     private void sendMessageToChat(String chatId, String content) {
         if (webSocket == null || content == null || content.isBlank()) return;
+        Map<String, Object> textBody = Map.of(
+                "msgtype", "markdown",
+                "markdown", Map.of("content", content)
+        );
+        sendOutboundFrame(chatId, textBody);
+    }
+
+    /**
+     * Send a body via either {@code aibot_respond_msg} (groups, using a
+     * cached inbound reqId) or {@code aibot_send_msg} (single chats).
+     * <p>
+     * Centralised so {@link #sendMessageToChat} (text) and
+     * {@link #sendMediaMessage} (image/file/voice/video) share the same
+     * group-vs-single dispatch — without this, every new outbound path
+     * had to remember the group rule, and several didn't.
+     */
+    private void sendOutboundFrame(String chatId, Map<String, Object> bodyWithMsgtype) {
+        if (webSocket == null || chatId == null || chatId.isBlank()) return;
         try {
-            String reqId = generateReqId(CMD_SEND_MSG);
-            Map<String, Object> frame = Map.of(
-                    "cmd", CMD_SEND_MSG,
-                    "headers", Map.of("req_id", reqId),
-                    "body", Map.of(
-                            "chatid", chatId,
-                            "msgtype", "markdown",
-                            "markdown", Map.of("content", content)
-                    )
-            );
-            sendFrameWithAck(reqId, frame);
+            String groupReplyReqId = pickGroupReplyReqId(chatId);
+            if (groupReplyReqId != null) {
+                // Group chat — ride aibot_respond_msg with the cached reqId.
+                // The body for respond_msg does NOT include "chatid" — the
+                // server infers the target from the original frame's reqId.
+                Map<String, Object> frame = Map.of(
+                        "cmd", CMD_RESPONSE,
+                        "headers", Map.of("req_id", groupReplyReqId),
+                        "body", bodyWithMsgtype
+                );
+                sendFrameWithAck(groupReplyReqId, frame);
+                log.debug("[wecom] Group send via aibot_respond_msg: chatId={}, reqId={}",
+                        chatId, groupReplyReqId);
+            } else {
+                // Single chat — aibot_send_msg accepts a chatid field.
+                Map<String, Object> withChatId = new LinkedHashMap<>(bodyWithMsgtype);
+                withChatId.put("chatid", chatId);
+                String reqId = generateReqId(CMD_SEND_MSG);
+                Map<String, Object> frame = Map.of(
+                        "cmd", CMD_SEND_MSG,
+                        "headers", Map.of("req_id", reqId),
+                        "body", withChatId
+                );
+                sendFrameWithAck(reqId, frame);
+            }
         } catch (Exception e) {
-            log.error("[wecom] Failed to send message to {}: {}", chatId, e.getMessage(), e);
+            log.error("[wecom] Failed to send outbound frame to {}: {}", chatId, e.getMessage(), e);
         }
+    }
+
+    /**
+     * Record the most recent inbound frameReqId for a group chat. Bounded
+     * LRU: when over {@link #LAST_CHAT_REQ_IDS_MAX_SIZE} we evict the
+     * oldest insertion-order key (ConcurrentHashMap iteration is
+     * insertion-order-ish for small maps and good enough — the cache
+     * exists to bound memory, not to be perfectly LRU).
+     */
+    private void rememberGroupReplyReqId(String chatId, String frameReqId) {
+        lastChatReqIds.put(chatId, frameReqId);
+        while (lastChatReqIds.size() > LAST_CHAT_REQ_IDS_MAX_SIZE) {
+            // Pop one entry — any will do for memory bounding.
+            var it = lastChatReqIds.keySet().iterator();
+            if (it.hasNext()) {
+                String victim = it.next();
+                lastChatReqIds.remove(victim);
+            } else break;
+        }
+    }
+
+    /**
+     * Look up the cached reply reqId for a group chat. Returns null when
+     * the chatId isn't a known group (single chats, or no inbound seen
+     * yet) — callers fall back to {@code aibot_send_msg}.
+     * <p>
+     * Package-private for test access.
+     */
+    String pickGroupReplyReqId(String chatId) {
+        if (chatId == null || chatId.isBlank()) return null;
+        return lastChatReqIds.get(chatId);
     }
 
     /**
@@ -1519,7 +1638,7 @@ public class WeComChannelAdapter extends AbstractChannelAdapter {
     }
 
     /**
-     * 发送图片部分：压缩 → 上传 → 发送 media_id
+     * 发送图片部分：压缩 → 大小预校验 → 上传 → 发送 media_id
      */
     private void sendImagePart(String targetId, MessageContentPart part, WeComReplyContext ctx) {
         byte[] imageBytes = resolveFileBytes(part);
@@ -1531,17 +1650,29 @@ public class WeComChannelAdapter extends AbstractChannelAdapter {
         String fileName = part.getFileName() != null ? part.getFileName() : "image.jpg";
         imageBytes = WeComImageCompressor.compressIfNeeded(imageBytes, fileName);
 
-        String mediaId = uploadMedia(imageBytes, fileName, "image");
+        WeComUploadLimitDecision decision = applyWeComUploadLimits(
+                imageBytes.length, "image", part.getContentType());
+        if (decision.rejected()) {
+            log.warn("[wecom] Image upload rejected: {} ({} bytes) — {}",
+                    fileName, imageBytes.length, decision.rejectReason());
+            sendMessageToChat(targetId, "⚠️ " + decision.rejectReason());
+            return;
+        }
+
+        String mediaId = uploadMedia(imageBytes, fileName, decision.finalMediaType());
         if (mediaId != null) {
             String frameReqId = ctx != null ? ctx.frameReqId() : null;
-            sendMediaMessage(targetId, mediaId, "image", frameReqId);
+            sendMediaMessage(targetId, mediaId, decision.finalMediaType(), frameReqId);
+            if (decision.downgraded()) {
+                sendMessageToChat(targetId, "ℹ️ " + decision.downgradeNote());
+            }
         } else {
             sendFallbackText(targetId, part);
         }
     }
 
     /**
-     * 发送文件部分：上传 → 发送 media_id
+     * 发送文件部分：大小预校验 → 上传 → 发送 media_id
      */
     private void sendFilePart(String targetId, MessageContentPart part, WeComReplyContext ctx) {
         byte[] fileBytes = resolveFileBytes(part);
@@ -1551,21 +1682,30 @@ public class WeComChannelAdapter extends AbstractChannelAdapter {
         }
 
         String fileName = part.getFileName() != null ? part.getFileName() : "file.bin";
-        String mediaId = uploadMedia(fileBytes, fileName, "file");
+        WeComUploadLimitDecision decision = applyWeComUploadLimits(
+                fileBytes.length, "file", part.getContentType());
+        if (decision.rejected()) {
+            log.warn("[wecom] File upload rejected: {} ({} bytes) — {}",
+                    fileName, fileBytes.length, decision.rejectReason());
+            sendMessageToChat(targetId, "⚠️ " + decision.rejectReason());
+            return;
+        }
+
+        String mediaId = uploadMedia(fileBytes, fileName, decision.finalMediaType());
         if (mediaId != null) {
             String frameReqId = ctx != null ? ctx.frameReqId() : null;
-            sendMediaMessage(targetId, mediaId, "file", frameReqId);
+            sendMediaMessage(targetId, mediaId, decision.finalMediaType(), frameReqId);
         } else {
             sendFallbackText(targetId, part);
         }
     }
 
     /**
-     * 发送音频部分：读取字节 → 上传 → 发送
+     * 发送音频部分：读取字节 → 大小+格式预校验 → 上传 → 发送。
      * <p>
-     * WeCom 原生语音消息要求 AMR 格式。TTS 输出为 MP3，
-     * Phase 1 以 file 类型发送（用户可点击播放），避免引入 AMR 转码依赖。
-     * 非 AMR 格式走 file 类型而非 voice 类型，避免企微语音播放兼容问题。
+     * WeCom 原生语音消息要求 AMR 格式 + ≤ 2 MB。预校验里非 AMR 或超 2 MB
+     * 自动降级为 file（文件卡片，可点击下载播放）+ 给用户一行说明
+     * 提示——避免用户期待"语音气泡"但收到一个 .mp3 文件却不知道为啥。
      */
     private void sendAudioPart(String targetId, MessageContentPart part, WeComReplyContext ctx) {
         byte[] audioBytes = resolveFileBytes(part);
@@ -1576,15 +1716,30 @@ public class WeComChannelAdapter extends AbstractChannelAdapter {
 
         String fileName = part.getFileName() != null ? part.getFileName() : "voice_reply.mp3";
         boolean isAmr = fileName.toLowerCase().endsWith(".amr");
+        // Pre-decide native voice vs file based on extension; the limits
+        // checker can still downgrade voice→file if size exceeds 2MB.
+        String requestedType = isAmr ? "voice" : "file";
+        String contentTypeHint = part.getContentType();
+        if (contentTypeHint == null && isAmr) contentTypeHint = "audio/amr";
 
-        // AMR 格式：以原生 voice 类型发送（语音气泡）
-        // 其他格式（MP3 等）：以 file 类型发送（文件卡片，可点击播放）
-        String uploadType = isAmr ? "voice" : "file";
-        String mediaId = uploadMedia(audioBytes, fileName, uploadType);
+        WeComUploadLimitDecision decision = applyWeComUploadLimits(
+                audioBytes.length, requestedType, contentTypeHint);
+        if (decision.rejected()) {
+            log.warn("[wecom] Audio upload rejected: {} ({} bytes) — {}",
+                    fileName, audioBytes.length, decision.rejectReason());
+            sendMessageToChat(targetId, "⚠️ " + decision.rejectReason());
+            return;
+        }
+
+        String mediaId = uploadMedia(audioBytes, fileName, decision.finalMediaType());
         if (mediaId != null) {
             String frameReqId = ctx != null ? ctx.frameReqId() : null;
-            sendMediaMessage(targetId, mediaId, uploadType, frameReqId);
-            log.info("[wecom] Audio sent as {}: {} ({}KB)", uploadType, fileName, audioBytes.length / 1024);
+            sendMediaMessage(targetId, mediaId, decision.finalMediaType(), frameReqId);
+            log.info("[wecom] Audio sent as {}: {} ({}KB)",
+                    decision.finalMediaType(), fileName, audioBytes.length / 1024);
+            if (decision.downgraded()) {
+                sendMessageToChat(targetId, "ℹ️ " + decision.downgradeNote());
+            }
         } else {
             sendFallbackText(targetId, part);
         }
@@ -1722,6 +1877,105 @@ public class WeComChannelAdapter extends AbstractChannelAdapter {
      * cleared on each finish=true chunk and on connection release.
      */
     private final ConcurrentHashMap<String, String> streamLastContent = new ConcurrentHashMap<>();
+
+    // ==================== 上传大小预校验（WeCom 平台限制） ====================
+
+    /** WeCom hard limits — verified empirically; sources differ slightly. */
+    static final long IMAGE_MAX_BYTES = 10L * 1024 * 1024;   // 10 MB
+    static final long VIDEO_MAX_BYTES = 10L * 1024 * 1024;   // 10 MB
+    static final long VOICE_MAX_BYTES =  2L * 1024 * 1024;   // 2 MB
+    static final long FILE_MAX_BYTES  = 20L * 1024 * 1024;   // 20 MB (absolute cap)
+    static final Set<String> VOICE_SUPPORTED_MIMES = Set.of("audio/amr");
+
+    /**
+     * Decision result for {@link #applyWeComUploadLimits}.
+     *
+     * @param finalMediaType  effective media type after auto-downgrade
+     *                        (image / video / voice could become "file"
+     *                        when oversized or unsupported)
+     * @param rejected        true → don't upload at all; surface
+     *                        {@code rejectReason} to the user instead
+     * @param rejectReason    human-readable reason when {@code rejected}
+     * @param downgraded      true → uploaded as {@code finalMediaType}
+     *                        but caller should append a notice to the
+     *                        bubble explaining why it's not native
+     * @param downgradeNote   user-friendly note when {@code downgraded}
+     */
+    record WeComUploadLimitDecision(String finalMediaType, boolean rejected,
+                                    String rejectReason, boolean downgraded,
+                                    String downgradeNote) {
+        static WeComUploadLimitDecision pass(String mediaType) {
+            return new WeComUploadLimitDecision(mediaType, false, null, false, null);
+        }
+    }
+
+    /**
+     * Pre-validate an outbound upload against WeCom's per-media-type limits
+     * and decide whether to upload as-is, downgrade to {@code file}, or
+     * reject outright. Mirrors the strategy proven in production by
+     * comparable Java/Python WeCom integrations:
+     * <ul>
+     *   <li>Files over 20 MB → reject — even {@code msgtype=file} can't
+     *       carry them.</li>
+     *   <li>Image &gt; 10 MB → downgrade to file (still delivers, just as
+     *       a tappable card instead of an inline preview).</li>
+     *   <li>Video &gt; 10 MB → downgrade to file.</li>
+     *   <li>Voice with non-AMR mime type → downgrade to file (WeCom
+     *       voice msgtype only accepts AMR).</li>
+     *   <li>Voice in AMR but &gt; 2 MB → downgrade to file.</li>
+     * </ul>
+     * Without this layer, oversized uploads would chunk-upload for up to
+     * a minute before the platform server rejected them at the finish
+     * step, with the user seeing nothing arrive in their chat.
+     * <p>
+     * Package-private for unit-test access.
+     */
+    static WeComUploadLimitDecision applyWeComUploadLimits(long fileSize, String mediaType,
+                                                            String contentType) {
+        String type = mediaType == null ? "file" : mediaType.toLowerCase();
+        String mime = contentType == null ? "" : contentType.toLowerCase().trim();
+
+        if (fileSize > FILE_MAX_BYTES) {
+            double mb = fileSize / 1024.0 / 1024.0;
+            return new WeComUploadLimitDecision(
+                    type, true,
+                    String.format(java.util.Locale.ROOT,
+                            "文件大小 %.2fMB 超过企业微信 20MB 上限，无法发送。请压缩或拆分后再发。", mb),
+                    false, null);
+        }
+        if ("image".equals(type) && fileSize > IMAGE_MAX_BYTES) {
+            double mb = fileSize / 1024.0 / 1024.0;
+            return new WeComUploadLimitDecision(
+                    "file", false, null,
+                    true,
+                    String.format(java.util.Locale.ROOT,
+                            "图片 %.2fMB 超过 10MB 限制，已转为文件形式发送", mb));
+        }
+        if ("video".equals(type) && fileSize > VIDEO_MAX_BYTES) {
+            double mb = fileSize / 1024.0 / 1024.0;
+            return new WeComUploadLimitDecision(
+                    "file", false, null,
+                    true,
+                    String.format(java.util.Locale.ROOT,
+                            "视频 %.2fMB 超过 10MB 限制，已转为文件形式发送", mb));
+        }
+        if ("voice".equals(type)) {
+            if (!mime.isEmpty() && !VOICE_SUPPORTED_MIMES.contains(mime)) {
+                return new WeComUploadLimitDecision(
+                        "file", false, null, true,
+                        "语音格式 " + mime + " 不支持（企微仅支持 AMR），已转为文件形式发送");
+            }
+            if (fileSize > VOICE_MAX_BYTES) {
+                double mb = fileSize / 1024.0 / 1024.0;
+                return new WeComUploadLimitDecision(
+                        "file", false, null,
+                        true,
+                        String.format(java.util.Locale.ROOT,
+                                "语音 %.2fMB 超过 2MB 限制，已转为文件形式发送", mb));
+            }
+        }
+        return WeComUploadLimitDecision.pass(type);
+    }
 
     /**
      * 发送欢迎消息
@@ -1892,6 +2146,18 @@ public class WeComChannelAdapter extends AbstractChannelAdapter {
         if (webSocket == null || fileBytes == null || fileBytes.length == 0) {
             return null;
         }
+        // Pre-flight chunk count guard. WeCom's chunked upload protocol caps
+        // out near 100 chunks (~50 MB at 512 KB / chunk) but we already
+        // reject anything over FILE_MAX_BYTES (20 MB ≈ 40 chunks) before
+        // reaching here, so this is a defence-in-depth log line rather
+        // than a routine path.
+        int totalChunks = (int) Math.ceil((double) fileBytes.length / UPLOAD_CHUNK_SIZE);
+        if (totalChunks > 100) {
+            log.warn("[wecom] Upload would require {} chunks (>100 cap), rejecting: {} ({} bytes)",
+                    totalChunks, fileName, fileBytes.length);
+            return null;
+        }
+
         boolean acquired = false;
         try {
             acquired = uploadLock.tryAcquire(60, TimeUnit.SECONDS);
@@ -1901,7 +2167,6 @@ public class WeComChannelAdapter extends AbstractChannelAdapter {
             }
 
             String md5 = md5Hex(fileBytes);
-            int totalChunks = (int) Math.ceil((double) fileBytes.length / UPLOAD_CHUNK_SIZE);
 
             // Phase 1: Init
             String initReqId = generateReqId(CMD_UPLOAD_INIT);
@@ -2024,7 +2289,8 @@ public class WeComChannelAdapter extends AbstractChannelAdapter {
         mediaBody.put(mediaType, Map.of("media_id", mediaId));
 
         if (frameReqId != null && !frameReqId.isBlank()) {
-            // Reply 路径：使用 aibot_respond_msg
+            // Caller has an explicit inbound frameReqId (the message we're
+            // replying to is "now") — use that reply slot directly.
             Map<String, Object> frame = Map.of(
                     "cmd", CMD_RESPONSE,
                     "headers", Map.of("req_id", frameReqId),
@@ -2032,15 +2298,12 @@ public class WeComChannelAdapter extends AbstractChannelAdapter {
             );
             sendFrameWithAck(frameReqId, frame);
         } else {
-            // 主动推送路径：使用 aibot_send_msg
-            mediaBody.put("chatid", targetId);
-            String reqId = generateReqId(CMD_SEND_MSG);
-            Map<String, Object> frame = Map.of(
-                    "cmd", CMD_SEND_MSG,
-                    "headers", Map.of("req_id", reqId),
-                    "body", mediaBody
-            );
-            sendFrameWithAck(reqId, frame);
+            // Proactive push (cron summary, async-task forward, etc.) —
+            // delegate to sendOutboundFrame so groups ride the cached
+            // reqId via aibot_respond_msg (the AI bot platform rejects
+            // aibot_send_msg in groups). Single chats fall through to
+            // aibot_send_msg as before.
+            sendOutboundFrame(targetId, mediaBody);
         }
     }
 
@@ -2423,6 +2686,98 @@ public class WeComChannelAdapter extends AbstractChannelAdapter {
     private static void appendQuoteSummary(StringBuilder summary, String fragment) {
         if (summary.length() > 0) summary.append(' ');
         summary.append(fragment);
+    }
+
+    // ==================== appmsg 解析（PDF/Word/Excel/链接/小程序）====================
+
+    /**
+     * Decoded {@code msgtype=appmsg} payload — text marker the agent reads
+     * + any attached media parts. Returned by {@link #extractAppmsgContent}
+     * so the inbound switch can splice it into {@code textContent} and
+     * {@code contentParts} uniformly.
+     */
+    record AppmsgContent(String text, List<MessageContentPart> attachedParts) {}
+
+    /**
+     * Parse a {@code msgtype=appmsg} body into a text marker + media parts.
+     * <p>
+     * Supports four variants observed in the WeCom platform:
+     * <ul>
+     *   <li>{@code appmsg.file} — forwarded PDF / Word / Excel; reuses
+     *       {@link #buildInboundFilePart} so magic-byte sniff + ZIP
+     *       refinement work identically to plain {@code msgtype=file}</li>
+     *   <li>{@code appmsg.image} — forwarded image card</li>
+     *   <li>{@code appmsg.miniprogram} — miniprogram card; surface the
+     *       title so the agent at least knows what was shared</li>
+     *   <li>{@code appmsg.url} — public-account article / external link;
+     *       flatten title + description + URL into text</li>
+     * </ul>
+     * Unknown variants fall back to a {@code [appmsg]} marker so the
+     * agent isn't completely blind.
+     * <p>
+     * Package-private for unit-test access.
+     */
+    AppmsgContent extractAppmsgContent(Map<String, Object> body, String msgId,
+                                        String senderId, String chatId, String chatType) {
+        @SuppressWarnings("unchecked")
+        Map<String, Object> appmsg = (Map<String, Object>) body.getOrDefault("appmsg", Map.of());
+        String title = ((String) appmsg.getOrDefault("title", "")).trim();
+        String desc  = ((String) appmsg.getOrDefault("description", "")).trim();
+        String linkUrl = ((String) appmsg.getOrDefault("url", "")).trim();
+        String inboundConvId = inboundConversationId(senderId, chatId, chatType);
+
+        Object fileObj = appmsg.get("file");
+        Object imageObj = appmsg.get("image");
+        Object miniObj = appmsg.get("miniprogram");
+
+        List<MessageContentPart> attached = new ArrayList<>();
+        StringBuilder text = new StringBuilder();
+
+        if (fileObj instanceof Map<?, ?> fileMap) {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> fileBody = (Map<String, Object>) fileMap;
+            String fileUrl = (String) fileBody.getOrDefault("url", "");
+            String aesKey = (String) fileBody.getOrDefault("aeskey", "");
+            String filename = (String) fileBody.getOrDefault("filename",
+                    fileBody.getOrDefault("file_name",
+                            fileBody.getOrDefault("name",
+                                    title.isBlank() ? "file.bin" : title)));
+            if (!fileUrl.isBlank()) {
+                MessageContentPart filePart = buildInboundFilePart(
+                        fileUrl, aesKey, msgId, filename, inboundConvId);
+                attached.add(filePart);
+                if (filePart.getFileName() != null && !filePart.getFileName().isBlank()) {
+                    filename = filePart.getFileName();
+                }
+            }
+            text.append("[文件: ").append(filename).append("]");
+        } else if (imageObj instanceof Map<?, ?> imgMap) {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> imgBody = (Map<String, Object>) imgMap;
+            String imgUrl = (String) imgBody.getOrDefault("url", "");
+            String aesKey = (String) imgBody.getOrDefault("aeskey", "");
+            if (!imgUrl.isBlank()) {
+                attached.add(buildInboundImagePart(imgUrl, aesKey, msgId,
+                        "appmsg_image.jpg", inboundConvId));
+            }
+            text.append("[图片").append(title.isBlank() ? "" : ": " + title).append("]");
+        } else if (miniObj instanceof Map<?, ?> miniMap) {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> mini = (Map<String, Object>) miniMap;
+            String miniTitle = ((String) mini.getOrDefault("title",
+                    title.isBlank() ? "未命名小程序" : title)).trim();
+            text.append("[小程序: ").append(miniTitle).append("]");
+        } else if (!linkUrl.isBlank()) {
+            text.append("[链接]");
+            if (!title.isBlank()) text.append(' ').append(title);
+            if (!desc.isBlank()) text.append('\n').append(desc);
+            text.append('\n').append(linkUrl);
+        } else if (!title.isBlank()) {
+            text.append("[appmsg: ").append(title).append("]");
+        } else {
+            text.append("[appmsg]");
+        }
+        return new AppmsgContent(text.toString(), attached);
     }
 
     /**
