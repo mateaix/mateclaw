@@ -144,12 +144,7 @@ async function loadAll() {
 }
 
 async function persistSettings(payload: { defaultVisionModelId: number | null; defaultVideoModelId: number | null }) {
-  // Use the dedicated sidecar endpoint so the bulk /settings PUT can keep
-  // guarding vision/video keys with non-null checks (preventing unrelated
-  // settings pages from clobbering this configuration via partial payloads).
-  // This endpoint always writes both keys, so passing null here means
-  // "explicit clear" which is the original UX of this card.
-  await settingsApi.updateSidecar(payload)
+  await settingsApi.update(payload)
 }
 
 async function onSaveVision() {
