@@ -423,7 +423,7 @@ import type { Message, MessageSegment, ChatAttachment, ToolCallMeta, PlanMeta } 
 import type { ChatErrorInfo } from '@/types/chatError'
 
 const { renderMarkdown } = useMarkdownRenderer()
-const { t } = useI18n()
+const { t,locale} = useI18n()
 const { getToolLabel } = useToolLabel()
 const { blobUrls, loadAllImages, loadAllVideos, loadAllAudios, loadAllModels, downloadFile, openImage, getDisplayUrl, revokeAll } = useAuthenticatedAttachment()
 
@@ -747,8 +747,39 @@ watch(model3dAttachments, (atts) => {
 
 // --- 时间 ---
 const formattedTime = computed(() => {
-  if (!props.message.createTime) return ''
-  return new Date(props.message.createTime).toLocaleTimeString('zh-CN', {
+  const createTime = props.message.createTime
+  if (!createTime) return ''
+
+  const date = new Date(createTime)
+  if (Number.isNaN(date.getTime())) return ''
+
+  const now = new Date()
+
+  const sameDay = (a: Date, b: Date) =>
+    a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate()
+
+  const currentLocale = locale.value
+
+  const time = date.toLocaleTimeString(currentLocale, {
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+
+  if (sameDay(date, now)) return time
+
+  const yesterday = new Date(now)
+  yesterday.setDate(now.getDate() - 1)
+
+  if (sameDay(date, yesterday)) {
+    return `${t('security.activity.yesterday')} ${time}`
+  }
+
+  return date.toLocaleString(currentLocale, {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
     hour: '2-digit',
     minute: '2-digit',
   })
