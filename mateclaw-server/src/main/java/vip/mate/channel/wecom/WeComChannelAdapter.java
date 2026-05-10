@@ -1006,6 +1006,47 @@ public class WeComChannelAdapter extends AbstractChannelAdapter {
                 }
             }
 
+            // Apply any quoted-message context. The "quote" field appears at
+            // body level alongside the new message regardless of outer
+            // msgtype — without parsing it, the agent only sees the user's
+            // current text and silently loses the conversational reference
+            // ("user quoted the bot's previous image and asked '什么意思'"
+            // arrives as bare "什么意思", agent goes off-topic).
+            QuoteContext quote = extractQuoteContext(body, msgId, senderId, chatId, chatType);
+            if (quote != null && !quote.isEmpty()) {
+                String prefixedText = quote.prefix()
+                        + (textContent != null && !textContent.isBlank() ? textContent : "");
+                textContent = prefixedText;
+
+                // Find an existing text part (text/voice cases produce one)
+                // and overwrite it with the prefixed text. Also pull it to
+                // the front so agent reading order starts with quote prefix.
+                boolean updated = false;
+                for (int i = 0; i < contentParts.size(); i++) {
+                    if ("text".equals(contentParts.get(i).getType())) {
+                        contentParts.set(i, MessageContentPart.text(prefixedText));
+                        if (i != 0) {
+                            MessageContentPart promoted = contentParts.remove(i);
+                            contentParts.add(0, promoted);
+                        }
+                        updated = true;
+                        break;
+                    }
+                }
+                if (!updated) {
+                    // image/file/mixed cases without a text part — insert one.
+                    contentParts.add(0, MessageContentPart.text(prefixedText));
+                }
+                // Quoted media (image/file the user referenced) goes right
+                // after the text prefix so the agent reads:
+                //   prefix → quoted media → user's own media (if any)
+                if (!quote.attachedParts().isEmpty()) {
+                    contentParts.addAll(1, quote.attachedParts());
+                }
+                log.debug("[wecom] Applied quote context: prefixLen={}, attachedParts={}",
+                        quote.prefix().length(), quote.attachedParts().size());
+            }
+
             if (contentParts.isEmpty()) {
                 if (textContent != null && !textContent.isBlank()) {
                     contentParts.add(MessageContentPart.text(textContent));
@@ -2253,6 +2294,135 @@ public class WeComChannelAdapter extends AbstractChannelAdapter {
     private static String inboundConversationId(String senderId, String chatId, String chatType) {
         boolean isGroup = "group".equals(chatType);
         return isGroup ? "wecom:group:" + chatId : "wecom:" + senderId;
+    }
+
+    // ==================== 引用消息（quote）解析 ====================
+
+    /**
+     * Quoted-message extraction result: a human-readable prefix string the
+     * agent prompt prepends, plus any media (image / file) that was quoted
+     * and needs to be available as a content part. Either field may be
+     * empty; {@link #isEmpty()} returns true only when both are.
+     */
+    private record QuoteContext(String prefix, List<MessageContentPart> attachedParts) {
+        boolean isEmpty() {
+            return (prefix == null || prefix.isBlank()) && attachedParts.isEmpty();
+        }
+    }
+
+    /**
+     * Parse the {@code body.quote} field of an inbound WeCom AI Bot frame.
+     * Quote payloads sit alongside the new message at body level —
+     * independent of the outer {@code msgtype} — and may themselves carry
+     * any of text / voice / image / file / mixed. We flatten everything
+     * into:
+     * <ul>
+     *   <li>a single {@code prefix} string of the form
+     *       {@code "[引用消息: <flattened summary>]\n"} that prepends to the
+     *       agent's user prompt</li>
+     *   <li>a list of {@link MessageContentPart}s for any quoted media so
+     *       the vision / document tools can analyse the actually-quoted
+     *       image or PDF, not just see "[图片]" in the prefix</li>
+     * </ul>
+     * Returns null when {@code body.quote} is absent / empty / malformed —
+     * the caller treats that the same as "no quote context".
+     */
+    private QuoteContext extractQuoteContext(Map<String, Object> body, String msgId,
+                                              String senderId, String chatId, String chatType) {
+        Object raw = body.get("quote");
+        if (!(raw instanceof Map<?, ?> map)) return null;
+        @SuppressWarnings("unchecked")
+        Map<String, Object> quote = (Map<String, Object>) map;
+        String quoteType = (String) quote.getOrDefault("msgtype", "");
+        if (quoteType == null || quoteType.isBlank()) return null;
+
+        // Flatten: a "mixed" quote nests its own msg_item array; single-type
+        // quotes act as a one-element list of themselves.
+        List<Map<String, Object>> items;
+        if ("mixed".equals(quoteType)) {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> mixed = (Map<String, Object>) quote.getOrDefault("mixed", Map.of());
+            @SuppressWarnings("unchecked")
+            List<Map<String, Object>> mi = (List<Map<String, Object>>) mixed.getOrDefault("msg_item", List.of());
+            items = mi;
+        } else {
+            items = List.of(quote);
+        }
+
+        String inboundConvId = inboundConversationId(senderId, chatId, chatType);
+        StringBuilder summary = new StringBuilder();
+        List<MessageContentPart> attached = new ArrayList<>();
+
+        for (Map<String, Object> item : items) {
+            String itemType = (String) item.getOrDefault("msgtype", "");
+            switch (itemType == null ? "" : itemType) {
+                case "text" -> {
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> t = (Map<String, Object>) item.getOrDefault("text", Map.of());
+                    String content = ((String) t.getOrDefault("content", "")).trim();
+                    if (!content.isBlank()) {
+                        appendQuoteSummary(summary, content);
+                    }
+                }
+                case "voice" -> {
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> v = (Map<String, Object>) item.getOrDefault("voice", Map.of());
+                    String asr = ((String) v.getOrDefault("content", "")).trim();
+                    if (!asr.isBlank()) {
+                        appendQuoteSummary(summary, "[语音] " + asr);
+                    } else {
+                        appendQuoteSummary(summary, "[语音消息]");
+                    }
+                }
+                case "image" -> {
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> img = (Map<String, Object>) item.getOrDefault("image", Map.of());
+                    String url = (String) img.getOrDefault("url", "");
+                    String aesKey = (String) img.getOrDefault("aeskey", "");
+                    if (!url.isBlank()) {
+                        attached.add(buildInboundImagePart(url, aesKey, msgId,
+                                "quoted_image.jpg", inboundConvId));
+                    }
+                    appendQuoteSummary(summary, "[图片]");
+                }
+                case "file" -> {
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> f = (Map<String, Object>) item.getOrDefault("file", Map.of());
+                    String url = (String) f.getOrDefault("url", "");
+                    String aesKey = (String) f.getOrDefault("aeskey", "");
+                    String filename = (String) f.getOrDefault("filename",
+                            f.getOrDefault("file_name", f.getOrDefault("name", "file.bin")));
+                    if (!url.isBlank()) {
+                        MessageContentPart part = buildInboundFilePart(url, aesKey, msgId,
+                                filename, inboundConvId);
+                        attached.add(part);
+                        if (part.getFileName() != null && !part.getFileName().isBlank()) {
+                            filename = part.getFileName();
+                        }
+                    }
+                    appendQuoteSummary(summary, "[文件: " + filename + "]");
+                }
+                default -> {
+                    // Unknown quote sub-type — surface the type tag so the
+                    // agent knows something was quoted even if we can't
+                    // unpack it.
+                    if (itemType != null && !itemType.isBlank()) {
+                        appendQuoteSummary(summary, "[" + itemType + "]");
+                    }
+                }
+            }
+        }
+
+        if (summary.length() == 0 && attached.isEmpty()) {
+            return null;
+        }
+        String prefix = "[引用消息: " + summary + "]\n";
+        return new QuoteContext(prefix, attached);
+    }
+
+    private static void appendQuoteSummary(StringBuilder summary, String fragment) {
+        if (summary.length() > 0) summary.append(' ');
+        summary.append(fragment);
     }
 
     /**
