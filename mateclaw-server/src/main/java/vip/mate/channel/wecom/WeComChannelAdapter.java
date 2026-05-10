@@ -149,6 +149,19 @@ public class WeComChannelAdapter extends AbstractChannelAdapter {
     private final AtomicBoolean replyQueueAccepting = new AtomicBoolean(false);
 
     /**
+     * Idle-timeout (ms) for the per-reqId worker's {@code queue.poll}.
+     * Default 60s in production; tests in the same package may lower
+     * this to the millisecond range to surface idle-close vs late-offer
+     * races without waiting a real minute (RFC-32 §3.0 S-3 stress).
+     *
+     * <p><b>Package-private on purpose</b> — not exposed via getter or
+     * setter; tests assign it directly. Production code never writes
+     * to this field.
+     */
+    @SuppressWarnings("PackageVisibleField")
+    volatile long workerIdleTimeoutMs = 60_000L;
+
+    /**
      * Per-reqId 回复队列状态。
      *
      * @param queue  串行回复任务队列
@@ -426,7 +439,7 @@ public class WeComChannelAdapter extends AbstractChannelAdapter {
         while (running.get() && !Thread.currentThread().isInterrupted()) {
             ReplyTask task;
             try {
-                task = state.queue().poll(60, TimeUnit.SECONDS);
+                task = state.queue().poll(workerIdleTimeoutMs, TimeUnit.MILLISECONDS);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 break;  // fall through to drainStateExceptionally + return
@@ -1643,7 +1656,12 @@ public class WeComChannelAdapter extends AbstractChannelAdapter {
     /**
      * 发送 WebSocket 帧（fire and forget）
      */
-    private void sendFrame(Map<String, Object> frame) {
+    /**
+     * Visible to package-level tests (RFC-32 §3.0 S-1/S-2 stress) so a
+     * test subclass can override frame dispatch without monkey-patching
+     * the private WS field. Production callers stay within this class.
+     */
+    void sendFrame(Map<String, Object> frame) {
         WebSocket ws = this.webSocket;
         if (ws == null) {
             log.warn("[wecom] WebSocket not connected, cannot send frame");
