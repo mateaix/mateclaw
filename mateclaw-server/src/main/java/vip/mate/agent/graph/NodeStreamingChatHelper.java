@@ -283,6 +283,35 @@ public class NodeStreamingChatHelper {
      */
     private static final int THINKING_ONLY_HARD_CAP_CHARS = 32768;
 
+    /**
+     * Narrow content-repetition guard — fires when the buffer ends with
+     * the same period-sized chunk repeated {@link
+     * #CONTENT_REPEAT_MAX_OCCURRENCES}+ times in a row. Picked to catch
+     * the specific failure mode where reasoning-mode models (qwen3.6,
+     * deepseek-r1) get into a "Wait, I should X. → 写答案 → Wait, I
+     * should Y. → 写同一份答案 → …" self-arguing loop and emit the same
+     * final-answer paragraph dozens of times until {@code max_tokens}
+     * runs out.
+     *
+     * <p>Tests probe sizes from {@link #CONTENT_REPEAT_MIN_PERIOD} up
+     * to {@link #CONTENT_REPEAT_MAX_PERIOD}; the smallest period that
+     * yields the required consecutive copies trips the guard. 4
+     * verbatim consecutive copies of any 24+ char unit is a near-
+     * impossible coincidence in real text, so false positives are very
+     * rare. Not as exhaustive as the previous {@code RepetitionDetector}
+     * (removed at 42d406ff for being brittle on legitimate long-form
+     * content), just the cheap specific check that catches this loop.
+     */
+    private static final int CONTENT_REPEAT_MIN_PERIOD = 24;
+    private static final int CONTENT_REPEAT_MAX_PERIOD = 240;
+    private static final int CONTENT_REPEAT_MAX_OCCURRENCES = 4;
+    /**
+     * Re-scan every N chars of new content. Smaller = faster reaction,
+     * larger = less CPU. The probe loop is O(period_range × occurrences)
+     * char comparisons per scan — cheap even at 400-char intervals.
+     */
+    private static final int CONTENT_REPEAT_CHECK_INTERVAL = 200;
+
     private static final int MAX_RETRIES = 5;
     // RATE_LIMIT: fail fast to failover chain — staying on the same
     // provider during a rate-limit window wastes time without recovery.
@@ -738,6 +767,16 @@ public class NodeStreamingChatHelper {
         // 仅保留 thinking-only 这条体积兜底，处理 volcengine-plan 等 provider
         // 在 thinking 通道堆字符不出 content 的死循环（生产 trace c1eefa45）。
         AtomicBoolean thinkingOnlyCapTriggered = new AtomicBoolean(false);
+        // Content-repetition guard: trips when the same paragraph-sized
+        // suffix appears CONTENT_REPEAT_MAX_OCCURRENCES+ times in
+        // contentAccum. The outer poll loop disposes the upstream
+        // subscription within 500ms once flipped — same pattern as the
+        // thinking-only cap above.
+        AtomicBoolean contentRepeatCapTriggered = new AtomicBoolean(false);
+        // Last contentAccum length at which we ran the repetition scan.
+        // Throttles the O(n) substring scan so it runs at most once per
+        // CONTENT_REPEAT_CHECK_INTERVAL chars, not on every chunk.
+        AtomicInteger lastContentRepeatCheckLen = new AtomicInteger(0);
 
         // Lifecycle events emitted at most once per call so consumers can
         // pivot the UI between "thinking" and "drafting" without inspecting
@@ -780,7 +819,7 @@ public class NodeStreamingChatHelper {
                     lastAssistantMessage.set(msg);
 
                     // thinking-only soft cap 已触发 → 跳过一切处理（等外层 dispose）
-                    if (thinkingOnlyCapTriggered.get()) {
+                    if (thinkingOnlyCapTriggered.get() || contentRepeatCapTriggered.get()) {
                         return;
                     }
 
@@ -867,6 +906,36 @@ public class NodeStreamingChatHelper {
                         return;
                     }
 
+                    // 5. Content-repetition guard. Some reasoning-mode models
+                    // (qwen3.6, deepseek-r1) get stuck in a "Wait, I should X
+                    // → 写答案 → Wait, I should Y → 写同一份答案 → ..." loop
+                    // and emit the same final-answer paragraph dozens of times
+                    // until max_tokens runs out. Without this, the user sees a
+                    // wall of duplicated text and the bot never actually finishes.
+                    // Throttled to one scan per CONTENT_REPEAT_CHECK_INTERVAL
+                    // chars of new content — the probe loop is cheap but no
+                    // need to run on every chunk.
+                    int currentLen = contentAccum.length();
+                    int floor = CONTENT_REPEAT_MIN_PERIOD * CONTENT_REPEAT_MAX_OCCURRENCES;
+                    if (currentLen >= floor
+                            && currentLen - lastContentRepeatCheckLen.get() >= CONTENT_REPEAT_CHECK_INTERVAL) {
+                        lastContentRepeatCheckLen.set(currentLen);
+                        if (hasRepeatingSuffix(contentAccum, CONTENT_REPEAT_MIN_PERIOD,
+                                               CONTENT_REPEAT_MAX_PERIOD,
+                                               CONTENT_REPEAT_MAX_OCCURRENCES)) {
+                            log.warn("[{}] Content-repetition cap reached " +
+                                            "({} chars, tail repeated {}+ times) " +
+                                            "— disposing stream for conversation {}",
+                                    phase, currentLen, CONTENT_REPEAT_MAX_OCCURRENCES,
+                                    conversationId);
+                            broadcastContentTruncated(conversationId,
+                                    "content_repetition",
+                                    currentLen);
+                            contentRepeatCapTriggered.set(true);
+                            return;
+                        }
+                    }
+
                     // 4. 提取 token usage（通常最后一个 chunk 携带完整 usage）
                     if (chatResponse.getMetadata() != null && chatResponse.getMetadata().getUsage() != null) {
                         var usage = chatResponse.getMetadata().getUsage();
@@ -902,6 +971,20 @@ public class NodeStreamingChatHelper {
                                 buildDeltaJson("模型在思考阶段停留过久，已自动截断"));
                     }
                     // dispose 后 latch 可能不会 countDown，直接跳出
+                    break;
+                }
+                if (contentRepeatCapTriggered.get()) {
+                    // Same dispose pattern as thinking-only cap. The
+                    // accumulated content is preserved (it's the looping
+                    // text — at least the user gets the FIRST occurrence
+                    // as a partial answer instead of waiting for max_tokens).
+                    log.warn("[{}] Stream guard tripped (content_repetition), disposing " +
+                            "upstream subscription for conversation {}", phase, conversationId);
+                    subscription.dispose();
+                    if (broadcast) {
+                        broadcastDelta(conversationId, "warning",
+                                buildDeltaJson("检测到回答内容反复重复，已自动截断"));
+                    }
                     break;
                 }
                 if (streamTracker.isStopRequested(conversationId)) {
@@ -999,10 +1082,15 @@ public class NodeStreamingChatHelper {
                     conversationId, phase, errorType);
         }
 
-        // ===== 成功（检查是否因 thinking-only 软上限被截断） =====
+        // ===== 成功（检查是否因 thinking-only 软上限或内容重复被截断） =====
         boolean truncatedByThinkingCap = thinkingOnlyCapTriggered.get();
+        boolean truncatedByContentRepeat = contentRepeatCapTriggered.get();
+        boolean truncated = truncatedByThinkingCap || truncatedByContentRepeat;
         if (truncatedByThinkingCap) {
             log.warn("[{}] LLM stream disposed: thinking-only soft cap reached for conversation {}",
+                    phase, conversationId);
+        } else if (truncatedByContentRepeat) {
+            log.warn("[{}] LLM stream disposed: content-repetition cap reached for conversation {}",
                     phase, conversationId);
         }
 
@@ -1010,10 +1098,10 @@ public class NodeStreamingChatHelper {
         // HTTP 200 with an empty body under soft-failure conditions (rate-limit
         // capacity, context filter, upstream overload). Treat this as a failure
         // signal so streamCallInternal can hand off to the fallback chain.
-        // Only fire when the thinking-only cap didn't fire (which deliberately
-        // produces thinking-only output) and there are no tool calls
+        // Only fire when neither truncation cap fired (those deliberately
+        // produce non-empty output) and there are no tool calls
         // (tool-only responses are legitimately empty-text).
-        if (!truncatedByThinkingCap
+        if (!truncated
                 && contentAccum.length() == 0
                 && thinkingAccum.length() == 0
                 && toolCallAccumulators.isEmpty()) {
@@ -1021,11 +1109,14 @@ public class NodeStreamingChatHelper {
             return buildErrorResultWithType("LLM 返回空响应", conversationId, phase, ErrorType.EMPTY_RESPONSE);
         }
 
+        String truncationReason = truncatedByThinkingCap ? "thinking_only_no_content"
+                : truncatedByContentRepeat ? "content_repetition"
+                : null;
         return assembleResult(contentAccum, thinkingAccum, toolCallAccumulators,
                 promptTokens.get(), completionTokens.get(),
                 cacheReadTokens.get(), cacheWriteTokens.get(), phase,
-                truncatedByThinkingCap,
-                truncatedByThinkingCap ? "thinking_only_no_content" : null);
+                truncated,
+                truncationReason);
     }
 
     /** 组装 stopped partial 结果（用户主动停止，有已累积内容） */
@@ -1534,6 +1625,56 @@ public class NodeStreamingChatHelper {
         } catch (Exception e) {
             log.debug("Failed to broadcast content_truncated for {}: {}", conversationId, e.getMessage());
         }
+    }
+
+    /**
+     * Detect whether {@code accum} ends with the same {@code period}-sized
+     * unit repeated at least {@code minOccurrences} times consecutively,
+     * for some {@code period} in {@code [minPeriod, maxPeriod]}. Returns
+     * true when the model is stuck in a "self-arguing" loop emitting the
+     * same final-answer chunk over and over.
+     *
+     * <p>Algorithm: probe period sizes from small to large. For each
+     * candidate period {@code p}, take the last {@code p} chars as the
+     * unit and check whether the {@code minOccurrences-1} preceding
+     * blocks of length {@code p} are byte-identical. The smallest period
+     * that yields the required consecutive copies trips the guard. We
+     * iterate small→large because tighter periods are more specific:
+     * a 30-char unit repeated 4× is a stronger signal than a 200-char
+     * unit happening to appear once.
+     *
+     * <p>Cost: O(periodRange × occurrences × period) char comparisons.
+     * For default thresholds (~200 × 4 × 100) that's ~80K comparisons
+     * per scan — microseconds against an LLM call. Throttled by the
+     * caller via {@code lastContentRepeatCheckLen} so the scan amortizes.
+     *
+     * <p>Package-private + static for unit-testing the threshold without
+     * spinning up a full {@code StreamResult}.
+     */
+    static boolean hasRepeatingSuffix(CharSequence accum, int minPeriod, int maxPeriod,
+                                       int minOccurrences) {
+        if (accum == null) return false;
+        int len = accum.length();
+        if (minPeriod <= 0 || minOccurrences <= 1 || maxPeriod < minPeriod) return false;
+        if (len < minPeriod * minOccurrences) return false;
+        String s = accum.toString();
+        int periodCap = Math.min(maxPeriod, len / minOccurrences);
+        for (int p = minPeriod; p <= periodCap; p++) {
+            // Unit = last p chars. Check prior (minOccurrences - 1)
+            // blocks of length p match the unit byte-for-byte.
+            int unitStart = len - p;
+            boolean allMatch = true;
+            for (int k = 2; k <= minOccurrences; k++) {
+                int blockStart = len - k * p;
+                if (blockStart < 0) { allMatch = false; break; }
+                if (!s.regionMatches(blockStart, s, unitStart, p)) {
+                    allMatch = false;
+                    break;
+                }
+            }
+            if (allMatch) return true;
+        }
+        return false;
     }
 
     /**
