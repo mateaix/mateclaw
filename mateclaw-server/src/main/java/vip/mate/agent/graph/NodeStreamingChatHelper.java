@@ -302,8 +302,8 @@ public class NodeStreamingChatHelper {
      * (removed at 42d406ff for being brittle on legitimate long-form
      * content), just the cheap specific check that catches this loop.
      */
-    private static final int CONTENT_REPEAT_MIN_PERIOD = 24;
-    private static final int CONTENT_REPEAT_MAX_PERIOD = 240;
+    public static final int CONTENT_REPEAT_MIN_PERIOD = 24;
+    public static final int CONTENT_REPEAT_MAX_PERIOD = 240;
     private static final int CONTENT_REPEAT_MAX_OCCURRENCES = 4;
     /**
      * Re-scan every N chars of new content. Smaller = faster reaction,
@@ -1625,6 +1625,49 @@ public class NodeStreamingChatHelper {
         } catch (Exception e) {
             log.debug("Failed to broadcast content_truncated for {}: {}", conversationId, e.getMessage());
         }
+    }
+
+    /**
+     * Collapse a content buffer's trailing run of verbatim repeats to a
+     * single copy. Used to clean up the persisted final answer after
+     * {@link #hasRepeatingSuffix} fires — the streamed text already
+     * contains the duplicates (SSE chunks can't be unsent), but the
+     * DB-persisted message and the IM channel reply should show ONE
+     * clean copy of the looping unit, not a wall.
+     *
+     * <p>Algorithm: find the smallest period in {@code [minPeriod,
+     * maxPeriod]} where the buffer ends with that unit repeated 2+
+     * times consecutively, then return everything up to (and including)
+     * the FIRST copy of that unit. Conservative — if no period yields
+     * 2+ consecutive matches, returns the buffer unchanged.
+     *
+     * <p>Public for unit-testing alongside {@link #hasRepeatingSuffix}.
+     */
+    public static String dedupTrailingRepeats(String content, int minPeriod, int maxPeriod) {
+        if (content == null || content.isEmpty()) return content;
+        int len = content.length();
+        if (minPeriod <= 0 || maxPeriod < minPeriod) return content;
+        int periodCap = Math.min(maxPeriod, len / 2);
+        for (int p = minPeriod; p <= periodCap; p++) {
+            int unitStart = len - p;
+            // Walk backward as far as the unit keeps matching.
+            int copies = 1;
+            int blockStart = unitStart - p;
+            while (blockStart >= 0
+                    && content.regionMatches(blockStart, content, unitStart, p)) {
+                copies++;
+                blockStart -= p;
+            }
+            if (copies >= 2) {
+                // Keep prefix + ONE copy. The first copy starts at
+                // (blockStart + p) since the loop walked back one step
+                // past the last match.
+                int firstCopyStart = blockStart + p;
+                int trimEnd = firstCopyStart + p;
+                return content.substring(0, trimEnd);
+            }
+        }
+        return content;
     }
 
     /**

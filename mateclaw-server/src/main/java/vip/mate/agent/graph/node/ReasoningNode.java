@@ -489,6 +489,46 @@ public class ReasoningNode implements NodeAction {
             return builder.build();
         }
 
+        if (result.partial() && "content_repetition".equals(result.errorMessage())) {
+            // Reasoning loop: the helper disposed the stream because the
+            // model emitted the same paragraph 4+ times in a row (qwen3.6
+            // / deepseek-r1 self-arguing pattern). The streamed text
+            // already showed the duplicates to the user — we can't unsend
+            // SSE chunks — but the persisted finalAnswer should be ONE
+            // clean copy so the IM channel reply and any page-reload
+            // history don't show the wall of repetition. Skip
+            // FinalAnswerNode's evidence validation: the answer is
+            // already truncated, applying validateAnswer on top would
+            // double-stamp warnings on something the user already knows
+            // is incomplete.
+            String rawContent = result.text() != null ? result.text() : "";
+            String dedupedAnswer = NodeStreamingChatHelper.dedupTrailingRepeats(
+                    rawContent,
+                    NodeStreamingChatHelper.CONTENT_REPEAT_MIN_PERIOD,
+                    NodeStreamingChatHelper.CONTENT_REPEAT_MAX_PERIOD);
+            log.warn("[ReasoningNode] Content-repetition cap hit (raw={} chars → deduped={} chars); " +
+                            "INCOMPLETE",
+                    rawContent.length(), dedupedAnswer.length());
+            var builder = reasonOutput()
+                    .needsToolCall(false)
+                    .shouldSummarize(false)
+                    .finalAnswer(dedupedAnswer.isEmpty()
+                            ? "（模型反复输出同一段内容，已自动截断。请尝试重新生成或换个问法。）"
+                            : dedupedAnswer)
+                    .llmCallCount(nextLlmCallCount)
+                    .finishReason(FinishReason.INCOMPLETE)
+                    // contentStreamed=true because the user already saw
+                    // the looping text in their bubble; persisting again
+                    // via streamedContent would replay it.
+                    .contentStreamed(true)
+                    .thinkingStreamed(result.thinking() != null && !result.thinking().isEmpty())
+                    .mergeUsage(state, result);
+            if (result.thinking() != null && !result.thinking().isEmpty()) {
+                builder.finalThinking(result.thinking());
+            }
+            return builder.build();
+        }
+
         // Fatal error：直接设置 finalAnswer 为错误文案 + ERROR_FALLBACK，
         // 不走 LimitExceededNode（后者会再发一次 LLM 调用，语义不对且对认证/配额错误会再失败）。
         // ReasoningDispatcher 看到 !needsToolCall && !shouldSummarize → finalAnswerNode，
