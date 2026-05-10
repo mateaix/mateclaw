@@ -130,6 +130,25 @@ public class ResolvedSkill {
     @Builder.Default
     private Set<String> activeFeatures = Set.of();
 
+    /**
+     * Per-tool display-name decoration table, keyed by the prefixed callback
+     * name and valued by the human-readable form (e.g.
+     * {@code "mcp_4_fs_a1b2c3"} → {@code "mcp_4_fs_a1b2c3 (read_file)"}).
+     *
+     * <p>Populated by skill source providers that have a recoverable raw
+     * name (currently MCP-bridged skills); other sources leave it empty,
+     * in which case {@link #getEffectiveAllowedToolsDisplay()} falls
+     * through to the prefixed names unchanged.
+     *
+     * <p>Held internally rather than serialized: the wire shape exposes
+     * the decorated set via the derived getter, which keeps the
+     * source-of-truth (the feature filter in
+     * {@link #getEffectiveAllowedTools()}) in one place.
+     */
+    @JsonIgnore
+    @Builder.Default
+    private Map<String, String> toolDisplayNames = Map.of();
+
     /** RFC-090 §14.1 — replacement filter for {@code dependencyReady}. */
     public boolean hasAnyActiveFeature() {
         return activeFeatures != null && !activeFeatures.isEmpty();
@@ -196,6 +215,26 @@ public class ResolvedSkill {
                 }
                 out.add(t);
             }
+        }
+        return out;
+    }
+
+    /**
+     * Display-friendly companion to {@link #getEffectiveAllowedTools()}.
+     * Each prefixed callback name is replaced by its decorated form (e.g.
+     * {@code "mcp_4_fs_a1b2c3 (read_file)"}) when {@link #toolDisplayNames}
+     * carries an entry for it; names without a decoration entry are kept
+     * verbatim. Feature-filter semantics match the prefixed getter, so a
+     * tool that is hidden by a SETUP_NEEDED feature stays hidden here too.
+     */
+    public Set<String> getEffectiveAllowedToolsDisplay() {
+        Set<String> base = getEffectiveAllowedTools();
+        if (base.isEmpty() || toolDisplayNames == null || toolDisplayNames.isEmpty()) {
+            return base;
+        }
+        Set<String> out = new LinkedHashSet<>(base.size());
+        for (String name : base) {
+            out.add(toolDisplayNames.getOrDefault(name, name));
         }
         return out;
     }
