@@ -729,6 +729,33 @@ export function useChat(options: UseChatOptions): UseChatReturn {
     }
   })
 
+  // Live recovery affordance event. Emitted by the graph when a turn
+  // ends in a non-transient error (ERROR_FALLBACK). Carries
+  // { errorType, errorMessage, actions } — actions is the ordered list
+  // of buttons the failed-bubble card should render. Persisting onto
+  // metadata.feedbackEvent matches the post-reload code path in
+  // MessageBubble (which reads the same metadata key) so the card
+  // appears immediately during the live stream AND survives a refresh.
+  stream.on('feedback_event', (data) => {
+    if (isStaleEvent(data)) return
+    if (!currentAssistantId.value) return
+    const msg = getMessage(currentAssistantId.value)
+    if (!msg) return
+    const metadata = parseMetadata((msg as any).metadata)
+    updateMessage(currentAssistantId.value, {
+      ...msg,
+      metadata: {
+        ...metadata,
+        feedbackEvent: {
+          errorType: data.errorType,
+          errorMessage: data.errorMessage,
+          actions: data.actions,
+          timestamp: data.timestamp || Date.now(),
+        },
+      },
+    } as any)
+  })
+
   stream.on('phase', (data) => {
     if (isStaleEvent(data)) return
     const phase = data.phase as StreamPhase

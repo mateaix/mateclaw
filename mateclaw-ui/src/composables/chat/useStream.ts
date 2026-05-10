@@ -58,6 +58,8 @@ export type SSEEventType =
   | 'content_truncated'
   | 'tool_result_chunk'
   | 'delegation_batch'
+  // Recovery affordance for non-transient errors (ERROR_FALLBACK turns)
+  | 'feedback_event'
 
 export interface SSEEvent {
   type: SSEEventType

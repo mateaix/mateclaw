@@ -221,6 +221,37 @@
           <p class="evidence-card__description">{{ $t('chat.evidenceDescription') }}</p>
         </div>
 
+        <!--
+          feedback_event card: recovery affordances for turns that ended
+          in a non-transient error. Backend's NodeStreamingChatHelper
+          handles transient TLS / IO retries silently; this card only
+          appears for the residue (auth, billing, model-not-found, raw
+          parse failures, etc.) that no amount of retry can fix without
+          user input. Buttons are data-driven from the event's `actions`
+          array so the backend can narrow the offering per error type
+          without a frontend release.
+        -->
+        <div v-if="feedbackInfo" class="feedback-card">
+          <div class="feedback-card__header">
+            <el-icon class="feedback-card__icon"><WarningFilled /></el-icon>
+            <span class="feedback-card__title">{{ $t('chat.feedback.title') }}</span>
+          </div>
+          <p class="feedback-card__description">{{ $t('chat.feedback.description') }}</p>
+          <div class="feedback-card__actions">
+            <button
+              v-for="action in feedbackInfo.actions"
+              :key="action"
+              class="feedback-card__btn"
+              :class="`feedback-card__btn--${action}`"
+              type="button"
+              @click="handleFeedbackAction(action)"
+            >
+              <el-icon v-if="action === 'retry' || action === 'regenerate'"><RefreshRight /></el-icon>
+              {{ feedbackActionLabel(action) }}
+            </button>
+          </div>
+        </div>
+
         <!-- 附件列表 -->
         <div v-if="attachments?.length" class="message-attachments">
           <div
@@ -359,6 +390,7 @@
 <script setup lang="ts">
 import { computed, ref, watch, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { ElMessage } from 'element-plus'
 import {
   ArrowDown,
   CloseBold,
@@ -926,6 +958,66 @@ const isEvidenceInsufficient = computed<boolean>(() => {
   if (props.message.role !== 'assistant') return false
   return parsedMetadata.value?.finishReason === 'evidence_insufficient'
 })
+
+/**
+ * Recovery-affordance payload from the graph's feedback_event. Populated
+ * for assistant turns that ended in a non-transient error (after the
+ * helper's TLS / IO retry loop has already given up). Shape mirrors
+ * GraphEventPublisher.feedback: { errorType, errorMessage, actions }.
+ *
+ * <p>Surfaces a card with buttons for each action: "retry" and
+ * "regenerate" both replay the last user message; "report" copies the
+ * error details for a bug report. The card sits right under the red
+ * "[错误] …" content so users see the recovery options inline rather
+ * than having to retype the whole prompt.
+ */
+interface FeedbackInfo {
+  errorType: string
+  errorMessage: string
+  actions: string[]
+  timestamp?: number
+}
+const feedbackInfo = computed<FeedbackInfo | undefined>(() => {
+  if (props.message.role !== 'assistant') return undefined
+  const raw = parsedMetadata.value?.feedbackEvent as FeedbackInfo | undefined
+  if (!raw || !Array.isArray(raw.actions) || raw.actions.length === 0) return undefined
+  return raw
+})
+
+function handleFeedbackAction(action: string) {
+  if (action === 'retry' || action === 'regenerate') {
+    emit('regenerate')
+    return
+  }
+  if (action === 'report') {
+    // Copy error details for a bug report. Lower-friction than a modal
+    // and works offline; users paste the result into wherever they file
+    // issues. Uses the clipboard helper with execCommand fallback for
+    // non-HTTPS contexts (e.g. internal IPs without TLS).
+    const lines = [
+      `Error type: ${feedbackInfo.value?.errorType || 'UNKNOWN'}`,
+      `Message: ${feedbackInfo.value?.errorMessage || ''}`,
+      `Conversation: ${(props.message as any).conversationId || ''}`,
+      `Message id: ${(props.message as any).id || ''}`,
+      `Timestamp: ${new Date(feedbackInfo.value?.timestamp || Date.now()).toISOString()}`,
+    ].join('\n')
+    copyToClipboard(lines).then(() => {
+      ElMessage.success(t('chat.feedback.reportCopied'))
+    }).catch(() => {
+      console.error('[feedback_event] copy failed:\n' + lines)
+      ElMessage.error(t('chat.feedback.reportFailed'))
+    })
+  }
+}
+
+function feedbackActionLabel(action: string): string {
+  // Action labels go through i18n so the same data-driven button list
+  // renders correctly in zh-CN / en-US. Falls back to the raw action
+  // key if a future backend introduces a label we haven't translated.
+  const key = `chat.feedback.${action}`
+  const localized = t(key)
+  return localized === key ? action : localized
+}
 
 const browserActionsMeta = computed<BrowserAction[]>(() => {
   return parsedMetadata.value?.browserActions || []
@@ -1739,6 +1831,84 @@ watch(isGenerating, (generating) => {
   color: var(--mc-text-primary);
   font-size: 12.5px;
   opacity: 0.85;
+}
+
+/* ==================== feedback_event recovery card (ERROR_FALLBACK) ==================== */
+.feedback-card {
+  margin-top: 8px;
+  padding: 12px 16px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--mc-danger, #dc2626) 8%, var(--mc-bg-elevated));
+  border: 1px solid color-mix(in srgb, var(--mc-danger, #dc2626) 30%, transparent);
+  font-size: 13px;
+  max-width: 480px;
+  line-height: 1.5;
+}
+
+.feedback-card__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.feedback-card__icon {
+  flex-shrink: 0;
+  color: var(--mc-danger, #dc2626);
+}
+
+.feedback-card__title {
+  font-weight: 600;
+  color: var(--mc-danger, #dc2626);
+  font-size: 14px;
+}
+
+.feedback-card__description {
+  margin: 4px 0 8px;
+  color: var(--mc-text-primary);
+  font-size: 13px;
+  opacity: 0.85;
+}
+
+.feedback-card__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.feedback-card__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--mc-danger, #dc2626) 35%, transparent);
+  background: color-mix(in srgb, var(--mc-danger, #dc2626) 10%, var(--mc-bg-elevated));
+  color: var(--mc-danger, #dc2626);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.feedback-card__btn:hover {
+  background: color-mix(in srgb, var(--mc-danger, #dc2626) 18%, var(--mc-bg-elevated));
+  border-color: color-mix(in srgb, var(--mc-danger, #dc2626) 55%, transparent);
+}
+
+/* Report button is secondary action — muted neutral palette so the
+   primary "retry" stays visually emphasized. */
+.feedback-card__btn--report {
+  border-color: var(--mc-border);
+  background: var(--mc-bg-elevated);
+  color: var(--mc-text-secondary);
+}
+
+.feedback-card__btn--report:hover {
+  background: var(--mc-bg-sunken);
+  border-color: var(--mc-border-strong, var(--mc-border));
+  color: var(--mc-text-primary);
 }
 
 /* ==================== 附件 ==================== */

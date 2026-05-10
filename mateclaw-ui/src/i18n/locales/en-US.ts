@@ -328,6 +328,19 @@ export default {
     // EVIDENCE_INSUFFICIENT info card (finishReason=evidence_insufficient)
     evidenceTitle: 'Run completed — some source references could not be verified',
     evidenceDescription: 'The full answer is preserved above. The classes/files listed in the trailing "[evidence insufficient] …" line were not actually opened during this run; the model may have inferred them from naming. Ask a follow-up to have each one read before relying on those references.',
+    // feedback_event card — emitted when a turn ends in a non-transient error.
+    // Buttons are data-driven from the event's `actions` array; labels live
+    // under chat.feedback.{action} so a future backend can ship a new action
+    // (e.g. "switch_model") with a single new translation key.
+    feedback: {
+      title: 'This turn failed',
+      description: 'The model call did not finish normally; the error reason is shown above. Click Retry to replay the same prompt, or Report to copy the error details for a bug report.',
+      retry: 'Retry',
+      regenerate: 'Regenerate',
+      report: 'Report',
+      reportCopied: 'Error details copied to clipboard',
+      reportFailed: 'Copy failed — check browser permissions',
+    },
     // Approval bar
     approvalAllow: 'Allow',
     approvalExecute: 'to execute?',

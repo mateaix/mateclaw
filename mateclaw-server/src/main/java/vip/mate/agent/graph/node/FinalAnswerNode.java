@@ -170,6 +170,24 @@ public class FinalAnswerNode implements NodeAction {
                     validation.unsupportedReferences());
         }
 
+        // Build the event list. Always carries the finish_reason event so
+        // downstream consumers (memory gate, channel accumulator, message
+        // metadata persistence) see a machine-readable status. When the
+        // turn ended in a non-transient error, also attach a
+        // feedback_event so the frontend can render retry/regenerate/
+        // report affordances next to the red "[错误] ..." bubble — without
+        // this, fatal errors leave the user staring at error text with no
+        // way to recover short of retyping the whole prompt.
+        List<GraphEventPublisher.GraphEvent> events =
+                new java.util.ArrayList<>(2);
+        events.add(GraphEventPublisher.finishReason(finishReason.getValue()));
+        if (finishReason == FinishReason.ERROR_FALLBACK) {
+            events.add(GraphEventPublisher.feedback(
+                    "ERROR_FALLBACK",
+                    finalAnswer,
+                    List.of("retry", "regenerate", "report")));
+        }
+
         // 不重置 CONTENT_STREAMED/THINKING_STREAMED，保留上游节点的标志
         var builder = MateClawStateAccessor.output()
                 .finalAnswer(finalAnswer)
@@ -183,7 +201,7 @@ public class FinalAnswerNode implements NodeAction {
                 // signal. APPEND-strategy on PENDING_EVENTS means this
                 // composes safely with any earlier events upstream nodes
                 // attached.
-                .events(List.of(GraphEventPublisher.finishReason(finishReason.getValue())));
+                .events(events);
 
         if (!finalThinking.isEmpty()) {
             builder.finalThinking(finalThinking);
