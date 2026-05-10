@@ -373,11 +373,31 @@ public class NodeStreamingChatHelper {
                 || msg.contains("invalid_request_error") || msg.contains("unsupported")) {
             return ErrorType.CLIENT_ERROR;
         }
-        // Server errors
+        // Server errors and transient TLS / socket-level network hiccups.
+        // Without the TLS-specific patterns, a single SSL fatal alert
+        // (e.g. bad_record_mac during long-running streams) falls through to
+        // UNKNOWN — non-retryable — so one transient handshake glitch surfaces
+        // to the user as "LLM 调用失败" with no recovery attempt. These are
+        // network-layer transients that almost always succeed on retry, so
+        // they belong in the same retryable bucket as 5xx/timeouts.
         if (msg.contains("500") || msg.contains("502") || msg.contains("503") || msg.contains("504")
                 || msg.contains("APITimeoutError") || msg.contains("APIConnectionError")
                 || msg.contains("Connection reset") || msg.contains("Connection refused")
-                || msg.contains("timeout") || msg.contains("Timeout")) {
+                || msg.contains("timeout") || msg.contains("Timeout")
+                // TLS-layer transients: bad_record_mac (RFC 5246 §7.2.2 fatal
+                // alert 20), aborted handshakes, mid-stream protocol errors.
+                || msg.contains("SSLException") || msg.contains("SSLHandshakeException")
+                || msg.contains("SSLProtocolException") || msg.contains("bad_record_mac")
+                // Socket-level transients: a peer closing the TCP connection
+                // mid-response, or the OS reporting a half-closed pipe.
+                || msg.contains("SocketException") || msg.contains("Broken pipe")
+                || msg.contains("Premature close") || msg.contains("PrematureCloseException")
+                || msg.contains("Connection prematurely closed")
+                || msg.contains("Connection closed prematurely")
+                // Reactor Netty wraps the raw socket cause in WebClientRequestException;
+                // surface that wrapper too so retries fire even when the cause chain
+                // string is "WebClientRequestException ...; nested ... SSLException".
+                || msg.contains("WebClientRequestException")) {
             return ErrorType.SERVER_ERROR;
         }
         return ErrorType.UNKNOWN;
