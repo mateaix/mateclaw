@@ -423,7 +423,7 @@ import type { Message, MessageSegment, ChatAttachment, ToolCallMeta, PlanMeta } 
 import type { ChatErrorInfo } from '@/types/chatError'
 
 const { renderMarkdown } = useMarkdownRenderer()
-const { t,locale} = useI18n()
+const { t, locale } = useI18n()
 const { getToolLabel } = useToolLabel()
 const { blobUrls, loadAllImages, loadAllVideos, loadAllAudios, loadAllModels, downloadFile, openImage, getDisplayUrl, revokeAll } = useAuthenticatedAttachment()
 
