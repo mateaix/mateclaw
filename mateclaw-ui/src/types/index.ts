@@ -311,6 +311,8 @@ export interface SkillRuntimeStatus {
   activeFeatures?: string[]
   /** Tools advertised to the LLM after feature filtering */
   effectiveAllowedTools?: string[]
+  /** Human-readable tool names for display after feature filtering */
+  effectiveAllowedToolsDisplay?: string[]
 }
 
 /** RFC-090 §14.6 — typed view onto manifest_json */

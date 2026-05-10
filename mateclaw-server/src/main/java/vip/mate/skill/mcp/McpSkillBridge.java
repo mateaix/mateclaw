@@ -121,6 +121,26 @@ public class McpSkillBridge {
         }
     }
 
+    /**
+     * Add a "display-only" method to reverse-lookup a prefixed name back to its raw name.
+     *
+     * @param prefixedName
+     * @return
+     */
+    public String decorateToolNameForDisplay(String prefixedName) {
+        McpToolNameResolver.ParsedRef ref = McpToolNameResolver.parse(prefixedName);
+        if (ref == null) return prefixedName;
+
+        McpServerEntity server = mcpServerService.getById(ref.serverId());
+        for (String raw : readToolRawNames(server)) {
+            String rebuilt = McpToolNameResolver.prefixedName(ref.serverId(), raw);
+            if (rebuilt.equals(prefixedName)) {
+                return prefixedName + " (" + raw + ")";
+            }
+        }
+        return prefixedName;
+    }
+
     private List<McpServerEntity> listEnabledServers() {
         try {
             return mcpServerService.listEnabled();

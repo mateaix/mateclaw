@@ -807,7 +807,9 @@ const detailManifest = computed(() => detailRuntime.value?.manifest ?? null)
 const detailManifestPretty = computed(() =>
   detailManifest.value ? JSON.stringify(detailManifest.value, null, 2) : '',
 )
-const detailEffectiveTools = computed(() => detailRuntime.value?.effectiveAllowedTools || [])
+const detailEffectiveTools = computed(() =>
+  detailRuntime.value?.effectiveAllowedToolsDisplay || detailRuntime.value?.effectiveAllowedTools || [],
+)
 const detailToolsCount = computed(() => detailEffectiveTools.value.length)
 const detailFeatures = computed(() => {
   const m = detailManifest.value
