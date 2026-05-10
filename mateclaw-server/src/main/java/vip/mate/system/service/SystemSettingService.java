@@ -351,13 +351,47 @@ public class SystemSettingService {
             saveValue(MODEL3D_FALLBACK_ENABLED_KEY, String.valueOf(dto.getModel3dFallbackEnabled()), "3D Provider 级 Fallback");
         }
 
-        // Multimodal sidecar routing — write empty string to clear (parse-back returns null)
-        // Always written so users can revert to "not configured" via the UI.
+        // Multimodal sidecar routing — guarded with null check, matching the
+        // pattern used for music / 3D / image / video / tts / stt blocks
+        // above. The bulk PUT /settings is used by every settings page (System,
+        // Music, Video, Image, Stt, Tts, Model3D), each sending a partial
+        // payload that omits sidecar fields. Without this guard, saving any
+        // unrelated setting would silently write "" into the sidecar keys
+        // (Long? defaultVisionModelId deserializes to null when absent), which
+        // wiped users' configured vision/video models the moment they touched
+        // an unrelated settings page. Explicit clearing via the sidecar UI now
+        // routes through {@link #updateSidecarSettings} instead.
+        if (dto.getDefaultVisionModelId() != null) {
+            saveValue(DEFAULT_VISION_MODEL_KEY,
+                    String.valueOf(dto.getDefaultVisionModelId()),
+                    "Default vision-capable model id (mate_model_config.id) for sidecar routing");
+        }
+        if (dto.getDefaultVideoModelId() != null) {
+            saveValue(DEFAULT_VIDEO_MODEL_KEY,
+                    String.valueOf(dto.getDefaultVideoModelId()),
+                    "Default video-capable model id (mate_model_config.id) for sidecar routing");
+        }
+        return getSettings();
+    }
+
+    /**
+     * Dedicated update path for the multimodal sidecar configuration.
+     * <p>
+     * This endpoint is the ONLY place vision/video model ids can be written
+     * unconditionally — null is treated as an explicit "clear" and writes
+     * an empty string (parse-back returns null). The bulk
+     * {@link #saveSettings} now guards both keys with non-null checks so
+     * unrelated settings pages can't accidentally clobber sidecar config.
+     * <p>
+     * Both fields are always written so a single API call can independently
+     * assign / clear either modality.
+     */
+    public SystemSettingsDTO updateSidecarSettings(Long visionModelId, Long videoModelId) {
         saveValue(DEFAULT_VISION_MODEL_KEY,
-                dto.getDefaultVisionModelId() == null ? "" : String.valueOf(dto.getDefaultVisionModelId()),
+                visionModelId == null ? "" : String.valueOf(visionModelId),
                 "Default vision-capable model id (mate_model_config.id) for sidecar routing");
         saveValue(DEFAULT_VIDEO_MODEL_KEY,
-                dto.getDefaultVideoModelId() == null ? "" : String.valueOf(dto.getDefaultVideoModelId()),
+                videoModelId == null ? "" : String.valueOf(videoModelId),
                 "Default video-capable model id (mate_model_config.id) for sidecar routing");
         return getSettings();
     }

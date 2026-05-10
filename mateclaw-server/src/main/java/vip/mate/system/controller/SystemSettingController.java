@@ -41,8 +41,39 @@ public class SystemSettingController {
         return R.ok(systemSettingService.saveLanguage(request.getLanguage()));
     }
 
+    /**
+     * Dedicated endpoint for the multimodal sidecar configuration.
+     * <p>
+     * Separated from the bulk {@code PUT /settings} because the bulk endpoint
+     * now guards sidecar keys with null checks (so unrelated settings pages
+     * can't clobber them via partial payloads). This endpoint always writes
+     * both fields, so passing {@code null} for either explicitly clears that
+     * sidecar — preserving the "clear via UI" UX without leaking the
+     * write-on-null semantics into every other settings save.
+     */
+    @Operation(summary = "更新多模态 sidecar 配置")
+    @PutMapping("/sidecar")
+    public R<SystemSettingsDTO> saveSidecar(@RequestBody SidecarRequest request) {
+        return R.ok(systemSettingService.updateSidecarSettings(
+                request.getDefaultVisionModelId(),
+                request.getDefaultVideoModelId()));
+    }
+
     @Data
     public static class LanguageRequest {
         private String language;
+    }
+
+    /**
+     * Body for {@code PUT /settings/sidecar}. Both fields are nullable;
+     * {@code null} means "explicit clear". Field absence in the JSON
+     * payload also deserializes to null, which is the same outcome — the
+     * sidecar UI is the only caller of this endpoint and always sends both
+     * fields, so the absent-vs-null distinction doesn't matter here.
+     */
+    @Data
+    public static class SidecarRequest {
+        private Long defaultVisionModelId;
+        private Long defaultVideoModelId;
     }
 }
