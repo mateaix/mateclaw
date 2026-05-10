@@ -83,6 +83,13 @@ public class WeComChannelAdapter extends AbstractChannelAdapter {
     private static final String CMD_HEARTBEAT = "ping";
     private static final String CMD_RESPONSE = "aibot_respond_msg";
     private static final String CMD_RESPONSE_WELCOME = "aibot_respond_welcome_msg";
+    /**
+     * Update an interactive template card. Source-verified against the
+     * aibot SDK at {@code aibot/types.py:81} (RESPONSE_UPDATE constant)
+     * — used by {@link #updateTemplateCard} to replace a posted card
+     * within the 5-second window WeCom enforces after a button click.
+     */
+    private static final String CMD_RESPONSE_UPDATE = "aibot_respond_update_msg";
     private static final String CMD_SEND_MSG = "aibot_send_msg";
     private static final String CMD_CALLBACK = "aibot_msg_callback";
     private static final String CMD_EVENT_CALLBACK = "aibot_event_callback";
@@ -203,25 +210,46 @@ public class WeComChannelAdapter extends AbstractChannelAdapter {
     private final AtomicBoolean disconnectInflight = new AtomicBoolean(false);
 
     /**
-     * Optional approval-notification renderer.
-     *
-     * <p>Wired in PR-0 for forward compatibility. PR-1 will use this to
-     * build {@code button_interaction} card payloads for tool-guard
-     * approvals; PR-0 keeps the field but does not consume it (the
-     * default text path on {@link AbstractChannelAdapter#sendApprovalNotice}
-     * still handles approvals). {@code null}-tolerant: if Spring DI
-     * cannot find the bean (unit-test contexts, hot-swap edge cases,
-     * etc.) the adapter still functions in PR-0 fashion.
+     * Approval-notification renderer. Held for symmetry with other channel
+     * adapters; the WeCom override of {@link #sendApprovalNotice} delegates
+     * card rendering to {@link #cardDispatcher} but still uses this service
+     * to build the {@link vip.mate.channel.notification.ApprovalNotice}
+     * data carrier. Null-tolerant: if Spring DI fails (test contexts), the
+     * default text-approval fallback still works.
      */
-    @SuppressWarnings("unused")  // consumed in PR-1
+    @SuppressWarnings("unused")  // consumed via card dispatcher's tool_guard kind in PR-1
     private final vip.mate.channel.notification.ApprovalNotificationService approvalNotificationService;
+
+    /**
+     * WeCom interactive-card dispatcher (PR-1).
+     *
+     * <p>Routes outbound approval notices to a {@code button_interaction}
+     * card via tool_guard renderer, and inbound {@code template_card_event}
+     * frames to the matching handler by task_id prefix. Null-tolerant for
+     * test contexts (the {@link #sendApprovalNotice} override falls back
+     * to the abstract-class text path when the dispatcher is missing).
+     */
+    private final vip.mate.channel.wecom.cards.WeComCardDispatcher cardDispatcher;
+
+    /**
+     * Refreshes the "🤔 思考中..." processing-stream chunk every 20s and
+     * force-finishes after 180s, so WeCom's server-side stream slot
+     * doesn't drop while a long-running agent task is still computing
+     * (RFC-32 §2.1.2 / R-7 / B-5). Null-tolerant: if missing (test DI
+     * gap), placeholder still appears once but is not refreshed.
+     */
+    private final WeComKeepaliveScheduler keepaliveScheduler;
 
     public WeComChannelAdapter(ChannelEntity channelEntity,
                                ChannelMessageRouter messageRouter,
                                ObjectMapper objectMapper,
-                               vip.mate.channel.notification.ApprovalNotificationService approvalNotificationService) {
+                               vip.mate.channel.notification.ApprovalNotificationService approvalNotificationService,
+                               vip.mate.channel.wecom.cards.WeComCardDispatcher cardDispatcher,
+                               WeComKeepaliveScheduler keepaliveScheduler) {
         super(channelEntity, messageRouter, objectMapper);
         this.approvalNotificationService = approvalNotificationService;
+        this.cardDispatcher = cardDispatcher;
+        this.keepaliveScheduler = keepaliveScheduler;
         // Default to 8 bounded attempts (~4 minutes total at 2s..30s exponential)
         // so the UI eventually settles in ERROR instead of getting stuck in
         // RECONNECTING forever. User config still overrides (-1 = infinite).
@@ -383,6 +411,10 @@ public class WeComChannelAdapter extends AbstractChannelAdapter {
         // ---- 其他 per-connection 状态 ----
         pendingFrames.clear();
         replyContexts.clear();
+        streamLastContent.clear();
+        if (keepaliveScheduler != null) {
+            keepaliveScheduler.shutdownAll();
+        }
         missedPongCount.set(0);
 
         this.httpClient = null;
@@ -995,6 +1027,19 @@ public class WeComChannelAdapter extends AbstractChannelAdapter {
             String replyToken = isGroup ? chatId : senderId;
             replyContexts.put(replyToken, new WeComReplyContext(frameReqId, processingStreamId));
 
+            // PR-1: launch keepalive for the processing stream so long-running agent
+            // tasks (>60s) keep their stream slot alive — without this, WeCom's
+            // server-side TTL drops the slot and the eventual real reply gets
+            // silently rejected. RFC-32 §2.1.2 / R-7 / B-5.
+            if (keepaliveScheduler != null
+                    && processingStreamId != null && !processingStreamId.isBlank()) {
+                try {
+                    keepaliveScheduler.start(this, frameReqId, processingStreamId, replyToken);
+                } catch (Exception e) {
+                    log.debug("[wecom] keepalive start failed: {}", e.getMessage());
+                }
+            }
+
             log.info("[wecom] Received message: sender={}, chatType={}, msgType={}, textLen={}",
                     senderId.length() > 20 ? senderId.substring(0, 20) : senderId,
                     chatType, msgType,
@@ -1032,13 +1077,121 @@ public class WeComChannelAdapter extends AbstractChannelAdapter {
                 return;
             }
 
+            if ("template_card_event".equals(eventType)) {
+                handleTemplateCardEvent(frame, body, event);
+                return;
+            }
+
             log.debug("[wecom] Ignoring event type: {}", eventType);
         } catch (Exception e) {
             log.error("[wecom] Failed to handle event callback: {}", e.getMessage(), e);
         }
     }
 
+    /**
+     * Route an inbound {@code template_card_event} (a button click on a
+     * card we previously sent) to the correct
+     * {@link vip.mate.channel.wecom.cards.WeComCardKind} based on the
+     * task_id prefix. Each card kind owns its own validation +
+     * resolved-state render + command-injection logic.
+     *
+     * <p><b>5-second window</b>: WeCom requires the
+     * {@code aibot_respond_update_msg} for this event to be sent inside
+     * 5s. Handlers therefore run synchronously here; the heavy work
+     * (e.g. agent re-execution) is deferred to the router's normal
+     * processMessage path via {@link #injectSyntheticMessage}.
+     */
+    @SuppressWarnings("unchecked")
+    private void handleTemplateCardEvent(Map<String, Object> frame,
+                                         Map<String, Object> body,
+                                         Map<String, Object> event) {
+        if (cardDispatcher == null) {
+            log.debug("[wecom] template_card_event ignored: dispatcher not wired");
+            return;
+        }
+        Map<String, Object> tce = event.get("template_card_event") instanceof Map<?, ?> m
+                ? (Map<String, Object>) m
+                : (Map<String, Object>) event;  // some firmware nests directly under event
+        String taskId = (String) tce.getOrDefault("task_id", "");
+        if (taskId.isBlank()) {
+            log.debug("[wecom] template_card_event missing task_id, ignoring");
+            return;
+        }
+
+        var kindOpt = cardDispatcher.lookupByTaskId(taskId);
+        if (kindOpt.isEmpty()) {
+            log.warn("[wecom] No registered card kind matches task_id={}, ignoring", taskId);
+            return;
+        }
+
+        Map<String, Object> fromBlock = body.get("from") instanceof Map<?, ?> fm
+                ? (Map<String, Object>) fm
+                : Map.of();
+        try {
+            kindOpt.get().handler().handle(this, frame, tce, fromBlock);
+        } catch (Exception e) {
+            log.error("[wecom] template_card_event handler ({}) threw: {}",
+                    kindOpt.get().name(), e.getMessage(), e);
+        }
+    }
+
     // ==================== 消息发送 ====================
+
+    /**
+     * Render an approval notice as a WeCom {@code button_interaction}
+     * card and post it via the active reply context, instead of the
+     * abstract-class default text path.
+     *
+     * <p>Falls back to {@code super.sendApprovalNotice} (markdown text)
+     * in three failure modes:
+     * <ol>
+     *   <li>No card dispatcher available (DI did not wire it — usually
+     *       a test / hot-swap context)</li>
+     *   <li>No active {@link WeComReplyContext} for {@code targetId} —
+     *       proactive paths (cron without a recent inbound message)
+     *       cannot post a card because WeCom AI Bots reject
+     *       {@code aibot_send_msg + template_card}; fall back to text
+     *       so the user still sees the approval</li>
+     *   <li>{@link CardOversizedException} thrown by the renderer
+     *       (button.key payload &gt; 1024 bytes)</li>
+     * </ol>
+     *
+     * <p>The card is sent via {@link #replyTemplateCard} bound to the
+     * inbound frame's {@code req_id} that
+     * {@link #handleMessageCallback} stashed in {@link #replyContexts}.
+     */
+    @Override
+    public void sendApprovalNotice(String targetId,
+            vip.mate.channel.notification.ApprovalNotice notice) {
+        if (cardDispatcher == null) {
+            super.sendApprovalNotice(targetId, notice);
+            return;
+        }
+        WeComReplyContext ctx = replyContexts.get(targetId);
+        if (ctx == null || ctx.frameReqId() == null || ctx.frameReqId().isBlank()) {
+            // No bound reply context — fall back to text. Most common in
+            // proactive paths (cron-triggered approvals) which WeCom AI
+            // Bot rejects for cards anyway.
+            super.sendApprovalNotice(targetId, notice);
+            return;
+        }
+        var kindOpt = cardDispatcher.lookupByMessageType(
+                vip.mate.channel.wecom.cards.tool_guard.ToolGuardCardKindFactory.MESSAGE_TYPE);
+        if (kindOpt.isEmpty()) {
+            super.sendApprovalNotice(targetId, notice);
+            return;
+        }
+        try {
+            Map<String, Object> card = kindOpt.get().renderer().render(notice);
+            replyTemplateCard(ctx.frameReqId(), card);
+        } catch (vip.mate.channel.wecom.cards.CardOversizedException oversized) {
+            log.warn("[wecom] approval card oversized, falling back to text: {}", oversized.getMessage());
+            super.sendApprovalNotice(targetId, notice);
+        } catch (Exception e) {
+            log.warn("[wecom] approval card render/send failed, falling back to text: {}", e.getMessage());
+            super.sendApprovalNotice(targetId, notice);
+        }
+    }
 
     @Override
     public void sendMessage(String targetId, String content) {
@@ -1083,6 +1236,12 @@ public class WeComChannelAdapter extends AbstractChannelAdapter {
     public void renderAndSend(String targetId, String content) {
         // 消费回复上下文（如果有的话）
         WeComReplyContext ctx = replyContexts.remove(targetId);
+        // Stop keepalive before we send the real reply: avoids racing the next
+        // refresh tick against this finish=true chunk on the same stream.
+        // No-op if force-finish already evicted the entry.
+        if (keepaliveScheduler != null && ctx != null && ctx.processingStreamId() != null) {
+            keepaliveScheduler.stop(ctx.processingStreamId());
+        }
 
         // 先进行正常的内容渲染（过滤 thinking、分割长文本）
         boolean filterThinking = getConfigBoolean("filter_thinking", true);
@@ -1111,6 +1270,9 @@ public class WeComChannelAdapter extends AbstractChannelAdapter {
     @Override
     public void sendContentParts(String targetId, List<MessageContentPart> parts) {
         WeComReplyContext ctx = replyContexts.remove(targetId);
+        if (keepaliveScheduler != null && ctx != null && ctx.processingStreamId() != null) {
+            keepaliveScheduler.stop(ctx.processingStreamId());
+        }
         boolean sentText = false;
         boolean firstText = true;
 
@@ -1324,6 +1486,24 @@ public class WeComChannelAdapter extends AbstractChannelAdapter {
      */
     private void replyStream(String originalReqId, String streamId, String content,
                              boolean finish, String feedbackId) {
+        // PR-1 chunk dedup: skip the network round-trip when a non-final chunk
+        // has the exact same content as the previous one for the same streamId.
+        // Tool-call argument streaming in particular emits many redundant chunks
+        // (each token re-flushes the partial JSON args) that would otherwise
+        // flicker the IM client. The final chunk (finish=true) ALWAYS goes
+        // through so WeCom closes the slot cleanly. RFC-32 §2.1.3.
+        if (!finish) {
+            String content_safe = content == null ? "" : content;
+            String prev = streamLastContent.get(streamId);
+            if (content_safe.equals(prev)) {
+                return;
+            }
+            streamLastContent.put(streamId, content_safe);
+        } else {
+            // Final chunk consumes the dedup slot.
+            streamLastContent.remove(streamId);
+        }
+
         Map<String, Object> streamBody = new LinkedHashMap<>();
         streamBody.put("id", streamId);
         streamBody.put("finish", finish);
@@ -1347,6 +1527,13 @@ public class WeComChannelAdapter extends AbstractChannelAdapter {
     }
 
     /**
+     * Per-streamId last-content cache for chunk dedup. Bounded only by
+     * the number of in-flight streams (a small handful in practice);
+     * cleared on each finish=true chunk and on connection release.
+     */
+    private final ConcurrentHashMap<String, String> streamLastContent = new ConcurrentHashMap<>();
+
+    /**
      * 发送欢迎消息
      */
     private void replyWelcome(String reqId, String text) {
@@ -1360,6 +1547,139 @@ public class WeComChannelAdapter extends AbstractChannelAdapter {
                 "body", body
         );
         sendFrameWithAck(reqId, frame);
+    }
+
+    /**
+     * Send an interactive template card (e.g. button_interaction approval card).
+     *
+     * <p>Wraps the card payload in {@code msgtype=template_card} and routes via
+     * the existing reply channel ({@code aibot_respond_msg}, bound to the inbound
+     * frame's req_id). Source-verified against aibot SDK
+     * {@code client.py:188-207 reply_template_card}.
+     *
+     * <p>Caller must have an active reply context for {@code reqId} — i.e. the
+     * card is sent in response to a previously received message frame, not as a
+     * proactive group push (which WeCom rejects for AI Bots, see RFC-32 G-12).
+     *
+     * @param reqId       the original inbound frame's {@code headers.req_id}
+     * @param templateCard the WeCom template_card payload (card_type / task_id /
+     *                    main_title / button_list / etc.)
+     */
+    public void replyTemplateCard(String reqId, Map<String, Object> templateCard) {
+        Map<String, Object> body = Map.of(
+                "msgtype", "template_card",
+                "template_card", templateCard
+        );
+        Map<String, Object> frame = Map.of(
+                "cmd", CMD_RESPONSE,
+                "headers", Map.of("req_id", reqId),
+                "body", body
+        );
+        sendFrameWithAck(reqId, frame);
+    }
+
+    /**
+     * Update a previously-posted template card. Used by inbound
+     * {@code template_card_event} handlers (e.g. tool-guard approval) to swap
+     * the {@code button_interaction} card for a {@code text_notice} resolved
+     * state once the user clicks a button.
+     *
+     * <p><b>5-second window</b>: per the aibot protocol, the response must be
+     * sent within 5s of receiving the {@code template_card_event} frame —
+     * otherwise the update is silently dropped. The handler path therefore
+     * has to validate identity + render the new card synchronously (fast
+     * DB lookup + map construction, well under 1ms) and only enqueue the
+     * inject-command on the agent thread afterwards.
+     *
+     * <p>Source-verified against aibot SDK {@code client.py:260-284 update_template_card}.
+     *
+     * @param eventReqId the inbound {@code template_card_event} frame's req_id
+     *                  (DIFFERENT from the original card-posting req_id)
+     * @param templateCard the replacement card payload (same task_id as the
+     *                    original card)
+     */
+    public void updateTemplateCard(String eventReqId, Map<String, Object> templateCard) {
+        Map<String, Object> body = Map.of(
+                "response_type", "update_template_card",
+                "template_card", templateCard
+        );
+        Map<String, Object> frame = Map.of(
+                "cmd", CMD_RESPONSE_UPDATE,
+                "headers", Map.of("req_id", eventReqId),
+                "body", body
+        );
+        sendFrameWithAck(eventReqId, frame);
+    }
+
+    /**
+     * Keepalive refresh tick (called by {@link WeComKeepaliveScheduler}
+     * every 20s). Sends {@code finish=false} on the existing stream so
+     * WeCom's server-side TTL counter resets.
+     *
+     * <p>Public so the scheduler in this same package can invoke it; the
+     * scheduler is itself a singleton bean and outside callers should
+     * not be triggering refresh ticks.
+     */
+    public void replyStreamRefreshForKeepalive(String reqId, String streamId, String text) {
+        replyStream(reqId, streamId, text, false);
+    }
+
+    /**
+     * Force-finish the keepalive stream (180s ceiling reached). Sends
+     * {@code finish=true} so WeCom closes the slot cleanly. The
+     * scheduler immediately follows this with
+     * {@link #invalidateReplyContext} so the eventual real reply takes
+     * the fresh-stream path.
+     */
+    public void replyStreamFinishForKeepalive(String reqId, String streamId, String text) {
+        replyStream(reqId, streamId, text, true);
+    }
+
+    /**
+     * Drop the {@link WeComReplyContext} entry for a {@code targetId}
+     * if (and only if) its current {@code processingStreamId} matches
+     * the supplied {@code streamId}. Idempotent and safe to call from
+     * any thread.
+     *
+     * <p>Used by {@link WeComKeepaliveScheduler} after force-finishing
+     * a stuck stream — RFC-32 §2.1.2 invariant: the next
+     * {@link #renderAndSend} call must NOT reuse a finished
+     * {@code processingStreamId}.
+     *
+     * <p>The match-and-remove uses {@link
+     * java.util.concurrent.ConcurrentHashMap#computeIfPresent} so a
+     * concurrent {@code renderAndSend} that already swapped the
+     * context for a fresh stream is left untouched.
+     */
+    public void invalidateReplyContext(String targetId, String streamId) {
+        if (targetId == null || streamId == null) return;
+        replyContexts.computeIfPresent(targetId, (k, ctx) -> {
+            if (streamId.equals(ctx.processingStreamId())) {
+                log.debug("[wecom] invalidateReplyContext: cleared {} (stream={})", targetId, streamId);
+                return null;  // remove entry
+            }
+            return ctx;
+        });
+    }
+
+    /**
+     * Route a synthetic message into the standard
+     * {@link ChannelMessageRouter} pipeline as if the user had typed it.
+     *
+     * <p>Bypasses {@link AbstractChannelAdapter#onMessage} so the
+     * pre-flight bot-prefix filter and access-control check are SKIPPED
+     * — appropriate for events that already represent an explicit user
+     * intent (e.g. a button click on an approval card). The router still
+     * runs its own approval validation in
+     * {@link ChannelMessageRouter#processMessage}, so the identity check
+     * for "only original requester can approve" still fires.
+     *
+     * <p>Currently used by tool-guard card handler. Package-private (no
+     * modifier) so only sibling classes in the wecom package can inject;
+     * external code must go through {@link ChannelAdapter#onMessage}.
+     */
+    public void injectSyntheticMessage(ChannelMessage message) {
+        messageRouter.enqueue(message, this, channelEntity);
     }
 
     // ==================== 媒体上传协议 ====================

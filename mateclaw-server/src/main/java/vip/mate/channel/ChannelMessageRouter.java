@@ -564,9 +564,13 @@ public class ChannelMessageRouter {
                     // 检查 chat 过程中是否产生了审批 pending
                     PendingApproval newPending = approvalService.findPendingByConversation(conversationId);
                     if (newPending != null) {
-                        // 有审批需求：不保存 LLM 的审批占位回复到 DB，直接从 pending 元数据构建通知
-                        String approvalNotice = buildApprovalNotice(newPending);
-                        adapter.renderAndSend(replyTarget, approvalNotice);
+                        // Channel-specific approval rendering: WeCom overrides
+                        // sendApprovalNotice to post a button_interaction card;
+                        // every other adapter falls back to the markdown-text path
+                        // on AbstractChannelAdapter (preserves PR-0 behavior for
+                        // non-WeCom channels).
+                        var notice = approvalNotificationService.buildNotice(newPending);
+                        adapter.sendApprovalNotice(replyTarget, notice);
                         log.info("[{}] Approval triggered during chat, sent notice (NOT saved to DB): tool={}",
                                 adapter.getChannelType(), newPending.getToolName());
                     } else {
@@ -694,7 +698,11 @@ public class ChannelMessageRouter {
             PendingApproval newPending = approvalService.findPendingByConversation(conversationId);
             if (newPending != null) {
                 String replyTarget = resolveReplyTarget(message);
-                streamingAdapter.sendMessage(replyTarget, buildApprovalNotice(newPending));
+                // Same polymorphic dispatch as the non-streaming path — WeCom
+                // renders a card, others render text. See the buildNotice +
+                // sendApprovalNotice pair at the non-streaming call site above.
+                var notice = approvalNotificationService.buildNotice(newPending);
+                streamingAdapter.sendApprovalNotice(replyTarget, notice);
                 log.info("[{}] Approval triggered during streaming (NOT saved to DB): tool={}",
                         channelType, newPending.getToolName());
             } else if (finalContent != null && !finalContent.isBlank()) {
