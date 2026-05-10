@@ -6,7 +6,7 @@
   "description": "MateClaw - Personal AI Assistant Web Console",
   "scripts": {
     "dev": "vite",
-    "build": "vue-tsc && vite build",
+    "build": "NODE_OPTIONS=--max-old-space-size=6144 vue-tsc && vite build",
     "preview": "vite preview",
     "lint": "eslint src --ext .ts,.vue --fix"
   },
