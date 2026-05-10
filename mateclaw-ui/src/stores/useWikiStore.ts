@@ -109,6 +109,14 @@ export const useWikiStore = defineStore('wiki', () => {
     }
   }
 
+  function backToLibrary() {
+    currentKB.value = null
+    currentPage.value = null
+    rawMaterials.value = []
+    pages.value = []
+    selectedRawId.value = null
+  }
+
   async function fetchRawMaterials(kbId: number) {
     const res: any = await wikiApi.listRaw(kbId)
     rawMaterials.value = res.data || []
@@ -183,6 +191,7 @@ export const useWikiStore = defineStore('wiki', () => {
     selectKB,
     createKB,
     deleteKB,
+    backToLibrary,
     fetchRawMaterials,
     fetchPages,
     filterPagesByRaw,
