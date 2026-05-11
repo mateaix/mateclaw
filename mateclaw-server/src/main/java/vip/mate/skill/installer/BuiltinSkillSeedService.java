@@ -309,7 +309,16 @@ public class BuiltinSkillSeedService implements ApplicationRunner {
         row.setDescription(nullIfBlank(parsed.getDescription()));
         row.setSkillType(SKILL_TYPE_BUILTIN);
         row.setBuiltin(true);
-        row.setEnabled(true);
+        // Frontmatter `optional: true` flips the initial seed to enabled=false,
+        // so heavyweight bundled skills (paid CLI dependencies, external OAuth,
+        // niche integrations) ship dark — the user opts in from the Skills page
+        // when they actually want them. The default (frontmatter absent or
+        // false) preserves the historical "all bundled skills active" behavior.
+        // {@link #mergeIntoExisting} deliberately does NOT touch `enabled`, so
+        // once a user activates an optional skill, subsequent boots keep their
+        // choice and a downgrade in frontmatter never silently disables it.
+        boolean optional = booleanFromFrontmatter(parsed, "optional", false);
+        row.setEnabled(!optional);
         row.setSkillContent(content);
         row.setVersion(stringFromFrontmatter(parsed, "version", DEFAULT_VERSION));
         row.setIcon(stringFromFrontmatter(parsed, "icon", DEFAULT_ICON));
@@ -404,6 +413,24 @@ public class BuiltinSkillSeedService implements ApplicationRunner {
         }
 
         return dirty;
+    }
+
+    /**
+     * Read a boolean frontmatter key, tolerant of the YAML / casual-string
+     * forms the parser might surface ({@code true} / {@code "true"} /
+     * {@code "yes"} / {@code "1"}). Anything else falls back to the supplied
+     * default so a typo doesn't silently flip behavior.
+     */
+    private boolean booleanFromFrontmatter(SkillFrontmatterParser.ParsedSkillMd parsed,
+                                            String key, boolean fallback) {
+        Map<String, Object> fm = parsed.getFrontmatter();
+        if (fm == null) return fallback;
+        Object value = fm.get(key);
+        if (value == null) return fallback;
+        if (value instanceof Boolean b) return b;
+        String s = value.toString().trim().toLowerCase();
+        if (s.isEmpty()) return fallback;
+        return s.equals("true") || s.equals("yes") || s.equals("1") || s.equals("on");
     }
 
     @SuppressWarnings("unchecked")
