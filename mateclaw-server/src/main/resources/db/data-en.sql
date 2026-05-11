@@ -5,26 +5,26 @@ MERGE INTO mate_user (id, username, password, nickname, role, enabled, create_ti
 KEY (id)
 VALUES (1, 'admin', '$2a$10$7JB720yubVSZvUI0rEqK/.VqGOZTH.ulu33dHOiBE8ByOhJIrdAu2', 'MateClaw Admin', 'admin', TRUE, NOW(), NOW(), 0);
 
--- Default Agent: General Assistant (ReAct mode)
+-- Default digital employee: General Assistant (ReAct mode)
 MERGE INTO mate_agent (id, name, description, agent_type, system_prompt, model_name, max_iterations, enabled, icon, tags, create_time, update_time, deleted)
 KEY (id)
-VALUES (1000000001, 'MateClaw Assistant', 'Default AI assistant with ReAct mode and tool calling', 'react',
-        'You are MateClaw, an intelligent AI assistant. You can help users answer questions, analyze data, and execute tasks. Please respond professionally and in a friendly manner.',
+VALUES (1000000001, 'General Assistant', 'All-purpose helper for day-to-day questions, data analysis, and tool calling', 'react',
+        'You are MateClaw''s General Assistant. You can help users answer questions, analyze data, and call tools to get things done. Please respond professionally and in a friendly manner.',
         NULL, 100, TRUE, 'pi:robot-face-happy', 'default,assistant', NOW(), NOW(), 0);
 
--- Default Agent: Task Planner (Plan-Execute mode)
+-- Default digital employee: Task Planner (Plan-Execute mode)
 MERGE INTO mate_agent (id, name, description, agent_type, system_prompt, model_name, max_iterations, enabled, icon, tags, create_time, update_time, deleted)
 KEY (id)
-VALUES (1000000002, 'Task Planner', 'Task planning assistant for complex multi-step tasks', 'plan_execute',
-        'You are a professional task planning and execution assistant. You excel at breaking complex goals into executable steps and completing them systematically.',
+VALUES (1000000002, 'Task Planner', 'Breaks complex goals into executable steps and drives them forward to completion', 'plan_execute',
+        'You are a professional Task Planner. You excel at breaking complex goals into executable steps and completing them systematically.',
         NULL, 100, TRUE, 'pi:clipboard-note', 'planning,task', NOW(), NOW(), 0);
 
--- StateGraph ReAct Agent (StateGraph architecture)
+-- Default digital employee: Reasoning Analyst (explicit reasoning loops + tool calling)
 MERGE INTO mate_agent (id, name, description, agent_type, system_prompt, model_name, max_iterations, enabled, icon, tags, create_time, update_time, deleted)
 KEY (id)
-VALUES (1000000003, 'StateGraph ReAct', 'StateGraph-based ReAct Agent with explicit reasoning loops and tool calling', 'react',
-        'You are an intelligent assistant based on the StateGraph architecture. You can use tools to help users solve problems. Please respond professionally and in a friendly manner.',
-        NULL, 100, TRUE, 'pi:cpu', 'react,stategraph,tools', NOW(), NOW(), 0);
+VALUES (1000000003, 'Reasoning Analyst', 'Thinks step by step with visible reasoning, ideal for problems that need thorough deliberation', 'react',
+        'You are a Reasoning Analyst, an assistant that excels at deep reasoning. When facing a problem, first think through it step by step with a clear reasoning trace, then call tools or give the answer. Please respond professionally and in a friendly manner.',
+        NULL, 100, TRUE, 'pi:cpu', 'react,reasoning,tools', NOW(), NOW(), 0);
 
 -- ==================== Local Model Providers (displayed first) ====================
 
