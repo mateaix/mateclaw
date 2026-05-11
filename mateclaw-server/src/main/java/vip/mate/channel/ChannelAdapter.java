@@ -200,6 +200,34 @@ public interface ChannelAdapter {
     }
 
     /**
+     * Whether this adapter must run on exactly one node in a multi-instance
+     * deployment.
+     *
+     * <p>Return {@code true} when the underlying transport rejects multiple
+     * concurrent connections from the same credentials — e.g. a bot WebSocket
+     * gateway that enforces a per-app connection cap, or a long-polling
+     * endpoint where multiple consumers would steal updates from each other.
+     * The channel manager will gate {@link #start()} on a distributed lease
+     * so only one node connects at a time, and failover to another node when
+     * the lease holder dies.
+     *
+     * <p>Webhook-based channels (DingTalk, WeCom, Slack, …) should leave this
+     * at the default {@code false}: inbound HTTP traffic is fanned out by the
+     * load balancer, so every node may safely subscribe.
+     *
+     * <p>Scope: this hook is honored by the framework for <b>DB-backed
+     * channels</b> registered via {@code ChannelManager.startChannel}. For
+     * plugin-registered channels the framework can only gate the initial
+     * register attempt — there is no follower retry, no hot-swap, and no
+     * disable-detection (plugins have a register/unregister lifecycle, not
+     * a DB-driven one). Plugin authors needing full single-leader semantics
+     * should depend on {@code ChannelLeaderElection} directly.
+     */
+    default boolean requiresSingleLeader() {
+        return false;
+    }
+
+    /**
      * RFC-024 Change 2：本 adapter 认为"多久没活动就视作 stale 需要重启"的阈值。
      *
      * <p>通用默认 60 分钟；长轮询类渠道（如 iLink 微信）应覆盖为 5 分钟，

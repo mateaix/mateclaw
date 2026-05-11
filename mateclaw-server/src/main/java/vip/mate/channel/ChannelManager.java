@@ -10,6 +10,8 @@ import org.springframework.stereotype.Component;
 import vip.mate.channel.dingtalk.DingTalkChannelAdapter;
 import vip.mate.channel.discord.DiscordChannelAdapter;
 import vip.mate.channel.feishu.FeishuChannelAdapter;
+import vip.mate.channel.leader.ChannelLeaderElection;
+import vip.mate.channel.leader.LeaderLease;
 import vip.mate.channel.model.ChannelEntity;
 import vip.mate.channel.qq.QQChannelAdapter;
 import vip.mate.channel.service.ChannelService;
@@ -17,7 +19,9 @@ import vip.mate.channel.telegram.TelegramChannelAdapter;
 import vip.mate.channel.web.WebChannelAdapter;
 import vip.mate.channel.wecom.WeComChannelAdapter;
 import vip.mate.channel.weixin.WeixinChannelAdapter;
+import vip.mate.exception.MateClawException;
 
+import java.time.LocalDateTime;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.locks.ReadWriteLock;
@@ -71,11 +75,65 @@ public class ChannelManager {
      */
     private final vip.mate.channel.wecom.WeComKeepaliveScheduler weComKeepaliveScheduler;
 
+    /**
+     * Distributed leader election. Channels whose adapter reports
+     * {@link ChannelAdapter#requiresSingleLeader()} are gated on a lease so
+     * only one node opens the upstream WebSocket / long-poll at a time.
+     */
+    private final ChannelLeaderElection leaderElection;
+
     /** 运行中的渠道适配器：channelId -> adapter */
     private final Map<Long, ChannelAdapter> activeAdapters = new HashMap<>();
 
     /** 插件注册的渠道适配器：pluginName -> adapter */
     private final Map<String, ChannelAdapter> pluginChannels = new ConcurrentHashMap<>();
+
+    /** Held leadership leases for plugin channels: pluginName -> lease */
+    private final Map<String, LeaderLease> pluginLeases = new ConcurrentHashMap<>();
+
+    /** Lease-extension futures for plugin channels: pluginName -> heartbeat */
+    private final Map<String, ScheduledFuture<?>> pluginHeartbeatFutures = new ConcurrentHashMap<>();
+
+    /**
+     * Serializes register / unregister / shutdown / heartbeat-loss cleanup
+     * for plugin channels. The three plugin maps each use
+     * {@code ConcurrentHashMap}, which makes individual put/remove atomic
+     * — but not the multi-map sequences these paths run (snapshot, clear,
+     * stop adapter, release lease). Without this lock, a concurrent
+     * {@code registerPluginChannel} could insert into {@code pluginChannels}
+     * after {@code stopAll} snapshot-copies it but before
+     * {@code pluginChannels.clear()}, leaking an unstopped adapter and a
+     * never-released lease.
+     */
+    private final Object pluginLifecycleLock = new Object();
+
+    /** Held leadership leases for leader-required channels: channelId -> lease */
+    private final Map<Long, LeaderLease> activeLeases = new HashMap<>();
+
+    /** Lease-extension futures: channelId -> heartbeat */
+    private final Map<Long, ScheduledFuture<?>> heartbeatFutures = new HashMap<>();
+
+    /** Follower retry futures: channelId -> retry */
+    private final Map<Long, ScheduledFuture<?>> followerRetryFutures = new HashMap<>();
+
+    /**
+     * Reconcile futures for <b>non</b>-leader-required active adapters
+     * (e.g. webhook-mode Feishu, polling-disabled Telegram). Without these,
+     * cross-node admin actions on a follower would never reach the running
+     * adapter on another node — only leaders run reconciliation through
+     * their heartbeat, so a webhook-running node would otherwise be deaf
+     * to disable / delete / config / mode-flip changes processed elsewhere.
+     */
+    private final Map<Long, ScheduledFuture<?>> reconcileFutures = new HashMap<>();
+
+    /**
+     * Last {@code update_time} the leader observed for each owned channel.
+     * Compared against the DB row on every heartbeat — a newer value means
+     * another node has applied a config change, and we (the connection
+     * holder) need to apply it locally too. Otherwise the leader keeps
+     * running with stale credentials/mode after admin edits.
+     */
+    private final Map<Long, LocalDateTime> lastSeenChannelUpdateTime = new HashMap<>();
 
     /** 读写锁：读操作（getAdapter 等）用读锁，写操作（start/stop/replace）用写锁 */
     private final ReadWriteLock adapterLock = new ReentrantReadWriteLock();
@@ -87,8 +145,33 @@ public class ChannelManager {
         return t;
     });
 
+    /**
+     * Heartbeat + follower-retry scheduler. A small pool is enough — both
+     * tasks are short-lived (lock extend or a single startChannel attempt).
+     */
+    private final ScheduledExecutorService leaderScheduler = Executors.newScheduledThreadPool(2, r -> {
+        Thread t = new Thread(r, "channel-leader");
+        t.setDaemon(true);
+        return t;
+    });
+
     /** 旧 Adapter stop() 超时时间（秒） */
     private static final int STOP_TIMEOUT_SECONDS = 5;
+
+    /**
+     * Lease heartbeat cadence. Must be well under
+     * {@link ChannelLeaderElection#LOCK_AT_MOST_FOR} (60s) so a single
+     * missed tick doesn't lose leadership; 20s gives us three chances per
+     * window.
+     */
+    private static final long HEARTBEAT_INTERVAL_SECONDS = 20L;
+
+    /**
+     * How often a follower retries to acquire leadership. Picked so a
+     * leader dying gets failed-over within (lease window + this interval)
+     * = ~90s in the worst case, without hammering the DB.
+     */
+    private static final long FOLLOWER_RETRY_INTERVAL_SECONDS = 30L;
 
     /** 支持的渠道类型 */
     private static final Set<String> SUPPORTED_TYPES = Set.of(
@@ -122,6 +205,7 @@ public class ChannelManager {
     public void destroy() {
         log.info("Shutting down ChannelManager, stopping {} active channels...", activeAdapters.size());
         stopAll();
+        leaderScheduler.shutdownNow();
         stopExecutor.shutdownNow();
         messageRouter.shutdown();
     }
@@ -140,9 +224,25 @@ public class ChannelManager {
             }
 
             ChannelAdapter adapter = createAdapter(channel);
-            adapter.start();
-            activeAdapters.put(channel.getId(), adapter);
-            log.info("Channel started: {} (type={}, id={})", channel.getName(), channel.getChannelType(), channel.getId());
+            if (adapter.requiresSingleLeader()) {
+                attemptLeaderStart(channel, adapter);
+            } else {
+                adapter.start();
+                activeAdapters.put(channel.getId(), adapter);
+                lastSeenChannelUpdateTime.put(channel.getId(), channel.getUpdateTime());
+                // A follower retry may still be scheduled if this channel was
+                // previously in leader-required mode and just flipped to a
+                // non-leader transport (e.g. Feishu websocket → webhook).
+                // Cancel it so we don't tick forever on a no-op startChannel.
+                cancelFollowerRetryLocked(channel.getId());
+                // Schedule cross-node reconciliation for this non-leader adapter:
+                // followers driven by their retry tick re-read the channel, but
+                // a running non-leader has neither a heartbeat nor a retry, so
+                // without this ticker it would never notice admin actions
+                // processed on a different node.
+                scheduleReconcileLocked(channel.getId(), channel.getName());
+                log.info("Channel started: {} (type={}, id={})", channel.getName(), channel.getChannelType(), channel.getId());
+            }
         } finally {
             adapterLock.writeLock().unlock();
         }
@@ -153,15 +253,386 @@ public class ChannelManager {
      */
     public void stopChannel(Long channelId) {
         ChannelAdapter oldAdapter;
+        LeaderLease lease;
         adapterLock.writeLock().lock();
         try {
             oldAdapter = activeAdapters.remove(channelId);
+            lease = activeLeases.remove(channelId);
+            lastSeenChannelUpdateTime.remove(channelId);
+            cancelHeartbeatLocked(channelId);
+            cancelFollowerRetryLocked(channelId);
+            cancelReconcileLocked(channelId);
         } finally {
             adapterLock.writeLock().unlock();
         }
 
         if (oldAdapter != null) {
             stopAdapterSafely(oldAdapter, "stopChannel");
+        }
+        if (lease != null) {
+            try {
+                lease.release();
+                log.info("[leader] Released lease for channel id={}", channelId);
+            } catch (Exception e) {
+                log.warn("[leader] Failed to release lease for channel id={}: {}", channelId, e.getMessage());
+            }
+        }
+    }
+
+    // ==================== Leader election ====================
+
+    /**
+     * Try to become leader for {@code channel} and start its adapter on
+     * success. On failure (another node holds the lease) schedule a
+     * follower retry so we'll take over when the current leader dies.
+     *
+     * <p>Caller must hold the adapter write lock.
+     */
+    private void attemptLeaderStart(ChannelEntity channel, ChannelAdapter adapter) {
+        String key = channel.getChannelType() + ":" + channel.getId();
+        Optional<LeaderLease> maybeLease = leaderElection.tryAcquire(key);
+        if (maybeLease.isEmpty()) {
+            log.info("[leader] Channel {} (id={}, type={}) is owned by another node — entering follower mode",
+                    channel.getName(), channel.getId(), channel.getChannelType());
+            scheduleFollowerRetryLocked(channel.getId());
+            return;
+        }
+
+        LeaderLease lease = maybeLease.get();
+        try {
+            adapter.start();
+            activeAdapters.put(channel.getId(), adapter);
+            activeLeases.put(channel.getId(), lease);
+            lastSeenChannelUpdateTime.put(channel.getId(), channel.getUpdateTime());
+            scheduleHeartbeatLocked(channel.getId(), channel.getName());
+            cancelFollowerRetryLocked(channel.getId());
+            log.info("[leader] Channel started as leader: {} (type={}, id={})",
+                    channel.getName(), channel.getChannelType(), channel.getId());
+        } catch (Exception e) {
+            log.error("[leader] Adapter start failed after acquiring lease for channel {}: {} — releasing lease",
+                    channel.getName(), e.getMessage(), e);
+            lease.release();
+            throw e instanceof RuntimeException re ? re
+                    : new RuntimeException("Channel start failed: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Schedule periodic heartbeat to extend the lease. Caller must hold
+     * the adapter write lock.
+     */
+    private void scheduleHeartbeatLocked(Long channelId, String channelName) {
+        cancelHeartbeatLocked(channelId);
+        ScheduledFuture<?> f = leaderScheduler.scheduleAtFixedRate(
+                () -> heartbeat(channelId, channelName),
+                HEARTBEAT_INTERVAL_SECONDS, HEARTBEAT_INTERVAL_SECONDS, TimeUnit.SECONDS);
+        heartbeatFutures.put(channelId, f);
+    }
+
+    /**
+     * One heartbeat tick. Extends the lease, then reconciles the local
+     * adapter against the current DB row — the leader is the only node
+     * holding the upstream connection, so it's the only one that can
+     * apply admin actions (disable / config change / delete) issued on
+     * a different node. Without this, e.g. a {@code /toggle?enabled=false}
+     * processed by a follower would never reach the actual connection.
+     */
+    private void heartbeat(Long channelId, String channelName) {
+        LeaderLease lease;
+        adapterLock.readLock().lock();
+        try {
+            lease = activeLeases.get(channelId);
+        } finally {
+            adapterLock.readLock().unlock();
+        }
+        if (lease == null) {
+            return;
+        }
+        boolean stillOurs = lease.extend(ChannelLeaderElection.LOCK_AT_MOST_FOR);
+        if (!stillOurs) {
+            log.warn("[leader] Lost leadership for channel {} (id={}) — stopping local adapter and re-entering election",
+                    channelName, channelId);
+            handleLeadershipLoss(channelId);
+            return;
+        }
+        reconcileChannel(channelId, channelName);
+    }
+
+    /**
+     * Re-read the channel from the DB and apply any admin-side changes
+     * (disable, delete, config update) the leader hasn't seen yet because
+     * the API call was processed by a different node.
+     *
+     * <p>Package-private for unit testing — callers should rely on the
+     * heartbeat scheduler invoking this on its tick.
+     */
+    void reconcileChannel(Long channelId, String channelName) {
+        ChannelEntity current;
+        try {
+            current = channelService.getChannel(channelId);
+        } catch (MateClawException e) {
+            if (e.getMsgKey() != null && e.getMsgKey().startsWith("err.channel.not_found")) {
+                log.info("[reconcile] Channel id={} no longer exists — stopping local adapter and releasing lease",
+                        channelId);
+                stopChannel(channelId);
+            } else {
+                log.debug("[reconcile] Channel lookup failed for id={}: {}", channelId, e.getMessage());
+            }
+            return;
+        } catch (Exception e) {
+            // Transient DB issue; skip this tick and try again on the next heartbeat.
+            log.debug("[reconcile] Channel lookup failed for id={}: {}", channelId, e.getMessage());
+            return;
+        }
+
+        if (!Boolean.TRUE.equals(current.getEnabled())) {
+            log.info("[reconcile] Channel {} (id={}) is now disabled — stopping local adapter",
+                    channelName, channelId);
+            stopChannel(channelId);
+            return;
+        }
+
+        LocalDateTime previousSeen;
+        adapterLock.readLock().lock();
+        try {
+            previousSeen = lastSeenChannelUpdateTime.get(channelId);
+        } finally {
+            adapterLock.readLock().unlock();
+        }
+        LocalDateTime currentUpdateTime = current.getUpdateTime();
+        if (currentUpdateTime != null && previousSeen != null
+                && currentUpdateTime.isAfter(previousSeen)) {
+            log.info("[reconcile] Channel {} (id={}) config changed ({} → {})",
+                    channelName, channelId, previousSeen, currentUpdateTime);
+            applyConfigChange(channelId, current);
+        }
+    }
+
+    /**
+     * Apply a detected config change to a locally-running channel.
+     *
+     * <p>The fast path is the in-place swap that preserves the lease —
+     * but it is only valid when we are the current leader (we already
+     * hold {@code activeLeases[channelId]}). Without that gate, a
+     * non-leader node observing a {@code webhook → websocket} flip
+     * would call {@code newAdapter.start()} directly inside the swap
+     * and open a duplicate upstream connection, defeating the leader
+     * election. Every other transition — including
+     * {@code non-leader → leader-required}, {@code leader-required →
+     * non-leader}, and plain non-leader config updates — must go
+     * through {@code stopChannel} + {@code startChannel} so the lease
+     * is correctly released or acquired and follower retry is
+     * scheduled when election is lost.
+     *
+     * <p>Package-private for unit testing — see {@link #reconcileChannel}.
+     */
+    void applyConfigChange(Long channelId, ChannelEntity newChannel) {
+        ChannelAdapter probe = createAdapter(newChannel);
+        boolean newRequiresLeader = probe.requiresSingleLeader();
+        boolean weHaveLease;
+        adapterLock.readLock().lock();
+        try {
+            weHaveLease = activeLeases.containsKey(channelId);
+        } finally {
+            adapterLock.readLock().unlock();
+        }
+
+        if (newRequiresLeader && weHaveLease) {
+            // Case A: same leader-required mode and we are the current leader
+            // — preserve the lease across the adapter swap.
+            swapAdapterPreservingLease(channelId, newChannel);
+            return;
+        }
+
+        // All other cases: tear down local state and route through
+        // startChannel so leader election runs, lease is released, or both.
+        log.info("[reconcile] Channel {} (id={}) config change (newRequiresLeader={}, weHaveLease={}) — stop+start",
+                newChannel.getName(), channelId, newRequiresLeader, weHaveLease);
+        stopChannel(channelId);
+        try {
+            startChannel(newChannel);
+        } catch (Exception e) {
+            log.error("[reconcile] Restart after config change failed for channel {} (id={}): {}",
+                    newChannel.getName(), channelId, e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Swap to a freshly-built adapter using the new config, while keeping
+     * the leadership lease and heartbeat in place. The lease is only
+     * released if the new adapter fails to start, in which case we fall
+     * back to follower mode so another node can try.
+     */
+    private void swapAdapterPreservingLease(Long channelId, ChannelEntity newChannel) {
+        ChannelAdapter oldAdapter;
+        adapterLock.writeLock().lock();
+        try {
+            oldAdapter = activeAdapters.remove(channelId);
+        } finally {
+            adapterLock.writeLock().unlock();
+        }
+        if (oldAdapter != null) {
+            stopAdapterSafely(oldAdapter, "reconcile-swap");
+        }
+
+        ChannelAdapter newAdapter = createAdapter(newChannel);
+        boolean started = false;
+        Exception startError = null;
+        try {
+            newAdapter.start();
+            started = true;
+        } catch (Exception e) {
+            startError = e;
+        }
+
+        LeaderLease leaseToRelease = null;
+        adapterLock.writeLock().lock();
+        try {
+            if (started) {
+                activeAdapters.put(channelId, newAdapter);
+                lastSeenChannelUpdateTime.put(channelId, newChannel.getUpdateTime());
+            } else {
+                leaseToRelease = activeLeases.remove(channelId);
+                lastSeenChannelUpdateTime.remove(channelId);
+                cancelHeartbeatLocked(channelId);
+                scheduleFollowerRetryLocked(channelId);
+            }
+        } finally {
+            adapterLock.writeLock().unlock();
+        }
+
+        if (!started) {
+            log.error("[reconcile] New adapter start failed for channel {} (id={}): {} — released lease, entering follower mode",
+                    newChannel.getName(), channelId,
+                    startError != null ? startError.getMessage() : "unknown");
+            if (leaseToRelease != null) {
+                leaseToRelease.release();
+            }
+        }
+    }
+
+    /**
+     * Drop the local adapter (without releasing the already-lost lease)
+     * and start follower retry so we'll attempt to reclaim leadership
+     * once the current owner stops renewing.
+     */
+    private void handleLeadershipLoss(Long channelId) {
+        ChannelAdapter local;
+        adapterLock.writeLock().lock();
+        try {
+            local = activeAdapters.remove(channelId);
+            activeLeases.remove(channelId); // already lost; do not call release()
+            cancelHeartbeatLocked(channelId);
+            scheduleFollowerRetryLocked(channelId);
+        } finally {
+            adapterLock.writeLock().unlock();
+        }
+        if (local != null) {
+            stopAdapterSafely(local, "leadership-loss");
+        }
+    }
+
+    /**
+     * Schedule periodic follower retry. Caller must hold the adapter
+     * write lock.
+     */
+    private void scheduleFollowerRetryLocked(Long channelId) {
+        if (followerRetryFutures.containsKey(channelId)) {
+            return;
+        }
+        ScheduledFuture<?> f = leaderScheduler.scheduleAtFixedRate(
+                () -> followerRetry(channelId),
+                FOLLOWER_RETRY_INTERVAL_SECONDS, FOLLOWER_RETRY_INTERVAL_SECONDS, TimeUnit.SECONDS);
+        followerRetryFutures.put(channelId, f);
+    }
+
+    /**
+     * One follower-retry tick. Re-reads the channel from the DB (it may
+     * have been disabled or deleted) and attempts to start it. The retry
+     * cancels itself once we successfully become leader.
+     */
+    /** Package-private for unit testing — see {@link #reconcileChannel}. */
+    void followerRetry(Long channelId) {
+        ChannelEntity current;
+        try {
+            current = channelService.getChannel(channelId);
+        } catch (MateClawException e) {
+            // Channel was deleted on another node — cancel the retry so we
+            // don't leak a scheduled task forever. Other exception codes
+            // (e.g. transient DB errors) fall through to the generic catch
+            // and let the retry continue.
+            if (e.getMsgKey() != null && e.getMsgKey().startsWith("err.channel.not_found")) {
+                log.info("[leader] Follower retry: channel id={} no longer exists — cancelling retry", channelId);
+                adapterLock.writeLock().lock();
+                try {
+                    cancelFollowerRetryLocked(channelId);
+                } finally {
+                    adapterLock.writeLock().unlock();
+                }
+                return;
+            }
+            log.debug("[leader] Follower retry: lookup failed for channel id={}: {}", channelId, e.getMessage());
+            return;
+        } catch (Exception e) {
+            log.debug("[leader] Follower retry: lookup failed for channel id={}: {}", channelId, e.getMessage());
+            return;
+        }
+        if (!Boolean.TRUE.equals(current.getEnabled())) {
+            adapterLock.writeLock().lock();
+            try {
+                cancelFollowerRetryLocked(channelId);
+            } finally {
+                adapterLock.writeLock().unlock();
+            }
+            return;
+        }
+        try {
+            startChannel(current);
+        } catch (Exception e) {
+            log.debug("[leader] Follower retry: startChannel failed for id={}: {}", channelId, e.getMessage());
+        }
+    }
+
+    /** Package-private for unit testing. */
+    boolean hasFollowerRetry(Long channelId) {
+        adapterLock.readLock().lock();
+        try {
+            return followerRetryFutures.containsKey(channelId);
+        } finally {
+            adapterLock.readLock().unlock();
+        }
+    }
+
+    private void cancelHeartbeatLocked(Long channelId) {
+        ScheduledFuture<?> f = heartbeatFutures.remove(channelId);
+        if (f != null) {
+            f.cancel(false);
+        }
+    }
+
+    private void cancelFollowerRetryLocked(Long channelId) {
+        ScheduledFuture<?> f = followerRetryFutures.remove(channelId);
+        if (f != null) {
+            f.cancel(false);
+        }
+    }
+
+    /**
+     * Schedule the cross-node reconcile ticker for a non-leader active
+     * adapter. Caller must hold the adapter write lock.
+     */
+    private void scheduleReconcileLocked(Long channelId, String channelName) {
+        cancelReconcileLocked(channelId);
+        ScheduledFuture<?> f = leaderScheduler.scheduleAtFixedRate(
+                () -> reconcileChannel(channelId, channelName),
+                FOLLOWER_RETRY_INTERVAL_SECONDS, FOLLOWER_RETRY_INTERVAL_SECONDS, TimeUnit.SECONDS);
+        reconcileFutures.put(channelId, f);
+    }
+
+    private void cancelReconcileLocked(Long channelId) {
+        ScheduledFuture<?> f = reconcileFutures.remove(channelId);
+        if (f != null) {
+            f.cancel(false);
         }
     }
 
@@ -186,6 +657,50 @@ public class ChannelManager {
             return;
         }
 
+        // Leader-required channels: if we don't already own the local adapter
+        // (i.e. we are a follower, or this is a brand-new channel), there is
+        // nothing to hot-swap. Fall through to startChannel which handles
+        // lease acquisition and follower retry. Hot-swap (which briefly opens
+        // a second upstream connection) is also avoided here so we don't
+        // double-occupy the bot's connection quota during a restart.
+        boolean weHaveAdapter;
+        boolean weHaveLease;
+        adapterLock.readLock().lock();
+        try {
+            weHaveAdapter = activeAdapters.containsKey(channelId);
+            weHaveLease = activeLeases.containsKey(channelId);
+        } finally {
+            adapterLock.readLock().unlock();
+        }
+        ChannelAdapter probe = createAdapter(channel);
+        if (probe.requiresSingleLeader()) {
+            log.info("[hot-swap] Channel {} requires single-leader; stop+start instead of hot-swap (weHaveAdapter={}, weHaveLease={})",
+                    channel.getName(), weHaveAdapter, weHaveLease);
+            stopChannel(channelId);
+            startChannel(channel);
+            return;
+        }
+        // Mode flip: we currently hold a lease but the new config is no
+        // longer leader-required (e.g. Feishu WS → webhook). The lease,
+        // heartbeat, and lastSeenUpdateTime must all be torn down before
+        // the new non-leader adapter starts — the in-place hot-swap path
+        // below would leave them behind until the next heartbeat tick
+        // noticed and re-restarted, causing a redundant restart and a
+        // window where this node is silently holding a lease nobody else
+        // can grab. Stop+start handles all the cleanup in one shot.
+        if (weHaveLease) {
+            log.info("[hot-swap] Channel {} flipping leader-required → non-leader; stop+start to release lease",
+                    channel.getName());
+            stopChannel(channelId);
+            startChannel(channel);
+            return;
+        }
+        if (!weHaveAdapter) {
+            log.info("[hot-swap] No local adapter for channel {}, delegating to startChannel", channel.getName());
+            startChannel(channel);
+            return;
+        }
+
         log.info("[hot-swap] Starting hot-swap for channel: {} (type={}, id={})",
                 channel.getName(), channel.getChannelType(), channelId);
 
@@ -207,6 +722,10 @@ public class ChannelManager {
         adapterLock.writeLock().lock();
         try {
             oldAdapter = activeAdapters.put(channelId, newAdapter);
+            // Mark the version we've now applied so the reconcile ticker
+            // (running for non-leader adapters) doesn't immediately fire a
+            // redundant swap on its next tick.
+            lastSeenChannelUpdateTime.put(channelId, channel.getUpdateTime());
             log.info("[hot-swap] Adapter reference swapped for channel: {} (old={})",
                     channel.getName(), oldAdapter != null ? "present" : "none");
         } finally {
@@ -228,16 +747,64 @@ public class ChannelManager {
      */
     public void stopAll() {
         List<ChannelAdapter> adaptersToStop;
+        List<LeaderLease> leasesToRelease;
+        List<ChannelAdapter> pluginAdaptersToStop;
+        List<LeaderLease> pluginLeasesToRelease;
         adapterLock.writeLock().lock();
         try {
             adaptersToStop = new ArrayList<>(activeAdapters.values());
+            leasesToRelease = new ArrayList<>(activeLeases.values());
             activeAdapters.clear();
+            activeLeases.clear();
+            lastSeenChannelUpdateTime.clear();
+            heartbeatFutures.values().forEach(f -> f.cancel(false));
+            heartbeatFutures.clear();
+            followerRetryFutures.values().forEach(f -> f.cancel(false));
+            followerRetryFutures.clear();
+            reconcileFutures.values().forEach(f -> f.cancel(false));
+            reconcileFutures.clear();
         } finally {
             adapterLock.writeLock().unlock();
         }
 
+        // Plugin channels live on a different map (keyed by pluginName), but
+        // shutdown must release their leases + cancel their heartbeats just
+        // like DB-backed ones. Without this, a plugin-supplied single-leader
+        // adapter would skip graceful release on @PreDestroy and its lease
+        // would stay locked until the lockAtMostFor window expired.
+        //
+        // Holding pluginLifecycleLock makes the snapshot+clear atomic
+        // against concurrent register / unregister / heartbeat-loss
+        // cleanup, so we don't leak an adapter that was registered after
+        // the snapshot but before the clear.
+        synchronized (pluginLifecycleLock) {
+            pluginAdaptersToStop = new ArrayList<>(pluginChannels.values());
+            pluginChannels.clear();
+            pluginLeasesToRelease = new ArrayList<>(pluginLeases.values());
+            pluginLeases.clear();
+            pluginHeartbeatFutures.values().forEach(f -> f.cancel(false));
+            pluginHeartbeatFutures.clear();
+        }
+
         for (ChannelAdapter adapter : adaptersToStop) {
             stopAdapterSafely(adapter, "stopAll");
+        }
+        for (ChannelAdapter adapter : pluginAdaptersToStop) {
+            stopAdapterSafely(adapter, "stopAll-plugin");
+        }
+        for (LeaderLease lease : leasesToRelease) {
+            try {
+                lease.release();
+            } catch (Exception e) {
+                log.warn("[leader] stopAll: failed to release lease '{}': {}", lease.getName(), e.getMessage());
+            }
+        }
+        for (LeaderLease lease : pluginLeasesToRelease) {
+            try {
+                lease.release();
+            } catch (Exception e) {
+                log.warn("[leader] stopAll: failed to release plugin lease '{}': {}", lease.getName(), e.getMessage());
+            }
         }
     }
 
@@ -398,16 +965,42 @@ public class ChannelManager {
     /**
      * Register a channel adapter from a plugin.
      *
+     * <p>If the adapter reports {@link ChannelAdapter#requiresSingleLeader()},
+     * the framework gates the local register on a distributed lease keyed by
+     * {@code plugin:{pluginName}}. When another node already owns the lease
+     * this node skips registration (its plugin instance is loaded but inert
+     * locally) — see the scope note on {@link ChannelAdapter#requiresSingleLeader()}.
+     *
      * @param pluginName the plugin name (used as key for unregistration)
      * @param adapter    the channel adapter
      */
     public void registerPluginChannel(String pluginName, ChannelAdapter adapter) {
-        try {
-            adapter.start();
-            pluginChannels.put(pluginName, adapter);
-            log.info("Plugin channel registered: {} (type={})", pluginName, adapter.getChannelType());
-        } catch (Exception e) {
-            log.error("Failed to start plugin channel {}: {}", pluginName, e.getMessage(), e);
+        synchronized (pluginLifecycleLock) {
+            LeaderLease lease = null;
+            if (adapter.requiresSingleLeader()) {
+                Optional<LeaderLease> maybeLease = leaderElection.tryAcquire("plugin:" + pluginName);
+                if (maybeLease.isEmpty()) {
+                    log.info("[leader] Plugin channel {} (type={}) is owned by another node — skipping local registration",
+                            pluginName, adapter.getChannelType());
+                    return;
+                }
+                lease = maybeLease.get();
+            }
+
+            try {
+                adapter.start();
+                pluginChannels.put(pluginName, adapter);
+                if (lease != null) {
+                    pluginLeases.put(pluginName, lease);
+                    schedulePluginHeartbeatLocked(pluginName);
+                }
+                log.info("Plugin channel registered: {} (type={})", pluginName, adapter.getChannelType());
+            } catch (Exception e) {
+                log.error("Failed to start plugin channel {}: {}", pluginName, e.getMessage(), e);
+                if (lease != null) {
+                    lease.release();
+                }
+            }
         }
     }
 
@@ -415,10 +1008,77 @@ public class ChannelManager {
      * Unregister a plugin channel.
      */
     public void unregisterPluginChannel(String pluginName) {
-        ChannelAdapter adapter = pluginChannels.remove(pluginName);
+        ChannelAdapter adapter;
+        ScheduledFuture<?> heartbeat;
+        LeaderLease lease;
+        synchronized (pluginLifecycleLock) {
+            adapter = pluginChannels.remove(pluginName);
+            heartbeat = pluginHeartbeatFutures.remove(pluginName);
+            lease = pluginLeases.remove(pluginName);
+        }
+        if (heartbeat != null) {
+            heartbeat.cancel(false);
+        }
         if (adapter != null) {
             stopAdapterSafely(adapter, "unregisterPluginChannel");
             log.info("Plugin channel unregistered: {}", pluginName);
+        }
+        if (lease != null) {
+            try {
+                lease.release();
+            } catch (Exception e) {
+                log.warn("[leader] Failed to release plugin lease '{}': {}", pluginName, e.getMessage());
+            }
+        }
+    }
+
+    /** Caller must hold {@link #pluginLifecycleLock}. */
+    private void schedulePluginHeartbeatLocked(String pluginName) {
+        ScheduledFuture<?> existing = pluginHeartbeatFutures.remove(pluginName);
+        if (existing != null) {
+            existing.cancel(false);
+        }
+        ScheduledFuture<?> f = leaderScheduler.scheduleAtFixedRate(
+                () -> pluginHeartbeatTick(pluginName),
+                HEARTBEAT_INTERVAL_SECONDS, HEARTBEAT_INTERVAL_SECONDS, TimeUnit.SECONDS);
+        pluginHeartbeatFutures.put(pluginName, f);
+    }
+
+    /**
+     * One plugin heartbeat tick. The tick runs on the scheduler thread, so
+     * it can race with {@code registerPluginChannel} / {@code unregisterPluginChannel}
+     * / {@code stopAll}. Serializing the loss-handler on
+     * {@link #pluginLifecycleLock} keeps the three maps consistent (no
+     * "stop ran twice" or "lease released after register re-acquired").
+     */
+    private void pluginHeartbeatTick(String pluginName) {
+        LeaderLease lease = pluginLeases.get(pluginName);
+        if (lease == null) {
+            return;
+        }
+        boolean stillOurs = lease.extend(ChannelLeaderElection.LOCK_AT_MOST_FOR);
+        if (stillOurs) {
+            return;
+        }
+        ChannelAdapter local;
+        ScheduledFuture<?> self;
+        synchronized (pluginLifecycleLock) {
+            // Re-check under the lock — a concurrent unregister may have
+            // already torn everything down between the failed extend and
+            // our entering the locked region.
+            LeaderLease currentLease = pluginLeases.remove(pluginName);
+            if (currentLease == null) {
+                return;
+            }
+            local = pluginChannels.remove(pluginName);
+            self = pluginHeartbeatFutures.remove(pluginName);
+        }
+        log.warn("[leader] Lost plugin lease '{}' — unregistering local adapter", pluginName);
+        if (self != null) {
+            self.cancel(false);
+        }
+        if (local != null) {
+            stopAdapterSafely(local, "plugin-leadership-loss");
         }
     }
 
@@ -471,8 +1131,11 @@ public class ChannelManager {
     /**
      * 根据渠道实体创建对应的适配器实例
      * 采用渠道注册表模式，根据类型创建对应适配器
+     *
+     * <p>Package-private + non-final so unit tests can substitute a stub
+     * adapter without spinning up real WebSocket / HTTP clients.
      */
-    private ChannelAdapter createAdapter(ChannelEntity channel) {
+    ChannelAdapter createAdapter(ChannelEntity channel) {
         String type = channel.getChannelType();
         return switch (type) {
             case "web" -> new WebChannelAdapter(channel, messageRouter, objectMapper);

@@ -3300,6 +3300,20 @@ public class WeComChannelAdapter extends AbstractChannelAdapter {
         return CHANNEL_TYPE;
     }
 
+    /**
+     * WeCom's AI-bot transport is WebSocket-only ({@code wss://openws.work.weixin.qq.com}
+     * with {@code aibot_subscribe} authenticated by {@code bot_id + secret}) — there is
+     * no HTTP webhook fallback. Multiple nodes subscribing with the same
+     * credentials would each receive every {@code aibot_msg_callback} and race
+     * to send {@code aibot_respond_msg}, producing duplicate replies and
+     * eventual gateway rejection. The leader gate ensures only one node
+     * holds the subscription at a time.
+     */
+    @Override
+    public boolean requiresSingleLeader() {
+        return true;
+    }
+
     // ==================== 工具方法 ====================
 
     /**

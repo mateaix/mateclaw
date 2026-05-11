@@ -1435,4 +1435,19 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter {
     public String getChannelType() {
         return CHANNEL_TYPE;
     }
+
+    /**
+     * WebSocket mode opens a long-lived connection to Lark's gateway, which
+     * caps concurrent connections per bot app (~2). In a multi-instance
+     * deployment every node would race for that quota and reconnect-loop on
+     * {@code 1000040350: the number of connections exceeded the limit}.
+     * The leader gate ensures only one node holds the connection at a time.
+     *
+     * <p>Webhook mode is exempt: callbacks are HTTP-fanned by the load
+     * balancer, so all nodes can safely subscribe.
+     */
+    @Override
+    public boolean requiresSingleLeader() {
+        return "websocket".equals(getConfigString("connection_mode", "websocket"));
+    }
 }

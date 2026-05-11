@@ -199,6 +199,17 @@ public class QQChannelAdapter extends AbstractChannelAdapter {
         return CHANNEL_TYPE;
     }
 
+    /**
+     * The QQ bot gateway rejects duplicate {@code IDENTIFY} sessions for
+     * the same app credentials. Multiple nodes connecting simultaneously
+     * trip the connection cap and reconnect-loop forever. The leader gate
+     * ensures only one node holds the WebSocket at a time.
+     */
+    @Override
+    public boolean requiresSingleLeader() {
+        return true;
+    }
+
     // ==================== Access Token 管理 ====================
 
     /**
