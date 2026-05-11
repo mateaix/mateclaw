@@ -234,11 +234,14 @@ public class ModelProviderService {
 
     public boolean isProviderAvailable(String providerId) {
         ModelProviderEntity provider = getProvider(providerId);
-        return isProviderConfigured(provider) && hasModels(providerId);
+        return isProviderEnabledAndConfigured(provider) && hasModels(providerId);
     }
 
     public String getProviderUnavailableReason(String providerId) {
         ModelProviderEntity provider = getProvider(providerId);
+        if (!Boolean.TRUE.equals(provider.getEnabled())) {
+            return "Provider 未启用";
+        }
         if (!isProviderConfigured(provider)) {
             if (Boolean.TRUE.equals(provider.getRequireApiKey())) {
                 return "Provider 未配置有效的 API Key";
@@ -316,7 +319,7 @@ public class ModelProviderService {
     }
 
     private void tryAutoActivateModel(String providerId, ModelProviderEntity provider) {
-        if (!isProviderConfigured(provider)) {
+        if (!isProviderEnabledAndConfigured(provider)) {
             return;
         }
         List<ModelConfigEntity> providerModels = modelConfigService.listModelsByProvider(providerId);
@@ -327,7 +330,7 @@ public class ModelProviderService {
         try {
             ModelConfigEntity currentDefault = modelConfigService.getDefaultModel();
             ModelProviderEntity defaultProvider = modelProviderMapper.selectById(currentDefault.getProvider());
-            if (!isProviderConfigured(defaultProvider)) {
+            if (!isProviderEnabledAndConfigured(defaultProvider)) {
                 shouldAutoActivate = true;
             }
         } catch (MateClawException e) {
@@ -471,6 +474,16 @@ public class ModelProviderService {
         return !normalized.contains("*")
                 && !"your-dashscope-api-key-here".equalsIgnoreCase(normalized)
                 && !"your-api-key-here".equalsIgnoreCase(normalized);
+    }
+
+    public boolean isProviderEnabledAndConfigured(String providerId) {
+        return isProviderEnabledAndConfigured(getProvider(providerId));
+    }
+
+    private boolean isProviderEnabledAndConfigured(ModelProviderEntity provider) {
+        return provider != null
+                && Boolean.TRUE.equals(provider.getEnabled())
+                && isProviderConfigured(provider);
     }
 
     public Map<String, Object> readProviderGenerateKwargs(ModelProviderEntity provider) {
