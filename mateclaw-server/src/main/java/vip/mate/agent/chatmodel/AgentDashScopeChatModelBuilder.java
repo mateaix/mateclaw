@@ -172,7 +172,7 @@ public class AgentDashScopeChatModelBuilder implements ChatModelBuilder {
         }
         if (!modelProviderService.hasUsableApiKey(apiKey)) {
             throw new MateClawException("err.agent.dashscope_key_missing",
-                    "DashScope API Key 未配置，请在模型设置中填写 dashscope 的 API Key，或设置 DASHSCOPE_API_KEY 环境变量");
+                    "DashScope API Key 未配置，请在「设置 → 模型 → 添加供应商」中为 dashscope 填写 API Key");
         }
         builder.apiKey(apiKey.trim());
 

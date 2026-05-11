@@ -551,7 +551,16 @@ public class ModelProviderService {
             return false;
         }
         String normalized = apiKey.trim();
+        // Reject masked display values (the UI sends "********" when the user
+        // didn't re-type the key) and known placeholder sentinels — without this
+        // check, the chat / embedding fallback chain happily forwards the
+        // placeholder to the LLM endpoint, which then returns a 401 at request
+        // time. "configure-in-admin-ui" is the application.yml default that
+        // keeps DashScopeChatAutoConfiguration happy at startup when no env var
+        // is set; "your-*-api-key-here" are legacy sentinels from earlier
+        // .env.example / application.yml versions.
         return !normalized.contains("*")
+                && !"configure-in-admin-ui".equalsIgnoreCase(normalized)
                 && !"your-dashscope-api-key-here".equalsIgnoreCase(normalized)
                 && !"your-api-key-here".equalsIgnoreCase(normalized);
     }

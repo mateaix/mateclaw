@@ -97,7 +97,10 @@ services:
       DB_NAME: ${DB_NAME:-mateclaw}
       DB_USERNAME: ${DB_USERNAME:-mateclaw}
       DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required in .env}
-      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
+      # LLM provider keys (DashScope / OpenAI / Anthropic / DeepSeek / Kimi / …) are
+      # NOT configured via env vars. After startup, add providers in the admin UI:
+      #   Settings → Models → Add Provider
+      # Keys are stored in mate_model_provider and hot-reloaded.
       SERPER_API_KEY: ${SERPER_API_KEY:-}
       JWT_SECRET: ${JWT_SECRET:-}
       MATECLAW_CORS_ALLOWED_ORIGINS: ${MATECLAW_CORS_ALLOWED_ORIGINS:-}

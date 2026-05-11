@@ -67,10 +67,19 @@ spring:
       enabled: ${H2_CONSOLE_ENABLED:false}
       path: /h2-console
 
-  # Spring AI Alibaba (DashScope) - Spring AI Alibaba 1.1.x 配置路径
+  # Spring AI Alibaba (DashScope) — Spring AI Alibaba 1.1.x configuration path.
+  #
+  # The api-key here is only consumed by Spring AI Alibaba's auto-configured beans
+  # as a *fallback*. The real source of truth for every provider/key/model is the
+  # admin UI ("Settings → Models", persisted in mate_model_provider /
+  # mate_model_config); AgentDashScopeChatModelBuilder resolves the key per-request
+  # from the provider row first, only falling back to this property when the row
+  # is incomplete. The placeholder default keeps DashScopeChatAutoConfiguration
+  # happy at startup when no env var is set (Docker / fresh install) — leave it
+  # alone unless you know what you're doing.
   ai:
     dashscope:
-      api-key: ${DASHSCOPE_API_KEY:your-dashscope-api-key-here}
+      api-key: ${DASHSCOPE_API_KEY:configure-in-admin-ui}
       chat:
         options:
           model: qwen-max
