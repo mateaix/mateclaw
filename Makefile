@@ -29,8 +29,10 @@ build:
 	  --no-cache \
 	  -f mateclaw-server/Dockerfile \
 	  --build-arg MAVEN_FLAGS="-Paliyun-first" \
-	  -t $(REGISTRY):$(IMAGE_TAG) \
-	  --push .
+-t $(MATECLAW_SERVER_SG_IMAGE) \
+	  -t $(MATECLAW_SERVER_GZ_IMAGE) \
+	  --push \
+	  --progress=plain .
 
 pull-searxng:
 	docker pull --platform linux/amd64 searxng/searxng:latest
@@ -38,5 +40,13 @@ pull-searxng:
 build-searxng:
 	docker buildx build \
 	  --platform linux/amd64 \
+<<<<<<< Updated upstream
 	  -t $(SEARXNG_IMAGE) \
 	  --push .
+=======
+	  -f docker/searxng/Dockerfile \
+	  -t $(SEARXNG_SG_IMAGE) \
+	  -t $(SEARXNG_GZ_IMAGE) \
+	  --push \
+	  --progress=plain .
+>>>>>>> Stashed changes
