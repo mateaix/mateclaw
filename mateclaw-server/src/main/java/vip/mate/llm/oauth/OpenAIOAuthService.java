@@ -13,6 +13,7 @@ import org.springframework.web.client.RestClient;
 import vip.mate.exception.MateClawException;
 import vip.mate.llm.model.ModelProviderEntity;
 import vip.mate.llm.repository.ModelProviderMapper;
+import vip.mate.llm.service.ModelProviderService;
 
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
@@ -77,6 +78,7 @@ public class OpenAIOAuthService {
 
     private final ModelProviderMapper modelProviderMapper;
     private final ObjectMapper objectMapper;
+    private final ModelProviderService modelProviderService;
     private final RestClient restClient = RestClient.create();
 
     /** state → code_verifier 缓存 */
@@ -494,6 +496,7 @@ public class OpenAIOAuthService {
             provider.setOauthAccountId(accountId);
         }
         modelProviderMapper.updateById(provider);
+        modelProviderService.activateFirstModelIfDefaultUnavailable(PROVIDER_ID);
         log.info("OpenAI OAuth token 已保存，expires_in={}s, accountId={}", expiresIn, accountId);
     }
 

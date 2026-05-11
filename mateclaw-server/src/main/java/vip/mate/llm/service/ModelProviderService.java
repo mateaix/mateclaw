@@ -339,6 +339,16 @@ public class ModelProviderService {
         }
     }
 
+    /**
+     * OAuth/device-code completion updates credentials outside the normal provider
+     * config endpoint. Reuse the same default-model promotion logic so a freshly
+     * connected OAuth provider is immediately selectable by chat.
+     */
+    public void activateFirstModelIfDefaultUnavailable(String providerId) {
+        ModelProviderEntity provider = getProvider(providerId);
+        tryAutoActivateModel(providerId, provider);
+    }
+
     private ModelProviderEntity getProvider(String providerId) {
         ModelProviderEntity provider = modelProviderMapper.selectById(providerId);
         if (provider == null) {
