@@ -39,7 +39,8 @@ build:
 	  --build-arg MAVEN_FLAGS="-Paliyun-first" \
 	  -t $(MATECLAW_SERVER_SG_IMAGE) \
 	  -t $(MATECLAW_SERVER_GZ_IMAGE) \
-	  --push .
+	  --push \
+	  --progress=plain .
 
 pull-searxng:
 	docker pull --platform linux/amd64 searxng/searxng:latest

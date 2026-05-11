@@ -1,23 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """
 搜狗微信搜索 engine for SearXNG
-用法: 将本文件放入 searx/engines/ 目录，并在 settings.yml 中添加配置。
-
 搜索接口: https://weixin.sogou.com/weixin?type=2&query=<keyword>&page=<n>
-type=1 -> 公众号搜索
-type=2 -> 文章搜索（本 engine 使用）
-
-注意:
-- 搜狗有频率限制，高并发会触发 CAPTCHA / 302 跳转
-- 建议在 settings.yml 中将 timeout 设为 6.0，request_timeout 不低于 6
-- 仅在大陆 IP 可正常访问
 """
 
 from urllib.parse import urlencode
 from lxml import html
 from searx.utils import extract_text
 
-# SearXNG engine 元信息
 about = {
     "website": "https://weixin.sogou.com",
     "wikidata_id": None,
@@ -27,95 +17,88 @@ about = {
     "results": "HTML",
 }
 
-# 分类：social media，也可以加 general
 categories = ["social media"]
 paging = True
 language_support = False
 
-# 基础 URL
 base_url = "https://weixin.sogou.com"
 search_url = base_url + "/weixin?type=2&{query}&page={page}"
 
 
 def request(query, params):
-    """构造请求参数"""
     params["url"] = search_url.format(
         query=urlencode({"query": query}),
         page=params.get("pageno", 1),
     )
-    params["headers"].update(
-        {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            ),
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "zh-CN,zh;q=0.9",
-            "Referer": "https://weixin.sogou.com/",
-        }
-    )
+    params["headers"].update({
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "zh-CN,zh;q=0.9",
+        "Referer": "https://weixin.sogou.com/",
+    })
     return params
 
 
 def response(resp):
-    """解析搜索结果页"""
     results = []
 
-    # 检测是否触发了 CAPTCHA 或反爬跳转
-    if "antispider" in resp.url or "verify" in resp.url:
-        return results
+    # 检测反爬跳转
     if resp.status_code != 200:
+        return results
+    if any(kw in str(resp.url) for kw in ("antispider", "verify", "sogou.com/index")):
         return results
 
     doc = html.fromstring(resp.text)
 
-    # 结果列表容器: <ul class="news-list"> > <li>
-    items = doc.cssselect("ul.news-list > li")
+    # 检测验证页（搜狗有时返回 200 但内容是验证页）
+    if doc.xpath('//div[@id="verify-box"]') or doc.xpath('//div[@class="verifyPage"]'):
+        return results
+
+    # 结果列表: <ul class="news-list"> > <li>
+    items = doc.xpath('//ul[contains(@class,"news-list")]/li')
 
     for item in items:
         try:
             # 标题 + 链接
-            title_el = item.cssselect(".txt-box > h3 > a")
-            if not title_el:
+            title_els = item.xpath('.//div[contains(@class,"txt-box")]/h3/a')
+            if not title_els:
                 continue
-            title = extract_text(title_el[0])
-            # 搜狗微信文章链接是跳转链接，直接使用（可访问）
-            url = title_el[0].get("href", "")
+            title = extract_text(title_els[0])
+            url = title_els[0].get("href", "")
+            if not url:
+                continue
             if not url.startswith("http"):
                 url = base_url + url
 
             # 摘要
-            content_el = item.cssselect(".txt-box > p.txt-info")
-            content = extract_text(content_el[0]) if content_el else ""
+            content_els = item.xpath('.//div[contains(@class,"txt-box")]//p[contains(@class,"txt-info")]')
+            content = extract_text(content_els[0]) if content_els else ""
 
-            # 来源公众号名称
-            account_el = item.cssselect(".account")
-            source = extract_text(account_el[0]) if account_el else ""
-
-            # 发布时间（搜狗返回的是时间戳或相对时间字符串）
-            date_el = item.cssselect(".s-p")  # 有时候是 .s-p，有时候是 span[name]
-            publishedDate = extract_text(date_el[0]) if date_el else None
+            # 公众号名称
+            account_els = item.xpath('.//div[contains(@class,"account")]')
+            if not account_els:
+                account_els = item.xpath('.//*[contains(@class,"account")]')
+            source = extract_text(account_els[0]) if account_els else ""
 
             # 缩略图
-            img_el = item.cssselect(".img-box > a > img")
-            thumbnail = img_el[0].get("src", "") if img_el else None
+            img_els = item.xpath('.//div[contains(@class,"img-box")]//img/@src')
+            thumbnail = img_els[0] if img_els else None
 
             result = {
                 "title": title,
                 "url": url,
-                "content": content,
-                "publishedDate": publishedDate,
+                "content": f"【{source}】{content}" if source else content,
             }
-            if source:
-                result["content"] = f"【{source}】{content}"
             if thumbnail:
                 result["thumbnail"] = thumbnail
 
             results.append(result)
 
-        except Exception:  # noqa: BLE001
-            # 跳过解析失败的单条结果，不影响整体
+        except Exception:
             continue
 
     return results

@@ -1,24 +1,15 @@
-# SearXNG config for MateClaw's bundled search sidecar.
-#
-# Two things differ from the upstream default:
-#   1. JSON output format is enabled — mateclaw's SearXNGSearchProvider
-#      queries /search?format=json and fails silently without this.
-#   2. The anti-bot Limiter plugin is disabled — it otherwise rejects
-#      server-side HTTP calls (no JS, no cookies) with HTTP 429.
-#
-# This file is baked into the custom image via docker/searxng/Dockerfile —
-# do NOT bind-mount it from the host (prior host bind-mount broke deploys
-# where the host directory did not exist and Docker auto-created an empty
-# dir over the path).
-#
-# See https://docs.searxng.org/admin/settings/ for all knobs.
-
-use_default_settings: true
+use_default_settings:
+  engines:
+    keep_only:
+      - bing
+      - 360search
+      - sogou
+      - bing news
+      - bilibili
+      - 微信公众号
 
 general:
-  # Cosmetic only; shown in the UI title.
   instance_name: "MateClaw Search"
-  # Keep this private — no outbound metrics.
   donation_url: false
   contact_url: false
   enable_metrics: false
@@ -30,75 +21,60 @@ search:
   max_ban_time_on_fail: 120
   formats:
     - html
-    - json    # REQUIRED for mateclaw integration
+    - json
 
 server:
-  # Override the default dev secret; docker-compose passes SEARXNG_SECRET in.
   secret_key: "${SEARXNG_SECRET:-please-change-me-to-a-random-32-char-string}"
-  # Trust Docker's internal network — the reverse-proxy / rate-limit plugin
-  # uses this to know the caller's real IP.
   limiter: false
   image_proxy: false
-  # Bind address matches the container default.
   bind_address: "0.0.0.0"
   port: 8080
 
-# ===== UI =====
 ui:
   static_use_hash: true
 
 engines:
-  # ----- 通用网页 -----
   - name: bing
     engine: bing
     shortcut: b
     region: zh-CN
     disabled: false
     weight: 2
+
   - name: 360search
     engine: 360search
-    shortcut: 360
+    shortcut: "360"
+    categories:
+      - general
+      - news
     disabled: false
     weight: 1
-  - name: baidu
-    engine: baidu
-    shortcut: bd
+
+  - name: sogou
+    engine: sogou
+    shortcut: sg
+    categories:
+      - general
+      - news
+    timeout: 6.0
     disabled: false
-    weight: 1
-  # ----- 新闻 -----
+
   - name: bing news
     engine: bing_news
     shortcut: bn
-    region: zh-CN
     disabled: false
     categories: news
-  # ----- 视频/社交 -----
+
   - name: bilibili
     engine: bilibili
     shortcut: bil
     timeout: 5.0
     disabled: false
     categories: videos
+
   - name: 微信公众号
-    engine: sogou_weixin        # 你自定义的 engine
+    engine: sogou_weixin
     shortcut: wx
     timeout: 6.0
     disabled: false
     categories: social media
-  # ----- 学术/论文 -----
-  - name: semantic scholar
-    engine: semantic_scholar
-    shortcut: ss
-    disabled: false
-    categories: science
-  - name: arxiv
-    engine: arxiv
-    shortcut: ax
-    disabled: false
-    categories: science
-  # ----- 百科 -----
-  - name: wikipedia
-    engine: wikipedia
-    shortcut: wp
-    language: zh
-    disabled: false
