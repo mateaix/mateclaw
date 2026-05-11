@@ -19,9 +19,17 @@ builder-inspect:
 
 # Docker build targets
 
-IMAGE_TAG := mateclaw-1.2.0
-REGISTRY  := connor-mateclaw-registry.zeabur.app/mateclaw/mateclaw-server
-SEARXNG_IMAGE := connor-mateclaw-registry.zeabur.app/searxng/searxng:$(IMAGE_TAG)
+METACLAW_SERVER_IMAGE_TAG := 1.2.3-SNAPSHOT
+MATECLAW_SERVER_SG_IMAGE := sgccr.ccs.tencentyun.com/connor-ai-lab/mateclaw-server:$(METACLAW_SERVER_IMAGE_TAG)
+MATECLAW_SERVER_GZ_IMAGE := ccr.ccs.tencentyun.com/connor-ai-lab/mateclaw-server:$(METACLAW_SERVER_IMAGE_TAG)
+# MATECLAW_SERVER_IMAGE := connor-mateclaw-registry.zeabur.app/mateclaw/mateclaw-server:$(IMAGE_TAG)
+# MATECLAW_SERVER_TENCENT_IMAGE := ccr.ccs.tencentyun.com/connor-ai-lab/mateclaw/mateclaw-server:$(IMAGE_TAG)
+
+SEARXNG_IMAGE_TAG := 1.0.1-SNAPSHOT
+SEARXNG_SG_IMAGE := sgccr.ccs.tencentyun.com/connor-ai-lab/mateclaw-searxng:$(SEARXNG_IMAGE_TAG)
+SEARXNG_GZ_IMAGE := ccr.ccs.tencentyun.com/connor-ai-lab/mateclaw-searxng:$(SEARXNG_IMAGE_TAG)
+# SEARXNG_IMAGE := connor-mateclaw-registry.zeabur.app/mateclaw/searxng:$(IMAGE_TAG)
+# SEARXNG_TENCENT_IMAGE := ccr.ccs.tencentyun.com/connor-ai-lab/mateclaw/searxng:$(IMAGE_TAG)
 
 build:
 	docker buildx build \
@@ -29,10 +37,9 @@ build:
 	  --no-cache \
 	  -f mateclaw-server/Dockerfile \
 	  --build-arg MAVEN_FLAGS="-Paliyun-first" \
--t $(MATECLAW_SERVER_SG_IMAGE) \
+	  -t $(MATECLAW_SERVER_SG_IMAGE) \
 	  -t $(MATECLAW_SERVER_GZ_IMAGE) \
-	  --push \
-	  --progress=plain .
+	  --push .
 
 pull-searxng:
 	docker pull --platform linux/amd64 searxng/searxng:latest
@@ -40,13 +47,6 @@ pull-searxng:
 build-searxng:
 	docker buildx build \
 	  --platform linux/amd64 \
-<<<<<<< Updated upstream
-	  -t $(SEARXNG_IMAGE) \
-	  --push .
-=======
-	  -f docker/searxng/Dockerfile \
 	  -t $(SEARXNG_SG_IMAGE) \
 	  -t $(SEARXNG_GZ_IMAGE) \
-	  --push \
-	  --progress=plain .
->>>>>>> Stashed changes
+	  --push .
