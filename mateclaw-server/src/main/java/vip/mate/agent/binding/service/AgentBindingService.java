@@ -12,7 +12,13 @@ import vip.mate.agent.binding.model.AgentToolBinding;
 import vip.mate.agent.binding.repository.AgentProviderPreferenceMapper;
 import vip.mate.agent.binding.repository.AgentSkillBindingMapper;
 import vip.mate.agent.binding.repository.AgentToolBindingMapper;
+import vip.mate.agent.model.AgentEntity;
+import vip.mate.agent.repository.AgentMapper;
 import vip.mate.exception.MateClawException;
+import vip.mate.skill.acp.AcpSkillBridge;
+import vip.mate.skill.mcp.McpSkillBridge;
+import vip.mate.skill.model.SkillEntity;
+import vip.mate.skill.repository.SkillMapper;
 import vip.mate.skill.runtime.SkillRuntimeService;
 import vip.mate.skill.runtime.model.ResolvedSkill;
 import vip.mate.tool.model.AvailableToolDTO;
@@ -53,18 +59,44 @@ public class AgentBindingService {
      * could still be saved by hitting the API directly.
      */
     private final AvailableToolService availableToolService;
+    /**
+     * Direct mapper access (instead of {@code AgentService}) to look up an
+     * agent's workspace before binding a skill. {@code AgentService} pulls
+     * in {@code AgentGraphBuilder}, which itself depends on
+     * {@code AgentBindingService} — going through the service would create a
+     * boot-time cycle. The mapper has no such transitive dependency.
+     */
+    private final AgentMapper agentMapper;
+    /** Same reasoning as {@link #agentMapper}: skill workspace lookup. */
+    private final SkillMapper skillMapper;
+    /**
+     * ACP virtual skills aren't rows in {@code mate_skill}; the bridge
+     * synthesizes them from {@code mate_acp_endpoint}. We need this to
+     * answer "what workspace does this virtual id belong to?" when an
+     * agent tries to bind one. MCP virtual skills don't need a bridge
+     * reference — {@link McpSkillBridge#isVirtualMcpSkillId(Long)} is a
+     * static range check, and MCP servers carry no workspace today, so
+     * binding any MCP virtual id is allowed for any agent.
+     */
+    private final AcpSkillBridge acpSkillBridge;
 
     @Autowired
     public AgentBindingService(AgentSkillBindingMapper skillBindingMapper,
                                AgentToolBindingMapper toolBindingMapper,
                                AgentProviderPreferenceMapper providerPreferenceMapper,
                                @Lazy SkillRuntimeService skillRuntimeService,
-                               AvailableToolService availableToolService) {
+                               AvailableToolService availableToolService,
+                               AgentMapper agentMapper,
+                               SkillMapper skillMapper,
+                               AcpSkillBridge acpSkillBridge) {
         this.skillBindingMapper = skillBindingMapper;
         this.toolBindingMapper = toolBindingMapper;
         this.providerPreferenceMapper = providerPreferenceMapper;
         this.skillRuntimeService = skillRuntimeService;
         this.availableToolService = availableToolService;
+        this.agentMapper = agentMapper;
+        this.skillMapper = skillMapper;
+        this.acpSkillBridge = acpSkillBridge;
     }
 
     // ==================== Skill Bindings ====================
@@ -92,6 +124,7 @@ public class AgentBindingService {
     }
 
     public AgentSkillBinding bindSkill(Long agentId, Long skillId) {
+        requireSameWorkspace(agentId, skillId);
         // 检查是否已绑定
         AgentSkillBinding existing = skillBindingMapper.selectOne(
                 new LambdaQueryWrapper<AgentSkillBinding>()
@@ -121,6 +154,15 @@ public class AgentBindingService {
      * 批量设置 Agent 的 skill 绑定（替换模式）
      */
     public void setSkillBindings(Long agentId, List<Long> skillIds) {
+        // Validate every incoming skill BEFORE touching the binding rows;
+        // a half-applied save (old bindings dropped, new set rejected
+        // mid-loop) would leave the agent silently un-bound from skills it
+        // had a moment ago.
+        if (skillIds != null) {
+            for (Long skillId : skillIds) {
+                requireSameWorkspace(agentId, skillId);
+            }
+        }
         // 删除旧绑定
         skillBindingMapper.delete(
                 new LambdaQueryWrapper<AgentSkillBinding>()
@@ -134,6 +176,78 @@ public class AgentBindingService {
                 binding.setEnabled(true);
                 skillBindingMapper.insert(binding);
             }
+        }
+    }
+
+    /**
+     * Refuse to bind a skill that doesn't share the agent's workspace.
+     * Skills are per-workspace installable artifacts (each workspace has
+     * its own catalog under {@code mate_skill.workspace_id}); letting
+     * workspace A's agent bind workspace B's skill would leak capabilities
+     * — and prompt content — across the tenancy boundary.
+     *
+     * <p>Three skill id flavors to handle:
+     * <ul>
+     *   <li><b>Real {@code mate_skill} rows</b> — straight mapper lookup,
+     *       compare {@code workspace_id} to the agent's.</li>
+     *   <li><b>Virtual MCP-derived ids</b> ({@code >= McpSkillBridge.VIRTUAL_ID_BASE})
+     *       — pass through. MCP servers carry no workspace concept today,
+     *       so any agent in any workspace may bind any MCP virtual skill.
+     *       The picker (/skills/enabled) hands these out to every workspace.</li>
+     *   <li><b>Virtual ACP-derived ids</b> ({@code AcpSkillBridge}'s range)
+     *       — resolve through the bridge so the {@link SkillEntity#getWorkspaceId()}
+     *       comes from the backing {@code mate_acp_endpoint.workspace_id},
+     *       then apply the same workspace comparison.</li>
+     * </ul>
+     *
+     * <p>Most {@code mate_skill} rows currently sit in the default workspace
+     * (id=1) because skill creation doesn't yet honor the
+     * {@code X-Workspace-Id} header; the real-skill branch is therefore
+     * defense-in-depth right now and flips on automatically the moment
+     * workspace-scoped skill creation lands. ACP enforcement is live today.
+     *
+     * @throws MateClawException 404 if the agent or skill doesn't exist;
+     *                           403 on a workspace mismatch.
+     */
+    private void requireSameWorkspace(Long agentId, Long skillId) {
+        if (agentId == null) {
+            throw new MateClawException("err.agent.not_found", 404, "Agent ID is required");
+        }
+        if (skillId == null) {
+            throw new MateClawException("err.skill.not_found", 404, "Skill ID is required");
+        }
+        AgentEntity agent = agentMapper.selectById(agentId);
+        if (agent == null) {
+            throw new MateClawException("err.agent.not_found", 404, "Agent 不存在: " + agentId);
+        }
+        // MCP virtual: no workspace on McpServerEntity — globally bindable.
+        if (McpSkillBridge.isVirtualMcpSkillId(skillId)) {
+            return;
+        }
+        SkillEntity skill;
+        if (AcpSkillBridge.isVirtualAcpSkillId(skillId)) {
+            // ACP virtual: synthesize from the bridge so workspace_id flows
+            // through from mate_acp_endpoint. A null reply here means the
+            // backing endpoint was deleted or disabled between picker render
+            // and save — same surface as a deleted real skill.
+            skill = acpSkillBridge.findEntityById(skillId);
+            if (skill == null) {
+                throw new MateClawException("err.skill.not_found", 404,
+                        "ACP endpoint backing skill " + skillId + " is gone or disabled");
+            }
+        } else {
+            skill = skillMapper.selectById(skillId);
+            if (skill == null) {
+                throw new MateClawException("err.skill.not_found", 404, "Skill 不存在: " + skillId);
+            }
+        }
+        long agentWs = agent.getWorkspaceId() == null ? 1L : agent.getWorkspaceId();
+        long skillWs = skill.getWorkspaceId() == null ? 1L : skill.getWorkspaceId();
+        if (agentWs != skillWs) {
+            throw new MateClawException("err.skill.cross_workspace_binding", 403,
+                    "Skill " + skillId + " (workspace=" + skillWs
+                            + ") cannot be bound to Agent " + agentId
+                            + " (workspace=" + agentWs + ")");
         }
     }
 

@@ -83,6 +83,7 @@ public class AgentService {
         if (agent.getAgentType() == null) {
             agent.setAgentType("react");
         }
+        requireUniqueName(agent, null);
         agentMapper.insert(agent);
         publishLifecycle(agent, "spawned");
         return agent;
@@ -93,6 +94,19 @@ public class AgentService {
         // intent rather than every metadata edit. Reading the prior row
         // is cheap and gives us a clean diff source.
         AgentEntity prior = agentMapper.selectById(agent.getId());
+        // Only re-validate uniqueness when the name actually changes —
+        // a pure metadata edit (icon, prompt, ...) shouldn't pay the
+        // SELECT cost or risk a false positive against the row itself.
+        if (prior != null
+                && agent.getName() != null
+                && !agent.getName().equals(prior.getName())) {
+            // Workspace cannot be moved (Controller pins it to prior.workspaceId),
+            // so reuse it for the lookup even if the incoming DTO left it null.
+            if (agent.getWorkspaceId() == null) {
+                agent.setWorkspaceId(prior.getWorkspaceId());
+            }
+            requireUniqueName(agent, agent.getId());
+        }
         agentMapper.updateById(agent);
         agentInstances.remove(agent.getId());
         if (prior != null && prior.getEnabled() != null
@@ -101,6 +115,40 @@ public class AgentService {
                     Boolean.TRUE.equals(agent.getEnabled()) ? "enabled" : "disabled");
         }
         return agent;
+    }
+
+    /**
+     * Friendly business-code surface for the {@code (workspace_id, name)}
+     * unique index added in V102.
+     *
+     * <p>The wire shape is the project-wide R&lt;T&gt; envelope: HTTP status
+     * stays 200 (per the convention in {@code R.fail} and the axios
+     * interceptor in {@code mateclaw-ui/src/api/index.ts}); the 409 lives in
+     * the response body's {@code code} field so the front-end can branch
+     * without breaking on an axios error. Without this pre-check the
+     * duplicate save would surface as an opaque
+     * {@code DataIntegrityViolation} stack trace.
+     *
+     * @param excludeId when non-null, skip this row in the lookup so
+     *                  {@link #updateAgent} doesn't mistake the row for its
+     *                  own duplicate.
+     */
+    private void requireUniqueName(AgentEntity agent, Long excludeId) {
+        if (agent.getName() == null || agent.getName().isBlank()) {
+            throw new MateClawException("err.agent.name_required", 400, "Agent 名称不能为空");
+        }
+        Long workspaceId = agent.getWorkspaceId() == null ? 1L : agent.getWorkspaceId();
+        LambdaQueryWrapper<AgentEntity> q = new LambdaQueryWrapper<AgentEntity>()
+                .eq(AgentEntity::getWorkspaceId, workspaceId)
+                .eq(AgentEntity::getName, agent.getName());
+        if (excludeId != null) {
+            q.ne(AgentEntity::getId, excludeId);
+        }
+        Long count = agentMapper.selectCount(q);
+        if (count != null && count > 0) {
+            throw new MateClawException("err.agent.duplicate_name", 409,
+                    "工作区内已存在同名 Agent: " + agent.getName());
+        }
     }
 
     public void deleteAgent(Long id) {

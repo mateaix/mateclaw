@@ -354,16 +354,20 @@ public class SkillRuntimeService {
                                               Long agentId) {
         List<ResolvedSkill> activeSkills;
         if (boundSkillIds != null) {
-            // Per-agent 过滤：从全局 enabled skills 中按 ID 过滤。RFC-090
-            // §14.1 — must use the same features-aware gate as
-            // refreshActiveSkills() so legacy dependencyReady drift
-            // doesn't silently let setup-needed manifest skills through
-            // (or hide partially-ready features that should be visible).
-            List<SkillEntity> enabledSkills = skillService.listEnabledSkills();
-            activeSkills = enabledSkills.stream()
-                    .filter(s -> boundSkillIds.contains(s.getId()))
-                    .map(packageResolver::resolve)
-                    .filter(SkillRuntimeService::passesActiveGate)
+            // Per-agent filter: pick the agent's bound subset from the
+            // already-merged active set (real + MCP/ACP virtual). Using
+            // getActiveSkills() — instead of a fresh
+            // skillService.listEnabledSkills() walk — is what makes bound
+            // virtual skills surface in the prompt catalog. The earlier
+            // implementation only looked at mate_skill rows, so a user
+            // who explicitly checked an MCP/ACP card in the agent picker
+            // got its tools (via AgentBindingService.getEffectiveToolNames)
+            // but lost the corresponding `## Skills` catalog row, which
+            // confused the LLM when it tried to dispatch by skill name.
+            // Cache-backed get + same passesActiveGate semantics, so this
+            // is strictly additive for real skills.
+            activeSkills = getActiveSkills().stream()
+                    .filter(s -> s.getId() != null && boundSkillIds.contains(s.getId()))
                     .collect(java.util.stream.Collectors.toList());
         } else {
             activeSkills = getActiveSkills();

@@ -43,24 +43,6 @@ public class FactQueryTool {
                 .collect(Collectors.joining("\n"));
     }
 
-    @Tool(description = "Find facts related to an entity via entity references (multi-hop graph query).")
-    public String fact_related(
-            @ToolParam(description = "Agent ID") Long agentId,
-            @ToolParam(description = "Entity name") String entity,
-            @ToolParam(description = "Number of hops (1-3)") int hops) {
-        if (!properties.getFact().isProjectionEnabled()) {
-            return "Fact projection is disabled.";
-        }
-        List<FactEntity> facts = queryService.related(agentId, entity, Math.min(hops, 3));
-        if (facts.isEmpty()) return "No related facts found for: " + entity;
-
-        queryService.bumpUseCount(facts.stream().map(FactEntity::getId).toList());
-
-        return facts.stream()
-                .map(f -> String.format("- %s %s %s (trust=%.2f)", f.getSubject(), f.getPredicate(), f.getObjectValue(), f.getTrust()))
-                .collect(Collectors.joining("\n"));
-    }
-
     @Tool(description = "List unresolved fact contradictions detected during Dream consolidation.")
     public String fact_list_contradictions(
             @ToolParam(description = "Agent ID") Long agentId) {

@@ -3114,7 +3114,6 @@ export default {
     remember_structured: '保存记忆',
     forget_structured: '清除记忆',
     fact_probe: '探查事实',
-    fact_related: '查询关联事实',
     fact_list_contradictions: '检查矛盾事实',
     session_search: '搜索会话',
     read_workspace_memory_file: '读取记忆文件',

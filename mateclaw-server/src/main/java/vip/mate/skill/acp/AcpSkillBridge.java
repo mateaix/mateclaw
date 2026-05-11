@@ -301,6 +301,12 @@ public class AcpSkillBridge {
         s.setEnabled(Boolean.TRUE.equals(ep.getEnabled()));
         s.setBuiltin(Boolean.TRUE.equals(ep.getBuiltin()));
         s.setTags("acp");
+        // Carry the backing endpoint's workspace through to the virtual
+        // SkillEntity so binding-time tenancy checks can compare it against
+        // the agent's workspace. Without this the bridge synthesizes rows
+        // with workspaceId = null and an agent in any workspace could bind
+        // any ACP endpoint regardless of where the endpoint was provisioned.
+        s.setWorkspaceId(ep.getWorkspaceId());
         s.setSecurityScanStatus("PASSED"); // ACP endpoints are user-configured external CLIs, not skill scripts
         s.setConfigJson(buildConfigJson(ep));
         s.setManifestJson(serializeManifest(buildManifest(ep)));

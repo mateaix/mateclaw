@@ -3110,7 +3110,6 @@ export default {
     remember_structured: 'Save Memory',
     forget_structured: 'Clear Memory',
     fact_probe: 'Probe Facts',
-    fact_related: 'Query Related Facts',
     fact_list_contradictions: 'Check Contradictions',
     session_search: 'Search Sessions',
     read_workspace_memory_file: 'Read Memory File',

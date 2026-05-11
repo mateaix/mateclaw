@@ -97,7 +97,17 @@ public class SkillEntity {
     /** 标签（逗号分隔） */
     private String tags;
 
-    /** RFC-023：来源对话 ID（Agent 自治合成时记录） */
+    /**
+     * Owning workspace. The DB column has existed since the baseline schema
+     * (default = 1) but the field was missing from the entity, so MyBatis
+     * Plus silently ignored both reads and writes. Surfacing it here lets
+     * binding-time tenancy checks see the value; default behavior on insert
+     * remains "fall through to the column DEFAULT" because the field stays
+     * {@code null} in the no-arg create path.
+     */
+    private Long workspaceId;
+
+    /** 来源对话 ID（Agent 自治合成时记录） */
     private String sourceConversationId;
 
     /**
