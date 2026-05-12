@@ -212,12 +212,19 @@ public class WikiTransformationExecutor {
                 : sourceText;
 
         boolean wantJson = "json".equalsIgnoreCase(transformation.getOutputFormat());
+        String schema = transformation.getOutputSchema();
+        boolean hasSchema = wantJson && schema != null && !schema.isBlank();
 
         String systemPrompt = PromptLoader.loadPrompt(
                 wantJson ? "wiki/transformation-system-json" : "wiki/transformation-system");
         String instruction = (transformation.getPromptTemplate() == null ? "" : transformation.getPromptTemplate())
                 .replace("{input_text}", trimmedInput)
                 .replace("{title}", sourceTitle);
+        if (hasSchema) {
+            instruction = instruction
+                    + "\n\n---\n\n输出必须严格符合下面这个 JSON Schema：\n```json\n"
+                    + schema + "\n```";
+        }
         String userPrompt = PromptLoader.loadPrompt("wiki/transformation-user")
                 .replace("{instruction}", instruction)
                 .replace("{source_title}", sourceTitle)
@@ -231,25 +238,70 @@ public class WikiTransformationExecutor {
         accumulateUsage(run, first);
         if (wantJson) {
             String coerced = coerceToJson(first.text());
-            if (coerced != null) {
+            String validationError = coerced != null ? validateAgainstSchema(coerced, schema) : "not valid JSON";
+            if (coerced != null && validationError == null) {
                 // Wrap in a fenced block so UI rendering and save-as-page
                 // keep the existing markdown contract. The raw JSON is the
                 // first thing inside the block, so downstream tools can grep.
                 return "```json\n" + coerced + "\n```";
             }
-            // One retry with an explicit nudge.
-            log.info("[WikiTransformation] JSON parse failed for template={}; retrying with stricter reminder",
-                    transformation.getName());
-            String retryUserPrompt = userPrompt + "\n\n---\n\n上一次回复不是合法 JSON。请只返回一个合法 JSON 文档，前后不要有任何文字或代码块标记。";
+            // One retry with an explicit nudge about what failed.
+            log.info("[WikiTransformation] JSON validation failed for template={} ({}); retrying with stricter reminder",
+                    transformation.getName(), validationError);
+            String reminder = "上一次回复无效：" + validationError + "。请只返回一个合法 JSON 文档，"
+                    + "前后不要有任何文字或代码块标记"
+                    + (hasSchema ? "，并严格匹配上面给出的 JSON Schema。" : "。");
+            String retryUserPrompt = userPrompt + "\n\n---\n\n" + reminder;
             CallResult retry = callOnce(chatModel, systemPrompt, retryUserPrompt);
             accumulateUsage(run, retry);
             String coercedRetry = coerceToJson(retry.text());
-            if (coercedRetry != null) {
+            String retryError = coercedRetry != null ? validateAgainstSchema(coercedRetry, schema) : "not valid JSON";
+            if (coercedRetry != null && retryError == null) {
                 return "```json\n" + coercedRetry + "\n```";
             }
-            throw new IllegalStateException("LLM output is not valid JSON after one retry");
+            throw new IllegalStateException("LLM output failed JSON validation after one retry: " + retryError);
         }
         return first.text();
+    }
+
+    /**
+     * Lightweight JSON Schema check — verifies the parsed value is the
+     * declared top-level type and contains every entry in the
+     * {@code required} array. Deep validation (per-field types, enums,
+     * patterns) is out of scope; the prompt-time schema injection does
+     * most of the work and this check just guards the obvious failures.
+     *
+     * @return {@code null} when valid, otherwise a short failure description
+     */
+    private static String validateAgainstSchema(String jsonText, String schemaText) {
+        if (schemaText == null || schemaText.isBlank()) return null;
+        try {
+            com.fasterxml.jackson.databind.JsonNode value = JSON_MAPPER.readTree(jsonText);
+            com.fasterxml.jackson.databind.JsonNode schema = JSON_MAPPER.readTree(schemaText);
+
+            String type = schema.path("type").asText("");
+            if ("object".equals(type) && !value.isObject()) {
+                return "expected object at top level, got " + value.getNodeType().name().toLowerCase();
+            }
+            if ("array".equals(type) && !value.isArray()) {
+                return "expected array at top level, got " + value.getNodeType().name().toLowerCase();
+            }
+
+            com.fasterxml.jackson.databind.JsonNode required = schema.get("required");
+            if (required != null && required.isArray() && value.isObject()) {
+                List<String> missing = new java.util.ArrayList<>();
+                for (com.fasterxml.jackson.databind.JsonNode req : required) {
+                    String field = req.asText();
+                    if (!field.isBlank() && !value.has(field)) missing.add(field);
+                }
+                if (!missing.isEmpty()) {
+                    return "missing required field(s): " + String.join(", ", missing);
+                }
+            }
+            return null;
+        } catch (Exception e) {
+            return "schema check error: " + e.getMessage();
+        }
     }
 
     /** Tuple returned from a single LLM call: cleaned text + usage (null when provider didn't surface usage). */

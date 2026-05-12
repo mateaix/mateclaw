@@ -76,6 +76,14 @@ public class WikiTransformationEntity {
      */
     private String outputFormat;
 
+    /**
+     * Optional JSON Schema text describing the expected shape when
+     * {@code outputFormat == 'json'}. Injected into the prompt verbatim
+     * so the LLM has explicit field expectations; the executor also runs
+     * a lightweight required-fields check after parsing.
+     */
+    private String outputSchema;
+
     @TableField(fill = FieldFill.INSERT)
     private LocalDateTime createTime;
 

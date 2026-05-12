@@ -111,6 +111,7 @@ public class WikiTransformationService {
         entity.setModelId(input.getModelId() != null && input.getModelId() < 0 ? null : input.getModelId());
         entity.setOutputTarget(normalizeOutputTarget(input.getOutputTarget()));
         entity.setOutputFormat(normalizeOutputFormat(input.getOutputFormat()));
+        entity.setOutputSchema(sanitizeOutputSchema(input.getOutputSchema()));
         transformationMapper.insert(entity);
         log.info("[WikiTransformation] created id={} name={} kbId={}",
                 entity.getId(), entity.getName(), entity.getKbId());
@@ -139,6 +140,10 @@ public class WikiTransformationService {
         if (patch.getOutputFormat() != null) {
             entity.setOutputFormat(normalizeOutputFormat(patch.getOutputFormat()));
         }
+        if (patch.getOutputSchema() != null) {
+            // Empty string clears the schema; non-blank gets stored after a parse check.
+            entity.setOutputSchema(sanitizeOutputSchema(patch.getOutputSchema()));
+        }
         transformationMapper.updateById(entity);
         return entity;
     }
@@ -161,6 +166,27 @@ public class WikiTransformationService {
             case "json" -> "json";
             default -> "markdown";
         };
+    }
+
+    /**
+     * Sanitises the user-supplied JSON Schema text. Empty / blank values
+     * clear the column. Non-parseable values are rejected at the API
+     * boundary so the executor doesn't have to defend against garbage
+     * stored on the template.
+     */
+    private static final com.fasterxml.jackson.databind.ObjectMapper SCHEMA_MAPPER =
+            new com.fasterxml.jackson.databind.ObjectMapper();
+
+    private static String sanitizeOutputSchema(String raw) {
+        if (raw == null) return null;
+        String trimmed = raw.trim();
+        if (trimmed.isEmpty()) return null;
+        try {
+            SCHEMA_MAPPER.readTree(trimmed);
+        } catch (Exception e) {
+            throw new IllegalArgumentException("output_schema is not valid JSON: " + e.getMessage());
+        }
+        return trimmed;
     }
 
     @Transactional

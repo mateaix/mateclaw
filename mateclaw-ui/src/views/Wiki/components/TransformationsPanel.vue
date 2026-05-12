@@ -44,6 +44,9 @@
             <span v-if="tpl.outputFormat === 'json'" class="flag flag--scope">
               {{ t('wiki.transformations.outputFormatJsonBadge') }}
             </span>
+            <span v-if="tpl.outputSchema" class="flag flag--scope">
+              {{ t('wiki.transformations.outputSchemaBadge') }}
+            </span>
             <span v-if="tpl.modelId" class="flag flag--scope">
               {{ modelLabelFor(tpl.modelId) }}
             </span>
@@ -270,6 +273,17 @@
               <span>{{ t('wiki.transformations.outputFormatJson') }}</span>
             </label>
           </fieldset>
+
+          <label v-if="form.outputFormat === 'json'" class="field">
+            <span class="field-label">{{ t('wiki.transformations.outputSchemaLabel') }}</span>
+            <textarea
+              v-model="form.outputSchema"
+              class="field-textarea"
+              rows="8"
+              :placeholder="t('wiki.transformations.outputSchemaPlaceholder')"
+            ></textarea>
+            <span class="field-hint">{{ t('wiki.transformations.outputSchemaHelp') }}</span>
+          </label>
         </div>
 
         <div class="modal-actions">
@@ -337,6 +351,7 @@ interface WikiTransformation {
   modelId: number | null
   outputTarget: 'none' | 'page' | null
   outputFormat: 'markdown' | 'json' | null
+  outputSchema: string | null
 }
 
 interface WikiTransformationRun {
@@ -394,6 +409,7 @@ const form = reactive<{
   enabled: boolean
   outputTarget: 'none' | 'page'
   outputFormat: 'markdown' | 'json'
+  outputSchema: string
   modelId: number | null
 }>({
   name: '',
@@ -404,6 +420,7 @@ const form = reactive<{
   enabled: true,
   outputTarget: 'none',
   outputFormat: 'markdown',
+  outputSchema: '',
   modelId: null,
 })
 
@@ -498,6 +515,7 @@ function openCreate() {
   form.enabled = true
   form.outputTarget = 'none'
   form.outputFormat = 'markdown'
+  form.outputSchema = ''
   form.modelId = null
   editorOpen.value = true
   ensureModelsLoaded()
@@ -513,6 +531,7 @@ function openEdit(tpl: WikiTransformation) {
   form.enabled = tpl.enabled !== false
   form.outputTarget = tpl.outputTarget === 'page' ? 'page' : 'none'
   form.outputFormat = tpl.outputFormat === 'json' ? 'json' : 'markdown'
+  form.outputSchema = tpl.outputSchema || ''
   form.modelId = tpl.modelId ?? null
   editorOpen.value = true
   ensureModelsLoaded()
@@ -531,6 +550,9 @@ async function onSave() {
   }
   saving.value = true
   try {
+    // Schema is only persisted when format=json; otherwise we always send
+    // an empty string so the backend can clear a previously-stored value.
+    const schemaPayload = form.outputFormat === 'json' ? form.outputSchema.trim() : ''
     if (editing.value) {
       // Update path: backend treats `-1` as "clear modelId"; null is skipped.
       const updateModelId = form.modelId == null ? -1 : form.modelId
@@ -542,6 +564,7 @@ async function onSave() {
         enabled: form.enabled,
         outputTarget: form.outputTarget,
         outputFormat: form.outputFormat,
+        outputSchema: schemaPayload,
         modelId: updateModelId,
       })
     } else {
@@ -555,6 +578,7 @@ async function onSave() {
         enabled: form.enabled,
         outputTarget: form.outputTarget,
         outputFormat: form.outputFormat,
+        outputSchema: schemaPayload || null,
         modelId: form.modelId,
       })
     }
