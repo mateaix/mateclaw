@@ -18,7 +18,7 @@ builder-inspect:
 	docker buildx inspect --bootstrap
 
 # Docker build targets
-# Convention: bare name = SGCCR (singapore), -gz suffix = CCR (guangzhou)
+# Convention: -sg suffix = SGCCR (singapore), -gz suffix = CCR (guangzhou)
 
 METACLAW_SERVER_IMAGE_TAG := 1.2.3-SNAPSHOT
 MATECLAW_SERVER_SG_IMAGE := sgccr.ccs.tencentyun.com/connor-ai-lab/mateclaw-server:$(METACLAW_SERVER_IMAGE_TAG)
@@ -30,14 +30,11 @@ SEARXNG_IMAGE_TAG := 1.0.1-SNAPSHOT
 SEARXNG_SG_IMAGE := sgccr.ccs.tencentyun.com/connor-ai-lab/mateclaw-searxng:$(SEARXNG_IMAGE_TAG)
 SEARXNG_GZ_IMAGE := ccr.ccs.tencentyun.com/connor-ai-lab/mateclaw-searxng:$(SEARXNG_IMAGE_TAG)
 
-XRAY_IMAGE_TAG := 1.0.2-SNAPSHOT
-XRAY_GZ_IMAGE := ccr.ccs.tencentyun.com/connor-ai-lab/xray-client:$(XRAY_IMAGE_TAG)
-
 MIHOMO_IMAGE_TAG := 1.0.2-SNAPSHOT
 MIHOMO_GZ_IMAGE := ccr.ccs.tencentyun.com/connor-ai-lab/mihomo-client:$(MIHOMO_IMAGE_TAG)
 
 # mateclaw-server
-build:
+build-sg:
 	docker buildx build \
 	  --platform linux/amd64 \
 	  --no-cache \
@@ -61,7 +58,7 @@ build-gz:
 pull-searxng:
 	docker pull --platform linux/amd64 searxng/searxng:latest
 
-build-searxng:
+build-searxng-sg:
 	docker buildx build \
 	  --platform linux/amd64 \
 	  -f docker/searxng/Dockerfile \
@@ -74,15 +71,6 @@ build-searxng-gz:
 	  --platform linux/amd64 \
 	  -f docker/searxng/Dockerfile \
 	  -t $(SEARXNG_GZ_IMAGE) \
-	  --push \
-	  --progress=plain .
-
-# xray
-build-xray-gz:
-	docker buildx build \
-	  --platform linux/amd64 \
-	  -f docker/xray/Dockerfile \
-	  -t $(XRAY_GZ_IMAGE) \
 	  --push \
 	  --progress=plain .
 
