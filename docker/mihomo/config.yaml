@@ -10,10 +10,10 @@ geodata-loader: memconservative
 proxies:
   - name: "ss-node"
     type: ss
-    server: abc052d8-1793-4814-a5f6-62dafa58c2a7.ss03.net
-    port: 22388
+    server: "${SS_SERVER:-your-server-address}"
+    port: ${SS_PORT:-22388}
     cipher: chacha20-ietf-poly1305
-    password: "BecREz"
+    password: "${SS_PASSWORD:-your-password}"
 
 proxy-groups:
   - name: "Proxy"

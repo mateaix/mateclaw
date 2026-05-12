@@ -24,6 +24,11 @@ COPY --from=builder /tmp/geo/geosite.dat /etc/mihomo/geosite.dat
 COPY --from=builder /tmp/geo/country.mmdb /etc/mihomo/country.mmdb
 COPY docker/mihomo/config.yaml /etc/mihomo/config.yaml
 
-RUN chmod +x /usr/local/bin/mihomo
+RUN chmod +x /usr/local/bin/mihomo && \
+    apk add --no-cache gettext
 
+COPY docker/mihomo/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
 CMD ["mihomo", "-d", "/etc/mihomo"]
