@@ -1,0 +1,28 @@
+mixed-port: 10808
+allow-lan: false
+mode: rule
+log-level: debug
+
+geo-auto-update: false
+geodata-mode: true
+geodata-loader: memconservative
+
+proxies:
+  - name: "ss-node"
+    type: ss
+    server: abc052d8-1793-4814-a5f6-62dafa58c2a7.ss03.net
+    port: 22388
+    cipher: chacha20-ietf-poly1305
+    password: "BecREz"
+
+proxy-groups:
+  - name: "Proxy"
+    type: select
+    proxies:
+      - ss-node
+
+rules:
+  - GEOIP,LAN,DIRECT
+  - GEOSITE,CN,DIRECT
+  - GEOIP,CN,DIRECT
+  - MATCH,Proxy
