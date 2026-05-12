@@ -1,7 +1,8 @@
-mixed-port: 10808
-allow-lan: false
+port: 10808         # HTTP 代理端口
+socks-port: 10809   # SOCKS5 端口
+allow-lan: true
 mode: rule
-log-level: debug
+log-level: warning
 
 geo-auto-update: false
 geodata-mode: true
