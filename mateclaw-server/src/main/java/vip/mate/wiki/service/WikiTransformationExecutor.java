@@ -292,10 +292,26 @@ public class WikiTransformationExecutor {
         return persisted;
     }
 
+    /**
+     * Common document / image extensions that we don't want leaking into the
+     * slug. The pattern matches a trailing dotted extension and is case-
+     * insensitive so both {@code foo.PDF} and {@code foo.pdf} are stripped.
+     */
+    private static final java.util.regex.Pattern FILE_EXT_PATTERN =
+            java.util.regex.Pattern.compile(
+                    "\\.(pdf|docx?|pptx?|xlsx?|csv|tsv|txt|md|markdown|rtf|odt|epub|html?|json|xml|yaml|yml|jpe?g|png|gif|bmp|tiff?|webp|svg|mp3|wav|mp4|mov|webm)$",
+                    java.util.regex.Pattern.CASE_INSENSITIVE);
+
     private static String buildSlug(WikiTransformationEntity template, WikiRawMaterialEntity raw) {
-        String rawPart = WikiPageService.toSlug(raw.getTitle());
+        String trimmedTitle = stripFileExtension(raw.getTitle());
+        String rawPart = WikiPageService.toSlug(trimmedTitle);
         if (rawPart == null || rawPart.isBlank()) rawPart = "r" + raw.getId();
         return template.getName() + "-" + rawPart;
+    }
+
+    private static String stripFileExtension(String title) {
+        if (title == null) return null;
+        return FILE_EXT_PATTERN.matcher(title.trim()).replaceFirst("");
     }
 
     /** First non-empty line of the output, capped to ~280 chars, used as page summary. */
