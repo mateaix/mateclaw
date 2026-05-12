@@ -443,6 +443,17 @@ public class ToolExecutionExecutor {
             }
             ToolCallback callback = toolCallbackMap.get(toolName);
             if (callback == null) {
+                SkillRedirect redirect = tryAutoRedirectSkillCall(toolName, arguments, safeOrigin);
+                if (redirect != null) {
+                    // Auto-redirect succeeds with success=true on the SSE event so the
+                    // model treats the SKILL.md content as the answer to a different,
+                    // valid question (rather than as another failed call to recover from).
+                    events.add(GraphEventPublisher.toolComplete(
+                            toolCall.id(), toolName, redirect.response(), true));
+                    allResponses.add(new ToolResponseMessage.ToolResponse(
+                            toolCall.id(), toolName, redirect.response()));
+                    continue;
+                }
                 String msg = skillAwareNotFoundMessage(toolName);
                 log.warn("[ToolExecutor] {}", msg);
                 events.add(GraphEventPublisher.toolComplete(toolCall.id(), toolName, msg, false));
@@ -521,6 +532,18 @@ public class ToolExecutionExecutor {
 
         ToolCallback callback = toolCallbackMap.get(toolName);
         if (callback == null) {
+            // Same auto-redirect for pre-approved replays — a stale skill-as-tool
+            // approval shouldn't dead-end the conversation either.
+            ChatOrigin replayOriginForRedirect = ChatOrigin.EMPTY
+                    .withConversationId(conversationId)
+                    .withWorkspace(null, workspaceBasePath);
+            SkillRedirect redirect = tryAutoRedirectSkillCall(toolName, callArguments, replayOriginForRedirect);
+            if (redirect != null) {
+                events.add(GraphEventPublisher.toolComplete(
+                        toolCall.id(), toolName, redirect.response(), true));
+                return new ToolResponseMessage.ToolResponse(
+                        toolCall.id(), toolName, redirect.response());
+            }
             String msg = skillAwareNotFoundMessage(toolName);
             log.warn("[ToolExecutor] Pre-approved {}", msg);
             events.add(GraphEventPublisher.toolComplete(toolCall.id(), toolName, msg, false));
@@ -1047,6 +1070,79 @@ public class ToolExecutionExecutor {
             }
         }
         return "Tool not found: " + toolName;
+    }
+
+    /**
+     * Holder for an auto-redirect outcome: the SKILL.md content (wrapped
+     * with a one-line nudge) that we substitute as the tool response when
+     * the LLM mistakenly calls a skill name as if it were a tool.
+     *
+     * <p>{@code success=true} on the substituted response so the model
+     * doesn't read it as "tool failed, try harder" — semantically we
+     * answered a different question than the one it asked, and we want
+     * the model to follow the redirect rather than thrash.
+     */
+    private record SkillRedirect(String response) {}
+
+    /**
+     * When the LLM calls a skill name as if it were a tool, transparently
+     * fetch its SKILL.md and return that as the tool response. Smaller
+     * models (qwen-turbo et al.) often can't act on a "not a tool — go
+     * read X first" hint; they keep emitting the same wrong call until the
+     * iteration cap. With auto-redirect, the model receives runnable
+     * instructions on the very first attempt and can copy the runSkillScript
+     * shape from SKILL.md verbatim.
+     *
+     * <p>Returns {@code null} if {@code toolName} isn't a registered skill,
+     * if {@code readSkillFile} isn't available in this agent's tool set, or
+     * if the redirect call itself errored — the caller then falls through
+     * to the usual {@code skillAwareNotFoundMessage} hint.
+     */
+    private SkillRedirect tryAutoRedirectSkillCall(String toolName, String originalArgs, ChatOrigin origin) {
+        if (skillRuntimeService == null || toolName == null || toolName.isBlank()) return null;
+        try {
+            boolean isSkill = skillRuntimeService.getActiveSkills().stream()
+                    .anyMatch(s -> s.getName() != null && s.getName().equalsIgnoreCase(toolName));
+            if (!isSkill) return null;
+        } catch (Exception e) {
+            log.debug("[ToolExecutor] auto-redirect skill lookup failed: {}", e.getMessage());
+            return null;
+        }
+
+        ToolCallback readSkillFile = toolCallbackMap.get("readSkillFile");
+        if (readSkillFile == null) {
+            log.debug("[ToolExecutor] readSkillFile not bound to this agent — cannot auto-redirect '{}'", toolName);
+            return null;
+        }
+
+        String redirectArgs = "{\"skillName\":\""
+                + jsonStringEscape(toolName)
+                + "\",\"filePath\":\"SKILL.md\"}";
+        String skillMd;
+        try {
+            ToolContext ctx = (origin != null ? origin : ChatOrigin.EMPTY).toToolContext();
+            skillMd = readSkillFile.call(redirectArgs, ctx);
+        } catch (Exception e) {
+            log.warn("[ToolExecutor] Auto-redirect readSkillFile failed for '{}': {}", toolName, e.getMessage());
+            return null;
+        }
+
+        log.info("[ToolExecutor] Auto-redirected skill-as-tool call '{}' → readSkillFile (returned {} chars)",
+                toolName, skillMd != null ? skillMd.length() : 0);
+
+        String safeArgs = originalArgs == null || originalArgs.isBlank() ? "{}" : originalArgs;
+        String response = String.format(
+                "[auto-redirect] You called '%s' as a tool, but it's a Skill (documentation package). "
+                + "Its SKILL.md is loaded below — read the script invocation example, then call "
+                + "`runSkillScript(skillName=\"%s\", scriptPath=\"scripts/<file from SKILL.md>\", args=[...])` "
+                + "to actually run it. Your original payload was: %s%n%n---%n%s",
+                toolName, toolName, safeArgs, skillMd == null ? "" : skillMd);
+        return new SkillRedirect(response);
+    }
+
+    /** Minimal JSON string escaping for the synthetic readSkillFile arg payload. */
+    private static String jsonStringEscape(String s) {
+        return s.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
     // ==================== 内部数据类 ====================
