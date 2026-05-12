@@ -203,6 +203,24 @@ export const skillApi = {
   getLessons: (id: string | number) => http.get(`/skills/${id}/lessons`),
   clearLessons: (id: string | number) => http.post(`/skills/${id}/lessons/clear`),
   employees: (id: string | number) => http.get(`/skills/${id}/employees`),
+  /**
+   * Per-skill secrets — env-var-shaped key/value pairs that get injected
+   * into the script subprocess at runtime. Plaintext values never leave
+   * the server; list returns masked previews only.
+   */
+  listSecrets: (id: string | number) => http.get(`/skills/${id}/secrets`),
+  putSecret: (id: string | number, key: string, value: string) =>
+    http.post(`/skills/${id}/secrets`, { key, value }),
+  deleteSecret: (id: string | number, key: string) =>
+    http.delete(`/skills/${id}/secrets/${encodeURIComponent(key)}`),
+}
+
+/** Shape returned by GET /skills/{id}/secrets. */
+export interface SkillSecretSummary {
+  key: string
+  /** Masked preview, e.g. "abc...xyz". Plaintext is never shipped. */
+  preview: string
+  updatedAt: string
 }
 
 // ==================== Activity Feed (RFC-090 §4.5) ====================

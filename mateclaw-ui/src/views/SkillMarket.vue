@@ -291,6 +291,9 @@
           <button class="detail-tab" :class="{ active: detailTab === 'lessons' }" @click="detailTab = 'lessons'">
             {{ t('skills.detail.lessons') }}
           </button>
+          <button class="detail-tab" :class="{ active: detailTab === 'secrets' }" @click="detailTab = 'secrets'">
+            {{ t('skills.detail.secrets') }}
+          </button>
           <button class="detail-tab" :class="{ active: detailTab === 'memory' }" @click="detailTab = 'memory'">
             {{ t('skills.detail.memory') }}
             <span v-if="detailEmployees.length > 0" class="tab-count">{{ detailEmployees.length }}</span>
@@ -581,6 +584,16 @@
           <p v-else-if="!detailLessonsRaw" class="detail-empty">{{ t('skills.detail.noLessons') }}</p>
           <pre v-else class="detail-pre">{{ detailLessonsRaw }}</pre>
         </div>
+
+        <!-- Per-skill secrets — env-var key/value table.
+             Plaintext never leaves the server; the panel shows masked
+             previews and routes write/delete through the SkillSecretController. -->
+        <div v-if="detailTab === 'secrets'" class="detail-section">
+          <SkillSecretsPanel
+            :skill-id="detailSkill?.id ?? null"
+            :visible="detailTab === 'secrets'"
+          />
+        </div>
             </div>
           </div>
         </div>
@@ -668,6 +681,7 @@ import { skillApi, skillInstallApi } from '@/api/index'
 import type { Skill, SkillRuntimeStatus, SkillSecurityFinding } from '@/types/index'
 import ImportHubDialog from '@/components/skill/ImportHubDialog.vue'
 import PreflightInstallDialog from '@/components/skill/PreflightInstallDialog.vue'
+import SkillSecretsPanel from '@/components/skill/SkillSecretsPanel.vue'
 import McPagination from '@/components/common/McPagination.vue'
 import SkillIcon from '@/components/common/SkillIcon.vue'
 import SkillIconPicker from '@/components/common/SkillIconPicker.vue'
@@ -705,7 +719,7 @@ const rescanning = ref<Record<string, boolean>>({})
  *  tab for back-compat with any deep links that may pass it. */
 const detailDrawerVisible = ref(false)
 const detailSkill = ref<Skill | null>(null)
-const detailTab = ref<'overview' | 'body' | 'manifest' | 'tools' | 'features' | 'security' | 'lessons' | 'memory'>('overview')
+const detailTab = ref<'overview' | 'body' | 'manifest' | 'tools' | 'features' | 'security' | 'lessons' | 'secrets' | 'memory'>('overview')
 const detailLessonsRaw = ref<string>('')
 const detailLessonsLoading = ref(false)
 const detailEmployees = ref<Array<{ id: number; name: string; icon?: string; binding?: 'explicit' | 'implicit' }>>([])
@@ -821,7 +835,7 @@ const detailFeaturesCount = computed(() => detailFeatures.value.length)
 
 function openDetailDrawer(
   skill: Skill,
-  tab: 'overview' | 'body' | 'tools' | 'features' | 'security' | 'lessons' | 'memory' = 'overview',
+  tab: 'overview' | 'body' | 'tools' | 'features' | 'security' | 'lessons' | 'secrets' | 'memory' = 'overview',
   opts: { editIdentity?: boolean; editBody?: boolean } = {},
 ) {
   detailSkill.value = skill
