@@ -213,13 +213,12 @@ public class DocumentExtractTool {
         long t0 = System.currentTimeMillis();
         String content = tryPdftotext(path, options);
         if (content != null && !content.isBlank()) {
-            if (!needsOcr(content, realPageCount)) {
+            ExtractionQuality q = classifyExtraction(content, realPageCount);
+            if (!q.needsOcr()) {
                 attempts.add("pdftotext: 成功 (" + (System.currentTimeMillis() - t0) + "ms)");
                 return new ExtractedContent(content, "pdftotext", realPageCount > 0 ? realPageCount : estimatePages(content));
             }
-            double perPage = realPageCount > 0 ? (double) content.strip().length() / realPageCount : 0;
-            attempts.add("pdftotext: 文本过少 (总 " + content.strip().length() + " 字符, "
-                    + realPageCount + " 页, 每页 " + String.format("%.0f", perPage) + " 字符)，可能是扫描版");
+            attempts.add("pdftotext: 触发 OCR (" + describeTrigger(q, content.strip().length(), realPageCount) + ")");
             bestContent = content;
             bestMethod = "pdftotext";
         } else {
@@ -230,11 +229,12 @@ public class DocumentExtractTool {
         long t1 = System.currentTimeMillis();
         content = tryPythonPdfExtractor(path, options);
         if (content != null && !content.isBlank()) {
-            if (!needsOcr(content, realPageCount)) {
+            ExtractionQuality q = classifyExtraction(content, realPageCount);
+            if (!q.needsOcr()) {
                 attempts.add("python_pdf: 成功 (" + (System.currentTimeMillis() - t1) + "ms)");
                 return new ExtractedContent(content, "python_pdfplumber", realPageCount > 0 ? realPageCount : estimatePages(content));
             }
-            attempts.add("python_pdf: 文本过少");
+            attempts.add("python_pdf: 触发 OCR (" + describeTrigger(q, content.strip().length(), realPageCount) + ")");
             if (bestContent == null || content.strip().length() > bestContent.strip().length()) {
                 bestContent = content;
                 bestMethod = "python_pdfplumber";
@@ -247,11 +247,12 @@ public class DocumentExtractTool {
         long t2 = System.currentTimeMillis();
         content = extractPdfWithJava(path);
         if (content != null && !content.isBlank()) {
-            if (!needsOcr(content, realPageCount)) {
+            ExtractionQuality q = classifyExtraction(content, realPageCount);
+            if (!q.needsOcr()) {
                 attempts.add("java_pdf: 成功 (" + (System.currentTimeMillis() - t2) + "ms)");
                 return new ExtractedContent(content, "java_pdfbox", realPageCount > 0 ? realPageCount : estimatePages(content));
             }
-            attempts.add("java_pdf: 文本过少");
+            attempts.add("java_pdf: 触发 OCR (" + describeTrigger(q, content.strip().length(), realPageCount) + ")");
             if (bestContent == null || content.strip().length() > bestContent.strip().length()) {
                 bestContent = content;
                 bestMethod = "java_pdfbox";
@@ -325,22 +326,99 @@ public class DocumentExtractTool {
         return 0; // 未知页数
     }
 
+    /** Fraction below which extracted text is judged unreadable and an OCR pass is forced. */
+    static final double READABLE_RATIO_THRESHOLD = 0.5;
+
+    /** Outcome of {@link #classifyExtraction}; {@link #trigger()} is {@code null} when usable. */
+    record ExtractionQuality(String trigger, double readableRatio, double charsPerPage) {
+        boolean needsOcr() { return trigger != null; }
+    }
+
     /**
-     * 判断提取到的文本是否太少、需要尝试 OCR。
-     * 使用真实页数（来自 getPdfPageCount）计算字符密度，不再依赖 estimatePages 反推。
-     * 页数未知（0）时，只看总字符数。
+     * Classify the quality of a text extraction pass.
+     * <p>
+     * Three failure modes can fire an OCR retry:
+     * <ul>
+     *   <li>{@code empty} / {@code too_short}: nothing extracted, typical of image-only PDFs.</li>
+     *   <li>{@code low_readable_ratio}: extractor returned plenty of characters but most of
+     *       them are control bytes / high-Latin junk — typical of CID-encoded fonts without
+     *       a {@code ToUnicode} CMap, where the engine dumps glyph indices as bytes.</li>
+     *   <li>{@code low_char_density}: per-page char count is far below what a real text PDF
+     *       would yield, typical of scanned PDFs with a thin OCR layer applied upstream.</li>
+     * </ul>
      */
-    private boolean needsOcr(String text, int realPageCount) {
-        if (text == null || text.isBlank()) return true;
-        String stripped = text.strip();
-        if (stripped.length() < 20) return true;
-        if (realPageCount <= 0) {
-            // 页数未知时回退到总字符数判定（保守阈值）
-            return stripped.length() < 100;
+    static ExtractionQuality classifyExtraction(String text, int realPageCount) {
+        if (text == null || text.isBlank()) {
+            return new ExtractionQuality("empty", 0.0, 0.0);
         }
-        double perPage = (double) stripped.length() / realPageCount;
-        // 正常文本 PDF 每页至少数百字符；每页不到 30 字符大概率是扫描版
-        return perPage < 30;
+        String stripped = text.strip();
+        if (stripped.length() < 20) {
+            return new ExtractionQuality("too_short", 0.0, 0.0);
+        }
+        double ratio = readableRatio(stripped);
+        double perPage = realPageCount > 0
+                ? (double) stripped.length() / realPageCount
+                : stripped.length();
+        if (ratio < READABLE_RATIO_THRESHOLD) {
+            return new ExtractionQuality("low_readable_ratio", ratio, perPage);
+        }
+        if (realPageCount <= 0) {
+            // Page count unknown — fall back to a conservative total-length cutoff.
+            if (stripped.length() < 100) {
+                return new ExtractionQuality("too_short", ratio, perPage);
+            }
+        } else if (perPage < 30) {
+            return new ExtractionQuality("low_char_density", ratio, perPage);
+        }
+        return new ExtractionQuality(null, ratio, perPage);
+    }
+
+    /**
+     * Fraction of code points that are obviously readable: ASCII printable, tab/newline,
+     * CJK Unified Ideographs (+ ext A), CJK punctuation, halfwidth/fullwidth forms,
+     * hiragana/katakana, hangul syllables. Returns 0 for empty input.
+     * <p>
+     * The threshold {@link #READABLE_RATIO_THRESHOLD} separates real-world noisy
+     * extraction (well above 0.7 even with OCR errors) from font-encoding garbage,
+     * which typically lands below 0.1 because the bytes fall outside every script range.
+     */
+    static double readableRatio(String text) {
+        if (text == null || text.isEmpty()) return 0.0;
+        int total = 0, good = 0;
+        for (int i = 0; i < text.length(); ) {
+            int cp = text.codePointAt(i);
+            i += Character.charCount(cp);
+            total++;
+            if (isReadable(cp)) good++;
+        }
+        return total == 0 ? 0.0 : (double) good / total;
+    }
+
+    /** Compact one-line summary of why an extraction was rejected, for the attempts log. */
+    private static String describeTrigger(ExtractionQuality q, int totalChars, int realPageCount) {
+        return switch (q.trigger()) {
+            case "low_readable_ratio" -> String.format(
+                    "readable=%.2f<%.2f, %d 字符多为非可读字节，可能是字体编码异常",
+                    q.readableRatio(), READABLE_RATIO_THRESHOLD, totalChars);
+            case "low_char_density" -> String.format(
+                    "每页 %.0f 字符（总 %d, %d 页），可能是扫描版",
+                    q.charsPerPage(), totalChars, realPageCount);
+            case "too_short" -> "总 " + totalChars + " 字符，文本过少";
+            case "empty" -> "提取结果为空";
+            default -> "trigger=" + q.trigger();
+        };
+    }
+
+    private static boolean isReadable(int cp) {
+        if (cp == 9 || cp == 10 || cp == 13) return true;
+        if (cp >= 0x20 && cp <= 0x7E) return true;     // ASCII printable
+        if (cp >= 0x3000 && cp <= 0x303F) return true; // CJK punctuation
+        if (cp >= 0x3040 && cp <= 0x30FF) return true; // hiragana / katakana
+        if (cp >= 0x3400 && cp <= 0x4DBF) return true; // CJK ext A
+        if (cp >= 0x4E00 && cp <= 0x9FFF) return true; // CJK unified
+        if (cp >= 0xAC00 && cp <= 0xD7AF) return true; // hangul syllables
+        if (cp >= 0xFF00 && cp <= 0xFFEF) return true; // halfwidth / fullwidth
+        return false;
     }
 
     /** OCR 结果（含成功/失败页数统计） */

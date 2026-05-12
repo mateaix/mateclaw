@@ -792,8 +792,8 @@ async function applyTemplate(id: string) {
     ElMessage.success(t('agents.templates.applied'))
     showTemplateSelector.value = false
     await loadAgents()
-  } catch {
-    ElMessage.error(t('agents.messages.saveFailed'))
+  } catch (e: any) {
+    ElMessage.error(e?.message || t('agents.messages.saveFailed'))
   } finally {
     applyingTemplate.value = false
   }
@@ -887,8 +887,8 @@ async function saveAgent() {
     ElMessage.success(t('agents.messages.saveSuccess'))
     closeModal()
     await loadAgents()
-  } catch {
-    ElMessage.error(t('agents.messages.saveFailed'))
+  } catch (e: any) {
+    ElMessage.error(e?.message || t('agents.messages.saveFailed'))
   }
 }
 
