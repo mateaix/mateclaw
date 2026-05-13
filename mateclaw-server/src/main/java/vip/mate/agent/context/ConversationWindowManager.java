@@ -62,11 +62,20 @@ public class ConversationWindowManager {
     /** 迭代更新：合并旧摘要 + 新轮次 */
     private static final String STRUCTURED_SUMMARY_UPDATE = PromptLoader.loadPrompt("context/structured-summary-update");
 
-    /** 摘要注入前缀 */
-    private static final String SUMMARY_PREFIX =
+    /** 摘要注入前缀 (package-private for test assertions) */
+    static final String SUMMARY_PREFIX =
             "[上下文压缩] 更早的对话轮次已被压缩为摘要以节省上下文空间。" +
             "以下摘要描述了已完成的工作，当前会话状态可能已反映这些变更。" +
             "请基于摘要和当前状态继续，避免重复已完成的工作：\n\n";
+
+    /**
+     * Marker prefix used by the first-user anchor. Lets compaction skip
+     * previously-injected anchors when looking for the "real" first user
+     * message in a subsequent round.
+     *
+     * <p>Package-private so unit tests can assert on the marker.
+     */
+    static final String ANCHOR_PREFIX = "[Original goal]\n";
 
     // ==================== 序列化截断参数 ====================
 
@@ -363,6 +372,15 @@ public class ConversationWindowManager {
         List<Message> result = new ArrayList<>();
         if (summary != null && !summary.isBlank()) {
             result.add(new UserMessage(SUMMARY_PREFIX + summary));
+
+            // Anchor the original user goal so a long task that paged through
+            // dozens of turns can still see what was originally asked. Always
+            // as a UserMessage — promoting historical user input to a
+            // SystemMessage would be a privilege-escalation risk.
+            Message anchor = buildFirstUserAnchor(oldMessages);
+            if (anchor != null) {
+                result.add(anchor);
+            }
         } else if (!oldMessages.isEmpty()) {
             log.warn("[ConversationWindow] 摘要生成失败，降级为保留最近 4 条旧消息, conv={}", conversationId);
             int fallbackKeep = Math.min(4, oldMessages.size());
@@ -524,6 +542,94 @@ public class ConversationWindowManager {
                     tailStart, cut);
         }
         return cut;
+    }
+
+    /**
+     * Build an anchor message replaying the first <em>real</em> user input
+     * found in the compressed prefix. "Real" here excludes prior
+     * compaction artifacts ({@link #SUMMARY_PREFIX} / {@link #ANCHOR_PREFIX}
+     * messages from earlier rounds), because anchoring the previous
+     * summary defeats the purpose — the model would just see "[Original
+     * goal] [上下文压缩] …" pointing at compressor output, not at the user's
+     * actual request.
+     *
+     * <p>Sizing rules:
+     * <ul>
+     *   <li>≤ {@code firstUserAnchorMaxTokens}: keep the original text verbatim.</li>
+     *   <li>≤ 3× the budget: head+tail truncate to the budget so most of
+     *       the prompt-cache benefit survives.</li>
+     *   <li>&gt; 3× the budget: degrade to a 200-char pointer line so we
+     *       don't blow prompt cache or the summary budget on a single
+     *       message that was probably a pasted spec the model can re-read
+     *       from the workspace anyway.</li>
+     * </ul>
+     *
+     * <p>Always returns a {@link UserMessage}. {@code null} when anchoring
+     * is disabled, no real first user exists in the prefix, or the body is
+     * blank.
+     *
+     * <p>Package-private for direct unit testing — the surrounding
+     * {@link #compactMessages} path needs a ChatModel and the whole
+     * structured-summary pipeline, which the anchor logic does not.
+     */
+    Message buildFirstUserAnchor(List<Message> oldMessages) {
+        if (!properties.isFirstUserAnchorEnabled()) {
+            return null;
+        }
+        UserMessage firstUser = null;
+        for (Message m : oldMessages) {
+            if (!(m instanceof UserMessage um)) continue;
+            String text = um.getText();
+            if (text == null) continue;
+            // Skip synthetic prior-round artifacts.
+            if (text.startsWith(SUMMARY_PREFIX) || text.startsWith(ANCHOR_PREFIX)) {
+                continue;
+            }
+            firstUser = um;
+            break;
+        }
+        if (firstUser == null) return null;
+
+        String text = firstUser.getText();
+        if (text == null || text.isBlank()) return null;
+
+        int maxAnchorTokens = Math.max(40, properties.getFirstUserAnchorMaxTokens());
+        int textTokens = TokenEstimator.estimateTokens(text);
+
+        if (textTokens <= maxAnchorTokens) {
+            return new UserMessage(ANCHOR_PREFIX + text);
+        }
+
+        // > 3× budget: cheap pointer line so we don't pay token tax for a
+        // gigantic pasted spec. The model still knows the original goal
+        // existed without seeing the full body.
+        if (textTokens > maxAnchorTokens * 3L) {
+            int pointerChars = Math.min(text.length(), 200);
+            String pointer = text.substring(0, pointerChars).stripTrailing()
+                    + (text.length() > pointerChars ? "..." : "");
+            log.info("[ConversationWindow] First-user anchor downgraded to pointer ({} tokens > 3× budget {})",
+                    textTokens, maxAnchorTokens);
+            return new UserMessage(ANCHOR_PREFIX + pointer);
+        }
+
+        // Within 3× — head+tail truncate to the budget. The 2 chars/token
+        // ratio is a deliberate over-estimate so the anchor never inflates
+        // past the configured budget on ASCII-heavy input.
+        int budgetChars = Math.max(160, maxAnchorTokens * 2);
+        if (budgetChars >= text.length()) {
+            return new UserMessage(ANCHOR_PREFIX + text);
+        }
+        int headLen = (int) (budgetChars * 0.6);
+        int tailLen = Math.max(40, budgetChars - headLen - 40);
+        if (headLen + tailLen >= text.length()) {
+            return new UserMessage(ANCHOR_PREFIX + text);
+        }
+        String truncated = text.substring(0, headLen)
+                + "\n...[" + (text.length() - headLen - tailLen) + " chars truncated]...\n"
+                + text.substring(text.length() - tailLen);
+        log.info("[ConversationWindow] First-user anchor head+tail truncated ({} -> ~{} chars)",
+                text.length(), truncated.length());
+        return new UserMessage(ANCHOR_PREFIX + truncated);
     }
 
     /**
