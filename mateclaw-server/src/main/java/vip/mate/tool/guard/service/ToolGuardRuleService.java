@@ -74,6 +74,12 @@ public class ToolGuardRuleService {
         rule.setName(rule.getName().trim());
         rule.setPattern(rule.getPattern().trim());
         rule.setBuiltin(false);
+        // Pre-check uniqueness so the API returns a friendly message instead of
+        // surfacing the raw JDBC UNIQUE-constraint violation through the global
+        // exception handler. The DB constraint still guards against races.
+        if (getByRuleId(rule.getRuleId()) != null) {
+            throw new IllegalArgumentException("Rule ID already exists: " + rule.getRuleId());
+        }
         ruleMapper.insert(rule);
         ruleRegistry.reload();
         return rule;

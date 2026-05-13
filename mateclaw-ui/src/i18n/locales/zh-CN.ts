@@ -1266,6 +1266,9 @@ export default {
       },
       messages: {
         ruleIdRequired: '规则 ID 不能为空',
+        nameRequired: '名称不能为空',
+        patternRequired: '正则模式不能为空',
+        ruleIdDuplicate: '规则 ID 已存在',
         saveFailed: '保存规则失败',
       },
     },
