@@ -66,6 +66,19 @@ public class ConversationService {
     private final ApplicationEventPublisher eventPublisher;
 
     /**
+     * Optional spill store. Injected via a setter so the existing @RequiredArgsConstructor
+     * stays stable and tests that build the service directly don't need to wire
+     * tool-result storage. When present, deleteConversation also purges any spill
+     * files this conversation produced so they don't outlive the row that owned them.
+     */
+    private vip.mate.agent.graph.executor.ToolResultStorage toolResultStorage;
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setToolResultStorage(vip.mate.agent.graph.executor.ToolResultStorage toolResultStorage) {
+        this.toolResultStorage = toolResultStorage;
+    }
+
+    /**
      * 获取用户的会话列表（返回 VO，包含 agentName/agentIcon/status）
      */
     public List<ConversationVO> listConversations(String username) {
@@ -501,12 +514,31 @@ public class ConversationService {
                 @Override
                 public void afterCommit() {
                     cleanAttachmentFiles(conversationId);
+                    purgeToolResultSpill(conversationId);
                     eventPublisher.publishEvent(new ConversationDeletedEvent(conversationId));
                 }
             });
         } else {
             cleanAttachmentFiles(conversationId);
+            purgeToolResultSpill(conversationId);
             eventPublisher.publishEvent(new ConversationDeletedEvent(conversationId));
+        }
+    }
+
+    /**
+     * Best-effort: ask the spill store to delete every tool-result file this
+     * conversation produced. No-op when no spill store is wired in (legacy
+     * deployments or tests that don't need spill). Failures are logged but
+     * never propagated — leaving an extra file on disk is a small price
+     * compared to surfacing IO errors as a 500 on the delete endpoint.
+     */
+    private void purgeToolResultSpill(String conversationId) {
+        if (toolResultStorage == null) return;
+        try {
+            toolResultStorage.purgeConversation(conversationId);
+        } catch (Exception e) {
+            log.warn("[Conversation] tool-result spill purge failed for {}: {}",
+                    conversationId, e.getMessage());
         }
     }
 

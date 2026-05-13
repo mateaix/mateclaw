@@ -97,6 +97,23 @@ public class ToolResultProperties {
      */
     private List<String> excludedTools = List.of("read_file", "read_workspace_memory_file");
 
+    /**
+     * Days to retain spill files before the scheduled cleanup deletes them.
+     * Spill files exist to let the model recover full tool output via
+     * {@code read_file} during the active conversation; once the conversation
+     * is dormant for this many days the agent is extremely unlikely to ever
+     * read the file again, and disk pressure starts to matter.
+     */
+    private int retentionDays = 7;
+
+    /**
+     * Cron expression for the spill-cleanup task. Defaults to once a day at
+     * 03:00 server-local time so cleanup runs during quiet hours. Set this
+     * to a Spring-recognised value (six-field cron) or change the bean
+     * wiring to disable it entirely.
+     */
+    private String cleanupCron = "0 0 3 * * ?";
+
     public boolean isEnabled() { return enabled; }
     public void setEnabled(boolean enabled) { this.enabled = enabled; }
 
@@ -128,6 +145,14 @@ public class ToolResultProperties {
     public List<String> getExcludedTools() { return excludedTools; }
     public void setExcludedTools(List<String> excludedTools) {
         this.excludedTools = excludedTools == null ? List.of() : excludedTools;
+    }
+
+    public int getRetentionDays() { return retentionDays; }
+    public void setRetentionDays(int retentionDays) { this.retentionDays = retentionDays; }
+
+    public String getCleanupCron() { return cleanupCron; }
+    public void setCleanupCron(String cleanupCron) {
+        this.cleanupCron = cleanupCron == null ? "" : cleanupCron;
     }
 
     /** O(1) membership test for the exclusion list, used on every tool result. */

@@ -229,6 +229,11 @@ mate:
       excluded-tools:
         - read_file
         - read_workspace_memory_file
+      # Spill files are deleted after this many days. Set to 0 to disable the
+      # scheduled sweep entirely (files still get purged when the conversation
+      # is deleted explicitly via ConversationService.deleteConversation).
+      retention-days: 7
+      cleanup-cron: "0 0 3 * * ?"
     conversation:
       window:
         # 测试时临时调低：2000 token ≈ 2000 中文字，3 轮对话即可触发压缩
