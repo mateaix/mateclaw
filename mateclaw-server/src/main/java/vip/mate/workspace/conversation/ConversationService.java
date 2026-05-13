@@ -477,6 +477,11 @@ public class ConversationService {
                 if (v != null) metadata.put(k, v);
             });
         }
+        // First write a placeholder so the row lands with the structured
+        // fields; we backfill summaryId in a second step once MyBatis Plus
+        // has assigned the snowflake id. ASSIGN_ID actually populates the
+        // id BEFORE flushing the INSERT, but reading it back this way means
+        // the contract holds even if the ID generation strategy changes.
         try {
             entity.setMetadata(objectMapper.writeValueAsString(metadata));
         } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
@@ -485,6 +490,20 @@ public class ConversationService {
             entity.setMetadata("{\"type\":\"compression_summary\",\"compressedCount\":" + compressedCount + "}");
         }
         messageMapper.insert(entity);
+
+        // Backfill summaryId now that the row owns an id. Best-effort: a
+        // failure here doesn't invalidate the boundary itself, it just
+        // means SSE clients won't have a deep-link target for this row.
+        if (entity.getId() != null) {
+            metadata.put("summaryId", entity.getId());
+            try {
+                entity.setMetadata(objectMapper.writeValueAsString(metadata));
+                messageMapper.updateById(entity);
+            } catch (Exception e) {
+                log.warn("[Conversation] Failed to backfill summaryId on compression boundary: {}",
+                        e.getMessage());
+            }
+        }
         log.info("[Conversation] Saved compression boundary conv={}, compressedCount={}, metadata={}",
                 conversationId, compressedCount, entity.getMetadata());
     }

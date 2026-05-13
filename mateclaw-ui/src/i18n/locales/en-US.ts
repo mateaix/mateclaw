@@ -297,6 +297,12 @@ export default {
     streamReconnecting: 'Reconnecting...',
     streamStopped: 'Stopped',
     streamCompleted: 'Completed',
+    // Context compaction (compact_status SSE)
+    compactStart: 'Compacting context…',
+    compactPairSafe: 'Adjusting boundary to preserve tool_call pairs…',
+    compactSummarize: 'Summarizing the older turns…',
+    compactStartWithTokens: 'Compacting context… ({tokens})',
+    compactSummarizeWithCount: 'Summarizing the older turns… ({count} msgs)',
     streamPreparingContextDetail: 'Collecting the current question, conversation history, and required context.',
     streamReadingMemoryDetail: 'Looking up the most relevant long-term memory and recent notes for this question.',
     streamReasoningDetail: 'Comparing options and organizing the answer structure based on the available information.',

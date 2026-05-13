@@ -297,6 +297,12 @@ export default {
     streamReconnecting: '重新连接...',
     streamStopped: '已停止',
     streamCompleted: '已完成',
+    // Context compaction (compact_status SSE)
+    compactStart: '正在压缩上下文…',
+    compactPairSafe: '调整边界以保留 tool_call 配对…',
+    compactSummarize: '正在生成压缩摘要…',
+    compactStartWithTokens: '正在压缩上下文… ({tokens})',
+    compactSummarizeWithCount: '正在生成压缩摘要… ({count} 条)',
     streamPreparingContextDetail: '正在收集当前问题、历史对话和必要配置。',
     streamReadingMemoryDetail: '正在查找与你当前问题最相关的长期记忆和今日记录。',
     streamReasoningDetail: '正在基于现有信息进行判断、比较方案并组织回答结构。',

@@ -235,12 +235,17 @@ public abstract class BaseAgent {
                     agentName, history.size(), totalCount, windowSize);
         }
 
-        // ===== 识别持久化的压缩摘要：从摘要位置开始，跳过更早消息 =====
-        for (int i = 0; i < history.size(); i++) {
+        // ===== Slice from the LATEST compression boundary, not the first =====
+        // A long-running conversation can accumulate several boundaries; the
+        // newest one is the only relevant cut-off because every earlier
+        // boundary's content is already folded into the newer summary. Walking
+        // forward and breaking on the first boundary kept everything between
+        // boundaries — the very redundancy compaction was supposed to remove.
+        for (int i = history.size() - 1; i >= 0; i--) {
             MessageEntity msg = history.get(i);
             if ("system".equals(msg.getRole()) && isCompressionSummary(msg)) {
                 history = new ArrayList<>(history.subList(i, history.size()));
-                log.info("[{}] Found compression summary, loading from index {} ({} messages)",
+                log.info("[{}] Found latest compression boundary at index {}; loading {} messages forward",
                         agentName, i, history.size());
                 break;
             }
