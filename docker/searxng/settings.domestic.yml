@@ -2,11 +2,10 @@ use_default_settings:
   engines:
     keep_only:
       - google
-      - google news
+      - google_news_rss
       - bing
       - 360search
       - sogou
-      - bing news
       - bilibili
       - 微信公众号
 
@@ -41,8 +40,8 @@ engines:
     shortcut: g
     region: zh-CN
     disabled: false
-    weight: 2
-    categories: [general, news]
+    weight: 4
+    categories: [general]
     proxies:
       all://:
         - http://mihomo.zeabur.internal:10808
@@ -58,42 +57,30 @@ engines:
     shortcut: b
     region: zh-CN
     disabled: false
-    weight: 2
-    categories: [general, news]
+    weight: 3
+    categories: [general]
 
   - name: 360search
     engine: 360search
     shortcut: "360"
-    categories: [general, news]
+    categories: [general]
     disabled: false
     weight: 1
 
   - name: sogou
     engine: sogou
     shortcut: sg
-    categories: [general, news]
+    categories: [general]
     timeout: 6.0
     disabled: false
     weight: 1
 
-  - name: bing news
-    engine: bing_news
-    shortcut: bn
-    disabled: true
+  - name: google_news_rss
+    engine: google_news_rss
+    shortcut: gnrss
     categories: [news]
-    proxies:
-      all://:
-        - http://mihomo.zeabur.internal:10808
-
-  - name: google news
-    engine: google_news
-    shortcut: gn
-    region: zh-CN
-    google_domain: google.com
-    use_mobile_ui: true
-    timeout: 10.0
-    disabled: true
-    categories: [news]
+    timeout: 30.0
+    enabled: true
     proxies:
       all://:
         - http://mihomo.zeabur.internal:10808
