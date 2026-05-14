@@ -55,7 +55,7 @@
   <text x="140" y="264" text-anchor="middle" font-size="10" fill="#665245">LLM Wiki KB</text>
   <text x="140" y="282" text-anchor="middle" font-size="10" fill="#665245">Structured + Backlinks</text>
   <text x="140" y="300" text-anchor="middle" font-size="10" fill="#665245">Citations + Soft Archive</text>
-  <text x="140" y="318" text-anchor="middle" font-size="10" fill="#665245">Lazy ingest · On-demand</text>
+  <text x="140" y="318" text-anchor="middle" font-size="10" fill="#665245">+ Transformations (1.3.0+)</text>
   <text x="140" y="336" text-anchor="middle" font-size="9" fill="#9b7d6c">A library, not a vector store</text>
   <line x1="240" y1="280" x2="408" y2="280" stroke="#184a45" stroke-width="1.5" stroke-dasharray="4,3" opacity="0.5"/>
   <polygon points="406,275 414,280 406,285" fill="#184a45" opacity="0.6"/>
@@ -98,13 +98,19 @@
   <line x1="640" y1="400" x2="508" y2="340" stroke="#d96d46" stroke-width="1.5" stroke-dasharray="4,3" opacity="0.4"/>
   <polygon points="513,344 504,342 511,336" fill="#d96d46" opacity="0.5"/>
 
+  <!-- ===== Orchestration tier (NEW 1.3.0): Workflow + Trigger ===== -->
+  <rect x="350" y="358" width="260" height="36" rx="10" fill="url(#primary)" filter="url(#shadow)"/>
+  <text x="480" y="376" text-anchor="middle" font-size="11" font-weight="700" fill="#ffffff">Orchestration · Workflow + Trigger</text>
+  <text x="480" y="389" text-anchor="middle" font-size="9" fill="#fde7dd">Events → multi-employee → approval / dispatch / memory</text>
+
   <!-- ===== Bottom Center: Provider Pool + Failover ===== -->
   <rect x="370" y="420" width="220" height="64" rx="12" fill="url(#accent)" filter="url(#shadow)"/>
   <text x="480" y="442" text-anchor="middle" font-size="13" font-weight="700" fill="#ffffff">Provider Pool · Failover</text>
   <text x="480" y="460" text-anchor="middle" font-size="10" fill="#dce8e4">Cloud + Local · 14+ providers</text>
   <text x="480" y="475" text-anchor="middle" font-size="9" fill="#dce8e4">Health Tracker · Auto-switch</text>
-  <line x1="480" y1="420" x2="480" y2="352" stroke="#184a45" stroke-width="1.5" stroke-dasharray="4,3" opacity="0.5"/>
-  <polygon points="475,354 480,346 485,354" fill="#184a45" opacity="0.6"/>
+  <!-- Arrow up to agent (short, stops before orchestration band) -->
+  <line x1="480" y1="420" x2="480" y2="398" stroke="#184a45" stroke-width="1.5" stroke-dasharray="4,3" opacity="0.5"/>
+  <polygon points="475,400 480,392 485,400" fill="#184a45" opacity="0.6"/>
 
   <rect x="340" y="530" width="280" height="26" rx="13" fill="url(#primary)"/>
   <text x="480" y="548" text-anchor="middle" font-size="11" font-weight="600" fill="#fff" letter-spacing="0.5">Mate is companion. Claw is capability.</text>
