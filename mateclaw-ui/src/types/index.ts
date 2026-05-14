@@ -177,6 +177,12 @@ export interface MessageSegment {
   repetitionWarning?: 'char_pattern' | 'sentence_repetition'
   /** Number of trailing characters dropped when the repetition guard fired. */
   truncatedChars?: number
+  /** Backend marked this model-predicted tool result as replaced by a later actual tool result. */
+  superseded?: boolean
+  /** Segment ID that replaced this pre-tool prediction. */
+  supersededBySegmentId?: string
+  /** Machine-readable reason for superseding this segment. */
+  supersededReason?: string
 }
 
 export interface MessageMetadata {

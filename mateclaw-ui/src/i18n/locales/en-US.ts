@@ -327,6 +327,8 @@ export default {
     // Per-iteration grouping
     iterationEmpty: 'Iteration {index} interrupted (no output)',
     contentRepetitionWarning: 'Repetitive content detected near the end (model artifact)',
+    supersededPreviewCollapsed: 'Model preview replaced by the actual tool result',
+    expand: 'Expand',
     // INCOMPLETE truncation card (finishReason=incomplete)
     incompleteTitle: 'Answer auto-truncated after repeated output was detected',
     incompleteDescription: 'After the visible text above, the model started repeating itself (or stalled in thinking with no output) and was cut short to avoid wasted tokens. Click below to regenerate the full answer, or refine your prompt to focus on the missing parts.',
