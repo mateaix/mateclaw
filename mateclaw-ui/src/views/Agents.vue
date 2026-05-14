@@ -337,7 +337,7 @@
                   <input type="checkbox" :value="skill.id" v-model="selectedSkillIds" class="binding-checkbox" />
                   <span class="binding-icon"><SkillIcon :value="skill.icon" :size="20" :fallback="'🧩'" /></span>
                   <div class="binding-info">
-                    <span class="binding-name">{{ skill.name }}</span>
+                    <span class="binding-name">{{ resolveSkillName(skill) }}</span>
                     <span v-if="skill.description" class="binding-desc">{{ skill.description?.slice(0, 80) }}</span>
                   </div>
                   <span v-if="skill.version" class="binding-version">v{{ skill.version }}</span>
@@ -505,9 +505,11 @@ import {
 } from '@/utils/agentPromptProfile'
 import { agentIconColor } from '@/utils/agentIconColor'
 import { filterAgentBindingItems, filterAgentToolGroups } from '@/utils/agentBindingSearch'
+import { useSkillName } from '@/composables/useSkillName'
 
 const router = useRouter()
 const { t } = useI18n()
+const { resolveSkillName } = useSkillName()
 const agents = ref<Agent[]>([])
 const searchText = ref('')
 const activeFilter = ref('all')
