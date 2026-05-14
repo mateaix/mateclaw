@@ -144,9 +144,10 @@ import { useI18n } from 'vue-i18n'
 const { t } = useI18n()
 const props = defineProps<{ focus: string | null }>()
 
-const listFilter = ref<'all' | 'high' | 'pending'>('all')
+type ListFilterKey = 'all' | 'high' | 'pending'
+const listFilter = ref<ListFilterKey>('all')
 
-const listFilters = computed(() => [
+const listFilters = computed<{ key: ListFilterKey; label: string; count: number }[]>(() => [
   { key: 'all', label: t('enterprise.contract.filterAll'), count: 23 },
   { key: 'high', label: t('enterprise.contract.filterHigh'), count: 7 },
   { key: 'pending', label: t('enterprise.contract.filterPending'), count: 12 },

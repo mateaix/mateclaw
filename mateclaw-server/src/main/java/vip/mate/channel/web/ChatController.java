@@ -1726,7 +1726,15 @@ public class ChatController {
 
             // content_delta
             if (delta.content() != null && !delta.content().isBlank()) {
-                content.append(delta.content());
+                // segmentOnly deltas route per-iteration narration to the
+                // segments timeline only — the persisted top-level content
+                // field stays clean so it carries the final answer span,
+                // not "我来…让我…" concatenations across iterations (issue
+                // #120 narration leg). segmentOnly implies persistenceOnly,
+                // so no broadcast either.
+                if (!delta.segmentOnly()) {
+                    content.append(delta.content());
+                }
                 streamTracker.updatePhase(conversationId, "drafting_answer");
                 if (!delta.persistenceOnly()) {
                     broadcastEvent(conversationId, "content_delta", Map.of("delta", delta.content()));
@@ -1745,7 +1753,9 @@ public class ChatController {
 
             // thinking_delta
             if (delta.thinking() != null && !delta.thinking().isBlank()) {
-                thinking.append(delta.thinking());
+                if (!delta.segmentOnly()) {
+                    thinking.append(delta.thinking());
+                }
                 if (!delta.persistenceOnly()) {
                     broadcastEvent(conversationId, "thinking_delta", Map.of("delta", delta.thinking()));
                 }
@@ -1824,6 +1834,11 @@ public class ChatController {
             } else if ("tool_call_started".equals(eventType)) {
                 // toolCalls（兼容）
                 Map<String, Object> tc = new LinkedHashMap<>();
+                // toolCallId is required for history replay to pair the persisted
+                // assistant tool_call with its tool_response — providers reject any
+                // sequence whose ids don't match. Always record it (empty string
+                // when the upstream event didn't carry one, e.g. forced tool calls).
+                tc.put("toolCallId", String.valueOf(data.getOrDefault("toolCallId", "")));
                 tc.put("name", data.getOrDefault("toolName", ""));
                 tc.put("arguments", data.getOrDefault("arguments", ""));
                 tc.put("status", "running");
@@ -1831,6 +1846,7 @@ public class ChatController {
                 // segments: 关闭 running thinking/content，插入 tool_call
                 finalizeRunningSegments("thinking", "content");
                 var seg = newSegment("tool_call");
+                seg.put("toolCallId", String.valueOf(data.getOrDefault("toolCallId", "")));
                 seg.put("toolName", data.getOrDefault("toolName", ""));
                 seg.put("toolArgs", data.getOrDefault("arguments", ""));
                 segments.add(seg);
@@ -1848,10 +1864,17 @@ public class ChatController {
                 }
             } else if ("tool_call_completed".equals(eventType)) {
                 String toolName = String.valueOf(data.getOrDefault("toolName", ""));
-                // toolCalls（兼容）
+                String toolCallId = String.valueOf(data.getOrDefault("toolCallId", ""));
+                // toolCalls（兼容）— prefer toolCallId match so parallel calls of
+                // the same tool don't collide on the running+toolName fallback.
                 for (int i = toolCalls.size() - 1; i >= 0; i--) {
                     Map<String, Object> tc = toolCalls.get(i);
-                    if ("running".equals(tc.get("status")) && toolName.equals(tc.get("name"))) {
+                    boolean matches = (!toolCallId.isEmpty()
+                                && toolCallId.equals(String.valueOf(tc.getOrDefault("toolCallId", ""))))
+                            || (toolCallId.isEmpty()
+                                && "running".equals(tc.get("status"))
+                                && toolName.equals(tc.get("name")));
+                    if (matches) {
                         tc.put("result", data.getOrDefault("result", ""));
                         tc.put("success", data.getOrDefault("success", true));
                         tc.put("status", "completed");
@@ -1861,8 +1884,13 @@ public class ChatController {
                 // segments: 标记对应 tool_call 完成
                 for (int i = segments.size() - 1; i >= 0; i--) {
                     var seg = segments.get(i);
-                    if ("tool_call".equals(seg.get("type")) && "running".equals(seg.get("status"))
-                            && toolName.equals(seg.get("toolName"))) {
+                    if (!"tool_call".equals(seg.get("type"))) continue;
+                    boolean matches = (!toolCallId.isEmpty()
+                                && toolCallId.equals(String.valueOf(seg.getOrDefault("toolCallId", ""))))
+                            || (toolCallId.isEmpty()
+                                && "running".equals(seg.get("status"))
+                                && toolName.equals(seg.get("toolName")));
+                    if (matches) {
                         seg.put("status", "completed");
                         seg.put("toolResult", data.getOrDefault("result", ""));
                         seg.put("toolSuccess", data.getOrDefault("success", true));

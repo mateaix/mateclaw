@@ -84,9 +84,10 @@ import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 const { t } = useI18n()
-const filter = ref<'mine' | 'all' | 'high'>('mine')
+type FilterKey = 'mine' | 'all' | 'high'
+const filter = ref<FilterKey>('mine')
 
-const filters = computed(() => [
+const filters = computed<{ key: FilterKey; label: string; count: number }[]>(() => [
   { key: 'mine', label: t('enterprise.approvals.filterMine'), count: 3 },
   { key: 'all', label: t('enterprise.approvals.filterAll'), count: 5 },
   { key: 'high', label: t('enterprise.approvals.filterHigh'), count: 2 },

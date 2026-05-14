@@ -109,7 +109,8 @@ import { useI18n } from 'vue-i18n'
 const { t } = useI18n()
 const emit = defineEmits<{ (e: 'open-case', id: string): void }>()
 
-const activeFilter = ref<'all' | 'high' | 'pending' | 'today'>('all')
+type QueueFilterKey = 'all' | 'high' | 'pending' | 'today'
+const activeFilter = ref<QueueFilterKey>('all')
 
 const metrics = computed(() => [
   { key: 'pending', label: t('enterprise.overview.metricPending'), value: '23', delta: '+4', deltaTone: 'up', tone: '' },
@@ -118,7 +119,7 @@ const metrics = computed(() => [
   { key: 'cited',   label: t('enterprise.overview.metricCited'), value: '98%', delta: '+3pp', deltaTone: 'up', tone: 'tone-good' },
 ])
 
-const queueFilters = computed(() => [
+const queueFilters = computed<{ key: QueueFilterKey; label: string; count: number }[]>(() => [
   { key: 'all', label: t('enterprise.overview.filterAll'), count: 23 },
   { key: 'high', label: t('enterprise.overview.filterHighRisk'), count: 7 },
   { key: 'pending', label: t('enterprise.overview.filterPending'), count: 12 },

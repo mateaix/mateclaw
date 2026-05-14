@@ -16,7 +16,7 @@
 
         <div class="workflows-grid">
           <!-- left: list -->
-          <aside class="workflows-list mc-surface-card">
+          <aside class="workflows-list">
             <div class="list-header">
               <span>{{ t('workflows.defined', { count: workflows.length }) }}</span>
               <button class="btn-ghost" @click="reload">{{ t('workflows.refresh') }}</button>
@@ -41,7 +41,7 @@
           </aside>
 
           <!-- middle: editor -->
-          <section class="workflows-editor mc-surface-card" v-if="selected">
+          <section class="workflows-editor" v-if="selected">
             <header class="editor-header">
               <input v-model="selected.name" class="editor-name" :placeholder="t('workflows.namePlaceholder')" />
               <input v-model="selected.description" class="editor-desc" :placeholder="t('workflows.descPlaceholder')" />
@@ -61,30 +61,32 @@
               <button class="tab-btn" :class="{ active: editorTab === 'json' }" @click="editorTab = 'json'">
                 {{ t('workflows.tabs.json') }}
               </button>
+              <button class="tab-btn" :class="{ active: editorTab === 'runs' }" @click="onSwitchToRuns">
+                {{ t('workflows.tabs.runs', { count: runs.length + pausedRuns.length }) }}
+              </button>
             </div>
 
-            <div v-if="editorTab === 'canvas'" class="canvas-pane">
+            <div v-if="editorTab === 'canvas'" class="canvas-pane" :class="{ 'canvas-fullscreen': canvasFullscreen }">
               <WorkflowCanvas
                 v-model="canvasModel"
                 :canvas-id="`wf-${selected.id}`"
                 @select-step="onCanvasSelect"
                 @insert-step="onInsertStep"
-              >
-                <template v-if="canvasSelection" #panel>
-                  <StepPropertyPanel
-                    :step="selectedStep"
-                    :index="canvasSelection.index"
-                    :available-agents="availableAgents"
-                    :available-channels="availableChannels"
-                    @patch="onStepPatch"
-                    @duplicate="onStepDuplicate"
-                    @delete="onStepDelete"
-                  />
-                </template>
-              </WorkflowCanvas>
+                @update:fullscreen="canvasFullscreen = $event"
+              />
+              <StepPropertyPanel
+                v-if="canvasSelection"
+                :step="selectedStep"
+                :index="canvasSelection.index"
+                :available-agents="availableAgents"
+                :available-channels="availableChannels"
+                @patch="onStepPatch"
+                @duplicate="onStepDuplicate"
+                @delete="onStepDelete"
+              />
             </div>
 
-            <div v-else class="json-pane">
+            <div v-else-if="editorTab === 'json'" class="json-pane">
               <div class="editor-toolbar">
                 <label class="template-picker">
                   <span>{{ t('workflows.templates.label') }}</span>
@@ -108,6 +110,81 @@
               />
             </div>
 
+            <div v-else class="runs-pane">
+              <section v-if="pausedRuns.length" class="paused-section">
+                <header class="paused-header">
+                  <span>{{ t('workflows.paused.header', { count: pausedRuns.length }) }}</span>
+                  <button class="btn-ghost" @click="reloadPausedRuns">{{ t('workflows.refresh') }}</button>
+                </header>
+                <ul class="paused-list">
+                  <li v-for="entry in pausedRuns" :key="entry.run.id" class="paused-row">
+                    <div class="paused-row-line">
+                      <span class="run-state state-paused">paused</span>
+                      <span class="paused-run-hash">{{ t('workflows.paused.runHash', { id: entry.run.id }) }}</span>
+                    </div>
+                    <div class="paused-meta" v-if="entry.pause">
+                      <div><span>{{ t('workflows.paused.pauseTokenLabel') }}:</span>
+                        <code class="pause-token">{{ truncateToken(entry.pause.pauseToken) }}</code></div>
+                      <div v-if="entry.pause.pausedAt">
+                        <span>{{ t('workflows.paused.pausedAtLabel') }}:</span> {{ formatTime(entry.pause.pausedAt) }}
+                      </div>
+                      <div v-if="entry.pause.resumeDeadline">
+                        <span>{{ t('workflows.paused.deadlineLabel') }}:</span> {{ formatTime(entry.pause.resumeDeadline) }}
+                      </div>
+                    </div>
+                    <div class="paused-actions" v-if="entry.pause">
+                      <button class="resume-btn approve" :disabled="resumingId === entry.run.id"
+                              @click="onResume(entry, 'approved')">
+                        {{ t('workflows.paused.resumeApproved') }}
+                      </button>
+                      <button class="resume-btn reject" :disabled="resumingId === entry.run.id"
+                              @click="onResume(entry, 'rejected')">
+                        {{ t('workflows.paused.resumeRejected') }}
+                      </button>
+                      <button class="resume-btn neutral" :disabled="resumingId === entry.run.id"
+                              @click="onResume(entry, 'timeout')">
+                        {{ t('workflows.paused.resumeTimeout') }}
+                      </button>
+                      <button class="resume-btn neutral" :disabled="resumingId === entry.run.id"
+                              @click="onResume(entry, 'cancelled')">
+                        {{ t('workflows.paused.resumeCancelled') }}
+                      </button>
+                    </div>
+                  </li>
+                </ul>
+              </section>
+
+              <header class="runs-header">
+                <span>{{ t('workflows.runs.header', { count: runs.length }) }}</span>
+                <button class="btn-ghost" @click="reloadRuns">{{ t('workflows.refresh') }}</button>
+              </header>
+              <ul class="runs-list">
+                <li v-for="run in runs" :key="run.id" class="run-row" @click="loadRun(run.id)">
+                  <div class="run-row-line">
+                    <span class="run-state" :class="'state-' + run.state">{{ run.state }}</span>
+                    <span class="run-time">{{ formatTime(run.startedAt) }}</span>
+                  </div>
+                  <div class="run-row-meta">
+                    <span>{{ t('workflows.runs.runHash', { id: run.id }) }}</span>
+                    <span v-if="run.triggeredBy">· {{ run.triggeredBy }}</span>
+                    <span v-if="run.errorMessage" class="run-err">· {{ run.errorMessage }}</span>
+                  </div>
+                </li>
+                <li v-if="!runs.length" class="runs-empty">{{ t('workflows.runs.empty') }}</li>
+              </ul>
+              <section v-if="runDetail" class="run-detail">
+                <div class="run-detail-title">{{ t('workflows.runs.detailTitle', { id: runDetail.run.id, state: runDetail.run.state }) }}</div>
+                <ol class="run-steps">
+                  <li v-for="step in runDetail.steps" :key="step.id">
+                    <span class="step-state" :class="'state-' + step.state">{{ step.state }}</span>
+                    <span class="step-name">{{ step.stepName || t('workflows.unnamed') }}</span>
+                    <span v-if="step.durationMs != null" class="step-duration">{{ step.durationMs }} ms</span>
+                    <span v-if="step.errorMessage" class="step-err">{{ step.errorMessage }}</span>
+                  </li>
+                </ol>
+              </section>
+            </div>
+
             <div v-if="compileErrors.length" class="errors-panel">
               <div class="errors-title">{{ t('workflows.compileErrorsTitle', { count: compileErrors.length }) }}</div>
               <ul>
@@ -123,85 +200,9 @@
             </div>
           </section>
 
-          <section class="workflows-empty mc-surface-card" v-else>
+          <section class="workflows-empty" v-else>
             <p>{{ t('workflows.selectHint') }}</p>
           </section>
-
-          <!-- right: runs -->
-          <aside class="workflows-runs mc-surface-card" v-if="selected">
-            <section v-if="pausedRuns.length" class="paused-section">
-              <header class="paused-header">
-                <span>{{ t('workflows.paused.header', { count: pausedRuns.length }) }}</span>
-                <button class="btn-ghost" @click="reloadPausedRuns">{{ t('workflows.refresh') }}</button>
-              </header>
-              <ul class="paused-list">
-                <li v-for="entry in pausedRuns" :key="entry.run.id" class="paused-row">
-                  <div class="paused-row-line">
-                    <span class="run-state state-paused">paused</span>
-                    <span class="paused-run-hash">{{ t('workflows.paused.runHash', { id: entry.run.id }) }}</span>
-                  </div>
-                  <div class="paused-meta" v-if="entry.pause">
-                    <div><span>{{ t('workflows.paused.pauseTokenLabel') }}:</span>
-                      <code class="pause-token">{{ truncateToken(entry.pause.pauseToken) }}</code></div>
-                    <div v-if="entry.pause.pausedAt">
-                      <span>{{ t('workflows.paused.pausedAtLabel') }}:</span> {{ formatTime(entry.pause.pausedAt) }}
-                    </div>
-                    <div v-if="entry.pause.resumeDeadline">
-                      <span>{{ t('workflows.paused.deadlineLabel') }}:</span> {{ formatTime(entry.pause.resumeDeadline) }}
-                    </div>
-                  </div>
-                  <div class="paused-actions" v-if="entry.pause">
-                    <button class="resume-btn approve" :disabled="resumingId === entry.run.id"
-                            @click="onResume(entry, 'approved')">
-                      {{ t('workflows.paused.resumeApproved') }}
-                    </button>
-                    <button class="resume-btn reject" :disabled="resumingId === entry.run.id"
-                            @click="onResume(entry, 'rejected')">
-                      {{ t('workflows.paused.resumeRejected') }}
-                    </button>
-                    <button class="resume-btn neutral" :disabled="resumingId === entry.run.id"
-                            @click="onResume(entry, 'timeout')">
-                      {{ t('workflows.paused.resumeTimeout') }}
-                    </button>
-                    <button class="resume-btn neutral" :disabled="resumingId === entry.run.id"
-                            @click="onResume(entry, 'cancelled')">
-                      {{ t('workflows.paused.resumeCancelled') }}
-                    </button>
-                  </div>
-                </li>
-              </ul>
-            </section>
-
-            <header class="runs-header">
-              <span>{{ t('workflows.runs.header', { count: runs.length }) }}</span>
-              <button class="btn-ghost" @click="reloadRuns">{{ t('workflows.refresh') }}</button>
-            </header>
-            <ul class="runs-list">
-              <li v-for="run in runs" :key="run.id" class="run-row" @click="loadRun(run.id)">
-                <div class="run-row-line">
-                  <span class="run-state" :class="'state-' + run.state">{{ run.state }}</span>
-                  <span class="run-time">{{ formatTime(run.startedAt) }}</span>
-                </div>
-                <div class="run-row-meta">
-                  <span>{{ t('workflows.runs.runHash', { id: run.id }) }}</span>
-                  <span v-if="run.triggeredBy">· {{ run.triggeredBy }}</span>
-                  <span v-if="run.errorMessage" class="run-err">· {{ run.errorMessage }}</span>
-                </div>
-              </li>
-              <li v-if="!runs.length" class="runs-empty">{{ t('workflows.runs.empty') }}</li>
-            </ul>
-            <section v-if="runDetail" class="run-detail">
-              <div class="run-detail-title">{{ t('workflows.runs.detailTitle', { id: runDetail.run.id, state: runDetail.run.state }) }}</div>
-              <ol class="run-steps">
-                <li v-for="step in runDetail.steps" :key="step.id">
-                  <span class="step-state" :class="'state-' + step.state">{{ step.state }}</span>
-                  <span class="step-name">{{ step.stepName || t('workflows.unnamed') }}</span>
-                  <span v-if="step.durationMs != null" class="step-duration">{{ step.durationMs }} ms</span>
-                  <span v-if="step.errorMessage" class="step-err">{{ step.errorMessage }}</span>
-                </li>
-              </ol>
-            </section>
-          </aside>
         </div>
       </div>
     </div>
@@ -213,7 +214,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { mcConfirm } from '@/components/common/useConfirm'
 import { ElMessage } from 'element-plus'
@@ -234,9 +235,18 @@ import {
 } from '@/api'
 import type { Channel } from '@/types'
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore'
-import WorkflowCanvas from '@/components/workflow/WorkflowCanvas.vue'
+// Lazy-load the canvas + Monaco editor — each pulls a heavy vendor chunk
+// (@vue-flow/* and monaco-editor respectively). Keeping them out of the
+// route's main chunk means /settings/workflows starts as ~500 KB instead
+// of 4 MB, and the Docker production build no longer needs the
+// --max-old-space-size=6144 escape hatch.
+const WorkflowCanvas = defineAsyncComponent(
+  () => import('@/components/workflow/WorkflowCanvas.vue'),
+)
+const WorkflowJsonEditor = defineAsyncComponent(
+  () => import('@/components/workflow/WorkflowJsonEditor.vue'),
+)
 import StepPropertyPanel from '@/components/workflow/StepPropertyPanel.vue'
-import WorkflowJsonEditor from '@/components/workflow/WorkflowJsonEditor.vue'
 import CreateWorkflowDialog from '@/components/workflow/CreateWorkflowDialog.vue'
 import PublishDialog from '@/components/workflow/PublishDialog.vue'
 import GenerateWorkflowDialog from '@/components/workflow/GenerateWorkflowDialog.vue'
@@ -285,7 +295,13 @@ const templateChoice = ref('')
 // the JSON) and the raw JSON editor. Canvas is the default — most
 // authors visit the page to make sense of an existing flow rather
 // than to type fresh JSON.
-const editorTab = ref<'canvas' | 'json'>('canvas')
+const editorTab = ref<'canvas' | 'json' | 'runs'>('canvas')
+
+async function onSwitchToRuns() {
+  editorTab.value = 'runs'
+  await reloadRuns()
+  await reloadPausedRuns()
+}
 
 // The canvas reads from `draftJson` directly. We keep the model write
 // path on the JSON editor only — the canvas is purely a derived view
@@ -296,6 +312,12 @@ const canvasModel = computed({
 })
 
 const canvasSelection = ref<StepNodeData | null>(null)
+// Mirrors the WorkflowCanvas's internal fullscreen flag so we can float
+// the property inspector above the fixed-position overlay. Without this,
+// clicking a node in fullscreen would emit a selection but the panel —
+// rendered as a flex sibling outside the canvas — sits underneath the
+// z-index: 2000 overlay and reads as "panel doesn't open".
+const canvasFullscreen = ref(false)
 function onCanvasSelect(payload: StepNodeData | null) {
   canvasSelection.value = payload
 }
@@ -830,21 +852,53 @@ watch(workspaceId, async () => {
   display: flex;
   flex-direction: column;
   gap: 16px;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+}
+.workflows-page :deep(.mc-page-header) {
+  align-items: center;
+  margin-bottom: 18px;
+  flex-shrink: 0;
+}
+.workflows-page :deep(.header-actions) {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+  align-self: center;
 }
 .workflows-grid {
   display: grid;
-  grid-template-columns: 280px 1fr 320px;
+  grid-template-columns: minmax(220px, 260px) minmax(0, 1fr);
   gap: 16px;
   align-items: stretch;
-  min-height: 480px;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
 }
 .workflows-list,
 .workflows-editor,
-.workflows-runs,
 .workflows-empty {
   padding: 12px;
   display: flex;
   flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid var(--mc-border-light, rgba(0, 0, 0, 0.06));
+  border-radius: 10px;
+  background: var(--mc-bg-elevated, rgba(255, 255, 255, 0.4));
+}
+.workflows-list {
+  /* Slightly recessed so the editor reads as primary surface. */
+  background: var(--mc-bg-sunken, rgba(0, 0, 0, 0.02));
+}
+.runs-pane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 360px;
+  overflow-y: auto;
 }
 .list-header,
 .runs-header {
@@ -1146,7 +1200,7 @@ button:disabled {
   display: flex;
   flex-direction: row;
   gap: 12px;
-  min-height: 420px;
+  min-height: 320px;
   align-items: stretch;
 }
 .canvas-pane > .workflow-canvas {
@@ -1164,6 +1218,40 @@ button:disabled {
   .canvas-pane > .step-panel {
     flex: 0 0 auto;
     max-height: 360px;
+  }
+}
+/* Fullscreen mode: the canvas itself becomes a fixed overlay
+   (z-index: 2000). Float the panel above it so the same flex sibling
+   stays interactive — the previous behaviour where the panel slipped
+   underneath the overlay made it look like the property panel had
+   broken when fullscreen was on.
+
+   bottom: 180px reserves room for vue-flow's MiniMap (~150px tall) at
+   the bottom-right corner. Without it, the panel covers the minimap
+   and the user loses overview navigation. The panel scrolls internally
+   when content exceeds the shortened height. */
+.canvas-pane.canvas-fullscreen {
+  position: static;
+}
+.canvas-pane.canvas-fullscreen > .step-panel {
+  position: fixed;
+  top: 56px;
+  right: 14px;
+  bottom: 180px;
+  width: min(360px, 30vw);
+  max-height: none;
+  z-index: 2001;
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.22);
+  overflow-y: auto;
+}
+@media (max-width: 760px) {
+  .canvas-pane.canvas-fullscreen > .step-panel {
+    top: auto;
+    left: 10px;
+    right: 10px;
+    bottom: 10px;
+    width: auto;
+    height: min(56vh, 420px);
   }
 }
 .canvas-inspector {
@@ -1221,7 +1309,7 @@ button:disabled {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  min-height: 360px;
+  min-height: 280px;
 }
 .paused-section {
   border-bottom: 1px dashed var(--mc-border-light, rgba(0, 0, 0, 0.08));
@@ -1326,7 +1414,7 @@ button:disabled {
    can breathe on tablets, and stack everything vertically below 720px
    so the page is usable on a phone. The runs panel becomes a
    collapsible details element on small screens. */
-@media (max-width: 1100px) {
+@media (max-width: 1300px) {
   .workflows-grid {
     grid-template-columns: 1fr;
   }

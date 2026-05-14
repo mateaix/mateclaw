@@ -297,6 +297,12 @@ export default {
     streamReconnecting: 'Reconnecting...',
     streamStopped: 'Stopped',
     streamCompleted: 'Completed',
+    // Context compaction (compact_status SSE)
+    compactStart: 'Compacting context…',
+    compactPairSafe: 'Adjusting boundary to preserve tool_call pairs…',
+    compactSummarize: 'Summarizing the older turns…',
+    compactStartWithTokens: 'Compacting context… ({tokens})',
+    compactSummarizeWithCount: 'Summarizing the older turns… ({count} msgs)',
     streamPreparingContextDetail: 'Collecting the current question, conversation history, and required context.',
     streamReadingMemoryDetail: 'Looking up the most relevant long-term memory and recent notes for this question.',
     streamReasoningDetail: 'Comparing options and organizing the answer structure based on the available information.',
@@ -1362,6 +1368,9 @@ export default {
       },
       messages: {
         ruleIdRequired: 'Rule ID is required',
+        nameRequired: 'Name is required',
+        patternRequired: 'Regex pattern is required',
+        ruleIdDuplicate: 'Rule ID already exists',
         saveFailed: 'Failed to save rule',
       },
     },
@@ -2169,6 +2178,7 @@ export default {
     tabs: {
       canvas: 'Canvas',
       json: 'JSON',
+      runs: 'Runs ({count})',
     },
     canvas: {
       empty: 'The current draft has no steps. Add one in the JSON editor or pick a template.',
@@ -2212,7 +2222,8 @@ export default {
         agentPlaceholder: 'Select digital employee',
         agentMissing: 'Current digital employee is not in the list: {name}',
         promptTemplate: 'Prompt template',
-        promptPlaceholder: 'Hello {{ inputs.payload }}',
+        // promptPlaceholder is intentionally not localized — hardcoded in
+        // StepPropertyPanel so vue-i18n's parser never sees the Pebble braces.
         outputVar: 'Output variable',
         outputVarPlaceholder: 'data',
         outputContentType: 'Output type',

@@ -484,24 +484,55 @@ public class AgentService {
 
     // ==================== StreamDelta ====================
 
-    public record StreamDelta(String content, String thinking, String eventType, Map<String, Object> eventData, boolean persistenceOnly) {
+    public record StreamDelta(String content, String thinking, String eventType, Map<String, Object> eventData,
+                              boolean persistenceOnly, boolean segmentOnly) {
 
         // 兼容构造器（广播+持久化）
         public StreamDelta(String content, String thinking) {
-            this(content, thinking, null, null, false);
+            this(content, thinking, null, null, false, false);
+        }
+
+        // 显式 5-参构造器：保留旧调用点对 (content, thinking, eventType, eventData, persistenceOnly) 的兼容
+        public StreamDelta(String content, String thinking, String eventType,
+                           Map<String, Object> eventData, boolean persistenceOnly) {
+            this(content, thinking, eventType, eventData, persistenceOnly, false);
         }
 
         /** 仅用于持久化，不再广播（内容已由 NodeStreamingChatHelper 实时广播过） */
         public static StreamDelta persistOnly(String content, String thinking) {
-            return new StreamDelta(content, thinking, null, null, true);
+            return new StreamDelta(content, thinking, null, null, true, false);
+        }
+
+        /**
+         * Per-iteration narrative routing for ReasoningNode / SummarizingNode output.
+         *
+         * <p>The accumulator should:
+         * <ul>
+         *   <li>append the text to the in-flight {@code segments} entry so the UI's
+         *       segmented view still renders the intermediate "I'll look it up…"
+         *       narration between tool cards;</li>
+         *   <li>NOT broadcast — already broadcast live by NodeStreamingChatHelper;</li>
+         *   <li>NOT append to the top-level {@code content} StringBuilder, which is
+         *       what gets persisted as {@code mate_message.content}. That field
+         *       should hold the final-answer span only — otherwise multiple
+         *       iterations stack into "我来…让我…然后…" walls that next-turn replay
+         *       sees as unanswered chain-of-thought (issue #120 narration leg).</li>
+         * </ul>
+         *
+         * <p>Implies {@code persistenceOnly} (no broadcast) at the accumulator
+         * layer, but is a stricter promise: <em>nothing</em> reaches the top-level
+         * persisted content field via this flavor.
+         */
+        public static StreamDelta segmentOnly(String content, String thinking) {
+            return new StreamDelta(content, thinking, null, null, true, true);
         }
 
         public static StreamDelta empty() {
-            return new StreamDelta(null, null, null, null, false);
+            return new StreamDelta(null, null, null, null, false, false);
         }
 
         public static StreamDelta event(String type, Map<String, Object> data) {
-            return new StreamDelta(null, null, type, data, false);
+            return new StreamDelta(null, null, type, data, false, false);
         }
 
         public boolean isEvent() {

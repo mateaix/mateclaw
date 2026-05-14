@@ -634,6 +634,19 @@ html.dark body::before {
   box-shadow: var(--mc-shadow-soft);
 }
 
+/* While a workflow canvas is in fullscreen mode, suppress the backdrop
+   filter on every page frame. A non-`none` backdrop-filter promotes the
+   element to a containing block for position:fixed descendants, which
+   pinned the fullscreen canvas to the frame's top-left instead of the
+   viewport. The frames sit behind the fullscreen overlay anyway, so
+   the blur has no visible cost during this transient state. */
+body.workflow-canvas-fullscreen .mc-page-frame {
+  backdrop-filter: none;
+}
+body.workflow-canvas-fullscreen .mc-page-frame::before {
+  display: none;
+}
+
 .mc-page-frame::before {
   content: '';
   position: absolute;

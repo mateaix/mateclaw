@@ -348,7 +348,12 @@ public class ReasoningNode implements NodeAction {
         }
 
         if (conversationWindowManager != null) {
-            messages = conversationWindowManager.pruneOldToolResultsForModelInput(messages);
+            // Pass conversationId + workspaceBasePath so oversized older
+            // tool results can be spilled to the workspace spill directory
+            // (preserving the full body for read_file recovery) instead of
+            // being rewritten into a lossy single-line summary.
+            messages = conversationWindowManager.pruneOldToolResultsForModelInput(
+                    messages, conversationId, workspaceBasePath);
         }
         promptMessages.addAll(messages);
 

@@ -155,12 +155,12 @@
                 />
               </div>
               <div class="form-group">
-                <label>{{ t('security.toolGuard.fields.name') }}</label>
-                <input v-model="ruleForm.name" class="form-input" />
+                <label>{{ t('security.toolGuard.fields.name') }} <span class="required">*</span></label>
+                <input v-model="ruleForm.name" class="form-input" required />
               </div>
               <div class="form-group">
-                <label>{{ t('security.toolGuard.fields.pattern') }}</label>
-                <input v-model="ruleForm.pattern" class="form-input mono" placeholder="regex pattern" />
+                <label>{{ t('security.toolGuard.fields.pattern') }} <span class="required">*</span></label>
+                <input v-model="ruleForm.pattern" class="form-input mono" placeholder="regex pattern" required />
               </div>
               <div class="form-group">
                 <label>{{ t('security.toolGuard.fields.severity') }}</label>
@@ -360,6 +360,14 @@ async function saveRule() {
     ElMessage.error(t('security.toolGuard.messages.ruleIdRequired'))
     return
   }
+  if (!ruleForm.name.trim()) {
+    ElMessage.error(t('security.toolGuard.messages.nameRequired'))
+    return
+  }
+  if (!ruleForm.pattern.trim()) {
+    ElMessage.error(t('security.toolGuard.messages.patternRequired'))
+    return
+  }
 
   try {
     if (editingRule.value) {
@@ -370,7 +378,12 @@ async function saveRule() {
     showRuleModal.value = false
     loadRules()
   } catch (e: any) {
-    ElMessage.error(e?.msg || e?.message || t('security.toolGuard.messages.saveFailed'))
+    const raw = e?.msg || e?.message || ''
+    if (typeof raw === 'string' && raw.toLowerCase().includes('already exists')) {
+      ElMessage.error(t('security.toolGuard.messages.ruleIdDuplicate'))
+    } else {
+      ElMessage.error(raw || t('security.toolGuard.messages.saveFailed'))
+    }
   }
 }
 

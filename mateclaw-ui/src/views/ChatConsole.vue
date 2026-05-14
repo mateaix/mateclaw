@@ -284,6 +284,7 @@
         :running-tool-name="currentRunningToolName"
         :has-queued="hasQueued"
         :lifecycle-stage="lifecycleStage"
+        :compact-status="compactStatus"
       />
 
       <!-- Multimodal routing hint: shown when pending attachments require a
@@ -664,6 +665,7 @@ const {
   hasQueued,
   queueSize,
   heartbeat,
+  compactStatus,
   lifecycleStage,
   sendMessage: sendChatMessage,
   stopGeneration: stopChatGeneration,

@@ -211,7 +211,11 @@ public class StepExecutionNode implements NodeAction {
                 ChatOptions options = oaiOpts;
 
                 if (conversationWindowManager != null) {
-                    messages = conversationWindowManager.pruneOldToolResultsForModelInput(messages);
+                    // Pass conversationId + workspaceBasePath so oversized
+                    // older tool results can be spilled to disk instead of
+                    // being rewritten into a lossy single-line summary.
+                    messages = conversationWindowManager.pruneOldToolResultsForModelInput(
+                            messages, conversationId, workspaceBasePath);
                 }
 
                 NodeStreamingChatHelper.StreamResult result = streamingHelper.streamCall(

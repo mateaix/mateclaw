@@ -123,6 +123,11 @@ const props = withDefaults(defineProps<Props>(), { canvasId: 'workflow-canvas' }
 const emit = defineEmits<{
   (e: 'select-step', payload: StepNodeData | null): void
   (e: 'insert-step', payload: { afterIndex: number; modeType: string }): void
+  /** Toggled by the fullscreen button. The parent uses this to float the
+   *  property inspector above the fullscreen overlay (otherwise the panel,
+   *  which lives as a flex sibling outside this component, gets hidden
+   *  behind the z-index: 2000 fixed canvas). */
+  (e: 'update:fullscreen', value: boolean): void
 }>()
 
 function onAddNode(e: Event) {
@@ -238,15 +243,29 @@ watch(fullscreen, (on) => {
     document.addEventListener('keydown', handleEsc)
     // Lock page scroll behind the overlay.
     document.body.style.overflow = 'hidden'
+    // The settings layout's mc-page-frame uses backdrop-filter, which
+    // promotes it to a containing block for position:fixed descendants
+    // (CSS containment spec). That makes our `inset: 0` anchor to the
+    // frame instead of the viewport, leaving the canvas pinned to the
+    // top-left of the page rather than truly fullscreen. Suppress the
+    // filter while fullscreen is active — the frames sit behind the
+    // overlay anyway, so dropping the blur has no visible cost.
+    document.body.classList.add('workflow-canvas-fullscreen')
   } else {
     document.removeEventListener('keydown', handleEsc)
     document.body.style.overflow = ''
+    document.body.classList.remove('workflow-canvas-fullscreen')
   }
+  emit('update:fullscreen', on)
 })
 onBeforeUnmount(() => {
   window.removeEventListener('mateclaw:workflow-step-select', handleDomStepSelect as EventListener)
   document.removeEventListener('keydown', handleEsc)
   document.body.style.overflow = ''
+  // Unmounting while in fullscreen (route change, panel close) must
+  // restore the page frame's backdrop blur — otherwise we leave the
+  // rest of the app permanently transparent.
+  document.body.classList.remove('workflow-canvas-fullscreen')
 })
 
 </script>

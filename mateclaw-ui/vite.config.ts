@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import tailwindcss from '@tailwindcss/vite'
+import { visualizer } from 'rollup-plugin-visualizer'
 import { resolve } from 'path'
 
 export default defineConfig({
@@ -17,6 +18,15 @@ export default defineConfig({
       },
     }),
     tailwindcss(),
+    // ANALYZE=1 pnpm build writes dist/stats.html. Skipped on normal builds so
+    // CI artifact upload is opt-in and the Docker image build doesn't waste
+    // memory generating an HTML report it never reads.
+    process.env.ANALYZE && visualizer({
+      filename: 'dist/stats.html',
+      open: false,
+      gzipSize: true,
+      brotliSize: true,
+    }),
   ],
   resolve: {
     alias: {
@@ -51,5 +61,33 @@ export default defineConfig({
   build: {
     outDir: '../mateclaw-server/src/main/resources/static',
     emptyOutDir: true,
+    // Cap warning so a future barrel import (see history with monaco) trips
+    // the build log instead of slipping in silently.
+    chunkSizeWarningLimit: 1024,
+    rollupOptions: {
+      output: {
+        // Pin heavy vendor libs to named chunks. Two reasons:
+        //   1. Cache: bumping a business chunk doesn't invalidate the
+        //      monaco / vue-flow bundles, so returning visitors only
+        //      re-download the few KB that actually changed.
+        //   2. Rollup minify peak heap: keeping monaco out of the route
+        //      chunk lets each Worker on the chunk run with a smaller
+        //      working set, which is what blew up the Docker build at
+        //      1.3.0 (needed --max-old-space-size=6144 as a band-aid).
+        manualChunks: {
+          'vendor-monaco': ['monaco-editor', '@guolao/vue-monaco-editor'],
+          'vendor-vue-flow': [
+            '@vue-flow/core',
+            '@vue-flow/background',
+            '@vue-flow/controls',
+            '@vue-flow/minimap',
+          ],
+          'vendor-mermaid': ['mermaid'],
+          'vendor-echarts': ['echarts'],
+          'vendor-element': ['element-plus', '@element-plus/icons-vue'],
+          'vendor-markdown': ['marked', 'marked-highlight', 'highlight.js', 'dompurify'],
+        },
+      },
+    },
   },
 })

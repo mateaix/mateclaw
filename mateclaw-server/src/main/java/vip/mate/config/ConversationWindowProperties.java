@@ -37,4 +37,39 @@ public class ConversationWindowProperties {
 
     /** 摘要 token 预算下限（字数） */
     private int summaryBudgetFloor = 500;
+
+    /**
+     * Minimum prefix size (in messages) the pair-safe boundary must leave
+     * before compaction is allowed to run. After enforcing tool-call/response
+     * pair integrity the boundary may collapse so far forward that only a
+     * handful of messages remain in the prefix — at that point the
+     * compaction cost (a structured-summary LLM call) outweighs any token
+     * savings, and we may as well skip this turn.
+     *
+     * <p>Default 2 means "at least two old messages worth condensing".
+     * Set to 0 to always attempt compaction whenever a pair-safe cut exists.
+     */
+    private int pairSafeMinPrefixToCompact = 2;
+
+    /**
+     * After compaction, re-inject the first user message of the compressed
+     * prefix so the original goal stays anchored in the prompt even when a
+     * long task has paged through dozens of turns. Without an anchor the
+     * structured summary alone can drift, and the model may forget what was
+     * being asked. Injected as a {@link org.springframework.ai.chat.messages.UserMessage}
+     * (never SystemMessage) so historical user input cannot be promoted to a
+     * system-level instruction.
+     */
+    private boolean firstUserAnchorEnabled = true;
+
+    /**
+     * Maximum tokens the anchor body is allowed to consume in the prompt.
+     * The first user message is often short ("write me a CLI tool that…"),
+     * but power users sometimes paste multi-KB specs. When the body fits
+     * the budget it stays verbatim; when it is up to 3× over, it is
+     * head+tail truncated to this budget; when it is more than 3× over,
+     * it degrades to a 200-char pointer line so the model still knows the
+     * original goal existed without blowing prompt-cache or summary budget.
+     */
+    private int firstUserAnchorMaxTokens = 400;
 }

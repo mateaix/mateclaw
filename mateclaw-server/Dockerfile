@@ -21,9 +21,17 @@ ENV NODE_OPTIONS="--max-old-space-size=4096"
 COPY mateclaw-ui/ ./
 # Override outDir: vite.config.ts writes to ../mateclaw-server/…/static which
 # is outside this container; call vite directly to control --outDir.
+# NODE_OPTIONS=--max-old-space-size=6144 keeps Rollup's `rendering chunks`
+# phase from getting SIGKILL'd by the host kernel's OOM-killer on memory-
+# constrained servers. The earlier removal of this flag relied on lazy-
+# loading + manualChunks dropping the per-chunk peak, but Rollup still
+# minifies several vendor chunks (monaco / mermaid / echarts) in parallel
+# so the cumulative working set blows past Node's default ~1.5 GB heap
+# and trips the OOM-killer mid-build. The fix is not the heap flag
+# itself; it is keeping the build reproducible on smaller hosts.
 # Skipping vue-tsc here is intentional — type errors are caught in CI, not in
 # the production Docker image build.
-RUN pnpm exec vite build --outDir /static --emptyOutDir
+RUN NODE_OPTIONS=--max-old-space-size=6144 pnpm exec vite build --outDir /static --emptyOutDir
 
 # Stage 2 — Backend (Maven)
 FROM maven:3.9-eclipse-temurin-21 AS builder
