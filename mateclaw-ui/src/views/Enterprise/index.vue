@@ -37,15 +37,16 @@ import Approvals from './Approvals.vue'
 import Audit from './Audit.vue'
 
 const { t } = useI18n()
-const activeTab = ref<'overview' | 'contract' | 'account' | 'approvals' | 'audit'>('overview')
+type TabKey = 'overview' | 'contract' | 'account' | 'approvals' | 'audit'
+const activeTab = ref<TabKey>('overview')
 const caseFocus = ref<string | null>(null)
 
-const tabs = computed(() => [
-  { key: 'overview', label: t('enterprise.tabs.overview'), count: null as number | null },
+const tabs = computed<{ key: TabKey; label: string; count: number | null }[]>(() => [
+  { key: 'overview', label: t('enterprise.tabs.overview'), count: null },
   { key: 'contract', label: t('enterprise.tabs.contract'), count: 23 },
   { key: 'account',  label: t('enterprise.tabs.account'),  count: 14 },
   { key: 'approvals', label: t('enterprise.tabs.approvals'), count: 5 },
-  { key: 'audit', label: t('enterprise.tabs.audit'), count: null as number | null },
+  { key: 'audit', label: t('enterprise.tabs.audit'), count: null },
 ])
 
 function onOpenCase(id: string) {

@@ -43,9 +43,10 @@ import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 const { t } = useI18n()
-const scope = ref<'all' | 'contract' | 'account' | 'tool'>('all')
+type ScopeKey = 'all' | 'contract' | 'account' | 'tool'
+const scope = ref<ScopeKey>('all')
 
-const scopeFilters = computed(() => [
+const scopeFilters = computed<{ key: ScopeKey; label: string }[]>(() => [
   { key: 'all', label: t('enterprise.audit.scopeAll') },
   { key: 'contract', label: t('enterprise.audit.scopeContract') },
   { key: 'account', label: t('enterprise.audit.scopeAccount') },

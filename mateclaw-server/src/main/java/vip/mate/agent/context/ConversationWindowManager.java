@@ -14,6 +14,7 @@ import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.tool.ToolCallback;
 import com.alibaba.cloud.ai.dashscope.chat.DashScopeChatOptions;
 import org.springframework.stereotype.Component;
+import vip.mate.agent.graph.executor.ToolResultStorage;
 import vip.mate.agent.prompt.PromptLoader;
 import vip.mate.config.ConversationWindowProperties;
 import vip.mate.memory.spi.MemoryManager;
@@ -21,6 +22,7 @@ import vip.mate.workspace.conversation.ConversationService;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -61,18 +63,35 @@ public class ConversationWindowManager {
     /** 迭代更新：合并旧摘要 + 新轮次 */
     private static final String STRUCTURED_SUMMARY_UPDATE = PromptLoader.loadPrompt("context/structured-summary-update");
 
-    /** 摘要注入前缀 */
-    private static final String SUMMARY_PREFIX =
+    /** 摘要注入前缀 (package-private for test assertions) */
+    static final String SUMMARY_PREFIX =
             "[上下文压缩] 更早的对话轮次已被压缩为摘要以节省上下文空间。" +
             "以下摘要描述了已完成的工作，当前会话状态可能已反映这些变更。" +
             "请基于摘要和当前状态继续，避免重复已完成的工作：\n\n";
+
+    /**
+     * Marker prefix used by the first-user anchor. Lets compaction skip
+     * previously-injected anchors when looking for the "real" first user
+     * message in a subsequent round.
+     *
+     * <p>Package-private so unit tests can assert on the marker.
+     */
+    static final String ANCHOR_PREFIX = "[Original goal]\n";
 
     // ==================== 序列化截断参数 ====================
 
     private static final int CONTENT_MAX = 6000;
     private static final int CONTENT_HEAD = 4000;
     private static final int CONTENT_TAIL = 1500;
-    private static final int OLD_TOOL_RESULT_SUMMARY_THRESHOLD = 500;
+
+    /**
+     * Minimum body size at which the duplicate-output placeholder is preferred
+     * over keeping the verbatim copy. Below this size the placeholder text
+     * (~80 chars) is comparable to the body itself, so deduplication only
+     * complicates the prompt without saving meaningful tokens. Above this
+     * size the dedup placeholder is a real win.
+     */
+    private static final int DEDUP_MIN_CHARS = 500;
 
     /**
      * Tool names whose results must never be compacted into a one-line
@@ -98,6 +117,35 @@ public class ConversationWindowManager {
     private final ConversationWindowProperties properties;
     private final MemoryManager memoryManager;
     private final ConversationService conversationService;
+
+    /**
+     * Optional spill store, injected via setter so unit tests and the two
+     * existing 3-arg constructor callers in tests stay source-compatible.
+     * When {@code null}, prune falls back to "keep originals verbatim" — no
+     * lossy summary rewrite is ever applied. Spring autowires this when
+     * {@link ToolResultStorage} is on the context.
+     */
+    private ToolResultStorage toolResultStorage;
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setToolResultStorage(ToolResultStorage toolResultStorage) {
+        this.toolResultStorage = toolResultStorage;
+    }
+
+    /**
+     * Optional stream tracker for broadcasting {@code compact_status}
+     * SSE events. Wired via setter so unit tests can leave it {@code null}
+     * without dragging in the channel layer. When present, every
+     * compaction emits start/skipped/summarize/done events so the
+     * frontend can render a boundary card and a status line in real
+     * time.
+     */
+    private vip.mate.channel.web.ChatStreamTracker streamTracker;
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setStreamTracker(vip.mate.channel.web.ChatStreamTracker streamTracker) {
+        this.streamTracker = streamTracker;
+    }
 
     // ==================== 状态 ====================
 
@@ -133,7 +181,7 @@ public class ConversationWindowManager {
                                      Integer maxInputTokens, ChatModel chatModel,
                                      String conversationId, Long agentId) {
         return fitToWindow(messages, systemPrompt, currentUserMessage,
-                maxInputTokens, chatModel, conversationId, agentId, null);
+                maxInputTokens, chatModel, conversationId, agentId, null, null);
     }
 
     /**
@@ -149,10 +197,33 @@ public class ConversationWindowManager {
                                      Integer maxInputTokens, ChatModel chatModel,
                                      String conversationId, Long agentId,
                                      java.util.Collection<ToolCallback> toolCallbacks) {
+        return fitToWindow(messages, systemPrompt, currentUserMessage,
+                maxInputTokens, chatModel, conversationId, agentId, toolCallbacks, null);
+    }
+
+    /**
+     * Most comprehensive overload — adds {@code workspaceBasePath} so the
+     * pre-pass that prunes old tool results can route oversized bodies to
+     * the agent's workspace spill directory via {@link ToolResultStorage}.
+     *
+     * <p>When {@code workspaceBasePath} is {@code null}, spill files land in
+     * the configured base dir, or the JVM tmpdir as last resort (see
+     * {@link ToolResultStorage#resolveBaseDir(String)}). Workspace-aware
+     * callers should always pass the path so historical spill files stay
+     * grouped with the workspace that produced them.
+     */
+    public List<Message> fitToWindow(List<Message> messages, String systemPrompt,
+                                     String currentUserMessage,
+                                     Integer maxInputTokens, ChatModel chatModel,
+                                     String conversationId, Long agentId,
+                                     java.util.Collection<ToolCallback> toolCallbacks,
+                                     String workspaceBasePath) {
         if (messages == null || messages.isEmpty()) {
             return messages;
         }
-        messages = pruneOldToolResultsForModelInput(messages);
+        long spillsAtEntry = (toolResultStorage != null) ? toolResultStorage.getSpillCount() : 0L;
+
+        messages = pruneOldToolResultsForModelInput(messages, conversationId, workspaceBasePath);
 
         int effectiveMax = (maxInputTokens != null && maxInputTokens > 0)
                 ? maxInputTokens : properties.getDefaultMaxInputTokens();
@@ -176,7 +247,7 @@ public class ConversationWindowManager {
 
         // 可用于历史的 token 预算 = max - system - currentMsg - tools - 安全余量
         int reservedTokens = systemTokens + currentMsgTokens + toolsTokens + (int) (effectiveMax * 0.05);
-        // RFC-025 Change 1: reserve 硬封顶到 effectiveMax 的 50%。
+        // 预留 reserve 硬封顶到 effectiveMax 的 50%。
         // 小上下文模型（Ollama 16K、本地 8K）下，systemTokens + currentMsgTokens 很容易
         // 接近或超过 effectiveMax，不封顶会让 historyBudget 变负数导致死循环压缩
         // （压缩目标比压缩前还大 → 压缩后又触发压缩）。
@@ -191,7 +262,8 @@ public class ConversationWindowManager {
         // 尾部保护 token 预算：阈值的 20%（与 Hermes 一致）
         int tailTokenBudget = (int) (triggerThreshold * 0.20);
 
-        return compactMessages(messages, historyBudget, tailTokenBudget, chatModel, conversationId, agentId);
+        return compactMessages(messages, historyBudget, tailTokenBudget, chatModel,
+                conversationId, agentId, totalTokens, spillsAtEntry);
     }
 
     /**
@@ -207,17 +279,61 @@ public class ConversationWindowManager {
 
     // ==================== 核心压缩逻辑 ====================
 
+    /** Broadcast a single compact_status event; silent no-op when no tracker is wired. */
+    private void broadcastCompactStatus(String conversationId, String status, Map<String, Object> extra) {
+        if (streamTracker == null || conversationId == null || conversationId.isEmpty()) {
+            return;
+        }
+        try {
+            Map<String, Object> payload = new java.util.LinkedHashMap<>();
+            payload.put("status", status);
+            payload.put("timestamp", System.currentTimeMillis());
+            if (extra != null) payload.putAll(extra);
+            streamTracker.broadcastObject(conversationId, "compact_status", payload);
+        } catch (Exception e) {
+            log.debug("[ConversationWindow] broadcast compact_status failed: {}", e.getMessage());
+        }
+    }
+
     private List<Message> compactMessages(List<Message> messages, int historyBudget,
                                           int tailTokenBudget, ChatModel chatModel,
-                                          String conversationId, Long agentId) {
+                                          String conversationId, Long agentId,
+                                          int preTokens, long spillsAtEntry) {
+        broadcastCompactStatus(conversationId, "start", Map.of(
+                "preTokens", preTokens,
+                "messagesIn", messages.size(),
+                "trigger", "token_threshold"
+        ));
+
         // 动态计算尾部保护边界（替代固定 preserveRecentPairs）
         int headEnd = 0; // 头部保护：暂不保护（system prompt 已在外部计算）
         int tailStart = findTailBoundary(messages, headEnd, tailTokenBudget);
 
         if (tailStart <= headEnd) {
             log.debug("[ConversationWindow] 消息数不足以拆分，跳过压缩");
+            broadcastCompactStatus(conversationId, "skipped",
+                    Map.of("reason", "insufficient_messages"));
             return messages;
         }
+
+        // Pair safety: never split an AssistantMessage's tool_calls from its
+        // matching ToolResponseMessages. The cut may walk forward (i.e. the
+        // tail grows) until every call/response cluster lives on one side of
+        // the boundary. If no safe cut survives the walk, skip compaction —
+        // a broken pair would 400 every OpenAI-compatible provider, which is
+        // strictly worse than letting context cross the budget by one extra
+        // turn.
+        int pairSafeCut = enforcePairSafeBoundary(messages, headEnd, tailStart);
+        if (pairSafeCut <= headEnd) {
+            broadcastCompactStatus(conversationId, "skipped",
+                    Map.of("reason", "pair_boundary_collapsed"));
+            return messages;
+        }
+        if (pairSafeCut != tailStart) {
+            broadcastCompactStatus(conversationId, "pair_safe", Map.of(
+                    "movedFrom", tailStart, "movedTo", pairSafeCut));
+        }
+        tailStart = pairSafeCut;
 
         List<Message> oldMessages = new ArrayList<>(messages.subList(headEnd, tailStart));
         List<Message> recentMessages = messages.subList(tailStart, messages.size());
@@ -274,13 +390,20 @@ public class ConversationWindowManager {
         // 计算动态摘要预算
         int summaryBudget = computeSummaryBudget(forSummary);
 
+        broadcastCompactStatus(conversationId, "summarize", Map.of(
+                "messagesToSummarize", oldMessages.size(),
+                "summaryBudget", summaryBudget
+        ));
+
         // 检查缓存
         String cacheKey = conversationId + ":" + oldMessages.size();
         CachedSummary cached = summaryCache.get(cacheKey);
         String summary;
+        boolean fromCache = false;
 
         if (cached != null && !cached.isExpired(CACHE_TTL_MS)) {
             summary = cached.summary();
+            fromCache = true;
             log.debug("[ConversationWindow] 命中摘要缓存, conv={}", conversationId);
         } else {
             summary = generateSummary(forSummary, chatModel, conversationId, summaryBudget, memoryExtraContext);
@@ -289,27 +412,32 @@ public class ConversationWindowManager {
                 int count = compressionCounts.merge(conversationId, 1, Integer::sum);
                 log.info("[ConversationWindow] 生成结构化摘要 ({} 字符, 第 {} 次压缩), 压缩 {} 条旧消息, conv={}",
                         summary.length(), count, oldMessages.size(), conversationId);
-
-                // 持久化摘要到 DB：下次加载历史时可直接从摘要位置开始，跳过重复压缩
-                if (conversationService != null) {
-                    try {
-                        conversationService.saveCompressionSummary(
-                                conversationId, SUMMARY_PREFIX + summary, oldMessages.size());
-                    } catch (Exception e) {
-                        log.warn("[ConversationWindow] Failed to persist compression summary: {}", e.getMessage());
-                    }
-                }
             }
         }
 
         // 组装结果
         List<Message> result = new ArrayList<>();
+        boolean anchored = false;
         if (summary != null && !summary.isBlank()) {
             result.add(new UserMessage(SUMMARY_PREFIX + summary));
+
+            // Anchor the original user goal so a long task that paged through
+            // dozens of turns can still see what was originally asked. Always
+            // as a UserMessage — promoting historical user input to a
+            // SystemMessage would be a privilege-escalation risk.
+            Message anchor = buildFirstUserAnchor(oldMessages);
+            if (anchor != null) {
+                result.add(anchor);
+                anchored = true;
+            }
         } else if (!oldMessages.isEmpty()) {
             log.warn("[ConversationWindow] 摘要生成失败，降级为保留最近 4 条旧消息, conv={}", conversationId);
             int fallbackKeep = Math.min(4, oldMessages.size());
             result.addAll(oldMessages.subList(oldMessages.size() - fallbackKeep, oldMessages.size()));
+            broadcastCompactStatus(conversationId, "failed", Map.of(
+                    "reason", "summary_generation_failed",
+                    "fallbackKept", fallbackKeep
+            ));
         }
         result.addAll(recentMessages);
 
@@ -318,6 +446,48 @@ public class ConversationWindowManager {
         if (resultTokens > historyBudget && result.size() > 2) {
             log.warn("[ConversationWindow] 压缩后仍超预算: {} > {}, 执行二次裁剪", resultTokens, historyBudget);
             result = trimToFit(result, historyBudget);
+            resultTokens = TokenEstimator.estimateTokens(result);
+        }
+
+        // Persist the boundary + announce completion only when the summary
+        // actually wrote a row. Failed-summary fallback already broadcast
+        // its own event above.
+        if (summary != null && !summary.isBlank() && conversationService != null && !fromCache) {
+            long spillsThisTurn = (toolResultStorage != null)
+                    ? Math.max(0L, toolResultStorage.getSpillCount() - spillsAtEntry)
+                    : 0L;
+            Map<String, Object> boundaryMetadata = new java.util.LinkedHashMap<>();
+            boundaryMetadata.put("trigger", "token_threshold");
+            boundaryMetadata.put("preTokens", preTokens);
+            boundaryMetadata.put("postTokens", resultTokens);
+            boundaryMetadata.put("messagesSummarized", oldMessages.size());
+            boundaryMetadata.put("tailKept", recentMessages.size());
+            boundaryMetadata.put("toolResultsSpilled", spillsThisTurn);
+            boundaryMetadata.put("anchored", anchored);
+            Long summaryId = null;
+            try {
+                summaryId = conversationService.saveCompressionSummaryReturningId(
+                        conversationId, SUMMARY_PREFIX + summary, oldMessages.size(),
+                        boundaryMetadata);
+            } catch (Exception e) {
+                log.warn("[ConversationWindow] Failed to persist compression boundary: {}", e.getMessage());
+            }
+            if (summaryId != null) {
+                // Mirror the DB row's metadata: the SSE consumer needs the id
+                // to deep-link the boundary card without having to refetch.
+                boundaryMetadata.put("summaryId", summaryId);
+            }
+            broadcastCompactStatus(conversationId, "done", boundaryMetadata);
+        } else if (summary != null && !summary.isBlank() && fromCache) {
+            // Cached summary path — no new DB row, but emit done so the
+            // frontend status bar still updates.
+            broadcastCompactStatus(conversationId, "done", Map.of(
+                    "preTokens", preTokens,
+                    "postTokens", resultTokens,
+                    "messagesSummarized", oldMessages.size(),
+                    "tailKept", recentMessages.size(),
+                    "fromCache", true
+            ));
         }
 
         return result;
@@ -363,6 +533,201 @@ public class ConversationWindowManager {
     }
 
     /**
+     * Adjust the candidate boundary so an {@link AssistantMessage}'s
+     * {@code toolCalls} are never separated from their matching
+     * {@link ToolResponseMessage}s.
+     *
+     * <p>Walks forward, collecting every {@code tool_call_id}'s assistant
+     * index and the indices of its matching responses. Whenever an
+     * assistant in the prefix has at least one response in the tail, the
+     * cut moves backward to that assistant — pulling the whole cluster
+     * into the tail. The walk repeats until convergence because moving
+     * the cut can expose pairs that were previously fully in the tail.
+     *
+     * <p>The method preserves pair integrity above any other concern. If
+     * the cut collapses all the way to {@code headEnd}, callers must
+     * interpret the return as "skip compaction this turn" — splitting a
+     * pair would produce HTTP 400 on every OpenAI-compatible provider,
+     * which is a worse failure mode than letting context grow by one turn.
+     *
+     * <p>An orphan {@code ToolResponseMessage} (id matching no
+     * assistant in scope) does not trigger movement; the upstream code
+     * paths should never produce one, and logging at WARN gives us a
+     * breadcrumb if they ever do.
+     *
+     * @return adjusted cut index, or {@code headEnd} when no pair-safe
+     *         cut larger than {@code headEnd} can be produced.
+     */
+    // Package-private so unit tests in the same package can drive it directly
+    // without standing up a ChatModel + the rest of the compactMessages pipeline.
+    int enforcePairSafeBoundary(List<Message> messages, int headEnd, int tailStart) {
+        if (tailStart <= headEnd || tailStart >= messages.size()) {
+            return tailStart;
+        }
+        int cut = tailStart;
+        int safety = messages.size() + 1; // hard guard against pathological loops
+        while (safety-- > 0) {
+            // Map: tool_call_id -> earliest assistant index that issued it.
+            java.util.Map<String, Integer> assistantIdxById = new java.util.HashMap<>();
+            // Map: tool_call_id -> max response index closing it.
+            java.util.Map<String, Integer> latestResponseIdxById = new java.util.HashMap<>();
+
+            for (int i = headEnd; i < messages.size(); i++) {
+                Message m = messages.get(i);
+                if (m instanceof AssistantMessage am && am.getToolCalls() != null) {
+                    for (AssistantMessage.ToolCall tc : am.getToolCalls()) {
+                        String tid = tc.id();
+                        if (tid == null || tid.isEmpty()) continue;
+                        // Keep the first occurrence so the cut "snaps" to the
+                        // earliest assistant for any duplicated ids; the same
+                        // id should never repeat anyway.
+                        assistantIdxById.putIfAbsent(tid, i);
+                    }
+                } else if (m instanceof ToolResponseMessage trm) {
+                    for (ToolResponseMessage.ToolResponse r : trm.getResponses()) {
+                        String tid = r.id();
+                        if (tid == null || tid.isEmpty()) continue;
+                        latestResponseIdxById.merge(tid, i, Math::max);
+                    }
+                }
+            }
+
+            // Find the earliest in-prefix assistant whose pair is split.
+            int earliestSplitAssistant = Integer.MAX_VALUE;
+            for (var e : assistantIdxById.entrySet()) {
+                String id = e.getKey();
+                int aIdx = e.getValue();
+                Integer rIdx = latestResponseIdxById.get(id);
+                if (rIdx == null) {
+                    // Assistant issued a call but no response — orphan call,
+                    // would already break the provider. Not a pair-split, ignore.
+                    continue;
+                }
+                if (aIdx < cut && rIdx >= cut && aIdx < earliestSplitAssistant) {
+                    earliestSplitAssistant = aIdx;
+                }
+                if (aIdx >= cut && rIdx < cut) {
+                    log.warn("[ConversationWindow] Orphan tool response in prefix without preceding assistant in tail (id={}); leaving boundary alone",
+                            id);
+                }
+            }
+
+            if (earliestSplitAssistant == Integer.MAX_VALUE) {
+                break; // converged: no splits remain
+            }
+            cut = earliestSplitAssistant;
+        }
+
+        if (cut <= headEnd) {
+            log.info("[ConversationWindow] Pair-safe boundary collapsed to {} for conv: skipping compaction this turn to avoid splitting a tool_call ↔ tool_response pair",
+                    headEnd);
+            return headEnd;
+        }
+
+        int prefixSize = cut - headEnd;
+        int minPrefix = Math.max(0, properties.getPairSafeMinPrefixToCompact());
+        if (prefixSize < minPrefix) {
+            log.info("[ConversationWindow] Pair-safe boundary left {} prefix message(s) (< minPrefix={}); skipping compaction",
+                    prefixSize, minPrefix);
+            return headEnd;
+        }
+
+        if (cut != tailStart) {
+            log.info("[ConversationWindow] Pair-safe boundary moved {} -> {} to keep tool_call ↔ tool_response pairs intact",
+                    tailStart, cut);
+        }
+        return cut;
+    }
+
+    /**
+     * Build an anchor message replaying the first <em>real</em> user input
+     * found in the compressed prefix. "Real" here excludes prior
+     * compaction artifacts ({@link #SUMMARY_PREFIX} / {@link #ANCHOR_PREFIX}
+     * messages from earlier rounds), because anchoring the previous
+     * summary defeats the purpose — the model would just see "[Original
+     * goal] [上下文压缩] …" pointing at compressor output, not at the user's
+     * actual request.
+     *
+     * <p>Sizing rules:
+     * <ul>
+     *   <li>≤ {@code firstUserAnchorMaxTokens}: keep the original text verbatim.</li>
+     *   <li>≤ 3× the budget: head+tail truncate to the budget so most of
+     *       the prompt-cache benefit survives.</li>
+     *   <li>&gt; 3× the budget: degrade to a 200-char pointer line so we
+     *       don't blow prompt cache or the summary budget on a single
+     *       message that was probably a pasted spec the model can re-read
+     *       from the workspace anyway.</li>
+     * </ul>
+     *
+     * <p>Always returns a {@link UserMessage}. {@code null} when anchoring
+     * is disabled, no real first user exists in the prefix, or the body is
+     * blank.
+     *
+     * <p>Package-private for direct unit testing — the surrounding
+     * {@link #compactMessages} path needs a ChatModel and the whole
+     * structured-summary pipeline, which the anchor logic does not.
+     */
+    Message buildFirstUserAnchor(List<Message> oldMessages) {
+        if (!properties.isFirstUserAnchorEnabled()) {
+            return null;
+        }
+        UserMessage firstUser = null;
+        for (Message m : oldMessages) {
+            if (!(m instanceof UserMessage um)) continue;
+            String text = um.getText();
+            if (text == null) continue;
+            // Skip synthetic prior-round artifacts.
+            if (text.startsWith(SUMMARY_PREFIX) || text.startsWith(ANCHOR_PREFIX)) {
+                continue;
+            }
+            firstUser = um;
+            break;
+        }
+        if (firstUser == null) return null;
+
+        String text = firstUser.getText();
+        if (text == null || text.isBlank()) return null;
+
+        int maxAnchorTokens = Math.max(40, properties.getFirstUserAnchorMaxTokens());
+        int textTokens = TokenEstimator.estimateTokens(text);
+
+        if (textTokens <= maxAnchorTokens) {
+            return new UserMessage(ANCHOR_PREFIX + text);
+        }
+
+        // > 3× budget: cheap pointer line so we don't pay token tax for a
+        // gigantic pasted spec. The model still knows the original goal
+        // existed without seeing the full body.
+        if (textTokens > maxAnchorTokens * 3L) {
+            int pointerChars = Math.min(text.length(), 200);
+            String pointer = text.substring(0, pointerChars).stripTrailing()
+                    + (text.length() > pointerChars ? "..." : "");
+            log.info("[ConversationWindow] First-user anchor downgraded to pointer ({} tokens > 3× budget {})",
+                    textTokens, maxAnchorTokens);
+            return new UserMessage(ANCHOR_PREFIX + pointer);
+        }
+
+        // Within 3× — head+tail truncate to the budget. The 2 chars/token
+        // ratio is a deliberate over-estimate so the anchor never inflates
+        // past the configured budget on ASCII-heavy input.
+        int budgetChars = Math.max(160, maxAnchorTokens * 2);
+        if (budgetChars >= text.length()) {
+            return new UserMessage(ANCHOR_PREFIX + text);
+        }
+        int headLen = (int) (budgetChars * 0.6);
+        int tailLen = Math.max(40, budgetChars - headLen - 40);
+        if (headLen + tailLen >= text.length()) {
+            return new UserMessage(ANCHOR_PREFIX + text);
+        }
+        String truncated = text.substring(0, headLen)
+                + "\n...[" + (text.length() - headLen - tailLen) + " chars truncated]...\n"
+                + text.substring(text.length() - tailLen);
+        log.info("[ConversationWindow] First-user anchor head+tail truncated ({} -> ~{} chars)",
+                text.length(), truncated.length());
+        return new UserMessage(ANCHOR_PREFIX + truncated);
+    }
+
+    /**
      * 计算摘要字数预算：被压缩内容 token 的 20%，不低于 500、不超过 3000。
      */
     private int computeSummaryBudget(List<Message> turnsToSummarize) {
@@ -374,7 +739,54 @@ public class ConversationWindowManager {
 
     // ==================== 工具结果处理 ====================
 
+    /**
+     * Backwards-compatible overload — older tool results that are oversized
+     * stay verbatim because no {@link ToolResultStorage} target is in
+     * scope. New call sites should use the 3-arg overload with explicit
+     * {@code conversationId} and {@code workspaceBasePath} so oversized
+     * bodies can be spilled to disk and recovered via {@code read_file}.
+     */
     public List<Message> pruneOldToolResultsForModelInput(List<Message> messages) {
+        return pruneOldToolResultsForModelInput(messages, null, null);
+    }
+
+    /**
+     * Walk the messages newest-to-oldest, keeping the latest tool response
+     * verbatim and applying space-saving rewrites to older ones:
+     *
+     * <ol>
+     *   <li>Bodies already starting with {@link ToolResultStorage#SPILL_MARKER_PREFIX}
+     *       were spilled at tool-execution time — pass through untouched.</li>
+     *   <li>If a body matches an identical body already seen in a newer turn,
+     *       replace it with a short "duplicate tool output omitted" placeholder
+     *       (only above {@link #DEDUP_MIN_CHARS} so we don't bloat tiny acks).</li>
+     *   <li>Otherwise, when a {@link ToolResultStorage} is wired and a
+     *       conversation id is available, try
+     *       {@link ToolResultStorage#persistIfOversized} to spill the raw
+     *       bytes to disk and replace the inline body with a preview + path
+     *       so the model can read_file the original on demand.</li>
+     *   <li>If none of the above apply, leave the body verbatim. Bodies
+     *       under the spill threshold or running without a storage hook are
+     *       preserved exactly — the lossy "summarized for model context"
+     *       single-liner that used to fire here destroyed enough context
+     *       on long tasks to be the wrong default.</li>
+     * </ol>
+     *
+     * <p>The {@link #PRUNE_EXEMPT_TOOLS} set still bypasses everything:
+     * sub-agent delegations are not replayable, so their full transcript
+     * stays in context.
+     *
+     * @param messages          full conversation in chronological order
+     * @param conversationId    used to scope spill files; {@code null} disables spill
+     * @param workspaceBasePath used to locate the spill directory; {@code null}
+     *                          falls back through the storage's resolveBaseDir chain
+     */
+    public List<Message> pruneOldToolResultsForModelInput(List<Message> messages,
+                                                          String conversationId,
+                                                          String workspaceBasePath) {
+        if (messages == null || messages.isEmpty()) {
+            return messages;
+        }
         int latestToolResponseIndex = -1;
         for (int i = messages.size() - 1; i >= 0; i--) {
             if (messages.get(i) instanceof ToolResponseMessage) {
@@ -386,9 +798,13 @@ public class ConversationWindowManager {
             return messages;
         }
 
+        boolean canSpill = toolResultStorage != null
+                && conversationId != null && !conversationId.isEmpty();
+
         List<Message> pruned = new ArrayList<>(messages);
         java.util.Set<String> seenLargeOutputs = new java.util.HashSet<>();
         int changed = 0;
+        int spilled = 0;
         for (int i = pruned.size() - 1; i >= 0; i--) {
             if (!(pruned.get(i) instanceof ToolResponseMessage trm)) {
                 continue;
@@ -398,23 +814,53 @@ public class ConversationWindowManager {
             boolean messageChanged = false;
             for (ToolResponseMessage.ToolResponse r : trm.getResponses()) {
                 String data = r.responseData();
-                boolean exempt = r.name() != null && PRUNE_EXEMPT_TOOLS.contains(r.name());
-                if (keepFull || exempt || data == null || data.length() <= OLD_TOOL_RESULT_SUMMARY_THRESHOLD) {
+                String name = r.name();
+                boolean exempt = name != null && PRUNE_EXEMPT_TOOLS.contains(name);
+                boolean alreadySpilled = data != null
+                        && data.startsWith(ToolResultStorage.SPILL_MARKER_PREFIX);
+
+                // Pass through: the latest response, exempt tools, empty bodies,
+                // already-spilled previews — none should be rewritten.
+                if (keepFull || exempt || data == null || data.isEmpty() || alreadySpilled) {
                     newResponses.add(r);
-                    if (data != null && data.length() > OLD_TOOL_RESULT_SUMMARY_THRESHOLD) {
+                    if (data != null && data.length() > DEDUP_MIN_CHARS) {
                         seenLargeOutputs.add(data);
                     }
                     continue;
                 }
-                String replacement;
-                if (seenLargeOutputs.contains(data)) {
-                    replacement = "[" + r.name() + "] duplicate tool output omitted; same content appeared later.";
-                } else {
-                    replacement = summarizeToolResponse(r.name(), data);
+
+                // Dedup: identical body seen in a later turn already.
+                if (data.length() > DEDUP_MIN_CHARS && seenLargeOutputs.contains(data)) {
+                    String replacement = "[" + name
+                            + "] duplicate tool output omitted; same content appeared later.";
+                    newResponses.add(new ToolResponseMessage.ToolResponse(r.id(), name, replacement));
+                    messageChanged = true;
+                    continue;
+                }
+
+                // Spill on demand: route oversized bodies to disk so the model
+                // can read_file them rather than losing them to a lossy summary.
+                if (canSpill) {
+                    String candidate = toolResultStorage.persistIfOversized(
+                            data, name, r.id(), conversationId, workspaceBasePath);
+                    if (candidate != null
+                            && candidate.startsWith(ToolResultStorage.SPILL_MARKER_PREFIX)) {
+                        newResponses.add(new ToolResponseMessage.ToolResponse(r.id(), name, candidate));
+                        seenLargeOutputs.add(data);
+                        messageChanged = true;
+                        spilled++;
+                        continue;
+                    }
+                    // returned unchanged: under threshold, excluded tool, or write failed.
+                    // Fall through to "keep verbatim".
+                }
+
+                // Default: keep the body verbatim. Better to send a few extra
+                // tokens than to silently destroy data the model might need.
+                newResponses.add(r);
+                if (data.length() > DEDUP_MIN_CHARS) {
                     seenLargeOutputs.add(data);
                 }
-                newResponses.add(new ToolResponseMessage.ToolResponse(r.id(), r.name(), replacement));
-                messageChanged = true;
             }
             if (messageChanged) {
                 pruned.set(i, ToolResponseMessage.builder().responses(newResponses).build());
@@ -422,47 +868,43 @@ public class ConversationWindowManager {
             }
         }
         if (changed > 0) {
-            log.info("[ConversationWindow] Pruned {} older tool response message(s) before model request", changed);
+            log.info("[ConversationWindow] Pruned {} older tool response message(s) ({} spilled to disk) before model request",
+                    changed, spilled);
         }
         return changed > 0 ? pruned : messages;
     }
 
-    private static String summarizeToolResponse(String toolName, String data) {
-        int chars = data.length();
-        int lines = data.isBlank() ? 0 : data.split("\\R", -1).length;
-        String firstLine = firstNonBlankLine(data);
-        if (firstLine.length() > 160) {
-            firstLine = firstLine.substring(0, 160) + "...";
-        }
-        StringBuilder sb = new StringBuilder();
-        sb.append('[').append(toolName).append("] previous tool output summarized for model context: ")
-                .append(chars).append(" chars, ").append(lines).append(" lines");
-        if (!firstLine.isBlank()) {
-            sb.append(". First line: ").append(firstLine);
-        }
-        return sb.toString();
-    }
-
-    private static String firstNonBlankLine(String data) {
-        for (String line : data.split("\\R")) {
-            String trimmed = line.trim();
-            if (!trimmed.isBlank()) {
-                return trimmed.replace('|', '/');
-            }
-        }
-        return "";
+    /**
+     * Spill-marker responses already point at an on-disk full copy via
+     * {@code path=...} in their body. Trimming, replacing, or pre-pruning
+     * them would destroy the very pointer the model needs to recover the
+     * original output with {@code read_file} — which is the whole reason
+     * we spilled in the first place. All three compaction phases consult
+     * this guard before touching a response.
+     */
+    static boolean isSpillMarker(ToolResponseMessage.ToolResponse r) {
+        return r != null
+                && r.responseData() != null
+                && r.responseData().startsWith(ToolResultStorage.SPILL_MARKER_PREFIX);
     }
 
     /**
      * Phase 1 - Soft trim：对工具结果做 head+tail 裁剪（保留首尾各 200 字符）。
+     * <p>Spill-marker responses are left untouched so their on-disk pointer
+     * survives intact across compaction.
      */
-    private int softTrimToolResults(List<Message> messages) {
+    int softTrimToolResults(List<Message> messages) {
         int trimmed = 0;
         for (int i = 0; i < messages.size(); i++) {
             if (messages.get(i) instanceof ToolResponseMessage trm) {
                 List<ToolResponseMessage.ToolResponse> newResponses = new ArrayList<>();
                 boolean changed = false;
                 for (ToolResponseMessage.ToolResponse r : trm.getResponses()) {
+                    if (isSpillMarker(r)) {
+                        // Pointer + preview already; trimming would lose the path.
+                        newResponses.add(r);
+                        continue;
+                    }
                     String data = r.responseData();
                     if (data != null && data.length() > 500) {
                         String head = data.substring(0, 200);
@@ -485,16 +927,28 @@ public class ConversationWindowManager {
 
     /**
      * Phase 2 - Hard clear：将所有旧工具结果替换为占位符。
+     * <p>Spill-marker responses are left untouched so the on-disk pointer
+     * survives — a placeholder here would force the model to abandon a
+     * tool output it could otherwise recover via {@code read_file}.
      */
-    private int hardClearToolResults(List<Message> messages) {
+    int hardClearToolResults(List<Message> messages) {
         int cleared = 0;
         for (int i = 0; i < messages.size(); i++) {
             if (messages.get(i) instanceof ToolResponseMessage trm) {
-                List<ToolResponseMessage.ToolResponse> placeholders = trm.getResponses().stream()
-                        .map(r -> new ToolResponseMessage.ToolResponse(r.id(), r.name(), "[tool result removed]"))
-                        .toList();
-                messages.set(i, ToolResponseMessage.builder().responses(placeholders).build());
-                cleared++;
+                boolean changed = false;
+                List<ToolResponseMessage.ToolResponse> replaced = new ArrayList<>(trm.getResponses().size());
+                for (ToolResponseMessage.ToolResponse r : trm.getResponses()) {
+                    if (isSpillMarker(r)) {
+                        replaced.add(r);
+                        continue;
+                    }
+                    replaced.add(new ToolResponseMessage.ToolResponse(r.id(), r.name(), "[tool result removed]"));
+                    changed = true;
+                }
+                if (changed) {
+                    messages.set(i, ToolResponseMessage.builder().responses(replaced).build());
+                    cleared++;
+                }
             }
         }
         return cleared;
@@ -502,18 +956,27 @@ public class ConversationWindowManager {
 
     /**
      * Phase 3 Pre-prune：在 LLM 摘要前，将工具输出替换为占位符（减少摘要输入 token）。
+     * <p>Spill-marker responses are left untouched so the summary input
+     * still has the on-disk path the model might cite back in its summary.
      */
-    private int prePruneForSummary(List<Message> messages) {
+    int prePruneForSummary(List<Message> messages) {
         int pruned = 0;
         for (int i = 0; i < messages.size(); i++) {
             if (messages.get(i) instanceof ToolResponseMessage trm) {
                 boolean hasSubstantial = trm.getResponses().stream()
-                        .anyMatch(r -> r.responseData() != null && r.responseData().length() > 200);
+                        .anyMatch(r -> !isSpillMarker(r)
+                                && r.responseData() != null
+                                && r.responseData().length() > 200);
                 if (hasSubstantial) {
-                    List<ToolResponseMessage.ToolResponse> placeholders = trm.getResponses().stream()
-                            .map(r -> new ToolResponseMessage.ToolResponse(r.id(), r.name(),
-                                    "[旧工具输出已清理以节省上下文空间]"))
-                            .toList();
+                    List<ToolResponseMessage.ToolResponse> placeholders = new ArrayList<>(trm.getResponses().size());
+                    for (ToolResponseMessage.ToolResponse r : trm.getResponses()) {
+                        if (isSpillMarker(r)) {
+                            placeholders.add(r);
+                            continue;
+                        }
+                        placeholders.add(new ToolResponseMessage.ToolResponse(r.id(), r.name(),
+                                "[旧工具输出已清理以节省上下文空间]"));
+                    }
                     messages.set(i, ToolResponseMessage.builder().responses(placeholders).build());
                     pruned++;
                 }

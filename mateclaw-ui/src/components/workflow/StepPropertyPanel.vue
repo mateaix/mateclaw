@@ -66,7 +66,7 @@
           @input="patch({ promptTemplate: ($event.target as HTMLTextAreaElement).value })"
           spellcheck="false"
           rows="3"
-          :placeholder="t('workflows.canvas.fields.promptPlaceholder')"
+          :placeholder="PROMPT_PLACEHOLDER"
         />
       </label>
 
@@ -318,6 +318,14 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+
+// The Pebble example shown in the textarea placeholder is the same in every
+// locale and contains literal `{{ }}`. Routing it through vue-i18n's t()
+// works but the library does a second compile pass on the returned string
+// looking for linked messages / nested placeholders, which trips on the
+// inner braces and floods the console with parse errors. Keeping it as a
+// plain const sidesteps the parser entirely.
+const PROMPT_PLACEHOLDER = 'Hello {{ inputs.payload }}'
 
 const modeType = computed(() => (props.step?.mode?.type ?? 'sequential') as string)
 

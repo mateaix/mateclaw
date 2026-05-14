@@ -43,35 +43,46 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, onMounted, onBeforeUnmount } from 'vue'
+import { computed, ref, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 
 const route = useRoute()
 const { t } = useI18n()
 
-// 折叠状态
+// Routes that benefit from extra editor width — the sub-nav auto-collapses
+// to a 56px rail unless the user has explicitly toggled it open.
+const COMPACT_ROUTES = ['/settings/workflows', '/settings/triggers']
+
 const navCollapsed = ref(localStorage.getItem('mc-settings-nav-collapsed') === 'true')
-const userExplicit = ref(localStorage.getItem('mc-settings-nav-collapsed') === 'true')
+const userExplicit = ref(localStorage.getItem('mc-settings-nav-collapsed') !== null)
 let mediumQuery: MediaQueryList | null = null
 
 function toggleNav() {
   navCollapsed.value = !navCollapsed.value
-  userExplicit.value = navCollapsed.value
+  userExplicit.value = true
   localStorage.setItem('mc-settings-nav-collapsed', String(navCollapsed.value))
 }
 
-function handleMediumChange(e: MediaQueryListEvent | MediaQueryList) {
-  if (e.matches && !userExplicit.value) {
-    navCollapsed.value = true
-  } else if (!e.matches && !userExplicit.value) {
-    navCollapsed.value = false
-  }
+function isCompactRoute(path: string): boolean {
+  return COMPACT_ROUTES.some((p) => path.startsWith(p))
 }
+
+function recomputeAuto() {
+  if (userExplicit.value) return
+  const compact = isCompactRoute(route.path) || !!mediumQuery?.matches
+  navCollapsed.value = compact
+}
+
+function handleMediumChange(_e: MediaQueryListEvent | MediaQueryList) {
+  recomputeAuto()
+}
+
+watch(() => route.path, recomputeAuto)
 
 onMounted(() => {
   mediumQuery = window.matchMedia('(max-width: 1200px)')
-  handleMediumChange(mediumQuery)
+  recomputeAuto()
   mediumQuery.addEventListener('change', handleMediumChange)
 })
 

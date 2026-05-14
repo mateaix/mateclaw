@@ -123,16 +123,19 @@ import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 const { t } = useI18n()
-const listFilter = ref<'all' | 'hot' | 'cooling'>('all')
-const tlFilter = ref<'all' | 'public' | 'meeting' | 'doc'>('all')
+type ListFilterKey = 'all' | 'hot' | 'cooling'
+type TlFilterKey = 'all' | 'public' | 'meeting' | 'doc'
 
-const listFilters = computed(() => [
+const listFilter = ref<ListFilterKey>('all')
+const tlFilter = ref<TlFilterKey>('all')
+
+const listFilters = computed<{ key: ListFilterKey; label: string; count: number }[]>(() => [
   { key: 'all', label: t('enterprise.account.filterAll'), count: 14 },
   { key: 'hot', label: t('enterprise.account.filterHot'), count: 4 },
   { key: 'cooling', label: t('enterprise.account.filterCooling'), count: 3 },
 ])
 
-const tlFilters = computed(() => [
+const tlFilters = computed<{ key: TlFilterKey; label: string }[]>(() => [
   { key: 'all', label: t('enterprise.account.tlAll') },
   { key: 'public', label: t('enterprise.account.tlPublic') },
   { key: 'meeting', label: t('enterprise.account.tlMeeting') },

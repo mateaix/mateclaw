@@ -297,6 +297,12 @@ export default {
     streamReconnecting: '重新连接...',
     streamStopped: '已停止',
     streamCompleted: '已完成',
+    // Context compaction (compact_status SSE)
+    compactStart: '正在压缩上下文…',
+    compactPairSafe: '调整边界以保留 tool_call 配对…',
+    compactSummarize: '正在生成压缩摘要…',
+    compactStartWithTokens: '正在压缩上下文… ({tokens})',
+    compactSummarizeWithCount: '正在生成压缩摘要… ({count} 条)',
     streamPreparingContextDetail: '正在收集当前问题、历史对话和必要配置。',
     streamReadingMemoryDetail: '正在查找与你当前问题最相关的长期记忆和今日记录。',
     streamReasoningDetail: '正在基于现有信息进行判断、比较方案并组织回答结构。',
@@ -1260,6 +1266,9 @@ export default {
       },
       messages: {
         ruleIdRequired: '规则 ID 不能为空',
+        nameRequired: '名称不能为空',
+        patternRequired: '正则模式不能为空',
+        ruleIdDuplicate: '规则 ID 已存在',
         saveFailed: '保存规则失败',
       },
     },
@@ -2181,6 +2190,7 @@ export default {
     tabs: {
       canvas: '画布视图',
       json: 'JSON 编辑',
+      runs: '运行 ({count})',
     },
     canvas: {
       empty: '当前草稿没有任何步骤，先在 JSON 编辑器中添加步骤或选择一个模板。',
@@ -2224,7 +2234,8 @@ export default {
         agentPlaceholder: '选择数字员工',
         agentMissing: '当前数字员工不在列表中：{name}',
         promptTemplate: 'Prompt 模板',
-        promptPlaceholder: 'Hello {{ inputs.payload }}',
+        // promptPlaceholder is intentionally not localized — hardcoded in
+        // StepPropertyPanel so vue-i18n's parser never sees the Pebble braces.
         outputVar: '输出变量名',
         outputVarPlaceholder: 'data',
         outputContentType: '输出类型',

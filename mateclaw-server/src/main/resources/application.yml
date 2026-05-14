@@ -207,15 +207,17 @@ mate:
         per-category:
           shell: 120
           web: 30
-    # RFC-008 Phase 3: tool-result three-layer budget (per-result spill + per-turn aggregate budget).
-    # Layer 1 (per-tool cap) lives inside individual tools; Layer 2 spills oversized
-    # single results to disk; Layer 3 enforces an aggregate cap on the combined
-    # response size of one tool turn. The full output is preserved on disk and
-    # the in-context preview points the agent at the spill file (read_file tool).
+    # Tool-result budget (per-result spill + per-turn aggregate budget).
+    # The executor tries to spill the RAW result first so the full output is
+    # preserved on disk; the in-context preview points the agent at the spill
+    # file via read_file. When spill is disabled, the tool is on the exclusion
+    # list, the body is at or below the threshold, or the disk write fails,
+    # the executor falls back to inline hard-truncation to the same character
+    # cap. Per-turn aggregate caps the combined size across one tool turn.
     tool-result:
       enabled: true
-      per-result-threshold-chars: 16000   # was 4000 — prevents WebSearch spill-to-disk
-      per-turn-budget-chars: 32000        # was 16000 — headroom for multi-tool turns
+      per-result-threshold-chars: 8000    # aligned with executor hard cap; > this size → spill, ≤ → inline verbatim
+      per-turn-budget-chars: 32000        # headroom for multi-tool turns
       preview-head-chars: 800
       excluded-tool-inline-chars: 2500
       storage-base-dir: ""
@@ -227,6 +229,14 @@ mate:
       excluded-tools:
         - read_file
         - read_workspace_memory_file
+      # Spill files are deleted after this many days. Default 0 disables the
+      # scheduled sweep entirely so a summary/preview that points at a spill
+      # path stays valid for the whole life of the conversation. Files are
+      # still purged when the conversation is deleted explicitly via
+      # ConversationService.deleteConversation. Raise to a positive value if
+      # disk pressure outweighs recoverability for your deployment.
+      retention-days: 0
+      cleanup-cron: "0 0 3 * * ?"
     conversation:
       window:
         # 测试时临时调低：2000 token ≈ 2000 中文字，3 轮对话即可触发压缩
