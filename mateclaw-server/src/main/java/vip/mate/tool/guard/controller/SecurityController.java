@@ -178,11 +178,13 @@ public class SecurityController {
     @Operation(summary = "审批记录（管理视角）")
     @GetMapping("/approvals")
     public R<Object> listApprovals(
-            @RequestParam(required = false) String conversationId) {
+            @RequestParam(required = false) String conversationId,
+            @RequestParam(required = false, defaultValue = "0") int limit) {
         if (conversationId != null && !conversationId.isBlank()) {
             return R.ok(approvalWorkflowService.getPendingByConversation(conversationId));
         }
-        // 返回空列表（后续可扩展为全量审批记录查询）
-        return R.ok(java.util.List.of());
+        // Global view — reads from mate_tool_approval directly so the result
+        // survives in-memory map drift after a restart/recovery cycle.
+        return R.ok(approvalWorkflowService.listPendingFromDb(limit));
     }
 }

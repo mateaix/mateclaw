@@ -293,6 +293,19 @@ export const backstageApi = {
   sweep: () => http.post('/admin/agent-runtime/sweep'),
 }
 
+// ==================== Notification summary (sidebar attention badges) ====================
+export interface NotificationSummary {
+  pendingApprovals: number
+  stuckAgents: number
+  failedCrons: number
+  downChannels: number
+  downMcps: number
+}
+
+export const notificationApi = {
+  summary: () => http.get<{ data: NotificationSummary }>('/notifications/summary'),
+}
+
 // ==================== ACP Endpoints (RFC-090 Phase 7) ====================
 export const acpApi = {
   list: () => http.get('/acp/endpoints'),

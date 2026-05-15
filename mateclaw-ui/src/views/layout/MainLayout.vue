@@ -46,17 +46,26 @@
               :key="item.path"
               :to="item.path"
               class="nav-item"
-              :class="{ active: isNavItemActive(item), 'has-attention': item.path === '/backstage' && backstageAlertActive }"
+              :class="{ active: isNavItemActive(item) }"
               :title="effectiveCollapsed ? (item.tooltip || item.label) : (item.tooltip || '')"
               @click="onNavClick"
             >
               <span class="nav-icon" v-html="item.icon"></span>
               <span v-if="!effectiveCollapsed" class="nav-label">{{ item.label }}</span>
-              <span
-                v-if="item.path === '/backstage' && backstageAlertActive"
-                class="nav-attention-dot"
+              <NavBadge
+                v-if="item.path === '/backstage'"
+                :dot="backstageAlertActive"
+                tone="warning"
+                :collapsed="effectiveCollapsed"
                 :title="t('backstage.attention')"
-              ></span>
+              />
+              <NavBadge
+                v-else-if="item.path === '/security' && isAdminRole"
+                :count="pendingApprovals"
+                tone="urgent"
+                :collapsed="effectiveCollapsed"
+                :title="t('notifications.pendingApprovals', { n: pendingApprovals })"
+              />
             </router-link>
           </div>
         </template>
@@ -173,10 +182,12 @@ import { useI18n } from 'vue-i18n'
 import { useThemeStore } from '@/stores/useThemeStore'
 import { version as appVersion } from '../../../package.json'
 import type { ThemeMode } from '@/stores/useThemeStore'
-import { http, settingsApi, setupApi, backstageApi } from '@/api/index'
+import { http, settingsApi, setupApi } from '@/api/index'
 import OnboardingWizard from '@/views/Onboarding/OnboardingWizard.vue'
 import DoctorDrawer from '@/views/Doctor/DoctorDrawer.vue'
 import WorkspaceSwitcher from '@/components/workspace/WorkspaceSwitcher.vue'
+import NavBadge from '@/components/common/NavBadge.vue'
+import { useNotificationCenter } from '@/composables/useNotificationCenter'
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore'
 import { applyLocale, currentLocale, type AppLocale } from '@/i18n'
 import { SwitchButton, Lock } from '@element-plus/icons-vue'
@@ -210,24 +221,12 @@ async function fetchHealthStatus() {
   }
 }
 
-// Live attention signal for the Backstage sidebar entry. Admins only —
-// non-admin users never poll the runtime endpoint and never see the dot.
-const backstageStuckCount = ref(0)
-let backstagePollTimer: ReturnType<typeof setInterval> | null = null
-
+// Sidebar attention signals — admin-only. Both `/backstage` (stuck agents)
+// and `/security` (pending approvals) read from a shared 15s poller so
+// multiple consumers don't multiply HTTP traffic.
 const isAdminRole = computed(() => (localStorage.getItem('role') || 'user') === 'admin')
-const backstageAlertActive = computed(() => isAdminRole.value && backstageStuckCount.value > 0)
-
-async function refreshBackstageBadge() {
-  if (!isAdminRole.value) return
-  try {
-    const res: any = await backstageApi.snapshot()
-    const data = res?.data ?? res
-    backstageStuckCount.value = data?.summary?.stuck ?? 0
-  } catch {
-    // Silent: stale value is preferable to a flapping indicator.
-  }
-}
+const { stuckAgents, pendingApprovals } = useNotificationCenter()
+const backstageAlertActive = computed(() => isAdminRole.value && stuckAgents.value > 0)
 
 // 移动端状态
 const isMobile = ref(false)
@@ -274,18 +273,13 @@ onMounted(async () => {
 
   // Fetch initial health status for sidebar indicator
   fetchHealthStatus()
-
-  // Backstage attention dot — poll every 15s for admins.
-  if (isAdminRole.value) {
-    refreshBackstageBadge()
-    backstagePollTimer = setInterval(refreshBackstageBadge, 15_000)
-  }
+  // Sidebar attention counts (backstage / security) are driven by
+  // useNotificationCenter — it polls when admins are mounted.
 })
 
 onBeforeUnmount(() => {
   mobileQuery?.removeEventListener('change', handleMobileChange)
   mediumQuery?.removeEventListener('change', handleMediumChange)
-  if (backstagePollTimer) clearInterval(backstagePollTimer)
 })
 
 function onNavClick() {
@@ -672,44 +666,6 @@ watch(() => workspaceStore.currentWorkspaceId, () => {
 
 .nav-icon { display: flex; align-items: center; flex-shrink: 0; }
 .nav-label { overflow: hidden; text-overflow: ellipsis; }
-
-/* Backstage attention dot — appears only when stuck > 0 for an admin. */
-.nav-attention-dot {
-  position: absolute;
-  right: 14px;
-  top: 50%;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: hsl(20, 80%, 55%);
-  transform: translateY(-50%);
-  box-shadow: 0 0 0 0 hsla(20, 80%, 55%, 0.6);
-  animation: nav-attention-pulse 2.4s ease-in-out infinite;
-}
-
-.nav-item.has-attention {
-  color: hsl(20, 75%, 50%);
-}
-
-@keyframes nav-attention-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 hsla(20, 80%, 55%, 0.55); transform: translateY(-50%) scale(1); }
-  50%      { box-shadow: 0 0 0 6px hsla(20, 80%, 55%, 0);    transform: translateY(-50%) scale(1.15); }
-}
-
-.sidebar.collapsed .nav-attention-dot {
-  right: 8px;
-  top: 8px;
-  transform: none;
-}
-
-.sidebar.collapsed .nav-attention-dot {
-  animation-name: nav-attention-pulse-collapsed;
-}
-
-@keyframes nav-attention-pulse-collapsed {
-  0%, 100% { box-shadow: 0 0 0 0 hsla(20, 80%, 55%, 0.55); transform: scale(1); }
-  50%      { box-shadow: 0 0 0 5px hsla(20, 80%, 55%, 0);    transform: scale(1.2); }
-}
 
 /* 底部 */
 .sidebar-footer {

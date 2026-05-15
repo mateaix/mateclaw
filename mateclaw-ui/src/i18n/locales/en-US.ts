@@ -401,6 +401,9 @@ export default {
     roleUser: 'User',
     roleAdmin: 'Admin',
   },
+  notifications: {
+    pendingApprovals: '{n} tool call(s) pending approval',
+  },
   backstage: {
     kicker: 'Backstage',
     title: 'See what your employees are doing',

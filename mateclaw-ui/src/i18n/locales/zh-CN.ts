@@ -1714,6 +1714,9 @@ export default {
       testFailed: '连接失败，请检查配置',
     },
   },
+  notifications: {
+    pendingApprovals: '{n} 个工具调用等待审批',
+  },
   backstage: {
     kicker: '后台',
     title: '看看你的数字员工在做什么',
