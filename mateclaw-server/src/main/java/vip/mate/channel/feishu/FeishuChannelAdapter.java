@@ -221,6 +221,9 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter {
                         }
                     }
                 })
+                // 静默忽略消息表情回应事件，避免 HandlerNotFoundException
+                .onP2MessageReactionCreatedV1(event -> {})
+                .onP2MessageReactionDeletedV1(event -> {})
                 .build();
 
         return new com.lark.oapi.ws.Client.Builder(appId, appSecret)
