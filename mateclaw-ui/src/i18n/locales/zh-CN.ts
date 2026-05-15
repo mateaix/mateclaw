@@ -3474,4 +3474,11 @@ export default {
     listAvailableSkills: '列出可用技能',
     readSkillFile: '读取技能文件',
   },
+  forbidden: {
+    title: '无权访问',
+    message: '当前工作区中你的角色无法访问该页面。',
+    currentRole: '当前角色：{role}',
+    goChat: '返回对话',
+    goBack: '返回上一页',
+  },
 } as const

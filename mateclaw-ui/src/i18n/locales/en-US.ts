@@ -3382,4 +3382,11 @@ export default {
     listAvailableSkills: 'List Skills',
     readSkillFile: 'Read Skill File',
   },
+  forbidden: {
+    title: 'Access denied',
+    message: 'Your role in this workspace does not include this page.',
+    currentRole: 'Current role: {role}',
+    goChat: 'Go to chat',
+    goBack: 'Go back',
+  },
 } as const

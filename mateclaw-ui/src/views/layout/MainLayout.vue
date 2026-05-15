@@ -317,93 +317,140 @@ const localeOptions = computed<{ value: AppLocale; label: string; short: string 
   { value: 'en-US', label: t('settings.languageOptions.enUS'), short: 'EN' },
 ])
 
+// Capability-gated nav. Each item declares a capability or globalAdmin flag;
+// useWorkspaceStore.can() decides visibility from the backend access set so
+// the sidebar can't drift from the route guard or controller annotations.
+type NavItem = {
+  path: string
+  label: string
+  icon: string
+  tooltip?: string
+  requiredCapability?:
+    | 'chat'
+    | 'view:wiki'
+    | 'view:memory'
+    | 'view:dashboard'
+    | 'manage:wiki'
+    | 'manage:agents'
+    | 'manage:skills'
+    | 'manage:channels'
+    | 'manage:models'
+    | 'manage:security'
+    | 'manage:settings'
+  globalAdmin?: boolean
+}
+
+function filterNav(items: NavItem[]): NavItem[] {
+  // Default deny while access is still loading — render an empty group rather
+  // than flashing the full menu before refreshAccess() returns.
+  if (!workspaceStore.accessLoaded) return []
+  return items.filter((item) => {
+    if (item.globalAdmin) return workspaceStore.isGlobalAdmin
+    if (item.requiredCapability && !workspaceStore.can(item.requiredCapability as never)) return false
+    return true
+  })
+}
+
 const navGroups = computed(() => [
   {
     key: 'core',
     label: t('nav.core'),
-    items: [
+    items: filterNav([
       {
         path: '/dashboard',
         label: t('nav.dashboard', 'Dashboard'),
         icon: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>`,
+        requiredCapability: 'view:dashboard',
       },
       {
         path: '/chat',
         label: t('nav.chat'),
         icon: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>`,
+        requiredCapability: 'chat',
       },
       {
         path: '/agents',
         label: t('nav.agents'),
         icon: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M20 21a8 8 0 1 0-16 0"/></svg>`,
+        requiredCapability: 'manage:agents',
       },
-      ...(isAdminRole.value ? [{
+      {
         path: '/backstage',
         label: t('nav.backstage'),
         tooltip: t('nav.backstageTooltip'),
         icon: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>`,
-      }] : []),
+        globalAdmin: true,
+      },
       {
         path: '/wiki',
         label: t('nav.wiki'),
         icon: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><line x1="8" y1="7" x2="16" y2="7"/><line x1="8" y1="11" x2="14" y2="11"/></svg>`,
+        requiredCapability: 'view:wiki',
       },
       {
         path: '/memory',
         label: t('nav.memory'),
         icon: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a4 4 0 0 1 4 4v2a4 4 0 0 1-8 0V6a4 4 0 0 1 4-4z"/><path d="M16 14H8a4 4 0 0 0-4 4v2h16v-2a4 4 0 0 0-4-4z"/><line x1="12" y1="11" x2="12" y2="14"/></svg>`,
+        requiredCapability: 'view:memory',
       },
       {
         path: '/enterprise',
         label: t('nav.enterprise'),
         icon: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18"/><path d="M5 21V7l7-4 7 4v14"/><path d="M9 9h.01"/><path d="M9 12h.01"/><path d="M9 15h.01"/><path d="M9 18h.01"/><path d="M15 9h.01"/><path d="M15 12h.01"/><path d="M15 15h.01"/><path d="M15 18h.01"/></svg>`,
+        requiredCapability: 'manage:agents',
       },
-    ],
+    ] as NavItem[]),
   },
   {
     key: 'connect',
     label: t('nav.connect'),
-    items: [
+    items: filterNav([
       {
         path: '/channels',
         label: t('nav.channels'),
         icon: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 12a19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 3.6 1.18h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.91 8.73a16 16 0 0 0 6.29 6.29l1.62-1.62a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>`,
+        requiredCapability: 'manage:channels',
       },
       {
         path: '/skills',
         label: t('nav.skills'),
         icon: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>`,
+        requiredCapability: 'manage:skills',
       },
       {
         path: '/plugins',
         label: t('nav.plugins'),
         icon: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 3h-8v4h8V3z"/></svg>`,
+        requiredCapability: 'manage:settings',
       },
       // RFC-090 Phase 4: Activity 提升到顶层
       {
         path: '/activity',
         label: t('nav.activity'),
         icon: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>`,
+        requiredCapability: 'manage:security',
       },
-    ],
+    ] as NavItem[]),
   },
   {
     key: 'system',
     label: t('nav.system'),
-    items: [
+    items: filterNav([
       {
         path: '/settings/models',
         label: t('nav.settings'),
         icon: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/></svg>`,
+        requiredCapability: 'manage:models',
       },
       {
         path: '/security',
         label: t('nav.security'),
         icon: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>`,
+        requiredCapability: 'manage:security',
       },
-    ],
+    ] as NavItem[]),
   },
-])
+].filter((group) => group.items.length > 0))
 
 function toggleSidebar() {
   sidebarCollapsed.value = !sidebarCollapsed.value
