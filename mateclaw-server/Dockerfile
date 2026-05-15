@@ -48,18 +48,18 @@ COPY mateclaw-server/settings.xml /root/.m2/settings.xml
 WORKDIR /plugin-api
 COPY mateclaw-plugin-api/pom.xml ./pom.xml
 COPY mateclaw-plugin-api/src ./src
-RUN mvn install -Dmaven.test.skip=true -q ${MAVEN_FLAGS}
+RUN mvn install -Dmaven.test.skip=true ${MAVEN_FLAGS}
 
 # Pre-fetch mateclaw-server dependencies (uses mirror, so this won't hang)
 WORKDIR /build
 COPY mateclaw-server/pom.xml .
-RUN mvn dependency:go-offline -q ${MAVEN_FLAGS}
+RUN mvn dependency:go-offline ${MAVEN_FLAGS}
 
 # Copy backend source and inject pre-built frontend into the right classpath location
 COPY mateclaw-server/src ./src
 COPY --from=frontend-builder /static ./src/main/resources/static
 
-RUN mvn package -Dmaven.test.skip=true -q ${MAVEN_FLAGS}
+RUN mvn package -Dmaven.test.skip=true ${MAVEN_FLAGS}
 
 # Stage 3 — Runtime
 #
