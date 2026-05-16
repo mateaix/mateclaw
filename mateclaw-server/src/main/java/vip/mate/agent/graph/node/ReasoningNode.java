@@ -237,17 +237,16 @@ public class ReasoningNode implements NodeAction {
 
         // ======= 构建 Prompt =======
         String systemPrompt = accessor.systemPrompt();
-        // RFC-049 follow-up: append a tool-use enforcement clause to every
-        // ReasoningNode call. Without this, models (especially DeepSeek thinking
-        // and Claude Opus) tend to "narrate" — emit a final_answer like "现在
-        // 直接生成立项材料 docx" instead of actually calling renderDocx, which
-        // makes the graph silently terminate at final_answer_node with the
-        // narration as the user-facing reply.
+        // Append a tool-use enforcement clause to every ReasoningNode call.
+        // Without it, some models (notably DeepSeek thinking and Claude Opus)
+        // tend to "narrate" — emit a final_answer like "现在直接生成立项材料
+        // docx" instead of actually calling renderDocx, which makes the
+        // graph silently terminate at final_answer_node with the narration
+        // as the user-facing reply.
         //
-        // Pattern adopted from hermes-agent's TOOL_USE_ENFORCEMENT_GUIDANCE
-        // (`/agent/prompt_builder.py:179-191`). Appended to systemPrompt rather
-        // than woven into the AgentEntity-stored prompt so it stays out of the
-        // user-editable agent UI but is still always-on at runtime.
+        // Appended at runtime rather than woven into the AgentEntity-stored
+        // prompt so it stays out of the user-editable agent UI but is still
+        // always-on for the runtime LLM.
         systemPrompt = systemPrompt + TOOL_USE_ENFORCEMENT;
         List<Message> messages = accessor.messages();
 
@@ -328,24 +327,16 @@ public class ReasoningNode implements NodeAction {
         }
 
         String workspaceBasePath = state.value(vip.mate.agent.graph.state.MateClawStateKeys.WORKSPACE_BASE_PATH, "");
-        List<Message> promptMessages = new ArrayList<>();
-        promptMessages.add(new SystemMessage(systemPrompt));
-        promptMessages.add(new UserMessage(RuntimeContextInjector.buildContextMessage(workspaceBasePath)));
+        String agentIdStr = state.value(MateClawStateKeys.AGENT_ID, "");
+        String userMsg = state.value(MateClawStateKeys.USER_MESSAGE, "");
 
-        // Wiki 相关性注入：根据用户消息提取相关页面摘要
-        if (wikiContextService != null) {
-            String agentIdStr = state.value(MateClawStateKeys.AGENT_ID, "");
-            String userMsg = state.value(MateClawStateKeys.USER_MESSAGE, "");
-            try {
-                Long parsedAgentId = Long.parseLong(agentIdStr);
-                String wikiRelevant = wikiContextService.buildRelevantContext(parsedAgentId, userMsg);
-                if (wikiRelevant != null && !wikiRelevant.isBlank()) {
-                    promptMessages.add(new UserMessage(wikiRelevant));
-                }
-            } catch (NumberFormatException ignored) {
-                // agentId 无法解析时跳过 wiki 注入
-            }
-        }
+        // Build the non-history prefix ONCE. The PTL retry branch below
+        // reuses this list verbatim so the retried prompt has exactly the
+        // same system / runtime context / wiki injection as the original —
+        // the previous tail-only retry path silently dropped the wiki
+        // segment which led to "answer regressed after compaction"
+        // complaints on long sessions.
+        List<Message> nonHistoryPrefix = buildNonHistoryPrefix(systemPrompt, workspaceBasePath, agentIdStr, userMsg);
 
         if (conversationWindowManager != null) {
             // Pass conversationId + workspaceBasePath so oversized older
@@ -355,6 +346,7 @@ public class ReasoningNode implements NodeAction {
             messages = conversationWindowManager.pruneOldToolResultsForModelInput(
                     messages, conversationId, workspaceBasePath);
         }
+        List<Message> promptMessages = new ArrayList<>(nonHistoryPrefix);
         promptMessages.addAll(messages);
 
         // 请求级思考深度覆盖（ThinkingLevelHolder 由 AgentService 设置）
@@ -397,19 +389,34 @@ public class ReasoningNode implements NodeAction {
         try {
             result = streamingHelper.streamCall(chatModel, prompt, conversationId, "reasoning");
 
-            // PTL 处理：压缩后重试
+            // PTL 处理：结构化压缩后重试。复用 nonHistoryPrefix 保证重试
+            // Prompt 仍带 wiki / runtime context；早期的 tail-only 路径会把
+            // wiki 段一起丢掉，重试后的 prompt 比原始更短少一层信息。
             if (result.isPromptTooLong() && conversationWindowManager != null) {
-                log.warn("[ReasoningNode] Prompt too long, attempting compaction and retry");
-                List<Message> compactedMessages = conversationWindowManager.compactForRetry(messages);
+                log.warn("[ReasoningNode] Prompt too long, attempting STRUCTURED compaction and retry");
+
+                // MateClawStateAccessor.agentId() returns String per state
+                // schema; the ConversationWindowManager hook expects Long
+                // (nullable — onPreCompress is a no-op when null).
+                Long agentIdLong = null;
+                if (!agentIdStr.isEmpty()) {
+                    try {
+                        agentIdLong = Long.parseLong(agentIdStr);
+                    } catch (NumberFormatException ignored) {
+                        // Same fallback as the non-history prefix builder above.
+                    }
+                }
+
+                List<Message> compactedMessages = conversationWindowManager.compactForRetry(
+                        messages, chatModel, conversationId, agentIdLong);
+
                 if (compactedMessages != null && compactedMessages.size() < messages.size()) {
-                    List<Message> retryPromptMessages = new ArrayList<>();
-                    retryPromptMessages.add(new SystemMessage(systemPrompt));
-                    retryPromptMessages.add(new UserMessage(RuntimeContextInjector.buildContextMessage(workspaceBasePath)));
+                    // Reuse the SAME non-history prefix — wiki/runtime context preserved.
+                    List<Message> retryPromptMessages = new ArrayList<>(nonHistoryPrefix);
                     retryPromptMessages.addAll(compactedMessages);
                     Prompt retryPrompt = new Prompt(retryPromptMessages, options);
                     log.info("[ReasoningNode] Retrying with compacted messages: {} -> {} messages",
                             messages.size(), compactedMessages.size());
-                    // compact retry 是第 2 次 LLM 调用，先递增再调用
                     nextLlmCallCount++;
                     pushPhase(conversationId, "reasoning", Map.of(
                             "iteration", accessor.iterationCount(),
@@ -658,6 +665,55 @@ public class ReasoningNode implements NodeAction {
             if (ev != null) out.add(ev);
         }
         return out;
+    }
+
+    /**
+     * Build the part of the Prompt that does not depend on history messages:
+     * system prompt, workspace runtime context, and (when wiring permits) the
+     * wiki relevant-pages snippet. Extracted so the initial Prompt assembly
+     * and the PTL retry path can share one source of truth — historically
+     * these were two parallel code paths and the retry one silently dropped
+     * the wiki injection.
+     * <p>
+     * {@code systemPrompt} is consumed as-is; the upstream callsite has
+     * already appended the tool-use enforcement clause, so this helper must
+     * NOT re-append it (doing so would duplicate the clause on every retry).
+     *
+     * @param systemPrompt      Fully-built system prompt (with tool-use
+     *                          enforcement already appended upstream).
+     * @param workspaceBasePath Active workspace directory; passed to
+     *                          {@link RuntimeContextInjector}.
+     * @param agentIdStr        Agent ID as carried in graph state — parsed
+     *                          to {@code Long} only when non-empty and
+     *                          numeric; otherwise the wiki segment is
+     *                          skipped (matches the pre-refactor behavior).
+     * @param userMsg           Current user message used by
+     *                          {@code WikiContextService} to score
+     *                          relevance.
+     */
+    // Package-private so ReasoningNodePtlPromptTest can directly assert on
+    // the wiki / runtime-context layout; the production callsites inside
+    // this class call it via {@code this.buildNonHistoryPrefix(...)} so
+    // narrowing the visibility doesn't change behavior.
+    List<Message> buildNonHistoryPrefix(String systemPrompt,
+                                        String workspaceBasePath,
+                                        String agentIdStr,
+                                        String userMsg) {
+        List<Message> prefix = new ArrayList<>();
+        prefix.add(new SystemMessage(systemPrompt));
+        prefix.add(new UserMessage(RuntimeContextInjector.buildContextMessage(workspaceBasePath)));
+        if (wikiContextService != null && agentIdStr != null && !agentIdStr.isEmpty()) {
+            try {
+                Long parsedAgentId = Long.parseLong(agentIdStr);
+                String wikiRelevant = wikiContextService.buildRelevantContext(parsedAgentId, userMsg);
+                if (wikiRelevant != null && !wikiRelevant.isBlank()) {
+                    prefix.add(new UserMessage(wikiRelevant));
+                }
+            } catch (NumberFormatException ignored) {
+                // agentId not numeric — skip wiki injection (matches prior behavior).
+            }
+        }
+        return prefix;
     }
 
     private void pushPhase(String conversationId, String phase, Map<String, Object> extra) {
