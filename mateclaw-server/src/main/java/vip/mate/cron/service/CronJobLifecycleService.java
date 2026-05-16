@@ -128,6 +128,41 @@ public class CronJobLifecycleService {
     }
 
     /**
+     * Insert a {@code running} run row for a task type that does not produce
+     * a conversation (e.g. {@code wiki_process}). No header / user message is
+     * saved and no conversation row is touched, because there is no recipient
+     * to surface the run to.
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public CronJobRunEntity startSystemRun(CronJobEntity job, String triggerType) {
+        CronJobRunEntity run = new CronJobRunEntity();
+        run.setCronJobId(job.getId());
+        run.setConversationId(null);
+        run.setStatus("running");
+        run.setTriggerType(triggerType != null ? triggerType : "scheduled");
+        run.setStartedAt(LocalDateTime.now());
+        run.setDeliveryStatus("NONE");
+        runMapper.insert(run);
+        return run;
+    }
+
+    /**
+     * Mark a {@link #startSystemRun system run} as succeeded with a short
+     * description of what was done (e.g. "queued 5 raw materials"). The
+     * description lands in {@code error_message} so the dashboard's existing
+     * "last run" line surfaces it without a schema change.
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void markRunSucceeded(CronJobRunEntity run, String description) {
+        runMapper.update(null, new LambdaUpdateWrapper<CronJobRunEntity>()
+                .eq(CronJobRunEntity::getId, run.getId())
+                .set(CronJobRunEntity::getStatus, "succeeded")
+                .set(CronJobRunEntity::getFinishedAt, LocalDateTime.now())
+                .set(CronJobRunEntity::getErrorMessage,
+                        description != null ? StrUtil.maxLength(description, 1000) : null));
+    }
+
+    /**
      * T2 — short transaction: persist the assistant reply, mark the run
      * succeeded, then publish the two domain events. The
      * {@code @TransactionalEventListener(AFTER_COMMIT)} listeners only run

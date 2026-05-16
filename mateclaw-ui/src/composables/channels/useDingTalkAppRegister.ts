@@ -1,6 +1,6 @@
 import { ref, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+import { mcToast } from '@/composables/useMcToast'
 import { channelApi } from '@/api'
 
 export type DingTalkRegisterStatus = '' | 'waiting' | 'confirmed' | 'expired' | 'denied'
@@ -52,13 +52,13 @@ export function useDingTalkAppRegister(onConfirmed: (r: DingTalkRegisterResult) 
       sessionId = res?.data?.session_id || res?.session_id || ''
       if (!sessionId) {
         loading.value = false
-        ElMessage.error(t('channels.dingtalkRegister.startFailed'))
+        mcToast.error(t('channels.dingtalkRegister.startFailed'))
         return
       }
       status.value = 'waiting'
     } catch {
       loading.value = false
-      ElMessage.error(t('channels.dingtalkRegister.startFailed'))
+      mcToast.error(t('channels.dingtalkRegister.startFailed'))
       return
     }
 
@@ -87,7 +87,7 @@ export function useDingTalkAppRegister(onConfirmed: (r: DingTalkRegisterResult) 
           const clientSecret = data.client_secret || ''
           if (clientId && clientSecret) {
             onConfirmed({ clientId, clientSecret })
-            ElMessage.success(t('channels.dingtalkRegister.confirmed'))
+            mcToast.success(t('channels.dingtalkRegister.confirmed'))
           }
           return
         }
@@ -95,11 +95,11 @@ export function useDingTalkAppRegister(onConfirmed: (r: DingTalkRegisterResult) 
         if (s === 'expired') {
           stopPolling()
           loading.value = false
-          ElMessage.warning(t('channels.dingtalkRegister.expired'))
+          mcToast.warning(t('channels.dingtalkRegister.expired'))
         } else if (s === 'denied') {
           stopPolling()
           loading.value = false
-          ElMessage.warning(t('channels.dingtalkRegister.denied'))
+          mcToast.warning(t('channels.dingtalkRegister.denied'))
         }
       } catch {
         // Silent — transient network errors should not abort the loop.

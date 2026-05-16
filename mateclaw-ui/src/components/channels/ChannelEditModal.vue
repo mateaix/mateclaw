@@ -468,7 +468,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+import { mcToast } from '@/composables/useMcToast'
 import { CHANNEL_FIELD_DEFS } from '@/types'
 import { copyToClipboard } from '@/utils/clipboard'
 import type { Agent, Channel, ChannelFieldDef } from '@/types'
@@ -695,16 +695,16 @@ async function copyWebhookUrl() {
     copyLabel.value = t('channels.webhook.copied')
     setTimeout(() => { copyLabel.value = t('channels.webhook.copy') }, 2000)
   } catch {
-    ElMessage.warning(t('channels.webhook.copyFailed'))
+    mcToast.warning(t('channels.webhook.copyFailed'))
   }
 }
 
 async function copyText(text: string) {
   try {
     await copyToClipboard(text)
-    ElMessage.success(t('common.copied'))
+    mcToast.success(t('common.copied'))
   } catch {
-    ElMessage.warning(t('channels.webhook.copyFailed'))
+    mcToast.warning(t('channels.webhook.copyFailed'))
   }
 }
 
@@ -840,7 +840,7 @@ function save() {
     if (rawConfigJson.value.trim()) {
       try { JSON.parse(rawConfigJson.value) }
       catch {
-        ElMessage.error(t('channels.messages.invalidJson'))
+        mcToast.error(t('channels.messages.invalidJson'))
         return
       }
     }

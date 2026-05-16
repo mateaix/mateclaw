@@ -28,7 +28,10 @@ import dagre from 'dagre'
 
 export interface RawStep {
   name?: string
-  agentId?: number
+  // Snowflake IDs lose precision when round-tripped through JS Number, so
+  // we treat agentId as opaque (string preferred, number tolerated for
+  // legacy JSON written before the string-id convention).
+  agentId?: string | number
   agentName?: string
   mode?: { type?: string; expression?: string; [k: string]: unknown }
   promptTemplate?: string
@@ -45,7 +48,7 @@ export interface StepNodeData {
   index: number
   name: string
   modeType: string
-  agentId?: number
+  agentId?: string | number
   agentName?: string
   promptTemplate?: string
   expression?: string
@@ -102,7 +105,9 @@ export function buildGraph(json: string): { nodes: Node<StepNodeData>[]; edges: 
       index: idx,
       name: step?.name?.trim() || fallbackName(idx),
       modeType,
-      agentId: typeof step?.agentId === 'number' ? step.agentId : undefined,
+      // Accept both string (post-fix, Snowflake-safe) and number (legacy)
+      // forms; the canvas only uses this for display, so we don't normalize.
+      agentId: step?.agentId != null && step.agentId !== '' ? step.agentId : undefined,
       agentName: step?.agentName,
       promptTemplate: step?.promptTemplate,
       expression: typeof step?.mode?.expression === 'string' ? step.mode!.expression : undefined,

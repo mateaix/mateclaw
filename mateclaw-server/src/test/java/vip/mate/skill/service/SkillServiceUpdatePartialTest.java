@@ -59,7 +59,8 @@ class SkillServiceUpdatePartialTest {
 
         SkillService service = new SkillService(
                 mapper, mock(vip.mate.skill.repository.SkillFileMapper.class),
-                workspaceManager, workspaceProps, secretService);
+                workspaceManager, workspaceProps, secretService,
+                mock(org.springframework.context.ApplicationEventPublisher.class));
         service.setRuntimeService(runtimeService);
 
         SkillEntity existing = new SkillEntity();
@@ -137,7 +138,8 @@ class SkillServiceUpdatePartialTest {
 
         SkillService service = new SkillService(
                 mapper, mock(vip.mate.skill.repository.SkillFileMapper.class),
-                workspaceManager, workspaceProps, secretService);
+                workspaceManager, workspaceProps, secretService,
+                mock(org.springframework.context.ApplicationEventPublisher.class));
         service.setRuntimeService(runtimeService);
 
         SkillEntity existing = new SkillEntity();

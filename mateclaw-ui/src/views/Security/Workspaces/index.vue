@@ -138,7 +138,7 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+import { mcToast } from '@/composables/useMcToast'
 import { workspaceTeamApi } from '@/api/index'
 import { useWorkspaceStore, type Workspace } from '@/stores/useWorkspaceStore'
 
@@ -170,7 +170,7 @@ async function fetchWorkspaces() {
     const res: any = await workspaceTeamApi.list()
     workspaces.value = res.data || []
   } catch (e: any) {
-    ElMessage.error(e.message || 'Failed to fetch workspaces')
+    mcToast.error(e.message || 'Failed to fetch workspaces')
   } finally {
     loading.value = false
   }
@@ -219,11 +219,11 @@ async function saveWorkspace() {
       })
     }
     showDialog.value = false
-    ElMessage.success(t('security.workspaces.messages.saveSuccess'))
+    mcToast.success(t('security.workspaces.messages.saveSuccess'))
     await fetchWorkspaces()
     wsStore.fetchWorkspaces()
   } catch (e: any) {
-    ElMessage.error(t('security.workspaces.messages.saveFailed'))
+    mcToast.error(t('security.workspaces.messages.saveFailed'))
   }
 }
 
@@ -238,11 +238,11 @@ async function deleteWorkspace() {
     await workspaceTeamApi.delete(deletingWs.value.id)
     showDeleteConfirm.value = false
     deletingWs.value = null
-    ElMessage.success(t('security.workspaces.messages.deleteSuccess'))
+    mcToast.success(t('security.workspaces.messages.deleteSuccess'))
     await fetchWorkspaces()
     wsStore.fetchWorkspaces()
   } catch (e: any) {
-    ElMessage.error(t('security.workspaces.messages.deleteFailed'))
+    mcToast.error(t('security.workspaces.messages.deleteFailed'))
   }
 }
 

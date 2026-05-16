@@ -221,6 +221,29 @@ class AgentBindingServiceTest {
     }
 
     @Test
+    @DisplayName("bindSkill 允许跨 workspace 的 builtin skill（builtin 为全局能力，不做 tenancy 校验）")
+    void bindSkillAllowsBuiltinSkillCrossWorkspace() {
+        // Builtin skills are seeded once into the default workspace but are
+        // global — an agent in any workspace must be able to bind them. Seed
+        // a builtin row whose workspace_id deliberately differs from the
+        // agent's (=1) to prove the builtin exemption, not a workspace match,
+        // is what lets the binding through.
+        long builtinSkillId = 7_777_350L;
+        jdbcTemplate.update(
+                "MERGE INTO mate_skill (id, name, skill_type, version, enabled, builtin, " +
+                        "workspace_id, create_time, update_time, deleted) " +
+                        "KEY(id) VALUES (?, ?, 'builtin', '1.0.0', TRUE, TRUE, 2, " +
+                        "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 0)",
+                builtinSkillId, "binding-test-builtin-" + builtinSkillId);
+
+        assertDoesNotThrow(() -> bindingService.bindSkill(agentId, builtinSkillId));
+
+        Set<Long> ids = bindingService.getBoundSkillIds(agentId);
+        assertNotNull(ids);
+        assertTrue(ids.contains(builtinSkillId), "builtin skill 应当可跨 workspace 绑定");
+    }
+
+    @Test
     @DisplayName("bindSkill 允许 MCP 虚拟 skill（McpServerEntity 无 workspace，全局共享）")
     void bindSkillAllowsVirtualMcpSkill() {
         // Virtual MCP id range starts at McpSkillBridge.VIRTUAL_ID_BASE (9e18).

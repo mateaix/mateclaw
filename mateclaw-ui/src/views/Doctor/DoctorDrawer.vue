@@ -1,60 +1,95 @@
 <template>
-  <Teleport to="body">
-    <div v-if="visible" class="drawer-overlay">
-      <div class="drawer-panel">
-        <div class="drawer-header">
-          <h2 class="drawer-title">{{ t('doctor.title') }}</h2>
-          <button class="drawer-close" @click="emit('close')">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-            </svg>
-          </button>
-        </div>
+  <MateDrawer
+    :visible="visible"
+    :title="t('doctor.title')"
+    :subtitle="t('doctor.subtitle')"
+    :close-label="t('common.close')"
+    @close="emit('close')"
+  >
+    <template #icon>
+      <!-- Heartbeat glyph — Apple Health metaphor: this drawer reports
+           vital signs of the local instance, not just status flags. -->
+      <svg
+        width="22"
+        height="22"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      >
+        <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
+      </svg>
+    </template>
 
-        <!-- Overall status banner -->
-        <div class="status-banner" :class="health?.overall || 'loading'">
-          <span class="status-dot"></span>
-          <span v-if="loading">{{ t('doctor.checking') }}</span>
-          <span v-else-if="health?.overall === 'healthy'">{{ t('doctor.allGood') }}</span>
-          <span v-else-if="health?.overall === 'warning'">{{ t('doctor.hasWarnings', { count: warningCount }) }}</span>
-          <span v-else-if="health?.overall === 'error'">{{ t('doctor.hasErrors', { count: errorCount }) }}</span>
+    <div class="doctor-stack">
+      <!-- Status hero: the first fact the user reads. A frosted card
+           carries the overall verdict; the colored dot does the
+           semantic work, the background stays calm. -->
+      <div class="status-hero" :class="`status-hero--${heroState}`">
+        <span class="status-hero__dot"></span>
+        <div class="status-hero__text">
+          <h4 class="status-hero__headline">{{ heroHeadline }}</h4>
+          <p class="status-hero__sub">{{ heroSub }}</p>
         </div>
+      </div>
 
-        <!-- Check list -->
-        <div class="check-list">
-          <div v-for="check in health?.checks" :key="check.name" class="check-item">
-            <span class="check-dot" :class="check.status"></span>
-            <div class="check-info">
-              <div class="check-name">{{ check.name }}</div>
-              <div class="check-message">{{ check.message }}</div>
-            </div>
-            <router-link
-              v-if="check.action && check.status !== 'healthy'"
-              :to="check.action.route"
-              class="check-action"
-              @click="emit('close')"
-            >
-              {{ check.action.label }}
-            </router-link>
+      <!-- Check list — each row is a frosted card, not a bordered row. -->
+      <div class="check-list">
+        <div
+          v-for="check in health?.checks"
+          :key="check.name"
+          class="check-card"
+        >
+          <span class="check-card__dot" :class="`check-card__dot--${check.status}`"></span>
+          <div class="check-card__info">
+            <div class="check-card__name">{{ check.name }}</div>
+            <div class="check-card__message">{{ check.message }}</div>
           </div>
-        </div>
-
-        <!-- Refresh -->
-        <div class="drawer-footer">
-          <button class="btn-secondary" @click="fetchHealth" :disabled="loading">
-            {{ loading ? t('doctor.checking') : t('doctor.refresh') }}
-          </button>
-          <span v-if="lastChecked" class="last-checked">{{ t('doctor.lastChecked', { time: lastCheckedText }) }}</span>
+          <router-link
+            v-if="check.action && check.status !== 'healthy'"
+            :to="check.action.route"
+            class="check-card__action"
+            @click="emit('close')"
+          >
+            {{ check.action.label }}
+          </router-link>
         </div>
       </div>
     </div>
-  </Teleport>
+
+    <template #footer>
+      <button class="footer-refresh" :disabled="loading" @click="fetchHealth">
+        <svg
+          v-if="!loading"
+          width="13"
+          height="13"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <polyline points="23 4 23 10 17 10" />
+          <polyline points="1 20 1 14 7 14" />
+          <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+        </svg>
+        {{ loading ? t('doctor.checking') : t('doctor.refresh') }}
+      </button>
+      <span v-if="lastChecked" class="footer-stamp">
+        {{ t('doctor.lastChecked', { time: lastCheckedText }) }}
+      </span>
+    </template>
+  </MateDrawer>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { http } from '@/api/index'
+import MateDrawer from '@/components/common/MateDrawer.vue'
 
 interface HealthAction { label: string; route: string }
 interface HealthCheck { name: string; status: string; message: string; action?: HealthAction }
@@ -68,8 +103,35 @@ const health = ref<HealthResponse | null>(null)
 const loading = ref(false)
 const lastChecked = ref<Date | null>(null)
 
-const warningCount = computed(() => health.value?.checks.filter(c => c.status === 'warning').length || 0)
-const errorCount = computed(() => health.value?.checks.filter(c => c.status === 'error').length || 0)
+const totalChecks = computed(() => health.value?.checks.length || 0)
+const healthyChecks = computed(
+  () => health.value?.checks.filter(c => c.status === 'healthy').length || 0,
+)
+const warningCount = computed(
+  () => health.value?.checks.filter(c => c.status === 'warning').length || 0,
+)
+const errorCount = computed(
+  () => health.value?.checks.filter(c => c.status === 'error').length || 0,
+)
+
+const heroState = computed(() => {
+  if (loading.value && !health.value) return 'loading'
+  return health.value?.overall || 'loading'
+})
+
+const heroHeadline = computed(() => {
+  if (heroState.value === 'loading') return t('doctor.checking')
+  if (heroState.value === 'healthy') return t('doctor.allGood')
+  if (heroState.value === 'warning') return t('doctor.hasWarnings', { count: warningCount.value })
+  if (heroState.value === 'error') return t('doctor.hasErrors', { count: errorCount.value })
+  return ''
+})
+
+const heroSub = computed(() => {
+  if (heroState.value === 'loading') return t('doctor.checksLoading')
+  return t('doctor.checksPassed', { healthy: healthyChecks.value, total: totalChecks.value })
+})
+
 const lastCheckedText = computed(() => {
   if (!lastChecked.value) return ''
   const secs = Math.floor((Date.now() - lastChecked.value.getTime()) / 1000)
@@ -97,37 +159,177 @@ watch(() => props.visible, (v) => {
 </script>
 
 <style scoped>
-.drawer-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.3); z-index: 1500; display: flex; justify-content: flex-end; }
-.drawer-panel { width: 400px; max-width: 90vw; height: 100%; background: var(--mc-bg-elevated); border-left: 1px solid var(--mc-border); display: flex; flex-direction: column; animation: slide-in 0.2s ease; }
-@keyframes slide-in { from { transform: translateX(100%); } to { transform: translateX(0); } }
+/* Body layout — MateDrawer's body is minimal; we own padding + gap. */
+.doctor-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px 22px 22px;
+}
 
-.drawer-header { display: flex; align-items: center; justify-content: space-between; padding: 20px 24px; border-bottom: 1px solid var(--mc-border-light); }
-.drawer-title { font-size: 16px; font-weight: 600; color: var(--mc-text-primary); margin: 0; }
-.drawer-close { width: 32px; height: 32px; border: none; background: none; cursor: pointer; color: var(--mc-text-tertiary); display: flex; align-items: center; justify-content: center; border-radius: 6px; }
-.drawer-close:hover { background: var(--mc-bg-sunken); }
+/* Status hero — frosted card with a colored dot doing the semantic work. */
+.status-hero {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px 18px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.55);
+  box-shadow: 0 1px 3px rgba(25, 14, 8, 0.04);
+}
+:global(html.dark .status-hero) {
+  background: rgba(255, 255, 255, 0.06);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+.status-hero__dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  flex-shrink: 0;
+  background: var(--mc-text-tertiary);
+  box-shadow: 0 0 0 4px rgba(0, 0, 0, 0.04);
+}
+.status-hero--loading .status-hero__dot {
+  background: var(--mc-text-tertiary);
+  animation: status-pulse 1.4s ease-in-out infinite;
+}
+.status-hero--healthy .status-hero__dot {
+  background: var(--mc-success);
+  box-shadow: 0 0 0 4px rgba(90, 138, 90, 0.12);
+}
+.status-hero--warning .status-hero__dot {
+  background: var(--mc-primary);
+  box-shadow: 0 0 0 4px rgba(217, 119, 87, 0.14);
+}
+.status-hero--error .status-hero__dot {
+  background: var(--mc-danger);
+  box-shadow: 0 0 0 4px rgba(200, 60, 60, 0.14);
+}
+@keyframes status-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+.status-hero__text {
+  min-width: 0;
+}
+.status-hero__headline {
+  margin: 0 0 2px;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  color: var(--mc-text-primary);
+}
+.status-hero__sub {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--mc-text-tertiary);
+}
 
-.status-banner { display: flex; align-items: center; gap: 10px; padding: 12px 24px; font-size: 14px; font-weight: 500; }
-.status-banner.healthy { color: var(--mc-success); background: rgba(90,138,90,0.08); }
-.status-banner.warning { color: var(--mc-primary); background: var(--mc-primary-bg); }
-.status-banner.error { color: var(--mc-danger); background: var(--mc-danger-bg); }
-.status-banner.loading { color: var(--mc-text-secondary); background: var(--mc-bg-sunken); }
-.status-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
+/* Check list — frosted cards, no visible borders. The dot carries
+   the status, the action sits as a pill on the right. */
+.check-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.check-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.42);
+  box-shadow: 0 1px 2px rgba(25, 14, 8, 0.03);
+  transition: background 0.15s ease, transform 0.15s ease;
+}
+.check-card:hover {
+  background: rgba(255, 255, 255, 0.62);
+}
+:global(html.dark .check-card) {
+  background: rgba(255, 255, 255, 0.04);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+}
+:global(html.dark .check-card:hover) {
+  background: rgba(255, 255, 255, 0.07);
+}
+.check-card__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  margin-top: 6px;
+  flex-shrink: 0;
+}
+.check-card__dot--healthy { background: var(--mc-success); }
+.check-card__dot--warning { background: var(--mc-primary); }
+.check-card__dot--error { background: var(--mc-danger); }
+.check-card__info {
+  flex: 1;
+  min-width: 0;
+}
+.check-card__name {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  color: var(--mc-text-primary);
+}
+.check-card__message {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--mc-text-secondary);
+  margin-top: 2px;
+}
+.check-card__action {
+  flex-shrink: 0;
+  padding: 5px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #fff;
+  background: var(--mc-primary);
+  text-decoration: none;
+  white-space: nowrap;
+  transition: background 0.15s ease, transform 0.15s ease;
+}
+.check-card__action:hover {
+  background: var(--mc-primary-hover);
+  transform: translateY(-1px);
+}
 
-.check-list { flex: 1; overflow-y: auto; padding: 16px 24px; display: flex; flex-direction: column; gap: 12px; }
-.check-item { display: flex; align-items: flex-start; gap: 12px; padding: 12px; background: var(--mc-bg); border-radius: 8px; border: 1px solid var(--mc-border-light); }
-.check-dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 5px; flex-shrink: 0; }
-.check-dot.healthy { background: var(--mc-success); }
-.check-dot.warning { background: var(--mc-primary); }
-.check-dot.error { background: var(--mc-danger); }
-.check-info { flex: 1; min-width: 0; }
-.check-name { font-size: 13px; font-weight: 500; color: var(--mc-text-primary); }
-.check-message { font-size: 12px; color: var(--mc-text-secondary); margin-top: 2px; }
-.check-action { font-size: 12px; color: var(--mc-primary); text-decoration: none; white-space: nowrap; padding: 4px 10px; border: 1px solid var(--mc-primary); border-radius: 6px; flex-shrink: 0; }
-.check-action:hover { background: var(--mc-primary-bg); }
-
-.drawer-footer { padding: 16px 24px; border-top: 1px solid var(--mc-border-light); display: flex; align-items: center; gap: 12px; }
-.btn-secondary { padding: 6px 14px; background: var(--mc-bg-elevated); color: var(--mc-text-primary); border: 1px solid var(--mc-border); border-radius: 6px; font-size: 13px; cursor: pointer; }
-.btn-secondary:hover { background: var(--mc-bg-sunken); }
-.btn-secondary:disabled { opacity: 0.5; cursor: not-allowed; }
-.last-checked { font-size: 11px; color: var(--mc-text-tertiary); }
+/* Footer refresh — pill secondary button to match the rest of the app. */
+.footer-refresh {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.6);
+  box-shadow: inset 0 0 0 1px rgba(123, 88, 67, 0.12);
+  color: var(--mc-text-primary);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s ease, box-shadow 0.15s ease;
+}
+.footer-refresh:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.85);
+  box-shadow: inset 0 0 0 1px rgba(123, 88, 67, 0.20);
+}
+.footer-refresh:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+:global(html.dark .footer-refresh) {
+  background: rgba(255, 255, 255, 0.06);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+:global(html.dark .footer-refresh:hover:not(:disabled)) {
+  background: rgba(255, 255, 255, 0.10);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
+}
+.footer-stamp {
+  font-size: 11px;
+  color: var(--mc-text-tertiary);
+  margin-left: auto;
+}
 </style>

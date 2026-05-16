@@ -144,7 +144,7 @@ import { CanvasRenderer } from 'echarts/renderers'
 
 echarts.use([LineChart, GridComponent, TooltipComponent, LegendComponent, CanvasRenderer])
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
 
 const overview = ref<Record<string, any>>({})
 const recentRuns = ref<any[]>([])
@@ -257,6 +257,10 @@ function renderChart() {
   const ro = new ResizeObserver(() => chartInstance?.resize())
   ro.observe(chartRef.value!)
 }
+
+watch(locale, () => {
+  if (trendData.value.length) renderChart()
+})
 
 function formatTokens(n: number): string {
   if (!n) return '0'
@@ -437,5 +441,11 @@ function calcDuration(run: any): string {
   }
   .stats-grid { grid-template-columns: repeat(2, 1fr); }
   .comparison-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 480px) {
+  .stats-grid { grid-template-columns: 1fr; }
+  .stat-card { min-width: 0; }
+  .stat-value { font-size: 28px; }
 }
 </style>

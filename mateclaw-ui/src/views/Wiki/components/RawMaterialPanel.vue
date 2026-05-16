@@ -286,7 +286,7 @@
 <script setup lang="ts">
 import { ref, reactive, computed, watch, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+import { mcToast } from '@/composables/useMcToast'
 import { Download } from '@element-plus/icons-vue'
 import { useWikiStore } from '@/stores/useWikiStore'
 import { wikiApi } from '@/api/index'
@@ -297,9 +297,9 @@ const { t } = useI18n()
 const store = useWikiStore()
 const fileInput = ref<HTMLInputElement | null>(null)
 
-// RFC-012 M3：当列表中存在 processing 的材料时，优先订阅后端 SSE 实时进度流，
-// 60s 兜底拉取 processingStatus / fetchRawMaterials 作为 SSE 断线降级（DB 是真源）。
-// 处理完毕（无 processing 项）自动断开 SSE + 停止兜底轮询；组件卸载时也会清理。
+// While raw materials are active, subscribe to the backend SSE progress stream.
+// A slower polling fallback keeps the UI in sync if SSE reconnects or misses a
+// terminal event. The database remains the source of truth.
 let sse: EventSource | null = null
 let fallbackTimer: number | null = null
 let activeKbId: number | null = null
@@ -319,7 +319,7 @@ function applyProgressEvent(payload: any) {
 function openSse(kbId: number) {
   closeSse()
   activeKbId = kbId
-  // Vite 代理 /api → :18088；EventSource 走相对路径即可
+  // Vite proxies /api to the backend, so EventSource can use a relative URL.
   const es = new EventSource(`/api/v1/wiki/knowledge-bases/${kbId}/progress`)
   sse = es
 
@@ -353,7 +353,7 @@ function openSse(kbId: number) {
       }
       // Clear stale job entry so JobStageBar hides
       delete rawJobs[data.rawId]
-      if (store.currentKB) store.fetchRawMaterials(store.currentKB.id)
+      if (store.currentKB) void store.refreshCurrentKB()
     } catch { /* ignore */ }
   })
   es.addEventListener('raw.failed', (ev: MessageEvent) => {
@@ -363,7 +363,7 @@ function openSse(kbId: number) {
       if (raw) raw.processingStatus = 'failed'
       // Clear stale job entry
       delete rawJobs[data.rawId]
-      if (store.currentKB) store.fetchRawMaterials(store.currentKB.id)
+      if (store.currentKB) void store.refreshCurrentKB()
     } catch { /* ignore */ }
   })
   es.onerror = () => {
@@ -389,7 +389,7 @@ watch(
       // 60s fallback polling
       if (fallbackTimer == null) {
         fallbackTimer = window.setInterval(() => {
-          if (store.currentKB) store.fetchRawMaterials(store.currentKB.id)
+          if (store.currentKB) void store.refreshCurrentKB()
         }, 60000)
       }
     } else {
@@ -445,9 +445,9 @@ async function pollJobs() {
       }
     } catch { /* ignore */ }
   }
-  // When any job reaches terminal, refresh raw materials to sync status badges
+  // When any job reaches terminal, refresh wiki metadata, pages, and raw badges.
   if (anyTerminal) {
-    await store.fetchRawMaterials(kbId)
+    await store.refreshCurrentKB()
   }
   // Continue polling while there are still processing/pending raws
   const stillActive = store.rawMaterials.some(
@@ -550,7 +550,7 @@ async function uploadFile(kbId: number, file: File) {
   } catch (err: any) {
     item.status = 'error'
     item.errorMsg = err?.response?.data?.message || err?.message || t('wiki.uploadFailed', { name: file.name })
-    ElMessage.error(t('wiki.uploadFailed', { name: file.name }))
+    mcToast.error(t('wiki.uploadFailed', { name: file.name }))
   }
 }
 
@@ -653,7 +653,7 @@ async function downloadRaw(raw: { id: number; title?: string }) {
     setTimeout(() => URL.revokeObjectURL(url), 0)
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
-    ElMessage.error(`${t('wiki.downloadFailed')}: ${msg}`)
+    mcToast.error(`${t('wiki.downloadFailed')}: ${msg}`)
   }
 }
 

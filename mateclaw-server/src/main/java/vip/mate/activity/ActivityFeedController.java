@@ -20,6 +20,7 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import vip.mate.workspace.core.annotation.RequireWorkspaceRole;
 
 /**
  * RFC-090 §4.5 / §7 — unified Activity feed.
@@ -74,6 +75,7 @@ public class ActivityFeedController {
      */
     @Operation(summary = "Unified activity feed (audit + approval + tool calls)")
     @GetMapping("/feed")
+    @RequireWorkspaceRole("admin")
     public R<Map<String, Object>> feed(
             @RequestParam(required = false) Long workspaceId,
             @RequestParam(required = false) String source,

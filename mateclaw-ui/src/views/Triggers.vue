@@ -11,60 +11,77 @@
           <button class="btn-primary" @click="openCreate">{{ t('triggers.newTrigger') }}</button>
         </div>
 
-        <table class="triggers-table mc-surface-card">
-          <thead>
-            <tr>
-              <th>{{ t('triggers.columns.name') }}</th>
-              <th>{{ t('triggers.columns.pattern') }}</th>
-              <th>{{ t('triggers.columns.target') }}</th>
-              <th>{{ t('triggers.columns.rate') }}</th>
-              <th>{{ t('triggers.columns.fires') }}</th>
-              <th>{{ t('triggers.columns.patternVersion') }}</th>
-              <th>{{ t('triggers.columns.lastFired') }}</th>
-              <th>{{ t('triggers.columns.state') }}</th>
-              <th>{{ t('triggers.columns.actions') }}</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="row in triggers" :key="row.id">
-              <td>
-                <div class="trigger-name">{{ row.name || t('triggers.unnamed') }}</div>
-                <div v-if="row.lastError" class="trigger-last-error" :title="row.lastError">
+        <div v-if="!triggers.length" class="trigger-empty mc-surface-card">
+          <div class="trigger-empty-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"
+                 stroke-linecap="round" stroke-linejoin="round">
+              <path d="M13 2 3 14h7l-1 8 10-12h-7l1-8Z" />
+            </svg>
+          </div>
+          <h2 class="trigger-empty-title">{{ t('triggers.empty') }}</h2>
+          <p class="trigger-empty-desc">{{ t('triggers.emptyDesc') }}</p>
+          <button class="btn-primary" @click="openCreate">{{ t('triggers.newTrigger') }}</button>
+        </div>
+
+        <div v-else class="trigger-list">
+          <article
+            v-for="row in triggers"
+            :key="row.id"
+            class="trigger-card mc-surface-card"
+            :class="{ 'is-disabled': !row.enabled }"
+          >
+            <span
+              class="trigger-status-dot"
+              :class="row.enabled ? 'is-on' : 'is-off'"
+              :title="row.enabled ? t('triggers.enabled') : t('triggers.disabled')"
+            />
+            <div class="trigger-main">
+              <div class="trigger-headline">
+                <span class="trigger-name">{{ row.name || t('triggers.unnamed') }}</span>
+                <span v-if="row.lastError" class="trigger-error-chip" :title="row.lastError">
                   ⚠ {{ truncateError(row.lastError) }}
-                </div>
-              </td>
-              <td>
-                <span class="trigger-type-pill" :title="row.patternType">{{ patternTypeLabel(row.patternType) }}</span>
-                <div class="pattern-summary" :title="row.patternJson">{{ patternSummary(row) }}</div>
-              </td>
-              <td>{{ formatTarget(row) }}</td>
-              <td>{{ t('triggers.rateUnit', { count: row.rateLimitPerMin }) }}</td>
-              <td>{{ row.fireCount }}<span v-if="row.maxFires > 0"> / {{ row.maxFires }}</span></td>
-              <td>{{ row.patternVersion }}</td>
-              <td>
-                <div>{{ formatTime(row.lastFiredAt) }}</div>
-                <div v-if="row.lastDispatchedAt && row.lastDispatchedAt !== row.lastFiredAt"
-                     class="trigger-attempt-time"
-                     :title="t('triggers.lastDispatchedAt')">
-                  {{ formatTime(row.lastDispatchedAt) }}
-                </div>
-              </td>
-              <td>
-                <label class="toggle">
-                  <input type="checkbox" :checked="row.enabled" @change="toggleEnabled(row)" />
-                  <span>{{ row.enabled ? t('triggers.enabled') : t('triggers.disabled') }}</span>
-                </label>
-              </td>
-              <td class="actions">
-                <button class="btn-ghost" @click="openEdit(row)">{{ t('triggers.actions.edit') }}</button>
-                <button class="btn-danger" @click="remove(row)">{{ t('triggers.actions.delete') }}</button>
-              </td>
-            </tr>
-            <tr v-if="!triggers.length">
-              <td colspan="9" class="empty-row">{{ t('triggers.empty') }}</td>
-            </tr>
-          </tbody>
-        </table>
+                </span>
+              </div>
+              <div class="trigger-rule">
+                <span class="trigger-type-pill" :title="row.patternType">
+                  {{ patternTypeLabel(row.patternType) }}
+                </span>
+                <span class="trigger-rule-arrow" aria-hidden="true">→</span>
+                <span class="trigger-target" :title="'#' + row.targetId">{{ targetName(row) }}</span>
+              </div>
+              <div class="trigger-meta">
+                <span class="trigger-meta-summary" :title="row.patternJson">{{ patternSummary(row) }}</span>
+                <span class="trigger-meta-sep" aria-hidden="true">·</span>
+                <span>{{ activityLine(row) }}</span>
+              </div>
+            </div>
+            <div class="trigger-controls">
+              <button
+                type="button"
+                class="trigger-toggle"
+                :class="{ 'is-on': row.enabled }"
+                :title="row.enabled ? t('triggers.enabled') : t('triggers.disabled')"
+                @click="toggleEnabled(row)"
+              >
+                <span class="trigger-toggle-knob" />
+              </button>
+              <button class="row-btn" :title="t('triggers.actions.edit')" @click="openEdit(row)">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                     stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M12 20h9" />
+                  <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z" />
+                </svg>
+              </button>
+              <button class="row-btn danger" :title="t('triggers.actions.delete')" @click="remove(row)">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                     stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M3 6h18" />
+                  <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
+                </svg>
+              </button>
+            </div>
+          </article>
+        </div>
 
         <Teleport to="body">
           <div v-if="formOpen" class="trigger-modal-overlay" @click.self="closeForm">
@@ -118,7 +135,10 @@
                     </select>
                   </label>
                   <label>{{ t('triggers.fields.targetId') }}
-                    <select v-model.number="formState.targetId">
+                    <!-- Keep targetId as a string so 19-digit Snowflake IDs survive
+                         the v-model round trip; .number would truncate to JS's
+                         53-bit safe-integer ceiling. -->
+                    <select v-model="formState.targetId">
                       <option v-if="!availableWorkflows.length" :value="0">
                         {{ t('triggers.targetWorkflowEmpty') }}
                       </option>
@@ -171,7 +191,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+import { mcToast } from '@/composables/useMcToast'
 import { mcConfirm } from '@/components/common/useConfirm'
 import { triggerApi, type TriggerSummary, workflowApi, type WorkflowSummary } from '@/api'
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore'
@@ -208,7 +228,11 @@ interface FormState {
   patternType: string
   patternJson: string
   targetType: string
-  targetId: number
+  // Snowflake IDs arrive from the backend as strings (ToStringSerializer).
+  // Keep that string form here so v-model on the workflow select can't
+  // accidentally lose precision. The 0 sentinel covers the "no workflow
+  // available" empty state.
+  targetId: number | string
   rateLimitPerMin: number
   dedupWindowSecs: number
   botSelfFilter: boolean
@@ -251,17 +275,30 @@ async function reload() {
   }
 }
 
-function formatTarget(row: TriggerSummary) {
+function targetName(row: TriggerSummary): string {
   if (row.targetType === 'workflow') {
-    const wf = workflows.value.find((w) => w.id === row.targetId)
-    if (wf?.name) return `${wf.name} (#${row.targetId})`
+    const wf = workflows.value.find((w) => String(w.id) === String(row.targetId))
+    if (wf?.name) return wf.name
   }
-  return `${row.targetType}#${row.targetId}`
+  return `${row.targetType} #${row.targetId}`
 }
 
-function formatTime(iso?: string) {
+// Compact "MM-DD HH:mm" for the activity subline — the full timestamp would
+// crowd the card without telling the operator anything they scan for.
+function shortTime(iso?: string): string {
   if (!iso) return '-'
-  return iso.replace('T', ' ').slice(0, 19)
+  return iso.slice(5, 16).replace('T', ' ')
+}
+
+// One muted line summarizing operational state: how many times it has fired
+// and when. Replaces the former fireCount / lastFired / pattern_version
+// columns — those scalars never warranted a column each.
+function activityLine(row: TriggerSummary): string {
+  if (!row.lastFiredAt) return t('triggers.neverFired')
+  return t('triggers.firedSummary', {
+    count: row.fireCount,
+    time: shortTime(row.lastFiredAt),
+  })
 }
 
 function patternTypeLabel(pt: string): string {
@@ -361,7 +398,7 @@ async function save() {
     formOpen.value = false
     await reload()
   } catch (e) {
-    ElMessage.error(t('triggers.saveFailed', { msg: (e as Error).message }))
+    mcToast.error(t('triggers.saveFailed', { msg: (e as Error).message }))
   } finally {
     busy.value = false
   }
@@ -372,7 +409,7 @@ async function toggleEnabled(row: TriggerSummary) {
     await triggerApi.update(row.id, { ...row, enabled: !row.enabled })
     await reload()
   } catch (e) {
-    ElMessage.error(t('triggers.toggleFailed', { msg: (e as Error).message }))
+    mcToast.error(t('triggers.toggleFailed', { msg: (e as Error).message }))
   }
 }
 
@@ -388,7 +425,7 @@ async function remove(row: TriggerSummary) {
     await triggerApi.delete(row.id)
     await reload()
   } catch (e) {
-    ElMessage.error(t('triggers.deleteFailed', { msg: (e as Error).message }))
+    mcToast.error(t('triggers.deleteFailed', { msg: (e as Error).message }))
   }
 }
 
@@ -402,59 +439,77 @@ watch(workspaceId, reload)
   flex-direction: column;
   gap: 16px;
 }
-.triggers-table {
-  width: 100%;
-  border-collapse: collapse;
-  padding: 0;
-  overflow: hidden;
-}
-.triggers-table th,
-.triggers-table td {
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--mc-border, rgba(0, 0, 0, 0.06));
-  text-align: left;
-  font-size: 13px;
-  vertical-align: top;
-}
-.triggers-table th {
-  font-weight: 600;
-  background: var(--mc-bg-sunken, rgba(0, 0, 0, 0.04));
-}
-.pattern-detail {
-  font-family: 'JetBrains Mono', Consolas, monospace;
-  font-size: 11px;
-  opacity: 0.7;
-  margin-top: 2px;
-}
-.pattern-summary {
-  font-family: 'JetBrains Mono', Consolas, monospace;
-  font-size: 11px;
-  opacity: 0.7;
-  margin-top: 3px;
+.mc-page-header .btn-primary {
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 240px;
+}
+/* ── Trigger list — one card per rule, reads as "when X → run Y" ── */
+.trigger-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.trigger-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 13px 18px;
+  transition: opacity 0.15s ease, border-color 0.15s ease;
+}
+.trigger-card.is-disabled {
+  opacity: 0.6;
+}
+.trigger-status-dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.trigger-status-dot.is-on {
+  background: #22c55e;
+  box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.16);
+}
+.trigger-status-dot.is-off {
+  background: var(--mc-text-tertiary, #b0a89e);
+}
+.trigger-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.trigger-headline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
 .trigger-name {
-  font-weight: 500;
-}
-.trigger-last-error {
-  font-size: 11px;
-  color: var(--mc-danger, #c0392b);
-  margin-top: 2px;
+  font-weight: 600;
+  font-size: 14px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 240px;
+}
+.trigger-error-chip {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--mc-danger, #c0392b);
+  background: var(--mc-danger-bg, rgba(192, 57, 43, 0.1));
+  padding: 1px 8px;
+  border-radius: 999px;
   cursor: help;
 }
-.trigger-attempt-time {
-  font-size: 10px;
-  opacity: 0.55;
-  margin-top: 1px;
+/* Line 2 — the rule at its purest: "[type] → [workflow]". Both ends are
+   short, so this never needs to truncate; detail lives on the meta line. */
+.trigger-rule {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
 .trigger-type-pill {
+  flex: 0 0 auto;
   display: inline-block;
   padding: 2px 8px;
   font-size: 11px;
@@ -466,20 +521,132 @@ watch(workspaceId, reload)
   letter-spacing: 0.02em;
 }
 :lang(zh-CN) .trigger-type-pill { text-transform: none; }
-.empty-row {
-  text-align: center;
-  opacity: 0.6;
-  padding: 24px;
+.trigger-rule-arrow {
+  flex: 0 0 auto;
+  color: var(--mc-text-tertiary, #b0a89e);
+  font-size: 13px;
 }
-.toggle {
+.trigger-target {
+  flex: 0 1 auto;
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Line 3 — muted detail: pattern summary + activity. Wraps instead of
+   truncating so neither the schedule nor the fire stats get amputated. */
+.trigger-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 7px;
+  font-size: 11.5px;
+  color: var(--mc-text-tertiary, #9a938b);
+}
+.trigger-meta-summary {
+  font-family: 'JetBrains Mono', Consolas, monospace;
+  font-size: 11px;
+}
+.trigger-meta-sep {
+  opacity: 0.5;
+}
+.trigger-controls {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+/* Toggle switch — enabled state is user-controlled, so it earns a switch */
+.trigger-toggle {
+  flex: 0 0 auto;
+  position: relative;
+  width: 38px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: var(--mc-bg-sunken, rgba(0, 0, 0, 0.16));
+  cursor: pointer;
+  transition: background 0.18s ease;
+}
+.trigger-toggle.is-on {
+  background: #22c55e;
+}
+.trigger-toggle-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  transition: transform 0.18s ease;
+}
+.trigger-toggle.is-on .trigger-toggle-knob {
+  transform: translateX(16px);
+}
+.row-btn {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  font-size: 12px;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--mc-border, rgba(0, 0, 0, 0.12));
+  border-radius: 8px;
+  background: var(--mc-bg-elevated, transparent);
+  color: var(--mc-text-secondary, inherit);
+  cursor: pointer;
+  transition: background 0.14s ease, color 0.14s ease, border-color 0.14s ease;
 }
-.actions {
+.row-btn svg {
+  width: 15px;
+  height: 15px;
+}
+.row-btn:hover {
+  background: var(--mc-bg-sunken, rgba(0, 0, 0, 0.05));
+  color: var(--mc-text-primary, inherit);
+}
+.row-btn.danger:hover {
+  background: var(--mc-danger-bg, rgba(192, 57, 43, 0.1));
+  border-color: var(--mc-danger, #c0392b);
+  color: var(--mc-danger, #c0392b);
+}
+/* Empty state — a brand-new page should invite, not show a blank table */
+.trigger-empty {
   display: flex;
-  gap: 6px;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 10px;
+  padding: 56px 24px;
+}
+.trigger-empty-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 52px;
+  height: 52px;
+  border-radius: 14px;
+  background: var(--mc-bg-muted, rgba(0, 0, 0, 0.06));
+  color: var(--mc-text-tertiary, #9a938b);
+}
+.trigger-empty-icon svg {
+  width: 26px;
+  height: 26px;
+}
+.trigger-empty-title {
+  margin: 4px 0 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+.trigger-empty-desc {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--mc-text-secondary, inherit);
+  max-width: 380px;
 }
 .trigger-modal-overlay {
   position: fixed;
@@ -617,21 +784,11 @@ button:disabled {
   cursor: not-allowed;
 }
 
-/* Mobile / tablet: the trigger table has 9 columns and breaks on
-   phones. Wrap it in a horizontal-scroll container, collapse the
-   form to one column, and stack the page header. */
-@media (max-width: 900px) {
-  .triggers-table {
-    display: block;
-    overflow-x: auto;
-    white-space: nowrap;
-  }
-  .triggers-table thead,
-  .triggers-table tbody,
-  .triggers-table tr {
-    display: table;
-    width: 100%;
-    table-layout: auto;
+/* Mobile / tablet: let the rule line wrap instead of truncating, collapse
+   the form to one column, and stack the page header. */
+@media (max-width: 720px) {
+  .trigger-rule {
+    flex-wrap: wrap;
   }
   .form-grid {
     grid-template-columns: 1fr;

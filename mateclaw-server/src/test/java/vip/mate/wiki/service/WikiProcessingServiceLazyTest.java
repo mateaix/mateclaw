@@ -86,6 +86,20 @@ class WikiProcessingServiceLazyTest {
         return k;
     }
 
+    private WikiKnowledgeBaseEntity markdownKbWithFrontmatter(String ingestMode) {
+        WikiKnowledgeBaseEntity k = new WikiKnowledgeBaseEntity();
+        k.setId(KB_ID);
+        k.setConfigContent("""
+                ---
+                ingestMode: %s
+                ---
+                # Wiki Processing Rules
+
+                Keep pages concise.
+                """.formatted(ingestMode));
+        return k;
+    }
+
     @Test
     @DisplayName("lazy mode: skips LLM pipeline, persists chunks, marks completed with 0 pages")
     void lazyMode_noLlmCalls() throws InterruptedException {
@@ -134,6 +148,34 @@ class WikiProcessingServiceLazyTest {
 
         // KB back to active.
         verify(kbService).updateStatus(KB_ID, "active");
+    }
+
+    @Test
+    @DisplayName("lazy mode from markdown frontmatter: skips LLM pipeline")
+    void markdownFrontmatterLazyMode_noLlmCalls() throws InterruptedException {
+        WikiRawMaterialEntity rawEntity = raw();
+        WikiKnowledgeBaseEntity kbEntity = markdownKbWithFrontmatter("lazy");
+
+        when(rawService.claimForProcessing(RAW_ID)).thenReturn(true);
+        when(rawService.getById(RAW_ID)).thenReturn(rawEntity);
+        when(rawService.getTextContent(rawEntity)).thenReturn("Some document text for lazy ingest. ".repeat(20));
+        when(kbService.getById(KB_ID)).thenReturn(kbEntity);
+        when(pageService.countByKbId(KB_ID)).thenReturn(0);
+
+        CountDownLatch embedCalled = new CountDownLatch(1);
+        when(embeddingService.embedMissingChunks(KB_ID)).thenAnswer(inv -> {
+            embedCalled.countDown();
+            return 0;
+        });
+
+        service.processRawMaterial(RAW_ID);
+
+        verify(chunkService, times(1)).persistChunks(eq(KB_ID), eq(RAW_ID), anyList(), anyList());
+        verify(pageService, never()).deleteExclusiveBySourceRawId(anyLong(), anyLong());
+        assertTrue(embedCalled.await(5, TimeUnit.SECONDS), "embedMissingChunks should have been invoked");
+        verify(progressBus).broadcast(eq(KB_ID),
+                eq(WikiProgressBus.EVENT_RAW_STARTED),
+                argThat((Map<String, Object> m) -> "lazy".equals(m.get("phase"))));
     }
 
     @Test

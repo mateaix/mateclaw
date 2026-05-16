@@ -293,6 +293,19 @@ export const backstageApi = {
   sweep: () => http.post('/admin/agent-runtime/sweep'),
 }
 
+// ==================== Notification summary (sidebar attention badges) ====================
+export interface NotificationSummary {
+  pendingApprovals: number
+  stuckAgents: number
+  failedCrons: number
+  downChannels: number
+  downMcps: number
+}
+
+export const notificationApi = {
+  summary: () => http.get<{ data: NotificationSummary }>('/notifications/summary'),
+}
+
 // ==================== ACP Endpoints (RFC-090 Phase 7) ====================
 export const acpApi = {
   list: () => http.get('/acp/endpoints'),
@@ -546,7 +559,10 @@ export const settingsApi = {
   // unrelated settings pages can't clobber them via partial payloads. This
   // endpoint is the only path that writes those fields unconditionally —
   // pass {defaultVisionModelId: null} here to explicitly clear a sidecar.
-  updateSidecar: (data: { defaultVisionModelId: number | null; defaultVideoModelId: number | null }) =>
+  // Model IDs are accepted as either JSON numbers or strings — Jackson
+  // coerces both into Long. The string form is preferred from the UI to
+  // sidestep JS Number precision loss on 19-digit Snowflake IDs.
+  updateSidecar: (data: { defaultVisionModelId: number | string | null; defaultVideoModelId: number | string | null }) =>
     http.put('/settings/sidecar', data),
 }
 
@@ -663,7 +679,7 @@ export const wikiApi = {
   getBacklinks: (kbId: number, slug: string) =>
     http.get(`/wiki/knowledge-bases/${kbId}/pages/${encodeURIComponent(slug)}/backlinks`),
 
-  // RFC-051 PR-7: archived pages
+  // Archived pages
   listArchivedPages: (kbId: number) =>
     http.get(`/wiki/knowledge-bases/${kbId}/pages/archived`),
   archivePage: (kbId: number, slug: string) =>
@@ -754,6 +770,7 @@ export const wikiApi = {
 export const workspaceTeamApi = {
   list: () => http.get('/workspaces'),
   get: (id: string | number) => http.get(`/workspaces/${id}`),
+  getAccess: (id: string | number) => http.get(`/workspaces/${id}/access`),
   create: (data: any) => http.post('/workspaces', data),
   update: (id: string | number, data: any) => http.put(`/workspaces/${id}`, data),
   delete: (id: string | number) => http.delete(`/workspaces/${id}`),
@@ -1028,7 +1045,10 @@ export interface TriggerSummary {
   patternType: string
   patternJson: string
   targetType: string
-  targetId: number
+  // Snowflake ID — backend serializes Long as string (ToStringSerializer).
+  // Keep the union so v-model can hold the string form without TS errors
+  // and JS Number() coercion stays out of the round-trip.
+  targetId: number | string
   payloadTemplate?: string
   rateLimitPerMin: number
   dedupWindowSecs: number

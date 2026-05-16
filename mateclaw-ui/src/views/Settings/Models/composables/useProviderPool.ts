@@ -1,6 +1,6 @@
 import { ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+import { mcToast } from '@/composables/useMcToast'
 import { providerPoolApi } from '@/api'
 import type { ProviderInfo } from '@/types'
 
@@ -29,13 +29,13 @@ export function useProviderPool(deps: ListDeps) {
       // refreshes everything the UI needs (badge + status pill + dropdown filter).
       await deps.loadProviders()
       if (data.success) {
-        ElMessage.success(t('settings.model.poolReprobeOk'))
+        mcToast.success(t('settings.model.poolReprobeOk'))
       } else {
-        ElMessage.warning(t('settings.model.poolReprobeFail', { error: data.errorMessage || '—' }))
+        mcToast.warning(t('settings.model.poolReprobeFail', { error: data.errorMessage || '—' }))
       }
       return data
     } catch (err) {
-      ElMessage.error(t('settings.model.poolReprobeFail', {
+      mcToast.error(t('settings.model.poolReprobeFail', {
         error: err instanceof Error ? err.message : String(err)
       }))
     } finally {

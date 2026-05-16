@@ -1424,6 +1424,29 @@ public class ChatController {
             if (savedAssistant.getRuntimeProvider() != null && !savedAssistant.getRuntimeProvider().isBlank()) {
                 payload.put("runtimeProvider", savedAssistant.getRuntimeProvider());
             }
+            // Surface the server-authoritative segments timeline. The live SSE
+            // path builds metadata.segments from streamed deltas only, so
+            // server-side annotations added at persist time (e.g. the
+            // 'superseded' marker the SegmentSupersedeDetector writes onto
+            // pre-tool model claims that the actual tool result replaced)
+            // never reach the in-memory message until a page reload triggers
+            // a refetch via /messages. Inlining them in the done payload lets
+            // the client merge the markers onto its local segments by id
+            // without an extra HTTP round-trip.
+            String rawMetadata = savedAssistant.getMetadata();
+            if (rawMetadata != null && !rawMetadata.isBlank()) {
+                try {
+                    Map<String, Object> parsed = objectMapper.readValue(rawMetadata,
+                            new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {});
+                    Object segs = parsed.get("segments");
+                    if (segs instanceof java.util.List<?> list && !list.isEmpty()) {
+                        payload.put("segments", segs);
+                    }
+                } catch (Exception ignored) {
+                    // Best-effort: malformed metadata just means the client falls
+                    // back to its existing "wait for reload" reconcile path.
+                }
+            }
         }
         if (promptTokens > 0) payload.put("promptTokens", promptTokens);
         if (completionTokens > 0) payload.put("completionTokens", completionTokens);
@@ -1982,6 +2005,7 @@ public class ChatController {
         synchronized String toMetadataJson() {
             finalizeToolCalls();
             finalizeRunningSegments("thinking", "content", "tool_call");
+            SegmentSupersedeDetector.markSuperseded(segments);
             try {
                 Map<String, Object> metadata = new LinkedHashMap<>();
                 if (!toolCalls.isEmpty()) {

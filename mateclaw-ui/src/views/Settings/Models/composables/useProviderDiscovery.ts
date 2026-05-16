@@ -1,6 +1,6 @@
 import { computed, reactive, ref, type Ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+import { mcToast } from '@/composables/useMcToast'
 import { modelApi } from '@/api'
 import type { DiscoverResult, ProviderInfo, ProviderModelInfo, TestResult } from '@/types'
 
@@ -98,7 +98,7 @@ export function useProviderDiscovery(deps: ListDeps) {
         selectedNewModelIds.value = res.data.newModels.map((m: ProviderModelInfo) => m.id)
       }
     } catch (error) {
-      ElMessage.error(error instanceof Error ? error.message : String(error))
+      mcToast.error(error instanceof Error ? error.message : String(error))
     } finally {
       discovering.value = false
     }
@@ -116,7 +116,7 @@ export function useProviderDiscovery(deps: ListDeps) {
       await deps.refreshCurrentProvider(deps.currentProvider.value.id)
       return added
     } catch (error) {
-      ElMessage.error(error instanceof Error ? error.message : String(error))
+      mcToast.error(error instanceof Error ? error.message : String(error))
       return 0
     } finally {
       applyingModels.value = false

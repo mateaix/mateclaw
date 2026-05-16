@@ -60,7 +60,7 @@ public class WikiTransformationController {
     public R<WikiTransformationEntity> get(@PathVariable Long id,
                                             @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
         WikiTransformationEntity t = transformationService.getById(id);
-        if (t == null) return R.fail("Transformation not found");
+        if (t == null) return R.fail(404, "Transformation not found");
         verifyTemplateWorkspace(t, workspaceId);
         return R.ok(t);
     }
@@ -84,7 +84,7 @@ public class WikiTransformationController {
                                                @RequestBody WikiTransformationEntity body,
                                                @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
         WikiTransformationEntity existing = transformationService.getById(id);
-        if (existing == null) return R.fail("Transformation not found");
+        if (existing == null) return R.fail(404, "Transformation not found");
         verifyTemplateWorkspace(existing, workspaceId);
         return R.ok(transformationService.update(id, body));
     }
@@ -114,16 +114,16 @@ public class WikiTransformationController {
                                                  @RequestParam(defaultValue = "false") boolean sync,
                                                  @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
         WikiTransformationEntity t = transformationService.getById(id);
-        if (t == null) return R.fail("Transformation not found");
+        if (t == null) return R.fail(404, "Transformation not found");
         verifyTemplateWorkspace(t, workspaceId);
 
         Object rawIdRaw = body == null ? null : body.get("rawId");
         Object pageIdRaw = body == null ? null : body.get("pageId");
         if (rawIdRaw == null && pageIdRaw == null) {
-            return R.fail("One of rawId / pageId is required");
+            return R.fail(400, "One of rawId / pageId is required");
         }
         if (rawIdRaw != null && pageIdRaw != null) {
-            return R.fail("Pass only one of rawId / pageId, not both");
+            return R.fail(400, "Pass only one of rawId / pageId, not both");
         }
 
         if (rawIdRaw != null) {
@@ -147,14 +147,14 @@ public class WikiTransformationController {
                                              @RequestParam Long kbId,
                                              @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
         WikiTransformationEntity t = transformationService.getById(id);
-        if (t == null) return R.fail("Transformation not found");
+        if (t == null) return R.fail(404, "Transformation not found");
         verifyTemplateWorkspace(t, workspaceId);
         verifyKBWorkspace(kbId, workspaceId != null ? workspaceId : 1L);
 
         try {
             WikiTransformationAggregator.Result res = aggregator.aggregate(t, kbId, "manual");
             if (res.pageId() == null) {
-                return R.fail(res.title()); // when sources are empty we put the reason in title field
+                return R.fail(409, res.title()); // when sources are empty we put the reason in title field
             }
             return R.ok(Map.of(
                     "pageId", res.pageId(),
@@ -164,7 +164,7 @@ public class WikiTransformationController {
                     "charsFed", res.charsFed(),
                     "created", res.created()));
         } catch (IllegalStateException | IllegalArgumentException e) {
-            return R.fail(e.getMessage());
+            return R.fail(400, e.getMessage());
         }
     }
 
@@ -175,7 +175,7 @@ public class WikiTransformationController {
     public R<WikiTransformationRunEntity> getRun(@PathVariable Long runId,
                                                   @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
         WikiTransformationRunEntity run = transformationService.getRun(runId);
-        if (run == null) return R.fail("Run not found");
+        if (run == null) return R.fail(404, "Run not found");
         verifyKBWorkspace(run.getKbId(), workspaceId != null ? workspaceId : 1L);
         return R.ok(run);
     }
@@ -194,7 +194,7 @@ public class WikiTransformationController {
         }
         if (transformationId != null) {
             WikiTransformationEntity t = transformationService.getById(transformationId);
-            if (t == null) return R.fail("Transformation not found");
+            if (t == null) return R.fail(404, "Transformation not found");
             verifyTemplateWorkspace(t, wsId);
             return R.ok(transformationService.listRunsByTransformation(transformationId, limit));
         }
@@ -202,7 +202,7 @@ public class WikiTransformationController {
             verifyKBWorkspace(kbId, wsId);
             return R.ok(transformationService.listRunsByKb(kbId, limit));
         }
-        return R.fail("One of rawId / kbId / transformationId is required");
+        return R.fail(400, "One of rawId / kbId / transformationId is required");
     }
 
     @RequireWorkspaceRole("member")
@@ -214,10 +214,10 @@ public class WikiTransformationController {
     public R<Void> cancelRun(@PathVariable Long runId,
                               @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
         WikiTransformationRunEntity run = transformationService.getRun(runId);
-        if (run == null) return R.fail("Run not found");
+        if (run == null) return R.fail(404, "Run not found");
         verifyKBWorkspace(run.getKbId(), workspaceId != null ? workspaceId : 1L);
         boolean cancelled = executor.cancelRun(runId);
-        if (!cancelled) return R.fail("Run is not running");
+        if (!cancelled) return R.fail(409, "Run is not running");
         return R.ok();
     }
 
@@ -228,17 +228,17 @@ public class WikiTransformationController {
     public R<Map<String, Object>> saveRunAsPage(@PathVariable Long runId,
                                                  @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
         WikiTransformationRunEntity run = transformationService.getRun(runId);
-        if (run == null) return R.fail("Run not found");
+        if (run == null) return R.fail(404, "Run not found");
         verifyKBWorkspace(run.getKbId(), workspaceId != null ? workspaceId : 1L);
         try {
             var page = executor.manualSaveRunAsPage(runId);
-            if (page == null) return R.fail("Page service unavailable");
+            if (page == null) return R.fail(503, "Page service unavailable");
             return R.ok(Map.of(
                     "pageId", page.getId(),
                     "slug", page.getSlug(),
                     "title", page.getTitle()));
         } catch (IllegalStateException | IllegalArgumentException e) {
-            return R.fail(e.getMessage());
+            return R.fail(400, e.getMessage());
         }
     }
 

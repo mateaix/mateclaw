@@ -341,7 +341,7 @@
 import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+import { mcToast } from '@/composables/useMcToast'
 import { mcConfirm } from '@/components/common/useConfirm'
 import { ChatDotRound, Delete, Plus, Setting, UploadFilled } from '@element-plus/icons-vue'
 import { conversationApi, agentApi, modelApi, chatApi, cronJobApi } from '@/api/index'
@@ -443,6 +443,15 @@ const recoverablePrompt = ref(false)
 const recoverableDismissed = ref(false)
 const defaultModel = ref<ModelConfig | null>(null)
 const providers = ref<ProviderInfo[]>([])
+// True when /models 403s for a viewer-level user. Provider config (API keys,
+// base URLs, liveness) is admin-only, so viewers chat without it; the prompt
+// flags fall back to "trust the active model" in that branch.
+const providersUnavailable = ref(false)
+// Mirror of /models/enabled (viewer-accessible). Used to resolve the display
+// name of the active model when providers is empty for viewer-level users —
+// otherwise the model selector trigger would show its 配置模型 fallback even
+// though there IS an active model.
+const enabledModels = ref<ModelConfig[]>([])
 const activeModels = ref<ActiveModelsInfo | null>(null)
 const pendingAttachments = ref<ChatAttachment[]>([])
 const uploadingAttachment = ref(false)
@@ -479,7 +488,7 @@ async function selectModel(value: string) {
     activeModels.value = res.data || { activeLlm: { providerId, model } }
     await loadModelState()
   } catch (e) {
-    ElMessage.error(t('chat.switchModelFailed'))
+    mcToast.error(t('chat.switchModelFailed'))
   } finally {
     modelSaving.value = false
   }
@@ -847,7 +856,18 @@ const activeModelValue = computed(() => {
 const activeModelLabel = computed(() => {
   if (!activeModelValue.value) return ''
   const match = eligibleModels.value.find(m => m.value === activeModelValue.value)
-  return match?.label || ''
+  if (match?.label) return match.label
+  // Viewer-level users have an empty providers list (admin-only endpoint), so
+  // eligibleModels is empty even when there IS an active model. Fall back to
+  // the viewer-readable /models/enabled list to resolve a display name —
+  // otherwise the trigger button would read "配置模型" forever.
+  const providerId = activeModels.value?.activeLlm?.providerId
+  const modelName = activeModels.value?.activeLlm?.model
+  if (!providerId || !modelName) return ''
+  const hit = enabledModels.value.find(m =>
+    m.provider === providerId && (m.modelName === modelName || m.name === modelName))
+  if (hit) return hit.name ? `${hit.name} (${hit.modelName})` : hit.modelName
+  return `${providerId} / ${modelName}`
 })
 
 const activeProvider = computed(() => {
@@ -971,16 +991,38 @@ const eligibleModels = computed(() => {
 })
 
 // ============ 生命周期 ============
-function handleKeyboardShortcuts(e: KeyboardEvent) {
-  const mod = e.metaKey || e.ctrlKey
-  if (mod && e.key === 'n') {
-    e.preventDefault()
+// Global shortcuts (Ctrl+K agents, Ctrl+N new chat) live in MainLayout so they
+// work from any page; this view reacts to the dispatched event when mounted.
+function handleChatShortcut(e: Event) {
+  const action = (e as CustomEvent).detail as 'newChat' | 'selectAgent' | undefined
+  if (action === 'newChat') {
     newConversation()
-    chatInputRef.value?.focus?.()
-  }
-  if (mod && e.key === 'k') {
-    e.preventDefault()
+    nextTick(() => chatInputRef.value?.focus?.())
+  } else if (action === 'selectAgent') {
     agentDropdownOpen.value = !agentDropdownOpen.value
+  }
+}
+
+// Cross-page hand-off from MainLayout's global shortcuts: read once on mount
+// (before loadAgents triggers syncRouteState, which would wipe the action key)
+// and apply after agents are loaded so the dropdown actually has something to show.
+let pendingRouteAction: 'newChat' | 'selectAgent' | '' = ''
+
+function captureRouteAction() {
+  const action = route.query.action
+  if (action === 'newChat' || action === 'selectAgent') {
+    pendingRouteAction = action
+  }
+}
+
+function applyPendingRouteAction() {
+  const action = pendingRouteAction
+  pendingRouteAction = ''
+  if (action === 'newChat') {
+    newConversation()
+    nextTick(() => chatInputRef.value?.focus?.())
+  } else if (action === 'selectAgent') {
+    agentDropdownOpen.value = true
   }
 }
 
@@ -1097,7 +1139,8 @@ async function pollActivity() {
 }
 
 onMounted(async () => {
-  document.addEventListener('keydown', handleKeyboardShortcuts)
+  captureRouteAction()
+  window.addEventListener('mc:chat-shortcut', handleChatShortcut)
   document.addEventListener('click', handleCodeCopy)
   startECharts()
   startKatex()
@@ -1110,6 +1153,7 @@ onMounted(async () => {
   mediumQuery.addEventListener('change', handleConvMediumChange)
   await Promise.all([loadAgents(), loadModelState(), loadConversations()])
   await hydrateStateFromRoute()
+  applyPendingRouteAction()
   activityPollTimer = window.setInterval(pollActivity, ACTIVITY_POLL_MS)
   elapsedTickTimer = window.setInterval(() => {
     if (activeCronRuns.value.length > 0) elapsedNow.value = Date.now()
@@ -1117,7 +1161,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
-  document.removeEventListener('keydown', handleKeyboardShortcuts)
+  window.removeEventListener('mc:chat-shortcut', handleChatShortcut)
   document.removeEventListener('click', handleCodeCopy)
   disposeECharts()
   disposeKatex()
@@ -1142,6 +1186,10 @@ onBeforeUnmount(() => {
 })
 
 watch(() => route.query, () => {
+  // If a fresh action arrives (e.g. user re-fires Ctrl+K via the URL while
+  // the view is already alive), pick it up immediately.
+  captureRouteAction()
+  if (pendingRouteAction) applyPendingRouteAction()
   void hydrateStateFromRoute()
 })
 
@@ -1175,26 +1223,44 @@ async function loadAgents() {
       selectedAgentId.value = agents.value[0].id
     }
   } catch (e) {
-    ElMessage.error(t('chat.loadAgentsFailed'))
+    mcToast.error(t('chat.loadAgentsFailed'))
   }
 }
 
 async function loadModelState() {
+  // /default + /active + /enabled are viewer-accessible and required to chat.
+  // /models (provider list) is admin-only because it returns API keys + base
+  // URLs; viewers degrade to "trust the active model, skip the liveness
+  // banner" and resolve the label via /enabled instead.
   try {
-    const [defaultRes, providersRes, activeRes]: any = await Promise.all([
+    const [defaultRes, activeRes, enabledRes]: any = await Promise.all([
       modelApi.getDefault(),
-      modelApi.listProviders(),
       modelApi.getActive(),
+      modelApi.listEnabled(),
     ])
     defaultModel.value = defaultRes.data || null
-    providers.value = providersRes.data || []
     activeModels.value = activeRes.data || null
-    recomputePromptFlags()
+    enabledModels.value = enabledRes.data || []
   } catch (e) {
-    ElMessage.error(t('chat.loadModelFailed'))
+    mcToast.error(t('chat.loadModelFailed'))
     blockingPrompt.value = true
     recoverablePrompt.value = false
+    return
   }
+  try {
+    const providersRes: any = await modelApi.listProviders()
+    providers.value = providersRes.data || []
+    providersUnavailable.value = false
+  } catch (e: any) {
+    if (e?.response?.status === 403) {
+      providers.value = []
+      providersUnavailable.value = true
+    } else {
+      // Non-403 failure is still a real problem worth surfacing.
+      mcToast.error(t('chat.loadModelFailed'))
+    }
+  }
+  recomputePromptFlags()
 }
 
 /**
@@ -1209,6 +1275,16 @@ function recomputePromptFlags() {
   const active = activeModels.value?.activeLlm
   if (!active?.providerId || !active?.model) {
     blockingPrompt.value = true
+    recoverablePrompt.value = false
+    recoverableDismissed.value = false
+    return
+  }
+  // Viewer-level users cannot read the provider list (admin-only because it
+  // returns API keys), so we can't compute liveness. Trust the active model
+  // and let the agent runtime surface any per-call failure instead of
+  // blocking the entire chat surface.
+  if (providersUnavailable.value) {
+    blockingPrompt.value = false
     recoverablePrompt.value = false
     recoverableDismissed.value = false
     return
@@ -1241,7 +1317,7 @@ async function loadConversations() {
     const res: any = await conversationApi.list()
     conversations.value = res.data || []
   } catch (e) {
-    ElMessage.error(t('chat.loadConversationsFailed'))
+    mcToast.error(t('chat.loadConversationsFailed'))
   }
 }
 
@@ -1448,7 +1524,7 @@ async function selectConversation(conv: Conversation) {
       await reconnectStream(requestedConvId)
     }
   } catch (e) {
-    ElMessage.error(t('chat.loadMessagesFailed'))
+    mcToast.error(t('chat.loadMessagesFailed'))
   }
 }
 
@@ -1470,7 +1546,7 @@ async function deleteConversation(conversationId: string) {
       currentConversationId.value = ''
     }
   } catch (e) {
-    ElMessage.error(t('chat.deleteConversationFailed'))
+    mcToast.error(t('chat.deleteConversationFailed'))
   }
 }
 
@@ -1555,7 +1631,7 @@ async function handleSendMessage(content: string) {
   const trimmed = content.trim().toLowerCase()
   if (trimmed === '/approve' || trimmed === '/deny') {
     if (!currentConversationId.value) {
-      ElMessage.warning('No active conversation')
+      mcToast.warning('No active conversation')
       inputText.value = ''
       chatInputRef.value?.clear?.()
       return
@@ -1566,7 +1642,7 @@ async function handleSendMessage(content: string) {
       m => m.role === 'assistant' && (m as any).metadata?.pendingApproval?.status === 'pending_approval'
     )
     if (!pendingMsg) {
-      ElMessage.warning('No pending approval to process')
+      mcToast.warning('No pending approval to process')
       inputText.value = ''
       chatInputRef.value?.clear?.()
       return
@@ -1590,7 +1666,7 @@ async function handleSendMessage(content: string) {
       console.error('Approval stream failed:', e)
       // 回滚乐观更新
       ;(pendingMsg as any).metadata.pendingApproval.status = 'pending_approval'
-      ElMessage.error(e?.message || 'Approval failed')
+      mcToast.error(e?.message || 'Approval failed')
     }
     return
   }
@@ -1697,7 +1773,7 @@ async function reconnectStream(conversationId: string) {
     await reconnectChatStream(conversationId)
   } catch (e) {
     console.error('[ChatConsole] Reconnect failed:', e)
-    ElMessage.warning(t('chat.reconnectFailed') || 'Stream reconnection failed')
+    mcToast.warning(t('chat.reconnectFailed') || 'Stream reconnection failed')
   }
 }
 
@@ -1738,7 +1814,7 @@ async function handleFileSelect(files: File[]) {
       })
     }
   } catch (e) {
-    ElMessage.error(t('chat.uploadFailed'))
+    mcToast.error(t('chat.uploadFailed'))
   } finally {
     uploadingAttachment.value = false
   }
@@ -1938,7 +2014,7 @@ function handleCodeCopy(e: MouseEvent) {
       if (textEl) textEl.textContent = t('chat.copy')
     }, 1500)
   }).catch(() => {
-    ElMessage.error(t('chat.copyFailed'))
+    mcToast.error(t('chat.copyFailed'))
   })
 }
 </script>

@@ -191,7 +191,7 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+import { mcToast } from '@/composables/useMcToast'
 import { mcConfirm } from '@/components/common/useConfirm'
 import { useRoute, useRouter } from 'vue-router'
 import type { ProviderInfo, ProviderModelInfo } from '@/types'
@@ -333,7 +333,7 @@ async function onSaveApiKey({ provider, apiKey }: { provider: ProviderInfo; apiK
     await saveProviderApiKey(provider, apiKey)
     showSavedTip(t('settings.model.inlineApiKeySaved'))
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : t('settings.model.inlineApiKeySaveFailed'))
+    mcToast.error(error instanceof Error ? error.message : t('settings.model.inlineApiKeySaveFailed'))
   } finally {
     savingApiKeyId.value = null
   }
@@ -350,10 +350,10 @@ async function onSaveProvider() {
     const saved = await saveProvider()
     // Issue #39: saveProvider() returns false when client-side validation
     // (e.g. provider id format) blocks the request — it has already shown
-    // its own ElMessage.error, so don't follow up with a "saved" toast.
+    // its own mcToast.error, so don't follow up with a "saved" toast.
     if (saved) showSavedTip(t('settings.model.providerSaved'))
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : t('settings.messages.saveFailed'))
+    mcToast.error(error instanceof Error ? error.message : t('settings.messages.saveFailed'))
   }
 }
 
@@ -367,7 +367,7 @@ async function onAddProviderModel() {
     await addProviderModel()
     showSavedTip(t('settings.model.modelAdded'))
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : t('settings.model.modelAddFailed'))
+    mcToast.error(error instanceof Error ? error.message : t('settings.model.modelAddFailed'))
   }
 }
 
@@ -376,7 +376,7 @@ async function onRemoveProviderModel(model: ProviderModelInfo) {
     await removeProviderModel(model)
     showSavedTip(t('settings.model.modelRemoved'))
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : t('settings.model.modelRemoveFailed'))
+    mcToast.error(error instanceof Error ? error.message : t('settings.model.modelRemoveFailed'))
   }
 }
 
@@ -385,7 +385,7 @@ async function onSetActiveModel(model: ProviderModelInfo) {
     await setActiveModel(model)
     showSavedTip(t('settings.model.activeChanged'))
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : t('settings.model.activeChangeFailed'))
+    mcToast.error(error instanceof Error ? error.message : t('settings.model.activeChangeFailed'))
   }
 }
 

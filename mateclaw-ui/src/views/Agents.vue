@@ -337,7 +337,7 @@
                   <input type="checkbox" :value="skill.id" v-model="selectedSkillIds" class="binding-checkbox" />
                   <span class="binding-icon"><SkillIcon :value="skill.icon" :size="20" :fallback="'🧩'" /></span>
                   <div class="binding-info">
-                    <span class="binding-name">{{ skill.name }}</span>
+                    <span class="binding-name">{{ resolveSkillName(skill) }}</span>
                     <span v-if="skill.description" class="binding-desc">{{ skill.description?.slice(0, 80) }}</span>
                   </div>
                   <span v-if="skill.version" class="binding-version">v{{ skill.version }}</span>
@@ -488,7 +488,7 @@
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+import { mcToast } from '@/composables/useMcToast'
 import { mcConfirm } from '@/components/common/useConfirm'
 import { agentApi, agentBindingApi, modelApi, skillApi, toolApi, templateApi, backstageApi } from '@/api/index'
 import type { Agent } from '@/types/index'
@@ -505,9 +505,11 @@ import {
 } from '@/utils/agentPromptProfile'
 import { agentIconColor } from '@/utils/agentIconColor'
 import { filterAgentBindingItems, filterAgentToolGroups } from '@/utils/agentBindingSearch'
+import { useSkillName } from '@/composables/useSkillName'
 
 const router = useRouter()
 const { t } = useI18n()
+const { resolveSkillName } = useSkillName()
 const agents = ref<Agent[]>([])
 const searchText = ref('')
 const activeFilter = ref('all')
@@ -751,7 +753,7 @@ async function loadAgents() {
     const res: any = await agentApi.list()
     agents.value = res.data || []
   } catch {
-    ElMessage.error(t('agents.messages.loadFailed'))
+    mcToast.error(t('agents.messages.loadFailed'))
   }
 }
 
@@ -829,11 +831,11 @@ async function applyTemplate(id: string) {
   applyingTemplate.value = true
   try {
     await templateApi.apply(id)
-    ElMessage.success(t('agents.templates.applied'))
+    mcToast.success(t('agents.templates.applied'))
     showTemplateSelector.value = false
     await loadAgents()
   } catch (e: any) {
-    ElMessage.error(e?.message || t('agents.messages.saveFailed'))
+    mcToast.error(e?.message || t('agents.messages.saveFailed'))
   } finally {
     applyingTemplate.value = false
   }
@@ -928,11 +930,11 @@ async function saveAgent() {
       ])
     }
 
-    ElMessage.success(t('agents.messages.saveSuccess'))
+    mcToast.success(t('agents.messages.saveSuccess'))
     closeModal()
     await loadAgents()
   } catch (e: any) {
-    ElMessage.error(e?.message || t('agents.messages.saveFailed'))
+    mcToast.error(e?.message || t('agents.messages.saveFailed'))
   }
 }
 
@@ -945,10 +947,10 @@ async function deleteAgent(agent: Agent) {
   if (!ok) return
   try {
     await agentApi.delete(agent.id)
-    ElMessage.success(t('agents.messages.deleteSuccess'))
+    mcToast.success(t('agents.messages.deleteSuccess'))
     await loadAgents()
   } catch {
-    ElMessage.error(t('agents.messages.deleteFailed'))
+    mcToast.error(t('agents.messages.deleteFailed'))
   }
 }
 
@@ -964,10 +966,10 @@ function goToChat(agent: Agent) {
 async function toggleAgent(agent: Agent) {
   try {
     await agentApi.update(agent.id, { ...agent, enabled: !agent.enabled })
-    ElMessage.success(t('agents.messages.toggleSuccess'))
+    mcToast.success(t('agents.messages.toggleSuccess'))
     await loadAgents()
   } catch {
-    ElMessage.error(t('agents.messages.toggleFailed'))
+    mcToast.error(t('agents.messages.toggleFailed'))
   }
 }
 </script>

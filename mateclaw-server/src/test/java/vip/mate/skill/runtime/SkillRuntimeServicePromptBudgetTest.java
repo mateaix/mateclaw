@@ -159,6 +159,53 @@ class SkillRuntimeServicePromptBudgetTest {
                         + "prompt was: " + prompt);
     }
 
+    @Test
+    @DisplayName("workspace filter hides other workspaces' skills, keeps builtin global")
+    void workspaceFilterHidesOtherWorkspaceSkills() {
+        SkillService skillService = mock(SkillService.class);
+        SkillPackageResolver resolver = mock(SkillPackageResolver.class);
+        SkillLessonsService lessonsService = mock(SkillLessonsService.class);
+        McpSkillBridge mcpBridge = mock(McpSkillBridge.class);
+        AcpSkillBridge acpBridge = mock(AcpSkillBridge.class);
+        SkillUsageService usageService = mock(SkillUsageService.class);
+
+        SkillEntity builtin = entity(1L, "pdf-builtin", "builtin");
+        SkillEntity ownWorkspace = entity(2L, "ws1-skill", "dynamic");
+        SkillEntity otherWorkspace = entity(3L, "ws2-skill", "dynamic");
+        when(skillService.listEnabledSkills()).thenReturn(List.of(builtin, ownWorkspace, otherWorkspace));
+        when(resolver.resolve(builtin)).thenReturn(scopedResolved(builtin, true, null));
+        when(resolver.resolve(ownWorkspace)).thenReturn(scopedResolved(ownWorkspace, false, 1L));
+        when(resolver.resolve(otherWorkspace)).thenReturn(scopedResolved(otherWorkspace, false, 2L));
+        when(mcpBridge.listMcpDerivedResolvedSkills()).thenReturn(List.of());
+        when(acpBridge.listAcpDerivedResolvedSkills()).thenReturn(List.of());
+        when(usageService.recentLoadedSkillNames(null, 8)).thenReturn(Set.of());
+        when(usageService.frequentlyLoadedSkillNames(8)).thenReturn(Set.of());
+
+        SkillRuntimeService runtime = new SkillRuntimeService(
+                skillService, resolver, lessonsService, mcpBridge, acpBridge, usageService);
+
+        // Agent lives in workspace 1.
+        String prompt = runtime.buildSkillPromptEnhancement(null, null, 8192, null, 1L);
+
+        assertTrue(prompt.contains("pdf-builtin"), "builtin skill must stay globally visible");
+        assertTrue(prompt.contains("ws1-skill"), "the agent's own workspace skill must be visible");
+        assertFalse(prompt.contains("ws2-skill"), "another workspace's skill must not leak into the prompt");
+    }
+
+    private static ResolvedSkill scopedResolved(SkillEntity entity, boolean builtin, Long workspaceId) {
+        return ResolvedSkill.builder()
+                .id(entity.getId())
+                .name(entity.getName())
+                .description(entity.getDescription())
+                .enabled(true)
+                .runtimeAvailable(true)
+                .dependencyReady(true)
+                .securityBlocked(false)
+                .builtin(builtin)
+                .workspaceId(workspaceId)
+                .build();
+    }
+
     private static SkillEntity entity(Long id, String name, String type) {
         SkillEntity entity = new SkillEntity();
         entity.setId(id);

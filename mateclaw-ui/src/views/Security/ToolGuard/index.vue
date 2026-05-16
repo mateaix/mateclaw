@@ -220,7 +220,7 @@
 <script setup lang="ts">
 import { ref, reactive, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+import { mcToast } from '@/composables/useMcToast'
 import { securityApi } from '@/api'
 import { parseJsonArray } from '../composables/helpers'
 import type { GuardRule } from '@/types'
@@ -357,15 +357,15 @@ function openEditRuleModal(rule: GuardRule) {
 
 async function saveRule() {
   if (!editingRule.value && !ruleForm.ruleId.trim()) {
-    ElMessage.error(t('security.toolGuard.messages.ruleIdRequired'))
+    mcToast.error(t('security.toolGuard.messages.ruleIdRequired'))
     return
   }
   if (!ruleForm.name.trim()) {
-    ElMessage.error(t('security.toolGuard.messages.nameRequired'))
+    mcToast.error(t('security.toolGuard.messages.nameRequired'))
     return
   }
   if (!ruleForm.pattern.trim()) {
-    ElMessage.error(t('security.toolGuard.messages.patternRequired'))
+    mcToast.error(t('security.toolGuard.messages.patternRequired'))
     return
   }
 
@@ -380,9 +380,9 @@ async function saveRule() {
   } catch (e: any) {
     const raw = e?.msg || e?.message || ''
     if (typeof raw === 'string' && raw.toLowerCase().includes('already exists')) {
-      ElMessage.error(t('security.toolGuard.messages.ruleIdDuplicate'))
+      mcToast.error(t('security.toolGuard.messages.ruleIdDuplicate'))
     } else {
-      ElMessage.error(raw || t('security.toolGuard.messages.saveFailed'))
+      mcToast.error(raw || t('security.toolGuard.messages.saveFailed'))
     }
   }
 }

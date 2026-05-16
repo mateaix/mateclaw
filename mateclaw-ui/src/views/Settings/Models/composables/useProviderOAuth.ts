@@ -1,6 +1,6 @@
 import { ref, type Ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+import { mcToast } from '@/composables/useMcToast'
 import { claudeCodeOAuthApi, oauthApi } from '@/api'
 import type { ProviderInfo } from '@/types'
 
@@ -74,12 +74,12 @@ export function useProviderOAuth(deps: FormDeps & ListDeps) {
     try {
       start = await oauthApi.deviceStart()
     } catch (e: any) {
-      ElMessage.error(e.msg || 'Device code request failed')
+      mcToast.error(e.msg || 'Device code request failed')
       return
     }
     const data = start.data
     if (!data?.deviceAuthId || !data?.userCode) {
-      ElMessage.error('Device code response was incomplete')
+      mcToast.error('Device code response was incomplete')
       return
     }
 
@@ -100,7 +100,7 @@ export function useProviderOAuth(deps: FormDeps & ListDeps) {
         return
       }
       if (Date.now() > deviceCodeDialog.value.expiresAt) {
-        ElMessage.warning(t('settings.model.oauthDeviceExpired'))
+        mcToast.warning(t('settings.model.oauthDeviceExpired'))
         closeDeviceCodeDialog()
         return
       }
@@ -111,12 +111,12 @@ export function useProviderOAuth(deps: FormDeps & ListDeps) {
           activeDeviceAuthId = null
           stopDevicePolling()
           deviceCodeDialog.value.visible = false
-          ElMessage.success(t('settings.model.oauthLoginSuccess'))
+          mcToast.success(t('settings.model.oauthLoginSuccess'))
           await reloadProvidersAndSync()
           return
         }
         if (status === 'EXPIRED') {
-          ElMessage.warning(t('settings.model.oauthDeviceExpired'))
+          mcToast.warning(t('settings.model.oauthDeviceExpired'))
           closeDeviceCodeDialog()
           return
         }
@@ -131,13 +131,13 @@ export function useProviderOAuth(deps: FormDeps & ListDeps) {
       try {
         const res: any = await claudeCodeOAuthApi.reload()
         if (res.data?.connected && !res.data?.expired) {
-          ElMessage.success(t('settings.model.oauthLoginSuccess'))
+          mcToast.success(t('settings.model.oauthLoginSuccess'))
         } else {
-          ElMessage.warning(t('settings.model.claudeCodeOauthInstructions'))
+          mcToast.warning(t('settings.model.claudeCodeOauthInstructions'))
         }
         await reloadProvidersAndSync()
       } catch (e: any) {
-        ElMessage.error(e.msg || 'Claude Code OAuth detection failed')
+        mcToast.error(e.msg || 'Claude Code OAuth detection failed')
       }
       return
     }
@@ -160,14 +160,14 @@ export function useProviderOAuth(deps: FormDeps & ListDeps) {
           if (statusRes.data?.connected) {
             clearInterval(pollInterval)
             if (authWindow && !authWindow.closed) authWindow.close()
-            ElMessage.success(t('settings.model.oauthLoginSuccess'))
+            mcToast.success(t('settings.model.oauthLoginSuccess'))
             await reloadProvidersAndSync()
           }
         } catch { /* ignore polling errors */ }
       }, 2000)
       setTimeout(() => clearInterval(pollInterval), 30000)
     } catch (e: any) {
-      ElMessage.error(e.msg || 'OAuth login failed')
+      mcToast.error(e.msg || 'OAuth login failed')
     }
   }
 
@@ -176,15 +176,15 @@ export function useProviderOAuth(deps: FormDeps & ListDeps) {
     // Code app, not MateClaw — direct the user to log out there instead of
     // clobbering their machine-level login.
     if (providerId === 'anthropic-claude-code') {
-      ElMessage.info(t('settings.model.claudeCodeOauthRevokeHint'))
+      mcToast.info(t('settings.model.claudeCodeOauthRevokeHint'))
       return
     }
     try {
       await oauthApi.revoke()
-      ElMessage.success(t('settings.model.oauthRevokeSuccess'))
+      mcToast.success(t('settings.model.oauthRevokeSuccess'))
       await reloadProvidersAndSync()
     } catch (e: any) {
-      ElMessage.error(e.msg || 'OAuth revoke failed')
+      mcToast.error(e.msg || 'OAuth revoke failed')
     }
   }
 

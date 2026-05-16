@@ -119,7 +119,7 @@
 <script setup lang="ts">
 import { ref, reactive, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+import { mcToast } from '@/composables/useMcToast'
 import { workspaceTeamApi } from '@/api/index'
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore'
 
@@ -155,7 +155,7 @@ async function fetchMembers() {
     const res: any = await workspaceTeamApi.listMembers(wsId)
     members.value = res.data || []
   } catch (e: any) {
-    ElMessage.error(e.message)
+    mcToast.error(e.message)
   } finally {
     loading.value = false
   }
@@ -171,12 +171,12 @@ async function addMember() {
       nickname: newMemberForm.nickname || undefined,
       role: newMemberForm.role,
     })
-    ElMessage.success(t('security.members.messages.addSuccess'))
+    mcToast.success(t('security.members.messages.addSuccess'))
     showAddDialog.value = false
     Object.assign(newMemberForm, defaultForm())
     fetchMembers()
   } catch (e: any) {
-    ElMessage.error(e?.msg || e?.message || t('security.members.messages.addFailed'))
+    mcToast.error(e?.msg || e?.message || t('security.members.messages.addFailed'))
   }
 }
 
@@ -186,9 +186,9 @@ async function updateRole(member: Member, role: string) {
   try {
     await workspaceTeamApi.updateMemberRole(wsId, member.userId, role)
     member.role = role
-    ElMessage.success(t('security.members.messages.updateSuccess'))
+    mcToast.success(t('security.members.messages.updateSuccess'))
   } catch {
-    ElMessage.error(t('security.members.messages.updateFailed'))
+    mcToast.error(t('security.members.messages.updateFailed'))
   }
 }
 
@@ -198,10 +198,10 @@ async function removeMember(member: Member) {
   if (!confirm(t('security.members.messages.removeConfirm'))) return
   try {
     await workspaceTeamApi.removeMember(wsId, member.userId)
-    ElMessage.success(t('security.members.messages.removeSuccess'))
+    mcToast.success(t('security.members.messages.removeSuccess'))
     fetchMembers()
   } catch {
-    ElMessage.error(t('security.members.messages.removeFailed'))
+    mcToast.error(t('security.members.messages.removeFailed'))
   }
 }
 

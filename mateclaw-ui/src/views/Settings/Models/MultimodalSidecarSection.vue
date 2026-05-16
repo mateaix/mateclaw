@@ -143,7 +143,7 @@ async function loadAll() {
   }
 }
 
-async function persistSettings(payload: { defaultVisionModelId: number | null; defaultVideoModelId: number | null }) {
+async function persistSettings(payload: { defaultVisionModelId: number | string | null; defaultVideoModelId: number | string | null }) {
   // Use the dedicated sidecar endpoint so the bulk /settings PUT can keep
   // guarding vision/video keys with non-null checks (preventing unrelated
   // settings pages from clobbering this configuration via partial payloads).
@@ -159,9 +159,12 @@ async function onSaveVision() {
     // Send vision's pending value plus the *initial* (last-saved) video value
     // so saving vision never accidentally clears a video selection the user
     // may have edited but not yet committed in that card.
+    // Send IDs as the raw string from the model picker. Number() would
+    // truncate 19-digit Snowflake IDs past Number.MAX_SAFE_INTEGER; Jackson
+    // on the backend coerces the string back to Long with full precision.
     await persistSettings({
-      defaultVisionModelId: visionModelId.value ? Number(visionModelId.value) : null,
-      defaultVideoModelId: initialVideo.value ? Number(initialVideo.value) : null,
+      defaultVisionModelId: visionModelId.value ? String(visionModelId.value) : null,
+      defaultVideoModelId: initialVideo.value ? String(initialVideo.value) : null,
     })
     initialVision.value = visionModelId.value
     savedTip.value = 'vision'
@@ -178,8 +181,8 @@ async function onSaveVideo() {
   savedTip.value = null
   try {
     await persistSettings({
-      defaultVisionModelId: initialVision.value ? Number(initialVision.value) : null,
-      defaultVideoModelId: videoModelId.value ? Number(videoModelId.value) : null,
+      defaultVisionModelId: initialVision.value ? String(initialVision.value) : null,
+      defaultVideoModelId: videoModelId.value ? String(videoModelId.value) : null,
     })
     initialVideo.value = videoModelId.value
     savedTip.value = 'video'

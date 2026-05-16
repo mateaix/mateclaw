@@ -1,5 +1,7 @@
 package vip.mate.cron.service;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.messages.AssistantMessage;
@@ -9,6 +11,7 @@ import vip.mate.agent.context.ChatOrigin;
 import vip.mate.cron.CronChatOriginFactory;
 import vip.mate.cron.model.CronJobEntity;
 import vip.mate.dashboard.model.CronJobRunEntity;
+import vip.mate.wiki.service.WikiProcessingService;
 
 /**
  * RFC-063r §2.7.1: scheduler-facing orchestrator that decomposes one cron
@@ -42,6 +45,8 @@ public class CronJobRunner {
     private final AgentService agentService;
     private final CronChatOriginFactory originFactory;
     private final vip.mate.cron.CronConversationResolver conversationResolver;
+    private final WikiProcessingService wikiProcessingService;
+    private final ObjectMapper objectMapper;
 
     /**
      * Scheduler-facing entry. Runs three logical segments:
@@ -66,6 +71,16 @@ public class CronJobRunner {
             log.warn("[CronRunner] executeJob called with null job — ignoring");
             return;
         }
+
+        // task_type='wiki_process' — system task with no conversation /
+        // channel delivery. Parse the wiki-process payload from request_body,
+        // queue the KB's raw materials for asynchronous processing, and write
+        // a standalone run record.
+        if ("wiki_process".equals(job.getTaskType())) {
+            executeWikiProcess(job, triggerType);
+            return;
+        }
+
         String userMessage = "agent".equals(job.getTaskType())
                 ? job.getRequestBody()
                 : job.getTriggerMessage();
@@ -142,6 +157,90 @@ public class CronJobRunner {
                         run.getId(), markErr.getMessage());
             }
         }
+    }
+
+    /**
+     * Execute a {@code wiki_process} job: parse the KB id (+ force flag) from
+     * {@link CronJobEntity#getRequestBody()}, queue the KB's raw materials,
+     * and record a standalone run row. No conversation, no LLM call, no
+     * channel delivery — every other cron task type goes through the agent
+     * path, but this one talks directly to the wiki processing service.
+     */
+    private void executeWikiProcess(CronJobEntity job, String triggerType) {
+        CronJobRunEntity run;
+        try {
+            run = lifecycle.startSystemRun(job, triggerType);
+        } catch (Exception e) {
+            log.error("[CronRunner] startSystemRun failed for wiki_process job {}: {}",
+                    job.getId(), e.getMessage(), e);
+            return;
+        }
+
+        Long kbId;
+        boolean force;
+        try {
+            JsonNode payload = parsePayload(job.getRequestBody());
+            kbId = readKbId(payload);
+            force = payload != null && payload.hasNonNull("force") && payload.get("force").asBoolean(false);
+        } catch (Exception e) {
+            log.error("[CronRunner] wiki_process payload parse failed for job {}: {}",
+                    job.getId(), e.getMessage());
+            try {
+                lifecycle.markRunFailed(run, e);
+            } catch (Exception markErr) {
+                log.warn("[CronRunner] markRunFailed after payload-parse failure also failed for run {}: {}",
+                        run.getId(), markErr.getMessage());
+            }
+            return;
+        }
+
+        try {
+            int queued = wikiProcessingService.processKB(kbId, force);
+            String description = "queued " + queued + " raw material(s)" + (force ? " (force)" : "");
+            lifecycle.markRunSucceeded(run, description);
+        } catch (Exception e) {
+            log.error("[CronRunner] wiki_process job {} failed for kbId={}: {}",
+                    job.getId(), kbId, e.getMessage(), e);
+            try {
+                lifecycle.markRunFailed(run, e);
+            } catch (Exception markErr) {
+                log.warn("[CronRunner] markRunFailed after wiki_process failure also failed for run {}: {}",
+                        run.getId(), markErr.getMessage());
+            }
+        }
+    }
+
+    private JsonNode parsePayload(String requestBody) throws Exception {
+        if (requestBody == null || requestBody.isBlank()) {
+            throw new IllegalArgumentException("wiki_process requires a non-empty request_body");
+        }
+        return objectMapper.readTree(requestBody);
+    }
+
+    /**
+     * Read {@code kbId} from a wiki_process payload, accepting either a JSON
+     * number or a JSON string (mirrors the Snowflake precision contract:
+     * frontend may send IDs as strings to avoid Number truncation).
+     */
+    private Long readKbId(JsonNode payload) {
+        if (payload == null || !payload.hasNonNull("kbId")) {
+            throw new IllegalArgumentException("wiki_process payload missing kbId");
+        }
+        JsonNode v = payload.get("kbId");
+        if (v.isNumber()) {
+            return v.asLong();
+        }
+        if (v.isTextual()) {
+            String text = v.asText().trim();
+            if (!text.isEmpty()) {
+                try {
+                    return Long.parseLong(text);
+                } catch (NumberFormatException ignored) {
+                    // fall through to exception below
+                }
+            }
+        }
+        throw new IllegalArgumentException("wiki_process payload has unparseable kbId: " + v);
     }
 
     /**

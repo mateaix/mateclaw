@@ -3,8 +3,6 @@ package vip.mate.dashboard.service;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
-import vip.mate.agent.model.AgentEntity;
-import vip.mate.agent.repository.AgentMapper;
 import vip.mate.cron.model.CronJobEntity;
 import vip.mate.cron.repository.CronJobMapper;
 import vip.mate.dashboard.model.ActiveCronRunVO;
@@ -30,7 +28,6 @@ public class CronJobRunService {
 
     private final CronJobRunMapper runMapper;
     private final CronJobMapper cronJobMapper;
-    private final AgentMapper agentMapper;
 
     /**
      * 记录一次执行开始
@@ -95,26 +92,21 @@ public class CronJobRunService {
 
     /**
      * 查询指定 workspace 关联的最近执行记录
-     * 路径：workspace → agents → cronJobs → cronJobRuns
+     * 路径：workspace → cronJobs → cronJobRuns
+     * <p>
+     * Cron jobs are matched by their own workspace_id, so agent-less system
+     * jobs (e.g. wiki_process) are included alongside agent-bound jobs.
      */
     public List<CronJobRunEntity> listRecentByWorkspace(Long workspaceId, int limit) {
-        // 1. workspace 下的 agent IDs
-        List<AgentEntity> agents = agentMapper.selectList(
-                new LambdaQueryWrapper<AgentEntity>()
-                        .eq(AgentEntity::getWorkspaceId, workspaceId)
-                        .select(AgentEntity::getId));
-        if (agents.isEmpty()) return Collections.emptyList();
-        Set<Long> agentIds = agents.stream().map(AgentEntity::getId).collect(Collectors.toSet());
-
-        // 2. 这些 agent 关联的 cronJob IDs
+        // 1. workspace 下的 cronJob IDs
         List<CronJobEntity> jobs = cronJobMapper.selectList(
                 new LambdaQueryWrapper<CronJobEntity>()
-                        .in(CronJobEntity::getAgentId, agentIds)
+                        .eq(CronJobEntity::getWorkspaceId, workspaceId)
                         .select(CronJobEntity::getId));
         if (jobs.isEmpty()) return Collections.emptyList();
         Set<Long> jobIds = jobs.stream().map(CronJobEntity::getId).collect(Collectors.toSet());
 
-        // 3. 这些 cronJob 的执行记录
+        // 2. 这些 cronJob 的执行记录
         return runMapper.selectList(
                 new LambdaQueryWrapper<CronJobRunEntity>()
                         .in(CronJobRunEntity::getCronJobId, jobIds)

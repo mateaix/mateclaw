@@ -170,7 +170,7 @@
 <script setup lang="ts">
 import { ref, computed, defineAsyncComponent, onMounted, onUnmounted, onActivated, onDeactivated } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+import { mcToast } from '@/composables/useMcToast'
 import { mcConfirm } from '@/components/common/useConfirm'
 import { channelApi, agentApi } from '@/api'
 import type { Channel, Agent } from '@/types'
@@ -280,7 +280,7 @@ async function loadChannels() {
     const res: any = await channelApi.list()
     channels.value = (res.data || []).map((c: any) => ({ ...c }))
   } catch (e: any) {
-    ElMessage.error(t('channels.messages.loadFailed') + ': ' + (e?.message || ''))
+    mcToast.error(t('channels.messages.loadFailed') + ': ' + (e?.message || ''))
     channels.value = []
   }
 }
@@ -498,7 +498,7 @@ async function handleSave(payload: Partial<Channel>) {
     editingChannel.value = null
     await loadChannels()
   } catch (e: any) {
-    ElMessage.error(e?.message || t('channels.messages.saveFailed'))
+    mcToast.error(e?.message || t('channels.messages.saveFailed'))
   }
 }
 
@@ -515,7 +515,7 @@ async function deleteChannel(id: string | number) {
     await channelApi.delete(id)
     await loadChannels()
   } catch (e: any) {
-    ElMessage.error(e?.message || t('channels.messages.deleteFailed'))
+    mcToast.error(e?.message || t('channels.messages.deleteFailed'))
   }
 }
 
@@ -525,7 +525,7 @@ async function toggleChannel(channel: Channel) {
     await loadChannels()
     await loadStatus()
   } catch (e: any) {
-    ElMessage.error(e?.message || t('channels.messages.toggleFailed'))
+    mcToast.error(e?.message || t('channels.messages.toggleFailed'))
   }
 }
 

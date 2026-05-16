@@ -44,11 +44,27 @@ import java.util.Map;
  *       links back to the MCP page).</li>
  * </ul>
  *
- * <p>ID namespace: virtual skill ids use a high sentinel
- * {@link #VIRTUAL_ID_BASE} + mcpServerId so they can never collide
- * with real {@code mate_skill.id} values (Snowflake longs are bounded
- * well below this base). Negative numbers were considered but several
- * existing endpoints {@code abs()} the id for path constraints.
+ * <p>ID namespace: virtual ids encode a 2-bit type tag in the top two
+ * bits of a {@code long}, leaving 62 bits to carry the underlying
+ * mcpServerId:
+ * <pre>
+ *   bit 63 (sign) | bit 62 | bits 0..61
+ *   --------------+--------+--------------------------------
+ *         0       |   0    |  real persisted skill (Snowflake)
+ *         1       |   0    |  virtual MCP-derived skill
+ *         1       |   1    |  virtual ACP-derived skill
+ * </pre>
+ *
+ * <p>The earlier {@code 9e18 + serverId} addition scheme broke once
+ * Snowflake-issued mcpServerIds crossed ~{@code 2e18} (the sum then
+ * overflowed signed long, wrapping to a negative number that no longer
+ * satisfied {@code id >= 9e18} — every detail / lookup of a freshly
+ * created MCP server 500'd with "技能不存在"). The bit-tagged layout
+ * has no arithmetic and survives any 62-bit server id.
+ *
+ * <p>The constants are arranged so that {@code BASE + smallId} still
+ * equals {@code BASE | smallId} for any {@code smallId < 2^62}, so
+ * test fixtures that build virtual ids by addition keep working.
  */
 @Slf4j
 @Service
@@ -56,33 +72,43 @@ import java.util.Map;
 public class McpSkillBridge {
 
     /**
-     * High sentinel for virtual id space. Snowflake ids fit in 63 bits
-     * but in practice never approach this magnitude, so anything
-     * {@code >= VIRTUAL_ID_BASE} is unambiguously a bridged MCP skill.
+     * Type tag for the MCP virtual id space: bit 63 set, bit 62 clear.
+     * Equal to {@link Long#MIN_VALUE}; named for the historical
+     * "base sentinel" idiom callers still use.
      */
-    public static final long VIRTUAL_ID_BASE = 9_000_000_000_000_000_000L;
+    public static final long VIRTUAL_ID_BASE = Long.MIN_VALUE; // 0x8000000000000000L
+
+    /** Selects the top-two type-tag bits. */
+    private static final long TAG_MASK = 0xC000000000000000L;
+    /** Selects the bottom 62 bits that carry the original server id. */
+    private static final long ID_MASK = 0x3FFFFFFFFFFFFFFFL;
 
     private final McpServerService mcpServerService;
     private final McpClientManager mcpClientManager;
     private final ObjectMapper objectMapper;
 
     /**
-     * @return true iff the given id falls inside the virtual MCP skill
-     *     range. Cheap O(1) check, callers use it to route lookups
-     *     between the real DB and this bridge.
+     * @return true iff the given id carries the MCP virtual-skill type
+     *     tag (bit 63 set, bit 62 clear). Cheap O(1) bit-mask check.
      */
     public static boolean isVirtualMcpSkillId(Long id) {
-        return id != null && id >= VIRTUAL_ID_BASE;
+        return id != null && (id & TAG_MASK) == VIRTUAL_ID_BASE;
     }
 
     /** Inverse mapping: extract the original MCP server id. */
     public static Long extractMcpServerId(Long virtualId) {
         if (!isVirtualMcpSkillId(virtualId)) return null;
-        return virtualId - VIRTUAL_ID_BASE;
+        return virtualId & ID_MASK;
     }
 
     public static long virtualIdFor(McpServerEntity server) {
-        return VIRTUAL_ID_BASE + server.getId();
+        long sid = server.getId();
+        if ((sid & TAG_MASK) != 0L) {
+            throw new IllegalStateException(
+                    "MCP server id 0x" + Long.toHexString(sid)
+                            + " uses the top two bits — would collide with the virtual id type tag");
+        }
+        return VIRTUAL_ID_BASE | sid;
     }
 
     /**
@@ -133,7 +159,7 @@ public class McpSkillBridge {
     private SkillEntity serverToEntity(McpServerEntity server) {
         SkillEntity s = new SkillEntity();
         s.setId(virtualIdFor(server));
-        s.setName(slugify(server.getName()));
+        s.setName(slugForServer(server));
         s.setNameEn(displayName(server));
         s.setNameZh(displayName(server));
         s.setDescription(buildDescription(server));
@@ -175,7 +201,7 @@ public class McpSkillBridge {
 
         return ResolvedSkill.builder()
                 .id(virtualIdFor(server))
-                .name(slugify(server.getName()))
+                .name(slugForServer(server))
                 .description(buildDescription(server))
                 .content("") // no SKILL.md
                 .source("mcp")
@@ -242,9 +268,10 @@ public class McpSkillBridge {
                 .description("MCP server '" + server.getName() + "' must be connected. Configure in Settings ▸ MCP Connections.")
                 .build();
 
+        String slug = slugForServer(server);
         return SkillManifest.builder()
-                .id(slugify(server.getName()))
-                .name(slugify(server.getName()))
+                .id(slug)
+                .name(slug)
                 .description(buildDescription(server))
                 .icon(iconFor(server))
                 .version("1.0.0")
@@ -320,6 +347,27 @@ public class McpSkillBridge {
     private String slugify(String raw) {
         if (raw == null) return "";
         return raw.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9_-]", "-");
+    }
+
+    /**
+     * Stable slug for an MCP server. Falls back to {@code mcp-{id}} when
+     * the source name has no ASCII letter/digit (e.g. pure CJK), because
+     * the naive slugify would otherwise return a run of dashes — making
+     * two differently-named all-CJK servers collide on the same display
+     * key and breaking name-based skill lookup.
+     */
+    private String slugForServer(McpServerEntity server) {
+        String slug = slugify(server.getName());
+        return hasAsciiAlphaNumeric(slug) ? slug : "mcp-" + server.getId();
+    }
+
+    private static boolean hasAsciiAlphaNumeric(String s) {
+        if (s == null || s.isEmpty()) return false;
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) return true;
+        }
+        return false;
     }
 
     private String displayName(McpServerEntity server) {

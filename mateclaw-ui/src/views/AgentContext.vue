@@ -205,7 +205,7 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+import { mcToast } from '@/composables/useMcToast'
 import { mcConfirm } from '@/components/common/useConfirm'
 import { agentApi, agentContextApi } from '@/api/index'
 import { copyToClipboard } from '@/utils/clipboard'
@@ -293,7 +293,7 @@ async function loadAgents() {
       selectedAgentId.value = agents.value[0].id
     }
   } catch {
-    ElMessage.error(t('agentContext.loadFailed'))
+    mcToast.error(t('agentContext.loadFailed'))
   }
 }
 
@@ -307,7 +307,7 @@ async function fetchFiles() {
     const res: any = await agentContextApi.listFiles(selectedAgentId.value)
     files.value = res.data || []
   } catch {
-    ElMessage.error(t('agentContext.loadFailed'))
+    mcToast.error(t('agentContext.loadFailed'))
   }
 }
 
@@ -352,7 +352,7 @@ async function onFileClick(file: WorkspaceFile) {
     fileContent.value = data?.content || ''
     originalContent.value = fileContent.value
   } catch {
-    ElMessage.error(t('agentContext.loadFileFailed'))
+    mcToast.error(t('agentContext.loadFileFailed'))
   }
 }
 
@@ -362,10 +362,10 @@ async function saveContent() {
   try {
     await agentContextApi.saveFile(selectedAgentId.value, selectedFile.value.filename, fileContent.value)
     originalContent.value = fileContent.value
-    ElMessage.success(t('agentContext.saveSuccess'))
+    mcToast.success(t('agentContext.saveSuccess'))
     await fetchFiles()
   } catch {
-    ElMessage.error(t('agentContext.saveFailed'))
+    mcToast.error(t('agentContext.saveFailed'))
   } finally {
     saving.value = false
   }
@@ -387,9 +387,9 @@ async function toggleFileEnabled(file: WorkspaceFile) {
     // 同步本地 file 状态
     const f = files.value.find(x => x.filename === file.filename)
     if (f) f.enabled = isEnabling
-    ElMessage.success(t('agentContext.promptUpdated'))
+    mcToast.success(t('agentContext.promptUpdated'))
   } catch {
-    ElMessage.error(t('agentContext.promptUpdateFailed'))
+    mcToast.error(t('agentContext.promptUpdateFailed'))
   }
 }
 
@@ -405,21 +405,21 @@ async function confirmDeleteFile() {
 
   try {
     await agentContextApi.deleteFile(selectedAgentId.value, name)
-    ElMessage.success(t('agentContext.deleteSuccess'))
+    mcToast.success(t('agentContext.deleteSuccess'))
     selectedFile.value = null
     fileContent.value = ''
     originalContent.value = ''
     await fetchFiles()
     await fetchPromptFiles()
   } catch {
-    ElMessage.error(t('agentContext.deleteFailed'))
+    mcToast.error(t('agentContext.deleteFailed'))
   }
 }
 
 async function createNewFile() {
   const name = newFilename.value.trim()
   if (!isValidFilename.value) {
-    ElMessage.warning(t('agentContext.invalidFilename'))
+    mcToast.warning(t('agentContext.invalidFilename'))
     return
   }
   try {
@@ -433,7 +433,7 @@ async function createNewFile() {
       onFileClick(newFile)
     }
   } catch {
-    ElMessage.error(t('agentContext.saveFailed'))
+    mcToast.error(t('agentContext.saveFailed'))
   }
 }
 

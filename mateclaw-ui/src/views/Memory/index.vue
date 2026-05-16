@@ -180,7 +180,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+import { mcToast } from '@/composables/useMcToast'
 import { http } from '@/api'
 import { useAgentStore } from '@/stores/useAgentStore'
 import { useMemoryStore, type DreamReportItem } from '@/stores/useMemoryStore'
@@ -251,12 +251,12 @@ async function triggerDream() {
   dreamRunning.value = true
   try {
     await http.post(`/memory/${selectedAgentId.value}/dreaming/focused`, { topic: dreamTopic.value.trim() })
-    ElMessage.success(t('memory.focused.success'))
+    mcToast.success(t('memory.focused.success'))
     dreamTopic.value = ''
     dreamInputOpen.value = false
     loadReports()
   } catch (e: any) {
-    ElMessage.error(e.message || 'Dream failed')
+    mcToast.error(e.message || 'Dream failed')
   } finally {
     dreamRunning.value = false
   }

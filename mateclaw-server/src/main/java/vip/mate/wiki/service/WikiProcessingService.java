@@ -17,7 +17,9 @@ import vip.mate.llm.model.ModelConfigEntity;
 import vip.mate.llm.service.ModelConfigService;
 import vip.mate.wiki.WikiProperties;
 import vip.mate.wiki.dto.WikiChunkDraft;
+import vip.mate.wiki.event.WikiProcessingEvent;
 import vip.mate.wiki.job.WikiKbConfig;
+import vip.mate.wiki.job.WikiKbConfigParser;
 import vip.mate.wiki.model.WikiKnowledgeBaseEntity;
 import vip.mate.wiki.model.WikiPageEntity;
 import vip.mate.wiki.model.WikiRawMaterialEntity;
@@ -162,26 +164,25 @@ public class WikiProcessingService {
     private final ConcurrentHashMap<Long, ProgressCounter> progressCounters = new ConcurrentHashMap<>();
 
     /**
-     * 处理单个原始材料
+     * Process one raw material.
      */
     public void processRawMaterial(Long rawId) {
         processRawMaterial(rawId, false);
     }
 
     /**
-     * 处理单个原始材料（支持强制重跑）
+     * Process one raw material, optionally bypassing the content-hash shortcut.
      *
-     * @param rawId 材料 ID
-     * @param force 为 true 时忽略 content_hash 短路（RFC-012 Change 5），用于模型/提示词变更后的强制重跑
+     * @param rawId raw material ID
+     * @param force when true, ignore content_hash so model or prompt changes can re-run the full pipeline
      */
     public void processRawMaterial(Long rawId, boolean force) {
-        // RFC-012 follow-up #3：消费续传标志（reprocess() 把 partial 改回 pending 之前打的标）。
-        // 必须在 claimForProcessing 之前读，因为 claim 会把状态再改一次。
-        // flag 只在内存中，server 重启会丢 → 重启后仍按 pending 走正常流程（退化为全量重跑，
-        // 功能不丢失只是性能回退）。
+        // Consume the partial-resume marker before claimForProcessing changes
+        // the row status again. The marker is in-memory only; after a restart
+        // the pending row falls back to a full re-run.
         boolean isPartialResume = rawService.consumePartialResumeFlag(rawId);
 
-        // CAS 式抢占：防止并发重复处理
+        // Claim once so concurrent workers do not process the same raw twice.
         if (!rawService.claimForProcessing(rawId)) {
             log.debug("[Wiki] Raw material {} already claimed or not pending, skipping", rawId);
             return;
@@ -193,7 +194,7 @@ public class WikiProcessingService {
             return;
         }
 
-        // RFC-012 Change 5：若 content_hash 与上次成功处理时一致，直接短路
+        // Skip unchanged content unless the caller requested a forced re-run.
         if (!force
                 && raw.getContentHash() != null
                 && raw.getContentHash().equals(raw.getLastProcessedHash())) {
@@ -210,15 +211,14 @@ public class WikiProcessingService {
 
         kbService.updateStatus(kb.getId(), "processing");
 
-        // RFC-051 PR-2: every ingest path opens with a scaffold check so older
-        // KBs get their overview / log pages on first use without a manual step.
+        // Every ingest path opens with a scaffold check so older KBs get their
+        // overview / log pages on first use without a manual step.
         if (scaffoldService != null) {
             scaffoldService.ensureScaffold(kb.getId());
         }
 
-        // RFC-051 PR-1b: lazy ingest short-circuit. Per KB config, skip the heavy
-        // pipeline entirely: extract → chunk → embed → completed. 0 pages is the
-        // expected outcome, not a failure. ingestMode==null keeps existing behavior.
+        // Lazy ingest skips the heavy generation pipeline: extract, chunk,
+        // embed, completed. Zero pages is expected, not a failure.
         if ("lazy".equals(resolveIngestMode(kb))) {
             processLazyIngest(kb, raw);
             return;
@@ -362,7 +362,7 @@ public class WikiProcessingService {
             } else {
                 rawService.updateProcessingStatus(rawId, "completed", null);
                 finalStatus = "completed";
-                // RFC-012 Change 5：记录本次成功处理时的 hash，供下次短路判断
+                // Record the successful hash for the next unchanged-content shortcut.
                 if (raw.getContentHash() != null) {
                     rawService.setLastProcessedHash(rawId, raw.getContentHash());
                 }
@@ -509,6 +509,39 @@ public class WikiProcessingService {
     }
 
     /**
+     * Queue every raw material in a KB for asynchronous processing and
+     * return the number of materials queued. Does not block on processing.
+     * <p>
+     * When {@code force=true}, every raw material is reset to {@code pending}
+     * and its {@code last_processed_hash} is cleared so the dedup short-circuit
+     * is bypassed; otherwise only currently-{@code pending} materials are
+     * republished to the event bus (the same shape as the manual
+     * {@code POST /knowledge-bases/{kbId}/process} endpoint).
+     *
+     * @return the number of raw materials queued
+     */
+    public int processKB(Long kbId, boolean force) {
+        if (kbId == null) {
+            throw new IllegalArgumentException("kbId is required");
+        }
+        if (force) {
+            List<WikiRawMaterialEntity> all = rawService.listByKbId(kbId);
+            for (WikiRawMaterialEntity raw : all) {
+                rawService.setLastProcessedHash(raw.getId(), null);
+                rawService.reprocess(raw.getId());
+            }
+            log.info("[Wiki] processKB queued {} raw material(s) for kbId={} (force=true)", all.size(), kbId);
+            return all.size();
+        }
+        List<WikiRawMaterialEntity> pending = rawService.listPending(kbId);
+        for (WikiRawMaterialEntity raw : pending) {
+            eventPublisher.publishEvent(new WikiProcessingEvent(this, raw.getId(), kbId));
+        }
+        log.info("[Wiki] processKB queued {} pending raw material(s) for kbId={}", pending.size(), kbId);
+        return pending.size();
+    }
+
+    /**
      * 处理知识库中所有待处理的原始材料
      * <p>
      * RFC-012 Change 1：材料级并行，受 {@link WikiProperties#getMaxParallelRawMaterials()} 约束。
@@ -596,9 +629,9 @@ public class WikiProcessingService {
                     return;
                 }
                 try {
-                    // RFC-051 PR-9: skip remaining chunks if the user deleted the raw
-                    // while earlier chunks were still in flight. Counts as a "failed chunk"
-                    // for terminal-status accounting (not actually failed, just abandoned).
+                    // Skip remaining chunks if the user deleted the raw while
+                    // earlier chunks were still in flight. Counts as a failed
+                    // chunk for terminal-status accounting.
                     if (isAborted(raw.getId(), "chunk " + (chunkIndex + 1) + "/" + totalChunks)) {
                         failedChunks.incrementAndGet();
                         return;
@@ -1326,9 +1359,9 @@ public class WikiProcessingService {
         Long kbId = kb.getId();
         Long rawId = raw.getId();
 
-        // RFC-051 PR-9: refuse to materialize a page (or merge into an existing one) tied
-        // to a raw the user just deleted. Prevents zombie pages whose source_raw_ids point
-        // at a tombstoned row.
+        // Refuse to materialize a page, or merge into an existing one, for a
+        // raw the user just deleted. This prevents pages whose source_raw_ids
+        // point at a tombstoned row.
         if (isAborted(rawId, "savePageContent slug=" + slug)) return false;
 
         // Fallback 0: cross-spelling canonical match (DB has same concept under different slug)
@@ -2181,47 +2214,38 @@ public class WikiProcessingService {
     }
 
     /**
-     * RFC-051 PR-6b follow-up: KB-level override for structured route output,
-     * falling back to the global property when the KB hasn't set a preference.
-     * Parse failures fall back to global too — never block ingest on bad config.
+     * KB-level override for structured route output, falling back to the global
+     * property when the KB has not set a preference. Parse failures fall back to
+     * global too; ingestion must not be blocked by bad optional config.
      */
     private boolean resolveStructuredRouteFlag(WikiKnowledgeBaseEntity kb) {
         boolean fallback = properties.isUseStructuredRoute();
         if (kb == null || kb.getConfigContent() == null) return fallback;
-        try {
-            WikiKbConfig config = objectMapper.readValue(kb.getConfigContent(), WikiKbConfig.class);
-            return config.getUseStructuredRoute() != null
-                    ? config.getUseStructuredRoute()
-                    : fallback;
-        } catch (Exception e) {
-            return fallback;
-        }
+        WikiKbConfig config = WikiKbConfigParser.parse(objectMapper, kb.getConfigContent());
+        return config != null && config.getUseStructuredRoute() != null
+                ? config.getUseStructuredRoute()
+                : fallback;
     }
 
     /**
-     * RFC-051 PR-1b: read {@code ingestMode} from KB config JSON. Returns null
-     * on any parse error or missing field so the caller falls through to eager.
+     * Read {@code ingestMode} from KB config JSON or markdown frontmatter.
+     * Returns null on any parse error or missing field so the caller falls
+     * through to eager mode.
      */
     private String resolveIngestMode(WikiKnowledgeBaseEntity kb) {
         if (kb == null || kb.getConfigContent() == null) return null;
-        try {
-            WikiKbConfig config = objectMapper.readValue(kb.getConfigContent(), WikiKbConfig.class);
-            return config.getIngestMode();
-        } catch (Exception e) {
-            log.warn("[Wiki] Failed to parse KB config for ingest mode, falling back to eager: {}", e.getMessage());
-            return null;
-        }
+        WikiKbConfig config = WikiKbConfigParser.parse(objectMapper, kb.getConfigContent());
+        return config != null ? config.getIngestMode() : null;
     }
 
     /**
-     * RFC-051 PR-9: returns {@code true} when the caller should bail out of an
-     * in-flight processing path because the raw material has been deleted.
+     * Returns {@code true} when the caller should bail out of an in-flight
+     * processing path because the raw material has been deleted.
      * <p>
-     * {@link WikiRawMaterialService#delete(Long)} is a logical delete (the
-     * {@code @TableLogic} column flips to 1), so {@code selectById} returns
-     * {@code null} as soon as the deletion commits. Sprinkling this check
-     * right before each LLM call keeps token spend bounded by a single
-     * in-flight call after the user clicks delete.
+     * {@link WikiRawMaterialService#delete(Long)} is a logical delete. The row
+     * disappears from normal lookups as soon as deletion commits. Checking
+     * before each LLM call keeps token spend bounded by a single in-flight call
+     * after the user clicks delete.
      *
      * @param rawId the raw material id this processing path is about
      * @param ctx   short string used in the log line
@@ -2269,12 +2293,11 @@ public class WikiProcessingService {
     }
 
     /**
-     * RFC-051 PR-1b: lazy ingest — chunk + embed, no page generation.
+     * Lazy ingest: chunk and embed, without page generation.
      * <p>
      * Intentionally minimal: reuses the legacy {@code persistChunks(List<String>, offsets)}
-     * overload (no structural metadata; that lands in PR-1c with the preprocessor)
-     * and the existing {@code embedMissingChunks} entry point. Zero pages is the
-     * expected outcome, not a failure.
+     * overload and the existing {@code embedMissingChunks} entry point. Zero
+     * pages is the expected outcome, not a failure.
      */
     private void processLazyIngest(WikiKnowledgeBaseEntity kb, WikiRawMaterialEntity raw) {
         Long rawId = raw.getId();
@@ -2295,9 +2318,9 @@ public class WikiProcessingService {
                 return;
             }
 
-            // RFC-051 PR-9: text extraction can take many seconds on large binaries.
-            // If the user deleted the raw during that window, persisting chunks for a
-            // tombstoned row is wasted work that the cascade-cleanup already covered.
+            // Text extraction can take many seconds on large binaries. If the
+            // user deleted the raw during that window, persisting chunks for a
+            // tombstoned row is wasted work already covered by cascade cleanup.
             if (isAborted(rawId, "lazy ingest after extract")) {
                 kbService.updateStatus(kbId, "active");
                 return;

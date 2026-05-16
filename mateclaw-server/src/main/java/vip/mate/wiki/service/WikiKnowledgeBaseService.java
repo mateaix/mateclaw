@@ -5,8 +5,18 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import vip.mate.wiki.job.model.WikiProcessingJobEntity;
+import vip.mate.wiki.model.WikiChunkEntity;
 import vip.mate.wiki.model.WikiKnowledgeBaseEntity;
+import vip.mate.wiki.model.WikiPageCitationEntity;
+import vip.mate.wiki.model.WikiPageEntity;
+import vip.mate.wiki.model.WikiRawMaterialEntity;
+import vip.mate.wiki.repository.WikiChunkMapper;
 import vip.mate.wiki.repository.WikiKnowledgeBaseMapper;
+import vip.mate.wiki.repository.WikiPageCitationMapper;
+import vip.mate.wiki.repository.WikiPageMapper;
+import vip.mate.wiki.repository.WikiProcessingJobMapper;
+import vip.mate.wiki.repository.WikiRawMaterialMapper;
 
 import java.util.List;
 
@@ -21,6 +31,11 @@ import java.util.List;
 public class WikiKnowledgeBaseService {
 
     private final WikiKnowledgeBaseMapper kbMapper;
+    private final WikiRawMaterialMapper rawMapper;
+    private final WikiPageMapper pageMapper;
+    private final WikiChunkMapper chunkMapper;
+    private final WikiPageCitationMapper citationMapper;
+    private final WikiProcessingJobMapper processingJobMapper;
 
     /**
      * RFC-051 PR-2: optional system-page scaffold (overview / log). Marked
@@ -31,6 +46,19 @@ public class WikiKnowledgeBaseService {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     @org.springframework.context.annotation.Lazy
     private WikiScaffoldService scaffoldService;
+
+    /**
+     * Summary returned from cascade delete — used by callers (e.g. the
+     * controller) to record an audit event with affected-row counts.
+     */
+    public record CascadeDeleteResult(
+            String kbName,
+            int rawMaterialCount,
+            int pageCount,
+            int chunkCount,
+            int citationCount,
+            int processingJobCount) {
+    }
 
     private static final String DEFAULT_CONFIG = """
             # Wiki Processing Rules
@@ -216,9 +244,54 @@ public class WikiKnowledgeBaseService {
         }
     }
 
+    /**
+     * Cascade-delete a knowledge base and all data that belongs to it.
+     * <p>
+     * Single transaction: removes page citations (looked up via page IDs since
+     * the citation table has no {@code kb_id} column), then chunks, pages, raw
+     * materials, and processing jobs by {@code kb_id}, and finally the KB row
+     * itself. Returns a summary so callers can record audit metadata.
+     */
     @Transactional
-    public void delete(Long id) {
+    public CascadeDeleteResult delete(Long id) {
+        WikiKnowledgeBaseEntity kb = kbMapper.selectById(id);
+        if (kb == null) {
+            throw new IllegalArgumentException("Knowledge base not found: " + id);
+        }
+
+        List<Long> pageIds = pageMapper.selectList(
+                new LambdaQueryWrapper<WikiPageEntity>()
+                        .select(WikiPageEntity::getId)
+                        .eq(WikiPageEntity::getKbId, id))
+                .stream()
+                .map(WikiPageEntity::getId)
+                .toList();
+
+        int citationCount = pageIds.isEmpty() ? 0 : citationMapper.delete(
+                new LambdaQueryWrapper<WikiPageCitationEntity>()
+                        .in(WikiPageCitationEntity::getPageId, pageIds));
+
+        int pageCount = pageMapper.delete(
+                new LambdaQueryWrapper<WikiPageEntity>()
+                        .eq(WikiPageEntity::getKbId, id));
+
+        int chunkCount = chunkMapper.delete(
+                new LambdaQueryWrapper<WikiChunkEntity>()
+                        .eq(WikiChunkEntity::getKbId, id));
+
+        int rawCount = rawMapper.delete(
+                new LambdaQueryWrapper<WikiRawMaterialEntity>()
+                        .eq(WikiRawMaterialEntity::getKbId, id));
+
+        int jobCount = processingJobMapper.delete(
+                new LambdaQueryWrapper<WikiProcessingJobEntity>()
+                        .eq(WikiProcessingJobEntity::getKbId, id));
+
         kbMapper.deleteById(id);
-        log.info("[Wiki] Knowledge base deleted: id={}", id);
+
+        log.info("[Wiki] Knowledge base cascade-deleted: id={}, name={}, raw={}, page={}, chunk={}, citation={}, job={}",
+                id, kb.getName(), rawCount, pageCount, chunkCount, citationCount, jobCount);
+
+        return new CascadeDeleteResult(kb.getName(), rawCount, pageCount, chunkCount, citationCount, jobCount);
     }
 }

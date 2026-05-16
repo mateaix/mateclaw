@@ -4,20 +4,23 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.validation.BindException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.context.request.async.AsyncRequestTimeoutException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 import vip.mate.common.result.R;
 import vip.mate.i18n.I18nService;
 
 /**
- * 全局异常处理器
+ * Global exception handler.
  * <p>
- * MateClawException 的中文消息通过 I18nService 查表翻译：
- * 中文原文作为 key 前缀查 properties（err.msg.{hash}），
- * 找到翻译返回翻译，找不到返回原文。
+ * MateClawException messages are translated through I18nService when the
+ * exception provides a message key. The JSON body keeps the project-wide
+ * R envelope while the HTTP status mirrors the failure class.
  *
  * @author MateClaw Team
  */
@@ -29,24 +32,24 @@ public class GlobalExceptionHandler {
     private final I18nService i18nService;
 
     @ExceptionHandler(AsyncRequestTimeoutException.class)
-    public R<Void> handleAsyncTimeout(AsyncRequestTimeoutException e,
-                                      HttpServletRequest request,
-                                      HttpServletResponse response) {
+    public ResponseEntity<R<Void>> handleAsyncTimeout(AsyncRequestTimeoutException e,
+                                                      HttpServletRequest request,
+                                                      HttpServletResponse response) {
         if (isSseRequest(request) || response.isCommitted()) {
             log.debug("SSE async timeout (normal lifecycle): {} {}", request.getMethod(), request.getRequestURI());
-            // 不返回任何 body，避免 text/event-stream 无法序列化 R 的问题
-            // 返回 null 让框架自然结束异步请求
+            // Return no body for SSE so the framework can end the async request.
             return null;
         }
         log.warn("Async request timeout: {} {}", request.getMethod(), request.getRequestURI());
-        return R.fail(503, "Request timeout, please try again");
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .body(R.fail(503, "Request timeout, please try again"));
     }
 
     @ExceptionHandler(MateClawException.class)
-    public R<Void> handleMateClawException(MateClawException e) {
+    public ResponseEntity<R<Void>> handleMateClawException(MateClawException e) {
         log.warn("Business exception: [{}] {}", e.getCode(), e.getMessage());
         String msg = translateExceptionMsg(e);
-        return R.fail(e.getCode(), msg);
+        return ResponseEntity.status(httpStatusForCode(e.getCode())).body(R.fail(e.getCode(), msg));
     }
 
     /**
@@ -66,31 +69,37 @@ public class GlobalExceptionHandler {
     }
 
     @ExceptionHandler(BindException.class)
-    public R<Void> handleBindException(BindException e) {
+    public ResponseEntity<R<Void>> handleBindException(BindException e) {
         String msg = e.getBindingResult().getFieldErrors().stream()
                 .map(fe -> fe.getField() + ": " + fe.getDefaultMessage())
                 .findFirst()
                 .orElse("Validation failed");
         log.warn("Validation failed: {}", msg);
-        return R.fail(400, msg);
+        return ResponseEntity.badRequest().body(R.fail(400, msg));
+    }
+
+    @ExceptionHandler(NoResourceFoundException.class)
+    public ResponseEntity<R<Void>> handleNoResourceFound(NoResourceFoundException e,
+                                                         HttpServletRequest request) {
+        log.warn("Resource not found: {} {}", request.getMethod(), request.getRequestURI());
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(R.fail(404, "Resource not found"));
     }
 
     @ExceptionHandler(Exception.class)
-    public R<Void> handleException(Exception e,
-                                   HttpServletRequest request,
-                                   HttpServletResponse response) {
-        // response 已提交或 SSE 请求，不再尝试写 JSON body
+    public ResponseEntity<R<Void>> handleException(Exception e,
+                                                   HttpServletRequest request,
+                                                   HttpServletResponse response) {
         if (response.isCommitted() || isSseRequest(request)) {
             log.warn("Exception after response committed or during SSE (suppressed): {} {} - {}",
                     request.getMethod(), request.getRequestURI(), e.getMessage());
             return null;
         }
         log.error("Unexpected error: {} {}", request.getMethod(), request.getRequestURI(), e);
-        return R.fail("Internal server error");
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(R.fail("Internal server error"));
     }
 
     /**
-     * 判断是否为 SSE 请求：检查 Accept 头 或 已设置的 Content-Type
+     * Identify SSE requests from the Accept header, Content-Type, or known stream path.
      */
     private boolean isSseRequest(HttpServletRequest request) {
         String accept = request.getHeader("Accept");
@@ -101,8 +110,13 @@ public class GlobalExceptionHandler {
         if (contentType != null && contentType.contains(MediaType.TEXT_EVENT_STREAM_VALUE)) {
             return true;
         }
-        // 备选：路径匹配
+        // Fallback path match for stream endpoints that omit explicit headers.
         String uri = request.getRequestURI();
         return uri != null && uri.contains("/chat/stream");
+    }
+
+    private HttpStatus httpStatusForCode(int code) {
+        HttpStatus status = HttpStatus.resolve(code);
+        return status != null ? status : HttpStatus.INTERNAL_SERVER_ERROR;
     }
 }

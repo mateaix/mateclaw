@@ -71,7 +71,7 @@
 <script setup lang="ts">
 import { ref, onMounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+import { mcToast } from '@/composables/useMcToast'
 import { http } from '@/api'
 import FactTrustBar from './FactTrustBar.vue'
 
@@ -109,25 +109,25 @@ function search() { loadFacts() }
 async function feedback(factId: number, kind: string) {
   try {
     await http.post(`/memory/${props.agentId}/facts/${factId}/feedback`, { kind })
-    ElMessage.success(kind === 'HELPFUL' ? '👍' : '👎')
+    mcToast.success(kind === 'HELPFUL' ? '👍' : '👎')
     loadFacts()
-  } catch (e: any) { ElMessage.error(e.message || 'Failed') }
+  } catch (e: any) { mcToast.error(e.message || 'Failed') }
 }
 
 async function forget(factId: number) {
   try {
     await http.post(`/memory/${props.agentId}/facts/${factId}/forget`)
-    ElMessage.success(t('memory.facts.forgotten'))
+    mcToast.success(t('memory.facts.forgotten'))
     loadFacts()
-  } catch (e: any) { ElMessage.error(e.message || 'Failed') }
+  } catch (e: any) { mcToast.error(e.message || 'Failed') }
 }
 
 async function resolve(contradictionId: number, resolution: string) {
   try {
     await http.post(`/memory/${props.agentId}/facts/contradictions/${contradictionId}/resolve`, { resolution })
-    ElMessage.success(t('memory.facts.resolved'))
+    mcToast.success(t('memory.facts.resolved'))
     loadContradictions()
-  } catch (e: any) { ElMessage.error(e.message || 'Failed') }
+  } catch (e: any) { mcToast.error(e.message || 'Failed') }
 }
 </script>
 

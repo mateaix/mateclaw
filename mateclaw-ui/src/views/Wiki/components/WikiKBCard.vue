@@ -1,10 +1,29 @@
 <template>
-  <button
-    type="button"
+  <div
     class="kb-card mc-surface-card"
     :class="{ 'kb-card--has-warn': failedJobCount > 0 }"
+    role="button"
+    tabindex="0"
     @click="$emit('open', kb.id)"
+    @keydown.enter.prevent="$emit('open', kb.id)"
+    @keydown.space.prevent="$emit('open', kb.id)"
   >
+    <button
+      type="button"
+      class="kb-card-delete"
+      :title="t('wiki.library.deleteKB')"
+      :aria-label="t('wiki.library.deleteKB')"
+      @click.stop="$emit('delete', kb)"
+      @keydown.enter.stop
+      @keydown.space.stop
+    >
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <polyline points="3 6 5 6 21 6"/>
+        <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+        <path d="M10 11v6"/><path d="M14 11v6"/>
+        <path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/>
+      </svg>
+    </button>
     <div class="kb-card-top">
       <div class="kb-card-icon" :style="iconStyle">{{ initial }}</div>
       <span
@@ -35,7 +54,7 @@
     <div v-if="failedJobCount > 0" class="kb-card-warn">
       ⚠ {{ t('wiki.stats.failedJobs', { count: failedJobCount }) }}
     </div>
-  </button>
+  </div>
 </template>
 
 <script setup lang="ts">
@@ -49,7 +68,10 @@ const props = defineProps<{
   failedJobCount?: number
 }>()
 
-defineEmits<{ (e: 'open', id: number): void }>()
+defineEmits<{
+  (e: 'open', id: number): void
+  (e: 'delete', kb: WikiKB): void
+}>()
 
 const { t, locale } = useI18n()
 
@@ -64,6 +86,7 @@ const relative = computed(() => relativeTime(props.kb.updateTime, locale.value.s
 
 <style scoped>
 .kb-card {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -81,6 +104,43 @@ const relative = computed(() => relativeTime(props.kb.updateTime, locale.value.s
   border-color: var(--mc-border);
 }
 .kb-card:focus-visible { outline: 2px solid var(--mc-primary); outline-offset: 2px; }
+
+.kb-card-delete {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--mc-border-light);
+  border-radius: 8px;
+  background: var(--mc-bg-elevated);
+  color: var(--mc-text-tertiary);
+  cursor: pointer;
+  opacity: 0;
+  transform: translateY(-2px);
+  transition: opacity 0.15s ease, transform 0.15s ease, color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+  padding: 0;
+  z-index: 1;
+}
+.kb-card:hover .kb-card-delete,
+.kb-card:focus-within .kb-card-delete {
+  opacity: 1;
+  transform: translateY(0);
+}
+.kb-card-delete:hover {
+  color: var(--mc-danger);
+  border-color: rgba(245, 108, 108, 0.45);
+  background: rgba(245, 108, 108, 0.08);
+}
+.kb-card-delete:focus-visible {
+  outline: 2px solid var(--mc-danger);
+  outline-offset: 2px;
+  opacity: 1;
+  transform: translateY(0);
+}
 
 .kb-card-top {
   display: flex;

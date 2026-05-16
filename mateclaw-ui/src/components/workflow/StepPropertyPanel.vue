@@ -406,10 +406,11 @@ function onAgentSelect(e: Event) {
     patch({ agentId: undefined, agentName: undefined })
     return
   }
-  const id = Number(v)
+  // Keep the id as the raw string from the option value — Snowflake IDs
+  // exceed Number.MAX_SAFE_INTEGER, so Number(v) would silently truncate.
   const selected = props.availableAgents.find((a) => String(a.id) === v)
   patch({
-    agentId: Number.isFinite(id) ? id : undefined,
+    agentId: v,
     // Kept as a denormalized label for the canvas node; runtime resolves by agentId.
     agentName: selected?.name,
   })

@@ -1,6 +1,6 @@
 import { ref, type Ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+import { mcToast } from '@/composables/useMcToast'
 import { modelApi } from '@/api'
 import type { EnableResult, ProviderInfo } from '@/types'
 
@@ -55,7 +55,7 @@ export function useProviderEnablement(deps: ListDeps) {
       await Promise.all([loadCatalog(), deps.loadProviders()])
       return res.data as EnableResult
     } catch (err) {
-      ElMessage.error(err instanceof Error ? err.message : String(err))
+      mcToast.error(err instanceof Error ? err.message : String(err))
       return null
     } finally {
       togglingId.value = null
@@ -72,14 +72,14 @@ export function useProviderEnablement(deps: ListDeps) {
       // RFC-074 §2: silent switch + toast. Show the toast here so every caller
       // (drawer disable, card more-menu, etc.) gets consistent UX.
       if (result?.defaultSwitched) {
-        ElMessage.success(t('settings.model.defaultSwitchedToast', {
+        mcToast.success(t('settings.model.defaultSwitchedToast', {
           provider: result.newDefaultProviderId,
           model: result.newDefaultModel,
         }))
       }
       return result
     } catch (err) {
-      ElMessage.error(err instanceof Error ? err.message : String(err))
+      mcToast.error(err instanceof Error ? err.message : String(err))
       return null
     } finally {
       togglingId.value = null

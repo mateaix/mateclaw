@@ -81,7 +81,7 @@ public class SkillInstaller {
      * admin-only physical removal, call
      * {@code SkillService.hardDeleteSkill} via {@code DELETE /skills/{id}}.
      */
-    public void uninstall(String skillName) {
+    public void uninstall(String skillName, Long workspaceId) {
         List<SkillEntity> skills = skillService.listSkills();
         SkillEntity target = skills.stream()
                 .filter(s -> s.getName().equals(skillName))
@@ -89,6 +89,18 @@ public class SkillInstaller {
                 .orElse(null);
 
         if (target != null) {
+            // A workspace may only uninstall the skills it owns. Builtin
+            // skills are global and rejected by uninstallSkill itself.
+            if (!Boolean.TRUE.equals(target.getBuiltin())) {
+                long requested = workspaceId != null
+                        ? workspaceId : SkillService.DEFAULT_WORKSPACE_ID;
+                long owner = target.getWorkspaceId() != null
+                        ? target.getWorkspaceId() : SkillService.DEFAULT_WORKSPACE_ID;
+                if (owner != requested) {
+                    throw new vip.mate.exception.MateClawException("err.common.wrong_workspace", 403,
+                            "Skill '" + skillName + "' does not belong to the current workspace");
+                }
+            }
             skillService.uninstallSkill(target.getId());
         }
         log.info("Uninstalled skill: {}", skillName);
@@ -159,7 +171,7 @@ public class SkillInstaller {
 
             // 5. Register/update the skill row first so we have an id for the file rows.
             SkillEntity skillEntity = upsertSkillRow(bundle, skillName, exists,
-                    Boolean.TRUE.equals(request.getEnable()));
+                    Boolean.TRUE.equals(request.getEnable()), request.getWorkspaceId());
 
             if (task.isCancelRequested()) {
                 task.markCancelled();
@@ -199,7 +211,8 @@ public class SkillInstaller {
      *
      * @return 安装结果 Map（skillId, name, version, filesCount）
      */
-    public Map<String, Object> installFromBundle(SkillBundle bundle, boolean enable, boolean overwrite, String targetName) {
+    public Map<String, Object> installFromBundle(SkillBundle bundle, boolean enable, boolean overwrite,
+                                                  String targetName, Long workspaceId) {
         String skillName = (targetName != null && !targetName.isBlank()) ? targetName : bundle.name();
         if (skillName == null || skillName.isBlank()) {
             throw new vip.mate.exception.MateClawException("err.skill.name_required", "Cannot determine skill name from bundle");
@@ -216,7 +229,7 @@ public class SkillInstaller {
         workspaceManager.initWorkspace(skillName, bundle.content(), exists);
 
         // Register/update skill row first so we have an id to anchor the file rows.
-        SkillEntity skillEntity = upsertSkillRow(bundle, skillName, exists, enable);
+        SkillEntity skillEntity = upsertSkillRow(bundle, skillName, exists, enable, workspaceId);
 
         // DB-canonical, FS-cache. Empty-bundle guard on both sides.
         persistBundleFiles(skillEntity, bundle, false, "zip");
@@ -241,8 +254,13 @@ public class SkillInstaller {
     /**
      * Insert or update the {@code mate_skill} row from a bundle. Returns the
      * persisted entity so callers have its id for downstream file writes.
+     *
+     * <p>{@code workspaceId} is stamped only on the insert path — an
+     * existing skill keeps its current owning workspace so a re-install
+     * never silently migrates a skill between workspaces.
      */
-    private SkillEntity upsertSkillRow(SkillBundle bundle, String skillName, boolean exists, boolean enable) {
+    private SkillEntity upsertSkillRow(SkillBundle bundle, String skillName, boolean exists,
+                                       boolean enable, Long workspaceId) {
         SkillEntity skillEntity;
         if (exists) {
             skillEntity = skillService.listSkills().stream()
@@ -267,6 +285,7 @@ public class SkillInstaller {
             skillEntity.setSkillContent(bundle.content());
             skillEntity.setConfigJson(buildConfigJson(bundle));
             skillEntity.setEnabled(enable);
+            skillEntity.setWorkspaceId(workspaceId);
             skillService.createSkill(skillEntity);
         }
         return skillEntity;

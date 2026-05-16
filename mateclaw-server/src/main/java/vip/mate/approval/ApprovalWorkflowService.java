@@ -525,6 +525,90 @@ public class ApprovalWorkflowService implements ApplicationRunner {
         }
     }
 
+    // ==================== Global pending query (admin/notification surface) ====================
+
+    /**
+     * Default cap for {@link #listPendingFromDb(int)} when callers don't specify
+     * one, so a runaway pending table cannot drown the notification panel.
+     */
+    public static final int DEFAULT_PENDING_LIST_LIMIT = 200;
+
+    /**
+     * Hard ceiling regardless of caller-requested limit.
+     */
+    public static final int MAX_PENDING_LIST_LIMIT = 500;
+
+    /**
+     * Return every {@code PENDING} approval row, newest first, capped at {@code limit}.
+     * Reads from {@code mate_tool_approval} directly so restart / recovery edge
+     * cases cannot leave the in-memory map and the DB out of sync from a caller's
+     * perspective.
+     *
+     * <p>Payload shape matches {@link ApprovalService#getPendingByConversation},
+     * so the same frontend renderer can consume both surfaces.
+     */
+    public List<Map<String, Object>> listPendingFromDb(int limit) {
+        int effectiveLimit = limit <= 0 ? DEFAULT_PENDING_LIST_LIMIT
+                : Math.min(limit, MAX_PENDING_LIST_LIMIT);
+        List<ToolApprovalEntity> rows;
+        try {
+            rows = approvalMapper.selectList(
+                    new LambdaQueryWrapper<ToolApprovalEntity>()
+                            .eq(ToolApprovalEntity::getStatus, "PENDING")
+                            .orderByDesc(ToolApprovalEntity::getCreatedAt)
+                            .last("LIMIT " + effectiveLimit)
+            );
+        } catch (Exception e) {
+            log.warn("[ApprovalWorkflow] listPendingFromDb failed: {}", e.getMessage());
+            return List.of();
+        }
+        return rows.stream().map(this::toPendingPayload).toList();
+    }
+
+    /**
+     * Count of pending approvals in {@code mate_tool_approval}. Used by the
+     * notification summary endpoint; cheap enough to call on every poll.
+     */
+    public long countPendingFromDb() {
+        try {
+            Long n = approvalMapper.selectCount(
+                    new LambdaQueryWrapper<ToolApprovalEntity>()
+                            .eq(ToolApprovalEntity::getStatus, "PENDING")
+            );
+            return n == null ? 0L : n;
+        } catch (Exception e) {
+            log.warn("[ApprovalWorkflow] countPendingFromDb failed: {}", e.getMessage());
+            return 0L;
+        }
+    }
+
+    private Map<String, Object> toPendingPayload(ToolApprovalEntity entity) {
+        java.util.LinkedHashMap<String, Object> entry = new java.util.LinkedHashMap<>();
+        entry.put("pendingId", entity.getPendingId());
+        entry.put("conversationId", entity.getConversationId());
+        entry.put("agentId", entity.getAgentId());
+        entry.put("toolName", entity.getToolName());
+        entry.put("toolArguments", entity.getToolArguments() != null ? entity.getToolArguments() : "");
+        entry.put("status", "pending");
+        entry.put("createdAt", entity.getCreatedAt() != null ? entity.getCreatedAt().toString() : null);
+        if (entity.getFindingsJson() != null) {
+            entry.put("findingsJson", entity.getFindingsJson());
+        }
+        if (entity.getMaxSeverity() != null) {
+            entry.put("maxSeverity", entity.getMaxSeverity());
+        }
+        if (entity.getSummary() != null) {
+            entry.put("summary", entity.getSummary());
+        }
+        if (entity.getChannelType() != null) {
+            entry.put("channelType", entity.getChannelType());
+        }
+        if (entity.getRequesterName() != null) {
+            entry.put("requesterName", entity.getRequesterName());
+        }
+        return entry;
+    }
+
     // ---------- shared two-phase machinery ----------
 
     private ResolveOutcome performResolve(String pendingId, String userId,

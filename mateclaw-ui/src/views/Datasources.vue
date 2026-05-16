@@ -235,7 +235,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+import { mcToast } from '@/composables/useMcToast'
 import { mcConfirm } from '@/components/common/useConfirm'
 import {
   ArrowDown,
@@ -365,7 +365,7 @@ async function saveDs() {
     await loadDatasources()
     const id = saved?.data?.id
     if (id) autoTestAfterSave(id)
-  } catch (e: any) { ElMessage.error(e?.message || t('datasources.messages.saveFailed')) }
+  } catch (e: any) { mcToast.error(e?.message || t('datasources.messages.saveFailed')) }
 }
 
 async function autoTestAfterSave(id: number | string) {
@@ -373,7 +373,8 @@ async function autoTestAfterSave(id: number | string) {
   try {
     const res: any = await datasourceApi.test(id)
     const ok = res.data?.success
-    ElMessage({ type: ok ? 'success' : 'warning', message: ok ? t('datasources.messages.testSuccess') : t('datasources.messages.testFailed') })
+    if (ok) mcToast.success(t('datasources.messages.testSuccess'))
+    else mcToast.warning(t('datasources.messages.testFailed'))
     await loadDatasources()
   } catch {
   } finally { testing.value = null }
@@ -387,7 +388,7 @@ async function testInModal() {
       form.value = { ...saved.data }
       await loadDatasources()
     } catch (e: any) {
-      ElMessage.error(e?.message || t('datasources.messages.saveFailed'))
+      mcToast.error(e?.message || t('datasources.messages.saveFailed'))
       return
     }
   } else {
@@ -395,7 +396,7 @@ async function testInModal() {
       await datasourceApi.update(editingDs.value.id, form.value)
       await loadDatasources()
     } catch (e: any) {
-      ElMessage.error(e?.message || t('datasources.messages.saveFailed'))
+      mcToast.error(e?.message || t('datasources.messages.saveFailed'))
       return
     }
   }
@@ -420,14 +421,14 @@ async function deleteDs(id: string | number) {
   try {
     await datasourceApi.delete(id)
     await loadDatasources()
-  } catch (e: any) { ElMessage.error(e?.message || t('datasources.messages.deleteFailed')) }
+  } catch (e: any) { mcToast.error(e?.message || t('datasources.messages.deleteFailed')) }
 }
 
 async function toggleDs(ds: Datasource) {
   try {
     await datasourceApi.toggle(ds.id, !ds.enabled)
     await loadDatasources()
-  } catch (e: any) { ElMessage.error(e?.message || t('datasources.messages.toggleFailed')) }
+  } catch (e: any) { mcToast.error(e?.message || t('datasources.messages.toggleFailed')) }
 }
 
 async function testConnection(ds: Datasource) {
@@ -435,10 +436,11 @@ async function testConnection(ds: Datasource) {
   try {
     const res: any = await datasourceApi.test(ds.id)
     const ok = res.data?.success
-    ElMessage({ type: ok ? 'success' : 'error', message: ok ? t('datasources.messages.testSuccess') : t('datasources.messages.testFailed') })
+    if (ok) mcToast.success(t('datasources.messages.testSuccess'))
+    else mcToast.error(t('datasources.messages.testFailed'))
     await loadDatasources()
   } catch (e: any) {
-    ElMessage.error(e?.message || t('datasources.messages.testFailed'))
+    mcToast.error(e?.message || t('datasources.messages.testFailed'))
   } finally { testing.value = null }
 }
 </script>

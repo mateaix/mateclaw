@@ -26,7 +26,7 @@ class SkillControllerVirtualGuardTest {
     void updateRejectsVirtualMcpId() {
         long virtualId = McpSkillBridge.VIRTUAL_ID_BASE + 42L;
         MateClawException ex = assertThrows(MateClawException.class,
-                () -> controller.update(virtualId, new SkillEntity()));
+                () -> controller.update(virtualId, new SkillEntity(), null));
         assertTrue(ex.getMessage().contains("MCP/ACP"),
                 "expected redirect-to-connection-page hint, got: " + ex.getMessage());
     }
@@ -41,16 +41,16 @@ class SkillControllerVirtualGuardTest {
         assertTrue(AcpSkillBridge.isVirtualAcpSkillId(virtualAcpId),
                 "test fixture id is not in ACP virtual range; ACP base layout changed?");
         assertThrows(MateClawException.class,
-                () -> controller.update(virtualAcpId, new SkillEntity()));
+                () -> controller.update(virtualAcpId, new SkillEntity(), null));
     }
 
     @Test
     @DisplayName("delete / toggle / rescan all reject virtual ids the same way")
     void mutationFamilyAllGuarded() {
         long virtualId = McpSkillBridge.VIRTUAL_ID_BASE + 42L;
-        assertThrows(MateClawException.class, () -> controller.delete(virtualId));
-        assertThrows(MateClawException.class, () -> controller.toggle(virtualId, true));
-        assertThrows(MateClawException.class, () -> controller.rescan(virtualId));
+        assertThrows(MateClawException.class, () -> controller.delete(virtualId, null));
+        assertThrows(MateClawException.class, () -> controller.toggle(virtualId, true, null));
+        assertThrows(MateClawException.class, () -> controller.rescan(virtualId, null));
     }
 
     @Test
@@ -69,7 +69,7 @@ class SkillControllerVirtualGuardTest {
         // A virtual-id call would have thrown MateClawException before
         // reaching the service.
         try {
-            real.update(snowflakeId, new SkillEntity());
+            real.update(snowflakeId, new SkillEntity(), null);
         } catch (MateClawException e) {
             // The guard message contains "MCP/ACP"; any other MateClawException
             // (e.g. from the service layer) is acceptable.

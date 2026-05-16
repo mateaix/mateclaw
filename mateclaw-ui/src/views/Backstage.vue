@@ -172,7 +172,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+import { mcToast } from '@/composables/useMcToast'
 import SkillIcon from '@/components/common/SkillIcon.vue'
 import BackstageFocusPanel from '@/components/backstage/BackstageFocusPanel.vue'
 import { useBackstageAgent } from '@/composables/useBackstageAgent'
@@ -358,7 +358,7 @@ async function refresh() {
       if (fresh) detail.value = fresh
     }
   } catch (e: any) {
-    if (isInitialLoading.value) ElMessage.error(e?.message || t('backstage.errors.loadFailed'))
+    if (isInitialLoading.value) mcToast.error(e?.message || t('backstage.errors.loadFailed'))
   } finally {
     isInitialLoading.value = false
   }
@@ -386,10 +386,10 @@ async function confirmStop(run: BackstageRunCard) {
   if (!ok) return
   try {
     await backstageApi.stop(run.conversationId)
-    ElMessage.success(t('backstage.toast.stopped'))
+    mcToast.success(t('backstage.toast.stopped'))
     refresh()
   } catch (e: any) {
-    ElMessage.error(e?.message || t('backstage.errors.loadFailed'))
+    mcToast.error(e?.message || t('backstage.errors.loadFailed'))
   }
 }
 
@@ -404,11 +404,11 @@ async function confirmRecycle(run: BackstageRunCard) {
   if (!ok) return
   try {
     await backstageApi.recycle(run.conversationId)
-    ElMessage.success(t('backstage.toast.ended'))
+    mcToast.success(t('backstage.toast.ended'))
     drawerOpen.value = false
     refresh()
   } catch (e: any) {
-    ElMessage.error(e?.message || t('backstage.errors.loadFailed'))
+    mcToast.error(e?.message || t('backstage.errors.loadFailed'))
   }
 }
 
@@ -423,10 +423,10 @@ async function confirmInterruptSub(sub: BackstageSubagentCard) {
   if (!ok) return
   try {
     await backstageApi.interruptSubagent(sub.subagentId)
-    ElMessage.success(t('backstage.toast.subStopped'))
+    mcToast.success(t('backstage.toast.subStopped'))
     refresh()
   } catch (e: any) {
-    ElMessage.error(e?.message || t('backstage.errors.loadFailed'))
+    mcToast.error(e?.message || t('backstage.errors.loadFailed'))
   }
 }
 
@@ -443,10 +443,10 @@ async function confirmSweep() {
   try {
     const res: any = await backstageApi.sweep()
     const recycled = res?.data?.recycled ?? 0
-    ElMessage.success(t('backstage.toast.swept', { n: recycled }))
+    mcToast.success(t('backstage.toast.swept', { n: recycled }))
     refresh()
   } catch (e: any) {
-    ElMessage.error(e?.message || t('backstage.errors.loadFailed'))
+    mcToast.error(e?.message || t('backstage.errors.loadFailed'))
   }
 }
 

@@ -63,7 +63,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+import { mcToast } from '@/composables/useMcToast'
 import { http, agentContextApi } from '@/api'
 
 const props = defineProps<{ agentId: number }>()
@@ -146,12 +146,12 @@ async function saveSection(idx: number) {
       `/memory/${props.agentId}/dream/reports/0/entries/${encodeURIComponent(heading)}/edit`,
       { content: editText.value }
     )
-    ElMessage.success(t('memory.hil.saved'))
+    mcToast.success(t('memory.hil.saved'))
     editingIdx.value = -1
     // Reload file to see changes
     await loadFile(currentFile.value)
   } catch (e: any) {
-    ElMessage.error(e.message || 'Save failed')
+    mcToast.error(e.message || 'Save failed')
   } finally { saving.value = false }
 }
 

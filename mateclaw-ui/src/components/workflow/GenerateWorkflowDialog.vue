@@ -111,7 +111,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+import { mcToast } from '@/composables/useMcToast'
 import {
   workflowApi,
   type GeneratedDraft,
@@ -272,7 +272,7 @@ async function onGenerate() {
     const res = await workflowApi.generateDraft(desc)
     result.value = res.data as unknown as GeneratedDraft
   } catch (e) {
-    ElMessage.error(t('workflows.generate.failed', { msg: (e as Error).message }))
+    mcToast.error(t('workflows.generate.failed', { msg: (e as Error).message }))
   } finally {
     loading.value = false
   }

@@ -200,11 +200,11 @@ public class AgentBindingService {
      *       then apply the same workspace comparison.</li>
      * </ul>
      *
-     * <p>Most {@code mate_skill} rows currently sit in the default workspace
-     * (id=1) because skill creation doesn't yet honor the
-     * {@code X-Workspace-Id} header; the real-skill branch is therefore
-     * defense-in-depth right now and flips on automatically the moment
-     * workspace-scoped skill creation lands. ACP enforcement is live today.
+     * <p>Builtin skills are exempt: they are global capabilities seeded
+     * once into the default workspace and shared with every workspace, so
+     * any agent may bind them regardless of its own workspace. Only
+     * workspace-owned skills (dynamic / installed / synthesized) are
+     * tenancy-checked.
      *
      * @throws MateClawException 404 if the agent or skill doesn't exist;
      *                           403 on a workspace mismatch.
@@ -240,6 +240,12 @@ public class AgentBindingService {
             if (skill == null) {
                 throw new MateClawException("err.skill.not_found", 404, "Skill 不存在: " + skillId);
             }
+        }
+        // Builtin skills are global — shared across every workspace, so any
+        // agent in any workspace may bind them (same stance as MCP virtuals
+        // above). Only workspace-owned skills are tenancy-checked.
+        if (Boolean.TRUE.equals(skill.getBuiltin())) {
+            return;
         }
         long agentWs = agent.getWorkspaceId() == null ? 1L : agent.getWorkspaceId();
         long skillWs = skill.getWorkspaceId() == null ? 1L : skill.getWorkspaceId();

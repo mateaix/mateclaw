@@ -311,7 +311,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+import { mcToast } from '@/composables/useMcToast'
 import { CHANNEL_FIELD_DEFS } from '@/types'
 import type { Agent, Channel, ChannelFieldDef } from '@/types'
 import { channelApi } from '@/api'
@@ -713,11 +713,11 @@ async function onDone() {
       enabled: true,
     }
     const res: any = await channelApi.create(payload)
-    ElMessage.success(t('channels.messages.saveSuccess'))
+    mcToast.success(t('channels.messages.saveSuccess'))
     emit('created', res.data as Channel)
     close()
   } catch (e: any) {
-    ElMessage.error(e?.message || t('channels.wizard.saveFailed'))
+    mcToast.error(e?.message || t('channels.wizard.saveFailed'))
   } finally {
     saving.value = false
   }

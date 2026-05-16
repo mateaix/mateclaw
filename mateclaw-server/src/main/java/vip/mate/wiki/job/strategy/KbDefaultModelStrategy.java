@@ -7,6 +7,7 @@ import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 import vip.mate.wiki.job.WikiJobStep;
 import vip.mate.wiki.job.WikiKbConfig;
+import vip.mate.wiki.job.WikiKbConfigParser;
 import vip.mate.wiki.job.model.WikiProcessingJobEntity;
 import vip.mate.wiki.model.WikiKnowledgeBaseEntity;
 
@@ -38,12 +39,7 @@ public class KbDefaultModelStrategy implements WikiStepModelStrategy {
     @Override
     public Long selectModelId(WikiProcessingJobEntity job, WikiKnowledgeBaseEntity kb, WikiJobStep step) {
         if (kb == null || kb.getConfigContent() == null) return null;
-        try {
-            WikiKbConfig config = objectMapper.readValue(kb.getConfigContent(), WikiKbConfig.class);
-            return config.getWikiDefaultModelId();
-        } catch (Exception e) {
-            log.debug("[KbDefaultModelStrategy] Failed to parse KB config: {}", e.getMessage());
-            return null;
-        }
+        WikiKbConfig config = WikiKbConfigParser.parse(objectMapper, kb.getConfigContent());
+        return config != null ? config.getWikiDefaultModelId() : null;
     }
 }

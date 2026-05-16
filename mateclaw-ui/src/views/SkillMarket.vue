@@ -199,41 +199,21 @@
       :skill-name="preflightSkillName"
     />
 
-    <!-- Skill detail drawer.
-         Mirrors Settings/Models/AddProviderDrawer.vue — Teleport + frosted
-         glass, iOS-spring slide, mobile bottom-sheet, dark variants. The
-         old el-drawer was off-brand and didn't match the rest of the app. -->
-    <Teleport to="body">
-      <Transition name="mc-drawer-fade">
-        <div
-          v-if="detailDrawerVisible && detailSkill"
-          class="mc-drawer-overlay"
-          :class="{ 'mc-drawer-overlay--wide': editingBody }"
-          @click.self="closeDetailDrawer"
-        >
-          <div class="mc-drawer-panel" :class="{ 'mc-drawer-panel--wide': editingBody }">
-            <div class="mc-drawer-header">
-              <div class="mc-drawer-header__meta">
-                <span class="mc-drawer-icon-shell">
-                  <SkillIcon :value="detailSkill.icon" :size="24" />
-                </span>
-                <div>
-                  <h3 class="mc-drawer-title">{{ resolveSkillName(detailSkill) }}</h3>
-                  <p class="mc-drawer-subtitle">
-                    {{ editingBody ? t('skills.detail.editingSource') : (detailSkill.description || detailSkill.name) }}
-                  </p>
-                </div>
-              </div>
-              <button
-                class="mc-drawer-close"
-                :title="t('common.cancel')"
-                @click="closeDetailDrawer"
-              >
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
-                  <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-                </svg>
-              </button>
-            </div>
+    <!-- Skill detail/edit drawer — frosted shell comes from MateDrawer;
+         the existing .mc-drawer-content wrapper below stays so the
+         tab/block/takeover styles keep working without renaming. -->
+    <MateDrawer
+      :visible="detailDrawerVisible && !!detailSkill"
+      :title="detailSkill ? resolveSkillName(detailSkill) : ''"
+      :subtitle="detailSkill ? (editingBody ? t('skills.detail.editingSource') : (detailSkill.description || detailSkill.name)) : ''"
+      :size="editingBody ? 'lg' : 'md'"
+      :close-label="t('common.cancel')"
+      @close="closeDetailDrawer"
+    >
+      <template v-if="detailSkill" #icon>
+        <SkillIcon :value="detailSkill.icon" :size="24" />
+      </template>
+      <template v-if="detailSkill">
 
             <!-- Body-edit takeover: the entire drawer becomes one editor.
                  Tabs and other blocks are hidden so the user can think in
@@ -595,10 +575,8 @@
           />
         </div>
             </div>
-          </div>
-        </div>
-      </Transition>
-    </Teleport>
+      </template>
+    </MateDrawer>
 
     <!-- New-skill modal (Layer-1 redesign).
          Reduced to 2 fields. The user's job here is "name it and confirm
@@ -676,13 +654,14 @@
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+import { mcToast } from '@/composables/useMcToast'
 import { skillApi, skillInstallApi } from '@/api/index'
 import type { Skill, SkillRuntimeStatus, SkillSecurityFinding } from '@/types/index'
 import ImportHubDialog from '@/components/skill/ImportHubDialog.vue'
 import PreflightInstallDialog from '@/components/skill/PreflightInstallDialog.vue'
 import SkillSecretsPanel from '@/components/skill/SkillSecretsPanel.vue'
 import McPagination from '@/components/common/McPagination.vue'
+import MateDrawer from '@/components/common/MateDrawer.vue'
 import SkillIcon from '@/components/common/SkillIcon.vue'
 import SkillIconPicker from '@/components/common/SkillIconPicker.vue'
 import { mcConfirm } from '@/components/common/useConfirm'
@@ -888,7 +867,7 @@ async function clearLessons() {
     await skillApi.clearLessons(detailSkill.value.id)
     detailLessonsRaw.value = ''
   } catch (e: any) {
-    ElMessage.error(typeof e === 'string' ? e : e?.message || t('skills.messages.deleteFailed'))
+    mcToast.error(typeof e === 'string' ? e : e?.message || t('skills.messages.deleteFailed'))
   }
 }
 
@@ -1067,7 +1046,7 @@ async function createSkillFromModal() {
       openDetailDrawer(fresh, 'overview', { editIdentity: true })
     }
   } catch (e: any) {
-    ElMessage.error(typeof e === 'string' ? e : e?.message || t('skills.messages.saveFailed'))
+    mcToast.error(typeof e === 'string' ? e : e?.message || t('skills.messages.saveFailed'))
   } finally {
     creating.value = false
   }
@@ -1145,9 +1124,9 @@ async function saveIdentity() {
       detailSkill.value = { ...detailSkill.value, ...updated }
     }
     editingIdentity.value = false
-    ElMessage.success(t('skills.messages.saveSuccess'))
+    mcToast.success(t('skills.messages.saveSuccess'))
   } catch (e: any) {
-    ElMessage.error(typeof e === 'string' ? e : e?.message || t('skills.messages.saveFailed'))
+    mcToast.error(typeof e === 'string' ? e : e?.message || t('skills.messages.saveFailed'))
   } finally {
     savingEdit.value = false
   }
@@ -1187,9 +1166,9 @@ async function saveBody() {
     // Body change → next resolve re-projects icon/version/author from the
     // new frontmatter, so refresh runtime status to pick those up.
     loadRuntimeStatus()
-    ElMessage.success(t('skills.detail.sourceSavedReprojection'))
+    mcToast.success(t('skills.detail.sourceSavedReprojection'))
   } catch (e: any) {
-    ElMessage.error(typeof e === 'string' ? e : e?.message || t('skills.messages.saveFailed'))
+    mcToast.error(typeof e === 'string' ? e : e?.message || t('skills.messages.saveFailed'))
   } finally {
     savingEdit.value = false
   }
@@ -1228,7 +1207,7 @@ async function deleteSkill(idOrSkill: string | number | Skill) {
     await skillInstallApi.uninstall(skill.name)
     await loadAll()
   } catch (e: any) {
-    ElMessage.error(typeof e === 'string' ? e : e?.message || t('skills.messages.deleteFailed'))
+    mcToast.error(typeof e === 'string' ? e : e?.message || t('skills.messages.deleteFailed'))
   }
 }
 
@@ -1238,14 +1217,14 @@ async function toggleSkill(skill: Skill) {
   // toast accurate when the backend would otherwise return err.skill.not_found
   // on builds that pre-date the rejectVirtualSkillMutation guard).
   if (isSkillRowVirtual(skill)) {
-    ElMessage.warning(t('skills.virtualReadonlyHint'))
+    mcToast.warning(t('skills.virtualReadonlyHint'))
     return
   }
   try {
     await skillApi.toggle(skill.id, !skill.enabled)
     await loadAll()
   } catch (e: any) {
-    ElMessage.error(typeof e === 'string' ? e : e?.message || t('skills.messages.toggleFailed'))
+    mcToast.error(typeof e === 'string' ? e : e?.message || t('skills.messages.toggleFailed'))
   }
 }
 
@@ -1254,9 +1233,9 @@ async function handleRefreshRuntime() {
   try {
     await skillApi.refreshRuntime()
     await loadRuntimeStatus()
-    ElMessage.success(t('skills.refreshSuccess'))
+    mcToast.success(t('skills.refreshSuccess'))
   } catch (e: any) {
-    ElMessage.error(typeof e === 'string' ? e : e?.message || t('skills.refreshFailed'))
+    mcToast.error(typeof e === 'string' ? e : e?.message || t('skills.refreshFailed'))
   } finally {
     refreshing.value = false
   }
@@ -1291,7 +1270,7 @@ async function rescanSkill(skill: Skill) {
       // Patch the row in-place so the panel updates without a full page reload.
       const idx = skills.value.findIndex(s => s.id === skill.id)
       if (idx >= 0) skills.value.splice(idx, 1, { ...skills.value[idx], ...updated })
-      ElMessage.success(
+      mcToast.success(
         updated.securityScanStatus === 'FAILED'
           ? t('skills.security.rescanStillFailed')
           : t('skills.security.rescanPassed')
@@ -1300,7 +1279,7 @@ async function rescanSkill(skill: Skill) {
     // Refresh runtime status too so the in-memory badges stay in sync.
     await loadRuntimeStatus()
   } catch (e: any) {
-    ElMessage.error(typeof e === 'string' ? e : e?.message || t('skills.security.rescanFailed'))
+    mcToast.error(typeof e === 'string' ? e : e?.message || t('skills.security.rescanFailed'))
   } finally {
     rescanning.value = { ...rescanning.value, [key]: false }
   }
@@ -2169,128 +2148,10 @@ html.dark .scan-finding-item { background: rgba(255, 255, 255, 0.05); }
   color: var(--mc-text-tertiary);
 }
 
-/* ============================================================
- * MateClaw frosted-glass drawer
- * Mirrors Settings/Models/AddProviderDrawer.vue so the skill
- * detail surface lives in the same visual language as the rest
- * of the app — depth via translucency, not borders.
- * ============================================================ */
-.mc-drawer-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(20, 14, 10, 0.32);
-  backdrop-filter: blur(8px) saturate(140%);
-  -webkit-backdrop-filter: blur(8px) saturate(140%);
-  z-index: 1500;
-  display: flex;
-  justify-content: flex-end;
-}
-:global(html.dark .mc-drawer-overlay) {
-  background: rgba(0, 0, 0, 0.5);
-}
-
-.mc-drawer-panel {
-  width: 640px;
-  max-width: 92vw;
-  height: 100%;
-  background: rgba(255, 250, 245, 0.78);
-  backdrop-filter: blur(48px) saturate(180%);
-  -webkit-backdrop-filter: blur(48px) saturate(180%);
-  border-left: 1px solid rgba(255, 255, 255, 0.4);
-  box-shadow: -24px 0 60px rgba(25, 14, 8, 0.16);
-  display: flex;
-  flex-direction: column;
-  animation: mc-drawer-slide 0.36s cubic-bezier(0.32, 0.72, 0, 1);
-  transition: width 0.32s cubic-bezier(0.32, 0.72, 0, 1);
-}
-.mc-drawer-panel--wide {
-  /* Editing SKILL.md needs room — 640 was cramped for code authoring. */
-  width: 880px;
-}
-:global(html.dark .mc-drawer-panel) {
-  background: rgba(32, 26, 22, 0.82);
-  border-left-color: rgba(255, 255, 255, 0.10);
-  box-shadow: -24px 0 60px rgba(0, 0, 0, 0.5);
-}
-
-@keyframes mc-drawer-slide {
-  from { transform: translateX(100%); }
-  to { transform: translateX(0); }
-}
-
-.mc-drawer-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 22px 26px 18px;
-  border-bottom: 1px solid rgba(123, 88, 67, 0.10);
-  flex-shrink: 0;
-}
-:global(html.dark .mc-drawer-header) {
-  border-bottom-color: rgba(255, 255, 255, 0.06);
-}
-.mc-drawer-header__meta {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  min-width: 0;
-}
-.mc-drawer-icon-shell {
-  flex-shrink: 0;
-  width: 40px;
-  height: 40px;
-  border-radius: 12px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 22px;
-  background: rgba(255, 255, 255, 0.55);
-  box-shadow: inset 0 0 0 1px rgba(123, 88, 67, 0.10);
-}
-:global(html.dark .mc-drawer-icon-shell) {
-  background: rgba(255, 255, 255, 0.06);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
-}
-.mc-drawer-title {
-  margin: 0 0 2px;
-  font-size: 17px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-  color: var(--mc-text-primary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.mc-drawer-subtitle {
-  margin: 0;
-  font-size: 12px;
-  line-height: 1.5;
-  color: var(--mc-text-tertiary);
-  display: -webkit-box;
-  -webkit-line-clamp: 1;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-.mc-drawer-close {
-  background: transparent;
-  border: 0;
-  padding: 8px;
-  border-radius: 999px;
-  cursor: pointer;
-  color: var(--mc-text-tertiary);
-  flex-shrink: 0;
-  transition: background 0.15s ease, color 0.15s ease;
-}
-.mc-drawer-close:hover {
-  background: rgba(123, 88, 67, 0.08);
-  color: var(--mc-text-primary);
-}
-:global(html.dark .mc-drawer-close:hover) {
-  background: rgba(255, 255, 255, 0.08);
-  color: var(--mc-text-primary);
-}
-
+/* Drawer shell (overlay, panel, header, close, mobile sheet) comes
+ * from MateDrawer; its body is a bare flex-column shell. This
+ * .mc-drawer-content wrapper is what hosts either tabbed sections
+ * (default) or a full-bleed SKILL.md editor (takeover). */
 .mc-drawer-content {
   flex: 1;
   overflow-y: auto;
@@ -2487,38 +2348,4 @@ html.dark .scan-finding-item { background: rgba(255, 255, 255, 0.05); }
   color: #fff;
 }
 
-.mc-drawer-fade-enter-active,
-.mc-drawer-fade-leave-active {
-  transition: opacity 0.22s ease;
-}
-.mc-drawer-fade-enter-from,
-.mc-drawer-fade-leave-to {
-  opacity: 0;
-}
-
-/* Mobile: bottom sheet so the drawer doesn't crush 92vw. */
-@media (max-width: 768px) {
-  .mc-drawer-overlay {
-    justify-content: stretch;
-    align-items: flex-end;
-  }
-  .mc-drawer-panel,
-  .mc-drawer-panel--wide {
-    width: 100%;
-    max-width: 100%;
-    height: 92vh;
-    border-left: 0;
-    border-top: 1px solid rgba(255, 255, 255, 0.4);
-    border-top-left-radius: 20px;
-    border-top-right-radius: 20px;
-    animation: mc-drawer-slide-up 0.32s cubic-bezier(0.32, 0.72, 0, 1);
-  }
-  :global(html.dark .mc-drawer-panel) {
-    border-top-color: rgba(255, 255, 255, 0.08);
-  }
-  @keyframes mc-drawer-slide-up {
-    from { transform: translateY(100%); }
-    to { transform: translateY(0); }
-  }
-}
 </style>

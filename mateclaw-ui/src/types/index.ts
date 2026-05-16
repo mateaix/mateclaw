@@ -177,6 +177,12 @@ export interface MessageSegment {
   repetitionWarning?: 'char_pattern' | 'sentence_repetition'
   /** Number of trailing characters dropped when the repetition guard fired. */
   truncatedChars?: number
+  /** Backend marked this model-predicted tool result as replaced by a later actual tool result. */
+  superseded?: boolean
+  /** Segment ID that replaced this pre-tool prediction. */
+  supersededBySegmentId?: string
+  /** Machine-readable reason for superseding this segment. */
+  supersededReason?: string
 }
 
 export interface MessageMetadata {
@@ -917,9 +923,9 @@ export interface CronJob {
   name: string
   cronExpression: string
   timezone: string
-  agentId: string | number
+  agentId: string | number | null
   agentName?: string
-  taskType: 'text' | 'agent' | 'reminder'
+  taskType: 'text' | 'agent' | 'reminder' | 'wiki_process'
   triggerMessage?: string
   requestBody?: string
   enabled: boolean

@@ -46,17 +46,26 @@
               :key="item.path"
               :to="item.path"
               class="nav-item"
-              :class="{ active: isNavItemActive(item), 'has-attention': item.path === '/backstage' && backstageAlertActive }"
+              :class="{ active: isNavItemActive(item) }"
               :title="effectiveCollapsed ? (item.tooltip || item.label) : (item.tooltip || '')"
               @click="onNavClick"
             >
               <span class="nav-icon" v-html="item.icon"></span>
               <span v-if="!effectiveCollapsed" class="nav-label">{{ item.label }}</span>
-              <span
-                v-if="item.path === '/backstage' && backstageAlertActive"
-                class="nav-attention-dot"
+              <NavBadge
+                v-if="item.path === '/backstage'"
+                :dot="backstageAlertActive"
+                tone="warning"
+                :collapsed="effectiveCollapsed"
                 :title="t('backstage.attention')"
-              ></span>
+              />
+              <NavBadge
+                v-else-if="item.path === '/security' && isAdminRole"
+                :count="pendingApprovals"
+                tone="urgent"
+                :collapsed="effectiveCollapsed"
+                :title="t('notifications.pendingApprovals', { n: pendingApprovals })"
+              />
             </router-link>
           </div>
         </template>
@@ -117,6 +126,14 @@
               <el-icon :size="16"><SwitchButton /></el-icon>
             </button>
           </div>
+
+          <div class="shortcuts-hint" :title="shortcutsHintText">
+            <kbd>Ctrl+K</kbd>
+            <span>{{ t('nav.shortcutAgents') }}</span>
+            <span class="shortcuts-hint__sep">|</span>
+            <kbd>Ctrl+N</kbd>
+            <span>{{ t('nav.shortcutNew') }}</span>
+          </div>
         </template>
 
         <template v-else>
@@ -173,10 +190,12 @@ import { useI18n } from 'vue-i18n'
 import { useThemeStore } from '@/stores/useThemeStore'
 import { version as appVersion } from '../../../package.json'
 import type { ThemeMode } from '@/stores/useThemeStore'
-import { http, settingsApi, setupApi, backstageApi } from '@/api/index'
+import { http, settingsApi, setupApi } from '@/api/index'
 import OnboardingWizard from '@/views/Onboarding/OnboardingWizard.vue'
 import DoctorDrawer from '@/views/Doctor/DoctorDrawer.vue'
 import WorkspaceSwitcher from '@/components/workspace/WorkspaceSwitcher.vue'
+import NavBadge from '@/components/common/NavBadge.vue'
+import { useNotificationCenter } from '@/composables/useNotificationCenter'
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore'
 import { applyLocale, currentLocale, type AppLocale } from '@/i18n'
 import { SwitchButton, Lock } from '@element-plus/icons-vue'
@@ -210,24 +229,12 @@ async function fetchHealthStatus() {
   }
 }
 
-// Live attention signal for the Backstage sidebar entry. Admins only —
-// non-admin users never poll the runtime endpoint and never see the dot.
-const backstageStuckCount = ref(0)
-let backstagePollTimer: ReturnType<typeof setInterval> | null = null
-
+// Sidebar attention signals — admin-only. Both `/backstage` (stuck agents)
+// and `/security` (pending approvals) read from a shared 15s poller so
+// multiple consumers don't multiply HTTP traffic.
 const isAdminRole = computed(() => (localStorage.getItem('role') || 'user') === 'admin')
-const backstageAlertActive = computed(() => isAdminRole.value && backstageStuckCount.value > 0)
-
-async function refreshBackstageBadge() {
-  if (!isAdminRole.value) return
-  try {
-    const res: any = await backstageApi.snapshot()
-    const data = res?.data ?? res
-    backstageStuckCount.value = data?.summary?.stuck ?? 0
-  } catch {
-    // Silent: stale value is preferable to a flapping indicator.
-  }
-}
+const { stuckAgents, pendingApprovals } = useNotificationCenter()
+const backstageAlertActive = computed(() => isAdminRole.value && stuckAgents.value > 0)
 
 // 移动端状态
 const isMobile = ref(false)
@@ -251,6 +258,41 @@ function handleMediumChange(e: MediaQueryListEvent | MediaQueryList) {
   }
 }
 
+type ChatShortcutAction = 'newChat' | 'selectAgent'
+
+const shortcutsHintText = computed(() =>
+  `Ctrl+K ${t('nav.shortcutAgents')} | Ctrl+N ${t('nav.shortcutNew')}`,
+)
+
+function fireChatShortcut(action: ChatShortcutAction) {
+  if (route.path === '/chat') {
+    window.dispatchEvent(new CustomEvent('mc:chat-shortcut', { detail: action }))
+  } else {
+    router.push({ path: '/chat', query: { action } })
+  }
+}
+
+function isEditableTarget(el: EventTarget | null): boolean {
+  if (!(el instanceof HTMLElement)) return false
+  if (el.isContentEditable) return true
+  const tag = el.tagName
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true
+  return false
+}
+
+function onGlobalKeydown(e: KeyboardEvent) {
+  const mod = e.metaKey || e.ctrlKey
+  if (!mod || e.altKey) return
+  const key = e.key.toLowerCase()
+  if (key !== 'k' && key !== 'n') return
+  // Ctrl+N within an editable field should keep its native behavior; Ctrl+K
+  // is rarely used by browsers (Firefox uses it for search-bar focus), but we
+  // still want to let the chat input handle native paste / undo unblocked.
+  if (key === 'n' && isEditableTarget(e.target)) return
+  e.preventDefault()
+  fireChatShortcut(key === 'k' ? 'selectAgent' : 'newChat')
+}
+
 onMounted(async () => {
   mobileQuery = window.matchMedia('(max-width: 768px)')
   handleMobileChange(mobileQuery)
@@ -259,6 +301,8 @@ onMounted(async () => {
   mediumQuery = window.matchMedia('(max-width: 1024px)')
   handleMediumChange(mediumQuery)
   mediumQuery.addEventListener('change', handleMediumChange)
+
+  window.addEventListener('keydown', onGlobalKeydown)
 
   // Check onboarding status
   if (!localStorage.getItem('mc-onboarding-done')) {
@@ -274,18 +318,14 @@ onMounted(async () => {
 
   // Fetch initial health status for sidebar indicator
   fetchHealthStatus()
-
-  // Backstage attention dot — poll every 15s for admins.
-  if (isAdminRole.value) {
-    refreshBackstageBadge()
-    backstagePollTimer = setInterval(refreshBackstageBadge, 15_000)
-  }
+  // Sidebar attention counts (backstage / security) are driven by
+  // useNotificationCenter — it polls when admins are mounted.
 })
 
 onBeforeUnmount(() => {
   mobileQuery?.removeEventListener('change', handleMobileChange)
   mediumQuery?.removeEventListener('change', handleMediumChange)
-  if (backstagePollTimer) clearInterval(backstagePollTimer)
+  window.removeEventListener('keydown', onGlobalKeydown)
 })
 
 function onNavClick() {
@@ -323,93 +363,140 @@ const localeOptions = computed<{ value: AppLocale; label: string; short: string 
   { value: 'en-US', label: t('settings.languageOptions.enUS'), short: 'EN' },
 ])
 
+// Capability-gated nav. Each item declares a capability or globalAdmin flag;
+// useWorkspaceStore.can() decides visibility from the backend access set so
+// the sidebar can't drift from the route guard or controller annotations.
+type NavItem = {
+  path: string
+  label: string
+  icon: string
+  tooltip?: string
+  requiredCapability?:
+    | 'chat'
+    | 'view:wiki'
+    | 'view:memory'
+    | 'view:dashboard'
+    | 'manage:wiki'
+    | 'manage:agents'
+    | 'manage:skills'
+    | 'manage:channels'
+    | 'manage:models'
+    | 'manage:security'
+    | 'manage:settings'
+  globalAdmin?: boolean
+}
+
+function filterNav(items: NavItem[]): NavItem[] {
+  // Default deny while access is still loading — render an empty group rather
+  // than flashing the full menu before refreshAccess() returns.
+  if (!workspaceStore.accessLoaded) return []
+  return items.filter((item) => {
+    if (item.globalAdmin) return workspaceStore.isGlobalAdmin
+    if (item.requiredCapability && !workspaceStore.can(item.requiredCapability as never)) return false
+    return true
+  })
+}
+
 const navGroups = computed(() => [
   {
     key: 'core',
     label: t('nav.core'),
-    items: [
+    items: filterNav([
       {
         path: '/dashboard',
         label: t('nav.dashboard', 'Dashboard'),
         icon: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>`,
+        requiredCapability: 'view:dashboard',
       },
       {
         path: '/chat',
         label: t('nav.chat'),
         icon: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>`,
+        requiredCapability: 'chat',
       },
       {
         path: '/agents',
         label: t('nav.agents'),
         icon: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M20 21a8 8 0 1 0-16 0"/></svg>`,
+        requiredCapability: 'manage:agents',
       },
-      ...(isAdminRole.value ? [{
+      {
         path: '/backstage',
         label: t('nav.backstage'),
         tooltip: t('nav.backstageTooltip'),
         icon: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>`,
-      }] : []),
+        globalAdmin: true,
+      },
       {
         path: '/wiki',
         label: t('nav.wiki'),
         icon: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><line x1="8" y1="7" x2="16" y2="7"/><line x1="8" y1="11" x2="14" y2="11"/></svg>`,
+        requiredCapability: 'view:wiki',
       },
       {
         path: '/memory',
         label: t('nav.memory'),
         icon: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a4 4 0 0 1 4 4v2a4 4 0 0 1-8 0V6a4 4 0 0 1 4-4z"/><path d="M16 14H8a4 4 0 0 0-4 4v2h16v-2a4 4 0 0 0-4-4z"/><line x1="12" y1="11" x2="12" y2="14"/></svg>`,
+        requiredCapability: 'view:memory',
       },
       {
         path: '/enterprise',
         label: t('nav.enterprise'),
         icon: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18"/><path d="M5 21V7l7-4 7 4v14"/><path d="M9 9h.01"/><path d="M9 12h.01"/><path d="M9 15h.01"/><path d="M9 18h.01"/><path d="M15 9h.01"/><path d="M15 12h.01"/><path d="M15 15h.01"/><path d="M15 18h.01"/></svg>`,
+        requiredCapability: 'manage:agents',
       },
-    ],
+    ] as NavItem[]),
   },
   {
     key: 'connect',
     label: t('nav.connect'),
-    items: [
+    items: filterNav([
       {
         path: '/channels',
         label: t('nav.channels'),
         icon: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 12a19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 3.6 1.18h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.91 8.73a16 16 0 0 0 6.29 6.29l1.62-1.62a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>`,
+        requiredCapability: 'manage:channels',
       },
       {
         path: '/skills',
         label: t('nav.skills'),
         icon: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>`,
+        requiredCapability: 'manage:skills',
       },
       {
         path: '/plugins',
         label: t('nav.plugins'),
         icon: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 3h-8v4h8V3z"/></svg>`,
+        requiredCapability: 'manage:settings',
       },
       // RFC-090 Phase 4: Activity 提升到顶层
       {
         path: '/activity',
         label: t('nav.activity'),
         icon: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>`,
+        requiredCapability: 'manage:security',
       },
-    ],
+    ] as NavItem[]),
   },
   {
     key: 'system',
     label: t('nav.system'),
-    items: [
+    items: filterNav([
       {
         path: '/settings/models',
         label: t('nav.settings'),
         icon: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/></svg>`,
+        requiredCapability: 'manage:models',
       },
       {
         path: '/security',
         label: t('nav.security'),
         icon: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>`,
+        requiredCapability: 'manage:security',
       },
-    ],
+    ] as NavItem[]),
   },
-])
+].filter((group) => group.items.length > 0))
 
 function toggleSidebar() {
   sidebarCollapsed.value = !sidebarCollapsed.value
@@ -673,44 +760,6 @@ watch(() => workspaceStore.currentWorkspaceId, () => {
 .nav-icon { display: flex; align-items: center; flex-shrink: 0; }
 .nav-label { overflow: hidden; text-overflow: ellipsis; }
 
-/* Backstage attention dot — appears only when stuck > 0 for an admin. */
-.nav-attention-dot {
-  position: absolute;
-  right: 14px;
-  top: 50%;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: hsl(20, 80%, 55%);
-  transform: translateY(-50%);
-  box-shadow: 0 0 0 0 hsla(20, 80%, 55%, 0.6);
-  animation: nav-attention-pulse 2.4s ease-in-out infinite;
-}
-
-.nav-item.has-attention {
-  color: hsl(20, 75%, 50%);
-}
-
-@keyframes nav-attention-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 hsla(20, 80%, 55%, 0.55); transform: translateY(-50%) scale(1); }
-  50%      { box-shadow: 0 0 0 6px hsla(20, 80%, 55%, 0);    transform: translateY(-50%) scale(1.15); }
-}
-
-.sidebar.collapsed .nav-attention-dot {
-  right: 8px;
-  top: 8px;
-  transform: none;
-}
-
-.sidebar.collapsed .nav-attention-dot {
-  animation-name: nav-attention-pulse-collapsed;
-}
-
-@keyframes nav-attention-pulse-collapsed {
-  0%, 100% { box-shadow: 0 0 0 0 hsla(20, 80%, 55%, 0.55); transform: scale(1); }
-  50%      { box-shadow: 0 0 0 5px hsla(20, 80%, 55%, 0);    transform: scale(1.2); }
-}
-
 /* 底部 */
 .sidebar-footer {
   border-top: 1px solid var(--mc-border-light);
@@ -755,6 +804,36 @@ watch(() => workspaceStore.currentWorkspaceId, () => {
 }
 
 .utility-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.12em; color: var(--mc-text-tertiary); margin: 0 0 8px; padding-left: 2px; }
+
+.shortcuts-hint {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  margin-top: 8px;
+  padding: 4px 6px;
+  font-size: 10px;
+  color: var(--mc-text-tertiary);
+  letter-spacing: 0.02em;
+  user-select: none;
+}
+.shortcuts-hint kbd {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 5px;
+  border-radius: 4px;
+  border: 1px solid var(--mc-border-light);
+  background: var(--mc-bg-muted);
+  color: var(--mc-text-secondary);
+  font-family: inherit;
+  font-size: 9.5px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+.shortcuts-hint__sep {
+  opacity: 0.45;
+}
 
 /* 主题切换 */
 .theme-toggle-row {

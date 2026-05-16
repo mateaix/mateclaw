@@ -1000,10 +1000,10 @@ public class AgentGraphBuilder {
         }
         String basePrompt = basePromptBuilder.toString();
 
-        // 使用 skill runtime 构建技能增强（per-agent 绑定过滤）
+        // 使用 skill runtime 构建技能增强（per-agent 绑定过滤 + 工作区隔离）
         Set<Long> boundSkillIds = agentBindingService.getBoundSkillIds(entity.getId());
         String skillEnhancement = skillRuntimeService.buildSkillPromptEnhancement(
-                boundSkillIds, boundTools, maxInputTokens, entity.getId());
+                boundSkillIds, boundTools, maxInputTokens, entity.getId(), entity.getWorkspaceId());
 
         // 工具调用指导
         String toolGuidance = """
@@ -1063,6 +1063,7 @@ public class AgentGraphBuilder {
                 Do not assume you cannot access local resources - try calling the appropriate tool first.
                 If a tool requires approval due to security policies, the system will prompt the user for confirmation.
                 Only state you cannot access something if no relevant tool is available.
+                Do not claim a tool-generated file, URL, UUID, path, task id, or success result before the corresponding tool call has completed. If a tool is needed, call the tool first, then report only the actual returned result.
 
                 ## Multi-Part Question Guidelines
                 When the user asks multiple questions or requests multiple tasks in a single message:
