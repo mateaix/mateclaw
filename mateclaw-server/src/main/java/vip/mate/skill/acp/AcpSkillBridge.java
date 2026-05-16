@@ -329,6 +329,7 @@ public class AcpSkillBridge {
         s.setSecurityScanStatus("PASSED"); // ACP endpoints are user-configured external CLIs, not skill scripts
         s.setConfigJson(buildConfigJson(ep));
         s.setManifestJson(serializeManifest(buildManifest(ep)));
+        s.setSkillContent(buildSkillContent(ep));
         return s;
     }
 
@@ -363,7 +364,7 @@ public class AcpSkillBridge {
                 .id(virtualIdFor(ep))
                 .name(slugForEndpoint(ep))
                 .description(buildDescription(ep))
-                .content("") // no SKILL.md
+                .content(buildSkillContent(ep))
                 .source("acp")
                 .skillDir(null)
                 .configuredSkillDir(null)
@@ -440,6 +441,72 @@ public class AcpSkillBridge {
                         .build())
                 .extras(Map.of("acpEndpointId", ep.getId()))
                 .build();
+    }
+
+    /**
+     * Synthesize a SKILL.md body for an ACP-derived virtual skill.
+     *
+     * <p>ACP endpoints carry no hand-authored SKILL.md — they wrap an
+     * external coding-agent CLI rather than a skill package. Without a
+     * synthesized body, an agent that calls
+     * {@code readSkillFile(skillName=..., filePath="SKILL.md")} gets
+     * nothing beyond the one-line description and cannot tell how to
+     * drive the endpoint.
+     *
+     * <p>This builds a markdown brief from the live endpoint row: what
+     * the endpoint is, the single wrapper tool it exposes, that tool's
+     * arguments, and usage notes — so the LLM can call
+     * {@code acp_<slug>_prompt} correctly on the first attempt.
+     */
+    private String buildSkillContent(AcpEndpointEntity ep) {
+        String slug = slugForEndpoint(ep);
+        String toolName = "acp_" + slug + "_prompt";
+        StringBuilder sb = new StringBuilder();
+
+        sb.append("# ").append(displayName(ep)).append("\n\n");
+        sb.append(buildDescription(ep)).append("\n\n");
+
+        sb.append("## Overview\n\n");
+        sb.append("This skill delegates work to the **").append(ep.getName())
+                .append("** ACP (Agent Communication Protocol) coding agent. ")
+                .append("The agent runs as an external CLI process spawned on demand: ")
+                .append("send it a single natural-language instruction and it returns ")
+                .append("its final reply.\n\n");
+
+        sb.append("## Tools\n\n");
+        sb.append("### `").append(toolName).append("`\n\n");
+        sb.append("Delegate a prompt to the '").append(ep.getName())
+                .append("' coding agent and receive its final reply.\n\n");
+        sb.append("Parameters:\n\n");
+        sb.append("- `prompt` (string, required) — the instruction or question to send.\n");
+        sb.append("- `cwd` (string, optional) — working directory; defaults to the ")
+                .append("endpoint's workspace base path when omitted.\n\n");
+
+        sb.append("## Usage notes\n\n");
+        sb.append("- Call `").append(toolName).append("` with one self-contained instruction. ")
+                .append("The endpoint runs autonomously and returns only its final answer, ")
+                .append("not intermediate steps.\n");
+        sb.append("- Omit `cwd` unless the task needs a specific directory — the server ")
+                .append("resolves the endpoint's bound workspace path.\n");
+        if (Boolean.TRUE.equals(ep.getTrusted())) {
+            sb.append("- This endpoint is trusted: the agent's own tool calls are accepted ")
+                    .append("without re-prompting for approval.\n");
+        } else {
+            sb.append("- This endpoint is not trusted: the agent's tool calls may require ")
+                    .append("human approval before they run.\n");
+        }
+        String status = nullSafe(ep.getLastStatus());
+        if ("OK".equalsIgnoreCase(status)) {
+            sb.append("- Last connection test: OK.\n");
+        } else if ("ERROR".equalsIgnoreCase(status)
+                || (ep.getLastError() != null && !ep.getLastError().isBlank())) {
+            sb.append("- Last connection test failed: ").append(nullSafe(ep.getLastError()))
+                    .append(". The CLI may not be installed or reachable.\n");
+        } else {
+            sb.append("- Not yet tested — the CLI is spawned on the first call.\n");
+        }
+
+        return sb.toString();
     }
 
     // ==================== Helpers ====================
