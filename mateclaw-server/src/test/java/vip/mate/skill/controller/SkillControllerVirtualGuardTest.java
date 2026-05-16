@@ -2,19 +2,25 @@ package vip.mate.skill.controller;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import vip.mate.common.result.R;
 import vip.mate.exception.MateClawException;
 import vip.mate.skill.acp.AcpSkillBridge;
 import vip.mate.skill.mcp.McpSkillBridge;
 import vip.mate.skill.model.SkillEntity;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 /**
- * Mutation paths refuse virtual MCP/ACP skill ids upfront so the user
- * gets a clear redirect to the connection page instead of the previous
- * "技能不存在" 500 surfacing from a doomed mate_skill lookup.
+ * The edit / delete mutation paths refuse virtual MCP/ACP skill ids upfront
+ * so the user gets a clear redirect to the connection page instead of the
+ * old "技能不存在" 500 from a doomed mate_skill lookup. Toggle is the one
+ * exception: a virtual MCP skill mirrors an MCP server, so toggling it
+ * forwards to that server's enable/disable.
  */
 class SkillControllerVirtualGuardTest {
 
@@ -45,12 +51,40 @@ class SkillControllerVirtualGuardTest {
     }
 
     @Test
-    @DisplayName("delete / toggle / rescan all reject virtual ids the same way")
+    @DisplayName("delete / rescan still reject virtual ids the same way")
     void mutationFamilyAllGuarded() {
         long virtualId = McpSkillBridge.VIRTUAL_ID_BASE + 42L;
         assertThrows(MateClawException.class, () -> controller.delete(virtualId, null));
-        assertThrows(MateClawException.class, () -> controller.toggle(virtualId, true, null));
         assertThrows(MateClawException.class, () -> controller.rescan(virtualId, null));
+    }
+
+    @Test
+    @DisplayName("toggle on a virtual MCP skill forwards to the bridge instead of rejecting")
+    void toggleForwardsVirtualMcpToBridge() {
+        McpSkillBridge bridge = mock(McpSkillBridge.class);
+        SkillController c = new SkillController(
+                null, null, null, null, null, null, null, null, null, null, null,
+                bridge, null);
+        long virtualMcpId = McpSkillBridge.VIRTUAL_ID_BASE + 42L;
+        SkillEntity toggled = new SkillEntity();
+        toggled.setName("github");
+        toggled.setEnabled(false);
+        when(bridge.toggleVirtualSkill(virtualMcpId, false)).thenReturn(toggled);
+
+        R<SkillEntity> resp = c.toggle(virtualMcpId, false, null);
+
+        verify(bridge).toggleVirtualSkill(virtualMcpId, false);
+        assertEquals("github", resp.getData().getName());
+    }
+
+    @Test
+    @DisplayName("toggle on a virtual ACP skill is still rejected — no MCP-server mapping")
+    void toggleRejectsVirtualAcp() {
+        long virtualAcpId = AcpSkillBridge.VIRTUAL_ID_BASE + 7L;
+        assertTrue(AcpSkillBridge.isVirtualAcpSkillId(virtualAcpId),
+                "test fixture id is not in ACP virtual range; ACP base layout changed?");
+        assertThrows(MateClawException.class,
+                () -> controller.toggle(virtualAcpId, true, null));
     }
 
     @Test

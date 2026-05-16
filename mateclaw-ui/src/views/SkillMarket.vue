@@ -98,12 +98,16 @@
                 <!-- RFC-042 §2.2.4 — slug under display name when they differ -->
                 <div v-if="hasI18nName(skill)" class="skill-slug">{{ skill.name }}</div>
               </div>
-              <!-- Issue #83: virtual MCP/ACP skills are view-only mirrors of the
-                   underlying MCP/ACP server row, with no mate_skill row to flip.
-                   Hiding the toggle here matches how the configure / delete
-                   buttons are gated below; users enable/disable from the
-                   Settings ▸ MCP connection page instead. -->
-              <label v-if="!isSkillRowVirtual(skill)" class="toggle-switch" @click.stop>
+              <!-- MCP-derived skills accept the enable/disable toggle — it
+                   forwards to the underlying MCP server connection, so the
+                   Skills page and Settings ▸ MCP Connections stay in sync.
+                   ACP-derived skills have no such mapping and stay read-only
+                   (padlock); configure / delete are gated for both below. -->
+              <label
+                v-if="!isSkillRowVirtual(skill) || isMcpSkillRow(skill)"
+                class="toggle-switch"
+                @click.stop
+              >
                 <input type="checkbox" :checked="skill.enabled" @change="toggleSkill(skill)" />
                 <span class="toggle-slider"></span>
               </label>
@@ -750,17 +754,22 @@ const editBodyForm = ref<{ skillContent: string; sourceCode: string }>({
  *  at creation time. Everything else is filled in via the drawer. */
 const newForm = ref<{ name: string; description: string; icon: string }>({ name: '', description: '', icon: '' })
 
-/** Virtual MCP-derived skills synthesize their id from
- *  {@link McpSkillBridge#VIRTUAL_ID_BASE} (= 9e18). The DB update path
- *  doesn't know about them, so the drawer hides the Edit affordance.
- *  Using string-length is robust against JS number precision loss past 2^53. */
+/** Virtual MCP/ACP-derived skills are read-only mirrors of a connection
+ *  row — there is no mate_skill row to edit or delete, so the drawer hides
+ *  the Edit affordance. The bridge encodes their ids with the sign bit set,
+ *  so a virtual id is always negative while real Snowflake ids are always
+ *  positive. Checking the leading '-' is precision-safe — no Number()
+ *  round-trip that would corrupt ids past 2^53. */
 function isVirtualSkillId(id: unknown): boolean {
   if (id === null || id === undefined) return false
-  const idStr = String(id)
-  return idStr.length >= 19 && idStr.startsWith('9')
+  return String(id).trim().startsWith('-')
 }
 /** Per-row check used by the card-level configure / delete buttons. */
 const isSkillRowVirtual = (skill: { id?: unknown } | null | undefined) => isVirtualSkillId(skill?.id)
+/** MCP-derived rows stay read-only for edit/delete, but their enable/disable
+ *  toggle is honored — it forwards to the underlying MCP server connection. */
+const isMcpSkillRow = (skill: { skillType?: unknown } | null | undefined) =>
+  skill?.skillType === 'mcp'
 const isVirtualSkill = computed(() => isVirtualSkillId(detailSkill.value?.id))
 const isBuiltinDetail = computed(() => detailSkill.value?.skillType === 'builtin' || !!detailSkill.value?.builtin)
 
@@ -1212,11 +1221,11 @@ async function deleteSkill(idOrSkill: string | number | Skill) {
 }
 
 async function toggleSkill(skill: Skill) {
-  // Issue #83: short-circuit if a programmatic caller reaches this for a
-  // virtual skill (the UI hides the toggle, but defense-in-depth keeps the
-  // toast accurate when the backend would otherwise return err.skill.not_found
-  // on builds that pre-date the rejectVirtualSkillMutation guard).
-  if (isSkillRowVirtual(skill)) {
+  // MCP virtual skills support enable/disable — the backend forwards it to
+  // the underlying MCP server. ACP virtual skills stay read-only: the UI
+  // hides their toggle, and this short-circuit keeps the toast accurate if
+  // a programmatic caller still reaches here.
+  if (isSkillRowVirtual(skill) && !isMcpSkillRow(skill)) {
     mcToast.warning(t('skills.virtualReadonlyHint'))
     return
   }

@@ -112,23 +112,45 @@ public class McpSkillBridge {
     }
 
     /**
-     * Snapshot every enabled MCP server as a virtual {@link SkillEntity}.
-     * Used by the Skills list endpoint; rows are non-persistent and
-     * regenerated on each call.
+     * Snapshot every MCP server as a virtual {@link SkillEntity}. Used by
+     * the Skills list endpoint; rows are non-persistent and regenerated on
+     * each call. Disabled servers are included so a skill the user toggled
+     * off still shows on the Skills page (as a disabled card) and can be
+     * toggled back on — {@code enabled} mirrors the server's flag.
      */
     public List<SkillEntity> listMcpDerivedSkillEntities() {
-        return listEnabledServers().stream().map(this::serverToEntity).toList();
+        return listAllServers().stream().map(this::serverToEntity).toList();
     }
 
     /**
-     * Snapshot every enabled MCP server as a virtual {@link ResolvedSkill}
-     * with synthesized manifest, ready to be merged into the runtime
-     * status feed. Status reflects connection health: OK → READY default
-     * feature; ERROR / disconnected → SETUP_NEEDED with a diagnostic
-     * missing-dependency entry.
+     * Snapshot every MCP server as a virtual {@link ResolvedSkill} with
+     * synthesized manifest, ready to be merged into the runtime status
+     * feed. Status reflects connection health: OK → READY default feature;
+     * ERROR / disconnected → SETUP_NEEDED with a diagnostic missing-dependency
+     * entry. Disabled servers are included for the admin status view; the
+     * active-skill gate ({@code SkillRuntimeService.passesActiveGate}) keeps
+     * them out of the agent runtime.
      */
     public List<ResolvedSkill> listMcpDerivedResolvedSkills() {
-        return listEnabledServers().stream().map(this::serverToResolved).toList();
+        return listAllServers().stream().map(this::serverToResolved).toList();
+    }
+
+    /**
+     * Enable or disable the MCP server behind a virtual MCP skill.
+     *
+     * <p>A virtual MCP skill has no {@code mate_skill} row — its enabled
+     * state is the underlying MCP server's {@code enabled} flag. Toggling
+     * the skill therefore toggles the server, which also connects or
+     * disconnects it. Returns the rebuilt virtual {@link SkillEntity}
+     * reflecting the new state.
+     */
+    public SkillEntity toggleVirtualSkill(Long virtualId, boolean enabled) {
+        Long serverId = extractMcpServerId(virtualId);
+        if (serverId == null) {
+            throw new IllegalArgumentException("Not a virtual MCP skill id: " + virtualId);
+        }
+        McpServerEntity updated = mcpServerService.toggle(serverId, enabled);
+        return serverToEntity(updated);
     }
 
     /**
@@ -147,16 +169,17 @@ public class McpSkillBridge {
         }
     }
 
-    private List<McpServerEntity> listEnabledServers() {
+    private List<McpServerEntity> listAllServers() {
         try {
-            return mcpServerService.listEnabled();
+            return mcpServerService.listAll();
         } catch (Exception e) {
-            log.warn("MCP bridge could not list enabled servers: {}", e.getMessage());
+            log.warn("MCP bridge could not list servers: {}", e.getMessage());
             return List.of();
         }
     }
 
     private SkillEntity serverToEntity(McpServerEntity server) {
+        List<McpToolDescriptor> tools = readToolDescriptors(server);
         SkillEntity s = new SkillEntity();
         s.setId(virtualIdFor(server));
         s.setName(slugForServer(server));
@@ -171,13 +194,15 @@ public class McpSkillBridge {
         s.setBuiltin(false);
         s.setTags("mcp");
         s.setSecurityScanStatus("PASSED"); // MCP servers don't go through SkillSecurityService
+        s.setSkillContent(buildSkillContent(server, tools));
         s.setConfigJson(buildConfigJson(server));
-        s.setManifestJson(serializeManifest(buildManifestFrom(server, readToolRawNames(server))));
+        s.setManifestJson(serializeManifest(buildManifestFrom(server, toRawNames(tools))));
         return s;
     }
 
     private ResolvedSkill serverToResolved(McpServerEntity server) {
-        List<String> rawNames = readToolRawNames(server);
+        List<McpToolDescriptor> tools = readToolDescriptors(server);
+        List<String> rawNames = toRawNames(tools);
         Map<String, String> toolDisplayNames = new LinkedHashMap<>();
         for (String raw : rawNames) {
             String prefixed = McpToolNameResolver.prefixedName(server.getId(), raw);
@@ -203,7 +228,7 @@ public class McpSkillBridge {
                 .id(virtualIdFor(server))
                 .name(slugForServer(server))
                 .description(buildDescription(server))
-                .content("") // no SKILL.md
+                .content(buildSkillContent(server, tools))
                 .source("mcp")
                 .skillDir(null)
                 .configuredSkillDir(null)
@@ -293,24 +318,27 @@ public class McpSkillBridge {
     }
 
     /**
-     * Resolve the raw tool name list for a server with cache-first / live-fallback
-     * semantics. Returns an empty list (never null) so the manifest builder
-     * stays simple.
+     * Resolve the tool list for a server with cache-first / live-fallback
+     * semantics. Each entry carries the raw name and (when available) the
+     * upstream description. Returns an empty list (never null) so callers
+     * stay simple.
      */
-    private List<String> readToolRawNames(McpServerEntity server) {
-        List<String> fromCache = parseCachedToolNames(server.getToolsCacheJson());
+    private List<McpToolDescriptor> readToolDescriptors(McpServerEntity server) {
+        List<McpToolDescriptor> fromCache = parseCachedToolDescriptors(server.getToolsCacheJson());
         if (!fromCache.isEmpty()) {
             return fromCache;
         }
         try {
             List<McpSchema.Tool> discovered = mcpClientManager.getServerTools(server.getId());
-            List<String> names = new ArrayList<>(discovered.size());
+            List<McpToolDescriptor> out = new ArrayList<>(discovered.size());
             for (McpSchema.Tool t : discovered) {
                 if (t == null) continue;
                 String n = t.name();
-                if (n != null && !n.isBlank()) names.add(n);
+                if (n != null && !n.isBlank()) {
+                    out.add(new McpToolDescriptor(n, t.description()));
+                }
             }
-            return names;
+            return out;
         } catch (Exception e) {
             log.debug("MCP bridge manifest build: getServerTools({}) failed: {}",
                     server.getId(), e.getMessage());
@@ -320,22 +348,25 @@ public class McpSkillBridge {
 
     /**
      * Parse the {@code tools_cache_json} column written by
-     * {@code McpServerService} after each successful connect. Returns an
-     * empty list if the column is null/blank/malformed — the bridge is
-     * required to keep working when the cache hasn't been populated yet
-     * (e.g. first-ever connect just succeeded a moment ago).
+     * {@code McpServerService} after each successful connect — an array of
+     * {@code {name, description, inputSchema}} entries. Returns an empty
+     * list if the column is null/blank/malformed — the bridge is required
+     * to keep working when the cache hasn't been populated yet (e.g.
+     * first-ever connect just succeeded a moment ago).
      */
-    private List<String> parseCachedToolNames(String json) {
+    private List<McpToolDescriptor> parseCachedToolDescriptors(String json) {
         if (json == null || json.isBlank()) {
             return List.of();
         }
         try {
             cn.hutool.json.JSONArray arr = cn.hutool.json.JSONUtil.parseArray(json);
-            List<String> out = new ArrayList<>(arr.size());
+            List<McpToolDescriptor> out = new ArrayList<>(arr.size());
             for (Object obj : arr) {
                 if (!(obj instanceof cn.hutool.json.JSONObject jo)) continue;
                 String name = jo.getStr("name");
-                if (name != null && !name.isBlank()) out.add(name);
+                if (name != null && !name.isBlank()) {
+                    out.add(new McpToolDescriptor(name, jo.getStr("description")));
+                }
             }
             return out;
         } catch (Exception e) {
@@ -343,6 +374,80 @@ public class McpSkillBridge {
             return List.of();
         }
     }
+
+    private static List<String> toRawNames(List<McpToolDescriptor> tools) {
+        List<String> names = new ArrayList<>(tools.size());
+        for (McpToolDescriptor t : tools) {
+            names.add(t.name());
+        }
+        return names;
+    }
+
+    /**
+     * Synthesize a SKILL.md body for an MCP-derived virtual skill.
+     *
+     * <p>Persisted and uploaded skills ship a hand-written SKILL.md that the
+     * agent serves on demand through {@code readSkillFile}; it tells the
+     * model what the skill is for and how to drive it. An MCP-derived skill
+     * has no such file — the upstream server only exposes a tool list — so
+     * without a synthesized body {@code readSkillFile} returns "content not
+     * available" and the model has nothing beyond the one-line description
+     * to reason about.
+     *
+     * <p>This builds an equivalent body from the live tool snapshot: a
+     * one-line summary, the tool catalog with per-tool descriptions, and a
+     * short usage note. Regenerated on every list call, so it tracks the
+     * upstream tool set with no persistence step.
+     */
+    private String buildSkillContent(McpServerEntity server, List<McpToolDescriptor> tools) {
+        String displayName = displayName(server);
+        StringBuilder md = new StringBuilder();
+        md.append("# ").append(displayName).append("\n\n");
+        md.append(buildDescription(server)).append("\n\n");
+        md.append("This capability is provided by the MCP server **").append(displayName).append("**");
+        String transport = nullSafe(server.getTransport());
+        if (!transport.isBlank()) {
+            md.append(" (").append(transport).append(" transport)");
+        }
+        md.append(". Its tools are available to you as ordinary function calls — ")
+                .append("invoke them directly by name; no shell or scripts are involved.\n\n");
+
+        md.append("## Available Tools\n\n");
+        if (tools.isEmpty()) {
+            md.append("The tool list is not available yet. The MCP server may be ")
+                    .append("disconnected or still starting up — check its status in ")
+                    .append("Settings ▸ MCP Connections.\n");
+            return md.toString();
+        }
+        md.append("This server exposes ").append(tools.size())
+                .append(tools.size() == 1 ? " tool:\n\n" : " tools:\n\n");
+        for (McpToolDescriptor t : tools) {
+            md.append("- **").append(t.name()).append("**");
+            String desc = oneLine(t.description());
+            if (!desc.isBlank()) {
+                md.append(" — ").append(desc);
+            }
+            md.append("\n");
+        }
+        md.append("\n## Usage Notes\n\n");
+        md.append("- These tools appear in your tool list under `mcp_`-prefixed names; ")
+                .append("pick whichever one matches the user's request.\n");
+        md.append("- If a call fails with a connection error, the MCP server is likely ")
+                .append("disconnected — it can be reconnected in Settings ▸ MCP Connections.\n");
+        return md.toString();
+    }
+
+    /** Collapse whitespace and clamp a tool description to a prompt-friendly length. */
+    private static String oneLine(String s) {
+        if (s == null) {
+            return "";
+        }
+        String collapsed = s.replaceAll("\\s+", " ").trim();
+        return collapsed.length() > 200 ? collapsed.substring(0, 200) + "…" : collapsed;
+    }
+
+    /** Minimal MCP tool projection: just what the manifest and SKILL.md body need. */
+    private record McpToolDescriptor(String name, String description) {}
 
     private String slugify(String raw) {
         if (raw == null) return "";
