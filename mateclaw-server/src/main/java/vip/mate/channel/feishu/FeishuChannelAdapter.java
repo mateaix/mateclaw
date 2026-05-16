@@ -221,6 +221,15 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter {
                         }
                     }
                 })
+                // Silently ignore message reaction events to avoid HandlerNotFoundException
+                .onP2MessageReactionCreatedV1(new ImService.P2MessageReactionCreatedV1Handler() {
+                    @Override
+                    public void handle(com.lark.oapi.service.im.v1.model.P2MessageReactionCreatedV1 event) {}
+                })
+                .onP2MessageReactionDeletedV1(new ImService.P2MessageReactionDeletedV1Handler() {
+                    @Override
+                    public void handle(com.lark.oapi.service.im.v1.model.P2MessageReactionDeletedV1 event) {}
+                })
                 .build();
 
         return new com.lark.oapi.ws.Client.Builder(appId, appSecret)
