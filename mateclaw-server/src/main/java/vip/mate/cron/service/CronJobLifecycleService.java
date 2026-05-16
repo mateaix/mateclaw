@@ -168,11 +168,16 @@ public class CronJobLifecycleService {
      * {@code @TransactionalEventListener(AFTER_COMMIT)} listeners only run
      * once this method's tx commits, so cross-connection reads in the
      * delivery / memory pipelines always see the final state.
+     *
+     * @param silent {@code true} when the agent returned the no-op sentinel —
+     *               the run succeeded but produced nothing to report. A short
+     *               marker message is persisted for conversation coherence,
+     *               and both the delivery and memory pipelines are skipped.
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void finishRunAndPublish(CronJobEntity job, CronJobRunEntity run,
                                     String userMessage, AssistantMessage result,
-                                    String conversationId) {
+                                    String conversationId, boolean silent) {
         String convId = conversationId != null ? conversationId : run.getConversationId();
         String text = result != null && result.getText() != null ? result.getText() : "";
 
@@ -180,6 +185,17 @@ public class CronJobLifecycleService {
                 .eq(CronJobRunEntity::getId, run.getId())
                 .set(CronJobRunEntity::getStatus, "succeeded")
                 .set(CronJobRunEntity::getFinishedAt, LocalDateTime.now()));
+
+        if (silent) {
+            // No-op run: persist a short marker so the tasks_<wsId>
+            // conversation keeps a coherent user -> assistant pairing, then
+            // return without delivery or memory extraction — there is no
+            // real content to deliver or to learn from.
+            String marker = i18n != null ? i18n.msg("cron.run.silent")
+                    : "（本次定时任务无新内容，已跳过）";
+            conversationService.saveMessage(convId, "assistant", marker);
+            return;
+        }
 
         conversationService.saveMessage(convId, "assistant", text);
 
