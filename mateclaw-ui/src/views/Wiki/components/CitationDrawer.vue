@@ -36,8 +36,8 @@ const { t } = useI18n()
 
 const props = defineProps<{
   modelValue: boolean
-  pageId: number
-  kbId: number
+  pageId: number | string
+  kbId: number | string
 }>()
 
 defineEmits<{

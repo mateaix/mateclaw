@@ -35,7 +35,7 @@ import { wikiApi } from '@/api/index'
 const { t } = useI18n()
 
 const props = defineProps<{
-  kbId: number
+  kbId: number | string
   slug: string
 }>()
 

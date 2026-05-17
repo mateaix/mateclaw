@@ -734,11 +734,11 @@ export const wikiApi = {
   getProcessingStatus: (kbId: number) => http.get(`/wiki/knowledge-bases/${kbId}/processing-status`),
 
   // RFC-029: Relations
-  getRelatedPages: (kbId: number, slug: string, topK = 5) =>
+  getRelatedPages: (kbId: number | string, slug: string, topK = 5) =>
     http.get(`/wiki/kb/${kbId}/pages/${encodeURIComponent(slug)}/related`, { params: { topK } }),
   explainRelation: (kbId: number, slugA: string, slugB: string) =>
     http.get(`/wiki/kb/${kbId}/pages/${encodeURIComponent(slugA)}/relation/${encodeURIComponent(slugB)}`),
-  getPageCitations: (kbId: number, pageId: number) =>
+  getPageCitations: (kbId: number | string, pageId: number | string) =>
     http.get(`/wiki/kb/${kbId}/pages/${pageId}/citations`),
 
   // RFC-030: Jobs
