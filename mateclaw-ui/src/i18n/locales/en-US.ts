@@ -42,6 +42,7 @@ export default {
     collapse: 'Collapse',
     enable: 'Enable',
     disable: 'Disable',
+    more: 'More',
     pager: {
       total: '{n} total',
       perPage: '{n}/page',

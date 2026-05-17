@@ -42,6 +42,7 @@ export default {
     disable: '停用',
     refresh: '刷新',
     collapse: '收起',
+    more: '更多',
     pager: {
       total: '共 {n} 条',
       perPage: '{n} 条/页',
