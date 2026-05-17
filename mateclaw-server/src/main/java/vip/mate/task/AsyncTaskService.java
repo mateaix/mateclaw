@@ -133,6 +133,130 @@ public class AsyncTaskService implements ApplicationRunner {
         return entity;
     }
 
+    // ==================== One-shot Callable submission ====================
+
+    /**
+     * Submit a one-shot {@link Callable} that runs on this service's
+     * {@code pollExecutor} and persists its outcome through the standard
+     * {@code mate_async_task} lifecycle.
+     * <p>
+     * This is the local-work counterpart to {@link #startPolling}: instead of
+     * polling an external provider, the worker runs {@code work.call()} in
+     * the shared executor, writes the return value to {@code resultJson} (or
+     * the exception message to {@code errorMessage}), and registers itself in
+     * the same {@code activePolls} / {@code pollTaskToConv} bookkeeping so
+     * {@link #onConversationDeleted} can cancel both kinds uniformly.
+     * <p>
+     * Race closure: the worker is scheduled at 0 ms but blocks on an internal
+     * {@code CountDownLatch} until the calling thread has finished
+     * registering both bookkeeping entries. Without this, the executor could
+     * dequeue the worker, run its {@code finally} cleanup, and return — all
+     * before {@code activePolls.put} runs on the calling thread — leaving a
+     * ghost entry no later event drains.
+     * <p>
+     * Cancellation: while {@code work.call()} runs the worker has no
+     * cooperative cancel signal beyond {@link #isConversationCanceled}; it
+     * checks once before invoking the body and once after, so a parent
+     * conversation deleted mid-run never lands as {@code succeeded}.
+     * {@link #onConversationDeleted} additionally writes {@code failed}
+     * synchronously for any non-terminal {@code agent_delegate} task so the
+     * DB row never lingers in {@code running} after parent deletion.
+     *
+     * @param taskType        Discriminator written to {@code task_type}
+     *                        (e.g. {@code "agent_delegate"}). Listeners
+     *                        and the conversation-deleted DB write-back gate
+     *                        on this value.
+     * @param conversationId  Parent conversation ID. Written to
+     *                        {@code conversation_id} so deleting the parent
+     *                        conversation cascade-cancels the worker. Any
+     *                        child / detached identifiers belong in
+     *                        {@code requestJson}, not here.
+     * @param messageId       Optional parent message ID.
+     * @param requestJson     Caller-serialized request payload.
+     * @param createdBy       Audit attribution; counts toward
+     *                        {@code MAX_ACTIVE_TASKS_PER_USER}.
+     * @param work            Body whose return value is persisted as
+     *                        {@code resultJson}. A thrown exception lands as
+     *                        {@code status=failed} with the exception
+     *                        message recorded.
+     * @return the created task entity (status = pending at return time).
+     */
+    public AsyncTaskEntity submitOneShot(String taskType, String conversationId,
+                                          Long messageId, String requestJson,
+                                          String createdBy, Callable<String> work) {
+        AsyncTaskEntity entity = createTask(taskType, conversationId, messageId,
+                "internal", null, requestJson, createdBy);
+        final String taskId = entity.getTaskId();
+        updateStatus(taskId, "running", 0, null, null);
+
+        // schedule(0)-vs-put race closure: see method javadoc.
+        CountDownLatch enrolled = new CountDownLatch(1);
+        ScheduledFuture<?> future = pollExecutor.schedule(() -> {
+            try {
+                try {
+                    enrolled.await();
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    updateStatus(taskId, "failed", null, null, "worker interrupted before start");
+                    return;
+                }
+                // Pre-call cancel check: parent conversation may have been
+                // deleted between submitOneShot returning and the worker
+                // being dequeued.
+                if (isConversationCanceled(conversationId)) {
+                    updateStatus(taskId, "failed", null, null, "conversation deleted before start");
+                    return;
+                }
+                String result;
+                try {
+                    result = work.call();
+                } catch (Exception e) {
+                    log.warn("[AsyncTask] One-shot task {} failed: {}", taskId, e.getMessage());
+                    updateStatus(taskId, "failed", null, null, e.getMessage());
+                    return;
+                }
+                // Post-call cancel check: parent may have been deleted while
+                // work was running; avoid resurrecting a succeeded row for a
+                // conversation whose DB cascade already wiped it.
+                if (isConversationCanceled(conversationId)) {
+                    updateStatus(taskId, "failed", null, null, "conversation deleted during execution");
+                } else {
+                    updateStatus(taskId, "succeeded", 100, result, null);
+                }
+            } finally {
+                activePolls.remove(taskId);
+                pollTaskToConv.remove(taskId);
+                // Generic terminal event so SSE listeners (parent
+                // conversation of an async delegation, UI badges, …) can
+                // react without polling the DB. Re-fetch so the event
+                // payload reflects the row we just wrote. Wrapped in a
+                // try-catch because a broadcast failure on a stale
+                // conversation stream must not mask the task outcome.
+                try {
+                    AsyncTaskEntity finalEntity = findEntityByTaskId(taskId);
+                    if (finalEntity != null) {
+                        boolean success = "succeeded".equals(finalEntity.getStatus());
+                        broadcastTaskEventWithData(finalEntity, "async_task_completed",
+                                success, java.util.Map.of(),
+                                success ? null : finalEntity.getErrorMessage());
+                    }
+                } catch (Exception broadcastErr) {
+                    log.debug("[AsyncTask] Completion broadcast failed for task {}: {}",
+                            taskId, broadcastErr.getMessage());
+                }
+            }
+        }, 0, TimeUnit.MILLISECONDS);
+
+        activePolls.put(taskId, future);
+        if (conversationId != null) {
+            pollTaskToConv.put(taskId, conversationId);
+        }
+        enrolled.countDown();
+        log.info("[AsyncTask] Submitted one-shot task {} (type={}, conv={})",
+                taskId, taskType, conversationId);
+        return entity;
+    }
+
     // ==================== 轮询管理 ====================
 
     /**
@@ -145,7 +269,7 @@ public class AsyncTaskService implements ApplicationRunner {
     public void startPolling(String taskId,
                               Function<String, TaskPollResult> statusChecker,
                               BiConsumer<AsyncTaskEntity, TaskPollResult> onComplete) {
-        AsyncTaskEntity task = findByTaskId(taskId);
+        AsyncTaskEntity task = findEntityByTaskId(taskId);
         if (task == null) {
             log.warn("[AsyncTask] Cannot start polling: task {} not found", taskId);
             return;
@@ -190,7 +314,7 @@ public class AsyncTaskService implements ApplicationRunner {
                         updateStatus(taskId, "failed", null, null, result.errorMessage());
                     }
                     // 刷新任务实体
-                    AsyncTaskEntity freshTask = findByTaskId(taskId);
+                    AsyncTaskEntity freshTask = findEntityByTaskId(taskId);
                     onComplete.accept(freshTask, result);
                 }
             } catch (Exception e) {
@@ -251,7 +375,22 @@ public class AsyncTaskService implements ApplicationRunner {
         int cancelled = 0;
         for (Map.Entry<String, String> entry : pollTaskToConv.entrySet()) {
             if (convId.equals(entry.getValue())) {
-                cancelPolling(entry.getKey());
+                String taskId = entry.getKey();
+                cancelPolling(taskId);
+                // One-shot tasks (taskType "agent_delegate") have no separate
+                // poll loop to observe the cancel and write the terminal row:
+                // cancelPolling only nukes the Future. Without this explicit
+                // write-back the DB row stays "running" forever. Polling
+                // tasks (video / image / ...) keep their original behavior —
+                // their own poll completion or startup-recovery path is what
+                // writes the terminal status.
+                AsyncTaskEntity t = findEntityByTaskId(taskId);
+                if (t != null
+                        && "agent_delegate".equals(t.getTaskType())
+                        && !"succeeded".equals(t.getStatus())
+                        && !"failed".equals(t.getStatus())) {
+                    updateStatus(taskId, "failed", null, null, "conversation deleted");
+                }
                 cancelled++;
             }
         }
@@ -290,7 +429,7 @@ public class AsyncTaskService implements ApplicationRunner {
     // ==================== 查询 ====================
 
     public AsyncTaskInfo getTaskInfo(String taskId) {
-        AsyncTaskEntity entity = findByTaskId(taskId);
+        AsyncTaskEntity entity = findEntityByTaskId(taskId);
         if (entity == null) {
             return null;
         }
@@ -307,7 +446,12 @@ public class AsyncTaskService implements ApplicationRunner {
         return entities.stream().map(this::toInfo).toList();
     }
 
-    private AsyncTaskEntity findByTaskId(String taskId) {
+    /** Returns the persisted task entity by its public {@code taskId}, or
+     *  {@code null} if no row matches. Promoted from private to public so the
+     *  conversation-deleted listener (and overrides in tests) can resolve a
+     *  task's current state without going through the read-model
+     *  {@link #getTaskInfo}. */
+    public AsyncTaskEntity findEntityByTaskId(String taskId) {
         return asyncTaskMapper.selectOne(
                 new LambdaQueryWrapper<AsyncTaskEntity>()
                         .eq(AsyncTaskEntity::getTaskId, taskId)

@@ -28,7 +28,7 @@ class ChatOriginTest {
     void roundTripThroughToolContext_preservesAllFields() {
         ChannelTarget target = new ChannelTarget("user-42", "thread-abc", "bot-001");
         ChatOrigin original = new ChatOrigin(7L, "wechat:42", "u123", 5L,
-                "/data/ws/5", 9L, target);
+                "/data/ws/5", 9L, target, false);
 
         ToolContext ctx = original.toToolContext();
         ChatOrigin restored = ChatOrigin.from(ctx);
@@ -57,10 +57,25 @@ class ChatOriginTest {
     }
 
     @Test
+    void cronOriginFlag_setByFactoryAndPreservedByWithers() {
+        ChatOrigin cron = ChatOrigin.cron("cron_7", 1L, null, 3L, null);
+        assertTrue(cron.cronOrigin(), "cron() factory must flag the origin as a cron run");
+        assertTrue(cron.withAgent(9L).cronOrigin(), "withAgent must preserve cronOrigin");
+        assertTrue(cron.withConversationId("tasks_1").cronOrigin(),
+                "withConversationId must preserve cronOrigin");
+        assertTrue(cron.withWorkspace(2L, "/ws").cronOrigin(),
+                "withWorkspace must preserve cronOrigin");
+
+        assertFalse(ChatOrigin.web("conv_1", "u1", 1L, null).cronOrigin(),
+                "web() origin must not be flagged as a cron run");
+        assertFalse(ChatOrigin.EMPTY.cronOrigin(), "EMPTY must not be flagged as a cron run");
+    }
+
+    @Test
     void jsonSerialization_isStableAndForwardCompatible() throws Exception {
         ObjectMapper om = new ObjectMapper();
         ChatOrigin origin = new ChatOrigin(7L, "wechat:42", "u123", 5L,
-                "/data/ws/5", 9L, new ChannelTarget("user-42", "thread-abc", "bot-001"));
+                "/data/ws/5", 9L, new ChannelTarget("user-42", "thread-abc", "bot-001"), false);
 
         String json = om.writeValueAsString(origin);
         ChatOrigin restored = om.readValue(json, ChatOrigin.class);

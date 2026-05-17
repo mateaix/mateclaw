@@ -1563,7 +1563,7 @@ public class ChatStreamTracker {
         }
     }
 
-    // ===== Runtime snapshot surface (admin Backstage) =====
+    // ===== Runtime snapshot surface (admin Live view) =====
 
     /**
      * Bind the resolved agent + owner to the active run so the runtime
@@ -1603,7 +1603,7 @@ public class ChatStreamTracker {
     ) {}
 
     /**
-     * Snapshot every active run. Used by the admin Backstage to render the
+     * Snapshot every active run. Used by the admin Live view to render the
      * global "what are my agents doing right now" view. Returned list is a
      * defensive copy — callers may freely sort / filter it.
      */
@@ -1640,7 +1640,7 @@ public class ChatStreamTracker {
     }
 
     /**
-     * Force a wedged run to terminate. Used by the admin Backstage's
+     * Force a wedged run to terminate. Used by the admin Live view's
      * "End it" action when the friendly stop has been observed not to take
      * effect (model wedged in a tool call beyond the timeout). Sequence
      * matches what {@link #onShutdown()} does for individual runs.

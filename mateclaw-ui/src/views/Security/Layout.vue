@@ -41,9 +41,10 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, onMounted, onBeforeUnmount } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
+import { useMediaQuery, BREAKPOINTS } from '@/composables/useBreakpoint'
 
 const route = useRoute()
 const { t } = useI18n()
@@ -51,7 +52,6 @@ const { t } = useI18n()
 // 折叠状态（与 Settings 共享 key）
 const navCollapsed = ref(localStorage.getItem('mc-settings-nav-collapsed') === 'true')
 const userExplicit = ref(localStorage.getItem('mc-settings-nav-collapsed') === 'true')
-let mediumQuery: MediaQueryList | null = null
 
 function toggleNav() {
   navCollapsed.value = !navCollapsed.value
@@ -59,23 +59,11 @@ function toggleNav() {
   localStorage.setItem('mc-settings-nav-collapsed', String(navCollapsed.value))
 }
 
-function handleMediumChange(e: MediaQueryListEvent | MediaQueryList) {
-  if (e.matches && !userExplicit.value) {
-    navCollapsed.value = true
-  } else if (!e.matches && !userExplicit.value) {
-    navCollapsed.value = false
-  }
-}
-
-onMounted(() => {
-  mediumQuery = window.matchMedia('(max-width: 1200px)')
-  handleMediumChange(mediumQuery)
-  mediumQuery.addEventListener('change', handleMediumChange)
-})
-
-onBeforeUnmount(() => {
-  mediumQuery?.removeEventListener('change', handleMediumChange)
-})
+// Auto-collapse the nav on narrow desktop unless the user collapsed it explicitly.
+const compactViewport = useMediaQuery(BREAKPOINTS.compact)
+watch(compactViewport, (compact) => {
+  if (!userExplicit.value) navCollapsed.value = compact
+}, { immediate: true })
 
 const sections = computed(() => [
   {

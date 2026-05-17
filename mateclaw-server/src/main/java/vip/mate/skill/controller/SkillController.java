@@ -145,6 +145,14 @@ public class SkillController {
         return filterShadowedVirtualSkills(virtualSkills, realSkillNames).size();
     }
 
+    /** Keep only enabled rows — gates virtual skills into enabled-only endpoints. */
+    static List<SkillEntity> enabledOnly(List<SkillEntity> skills) {
+        if (skills == null || skills.isEmpty()) return List.of();
+        return skills.stream()
+                .filter(s -> s != null && Boolean.TRUE.equals(s.getEnabled()))
+                .toList();
+    }
+
     /**
      * Keep MyBatis-Plus as the source of truth for DB pagination and append
      * live virtual ACP/MCP rows after the DB rows. This produces one stable
@@ -361,18 +369,21 @@ public class SkillController {
         // include all real skill names — including disabled ones — so a
         // disabled real skill correctly suppresses its same-named virtual
         // twin, matching /skills and /counts.
+        // The bridges surface disabled MCP/ACP servers too (so the Skills
+        // page can show a toggled-off card); this endpoint is enabled-only,
+        // so the virtual rows are filtered to enabled before merging.
         List<SkillEntity> result = new ArrayList<>(skillService.listEnabledSkills(workspaceId));
         Set<String> realNames = realSkillNames(workspaceId);
 
         try {
-            result.addAll(filterShadowedVirtualSkills(
-                    mcpSkillBridge.listMcpDerivedSkillEntities(), realNames));
+            result.addAll(enabledOnly(filterShadowedVirtualSkills(
+                    mcpSkillBridge.listMcpDerivedSkillEntities(), realNames)));
         } catch (Exception e) {
             // Bridge failure must not 500 the picker — same defensive stance as /counts.
         }
         try {
-            result.addAll(filterShadowedVirtualSkills(
-                    acpSkillBridge.listAcpDerivedSkillEntities(), realNames));
+            result.addAll(enabledOnly(filterShadowedVirtualSkills(
+                    acpSkillBridge.listAcpDerivedSkillEntities(), realNames)));
         } catch (Exception e) {
             // Bridge failure must not 500 the picker — same defensive stance as /counts.
         }
@@ -469,6 +480,13 @@ public class SkillController {
     @RequireWorkspaceRole("admin")
     public R<SkillEntity> toggle(@PathVariable Long id, @RequestParam boolean enabled,
             @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        // A virtual MCP skill mirrors an MCP server — toggling it enables /
+        // disables that server, keeping the Skills page and Settings ▸ MCP
+        // Connections in sync. ACP virtual skills have no such mapping and
+        // stay read-only via rejectVirtualSkillMutation below.
+        if (vip.mate.skill.mcp.McpSkillBridge.isVirtualMcpSkillId(id)) {
+            return R.ok(mcpSkillBridge.toggleVirtualSkill(id, enabled));
+        }
         rejectVirtualSkillMutation(id);
         verifyResourceWorkspace(skillService.getSkill(id), workspaceId);
         return R.ok(skillService.toggleSkill(id, enabled));

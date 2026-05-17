@@ -135,6 +135,22 @@ class SkillControllerListEnabledTest {
         assertTrue(response.getData().stream().anyMatch(s -> "github".equals(s.getName())));
     }
 
+    @Test
+    @DisplayName("listEnabled excludes a disabled MCP virtual skill")
+    void excludesDisabledVirtualMcpSkill() {
+        // The bridge now surfaces disabled MCP servers too (so the Skills
+        // page can show a toggled-off card); the enabled-only picker must
+        // filter them back out.
+        SkillEntity disabledMcp = skill("github", "mcp");
+        disabledMcp.setEnabled(false);
+        when(mcpSkillBridge.listMcpDerivedSkillEntities()).thenReturn(List.of(disabledMcp));
+
+        R<List<SkillEntity>> response = controller.listEnabled(null);
+
+        assertEquals(0, response.getData().size(),
+                "a disabled MCP virtual skill must not appear in the enabled-only picker");
+    }
+
     private static SkillEntity skill(String name, String type) {
         SkillEntity s = new SkillEntity();
         s.setName(name);

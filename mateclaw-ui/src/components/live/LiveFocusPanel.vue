@@ -6,7 +6,7 @@
           <button
             class="focus-close"
             type="button"
-            :aria-label="t('backstage.actions.close')"
+            :aria-label="t('live.actions.close')"
             @click="$emit('close')"
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -28,7 +28,7 @@
                 <span v-else class="agent-avatar-letter focus-avatar-letter">{{ avatarLetter(run) }}</span>
               </div>
             </div>
-            <div class="focus-title">{{ run.agentName || t('backstage.unknownAgent') }}</div>
+            <div class="focus-title">{{ run.agentName || t('live.unknownAgent') }}</div>
             <div class="focus-subtitle" v-if="run.username">@{{ run.username }}</div>
           </div>
 
@@ -62,7 +62,7 @@
             </svg>
             <div class="ring-label">
               <div class="ring-value">{{ formatAge(run.ageMs) }}</div>
-              <div class="ring-caption">{{ t('backstage.detail.runningFor') }}</div>
+              <div class="ring-caption">{{ t('live.detail.runningFor') }}</div>
             </div>
           </div>
 
@@ -73,27 +73,27 @@
           <div class="focus-tiles">
             <div class="focus-tile">
               <div class="focus-tile-value">{{ formatAge(run.msSinceLastEvent) }}</div>
-              <div class="focus-tile-label">{{ t('backstage.detail.lastHeard') }}</div>
+              <div class="focus-tile-label">{{ t('live.detail.lastHeard') }}</div>
             </div>
             <div class="focus-tile">
               <div
                 class="focus-tile-value"
                 :class="{ 'focus-tile-warn': run.subscriberCount === 0 }"
               >{{ run.subscriberCount }}</div>
-              <div class="focus-tile-label">{{ t('backstage.detail.audience') }}</div>
+              <div class="focus-tile-label">{{ t('live.detail.audience') }}</div>
             </div>
             <div class="focus-tile">
               <div
                 class="focus-tile-value focus-tile-id"
                 :title="run.conversationId"
               >#{{ shortId(run.conversationId) }}</div>
-              <div class="focus-tile-label">{{ t('backstage.detail.session') }}</div>
+              <div class="focus-tile-label">{{ t('live.detail.session') }}</div>
             </div>
           </div>
 
           <!-- Helpers (subagents) -->
           <div v-if="subagents.length > 0" class="focus-section">
-            <div class="focus-section-title">{{ t('backstage.detail.helpers') }}</div>
+            <div class="focus-section-title">{{ t('live.detail.helpers') }}</div>
             <div v-for="sub in subagents" :key="sub.subagentId" class="focus-sub-row">
               <div class="focus-sub-icon" :style="avatarBgStyle(sub)">
                 <SkillIcon v-if="sub.agentIcon" :value="sub.agentIcon" :size="20" fallback="🤖" />
@@ -106,17 +106,17 @@
                 </div>
               </div>
               <button class="focus-sub-stop" type="button" @click="$emit('interrupt-sub', sub)">
-                {{ t('backstage.actions.stop') }}
+                {{ t('live.actions.stop') }}
               </button>
             </div>
           </div>
 
           <div class="focus-actions">
             <button class="focus-btn focus-btn-soft" type="button" @click="$emit('stop', run)">
-              {{ t('backstage.actions.stop') }}
+              {{ t('live.actions.stop') }}
             </button>
             <button class="focus-btn focus-btn-strong" type="button" @click="$emit('recycle', run)">
-              {{ t('backstage.actions.endIt') }}
+              {{ t('live.actions.endIt') }}
             </button>
           </div>
         </div>
@@ -129,20 +129,20 @@
 import { onMounted, onBeforeUnmount, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import SkillIcon from '@/components/common/SkillIcon.vue'
-import { useBackstageAgent } from '@/composables/useBackstageAgent'
-import type { BackstageRunCard, BackstageSubagentCard } from '@/api'
+import { useLiveAgent } from '@/composables/useLiveAgent'
+import type { LiveRunCard, LiveSubagentCard } from '@/api'
 
 const props = defineProps<{
   open: boolean
-  run: BackstageRunCard | null
-  subagents: BackstageSubagentCard[]
+  run: LiveRunCard | null
+  subagents: LiveSubagentCard[]
 }>()
 
 const emit = defineEmits<{
   close: []
-  stop: [run: BackstageRunCard]
-  recycle: [run: BackstageRunCard]
-  'interrupt-sub': [sub: BackstageSubagentCard]
+  stop: [run: LiveRunCard]
+  recycle: [run: LiveRunCard]
+  'interrupt-sub': [sub: LiveSubagentCard]
 }>()
 
 const { t } = useI18n()
@@ -154,7 +154,7 @@ const {
   humanSentence,
   stuckCallout,
   formatAge,
-} = useBackstageAgent()
+} = useLiveAgent()
 
 // SVG ring geometry: r=54 gives a circumference of ~339.292.
 // Map the agent's age over a 5-minute window to a stroke-dashoffset so the

@@ -22,6 +22,7 @@ import vip.mate.llm.model.ModelProviderEntity;
 import vip.mate.llm.service.ModelProviderService;
 
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Pattern;
 
 /**
  * Embedding 模型工厂
@@ -54,6 +55,14 @@ public class EmbeddingModelFactory {
 
     /** 构造 API 时共享的 retry template（用 Spring AI 默认） */
     private static final RetryTemplate DEFAULT_RETRY = RetryUtils.DEFAULT_RETRY_TEMPLATE;
+
+    /**
+     * Trailing "/v{digits}" segment in a base URL — the OpenAI-compatible
+     * convention (/v1 OpenAI, /v3 Volcano Ark, /v4 Zhipu). When the base URL
+     * already carries a version segment, the default "/v1/embeddings" path
+     * would build a broken URL like ".../api/paas/v4/v1/embeddings".
+     */
+    private static final Pattern BASE_URL_VERSION_SUFFIX = Pattern.compile(".*/v\\d+$");
 
     /** 按 modelConfig.id 缓存 EmbeddingModel，config 变更时调用 {@link #evict} 清除 */
     private final ConcurrentHashMap<Long, EmbeddingModel> cache = new ConcurrentHashMap<>();
@@ -163,7 +172,7 @@ public class EmbeddingModelFactory {
         OpenAiApi api = OpenAiApi.builder()
                 .baseUrl(baseUrl)
                 .apiKey(apiKey.trim())
-                .embeddingsPath("/v1/embeddings")
+                .embeddingsPath(resolveEmbeddingsPath(baseUrl))
                 .build();
 
         OpenAiEmbeddingOptions options = OpenAiEmbeddingOptions.builder()
@@ -180,5 +189,18 @@ public class EmbeddingModelFactory {
         while (u.endsWith("/")) u = u.substring(0, u.length() - 1);
         if (u.endsWith("/v1")) u = u.substring(0, u.length() - 3);
         return u;
+    }
+
+    /**
+     * Resolve the embeddings path. Defaults to {@code /v1/embeddings}; when the
+     * base URL already ends with a version segment (Zhipu {@code /v4}, Volcano
+     * Ark {@code /v3}, …), drop the leading {@code /v1} so the request hits
+     * {@code <base>/embeddings} instead of a 404 at {@code <base>/v1/embeddings}.
+     */
+    private String resolveEmbeddingsPath(String baseUrl) {
+        if (baseUrl != null && BASE_URL_VERSION_SUFFIX.matcher(baseUrl).matches()) {
+            return "/embeddings";
+        }
+        return "/v1/embeddings";
     }
 }

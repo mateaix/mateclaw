@@ -9,12 +9,16 @@ import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.stereotype.Component;
 import vip.mate.memory.service.MemoryRecallTracker;
+import vip.mate.workspace.document.MemorySearchHit;
 import vip.mate.workspace.document.WorkspaceFileService;
 import vip.mate.workspace.document.model.WorkspaceFileEntity;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Comparator;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * 基于数据库工作区文件的长期记忆工具。
@@ -195,6 +199,88 @@ public class WorkspaceMemoryTool {
         log.info("[WorkspaceMemoryTool] Edited workspace memory file: agentId={}, filename={}, replacements={}",
                 agentId, filename, replacements);
         return JSONUtil.toJsonPrettyStr(result);
+    }
+
+    @Tool(description = """
+            Search agent's workspace memory files (MEMORY.md, PROFILE.md, AGENTS.md, memory/*.md) \
+            by keyword. Use this BEFORE read_workspace_memory_file when looking for a fact across \
+            many memory entries. Returns ranked hits with filename, line number, and snippet \
+            (matched terms wrapped in [[...]]).""")
+    public String search_workspace_memory(
+            @ToolParam(description = "当前 Agent 的 ID") Long agentId,
+            @ToolParam(description = "关键词或短语，2-64 字符") String query,
+            @ToolParam(description = "搜索范围：all（全部）/ memory（MEMORY.md 与 memory/）/ profile / persona，默认 all",
+                    required = false) String scope,
+            @ToolParam(description = "返回的最大命中数，默认 10，上限 30", required = false) Integer limit) {
+
+        if (agentId == null) {
+            return error("agentId 不能为空");
+        }
+        if (query == null || query.isBlank()) {
+            return error("query 不能为空");
+        }
+        String trimmed = query.trim();
+        if (trimmed.length() < 2) {
+            return error("query 至少 2 个字符");
+        }
+        if (trimmed.length() > 64) {
+            return error("query 不能超过 64 个字符");
+        }
+
+        int effectiveLimit = limit == null ? 10 : Math.min(Math.max(limit, 1), 30);
+        Set<String> prefixes = resolveScope(scope);
+
+        List<MemorySearchHit> hits = workspaceFileService.searchSnippets(
+                agentId, trimmed, prefixes, effectiveLimit);
+
+        // Treat each unique file in the results as an active retrieval signal —
+        // boosts that file's weight in the dream-consolidation ranker the same
+        // way an explicit read_workspace_memory_file call would.
+        Set<String> retrieved = new HashSet<>();
+        for (MemorySearchHit hit : hits) {
+            if (retrieved.add(hit.filename())) {
+                WorkspaceFileEntity file = workspaceFileService.getFile(agentId, hit.filename());
+                if (file != null && file.getContent() != null) {
+                    memoryRecallTracker.trackActiveRetrieval(agentId, hit.filename(), file.getContent());
+                }
+            }
+        }
+
+        JSONArray hitsJson = new JSONArray();
+        for (MemorySearchHit hit : hits) {
+            JSONObject h = new JSONObject();
+            h.set("filename", hit.filename());
+            h.set("lineNumber", hit.lineNumber());
+            h.set("snippet", hit.snippet());
+            h.set("score", hit.score());
+            hitsJson.add(h);
+        }
+        JSONObject result = new JSONObject();
+        result.set("agentId", agentId);
+        result.set("query", trimmed);
+        result.set("scope", scope == null || scope.isBlank() ? "all" : scope);
+        result.set("totalHits", hits.size());
+        result.set("hits", hitsJson);
+        if (!hits.isEmpty()) {
+            result.set("hint", "Use read_workspace_memory_file to get full context of any hit.");
+        }
+        return JSONUtil.toJsonPrettyStr(result);
+    }
+
+    /** Map the {@code scope} tool argument to a filename-prefix whitelist.
+     *  {@code "all"} (or null/blank) targets every memory-class file rather
+     *  than every workspace file the agent has, so a search doesn't surface
+     *  unrelated docs the user happens to store in the same workspace. */
+    private static Set<String> resolveScope(String scope) {
+        if (scope == null || scope.isBlank() || "all".equalsIgnoreCase(scope.trim())) {
+            return new LinkedHashSet<>(List.of("memory/", "MEMORY.md", "PROFILE.md", "AGENTS.md"));
+        }
+        return switch (scope.trim().toLowerCase()) {
+            case "memory" -> new LinkedHashSet<>(List.of("memory/", "MEMORY.md"));
+            case "profile" -> new LinkedHashSet<>(List.of("PROFILE.md"));
+            case "persona" -> new LinkedHashSet<>(List.of("AGENTS.md"));
+            default -> new LinkedHashSet<>(List.of("memory/", "MEMORY.md", "PROFILE.md", "AGENTS.md"));
+        };
     }
 
     private String validate(Long agentId, String filename) {

@@ -219,59 +219,16 @@
             </div>
           </div>
 
-          <!-- Bind agent (custom dropdown so SkillIcon renders pi:* glyphs;
-               native <select><option> cannot host components) -->
+          <!-- Bind agent -->
           <div class="form-group">
             <label class="form-label">{{ t('channels.wizard.bindAgentLabel') }}</label>
-            <div class="agent-select" :class="{ open: agentDropdownOpen }">
-              <button
-                type="button"
-                class="agent-select-trigger"
-                @click="agentDropdownOpen = !agentDropdownOpen"
-              >
-                <span class="agent-select-trigger__icon" :style="{ color: agentIconColor(selectedAgent?.icon) }">
-                  <SkillIcon :value="selectedAgent?.icon" :size="20" :fallback="'🤖'" />
-                </span>
-                <span class="agent-select-trigger__name">{{
-                  selectedAgent?.name || t('channels.placeholders.selectAgent')
-                }}</span>
-                <svg
-                  class="agent-select-trigger__arrow"
-                  :class="{ open: agentDropdownOpen }"
-                  width="12" height="12" viewBox="0 0 24 24" fill="none"
-                  stroke="currentColor" stroke-width="2"
-                ><polyline points="6 9 12 15 18 9"/></svg>
-              </button>
-              <Transition name="fade">
-                <div
-                  v-if="agentDropdownOpen"
-                  class="agent-dropdown-backdrop"
-                  @click="agentDropdownOpen = false"
-                ></div>
-              </Transition>
-              <Transition name="agent-dropdown">
-                <div v-if="agentDropdownOpen" class="agent-dropdown">
-                  <div
-                    v-for="a in agents"
-                    :key="a.id"
-                    class="agent-dropdown-item"
-                    :class="{ active: String(a.id) === String(form.agentId) }"
-                    @click="onSelectAgent(a)"
-                  >
-                    <span class="agent-dropdown-item__icon" :style="{ color: agentIconColor(a.icon) }">
-                      <SkillIcon :value="a.icon" :size="18" :fallback="'🤖'" />
-                    </span>
-                    <span class="agent-dropdown-item__name">{{ a.name }}</span>
-                    <span v-if="String(a.id) === String(form.agentId)" class="agent-dropdown-item__check">
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-                    </span>
-                  </div>
-                  <div v-if="agents.length === 0" class="agent-dropdown-empty">
-                    {{ t('chat.loadingAgents') }}
-                  </div>
-                </div>
-              </Transition>
-            </div>
+            <AgentPickerDialog
+              block
+              :model-value="form.agentId ?? null"
+              :agents="props.agents"
+              :placeholder="t('channels.placeholders.selectAgent')"
+              @update:model-value="(v) => (form.agentId = v ?? undefined)"
+            />
           </div>
 
           <p class="ready-hint">{{ t('channels.wizard.sendTestHint', { service: serviceName }) }}</p>
@@ -324,8 +281,7 @@ import { useWecomBotAuth } from '@/composables/channels/useWecomBotAuth'
 import { useWeixinQrcodePoll } from '@/composables/channels/useWeixinQrcodePoll'
 import { useDingTalkAppRegister } from '@/composables/channels/useDingTalkAppRegister'
 import { useFeishuAppRegister } from '@/composables/channels/useFeishuAppRegister'
-import SkillIcon from '@/components/common/SkillIcon.vue'
-import { agentIconColor } from '@/utils/agentIconColor'
+import AgentPickerDialog from '@/components/common/AgentPickerDialog.vue'
 
 interface Props {
   modelValue: boolean
@@ -376,19 +332,6 @@ const form = ref<Partial<Channel>>({
 const channelConfig = ref<Record<string, any>>({})
 const visibleFields = ref<Record<string, boolean>>({})
 const showAdvanced = ref(false)
-
-// Custom agent dropdown — native <select><option> can't render SkillIcon
-// component for pi:* glyphs; mirror ChatConsole.vue's pattern.
-const agentDropdownOpen = ref(false)
-const selectedAgent = computed<Agent | null>(() => {
-  const id = form.value.agentId
-  if (id == null) return null
-  return props.agents.find(a => String(a.id) === String(id)) ?? null
-})
-function onSelectAgent(a: Agent) {
-  form.value.agentId = a.id as any
-  agentDropdownOpen.value = false
-}
 
 const verifying = ref(false)
 const verifyResult = ref<VerifyResult | null>(null)
@@ -878,75 +821,6 @@ function formatIdentityKey(key: string): string {
 .btn-primary:disabled { background: var(--mc-border); cursor: not-allowed; box-shadow: none; }
 .btn-secondary { padding: 10px 18px; background: var(--mc-bg-elevated); color: var(--mc-text-primary); border: 1px solid var(--mc-border); border-radius: 12px; font-size: 14px; font-weight: 600; cursor: pointer; transition: background 0.15s; }
 .btn-secondary:hover { background: var(--mc-bg-sunken); }
-
-/* ===== Agent custom dropdown (mirrors ChatConsole.vue pattern) =====
-   Native <select><option> can't render the <SkillIcon> component
-   needed for pi:* glyphs, so step-3 uses a custom dropdown.
-   z-index has to clear the wizard modal-overlay (z-index: 1000). */
-.agent-select { position: relative; }
-.agent-select-trigger {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 12px;
-  border: 1px solid var(--mc-border);
-  border-radius: 10px;
-  font-size: 14px;
-  color: var(--mc-text-primary);
-  background: var(--mc-bg-elevated);
-  cursor: pointer;
-  outline: none;
-  transition: border-color 0.15s;
-  box-sizing: border-box;
-}
-.agent-select-trigger:hover { border-color: var(--mc-primary); }
-.agent-select.open .agent-select-trigger { border-color: var(--mc-primary); box-shadow: 0 0 0 3px rgba(217,119,87,0.12); }
-.agent-select-trigger__icon { font-size: 18px; line-height: 1; flex-shrink: 0; display: inline-flex; }
-.agent-select-trigger__name { flex: 1; text-align: left; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.agent-select-trigger__arrow { flex-shrink: 0; color: var(--mc-text-tertiary); transition: transform 0.2s; }
-.agent-select-trigger__arrow.open { transform: rotate(180deg); }
-
-.agent-dropdown-backdrop {
-  position: fixed;
-  inset: 0;
-  /* must clear modal-overlay (1000) so clicks fall through to backdrop, not modal */
-  z-index: 1099;
-}
-.agent-dropdown {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  right: 0;
-  z-index: 1100;
-  background: var(--mc-bg-elevated);
-  border: 1px solid var(--mc-border);
-  border-radius: 12px;
-  padding: 6px;
-  box-shadow: 0 8px 32px rgba(0,0,0,0.12);
-  max-height: 280px;
-  overflow-y: auto;
-}
-.agent-dropdown-item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
-  border-radius: 8px;
-  cursor: pointer;
-  transition: background 0.12s;
-}
-.agent-dropdown-item:hover { background: var(--mc-bg-sunken); }
-.agent-dropdown-item.active { background: var(--mc-primary-bg); }
-.agent-dropdown-item__icon { font-size: 20px; line-height: 1; flex-shrink: 0; display: inline-flex; }
-.agent-dropdown-item__name { flex: 1; font-size: 14px; font-weight: 500; color: var(--mc-text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.agent-dropdown-item__check { flex-shrink: 0; color: var(--mc-primary); }
-.agent-dropdown-empty { padding: 16px; text-align: center; font-size: 13px; color: var(--mc-text-tertiary); }
-
-.agent-dropdown-enter-active { transition: all 0.15s ease-out; }
-.agent-dropdown-leave-active { transition: all 0.1s ease-in; }
-.agent-dropdown-enter-from { opacity: 0; transform: translateY(-6px) scale(0.97); }
-.agent-dropdown-leave-to { opacity: 0; transform: translateY(-4px) scale(0.98); }
 
 .fade-enter-active, .fade-leave-active { transition: opacity 0.15s; }
 .fade-enter-from, .fade-leave-to { opacity: 0; }

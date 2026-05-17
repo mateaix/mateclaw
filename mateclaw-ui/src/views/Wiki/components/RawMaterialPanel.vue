@@ -287,6 +287,7 @@
 import { ref, reactive, computed, watch, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { mcToast } from '@/composables/useMcToast'
+import { useFileDrop } from '@/composables/useFileDrop'
 import { Download } from '@element-plus/icons-vue'
 import { useWikiStore } from '@/stores/useWikiStore'
 import { wikiApi } from '@/api/index'
@@ -493,21 +494,12 @@ const scanning = ref(false)
 const scanResult = ref<{ scanned: number; added: number; skipped: number } | null>(null)
 
 // ─── Drag-over state ──────────────────────────────────────────────────────────
-// Use a counter to handle nested dragenter/dragleave without flickering.
-const isDragging = ref(false)
-let dragCounter = 0
+const { isDragging, onDragEnter, onDragLeave, onDrop: handleDrop } = useFileDrop(uploadDroppedFiles)
 
-function onDragEnter() {
-  dragCounter++
-  isDragging.value = true
-}
-
-function onDragLeave() {
-  dragCounter--
-  if (dragCounter <= 0) {
-    dragCounter = 0
-    isDragging.value = false
-  }
+async function uploadDroppedFiles(event: DragEvent) {
+  if (!event.dataTransfer?.files || !store.currentKB) return
+  const kbId = store.currentKB.id
+  await Promise.all(Array.from(event.dataTransfer.files).map(f => uploadFile(kbId, f)))
 }
 
 // ─── Optimistic upload items ──────────────────────────────────────────────────
@@ -567,14 +559,6 @@ async function handleFileSelect(event: Event) {
   input.value = ''
 }
 
-async function handleDrop(event: DragEvent) {
-  // Reset drag state
-  dragCounter = 0
-  isDragging.value = false
-  if (!event.dataTransfer?.files || !store.currentKB) return
-  const kbId = store.currentKB.id
-  await Promise.all(Array.from(event.dataTransfer.files).map(f => uploadFile(kbId, f)))
-}
 
 async function handleAddText() {
   if (!store.currentKB) return

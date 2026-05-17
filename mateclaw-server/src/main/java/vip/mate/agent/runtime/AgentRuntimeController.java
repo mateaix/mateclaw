@@ -21,14 +21,14 @@ import java.util.Map;
 import vip.mate.workspace.core.annotation.RequireGlobalAdmin;
 
 /**
- * Admin-only Backstage surface: the global view of every in-flight agent
+ * Admin-only live runtime surface: the global view of every in-flight agent
  * turn plus the controls to friendly-stop, force-recycle, or sweep stuck
  * runs. Distinct from {@code /api/v1/subagents/...} which is per-conversation
  * owner-scoped — this controller is intentionally cross-tenant for the
  * operator role.
  */
 @Slf4j
-@Tag(name = "Agent Runtime (Backstage)")
+@Tag(name = "Agent Runtime (Live)")
 @RestController
 @RequestMapping("/api/v1/admin/agent-runtime")
 @RequiredArgsConstructor

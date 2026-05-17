@@ -66,7 +66,7 @@ import { useI18n } from 'vue-i18n'
 import { mcToast } from '@/composables/useMcToast'
 import { http, agentContextApi } from '@/api'
 
-const props = defineProps<{ agentId: number }>()
+const props = defineProps<{ agentId: string | number }>()
 const { t } = useI18n()
 
 interface FileInfo { filename: string; fileSize: number; enabled: boolean }

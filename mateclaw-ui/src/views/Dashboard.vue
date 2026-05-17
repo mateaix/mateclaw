@@ -55,6 +55,59 @@
             </div>
           </div>
 
+          <div class="models-section">
+            <div class="section-head">
+              <h2 class="section-title">{{ t('dashboard.models.title') }}</h2>
+              <p class="section-subtitle">{{ t('dashboard.models.subtitle') }}</p>
+            </div>
+            <div class="models-card mc-surface-card">
+              <div class="models-card__head">
+                <div class="active-model">
+                  <span class="active-model__label">{{ t('dashboard.models.activeModel') }}</span>
+                  <span v-if="activeModel" class="active-model__value">
+                    <span class="active-model__dot"></span>
+                    {{ activeProviderLabel }} · {{ activeModel.model }}
+                  </span>
+                  <span v-else class="active-model__value active-model__value--empty">
+                    {{ t('dashboard.models.notSet') }}
+                  </span>
+                </div>
+                <div class="models-card__actions">
+                  <span v-if="modelProviders.length" class="models-count">
+                    {{ readyProviderCount }}/{{ modelProviders.length }} {{ t('dashboard.models.configured') }}
+                  </span>
+                  <button class="models-manage" @click="goToModels">
+                    {{ t('dashboard.models.manage') }}
+                    <el-icon><ArrowRight /></el-icon>
+                  </button>
+                </div>
+              </div>
+              <div v-if="modelProviders.length" class="provider-chips">
+                <button
+                  v-for="p in modelProviders"
+                  :key="p.id"
+                  class="provider-chip"
+                  :class="'provider-chip--' + providerChipStatus(p)"
+                  :title="p.name"
+                  @click="goToModels"
+                >
+                  <span class="provider-chip__dot"></span>
+                  <img
+                    class="provider-chip__icon"
+                    :src="getProviderIcon(p.id)"
+                    :alt="p.name"
+                    @error="onProviderIconError"
+                  />
+                  <span class="provider-chip__name">{{ p.name }}</span>
+                </button>
+              </div>
+              <div v-else class="models-empty">
+                <span class="models-empty__text">{{ t('dashboard.models.empty') }}</span>
+                <button class="models-empty__btn" @click="goToModels">{{ t('dashboard.models.emptyCta') }}</button>
+              </div>
+            </div>
+          </div>
+
           <div v-if="trendData.length" class="trend-section">
             <div class="section-head">
               <h2 class="section-title">{{ t('dashboard.trend.title', '7-Day Trend') }}</h2>
@@ -133,10 +186,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted, onUnmounted, nextTick, watch } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ChatDotRound, DataLine, Document, Tools } from '@element-plus/icons-vue'
-import { dashboardApi } from '@/api'
+import { useRouter } from 'vue-router'
+import { ArrowRight, ChatDotRound, DataLine, Document, Tools } from '@element-plus/icons-vue'
+import { dashboardApi, modelApi } from '@/api'
+import { getProviderIcon, onProviderIconError } from '@/utils/providerIcons'
 import * as echarts from 'echarts/core'
 import { LineChart } from 'echarts/charts'
 import { GridComponent, TooltipComponent, LegendComponent } from 'echarts/components'
@@ -145,6 +200,7 @@ import { CanvasRenderer } from 'echarts/renderers'
 echarts.use([LineChart, GridComponent, TooltipComponent, LegendComponent, CanvasRenderer])
 
 const { t, locale } = useI18n()
+const router = useRouter()
 
 const overview = ref<Record<string, any>>({})
 const recentRuns = ref<any[]>([])
@@ -159,6 +215,42 @@ const todayStats = reactive({
   toolCalls: 0,
   errors: 0,
 })
+
+// ── Model configuration card ──
+const modelProviders = ref<any[]>([])
+const activeModel = ref<{ providerId: string; model: string } | null>(null)
+
+const readyProviderCount = computed(
+  () => modelProviders.value.filter((p) => providerChipStatus(p) === 'ready').length,
+)
+
+const activeProviderLabel = computed(() => {
+  if (!activeModel.value) return ''
+  const match = modelProviders.value.find((p) => p.id === activeModel.value!.providerId)
+  return match?.name || activeModel.value.providerId
+})
+
+// Maps a provider's liveness to a chip status, falling back to the legacy
+// configured/available booleans for backends that don't report liveness.
+function providerChipStatus(p: any): 'ready' | 'partial' | 'down' {
+  switch (p.liveness) {
+    case 'LIVE':
+      return 'ready'
+    case 'COOLDOWN':
+    case 'UNPROBED':
+      return 'partial'
+    case 'REMOVED':
+    case 'UNCONFIGURED':
+      return 'down'
+  }
+  if (p.available) return 'ready'
+  if (p.configured || (p.models?.length || 0) + (p.extraModels?.length || 0) > 0) return 'partial'
+  return 'down'
+}
+
+function goToModels() {
+  router.push('/settings/models')
+}
 
 onMounted(async () => {
   try {
@@ -178,6 +270,19 @@ onMounted(async () => {
     }
   } catch {
     // Dashboard data is non-critical
+  }
+
+  // Model configuration card — loaded independently so a failure here never
+  // blanks the analytics above, and vice versa.
+  try {
+    const [provRes, activeRes] = await Promise.all([
+      modelApi.listProviders().catch(() => ({ data: [] })),
+      modelApi.getActive().catch(() => ({ data: null })),
+    ])
+    modelProviders.value = (provRes as any).data || []
+    activeModel.value = (activeRes as any).data?.activeLlm || null
+  } catch {
+    // Non-critical
   }
 })
 
@@ -379,6 +484,75 @@ function calcDuration(run: any): string {
 .stat-card--secondary { opacity: 0.75; }
 .stat-card--secondary .stat-icon { background: linear-gradient(135deg, rgba(148, 163, 184, 0.12), rgba(148, 163, 184, 0.06)); color: var(--mc-text-secondary); }
 .stat-card--secondary .stat-value { font-size: 24px; }
+
+/* Model Configuration card */
+.models-section { margin-bottom: 22px; }
+.models-card { padding: 18px; }
+.models-card__head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 16px; flex-wrap: wrap;
+}
+.active-model { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.active-model__label {
+  font-size: 12px; color: var(--mc-text-tertiary);
+  text-transform: uppercase; letter-spacing: 0.08em;
+}
+.active-model__value {
+  display: flex; align-items: center; gap: 7px;
+  font-size: 14px; font-weight: 700; color: var(--mc-text-primary);
+}
+.active-model__value--empty { color: var(--mc-text-tertiary); font-weight: 600; }
+.active-model__dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: #10b981; flex-shrink: 0;
+}
+.models-card__actions { display: flex; align-items: center; gap: 14px; }
+.models-count { font-size: 12px; color: var(--mc-text-tertiary); white-space: nowrap; }
+.models-manage {
+  display: flex; align-items: center; gap: 3px;
+  font-size: 13px; font-weight: 600; color: var(--mc-primary);
+  background: none; border: none; cursor: pointer;
+  padding: 4px 6px; border-radius: 6px; transition: background 0.15s ease;
+}
+.models-manage:hover { background: rgba(217, 109, 70, 0.08); }
+
+.provider-chips {
+  display: flex; flex-wrap: wrap; gap: 8px;
+  margin-top: 16px; padding-top: 16px;
+  border-top: 1px solid var(--mc-border-light);
+}
+.provider-chip {
+  display: flex; align-items: center; gap: 6px;
+  padding: 5px 11px; border-radius: 999px;
+  border: 1px solid var(--mc-border-light);
+  background: var(--mc-bg-muted);
+  font-size: 12px; font-weight: 600; color: var(--mc-text-secondary);
+  cursor: pointer; transition: border-color 0.15s ease, transform 0.15s ease;
+}
+.provider-chip:hover { border-color: var(--mc-primary); transform: translateY(-1px); }
+.provider-chip__dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+.provider-chip__icon {
+  width: 15px; height: 15px; border-radius: 4px;
+  object-fit: contain; flex-shrink: 0;
+}
+.provider-chip--ready .provider-chip__dot { background: #10b981; }
+.provider-chip--partial .provider-chip__dot { background: #f59e0b; }
+.provider-chip--down .provider-chip__dot { background: var(--mc-text-tertiary); }
+.provider-chip--down { opacity: 0.7; }
+
+.models-empty {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  margin-top: 16px; padding-top: 16px;
+  border-top: 1px solid var(--mc-border-light);
+}
+.models-empty__text { font-size: 13px; color: var(--mc-text-tertiary); }
+.models-empty__btn {
+  padding: 6px 14px; border-radius: 8px;
+  background: var(--mc-primary); color: #fff;
+  border: none; font-size: 12px; font-weight: 600; cursor: pointer;
+  transition: opacity 0.15s ease;
+}
+.models-empty__btn:hover { opacity: 0.9; }
 
 .trend-section { margin-bottom: 22px; }
 .trend-chart { padding: 18px; }

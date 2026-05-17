@@ -279,7 +279,7 @@ const resumingId = ref<number | null>(null)
 // Workspace agent list — fed to the StepPropertyPanel's agent picker
 // so authors stop typing free-form agent names that don't actually
 // exist. Loaded once on mount and on workspace switch.
-interface AgentOption { id: number; name: string; title?: string }
+interface AgentOption { id: number; name: string; title?: string; icon?: string; description?: string }
 const availableAgents = ref<AgentOption[]>([])
 interface ChannelOption {
   id: number | string
@@ -607,7 +607,7 @@ async function reloadAgents() {
     // via the X-Workspace-Id header, so no client-side filter is needed.
     availableAgents.value = rows
         .filter((a) => a && a.name)
-        .map((a) => ({ id: a.id, name: a.name, title: a.title }))
+        .map((a) => ({ id: a.id, name: a.name, title: a.title, icon: a.icon, description: a.description }))
   } catch (e) {
     console.error('listAgents failed', e)
   }

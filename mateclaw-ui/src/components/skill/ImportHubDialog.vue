@@ -91,10 +91,11 @@
         <!-- ZIP 上传 -->
         <div v-if="activeTab === 'zip'" class="tab-content">
           <div class="upload-zone"
-               :class="{ 'drag-over': dragOver, 'has-file': zipFile }"
-               @dragover.prevent="dragOver = true"
-               @dragleave="dragOver = false"
-               @drop.prevent="handleDrop"
+               :class="{ 'drag-over': isDragging, 'has-file': zipFile }"
+               @dragenter.prevent="onDragEnter"
+               @dragover.prevent
+               @dragleave.prevent="onDragLeave"
+               @drop.prevent="onDrop"
                @click="triggerFileInput">
             <input ref="zipInputRef" type="file" accept=".zip" class="hidden-input" @change="handleFileSelect" />
             <svg v-if="!zipFile" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="opacity: 0.4; margin-bottom: 8px;">
@@ -150,6 +151,7 @@
 import { ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { mcToast } from '@/composables/useMcToast'
+import { useFileDrop } from '@/composables/useFileDrop'
 import { skillInstallApi } from '@/api/index'
 import type { InstallTask, HubSkillInfo } from '@/types/index'
 
@@ -177,7 +179,7 @@ const overwriteExisting = ref(false)
 const currentTask = ref<InstallTask | null>(null)
 const zipFile = ref<File | null>(null)
 const zipInputRef = ref<HTMLInputElement | null>(null)
-const dragOver = ref(false)
+const { isDragging, onDragEnter, onDragLeave, onDrop } = useFileDrop(handleDroppedZip)
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
 watch(() => props.visible, (val) => {
@@ -277,8 +279,7 @@ function handleFileSelect(e: Event) {
   input.value = ''
 }
 
-function handleDrop(e: DragEvent) {
-  dragOver.value = false
+function handleDroppedZip(e: DragEvent) {
   const file = e.dataTransfer?.files?.[0]
   if (file && file.name.endsWith('.zip')) {
     zipFile.value = file

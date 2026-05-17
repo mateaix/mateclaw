@@ -39,23 +39,17 @@
 
       <label class="panel-field" v-if="modeNeedsAgent">
         <span class="field-label">{{ t('workflows.canvas.nodeAgent') }}</span>
-        <!-- Digital employee picker. Agent steps persist agentId so the
-             workflow cannot drift when an employee is renamed. -->
-        <div class="agent-picker">
-          <select
-            class="mc-input"
-            :value="agentSelectValue"
-            @change="onAgentSelect"
-          >
-            <option value="">{{ t('workflows.canvas.fields.agentPlaceholder') }}</option>
-            <option v-for="a in availableAgents" :key="a.id" :value="String(a.id)">
-              {{ a.name }}<template v-if="a.title"> — {{ a.title }}</template>
-            </option>
-            <option v-if="agentNotInList" :value="agentSelectValue" disabled>
-              {{ t('workflows.canvas.fields.agentMissing', { name: step.agentName || step.agentId }) }}
-            </option>
-          </select>
-        </div>
+        <!-- Agent steps persist agentId so the workflow cannot drift when an
+             employee is renamed. -->
+        <AgentPickerDialog
+          block
+          clearable
+          :model-value="agentModelValue"
+          :agents="availableAgents"
+          :placeholder="t('workflows.canvas.fields.agentPlaceholder')"
+          :unknown-label="t('workflows.canvas.fields.agentMissing', { name: step?.agentName || step?.agentId })"
+          @change="onAgentPicked"
+        />
       </label>
 
       <label class="panel-field" v-if="modeNeedsAgent">
@@ -280,6 +274,7 @@
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { RawStep } from '@/composables/useWorkflowGraph'
+import AgentPickerDialog, { type PickableAgent } from '@/components/common/AgentPickerDialog.vue'
 
 /** Minimal agent shape the panel needs to render the picker — kept
  *  inside the component so the panel doesn't have to import the
@@ -288,6 +283,8 @@ export interface AgentOption {
   id: number | string
   name: string
   title?: string
+  icon?: string
+  description?: string
 }
 export interface ChannelOption {
   id: number | string
@@ -387,32 +384,25 @@ function onDuplicate() {
   emit('duplicate', { index: props.index })
 }
 
-const agentNotInList = computed(() => {
-  if (props.step?.agentId != null) {
-    return !props.availableAgents.some((a) => String(a.id) === String(props.step?.agentId))
-  }
-  const n = props.step?.agentName
-  if (!n) return false
-  return !props.availableAgents.some((a) => a.name === n)
-})
-const agentSelectValue = computed(() => {
-  if (props.step?.agentId != null) return String(props.step.agentId)
+// Resolve the picker's selected id. Newer steps persist agentId; legacy
+// steps stored only agentName, so fall back to a name lookup.
+const agentModelValue = computed<string | number | null>(() => {
+  if (props.step?.agentId != null) return props.step.agentId
   const byName = props.availableAgents.find((a) => a.name === props.step?.agentName)
-  return byName ? String(byName.id) : (props.step?.agentName ?? '')
+  if (byName) return byName.id
+  return props.step?.agentName ?? null
 })
-function onAgentSelect(e: Event) {
-  const v = (e.target as HTMLSelectElement).value
-  if (!v) {
+function onAgentPicked(value: string | number | null, agent: PickableAgent | null) {
+  if (value == null) {
     patch({ agentId: undefined, agentName: undefined })
     return
   }
-  // Keep the id as the raw string from the option value — Snowflake IDs
-  // exceed Number.MAX_SAFE_INTEGER, so Number(v) would silently truncate.
-  const selected = props.availableAgents.find((a) => String(a.id) === v)
+  // Keep the id as a string — Snowflake IDs exceed Number.MAX_SAFE_INTEGER,
+  // so a numeric round-trip would silently truncate.
   patch({
-    agentId: v,
-    // Kept as a denormalized label for the canvas node; runtime resolves by agentId.
-    agentName: selected?.name,
+    agentId: String(value),
+    // Denormalized label for the canvas node; runtime resolves by agentId.
+    agentName: agent?.name,
   })
 }
 
@@ -588,12 +578,6 @@ function onDispatchTargetInput(channelType: string, raw: string) {
   font-family: 'JetBrains Mono', Consolas, monospace;
   font-size: 11.5px;
 }
-.agent-picker {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-.agent-picker .mc-input { flex: 1; min-width: 0; }
 .channel-picker {
   display: grid;
   gap: 6px;

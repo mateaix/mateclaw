@@ -164,6 +164,10 @@ export const conversationApi = {
     http.delete(`/conversations/${conversationId}/messages`),
   rename: (conversationId: string, title: string) =>
     http.put(`/conversations/${conversationId}/title`, { title }),
+  setPinned: (conversationId: string, pinned: boolean) =>
+    http.put(`/conversations/${conversationId}/pin`, { pinned }),
+  batchDelete: (conversationIds: string[]) =>
+    http.post('/conversations/batch-delete', { conversationIds }),
 }
 
 // ==================== Skill ====================
@@ -229,8 +233,8 @@ export const activityApi = {
     http.get('/activity/feed', { params }),
 }
 
-// ==================== Backstage (admin runtime view) ====================
-export interface BackstageRunCard {
+// ==================== Live (admin runtime view) ====================
+export interface LiveRunCard {
   conversationId: string
   agentId: number | null
   agentName: string | null
@@ -252,7 +256,7 @@ export interface BackstageRunCard {
   subagentCount: number
 }
 
-export interface BackstageSubagentCard {
+export interface LiveSubagentCard {
   subagentId: string
   parentConversationId: string | null
   childConversationId: string | null
@@ -267,7 +271,7 @@ export interface BackstageSubagentCard {
   ageMs: number
 }
 
-export interface BackstageSummary {
+export interface LiveSummary {
   running: number
   stuck: number
   orphan: number
@@ -275,15 +279,15 @@ export interface BackstageSummary {
   subagentsActive: number
 }
 
-export interface BackstageSnapshot {
-  summary: BackstageSummary
-  runs: BackstageRunCard[]
-  subagents: BackstageSubagentCard[]
+export interface LiveSnapshot {
+  summary: LiveSummary
+  runs: LiveRunCard[]
+  subagents: LiveSubagentCard[]
   timestamp: number
 }
 
-export const backstageApi = {
-  snapshot: () => http.get<{ data: BackstageSnapshot }>('/admin/agent-runtime/snapshot'),
+export const liveApi = {
+  snapshot: () => http.get<{ data: LiveSnapshot }>('/admin/agent-runtime/snapshot'),
   stop: (conversationId: string) =>
     http.post(`/admin/agent-runtime/runs/${encodeURIComponent(conversationId)}/stop`),
   recycle: (conversationId: string) =>
@@ -583,6 +587,44 @@ export const agentContextApi = {
     http.get(`/agents/${agentId}/workspace/prompt-files`),
   setPromptFiles: (agentId: string | number, files: string[]) =>
     http.put(`/agents/${agentId}/workspace/prompt-files`, { files }),
+
+  // Memory snapshot — export downloads a ZIP via native fetch (axios R<T>
+  // interceptor would mis-handle the binary body); import + preview go
+  // through axios with multipart so the standard auth / workspace headers
+  // flow automatically.
+  exportMemorySnapshot: async (agentId: string | number): Promise<Blob> => {
+    const token = localStorage.getItem('token')
+    const workspaceId = localStorage.getItem('mc-workspace-id')
+    const headers: Record<string, string> = {}
+    if (token) headers.Authorization = `Bearer ${token}`
+    if (workspaceId) headers['X-Workspace-Id'] = workspaceId
+    const url = `/api/v1/agents/${agentId}/workspace/memory/export`
+    const response = await fetch(url, { headers })
+    if (!response.ok) {
+      // Try to parse the standard R<T> error envelope for a useful message.
+      let detail = `HTTP ${response.status}`
+      try {
+        const body = await response.json()
+        if (body && typeof body.msg === 'string') detail = body.msg
+      } catch { /* ignore — non-JSON body */ }
+      throw new Error(detail)
+    }
+    return response.blob()
+  },
+  previewImportMemorySnapshot: (agentId: string | number, file: File) => {
+    const form = new FormData()
+    form.append('file', file)
+    return http.post(`/agents/${agentId}/workspace/memory/import/preview`, form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+  },
+  applyImportMemorySnapshot: (agentId: string | number, file: File) => {
+    const form = new FormData()
+    form.append('file', file)
+    return http.post(`/agents/${agentId}/workspace/memory/import`, form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+  },
 }
 
 // ==================== Security ====================

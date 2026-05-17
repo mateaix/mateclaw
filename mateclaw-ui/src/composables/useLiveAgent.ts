@@ -1,18 +1,18 @@
 /**
- * Shared display helpers for the Backstage page and its child components.
+ * Shared display helpers for the Live runtime view and its child components.
  * Pure formatting and classification — no API calls, no shared state.
  *
- * The parent (Backstage.vue) and the focus panel both render agent cards
- * with avatars, status rings, human sentences, and elapsed-time strings;
- * keeping these in one place avoids drift between the two surfaces when
- * a status string or ring rule changes.
+ * The live panel and the focus panel both render agent cards with avatars,
+ * status rings, human sentences, and elapsed-time strings; keeping these in
+ * one place avoids drift between the two surfaces when a status string or
+ * ring rule changes.
  */
 import { useI18n } from 'vue-i18n'
-import type { BackstageRunCard, BackstageSubagentCard } from '@/api'
+import type { LiveRunCard, LiveSubagentCard } from '@/api'
 
-type AnyRun = BackstageRunCard | BackstageSubagentCard
+type AnyRun = LiveRunCard | LiveSubagentCard
 
-export function useBackstageAgent() {
+export function useLiveAgent() {
   const { t } = useI18n()
 
   function avatarLetter(run: AnyRun): string {
@@ -47,7 +47,7 @@ export function useBackstageAgent() {
    * to healthy — which is what you'd want for a helper that's still around.
    */
   function ringClass(run: AnyRun): Record<string, boolean> {
-    const r = run as BackstageRunCard
+    const r = run as LiveRunCard
     if (r.stuckReason) return { 'ring-stuck': true }
     if (r.orphan) return { 'ring-orphan': true }
     if (r.firstTokenReceived === false && r.ageMs < 30_000) return { 'ring-thinking': true }
@@ -55,10 +55,10 @@ export function useBackstageAgent() {
   }
 
   function dotTitle(run: AnyRun): string {
-    const r = run as BackstageRunCard
-    if (r.stuckReason) return t('backstage.dotTitle.stuck')
-    if (r.orphan) return t('backstage.dotTitle.orphan')
-    return t('backstage.dotTitle.healthy')
+    const r = run as LiveRunCard
+    if (r.stuckReason) return t('live.dotTitle.stuck')
+    if (r.orphan) return t('live.dotTitle.orphan')
+    return t('live.dotTitle.healthy')
   }
 
   /**
@@ -69,33 +69,33 @@ export function useBackstageAgent() {
    * stuckCallout (used in the focus panel) is the one place that still
    * mentions the tool name, because there it lives in a long-form alert.
    */
-  function humanSentence(run: BackstageRunCard): string {
-    if (run.stuckReason === 'tool_silent') return t('backstage.saying.toolSilentBare')
-    if (run.stuckReason === 'idle_silent') return t('backstage.saying.idleSilent')
-    if (run.stuckReason === 'hard_cap') return t('backstage.saying.hardCap')
-    if (run.currentPhase === 'awaiting_approval') return t('backstage.saying.awaitingApproval')
-    if (run.runningToolName) return t('backstage.saying.usingToolBare')
-    if (run.currentPhase === 'executing_tool') return t('backstage.saying.usingSomething')
-    if (run.currentPhase === 'summarizing') return t('backstage.saying.wrappingUp')
-    if (run.currentPhase === 'planning') return t('backstage.saying.planning')
-    if (!run.firstTokenReceived) return t('backstage.saying.thinking')
-    return t('backstage.saying.replying')
+  function humanSentence(run: LiveRunCard): string {
+    if (run.stuckReason === 'tool_silent') return t('live.saying.toolSilentBare')
+    if (run.stuckReason === 'idle_silent') return t('live.saying.idleSilent')
+    if (run.stuckReason === 'hard_cap') return t('live.saying.hardCap')
+    if (run.currentPhase === 'awaiting_approval') return t('live.saying.awaitingApproval')
+    if (run.runningToolName) return t('live.saying.usingToolBare')
+    if (run.currentPhase === 'executing_tool') return t('live.saying.usingSomething')
+    if (run.currentPhase === 'summarizing') return t('live.saying.wrappingUp')
+    if (run.currentPhase === 'planning') return t('live.saying.planning')
+    if (!run.firstTokenReceived) return t('live.saying.thinking')
+    return t('live.saying.replying')
   }
 
   function formatAge(ms: number): string {
-    if (ms < 1500) return t('backstage.time.justNow')
+    if (ms < 1500) return t('live.time.justNow')
     const sec = Math.floor(ms / 1000)
-    if (sec < 60) return t('backstage.time.seconds', { n: sec })
+    if (sec < 60) return t('live.time.seconds', { n: sec })
     const min = Math.floor(sec / 60)
-    if (min < 60) return t('backstage.time.minutes', { n: min, s: sec % 60 })
+    if (min < 60) return t('live.time.minutes', { n: min, s: sec % 60 })
     const hr = Math.floor(min / 60)
-    return t('backstage.time.hours', { n: hr, m: min % 60 })
+    return t('live.time.hours', { n: hr, m: min % 60 })
   }
 
-  function stuckCallout(run: BackstageRunCard): string {
-    if (run.stuckReason === 'tool_silent') return t('backstage.callout.toolSilent', { tool: run.runningToolName || t('backstage.aTool'), time: formatAge(run.msSinceLastEvent) })
-    if (run.stuckReason === 'idle_silent') return t('backstage.callout.idleSilent', { time: formatAge(run.msSinceLastEvent) })
-    return t('backstage.callout.hardCap', { time: formatAge(run.ageMs) })
+  function stuckCallout(run: LiveRunCard): string {
+    if (run.stuckReason === 'tool_silent') return t('live.callout.toolSilent', { tool: run.runningToolName || t('live.aTool'), time: formatAge(run.msSinceLastEvent) })
+    if (run.stuckReason === 'idle_silent') return t('live.callout.idleSilent', { time: formatAge(run.msSinceLastEvent) })
+    return t('live.callout.hardCap', { time: formatAge(run.ageMs) })
   }
 
   return {

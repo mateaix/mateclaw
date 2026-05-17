@@ -40,10 +40,10 @@ const router = createRouter({
           meta: { title: 'Agents', requiredCapability: 'manage:agents' },
         },
         {
+          // Live runtime view folded into the Agents page as a sub-view.
+          // Kept as a redirect so old links / bookmarks still resolve.
           path: 'backstage',
-          name: 'Backstage',
-          component: () => import('@/views/Backstage.vue'),
-          meta: { title: 'Backstage', requireAdmin: true },
+          redirect: { path: '/agents', query: { view: 'live' } },
         },
         {
           path: 'wiki',

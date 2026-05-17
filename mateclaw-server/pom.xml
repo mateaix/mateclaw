@@ -235,26 +235,26 @@
         <dependency>
             <groupId>com.google.zxing</groupId>
             <artifactId>core</artifactId>
-            <version>3.5.3</version>
+            <version>3.5.4</version>
         </dependency>
         <dependency>
             <groupId>com.google.zxing</groupId>
             <artifactId>javase</artifactId>
-            <version>3.5.3</version>
+            <version>3.5.4</version>
         </dependency>
 
         <!-- ===== Playwright (Browser Automation) ===== -->
         <dependency>
             <groupId>com.microsoft.playwright</groupId>
             <artifactId>playwright</artifactId>
-            <version>1.52.0</version>
+            <version>1.59.0</version>
         </dependency>
 
         <!-- ===== JDA（Discord Bot Gateway WebSocket 长连接） ===== -->
         <dependency>
             <groupId>net.dv8tion</groupId>
             <artifactId>JDA</artifactId>
-            <version>5.2.3</version>
+            <version>6.4.1</version>
             <exclusions>
                 <!-- 排除 audio 相关依赖（MateClaw 不需要语音功能） -->
                 <exclusion>
@@ -274,17 +274,17 @@
         <dependency>
             <groupId>com.slack.api</groupId>
             <artifactId>slack-api-client</artifactId>
-            <version>1.44.2</version>
+            <version>1.48.1</version>
         </dependency>
         <dependency>
             <groupId>com.slack.api</groupId>
             <artifactId>bolt-socket-mode</artifactId>
-            <version>1.44.2</version>
+            <version>1.48.1</version>
         </dependency>
         <dependency>
             <groupId>org.glassfish.tyrus.bundles</groupId>
             <artifactId>tyrus-standalone-client</artifactId>
-            <version>2.2.0</version>
+            <version>2.2.2</version>
         </dependency>
 
         <!-- ===== Apache POI (in-process .docx generation) ===== -->
@@ -309,12 +309,12 @@
         <dependency>
             <groupId>org.apache.xmlgraphics</groupId>
             <artifactId>batik-transcoder</artifactId>
-            <version>1.18</version>
+            <version>1.19</version>
         </dependency>
         <dependency>
             <groupId>org.apache.xmlgraphics</groupId>
             <artifactId>batik-codec</artifactId>
-            <version>1.18</version>
+            <version>1.19</version>
         </dependency>
 
         <!-- ===== jsoup (HTML cleanup for Wiki ingest, RFC-051 PR-1c) ===== -->
@@ -326,7 +326,7 @@
         <dependency>
             <groupId>org.jsoup</groupId>
             <artifactId>jsoup</artifactId>
-            <version>1.18.3</version>
+            <version>1.22.2</version>
         </dependency>
 
         <!-- ===== Apache Tika (RFC-051 PR-?: Java-side last-resort extractor) ===== -->
@@ -345,24 +345,24 @@
         <dependency>
             <groupId>org.apache.tika</groupId>
             <artifactId>tika-core</artifactId>
-            <version>3.0.0</version>
+            <version>3.3.0</version>
         </dependency>
         <dependency>
             <groupId>org.apache.tika</groupId>
             <artifactId>tika-parser-pdf-module</artifactId>
-            <version>3.0.0</version>
+            <version>3.3.0</version>
         </dependency>
         <dependency>
             <groupId>org.apache.tika</groupId>
             <artifactId>tika-parser-microsoft-module</artifactId>
-            <version>3.0.0</version>
+            <version>3.3.0</version>
         </dependency>
 
         <!-- ===== Markdown -> PDF rendering =====
-             Flying Saucer 9.13 ships a single `flying-saucer-pdf` artifact that
-             writes PDF via OpenPDF (LGPL fork of iText 5). It does NOT depend on
+             Flying Saucer ships a single `flying-saucer-pdf` artifact that
+             writes PDF via OpenPDF (LGPL fork of iText). It does NOT depend on
              PDFBox, so it sidesteps a version conflict with the existing
-             pdfbox:3.0.3 dependency. CSS3 paged-media features (@page,
+             pdfbox dependency. CSS3 paged-media features (@page,
              counter(page), counter(pages), @top-center / @bottom-center) are
              supported, which the cover / header / footer rendering relies on.
 
@@ -375,7 +375,7 @@
         <dependency>
             <groupId>org.xhtmlrenderer</groupId>
             <artifactId>flying-saucer-pdf</artifactId>
-            <version>9.13.0</version>
+            <version>10.2.0</version>
         </dependency>
         <dependency>
             <groupId>org.commonmark</groupId>
@@ -445,12 +445,12 @@
         <dependency>
             <groupId>net.javacrumbs.shedlock</groupId>
             <artifactId>shedlock-spring</artifactId>
-            <version>5.16.0</version>
+            <version>7.7.0</version>
         </dependency>
         <dependency>
             <groupId>net.javacrumbs.shedlock</groupId>
             <artifactId>shedlock-provider-jdbc-template</artifactId>
-            <version>5.16.0</version>
+            <version>7.7.0</version>
         </dependency>
 
         <!-- Graph algorithms (community detection, shortest path, centrality)
@@ -458,7 +458,7 @@
         <dependency>
             <groupId>org.jgrapht</groupId>
             <artifactId>jgrapht-core</artifactId>
-            <version>1.5.2</version>
+            <version>1.5.3</version>
         </dependency>
 
         <!-- PDF parsing for inline image extraction (wiki vision-in pipeline).
@@ -467,7 +467,7 @@
         <dependency>
             <groupId>org.apache.pdfbox</groupId>
             <artifactId>pdfbox</artifactId>
-            <version>3.0.3</version>
+            <version>3.0.7</version>
         </dependency>
 
         <!-- Expression language used by the workflow compiler to evaluate
@@ -478,7 +478,7 @@
         <dependency>
             <groupId>io.pebbletemplates</groupId>
             <artifactId>pebble</artifactId>
-            <version>3.2.2</version>
+            <version>4.1.1</version>
         </dependency>
     </dependencies>
 

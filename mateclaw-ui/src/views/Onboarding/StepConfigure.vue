@@ -30,6 +30,7 @@
         :disabled="!selectedModel || applying"
         @click="applyLocalModel"
       >{{ applying ? t('common.loading') : t('onboarding.setDefault') }}</button>
+      <span v-if="applyError" class="test-failed">{{ applyError }}</span>
     </template>
 
     <!-- Cloud path: provider cards -->
@@ -68,16 +69,18 @@
         </div>
         <button
           class="btn-primary"
-          :disabled="!apiKey || saving"
+          :disabled="testResult !== 'success' || saving"
           @click="saveCloudConfig"
         >{{ saving ? t('common.loading') : t('onboarding.saveAndContinue') }}</button>
+        <p v-if="testResult !== 'success'" class="save-hint">{{ t('onboarding.testBeforeSave') }}</p>
+        <span v-if="saveError" class="test-failed">{{ saveError }}</span>
       </div>
     </template>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { modelApi } from '@/api/index'
 
@@ -90,6 +93,7 @@ const loading = ref(false)
 const models = ref<string[]>([])
 const selectedModel = ref('')
 const applying = ref(false)
+const applyError = ref('')
 
 // Cloud path state
 const providers = [
@@ -102,6 +106,14 @@ const apiKey = ref('')
 const testing = ref(false)
 const testResult = ref<'' | 'success' | 'failed'>('')
 const saving = ref(false)
+const saveError = ref('')
+
+// A key or provider edit invalidates the previous connection test, so the
+// user must re-test before the provider can be enabled.
+watch([apiKey, selectedProvider], () => {
+  testResult.value = ''
+  saveError.value = ''
+})
 
 onMounted(async () => {
   if (props.path === 'local') {
@@ -124,12 +136,16 @@ onMounted(async () => {
 async function applyLocalModel() {
   if (!selectedModel.value) return
   applying.value = true
+  applyError.value = ''
   try {
     await modelApi.applyDiscoveredModels('ollama', [selectedModel.value])
+    // Local providers ship disabled — enable Ollama so it appears in the
+    // model dropdown and the chat runtime can route to it.
+    await modelApi.enableProvider('ollama')
     await modelApi.setActive({ providerId: 'ollama', model: selectedModel.value })
     emit('done')
-  } catch {
-    // Handle error silently, user can retry
+  } catch (err) {
+    applyError.value = err instanceof Error ? err.message : t('onboarding.saveFailed')
   } finally {
     applying.value = false
   }
@@ -139,6 +155,7 @@ async function testConnection() {
   if (!selectedProvider.value || !apiKey.value) return
   testing.value = true
   testResult.value = ''
+  saveError.value = ''
   try {
     // Save key first so test can use it
     await modelApi.updateProviderConfig(selectedProvider.value, { apiKey: apiKey.value })
@@ -154,11 +171,23 @@ async function testConnection() {
 async function saveCloudConfig() {
   if (!selectedProvider.value || !apiKey.value) return
   saving.value = true
+  saveError.value = ''
   try {
-    await modelApi.updateProviderConfig(selectedProvider.value, { apiKey: apiKey.value })
+    const res: any = await modelApi.updateProviderConfig(selectedProvider.value, {
+      apiKey: apiKey.value,
+    })
+    // Cloud providers ship disabled — enable this one so it surfaces in the
+    // model dropdown and the chat runtime can route to it.
+    await modelApi.enableProvider(selectedProvider.value)
+    // Promote one of its models to the active default so the verify step,
+    // and the rest of the app, has a usable model immediately.
+    const firstModel = (res?.data?.models || [])[0]
+    if (firstModel?.id) {
+      await modelApi.setActive({ providerId: selectedProvider.value, model: firstModel.id })
+    }
     emit('done')
-  } catch {
-    // Handle error silently
+  } catch (err) {
+    saveError.value = err instanceof Error ? err.message : t('onboarding.saveFailed')
   } finally {
     saving.value = false
   }
@@ -307,6 +336,12 @@ async function saveCloudConfig() {
   font-size: 13px;
   color: var(--mc-danger);
   font-weight: 500;
+}
+
+.save-hint {
+  font-size: 12px;
+  color: var(--mc-text-tertiary);
+  margin: 0;
 }
 
 .btn-primary {

@@ -47,7 +47,7 @@ class McpSkillBridgeManifestTest {
     void allowedToolsArePrefixed() {
         McpServerEntity server = newServer(42L, "github");
         server.setToolsCacheJson(toolsJson("create_issue", "list_issues"));
-        when(mcpServerService.listEnabled()).thenReturn(List.of(server));
+        when(mcpServerService.listAll()).thenReturn(List.of(server));
 
         SkillEntity entity = bridge.listMcpDerivedSkillEntities().get(0);
 
@@ -65,7 +65,7 @@ class McpSkillBridgeManifestTest {
     void readsFromCacheFirst() {
         McpServerEntity server = newServer(42L, "github");
         server.setToolsCacheJson(toolsJson("create_issue"));
-        when(mcpServerService.listEnabled()).thenReturn(List.of(server));
+        when(mcpServerService.listAll()).thenReturn(List.of(server));
 
         bridge.listMcpDerivedSkillEntities();
 
@@ -77,7 +77,7 @@ class McpSkillBridgeManifestTest {
     void fallsBackToLiveWhenCacheMissing() {
         McpServerEntity server = newServer(42L, "github");
         server.setToolsCacheJson(null); // first-ever connect just happened, cache not yet written
-        when(mcpServerService.listEnabled()).thenReturn(List.of(server));
+        when(mcpServerService.listAll()).thenReturn(List.of(server));
         when(mcpClientManager.getServerTools(42L)).thenReturn(List.of(
                 fakeTool("create_issue"),
                 fakeTool("list_issues")));
@@ -94,7 +94,7 @@ class McpSkillBridgeManifestTest {
         McpServerEntity server = newServer(42L, "github");
         server.setToolsCacheJson("");
         server.setLastStatus("disconnected");
-        when(mcpServerService.listEnabled()).thenReturn(List.of(server));
+        when(mcpServerService.listAll()).thenReturn(List.of(server));
         when(mcpClientManager.getServerTools(42L)).thenReturn(List.of());
 
         SkillEntity entity = bridge.listMcpDerivedSkillEntities().get(0);
@@ -150,7 +150,7 @@ class McpSkillBridgeManifestTest {
         McpServerEntity b = newServer(43L, "客户档案信息查询服务");
         a.setToolsCacheJson(toolsJson("search"));
         b.setToolsCacheJson(toolsJson("search"));
-        when(mcpServerService.listEnabled()).thenReturn(List.of(a, b));
+        when(mcpServerService.listAll()).thenReturn(List.of(a, b));
 
         List<SkillEntity> entities = bridge.listMcpDerivedSkillEntities();
 
@@ -167,7 +167,7 @@ class McpSkillBridgeManifestTest {
     void asciiNamePreservesExistingSlug() {
         McpServerEntity server = newServer(42L, "GitHub");
         server.setToolsCacheJson(toolsJson("create_issue"));
-        when(mcpServerService.listEnabled()).thenReturn(List.of(server));
+        when(mcpServerService.listAll()).thenReturn(List.of(server));
 
         SkillEntity entity = bridge.listMcpDerivedSkillEntities().get(0);
 
@@ -181,7 +181,7 @@ class McpSkillBridgeManifestTest {
         a.setToolsCacheJson(toolsJson("search"));
         McpServerEntity b = newServer(43L, "filesystem");
         b.setToolsCacheJson(toolsJson("search"));
-        when(mcpServerService.listEnabled()).thenReturn(List.of(a, b));
+        when(mcpServerService.listAll()).thenReturn(List.of(a, b));
 
         List<SkillEntity> entities = bridge.listMcpDerivedSkillEntities();
 

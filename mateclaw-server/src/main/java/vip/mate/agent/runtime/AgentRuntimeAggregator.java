@@ -19,7 +19,7 @@ import java.util.stream.Collectors;
 
 /**
  * Joins the live in-memory views ({@link ChatStreamTracker}, {@link SubagentRegistry})
- * with agent metadata so the admin Backstage UI can render one card per
+ * with agent metadata so the admin Live view can render one card per
  * working agent without making the frontend traverse three independent
  * services.
  *

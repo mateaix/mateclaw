@@ -1,164 +1,147 @@
 <template>
-  <div class="mc-page-shell">
-    <div class="mc-page-frame">
-      <div class="mc-page-inner backstage-page">
-        <!-- Header: one sentence, no jargon -->
-        <div class="mc-page-header">
-          <div class="header-lead">
-            <div class="mc-page-kicker">{{ t('backstage.kicker') }}</div>
-            <h1 class="mc-page-title">{{ t('backstage.title') }}</h1>
-            <p class="mc-page-desc">{{ headlineMessage }}</p>
-            <div v-if="statusSegments.length" class="head-meta">
-              <template v-for="(seg, i) in statusSegments" :key="seg.key">
-                <span class="head-meta-sep" v-if="i > 0">·</span>
-                <span class="head-meta-seg" :class="seg.tone">{{ seg.text }}</span>
-              </template>
-            </div>
-          </div>
-          <div class="header-actions">
-            <button
-              class="chip-btn"
-              :class="{ 'is-paused': !autoRefresh }"
-              :title="autoRefresh ? t('backstage.actions.pauseRefresh') : t('backstage.actions.resumeRefresh')"
-              @click="toggleAutoRefresh"
-            >
-              <span class="chip-pulse" v-if="autoRefresh"></span>
-              <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <polygon points="5 3 19 12 5 21 5 3"/>
-              </svg>
-              <span>{{ autoRefresh ? t('backstage.actions.live') : t('backstage.actions.paused') }}</span>
-            </button>
-            <button
-              v-if="(snapshot?.summary?.stuck ?? 0) > 0"
-              class="chip-btn chip-btn-warm"
-              @click="confirmSweep"
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M3 6h18"/>
-                <path d="M19 6l-1.2 14a2 2 0 0 1-2 1.8H8.2a2 2 0 0 1-2-1.8L5 6"/>
-                <path d="M10 11v6M14 11v6"/>
-              </svg>
-              {{ t('backstage.actions.tidyUp') }}
-            </button>
-          </div>
-        </div>
+  <div class="live-panel">
+    <!-- Toolbar: live toggle (left) + status filters + sweep (right) -->
+    <div class="live-toolbar">
+      <button
+        class="chip-btn"
+        :class="{ 'is-paused': !autoRefresh }"
+        :title="autoRefresh ? t('live.actions.pauseRefresh') : t('live.actions.resumeRefresh')"
+        @click="toggleAutoRefresh"
+      >
+        <span class="chip-pulse" v-if="autoRefresh"></span>
+        <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polygon points="5 3 19 12 5 21 5 3"/>
+        </svg>
+        <span>{{ autoRefresh ? t('live.actions.live') : t('live.actions.paused') }}</span>
+      </button>
 
-        <!-- Loading -->
-        <div v-if="isInitialLoading" class="cards-grid">
-          <div v-for="i in 3" :key="i" class="agent-card mc-surface-card agent-card-skeleton">
-            <el-skeleton :rows="2" animated />
-          </div>
-        </div>
+      <div v-if="showFilterRow" class="filter-row">
+        <button
+          v-for="opt in filterOptions"
+          :key="opt.key"
+          class="filter-chip"
+          :class="{ 'is-active': activeFilter === opt.key, [`tone-${opt.tone}`]: true }"
+          @click="activeFilter = opt.key"
+        >
+          <span class="filter-chip-label">{{ opt.label }}</span>
+          <span class="filter-chip-count">{{ opt.count }}</span>
+        </button>
+      </div>
 
-        <!-- Empty: nothing to see -->
-        <div v-else-if="snapshot && snapshot.runs.length === 0" class="empty-still">
-          <div class="empty-orb"></div>
-          <div class="empty-line">{{ t('backstage.empty.allQuiet') }}</div>
-          <div class="empty-hint">{{ t('backstage.empty.hint') }}</div>
-        </div>
+      <div class="toolbar-spacer"></div>
 
-        <!-- Active runs: filter row (when there's variety) + cards grid -->
-        <template v-else>
-          <div v-if="showFilterRow" class="filter-row">
-            <button
-              v-for="opt in filterOptions"
-              :key="opt.key"
-              class="filter-chip"
-              :class="{ 'is-active': activeFilter === opt.key, [`tone-${opt.tone}`]: true }"
-              @click="activeFilter = opt.key"
-            >
-              <span class="filter-chip-label">{{ opt.label }}</span>
-              <span class="filter-chip-count">{{ opt.count }}</span>
-            </button>
-          </div>
+      <button
+        v-if="(snapshot?.summary?.stuck ?? 0) > 0"
+        class="chip-btn chip-btn-warm"
+        @click="confirmSweep"
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3 6h18"/>
+          <path d="M19 6l-1.2 14a2 2 0 0 1-2 1.8H8.2a2 2 0 0 1-2-1.8L5 6"/>
+          <path d="M10 11v6M14 11v6"/>
+        </svg>
+        {{ t('live.actions.tidyUp') }}
+      </button>
+    </div>
 
-          <div class="cards-grid">
-            <article
-              v-for="run in visibleRuns"
-              :key="run.conversationId"
-              class="agent-card mc-surface-card"
-              :class="cardClass(run)"
-              @click="openDetail(run)"
-            >
-              <!-- Top: avatar (with status ring) + name -->
-              <div class="agent-card-top">
-                <div class="agent-avatar-wrap" :class="ringClass(run)" :title="dotTitle(run)">
-                  <div class="agent-avatar" :style="avatarBgStyle(run)">
-                    <SkillIcon
-                      v-if="run.agentIcon"
-                      :value="run.agentIcon"
-                      :size="34"
-                      fallback="🤖"
-                    />
-                    <span v-else class="agent-avatar-letter">{{ avatarLetter(run) }}</span>
-                  </div>
-                </div>
-                <div class="agent-id">
-                  <div class="agent-name">{{ run.agentName || t('backstage.unknownAgent') }}</div>
-                  <div class="agent-owner" v-if="run.username">@{{ run.username }}</div>
-                </div>
-              </div>
-
-              <!-- Status sentence + (when present) the tool chip standing
-                   on its own so a long tool name doesn't get ellipsis-eaten. -->
-              <div class="agent-saying-row">
-                <span class="agent-saying">{{ humanSentence(run) }}</span>
-                <span v-if="run.runningToolName" class="tool-chip" :title="run.runningToolName">
-                  {{ run.runningToolName }}
-                </span>
-              </div>
-
-              <!-- Meta: just the time + orphan hint (id moved to detail) -->
-              <div class="agent-meta-row">
-                <span class="meta-time">{{ formatAge(run.ageMs) }}</span>
-                <span v-if="run.orphan && !run.stuckReason" class="meta-pill meta-pill-orphan" :title="t('backstage.orphanHint')">
-                  {{ t('backstage.orphan') }}
-                </span>
-              </div>
-              <div class="agent-bar" v-if="showBar(run)">
-                <div class="bar-fill" :style="progressFillStyle(run)"></div>
-              </div>
-
-              <!-- Foot: subagent stack (left) + action hierarchy (right) -->
-              <div class="agent-card-foot">
-                <div class="subagent-stack" v-if="childrenOf(run).length > 0">
-                  <div
-                    v-for="sub in childrenOf(run).slice(0, 3)"
-                    :key="sub.subagentId"
-                    class="subagent-chip"
-                    :style="avatarBgStyle(sub)"
-                    :title="sub.agentName || sub.subagentId"
-                  >
-                    <SkillIcon v-if="sub.agentIcon" :value="sub.agentIcon" :size="14" fallback="🤖" />
-                    <span v-else class="sub-chip-letter">{{ avatarLetter(sub) }}</span>
-                  </div>
-                  <div v-if="childrenOf(run).length > 3" class="subagent-chip subagent-overflow">
-                    +{{ childrenOf(run).length - 3 }}
-                  </div>
-                </div>
-                <div class="card-foot-actions">
-                  <button
-                    class="card-action card-action-soft"
-                    @click.stop="confirmStop(run)"
-                    :title="t('backstage.actions.stopHint')"
-                  >{{ t('backstage.actions.stop') }}</button>
-                  <button
-                    v-if="run.stuckReason"
-                    class="card-action card-action-strong"
-                    @click.stop="confirmRecycle(run)"
-                    :title="t('backstage.actions.endHint')"
-                  >{{ t('backstage.actions.endIt') }}</button>
-                </div>
-              </div>
-            </article>
-          </div>
-        </template>
+    <!-- Loading -->
+    <div v-if="isInitialLoading" class="cards-grid">
+      <div v-for="i in 3" :key="i" class="agent-card mc-surface-card agent-card-skeleton">
+        <el-skeleton :rows="2" animated />
       </div>
     </div>
 
+    <!-- Empty: nothing to see -->
+    <div v-else-if="snapshot && snapshot.runs.length === 0" class="empty-still">
+      <div class="empty-orb"></div>
+      <div class="empty-line">{{ t('live.empty.allQuiet') }}</div>
+      <div class="empty-hint">{{ t('live.empty.hint') }}</div>
+    </div>
+
+    <!-- Active runs -->
+    <div v-else class="cards-grid">
+      <article
+        v-for="run in visibleRuns"
+        :key="run.conversationId"
+        class="agent-card mc-surface-card"
+        :class="cardClass(run)"
+        @click="openDetail(run)"
+      >
+        <!-- Top: avatar (with status ring) + name -->
+        <div class="agent-card-top">
+          <div class="agent-avatar-wrap" :class="ringClass(run)" :title="dotTitle(run)">
+            <div class="agent-avatar" :style="avatarBgStyle(run)">
+              <SkillIcon
+                v-if="run.agentIcon"
+                :value="run.agentIcon"
+                :size="34"
+                fallback="🤖"
+              />
+              <span v-else class="agent-avatar-letter">{{ avatarLetter(run) }}</span>
+            </div>
+          </div>
+          <div class="agent-id">
+            <div class="agent-name">{{ run.agentName || t('live.unknownAgent') }}</div>
+            <div class="agent-owner" v-if="run.username">@{{ run.username }}</div>
+          </div>
+        </div>
+
+        <!-- Status sentence + (when present) the tool chip standing
+             on its own so a long tool name doesn't get ellipsis-eaten. -->
+        <div class="agent-saying-row">
+          <span class="agent-saying">{{ humanSentence(run) }}</span>
+          <span v-if="run.runningToolName" class="tool-chip" :title="run.runningToolName">
+            {{ run.runningToolName }}
+          </span>
+        </div>
+
+        <!-- Meta: just the time + orphan hint (id moved to detail) -->
+        <div class="agent-meta-row">
+          <span class="meta-time">{{ formatAge(run.ageMs) }}</span>
+          <span v-if="run.orphan && !run.stuckReason" class="meta-pill meta-pill-orphan" :title="t('live.orphanHint')">
+            {{ t('live.orphan') }}
+          </span>
+        </div>
+        <div class="agent-bar" v-if="showBar(run)">
+          <div class="bar-fill" :style="progressFillStyle(run)"></div>
+        </div>
+
+        <!-- Foot: subagent stack (left) + action hierarchy (right) -->
+        <div class="agent-card-foot">
+          <div class="subagent-stack" v-if="childrenOf(run).length > 0">
+            <div
+              v-for="sub in childrenOf(run).slice(0, 3)"
+              :key="sub.subagentId"
+              class="subagent-chip"
+              :style="avatarBgStyle(sub)"
+              :title="sub.agentName || sub.subagentId"
+            >
+              <SkillIcon v-if="sub.agentIcon" :value="sub.agentIcon" :size="14" fallback="🤖" />
+              <span v-else class="sub-chip-letter">{{ avatarLetter(sub) }}</span>
+            </div>
+            <div v-if="childrenOf(run).length > 3" class="subagent-chip subagent-overflow">
+              +{{ childrenOf(run).length - 3 }}
+            </div>
+          </div>
+          <div class="card-foot-actions">
+            <button
+              class="card-action card-action-soft"
+              @click.stop="confirmStop(run)"
+              :title="t('live.actions.stopHint')"
+            >{{ t('live.actions.stop') }}</button>
+            <button
+              v-if="run.stuckReason"
+              class="card-action card-action-strong"
+              @click.stop="confirmRecycle(run)"
+              :title="t('live.actions.endHint')"
+            >{{ t('live.actions.endIt') }}</button>
+          </div>
+        </div>
+      </article>
+    </div>
   </div>
 
-  <BackstageFocusPanel
+  <LiveFocusPanel
     :open="drawerOpen"
     :run="detail"
     :subagents="detail ? childrenOf(detail) : []"
@@ -174,10 +157,10 @@ import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { mcToast } from '@/composables/useMcToast'
 import SkillIcon from '@/components/common/SkillIcon.vue'
-import BackstageFocusPanel from '@/components/backstage/BackstageFocusPanel.vue'
-import { useBackstageAgent } from '@/composables/useBackstageAgent'
+import LiveFocusPanel from '@/components/live/LiveFocusPanel.vue'
+import { useLiveAgent } from '@/composables/useLiveAgent'
 import { mcConfirm } from '@/components/common/useConfirm'
-import { backstageApi, type BackstageSnapshot, type BackstageRunCard, type BackstageSubagentCard } from '@/api'
+import { liveApi, type LiveSnapshot, type LiveRunCard, type LiveSubagentCard } from '@/api'
 
 const { t } = useI18n()
 const {
@@ -187,50 +170,25 @@ const {
   dotTitle,
   humanSentence,
   formatAge,
-} = useBackstageAgent()
+} = useLiveAgent()
 
 type FilterKey = 'all' | 'working' | 'attention' | 'quiet'
 
-const snapshot = ref<BackstageSnapshot | null>(null)
+const snapshot = ref<LiveSnapshot | null>(null)
 const isInitialLoading = ref(true)
 const autoRefresh = ref(true)
 const drawerOpen = ref(false)
-const detail = ref<BackstageRunCard | null>(null)
+const detail = ref<LiveRunCard | null>(null)
 const activeFilter = ref<FilterKey>('all')
 let timer: ReturnType<typeof setInterval> | null = null
 
-const headlineMessage = computed(() => {
-  if (!snapshot.value) return t('backstage.headline.loading')
-  const s = snapshot.value.summary
-  if (s.running === 0) return t('backstage.headline.allQuiet')
-  if (s.stuck > 0) return t('backstage.headline.someoneNeedsAttention', { n: s.stuck })
-  if (s.orphan > 0) return t('backstage.headline.workingAlone', { running: s.running, orphan: s.orphan })
-  return t('backstage.headline.working', { n: s.running })
-})
-
-/**
- * Runbook-style monospace status line. Each segment is a small fact, joined
- * with a `·` separator. Tone hints colour subtly (warn / accent / muted).
- * Hidden when nothing is running — empty state already says it best.
- */
-const statusSegments = computed<{ key: string; text: string; tone: 'muted' | 'accent' | 'warn' }[]>(() => {
-  const s = snapshot.value?.summary
-  if (!s || s.running === 0) return []
-  const segs: { key: string; text: string; tone: 'muted' | 'accent' | 'warn' }[] = []
-  segs.push({ key: 'running', text: t('backstage.status.running', { n: s.running }), tone: 'accent' })
-  if (s.stuck > 0) segs.push({ key: 'stuck', text: t('backstage.status.stuck', { n: s.stuck }), tone: 'warn' })
-  if (s.orphan > 0) segs.push({ key: 'orphan', text: t('backstage.status.orphan', { n: s.orphan }), tone: 'muted' })
-  if (s.subagentsActive > 0) segs.push({ key: 'helpers', text: t('backstage.status.helpers', { n: s.subagentsActive }), tone: 'muted' })
-  return segs
-})
-
-function isWorking(r: BackstageRunCard): boolean {
+function isWorking(r: LiveRunCard): boolean {
   return !r.stuckReason && !r.orphan
 }
-function isAttention(r: BackstageRunCard): boolean {
+function isAttention(r: LiveRunCard): boolean {
   return !!r.stuckReason
 }
-function isQuiet(r: BackstageRunCard): boolean {
+function isQuiet(r: LiveRunCard): boolean {
   return r.orphan && !r.stuckReason
 }
 
@@ -245,11 +203,11 @@ const filterOptions = computed(() => {
   // Always show All; only show secondary chips that have at least one match —
   // an empty chip is dead pixels.
   const opts: { key: FilterKey; label: string; count: number; tone: string }[] = [
-    { key: 'all', label: t('backstage.filters.all'), count: counts.all, tone: 'neutral' },
+    { key: 'all', label: t('live.filters.all'), count: counts.all, tone: 'neutral' },
   ]
-  if (counts.working > 0) opts.push({ key: 'working', label: t('backstage.filters.working'), count: counts.working, tone: 'good' })
-  if (counts.attention > 0) opts.push({ key: 'attention', label: t('backstage.filters.attention'), count: counts.attention, tone: 'warn' })
-  if (counts.quiet > 0) opts.push({ key: 'quiet', label: t('backstage.filters.quiet'), count: counts.quiet, tone: 'muted' })
+  if (counts.working > 0) opts.push({ key: 'working', label: t('live.filters.working'), count: counts.working, tone: 'good' })
+  if (counts.attention > 0) opts.push({ key: 'attention', label: t('live.filters.attention'), count: counts.attention, tone: 'warn' })
+  if (counts.quiet > 0) opts.push({ key: 'quiet', label: t('live.filters.quiet'), count: counts.quiet, tone: 'muted' })
   return opts
 })
 
@@ -272,13 +230,13 @@ const showFilterRow = computed(() => {
  * Without this, runs are listed in whatever order the snapshot returned
  * them, and the one card you actually need to look at can be 4 rows down.
  */
-function tierOf(r: BackstageRunCard): number {
+function tierOf(r: LiveRunCard): number {
   if (r.stuckReason) return 0
   if (r.orphan) return 1
   return 2
 }
 
-const visibleRuns = computed<BackstageRunCard[]>(() => {
+const visibleRuns = computed<LiveRunCard[]>(() => {
   const runs = snapshot.value?.runs ?? []
   const filtered = (() => {
     switch (activeFilter.value) {
@@ -297,7 +255,7 @@ const visibleRuns = computed<BackstageRunCard[]>(() => {
 })
 
 // If the filter the user picked no longer matches any rows (e.g., the stuck
-// run resolved itself between refreshes), drop back to All so the page
+// run resolved itself between refreshes), drop back to All so the panel
 // doesn't go inexplicably empty.
 watch(filterOptions, opts => {
   if (!opts.some(o => o.key === activeFilter.value)) {
@@ -305,7 +263,7 @@ watch(filterOptions, opts => {
   }
 })
 
-function cardClass(run: BackstageRunCard) {
+function cardClass(run: LiveRunCard) {
   return {
     'is-stuck': !!run.stuckReason,
     'is-orphan': run.orphan && !run.stuckReason,
@@ -318,21 +276,21 @@ function cardClass(run: BackstageRunCard) {
  * starts to matter. Under 30s is "barely started" — rendering 1px of bar
  * adds visual noise without informing the user.
  */
-function showBar(run: BackstageRunCard): boolean {
+function showBar(run: LiveRunCard): boolean {
   return run.ageMs > 30_000
 }
 
-function progressFillStyle(run: BackstageRunCard) {
+function progressFillStyle(run: LiveRunCard) {
   // Map age to 0..100% over the 5-minute window. Beyond that we just stay full.
   const pct = Math.min(100, ((run.ageMs - 30_000) / 270_000) * 100)
   return { width: `${Math.max(4, pct)}%` }
 }
 
-function childrenOf(run: BackstageRunCard): BackstageSubagentCard[] {
+function childrenOf(run: LiveRunCard): LiveSubagentCard[] {
   return snapshot.value?.subagents.filter(s => s.parentConversationId === run.conversationId) ?? []
 }
 
-function openDetail(run: BackstageRunCard) {
+function openDetail(run: LiveRunCard) {
   // Clicking the same card while the panel is open closes it — toggle.
   // Otherwise swap content and (re)open. The focus panel handles its own
   // enter/leave animations, so all we manage here is the open boolean and
@@ -351,14 +309,14 @@ function closeDetail() {
 
 async function refresh() {
   try {
-    const res: any = await backstageApi.snapshot()
-    snapshot.value = (res?.data ?? res) as BackstageSnapshot
+    const res: any = await liveApi.snapshot()
+    snapshot.value = (res?.data ?? res) as LiveSnapshot
     if (detail.value && snapshot.value) {
       const fresh = snapshot.value.runs.find(r => r.conversationId === detail.value!.conversationId)
       if (fresh) detail.value = fresh
     }
   } catch (e: any) {
-    if (isInitialLoading.value) mcToast.error(e?.message || t('backstage.errors.loadFailed'))
+    if (isInitialLoading.value) mcToast.error(e?.message || t('live.errors.loadFailed'))
   } finally {
     isInitialLoading.value = false
   }
@@ -375,78 +333,78 @@ function toggleAutoRefresh() {
   }
 }
 
-async function confirmStop(run: BackstageRunCard) {
+async function confirmStop(run: LiveRunCard) {
   const ok = await mcConfirm({
-    title: t('backstage.confirm.stopTitle'),
-    message: t('backstage.confirm.stopBody', { name: run.agentName || t('backstage.unknownAgent') }),
-    confirmText: t('backstage.actions.stop'),
+    title: t('live.confirm.stopTitle'),
+    message: t('live.confirm.stopBody', { name: run.agentName || t('live.unknownAgent') }),
+    confirmText: t('live.actions.stop'),
     cancelText: t('common.cancel'),
     tone: 'primary',
   })
   if (!ok) return
   try {
-    await backstageApi.stop(run.conversationId)
-    mcToast.success(t('backstage.toast.stopped'))
+    await liveApi.stop(run.conversationId)
+    mcToast.success(t('live.toast.stopped'))
     refresh()
   } catch (e: any) {
-    mcToast.error(e?.message || t('backstage.errors.loadFailed'))
+    mcToast.error(e?.message || t('live.errors.loadFailed'))
   }
 }
 
-async function confirmRecycle(run: BackstageRunCard) {
+async function confirmRecycle(run: LiveRunCard) {
   const ok = await mcConfirm({
-    title: t('backstage.confirm.endTitle', { name: run.agentName || t('backstage.unknownAgent') }),
-    message: t('backstage.confirm.endBody', { name: run.agentName || t('backstage.unknownAgent') }),
-    confirmText: t('backstage.actions.endIt'),
+    title: t('live.confirm.endTitle', { name: run.agentName || t('live.unknownAgent') }),
+    message: t('live.confirm.endBody', { name: run.agentName || t('live.unknownAgent') }),
+    confirmText: t('live.actions.endIt'),
     cancelText: t('common.cancel'),
     tone: 'danger',
   })
   if (!ok) return
   try {
-    await backstageApi.recycle(run.conversationId)
-    mcToast.success(t('backstage.toast.ended'))
+    await liveApi.recycle(run.conversationId)
+    mcToast.success(t('live.toast.ended'))
     drawerOpen.value = false
     refresh()
   } catch (e: any) {
-    mcToast.error(e?.message || t('backstage.errors.loadFailed'))
+    mcToast.error(e?.message || t('live.errors.loadFailed'))
   }
 }
 
-async function confirmInterruptSub(sub: BackstageSubagentCard) {
+async function confirmInterruptSub(sub: LiveSubagentCard) {
   const ok = await mcConfirm({
-    title: t('backstage.confirm.subTitle'),
-    message: t('backstage.confirm.subBody', { name: sub.agentName || sub.subagentId }),
-    confirmText: t('backstage.actions.stop'),
+    title: t('live.confirm.subTitle'),
+    message: t('live.confirm.subBody', { name: sub.agentName || sub.subagentId }),
+    confirmText: t('live.actions.stop'),
     cancelText: t('common.cancel'),
     tone: 'primary',
   })
   if (!ok) return
   try {
-    await backstageApi.interruptSubagent(sub.subagentId)
-    mcToast.success(t('backstage.toast.subStopped'))
+    await liveApi.interruptSubagent(sub.subagentId)
+    mcToast.success(t('live.toast.subStopped'))
     refresh()
   } catch (e: any) {
-    mcToast.error(e?.message || t('backstage.errors.loadFailed'))
+    mcToast.error(e?.message || t('live.errors.loadFailed'))
   }
 }
 
 async function confirmSweep() {
   const stuckCount = snapshot.value?.summary.stuck ?? 0
   const ok = await mcConfirm({
-    title: t('backstage.confirm.sweepTitle'),
-    message: t('backstage.confirm.sweepBody', { n: stuckCount }),
-    confirmText: t('backstage.actions.tidyUp'),
+    title: t('live.confirm.sweepTitle'),
+    message: t('live.confirm.sweepBody', { n: stuckCount }),
+    confirmText: t('live.actions.tidyUp'),
     cancelText: t('common.cancel'),
     tone: 'danger',
   })
   if (!ok) return
   try {
-    const res: any = await backstageApi.sweep()
+    const res: any = await liveApi.sweep()
     const recycled = res?.data?.recycled ?? 0
-    mcToast.success(t('backstage.toast.swept', { n: recycled }))
+    mcToast.success(t('live.toast.swept', { n: recycled }))
     refresh()
   } catch (e: any) {
-    mcToast.error(e?.message || t('backstage.errors.loadFailed'))
+    mcToast.error(e?.message || t('live.errors.loadFailed'))
   }
 }
 
@@ -461,57 +419,22 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-.backstage-page {
+.live-panel {
   --card-radius: 24px;
 }
 
-.header-lead {
-  min-width: 0;
-}
-
-/* ===== Runbook-style monospace status line ===== */
-.head-meta {
+/* ===== Toolbar: live toggle + status filters + sweep ===== */
+.live-toolbar {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
-  margin-top: 14px;
-  font-family: ui-monospace, SFMono-Regular, 'JetBrains Mono', Menlo, Consolas, monospace;
-  font-size: 11.5px;
-  letter-spacing: 0.02em;
-  color: var(--mc-text-tertiary);
-  font-variant-numeric: tabular-nums;
+  gap: 10px;
+  margin-bottom: 18px;
 }
 
-.head-meta-sep {
-  color: var(--mc-border-strong);
-  user-select: none;
-}
-
-html.dark .head-meta-sep {
-  /* Border-strong reads too pale in dark mode for a punctuation glyph. */
-  color: var(--mc-text-tertiary);
-  opacity: 0.45;
-}
-
-.head-meta-seg.muted {
-  color: var(--mc-text-tertiary);
-}
-
-.head-meta-seg.accent {
-  color: hsl(155, 50%, 38%);
-}
-
-html.dark .head-meta-seg.accent {
-  color: hsl(155, 55%, 62%);
-}
-
-.head-meta-seg.warn {
-  color: hsl(20, 75%, 42%);
-}
-
-html.dark .head-meta-seg.warn {
-  color: hsl(28, 80%, 70%);
+.toolbar-spacer {
+  flex: 1;
+  min-width: 0;
 }
 
 /* ===== Filter chip row (kanban-inspired, soft) ===== */
@@ -519,7 +442,6 @@ html.dark .head-meta-seg.warn {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  margin-bottom: 18px;
 }
 
 .filter-chip {
@@ -611,12 +533,6 @@ html.dark .filter-chip.is-active.tone-good {
 }
 
 /* ===== Header chips ===== */
-.header-actions {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-}
-
 .chip-btn {
   display: inline-flex;
   align-items: center;
@@ -1028,10 +944,9 @@ html.dark .agent-card.is-stuck .tool-chip {
 }
 
 /*
- * Subagent stack — overlapping circular avatars, like Linear's assignee
- * column. Up to 3 visible; the rest collapse into a "+N" chip.
- * Replaces the old "{n} 个帮手" pill: subagents are good news, they
- * deserve faces, not a count.
+ * Subagent stack — overlapping circular avatars, like an assignee column.
+ * Up to 3 visible; the rest collapse into a "+N" chip. Subagents are good
+ * news, they deserve faces, not a count.
  */
 .subagent-stack {
   display: inline-flex;
@@ -1155,5 +1070,4 @@ html.dark .card-action-strong {
   font-size: 13px;
   color: var(--mc-text-tertiary);
 }
-
 </style>

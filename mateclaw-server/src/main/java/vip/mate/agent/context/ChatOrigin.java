@@ -33,7 +33,12 @@ public record ChatOrigin(
         @Nullable Long workspaceId,
         @Nullable String workspaceBasePath,
         @Nullable Long channelId,
-        @Nullable ChannelTarget channelTarget
+        @Nullable ChannelTarget channelTarget,
+        // True only when the agent invocation was triggered by the scheduled-job
+        // runner. An explicit discriminator (rather than inferring from
+        // requesterId/channelId) so the runtime can branch on "is this a cron
+        // run" without coupling to factory internals.
+        boolean cronOrigin
 ) {
 
     /** Key used when this origin is wrapped into a Spring AI {@link ToolContext}. */
@@ -41,7 +46,7 @@ public record ChatOrigin(
 
     /** Sentinel used by AgentService default overloads where no origin is supplied. */
     public static final ChatOrigin EMPTY =
-            new ChatOrigin(null, null, "", null, null, null, null);
+            new ChatOrigin(null, null, "", null, null, null, null, false);
 
     // ---------------- Factories per entry point ----------------
 
@@ -51,7 +56,7 @@ public record ChatOrigin(
                                  @Nullable String workspaceBasePath) {
         return new ChatOrigin(null, conversationId,
                 requesterId != null ? requesterId : "",
-                workspaceId, workspaceBasePath, null, null);
+                workspaceId, workspaceBasePath, null, null, false);
     }
 
     public static ChatOrigin cron(@Nullable String conversationId,
@@ -60,25 +65,25 @@ public record ChatOrigin(
                                   @Nullable Long channelId,
                                   @Nullable ChannelTarget target) {
         return new ChatOrigin(null, conversationId, "system",
-                workspaceId, workspaceBasePath, channelId, target);
+                workspaceId, workspaceBasePath, channelId, target, true);
     }
 
     // ---------------- Wither-style updates ----------------
 
     public ChatOrigin withAgent(@Nullable Long newAgentId) {
         return new ChatOrigin(newAgentId, conversationId, requesterId,
-                workspaceId, workspaceBasePath, channelId, channelTarget);
+                workspaceId, workspaceBasePath, channelId, channelTarget, cronOrigin);
     }
 
     public ChatOrigin withWorkspace(@Nullable Long newWorkspaceId,
                                     @Nullable String newWorkspaceBasePath) {
         return new ChatOrigin(agentId, conversationId, requesterId,
-                newWorkspaceId, newWorkspaceBasePath, channelId, channelTarget);
+                newWorkspaceId, newWorkspaceBasePath, channelId, channelTarget, cronOrigin);
     }
 
     public ChatOrigin withConversationId(@Nullable String newConversationId) {
         return new ChatOrigin(agentId, newConversationId, requesterId,
-                workspaceId, workspaceBasePath, channelId, channelTarget);
+                workspaceId, workspaceBasePath, channelId, channelTarget, cronOrigin);
     }
 
     // ---------------- Spring AI ToolContext interop ----------------

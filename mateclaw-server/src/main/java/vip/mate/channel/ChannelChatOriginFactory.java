@@ -37,7 +37,8 @@ public class ChannelChatOriginFactory {
                 /* workspaceId       */ channel.getWorkspaceId(),
                 /* workspaceBasePath */ workspaceBasePath,
                 /* channelId         */ channel.getId(),
-                /* channelTarget     */ target);
+                /* channelTarget     */ target,
+                /* cronOrigin        */ false);
     }
 
     /**

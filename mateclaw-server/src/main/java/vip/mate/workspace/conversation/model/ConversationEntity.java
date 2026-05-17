@@ -48,6 +48,9 @@ public class ConversationEntity {
     /** 父会话 ID（委派场景下，子会话记录其父会话的 conversationId） */
     private String parentConversationId;
 
+    /** Pin flag: 0 = normal, 1 = pinned to the top of the sidebar list */
+    private Integer pinned;
+
     @TableField(fill = FieldFill.INSERT)
     private LocalDateTime createTime;
 

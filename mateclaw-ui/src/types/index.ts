@@ -65,6 +65,7 @@ export interface Conversation {
   status?: 'active' | 'closed'
   streamStatus?: 'idle' | 'running'
   source?: string
+  pinned?: number
   lastActiveTime?: string
   updateTime?: string
   createTime?: string

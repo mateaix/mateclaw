@@ -75,7 +75,7 @@ import { mcToast } from '@/composables/useMcToast'
 import { http } from '@/api'
 import FactTrustBar from './FactTrustBar.vue'
 
-const props = defineProps<{ agentId: number }>()
+const props = defineProps<{ agentId: string | number }>()
 const { t } = useI18n()
 
 const facts = ref<any[]>([])

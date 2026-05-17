@@ -53,11 +53,11 @@
               <span class="nav-icon" v-html="item.icon"></span>
               <span v-if="!effectiveCollapsed" class="nav-label">{{ item.label }}</span>
               <NavBadge
-                v-if="item.path === '/backstage'"
-                :dot="backstageAlertActive"
+                v-if="item.path === '/agents' && isAdminRole"
+                :dot="liveAlertActive"
                 tone="warning"
                 :collapsed="effectiveCollapsed"
-                :title="t('backstage.attention')"
+                :title="t('live.attention')"
               />
               <NavBadge
                 v-else-if="item.path === '/security' && isAdminRole"
@@ -186,6 +186,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { useIsMobile, useMediaQuery } from '@/composables/useBreakpoint'
 import { useI18n } from 'vue-i18n'
 import { useThemeStore } from '@/stores/useThemeStore'
 import { version as appVersion } from '../../../package.json'
@@ -229,46 +230,47 @@ async function fetchHealthStatus() {
   }
 }
 
-// Sidebar attention signals — admin-only. Both `/backstage` (stuck agents)
-// and `/security` (pending approvals) read from a shared 15s poller so
-// multiple consumers don't multiply HTTP traffic.
+// Sidebar attention signals — admin-only. Both `/agents` (stuck agents in the
+// Live view) and `/security` (pending approvals) read from a shared 15s poller
+// so multiple consumers don't multiply HTTP traffic.
 const isAdminRole = computed(() => (localStorage.getItem('role') || 'user') === 'admin')
 const { stuckAgents, pendingApprovals } = useNotificationCenter()
-const backstageAlertActive = computed(() => isAdminRole.value && stuckAgents.value > 0)
+const liveAlertActive = computed(() => isAdminRole.value && stuckAgents.value > 0)
 
 // 移动端状态
-const isMobile = ref(false)
 const mobileMenuOpen = ref(false)
-let mobileQuery: MediaQueryList | null = null
-// 中等屏幕自动折叠（≤1024px）
-let mediumQuery: MediaQueryList | null = null
 const userExplicitCollapse = ref(localStorage.getItem('mc-sidebar-collapsed') === 'true')
 
-function handleMobileChange(e: MediaQueryListEvent | MediaQueryList) {
-  isMobile.value = e.matches
-  if (!e.matches) mobileMenuOpen.value = false
-  if (e.matches) footerPanelOpen.value = false
-}
+const isMobile = useIsMobile()
+// 中等屏幕自动折叠（≤1024px）
+const compactViewport = useMediaQuery('(max-width: 1024px)')
 
-function handleMediumChange(e: MediaQueryListEvent | MediaQueryList) {
-  if (e.matches && !userExplicitCollapse.value) {
-    sidebarCollapsed.value = true
-  } else if (!e.matches && !userExplicitCollapse.value) {
-    sidebarCollapsed.value = false
-  }
-}
+// Mobile breakpoint side effects: close the drawer / footer panel when the
+// layout flips between mobile and desktop.
+watch(isMobile, (mobile) => {
+  if (!mobile) mobileMenuOpen.value = false
+  if (mobile) footerPanelOpen.value = false
+})
 
-type ChatShortcutAction = 'newChat' | 'selectAgent'
+// Auto-collapse the sidebar on narrow desktop unless the user set it explicitly.
+watch(compactViewport, (compact) => {
+  if (!userExplicitCollapse.value) sidebarCollapsed.value = compact
+}, { immediate: true })
 
 const shortcutsHintText = computed(() =>
   `Ctrl+K ${t('nav.shortcutAgents')} | Ctrl+N ${t('nav.shortcutNew')}`,
 )
 
-function fireChatShortcut(action: ChatShortcutAction) {
+function openAgentsMenu() {
+  if (!workspaceStore.can('manage:agents' as never)) return
+  if (route.path !== '/agents') router.push('/agents')
+}
+
+function fireNewChatShortcut() {
   if (route.path === '/chat') {
-    window.dispatchEvent(new CustomEvent('mc:chat-shortcut', { detail: action }))
+    window.dispatchEvent(new CustomEvent('mc:chat-shortcut', { detail: 'newChat' }))
   } else {
-    router.push({ path: '/chat', query: { action } })
+    router.push({ path: '/chat', query: { action: 'newChat' } })
   }
 }
 
@@ -290,18 +292,14 @@ function onGlobalKeydown(e: KeyboardEvent) {
   // still want to let the chat input handle native paste / undo unblocked.
   if (key === 'n' && isEditableTarget(e.target)) return
   e.preventDefault()
-  fireChatShortcut(key === 'k' ? 'selectAgent' : 'newChat')
+  if (key === 'k') {
+    openAgentsMenu()
+  } else {
+    fireNewChatShortcut()
+  }
 }
 
 onMounted(async () => {
-  mobileQuery = window.matchMedia('(max-width: 768px)')
-  handleMobileChange(mobileQuery)
-  mobileQuery.addEventListener('change', handleMobileChange)
-
-  mediumQuery = window.matchMedia('(max-width: 1024px)')
-  handleMediumChange(mediumQuery)
-  mediumQuery.addEventListener('change', handleMediumChange)
-
   window.addEventListener('keydown', onGlobalKeydown)
 
   // Check onboarding status
@@ -318,13 +316,11 @@ onMounted(async () => {
 
   // Fetch initial health status for sidebar indicator
   fetchHealthStatus()
-  // Sidebar attention counts (backstage / security) are driven by
+  // Sidebar attention counts (live / security) are driven by
   // useNotificationCenter — it polls when admins are mounted.
 })
 
 onBeforeUnmount(() => {
-  mobileQuery?.removeEventListener('change', handleMobileChange)
-  mediumQuery?.removeEventListener('change', handleMediumChange)
   window.removeEventListener('keydown', onGlobalKeydown)
 })
 
@@ -419,13 +415,6 @@ const navGroups = computed(() => [
         label: t('nav.agents'),
         icon: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M20 21a8 8 0 1 0-16 0"/></svg>`,
         requiredCapability: 'manage:agents',
-      },
-      {
-        path: '/backstage',
-        label: t('nav.backstage'),
-        tooltip: t('nav.backstageTooltip'),
-        icon: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>`,
-        globalAdmin: true,
       },
       {
         path: '/wiki',

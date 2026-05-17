@@ -126,6 +126,47 @@ public class ConversationController {
     }
 
     /**
+     * 置顶 / 取消置顶会话
+     */
+    @Operation(summary = "置顶或取消置顶会话")
+    @PutMapping("/{conversationId}/pin")
+    public R<Void> setPinned(@PathVariable String conversationId,
+                             @RequestBody Map<String, Boolean> body,
+                             Authentication auth) {
+        String username = auth != null ? auth.getName() : "anonymous";
+        if (!conversationService.isConversationOwner(conversationId, username)) {
+            return R.fail("无权操作该会话");
+        }
+        conversationService.setPinned(conversationId, Boolean.TRUE.equals(body.get("pinned")));
+        return R.ok();
+    }
+
+    /**
+     * 批量删除会话（仅删除当前用户有权操作的会话）
+     */
+    @Operation(summary = "批量删除会话")
+    @PostMapping("/batch-delete")
+    public R<Integer> batchDelete(@RequestBody Map<String, List<String>> body, Authentication auth) {
+        String username = auth != null ? auth.getName() : "anonymous";
+        List<String> ids = body.get("conversationIds");
+        if (ids == null || ids.isEmpty()) {
+            return R.fail("未指定要删除的会话");
+        }
+        int deleted = 0;
+        for (String conversationId : ids) {
+            if (conversationId == null || conversationId.isBlank()) {
+                continue;
+            }
+            if (!conversationService.isConversationOwner(conversationId, username)) {
+                continue;
+            }
+            conversationService.deleteConversation(conversationId);
+            deleted++;
+        }
+        return R.ok(deleted);
+    }
+
+    /**
      * 清空会话消息（保留会话记录）
      */
     @Operation(summary = "清空会话消息")
