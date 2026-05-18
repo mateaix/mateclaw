@@ -263,12 +263,17 @@ public class WikiController {
                 : "txt";
 
         // Resolve source type from extension. Image extensions route to the
-        // vision-in pipeline at extraction time; everything else falls through
-        // to the existing text / pdf / docx handling.
+        // vision-in pipeline at extraction time; Office / PDF / HTML extensions
+        // are staged on disk and extracted by DocumentExtractTool; plain-text
+        // formats (incl. CSV) are stored directly. Unknown extensions fall back
+        // to text so the upload never hard-fails.
         String sourceType = switch (extension) {
             case "pdf" -> "pdf";
             case "docx", "doc" -> "docx";
-            case "txt", "md" -> "text";
+            case "xlsx", "xls" -> "xlsx";
+            case "pptx", "ppt" -> "pptx";
+            case "html", "htm" -> "html";
+            case "txt", "md", "csv" -> "text";
             case "png", "jpg", "jpeg", "webp", "gif", "bmp", "tiff", "tif" -> "image";
             default -> "text";
         };

@@ -53,7 +53,10 @@
         <tyrus.version>2.2.2</tyrus.version>
 
         <!-- Document, wiki, and rendering toolchain -->
-        <poi.version>5.4.1</poi.version>
+        <!-- POI must stay aligned with the POI version tika-parser-microsoft-module
+             pulls in transitively (poi-ooxml-full / poi-scratchpad). A skew between
+             poi-ooxml-lite and poi-ooxml-full silently breaks XSSF (xlsx) parsing. -->
+        <poi.version>5.5.1</poi.version>
         <batik.version>1.19</batik.version>
         <jsoup.version>1.22.2</jsoup.version>
         <tika.version>3.3.0</tika.version>
