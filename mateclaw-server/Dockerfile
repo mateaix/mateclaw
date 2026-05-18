@@ -96,17 +96,24 @@ RUN apt-get update \
         fonts-noto-cjk \
         fonts-noto-color-emoji \
         poppler-utils \
+        python3-pip \
         tesseract-ocr \
         tesseract-ocr-chi-sim \
         tzdata \
     && rm -rf /var/lib/apt/lists/*
 
+# Install Playwright Python bindings so Python-based browser tools
+# (browser_use, etc.) can reuse the bundled browsers under
+# PLAYWRIGHT_BROWSERS_PATH without re-downloading them.
+RUN pip3 install --break-system-packages playwright
+
 # Tell Playwright Java where Microsoft's image stored the browsers.
 # BrowserLauncher's BUNDLED strategy will then succeed without extra config.
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
     TZ=Asia/Shanghai \
-    JAVA_TOOL_OPTIONS="-Duser.timezone=Asia/Shanghai"
-
+    JAVA_TOOL_OPTIONS="-Duser.timezone=Asia/Shanghai" \
+    PIP_INDEX_URL=https://pypi.org/simple \
+    PIP_TRUSTED_HOST=pypi.org
 COPY --from=builder /build/mateclaw-server/target/*.jar app.jar
 EXPOSE 18088
 EXPOSE 1455
