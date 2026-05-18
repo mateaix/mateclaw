@@ -44,14 +44,19 @@
             </template>
             <template v-else-if="store.error">
               <div class="empty-state error-state">
-                <div class="empty-icon">⚠️</div>
+                <svg class="empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                  <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+                </svg>
                 <p>{{ store.error }}</p>
                 <button class="retry-btn" @click="loadReports">{{ t('memory.retry') }}</button>
               </div>
             </template>
             <template v-else-if="store.reports.length === 0">
               <div class="empty-state">
-                <div class="empty-icon">🌙</div>
+                <svg class="empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+                </svg>
                 <p>{{ t('memory.noReports') }}</p>
               </div>
             </template>
@@ -145,7 +150,11 @@
           </template>
           <template v-else>
             <div class="detail-empty">
-              <div class="detail-empty-icon">🧠</div>
+              <svg class="detail-empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 2a4 4 0 0 1 4 4v2a4 4 0 0 1-8 0V6a4 4 0 0 1 4-4z"/>
+                <path d="M16 14H8a4 4 0 0 0-4 4v2h16v-2a4 4 0 0 0-4-4z"/>
+                <line x1="12" y1="11" x2="12" y2="14"/>
+              </svg>
               <p>{{ t('memory.desc') }}</p>
             </div>
           </template>
@@ -361,7 +370,7 @@ function fmtTime(iso: string) {
 .skeleton-line.short { width: 60%; }
 
 .empty-state { display: flex; flex-direction: column; align-items: center; padding: 40px 0; color: var(--mc-text-tertiary); }
-.empty-icon { font-size: 28px; margin-bottom: 8px; }
+.empty-icon { width: 30px; height: 30px; margin-bottom: 10px; opacity: 0.7; }
 .empty-state p { font-size: 13px; }
 .error-state p { color: var(--mc-text-secondary); }
 .retry-btn {
@@ -447,7 +456,7 @@ function fmtTime(iso: string) {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   height: 100%; color: var(--mc-text-tertiary); text-align: center;
 }
-.detail-empty-icon { font-size: 36px; margin-bottom: 12px; }
+.detail-empty-icon { width: 40px; height: 40px; margin-bottom: 14px; opacity: 0.6; }
 .detail-empty p { font-size: 14px; max-width: 260px; line-height: 1.5; }
 
 /* ========== Transitions ========== */

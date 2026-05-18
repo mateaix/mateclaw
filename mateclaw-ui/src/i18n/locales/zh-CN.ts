@@ -3462,7 +3462,7 @@ export default {
       save: '保存',
       editPlaceholder: '修改记忆内容...',
       confirmed: '已确认',
-      saved: '已保存到 MEMORY.md',
+      saved: '已保存',
     },
     facts: {
       searchPlaceholder: '搜索事实…',

@@ -3370,7 +3370,7 @@ export default {
       save: 'Save',
       editPlaceholder: 'Edit memory content...',
       confirmed: 'Confirmed',
-      saved: 'Saved to MEMORY.md',
+      saved: 'Saved',
     },
     facts: {
       searchPlaceholder: 'Search facts…',

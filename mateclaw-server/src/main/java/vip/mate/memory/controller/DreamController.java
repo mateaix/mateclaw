@@ -127,7 +127,7 @@ public class DreamController {
         return R.ok(null);
     }
 
-    @Operation(summary = "Edit a memory entry — writes back to MEMORY.md with user-edited metadata")
+    @Operation(summary = "Edit a memory entry — writes back to the target memory file with user-edited metadata")
     @PostMapping("/reports/{reportId}/entries/{key}/edit")
     @RequireWorkspaceRole("member")
     public R<Void> editEntry(@PathVariable Long agentId,
@@ -136,8 +136,16 @@ public class DreamController {
                               @RequestBody Map<String, String> body) {
         String decodedKey = java.net.URLDecoder.decode(key, java.nio.charset.StandardCharsets.UTF_8);
 
+        String newContent = body.get("content");
+        if (newContent == null || newContent.isBlank()) {
+            return R.fail("content is required");
+        }
+
+        String filename;
         if (reportId != 0L) {
-            // Report-scoped edit: validate report belongs to agent AND key belongs to report
+            // Report-scoped edit: dream report entries are always MEMORY.md sections.
+            filename = "MEMORY.md";
+            // Validate report belongs to agent AND key belongs to report
             DreamReportEntity report = dreamReportMapper.selectOne(
                     new LambdaQueryWrapper<DreamReportEntity>()
                             .eq(DreamReportEntity::getId, reportId)
@@ -166,18 +174,33 @@ public class DreamController {
                 return R.fail("Entry '" + decodedKey + "' does not belong to report " + reportId);
             }
         } else {
-            // Direct edit (reportId=0, from MemoryBrowser): only require section exists
-            if (!hilService.sectionExists(agentId, decodedKey)) {
-                return R.fail("Section '" + decodedKey + "' not found in MEMORY.md");
+            // Direct edit (reportId=0, from MemoryBrowser): the target file comes
+            // from the request body and must be an editable memory file.
+            filename = body.getOrDefault("filename", "MEMORY.md");
+            if (!isMemoryFile(filename)) {
+                return R.fail("Unsupported memory file: " + filename);
+            }
+            if (!hilService.sectionExists(agentId, filename, decodedKey)) {
+                return R.fail("Section '" + decodedKey + "' not found in " + filename);
             }
         }
 
-        String newContent = body.get("content");
-        if (newContent == null || newContent.isBlank()) {
-            return R.fail("content is required");
-        }
-        hilService.editMemoryEntry(agentId, decodedKey, newContent);
+        hilService.editMemoryEntry(agentId, filename, decodedKey, newContent);
         return R.ok(null);
+    }
+
+    /**
+     * Whitelist of workspace files the memory browser may edit. Keeps this
+     * memory-scoped endpoint from becoming a general-purpose file-write vector.
+     */
+    private boolean isMemoryFile(String filename) {
+        if (filename == null || filename.isBlank() || filename.contains("..")) {
+            return false;
+        }
+        return "MEMORY.md".equals(filename)
+                || "PROFILE.md".equals(filename)
+                || "SOUL.md".equals(filename)
+                || (filename.startsWith("structured/") && filename.endsWith(".md"));
     }
 
     /**
