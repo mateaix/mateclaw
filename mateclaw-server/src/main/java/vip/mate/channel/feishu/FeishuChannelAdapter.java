@@ -230,6 +230,11 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter {
                     @Override
                     public void handle(com.lark.oapi.service.im.v1.model.P2MessageReactionDeletedV1 event) {}
                 })
+                // Silently ignore bot added to chat event to avoid HandlerNotFoundException (#153)
+                .onP2ChatMemberBotAdded(new ImService.P2ChatMemberBotAddedV1Handler() {
+                    @Override
+                    public void handle(com.lark.oapi.service.im.v1.model.P2ChatMemberBotAddedV1 event) {}
+                })
                 .build();
 
         return new com.lark.oapi.ws.Client.Builder(appId, appSecret)
