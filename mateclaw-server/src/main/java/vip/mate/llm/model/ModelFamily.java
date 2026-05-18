@@ -53,7 +53,7 @@ public enum ModelFamily {
      * 也不强制 temperature=1。OpenClaw 实现参考 {@code extensions/deepseek/models.ts:28-81} 标记
      * {@code supportsReasoningEffort: true}。<br>
      * 约束：保留 max_tokens；支持 reasoning_effort；temperature/topP 用配置值。
-     * thinking=true 让 {@link vip.mate.agent.chatmodel.DeepSeekV4ThinkingDecorator}
+     * thinking=true 让 {@link vip.mate.llm.chatmodel.DeepSeekV4ThinkingDecorator}
      * 在请求体注入 OpenAI 协议外的 {@code thinking: {type: enabled|disabled}} 字段。
      */
     DEEPSEEK_V4_REASONING(false, false, true, false, false, true),

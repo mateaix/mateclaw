@@ -14,6 +14,7 @@
       </span>
       <template v-if="!collapsed">
         <span class="ws-trigger__name">{{ currentLabel }}</span>
+        <span v-if="roleBadge" class="ws-trigger__role" :title="roleBadge.tooltip">{{ roleBadge.label }}</span>
         <svg class="ws-trigger__arrow" :class="{ open }" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
       </template>
     </button>
@@ -103,6 +104,25 @@ const workspaces = computed(() => store.workspaces)
 const currentWorkspaceId = computed(() => store.currentWorkspaceId)
 const currentLabel = computed(() => store.currentWorkspace?.name || 'Workspace')
 
+// Show the REAL memberRole — never effective — so a global admin viewing a
+// workspace they have not joined sees "Global admin (non-member)" instead of
+// being silently labelled as owner. See WorkspaceWithRoleVO docs.
+const roleBadge = computed(() => {
+  const ws = store.currentWorkspace
+  if (!ws) return null
+  const real = ws.memberRole as string | null | undefined
+  if (ws.isGlobalAdmin) {
+    return {
+      label: t('nav.roleAdmin'),
+      tooltip: real
+        ? `${t('nav.roleAdmin')} (${real})`
+        : `${t('nav.roleAdmin')} (non-member)`,
+    }
+  }
+  if (!real) return null
+  return { label: real, tooltip: real }
+})
+
 onMounted(() => {
   store.fetchWorkspaces()
 })
@@ -176,6 +196,18 @@ function onManage() {
   text-overflow: ellipsis;
   white-space: nowrap;
   letter-spacing: -0.01em;
+}
+
+.ws-trigger__role {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: var(--mc-primary-bg, rgba(217, 109, 70, 0.12));
+  color: var(--mc-primary, #d96d46);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
 }
 
 .ws-trigger__arrow {

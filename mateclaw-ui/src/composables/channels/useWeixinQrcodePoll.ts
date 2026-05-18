@@ -1,6 +1,6 @@
 import { ref, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+import { mcToast } from '@/composables/useMcToast'
 import { channelApi } from '@/api'
 
 export type WeixinPollStatus = '' | 'polling' | 'scanned' | 'confirmed' | 'expired'
@@ -52,7 +52,7 @@ export function useWeixinQrcodePoll(onConfirmed: (r: WeixinQrcodeResult) => void
       const qrcodeId = data?.qrcode || ''
 
       if (!imgContent && !qrcodeId) {
-        ElMessage.error(t('channels.weixin.qrcodeFailed'))
+        mcToast.error(t('channels.weixin.qrcodeFailed'))
         return
       }
 
@@ -81,21 +81,21 @@ export function useWeixinQrcodePoll(onConfirmed: (r: WeixinQrcodeResult) => void
             qrcodeImg.value = ''
             pollStatus.value = 'confirmed'
             onConfirmed({ botToken: s.bot_token, baseUrl: s.base_url })
-            ElMessage.success(t('channels.weixin.loginSuccess'))
+            mcToast.success(t('channels.weixin.loginSuccess'))
           }
 
           if (status === 'expired') {
             stopPolling()
             qrcodeImg.value = ''
             pollStatus.value = 'expired'
-            ElMessage.warning(t('channels.weixin.qrcodeExpired'))
+            mcToast.warning(t('channels.weixin.qrcodeExpired'))
           }
         } catch {
           // Silent — transient network errors should not abort the loop.
         }
       }, 2000)
     } catch {
-      ElMessage.error(t('channels.weixin.qrcodeFailed'))
+      mcToast.error(t('channels.weixin.qrcodeFailed'))
     } finally {
       loading.value = false
     }

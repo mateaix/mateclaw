@@ -45,7 +45,7 @@
     <!-- Error state with actions -->
     <div v-if="status === 'failed'" class="stage-error">
       <span class="error-badge">❌ {{ t('wiki.jobStage.failed') }} — {{ errorCode }}</span>
-      <div class="error-actions">
+      <div v-if="canManageWiki" class="error-actions">
         <button class="btn-mini" @click="$emit('reprocess')">{{ t('wiki.reprocess') }}</button>
         <button class="btn-mini btn-mini-alt" @click="$emit('repair')">{{ t('wiki.page.repair') }}</button>
       </div>
@@ -56,8 +56,13 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useWorkspaceStore } from '@/stores/useWorkspaceStore'
 
 const { t } = useI18n()
+const workspace = useWorkspaceStore()
+
+// Reprocess / repair are write actions — viewers see job status without them.
+const canManageWiki = computed(() => workspace.can('manage:wiki'))
 
 const props = defineProps<{
   stage: string

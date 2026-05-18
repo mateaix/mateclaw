@@ -17,6 +17,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import vip.mate.workspace.core.annotation.RequireGlobalAdmin;
 
 /**
  * REST surface for managing live sub-agents:
@@ -86,6 +87,7 @@ public class SubagentController {
      */
     @Operation(summary = "Interrupt a running sub-agent")
     @PostMapping("/{subagentId}/interrupt")
+    @RequireGlobalAdmin
     public R<Map<String, Object>> interrupt(@PathVariable String subagentId, Authentication auth) {
         SubagentRegistry.SubagentRecord rec = requireOwnership(subagentId, auth);
         boolean ok = registry.interrupt(subagentId);
@@ -106,6 +108,7 @@ public class SubagentController {
      */
     @Operation(summary = "Set sub-agent spawn-pause for a conversation")
     @PostMapping("/spawn-pause")
+    @RequireGlobalAdmin
     public R<Map<String, Object>> setPaused(@RequestBody Map<String, Object> body, Authentication auth) {
         Object parentObj = body == null ? null : body.get("parentConversationId");
         String parent = parentObj == null ? null : parentObj.toString();
@@ -134,6 +137,7 @@ public class SubagentController {
      */
     @Operation(summary = "List active sub-agents under a parent conversation")
     @GetMapping("/active")
+    @RequireGlobalAdmin
     public R<Map<String, Object>> listActive(@RequestParam(required = false) String parentConversationId,
                                              Authentication auth) {
         if (parentConversationId == null || parentConversationId.isBlank()) {

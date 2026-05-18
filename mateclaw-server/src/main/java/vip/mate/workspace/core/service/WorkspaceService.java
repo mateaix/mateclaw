@@ -11,13 +11,20 @@ import vip.mate.exception.MateClawException;
 import vip.mate.i18n.I18nService;
 import vip.mate.workspace.conversation.model.ConversationEntity;
 import vip.mate.workspace.conversation.repository.ConversationMapper;
+import vip.mate.workspace.core.model.WorkspaceAccessVO;
 import vip.mate.workspace.core.model.WorkspaceEntity;
 import vip.mate.workspace.core.model.WorkspaceMemberEntity;
+import vip.mate.workspace.core.model.WorkspaceWithRoleVO;
 import vip.mate.workspace.core.repository.WorkspaceMapper;
 import vip.mate.workspace.core.repository.WorkspaceMemberMapper;
+import vip.mate.workspace.core.security.RoleCapabilities;
 
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * 工作区业务服务
@@ -64,6 +71,53 @@ public class WorkspaceService {
         }
         List<Long> wsIds = memberships.stream().map(WorkspaceMemberEntity::getWorkspaceId).toList();
         return workspaceMapper.selectBatchIds(wsIds);
+    }
+
+    /**
+     * List workspaces visible to a user, each annotated with the user's membership
+     * role. Global admins see every workspace (memberRole reflects their real
+     * membership, or null when they are not actually a member).
+     */
+    public List<WorkspaceWithRoleVO> listWithRoleByUserId(Long userId, boolean isGlobalAdmin) {
+        List<WorkspaceMemberEntity> memberships = memberMapper.selectList(
+                new LambdaQueryWrapper<WorkspaceMemberEntity>()
+                        .eq(WorkspaceMemberEntity::getUserId, userId));
+        Map<Long, String> roleByWorkspaceId = new HashMap<>();
+        for (WorkspaceMemberEntity m : memberships) {
+            roleByWorkspaceId.put(m.getWorkspaceId(), m.getRole());
+        }
+
+        List<WorkspaceEntity> entities;
+        if (isGlobalAdmin) {
+            entities = listAll();
+        } else if (memberships.isEmpty()) {
+            WorkspaceEntity defaultWs = getBySlug(DEFAULT_SLUG);
+            entities = defaultWs != null ? List.of(defaultWs) : List.of();
+        } else {
+            entities = workspaceMapper.selectBatchIds(roleByWorkspaceId.keySet());
+        }
+
+        List<WorkspaceWithRoleVO> result = new ArrayList<>(entities.size());
+        for (WorkspaceEntity ws : entities) {
+            String role = roleByWorkspaceId.get(ws.getId());
+            result.add(WorkspaceWithRoleVO.from(ws, role, isGlobalAdmin));
+        }
+        return result;
+    }
+
+    /**
+     * Resolve the user's access summary for a workspace. Used by
+     * {@code GET /api/v1/workspaces/&#123;id&#125;/access} so the frontend can
+     * refresh its capability set after a role change without reloading the page.
+     */
+    public WorkspaceAccessVO getAccess(Long workspaceId, Long userId, boolean isGlobalAdmin) {
+        WorkspaceMemberEntity member = getMembership(workspaceId, userId);
+        String memberRole = member != null ? member.getRole() : null;
+        String effective = isGlobalAdmin ? "owner" : memberRole;
+        Set<String> capabilities = effective != null
+                ? RoleCapabilities.forRole(effective)
+                : Set.of();
+        return new WorkspaceAccessVO(workspaceId, memberRole, isGlobalAdmin, effective, capabilities);
     }
 
     public WorkspaceEntity getById(Long id) {

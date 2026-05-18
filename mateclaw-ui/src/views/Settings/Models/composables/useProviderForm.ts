@@ -1,6 +1,6 @@
 import { computed, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+import { mcToast } from '@/composables/useMcToast'
 import { mcConfirm } from '@/components/common/useConfirm'
 import { modelApi } from '@/api'
 import type { ProviderInfo } from '@/types'
@@ -159,7 +159,7 @@ export function useProviderForm(deps: ListDeps) {
     if (!editingProvider.value) {
       const id = providerForm.id.trim()
       if (!id || !PROVIDER_ID_PATTERN.test(id)) {
-        ElMessage.error(t('settings.model.providerIdInvalid'))
+        mcToast.error(t('settings.model.providerIdInvalid'))
         return false
       }
       providerForm.id = id

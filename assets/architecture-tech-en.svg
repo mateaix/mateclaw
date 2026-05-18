@@ -74,15 +74,15 @@
 
   <g transform="translate(56, 222)">
     <rect width="172" height="68" rx="10" fill="#dce8e4" stroke="#5ca69d" stroke-width="0.5" filter="url(#shadowSm)"/>
-    <text x="86" y="20" text-anchor="middle" font-size="12" font-weight="700" fill="#184a45">ReAct Agent</text>
-    <text x="86" y="36" text-anchor="middle" font-size="9" fill="#665245">Think → Act → Observe</text>
-    <text x="86" y="50" text-anchor="middle" font-size="9" fill="#665245">Iterative Reasoning Loop</text>
+    <text x="86" y="20" text-anchor="middle" font-size="12" font-weight="700" fill="#184a45">Reasoning Engines</text>
+    <text x="86" y="36" text-anchor="middle" font-size="9" fill="#665245">ReAct · Think→Act→Observe</text>
+    <text x="86" y="50" text-anchor="middle" font-size="9" fill="#665245">Plan-Execute · Decompose</text>
   </g>
   <g transform="translate(244, 222)">
-    <rect width="172" height="68" rx="10" fill="#dce8e4" stroke="#5ca69d" stroke-width="0.5" filter="url(#shadowSm)"/>
-    <text x="86" y="20" text-anchor="middle" font-size="12" font-weight="700" fill="#184a45">Plan-Execute</text>
-    <text x="86" y="36" text-anchor="middle" font-size="9" fill="#665245">Decompose → Step Execute</text>
-    <text x="86" y="50" text-anchor="middle" font-size="9" fill="#665245">Complex Task Orchestration</text>
+    <rect width="172" height="68" rx="10" fill="#f6e2d7" stroke="#ebb08f" stroke-width="0.5" filter="url(#shadowSm)"/>
+    <text x="86" y="20" text-anchor="middle" font-size="12" font-weight="700" fill="#d96d46">Workflow + Trigger</text>
+    <text x="86" y="36" text-anchor="middle" font-size="9" fill="#665245">7 step modes · 6 patterns</text>
+    <text x="86" y="50" text-anchor="middle" font-size="9" fill="#9b7d6c">Business orchestration (1.3.0+)</text>
   </g>
   <g transform="translate(432, 222)">
     <rect width="172" height="68" rx="10" fill="#f6e2d7" stroke="#ebb08f" stroke-width="0.5" filter="url(#shadowSm)"/>
@@ -99,8 +99,8 @@
   <g transform="translate(808, 222)">
     <rect width="108" height="68" rx="10" fill="#f6e2d7" stroke="#ebb08f" stroke-width="0.5" filter="url(#shadowSm)"/>
     <text x="54" y="20" text-anchor="middle" font-size="12" font-weight="700" fill="#d96d46">Wiki KB</text>
-    <text x="54" y="36" text-anchor="middle" font-size="9" fill="#665245">Knowledge</text>
-    <text x="54" y="50" text-anchor="middle" font-size="9" fill="#665245">Digestion</text>
+    <text x="54" y="36" text-anchor="middle" font-size="9" fill="#665245">Knowledge digest</text>
+    <text x="54" y="50" text-anchor="middle" font-size="9" fill="#665245">+ Transforms (1.3)</text>
   </g>
 
   <!-- ===== Layer 3: Core Services ===== -->
@@ -178,9 +178,9 @@
   </g>
   <g transform="translate(632, 488)">
     <rect width="130" height="40" rx="8" fill="#fff" stroke="#d9cec2" stroke-width="0.5"/>
-    <text x="65" y="14" text-anchor="middle" font-size="11" font-weight="600" fill="#1d1612">Cron → Channel</text>
-    <text x="65" y="26" text-anchor="middle" font-size="9" fill="#665245">Ambient AI</text>
-    <text x="65" y="37" text-anchor="middle" font-size="9" fill="#665245">Proactive Delivery</text>
+    <text x="65" y="14" text-anchor="middle" font-size="11" font-weight="600" fill="#1d1612">Cron · Event Bus</text>
+    <text x="65" y="26" text-anchor="middle" font-size="9" fill="#665245">ShedLock distributed</text>
+    <text x="65" y="37" text-anchor="middle" font-size="9" fill="#665245">Ambient AI · Proactive</text>
   </g>
   <g transform="translate(776, 488)">
     <rect width="130" height="40" rx="8" fill="#fff" stroke="#d9cec2" stroke-width="0.5"/>

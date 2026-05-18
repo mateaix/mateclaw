@@ -217,7 +217,7 @@
 import { computed, defineAsyncComponent, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { mcConfirm } from '@/components/common/useConfirm'
-import { ElMessage } from 'element-plus'
+import { mcToast } from '@/composables/useMcToast'
 import {
   agentApi,
   channelApi,
@@ -279,7 +279,7 @@ const resumingId = ref<number | null>(null)
 // Workspace agent list — fed to the StepPropertyPanel's agent picker
 // so authors stop typing free-form agent names that don't actually
 // exist. Loaded once on mount and on workspace switch.
-interface AgentOption { id: number; name: string; title?: string }
+interface AgentOption { id: number; name: string; title?: string; icon?: string; description?: string }
 const availableAgents = ref<AgentOption[]>([])
 interface ChannelOption {
   id: number | string
@@ -370,7 +370,7 @@ async function onGenerateAccept(draft: GeneratedDraft) {
     })
     const created = res.data as unknown as WorkflowSummary
     if (!created?.id) {
-      ElMessage.error(t('workflows.generate.failed', { msg: 'workflow row not returned' }))
+      mcToast.error(t('workflows.generate.failed', { msg: 'workflow row not returned' }))
       return
     }
     await workflowApi.saveDraft(created.id, draft.draftJson)
@@ -418,15 +418,15 @@ async function onGenerateAccept(draft: GeneratedDraft) {
       compileErrors.value = draft.compileErrors
     }
     if (triggersCreated > 0 && triggersSkipped === 0) {
-      ElMessage.success(t('workflows.generate.acceptedWithTriggers', { count: triggersCreated }))
+      mcToast.success(t('workflows.generate.acceptedWithTriggers', { count: triggersCreated }))
     } else if (triggersSkipped > 0) {
-      ElMessage.warning(t('workflows.generate.acceptedSomeTriggersFailed',
+      mcToast.warning(t('workflows.generate.acceptedSomeTriggersFailed',
           { ok: triggersCreated, fail: triggersSkipped }))
     } else {
-      ElMessage.success(t('workflows.generate.compileOk'))
+      mcToast.success(t('workflows.generate.compileOk'))
     }
   } catch (e) {
-    ElMessage.error(t('workflows.generate.failed', { msg: (e as Error).message }))
+    mcToast.error(t('workflows.generate.failed', { msg: (e as Error).message }))
   } finally {
     busy.value = false
   }
@@ -607,7 +607,7 @@ async function reloadAgents() {
     // via the X-Workspace-Id header, so no client-side filter is needed.
     availableAgents.value = rows
         .filter((a) => a && a.name)
-        .map((a) => ({ id: a.id, name: a.name, title: a.title }))
+        .map((a) => ({ id: a.id, name: a.name, title: a.title, icon: a.icon, description: a.description }))
   } catch (e) {
     console.error('listAgents failed', e)
   }
@@ -640,11 +640,11 @@ async function onResume(entry: PausedRunSummary, outcome: ResumeOutcome) {
   resumingId.value = entry.run.id
   try {
     await workflowApi.resumeRun(entry.run.id, entry.pause.pauseToken, outcome)
-    ElMessage.success(t('workflows.paused.resumeOk', { outcome }))
+    mcToast.success(t('workflows.paused.resumeOk', { outcome }))
     await reloadPausedRuns()
     await reloadRuns()
   } catch (e) {
-    ElMessage.error(t('workflows.paused.resumeFailed', { msg: (e as Error).message }))
+    mcToast.error(t('workflows.paused.resumeFailed', { msg: (e as Error).message }))
   } finally {
     resumingId.value = null
   }
@@ -777,7 +777,7 @@ async function onPublishSubmit(payload: { note: string }) {
     // below the fold on smaller viewports.
     publishDialogOpen.value = false
     if (compileErrors.value.length) {
-      ElMessage.error(t('workflows.status.compileFailed', { count: compileErrors.value.length }))
+      mcToast.error(t('workflows.status.compileFailed', { count: compileErrors.value.length }))
     }
   } finally {
     busy.value = false

@@ -11,6 +11,7 @@ import vip.mate.auth.model.UserEntity;
 import vip.mate.auth.service.AuthService;
 import vip.mate.common.result.R;
 import vip.mate.exception.MateClawException;
+import vip.mate.workspace.core.annotation.RequireGlobalAdmin;
 
 import java.util.List;
 
@@ -35,12 +36,14 @@ public class AuthController {
 
     @Operation(summary = "获取用户列表")
     @GetMapping("/users")
+    @RequireGlobalAdmin
     public R<List<UserEntity>> listUsers() {
         return R.ok(authService.listUsers());
     }
 
     @Operation(summary = "创建用户")
     @PostMapping("/users")
+    @RequireGlobalAdmin
     public R<UserEntity> createUser(@RequestBody UserEntity user) {
         return R.ok(authService.createUser(user));
     }

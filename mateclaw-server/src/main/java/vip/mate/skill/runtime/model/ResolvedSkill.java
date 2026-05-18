@@ -74,6 +74,14 @@ public class ResolvedSkill {
     private boolean builtin = false;
 
     /**
+     * Owning workspace, copied from {@code mate_skill.workspace_id}. Builtin
+     * skills are global, so for them this is informational only. {@code null}
+     * for virtual MCP-derived skills (MCP servers carry no workspace) — the
+     * runtime treats a null workspace as globally visible.
+     */
+    private Long workspaceId;
+
+    /**
      * Skill row create timestamp, copied from {@code mate_skill.create_time}.
      * Used by the prompt-catalog ranker to surface freshly installed skills
      * before they accumulate any usage stats — without this, a brand-new

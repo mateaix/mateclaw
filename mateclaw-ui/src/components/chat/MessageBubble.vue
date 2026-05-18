@@ -35,12 +35,29 @@
                 <ThinkingSegment v-for="t in iter.thinkings" :key="t.id" :segment="t" />
                 <ToolCallSegment v-for="tool in iter.tools" :key="tool.id" :segment="tool" />
                 <template v-for="c in iter.contents" :key="c.id">
-                  <div v-if="c.repetitionWarning" class="repetition-warning">
+                  <button
+                    v-if="c.superseded"
+                    class="superseded-toggle"
+                    type="button"
+                    @click="toggleSupersededSegment(c.id)"
+                  >
+                    <el-icon><InfoFilled /></el-icon>
+                    <span>{{ $t('chat.supersededPreviewCollapsed') }}</span>
+                    <span class="superseded-toggle__action">
+                      {{ isSupersededExpanded(c.id) ? $t('chat.collapse') : $t('chat.expand') }}
+                    </span>
+                  </button>
+                  <div v-if="c.repetitionWarning && (!c.superseded || isSupersededExpanded(c.id))" class="repetition-warning">
                     <el-icon><WarningFilled /></el-icon>
                     <span class="repetition-warning__text">{{ $t('chat.contentRepetitionWarning') }}</span>
                     <span v-if="c.truncatedChars" class="repetition-warning__meta">({{ c.truncatedChars }} chars)</span>
                   </div>
-                  <ContentSegment :segment="c" :show-cursor="showCursor && c.status === 'running'" />
+                  <ContentSegment
+                    v-if="!c.superseded || isSupersededExpanded(c.id)"
+                    :segment="c"
+                    :show-cursor="showCursor && c.status === 'running'"
+                    :class="{ 'content-segment--superseded': c.superseded }"
+                  />
                 </template>
               </template>
             </template>
@@ -390,7 +407,7 @@
 <script setup lang="ts">
 import { computed, ref, watch, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+import { mcToast } from '@/composables/useMcToast'
 import {
   ArrowDown,
   CloseBold,
@@ -829,6 +846,18 @@ const formatFileSize = (size: number) => {
 
 // --- 执行过程面板 ---
 const executionExpanded = ref(false)
+const expandedSupersededSegments = ref(new Set<string>())
+
+function isSupersededExpanded(id: string) {
+  return expandedSupersededSegments.value.has(id)
+}
+
+function toggleSupersededSegment(id: string) {
+  const next = new Set(expandedSupersededSegments.value)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  expandedSupersededSegments.value = next
+}
 
 // --- 分段式渲染（Claude Code 风格） ---
 const parsedMetadata = computed(() => {
@@ -1033,10 +1062,10 @@ function handleFeedbackAction(action: string) {
       `Timestamp: ${new Date(feedbackInfo.value?.timestamp || Date.now()).toISOString()}`,
     ].join('\n')
     copyToClipboard(lines).then(() => {
-      ElMessage.success(t('chat.feedback.reportCopied'))
+      mcToast.success(t('chat.feedback.reportCopied'))
     }).catch(() => {
       console.error('[feedback_event] copy failed:\n' + lines)
-      ElMessage.error(t('chat.feedback.reportFailed'))
+      mcToast.error(t('chat.feedback.reportFailed'))
     })
   }
 }
@@ -1189,6 +1218,34 @@ watch(isGenerating, (generating) => {
 .repetition-warning__meta {
   color: var(--mc-text-tertiary, #94a3b8);
   font-size: 11px;
+}
+
+.superseded-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  padding: 5px 10px;
+  margin: 4px 0 2px;
+  font-size: 12px;
+  color: var(--mc-text-secondary, #64748b);
+  background: var(--mc-bg-elevated, #f8fafc);
+  border: 1px dashed var(--mc-border, #e2e8f0);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.superseded-toggle:hover {
+  color: var(--mc-text-primary, #0f172a);
+  border-color: var(--mc-primary, #2563eb);
+}
+
+.superseded-toggle__action {
+  color: var(--mc-primary, #2563eb);
+}
+
+.content-segment--superseded {
+  opacity: 0.72;
 }
 
 .message-wrapper {

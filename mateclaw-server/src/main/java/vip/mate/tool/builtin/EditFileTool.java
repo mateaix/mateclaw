@@ -20,8 +20,8 @@ import java.nio.file.Paths;
  * <p>
  * 安全说明：
  * <ul>
- *   <li>编辑操作经过 ToolGuard 审批（DefaultToolGuard 对 file_edit 工具默认返回 NEEDS_APPROVAL）</li>
- *   <li>每次编辑需要用户确认</li>
+ *   <li>编辑操作会经过 ToolGuard 安全检查；命中安全规则时会要求用户审批</li>
+ *   <li>路径边界由 {@code WorkspacePathGuard} 处理</li>
  * </ul>
  *
  * @author MateClaw Team
@@ -36,7 +36,8 @@ public class EditFileTool {
     @vip.mate.tool.ConcurrencyUnsafe("in-place file edit — must not race with reads/writes on the same path")
     @Tool(description = "Edit file content via find-and-replace. Finds exact match of old_text and replaces with new_text. "
             + "Returns structured JSON with filePath, replacements count. "
-            + "Requires user approval. Replaces first occurrence by default; set replaceAll=true for all.")
+            + "May require user approval when security rules flag the edit. "
+            + "Replaces first occurrence by default; set replaceAll=true for all.")
     public String edit_file(
             @ToolParam(description = "Absolute or relative file path") String filePath,
             @ToolParam(description = "Original text to find (exact match)") String oldText,

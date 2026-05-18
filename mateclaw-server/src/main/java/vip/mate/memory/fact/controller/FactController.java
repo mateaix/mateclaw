@@ -44,7 +44,7 @@ public class FactController {
 
     @Operation(summary = "List facts for an agent")
     @GetMapping
-    @RequireWorkspaceRole("viewer")
+    @RequireWorkspaceRole("member")
     public R<List<FactEntity>> listFacts(@PathVariable Long agentId,
                                           @RequestParam(required = false) String keyword) {
         LambdaQueryWrapper<FactEntity> query = new LambdaQueryWrapper<FactEntity>()
@@ -165,7 +165,7 @@ public class FactController {
 
     @Operation(summary = "List unresolved contradictions")
     @GetMapping("/contradictions")
-    @RequireWorkspaceRole("viewer")
+    @RequireWorkspaceRole("member")
     public R<List<FactContradictionEntity>> listContradictions(@PathVariable Long agentId) {
         return R.ok(contradictionMapper.selectList(
                 new LambdaQueryWrapper<FactContradictionEntity>()

@@ -1,6 +1,6 @@
 import { ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+import { mcToast } from '@/composables/useMcToast'
 
 const SDK_URL = 'https://wwcdn.weixin.qq.com/node/wework/js/wecom-aibot-sdk@0.1.0.min.js'
 const SOURCE = 'mateclaw'
@@ -48,14 +48,14 @@ export function useWecomBotAuth(onSuccess: (r: WecomBotAuthResult) => void) {
     try {
       await loadSDK()
     } catch {
-      ElMessage.error(t('channels.wecom.sdkFailed'))
+      mcToast.error(t('channels.wecom.sdkFailed'))
       loading.value = false
       return
     }
 
     const sdk = (window as any).WecomAIBotSDK
     if (!sdk) {
-      ElMessage.error(t('channels.wecom.sdkFailed'))
+      mcToast.error(t('channels.wecom.sdkFailed'))
       loading.value = false
       return
     }
@@ -68,16 +68,16 @@ export function useWecomBotAuth(onSuccess: (r: WecomBotAuthResult) => void) {
       (bot: WecomBotAuthResult) => {
         if (bot?.botid) {
           onSuccess(bot)
-          ElMessage.success(t('channels.wecom.authSuccess'))
+          mcToast.success(t('channels.wecom.authSuccess'))
         }
       },
       (error: { code: string; message: string }) => {
         if (error?.code === 'WINDOW_BLOCKED') {
-          ElMessage.error(t('channels.wecom.windowBlocked'))
+          mcToast.error(t('channels.wecom.windowBlocked'))
         } else if (error?.code === 'CANCELLED') {
-          ElMessage.info(t('channels.wecom.authCancelled'))
+          mcToast.info(t('channels.wecom.authCancelled'))
         } else {
-          ElMessage.error(t('channels.wecom.authFailed') + '：' + (error?.message || error?.code || ''))
+          mcToast.error(t('channels.wecom.authFailed') + '：' + (error?.message || error?.code || ''))
         }
       },
     )

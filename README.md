@@ -8,6 +8,8 @@
 
 <p align="center"><b>Your second brain</b></p>
 
+<p align="center"><sub><b>Agent Harness · Spring Boot inside · One JAR to ship</b></sub></p>
+
 [![GitHub Repo](https://img.shields.io/badge/GitHub-Repo-black.svg?logo=github)](https://github.com/matevip/mateclaw)
 [![Documentation](https://img.shields.io/badge/Docs-Website-green.svg?logo=readthedocs&label=Docs)](https://claw.mate.vip/docs)
 [![Live Demo](https://img.shields.io/badge/Demo-Online-orange.svg?logo=vercel&label=Demo)](https://claw-demo.mate.vip)
@@ -31,6 +33,8 @@
 > **Other personal AI agents are built for one person. MateClaw is the one your IT department can actually sign off on.**
 >
 > Multi-user workspaces. Approval-gated sensitive actions. Full audit trail. Spring Boot Actuator health monitoring. Per-channel error isolation so one chat platform's outage doesn't take down the rest. One JAR on your own machine, zero data egress.
+>
+> **And underneath, a real agent harness.** ReAct + Plan-and-Execute on a StateGraph runtime — not a one-shot RAG call dressed up. Tools, Skills, MCP, and ACP converge on one registry with per-employee binding. Sensitive tool calls flow through an approval gate you can actually inspect. Multi-vendor failover keeps the loop running when a provider doesn't.
 
 Most AI tools die when their vendor has a bad day. Most forget you the moment the tab closes. Most give you a chatbox and call it a product.
 
@@ -78,21 +82,26 @@ Same brain. Same memory. Same tools. Different doors.
 You hire coworkers, not chat boxes. Each one has a **Role**, a **Goal**, a **Backstory**, a pixel-art avatar, and a color of their own — five career templates ship ready (Product Researcher · Customer Support · Knowledge Curator · Data Analyst · Executive Assistant). **ReAct** drives iterative reasoning, **Plan-and-Execute** decomposes complex multi-step work, employees can delegate to one another in parallel. Dynamic context pruning, smart truncation, stale-stream cleanup — the boring stuff that makes long conversations actually work.
 
 ### Knowledge & memory
-- **LLM Wiki** — raw materials digest into linked pages with citations; the **hot cache** auto-injects into every employee's system prompt
+- **LLM Wiki** — raw materials digest into linked pages with citations; the **hot cache** auto-injects into every employee's system prompt. **Transformations engine** (1.3.0+) turns the Wiki from a search index into a processing pipeline
 - **Workspace memory** — `AGENTS.md`, `SOUL.md`, `PROFILE.md`, `MEMORY.md`, daily notes
-- **Memory lifecycle** — post-conversation extraction, scheduled consolidation, Dreaming workflows
+- **Memory lifecycle** — post-conversation extraction, scheduled consolidation, Dreaming workflows. Workflows can also write directly into an employee's `MEMORY.md` via the `write_memory` step
 
 ### Skills · MCP · ACP — three ways to extend capability
 - **SKILL.md packages** — manifest + prompt + tool list + **LESSONS.md (gets smarter the more you use it)**. Eight starter templates plus a five-step creation wizard, with **Pre-flight checks** that tell you what's missing before install
-- **MCP** — stdio / SSE / Streamable HTTP, plug into any external tool server
+- **MCP** — stdio / SSE / Streamable HTTP, plug into any external tool server. **Per-employee binding** (1.3.0+) means a tool you install for one employee doesn't bleed into another's toolbox
 - **ACP** — bring top-tier coding agents like Claude Code and Codex in as employees, auto-bridged to skill cards with wrapper tools
 - **Tool Guard** — RBAC + approval flow + path protection. Capability needs boundaries
+
+### Business orchestration (1.3.0+)
+- **Workflow** — compose multiple employees plus system actions (approval / channel dispatch / write-memory) into a publishable, triggerable, replayable linear DSL. Seven step modes (`sequential` / `fan_out` / `collect` / `conditional` / `await_approval` / `dispatch_channel` / `write_memory`). JSON-first authoring with Monaco + schema validation, or natural-language → draft generation
+- **Triggers** — wire system events to workflows or to employee conversations. Six pattern types (`cron` / `webhook` / `channel_message` / `agent_lifecycle` / `content_match` / `workflow_completion`). Default-on event governance: dedup, per-trigger rate limit, bot-self filter, recursion guard, fail-closed unknown patterns
+- **Wiki Transformations** — Wiki stops being retrieval-only. User-authored templates run against raw materials or existing pages, with cross-material map-reduce aggregation, reverse-citation extraction, JSON output mode, and per-template model picker
 
 ### You see what every employee is doing
 **Admin Runtime Console** (`Settings → System → Runtime`) — who's running, what step they're on, how many tokens, one-click force-recycle when stuck. Streaming is staged honestly (thinking / tool / answer), per-event SSE IDs make reconnects safe, multi-employee delegation no longer fights itself, long tasks demand evidence-grounded answers.
 
 ### Multimodal creation
-Text-to-speech · Speech-to-text · Image · Music · Video · 3D. First-class, not add-ons.
+Text-to-speech · Speech-to-text · Image · Music · Video · 3D. First-class, not add-ons. **Sidecar routing** (1.3.0+) means a text-only main model + an image attachment no longer dead-ends — a configured vision model describes the image, and the main model answers. **Image edit** lands too: refer to an earlier conversation attachment by `msg:<id>:<idx>` and ask the model to recolor or restyle it. Four **document-generation tools** (`DocxRenderTool` / `XlsxRenderTool` / `PptxRenderTool` / `PdfRenderTool`) render Markdown straight to Office files inside the JVM — no subprocess, no Office install.
 
 ### Enterprise-ready
 RBAC + JWT. **Personal Access Tokens** for headless scripts and CI. **HMAC-SHA-256 outbound webhook signing**. **Distributed Cron lock** so multi-instance deployments don't double-fire. Full audit trail. Flyway-managed schema that auto-heals on upgrade. One JAR to ship. MySQL in production, H2 for dev — nothing to change in your code.
@@ -192,7 +201,8 @@ Desktop binaries ship via [GitHub Releases](https://github.com/matevip/mateclaw/
 |---|---|
 | Backend | Spring Boot 3.5 · Spring AI Alibaba 1.1 · MyBatis Plus · Flyway |
 | Digital Employee Runtime | StateGraph · ReAct + Plan-Execute · Role / Goal / Backstory · LESSONS self-evolution |
-| Capability Extension | SKILL.md packages · MCP (stdio / SSE / HTTP) · ACP bridge (Claude Code / Codex) |
+| Orchestration | Workflow (7 step modes · Pebble DSL) · Triggers (6 pattern types · event governance) · Wiki Transformations (1.3.0+) |
+| Capability Extension | SKILL.md packages · MCP (stdio / SSE / HTTP · per-agent binding) · ACP bridge (Claude Code / Codex) |
 | Database | H2 (dev) · MySQL 8.0+ (prod) |
 | Auth | Spring Security + JWT |
 | Frontend | Vue 3 · TypeScript · Vite · Element Plus · TailwindCSS 4 |
@@ -207,7 +217,9 @@ Full docs at **[claw.mate.vip/docs](https://claw.mate.vip/docs)** — setup, arc
 
 ## Roadmap
 
-Sharper multi-employee collaboration · Smarter model routing · Deeper multimodal understanding · Longer-lived memory · A richer ClawHub · More ACP upstream integrations.
+**v1.3.0 (shipped 2026-05-13)** — Workflow engine · 6-pattern trigger system · Wiki transformations · per-agent MCP binding · multimodal sidecar routing · four JVM-native document generation tools · image edit. See the [v1.3.0 release notes](https://claw.mate.vip/docs/en/releases/1.3.0) for the full story.
+
+**Next** — Drag-to-edit workflow canvas · run replay timeline · `loop` and `invoke_skill` step modes · trigger priorities and event replay · industry scenario marketplace · more ACP upstream integrations.
 
 ## Contributing
 

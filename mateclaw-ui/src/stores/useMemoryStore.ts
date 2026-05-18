@@ -4,7 +4,7 @@ import { http } from '@/api'
 
 export interface DreamReportItem {
   id: string
-  agentId: number
+  agentId: string | number
   mode: string
   topic: string | null
   triggerSource: string
@@ -28,7 +28,7 @@ export const useMemoryStore = defineStore('memory', () => {
   const currentReport = ref<DreamReportItem | null>(null)
   let pollTimer: ReturnType<typeof setInterval> | null = null
 
-  async function fetchReports(agentId: number, page = 1, size = 20) {
+  async function fetchReports(agentId: string | number, page = 1, size = 20) {
     loading.value = true
     error.value = null
     try {
@@ -46,7 +46,7 @@ export const useMemoryStore = defineStore('memory', () => {
     }
   }
 
-  async function fetchReport(agentId: number, reportId: string) {
+  async function fetchReport(agentId: string | number, reportId: string) {
     loading.value = true
     try {
       const res = await http.get(`/memory/${agentId}/dream/reports/${reportId}`)
@@ -65,7 +65,7 @@ export const useMemoryStore = defineStore('memory', () => {
    * SSE via EventSource doesn't support Authorization headers,
    * causing 401 errors. Polling every 15s is sufficient for dream events.
    */
-  function subscribeEvents(agentId: number) {
+  function subscribeEvents(agentId: string | number) {
     unsubscribeEvents()
     pollTimer = setInterval(() => {
       fetchReports(agentId, 1, 20)

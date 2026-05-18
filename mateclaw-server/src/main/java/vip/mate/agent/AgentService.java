@@ -15,6 +15,7 @@ import vip.mate.agent.event.AgentLifecycleEvent;
 import vip.mate.agent.model.AgentEntity;
 import vip.mate.agent.repository.AgentMapper;
 import vip.mate.exception.MateClawException;
+import vip.mate.llm.chatmodel.ThinkingLevelHolder;
 import vip.mate.llm.event.ModelConfigChangedEvent;
 import vip.mate.memory.MemoryProperties;
 import vip.mate.memory.lifecycle.MemoryLifecycleMediator;

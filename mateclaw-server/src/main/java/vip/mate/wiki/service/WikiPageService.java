@@ -317,6 +317,7 @@ public class WikiPageService {
                 if (!rawIds.contains(newRawId)) {
                     rawIds.add(newRawId);
                     existing.setSourceRawIds(toJson(rawIds));
+                    existing.setUpdateTime(LocalDateTime.now());
                     pageMapper.updateById(existing);
                     evictSummaryCache(kbId);
                     return getBySlug(kbId, slug); // 从 DB 重新加载确保一致性
@@ -330,6 +331,7 @@ public class WikiPageService {
         existing.setOutgoingLinks(extractLinksAsJson(content));
         existing.setVersion(existing.getVersion() + 1);
         existing.setLastUpdatedBy("ai");
+        existing.setUpdateTime(LocalDateTime.now());
 
         // 追加新的 source raw id
         if (newRawId != null) {
@@ -377,6 +379,7 @@ public class WikiPageService {
         }
 
         if (!entryExists || !idExists) {
+            page.setUpdateTime(LocalDateTime.now());
             pageMapper.updateById(page);
             evictSummaryCache(page.getKbId());
         }
@@ -395,6 +398,7 @@ public class WikiPageService {
         existing.setOutgoingLinks(extractLinksAsJson(content));
         existing.setVersion(existing.getVersion() + 1);
         existing.setLastUpdatedBy("manual");
+        existing.setUpdateTime(LocalDateTime.now());
         // 同步更新摘要，防止与 content 漂移
         if (summary != null) {
             existing.setSummary(summary);

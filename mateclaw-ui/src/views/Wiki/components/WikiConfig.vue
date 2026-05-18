@@ -196,7 +196,10 @@ async function saveEmbeddingBinding() {
       embeddingModelId: embeddingModelId.value === '' ? null : embeddingModelId.value,
     })
     const kb: any = store.currentKB
-    kb.embeddingModelId = embeddingModelId.value === '' ? null : Number(embeddingModelId.value)
+    // Mirror the persisted value to the in-memory KB without going through
+    // Number() — Snowflake model IDs would otherwise lose their last digits
+    // (Number.MAX_SAFE_INTEGER = 2^53-1, IDs are 19 digits).
+    kb.embeddingModelId = embeddingModelId.value === '' ? null : embeddingModelId.value
   } catch (e) {
     console.error('[WikiConfig] Failed to save embedding binding', e)
   } finally {
@@ -262,9 +265,13 @@ async function saveStepModelsAndClose() {
   if (!store.currentKB) return
   savingStepModels.value = true
   try {
-    const stepMap: Record<string, number> = {}
+    // Keep model IDs as strings end-to-end. Snowflake IDs exceed
+    // Number.MAX_SAFE_INTEGER, so Number() / .map(Number) would silently
+    // corrupt the last few digits before serializing to configContent JSON.
+    // Backend parses configContent leniently — string-typed IDs are fine.
+    const stepMap: Record<string, string> = {}
     for (const key of stepKeys) {
-      if (stepModels[key]) stepMap[`heavy_ingest.${key}`] = Number(stepModels[key])
+      if (stepModels[key]) stepMap[`heavy_ingest.${key}`] = stepModels[key]
     }
     let existingConfig: any = {}
     try {
@@ -272,9 +279,9 @@ async function saveStepModelsAndClose() {
     } catch { /* not JSON */ }
     existingConfig.stepModels = Object.keys(stepMap).length > 0 ? stepMap : undefined
     existingConfig.fallbackModelIds = fallbackModelIds.value.length > 0
-      ? fallbackModelIds.value.map(Number) : undefined
+      ? [...fallbackModelIds.value] : undefined
     existingConfig.wikiDefaultModelId = wikiGlobalModelId.value
-      ? Number(wikiGlobalModelId.value) : undefined
+      ? wikiGlobalModelId.value : undefined
     await wikiApi.updateConfig(store.currentKB.id, JSON.stringify(existingConfig, null, 2))
     modelsOpen.value = false
   } catch (e) {

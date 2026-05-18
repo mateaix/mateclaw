@@ -53,7 +53,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+import { mcToast } from '@/composables/useMcToast'
 import { CloseBold, Loading, Microphone, Service } from '@element-plus/icons-vue'
 import { WavRecorder } from '@/utils/wavEncoder'
 
@@ -186,7 +186,7 @@ function connectWebSocket() {
           playAudioUrl(data.url)
           break
         case 'error':
-          ElMessage.error(data.message || t('talk.connectionError'))
+          mcToast.error(data.message || t('talk.connectionError'))
           state.value = 'idle'
           break
       }
@@ -199,7 +199,7 @@ function connectWebSocket() {
     console.warn('[TalkMode] WS error', e)
     if (state.value === 'connecting') {
       state.value = 'failed'
-      ElMessage.error(t('talk.connectionError'))
+      mcToast.error(t('talk.connectionError'))
     }
   }
 
@@ -260,7 +260,7 @@ async function startListening() {
     console.debug('[TalkMode] listening started')
   } catch (err) {
     console.warn('[TalkMode] startListening failed', err)
-    ElMessage.error(t('talk.micError'))
+    mcToast.error(t('talk.micError'))
     state.value = 'idle'
     recorder = null
   }
@@ -285,7 +285,7 @@ async function stopListening() {
     // firing (suspended AudioContext) or the recording was so short no
     // sample buffer landed. Surface a clear hint instead of a silent idle.
     console.warn('[TalkMode] stop returned no audio (recording too short or context suspended)')
-    ElMessage.warning(t('talk.tooShort') || '录音过短，请按住按钮多说几秒')
+    mcToast.warning(t('talk.tooShort') || '录音过短，请按住按钮多说几秒')
     state.value = 'idle'
     return
   }
@@ -302,7 +302,7 @@ async function stopListening() {
     // dropped before we got here. Tell the user instead of silently going
     // idle — they'd otherwise blame the mic.
     console.warn('[TalkMode] WS not open at stop time, readyState=', ws?.readyState)
-    ElMessage.error(t('talk.connectionError'))
+    mcToast.error(t('talk.connectionError'))
     state.value = 'idle'
   }
 }
@@ -323,7 +323,7 @@ async function playAudio(blob: Blob) {
     source.start(0)
     state.value = 'speaking'
   } catch {
-    ElMessage.warning(t('talk.playbackError'))
+    mcToast.warning(t('talk.playbackError'))
     state.value = 'idle'
   }
 }

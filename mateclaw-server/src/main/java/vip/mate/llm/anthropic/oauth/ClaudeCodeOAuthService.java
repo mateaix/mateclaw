@@ -13,7 +13,7 @@ import java.util.Optional;
  * <p>Combines {@link ClaudeCodeCredentialsReader},
  * {@link ClaudeCodeTokenRefresher}, and {@link ClaudeCodeCredentialsWriter}
  * to expose a single {@link #getValidToken()} entry point that
- * {@code AgentClaudeCodeChatModelBuilder} (PR-2) will call on every request.
+ * {@code ClaudeCodeChatModelBuilder} (PR-2) will call on every request.
  *
  * <h2>Behavior</h2>
  * <ol>

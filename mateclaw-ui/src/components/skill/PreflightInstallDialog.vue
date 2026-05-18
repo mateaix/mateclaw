@@ -77,7 +77,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+import { mcToast } from '@/composables/useMcToast'
 import { skillApi } from '@/api/index'
 import { copyToClipboard } from '@/utils/clipboard'
 
@@ -133,7 +133,7 @@ async function reload() {
     featureStatuses.value = data.featureStatuses || {}
     activeFeatures.value = Array.isArray(data.activeFeatures) ? data.activeFeatures : []
   } catch (e: any) {
-    ElMessage.error(typeof e === 'string' ? e : e?.message || t('skills.preflight.loadFailed'))
+    mcToast.error(typeof e === 'string' ? e : e?.message || t('skills.preflight.loadFailed'))
     statuses.value = []
     allMet.value = false
   } finally {
@@ -148,9 +148,9 @@ function handleClose() {
 async function copy(cmd: string) {
   try {
     await copyToClipboard(cmd)
-    ElMessage.success(t('common.copied'))
+    mcToast.success(t('common.copied'))
   } catch {
-    ElMessage.warning(t('common.copyFailed'))
+    mcToast.warning(t('common.copyFailed'))
   }
 }
 

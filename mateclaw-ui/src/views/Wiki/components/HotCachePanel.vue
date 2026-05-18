@@ -77,7 +77,8 @@
 <script setup lang="ts">
 import { onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElIcon, ElMessage } from 'element-plus'
+import { mcToast } from '@/composables/useMcToast'
+import { ElIcon } from 'element-plus'
 import { Loading, WarningFilled } from '@element-plus/icons-vue'
 import { hotCacheApi, type WikiHotCache } from '@/api/index'
 import { useWikiStore } from '@/stores/useWikiStore'
@@ -109,13 +110,13 @@ async function onRegenerate() {
   regenerating.value = true
   try {
     await hotCacheApi.regenerate(store.currentKB.id)
-    ElMessage.success(t('wiki.hotCache.regenerateQueued'))
+    mcToast.success(t('wiki.hotCache.regenerateQueued'))
     // Background rebuild — poll once after a short delay so the operator sees
     // the row update without manual refresh. The LLM call typically returns
     // within 5-15s; if the user hits "regenerate" again, a fresh poll fires.
     setTimeout(load, 4000)
   } catch (e: any) {
-    ElMessage.error(e?.message ?? t('wiki.hotCache.regenerateFailed'))
+    mcToast.error(e?.message ?? t('wiki.hotCache.regenerateFailed'))
   } finally {
     regenerating.value = false
   }
@@ -126,10 +127,10 @@ async function onReset() {
   if (!confirm(t('wiki.hotCache.resetConfirm'))) return
   try {
     await hotCacheApi.reset(store.currentKB.id)
-    ElMessage.success(t('wiki.hotCache.resetDone'))
+    mcToast.success(t('wiki.hotCache.resetDone'))
     await load()
   } catch (e: any) {
-    ElMessage.error(e?.message ?? t('wiki.hotCache.resetFailed'))
+    mcToast.error(e?.message ?? t('wiki.hotCache.resetFailed'))
   }
 }
 

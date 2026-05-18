@@ -93,7 +93,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+import { mcToast } from '@/composables/useMcToast'
 import { mcConfirm } from '@/components/common/useConfirm'
 import { conversationApi } from '@/api/index'
 import { channelIconUrl, sourceLabel } from '@/utils/channelSource'
@@ -120,7 +120,7 @@ async function loadSessions() {
   try {
     const res: any = await conversationApi.list()
     sessions.value = res.data || []
-  } catch (e: any) { ElMessage.error(t('sessions.loadFailed')) }
+  } catch (e: any) { mcToast.error(t('sessions.loadFailed')) }
 }
 
 function viewSession(session: Conversation) {
@@ -137,7 +137,7 @@ async function deleteSession(conversationId: string) {
   try {
     await conversationApi.delete(conversationId)
     await loadSessions()
-  } catch (e: any) { ElMessage.error(t('sessions.deleteFailed')) }
+  } catch (e: any) { mcToast.error(t('sessions.deleteFailed')) }
 }
 
 

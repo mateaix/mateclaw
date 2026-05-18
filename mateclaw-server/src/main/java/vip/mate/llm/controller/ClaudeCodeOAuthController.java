@@ -11,6 +11,7 @@ import org.springframework.web.bind.annotation.RestController;
 import vip.mate.common.result.R;
 import vip.mate.llm.anthropic.oauth.ClaudeCodeOAuthService;
 import vip.mate.llm.anthropic.oauth.ClaudeCodeOAuthService.OAuthStatus;
+import vip.mate.workspace.core.annotation.RequireWorkspaceRole;
 
 /**
  * RFC-062 PR-3: management-UI surface for the Claude Code OAuth provider.
@@ -45,6 +46,7 @@ public class ClaudeCodeOAuthController {
 
     @Operation(summary = "Read current Claude Code OAuth credential status from local disk")
     @GetMapping("/status")
+    @RequireWorkspaceRole("admin")
     public R<OAuthStatus> status() {
         return R.ok(oauthService.getStatus());
     }
@@ -60,6 +62,7 @@ public class ClaudeCodeOAuthController {
      */
     @Operation(summary = "Force re-detect credentials and refresh if near expiry")
     @PostMapping("/reload")
+    @RequireWorkspaceRole("admin")
     public R<OAuthStatus> reload() {
         try {
             oauthService.getValidToken();

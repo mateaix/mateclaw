@@ -227,11 +227,12 @@ export function useStream(options: UseStreamOptions): UseStreamReturn {
         return
       }
       seenEventIds.add(event.id)
-      // Track highest id for reconnect Last-Event-ID echo. String compare is
-      // fine because ids are zero-padded server-side... actually they're plain
-      // numbers, so coerce to BigInt-safe numeric compare.
-      const incoming = Number(event.id)
-      const current = lastEventId.value === null ? -1 : Number(lastEventId.value)
+      // Track highest id for reconnect Last-Event-ID echo. SSE event ids are
+      // per-conversation sequential counters issued by ChatStreamTracker — not
+      // Snowflake — so coercing through Number is safe within JS's 2^53 ceiling
+      // (a single conversation would need 9 quadrillion events to overflow).
+      const incoming = Number(event.id) // snowflake-precision-ok: SSE sequence counter
+      const current = lastEventId.value === null ? -1 : Number(lastEventId.value) // snowflake-precision-ok: SSE sequence counter
       if (!Number.isNaN(incoming) && incoming > current) {
         lastEventId.value = event.id
       }
@@ -305,7 +306,7 @@ export function useStream(options: UseStreamOptions): UseStreamReturn {
     // switch. We only inject when the dedup state is still relevant
     // (sameConv) AND we actually have an id to echo.
     if (sameConv && lastEventId.value !== null && body && body.reconnect) {
-      const numericId = Number(lastEventId.value)
+      const numericId = Number(lastEventId.value) // snowflake-precision-ok: SSE sequence counter
       if (!Number.isNaN(numericId)) {
         body = { ...body, lastEventId: numericId }
       }

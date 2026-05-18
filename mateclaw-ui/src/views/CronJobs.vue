@@ -18,6 +18,15 @@
       <div class="page-stage">
         <div class="table-wrap">
           <table class="data-table">
+            <colgroup>
+              <col style="width: 22%; min-width: 160px" />
+              <col style="width: 18%; min-width: 140px" />
+              <col style="width: 16%; min-width: 130px" />
+              <col style="width: 12%; min-width: 100px" />
+              <col style="width: 12%; min-width: 100px" />
+              <col style="width: 8%; min-width: 70px" />
+              <col style="width: 12%; min-width: 100px" />
+            </colgroup>
             <thead>
               <tr>
                 <th>{{ t('cronJobs.columns.name') }}</th>
@@ -35,7 +44,7 @@
                   <div class="job-main">
                     <div class="job-name" :title="job.name">{{ job.name }}</div>
                     <div class="job-meta-row">
-                      <span class="agent-badge" :title="job.agentName || 'Unknown'">{{ job.agentName || 'Unknown' }}</span>
+                      <span v-if="job.taskType !== 'wiki_process'" class="agent-badge" :title="job.agentName || 'Unknown'">{{ job.agentName || 'Unknown' }}</span>
                       <span class="type-badge" :class="'type-' + job.taskType">
                         {{ t('cronJobs.taskTypes.' + job.taskType) }}
                       </span>
@@ -131,7 +140,7 @@
           </button>
         </div>
         <div class="modal-body detail-grid">
-          <div class="detail-item">
+          <div class="detail-item" v-if="detailJob.taskType !== 'wiki_process'">
             <div class="detail-label">{{ t('cronJobs.columns.agent') }}</div>
             <div class="detail-value">{{ detailJob.agentName || 'Unknown' }}</div>
           </div>
@@ -184,6 +193,18 @@
             <div class="detail-label">{{ t('cronJobs.fields.reminderText') }}</div>
             <div class="detail-value detail-block">{{ detailJob.triggerMessage || '-' }}</div>
           </div>
+          <template v-else-if="detailJob.taskType === 'wiki_process'">
+            <div class="detail-item">
+              <div class="detail-label">{{ t('cronJobs.fields.wikiKb') }}</div>
+              <div class="detail-value">{{ wikiProcessSummary(detailJob).kbLabel }}</div>
+            </div>
+            <div class="detail-item">
+              <div class="detail-label">{{ t('cronJobs.fields.wikiForce') }}</div>
+              <div class="detail-value">
+                {{ wikiProcessSummary(detailJob).force ? t('common.yes') : t('common.no') }}
+              </div>
+            </div>
+          </template>
           <div class="detail-item detail-item-full" v-else>
             <div class="detail-label">{{ t('cronJobs.fields.requestBody') }}</div>
             <div class="detail-value detail-block">{{ detailJob.requestBody || '-' }}</div>
@@ -209,7 +230,7 @@
             <input v-model="form.name" class="form-input" :placeholder="t('cronJobs.fields.namePlaceholder')" />
           </div>
 
-          <div class="form-group">
+          <div v-if="form.taskType !== 'wiki_process'" class="form-group">
             <label class="form-label">{{ t('cronJobs.fields.agent') }} *</label>
             <select v-model="form.agentId" class="form-input">
               <option :value="undefined" disabled>{{ t('cronJobs.fields.agentPlaceholder') }}</option>
@@ -232,6 +253,10 @@
                 <input type="radio" v-model="form.taskType" value="agent" />
                 {{ t('cronJobs.taskTypes.agent') }}
               </label>
+              <label class="radio-option" :class="{ active: form.taskType === 'wiki_process' }">
+                <input type="radio" v-model="form.taskType" value="wiki_process" />
+                {{ t('cronJobs.taskTypes.wiki_process') }}
+              </label>
             </div>
           </div>
 
@@ -245,11 +270,33 @@
             <textarea v-model="form.triggerMessage" class="form-textarea" rows="3"
               :placeholder="t('cronJobs.fields.reminderTextPlaceholder')"></textarea>
           </div>
-          <div v-else class="form-group">
+          <div v-else-if="form.taskType === 'agent'" class="form-group">
             <label class="form-label">{{ t('cronJobs.fields.requestBody') }} *</label>
             <textarea v-model="form.requestBody" class="form-textarea" rows="3"
               :placeholder="t('cronJobs.fields.requestBodyPlaceholder')"></textarea>
           </div>
+          <template v-else>
+            <div class="form-group">
+              <label class="form-label">{{ t('cronJobs.fields.wikiKb') }} *</label>
+              <select v-model="form.wikiKbId" class="form-input">
+                <option value="" disabled>{{ t('cronJobs.fields.wikiKbPlaceholder') }}</option>
+                <option v-for="kb in wikiKbs" :key="kb.id" :value="kb.id">{{ kb.name }}</option>
+              </select>
+              <p v-if="wikiKbsLoaded && wikiKbs.length === 0" class="form-hint">
+                {{ t('cronJobs.fields.wikiKbEmpty') }}
+              </p>
+            </div>
+            <div class="form-group">
+              <label class="toggle-label">
+                <label class="toggle-switch">
+                  <input type="checkbox" v-model="form.wikiForce" />
+                  <span class="toggle-slider"></span>
+                </label>
+                <span>{{ t('cronJobs.fields.wikiForce') }}</span>
+              </label>
+              <p class="form-hint">{{ t('cronJobs.fields.wikiForceHint') }}</p>
+            </div>
+          </template>
 
           <div class="form-group">
             <label class="form-label">{{ t('cronJobs.fields.cronFrequency') }}</label>
@@ -315,11 +362,17 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+import { mcToast } from '@/composables/useMcToast'
 import { mcConfirm } from '@/components/common/useConfirm'
 import { useCronJobStore } from '@/stores/useCronJobStore'
 import { useAgentStore } from '@/stores/useAgentStore'
+import { wikiApi } from '@/api/index'
 import type { CronJob } from '@/types/index'
+
+interface WikiKbOption {
+  id: number | string
+  name: string
+}
 
 const { t } = useI18n()
 const store = useCronJobStore()
@@ -329,6 +382,8 @@ const agents = computed(() => agentStore.agents)
 const showModal = ref(false)
 const editing = ref<CronJob | null>(null)
 const detailJob = ref<CronJob | null>(null)
+const wikiKbs = ref<WikiKbOption[]>([])
+const wikiKbsLoaded = ref(false)
 
 const cronTypeOptions = ['hourly', 'daily', 'weekly', 'custom'] as const
 const cronType = ref<string>('daily')
@@ -343,7 +398,7 @@ const timezones = [
   'Australia/Sydney',
 ]
 
-const defaultForm = (): Partial<CronJob> => ({
+const defaultForm = (): Partial<CronJob> & { wikiKbId?: number | string; wikiForce?: boolean } => ({
   name: '',
   cronExpression: '',
   timezone: 'Asia/Shanghai',
@@ -352,16 +407,62 @@ const defaultForm = (): Partial<CronJob> => ({
   triggerMessage: '',
   requestBody: '',
   enabled: true,
+  wikiKbId: '',
+  wikiForce: false,
 })
 const form = ref<any>(defaultForm())
 
 const canSave = computed(() => {
-  if (!form.value.name || !form.value.agentId) return false
+  if (!form.value.name) return false
+  // wiki_process has no agent binding; every other task type needs an agent.
+  if (form.value.taskType !== 'wiki_process' && !form.value.agentId) return false
   if (form.value.taskType === 'text' && !form.value.triggerMessage) return false
   if (form.value.taskType === 'reminder' && !form.value.triggerMessage) return false
   if (form.value.taskType === 'agent' && !form.value.requestBody) return false
+  if (form.value.taskType === 'wiki_process'
+    && (form.value.wikiKbId == null || form.value.wikiKbId === '')) return false
   if (cronType.value === 'custom' && !form.value.cronExpression?.trim()) return false
   return true
+})
+
+async function loadWikiKbs() {
+  if (wikiKbsLoaded.value) return
+  try {
+    const res: any = await wikiApi.listKBs()
+    wikiKbs.value = (res?.data || []).map((kb: any) => ({
+      id: kb.id,
+      name: kb.name || (kb.id != null ? String(kb.id) : ''),
+    }))
+  } catch {
+    wikiKbs.value = []
+  } finally {
+    wikiKbsLoaded.value = true
+  }
+}
+
+// Parse a wiki_process request body back into form fields so the edit modal
+// shows the bound KB and force flag instead of a raw JSON blob.
+function applyWikiProcessForm(target: any, requestBody: string | null | undefined) {
+  if (!requestBody) {
+    target.wikiKbId = ''
+    target.wikiForce = false
+    return
+  }
+  try {
+    const payload = JSON.parse(requestBody)
+    // Keep kbId as string to preserve Snowflake precision.
+    target.wikiKbId = payload.kbId != null ? String(payload.kbId) : ''
+    target.wikiForce = !!payload.force
+  } catch {
+    target.wikiKbId = ''
+    target.wikiForce = false
+  }
+}
+
+watch(() => form.value.taskType, (next) => {
+  if (next === 'wiki_process') {
+    loadWikiKbs()
+  }
 })
 
 onMounted(() => {
@@ -402,7 +503,11 @@ function openCreateModal() {
 
 function openEditModal(job: CronJob) {
   editing.value = job
-  form.value = { ...job }
+  form.value = { ...defaultForm(), ...job }
+  if (job.taskType === 'wiki_process') {
+    applyWikiProcessForm(form.value, job.requestBody)
+    loadWikiKbs()
+  }
   const parsed = parseCronToForm(job.cronExpression)
   cronType.value = parsed.type
   cronTime.value = parsed.time
@@ -417,24 +522,74 @@ function closeModal() {
 
 function openDetailModal(job: CronJob) {
   detailJob.value = job
+  if (job.taskType === 'wiki_process') {
+    loadWikiKbs()
+  }
+}
+
+interface WikiProcessSummary {
+  kbId: string
+  kbLabel: string
+  force: boolean
+}
+
+function wikiProcessSummary(job: CronJob): WikiProcessSummary {
+  if (!job?.requestBody) {
+    return { kbId: '', kbLabel: '-', force: false }
+  }
+  try {
+    const payload = JSON.parse(job.requestBody)
+    const kbId = payload.kbId != null ? String(payload.kbId) : ''
+    const match = wikiKbs.value.find((kb) => String(kb.id) === kbId)
+    return {
+      kbId,
+      kbLabel: match ? match.name : (kbId ? `#${kbId}` : '-'),
+      force: !!payload.force,
+    }
+  } catch {
+    return { kbId: '', kbLabel: '-', force: false }
+  }
 }
 
 function closeDetailModal() {
   detailJob.value = null
 }
 
+function buildSavePayload() {
+  // Strip the form-only wiki helpers and substitute them with the canonical
+  // JSON request_body the backend expects for wiki_process. For every other
+  // task type the payload is forwarded as-is.
+  const { wikiKbId, wikiForce, ...rest } = form.value
+  if (form.value.taskType === 'wiki_process') {
+    return {
+      ...rest,
+      // Drop agent binding — server defaults to a 0 sentinel for system tasks.
+      agentId: undefined,
+      triggerMessage: '',
+      // Stringify kbId to preserve Snowflake precision over JSON.parse on the
+      // backend, which accepts both number and string forms.
+      requestBody: JSON.stringify({
+        kbId: wikiKbId != null ? String(wikiKbId) : '',
+        force: !!wikiForce,
+      }),
+    }
+  }
+  return rest
+}
+
 async function saveJob() {
   try {
+    const payload = buildSavePayload()
     if (editing.value) {
-      await store.updateJob(editing.value.id, form.value)
-      ElMessage.success(t('cronJobs.messages.updateSuccess'))
+      await store.updateJob(editing.value.id, payload)
+      mcToast.success(t('cronJobs.messages.updateSuccess'))
     } else {
-      await store.createJob(form.value)
-      ElMessage.success(t('cronJobs.messages.createSuccess'))
+      await store.createJob(payload)
+      mcToast.success(t('cronJobs.messages.createSuccess'))
     }
     closeModal()
   } catch (e: any) {
-    ElMessage.error(e?.message || e)
+    mcToast.error(e?.message || e)
   }
 }
 
@@ -447,9 +602,9 @@ async function handleDelete(job: CronJob) {
   if (!ok) return
   try {
     await store.deleteJob(job.id)
-    ElMessage.success(t('cronJobs.messages.deleteSuccess'))
+    mcToast.success(t('cronJobs.messages.deleteSuccess'))
   } catch (e: any) {
-    ElMessage.error(e?.message || e)
+    mcToast.error(e?.message || e)
   }
 }
 
@@ -457,20 +612,20 @@ async function handleToggle(job: CronJob) {
   try {
     const newEnabled = !job.enabled
     await store.toggleJob(job.id, newEnabled)
-    ElMessage.success(newEnabled ? t('cronJobs.messages.enableSuccess') : t('cronJobs.messages.disableSuccess'))
+    mcToast.success(newEnabled ? t('cronJobs.messages.enableSuccess') : t('cronJobs.messages.disableSuccess'))
     store.fetchJobs()
   } catch (e: any) {
-    ElMessage.error(e?.message || e)
+    mcToast.error(e?.message || e)
   }
 }
 
 async function handleRunNow(job: CronJob) {
   try {
     await store.runNow(job.id)
-    ElMessage.success(t('cronJobs.messages.runTriggered', { id: job.id }))
+    mcToast.success(t('cronJobs.messages.runTriggered', { id: job.id }))
     setTimeout(() => store.fetchJobs(), 3000)
   } catch (e: any) {
-    ElMessage.error(e?.message || e)
+    mcToast.error(e?.message || e)
   }
 }
 
@@ -685,6 +840,7 @@ function formatTime(datetime: string | undefined): string {
 .type-text { background: var(--mc-primary-bg); color: var(--mc-primary); }
 .type-reminder { background: var(--mc-warning-bg, var(--mc-primary-bg)); color: var(--mc-warning, var(--mc-primary-hover)); }
 .type-agent { background: var(--mc-success-bg, var(--mc-primary-bg)); color: var(--mc-success, var(--mc-primary-hover)); }
+.type-wiki_process { background: rgba(99, 102, 241, 0.12); color: rgb(99, 102, 241); }
 .cron-code { display: inline-flex; background: var(--mc-bg-sunken); padding: 4px 8px; border-radius: 8px; font-size: 12px; color: var(--mc-text-primary); font-family: monospace; }
 .cron-readable { font-size: 12px; line-height: 1.45; color: var(--mc-text-tertiary); margin-top: 6px; }
 .runtime-stack { display: flex; flex-direction: column; gap: 6px; }
@@ -802,6 +958,7 @@ function formatTime(datetime: string | undefined): string {
 
 .form-group { display: flex; flex-direction: column; gap: 6px; }
 .form-label { font-size: 13px; font-weight: 500; color: var(--mc-text-secondary); }
+.form-hint { font-size: 12px; color: var(--mc-text-tertiary); margin: 0; line-height: 1.45; }
 .form-input { padding: 8px 12px; border: 1px solid var(--mc-border); border-radius: 8px; font-size: 14px; color: var(--mc-text-primary); outline: none; background: var(--mc-bg-sunken); width: 100%; }
 .form-input:focus { border-color: var(--mc-primary); box-shadow: 0 0 0 2px rgba(217,119,87,0.1); }
 .form-input.mono { font-family: monospace; }

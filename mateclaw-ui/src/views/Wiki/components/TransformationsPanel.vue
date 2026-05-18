@@ -333,7 +333,8 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElIcon, ElMessage } from 'element-plus'
+import { mcToast } from '@/composables/useMcToast'
+import { ElIcon } from 'element-plus'
 import { Loading, WarningFilled } from '@element-plus/icons-vue'
 import { wikiApi, modelApi } from '@/api/index'
 import { useWikiStore, type WikiRawMaterial } from '@/stores/useWikiStore'
@@ -545,7 +546,7 @@ function closeEditor() {
 async function onSave() {
   if (!store.currentKB) return
   if (!form.name.trim() || !form.title.trim() || !form.promptTemplate.trim()) {
-    ElMessage.warning(t('common.required', 'All fields are required'))
+    mcToast.warning(t('common.required', 'All fields are required'))
     return
   }
   saving.value = true
@@ -585,7 +586,7 @@ async function onSave() {
     closeEditor()
     await loadAll()
   } catch (e: any) {
-    ElMessage.error(e?.message ?? String(e))
+    mcToast.error(e?.message ?? String(e))
   } finally {
     saving.value = false
   }
@@ -597,7 +598,7 @@ async function onDelete(tpl: WikiTransformation) {
     await wikiApi.deleteTransformation(tpl.id)
     await loadAll()
   } catch (e: any) {
-    ElMessage.error(e?.message ?? String(e))
+    mcToast.error(e?.message ?? String(e))
   }
 }
 
@@ -609,7 +610,7 @@ async function onApply(tpl: WikiTransformation) {
     await wikiApi.applyTransformation(tpl.id, rawId, true)
     await loadRunsFor(tpl.id)
   } catch (e: any) {
-    ElMessage.error(e?.message ?? t('wiki.transformations.runFailed'))
+    mcToast.error(e?.message ?? t('wiki.transformations.runFailed'))
   } finally {
     runningTemplateId.value = null
   }
@@ -624,7 +625,7 @@ async function onSaveRunAsPage(tpl: WikiTransformation, run: WikiTransformationR
     if (payload.pageId) {
       run.outputPageId = payload.pageId
     }
-    ElMessage.success(t('wiki.transformations.saveAsPageDone'))
+    mcToast.success(t('wiki.transformations.saveAsPageDone'))
     // Refresh the page list in the wiki store so the new page is visible in
     // the sidebar / search results without a manual reload.
     if (store.currentKB) {
@@ -632,7 +633,7 @@ async function onSaveRunAsPage(tpl: WikiTransformation, run: WikiTransformationR
     }
     await loadRunsFor(tpl.id)
   } catch (e: any) {
-    ElMessage.error(e?.message ?? t('wiki.transformations.saveAsPageFailed'))
+    mcToast.error(e?.message ?? t('wiki.transformations.saveAsPageFailed'))
   } finally {
     savingRunId.value = null
   }
@@ -682,15 +683,15 @@ async function onAggregate(tpl: WikiTransformation) {
     const resp: any = await wikiApi.aggregateTransformation(tpl.id, store.currentKB.id)
     const payload = resp?.data ?? {}
     if (payload && payload.pageId) {
-      ElMessage.success(`${t('wiki.transformations.aggregateDone')} · ${payload.sourcesUsed} sources`)
+      mcToast.success(`${t('wiki.transformations.aggregateDone')} · ${payload.sourcesUsed} sources`)
       // Refresh the page list in the wiki store so the new aggregate page
       // shows up in the sidebar without a manual reload.
       try { await store.fetchPages(store.currentKB.id) } catch {}
     } else {
-      ElMessage.info(t('wiki.transformations.aggregateNoRuns'))
+      mcToast.info(t('wiki.transformations.aggregateNoRuns'))
     }
   } catch (e: any) {
-    ElMessage.error(e?.message ?? t('wiki.transformations.aggregateFailed'))
+    mcToast.error(e?.message ?? t('wiki.transformations.aggregateFailed'))
   } finally {
     aggregatingTemplateId.value = null
   }
@@ -700,10 +701,10 @@ async function onCancelRun(tpl: WikiTransformation, run: WikiTransformationRun) 
   cancellingRunId.value = run.id
   try {
     await wikiApi.cancelTransformationRun(run.id)
-    ElMessage.success(t('wiki.transformations.cancelDone'))
+    mcToast.success(t('wiki.transformations.cancelDone'))
     await loadRunsFor(tpl.id)
   } catch (e: any) {
-    ElMessage.error(e?.message ?? t('wiki.transformations.cancelFailed'))
+    mcToast.error(e?.message ?? t('wiki.transformations.cancelFailed'))
   } finally {
     cancellingRunId.value = null
   }
@@ -716,7 +717,7 @@ async function onRerun(tpl: WikiTransformation, run: WikiTransformationRun) {
     await wikiApi.applyTransformation(tpl.id, run.rawId, true)
     await loadRunsFor(tpl.id)
   } catch (e: any) {
-    ElMessage.error(e?.message ?? t('wiki.transformations.runFailed'))
+    mcToast.error(e?.message ?? t('wiki.transformations.runFailed'))
   } finally {
     rerunningRunId.value = null
   }
@@ -735,7 +736,7 @@ async function onOpenSavedPage(run: WikiTransformationRun) {
       await store.loadPage(store.currentKB.id, page.slug)
     }
   } catch (e: any) {
-    ElMessage.error(e?.message ?? String(e))
+    mcToast.error(e?.message ?? String(e))
   }
 }
 

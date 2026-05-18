@@ -12,6 +12,8 @@ import vip.mate.MateClawApplication;
 import vip.mate.agent.binding.model.AgentToolBinding;
 import vip.mate.agent.binding.service.AgentBindingService;
 import vip.mate.exception.MateClawException;
+import vip.mate.tool.model.AvailableToolDTO;
+import vip.mate.tool.service.AvailableToolService;
 
 import java.util.List;
 import java.util.Set;
@@ -40,6 +42,9 @@ class AgentBindingServiceTest {
 
     @Autowired
     private AgentBindingService bindingService;
+
+    @Autowired
+    private AvailableToolService availableToolService;
 
     @Autowired
     private JdbcTemplate jdbcTemplate;
@@ -221,6 +226,29 @@ class AgentBindingServiceTest {
     }
 
     @Test
+    @DisplayName("bindSkill 允许跨 workspace 的 builtin skill（builtin 为全局能力，不做 tenancy 校验）")
+    void bindSkillAllowsBuiltinSkillCrossWorkspace() {
+        // Builtin skills are seeded once into the default workspace but are
+        // global — an agent in any workspace must be able to bind them. Seed
+        // a builtin row whose workspace_id deliberately differs from the
+        // agent's (=1) to prove the builtin exemption, not a workspace match,
+        // is what lets the binding through.
+        long builtinSkillId = 7_777_350L;
+        jdbcTemplate.update(
+                "MERGE INTO mate_skill (id, name, skill_type, version, enabled, builtin, " +
+                        "workspace_id, create_time, update_time, deleted) " +
+                        "KEY(id) VALUES (?, ?, 'builtin', '1.0.0', TRUE, TRUE, 2, " +
+                        "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 0)",
+                builtinSkillId, "binding-test-builtin-" + builtinSkillId);
+
+        assertDoesNotThrow(() -> bindingService.bindSkill(agentId, builtinSkillId));
+
+        Set<Long> ids = bindingService.getBoundSkillIds(agentId);
+        assertNotNull(ids);
+        assertTrue(ids.contains(builtinSkillId), "builtin skill 应当可跨 workspace 绑定");
+    }
+
+    @Test
     @DisplayName("bindSkill 允许 MCP 虚拟 skill（McpServerEntity 无 workspace，全局共享）")
     void bindSkillAllowsVirtualMcpSkill() {
         // Virtual MCP id range starts at McpSkillBridge.VIRTUAL_ID_BASE (9e18).
@@ -332,6 +360,62 @@ class AgentBindingServiceTest {
         Set<String> effective = bindingService.getEffectiveToolNames(agentId);
         assertNull(effective, "完全没有 skill / tool 绑定时必须返回 null（= 不过滤），"
                 + "否则 AgentToolSet.withAllowedToolsOnly 会变成空集禁掉所有工具");
+    }
+
+    @Test
+    @DisplayName("Issue #117: agent 显式勾选某个 MCP 工具后，只有该工具进入 allowlist，其它 MCP 工具不再自动并入")
+    void mcpToolsScopedWhenAgentPicksSpecificMcpTool() {
+        // Enterprise scenario: a role should be limited to a fixed subset
+        // of MCP tools. Two enabled MCP servers exist; the operator ticks
+        // only server A's tool. Server B's tool must NOT leak into the
+        // allowlist just because its server is enabled at the system level.
+        seedMcpServerWithOneTool(8_888_101L, "issue117-server-a", "alpha_probe");
+        seedMcpServerWithOneTool(8_888_102L, "issue117-server-b", "beta_probe");
+
+        String mcpA = mcpToolNameForServer(8_888_101L);
+        String mcpB = mcpToolNameForServer(8_888_102L);
+        assertNotNull(mcpA, "server A 的 MCP 工具应出现在 picker 中");
+        assertNotNull(mcpB, "server B 的 MCP 工具应出现在 picker 中");
+
+        bindingService.setToolBindings(agentId, List.of(mcpA));
+
+        Set<String> effective = bindingService.getEffectiveToolNames(agentId);
+        assertNotNull(effective, "binding 非空时应返回 allowlist（非 null）");
+        assertTrue(effective.contains(mcpA), "显式勾选的 MCP 工具必须在 allowlist 中");
+        assertFalse(effective.contains(mcpB),
+                "未勾选的其它 MCP 工具不得自动并入 —— 这正是 issue #117 要求的按岗位限定 MCP 范围。"
+                        + "实际 allowlist: " + effective);
+    }
+
+    /** Picker name the UI would save for the (only) MCP tool of {@code serverId}. */
+    private String mcpToolNameForServer(long serverId) {
+        return availableToolService.listAvailable().stream()
+                .filter(t -> "mcp".equals(t.getSource()))
+                .filter(t -> t.getProviderId() != null && serverId == t.getProviderId())
+                .map(AvailableToolDTO::getName)
+                .findFirst()
+                .orElse(null);
+    }
+
+    @Test
+    @DisplayName("Issue #143: 绑定任意工具后，wiki 知识库工具仍留在 effective allowlist（可读写知识库）")
+    void wikiToolsSurviveSkillBindingAllowlist() {
+        // Reproduce issue #143: once an agent has any binding, the effective
+        // allowlist turns on. Wiki tools live on the WikiTool bean and are
+        // never declared by a skill manifest, so before the fix they were
+        // filtered out — the agent could chat but lost its KB read/write
+        // tools and reported "no permission" when asked to save a result.
+        seedBuiltinTool("builtin_probe");
+        bindingService.setToolBindings(agentId, List.of("builtin_probe"));
+
+        Set<String> effective = bindingService.getEffectiveToolNames(agentId);
+        assertNotNull(effective, "binding 非空时应返回 allowlist（非 null）");
+        assertTrue(effective.contains("wiki_create_page"),
+                "wiki_create_page 必须留在 allowlist —— 否则 AI 无法把结果写入知识库（issue #143）。"
+                        + "实际 allowlist: " + effective);
+        assertTrue(effective.contains("wiki_read_page"),
+                "wiki_read_page 必须留在 allowlist —— 否则 agent 无法读取自己的知识库。"
+                        + "实际 allowlist: " + effective);
     }
 
     @Test

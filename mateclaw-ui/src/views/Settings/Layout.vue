@@ -43,8 +43,9 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch, onMounted, onBeforeUnmount } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
+import { useMediaQuery, BREAKPOINTS } from '@/composables/useBreakpoint'
 import { useI18n } from 'vue-i18n'
 
 const route = useRoute()
@@ -56,7 +57,7 @@ const COMPACT_ROUTES = ['/settings/workflows', '/settings/triggers']
 
 const navCollapsed = ref(localStorage.getItem('mc-settings-nav-collapsed') === 'true')
 const userExplicit = ref(localStorage.getItem('mc-settings-nav-collapsed') !== null)
-let mediumQuery: MediaQueryList | null = null
+const compactViewport = useMediaQuery(BREAKPOINTS.compact)
 
 function toggleNav() {
   navCollapsed.value = !navCollapsed.value
@@ -70,25 +71,11 @@ function isCompactRoute(path: string): boolean {
 
 function recomputeAuto() {
   if (userExplicit.value) return
-  const compact = isCompactRoute(route.path) || !!mediumQuery?.matches
-  navCollapsed.value = compact
-}
-
-function handleMediumChange(_e: MediaQueryListEvent | MediaQueryList) {
-  recomputeAuto()
+  navCollapsed.value = isCompactRoute(route.path) || compactViewport.value
 }
 
 watch(() => route.path, recomputeAuto)
-
-onMounted(() => {
-  mediumQuery = window.matchMedia('(max-width: 1200px)')
-  recomputeAuto()
-  mediumQuery.addEventListener('change', handleMediumChange)
-})
-
-onBeforeUnmount(() => {
-  mediumQuery?.removeEventListener('change', handleMediumChange)
-})
+watch(compactViewport, recomputeAuto, { immediate: true })
 
 const sections = computed(() => [
   {

@@ -345,13 +345,29 @@ public class SkillRuntimeService {
     public String buildSkillPromptEnhancement(Set<Long> boundSkillIds,
                                               Set<String> effectiveToolNames,
                                               Integer maxInputTokens) {
-        return buildSkillPromptEnhancement(boundSkillIds, effectiveToolNames, maxInputTokens, null);
+        return buildSkillPromptEnhancement(boundSkillIds, effectiveToolNames, maxInputTokens, null, null);
     }
 
     public String buildSkillPromptEnhancement(Set<Long> boundSkillIds,
                                               Set<String> effectiveToolNames,
                                               Integer maxInputTokens,
                                               Long agentId) {
+        return buildSkillPromptEnhancement(boundSkillIds, effectiveToolNames, maxInputTokens, agentId, null);
+    }
+
+    /**
+     * 构建技能目录提示片段（支持按 Agent 工作区隔离）。
+     *
+     * @param agentWorkspaceId 调用 Agent 的工作区 ID。非 null 时，目录只保留
+     *                         内置技能（全局）与该工作区拥有的技能；其他工作区
+     *                         的技能不会注入 prompt。null 表示不做工作区过滤
+     *                         （调试预览等全局场景）。
+     */
+    public String buildSkillPromptEnhancement(Set<Long> boundSkillIds,
+                                              Set<String> effectiveToolNames,
+                                              Integer maxInputTokens,
+                                              Long agentId,
+                                              Long agentWorkspaceId) {
         List<ResolvedSkill> activeSkills;
         if (boundSkillIds != null) {
             // Per-agent filter: pick the agent's bound subset from the
@@ -381,6 +397,16 @@ public class SkillRuntimeService {
         activeSkills = activeSkills.stream()
                 .filter(s -> matchesCurrentPlatform(s, currentOs))
                 .collect(java.util.stream.Collectors.toList());
+        // Workspace filter — a workspace-B agent must not see workspace-A's
+        // skills in its catalog. Builtin skills are global; virtual MCP
+        // skills carry no workspace (null) and stay globally visible. Only
+        // applied when the caller supplies the agent's workspace; the debug
+        // preview passes null to keep its global view.
+        if (agentWorkspaceId != null) {
+            activeSkills = activeSkills.stream()
+                    .filter(s -> matchesWorkspace(s, agentWorkspaceId))
+                    .collect(java.util.stream.Collectors.toList());
+        }
         if (activeSkills.isEmpty()) {
             return "";
         }
@@ -575,5 +601,18 @@ public class SkillRuntimeService {
             if (currentOs.equalsIgnoreCase(p.trim())) return true;
         }
         return false;
+    }
+
+    /**
+     * True when the skill is visible to an agent in {@code agentWorkspaceId}.
+     * Builtin skills are global, virtual MCP-derived skills carry no
+     * workspace ({@code null}) and are likewise global; every other skill is
+     * visible only inside its owning workspace.
+     */
+    static boolean matchesWorkspace(ResolvedSkill skill, long agentWorkspaceId) {
+        if (skill.isBuiltin()) return true;
+        Long skillWs = skill.getWorkspaceId();
+        if (skillWs == null) return true;
+        return skillWs == agentWorkspaceId;
     }
 }

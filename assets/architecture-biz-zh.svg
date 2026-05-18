@@ -57,7 +57,7 @@
   <text x="140" y="264" text-anchor="middle" font-size="10" fill="#665245">LLM Wiki 知识库</text>
   <text x="140" y="282" text-anchor="middle" font-size="10" fill="#665245">结构化消化 + 双向链接</text>
   <text x="140" y="300" text-anchor="middle" font-size="10" fill="#665245">引用溯源 + 软归档</text>
-  <text x="140" y="318" text-anchor="middle" font-size="10" fill="#665245">lazy 入库 · 按需出页</text>
+  <text x="140" y="318" text-anchor="middle" font-size="10" fill="#665245">+ 加工器流水线（1.3.0+）</text>
   <text x="140" y="336" text-anchor="middle" font-size="9" fill="#9b7d6c">是图书馆，不是向量库</text>
   <!-- Arrow right -->
   <line x1="240" y1="280" x2="408" y2="280" stroke="#184a45" stroke-width="1.5" stroke-dasharray="4,3" opacity="0.5"/>
@@ -105,14 +105,19 @@
   <line x1="640" y1="400" x2="508" y2="340" stroke="#d96d46" stroke-width="1.5" stroke-dasharray="4,3" opacity="0.4"/>
   <polygon points="513,344 504,342 511,336" fill="#d96d46" opacity="0.5"/>
 
+  <!-- ===== Orchestration tier (NEW 1.3.0): Workflow + Trigger ===== -->
+  <rect x="350" y="358" width="260" height="36" rx="10" fill="url(#primary)" filter="url(#shadow)"/>
+  <text x="480" y="376" text-anchor="middle" font-size="11" font-weight="700" fill="#ffffff">业务编排 · 工作流 + 触发器</text>
+  <text x="480" y="389" text-anchor="middle" font-size="9" fill="#fde7dd">事件触发 → 多员工协作 → 审批 / 分发 / 写记忆</text>
+
   <!-- ===== Bottom Center: Models + Failover ===== -->
   <rect x="370" y="420" width="220" height="64" rx="12" fill="url(#accent)" filter="url(#shadow)"/>
   <text x="480" y="442" text-anchor="middle" font-size="13" font-weight="700" fill="#ffffff">模型池 · Failover</text>
   <text x="480" y="460" text-anchor="middle" font-size="10" fill="#dce8e4">云端 + 本地 · 14+ 供应商</text>
   <text x="480" y="475" text-anchor="middle" font-size="9" fill="#dce8e4">健康追踪 · 自动切换</text>
-  <!-- Arrow up to agent -->
-  <line x1="480" y1="420" x2="480" y2="352" stroke="#184a45" stroke-width="1.5" stroke-dasharray="4,3" opacity="0.5"/>
-  <polygon points="475,354 480,346 485,354" fill="#184a45" opacity="0.6"/>
+  <!-- Arrow up to agent (short, stops before orchestration band) -->
+  <line x1="480" y1="420" x2="480" y2="398" stroke="#184a45" stroke-width="1.5" stroke-dasharray="4,3" opacity="0.5"/>
+  <polygon points="475,400 480,392 485,400" fill="#184a45" opacity="0.6"/>
 
   <!-- Footer -->
   <rect x="340" y="530" width="280" height="26" rx="13" fill="url(#primary)"/>

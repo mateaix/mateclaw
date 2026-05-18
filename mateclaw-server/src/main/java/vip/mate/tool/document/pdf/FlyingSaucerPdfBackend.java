@@ -1,6 +1,6 @@
 package vip.mate.tool.document.pdf;
 
-import com.lowagie.text.pdf.BaseFont;
+import org.openpdf.text.pdf.BaseFont;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.commonmark.ext.autolink.AutolinkExtension;
@@ -118,7 +118,7 @@ public class FlyingSaucerPdfBackend implements PdfBackend {
         // the output PDF — without IDENTITY_H glyph indexing, Chinese characters
         // render as blanks even when the font file is found.
         //
-        // OpenPDF 2.0.5 has a known weakness with Apple-style .ttc font
+        // OpenPDF has a known weakness with Apple-style .ttc font
         // collections (PingFang.ttc, STHeiti.ttc, Songti.ttc on macOS): the
         // load succeeds but the cmap is empty, charExists returns false even
         // for ASCII, and the rendered PDF is a blank page. We probe the font

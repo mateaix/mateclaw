@@ -102,7 +102,8 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { mcToast } from '@/composables/useMcToast'
+import { mcConfirm } from '@/components/common/useConfirm'
 import { skillApi, type SkillSecretSummary } from '@/api'
 
 const props = defineProps<{
@@ -140,7 +141,7 @@ async function load() {
     rows.value = (res?.data ?? []) as SkillSecretSummary[]
   } catch (e: any) {
     rows.value = []
-    ElMessage.error(typeof e === 'string' ? e : e?.message || t('skills.detail.secretLoadFailed'))
+    mcToast.error(typeof e === 'string' ? e : e?.message || t('skills.detail.secretLoadFailed'))
   } finally {
     loading.value = false
   }
@@ -173,11 +174,11 @@ async function save() {
   saving.value = true
   try {
     await skillApi.putSecret(props.skillId, form.value.key.trim(), form.value.value)
-    ElMessage.success(t('skills.detail.secretSaveSuccess'))
+    mcToast.success(t('skills.detail.secretSaveSuccess'))
     dialogVisible.value = false
     await load()
   } catch (e: any) {
-    ElMessage.error(typeof e === 'string' ? e : e?.message || t('skills.detail.secretSaveFailed'))
+    mcToast.error(typeof e === 'string' ? e : e?.message || t('skills.detail.secretSaveFailed'))
   } finally {
     saving.value = false
   }
@@ -185,21 +186,18 @@ async function save() {
 
 async function removeSecret(key: string) {
   if (props.skillId == null) return
-  try {
-    await ElMessageBox.confirm(
-      t('skills.detail.secretDeleteConfirm', { key }),
-      t('common.confirm'),
-      { type: 'warning' },
-    )
-  } catch {
-    return // user cancelled
-  }
+  const ok = await mcConfirm({
+    title: t('common.confirm'),
+    message: t('skills.detail.secretDeleteConfirm', { key }),
+    tone: 'danger',
+  })
+  if (!ok) return
   try {
     await skillApi.deleteSecret(props.skillId, key)
-    ElMessage.success(t('skills.detail.secretDeleteSuccess'))
+    mcToast.success(t('skills.detail.secretDeleteSuccess'))
     await load()
   } catch (e: any) {
-    ElMessage.error(typeof e === 'string' ? e : e?.message || t('skills.detail.secretDeleteFailed'))
+    mcToast.error(typeof e === 'string' ? e : e?.message || t('skills.detail.secretDeleteFailed'))
   }
 }
 

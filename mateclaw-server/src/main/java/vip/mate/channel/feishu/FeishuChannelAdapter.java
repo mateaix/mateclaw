@@ -221,7 +221,7 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter {
                         }
                     }
                 })
-                // 静默忽略消息表情回应事件，避免 HandlerNotFoundException
+                // Silently ignore message reaction events to avoid HandlerNotFoundException
                 .onP2MessageReactionCreatedV1(new ImService.P2MessageReactionCreatedV1Handler() {
                     @Override
                     public void handle(com.lark.oapi.service.im.v1.model.P2MessageReactionCreatedV1 event) {}

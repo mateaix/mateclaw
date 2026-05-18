@@ -56,9 +56,10 @@ public class SkillSynthesisService {
      *
      * @param conversationId 源对话 ID
      * @param agentId        Agent ID（用于记录来源）
+     * @param workspaceId    目标工作区 ID（决定新 Skill 的归属）
      * @return 合成结果（包含 skillId、name、status）
      */
-    public SynthesisResult synthesize(String conversationId, Long agentId) {
+    public SynthesisResult synthesize(String conversationId, Long agentId, Long workspaceId) {
         // 1. 读取对话历史
         List<MessageEntity> messages = messageMapper.selectList(
                 new LambdaQueryWrapper<MessageEntity>()
@@ -121,6 +122,7 @@ public class SkillSynthesisService {
             skill.setVersion(extractFrontmatterValue(skillMd, "version"));
             skill.setSourceConversationId(conversationId);
             skill.setSecurityScanStatus(scanStatus);
+            skill.setWorkspaceId(workspaceId);
 
             skillService.createSkill(skill);
 

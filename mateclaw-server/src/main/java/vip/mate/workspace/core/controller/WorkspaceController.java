@@ -9,8 +9,10 @@ import vip.mate.auth.model.UserEntity;
 import vip.mate.auth.service.AuthService;
 import vip.mate.common.result.R;
 import vip.mate.exception.MateClawException;
+import vip.mate.workspace.core.model.WorkspaceAccessVO;
 import vip.mate.workspace.core.model.WorkspaceEntity;
 import vip.mate.workspace.core.model.WorkspaceMemberEntity;
+import vip.mate.workspace.core.model.WorkspaceWithRoleVO;
 import vip.mate.workspace.core.service.WorkspaceService;
 
 import java.util.List;
@@ -32,17 +34,26 @@ public class WorkspaceController {
 
     // ==================== 工作区 CRUD ====================
 
-    @Operation(summary = "获取当前用户的工作区列表")
+    @Operation(summary = "获取当前用户的工作区列表（含 memberRole 与 effectiveRole）")
     @GetMapping
-    public R<List<WorkspaceEntity>> list(Authentication auth) {
-        Long userId = resolveUserId(auth);
-        return R.ok(workspaceService.listByUserId(userId));
+    public R<List<WorkspaceWithRoleVO>> list(Authentication auth) {
+        UserEntity user = resolveUser(auth);
+        boolean isGlobalAdmin = isGlobalAdmin(user);
+        return R.ok(workspaceService.listWithRoleByUserId(user.getId(), isGlobalAdmin));
     }
 
     @Operation(summary = "获取工作区详情")
     @GetMapping("/{id}")
     public R<WorkspaceEntity> get(@PathVariable Long id) {
         return R.ok(workspaceService.getById(id));
+    }
+
+    @Operation(summary = "获取当前用户在指定工作区的访问能力（路由守卫消费）")
+    @GetMapping("/{id}/access")
+    public R<WorkspaceAccessVO> getAccess(@PathVariable Long id, Authentication auth) {
+        UserEntity user = resolveUser(auth);
+        boolean isGlobalAdmin = isGlobalAdmin(user);
+        return R.ok(workspaceService.getAccess(id, user.getId(), isGlobalAdmin));
     }
 
     @Operation(summary = "创建工作区")
@@ -150,11 +161,19 @@ public class WorkspaceController {
     // ==================== 工具方法 ====================
 
     private Long resolveUserId(Authentication auth) {
+        return resolveUser(auth).getId();
+    }
+
+    private UserEntity resolveUser(Authentication auth) {
         String username = auth.getName();
         UserEntity user = authService.findByUsername(username);
         if (user == null) {
             throw new MateClawException("用户不存在: " + username);
         }
-        return user.getId();
+        return user;
+    }
+
+    private boolean isGlobalAdmin(UserEntity user) {
+        return user != null && "admin".equalsIgnoreCase(user.getRole());
     }
 }

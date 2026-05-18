@@ -11,6 +11,7 @@ import org.springframework.web.method.HandlerMethod;
 import org.springframework.web.servlet.HandlerInterceptor;
 import vip.mate.auth.model.UserEntity;
 import vip.mate.auth.service.AuthService;
+import vip.mate.workspace.core.annotation.RequireGlobalAdmin;
 import vip.mate.workspace.core.annotation.RequireWorkspaceRole;
 import vip.mate.workspace.core.service.WorkspaceService;
 
@@ -44,9 +45,10 @@ public class WorkspaceAccessInterceptor implements HandlerInterceptor {
             return true;
         }
 
-        // 检查方法是否标注了 @RequireWorkspaceRole
+        // 检查注解：@RequireGlobalAdmin 与 @RequireWorkspaceRole 二选一
+        RequireGlobalAdmin globalAdmin = handlerMethod.getMethodAnnotation(RequireGlobalAdmin.class);
         RequireWorkspaceRole annotation = handlerMethod.getMethodAnnotation(RequireWorkspaceRole.class);
-        if (annotation == null) {
+        if (globalAdmin == null && annotation == null) {
             return true;
         }
 
@@ -64,15 +66,24 @@ public class WorkspaceAccessInterceptor implements HandlerInterceptor {
             return false;
         }
 
-        // 系统管理员跳过 workspace 权限检查（全局 admin 角色）
-        if ("admin".equalsIgnoreCase(user.getRole())) {
+        boolean isGlobalAdmin = "admin".equalsIgnoreCase(user.getRole());
+
+        // 全局 admin 注解：必须是 mate_user.role=admin，与工作区无关
+        if (globalAdmin != null && !isGlobalAdmin) {
+            log.warn("Global admin access denied: user={}, path={}", username, request.getRequestURI());
+            sendForbidden(response, "Global administrator role required");
+            return false;
+        }
+        if (globalAdmin != null) {
             return true;
         }
 
-        // 解析 workspace ID
-        long workspaceId = resolveWorkspaceId(request);
+        // @RequireWorkspaceRole 分支：全局 admin 跳过
+        if (isGlobalAdmin) {
+            return true;
+        }
 
-        // 检查成员资格 + 角色
+        long workspaceId = resolveWorkspaceId(request);
         String minRole = annotation.value();
         if (!workspaceService.hasPermissionCached(workspaceId, user.getId(), minRole)) {
             log.warn("Workspace access denied: user={}, workspaceId={}, requiredRole={}", username, workspaceId, minRole);

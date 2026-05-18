@@ -4,70 +4,33 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
-    <groupId>vip.mate</groupId>
+    <parent>
+        <groupId>vip.mate</groupId>
+        <artifactId>mateclaw</artifactId>
+        <version>${revision}</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
     <artifactId>mateclaw-server</artifactId>
-    <version>1.3.0</version>
     <packaging>jar</packaging>
 
     <name>MateClaw Server</name>
     <description>MateClaw - Java+Vue Personal AI Assistant powered by Spring AI Alibaba</description>
-
-    <parent>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-parent</artifactId>
-        <version>3.5.14</version>
-        <relativePath/>
-    </parent>
-
-    <properties>
-        <java.version>21</java.version>
-        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <!-- Spring AI 1.1.6 正式版（patch upgrade from 1.1.5） -->
-        <spring-ai.version>1.1.6</spring-ai.version>
-        <!-- Spring AI Alibaba 1.1.2.3（对应 Spring AI 1.1.x） -->
-        <spring-ai-alibaba.version>1.1.2.3</spring-ai-alibaba.version>
-        <mybatis-plus.version>3.5.16</mybatis-plus.version>
-        <hutool.version>5.8.26</hutool.version>
-        <springdoc.version>2.8.16</springdoc.version>
-        <jjwt.version>0.12.6</jjwt.version>
-    </properties>
-
-    <dependencyManagement>
-        <dependencies>
-            <!-- Spring AI BOM（统一管理 spring-ai-* 版本） -->
-            <dependency>
-                <groupId>org.springframework.ai</groupId>
-                <artifactId>spring-ai-bom</artifactId>
-                <version>${spring-ai.version}</version>
-                <type>pom</type>
-                <scope>import</scope>
-            </dependency>
-            <!-- SpringDoc OpenAPI BOM（统一管理 springdoc-* 版本） -->
-            <dependency>
-                <groupId>org.springdoc</groupId>
-                <artifactId>springdoc-openapi-bom</artifactId>
-                <version>${springdoc.version}</version>
-                <type>pom</type>
-                <scope>import</scope>
-            </dependency>
-        </dependencies>
-    </dependencyManagement>
 
     <dependencies>
         <!-- ===== MateClaw Plugin API ===== -->
         <dependency>
             <groupId>vip.mate</groupId>
             <artifactId>mateclaw-plugin-api</artifactId>
-            <version>1.1.0-SNAPSHOT</version>
         </dependency>
 
-        <!-- ===== Web MVC（不引入 WebFlux，避免自动切换为响应式模式） ===== -->
+        <!-- ===== Web MVC, excluding WebFlux to keep servlet mode ===== -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
         </dependency>
 
-        <!-- ===== Actuator — exposes Spring AI observation metrics (gen_ai.*) ===== -->
+        <!-- ===== Actuator - exposes Spring AI observation metrics (gen_ai.*) ===== -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator</artifactId>
@@ -75,14 +38,13 @@
 
         <!-- ===== Spring AI Alibaba DashScope ===== -->
         <!--
-            1.1.2.2 需单独指定版本，不在 BOM 中
-            内置 DashScope ChatModel / EmbeddingModel / ImageModel
+            Version is managed centrally because this artifact is outside the Spring AI BOM.
+            Provides DashScope ChatModel, EmbeddingModel, and ImageModel support.
         -->
         <dependency>
             <groupId>com.alibaba.cloud.ai</groupId>
             <artifactId>spring-ai-alibaba-starter-dashscope</artifactId>
-            <version>${spring-ai-alibaba.version}</version>
-            <!-- 排除 webflux 传递依赖，保持 MVC 模式 -->
+            <!-- Exclude the transitive WebFlux starter to keep MVC mode. -->
             <exclusions>
                 <exclusion>
                     <groupId>org.springframework.boot</groupId>
@@ -91,11 +53,10 @@
             </exclusions>
         </dependency>
 
-        <!-- ===== Spring AI Alibaba Graph Core（StateGraph 工作流引擎） ===== -->
+        <!-- ===== Spring AI Alibaba Graph Core (StateGraph workflow engine) ===== -->
         <dependency>
             <groupId>com.alibaba.cloud.ai</groupId>
             <artifactId>spring-ai-alibaba-graph-core</artifactId>
-            <version>${spring-ai-alibaba.version}</version>
         </dependency>
 
         <!-- ===== Spring AI OpenAI Compatible ===== -->
@@ -104,16 +65,15 @@
             <artifactId>spring-ai-openai</artifactId>
         </dependency>
 
-        <!-- ===== Spring AI Anthropic（Claude 模型支持） ===== -->
+        <!-- ===== Spring AI Anthropic (Claude model support) ===== -->
         <dependency>
             <groupId>org.springframework.ai</groupId>
             <artifactId>spring-ai-anthropic</artifactId>
         </dependency>
 
-        <!-- ===== Spring AI MCP Client（动态 MCP server 连接管理） ===== -->
+        <!-- ===== Spring AI MCP Client (dynamic MCP server connection management) ===== -->
         <!--
-            使用 spring-ai-mcp-client-spring-boot-starter 引入 MCP 核心库，
-            但禁用自动配置（我们自己管理 McpSyncClient 生命周期）
+            Pulls in the MCP core library while application code owns the McpSyncClient lifecycle.
         -->
         <dependency>
             <groupId>org.springframework.ai</groupId>
@@ -126,38 +86,36 @@
             </exclusions>
         </dependency>
 
-        <!-- ===== H2 内嵌数据库（开发环境） ===== -->
+        <!-- ===== H2 embedded database (development) ===== -->
         <dependency>
             <groupId>com.h2database</groupId>
             <artifactId>h2</artifactId>
             <scope>runtime</scope>
         </dependency>
 
-        <!-- ===== MySQL 驱动（生产环境） ===== -->
+        <!-- ===== MySQL driver (production) ===== -->
         <dependency>
             <groupId>com.mysql</groupId>
             <artifactId>mysql-connector-j</artifactId>
             <scope>runtime</scope>
         </dependency>
 
-        <!-- ===== PostgreSQL 驱动（生产环境） ===== -->
+<!-- ===== PostgreSQL 驱动（生产环境） ===== -->
         <dependency>
             <groupId>org.postgresql</groupId>
             <artifactId>postgresql</artifactId>
             <scope>runtime</scope>
         </dependency>
 
-        <!-- ===== MyBatis Plus（不引入 JPA，避免双 ORM 冲突） ===== -->
+        <!-- ===== MyBatis Plus, without JPA to avoid dual ORM conflicts ===== -->
         <dependency>
             <groupId>com.baomidou</groupId>
             <artifactId>mybatis-plus-spring-boot3-starter</artifactId>
-            <version>${mybatis-plus.version}</version>
         </dependency>
-        <!-- MyBatis Plus 分页插件（3.5.16 拆分为独立模块） -->
+        <!-- MyBatis Plus pagination support is split into a separate module. -->
         <dependency>
             <groupId>com.baomidou</groupId>
             <artifactId>mybatis-plus-jsqlparser</artifactId>
-            <version>${mybatis-plus.version}</version>
         </dependency>
 
         <!-- ===== Spring Security ===== -->
@@ -170,55 +128,49 @@
         <dependency>
             <groupId>io.jsonwebtoken</groupId>
             <artifactId>jjwt-api</artifactId>
-            <version>${jjwt.version}</version>
         </dependency>
         <dependency>
             <groupId>io.jsonwebtoken</groupId>
             <artifactId>jjwt-impl</artifactId>
-            <version>${jjwt.version}</version>
             <scope>runtime</scope>
         </dependency>
         <dependency>
             <groupId>io.jsonwebtoken</groupId>
             <artifactId>jjwt-jackson</artifactId>
-            <version>${jjwt.version}</version>
             <scope>runtime</scope>
         </dependency>
 
-        <!-- ===== SpringDoc OpenAPI（Swagger UI for Spring MVC） ===== -->
+        <!-- ===== SpringDoc OpenAPI (Swagger UI for Spring MVC) ===== -->
         <dependency>
             <groupId>org.springdoc</groupId>
             <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
         </dependency>
 
-        <!-- ===== Hutool 工具库 ===== -->
+        <!-- ===== Hutool utilities ===== -->
         <dependency>
             <groupId>cn.hutool</groupId>
             <artifactId>hutool-all</artifactId>
-            <version>${hutool.version}</version>
         </dependency>
 
-        <!-- ===== 钉钉 Stream SDK（WebSocket 长连接，无需公网 IP） ===== -->
+        <!-- ===== DingTalk Stream SDK (WebSocket long connection, no public IP required) ===== -->
         <dependency>
             <groupId>com.dingtalk.open</groupId>
             <artifactId>dingtalk-stream</artifactId>
-            <version>1.3.12</version>
         </dependency>
 
-        <!-- ===== 飞书 / Lark Open API SDK（WebSocket 长连接 + 事件分发） ===== -->
+        <!-- ===== Lark Open API SDK (WebSocket long connection and event dispatch) ===== -->
         <dependency>
             <groupId>com.larksuite.oapi</groupId>
             <artifactId>oapi-sdk</artifactId>
-            <version>2.6.1</version>
         </dependency>
 
-        <!-- ===== Caffeine Cache（用于 skill runtime 缓存） ===== -->
+        <!-- ===== Caffeine cache for skill runtime caching ===== -->
         <dependency>
             <groupId>com.github.ben-manes.caffeine</groupId>
             <artifactId>caffeine</artifactId>
         </dependency>
 
-        <!-- ===== SnakeYAML（用于 SKILL.md frontmatter 解析） ===== -->
+        <!-- ===== SnakeYAML for SKILL.md frontmatter parsing ===== -->
         <dependency>
             <groupId>org.yaml</groupId>
             <artifactId>snakeyaml</artifactId>
@@ -235,28 +187,24 @@
         <dependency>
             <groupId>com.google.zxing</groupId>
             <artifactId>core</artifactId>
-            <version>3.5.3</version>
         </dependency>
         <dependency>
             <groupId>com.google.zxing</groupId>
             <artifactId>javase</artifactId>
-            <version>3.5.3</version>
         </dependency>
 
         <!-- ===== Playwright (Browser Automation) ===== -->
         <dependency>
             <groupId>com.microsoft.playwright</groupId>
             <artifactId>playwright</artifactId>
-            <version>1.52.0</version>
         </dependency>
 
-        <!-- ===== JDA（Discord Bot Gateway WebSocket 长连接） ===== -->
+        <!-- ===== JDA (Discord Bot Gateway WebSocket long connection) ===== -->
         <dependency>
             <groupId>net.dv8tion</groupId>
             <artifactId>JDA</artifactId>
-            <version>5.2.3</version>
             <exclusions>
-                <!-- 排除 audio 相关依赖（MateClaw 不需要语音功能） -->
+                <!-- Exclude audio dependencies because voice features are not used. -->
                 <exclusion>
                     <groupId>club.minnced</groupId>
                     <artifactId>opus-java</artifactId>
@@ -264,27 +212,24 @@
             </exclusions>
         </dependency>
 
-        <!-- ===== Spring WebSocket（Talk Mode） ===== -->
+        <!-- ===== Spring WebSocket (Talk Mode) ===== -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-websocket</artifactId>
         </dependency>
 
-        <!-- ===== Slack SDK（Socket Mode + Web API） ===== -->
+        <!-- ===== Slack SDK (Socket Mode and Web API) ===== -->
         <dependency>
             <groupId>com.slack.api</groupId>
             <artifactId>slack-api-client</artifactId>
-            <version>1.44.2</version>
         </dependency>
         <dependency>
             <groupId>com.slack.api</groupId>
             <artifactId>bolt-socket-mode</artifactId>
-            <version>1.44.2</version>
         </dependency>
         <dependency>
             <groupId>org.glassfish.tyrus.bundles</groupId>
             <artifactId>tyrus-standalone-client</artifactId>
-            <version>2.2.0</version>
         </dependency>
 
         <!-- ===== Apache POI (in-process .docx generation) ===== -->
@@ -295,7 +240,6 @@
         <dependency>
             <groupId>org.apache.poi</groupId>
             <artifactId>poi-ooxml</artifactId>
-            <version>5.4.1</version>
         </dependency>
 
         <!-- ===== Apache Batik (SVG rasterization for docx image embedding) ===== -->
@@ -309,60 +253,54 @@
         <dependency>
             <groupId>org.apache.xmlgraphics</groupId>
             <artifactId>batik-transcoder</artifactId>
-            <version>1.18</version>
         </dependency>
         <dependency>
             <groupId>org.apache.xmlgraphics</groupId>
             <artifactId>batik-codec</artifactId>
-            <version>1.18</version>
         </dependency>
 
-        <!-- ===== jsoup (HTML cleanup for Wiki ingest, RFC-051 PR-1c) ===== -->
+        <!-- ===== jsoup (HTML cleanup for Wiki ingest) ===== -->
         <!--
             Used by WikiContentNormalizer to strip nav/footer/script/style/aside
             and ad-class nodes from URL/HTML uploads before chunking. Small
-            (~430KB), no transitive deps, JVM-only — safe for the desktop bundle.
+            (~430KB), no transitive deps, JVM-only, and safe for the desktop bundle.
         -->
         <dependency>
             <groupId>org.jsoup</groupId>
             <artifactId>jsoup</artifactId>
-            <version>1.18.3</version>
         </dependency>
 
-        <!-- ===== Apache Tika (RFC-051 PR-?: Java-side last-resort extractor) ===== -->
+        <!-- ===== Apache Tika (Java-side last-resort document extractor) ===== -->
         <!--
             Wired as the FINAL fallback in DocumentExtractTool's PDF/DOCX/XLSX/PPTX
             chains, after every system command + Python + POI-based path has failed.
             Used in production primarily by Windows users without Python or poppler
             installed; otherwise idle.
 
-            Pinned to the precise format modules called out in RFC-051 §5.2 — we
-            deliberately avoid `tika-parsers-standard-package`, which pulls in mail,
+            Pinned to the precise format modules the extractor calls directly. This
+            deliberately avoids `tika-parsers-standard-package`, which pulls in mail,
             audio, archive, RTF / ODT, scientific, etc. (~80MB). Current footprint:
             tika-core (~700KB) + tika-parser-pdf-module (PDFBox ~5MB) +
-            tika-parser-microsoft-module (POI-scratchpad ~10MB) ≈ 16MB.
+            tika-parser-microsoft-module (POI-scratchpad ~10MB) is about 16MB.
         -->
         <dependency>
             <groupId>org.apache.tika</groupId>
             <artifactId>tika-core</artifactId>
-            <version>3.0.0</version>
         </dependency>
         <dependency>
             <groupId>org.apache.tika</groupId>
             <artifactId>tika-parser-pdf-module</artifactId>
-            <version>3.0.0</version>
         </dependency>
         <dependency>
             <groupId>org.apache.tika</groupId>
             <artifactId>tika-parser-microsoft-module</artifactId>
-            <version>3.0.0</version>
         </dependency>
 
         <!-- ===== Markdown -> PDF rendering =====
-             Flying Saucer 9.13 ships a single `flying-saucer-pdf` artifact that
-             writes PDF via OpenPDF (LGPL fork of iText 5). It does NOT depend on
+             Flying Saucer ships a single `flying-saucer-pdf` artifact that
+             writes PDF via OpenPDF (LGPL fork of iText). It does NOT depend on
              PDFBox, so it sidesteps a version conflict with the existing
-             pdfbox:3.0.3 dependency. CSS3 paged-media features (@page,
+             pdfbox dependency. CSS3 paged-media features (@page,
              counter(page), counter(pages), @top-center / @bottom-center) are
              supported, which the cover / header / footer rendering relies on.
 
@@ -375,32 +313,26 @@
         <dependency>
             <groupId>org.xhtmlrenderer</groupId>
             <artifactId>flying-saucer-pdf</artifactId>
-            <version>9.13.0</version>
         </dependency>
         <dependency>
             <groupId>org.commonmark</groupId>
             <artifactId>commonmark</artifactId>
-            <version>0.28.0</version>
         </dependency>
         <dependency>
             <groupId>org.commonmark</groupId>
             <artifactId>commonmark-ext-gfm-tables</artifactId>
-            <version>0.28.0</version>
         </dependency>
         <dependency>
             <groupId>org.commonmark</groupId>
             <artifactId>commonmark-ext-yaml-front-matter</artifactId>
-            <version>0.28.0</version>
         </dependency>
         <dependency>
             <groupId>org.commonmark</groupId>
             <artifactId>commonmark-ext-gfm-strikethrough</artifactId>
-            <version>0.28.0</version>
         </dependency>
         <dependency>
             <groupId>org.commonmark</groupId>
             <artifactId>commonmark-ext-autolink</artifactId>
-            <version>0.28.0</version>
         </dependency>
 
         <!-- ===== Database Migration (Flyway) ===== -->
@@ -424,33 +356,30 @@
             <scope>test</scope>
         </dependency>
 
-        <!-- ===== ArchUnit (RFC-063r §2.3 / §5.2 architecture invariants) =====
-             test-scope only — guards:
+        <!-- ===== ArchUnit architecture invariants =====
+             test-scope only, guards:
              - every ToolCallback implementation overrides call(String, ToolContext)
                so decorators (LocaleAwareToolCallback) cannot silently drop ChatOrigin
-             - CronJobRunner (introduced in PR-3) must not carry @Transactional
-               (would silently fail under self-invocation; see RFC §5.2)
+             - CronJobRunner must not carry @Transactional
+               because it would silently fail under self-invocation
         -->
         <dependency>
             <groupId>com.tngtech.archunit</groupId>
             <artifactId>archunit-junit5</artifactId>
-            <version>1.3.0</version>
             <scope>test</scope>
         </dependency>
 
         <!-- ShedLock: distributed lock for the cron scheduler so a
              multi-instance deployment doesn't fire the same job N times.
-             JDBC mode reuses the existing DataSource — no Redis dependency
+             JDBC mode reuses the existing DataSource, so there is no Redis dependency
              on the desktop / single-node footprint. -->
         <dependency>
             <groupId>net.javacrumbs.shedlock</groupId>
             <artifactId>shedlock-spring</artifactId>
-            <version>5.16.0</version>
         </dependency>
         <dependency>
             <groupId>net.javacrumbs.shedlock</groupId>
             <artifactId>shedlock-provider-jdbc-template</artifactId>
-            <version>5.16.0</version>
         </dependency>
 
         <!-- Graph algorithms (community detection, shortest path, centrality)
@@ -458,7 +387,6 @@
         <dependency>
             <groupId>org.jgrapht</groupId>
             <artifactId>jgrapht-core</artifactId>
-            <version>1.5.2</version>
         </dependency>
 
         <!-- PDF parsing for inline image extraction (wiki vision-in pipeline).
@@ -467,7 +395,6 @@
         <dependency>
             <groupId>org.apache.pdfbox</groupId>
             <artifactId>pdfbox</artifactId>
-            <version>3.0.3</version>
         </dependency>
 
         <!-- Expression language used by the workflow compiler to evaluate
@@ -478,7 +405,6 @@
         <dependency>
             <groupId>io.pebbletemplates</groupId>
             <artifactId>pebble</artifactId>
-            <version>3.2.2</version>
         </dependency>
     </dependencies>
 
@@ -487,6 +413,13 @@
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>repackage</goal>
+                        </goals>
+                    </execution>
+                </executions>
                 <configuration>
                     <excludes>
                         <exclude>
@@ -526,115 +459,7 @@
         </plugins>
     </build>
 
-    <!--
-      Dependency repositories, with US + CN mirrors listed side by side so builds
-      are reasonable on either continent. Maven tries repositories in the order
-      they are declared — the first one that resolves an artifact wins.
-
-      IDs are deliberately distinct from the super-POM's `central` id so that
-      mirror rules in settings.xml (if any) don't silently redirect them. Keep
-      the fastest-by-default first; switch order via a local ~/.m2/settings.xml
-      or pass `-Paliyun-first` when building from inside China.
-    -->
-    <repositories>
-        <!-- Primary: Maven Central direct — fast from US/EU backbones. -->
-        <repository>
-            <id>maven-central</id>
-            <name>Maven Central</name>
-            <url>https://repo.maven.apache.org/maven2</url>
-            <releases><enabled>true</enabled></releases>
-            <snapshots><enabled>false</enabled></snapshots>
-        </repository>
-        <!-- Fallback 1: Google Cloud's Maven Central mirror (global CDN edge). -->
-        <repository>
-            <id>google-maven-central</id>
-            <name>Google Maven Central Mirror</name>
-            <url>https://maven-central.storage-download.googleapis.com/maven2</url>
-            <releases><enabled>true</enabled></releases>
-            <snapshots><enabled>false</enabled></snapshots>
-        </repository>
-        <!-- Fallback 2: Aliyun public — fast from China, full Central mirror. -->
-        <repository>
-            <id>aliyun-public</id>
-            <name>Aliyun Public</name>
-            <url>https://maven.aliyun.com/repository/public</url>
-            <releases><enabled>true</enabled></releases>
-            <snapshots><enabled>false</enabled></snapshots>
-        </repository>
-        <!-- Spring milestones / snapshots — direct from Spring (US). -->
-        <repository>
-            <id>spring-milestones</id>
-            <name>Spring Milestones</name>
-            <url>https://repo.spring.io/milestone</url>
-            <releases><enabled>true</enabled></releases>
-            <snapshots><enabled>false</enabled></snapshots>
-        </repository>
-        <!-- Aliyun Spring mirror — fallback for CN builds. -->
-        <repository>
-            <id>aliyun-spring</id>
-            <name>Aliyun Spring Mirror</name>
-            <url>https://maven.aliyun.com/repository/spring</url>
-            <releases><enabled>true</enabled></releases>
-            <snapshots><enabled>false</enabled></snapshots>
-        </repository>
-    </repositories>
-
-    <!-- Plugin lookups follow the same multi-region fallback. -->
-    <pluginRepositories>
-        <pluginRepository>
-            <id>maven-central</id>
-            <name>Maven Central</name>
-            <url>https://repo.maven.apache.org/maven2</url>
-            <releases><enabled>true</enabled></releases>
-            <snapshots><enabled>false</enabled></snapshots>
-        </pluginRepository>
-        <pluginRepository>
-            <id>google-maven-central</id>
-            <name>Google Maven Central Mirror</name>
-            <url>https://maven-central.storage-download.googleapis.com/maven2</url>
-            <releases><enabled>true</enabled></releases>
-            <snapshots><enabled>false</enabled></snapshots>
-        </pluginRepository>
-        <pluginRepository>
-            <id>aliyun-public</id>
-            <name>Aliyun Public</name>
-            <url>https://maven.aliyun.com/repository/public</url>
-            <releases><enabled>true</enabled></releases>
-            <snapshots><enabled>false</enabled></snapshots>
-        </pluginRepository>
-    </pluginRepositories>
-
-    <!--
-      Profile: swap the primary repo order when building from China so Aliyun
-      is tried first. Activate with `mvn -Paliyun-first ...`.
-    -->
     <profiles>
-        <profile>
-            <id>aliyun-first</id>
-            <repositories>
-                <repository>
-                    <id>aliyun-public-first</id>
-                    <url>https://maven.aliyun.com/repository/public</url>
-                    <releases><enabled>true</enabled></releases>
-                    <snapshots><enabled>false</enabled></snapshots>
-                </repository>
-                <repository>
-                    <id>aliyun-spring-first</id>
-                    <url>https://maven.aliyun.com/repository/spring</url>
-                    <releases><enabled>true</enabled></releases>
-                    <snapshots><enabled>false</enabled></snapshots>
-                </repository>
-            </repositories>
-            <pluginRepositories>
-                <pluginRepository>
-                    <id>aliyun-public-first</id>
-                    <url>https://maven.aliyun.com/repository/public</url>
-                    <releases><enabled>true</enabled></releases>
-                    <snapshots><enabled>false</enabled></snapshots>
-                </pluginRepository>
-            </pluginRepositories>
-        </profile>
-
         <!--
           Profile: focused test run for image / video generation features.
           Activate with `mvn test -P media-gen` (or `mvn verify -P media-gen`).

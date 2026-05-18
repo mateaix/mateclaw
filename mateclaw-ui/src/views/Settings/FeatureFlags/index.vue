@@ -71,7 +71,8 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElIcon, ElMessage } from 'element-plus'
+import { mcToast } from '@/composables/useMcToast'
+import { ElIcon } from 'element-plus'
 import { Loading, WarningFilled } from '@element-plus/icons-vue'
 import { featureFlagApi, type FeatureFlag } from '@/api/index'
 
@@ -135,10 +136,10 @@ async function onToggle(flag: FeatureFlag, next: boolean) {
   try {
     await featureFlagApi.update(flag.flagKey, { enabled: next })
     flag.enabled = next
-    ElMessage.success(t(next ? 'settings.featureFlags.enabled' : 'settings.featureFlags.disabled',
+    mcToast.success(t(next ? 'settings.featureFlags.enabled' : 'settings.featureFlags.disabled',
         { key: flag.flagKey }))
   } catch (e: any) {
-    ElMessage.error(e?.message ?? t('settings.featureFlags.toggleFailed'))
+    mcToast.error(e?.message ?? t('settings.featureFlags.toggleFailed'))
     await load()
   } finally {
     pending[flag.flagKey] = false

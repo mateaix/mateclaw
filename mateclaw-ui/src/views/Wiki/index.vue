@@ -9,6 +9,7 @@
           :loading="store.loading"
           @open="enterKB"
           @create="showCreateKB = true"
+          @delete="handleDeleteKB"
         />
         <WikiWorkspace
           v-else
@@ -40,8 +41,10 @@
 <script setup lang="ts">
 import { ref, reactive, watch, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useWikiStore } from '@/stores/useWikiStore'
+import { useWikiStore, type WikiKB } from '@/stores/useWikiStore'
 import { wikiApi } from '@/api/index'
+import { mcConfirm } from '@/components/common/useConfirm'
+import { mcToast } from '@/composables/useMcToast'
 import WikiLibrary from './components/WikiLibrary.vue'
 import WikiWorkspace from './components/WikiWorkspace.vue'
 
@@ -83,6 +86,26 @@ async function handleCreateKB() {
   showCreateKB.value = false
   newKBName.value = ''
   newKBDesc.value = ''
+}
+
+async function handleDeleteKB(kb: WikiKB) {
+  const ok = await mcConfirm({
+    title: t('wiki.library.deleteKB'),
+    message: t('wiki.library.deleteKBConfirm', {
+      name: kb.name,
+      raws: kb.rawCount ?? 0,
+      pages: kb.pageCount ?? 0,
+    }),
+    confirmText: t('common.delete'),
+    tone: 'danger',
+  })
+  if (!ok) return
+  try {
+    await store.deleteKB(kb.id)
+    mcToast.success(t('wiki.library.deleteKBSuccess', { name: kb.name }))
+  } catch (e: any) {
+    mcToast.error(e?.response?.data?.message || t('wiki.library.deleteKBFailed'))
+  }
 }
 
 onMounted(() => {

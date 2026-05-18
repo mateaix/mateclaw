@@ -335,6 +335,7 @@ public class SkillPackageResolver {
             .enabled(Boolean.TRUE.equals(entity.getEnabled()))
             .icon(entity.getIcon())
             .builtin(Boolean.TRUE.equals(entity.getBuiltin()))
+            .workspaceId(entity.getWorkspaceId())
             .createTime(entity.getCreateTime())
             .build();
     }
@@ -376,6 +377,7 @@ public class SkillPackageResolver {
             .enabled(Boolean.TRUE.equals(entity.getEnabled()))
             .icon(entity.getIcon())
             .builtin(Boolean.TRUE.equals(entity.getBuiltin()))
+            .workspaceId(entity.getWorkspaceId())
             .createTime(entity.getCreateTime())
             .build();
     }

@@ -30,8 +30,6 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p>
  * Triggered every N turns via ConversationCompletedEvent.
  * Runs async to avoid blocking the user response.
- * <p>
- * Inspired by Hermes Agent's Memory Nudge mechanism.
  *
  * @author MateClaw Team
  */

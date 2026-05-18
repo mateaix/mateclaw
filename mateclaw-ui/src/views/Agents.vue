@@ -9,23 +9,28 @@
             <p class="mc-page-desc">{{ t('agents.desc') }}</p>
           </div>
           <div class="header-right">
-            <router-link
-              v-if="isAdminRole && backstageRunning > 0"
-              to="/backstage"
-              class="live-pill"
-              :class="{ 'live-pill--alert': backstageStuck > 0 }"
-              :title="t('backstage.attention')"
-            >
-              <span class="live-pill-dot"></span>
-              <span class="live-pill-text">
-                {{ backstageStuck > 0
-                  ? t('agents.live.needsAttention', { n: backstageStuck })
-                  : t('agents.live.atWork', { n: backstageRunning }) }}
-              </span>
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                <polyline points="9 18 15 12 9 6"/>
-              </svg>
-            </router-link>
+            <!-- Roster / Live view switch — one team, two states. Admin only.
+                 Sits on the header line, level with the New Employee button. -->
+            <div v-if="isAdminRole" class="view-switch">
+              <button
+                class="view-seg"
+                :class="{ 'is-active': view === 'roster' }"
+                @click="setView('roster')"
+              >{{ t('agents.views.roster') }}</button>
+              <button
+                class="view-seg"
+                :class="{ 'is-active': view === 'live' }"
+                @click="setView('live')"
+              >
+                <span v-if="liveRunning > 0" class="seg-pulse"></span>
+                {{ t('agents.views.live') }}
+                <span
+                  v-if="liveRunning > 0"
+                  class="seg-count"
+                  :class="{ warn: liveStuck > 0 }"
+                >{{ liveRunning }}</span>
+              </button>
+            </div>
             <button class="btn-primary" @click="openCreateModal">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
@@ -35,6 +40,8 @@
           </div>
         </div>
 
+        <!-- Roster: the team -->
+        <template v-if="view === 'roster'">
         <div class="agents-toolbar mc-surface-card">
           <div class="filter-bar">
             <div class="search-box">
@@ -123,6 +130,10 @@
           <p>{{ t('agents.emptyDesc') }}</p>
           <button class="btn-primary" @click="openCreateModal">{{ t('agents.newAgent') }}</button>
         </div>
+        </template>
+
+        <!-- Live: what the team is doing right now -->
+        <LivePanel v-else />
       </div>
     </div>
     
@@ -337,7 +348,7 @@
                   <input type="checkbox" :value="skill.id" v-model="selectedSkillIds" class="binding-checkbox" />
                   <span class="binding-icon"><SkillIcon :value="skill.icon" :size="20" :fallback="'🧩'" /></span>
                   <div class="binding-info">
-                    <span class="binding-name">{{ skill.name }}</span>
+                    <span class="binding-name">{{ resolveSkillName(skill) }}</span>
                     <span v-if="skill.description" class="binding-desc">{{ skill.description?.slice(0, 80) }}</span>
                   </div>
                   <span v-if="skill.version" class="binding-version">v{{ skill.version }}</span>
@@ -384,18 +395,22 @@
                 <template v-for="group in filteredAvailableToolGroups" :key="group.groupId">
                   <div class="binding-group-header">
                     <span>{{ group.label }}</span>
-                    <!-- MCP groups: ticking is now record-only — enabled MCP
-                         tools auto-join the agent's effective allowlist
-                         (server is admin-enabled at the system level). Tell
-                         the user that here so they don't think unchecked
-                         MCP rows are disabled. To deny a specific MCP tool,
-                         users still have Security → Tool Guard. -->
+                    <!-- MCP group badge reflects the agent's MCP scope:
+                         with no MCP tool ticked, every enabled MCP tool is
+                         available by default; once any MCP tool is ticked,
+                         the agent is restricted to the ticked set. To deny
+                         an MCP tool when none are ticked, users still have
+                         Security → Tool Guard. -->
                     <span
                       v-if="group.groupId && group.groupId.startsWith('mcp:')"
                       class="binding-group-note"
-                      :title="t('agents.binding.mcpAutoIncludedTooltip')"
+                      :title="anyMcpToolSelected
+                        ? t('agents.binding.mcpScopedTooltip')
+                        : t('agents.binding.mcpAutoIncludedTooltip')"
                     >
-                      {{ t('agents.binding.mcpAutoIncludedBadge') }}
+                      {{ anyMcpToolSelected
+                        ? t('agents.binding.mcpScopedBadge')
+                        : t('agents.binding.mcpAutoIncludedBadge') }}
                     </span>
                   </div>
                   <label
@@ -486,14 +501,15 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+import { mcToast } from '@/composables/useMcToast'
 import { mcConfirm } from '@/components/common/useConfirm'
-import { agentApi, agentBindingApi, modelApi, skillApi, toolApi, templateApi, backstageApi } from '@/api/index'
+import { agentApi, agentBindingApi, modelApi, skillApi, toolApi, templateApi, liveApi } from '@/api/index'
 import type { Agent } from '@/types/index'
 import SkillIcon from '@/components/common/SkillIcon.vue'
 import SkillIconPicker from '@/components/common/SkillIconPicker.vue'
+import LivePanel from '@/components/live/LivePanel.vue'
 import {
   emptyProfile,
   parsePrompt,
@@ -505,9 +521,12 @@ import {
 } from '@/utils/agentPromptProfile'
 import { agentIconColor } from '@/utils/agentIconColor'
 import { filterAgentBindingItems, filterAgentToolGroups } from '@/utils/agentBindingSearch'
+import { useSkillName } from '@/composables/useSkillName'
 
 const router = useRouter()
+const route = useRoute()
 const { t } = useI18n()
+const { resolveSkillName } = useSkillName()
 const agents = ref<Agent[]>([])
 const searchText = ref('')
 const activeFilter = ref('all')
@@ -624,6 +643,16 @@ const availableToolGroups = computed(() => {
 const filteredAvailableToolGroups = computed(() => filterAgentToolGroups(availableToolGroups.value, toolBindingSearch.value))
 
 /**
+ * True when at least one ticked tool is an MCP tool. The backend reads
+ * this as a deliberate per-agent MCP scope: only ticked MCP tools stay
+ * in the effective allowlist. When false, every enabled MCP tool is
+ * auto-included instead. Drives the MCP group badge in the picker.
+ */
+const anyMcpToolSelected = computed(() =>
+  availableTools.value.some((tool) => tool.source === 'mcp' && selectedToolNames.value.includes(tool.name)),
+)
+
+/**
  * Manual checkbox handler — replaces v-model on the picker row so that
  * two rows sharing a tool name (collision/duplicate twins) don't drag
  * each other's selection state via Vue's v-model auto-sync.
@@ -713,19 +742,28 @@ const filteredAgents = computed(() => {
   return list
 })
 
-// Live signal for the "see what's running" header pill — admin only.
+// Roster ↔ Live view switch — admin only. The running/stuck counts feed the
+// segmented control's pulse + badge so you know whether Live is worth a look.
 const isAdminRole = computed(() => (localStorage.getItem('role') || 'user') === 'admin')
-const backstageRunning = ref(0)
-const backstageStuck = ref(0)
-let backstagePollTimer: ReturnType<typeof setInterval> | null = null
+const view = ref<'roster' | 'live'>(
+  route.query.view === 'live' && isAdminRole.value ? 'live' : 'roster',
+)
+const liveRunning = ref(0)
+const liveStuck = ref(0)
+let livePollTimer: ReturnType<typeof setInterval> | null = null
 
-async function refreshBackstagePill() {
+function setView(next: 'roster' | 'live') {
+  view.value = next
+  router.replace({ query: next === 'live' ? { view: 'live' } : {} })
+}
+
+async function refreshLiveCounts() {
   if (!isAdminRole.value) return
   try {
-    const res: any = await backstageApi.snapshot()
+    const res: any = await liveApi.snapshot()
     const data = res?.data ?? res
-    backstageRunning.value = data?.summary?.running ?? 0
-    backstageStuck.value = data?.summary?.stuck ?? 0
+    liveRunning.value = data?.summary?.running ?? 0
+    liveStuck.value = data?.summary?.stuck ?? 0
   } catch {
     // Silent — stale value is preferable to a flapping number.
   }
@@ -737,13 +775,13 @@ onMounted(() => {
   // Failure is non-fatal — the dropdown just shows only "global default".
   loadAvailableModels()
   if (isAdminRole.value) {
-    refreshBackstagePill()
-    backstagePollTimer = setInterval(refreshBackstagePill, 10_000)
+    refreshLiveCounts()
+    livePollTimer = setInterval(refreshLiveCounts, 10_000)
   }
 })
 
 onBeforeUnmount(() => {
-  if (backstagePollTimer) clearInterval(backstagePollTimer)
+  if (livePollTimer) clearInterval(livePollTimer)
 })
 
 async function loadAgents() {
@@ -751,7 +789,7 @@ async function loadAgents() {
     const res: any = await agentApi.list()
     agents.value = res.data || []
   } catch {
-    ElMessage.error(t('agents.messages.loadFailed'))
+    mcToast.error(t('agents.messages.loadFailed'))
   }
 }
 
@@ -829,11 +867,11 @@ async function applyTemplate(id: string) {
   applyingTemplate.value = true
   try {
     await templateApi.apply(id)
-    ElMessage.success(t('agents.templates.applied'))
+    mcToast.success(t('agents.templates.applied'))
     showTemplateSelector.value = false
     await loadAgents()
   } catch (e: any) {
-    ElMessage.error(e?.message || t('agents.messages.saveFailed'))
+    mcToast.error(e?.message || t('agents.messages.saveFailed'))
   } finally {
     applyingTemplate.value = false
   }
@@ -928,11 +966,11 @@ async function saveAgent() {
       ])
     }
 
-    ElMessage.success(t('agents.messages.saveSuccess'))
+    mcToast.success(t('agents.messages.saveSuccess'))
     closeModal()
     await loadAgents()
   } catch (e: any) {
-    ElMessage.error(e?.message || t('agents.messages.saveFailed'))
+    mcToast.error(e?.message || t('agents.messages.saveFailed'))
   }
 }
 
@@ -945,10 +983,10 @@ async function deleteAgent(agent: Agent) {
   if (!ok) return
   try {
     await agentApi.delete(agent.id)
-    ElMessage.success(t('agents.messages.deleteSuccess'))
+    mcToast.success(t('agents.messages.deleteSuccess'))
     await loadAgents()
   } catch {
-    ElMessage.error(t('agents.messages.deleteFailed'))
+    mcToast.error(t('agents.messages.deleteFailed'))
   }
 }
 
@@ -964,10 +1002,10 @@ function goToChat(agent: Agent) {
 async function toggleAgent(agent: Agent) {
   try {
     await agentApi.update(agent.id, { ...agent, enabled: !agent.enabled })
-    ElMessage.success(t('agents.messages.toggleSuccess'))
+    mcToast.success(t('agents.messages.toggleSuccess'))
     await loadAgents()
   } catch {
-    ElMessage.error(t('agents.messages.toggleFailed'))
+    mcToast.error(t('agents.messages.toggleFailed'))
   }
 }
 </script>
@@ -975,92 +1013,87 @@ async function toggleAgent(agent: Agent) {
 <style scoped>
 .agents-page { gap: 18px; }
 
-/* ===== Backstage live pill in page header ===== */
 .header-right {
   display: flex;
   align-items: center;
   gap: 12px;
 }
 
-.live-pill {
+/* ===== Roster / Live segmented switch ===== */
+/* Lives in the header row, level with the New Employee button. */
+.view-switch {
+  display: inline-flex;
+  background: var(--mc-bg-sunken);
+  border: 1px solid var(--mc-border-light);
+  border-radius: 999px;
+  padding: 4px;
+  gap: 2px;
+}
+
+.view-seg {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 14px 8px 12px;
+  padding: 6px 18px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.6);
-  border: 1px solid var(--mc-border-light);
+  border: none;
+  background: transparent;
   color: var(--mc-text-secondary);
-  font-size: 12.5px;
+  font-size: 13.5px;
   font-weight: 500;
-  text-decoration: none;
+  font-family: inherit;
   cursor: pointer;
-  transition: all 0.18s ease;
-  backdrop-filter: blur(8px);
+  transition: background 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
 }
 
-html.dark .live-pill {
-  background: rgba(255, 255, 255, 0.04);
-}
-
-.live-pill:hover {
-  border-color: var(--mc-border);
+.view-seg:hover {
   color: var(--mc-text-primary);
-  transform: translateY(-1px);
 }
 
-.live-pill-dot {
+.view-seg.is-active {
+  background: var(--mc-bg-elevated);
+  color: var(--mc-text-primary);
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+/* Pulsing dot — the Live segment is alive when runs are in flight. */
+.seg-pulse {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: hsl(155, 55%, 50%);
-  position: relative;
-  animation: live-pill-pulse 2.4s ease-in-out infinite;
+  background: hsl(140, 55%, 48%);
+  animation: seg-pulse 2.4s ease-in-out infinite;
 }
 
-.live-pill-dot::before {
-  content: '';
-  position: absolute;
-  inset: -3px;
-  border-radius: 50%;
-  background: hsla(155, 55%, 50%, 0.3);
-  animation: live-pill-halo 2.4s ease-in-out infinite;
+@keyframes seg-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 hsla(140, 55%, 50%, 0.5); }
+  50%      { box-shadow: 0 0 0 5px hsla(140, 55%, 50%, 0); }
 }
 
-@keyframes live-pill-pulse {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50%      { opacity: 0.7; transform: scale(0.85); }
+.seg-count {
+  font-family: ui-monospace, SFMono-Regular, 'JetBrains Mono', Menlo, Consolas, monospace;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--mc-bg-muted);
+  color: var(--mc-text-tertiary);
 }
 
-@keyframes live-pill-halo {
-  0%, 100% { opacity: 0; transform: scale(0.85); }
-  50%      { opacity: 1; transform: scale(1.6); }
+.view-seg.is-active .seg-count {
+  background: var(--mc-accent-soft);
+  color: var(--mc-accent);
 }
 
-.live-pill--alert {
-  background: linear-gradient(135deg, hsla(28, 90%, 60%, 0.12), hsla(20, 90%, 55%, 0.16));
-  border-color: hsla(20, 80%, 55%, 0.32);
-  color: hsl(20, 70%, 40%);
+/* Stuck runs turn the badge warm — you should look without switching. */
+.seg-count.warn {
+  background: hsla(20, 90%, 55%, 0.18);
+  color: hsl(20, 75%, 42%);
 }
 
-.live-pill--alert:hover {
-  background: linear-gradient(135deg, hsla(28, 90%, 60%, 0.2), hsla(20, 90%, 55%, 0.25));
-  color: hsl(20, 75%, 35%);
-}
-
-.live-pill--alert .live-pill-dot {
-  background: hsl(20, 80%, 55%);
-  animation-duration: 4s;
-}
-
-.live-pill--alert .live-pill-dot::before {
-  background: hsla(20, 80%, 55%, 0.32);
-  animation-duration: 4s;
-}
-
-.live-pill-text {
-  letter-spacing: -0.005em;
-  white-space: nowrap;
+html.dark .seg-count.warn {
+  color: hsl(28, 80%, 70%);
 }
 
 .btn-primary { display: flex; align-items: center; gap: 6px; padding: 10px 16px; background: linear-gradient(135deg, var(--mc-primary), var(--mc-primary-hover)); color: white; border: none; border-radius: 14px; font-size: 14px; font-weight: 600; cursor: pointer; transition: background 0.15s, transform 0.15s; box-shadow: var(--mc-shadow-soft); }

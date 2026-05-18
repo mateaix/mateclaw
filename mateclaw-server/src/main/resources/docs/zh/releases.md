@@ -1,0 +1,29 @@
+# 更新日志
+
+每个 MateClaw 版本的发布说明。最新的文档始终以 `docs/zh/` 为单一事实源——这些说明讲的是每个版本里**改了什么**。
+
+历史 diff 看对应的 git tag。功能背后的"为什么"点进完整的发布说明。
+
+---
+
+## 发布列表
+
+| 版本 | 日期 | 亮点 |
+|------|------|------|
+| [v1.3.0](./releases/1.3.0) | 2026-05-13 | 工作流元年——7 种 step mode 把员工组装成业务流程 · 触发器 6 种 pattern 让事件自动启动流程 · Wiki 从搜索索引升级为处理流水线（用户模板 + 跨材料聚合 + reverse-citation） · MCP per-agent 工具绑定 + 多模态旁路路由 · 4 个 JVM 原生文档生成工具 + 图像编辑 |
+| [v1.2.0](./releases/1.2.0) | 2026-05-05 | 智能体改名"数字员工"（角色 / 目标 / 背景故事 + 5 职业模板） · 技能成了骨架（manifest + 模板向导 + LESSONS 自我进化） · ACP 接入：Claude Code / Codex 变成你的员工 · Admin 运行时控制台让你看见每个员工正在干什么 |
+| [v1.1.137](./releases/1.1.137) | 2026-04-29 | 它会从昨天学习了 · 一个模型坏了不会整体掉线 · "差一点就好"的地方现在好了 · 知识库变成了一座图书馆 |
+| [v1.1.0](./releases/1.1.0) | 2026-04-17 | Agent 自动技能合成、多 agent 并行委派、Wiki 语义搜索 + 两阶段摘要、深度思考、Anthropic prompt 缓存、声明式 Hook、插件 SDK、全渠道语音、ChatConsole 多渠道实时同步、微信稳定性重建 |
+| [v1.0.418](./releases/1.0.418) | 2026-04-11 | 后端国际化 (i18n)、Flyway 数据库迁移框架、WorkspacePathGuard 路径沙箱、CronJobTool 定时任务、Skill ZIP 导入、安全加固 |
+| [v1.0.314](./releases/1.0.314) | 2026-04-08 | LLM Wiki 知识库、TTS/STT、音乐生成、图像/视频升级、带 keyless fallback 的搜索系统、ChatGPT OAuth 登录、Agent 运行时增强、数据库 schema 统一 |
+| [v1.0.108](./releases/1.0.108) | 2026-04-06 | 数据源 SQL 查询、多模态增强、桌面动态端口、OpenRouter 免费模型 |
+| [v1.0.101](./releases/1.0.101) | 2026-04-05 | 移动端布局、Ollama 启动时自动探测、模型分组、GitHub MCP、拖拽文件上传、多 Agent 协作 |
+| [v1.0.0](./releases/1.0.0) | 2026-03-20 | 首次发布——ReAct + Plan-Execute Agent、12 个内置工具、MCP 协议、6 个渠道适配器、Vue 3 管理控制台 |
+
+---
+
+## 接下来读什么
+
+- [路线图](./roadmap)——计划中的、进行中的、已完成的
+- [项目介绍](./intro)——MateClaw 为什么存在
+- [贡献指南](./contributing)——怎么帮忙发布下一个版本

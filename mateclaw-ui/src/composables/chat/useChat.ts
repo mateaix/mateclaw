@@ -547,6 +547,56 @@ export function useChat(options: UseChatOptions): UseChatReturn {
         if (data.assistantMessageId) {
           msg.id = data.assistantMessageId
         }
+        // Merge server-authoritative segment annotations (carries fields the
+        // live SSE path can't compute, like the 'superseded' marker the
+        // backend's SegmentSupersedeDetector writes onto pre-tool model
+        // claims that the actual tool result replaced). The local segments
+        // keep their content / status; the server segments only contribute
+        // their annotation fields.
+        //
+        // Matching: client and server use DIFFERENT id schemes (client uses
+        // timestamp-based ids like `seg-1778744207326-0`; server uses
+        // `co-0 / to-1 / th-2` from its accumulator). They DO produce
+        // segments in the same temporal order from the same event stream,
+        // so we pair by (type, intra-type index): the N-th content/tool/
+        // thinking segment locally aligns with the N-th of the same type
+        // on the server. Extra local-only segments (rare streaming
+        // artifacts that the server pruned) end up unmatched and pass
+        // through untouched — no risk of mislabelling.
+        if (Array.isArray(data.segments) && data.segments.length > 0) {
+          const metadata = parseMetadata((msg as any).metadata)
+          const localSegs = (metadata?.segments as any[]) || []
+          if (localSegs.length > 0) {
+            const serverByTypeIndex = new Map<string, any>()
+            const serverTypeCount = new Map<string, number>()
+            for (const s of data.segments as any[]) {
+              if (!s || typeof s !== 'object' || typeof s.type !== 'string') continue
+              const idx = serverTypeCount.get(s.type) || 0
+              serverByTypeIndex.set(`${s.type}#${idx}`, s)
+              serverTypeCount.set(s.type, idx + 1)
+            }
+            if (serverByTypeIndex.size > 0) {
+              const localTypeCount = new Map<string, number>()
+              const merged = localSegs.map((local: any) => {
+                if (!local || typeof local.type !== 'string') return local
+                const idx = localTypeCount.get(local.type) || 0
+                localTypeCount.set(local.type, idx + 1)
+                const remote = serverByTypeIndex.get(`${local.type}#${idx}`)
+                if (!remote) return local
+                const next = { ...local }
+                if (remote.superseded !== undefined) next.superseded = remote.superseded
+                if (remote.supersededBySegmentId !== undefined) {
+                  next.supersededBySegmentId = remote.supersededBySegmentId
+                }
+                if (remote.supersededReason !== undefined) {
+                  next.supersededReason = remote.supersededReason
+                }
+                return next
+              })
+              ;(msg as any).metadata = { ...(metadata || {}), segments: merged }
+            }
+          }
+        }
         messages.value[msgIndex] = { ...msg }
       }
       currentAssistantId.value = null

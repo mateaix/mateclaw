@@ -9,8 +9,8 @@ import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
-import vip.mate.agent.AssistantThinkingRelay;
 import vip.mate.channel.web.ChatStreamTracker;
+import vip.mate.llm.chatmodel.AssistantThinkingRelay;
 
 import reactor.core.Disposable;
 
@@ -873,7 +873,7 @@ public class NodeStreamingChatHelper {
                         thinkingAccum.append(thinkingDelta);
                         // thinkingLevel=off 时不广播 thinking（模型仍可能产生，但前端不展示）
                         boolean suppressThinking = "off".equalsIgnoreCase(
-                                vip.mate.agent.ThinkingLevelHolder.get());
+                                vip.mate.llm.chatmodel.ThinkingLevelHolder.get());
                         if (broadcast && !suppressThinking) {
                             broadcastDelta(conversationId, "thinking_delta", thinkingDelta);
                         }

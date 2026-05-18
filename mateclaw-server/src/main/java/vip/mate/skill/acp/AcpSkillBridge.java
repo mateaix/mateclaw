@@ -58,23 +58,36 @@ import java.util.concurrent.ConcurrentHashMap;
  *       page always shows current state.</li>
  * </ul>
  *
- * <p>ID namespace: virtual skill ids use a high sentinel
- * {@link #VIRTUAL_ID_BASE} different from the MCP bridge's, so the two
- * id spaces never collide and a callsite can dispatch on which bridge
- * owns an id without coordination.
+ * <p>ID namespace: virtual ACP ids set both top bits of a {@code long}
+ * (bit 63 + bit 62) so they sit in a different type-tag than MCP
+ * (which sets only bit 63 — see
+ * {@link vip.mate.skill.mcp.McpSkillBridge}). The bottom 62 bits carry
+ * the underlying endpointId. The earlier {@code 8e18 + endpointId}
+ * addition scheme broke once Snowflake-issued endpoint ids crossed
+ * the {@code 1e17} bound, so the bit-tagged layout replaces it.
+ *
+ * <p>{@code VIRTUAL_ID_BASE + smallId} still equals
+ * {@code VIRTUAL_ID_BASE | smallId} for any {@code smallId < 2^62}, so
+ * test fixtures that build virtual ids by addition continue to work.
  */
 @Slf4j
 @Service
 public class AcpSkillBridge {
 
+    /** Type tag for ACP virtual ids: bits 63 + 62 set. */
+    public static final long VIRTUAL_ID_BASE = 0xC000000000000000L;
     /**
-     * High sentinel for ACP virtual id space. Distinct from
-     * {@code McpSkillBridge.VIRTUAL_ID_BASE} (9e18) so the two virtual
-     * spaces are partitionable by simple range checks.
+     * @deprecated The bound is implicit in the bit-tag layout — any id
+     *     whose top two bits are both set is an ACP virtual id. Kept
+     *     for source compatibility with earlier callers.
      */
-    public static final long VIRTUAL_ID_BASE = 8_000_000_000_000_000_000L;
-    /** Upper bound, exclusive — anything in [BASE, BASE + 1e17) is ours. */
-    public static final long VIRTUAL_ID_BOUND = VIRTUAL_ID_BASE + 100_000_000_000_000_000L;
+    @Deprecated
+    public static final long VIRTUAL_ID_BOUND = -1L; // 0xFFFFFFFFFFFFFFFFL
+
+    /** Selects the top-two type-tag bits. */
+    private static final long TAG_MASK = 0xC000000000000000L;
+    /** Selects the bottom 62 bits that carry the original endpoint id. */
+    private static final long ID_MASK = 0x3FFFFFFFFFFFFFFFL;
 
     private final AcpEndpointService endpointService;
     private final AcpDelegationService delegationService;
@@ -100,16 +113,22 @@ public class AcpSkillBridge {
     }
 
     public static boolean isVirtualAcpSkillId(Long id) {
-        return id != null && id >= VIRTUAL_ID_BASE && id < VIRTUAL_ID_BOUND;
+        return id != null && (id & TAG_MASK) == VIRTUAL_ID_BASE;
     }
 
     public static Long extractEndpointId(Long virtualId) {
         if (!isVirtualAcpSkillId(virtualId)) return null;
-        return virtualId - VIRTUAL_ID_BASE;
+        return virtualId & ID_MASK;
     }
 
     public static long virtualIdFor(AcpEndpointEntity endpoint) {
-        return VIRTUAL_ID_BASE + endpoint.getId();
+        long eid = endpoint.getId();
+        if ((eid & TAG_MASK) != 0L) {
+            throw new IllegalStateException(
+                    "ACP endpoint id 0x" + Long.toHexString(eid)
+                            + " uses the top two bits — would collide with the virtual id type tag");
+        }
+        return VIRTUAL_ID_BASE | eid;
     }
 
     @PostConstruct
@@ -212,7 +231,7 @@ public class AcpSkillBridge {
 
     private void registerWrappers(AcpEndpointEntity ep) {
         if (ep == null || !Boolean.TRUE.equals(ep.getEnabled())) return;
-        String slug = slugify(ep.getName());
+        String slug = slugForEndpoint(ep);
         if (slug.isEmpty()) {
             log.warn("ACP endpoint id={} has blank name; cannot register wrapper", ep.getId());
             return;
@@ -289,7 +308,7 @@ public class AcpSkillBridge {
     private SkillEntity endpointToEntity(AcpEndpointEntity ep) {
         SkillEntity s = new SkillEntity();
         s.setId(virtualIdFor(ep));
-        s.setName(slugify(ep.getName()));
+        s.setName(slugForEndpoint(ep));
         s.setNameEn(displayName(ep));
         s.setNameZh(ep.getDescription() != null && !ep.getDescription().isBlank()
                 ? displayName(ep) : null);
@@ -310,6 +329,7 @@ public class AcpSkillBridge {
         s.setSecurityScanStatus("PASSED"); // ACP endpoints are user-configured external CLIs, not skill scripts
         s.setConfigJson(buildConfigJson(ep));
         s.setManifestJson(serializeManifest(buildManifest(ep)));
+        s.setSkillContent(buildSkillContent(ep));
         return s;
     }
 
@@ -342,9 +362,9 @@ public class AcpSkillBridge {
 
         return ResolvedSkill.builder()
                 .id(virtualIdFor(ep))
-                .name(slugify(ep.getName()))
+                .name(slugForEndpoint(ep))
                 .description(buildDescription(ep))
-                .content("") // no SKILL.md
+                .content(buildSkillContent(ep))
                 .source("acp")
                 .skillDir(null)
                 .configuredSkillDir(null)
@@ -374,7 +394,7 @@ public class AcpSkillBridge {
      * it up the same way as a hand-authored skill manifest.
      */
     private SkillManifest buildManifest(AcpEndpointEntity ep) {
-        String slug = slugify(ep.getName());
+        String slug = slugForEndpoint(ep);
         String toolName = "acp_" + slug + "_prompt";
         List<String> tools = List.of(toolName);
 
@@ -423,6 +443,72 @@ public class AcpSkillBridge {
                 .build();
     }
 
+    /**
+     * Synthesize a SKILL.md body for an ACP-derived virtual skill.
+     *
+     * <p>ACP endpoints carry no hand-authored SKILL.md — they wrap an
+     * external coding-agent CLI rather than a skill package. Without a
+     * synthesized body, an agent that calls
+     * {@code readSkillFile(skillName=..., filePath="SKILL.md")} gets
+     * nothing beyond the one-line description and cannot tell how to
+     * drive the endpoint.
+     *
+     * <p>This builds a markdown brief from the live endpoint row: what
+     * the endpoint is, the single wrapper tool it exposes, that tool's
+     * arguments, and usage notes — so the LLM can call
+     * {@code acp_<slug>_prompt} correctly on the first attempt.
+     */
+    private String buildSkillContent(AcpEndpointEntity ep) {
+        String slug = slugForEndpoint(ep);
+        String toolName = "acp_" + slug + "_prompt";
+        StringBuilder sb = new StringBuilder();
+
+        sb.append("# ").append(displayName(ep)).append("\n\n");
+        sb.append(buildDescription(ep)).append("\n\n");
+
+        sb.append("## Overview\n\n");
+        sb.append("This skill delegates work to the **").append(ep.getName())
+                .append("** ACP (Agent Communication Protocol) coding agent. ")
+                .append("The agent runs as an external CLI process spawned on demand: ")
+                .append("send it a single natural-language instruction and it returns ")
+                .append("its final reply.\n\n");
+
+        sb.append("## Tools\n\n");
+        sb.append("### `").append(toolName).append("`\n\n");
+        sb.append("Delegate a prompt to the '").append(ep.getName())
+                .append("' coding agent and receive its final reply.\n\n");
+        sb.append("Parameters:\n\n");
+        sb.append("- `prompt` (string, required) — the instruction or question to send.\n");
+        sb.append("- `cwd` (string, optional) — working directory; defaults to the ")
+                .append("endpoint's workspace base path when omitted.\n\n");
+
+        sb.append("## Usage notes\n\n");
+        sb.append("- Call `").append(toolName).append("` with one self-contained instruction. ")
+                .append("The endpoint runs autonomously and returns only its final answer, ")
+                .append("not intermediate steps.\n");
+        sb.append("- Omit `cwd` unless the task needs a specific directory — the server ")
+                .append("resolves the endpoint's bound workspace path.\n");
+        if (Boolean.TRUE.equals(ep.getTrusted())) {
+            sb.append("- This endpoint is trusted: the agent's own tool calls are accepted ")
+                    .append("without re-prompting for approval.\n");
+        } else {
+            sb.append("- This endpoint is not trusted: the agent's tool calls may require ")
+                    .append("human approval before they run.\n");
+        }
+        String status = nullSafe(ep.getLastStatus());
+        if ("OK".equalsIgnoreCase(status)) {
+            sb.append("- Last connection test: OK.\n");
+        } else if ("ERROR".equalsIgnoreCase(status)
+                || (ep.getLastError() != null && !ep.getLastError().isBlank())) {
+            sb.append("- Last connection test failed: ").append(nullSafe(ep.getLastError()))
+                    .append(". The CLI may not be installed or reachable.\n");
+        } else {
+            sb.append("- Not yet tested — the CLI is spawned on the first call.\n");
+        }
+
+        return sb.toString();
+    }
+
     // ==================== Helpers ====================
 
     private List<AcpEndpointEntity> safeListEnabled() {
@@ -445,6 +531,28 @@ public class AcpSkillBridge {
     private String slugify(String raw) {
         if (raw == null) return "";
         return raw.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9_-]", "-");
+    }
+
+    /**
+     * Stable slug for an ACP endpoint. Falls back to {@code acp-{id}} when
+     * the source name has no ASCII letter/digit (e.g. pure CJK), because
+     * the naive slugify would otherwise return a run of dashes and two
+     * differently-named all-CJK endpoints would collide on the same slug,
+     * which is also the basis for the {@code acp_<slug>_prompt} wrapper
+     * tool name registered in the global tool registry.
+     */
+    private String slugForEndpoint(AcpEndpointEntity ep) {
+        String slug = slugify(ep.getName());
+        return hasAsciiAlphaNumeric(slug) ? slug : "acp-" + ep.getId();
+    }
+
+    private static boolean hasAsciiAlphaNumeric(String s) {
+        if (s == null || s.isEmpty()) return false;
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) return true;
+        }
+        return false;
     }
 
     private String displayName(AcpEndpointEntity ep) {

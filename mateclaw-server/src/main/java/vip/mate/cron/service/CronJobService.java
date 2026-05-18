@@ -2,6 +2,8 @@ package vip.mate.cron.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PreDestroy;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -24,6 +26,8 @@ import vip.mate.cron.model.CronJobDTO;
 import vip.mate.cron.model.CronJobEntity;
 import vip.mate.cron.repository.CronJobMapper;
 import vip.mate.exception.MateClawException;
+import vip.mate.wiki.model.WikiKnowledgeBaseEntity;
+import vip.mate.wiki.repository.WikiKnowledgeBaseMapper;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -56,6 +60,8 @@ public class CronJobService implements ApplicationRunner {
     private final CronJobMapper cronJobMapper;
     private final AgentMapper agentMapper;
     private final ChannelMapper channelMapper;
+    private final WikiKnowledgeBaseMapper wikiKnowledgeBaseMapper;
+    private final ObjectMapper objectMapper;
     /**
      * RFC-03 Lane G2: distributed lock for fire-time execution. ShedLock's
      * JDBC provider is configured in {@link vip.mate.cron.config.ShedLockConfig}
@@ -245,6 +251,13 @@ public class CronJobService implements ApplicationRunner {
         if (entity.getTimezone() == null) entity.setTimezone("Asia/Shanghai");
         if (entity.getTaskType() == null) entity.setTaskType("text");
         if (entity.getEnabled() == null) entity.setEnabled(true);
+        // System task types (e.g. wiki_process) have no agent binding, but the
+        // mate_cron_job.agent_id column is NOT NULL — substitute a 0 sentinel
+        // so the row inserts and the natural unique key (ws, agent, name)
+        // still detects duplicates.
+        if (entity.getAgentId() == null && "wiki_process".equals(entity.getTaskType())) {
+            entity.setAgentId(0L);
+        }
 
         entity.setNextRunTime(calcNextRunTime(springCron, entity.getTimezone()));
         try {
@@ -330,7 +343,13 @@ public class CronJobService implements ApplicationRunner {
         existing.setName(dto.getName());
         existing.setCronExpression(dto.getCronExpression());
         existing.setTimezone(dto.getTimezone() != null ? dto.getTimezone() : "Asia/Shanghai");
-        existing.setAgentId(dto.getAgentId());
+        // wiki_process has no agent binding — keep the NOT NULL constraint
+        // satisfied with a 0 sentinel (same convention as create()).
+        Long newAgentIdForUpdate = dto.getAgentId();
+        if (newAgentIdForUpdate == null && "wiki_process".equals(dto.getTaskType())) {
+            newAgentIdForUpdate = 0L;
+        }
+        existing.setAgentId(newAgentIdForUpdate);
         existing.setTaskType(dto.getTaskType());
         existing.setTriggerMessage(dto.getTriggerMessage());
         existing.setRequestBody(dto.getRequestBody());
@@ -651,13 +670,15 @@ public class CronJobService implements ApplicationRunner {
         if (dto.getName() == null || dto.getName().isBlank()) {
             throw new MateClawException("err.cron.name_required", "任务名称不能为空");
         }
-        if (dto.getAgentId() == null) {
-            throw new MateClawException("err.cron.agent_required", "请选择关联 Agent");
-        }
         if (dto.getCronExpression() == null || dto.getCronExpression().isBlank()) {
             throw new MateClawException("err.cron.expression_required", "Cron 表达式不能为空");
         }
         String taskType = dto.getTaskType() != null ? dto.getTaskType() : "text";
+        // wiki_process is a system task with no agent; every other task type
+        // needs an agent binding.
+        if (!"wiki_process".equals(taskType) && dto.getAgentId() == null) {
+            throw new MateClawException("err.cron.agent_required", "请选择关联 Agent");
+        }
         // 'text' (LLM chat) and 'reminder' (direct push) both rely on triggerMessage.
         if (("text".equals(taskType) || "reminder".equals(taskType))
                 && (dto.getTriggerMessage() == null || dto.getTriggerMessage().isBlank())) {
@@ -665,6 +686,53 @@ public class CronJobService implements ApplicationRunner {
         }
         if ("agent".equals(taskType) && (dto.getRequestBody() == null || dto.getRequestBody().isBlank())) {
             throw new MateClawException("err.cron.target_required", "执行目标不能为空");
+        }
+        if ("wiki_process".equals(taskType)) {
+            validateWikiProcessPayload(dto.getRequestBody());
+        }
+    }
+
+    /**
+     * Validate a {@code wiki_process} payload: the body must be JSON with a
+     * {@code kbId} field (number or string) that resolves to an existing
+     * knowledge base. Accepting both number and string mirrors the Snowflake
+     * precision contract — the UI may serialize the id as a string to avoid
+     * losing the trailing digits in JS Number.
+     */
+    private void validateWikiProcessPayload(String requestBody) {
+        if (requestBody == null || requestBody.isBlank()) {
+            throw new MateClawException("err.cron.wiki_kb_required", "请选择知识库");
+        }
+        Long kbId;
+        try {
+            JsonNode payload = objectMapper.readTree(requestBody);
+            if (payload == null || !payload.hasNonNull("kbId")) {
+                throw new MateClawException("err.cron.wiki_kb_required", "请选择知识库");
+            }
+            JsonNode v = payload.get("kbId");
+            if (v.isNumber()) {
+                kbId = v.asLong();
+            } else if (v.isTextual()) {
+                String text = v.asText().trim();
+                if (text.isEmpty()) {
+                    throw new MateClawException("err.cron.wiki_kb_required", "请选择知识库");
+                }
+                try {
+                    kbId = Long.parseLong(text);
+                } catch (NumberFormatException nfe) {
+                    throw new MateClawException("err.cron.wiki_kb_invalid", "知识库 ID 格式不合法");
+                }
+            } else {
+                throw new MateClawException("err.cron.wiki_kb_invalid", "知识库 ID 格式不合法");
+            }
+        } catch (MateClawException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new MateClawException("err.cron.wiki_kb_invalid", "知识库参数解析失败");
+        }
+        WikiKnowledgeBaseEntity kb = wikiKnowledgeBaseMapper.selectById(kbId);
+        if (kb == null) {
+            throw new MateClawException("err.cron.wiki_kb_not_found", "知识库不存在");
         }
     }
 }

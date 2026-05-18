@@ -16,6 +16,7 @@ import vip.mate.wiki.service.WikiScaffoldService;
 
 import java.util.HashMap;
 import java.util.Map;
+import vip.mate.workspace.core.annotation.RequireWorkspaceRole;
 
 /**
  * RFC-051 follow-up: small set of operator-facing endpoints for things the
@@ -44,6 +45,7 @@ public class WikiAdminController {
     @Operation(summary = "Ensure overview/log scaffold + rebuild overview stats now",
                description = "Idempotent. Use after manual data imports or when stats look stale.")
     @PostMapping("/kb/{kbId}/rebuild-overview")
+    @RequireWorkspaceRole("admin")
     public ResponseEntity<Map<String, Object>> rebuildOverview(@PathVariable Long kbId) {
         Map<String, Object> body = new HashMap<>();
         scaffoldService.ensureScaffold(kbId);
@@ -62,6 +64,7 @@ public class WikiAdminController {
                description = "Picks up to BATCH_SIZE chunks with token_count IS NULL and fills them. "
                        + "Returns the pending count after the batch so callers can poll.")
     @PostMapping("/backfill-tokens")
+    @RequireWorkspaceRole("admin")
     public ResponseEntity<Map<String, Object>> backfillTokens() {
         Map<String, Object> body = new HashMap<>();
         if (backfillJob == null) {

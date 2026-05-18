@@ -6,7 +6,7 @@
         class="file-nav-btn" :class="{ active: currentFile === f.filename }"
         :title="f.filename"
         @click="loadFile(f.filename)">
-        <span class="file-nav-icon">{{ fileIcon(f.filename) }}</span>
+        <span class="file-nav-icon" v-html="fileIcon(f.filename)" />
         <span class="file-nav-name">{{ fileLabel(f.filename) }}</span>
       </button>
     </div>
@@ -54,7 +54,12 @@
 
     <!-- Empty -->
     <div v-else class="browser-empty">
-      <div class="empty-icon">📝</div>
+      <svg class="empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+        <polyline points="14 2 14 8 20 8"/>
+        <line x1="16" y1="13" x2="8" y2="13"/>
+        <line x1="16" y1="17" x2="8" y2="17"/>
+      </svg>
       <p>{{ t('memory.memoryBrowser.empty') }}</p>
     </div>
   </div>
@@ -63,14 +68,16 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+import { mcToast } from '@/composables/useMcToast'
 import { http, agentContextApi } from '@/api'
 
-const props = defineProps<{ agentId: number }>()
+const props = defineProps<{ agentId: string | number }>()
 const { t } = useI18n()
 
 interface FileInfo { filename: string; fileSize: number; enabled: boolean }
-interface Section { heading: string; body: string; userEdited: boolean; raw: string }
+// `synthetic` marks the pseudo-section built from content before the first
+// `## ` heading — it has no heading key the HiL endpoint can address.
+interface Section { heading: string; body: string; userEdited: boolean; raw: string; synthetic?: boolean }
 
 const files = ref<FileInfo[]>([])
 const currentFile = ref('')
@@ -121,64 +128,104 @@ function parseSections(content: string): Section[] {
     const match = part.match(/^## (.+)\n([\s\S]*)/)
     if (match) {
       const heading = match[1].trim()
-      const body = match[2].trim()
-      const userEdited = body.includes('<!-- user-edited')
-      result.push({ heading, body, userEdited, raw: part })
+      const rawBody = match[2].trim()
+      const userEdited = rawBody.includes('<!-- user-edited')
+      // Strip the hidden marker from the display body — it is metadata, and
+      // since renderMd now escapes HTML it would otherwise show as raw text.
+      result.push({ heading, body: stripMarker(rawBody), userEdited, raw: part })
     } else if (part.trim() && result.length === 0) {
-      // Content before first ## heading
-      result.push({ heading: t('memory.memoryBrowser.header'), body: part.trim(), userEdited: false, raw: part })
+      // Content before the first ## heading — a synthetic "preamble" section.
+      result.push({ heading: t('memory.memoryBrowser.header'), body: part.trim(), userEdited: false, raw: part, synthetic: true })
     }
   }
   return result
 }
 
+// Strip the hidden user-edited marker so it never shows up as raw text in the
+// editor (and never accumulates when a section is edited repeatedly).
+function stripMarker(body: string): string {
+  return body.replace(/^[ \t]*<!-- user-edited:.*-->[ \t]*$/gm, '').trim()
+}
+
 function startEdit(idx: number) {
   editingIdx.value = idx
-  editText.value = sections.value[idx].body
+  editText.value = stripMarker(sections.value[idx].body)
 }
 
 async function saveSection(idx: number) {
   saving.value = true
   try {
-    // Use HiL edit endpoint to write back with user-edited metadata
-    const heading = sections.value[idx].heading
-    await http.post(
-      `/memory/${props.agentId}/dream/reports/0/entries/${encodeURIComponent(heading)}/edit`,
-      { content: editText.value }
-    )
-    ElMessage.success(t('memory.hil.saved'))
+    const sec = sections.value[idx]
+    if (sec.synthetic) {
+      // The preamble (content before the first ## heading) has no section key
+      // the HiL endpoint can address — rewrite it through the workspace file
+      // API, preserving every real `## ` section that follows.
+      const res: any = await agentContextApi.getFile(props.agentId, currentFile.value)
+      const content: string = res.data?.content || ''
+      const headingIdx = content.search(/^## /m)
+      const rest = headingIdx >= 0 ? content.slice(headingIdx) : ''
+      const preamble = editText.value.trim()
+      const merged = preamble && rest ? `${preamble}\n\n${rest}` : preamble + rest
+      await agentContextApi.saveFile(props.agentId, currentFile.value, merged)
+    } else {
+      // Use HiL edit endpoint to write back with user-edited metadata.
+      // `filename` tells the backend which memory file to edit — without it the
+      // backend defaults to MEMORY.md and PROFILE.md / SOUL.md edits fail.
+      await http.post(
+        `/memory/${props.agentId}/dream/reports/0/entries/${encodeURIComponent(sec.heading)}/edit`,
+        { content: editText.value, filename: currentFile.value }
+      )
+    }
+    mcToast.success(t('memory.hil.saved'))
     editingIdx.value = -1
     // Reload file to see changes
     await loadFile(currentFile.value)
   } catch (e: any) {
-    ElMessage.error(e.message || 'Save failed')
+    mcToast.error(e.message || 'Save failed')
   } finally { saving.value = false }
 }
 
 function renderMd(body: string): string {
-  // Simple markdown rendering (lists, bold, line breaks)
+  // Minimal Markdown — bold, inline code, italic, lists, blockquotes.
+  // HTML is escaped first so a section body can never inject markup via v-html.
+  const esc = (s: string) =>
+    s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  const inline = (s: string) =>
+    esc(s)
+      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+      .replace(/`([^`]+?)`/g, '<code>$1</code>')
+      // Italic — require a boundary before the marker so snake_case is left alone.
+      .replace(/(^|[\s(])([*_])(?=\S)([^*_]+?)\2(?=[\s).,;:!?，。；：！？]|$)/g, '$1<em>$3</em>')
   return body
     .split('\n')
     .map(line => {
-      let html = line
-        .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-        .replace(/`(.+?)`/g, '<code>$1</code>')
-      if (html.startsWith('- ')) return `<li>${html.slice(2)}</li>`
-      if (html.trim() === '') return ''
-      return `<p>${html}</p>`
+      if (line.trim() === '') return ''
+      if (line.startsWith('- ')) return `<li>${inline(line.slice(2))}</li>`
+      if (line.startsWith('> ')) return `<blockquote>${inline(line.slice(2))}</blockquote>`
+      return `<p>${inline(line)}</p>`
     })
     .filter(Boolean)
     .join('')
 }
 
+// Inline line-art icons (Feather style, 14px) keep the file tabs visually
+// consistent with the sidebar nav and the rest of the admin UI.
+function svgIcon(inner: string): string {
+  return `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${inner}</svg>`
+}
+
 function fileIcon(filename: string): string {
-  if (filename === 'MEMORY.md') return '🧠'
-  if (filename === 'PROFILE.md') return '👤'
-  if (filename === 'SOUL.md') return '💫'
-  if (filename === 'structured/user.md') return '📋'
-  if (filename === 'structured/reference.md') return '🔗'
-  if (filename.startsWith('structured/')) return '📋'
-  return '📄'
+  if (filename === 'MEMORY.md')
+    return svgIcon('<path d="M12 2a4 4 0 0 1 4 4v2a4 4 0 0 1-8 0V6a4 4 0 0 1 4-4z"/><path d="M16 14H8a4 4 0 0 0-4 4v2h16v-2a4 4 0 0 0-4-4z"/><line x1="12" y1="11" x2="12" y2="14"/>')
+  if (filename === 'PROFILE.md')
+    return svgIcon('<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>')
+  if (filename === 'SOUL.md')
+    return svgIcon('<path d="M12 3l1.9 5.8a2 2 0 0 0 1.3 1.3L21 12l-5.8 1.9a2 2 0 0 0-1.3 1.3L12 21l-1.9-5.8a2 2 0 0 0-1.3-1.3L3 12l5.8-1.9a2 2 0 0 0 1.3-1.3L12 3z"/>')
+  if (filename === 'structured/reference.md')
+    return svgIcon('<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>')
+  if (filename.startsWith('structured/'))
+    return svgIcon('<line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>')
+  return svgIcon('<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>')
 }
 
 // Rank for display order: 0 = primary brain, 1 = persona, 2 = extracted facts.
@@ -226,7 +273,7 @@ function fileLabel(filename: string): string {
   border-color: var(--mc-primary);
   color: var(--mc-text-primary);
 }
-.file-nav-icon { font-size: 14px; line-height: 1; }
+.file-nav-icon { display: inline-flex; align-items: center; }
 .file-nav-name { letter-spacing: 0.1px; }
 
 /* Section cards */
@@ -256,7 +303,12 @@ function fileLabel(filename: string): string {
   font-size: 12px; font-family: 'SF Mono', Menlo, monospace;
 }
 .section-body :deep(strong) { color: var(--mc-text-primary); }
+.section-body :deep(em) { font-style: italic; }
 .section-body :deep(p) { margin: 2px 0; }
+.section-body :deep(blockquote) {
+  margin: 4px 0; padding: 1px 0 1px 10px;
+  border-left: 2px solid var(--mc-border); color: var(--mc-text-tertiary);
+}
 
 /* Edit mode */
 .section-edit { margin-top: 8px; }
@@ -290,5 +342,5 @@ function fileLabel(filename: string): string {
 .skeleton-line { height: 10px; border-radius: 4px; background: var(--mc-border-light); margin-bottom: 8px; }
 .skeleton-line.short { width: 60%; }
 .browser-empty { display: flex; flex-direction: column; align-items: center; padding: 40px 0; color: var(--mc-text-tertiary); }
-.empty-icon { font-size: 28px; margin-bottom: 8px; }
+.empty-icon { width: 32px; height: 32px; margin-bottom: 10px; color: var(--mc-text-tertiary); opacity: 0.7; }
 </style>

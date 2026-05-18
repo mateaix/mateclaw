@@ -24,7 +24,7 @@ import org.springframework.scheduling.annotation.EnableScheduling;
     org.springframework.ai.mcp.client.httpclient.autoconfigure.StreamableHttpHttpClientTransportAutoConfiguration.class,
     // DashScopeAgent is the Bailian "Application Agent" (Bailian-hosted prompt+tool app),
     // not the chat model. We don't use it — model configuration is admin-UI driven and
-    // built by AgentDashScopeChatModelBuilder. Its auto-config strictly requires
+    // built by DashScopeChatModelBuilder. Its auto-config strictly requires
     // spring.ai.dashscope.api-key to be non-empty at startup, which makes the whole
     // ApplicationContext fail when users deploy via Docker without setting the key.
     com.alibaba.cloud.ai.autoconfigure.dashscope.DashScopeAgentAutoConfiguration.class,

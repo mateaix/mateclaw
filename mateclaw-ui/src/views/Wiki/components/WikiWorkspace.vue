@@ -55,6 +55,7 @@
 import { ref, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useWikiStore, type WikiKB } from '@/stores/useWikiStore'
+import { useWorkspaceStore } from '@/stores/useWorkspaceStore'
 import RawMaterialPanel from './RawMaterialPanel.vue'
 import WikiPageViewer from './WikiPageViewer.vue'
 import WikiConfig from './WikiConfig.vue'
@@ -68,17 +69,27 @@ defineProps<{ kb: WikiKB }>()
 
 const { t } = useI18n()
 const store = useWikiStore()
+const workspace = useWorkspaceStore()
+
+// Read-only viewers (view:wiki without manage:wiki) only get the browsing tabs;
+// the processing-config and transformations tabs are management surfaces.
+const canManageWiki = computed(() => workspace.can('manage:wiki'))
 
 const activeTab = ref('raw')
 
-const tabs = computed(() => [
-  { key: 'raw', label: t('wiki.rawMaterials') },
-  { key: 'pages', label: t('wiki.pages') },
-  { key: 'graph', label: t('wiki.graph.tab') },
-  { key: 'config', label: t('wiki.config') },
-  { key: 'transformations', label: t('wiki.transformations.tab') },
-  { key: 'hotCache', label: t('wiki.hotCache.tab') },
-])
+const tabs = computed(() => {
+  const list = [
+    { key: 'raw', label: t('wiki.rawMaterials') },
+    { key: 'pages', label: t('wiki.pages') },
+    { key: 'graph', label: t('wiki.graph.tab') },
+  ]
+  if (canManageWiki.value) {
+    list.push({ key: 'config', label: t('wiki.config') })
+    list.push({ key: 'transformations', label: t('wiki.transformations.tab') })
+  }
+  list.push({ key: 'hotCache', label: t('wiki.hotCache.tab') })
+  return list
+})
 
 // When the user picks a different KB from the library, snap back to the
 // raw-materials tab so they don't land on stale state from the previous KB.

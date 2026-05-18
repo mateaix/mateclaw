@@ -14,36 +14,15 @@
             </button>
           </div>
 
-          <!-- Agent selector (ChatConsole pattern) -->
+          <!-- Employee selector -->
           <div class="agent-selector">
-            <button class="agent-select-trigger" @click="agentDropdownOpen = !agentDropdownOpen">
-              <span class="agent-select-trigger__icon"><SkillIcon :value="currentAgent?.icon" :size="24" :fallback="'🧠'" /></span>
-              <span class="agent-select-trigger__name">{{ currentAgent?.name || t('memory.selectAgent') }}</span>
-              <svg class="agent-select-trigger__arrow" :class="{ open: agentDropdownOpen }" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
-            </button>
-            <Transition name="fade">
-              <div v-if="agentDropdownOpen" class="agent-dropdown-backdrop" @click="agentDropdownOpen = false"></div>
-            </Transition>
-            <Transition name="agent-dropdown">
-              <div v-if="agentDropdownOpen" class="agent-dropdown">
-                <div
-                  v-for="agent in agents"
-                  :key="agent.id"
-                  class="agent-dropdown-item"
-                  :class="{ active: agent.id === selectedAgentId }"
-                  @click="selectAgent(agent)"
-                >
-                  <span class="agent-dropdown-item__icon"><SkillIcon :value="agent.icon" :size="18" :fallback="'🤖'" /></span>
-                  <div class="agent-dropdown-item__info">
-                    <span class="agent-dropdown-item__name">{{ agent.name }}</span>
-                    <span class="agent-dropdown-item__desc">{{ agent.description || agent.agentType }}</span>
-                  </div>
-                  <span v-if="agent.id === selectedAgentId" class="agent-dropdown-item__check">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-                  </span>
-                </div>
-              </div>
-            </Transition>
+            <AgentPickerDialog
+              v-model="selectedAgentId"
+              :agents="agents"
+              block
+              :placeholder="t('memory.selectAgent')"
+              @change="onAgentPicked"
+            />
           </div>
 
           <!-- Tab nav (segment control) -->
@@ -65,14 +44,19 @@
             </template>
             <template v-else-if="store.error">
               <div class="empty-state error-state">
-                <div class="empty-icon">⚠️</div>
+                <svg class="empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                  <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+                </svg>
                 <p>{{ store.error }}</p>
                 <button class="retry-btn" @click="loadReports">{{ t('memory.retry') }}</button>
               </div>
             </template>
             <template v-else-if="store.reports.length === 0">
               <div class="empty-state">
-                <div class="empty-icon">🌙</div>
+                <svg class="empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+                </svg>
                 <p>{{ t('memory.noReports') }}</p>
               </div>
             </template>
@@ -166,7 +150,11 @@
           </template>
           <template v-else>
             <div class="detail-empty">
-              <div class="detail-empty-icon">🧠</div>
+              <svg class="detail-empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 2a4 4 0 0 1 4 4v2a4 4 0 0 1-8 0V6a4 4 0 0 1 4-4z"/>
+                <path d="M16 14H8a4 4 0 0 0-4 4v2h16v-2a4 4 0 0 0-4-4z"/>
+                <line x1="12" y1="11" x2="12" y2="14"/>
+              </svg>
               <p>{{ t('memory.desc') }}</p>
             </div>
           </template>
@@ -180,11 +168,11 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+import { mcToast } from '@/composables/useMcToast'
 import { http } from '@/api'
 import { useAgentStore } from '@/stores/useAgentStore'
 import { useMemoryStore, type DreamReportItem } from '@/stores/useMemoryStore'
-import SkillIcon from '@/components/common/SkillIcon.vue'
+import AgentPickerDialog from '@/components/common/AgentPickerDialog.vue'
 import MorningCard from './components/MorningCard.vue'
 import FactList from './components/FactList.vue'
 import MemoryBrowser from './components/MemoryBrowser.vue'
@@ -194,9 +182,7 @@ const agentStore = useAgentStore()
 const store = useMemoryStore()
 
 const agents = ref<any[]>([])
-const selectedAgentId = ref<number | null>(null)
-const currentAgent = computed(() => agents.value.find(a => a.id === selectedAgentId.value))
-const agentDropdownOpen = ref(false)
+const selectedAgentId = ref<string | number>('')
 const activeTab = ref('timeline')
 const selectedReportId = ref<string | null>(null)
 const currentPage = ref(1)
@@ -227,9 +213,7 @@ watch(selectedAgentId, (id) => {
 
 onUnmounted(() => store.unsubscribeEvents())
 
-function selectAgent(agent: any) {
-  selectedAgentId.value = agent.id
-  agentDropdownOpen.value = false
+function onAgentPicked() {
   selectedReportId.value = null
   currentPage.value = 1
   store.currentReport = null
@@ -251,12 +235,12 @@ async function triggerDream() {
   dreamRunning.value = true
   try {
     await http.post(`/memory/${selectedAgentId.value}/dreaming/focused`, { topic: dreamTopic.value.trim() })
-    ElMessage.success(t('memory.focused.success'))
+    mcToast.success(t('memory.focused.success'))
     dreamTopic.value = ''
     dreamInputOpen.value = false
     loadReports()
   } catch (e: any) {
-    ElMessage.error(e.message || 'Dream failed')
+    mcToast.error(e.message || 'Dream failed')
   } finally {
     dreamRunning.value = false
   }
@@ -332,36 +316,8 @@ function fmtTime(iso: string) {
   background: var(--mc-bg-elevated);
 }
 
-/* Agent selector (same CSS as ChatConsole) */
+/* Employee selector */
 .agent-selector { position: relative; padding: 0 12px 8px; }
-.agent-select-trigger {
-  width: 100%; display: flex; align-items: center; gap: 8px;
-  padding: 8px 12px; border: 1px solid var(--mc-border); border-radius: 12px;
-  font-size: 13px; color: var(--mc-text-primary); background: var(--mc-bg-sunken);
-  cursor: pointer; outline: none; transition: all 0.15s;
-}
-.agent-select-trigger:hover { border-color: var(--mc-primary); background: var(--mc-bg-elevated); }
-.agent-select-trigger__icon { font-size: 18px; line-height: 1; }
-.agent-select-trigger__name { flex: 1; text-align: left; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.agent-select-trigger__arrow { flex-shrink: 0; color: var(--mc-text-tertiary); transition: transform 0.2s; }
-.agent-select-trigger__arrow.open { transform: rotate(180deg); }
-.agent-dropdown-backdrop { position: fixed; inset: 0; z-index: 99; }
-.agent-dropdown {
-  position: absolute; top: calc(100% + 4px); left: 12px; right: 12px; min-width: 240px; z-index: 100;
-  background: var(--mc-bg-elevated); border: 1px solid var(--mc-border); border-radius: 14px;
-  padding: 6px; box-shadow: 0 8px 32px rgba(0,0,0,0.12); max-height: 320px; overflow-y: auto;
-}
-.agent-dropdown-item {
-  display: flex; align-items: center; gap: 10px; padding: 10px 12px;
-  border-radius: 10px; cursor: pointer; transition: background 0.12s;
-}
-.agent-dropdown-item:hover { background: var(--mc-bg-sunken); }
-.agent-dropdown-item.active { background: var(--mc-primary-bg); }
-.agent-dropdown-item__icon { font-size: 24px; line-height: 1; flex-shrink: 0; }
-.agent-dropdown-item__info { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.agent-dropdown-item__name { font-size: 13px; font-weight: 500; color: var(--mc-text-primary); }
-.agent-dropdown-item__desc { font-size: 11px; color: var(--mc-text-tertiary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.agent-dropdown-item__check { color: var(--mc-primary); flex-shrink: 0; }
 
 /* Segment control */
 .memory-nav {
@@ -414,7 +370,7 @@ function fmtTime(iso: string) {
 .skeleton-line.short { width: 60%; }
 
 .empty-state { display: flex; flex-direction: column; align-items: center; padding: 40px 0; color: var(--mc-text-tertiary); }
-.empty-icon { font-size: 28px; margin-bottom: 8px; }
+.empty-icon { width: 30px; height: 30px; margin-bottom: 10px; opacity: 0.7; }
 .empty-state p { font-size: 13px; }
 .error-state p { color: var(--mc-text-secondary); }
 .retry-btn {
@@ -500,16 +456,10 @@ function fmtTime(iso: string) {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   height: 100%; color: var(--mc-text-tertiary); text-align: center;
 }
-.detail-empty-icon { font-size: 36px; margin-bottom: 12px; }
+.detail-empty-icon { width: 40px; height: 40px; margin-bottom: 14px; opacity: 0.6; }
 .detail-empty p { font-size: 14px; max-width: 260px; line-height: 1.5; }
 
 /* ========== Transitions ========== */
-.fade-enter-active, .fade-leave-active { transition: opacity 0.15s; }
-.fade-enter-from, .fade-leave-to { opacity: 0; }
-.agent-dropdown-enter-active { transition: all 0.2s ease; }
-.agent-dropdown-leave-active { transition: all 0.12s ease; }
-.agent-dropdown-enter-from { opacity: 0; transform: translateY(-6px) scale(0.97); }
-.agent-dropdown-leave-to { opacity: 0; transform: translateY(-4px) scale(0.98); }
 .slide-down-enter-active, .slide-down-leave-active { transition: all 0.2s ease; }
 .slide-down-enter-from, .slide-down-leave-to { opacity: 0; transform: translateY(-8px); }
 

@@ -54,9 +54,10 @@ class DelegateAgentToolDenyListTest {
         ObjectMapper objectMapper = new ObjectMapper();
         registry = new SubagentRegistry();
         AuditEventService auditEventService = mock(AuditEventService.class);
+        vip.mate.task.AsyncTaskService asyncTaskService = mock(vip.mate.task.AsyncTaskService.class);
 
         tool = new DelegateAgentTool(agentService, agentMapper, streamTracker, conversationService,
-                objectMapper, registry, auditEventService);
+                objectMapper, registry, auditEventService, asyncTaskService);
     }
 
     @AfterEach

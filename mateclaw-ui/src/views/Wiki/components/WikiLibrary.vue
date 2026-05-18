@@ -6,7 +6,7 @@
         <h1 class="mc-page-title">{{ t('nav.wiki') }}</h1>
         <p class="mc-page-desc">{{ t('wiki.desc') }}</p>
       </div>
-      <button class="btn-primary page-cta" @click="$emit('create')">
+      <button v-if="canManageWiki" class="btn-primary page-cta" @click="$emit('create')">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
         </svg>
@@ -48,7 +48,7 @@
       </div>
       <h3 class="library-empty-title">{{ t('wiki.library.empty') }}</h3>
       <p class="library-empty-hint">{{ t('wiki.library.emptyHint') }}</p>
-      <button class="btn-primary" @click="$emit('create')">
+      <button v-if="canManageWiki" class="btn-primary" @click="$emit('create')">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
         {{ t('wiki.createKB') }}
       </button>
@@ -66,6 +66,7 @@
           :kb="kb"
           :failed-job-count="kbStats[kb.id]?.failedJobCount || 0"
           @open="$emit('open', $event)"
+          @delete="$emit('delete', $event)"
         />
       </div>
 
@@ -86,6 +87,7 @@
 import { ref, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { WikiKB } from '@/stores/useWikiStore'
+import { useWorkspaceStore } from '@/stores/useWorkspaceStore'
 import McPagination from '@/components/common/McPagination.vue'
 import WikiKBCard from './WikiKBCard.vue'
 
@@ -103,9 +105,14 @@ const props = defineProps<{
 defineEmits<{
   (e: 'open', id: number): void
   (e: 'create'): void
+  (e: 'delete', kb: WikiKB): void
 }>()
 
 const { t } = useI18n()
+const workspace = useWorkspaceStore()
+
+// view:wiki users without manage:wiki may browse but not create knowledge bases.
+const canManageWiki = computed(() => workspace.can('manage:wiki'))
 
 const searchInput = ref('')
 type SortMode = 'recent' | 'name' | 'pages'

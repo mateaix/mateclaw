@@ -130,7 +130,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+import { mcToast } from '@/composables/useMcToast'
 import { mcConfirm } from '@/components/common/useConfirm'
 import { toolApi } from '@/api/index'
 import type { Tool } from '@/types/index'
@@ -183,7 +183,7 @@ async function saveTool() {
     }
     closeModal()
     await loadTools()
-  } catch (e: any) { ElMessage.error(e?.message || t('tools.messages.saveFailed')) }
+  } catch (e: any) { mcToast.error(e?.message || t('tools.messages.saveFailed')) }
 }
 
 async function deleteTool(id: string | number) {
@@ -196,14 +196,14 @@ async function deleteTool(id: string | number) {
   try {
     await toolApi.delete(id)
     await loadTools()
-  } catch (e: any) { ElMessage.error(e?.message || t('tools.messages.deleteFailed')) }
+  } catch (e: any) { mcToast.error(e?.message || t('tools.messages.deleteFailed')) }
 }
 
 async function toggleTool(tool: Tool) {
   try {
     await toolApi.toggle(tool.id, !tool.enabled)
     await loadTools()
-  } catch (e: any) { ElMessage.error(e?.message || t('tools.messages.toggleFailed')) }
+  } catch (e: any) { mcToast.error(e?.message || t('tools.messages.toggleFailed')) }
 }
 </script>
 

@@ -33,4 +33,11 @@ public class InstallRequest {
      * an intentionally empty bundle.
      */
     private Boolean forcePrune = false;
+
+    /**
+     * Owning workspace for the installed skill. Stamped by the controller
+     * from the {@code X-Workspace-Id} header — never trusted from a raw
+     * client body. {@code null} falls back to the default workspace.
+     */
+    private Long workspaceId;
 }

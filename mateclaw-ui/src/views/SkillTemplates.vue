@@ -160,7 +160,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+import { mcToast } from '@/composables/useMcToast'
 import { skillTemplateApi, wikiApi } from '@/api/index'
 
 interface TemplateField {
@@ -286,7 +286,7 @@ async function installSkill() {
     await skillTemplateApi.instantiate(selectedTemplate.value.id, form)
     step.value = 3
   } catch (e: any) {
-    ElMessage.error(typeof e === 'string' ? e : e?.message || t('skillTemplates.installFailed'))
+    mcToast.error(typeof e === 'string' ? e : e?.message || t('skillTemplates.installFailed'))
   } finally {
     installing.value = false
   }

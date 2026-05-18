@@ -227,7 +227,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+import { mcToast } from '@/composables/useMcToast'
 import { mcConfirm } from '@/components/common/useConfirm'
 import { acpApi } from '@/api/index'
 
@@ -428,7 +428,7 @@ async function loadEndpoints() {
     endpoints.value = res?.data || []
   } catch (e: any) {
     endpoints.value = []
-    ElMessage.error(typeof e === 'string' ? e : e?.message || t('acp.loadFailed'))
+    mcToast.error(typeof e === 'string' ? e : e?.message || t('acp.loadFailed'))
   }
 }
 
@@ -486,7 +486,7 @@ async function saveEndpoint() {
     if (form.argsJson) JSON.parse(form.argsJson)
     if (form.envJson) JSON.parse(form.envJson)
   } catch (e: any) {
-    ElMessage.error(t('acp.invalidJson') + ': ' + (e?.message || 'parse error'))
+    mcToast.error(t('acp.invalidJson') + ': ' + (e?.message || 'parse error'))
     return
   }
   try {
@@ -498,7 +498,7 @@ async function saveEndpoint() {
     closeModal()
     await loadEndpoints()
   } catch (e: any) {
-    ElMessage.error(typeof e === 'string' ? e : e?.message || t('acp.saveFailed'))
+    mcToast.error(typeof e === 'string' ? e : e?.message || t('acp.saveFailed'))
   }
 }
 
@@ -513,7 +513,7 @@ async function removeEndpoint(ep: AcpEndpoint) {
     await acpApi.delete(ep.id)
     await loadEndpoints()
   } catch (e: any) {
-    ElMessage.error(typeof e === 'string' ? e : e?.message || t('acp.deleteFailed'))
+    mcToast.error(typeof e === 'string' ? e : e?.message || t('acp.deleteFailed'))
   }
 }
 
@@ -522,7 +522,7 @@ async function toggle(ep: AcpEndpoint) {
     await acpApi.toggle(ep.id, !ep.enabled)
     await loadEndpoints()
   } catch (e: any) {
-    ElMessage.error(typeof e === 'string' ? e : e?.message || t('acp.toggleFailed'))
+    mcToast.error(typeof e === 'string' ? e : e?.message || t('acp.toggleFailed'))
   }
 }
 

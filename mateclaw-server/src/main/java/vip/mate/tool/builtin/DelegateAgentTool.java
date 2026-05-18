@@ -2,6 +2,7 @@ package vip.mate.tool.builtin;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -18,8 +19,11 @@ import vip.mate.agent.model.AgentEntity;
 import vip.mate.agent.repository.AgentMapper;
 import vip.mate.audit.service.AuditEventService;
 import vip.mate.channel.web.ChatStreamTracker;
+import vip.mate.task.AsyncTaskService;
+import vip.mate.task.model.AsyncTaskEntity;
 import vip.mate.workspace.conversation.ConversationService;
 
+import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.stream.Collectors;
@@ -128,6 +132,27 @@ public class DelegateAgentTool {
     private final ObjectMapper objectMapper;
     private final SubagentRegistry subagentRegistry;
     private final AuditEventService auditEventService;
+    private final AsyncTaskService asyncTaskService;
+
+    /** Max characters of the task description persisted in {@code request_json}.
+     *  Anything longer is truncated — full task is still inside the running
+     *  child's conversation context. */
+    private static final int ASYNC_TASK_REQUEST_MAX_CHARS = 8000;
+
+    /** Max label length carried inside {@code request_json} and surfaced on
+     *  spawn-event payloads. Picked to fit a short UI badge without wrapping. */
+    private static final int ASYNC_LABEL_MAX_CHARS = 32;
+
+    /** Default {@code block=true} wait when caller omits {@code timeoutSeconds}. */
+    private static final int TASK_OUTPUT_DEFAULT_TIMEOUT_S = 30;
+
+    /** Upper bound on {@code block=true} wait. Picked to be longer than the
+     *  typical ReAct turn latency yet short enough that the parent agent
+     *  doesn't burn its own LLM budget blocked on a stalled child. */
+    private static final int TASK_OUTPUT_MAX_TIMEOUT_S = 120;
+
+    /** Polling interval inside {@code block=true} wait. */
+    private static final long TASK_OUTPUT_POLL_INTERVAL_MS = 500L;
 
     /**
      * Operator-supplied deny-list extension. Configured via
@@ -563,6 +588,281 @@ public class DelegateAgentTool {
             sb.append("\n");
         }
         return truncate(sb.toString(), MAX_RESULT_LENGTH * 2); // 并行结果允许更长
+    }
+
+    // ==================== Async (detached) delegation ====================
+
+    @Tool(description = """
+            Delegate a task to another agent asynchronously and return a task_id immediately. \
+            Parent continues reasoning while child runs in background. \
+            Use task_output(task_id) in a later turn to retrieve the result. \
+            Best for long-running sub-tasks (research, file processing) where the parent has \
+            other work to do in parallel. For quick tasks where you need the answer immediately, \
+            use delegateToAgent instead.""")
+    public String delegateAsync(
+            @ToolParam(description = "Target Agent name (exact match)") String agentName,
+            @ToolParam(description = "Task description with complete context information") String task,
+            @ToolParam(description = "Optional short label (≤ 32 chars) for human tracking on the UI badge",
+                    required = false) String label,
+            @Nullable ToolContext ctx) {
+
+        if (agentName == null || agentName.isBlank()) {
+            return errorJson("agentName 不能为空");
+        }
+        if (task == null || task.isBlank()) {
+            return errorJson("task 不能为空");
+        }
+        String safeLabel = label == null ? "" :
+                (label.length() > ASYNC_LABEL_MAX_CHARS ? label.substring(0, ASYNC_LABEL_MAX_CHARS) : label);
+
+        int depth = DelegationContext.currentDepth();
+        if (depth >= MAX_DELEGATION_DEPTH) {
+            return errorJson("Delegation depth exceeded (max " + MAX_DELEGATION_DEPTH + ")");
+        }
+
+        AgentEntity target = findAgent(agentName);
+        if (target == null) {
+            return errorJson("Agent not found: " + agentName);
+        }
+
+        String parentConversationId = resolveParentConversationId();
+        if (parentConversationId == null || parentConversationId.isBlank()) {
+            return errorJson("delegateAsync requires a parent conversation context");
+        }
+        if (subagentRegistry.isSpawnPaused(parentConversationId)) {
+            return errorJson("Spawning paused for this conversation; resume via /api/v1/subagents/spawn-pause");
+        }
+
+        // Capture origin / user on the calling thread — the Callable runs on
+        // AsyncTaskService.pollExecutor, where the ToolContext ThreadLocal is
+        // not visible. The child's identity (agentId) is swapped in below;
+        // channel / workspace / requester all propagate via the closure.
+        ChatOrigin parentOrigin = ChatOrigin.from(ctx);
+        String currentUser = parentOrigin != null && parentOrigin.requesterId() != null
+                && !parentOrigin.requesterId().isBlank()
+                ? parentOrigin.requesterId()
+                : "system";
+
+        String childConversationId = createChildConv(target, parentConversationId);
+
+        String requestJson;
+        try {
+            Map<String, Object> payload = new LinkedHashMap<>();
+            payload.put("parentConversationId", parentConversationId);
+            payload.put("childConversationId", childConversationId);
+            payload.put("childAgentId", target.getId());
+            payload.put("task", truncate(task, ASYNC_TASK_REQUEST_MAX_CHARS));
+            payload.put("label", safeLabel);
+            requestJson = objectMapper.writeValueAsString(payload);
+        } catch (Exception e) {
+            return errorJson("Failed to serialize task payload: " + e.getMessage());
+        }
+
+        // Live observability handle — task_output never reads from it; the
+        // persistent mate_async_task row is the source of truth for status,
+        // result, and attribution.
+        String subagentId = subagentRegistry.register(parentConversationId, childConversationId,
+                target.getId(), task, null);
+
+        AsyncTaskEntity entity;
+        try {
+            entity = asyncTaskService.submitOneShot(
+                    "agent_delegate",
+                    parentConversationId,
+                    null,
+                    requestJson,
+                    currentUser,
+                    () -> {
+                        try {
+                            ChildResult childResult = runSingleChild(0, target, task,
+                                    parentConversationId, childConversationId, parentOrigin);
+                            return childResult.toToolResponse(target.getName());
+                        } finally {
+                            subagentRegistry.get(subagentId).ifPresent(rec -> {
+                                if ("running".equals(rec.status().get())) {
+                                    rec.status().set("completed");
+                                }
+                            });
+                            subagentRegistry.unregister(subagentId);
+                        }
+                    });
+        } catch (IllegalStateException e) {
+            // Per-user concurrency cap hit inside AsyncTaskService#createTask.
+            // Roll back the registry entry so it doesn't dangle.
+            subagentRegistry.unregister(subagentId);
+            return errorJson(e.getMessage());
+        } catch (Exception e) {
+            subagentRegistry.unregister(subagentId);
+            log.error("delegateAsync submit failed: target={}, err={}", target.getName(), e.getMessage());
+            return errorJson("Failed to spawn async task: " + e.getMessage());
+        }
+
+        log.info("Async delegation spawned: taskId={}, target={}({}), childConv={}, parentConv={}",
+                entity.getTaskId(), target.getName(), target.getId(),
+                childConversationId, parentConversationId);
+
+        if (streamTracker.isRunning(parentConversationId)) {
+            Map<String, Object> spawnEvent = new LinkedHashMap<>();
+            spawnEvent.put("taskId", entity.getTaskId());
+            spawnEvent.put("childConversationId", childConversationId);
+            spawnEvent.put("childAgentName", target.getName());
+            spawnEvent.put("label", safeLabel);
+            spawnEvent.put("task", truncate(task, 200));
+            streamTracker.broadcastObject(parentConversationId, "delegation_async_spawned", spawnEvent);
+        }
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("task_id", entity.getTaskId());
+        result.put("child_conversation_id", childConversationId);
+        result.put("agent_name", target.getName());
+        result.put("status", "running");
+        result.put("hint", "Call task_output(task_id) in a later turn to retrieve the result.");
+        if (!safeLabel.isEmpty()) {
+            result.put("label", safeLabel);
+        }
+        try {
+            return objectMapper.writeValueAsString(result);
+        } catch (Exception e) {
+            return errorJson("Failed to serialize response: " + e.getMessage());
+        }
+    }
+
+    @Tool(description = """
+            Retrieve the result of a previously spawned async sub-agent task. \
+            Returns the final reply when completed, or a status indicator if still running. \
+            Set block=true to wait up to timeout seconds for completion.""")
+    public String taskOutput(
+            @ToolParam(description = "task_id returned by delegateAsync") String taskId,
+            @ToolParam(description = "Whether to block until done or timeout. Default false.",
+                    required = false) Boolean block,
+            @ToolParam(description = "Max seconds to wait when block=true. Default 30, max 120.",
+                    required = false) Integer timeoutSeconds,
+            @Nullable ToolContext ctx) {
+
+        if (taskId == null || taskId.isBlank()) {
+            return errorJson("taskId 不能为空");
+        }
+        String trimmedTaskId = taskId.trim();
+
+        AsyncTaskEntity entity = asyncTaskService.findEntityByTaskId(trimmedTaskId);
+        if (entity == null) {
+            return errorJson("Task not found: " + trimmedTaskId);
+        }
+        if (!"agent_delegate".equals(entity.getTaskType())) {
+            return errorJson("Task is not a delegate task: " + trimmedTaskId);
+        }
+
+        // Attribution gate — registry is live-only, so the persistent
+        // request_json + created_by columns are the only authoritative
+        // sources. Both must match the calling context; otherwise this is a
+        // cross-user or cross-conversation lookup and must be denied even
+        // for an already-succeeded task (otherwise a stranger can read the
+        // result by guessing taskIds).
+        //
+        // Caveat on the user gate: when ChatOrigin.requesterId is empty,
+        // delegateAsync stamps the task with the literal sentinel "system"
+        // (mirrors the existing channel/cron-originated flow). All callers
+        // that share that sentinel — e.g. two cron jobs in the same
+        // workspace — therefore satisfy the user gate against each other.
+        // The conversation gate above still narrows it to "the same parent
+        // conversation as the spawn", which keeps the blast radius bounded;
+        // a follow-up that surfaces a stable per-channel / per-cron caller
+        // identity into ChatOrigin.requesterId would close this gap.
+        String taskParentConv;
+        try {
+            JsonNode req = entity.getRequestJson() == null
+                    ? null
+                    : objectMapper.readTree(entity.getRequestJson());
+            taskParentConv = req == null ? "" : req.path("parentConversationId").asText("");
+        } catch (Exception e) {
+            return errorJson("Failed to parse task payload: " + e.getMessage());
+        }
+        String currentParentConv = resolveParentConversationId();
+        ChatOrigin origin = ChatOrigin.from(ctx);
+        String currentUser = origin != null ? origin.requesterId() : null;
+
+        if (taskParentConv.isEmpty()
+                || currentParentConv == null
+                || !taskParentConv.equals(currentParentConv)) {
+            return errorJson("Forbidden: task does not belong to current conversation");
+        }
+        if (entity.getCreatedBy() == null || currentUser == null
+                || currentUser.isBlank()
+                || !entity.getCreatedBy().equals(currentUser)) {
+            return errorJson("Forbidden: task does not belong to current user");
+        }
+
+        String status = entity.getStatus();
+        boolean isTerminal = "succeeded".equals(status) || "failed".equals(status);
+        if (Boolean.TRUE.equals(block) && !isTerminal) {
+            int waitSec = Math.min(TASK_OUTPUT_MAX_TIMEOUT_S,
+                    Math.max(1, Optional.ofNullable(timeoutSeconds).orElse(TASK_OUTPUT_DEFAULT_TIMEOUT_S)));
+            long deadline = System.currentTimeMillis() + waitSec * 1000L;
+            while (System.currentTimeMillis() < deadline) {
+                try {
+                    Thread.sleep(TASK_OUTPUT_POLL_INTERVAL_MS);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+                AsyncTaskEntity refreshed = asyncTaskService.findEntityByTaskId(trimmedTaskId);
+                if (refreshed == null) break;
+                entity = refreshed;
+                status = entity.getStatus();
+                if ("succeeded".equals(status) || "failed".equals(status)) break;
+            }
+        }
+
+        if (streamTracker.isRunning(currentParentConv)) {
+            streamTracker.broadcastObject(currentParentConv, "delegation_async_polled", Map.of(
+                    "taskId", trimmedTaskId,
+                    "status", status));
+        }
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("task_id", trimmedTaskId);
+        result.put("status", status);
+        switch (status == null ? "" : status) {
+            case "pending", "running" -> {
+                result.put("progress", entity.getProgress());
+                result.put("hint", "Try again later or call task_output with block=true.");
+            }
+            case "succeeded" -> {
+                result.put("result", entity.getResultJson());
+                result.put("duration_ms", durationMs(entity));
+            }
+            case "failed" -> {
+                result.put("error", entity.getErrorMessage());
+                result.put("duration_ms", durationMs(entity));
+            }
+            default -> result.put("error", "Unknown status: " + status);
+        }
+        try {
+            return objectMapper.writeValueAsString(result);
+        } catch (Exception e) {
+            return errorJson("Failed to serialize response: " + e.getMessage());
+        }
+    }
+
+    /** Build a one-line JSON error envelope for tool returns. Kept distinct
+     *  from {@link #truncate} / plain-text errors used by sync delegate paths
+     *  so the model sees a consistent shape for async results. */
+    private String errorJson(String message) {
+        try {
+            return objectMapper.writeValueAsString(Map.of(
+                    "error", true,
+                    "message", message != null ? message : ""));
+        } catch (Exception e) {
+            // Fallback — never throw from an error helper.
+            return "{\"error\":true,\"message\":\"" + (message == null ? "" : message.replace("\"", "\\\"")) + "\"}";
+        }
+    }
+
+    /** Walltime estimate using the create/update timestamps written by
+     *  {@code AsyncTaskService}. Returns 0 when either timestamp is missing. */
+    private static long durationMs(AsyncTaskEntity entity) {
+        if (entity == null || entity.getCreateTime() == null || entity.getUpdateTime() == null) return 0L;
+        return Duration.between(entity.getCreateTime(), entity.getUpdateTime()).toMillis();
     }
 
     // ==================== Child agent execution (shared by single and parallel paths) ====================

@@ -88,7 +88,14 @@ public class StateGraphReActAgent extends BaseAgent implements StructuredStreamC
             log.info("[{}] StateGraph chat: conversationId={}", agentName, conversationId);
 
             Map<String, Object> inputs = buildInitialState(userMessage, conversationId);
-            Optional<OverAllState> result = compiledGraph.invoke(inputs);
+            // Fresh thread per invocation so graph state never carries over
+            // between calls. The CompiledGraph is cached and shared; without a
+            // unique threadId, consecutive sync runs (e.g. back-to-back cron
+            // executions) inherit the prior run's accumulated messages and
+            // counters. Mirrors the streaming paths, which already do this.
+            RunnableConfig config = RunnableConfig.builder()
+                    .threadId(UUID.randomUUID().toString()).build();
+            Optional<OverAllState> result = compiledGraph.invoke(inputs, config);
 
             return result
                     .flatMap(s -> s.<String>value(FINAL_ANSWER))
@@ -147,7 +154,10 @@ public class StateGraphReActAgent extends BaseAgent implements StructuredStreamC
             if (toolCallPayload != null && !toolCallPayload.isEmpty()) {
                 inputs.put(FORCED_TOOL_CALL, toolCallPayload);
             }
-            Optional<OverAllState> result = compiledGraph.invoke(inputs);
+            // Fresh thread per invocation — see chat() for rationale.
+            RunnableConfig config = RunnableConfig.builder()
+                    .threadId(UUID.randomUUID().toString()).build();
+            Optional<OverAllState> result = compiledGraph.invoke(inputs, config);
 
             return result
                     .flatMap(s -> s.<String>value(FINAL_ANSWER))
@@ -491,7 +501,7 @@ public class StateGraphReActAgent extends BaseAgent implements StructuredStreamC
         // 迭代控制：深度思考模式允许更多迭代（思考需要更多轮工具调用）
         // maxIterations<=0 表示软上限解除（由 LLM 自己决定何时收尾），加分要短路，
         // 否则 thinking-on 会把"无限"误算成 5（变成"5 步就停"）。
-        String thinkingLevel = vip.mate.agent.ThinkingLevelHolder.get();
+        String thinkingLevel = vip.mate.llm.chatmodel.ThinkingLevelHolder.get();
         boolean thinkingOn = thinkingLevel != null && !"off".equalsIgnoreCase(thinkingLevel);
         int effectiveMaxIterations = (maxIterations <= 0)
                 ? 0

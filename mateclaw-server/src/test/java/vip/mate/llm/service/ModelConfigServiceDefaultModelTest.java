@@ -67,7 +67,7 @@ class ModelConfigServiceDefaultModelTest {
         ModelConfigEntity dashscopeDefault = chatModel("dashscope", "qwen-plus", true);
 
         when(modelConfigMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(dashscopeDefault);
-        when(modelProviderService.isProviderConfigured("dashscope")).thenReturn(true);
+        when(modelProviderService.isProviderEnabledAndConfigured("dashscope")).thenReturn(true);
 
         ModelConfigEntity result = service.getDefaultModel();
 
@@ -89,8 +89,8 @@ class ModelConfigServiceDefaultModelTest {
         // First selectOne → the is_default=true model
         when(modelConfigMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(dashscopeDefault);
         // dashscope is NOT configured, zhipu IS
-        when(modelProviderService.isProviderConfigured("dashscope")).thenReturn(false);
-        when(modelProviderService.isProviderConfigured("zhipu")).thenReturn(true);
+        when(modelProviderService.isProviderEnabledAndConfigured("dashscope")).thenReturn(false);
+        when(modelProviderService.isProviderEnabledAndConfigured("zhipu")).thenReturn(true);
         // Full-scan returns both; zhipu comes second but dashscope is skipped
         when(modelConfigMapper.selectList(any(LambdaQueryWrapper.class)))
                 .thenReturn(List.of(dashscopeDefault, zhipuModel));
@@ -110,7 +110,7 @@ class ModelConfigServiceDefaultModelTest {
         ModelConfigEntity zhipuModel = chatModel("zhipu", "glm-4", false);
 
         when(modelConfigMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(dashscopeDefault);
-        when(modelProviderService.isProviderConfigured(any())).thenReturn(false);
+        when(modelProviderService.isProviderEnabledAndConfigured(any())).thenReturn(false);
         when(modelConfigMapper.selectList(any(LambdaQueryWrapper.class)))
                 .thenReturn(List.of(dashscopeDefault, zhipuModel));
 
@@ -140,7 +140,7 @@ class ModelConfigServiceDefaultModelTest {
 
         when(modelConfigMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(dashscopeDefault);
 
-        // With null providerService, isProviderConfigured returns true (lenient bootstrap)
+        // With null providerService, isProviderEnabledAndConfigured returns true (lenient bootstrap)
         ModelConfigEntity result = service.getDefaultModel();
         assertEquals("dashscope", result.getProvider());
     }

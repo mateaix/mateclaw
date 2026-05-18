@@ -94,6 +94,7 @@ public class ConversationService {
         LambdaQueryWrapper<ConversationEntity> wrapper = new LambdaQueryWrapper<ConversationEntity>()
                 .in(ConversationEntity::getUsername, username, SYSTEM_USER)
                 .isNull(ConversationEntity::getParentConversationId)
+                .orderByDesc(ConversationEntity::getPinned)
                 .orderByDesc(ConversationEntity::getLastActiveTime);
         if (workspaceId != null) {
             wrapper.eq(ConversationEntity::getWorkspaceId, workspaceId);
@@ -318,6 +319,19 @@ public class ConversationService {
                 .eq(ConversationEntity::getConversationId, conversationId));
         if (conv != null) {
             conv.setTitle(title);
+            conversationMapper.updateById(conv);
+        }
+    }
+
+    /**
+     * Pin or unpin a conversation. Pinned conversations sort ahead of unpinned
+     * ones in the sidebar list regardless of last-active time.
+     */
+    public void setPinned(String conversationId, boolean pinned) {
+        ConversationEntity conv = conversationMapper.selectOne(new LambdaQueryWrapper<ConversationEntity>()
+                .eq(ConversationEntity::getConversationId, conversationId));
+        if (conv != null) {
+            conv.setPinned(pinned ? 1 : 0);
             conversationMapper.updateById(conv);
         }
     }

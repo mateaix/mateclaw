@@ -11,7 +11,7 @@ package vip.mate.agent.context;
  * call (set on entry, cleared in {@code finally}). Once written into the
  * graph state under {@link vip.mate.agent.graph.state.MateClawStateKeys#CHAT_ORIGIN},
  * the rest of the runtime reads via the typed accessor — no further ThreadLocal
- * access. Mirrors {@link vip.mate.agent.ThinkingLevelHolder}.
+ * access. Mirrors {@link vip.mate.llm.chatmodel.ThinkingLevelHolder}.
  */
 public final class ChatOriginHolder {
 
