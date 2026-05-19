@@ -41,32 +41,38 @@
         <template v-for="group in navGroups" :key="group.key">
           <div class="nav-group">
             <div v-if="!effectiveCollapsed" class="nav-group-title">{{ group.label }}</div>
-            <router-link
+            <McTooltip
               v-for="item in group.items"
               :key="item.path"
-              :to="item.path"
-              class="nav-item"
-              :class="{ active: isNavItemActive(item) }"
-              :title="effectiveCollapsed ? (item.tooltip || item.label) : (item.tooltip || '')"
-              @click="onNavClick"
+              :content="item.tooltip || item.label"
+              placement="right"
+              :disabled="!effectiveCollapsed"
             >
-              <span class="nav-icon" v-html="item.icon"></span>
-              <span v-if="!effectiveCollapsed" class="nav-label">{{ item.label }}</span>
-              <NavBadge
-                v-if="item.path === '/agents' && isAdminRole"
-                :dot="liveAlertActive"
-                tone="warning"
-                :collapsed="effectiveCollapsed"
-                :title="t('live.attention')"
-              />
-              <NavBadge
-                v-else-if="item.path === '/security' && isAdminRole"
-                :count="pendingApprovals"
-                tone="urgent"
-                :collapsed="effectiveCollapsed"
-                :title="t('notifications.pendingApprovals', { n: pendingApprovals })"
-              />
-            </router-link>
+              <router-link
+                :to="item.path"
+                class="nav-item"
+                :class="{ active: isNavItemActive(item) }"
+                :title="effectiveCollapsed ? '' : (item.tooltip || '')"
+                @click="onNavClick"
+              >
+                <span class="nav-icon" v-html="item.icon"></span>
+                <span v-if="!effectiveCollapsed" class="nav-label">{{ item.label }}</span>
+                <NavBadge
+                  v-if="item.path === '/agents' && isAdminRole"
+                  :dot="liveAlertActive"
+                  tone="warning"
+                  :collapsed="effectiveCollapsed"
+                  :title="t('live.attention')"
+                />
+                <NavBadge
+                  v-else-if="item.path === '/security' && isAdminRole"
+                  :count="pendingApprovals"
+                  tone="urgent"
+                  :collapsed="effectiveCollapsed"
+                  :title="t('notifications.pendingApprovals', { n: pendingApprovals })"
+                />
+              </router-link>
+            </McTooltip>
           </div>
         </template>
       </nav>
@@ -196,6 +202,7 @@ import OnboardingWizard from '@/views/Onboarding/OnboardingWizard.vue'
 import DoctorDrawer from '@/views/Doctor/DoctorDrawer.vue'
 import WorkspaceSwitcher from '@/components/workspace/WorkspaceSwitcher.vue'
 import NavBadge from '@/components/common/NavBadge.vue'
+import McTooltip from '@/components/common/McTooltip.vue'
 import { useNotificationCenter } from '@/composables/useNotificationCenter'
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore'
 import { applyLocale, currentLocale, type AppLocale } from '@/i18n'
@@ -745,6 +752,14 @@ watch(() => workspaceStore.currentWorkspaceId, () => {
 }
 
 /* Active indicator bar removed — active state uses bg color + font weight only */
+
+/* Collapsed rail: the label is hidden, so center the lone icon on the
+   sidebar's vertical axis instead of leaving it left-aligned by the
+   nav-item's horizontal padding. */
+.sidebar.collapsed .nav-item {
+  justify-content: center;
+  gap: 0;
+}
 
 .nav-icon { display: flex; align-items: center; flex-shrink: 0; }
 .nav-label { overflow: hidden; text-overflow: ellipsis; }

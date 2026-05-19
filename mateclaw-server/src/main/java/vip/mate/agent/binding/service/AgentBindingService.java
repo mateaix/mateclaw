@@ -18,6 +18,8 @@ import vip.mate.exception.MateClawException;
 import vip.mate.llm.routing.AgentBindingResolver;
 import vip.mate.skill.acp.AcpSkillBridge;
 import vip.mate.skill.mcp.McpSkillBridge;
+import vip.mate.skill.lifecycle.BlockedByBindingRow;
+import vip.mate.skill.lifecycle.ConfirmRequiredException;
 import vip.mate.skill.model.SkillEntity;
 import vip.mate.skill.repository.SkillMapper;
 import vip.mate.skill.runtime.SkillRuntimeService;
@@ -25,9 +27,15 @@ import vip.mate.skill.runtime.model.ResolvedSkill;
 import vip.mate.tool.model.AvailableToolDTO;
 import vip.mate.tool.service.AvailableToolService;
 
+import java.time.Duration;
+import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -179,6 +187,103 @@ public class AgentBindingService implements AgentBindingResolver {
                 skillBindingMapper.insert(binding);
             }
         }
+    }
+
+    // ==================== Lifecycle curator support ====================
+
+    /**
+     * Skill ids explicitly bound to at least one enabled agent (binding row
+     * {@code enabled = true} AND agent row {@code enabled = true}). The
+     * lifecycle curator excludes these from its candidate set so it never
+     * silently undoes a user's explicit skill picks.
+     */
+    public Set<Long> skillIdsBoundToEnabledAgents() {
+        Set<Long> enabledAgentIds = enabledAgentIds();
+        if (enabledAgentIds.isEmpty()) {
+            return Set.of();
+        }
+        return skillBindingMapper.selectList(new LambdaQueryWrapper<AgentSkillBinding>()
+                        .eq(AgentSkillBinding::getEnabled, true))
+                .stream()
+                .filter(b -> b.getSkillId() != null && enabledAgentIds.contains(b.getAgentId()))
+                .map(AgentSkillBinding::getSkillId)
+                .collect(Collectors.toSet());
+    }
+
+    /**
+     * Binding-protected skills with the detail the lifecycle run report
+     * needs: {@code {skillId, name, agentIds, daysIdle}}. Hard-exempt skills
+     * (builtin / mcp / acp / pinned) are excluded since they would not be
+     * archival candidates regardless of bindings.
+     */
+    public List<BlockedByBindingRow> blockedByBindingCandidates(LocalDateTime now) {
+        Set<Long> enabledAgentIds = enabledAgentIds();
+        if (enabledAgentIds.isEmpty()) {
+            return List.of();
+        }
+        Map<Long, List<Long>> bySkill = new HashMap<>();
+        for (AgentSkillBinding b : skillBindingMapper.selectList(new LambdaQueryWrapper<AgentSkillBinding>()
+                .eq(AgentSkillBinding::getEnabled, true))) {
+            if (b.getSkillId() == null || !enabledAgentIds.contains(b.getAgentId())) {
+                continue;
+            }
+            bySkill.computeIfAbsent(b.getSkillId(), k -> new ArrayList<>()).add(b.getAgentId());
+        }
+        if (bySkill.isEmpty()) {
+            return List.of();
+        }
+        List<BlockedByBindingRow> rows = new ArrayList<>();
+        for (SkillEntity skill : skillMapper.selectBatchIds(bySkill.keySet())) {
+            if (Boolean.TRUE.equals(skill.getBuiltin()) || Boolean.TRUE.equals(skill.getPinned())) {
+                continue;
+            }
+            String type = skill.getSkillType();
+            if (type != null && List.of("builtin", "mcp", "acp").contains(type)) {
+                continue;
+            }
+            LocalDateTime anchor = skill.getLastActivityAt() != null
+                    ? skill.getLastActivityAt() : skill.getCreateTime();
+            long daysIdle = anchor == null ? 0L : Duration.between(anchor, now).toDays();
+            rows.add(new BlockedByBindingRow(skill.getId(), skill.getName(),
+                    bySkill.get(skill.getId()), daysIdle));
+        }
+        return rows;
+    }
+
+    /**
+     * Enabled agents that explicitly bind {@code skillId}. Used by manual
+     * archive to list the agents an admin would affect before confirming.
+     */
+    public List<ConfirmRequiredException.AgentRow> enabledAgentsBoundToSkill(Long skillId) {
+        if (skillId == null) {
+            return List.of();
+        }
+        Set<Long> agentIds = skillBindingMapper.selectList(new LambdaQueryWrapper<AgentSkillBinding>()
+                        .eq(AgentSkillBinding::getSkillId, skillId)
+                        .eq(AgentSkillBinding::getEnabled, true))
+                .stream()
+                .map(AgentSkillBinding::getAgentId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        if (agentIds.isEmpty()) {
+            return List.of();
+        }
+        return agentMapper.selectList(new LambdaQueryWrapper<AgentEntity>()
+                        .in(AgentEntity::getId, agentIds)
+                        .eq(AgentEntity::getEnabled, true))
+                .stream()
+                .map(a -> new ConfirmRequiredException.AgentRow(a.getId(), a.getName()))
+                .collect(Collectors.toList());
+    }
+
+    /** Ids of every currently-enabled agent. */
+    private Set<Long> enabledAgentIds() {
+        return agentMapper.selectList(new LambdaQueryWrapper<AgentEntity>()
+                        .eq(AgentEntity::getEnabled, true)
+                        .select(AgentEntity::getId))
+                .stream()
+                .map(AgentEntity::getId)
+                .collect(Collectors.toSet());
     }
 
     /**

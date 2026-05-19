@@ -46,11 +46,16 @@ public class WikiContentNormalizer {
         if (rawText == null) return "";
         String type = sourceType == null ? "" : sourceType.toLowerCase();
         return switch (type) {
-            case "url", "html" -> normalizeHtml(rawText);
+            // 'url' is raw fetched web HTML and still carries markup, so it needs
+            // tag stripping here. 'html' file uploads are tag-stripped upstream by
+            // DocumentExtractTool (jsoup) before reaching the normalizer — running
+            // normalizeHtml again would re-collapse the recovered heading structure,
+            // so they fall through to the plain-text branch.
+            case "url" -> normalizeHtml(rawText);
             // PDF text from DocumentExtractTool may already contain "--- Page N ---"
             // markers; we keep them so the preprocessor can map char offsets to pages.
             case "pdf" -> collapseBlankLines(rawText);
-            case "docx", "pptx", "xlsx" -> collapseBlankLines(rawText);
+            case "docx", "doc", "pptx", "ppt", "xlsx", "xls", "html", "htm" -> collapseBlankLines(rawText);
             case "markdown", "md", "text", "paste" -> collapseBlankLines(rawText);
             default -> collapseBlankLines(rawText);
         };

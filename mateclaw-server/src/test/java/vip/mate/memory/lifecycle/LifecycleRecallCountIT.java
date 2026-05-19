@@ -15,6 +15,7 @@ import vip.mate.agent.repository.AgentMapper;
 import vip.mate.memory.MemoryProperties;
 import vip.mate.memory.service.MemoryRecallTracker;
 import vip.mate.memory.spi.MemoryManager;
+import vip.mate.workspace.conversation.repository.ConversationMapper;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -41,6 +42,7 @@ class LifecycleRecallCountIT {
     @Mock private MemoryManager memoryManager;
     @Mock private ApplicationEventPublisher eventPublisher;
     @Mock private BaseAgent mockAgent;
+    @Mock private ConversationMapper conversationMapper;
 
     private MemoryProperties props;
     private AgentService agentService;
@@ -50,14 +52,14 @@ class LifecycleRecallCountIT {
         props = new MemoryProperties();
         MemoryLifecycleMediator mediator = new MemoryLifecycleMediator(memoryManager, eventPublisher);
         agentService = new AgentService(agentMapper, agentGraphBuilder,
-                memoryRecallTracker, mediator, props);
+                memoryRecallTracker, mediator, props, conversationMapper);
 
         // Stub agent resolution (lenient for structural-only tests)
         AgentEntity entity = new AgentEntity();
         entity.setId(1L);
         entity.setEnabled(true);
         lenient().when(agentMapper.selectById(1L)).thenReturn(entity);
-        lenient().when(agentGraphBuilder.build(any(AgentEntity.class))).thenReturn(mockAgent);
+        lenient().when(agentGraphBuilder.build(any(AgentEntity.class), any(), any())).thenReturn(mockAgent);
         lenient().when(mockAgent.chat(any(), any())).thenReturn("reply");
     }
 

@@ -1,4 +1,4 @@
-import { defineStore } from 'pinia'
+import { acceptHMRUpdate, defineStore } from 'pinia'
 import { ref } from 'vue'
 import { agentApi } from '@/api/index'
 import type { Agent } from '@/types/index'
@@ -41,3 +41,9 @@ export const useAgentStore = defineStore('agent', () => {
 
   return { agents, loading, fetchAgents, createAgent, updateAgent, deleteAgent }
 })
+
+// Enable HMR for this store: editing it during `pnpm dev` patches the live
+// store instead of requiring a full page reload. Stripped from prod builds.
+if (import.meta.hot) {
+  import.meta.hot.accept(acceptHMRUpdate(useAgentStore, import.meta.hot))
+}

@@ -41,10 +41,11 @@
         <!-- 分类 Tab -->
         <div class="category-tabs mc-surface-card">
           <button v-for="tab in categoryTabs" :key="tab.value" class="cat-tab"
-            :class="{ active: query.skillType === tab.value }" @click="onTabChange(tab.value)">
-            <span class="cat-icon">{{ tab.icon }}</span>
+            :class="{ active: isTabActive(tab), 'cat-tab--lifecycle': tab.kind === 'lifecycle' }"
+            @click="onTabChange(tab)">
+            <SkillLineIcon :name="tab.icon" :size="15" class="cat-icon" />
             {{ tab.label }}
-            <span class="cat-count">{{ getCategoryCount(tab.value) }}</span>
+            <span class="cat-count">{{ getCategoryCount(tab) }}</span>
           </button>
         </div>
 
@@ -132,6 +133,12 @@
               </span>
               <span class="source-label" :class="getSourceClass(skill)">{{ getSourceLabel(skill) }}</span>
               <span v-if="skill.version" class="skill-version">v{{ skill.version }}</span>
+              <span
+                v-if="!isSkillRowVirtual(skill) && skill.lastActivityAt"
+                class="lifecycle-badge"
+                :class="{ 'lifecycle-badge--stale': skill.lifecycleState === 'stale',
+                          'lifecycle-badge--archived': skill.lifecycleState === 'archived' }"
+              ><SkillLineIcon name="clock" :size="11" />{{ lastUsedLabel(skill) }}</span>
             </div>
 
             <div class="skill-footer" @click.stop>
@@ -287,6 +294,42 @@
         <!-- Overview tab — manifest-projected chips (read-only) +
              DB-only display overrides (editable) + collapsed manifest. -->
         <div v-if="detailTab === 'overview'" class="detail-section">
+          <!-- Lifecycle: state + last-used + pin / archive / restore. -->
+          <div v-if="!isVirtualSkill" class="detail-block">
+            <div class="detail-block-head">
+              <h4 class="detail-block-title">{{ t('skills.lifecycle.section') }}</h4>
+            </div>
+            <div class="meta-chips">
+              <span class="meta-chip">
+                <span class="meta-chip-label">{{ t('skills.lifecycle.state') }}</span>
+                <span class="lc-pill" :class="'lc-' + (detailSkill.lifecycleState || 'active')">
+                  {{ t('skills.lifecycle.states.' + (detailSkill.lifecycleState || 'active')) }}
+                </span>
+              </span>
+              <span class="meta-chip">
+                <span class="meta-chip-label">{{ t('skills.lifecycle.lastUsed') }}</span>
+                {{ lastUsedLabel(detailSkill) }}
+              </span>
+            </div>
+            <div class="lifecycle-actions">
+              <label class="lifecycle-pin" :title="t('skills.lifecycle.pinHint')">
+                <input type="checkbox" :checked="!!detailSkill.pinned" @change="togglePin(detailSkill)" />
+                <SkillLineIcon name="pin" :size="14" />
+                <span>{{ t('skills.lifecycle.pin') }}</span>
+              </label>
+              <button
+                v-if="detailSkill.lifecycleState === 'archived'"
+                class="lc-btn lc-btn--restore"
+                @click="restoreSkill(detailSkill)"
+              >{{ t('skills.lifecycle.restore') }}</button>
+              <button
+                v-else-if="detailSkill.skillType !== 'builtin'"
+                class="lc-btn lc-btn--archive"
+                @click="archiveSkill(detailSkill)"
+              >{{ t('skills.lifecycle.archive') }}</button>
+            </div>
+          </div>
+
           <!-- Manifest-projected fields (chips, read-only).
                These columns are overwritten by SkillPackageResolver from
                manifest_json on every resolve, so editing them on the row
@@ -668,6 +711,7 @@ import McPagination from '@/components/common/McPagination.vue'
 import MateDrawer from '@/components/common/MateDrawer.vue'
 import SkillIcon from '@/components/common/SkillIcon.vue'
 import SkillIconPicker from '@/components/common/SkillIconPicker.vue'
+import SkillLineIcon from '@/components/skill/SkillLineIcon.vue'
 import { mcConfirm } from '@/components/common/useConfirm'
 import { useSkillName } from '@/composables/useSkillName'
 
@@ -689,6 +733,8 @@ const query = reactive({
   skillType: 'all' as string,
   statusFilter: '' as string,
   sort: 'recommended' as string,
+  /** '' = active+stale catalog; 'stale' / 'archived' = lifecycle tabs. */
+  lifecycleState: '' as string,
 })
 
 /** Per-skill UI state for the RFC-042 §2.3 findings panel. */
@@ -892,17 +938,30 @@ watch(detailTab, (tab) => {
 })
 
 const categoryTabs = computed(() => [
-  { label: t('skills.tabs.all'), value: 'all', icon: '🗂️' },
-  { label: t('skills.tabs.builtin'), value: 'builtin', icon: '🔧' },
-  { label: t('skills.tabs.mcp'), value: 'mcp', icon: '🔌' },
+  { label: t('skills.tabs.all'), value: 'all', icon: 'all', kind: 'source' },
+  { label: t('skills.tabs.builtin'), value: 'builtin', icon: 'builtin', kind: 'source' },
+  { label: t('skills.tabs.mcp'), value: 'mcp', icon: 'mcp', kind: 'source' },
   // ACP (Agent Communication Protocol) — auto-bridged from
   // Settings ▸ ACP Endpoints; one card per enabled endpoint.
-  { label: t('skills.tabs.acp'), value: 'acp', icon: '🤝' },
-  { label: t('skills.tabs.dynamic'), value: 'dynamic', icon: '📦' },
+  { label: t('skills.tabs.acp'), value: 'acp', icon: 'acp', kind: 'source' },
+  { label: t('skills.tabs.dynamic'), value: 'dynamic', icon: 'dynamic', kind: 'source' },
+  // Lifecycle tabs — orthogonal to skillType; they filter by lifecycle_state.
+  { label: t('skills.tabs.stale'), value: 'stale', icon: 'clock', kind: 'lifecycle' },
+  { label: t('skills.tabs.archived'), value: 'archived', icon: 'archive', kind: 'lifecycle' },
 ])
 
-function getCategoryCount(category: string) {
-  return counts.value[category] ?? 0
+/** Stale / archived counts, sourced from the curator status endpoint. */
+const lifecycleCounts = ref<Record<string, number>>({})
+
+function getCategoryCount(tab: { value: string; kind: string }) {
+  if (tab.kind === 'lifecycle') return lifecycleCounts.value[tab.value] ?? 0
+  return counts.value[tab.value] ?? 0
+}
+
+function isTabActive(tab: { value: string; kind: string }) {
+  return tab.kind === 'lifecycle'
+    ? query.lifecycleState === tab.value
+    : !query.lifecycleState && query.skillType === tab.value
 }
 
 function parseTags(tags: string): string[] {
@@ -918,7 +977,22 @@ async function loadAll() {
   // transient "checking" state until runtimeStatusMap populates.
   loadCounts()
   loadRuntimeStatus()
+  loadLifecycleCounts()
   await loadSkills()
+}
+
+/** Stale / archived tab counts — best-effort, from the curator status endpoint. */
+async function loadLifecycleCounts() {
+  try {
+    const res: any = await skillApi.curatorStatus()
+    const c = res.data?.counts || {}
+    lifecycleCounts.value = {
+      stale: Number(c.stale) || 0,
+      archived: Number(c.archived) || 0,
+    }
+  } catch {
+    lifecycleCounts.value = {}
+  }
 }
 
 /** Coalesce keyword edits into one server call per 300ms so typing doesn't thrash. */
@@ -931,8 +1005,14 @@ watch(() => query.keyword, () => {
   }, 300)
 })
 
-function onTabChange(tab: string) {
-  query.skillType = tab
+function onTabChange(tab: { value: string; kind: string }) {
+  if (tab.kind === 'lifecycle') {
+    query.lifecycleState = tab.value
+    query.skillType = 'all'
+  } else {
+    query.lifecycleState = ''
+    query.skillType = tab.value
+  }
   query.page = 1
   loadSkills()
 }
@@ -959,6 +1039,7 @@ async function loadSkills(allowPageClamp = true) {
     if (query.statusFilter === 'enabled') params.enabled = true
     else if (query.statusFilter === 'disabled') params.enabled = false
     else if (query.statusFilter === 'scan_failed') params.scanStatus = 'FAILED'
+    if (query.lifecycleState) params.lifecycleState = query.lifecycleState
 
     const res: any = await skillApi.page(params)
     const data = res.data || {}
@@ -1234,6 +1315,80 @@ async function toggleSkill(skill: Skill) {
     await loadAll()
   } catch (e: any) {
     mcToast.error(typeof e === 'string' ? e : e?.message || t('skills.messages.toggleFailed'))
+  }
+}
+
+// ==================== Lifecycle: pin / archive / restore ====================
+
+/** Human-readable "last used" label from {@code lastActivityAt}. */
+function lastUsedLabel(skill: Skill): string {
+  const ts = skill.lastActivityAt
+  if (!ts) return t('skills.lifecycle.neverUsed')
+  const then = new Date(ts).getTime()
+  if (Number.isNaN(then)) return t('skills.lifecycle.neverUsed')
+  const days = Math.floor((Date.now() - then) / 86400000)
+  if (days <= 0) return t('skills.lifecycle.today')
+  return t('skills.lifecycle.daysAgo', { n: days })
+}
+
+async function togglePin(skill: Skill) {
+  try {
+    const res: any = await skillApi.pin(skill.id, !skill.pinned)
+    if (detailSkill.value && detailSkill.value.id === skill.id) {
+      detailSkill.value = { ...detailSkill.value, ...(res.data || {}) }
+    }
+    await loadSkills()
+    loadLifecycleCounts()
+  } catch (e: any) {
+    mcToast.error(typeof e === 'string' ? e : e?.message || t('skills.lifecycle.pinFailed'))
+  }
+}
+
+async function archiveSkill(skill: Skill) {
+  const ok = await mcConfirm({
+    title: t('skills.lifecycle.archiveTitle'),
+    message: t('skills.lifecycle.archiveConfirm', { name: resolveSkillName(skill) }),
+    tone: 'danger',
+  })
+  if (!ok) return
+  await doArchive(skill, false)
+}
+
+/** Archive call with the bound-skill 409 confirm handshake. */
+async function doArchive(skill: Skill, force: boolean) {
+  try {
+    await skillApi.archive(skill.id, { force })
+    mcToast.success(t('skills.lifecycle.archiveSuccess'))
+    closeDetailDrawer()
+    await loadAll()
+  } catch (e: any) {
+    const resp = e?.response
+    if (!force && resp?.status === 409 && resp?.data?.code === 'BOUND_SKILL_CONFIRM_REQUIRED') {
+      const bound = (resp.data.boundAgents || []) as Array<{ name?: string }>
+      const confirmForce = await mcConfirm({
+        title: t('skills.lifecycle.boundConfirmTitle'),
+        message: t('skills.lifecycle.boundConfirmBody', {
+          name: resolveSkillName(skill),
+          count: bound.length,
+          agents: bound.map(a => a.name).filter(Boolean).join('、'),
+        }),
+        tone: 'danger',
+      })
+      if (confirmForce) await doArchive(skill, true)
+      return
+    }
+    mcToast.error(typeof e === 'string' ? e : e?.message || t('skills.lifecycle.archiveFailed'))
+  }
+}
+
+async function restoreSkill(skill: Skill) {
+  try {
+    await skillApi.restore(skill.id)
+    mcToast.success(t('skills.lifecycle.restoreSuccess'))
+    closeDetailDrawer()
+    await loadAll()
+  } catch (e: any) {
+    mcToast.error(typeof e === 'string' ? e : e?.message || t('skills.lifecycle.restoreFailed'))
   }
 }
 
@@ -2357,4 +2512,39 @@ html.dark .scan-finding-item { background: rgba(255, 255, 255, 0.05); }
   color: #fff;
 }
 
+/* ==================== Lifecycle / curator ==================== */
+.cat-tab--lifecycle { margin-left: 4px; }
+.lifecycle-badge {
+  display: inline-flex; align-items: center; gap: 3px;
+  font-size: 11px; color: var(--mc-text-tertiary);
+  padding: 1px 7px; border-radius: 999px; background: var(--mc-bg-sunken);
+}
+.lifecycle-badge--stale { color: #b9770e; background: rgba(243, 156, 18, 0.14); }
+.lifecycle-badge--archived { color: var(--mc-text-tertiary); background: var(--mc-bg-muted); }
+
+.lc-pill {
+  display: inline-block; padding: 1px 8px; border-radius: 999px;
+  font-size: 11px; font-weight: 600;
+}
+.lc-active { color: #1e8e3e; background: rgba(46, 160, 67, 0.14); }
+.lc-stale { color: #b9770e; background: rgba(243, 156, 18, 0.16); }
+.lc-archived { color: var(--mc-text-secondary); background: var(--mc-bg-sunken); }
+
+.lifecycle-actions {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 10px;
+}
+.lifecycle-pin {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 13px; color: var(--mc-text-secondary); cursor: pointer; user-select: none;
+}
+.lifecycle-pin input { cursor: pointer; }
+.lc-btn {
+  padding: 5px 14px; border-radius: 8px; font-size: 13px; font-weight: 600;
+  cursor: pointer; border: 1px solid var(--mc-border); background: var(--mc-bg-muted);
+  color: var(--mc-text-secondary); transition: all 0.15s;
+}
+.lc-btn:hover { border-color: var(--mc-text-tertiary); }
+.lc-btn--archive:hover { color: #d14343; border-color: #d14343; }
+.lc-btn--restore { color: var(--mc-primary); border-color: var(--mc-primary); }
+.lc-btn--restore:hover { background: var(--mc-primary); color: #fff; }
 </style>

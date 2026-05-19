@@ -409,6 +409,32 @@ public class SystemSettingService {
         return Boolean.parseBoolean(getValue(STATEGRAPH_ENABLED_KEY, "false"));
     }
 
+    /**
+     * Read a boolean setting. Returns {@code defaultValue} when the key is
+     * absent or stored as a non-boolean string.
+     */
+    public boolean getBool(String key, boolean defaultValue) {
+        return Boolean.parseBoolean(getValue(key, String.valueOf(defaultValue)));
+    }
+
+    /** Persist a boolean setting. */
+    public void saveBool(String key, boolean value, String description) {
+        saveValue(key, String.valueOf(value), description);
+    }
+
+    /**
+     * Read a raw string setting. Returns {@code defaultValue} (which may be
+     * {@code null}) when the key is absent.
+     */
+    public String getString(String key, String defaultValue) {
+        return getValue(key, defaultValue);
+    }
+
+    /** Persist a raw string setting. */
+    public void saveString(String key, String value, String description) {
+        saveValue(key, value, description);
+    }
+
     private String getValue(String key, String defaultValue) {
         SystemSettingEntity entity = systemSettingMapper.selectOne(new LambdaQueryWrapper<SystemSettingEntity>()
                 .eq(SystemSettingEntity::getSettingKey, key)

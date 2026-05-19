@@ -350,6 +350,32 @@ public class ConversationService {
     }
 
     /**
+     * Pin the model a conversation uses. A blank provider or model id is a
+     * no-op (no override supplied — the conversation keeps inheriting the
+     * agent / global default). The write is skipped when the stored value
+     * already matches, so persisting the same model on every turn costs only
+     * a SELECT.
+     */
+    @Transactional
+    public void updateConversationModel(String conversationId, String modelProvider, String modelName) {
+        if (modelProvider == null || modelProvider.isBlank()
+                || modelName == null || modelName.isBlank()) {
+            return;
+        }
+        ConversationEntity conv = conversationMapper.selectOne(new LambdaQueryWrapper<ConversationEntity>()
+                .eq(ConversationEntity::getConversationId, conversationId));
+        if (conv == null) {
+            return;
+        }
+        if (modelProvider.equals(conv.getModelProvider()) && modelName.equals(conv.getModelName())) {
+            return;
+        }
+        conv.setModelProvider(modelProvider);
+        conv.setModelName(modelName);
+        conversationMapper.updateById(conv);
+    }
+
+    /**
      * Persist an assistant placeholder marker only when the last message is a
      * user turn (i.e., the assistant never got to reply). Used by the admin
      * force-recycle path so a torn-down turn leaves a visible "已被用户中止"

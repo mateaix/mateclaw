@@ -295,7 +295,8 @@ async function handleBatchDelete() {
   try {
     await wikiApi.batchDeletePages(store.currentKB.id, selectedSlugs.value)
     exitBatchMode()
-    await store.fetchPages(store.currentKB.id)
+    // Keep the active raw-material filter so the list doesn't jump to all pages.
+    await store.fetchPages(store.currentKB.id, store.selectedRawId)
   } catch (e: any) {
     alert(e?.message || 'Batch delete failed')
   }
@@ -322,7 +323,8 @@ async function restoreArchivedPage(slug: string) {
   try {
     await wikiApi.unarchivePage(store.currentKB.id, slug)
     archivedPages.value = archivedPages.value.filter(p => p.slug !== slug)
-    await store.fetchPages(store.currentKB.id)
+    // Keep the active raw-material filter so the list doesn't jump to all pages.
+    await store.fetchPages(store.currentKB.id, store.selectedRawId)
   } catch (e: any) {
     console.error('[Wiki] Unarchive failed', e)
     alert(e?.message || 'Unarchive failed')

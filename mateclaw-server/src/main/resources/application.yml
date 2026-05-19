@@ -136,6 +136,15 @@ mateclaw:
       root: ${user.home}/.mateclaw/skills
       auto-init: true
       delete-policy: archive
+    curator:
+      enabled: true
+      cron: "0 0 2 * * *"         # daily 02:00 — staggered away from wiki / backup jobs
+      stale-after-days: 30
+      archive-after-days: 90
+      scope: AGENT_CREATED         # AGENT_CREATED | ALL_DYNAMIC | OFF
+      protect-prefixes:
+        - "sys-"
+        - "ops-"
     hub:
       base-url: https://clawhub.ai
       search-path: /api/v1/search

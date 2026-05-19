@@ -186,7 +186,8 @@ async function handleDelete() {
   try {
     await wikiApi.deletePage(store.currentKB.id, store.currentPage.slug)
     store.currentPage = null
-    await store.fetchPages(store.currentKB.id)
+    // Keep the active raw-material filter so the list doesn't jump to all pages.
+    await store.fetchPages(store.currentKB.id, store.selectedRawId)
   } catch (e: any) {
     alert(e?.message || 'Delete failed')
   }

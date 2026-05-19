@@ -147,6 +147,10 @@ export interface SendMessageOptions {
   contentParts?: MessageContentPart[]
   /** Thinking depth: off / low / medium / high / max */
   thinkingLevel?: string
+  /** Provider id of the model picked for this conversation. */
+  modelProvider?: string
+  /** Model id picked for this conversation. Paired with modelProvider. */
+  modelName?: string
 }
 
 export function useChat(options: UseChatOptions): UseChatReturn {
@@ -1643,6 +1647,12 @@ export function useChat(options: UseChatOptions): UseChatReturn {
       }
       if (options.thinkingLevel) {
         body.thinkingLevel = options.thinkingLevel
+      }
+      // Per-conversation model: the backend pins it onto the conversation row
+      // so switching the model here never leaks into other conversations.
+      if (options.modelProvider && options.modelName) {
+        body.modelProvider = options.modelProvider
+        body.modelName = options.modelName
       }
       await stream.connect(body)
     } catch (e) {

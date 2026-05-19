@@ -1,4 +1,4 @@
-import { defineStore } from 'pinia'
+import { acceptHMRUpdate, defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { workspaceTeamApi } from '@/api/index'
 import type { Capability, WorkspaceRole } from '@/composables/capabilities'
@@ -126,3 +126,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     refreshAccess,
   }
 })
+
+// Enable HMR for this store: editing it during `pnpm dev` patches the live
+// store instead of requiring a full page reload. Stripped from prod builds.
+if (import.meta.hot) {
+  import.meta.hot.accept(acceptHMRUpdate(useWorkspaceStore, import.meta.hot))
+}

@@ -21,6 +21,8 @@ import vip.mate.memory.MemoryProperties;
 import vip.mate.memory.lifecycle.MemoryLifecycleMediator;
 import vip.mate.memory.lifecycle.TurnContext;
 import vip.mate.memory.service.MemoryRecallTracker;
+import vip.mate.workspace.conversation.model.ConversationEntity;
+import vip.mate.workspace.conversation.repository.ConversationMapper;
 
 import java.util.List;
 import java.util.Map;
@@ -46,14 +48,22 @@ public class AgentService {
     private final MemoryRecallTracker memoryRecallTracker;
     private final MemoryLifecycleMediator lifecycleMediator;
     private final MemoryProperties memoryProperties;
+    /** Read-only lookup of a conversation's pinned model. Mapper (not service)
+     *  to keep this a leaf dependency with no risk of a bean cycle. */
+    private final ConversationMapper conversationMapper;
 
     /** Field-injected publisher for agent_lifecycle trigger events; the
      *  trigger module's bridge listens and forwards into ingest. */
     @Autowired(required = false)
     private ApplicationEventPublisher events;
 
-    /** 运行时 Agent 实例缓存（agentId -> BaseAgent） */
-    private final Map<Long, BaseAgent> agentInstances = new ConcurrentHashMap<>();
+    /**
+     * Runtime Agent instance cache. Keyed first by agentId, then by a model
+     * key, so a conversation that pins a non-default model gets its own graph
+     * variant instead of mutating the one every other conversation shares.
+     * The model key is {@code ""} for the Agent / global-default model.
+     */
+    private final Map<Long, Map<String, BaseAgent>> agentInstances = new ConcurrentHashMap<>();
 
     // ==================== CRUD ====================
 
@@ -217,7 +227,7 @@ public class AgentService {
      */
     public String chat(Long agentId, String message, String conversationId, ChatOrigin origin) {
         memoryRecallTracker.trackRecalls(agentId, message);
-        BaseAgent agent = getOrBuildAgent(agentId);
+        BaseAgent agent = getOrBuildAgentForConversation(agentId, conversationId);
         ChatOriginHolder.set(origin != null ? origin : ChatOrigin.EMPTY);
         try {
             return withLifecycleSync(agentId, message, conversationId,
@@ -233,7 +243,7 @@ public class AgentService {
 
     public Flux<String> chatStream(Long agentId, String message, String conversationId, ChatOrigin origin) {
         memoryRecallTracker.trackRecalls(agentId, message);
-        BaseAgent agent = getOrBuildAgent(agentId);
+        BaseAgent agent = getOrBuildAgentForConversation(agentId, conversationId);
         // Capture the origin into a request-scoped holder; cleared on Flux
         // termination so the next reactive subscriber doesn't inherit stale state.
         ChatOrigin captured = origin != null ? origin : ChatOrigin.EMPTY;
@@ -269,7 +279,7 @@ public class AgentService {
                                                    String requesterId, String thinkingLevel,
                                                    ChatOrigin origin) {
         memoryRecallTracker.trackRecalls(agentId, message);
-        BaseAgent agent = getOrBuildAgent(agentId);
+        BaseAgent agent = getOrBuildAgentForConversation(agentId, conversationId);
 
         // 设置请求级思考深度（通过 ThreadLocal 传递到 StateGraph 执行）
         if (thinkingLevel != null && !thinkingLevel.isBlank()) {
@@ -315,7 +325,7 @@ public class AgentService {
 
     public String execute(Long agentId, String goal, String conversationId, ChatOrigin origin) {
         memoryRecallTracker.trackRecalls(agentId, goal);
-        BaseAgent agent = getOrBuildAgent(agentId);
+        BaseAgent agent = getOrBuildAgentForConversation(agentId, conversationId);
         ChatOriginHolder.set(origin != null ? origin : ChatOrigin.EMPTY);
         try {
             return withLifecycleSync(agentId, goal, conversationId,
@@ -342,7 +352,7 @@ public class AgentService {
     public String chatWithReplay(Long agentId, String userMessage, String conversationId,
                                   String toolCallPayload, ChatOrigin origin) {
         memoryRecallTracker.trackRecalls(agentId, userMessage);
-        BaseAgent agent = getOrBuildAgent(agentId);
+        BaseAgent agent = getOrBuildAgentForConversation(agentId, conversationId);
         ChatOriginHolder.set(origin != null ? origin : ChatOrigin.EMPTY);
         try {
             return withLifecycleSync(agentId, userMessage, conversationId,
@@ -370,7 +380,7 @@ public class AgentService {
                                                    String toolCallPayload, String requesterId,
                                                    ChatOrigin origin) {
         memoryRecallTracker.trackRecalls(agentId, userMessage);
-        BaseAgent agent = getOrBuildAgent(agentId);
+        BaseAgent agent = getOrBuildAgentForConversation(agentId, conversationId);
         ChatOrigin captured = origin != null ? origin : ChatOrigin.EMPTY;
         return Flux.defer(() -> {
                     ChatOriginHolder.set(captured);
@@ -383,8 +393,20 @@ public class AgentService {
     }
 
     public AgentState getAgentState(Long agentId) {
-        BaseAgent agent = agentInstances.get(agentId);
-        return agent != null ? agent.getState() : AgentState.IDLE;
+        Map<String, BaseAgent> variants = agentInstances.get(agentId);
+        if (variants == null || variants.isEmpty()) {
+            return AgentState.IDLE;
+        }
+        // An Agent may have several cached graph variants (one per pinned
+        // model). Report the first non-IDLE state so a turn running on any
+        // variant stays visible.
+        for (BaseAgent agent : variants.values()) {
+            AgentState state = agent.getState();
+            if (state != AgentState.IDLE) {
+                return state;
+            }
+        }
+        return AgentState.IDLE;
     }
 
     // ==================== 缓存管理 ====================
@@ -473,14 +495,44 @@ public class AgentService {
 
     // ==================== 内部方法 ====================
 
-    private BaseAgent getOrBuildAgent(Long agentId) {
-        return agentInstances.computeIfAbsent(agentId, id -> {
-            AgentEntity entity = getAgent(id);
-            if (!Boolean.TRUE.equals(entity.getEnabled())) {
-                throw new MateClawException("err.agent.disabled", "Agent 已禁用: " + entity.getName());
+    /**
+     * Resolve (and cache) the Agent graph for a conversation, honouring the
+     * conversation's pinned model. Conversations with no pin — IM channels,
+     * cron, sub-tasks, or rows not yet created — resolve to the shared Agent /
+     * global-default graph.
+     */
+    private BaseAgent getOrBuildAgentForConversation(Long agentId, String conversationId) {
+        String provider = null;
+        String modelName = null;
+        if (conversationId != null && !conversationId.isBlank()) {
+            ConversationEntity conv = conversationMapper.selectOne(
+                    new LambdaQueryWrapper<ConversationEntity>()
+                            .eq(ConversationEntity::getConversationId, conversationId));
+            if (conv != null) {
+                provider = conv.getModelProvider();
+                modelName = conv.getModelName();
             }
-            return agentGraphBuilder.build(entity);
-        });
+        }
+        return getOrBuildAgent(agentId, provider, modelName);
+    }
+
+    private BaseAgent getOrBuildAgent(Long agentId) {
+        return getOrBuildAgent(agentId, null, null);
+    }
+
+    private BaseAgent getOrBuildAgent(Long agentId, String modelProvider, String modelName) {
+        boolean pinned = modelProvider != null && !modelProvider.isBlank()
+                && modelName != null && !modelName.isBlank();
+        String modelKey = pinned ? modelProvider + "::" + modelName : "";
+        return agentInstances
+                .computeIfAbsent(agentId, id -> new ConcurrentHashMap<>())
+                .computeIfAbsent(modelKey, key -> {
+                    AgentEntity entity = getAgent(agentId);
+                    if (!Boolean.TRUE.equals(entity.getEnabled())) {
+                        throw new MateClawException("err.agent.disabled", "Agent 已禁用: " + entity.getName());
+                    }
+                    return agentGraphBuilder.build(entity, modelProvider, modelName);
+                });
     }
 
     // ==================== StreamDelta ====================

@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.context.ApplicationEventPublisher;
 import vip.mate.skill.event.SkillRemovedEvent;
+import vip.mate.skill.lifecycle.SkillLifecycleService;
 import vip.mate.skill.model.SkillEntity;
 import vip.mate.skill.repository.SkillFileMapper;
 import vip.mate.skill.repository.SkillMapper;
@@ -49,7 +50,8 @@ class SkillServiceRemovalEventTest {
         when(workspaceProps.getDeletePolicy()).thenReturn("purge");
 
         SkillService service = new SkillService(
-                mapper, fileMapper, workspaceManager, workspaceProps, secretService, publisher);
+                mapper, fileMapper, workspaceManager, workspaceProps, secretService, publisher,
+                mock(SkillLifecycleService.class));
         service.setRuntimeService(runtimeService);
 
         service.uninstallSkill(42L);
@@ -80,7 +82,8 @@ class SkillServiceRemovalEventTest {
         when(fileMapper.deleteBySkillId(99L)).thenReturn(0);
 
         SkillService service = new SkillService(
-                mapper, fileMapper, workspaceManager, workspaceProps, secretService, publisher);
+                mapper, fileMapper, workspaceManager, workspaceProps, secretService, publisher,
+                mock(SkillLifecycleService.class));
         service.setRuntimeService(runtimeService);
 
         service.hardDeleteSkill(99L);

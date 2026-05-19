@@ -14,6 +14,10 @@ import org.springframework.web.context.request.async.AsyncRequestTimeoutExceptio
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 import vip.mate.common.result.R;
 import vip.mate.i18n.I18nService;
+import vip.mate.skill.lifecycle.ConfirmRequiredException;
+
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 /**
  * Global exception handler.
@@ -66,6 +70,21 @@ public class GlobalExceptionHandler {
             }
         }
         return e.getMessage();
+    }
+
+    /**
+     * A mutation that needs a second, explicit confirmation. Returns a real
+     * HTTP 409 with a structured body so the client can branch on the status
+     * code and render a confirm dialog from {@code boundAgents}.
+     */
+    @ExceptionHandler(ConfirmRequiredException.class)
+    public ResponseEntity<Map<String, Object>> handleConfirmRequired(ConfirmRequiredException e) {
+        log.info("Confirm required: [{}] {}", e.getCode(), e.getMessage());
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("code", e.getCode());
+        body.put("message", e.getMessage());
+        body.put("boundAgents", e.getBoundAgents());
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(body);
     }
 
     @ExceptionHandler(BindException.class)

@@ -10,7 +10,7 @@
               <h2 class="panel-title">{{ t('memory.title') }}</h2>
             </div>
             <button class="dream-trigger-btn" @click="startDream" title="Dream">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+              <MemoryIcon name="moon" :size="16" />
             </button>
           </div>
 
@@ -39,27 +39,11 @@
 
           <!-- Dream cards -->
           <div class="timeline-scroll">
-            <template v-if="store.loading">
-              <div class="skeleton-card" v-for="i in 4" :key="i"><div class="skeleton-line" /><div class="skeleton-line short" /></div>
-            </template>
-            <template v-else-if="store.error">
-              <div class="empty-state error-state">
-                <svg class="empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
-                  <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
-                </svg>
-                <p>{{ store.error }}</p>
-                <button class="retry-btn" @click="loadReports">{{ t('memory.retry') }}</button>
-              </div>
-            </template>
-            <template v-else-if="store.reports.length === 0">
-              <div class="empty-state">
-                <svg class="empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
-                </svg>
-                <p>{{ t('memory.noReports') }}</p>
-              </div>
-            </template>
+            <MemorySkeleton v-if="store.loading" :count="4" />
+            <MemoryEmptyState v-else-if="store.error" icon="alert" :text="store.error">
+              <button class="retry-btn" @click="loadReports">{{ t('memory.retry') }}</button>
+            </MemoryEmptyState>
+            <MemoryEmptyState v-else-if="store.reports.length === 0" icon="moon" :text="t('memory.noReports')" />
             <template v-else>
               <div v-for="report in store.reports" :key="report.id"
                 class="dream-card" :class="{ selected: selectedReportId === report.id }"
@@ -101,7 +85,7 @@
           <Transition name="slide-down">
             <div v-if="dreamInputOpen" class="dream-input-area">
               <div class="dream-input-header">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+                <MemoryIcon name="moon" :size="16" />
                 <span>Dream</span>
                 <button class="close-btn" @click="dreamInputOpen = false">&times;</button>
               </div>
@@ -149,14 +133,7 @@
             </div>
           </template>
           <template v-else>
-            <div class="detail-empty">
-              <svg class="detail-empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M12 2a4 4 0 0 1 4 4v2a4 4 0 0 1-8 0V6a4 4 0 0 1 4-4z"/>
-                <path d="M16 14H8a4 4 0 0 0-4 4v2h16v-2a4 4 0 0 0-4-4z"/>
-                <line x1="12" y1="11" x2="12" y2="14"/>
-              </svg>
-              <p>{{ t('memory.desc') }}</p>
-            </div>
+            <MemoryEmptyState icon="memory" :text="t('memory.desc')" large />
           </template>
           </template><!-- /timeline tab -->
         </div>
@@ -176,6 +153,9 @@ import AgentPickerDialog from '@/components/common/AgentPickerDialog.vue'
 import MorningCard from './components/MorningCard.vue'
 import FactList from './components/FactList.vue'
 import MemoryBrowser from './components/MemoryBrowser.vue'
+import MemoryIcon from './components/MemoryIcon.vue'
+import MemorySkeleton from './components/MemorySkeleton.vue'
+import MemoryEmptyState from './components/MemoryEmptyState.vue'
 
 const { t } = useI18n()
 const agentStore = useAgentStore()
@@ -364,15 +344,7 @@ function fmtTime(iso: string) {
 }
 .load-more-btn:hover { border-color: var(--mc-primary); color: var(--mc-primary); }
 
-/* Skeleton */
-.skeleton-card { padding: 14px; margin-bottom: 6px; }
-.skeleton-line { height: 10px; border-radius: 4px; background: var(--mc-bg-sunken); margin-bottom: 8px; }
-.skeleton-line.short { width: 60%; }
-
-.empty-state { display: flex; flex-direction: column; align-items: center; padding: 40px 0; color: var(--mc-text-tertiary); }
-.empty-icon { width: 30px; height: 30px; margin-bottom: 10px; opacity: 0.7; }
-.empty-state p { font-size: 13px; }
-.error-state p { color: var(--mc-text-secondary); }
+/* Timeline retry button (slotted into MemoryEmptyState) */
 .retry-btn {
   margin-top: 8px; padding: 6px 16px; border: 1px solid var(--mc-border); border-radius: 8px;
   background: transparent; font-size: 12px; color: var(--mc-text-secondary); cursor: pointer;
@@ -450,14 +422,6 @@ function fmtTime(iso: string) {
   white-space: pre-wrap; line-height: 1.5; border: 1px solid var(--mc-border-light);
 }
 .detail-section.error .section-body { color: #ff3b30; }
-
-/* Empty detail */
-.detail-empty {
-  display: flex; flex-direction: column; align-items: center; justify-content: center;
-  height: 100%; color: var(--mc-text-tertiary); text-align: center;
-}
-.detail-empty-icon { width: 40px; height: 40px; margin-bottom: 14px; opacity: 0.6; }
-.detail-empty p { font-size: 14px; max-width: 260px; line-height: 1.5; }
 
 /* ========== Transitions ========== */
 .slide-down-enter-active, .slide-down-leave-active { transition: all 0.2s ease; }

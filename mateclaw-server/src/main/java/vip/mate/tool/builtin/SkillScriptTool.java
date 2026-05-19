@@ -2,6 +2,9 @@ package vip.mate.tool.builtin;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonPropertyDescription;
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.tool.annotation.Tool;
@@ -13,6 +16,7 @@ import vip.mate.skill.runtime.model.ResolvedSkill;
 import vip.mate.skill.secret.SkillSecretService;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -30,6 +34,7 @@ public class SkillScriptTool {
     private final SkillFileAccessPolicy accessPolicy;
     private final SkillScriptExecutionService executionService;
     private final SkillSecretService skillSecretService;
+    private final ObjectMapper objectMapper;
 
     @vip.mate.tool.ConcurrencyUnsafe("script execution can have arbitrary side effects on the host process and filesystem")
     @Tool(description = """
@@ -39,10 +44,12 @@ public class SkillScriptTool {
         Parameters:
         - skillName: Name of the skill
         - scriptPath: Relative path to script under scripts/ directory (e.g., "scripts/run.py")
-        - args: Optional list of script arguments. Each element is passed as a separate
-                CLI argument exactly as written — no shell interpretation, no splitting.
-                For a JSON payload, wrap it as a single-element list, e.g.
-                ["{\\"date\\":\\"2026-05-12\\",\\"topic\\":\\"meeting\\"}"].
+        - args: Optional script arguments, given as ONE JSON-encoded string:
+                * a JSON array for multiple positional arguments, e.g. ["--verbose","input.txt"];
+                * a JSON object when the script expects a single JSON payload — it is
+                  forwarded as one argument, e.g. {"date":"2026-05-19","topic":"meeting"};
+                * any other plain text is forwarded verbatim as a single argument.
+                Pass the JSON object directly — do not wrap it in an array or escape it.
 
         Returns: JSON with exitCode, stdout, stderr
 
@@ -59,8 +66,8 @@ public class SkillScriptTool {
         String scriptPath,
 
         @JsonProperty(required = false)
-        @JsonPropertyDescription("Optional list of script arguments. Each element is passed as one CLI arg verbatim. Wrap a JSON payload as a single-element list.")
-        List<String> args
+        @JsonPropertyDescription("Optional script arguments as ONE JSON-encoded string: a JSON array for multiple positional args, a JSON object for a single JSON payload, or plain text for one literal argument.")
+        String args
     ) {
         log.info("Executing skill script: skill={}, script={}, args={}", skillName, scriptPath, args);
 
@@ -81,11 +88,13 @@ public class SkillScriptTool {
             return formatError("Invalid or unsafe script path: " + scriptPath);
         }
 
-        // Pass args straight through. No splitting — arbitrary delimiters
-        // (notably commas inside JSON payloads) used to shatter a single
-        // logical argument into multiple positional args, which broke any
-        // skill expecting a JSON-encoded payload.
-        List<String> argList = (args == null || args.isEmpty()) ? null : args;
+        // Normalize the JSON-encoded args into a positional argument list.
+        // Taking one JSON string (rather than a raw array) keeps the model
+        // out of nested-array-of-escaped-JSON territory — the failure mode
+        // where a JSON payload arrived shattered across array elements or
+        // type-mismatched, and the receiving script then rejected it as
+        // malformed JSON.
+        List<String> argList = normalizeArgs(args);
 
         // RFC-091 settings bridge — pull this skill's stored secrets
         // (e.g. AIRTABLE_API_KEY) and inject them as env vars for the
@@ -104,6 +113,66 @@ public class SkillScriptTool {
             log.error("Failed to execute skill script /{}: {}", skillName, scriptPath, e.getMessage());
             return formatError("Execution failed: " + e.getMessage());
         }
+    }
+
+    /**
+     * Decode the JSON-encoded {@code args} string into a positional argument
+     * list for the subprocess.
+     *
+     * <ul>
+     *   <li>A JSON array becomes one CLI argument per element. Non-string
+     *       elements are re-serialized to compact JSON, so an object the
+     *       model wrapped in a single-element array still reaches the script
+     *       as a JSON payload.</li>
+     *   <li>A JSON object is forwarded as a single argument — its compact
+     *       JSON text — which is what a script reading {@code json.loads(argv[1])}
+     *       expects.</li>
+     *   <li>Anything else (a bare date, topic, number, or malformed JSON) is
+     *       forwarded verbatim as one literal argument. A bare scalar is never
+     *       JSON-decoded: that would mangle e.g. {@code 2026-05-19} into
+     *       {@code 2026}.</li>
+     * </ul>
+     *
+     * <p>Package-private for direct unit testing of the decode rules.
+     *
+     * @param args the raw {@code args} tool parameter, may be {@code null}
+     * @return the positional argument list, or {@code null} when empty
+     */
+    List<String> normalizeArgs(String args) {
+        if (args == null) {
+            return null;
+        }
+        String trimmed = args.trim();
+        if (trimmed.isEmpty()) {
+            return null;
+        }
+        // Only decode when the text clearly intends JSON structure. The
+        // lead-char gate keeps a plain argument that merely looks numeric
+        // (a date, a version string) from being parsed and truncated.
+        char lead = trimmed.charAt(0);
+        if (lead == '[' || lead == '{') {
+            try {
+                JsonNode node = objectMapper.reader()
+                        .with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
+                        .readTree(trimmed);
+                if (node != null && node.isArray()) {
+                    List<String> out = new ArrayList<>(node.size());
+                    for (JsonNode el : node) {
+                        out.add(el.isTextual() ? el.asText() : el.toString());
+                    }
+                    return out.isEmpty() ? null : out;
+                }
+                if (node != null && node.isObject()) {
+                    return List.of(node.toString());
+                }
+            } catch (Exception e) {
+                // Looked like JSON but didn't parse — forward it unchanged so
+                // the script reports its own input error rather than us
+                // silently reshaping a malformed payload.
+                log.debug("runSkillScript: args not valid JSON, forwarding verbatim: {}", e.getMessage());
+            }
+        }
+        return List.of(trimmed);
     }
 
     private String formatResult(SkillScriptExecutionService.ScriptResult result) {

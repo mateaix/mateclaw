@@ -47,6 +47,23 @@ public class WorkflowEntity {
     @TableField(value = "latest_revision_id", updateStrategy = FieldStrategy.ALWAYS)
     private Long latestRevisionId;
 
+    /**
+     * Latest published revision's graph JSON. Not a persisted column — it is
+     * populated on the editor-facing read so a published workflow (whose inline
+     * draft is cleared at publish time) still has a graph for the editor to
+     * render instead of an empty canvas.
+     */
+    @TableField(exist = false)
+    private String publishedGraphJson;
+
+    /**
+     * Human-facing version number of the latest published revision (1, 2, 3…).
+     * Not a persisted column — populated on read so the UI shows "v3" instead
+     * of leaking the latestRevisionId snowflake. Null when never published.
+     */
+    @TableField(exist = false)
+    private Integer latestRevisionNumber;
+
     private Long createdBy;
 
     @TableField(fill = FieldFill.INSERT)

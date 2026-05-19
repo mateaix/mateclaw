@@ -168,6 +168,12 @@ const sections = computed(() => [
     icon: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>',
   },
   {
+    id: 'skill-curator',
+    path: '/settings/skill-curator',
+    label: t('settings.sections.skillCurator', 'Skill Curator'),
+    icon: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 8v13H3V8"/><rect x="1" y="3" width="22" height="5" rx="1"/><line x1="10" y1="12" x2="14" y2="12"/></svg>',
+  },
+  {
     id: 'datasources',
     path: '/settings/datasources',
     label: t('nav.datasources'),

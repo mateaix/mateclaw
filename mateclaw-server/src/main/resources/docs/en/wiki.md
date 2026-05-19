@@ -37,7 +37,7 @@ MateClaw's LLM Wiki **is the same idea, raised into a product**:
 
 A knowledge base is three layers stacked on top of each other:
 
-1. **Raw material** — the files you dropped in. PDF, DOCX, plain text, markdown, or a whole local directory scanned in one go. The system keeps them intact; any claim in the Wiki traces back to the passage that produced it.
+1. **Raw material** — the files you dropped in. PDF, Word, Excel, PowerPoint, HTML, markdown, plain text (incl. CSV), or a whole local directory scanned in one go. The system keeps them intact; any claim in the Wiki traces back to the passage that produced it.
 2. **Wiki pages** — structured articles the AI writes from the raw material. Each page has a title, a summary, a body, bidirectional links to related pages (`[[like this]]`, plus the alias form `[[target|display text]]`), and provenance pointers back into the raw layer.
 3. **Agent surface** — when an agent calls a wiki tool, the system auto-injects the summaries of relevant pages into the prompt. Bodies are fetched on demand. Agents don't read raw files. They read the library.
 
@@ -51,7 +51,7 @@ This matters because the agent's context window stops getting wasted on re-readi
 
 Once it exists, add material:
 
-- **Upload files** — drag PDFs, DOCX, markdown, or plain text into the upload area. Each file becomes a raw material row.
+- **Upload files** — drag PDF, Word, Excel, PowerPoint, HTML, markdown, or plain-text (incl. CSV) files into the upload area. Each file becomes a raw material row.
 - **Scan a local directory** — desktop only. Point at a folder and MateClaw walks it recursively, respecting `.gitignore`, importing everything that looks like text.
 - **Paste text** — for short excerpts or conversation transcripts.
 

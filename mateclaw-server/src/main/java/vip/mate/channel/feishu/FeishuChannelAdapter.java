@@ -52,6 +52,8 @@ import java.util.concurrent.TimeUnit;
  * - enable_quoted_context: 是否拉取被引用消息内容注入到 prompt（默认 true）
  * - silent_disconnect_threshold_seconds: WebSocket 静默断连阈值（默认 1800，0 禁用）
  * - stale_event_threshold_seconds: 过滤旧事件阈值（默认 30，0 禁用）
+ * - card_format: 卡片格式化模式 "auto"（默认）| "always" | "never"
+ *               auto: 根据内容自动检测；always: 全部包卡片；never: 全部纯文本（降级/调试用）
  *
  * @author MateClaw Team
  */
@@ -1244,13 +1246,22 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter {
         }
 
         ensureTokenValid();
-        List<String> chunks = splitTextForFeishu(content, MAX_TEXT_MESSAGE_CHARS);
-        if (chunks.size() > 1) {
-            log.info("[feishu] Splitting message into {} chunks ({} chars total) before send",
-                    chunks.size(), content.length());
+
+        String cardFormat = getConfigString("card_format", "auto");
+
+        if ("never".equals(cardFormat)) {
+            splitTextForFeishu(content, MAX_TEXT_MESSAGE_CHARS)
+                    .forEach(c -> sendOneTextChunk(targetId, c));
+            return;
         }
-        for (String chunk : chunks) {
-            sendOneTextChunk(targetId, chunk);
+
+        FeishuCardFormatter.ContentFormat fmt = FeishuCardFormatter.detect(content);
+
+        if ("always".equals(cardFormat) || fmt != FeishuCardFormatter.ContentFormat.PLAIN_TEXT) {
+            sendCard(targetId, FeishuCardFormatter.render(content, fmt));
+        } else {
+            splitTextForFeishu(content, MAX_TEXT_MESSAGE_CHARS)
+                    .forEach(c -> sendOneTextChunk(targetId, c));
         }
     }
 
@@ -1279,6 +1290,66 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter {
 
         } catch (Exception e) {
             log.error("[feishu] Failed to send message: {}", e.getMessage(), e);
+        }
+    }
+
+    public void sendCard(String targetId, Map<String, Object> cardJson) {
+        if (httpClient == null) {
+            log.warn("[feishu] Channel not started, cannot send card");
+            return;
+        }
+        ensureTokenValid();
+        String apiBase = getApiBaseUrl();
+        String receiveIdType = targetId.startsWith("ou_") ? "open_id" : "chat_id";
+        try {
+            String jsonBody = objectMapper.writeValueAsString(Map.of(
+                    "receive_id", targetId,
+                    "msg_type", "interactive",
+                    "content", objectMapper.writeValueAsString(cardJson)
+            ));
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(apiBase + "/open-apis/im/v1/messages?receive_id_type=" + receiveIdType))
+                    .header("Content-Type", "application/json; charset=utf-8")
+                    .header("Authorization", "Bearer " + tenantAccessToken)
+                    .POST(HttpRequest.BodyPublishers.ofString(jsonBody))
+                    .build();
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() != 200) {
+                log.warn("[feishu] Send card failed: status={}, body={}", response.statusCode(), response.body());
+            } else {
+                log.debug("[feishu] Card sent to {} (type={})", targetId, receiveIdType);
+            }
+        } catch (Exception e) {
+            log.error("[feishu] Failed to send card: {}", e.getMessage(), e);
+        }
+    }
+
+    public void updateCard(String messageId, Map<String, Object> cardJson) {
+        if (httpClient == null) {
+            log.warn("[feishu] Channel not started, cannot update card");
+            return;
+        }
+        ensureTokenValid();
+        String apiBase = getApiBaseUrl();
+        try {
+            String jsonBody = objectMapper.writeValueAsString(Map.of(
+                    "msg_type", "interactive",
+                    "content", objectMapper.writeValueAsString(cardJson)
+            ));
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(apiBase + "/open-apis/im/v1/messages/" + messageId))
+                    .header("Content-Type", "application/json; charset=utf-8")
+                    .header("Authorization", "Bearer " + tenantAccessToken)
+                    .method("PATCH", HttpRequest.BodyPublishers.ofString(jsonBody))
+                    .build();
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() != 200) {
+                log.warn("[feishu] Update card failed: status={}, body={}", response.statusCode(), response.body());
+            } else {
+                log.debug("[feishu] Card updated: messageId={}", messageId);
+            }
+        } catch (Exception e) {
+            log.error("[feishu] Failed to update card: {}", e.getMessage(), e);
         }
     }
 

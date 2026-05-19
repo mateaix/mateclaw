@@ -179,19 +179,26 @@ class NodeStreamingChatHelperPoolTest {
     }
 
     @Test
-    @DisplayName("Primary MODEL_NOT_FOUND HARD-removes with MODEL_NOT_FOUND source")
-    void primaryModelNotFoundEvictsWithCorrectSource() {
+    @DisplayName("Primary MODEL_NOT_FOUND keeps the provider in the pool (model-scoped, not provider-wide)")
+    void primaryModelNotFoundKeepsProviderInPool() {
         pool.add("openai");
         pool.add("dashscope");
 
+        // One model id is rejected — the provider's other models are still fine,
+        // so the provider must stay usable for them.
         ChatModel primary = errorModel(new RuntimeException("404 model_not_found: gpt-99"));
         ChatModel fallback = successModel("ok");
         var helper = helper(List.of(new FallbackEntry("dashscope", fallback)), "openai");
 
-        helper.streamCall(primary, smallPrompt(), "conv-h3c", "reasoning");
+        var result = helper.streamCall(primary, smallPrompt(), "conv-h3c", "reasoning");
 
-        assertFalse(pool.contains("openai"));
-        assertEquals(RemovalSource.MODEL_NOT_FOUND, pool.snapshot().get("openai").source());
+        assertEquals("ok", result.text(), "request still succeeds via the fallback chain");
+        assertTrue(pool.contains("openai"),
+                "MODEL_NOT_FOUND rejects one model id — the provider's sibling models stay usable");
+        assertNull(pool.snapshot().get("openai"),
+                "a model-scoped error must not record a provider removal reason");
+        assertNull(healthTracker.snapshot().get("openai"),
+                "MODEL_NOT_FOUND must not nudge the provider toward cooldown");
     }
 
     // ============================================================

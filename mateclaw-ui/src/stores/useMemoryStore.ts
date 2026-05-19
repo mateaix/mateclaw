@@ -1,4 +1,4 @@
-import { defineStore } from 'pinia'
+import { acceptHMRUpdate, defineStore } from 'pinia'
 import { ref } from 'vue'
 import { http } from '@/api'
 
@@ -85,3 +85,9 @@ export const useMemoryStore = defineStore('memory', () => {
     subscribeEvents, unsubscribeEvents,
   }
 })
+
+// Enable HMR for this store: editing it during `pnpm dev` patches the live
+// store instead of requiring a full page reload. Stripped from prod builds.
+if (import.meta.hot) {
+  import.meta.hot.accept(acceptHMRUpdate(useMemoryStore, import.meta.hot))
+}

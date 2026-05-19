@@ -20,7 +20,7 @@ import java.util.zip.ZipInputStream;
 
 /**
  * Document text extraction tool.
- * Supports PDF, DOCX, XLSX, PPTX with format-specific fallback chains.
+ * Supports PDF, DOCX, XLSX, PPTX, HTML with format-specific fallback chains.
  *
  * Strategy by format:
  * - PDF:       pdftotext -> pdfplumber/pypdf -> pdfbox -> OCR (scanned) -> Tika
@@ -28,6 +28,8 @@ import java.util.zip.ZipInputStream;
  * - XLSX/PPTX: Tika directly (POI-based; correctly resolves the shared-strings
  *              indirection table and walks SmartArt / chart / grouped-shape
  *              text that a naive ZIP+XML scan misses).
+ * - HTML:      jsoup parse -> drop script/style/nav/footer noise -> keep
+ *              heading hierarchy as Markdown ATX lines.
  */
 @Slf4j
 @Component
@@ -46,11 +48,13 @@ public class DocumentExtractTool {
         - Word (.docx, .doc)
         - Excel (.xlsx, .xls) - 提取为文本表格
         - PowerPoint (.pptx, .ppt)
+        - HTML (.html, .htm) - jsoup 清洗后提取正文
 
         提取策略（按格式分链）：
         - PDF:       pdftotext → pdfplumber/pypdf → pdfbox → OCR（扫描版） → Tika
         - DOCX:      textutil / pandoc / libreoffice → ZIP-XML → Tika
         - XLSX/PPTX: 直接走 Tika（基于 POI，正确解析 sharedStrings 表与 SmartArt / 图表文本）
+        - HTML:      jsoup 解析 → 去除 script/style/nav/footer 等噪音 → 保留标题层级
         - 返回详细的提取过程和元数据
 
         参数 options 可包含：
@@ -134,6 +138,8 @@ public class DocumentExtractTool {
                 content = extractXlsx(path, options, attempts);
             } else if (mimeType.contains("presentationml") || mimeType.contains("powerpoint")) {
                 content = extractPptx(path, options, attempts);
+            } else if (mimeType.contains("html")) {
+                content = extractHtml(path, attempts);
             } else {
                 return errorResult(filePath, "不支持的文档类型: " + mimeType, attempts);
             }
@@ -869,6 +875,53 @@ public class DocumentExtractTool {
         return count;
     }
 
+    // ==================== HTML 提取 ====================
+
+    /**
+     * Extract readable text from an HTML file with jsoup.
+     * <p>
+     * Drops structural noise (script / style / nav / header / footer / aside /
+     * form / iframe), then walks the surviving elements emitting headings as
+     * Markdown ATX lines ({@code # }, {@code ## } …) so the wiki preprocessor
+     * can still detect the document's heading hierarchy. The charset is
+     * auto-detected from the BOM / {@code <meta charset>} declaration.
+     */
+    private ExtractedContent extractHtml(Path path, List<String> attempts) throws Exception {
+        long t = System.currentTimeMillis();
+        org.jsoup.nodes.Document doc;
+        try {
+            // charsetName = null lets jsoup sniff the encoding from BOM / meta tag.
+            doc = org.jsoup.Jsoup.parse(path.toFile(), null);
+        } catch (IOException e) {
+            attempts.add("jsoup: 读取失败 - " + e.getMessage());
+            throw new Exception("HTML 文件读取失败: " + e.getMessage());
+        }
+
+        doc.select("script, style, noscript, nav, header, footer, aside, form, iframe").remove();
+
+        StringBuilder sb = new StringBuilder();
+        org.jsoup.nodes.Element root = doc.body() != null ? doc.body() : doc;
+        for (org.jsoup.nodes.Element el : root.getAllElements()) {
+            String text = el.ownText();
+            if (text.isBlank()) continue;
+            String tag = el.tagName();
+            if (tag.length() == 2 && tag.charAt(0) == 'h' && tag.charAt(1) >= '1' && tag.charAt(1) <= '6') {
+                int level = tag.charAt(1) - '0';
+                sb.append('\n').append("#".repeat(level)).append(' ').append(text.trim()).append('\n');
+            } else {
+                sb.append(text.trim()).append('\n');
+            }
+        }
+
+        String out = sb.toString().strip();
+        if (out.isBlank()) {
+            attempts.add("jsoup: 解析成功但无可读文本 (" + (System.currentTimeMillis() - t) + "ms)");
+            throw new Exception("HTML 提取无文本（页面可能仅含脚本 / 样式）");
+        }
+        attempts.add("jsoup: 成功 (" + (System.currentTimeMillis() - t) + "ms)");
+        return new ExtractedContent(out, "jsoup", 0);
+    }
+
     // ==================== 工具方法 ====================
 
     /**
@@ -938,6 +991,7 @@ public class DocumentExtractTool {
         if (fileName.endsWith(".xls")) return "application/vnd.ms-excel";
         if (fileName.endsWith(".pptx")) return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
         if (fileName.endsWith(".ppt")) return "application/vnd.ms-powerpoint";
+        if (fileName.endsWith(".html") || fileName.endsWith(".htm")) return "text/html";
         return "application/octet-stream";
     }
 
