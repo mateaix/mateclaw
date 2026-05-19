@@ -72,7 +72,7 @@ public class WikiController {
                                              @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
         verifyKBWorkspace(id, workspaceId);
         WikiKnowledgeBaseEntity kb = kbService.getById(id);
-        if (kb == null) return R.fail("Knowledge base not found");
+        if (kb == null) return R.fail(404, "Knowledge base not found");
         return R.ok(withLivePageCount(kb));
     }
 
@@ -165,7 +165,7 @@ public class WikiController {
                                              @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
         verifyKBWorkspace(id, workspaceId);
         WikiKnowledgeBaseEntity kb = kbService.getById(id);
-        if (kb == null) return R.fail("Knowledge base not found");
+        if (kb == null) return R.fail(404, "Knowledge base not found");
         return R.ok(Map.of("content", kb.getConfigContent() != null ? kb.getConfigContent() : ""));
     }
 
@@ -303,7 +303,7 @@ public class WikiController {
         verifyKBWorkspace(kbId, workspaceId);
         WikiRawMaterialEntity raw = rawService.getById(rawId);
         if (raw == null || !kbId.equals(raw.getKbId())) {
-            return R.fail("Raw material not found in this knowledge base");
+            return R.fail(404, "Raw material not found in this knowledge base");
         }
         rawService.delete(rawId);
         kbService.decrementRawCount(kbId);
@@ -319,7 +319,7 @@ public class WikiController {
         verifyKBWorkspace(kbId, workspaceId);
         WikiRawMaterialEntity raw = rawService.getById(rawId);
         if (raw == null || !kbId.equals(raw.getKbId())) {
-            return R.fail("Raw material not found in this knowledge base");
+            return R.fail(404, "Raw material not found in this knowledge base");
         }
         // Force reprocessing by clearing the hash used to skip unchanged inputs.
         if (force) {
@@ -337,7 +337,7 @@ public class WikiController {
         verifyKBWorkspace(kbId, workspaceId);
         WikiRawMaterialEntity raw = rawService.getById(rawId);
         if (raw == null || !kbId.equals(raw.getKbId())) {
-            return R.fail("Raw material not found in this knowledge base");
+            return R.fail(404, "Raw material not found in this knowledge base");
         }
         // requestCancel is idempotent: a no-op when the row is not processing,
         // so repeated clicks (or a click after the run already finished) are
@@ -440,7 +440,7 @@ public class WikiController {
                                       @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
         verifyKBWorkspace(kbId, workspaceId);
         WikiPageEntity page = pageService.getBySlug(kbId, slug);
-        if (page == null) return R.fail("Page not found");
+        if (page == null) return R.fail(404, "Page not found");
         return R.ok(page);
     }
 
@@ -540,7 +540,7 @@ public class WikiController {
                                                        @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
         verifyKBWorkspace(kbId, workspaceId);
         WikiKnowledgeBaseEntity kb = kbService.getById(kbId);
-        if (kb == null) return R.fail("Knowledge base not found");
+        if (kb == null) return R.fail(404, "Knowledge base not found");
 
         List<WikiRawMaterialEntity> rawList = rawService.listByKbId(kbId);
         long pending = rawList.stream().filter(r -> "pending".equals(r.getProcessingStatus())).count();
@@ -618,11 +618,11 @@ public class WikiController {
     private void verifyKBWorkspace(Long kbId, Long headerWorkspaceId) {
         WikiKnowledgeBaseEntity kb = kbService.getById(kbId);
         if (kb == null) {
-            throw new MateClawException("Knowledge base not found");
+            throw new MateClawException(404, "Knowledge base not found");
         }
         long wsId = headerWorkspaceId != null ? headerWorkspaceId : 1L;
         if (kb.getWorkspaceId() != null && !kb.getWorkspaceId().equals(wsId)) {
-            throw new MateClawException("err.common.wrong_workspace", "资源不属于当前工作区");
+            throw new MateClawException("err.common.wrong_workspace", 403, "资源不属于当前工作区");
         }
     }
 }

@@ -39,6 +39,7 @@ public class WorkspaceFileController {
      * 列出 Agent 的所有工作区文件（不含内容）
      */
     @Operation(summary = "列出工作区文件")
+    @RequireWorkspaceRole("viewer")
     @GetMapping("/files")
     public R<List<WorkspaceFileEntity>> listFiles(@PathVariable Long agentId) {
         return R.ok(workspaceFileService.listFiles(agentId));
@@ -48,6 +49,7 @@ public class WorkspaceFileController {
      * 读取单个文件内容（支持子目录，如 memory/2026-04-03.md）
      */
     @Operation(summary = "读取工作区文件")
+    @RequireWorkspaceRole("viewer")
     @GetMapping("/files/**")
     public R<WorkspaceFileEntity> getFile(@PathVariable Long agentId, HttpServletRequest request) {
         String filename = extractFilename(request);
@@ -62,6 +64,7 @@ public class WorkspaceFileController {
      * 创建或更新文件（支持子目录）
      */
     @Operation(summary = "保存工作区文件")
+    @RequireWorkspaceRole("member")
     @PutMapping("/files/**")
     public R<WorkspaceFileEntity> saveFile(@PathVariable Long agentId,
                                            HttpServletRequest httpRequest,
@@ -74,6 +77,7 @@ public class WorkspaceFileController {
      * 删除文件（支持子目录）
      */
     @Operation(summary = "删除工作区文件")
+    @RequireWorkspaceRole("member")
     @DeleteMapping("/files/**")
     public R<Void> deleteFile(@PathVariable Long agentId, HttpServletRequest request) {
         String filename = extractFilename(request);
@@ -94,6 +98,7 @@ public class WorkspaceFileController {
      * 获取启用的系统提示文件列表（有序）
      */
     @Operation(summary = "获取系统提示文件列表")
+    @RequireWorkspaceRole("viewer")
     @GetMapping("/prompt-files")
     public R<List<String>> getPromptFiles(@PathVariable Long agentId) {
         return R.ok(workspaceFileService.getPromptFiles(agentId));
@@ -103,6 +108,7 @@ public class WorkspaceFileController {
      * 设置启用的系统提示文件列表（有序）
      */
     @Operation(summary = "设置系统提示文件列表")
+    @RequireWorkspaceRole("member")
     @PutMapping("/prompt-files")
     public R<Void> setPromptFiles(@PathVariable Long agentId,
                                    @RequestBody PromptFilesRequest request) {

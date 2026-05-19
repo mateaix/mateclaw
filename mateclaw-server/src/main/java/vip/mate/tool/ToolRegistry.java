@@ -152,9 +152,12 @@ public class ToolRegistry {
             for (ToolCallback cb : cbs) {
                 String toolName = cb.getToolDefinition().name();
                 String descKey = "tool." + toolName + ".desc";
-                String localizedDesc = i18nService.msg(descKey);
-                // 如果 key 被解析（不等于 key 本身），使用本地化描述
-                if (!localizedDesc.equals(descKey)) {
+                // The i18n description is an optional override: tools without a
+                // bundle entry (e.g. wiki tools) keep the description declared on
+                // their @Tool annotation. Use msgOptional so an absent key is not
+                // logged as a "missing key" — that is expected, not a fault.
+                String localizedDesc = i18nService.msgOptional(descKey);
+                if (localizedDesc != null) {
                     localizedCallbacks.add(new LocaleAwareToolCallback(cb, localizedDesc));
                 } else {
                     localizedCallbacks.add(cb);

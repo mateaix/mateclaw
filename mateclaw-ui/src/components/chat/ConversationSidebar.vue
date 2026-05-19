@@ -397,7 +397,7 @@ function hasUnread(conv: Conversation): boolean {
   if (!Number.isFinite(lastActive)) return false
   let viewed = 0
   try {
-    viewed = Number(localStorage.getItem(VIEWED_KEY_PREFIX + conv.conversationId) || '0')
+    viewed = Number(localStorage.getItem(VIEWED_KEY_PREFIX + conv.conversationId) || '0') // snowflake-precision-ok: stored value is a last-viewed epoch-ms timestamp, not an id
   } catch {
     // Treat as never-viewed when storage is unavailable.
   }

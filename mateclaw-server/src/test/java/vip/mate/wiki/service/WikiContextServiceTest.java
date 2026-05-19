@@ -48,7 +48,7 @@ class WikiContextServiceTest {
 
         WikiKnowledgeBaseEntity kb = new WikiKnowledgeBaseEntity();
         kb.setId(42L);
-        when(kbService.listByAgentId(any())).thenReturn(List.of(kb));
+        when(kbService.resolvePrimaryKb(any())).thenReturn(kb);
 
         service = new WikiContextService(kbService, pageService, hybridRetriever, properties);
     }

@@ -139,7 +139,7 @@ public class AgentBindingController {
         }
         long requestedWs = headerWorkspaceId != null ? headerWorkspaceId : 1L;
         if (agent.getWorkspaceId() != null && !agent.getWorkspaceId().equals(requestedWs)) {
-            throw new MateClawException("err.common.wrong_workspace", "资源不属于当前工作区");
+            throw new MateClawException("err.common.wrong_workspace", 403, "资源不属于当前工作区");
         }
     }
 }

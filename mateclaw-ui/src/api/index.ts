@@ -87,7 +87,7 @@ export const authApi = {
     http.post('/auth/login', data),
   listUsers: () => http.get('/auth/users'),
   createUser: (data: any) => http.post('/auth/users', data),
-  changePassword: (id: number, oldPassword: string, newPassword: string) =>
+  changePassword: (id: string | number, oldPassword: string, newPassword: string) =>
     http.put(`/auth/users/${id}/password`, null, { params: { oldPassword, newPassword } }),
 }
 
@@ -953,7 +953,7 @@ export const hotCacheApi = {
 
 export interface WorkflowSummary {
   id: number
-  workspaceId: number
+  workspaceId: string | number
   name: string
   description?: string
   enabled: boolean
@@ -985,7 +985,7 @@ export interface WorkflowRun {
   id: number
   workflowId: number
   revisionId: number
-  workspaceId: number
+  workspaceId: string | number
   state: string
   triggeredBy?: string
   initialInputRef?: string
@@ -1048,7 +1048,7 @@ export interface ResumeResponse {
 }
 
 export const workflowApi = {
-  list: (workspaceId: number) =>
+  list: (workspaceId: string | number) =>
     http.get<WorkflowSummary[]>('/workflows', { params: { workspaceId } }),
   get: (id: number) => http.get<WorkflowSummary>(`/workflows/${id}`),
   create: (data: Partial<WorkflowSummary>) =>
@@ -1119,7 +1119,7 @@ export interface WorkflowDraftTemplate {
 
 export interface TriggerSummary {
   id: number
-  workspaceId: number
+  workspaceId: string | number
   name?: string
   patternType: string
   patternJson: string
@@ -1149,7 +1149,7 @@ export interface TriggerSummary {
 }
 
 export const triggerApi = {
-  list: (workspaceId: number) =>
+  list: (workspaceId: string | number) =>
     http.get<TriggerSummary[]>('/triggers', { params: { workspaceId } }),
   get: (id: number) => http.get<TriggerSummary>(`/triggers/${id}`),
   create: (data: Partial<TriggerSummary>) =>
@@ -1158,7 +1158,7 @@ export const triggerApi = {
     http.put<TriggerSummary>(`/triggers/${id}`, data),
   delete: (id: number) => http.delete(`/triggers/${id}`),
   ingestEvent: (envelope: {
-    workspaceId: number
+    workspaceId: string | number
     patternType: string
     eventId?: string
     senderId?: string

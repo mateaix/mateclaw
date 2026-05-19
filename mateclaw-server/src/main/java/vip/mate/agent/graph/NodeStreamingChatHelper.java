@@ -588,10 +588,22 @@ public class NodeStreamingChatHelper {
                     logPerfSummary(phase, conversationId, callStartMs, llmCallCount, retryCount, failoverCount);
                     return lastResult;
                 }
-                // Any other non-null errored result with a classified type that doStreamCall
-                // chose NOT to retry (i.e. UNKNOWN, or RATE_LIMIT/SERVER_ERROR past MAX_RETRIES)
-                // must exit — otherwise we silently spin through attempts and waste seconds
-                // per turn on unrecoverable errors like DashScope's "url error" / unknown model.
+                // RATE_LIMIT / SERVER_ERROR past their retry budget are provider-level
+                // failures: the same model will not recover within this turn, but a
+                // different provider can. Break to the fallback chain instead of
+                // returning — recordPrimary(false) runs once at the post-loop provider
+                // health check below, and if every fallback also fails the chain
+                // walker re-surfaces this same error to the caller.
+                if (lastResult.errorType() == ErrorType.RATE_LIMIT
+                        || lastResult.errorType() == ErrorType.SERVER_ERROR) {
+                    log.warn("[{}] Primary exhausted retries (type={}) — handing off to fallback chain",
+                            phase, lastResult.errorType());
+                    break;
+                }
+                // Any other non-null errored result (e.g. UNKNOWN) that doStreamCall
+                // chose NOT to retry must exit — otherwise we silently spin through
+                // attempts and waste seconds per turn on unrecoverable errors like
+                // DashScope's "url error" / unknown model.
                 recordPrimary(false);
                 logPerfSummary(phase, conversationId, callStartMs, llmCallCount, retryCount, failoverCount);
                 return lastResult;

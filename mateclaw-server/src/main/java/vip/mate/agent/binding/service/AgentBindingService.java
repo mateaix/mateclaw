@@ -389,8 +389,8 @@ public class AgentBindingService implements AgentBindingResolver {
     }
 
     /**
-     * RFC-090 §14.2 — single entry point that maps an agent's bindings to
-     * the set of tool names allowed at runtime.
+     * Single entry point that maps an agent's bindings to the set of tool
+     * names allowed at runtime.
      *
      * <p>Three-state semantics (mirrors {@link #getBoundSkillIds} /
      * {@link #getBoundToolNames}):
@@ -514,8 +514,8 @@ public class AgentBindingService implements AgentBindingResolver {
     }
 
     /**
-     * RFC-090 §11 — tools that exist outside the skill scope and must
-     * survive any agent-level skill binding restriction.
+     * Tools that exist outside the skill scope and must survive any
+     * agent-level skill binding restriction.
      *
      * <p>Add new entries here only after verifying the tool is genuinely
      * agent-wide, not skill-specific. Tools added here bypass the
@@ -757,7 +757,7 @@ public class AgentBindingService implements AgentBindingResolver {
         }
     }
 
-    // ==================== Provider Preferences (RFC-009 PR-3) ====================
+    // ==================== Provider Preferences ====================
 
     /** Raw rows for the agent edit form. Sorted by sort_order ascending. */
     public List<AgentProviderPreference> listProviderPreferences(Long agentId) {

@@ -263,14 +263,14 @@ public class WikiTransformationController {
         }
         long wsId = workspaceId != null ? workspaceId : 1L;
         if (kb.getWorkspaceId() != null && !kb.getWorkspaceId().equals(wsId)) {
-            throw new MateClawException("err.common.wrong_workspace", "Resource does not belong to current workspace");
+            throw new MateClawException("err.common.wrong_workspace", 403, "Resource does not belong to current workspace");
         }
     }
 
     private void verifyTemplateWorkspace(WikiTransformationEntity t, Long workspaceId) {
         long wsId = workspaceId != null ? workspaceId : 1L;
         if (t.getWorkspaceId() != null && !t.getWorkspaceId().equals(wsId)) {
-            throw new MateClawException("err.common.wrong_workspace", "Resource does not belong to current workspace");
+            throw new MateClawException("err.common.wrong_workspace", 403, "Resource does not belong to current workspace");
         }
     }
 }

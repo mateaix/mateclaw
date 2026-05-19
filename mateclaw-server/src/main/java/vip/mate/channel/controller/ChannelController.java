@@ -236,7 +236,7 @@ public class ChannelController {
     private void verifyResourceWorkspace(Long resourceWorkspaceId, Long headerWorkspaceId) {
         long requestedWs = headerWorkspaceId != null ? headerWorkspaceId : 1L;
         if (resourceWorkspaceId != null && !resourceWorkspaceId.equals(requestedWs)) {
-            throw new MateClawException("err.common.wrong_workspace", "资源不属于当前工作区");
+            throw new MateClawException("err.common.wrong_workspace", 403, "资源不属于当前工作区");
         }
     }
 }

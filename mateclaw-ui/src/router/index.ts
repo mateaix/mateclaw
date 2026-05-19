@@ -177,10 +177,12 @@ const router = createRouter({
               meta: { title: 'Settings - Agent Context', requiredCapability: 'manage:agents' },
             },
             {
-              path: 'cron-jobs',
-              name: 'SettingsCronJobs',
-              component: () => import('@/views/CronJobs.vue'),
-              meta: { title: 'Settings - Cron Jobs', requiredCapability: 'manage:agents' },
+              // Unified scheduler — scheduled jobs, event triggers and run
+              // history under one tabbed page (?tab= selects the tab).
+              path: 'scheduler',
+              name: 'SettingsScheduler',
+              component: () => import('@/views/Scheduler/index.vue'),
+              meta: { title: 'Settings - Scheduler', requiredCapability: 'manage:agents' },
             },
             {
               path: 'skill-curator',
@@ -193,12 +195,6 @@ const router = createRouter({
               name: 'SettingsWorkflows',
               component: () => import('@/views/Workflows.vue'),
               meta: { title: 'Settings - Workflows', requiredCapability: 'manage:settings' },
-            },
-            {
-              path: 'triggers',
-              name: 'SettingsTriggers',
-              component: () => import('@/views/Triggers.vue'),
-              meta: { title: 'Settings - Triggers', requiredCapability: 'manage:settings' },
             },
             {
               path: 'datasources',
@@ -286,7 +282,10 @@ const router = createRouter({
         // RFC-090 Phase 4: Activity 提升到顶层
         { path: 'security/activity', redirect: '/activity' },
         { path: 'settings/activity', redirect: '/activity' },
-        { path: 'cron-jobs', redirect: '/settings/cron-jobs' },
+        // Scheduler absorbs the former Cron Jobs + Triggers pages.
+        { path: 'cron-jobs', redirect: '/settings/scheduler' },
+        { path: 'settings/cron-jobs', redirect: '/settings/scheduler' },
+        { path: 'settings/triggers', redirect: { path: '/settings/scheduler', query: { tab: 'triggers' } } },
         { path: 'datasources', redirect: '/settings/datasources' },
         { path: 'mcp-servers', redirect: '/settings/mcp-servers' },
         { path: 'token-usage', redirect: '/settings/token-usage' },
