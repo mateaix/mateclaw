@@ -159,9 +159,20 @@ class FeishuCardFormatterTest {
 
         var body = (java.util.Map<String, Object>) card.get("body");
         var elems = (java.util.List<java.util.Map<String, Object>>) body.get("elements");
-        assertEquals("table", elems.get(0).get("tag"));
-        assertNotNull(elems.get(0).get("columns"));
-        assertNotNull(elems.get(0).get("rows"));
+        var table = elems.get(0);
+        assertEquals("table", table.get("tag"));
+
+        var columns = (java.util.List<java.util.Map<String, Object>>) table.get("columns");
+        assertEquals(2, columns.size());
+        assertEquals("a", columns.get(0).get("name"));
+        assertEquals("b", columns.get(1).get("name"));
+
+        var rows = (java.util.List<java.util.Map<String, Object>>) table.get("rows");
+        assertEquals(2, rows.size());
+        assertEquals("1", rows.get(0).get("a"));
+        assertEquals("2", rows.get(0).get("b"));
+        assertEquals("3", rows.get(1).get("a"));
+        assertEquals("4", rows.get(1).get("b"));
     }
 
     @Test
@@ -173,7 +184,14 @@ class FeishuCardFormatterTest {
 
         var body = (java.util.Map<String, Object>) card.get("body");
         var elems = (java.util.List<java.util.Map<String, Object>>) body.get("elements");
-        assertEquals("div", elems.get(0).get("tag"));
+        var div = elems.get(0);
+        assertEquals("div", div.get("tag"));
+
+        var text = (java.util.Map<String, Object>) div.get("text");
+        assertEquals("lark_md", text.get("tag"));
+        String content = (String) text.get("content");
+        assertTrue(content.contains("**a**:"), "content should contain **a**: field");
+        assertTrue(content.contains("**b**:"), "content should contain **b**: field");
     }
 
     @Test

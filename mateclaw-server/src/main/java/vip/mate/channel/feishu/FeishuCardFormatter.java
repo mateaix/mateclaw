@@ -3,6 +3,10 @@ package vip.mate.channel.feishu;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.regex.Pattern;
 
 final class FeishuCardFormatter {
@@ -50,7 +54,7 @@ final class FeishuCardFormatter {
 
     // ==================== 渲染层 ====================
 
-    static java.util.Map<String, Object> render(String content, ContentFormat format) {
+    static Map<String, Object> render(String content, ContentFormat format) {
         return switch (format) {
             case JSON      -> renderJson(content);
             case MARKDOWN  -> renderMarkdown(content);
@@ -58,27 +62,27 @@ final class FeishuCardFormatter {
         };
     }
 
-    private static java.util.Map<String, Object> renderMarkdown(String content) {
+    private static Map<String, Object> renderMarkdown(String content) {
         return cardOf(
-            java.util.Map.of("title", java.util.Map.of("tag", "plain_text", "content", "AI 助手")),
-            java.util.List.of(java.util.Map.of(
+            Map.of("title", Map.of("tag", "plain_text", "content", "AI 助手")),
+            List.of(Map.of(
                 "tag", "div",
-                "text", java.util.Map.of("tag", "lark_md", "content", content)
+                "text", Map.of("tag", "lark_md", "content", content)
             ))
         );
     }
 
-    private static java.util.Map<String, Object> renderLongText(String content) {
+    private static Map<String, Object> renderLongText(String content) {
         return cardOf(
             null,
-            java.util.List.of(java.util.Map.of(
+            List.of(Map.of(
                 "tag", "div",
-                "text", java.util.Map.of("tag", "plain_text", "content", content)
+                "text", Map.of("tag", "plain_text", "content", content)
             ))
         );
     }
 
-    private static java.util.Map<String, Object> renderJson(String content) {
+    private static Map<String, Object> renderJson(String content) {
         try {
             JsonNode node = MAPPER.readTree(content);
             if (node.isObject()) return renderJsonObject(node);
@@ -87,82 +91,82 @@ final class FeishuCardFormatter {
         return renderLongText(content);
     }
 
-    private static java.util.Map<String, Object> renderJsonObject(JsonNode node) {
-        java.util.List<Object> elements = new java.util.ArrayList<>();
+    private static Map<String, Object> renderJsonObject(JsonNode node) {
+        List<Object> elements = new ArrayList<>();
         node.fields().forEachRemaining(entry -> {
             String key = entry.getKey();
             String value = entry.getValue().isTextual()
                     ? entry.getValue().asText()
                     : entry.getValue().toString();
-            elements.add(java.util.Map.of(
+            elements.add(Map.of(
                 "tag", "column_set",
                 "flex_mode", "none",
-                "columns", java.util.List.of(
-                    java.util.Map.of("tag", "column", "width", "weighted", "weight", 1,
-                        "elements", java.util.List.of(java.util.Map.of("tag", "div",
-                            "text", java.util.Map.of("tag", "plain_text", "content", key)))),
-                    java.util.Map.of("tag", "column", "width", "weighted", "weight", 2,
-                        "elements", java.util.List.of(java.util.Map.of("tag", "div",
-                            "text", java.util.Map.of("tag", "plain_text", "content", value))))
+                "columns", List.of(
+                    Map.of("tag", "column", "width", "weighted", "weight", 1,
+                        "elements", List.of(Map.of("tag", "div",
+                            "text", Map.of("tag", "plain_text", "content", key)))),
+                    Map.of("tag", "column", "width", "weighted", "weight", 2,
+                        "elements", List.of(Map.of("tag", "div",
+                            "text", Map.of("tag", "plain_text", "content", value))))
                 )
             ));
         });
         return cardOf(null, elements);
     }
 
-    private static java.util.Map<String, Object> renderJsonArray(JsonNode array) {
+    private static Map<String, Object> renderJsonArray(JsonNode array) {
         JsonNode first = array.get(0);
-        java.util.List<String> fields = new java.util.ArrayList<>();
+        List<String> fields = new ArrayList<>();
         first.fieldNames().forEachRemaining(fields::add);
         return fields.size() <= 4
                 ? renderJsonTable(array, fields)
                 : renderJsonList(array);
     }
 
-    private static java.util.Map<String, Object> renderJsonTable(JsonNode array, java.util.List<String> fields) {
-        java.util.List<java.util.Map<String, Object>> columns = fields.stream()
-                .<java.util.Map<String, Object>>map(name -> java.util.Map.of("name", name, "display_name", name))
+    private static Map<String, Object> renderJsonTable(JsonNode array, List<String> fields) {
+        List<Map<String, Object>> columns = fields.stream()
+                .<Map<String, Object>>map(name -> Map.of("name", name, "display_name", name))
                 .toList();
-        java.util.List<java.util.Map<String, Object>> rows = new java.util.ArrayList<>();
+        List<Map<String, Object>> rows = new ArrayList<>();
         for (JsonNode item : array) {
-            java.util.Map<String, Object> row = new java.util.LinkedHashMap<>();
+            Map<String, Object> row = new LinkedHashMap<>();
             for (String field : fields) {
                 JsonNode val = item.get(field);
                 row.put(field, val == null ? "" : (val.isTextual() ? val.asText() : val.toString()));
             }
             rows.add(row);
         }
-        java.util.Map<String, Object> table = new java.util.LinkedHashMap<>();
+        Map<String, Object> table = new LinkedHashMap<>();
         table.put("tag", "table");
         table.put("columns", columns);
         table.put("rows", rows);
         table.put("page_size", 10);
         table.put("row_height", "low");
-        return cardOf(null, java.util.List.of(table));
+        return cardOf(null, List.of(table));
     }
 
-    private static java.util.Map<String, Object> renderJsonList(JsonNode array) {
-        java.util.List<Object> elements = new java.util.ArrayList<>();
+    private static Map<String, Object> renderJsonList(JsonNode array) {
+        List<Object> elements = new ArrayList<>();
         for (JsonNode item : array) {
             StringBuilder sb = new StringBuilder();
             item.fields().forEachRemaining(e -> {
                 String val = e.getValue().isTextual() ? e.getValue().asText() : e.getValue().toString();
                 sb.append("**").append(e.getKey()).append("**: ").append(val).append("\n");
             });
-            elements.add(java.util.Map.of(
+            elements.add(Map.of(
                 "tag", "div",
-                "text", java.util.Map.of("tag", "lark_md", "content", sb.toString().trim())
+                "text", Map.of("tag", "lark_md", "content", sb.toString().trim())
             ));
         }
         return cardOf(null, elements);
     }
 
-    private static java.util.Map<String, Object> cardOf(java.util.Map<String, Object> header, java.util.List<?> elements) {
-        java.util.Map<String, Object> card = new java.util.LinkedHashMap<>();
+    private static Map<String, Object> cardOf(Map<String, Object> header, List<?> elements) {
+        Map<String, Object> card = new LinkedHashMap<>();
         card.put("schema", "2.0");
-        card.put("config", java.util.Map.of("wide_screen_mode", true));
+        card.put("config", Map.of("wide_screen_mode", true));
         if (header != null) card.put("header", header);
-        card.put("body", java.util.Map.of("elements", elements));
+        card.put("body", Map.of("elements", elements));
         return card;
     }
 }
