@@ -374,6 +374,7 @@ public class WikiTool {
                 .set("message", "Page created successfully")
                 .set("title", page.getTitle())
                 .set("slug", page.getSlug())
+                .set("pageId", page.getId())
                 .set("kbId", kbId)
                 .toString();
     }
