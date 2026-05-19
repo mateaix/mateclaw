@@ -1,4 +1,4 @@
-import { defineStore } from 'pinia'
+import { acceptHMRUpdate, defineStore } from 'pinia'
 import { ref } from 'vue'
 import { wikiApi } from '@/api/index'
 
@@ -129,14 +129,18 @@ export const useWikiStore = defineStore('wiki', () => {
     if (!rawId) totalPageCount.value = pages.value.length
   }
 
-  async function refreshCurrentKB(options: { preserveRawFilter?: boolean } = {}) {
+  // Background refreshes (job completion, SSE events, fallback polling) must
+  // not drop the user's active raw-material filter. Re-fetch the page list
+  // scoped to selectedRawId whenever a filter is applied — otherwise the list
+  // silently reverts to every material's pages while the filter banner still
+  // claims a filter is active.
+  async function refreshCurrentKB() {
     if (!currentKB.value) return
     const kbId = currentKB.value.id
-    const rawId = options.preserveRawFilter ? selectedRawId.value : null
     const [kbRes] = await Promise.all([
       wikiApi.getKB(kbId),
       fetchRawMaterials(kbId),
-      fetchPages(kbId, rawId ?? undefined),
+      fetchPages(kbId, selectedRawId.value ?? undefined),
     ])
     const nextKB = (kbRes as any).data || kbRes
     currentKB.value = nextKB
@@ -221,3 +225,9 @@ export const useWikiStore = defineStore('wiki', () => {
     scanDirectory,
   }
 })
+
+// Enable HMR for this store: editing it during `pnpm dev` patches the live
+// store instead of requiring a full page reload. Stripped from prod builds.
+if (import.meta.hot) {
+  import.meta.hot.accept(acceptHMRUpdate(useWikiStore, import.meta.hot))
+}

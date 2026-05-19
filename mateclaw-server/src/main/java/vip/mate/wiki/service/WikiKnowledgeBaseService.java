@@ -112,6 +112,32 @@ public class WikiKnowledgeBaseService {
                         .orderByDesc(WikiKnowledgeBaseEntity::getUpdateTime));
     }
 
+    /**
+     * Resolve the single knowledge base an agent's wiki tools should operate on.
+     * <p>
+     * Prefers a KB explicitly bound to the agent; a shared (agent-less) KB is
+     * only used as a fallback when the agent has no bound KB of its own. This
+     * matters because {@link #listByAgentId} also returns shared KBs, and a
+     * shared KB with a more recent {@code update_time} would otherwise win the
+     * {@code get(0)} pick over the agent's own KB. Within each tier the most
+     * recently updated KB wins. Returns {@code null} when the agent can reach
+     * no knowledge base at all.
+     */
+    public WikiKnowledgeBaseEntity resolvePrimaryKb(Long agentId) {
+        List<WikiKnowledgeBaseEntity> kbs = listByAgentId(agentId);
+        if (kbs.isEmpty()) {
+            return null;
+        }
+        if (agentId != null) {
+            for (WikiKnowledgeBaseEntity kb : kbs) {
+                if (agentId.equals(kb.getAgentId())) {
+                    return kb;
+                }
+            }
+        }
+        return kbs.get(0);
+    }
+
     public WikiKnowledgeBaseEntity getById(Long id) {
         return kbMapper.selectById(id);
     }

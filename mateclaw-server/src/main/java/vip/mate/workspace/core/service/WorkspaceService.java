@@ -9,6 +9,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import vip.mate.exception.MateClawException;
 import vip.mate.i18n.I18nService;
+import vip.mate.wiki.service.WikiKnowledgeBaseService;
 import vip.mate.workspace.conversation.model.ConversationEntity;
 import vip.mate.workspace.conversation.repository.ConversationMapper;
 import vip.mate.workspace.core.model.WorkspaceAccessVO;
@@ -39,6 +40,7 @@ public class WorkspaceService {
     private final WorkspaceMapper workspaceMapper;
     private final WorkspaceMemberMapper memberMapper;
     private final ConversationMapper conversationMapper;
+    private final WikiKnowledgeBaseService wikiKnowledgeBaseService;
     private final I18nService i18n;
 
     /** 默认工作区 slug */
@@ -134,8 +136,34 @@ public class WorkspaceService {
                         .eq(WorkspaceEntity::getSlug, slug));
     }
 
+    /**
+     * Derive a URL-safe, unique slug from a workspace name. Non-alphanumeric
+     * runs collapse to a single hyphen; a name with no ASCII alphanumerics
+     * (e.g. a purely Chinese name) falls back to a generic base. A numeric
+     * suffix is appended until the slug is free.
+     */
+    private String generateUniqueSlug(String name) {
+        String base = (name == null ? "" : name.toLowerCase())
+                .replaceAll("[^a-z0-9]+", "-")
+                .replaceAll("^-|-$", "");
+        if (base.isBlank()) {
+            base = "workspace";
+        }
+        String slug = base;
+        int n = 1;
+        while (getBySlug(slug) != null) {
+            slug = base + "-" + (++n);
+        }
+        return slug;
+    }
+
     @Transactional
     public WorkspaceEntity create(WorkspaceEntity entity, Long creatorUserId) {
+        // Auto-derive a slug from the name when the caller did not supply one,
+        // so workspace creation never fails on the NOT NULL slug column.
+        if (entity.getSlug() == null || entity.getSlug().isBlank()) {
+            entity.setSlug(generateUniqueSlug(entity.getName()));
+        }
         // 验证 slug 唯一
         if (getBySlug(entity.getSlug()) != null) {
             throw new MateClawException("err.workspace.slug_exists", "工作区标识已存在: " + entity.getSlug());
@@ -205,6 +233,14 @@ public class WorkspaceService {
         WorkspaceEntity existing = getById(id);
         if (DEFAULT_SLUG.equals(existing.getSlug())) {
             throw new MateClawException("err.workspace.cannot_delete_default", "不能删除默认工作区");
+        }
+        // Refuse to delete a workspace that still owns wiki knowledge bases —
+        // dropping the workspace row would orphan them. The caller must delete
+        // the knowledge bases first.
+        int kbCount = wikiKnowledgeBaseService.listByWorkspace(id).size();
+        if (kbCount > 0) {
+            throw new MateClawException("err.workspace.not_empty", 409,
+                    "工作区下还有 " + kbCount + " 个知识库，请先删除知识库再删除工作区");
         }
         workspaceMapper.deleteById(id);
         log.info("Deleted workspace: {} (id={})", existing.getName(), id);

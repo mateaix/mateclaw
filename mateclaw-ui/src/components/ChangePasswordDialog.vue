@@ -107,7 +107,7 @@ async function handleSubmit() {
   }
   submitting.value = true
   try {
-    const userId = Number(localStorage.getItem('userId') || '1')
+    const userId = localStorage.getItem('userId') || '1'
     await authApi.changePassword(userId, form.oldPassword, form.newPassword)
     mcToast.success(t('auth.passwordChanged'))
     close()

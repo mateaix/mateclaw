@@ -1,132 +1,114 @@
 <template>
-  <div class="page-container">
-    <div class="page-shell">
-      <div class="page-header">
-        <div class="page-lead">
-          <div class="page-kicker">{{ t('cronJobs.kicker') }}</div>
-          <h1 class="page-title">{{ t('cronJobs.title') }}</h1>
-          <p class="page-desc">{{ t('cronJobs.desc') }}</p>
-        </div>
-        <button class="btn-primary" @click="openCreateModal">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
-          </svg>
-          {{ t('cronJobs.createJob') }}
-        </button>
-      </div>
-
-      <div class="page-stage">
-        <div class="table-wrap">
-          <table class="data-table">
-            <colgroup>
-              <col style="width: 22%; min-width: 160px" />
-              <col style="width: 18%; min-width: 140px" />
-              <col style="width: 16%; min-width: 130px" />
-              <col style="width: 12%; min-width: 100px" />
-              <col style="width: 12%; min-width: 100px" />
-              <col style="width: 8%; min-width: 70px" />
-              <col style="width: 12%; min-width: 100px" />
-            </colgroup>
-            <thead>
-              <tr>
-                <th>{{ t('cronJobs.columns.name') }}</th>
-                <th>{{ t('cronJobs.columns.cron') }}</th>
-                <th>{{ t('tokenUsage.date') }}</th>
-                <th>{{ t('cronJobs.columns.channel') }}</th>
-                <th>{{ t('cronJobs.columns.lastDelivery') }}</th>
-                <th>{{ t('cronJobs.columns.enabled') }}</th>
-                <th>{{ t('cronJobs.columns.actions') }}</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="job in store.jobs" :key="job.id" class="data-row">
-                <td>
-                  <div class="job-main">
-                    <div class="job-name" :title="job.name">{{ job.name }}</div>
-                    <div class="job-meta-row">
-                      <span v-if="job.taskType !== 'wiki_process'" class="agent-badge" :title="job.agentName || 'Unknown'">{{ job.agentName || 'Unknown' }}</span>
-                      <span class="type-badge" :class="'type-' + job.taskType">
-                        {{ t('cronJobs.taskTypes.' + job.taskType) }}
-                      </span>
-                    </div>
-                  </div>
-                </td>
-                <td>
-                  <code class="cron-code" :title="cronToHumanReadable(job.cronExpression, job.timezone)">
-                    {{ job.cronExpression }}
-                  </code>
-                  <div class="cron-readable">{{ cronToHumanReadable(job.cronExpression, job.timezone) }}</div>
-                </td>
-                <td>
-                  <div class="runtime-stack">
-                    <span v-if="job.nextRunTime" class="time-text" :title="`${t('cronJobs.columns.nextRun')}: ${formatTime(job.nextRunTime)}`">{{ formatTime(job.nextRunTime) }}</span>
-                    <span v-else class="time-empty">-</span>
-                    <span v-if="job.lastRunTime" class="time-subtext" :title="`${t('cronJobs.columns.lastRun')}: ${formatTime(job.lastRunTime)}`">{{ t('cronJobs.columns.lastRun') }}: {{ formatTime(job.lastRunTime) }}</span>
-                  </div>
-                </td>
-                <td>
-                  <!-- Channel binding visibility — RFC-063r post-deploy fix.
-                       Cron created from web (no channelId) shows "—". -->
-                  <span v-if="job.channelId" class="channel-binding"
-                        :title="job.deliveryConfig?.targetId ? t('cronJobs.columns.targetId') + ': ' + job.deliveryConfig.targetId : ''">
-                    {{ job.channelName || ('#' + job.channelId) }}
+  <div class="cron-panel">
+    <div class="table-wrap">
+      <table class="data-table">
+        <colgroup>
+          <col style="width: 22%; min-width: 160px" />
+          <col style="width: 18%; min-width: 140px" />
+          <col style="width: 16%; min-width: 130px" />
+          <col style="width: 12%; min-width: 100px" />
+          <col style="width: 12%; min-width: 100px" />
+          <col style="width: 8%; min-width: 70px" />
+          <col style="width: 12%; min-width: 100px" />
+        </colgroup>
+        <thead>
+          <tr>
+            <th>{{ t('cronJobs.columns.name') }}</th>
+            <th>{{ t('cronJobs.columns.cron') }}</th>
+            <th>{{ t('tokenUsage.date') }}</th>
+            <th>{{ t('cronJobs.columns.channel') }}</th>
+            <th>{{ t('cronJobs.columns.lastDelivery') }}</th>
+            <th>{{ t('cronJobs.columns.enabled') }}</th>
+            <th>{{ t('cronJobs.columns.actions') }}</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="job in store.jobs" :key="job.id" class="data-row">
+            <td>
+              <div class="job-main">
+                <div class="job-name" :title="job.name">{{ job.name }}</div>
+                <div class="job-meta-row">
+                  <span v-if="job.taskType !== 'wiki_process'" class="agent-badge" :title="job.agentName || 'Unknown'">{{ job.agentName || 'Unknown' }}</span>
+                  <span class="type-badge" :class="'type-' + job.taskType">
+                    {{ t('cronJobs.taskTypes.' + job.taskType) }}
                   </span>
-                  <span v-else class="time-empty">—</span>
-                </td>
-                <td>
-                  <!-- RFC-063r §2.14: most-recent delivery status badge.
-                       hover surfaces the error detail when not delivered. -->
-                  <span class="delivery-badge" :class="'delivery-' + (job.lastDeliveryStatus || 'NONE').toLowerCase()"
-                        :title="job.lastDeliveryError || t('cronJobs.lastDelivery.' + (job.lastDeliveryStatus || 'NONE').toLowerCase())">
-                    {{ t('cronJobs.lastDelivery.' + (job.lastDeliveryStatus || 'NONE').toLowerCase()) }}
-                  </span>
-                </td>
-                <td>
-                  <label class="toggle-switch">
-                    <input type="checkbox" :checked="job.enabled" @change="handleToggle(job)" />
-                    <span class="toggle-slider"></span>
-                  </label>
-                </td>
-                <td>
-                  <div class="row-actions">
-                    <button class="row-btn" :title="t('common.view')" @click="openDetailModal(job)">
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <circle cx="12" cy="12" r="3"/><path d="M2.05 12a9.94 9.94 0 0 1 19.9 0 9.94 9.94 0 0 1-19.9 0z"/>
-                      </svg>
-                    </button>
-                    <button class="row-btn" :title="t('cronJobs.actions.runNow')" @click="handleRunNow(job)">
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <polygon points="5 3 19 12 5 21 5 3"/>
-                      </svg>
-                    </button>
-                    <button class="row-btn" :title="t('cronJobs.actions.edit')" @click="openEditModal(job)">
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
-                        <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
-                      </svg>
-                    </button>
-                    <button class="row-btn danger" :title="t('cronJobs.actions.delete')" @click="handleDelete(job)">
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <polyline points="3 6 5 6 21 6"/>
-                        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>
-                      </svg>
-                    </button>
-                  </div>
-                </td>
-              </tr>
-              <tr v-if="store.jobs.length === 0">
-                <td colspan="7" class="empty-row">
-                  <div class="empty-state">
-                    <span class="empty-icon">&#9201;</span>
-                    <p>{{ t('cronJobs.noJobs') }}</p>
-                    <button class="btn-primary btn-sm" @click="openCreateModal">{{ t('cronJobs.createFirst') }}</button>
-                  </div>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
+                </div>
+              </div>
+            </td>
+            <td>
+              <code class="cron-code" :title="cronToHumanReadable(job.cronExpression, job.timezone)">
+                {{ job.cronExpression }}
+              </code>
+              <div class="cron-readable">{{ cronToHumanReadable(job.cronExpression, job.timezone) }}</div>
+            </td>
+            <td>
+              <div class="runtime-stack">
+                <span v-if="job.nextRunTime" class="time-text" :title="`${t('cronJobs.columns.nextRun')}: ${formatTime(job.nextRunTime)}`">{{ formatTime(job.nextRunTime) }}</span>
+                <span v-else class="time-empty">-</span>
+                <span v-if="job.lastRunTime" class="time-subtext" :title="`${t('cronJobs.columns.lastRun')}: ${formatTime(job.lastRunTime)}`">{{ t('cronJobs.columns.lastRun') }}: {{ formatTime(job.lastRunTime) }}</span>
+              </div>
+            </td>
+            <td>
+              <!-- Channel binding visibility — RFC-063r post-deploy fix.
+                   Cron created from web (no channelId) shows "—". -->
+              <span v-if="job.channelId" class="channel-binding"
+                    :title="job.deliveryConfig?.targetId ? t('cronJobs.columns.targetId') + ': ' + job.deliveryConfig.targetId : ''">
+                {{ job.channelName || ('#' + job.channelId) }}
+              </span>
+              <span v-else class="time-empty">—</span>
+            </td>
+            <td>
+              <!-- RFC-063r §2.14: most-recent delivery status badge.
+                   hover surfaces the error detail when not delivered. -->
+              <span class="delivery-badge" :class="'delivery-' + (job.lastDeliveryStatus || 'NONE').toLowerCase()"
+                    :title="job.lastDeliveryError || t('cronJobs.lastDelivery.' + (job.lastDeliveryStatus || 'NONE').toLowerCase())">
+                {{ t('cronJobs.lastDelivery.' + (job.lastDeliveryStatus || 'NONE').toLowerCase()) }}
+              </span>
+            </td>
+            <td>
+              <label class="toggle-switch">
+                <input type="checkbox" :checked="job.enabled" @change="handleToggle(job)" />
+                <span class="toggle-slider"></span>
+              </label>
+            </td>
+            <td>
+              <div class="row-actions">
+                <button class="row-btn" :title="t('common.view')" @click="openDetailModal(job)">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="3"/><path d="M2.05 12a9.94 9.94 0 0 1 19.9 0 9.94 9.94 0 0 1-19.9 0z"/>
+                  </svg>
+                </button>
+                <button class="row-btn" :title="t('cronJobs.actions.runNow')" @click="handleRunNow(job)">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polygon points="5 3 19 12 5 21 5 3"/>
+                  </svg>
+                </button>
+                <button class="row-btn" :title="t('cronJobs.actions.edit')" @click="openEditModal(job)">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                  </svg>
+                </button>
+                <button class="row-btn danger" :title="t('cronJobs.actions.delete')" @click="handleDelete(job)">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="3 6 5 6 21 6"/>
+                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>
+                  </svg>
+                </button>
+              </div>
+            </td>
+          </tr>
+          <tr v-if="store.jobs.length === 0">
+            <td colspan="7" class="empty-row">
+              <div class="empty-state">
+                <span class="empty-icon">&#9201;</span>
+                <p>{{ t('cronJobs.noJobs') }}</p>
+                <button class="btn-primary btn-sm" @click="openCreateModal">{{ t('cronJobs.createFirst') }}</button>
+              </div>
+            </td>
+          </tr>
+        </tbody>
+      </table>
     </div>
 
     <div v-if="detailJob" class="modal-overlay">
@@ -299,38 +281,8 @@
           </template>
 
           <div class="form-group">
-            <label class="form-label">{{ t('cronJobs.fields.cronFrequency') }}</label>
-            <div class="radio-group">
-              <label v-for="ct in cronTypeOptions" :key="ct" class="radio-option" :class="{ active: cronType === ct }">
-                <input type="radio" v-model="cronType" :value="ct" />
-                {{ t('cronJobs.cronTypes.' + ct) }}
-              </label>
-            </div>
-          </div>
-
-          <div v-if="cronType === 'daily' || cronType === 'weekly'" class="form-row">
-            <div v-if="cronType === 'weekly'" class="form-group">
-              <label class="form-label">{{ t('cronJobs.fields.cronDays') }}</label>
-              <div class="day-picker">
-                <label v-for="(dayKey, idx) in dayKeys" :key="dayKey" class="day-chip"
-                  :class="{ active: selectedDays.includes(idx + 1) }">
-                  <input type="checkbox" :value="idx + 1"
-                    :checked="selectedDays.includes(idx + 1)"
-                    @change="toggleDay(idx + 1)" />
-                  {{ t('cronJobs.days.' + dayKey) }}
-                </label>
-              </div>
-            </div>
-            <div class="form-group">
-              <label class="form-label">{{ t('cronJobs.fields.cronTime') }}</label>
-              <input type="time" v-model="cronTime" class="form-input" />
-            </div>
-          </div>
-
-          <div v-if="cronType === 'custom'" class="form-group">
-            <label class="form-label">{{ t('cronJobs.fields.cronExpression') }}</label>
-            <input v-model="form.cronExpression" class="form-input mono"
-              :placeholder="t('cronJobs.fields.cronExpressionPlaceholder')" />
+            <label class="form-label">{{ t('cronJobs.fields.cronExpression') }} *</label>
+            <CronExpressionField v-model="form.cronExpression" />
           </div>
 
           <div class="form-group">
@@ -368,6 +320,7 @@ import { useCronJobStore } from '@/stores/useCronJobStore'
 import { useAgentStore } from '@/stores/useAgentStore'
 import { wikiApi } from '@/api/index'
 import type { CronJob } from '@/types/index'
+import CronExpressionField from '@/components/common/CronExpressionField.vue'
 
 interface WikiKbOption {
   id: number | string
@@ -379,16 +332,17 @@ const store = useCronJobStore()
 const agentStore = useAgentStore()
 const agents = computed(() => agentStore.agents)
 
+// Report the job count up to the Scheduler shell so the tab badge stays
+// in sync without the shell having to fetch the list itself.
+const emit = defineEmits<{ count: [number] }>()
+
 const showModal = ref(false)
 const editing = ref<CronJob | null>(null)
 const detailJob = ref<CronJob | null>(null)
 const wikiKbs = ref<WikiKbOption[]>([])
 const wikiKbsLoaded = ref(false)
 
-const cronTypeOptions = ['hourly', 'daily', 'weekly', 'custom'] as const
-const cronType = ref<string>('daily')
-const cronTime = ref('09:00')
-const selectedDays = ref<number[]>([1, 2, 3, 4, 5])
+// Weekday keys for the table's human-readable cron rendering.
 const dayKeys = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']
 
 const timezones = [
@@ -400,7 +354,7 @@ const timezones = [
 
 const defaultForm = (): Partial<CronJob> & { wikiKbId?: number | string; wikiForce?: boolean } => ({
   name: '',
-  cronExpression: '',
+  cronExpression: '0 9 * * *',
   timezone: 'Asia/Shanghai',
   agentId: undefined,
   taskType: 'text',
@@ -421,7 +375,7 @@ const canSave = computed(() => {
   if (form.value.taskType === 'agent' && !form.value.requestBody) return false
   if (form.value.taskType === 'wiki_process'
     && (form.value.wikiKbId == null || form.value.wikiKbId === '')) return false
-  if (cronType.value === 'custom' && !form.value.cronExpression?.trim()) return false
+  if (!form.value.cronExpression?.trim()) return false
   return true
 })
 
@@ -470,34 +424,11 @@ onMounted(() => {
   agentStore.fetchAgents()
 })
 
-watch([cronType, cronTime, selectedDays], () => {
-  if (cronType.value === 'custom') return
-  const [h, m] = cronTime.value.split(':').map(Number)
-  if (cronType.value === 'hourly') {
-    form.value.cronExpression = '0 * * * *'
-  } else if (cronType.value === 'daily') {
-    form.value.cronExpression = `${m} ${h} * * *`
-  } else if (cronType.value === 'weekly') {
-    const days = selectedDays.value.length > 0 ? selectedDays.value.sort().join(',') : '*'
-    form.value.cronExpression = `${m} ${h} * * ${days}`
-  }
-}, { deep: true })
-
-function toggleDay(day: number) {
-  const idx = selectedDays.value.indexOf(day)
-  if (idx >= 0) {
-    selectedDays.value.splice(idx, 1)
-  } else {
-    selectedDays.value.push(day)
-  }
-}
+watch(() => store.jobs.length, (n) => emit('count', n), { immediate: true })
 
 function openCreateModal() {
   editing.value = null
   form.value = defaultForm()
-  cronType.value = 'daily'
-  cronTime.value = '09:00'
-  selectedDays.value = [1, 2, 3, 4, 5]
   showModal.value = true
 }
 
@@ -508,10 +439,6 @@ function openEditModal(job: CronJob) {
     applyWikiProcessForm(form.value, job.requestBody)
     loadWikiKbs()
   }
-  const parsed = parseCronToForm(job.cronExpression)
-  cronType.value = parsed.type
-  cronTime.value = parsed.time
-  selectedDays.value = [...parsed.days]
   showModal.value = true
 }
 
@@ -629,44 +556,6 @@ async function handleRunNow(job: CronJob) {
   }
 }
 
-interface CronFormParts {
-  type: string
-  time: string
-  days: number[]
-}
-
-function isSimpleIntList(s: string): boolean {
-  return s.split(',').every((v) => /^\d+$/.test(v.trim()))
-}
-
-function parseCronToForm(expr: string): CronFormParts {
-  const parts = expr.trim().split(/\s+/)
-  if (parts.length !== 5) return { type: 'custom', time: '09:00', days: [] }
-
-  const [min, hour, dom, mon, dow] = parts
-
-  if (min === '0' && hour === '*' && dom === '*' && mon === '*' && dow === '*') {
-    return { type: 'hourly', time: '00:00', days: [] }
-  }
-
-  if (!/^\d+$/.test(min) || !/^\d+$/.test(hour)) {
-    return { type: 'custom', time: '09:00', days: [] }
-  }
-
-  const timeStr = pad(+hour) + ':' + pad(+min)
-
-  if (dom === '*' && mon === '*' && dow === '*') {
-    return { type: 'daily', time: timeStr, days: [] }
-  }
-
-  if (dom === '*' && mon === '*' && dow !== '*' && isSimpleIntList(dow)) {
-    const days = dow.split(',').map(Number)
-    return { type: 'weekly', time: timeStr, days }
-  }
-
-  return { type: 'custom', time: timeStr, days: [] }
-}
-
 function pad(n: number): string {
   return n < 10 ? '0' + n : '' + n
 }
@@ -707,68 +596,17 @@ function formatTime(datetime: string | undefined): string {
     return datetime
   }
 }
+
+// The Scheduler shell owns the "+ New Job" header button; expose the modal
+// opener so it can drive this panel when the Scheduled Jobs tab is active.
+defineExpose({ openCreate: openCreateModal })
 </script>
 
 <style scoped>
-.page-container {
-  height: 100%;
-  overflow-y: auto;
-  padding: 0;
-  background: transparent;
-}
-
-.page-shell {
-  min-height: 100%;
+.cron-panel {
   display: flex;
   flex-direction: column;
-  gap: 20px;
-  padding: 0;
-  background: transparent;
-}
-
-.page-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
   gap: 16px;
-  padding: 24px 24px 0;
-}
-
-.page-lead {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.page-kicker {
-  display: inline-flex;
-  align-items: center;
-  width: fit-content;
-  padding: 6px 12px;
-  border: 1px solid color-mix(in srgb, var(--mc-primary) 18%, transparent);
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--mc-primary-bg) 72%, var(--mc-bg-elevated) 28%);
-  color: var(--mc-primary-hover);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-
-.page-title {
-  font-size: clamp(28px, 4vw, 40px);
-  line-height: 0.95;
-  font-weight: 800;
-  color: var(--mc-text-primary);
-  margin: 0;
-}
-
-.page-desc {
-  max-width: 620px;
-  font-size: 15px;
-  line-height: 1.55;
-  color: var(--mc-text-secondary);
-  margin: 0;
 }
 
 .btn-primary { display: flex; align-items: center; gap: 6px; padding: 10px 16px; background: var(--mc-primary); color: white; border: none; border-radius: 10px; font-size: 14px; font-weight: 600; cursor: pointer; white-space: nowrap; }
@@ -777,10 +615,6 @@ function formatTime(datetime: string | undefined): string {
 .btn-primary.btn-sm { padding: 6px 14px; font-size: 13px; }
 .btn-secondary { padding: 8px 16px; background: var(--mc-bg-elevated); color: var(--mc-text-primary); border: 1px solid var(--mc-border); border-radius: 8px; font-size: 14px; cursor: pointer; }
 .btn-secondary:hover { background: var(--mc-bg-sunken); }
-
-.page-stage {
-  padding: 0 24px 24px;
-}
 
 .table-wrap {
   width: 100%;
@@ -964,8 +798,6 @@ function formatTime(datetime: string | undefined): string {
 .form-input.mono { font-family: monospace; }
 .form-textarea { padding: 8px 12px; border: 1px solid var(--mc-border); border-radius: 8px; font-size: 14px; color: var(--mc-text-primary); outline: none; background: var(--mc-bg-sunken); width: 100%; resize: vertical; font-family: inherit; }
 .form-textarea:focus { border-color: var(--mc-primary); box-shadow: 0 0 0 2px rgba(217,119,87,0.1); }
-.form-row { display: flex; gap: 16px; }
-.form-row .form-group { flex: 1; }
 
 .radio-group { display: flex; gap: 8px; flex-wrap: wrap; }
 .radio-option { display: flex; align-items: center; gap: 4px; padding: 6px 14px; border: 1px solid var(--mc-border); border-radius: 8px; font-size: 13px; color: var(--mc-text-secondary); cursor: pointer; transition: all 0.15s; }
@@ -973,30 +805,9 @@ function formatTime(datetime: string | undefined): string {
 .radio-option.active { border-color: var(--mc-primary); background: var(--mc-primary-bg); color: var(--mc-primary); }
 .radio-option input { display: none; }
 
-.day-picker { display: flex; gap: 6px; flex-wrap: wrap; }
-.day-chip { display: flex; align-items: center; justify-content: center; padding: 4px 10px; border: 1px solid var(--mc-border); border-radius: 6px; font-size: 12px; color: var(--mc-text-secondary); cursor: pointer; transition: all 0.15s; user-select: none; }
-.day-chip:hover { border-color: var(--mc-primary); }
-.day-chip.active { border-color: var(--mc-primary); background: var(--mc-primary-bg); color: var(--mc-primary); }
-.day-chip input { display: none; }
-
 .toggle-label { display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--mc-text-primary); }
 
 @media (max-width: 900px) {
-  .page-header {
-    flex-direction: column;
-    align-items: stretch;
-    padding: 16px 16px 0;
-  }
-
-  .btn-primary {
-    width: 100%;
-    justify-content: center;
-  }
-
-  .page-stage {
-    padding: 0 16px 16px;
-  }
-
   .detail-grid {
     grid-template-columns: 1fr;
   }

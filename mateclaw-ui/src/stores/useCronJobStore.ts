@@ -1,4 +1,4 @@
-import { defineStore } from 'pinia'
+import { acceptHMRUpdate, defineStore } from 'pinia'
 import { ref } from 'vue'
 import { cronJobApi } from '@/api/index'
 import type { CronJob } from '@/types/index'
@@ -51,3 +51,9 @@ export const useCronJobStore = defineStore('cronJob', () => {
 
   return { jobs, loading, fetchJobs, createJob, updateJob, deleteJob, toggleJob, runNow }
 })
+
+// Enable HMR for this store: editing it during `pnpm dev` patches the live
+// store instead of requiring a full page reload. Stripped from prod builds.
+if (import.meta.hot) {
+  import.meta.hot.accept(acceptHMRUpdate(useCronJobStore, import.meta.hot))
+}

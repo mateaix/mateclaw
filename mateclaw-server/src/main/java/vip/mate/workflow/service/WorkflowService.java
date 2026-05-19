@@ -14,6 +14,9 @@ import vip.mate.workflow.repository.WorkflowRevisionMapper;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.stream.Collectors;
 
 /**
  * Workflow CRUD + draft / publish lifecycle. Drafts live inline on the
@@ -32,9 +35,34 @@ public class WorkflowService {
     private final WorkflowAclPort aclPort;
 
     public List<WorkflowEntity> listByWorkspace(long workspaceId) {
-        return workflowMapper.selectList(new LambdaQueryWrapper<WorkflowEntity>()
+        List<WorkflowEntity> rows = workflowMapper.selectList(new LambdaQueryWrapper<WorkflowEntity>()
                 .eq(WorkflowEntity::getWorkspaceId, workspaceId)
                 .orderByDesc(WorkflowEntity::getUpdateTime));
+        attachRevisionNumbers(rows);
+        return rows;
+    }
+
+    /**
+     * Batch-populate {@link WorkflowEntity#getLatestRevisionNumber()} so the
+     * workflow list shows a human version ("v3") instead of the latestRevisionId
+     * snowflake. One query for the whole page; no-op when nothing is published.
+     */
+    private void attachRevisionNumbers(List<WorkflowEntity> workflows) {
+        List<Long> ids = workflows.stream()
+                .map(WorkflowEntity::getLatestRevisionId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+        if (ids.isEmpty()) {
+            return;
+        }
+        Map<Long, Integer> numberById = revisionMapper.selectBatchIds(ids).stream()
+                .collect(Collectors.toMap(WorkflowRevisionEntity::getId, WorkflowRevisionEntity::getRevision));
+        for (WorkflowEntity wf : workflows) {
+            if (wf.getLatestRevisionId() != null) {
+                wf.setLatestRevisionNumber(numberById.get(wf.getLatestRevisionId()));
+            }
+        }
     }
 
     /**
@@ -49,6 +77,24 @@ public class WorkflowService {
         if (row == null) return null;
         if (row.getWorkspaceId() == null || row.getWorkspaceId() != workspaceId) return null;
         return row;
+    }
+
+    /**
+     * Populate {@link WorkflowEntity#getPublishedGraphJson()} from the latest
+     * revision. The editor needs this because {@link #publish} clears the inline
+     * draft on publish — without the published graph the canvas would render
+     * empty for any published workflow. No-op when the workflow was never
+     * published or the revision row is missing.
+     */
+    public void attachPublishedGraph(WorkflowEntity workflow) {
+        if (workflow == null || workflow.getLatestRevisionId() == null) {
+            return;
+        }
+        WorkflowRevisionEntity revision = revisionMapper.selectById(workflow.getLatestRevisionId());
+        if (revision != null) {
+            workflow.setPublishedGraphJson(revision.getGraphJson());
+            workflow.setLatestRevisionNumber(revision.getRevision());
+        }
     }
 
     /**

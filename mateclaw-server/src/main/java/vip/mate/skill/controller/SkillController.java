@@ -26,7 +26,15 @@ import vip.mate.skill.runtime.model.ResolvedSkill;
 import vip.mate.skill.workspace.BundledSkillSyncer;
 import vip.mate.skill.workspace.SkillFileSyncer;
 import vip.mate.skill.workspace.SkillWorkspaceManager;
+import vip.mate.exception.MateClawException;
+import vip.mate.skill.lifecycle.ConfirmRequiredException;
+import vip.mate.skill.lifecycle.LifecycleTransition;
+import vip.mate.skill.lifecycle.SkillCuratorJob;
+import vip.mate.skill.lifecycle.SkillCuratorReport;
+import vip.mate.skill.lifecycle.SkillCuratorReportStore;
+import vip.mate.skill.lifecycle.SkillLifecycleService;
 
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -60,6 +68,9 @@ public class SkillController {
     private final AgentBindingService agentBindingService;
     private final vip.mate.skill.mcp.McpSkillBridge mcpSkillBridge;
     private final vip.mate.skill.acp.AcpSkillBridge acpSkillBridge;
+    private final SkillLifecycleService skillLifecycleService;
+    private final SkillCuratorJob skillCuratorJob;
+    private final SkillCuratorReportStore skillCuratorReportStore;
 
     @Operation(summary = "获取技能分页列表（RFC-042 §2.1）")
     @GetMapping
@@ -75,14 +86,20 @@ public class SkillController {
             @RequestParam(required = false) String sort,
             @RequestParam(required = false) String source,
             @RequestParam(required = false) String runtime,
+            @RequestParam(required = false) String lifecycleState,
             @RequestParam(required = false) Long agentId) {
         Set<Long> pinnedSkillIds = agentId != null ? agentBindingService.getBoundSkillIds(agentId) : Set.of();
         if (pinnedSkillIds == null) pinnedSkillIds = Set.of();
         IPage<SkillEntity> dbPage = skillService.pageSkills(
                 page, size, keyword, skillType, enabled, scanStatus, sort, source, runtime,
-                pinnedSkillIds, workspaceId);
-        List<SkillEntity> virtualSkills = visibleVirtualSkills(
-                workspaceId, keyword, skillType, enabled, scanStatus, sort, source, runtime);
+                pinnedSkillIds, workspaceId, lifecycleState);
+        // Virtual MCP/ACP skills mirror live servers and carry no lifecycle
+        // state — exclude them whenever the caller filters by lifecycleState
+        // (stale / archived / active), otherwise they leak into every tab.
+        List<SkillEntity> virtualSkills = (lifecycleState != null && !lifecycleState.isBlank())
+                ? List.of()
+                : visibleVirtualSkills(
+                        workspaceId, keyword, skillType, enabled, scanStatus, sort, source, runtime);
         if (!virtualSkills.isEmpty()) {
             VirtualPageMergeResult merged = mergeVirtualTailPageRecords(
                     dbPage.getRecords(), virtualSkills, dbPage.getTotal(), page, size);
@@ -784,4 +801,129 @@ public class SkillController {
         verifyResourceWorkspace(skill, workspaceId);
         return R.ok(workspaceManager.getWorkspaceInfo(skill.getName()));
     }
+
+    // ==================== Skill lifecycle & curator ====================
+
+    @Operation(summary = "钉住/取消钉住技能（钉住的技能不会被自动归档）")
+    @PostMapping("/{id}/pin")
+    @RequireWorkspaceRole("admin")
+    public R<SkillEntity> pin(@PathVariable Long id,
+            @RequestBody(required = false) PinRequest body,
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        rejectVirtualSkillMutation(id);
+        verifyResourceWorkspace(skillService.getSkill(id), workspaceId);
+        boolean pinned = body != null && Boolean.TRUE.equals(body.pinned());
+        return R.ok(skillLifecycleService.setPinned(id, pinned));
+    }
+
+    @Operation(summary = "手动归档技能")
+    @PostMapping("/{id}/archive")
+    @RequireWorkspaceRole("admin")
+    public R<SkillEntity> archive(@PathVariable Long id,
+            @RequestParam(defaultValue = "false") boolean force,
+            @RequestBody(required = false) ArchiveRequest body,
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        rejectVirtualSkillMutation(id);
+        SkillEntity skill = skillService.getSkill(id);
+        verifyResourceWorkspace(skill, workspaceId);
+        if (Boolean.TRUE.equals(skill.getBuiltin())) {
+            throw new MateClawException("err.skill.builtin_not_archivable", 400,
+                    "Cannot archive builtin skill: " + skill.getName());
+        }
+        String state = skill.getLifecycleState() == null ? "active" : skill.getLifecycleState();
+        if ("archived".equals(state)) {
+            throw new MateClawException("err.skill.already_archived", 409,
+                    "Skill already archived: " + skill.getName());
+        }
+        // Bound skills are not silently archived: require an explicit
+        // second-pass confirmation (force=true) so the admin sees which
+        // agents lose the capability.
+        if (!force) {
+            List<ConfirmRequiredException.AgentRow> bound =
+                    agentBindingService.enabledAgentsBoundToSkill(id);
+            if (!bound.isEmpty()) {
+                throw new ConfirmRequiredException("BOUND_SKILL_CONFIRM_REQUIRED",
+                        "Skill is explicitly bound to " + bound.size()
+                                + " agent(s); pass force=true to confirm", bound);
+            }
+        }
+        String reason = body != null && body.reason() != null ? body.reason() : "manual:admin";
+        skillLifecycleService.applyManual(skill, LifecycleTransition.TO_ARCHIVED,
+                LocalDateTime.now(), reason);
+        return R.ok(skillService.getSkill(id));
+    }
+
+    @Operation(summary = "恢复已归档的技能")
+    @PostMapping("/{id}/restore")
+    @RequireWorkspaceRole("admin")
+    public R<SkillEntity> restore(@PathVariable Long id,
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        rejectVirtualSkillMutation(id);
+        verifyResourceWorkspace(skillService.getSkill(id), workspaceId);
+        return R.ok(skillLifecycleService.restore(id));
+    }
+
+    @Operation(summary = "立即运行一次 curator 预览（dry-run）")
+    @PostMapping("/curator/dry-run")
+    @RequireWorkspaceRole("admin")
+    public R<SkillCuratorReport> curatorDryRun() {
+        return R.ok(skillCuratorJob.dryRunNow());
+    }
+
+    @Operation(summary = "激活/取消激活 curator（真正归档 vs 仅预览）")
+    @PostMapping("/curator/activate")
+    @RequireWorkspaceRole("admin")
+    public R<Map<String, Object>> curatorActivate(
+            @RequestParam(defaultValue = "true") boolean activate) {
+        skillCuratorJob.activate(activate);
+        return R.ok(skillCuratorJob.status());
+    }
+
+    @Operation(summary = "暂停 curator 定时扫描")
+    @PostMapping("/curator/pause")
+    @RequireWorkspaceRole("admin")
+    public R<Map<String, Object>> curatorPause() {
+        skillCuratorJob.setPaused(true);
+        return R.ok(skillCuratorJob.status());
+    }
+
+    @Operation(summary = "恢复 curator 定时扫描")
+    @PostMapping("/curator/resume")
+    @RequireWorkspaceRole("admin")
+    public R<Map<String, Object>> curatorResume() {
+        skillCuratorJob.setPaused(false);
+        return R.ok(skillCuratorJob.status());
+    }
+
+    @Operation(summary = "curator 控制面状态")
+    @GetMapping("/curator/status")
+    @RequireWorkspaceRole("member")
+    public R<Map<String, Object>> curatorStatus() {
+        return R.ok(skillCuratorJob.status());
+    }
+
+    @Operation(summary = "列出最近的 curator 运行报告")
+    @GetMapping("/curator/reports")
+    @RequireWorkspaceRole("member")
+    public R<List<String>> curatorReports() {
+        return R.ok(skillCuratorReportStore.listRunIds(20));
+    }
+
+    @Operation(summary = "读取某次 curator 运行报告")
+    @GetMapping("/curator/reports/{runId}")
+    @RequireWorkspaceRole("member")
+    public R<Object> curatorReport(@PathVariable String runId) {
+        Object report = skillCuratorReportStore.readRun(runId);
+        if (report == null) {
+            throw new MateClawException("err.skill.curator_report_not_found", 404,
+                    "Curator report not found: " + runId);
+        }
+        return R.ok(report);
+    }
+
+    /** Body of {@code POST /skills/{id}/pin}. */
+    public record PinRequest(Boolean pinned) {}
+
+    /** Optional body of {@code POST /skills/{id}/archive}. */
+    public record ArchiveRequest(String reason) {}
 }

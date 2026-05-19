@@ -1,16 +1,18 @@
-import { defineStore } from 'pinia'
+import { acceptHMRUpdate, defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { workspaceTeamApi } from '@/api/index'
 import type { Capability, WorkspaceRole } from '@/composables/capabilities'
 import { ROLE_LEVEL } from '@/composables/capabilities'
 
 export interface Workspace {
-  id: number
+  // Backend-issued Snowflake id — kept as a string for its whole lifecycle so a
+  // Number() round-trip never truncates the 19-digit value (see CLAUDE.md).
+  id: string
   name: string
   slug: string
   description?: string
   basePath?: string
-  ownerId?: number
+  ownerId?: string
   settingsJson?: string
   createTime?: string
   updateTime?: string
@@ -24,8 +26,11 @@ export interface Workspace {
 
 export const useWorkspaceStore = defineStore('workspace', () => {
   const workspaces = ref<Workspace[]>([])
-  const currentWorkspaceId = ref<number | null>(
-    Number(localStorage.getItem('mc-workspace-id')) || null
+  // Stored as a string: the workspace id is a 19-digit Snowflake, so a Number()
+  // coercion here would corrupt every non-default workspace id and the reloaded
+  // value would match no workspace, silently snapping back to Default.
+  const currentWorkspaceId = ref<string | null>(
+    localStorage.getItem('mc-workspace-id') || null
   )
   const loading = ref(false)
 
@@ -102,9 +107,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
   }
 
-  async function switchWorkspace(id: number) {
+  async function switchWorkspace(id: string) {
     currentWorkspaceId.value = id
-    localStorage.setItem('mc-workspace-id', String(id))
+    localStorage.setItem('mc-workspace-id', id)
     accessLoaded.value = false
     currentCapabilities.value = new Set()
     await refreshAccess()
@@ -126,3 +131,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     refreshAccess,
   }
 })
+
+// Enable HMR for this store: editing it during `pnpm dev` patches the live
+// store instead of requiring a full page reload. Stripped from prod builds.
+if (import.meta.hot) {
+  import.meta.hot.accept(acceptHMRUpdate(useWorkspaceStore, import.meta.hot))
+}

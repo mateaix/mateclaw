@@ -31,10 +31,11 @@ public class WikiDirectoryScanService {
     private final WikiProperties properties;
 
     private static final Set<String> SUPPORTED_EXTENSIONS = Set.of(
-            "txt", "md", "pdf", "docx", "doc", "pptx", "xlsx"
+            "txt", "md", "csv", "pdf", "docx", "doc",
+            "pptx", "ppt", "xlsx", "xls", "html", "htm"
     );
 
-    private static final Set<String> TEXT_EXTENSIONS = Set.of("txt", "md");
+    private static final Set<String> TEXT_EXTENSIONS = Set.of("txt", "md", "csv");
 
     /**
      * 扫描结果
@@ -144,8 +145,9 @@ public class WikiDirectoryScanService {
                     String sourceType = switch (ext) {
                         case "pdf" -> "pdf";
                         case "docx", "doc" -> "docx";
-                        case "pptx" -> "pptx";
-                        case "xlsx" -> "xlsx";
+                        case "pptx", "ppt" -> "pptx";
+                        case "xlsx", "xls" -> "xlsx";
+                        case "html", "htm" -> "html";
                         default -> "text";
                     };
                     rawService.addFile(kbId, fileName, sourceType, absolutePath, Files.size(file));

@@ -9,6 +9,7 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import vip.mate.exception.MateClawException;
 import vip.mate.skill.event.SkillRemovedEvent;
+import vip.mate.skill.lifecycle.SkillLifecycleService;
 import vip.mate.skill.model.SkillEntity;
 import vip.mate.skill.repository.SkillFileMapper;
 import vip.mate.skill.repository.SkillMapper;
@@ -56,6 +57,8 @@ public class SkillService {
      * rows that the UI can no longer clear from the picker.
      */
     private final ApplicationEventPublisher eventPublisher;
+    /** Stamps the activity anchor on create / update / enable so the curator sees fresh skills as active. */
+    private final SkillLifecycleService lifecycleService;
     private vip.mate.skill.runtime.SkillRuntimeService runtimeService;
 
     /**
@@ -132,7 +135,8 @@ public class SkillService {
                                           String source,
                                           String runtime,
                                           Set<Long> pinnedSkillIds,
-                                          Long workspaceId) {
+                                          Long workspaceId,
+                                          String lifecycleState) {
         Page<SkillEntity> pageParam = new Page<>(Math.max(page, 1), Math.max(size, 1));
         LambdaQueryWrapper<SkillEntity> wrapper = new LambdaQueryWrapper<>();
         applyWorkspaceScope(wrapper, workspaceId);
@@ -156,6 +160,13 @@ public class SkillService {
         }
         if (scanStatus != null && !scanStatus.isBlank()) {
             wrapper.eq(SkillEntity::getSecurityScanStatus, scanStatus.trim().toUpperCase());
+        }
+        if (lifecycleState != null && !lifecycleState.isBlank()) {
+            wrapper.eq(SkillEntity::getLifecycleState, lifecycleState.trim().toLowerCase());
+        } else {
+            // Default catalog view hides archived skills — they have their own tab.
+            wrapper.and(w -> w.isNull(SkillEntity::getLifecycleState)
+                    .or().ne(SkillEntity::getLifecycleState, "archived"));
         }
 
         SkillCatalogSort catalogSort = SkillCatalogSort.parse(sort);
@@ -339,6 +350,10 @@ public class SkillService {
         skillMapper.insert(skill);
         log.info("Created skill: {} (type={})", skill.getName(), skill.getSkillType());
 
+        // Stamp the activity anchor so a freshly-created skill is anchored to
+        // now rather than ageing from create_time alone.
+        lifecycleService.bumpActivity(skill.getId());
+
         // 自动初始化工作区目录
         if (workspaceProperties.isAutoInit() && !hasExplicitSkillDir(skill)) {
             workspaceManager.initWorkspace(skill.getName(), skill.getSkillContent());
@@ -448,6 +463,9 @@ public class SkillService {
 
         skillMapper.updateById(existing);
         log.info("Updated skill: {}", existing.getName());
+
+        // A manual edit counts as activity — keep the skill anchored to now.
+        lifecycleService.bumpActivity(existing.getId());
 
         // 若 skillContent 变更且约定工作区存在，同步 SKILL.md
         syncSkillContentToWorkspace(existing);
@@ -567,6 +585,11 @@ public class SkillService {
         skill.setEnabled(enabled);
         skillMapper.updateById(skill);
         log.info("Skill {} {}", skill.getName(), enabled ? "enabled" : "disabled");
+
+        // Re-enabling a skill is an explicit "I use this again" signal.
+        if (enabled) {
+            lifecycleService.bumpActivity(id);
+        }
 
         // RFC-090 review #3 — when disabling, explicitly tear down any
         // registered wrapper tools (knowledge / acp). Without this the

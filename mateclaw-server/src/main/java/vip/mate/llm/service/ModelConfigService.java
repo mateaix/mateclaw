@@ -323,6 +323,24 @@ public class ModelConfigService {
         return getDefaultModel();
     }
 
+    /**
+     * Resolve an enabled model by its exact (provider, modelName) pair. Unlike
+     * {@link #resolveModel(String)} this does NOT fall back to the default —
+     * it returns {@code null} when nothing matches, leaving the fallback
+     * decision to the caller. Used to honour a per-conversation model pin while
+     * still degrading gracefully when that model was later disabled or deleted.
+     */
+    public ModelConfigEntity findEnabledModel(String provider, String modelName) {
+        if (!StringUtils.hasText(provider) || !StringUtils.hasText(modelName)) {
+            return null;
+        }
+        return modelConfigMapper.selectOne(new LambdaQueryWrapper<ModelConfigEntity>()
+                .eq(ModelConfigEntity::getProvider, provider)
+                .eq(ModelConfigEntity::getModelName, modelName)
+                .eq(ModelConfigEntity::getEnabled, true)
+                .last("LIMIT 1"));
+    }
+
     private void validateModel(ModelConfigEntity entity, Long currentId) {
         if (!StringUtils.hasText(entity.getName())) {
             throw new MateClawException("err.llm.name_required", "模型名称不能为空");

@@ -72,6 +72,17 @@ public class ReasoningNode implements NodeAction {
     private static final int DEFAULT_MAX_OUTPUT_TOKENS = 16384;
 
     /**
+     * DashScope's native chat API caps {@code max_tokens} at 8192 and returns a
+     * 400 {@code InvalidParameter} ("Range of max_tokens should be [1, 8192]")
+     * for anything larger. The failover layer misclassifies that 400 as
+     * "model not found" and silently switches to a different provider, so the
+     * per-call ceiling must be clamped to this value for DashScope-backed
+     * models — keeping {@link #DEFAULT_MAX_OUTPUT_TOKENS} for every other
+     * provider that does accept the larger budget.
+     */
+    private static final int DASHSCOPE_MAX_OUTPUT_TOKENS = 8192;
+
+    /**
      * Hermes-agent style enforcement clause appended to every ReasoningNode
      * system prompt. Treats narration ("I will now …") as a protocol violation
      * to prevent the recurring failure mode where a model says it will call a
@@ -768,9 +779,19 @@ public class ReasoningNode implements NodeAction {
         // 始终使用 OpenAiChatOptions（而非 ToolCallingChatOptions），
         // 因为 ToolCallingChatOptions 会丢失 OpenAI 特有参数（streamUsage 等），
         // 导致 Kimi 等 OpenAI 兼容 API 响应异常或提前截断。
+        // DashScope rejects max_tokens above its 8192 ceiling with a 400 that
+        // the failover layer misreads as "model not found"; clamp so a
+        // DashScope-backed model never overflows the provider limit.
+        int effectiveMaxTokens = maxOutputTokens;
+        if (chatModel instanceof com.alibaba.cloud.ai.dashscope.chat.DashScopeChatModel
+                && effectiveMaxTokens > DASHSCOPE_MAX_OUTPUT_TOKENS) {
+            log.debug("[ReasoningNode] Clamping max_tokens {} -> {} for DashScope-backed model",
+                    effectiveMaxTokens, DASHSCOPE_MAX_OUTPUT_TOKENS);
+            effectiveMaxTokens = DASHSCOPE_MAX_OUTPUT_TOKENS;
+        }
         OpenAiChatOptions.Builder oaiBuilder = OpenAiChatOptions.builder()
                 .toolCallbacks(toolCallbacks)
-                .maxTokens(maxOutputTokens);
+                .maxTokens(effectiveMaxTokens);
         if (StringUtils.hasText(effectiveReasoning)) {
             oaiBuilder.reasoningEffort(effectiveReasoning);
         }

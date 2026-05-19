@@ -46,11 +46,16 @@ public class WikiContentNormalizer {
         if (rawText == null) return "";
         String type = sourceType == null ? "" : sourceType.toLowerCase();
         return switch (type) {
-            case "url", "html" -> normalizeHtml(rawText);
+            // Web and HTML sources can still carry raw markup, so they go through
+            // normalizeHtml, which strips script/style/nav/footer noise. normalizeHtml
+            // also recognizes text that was already tag-stripped upstream (an extracted
+            // .html/.htm upload re-entering the normalizer) and leaves that text's line
+            // structure intact instead of re-collapsing its recovered headings.
+            case "url", "html", "htm" -> normalizeHtml(rawText);
             // PDF text from DocumentExtractTool may already contain "--- Page N ---"
             // markers; we keep them so the preprocessor can map char offsets to pages.
             case "pdf" -> collapseBlankLines(rawText);
-            case "docx", "pptx", "xlsx" -> collapseBlankLines(rawText);
+            case "docx", "doc", "pptx", "ppt", "xlsx", "xls" -> collapseBlankLines(rawText);
             case "markdown", "md", "text", "paste" -> collapseBlankLines(rawText);
             default -> collapseBlankLines(rawText);
         };
@@ -58,16 +63,46 @@ public class WikiContentNormalizer {
 
     /**
      * Strip nav/footer/script/style/aside and ad-like classes from HTML, then
-     * return readable text. Falls through to the raw input when the document
-     * is too large to parse safely or jsoup throws.
+     * return readable text.
+     * <p>
+     * The output never carries markup: input that still contains element
+     * structure is parsed and stripped; input with no element structure is
+     * reduced to its text content. When the document cannot be parsed (too
+     * large, or jsoup throws) it is run through {@link #stripMarkupLossy(String)} so that
+     * script/style bodies and tags are dropped without a full parse — the raw
+     * markup is never passed through verbatim.
      */
     private String normalizeHtml(String rawHtml) {
         if (rawHtml.length() > MAX_HTML_LEN) {
-            log.warn("[WikiContentNormalizer] HTML payload exceeds {} bytes, skipping cleanup", MAX_HTML_LEN);
-            return collapseBlankLines(rawHtml);
+            log.warn("[WikiContentNormalizer] HTML payload exceeds {} bytes, stripping markup without a full parse", MAX_HTML_LEN);
+            return stripMarkupLossy(rawHtml);
         }
         try {
             Document doc = Jsoup.parse(rawHtml);
+
+            // Distinguish genuine HTML markup from text that was already tag-stripped
+            // upstream (an extracted .html/.htm upload re-entering the normalizer).
+            // jsoup synthesizes an <html>/<head>/<body> skeleton even for plain text,
+            // so the absence of any element children means there is no real markup.
+            // Plain text must skip the element walker below: that walker relies on
+            // Element.ownText(), which collapses newlines and would merge a heading
+            // line into the paragraph that follows it.
+            Element body = doc.body();
+            Element head = doc.head();
+            boolean hasMarkup = (body != null && !body.children().isEmpty())
+                    || (head != null && !head.children().isEmpty());
+            if (!hasMarkup) {
+                // No element structure — text that was already tag-stripped upstream
+                // (an extracted .html/.htm upload). Return its whole text rather than
+                // the raw string: wholeText() keeps the original line breaks (so ATX
+                // headings stay on their own lines) but carries no tags, no attributes
+                // and no comment nodes. The raw string must never be returned here —
+                // a bare <html>/<body> skeleton can still hold event-handler
+                // attributes that would otherwise leak through verbatim.
+                Element textRoot = body != null ? body : doc;
+                return collapseBlankLines(textRoot.wholeText());
+            }
+
             // Drop structural noise.
             doc.select("script, style, noscript, nav, header, footer, aside, form, iframe").remove();
             // Drop common ad / share / cookie banners by class hint.
@@ -94,11 +129,39 @@ public class WikiContentNormalizer {
                 }
             }
             String out = sb.toString();
-            return out.isBlank() ? collapseBlankLines(rawHtml) : collapseBlankLines(out);
+            if (!out.isBlank()) {
+                return collapseBlankLines(out);
+            }
+            // The walker produced nothing — the document was pure script/style/nav
+            // noise. Fall back to jsoup's plain-text extraction, never the raw markup:
+            // returning rawHtml here would carry <script>/<style> straight through into
+            // stored wiki content. Element.text() reads TextNodes only, and the noise
+            // elements were already removed above, so the result is markup-free.
+            String plain = doc.text();
+            return plain.isBlank() ? "" : collapseBlankLines(plain);
         } catch (Exception e) {
-            log.warn("[WikiContentNormalizer] HTML parse failed, falling back to raw text: {}", e.getMessage());
-            return collapseBlankLines(rawHtml);
+            log.warn("[WikiContentNormalizer] HTML parse failed, stripping markup without a full parse: {}", e.getMessage());
+            return stripMarkupLossy(rawHtml);
         }
+    }
+
+    /** Matches a {@code <script>}/{@code <style>} block including its text body. */
+    private static final Pattern SCRIPT_STYLE_BLOCK =
+            Pattern.compile("(?is)<(script|style)\\b[^>]*>.*?</\\1\\s*>");
+    /** Matches any remaining HTML/XML tag. */
+    private static final Pattern ANY_TAG = Pattern.compile("(?s)<[^>]*>");
+
+    /**
+     * Last-resort sanitizer for HTML that could not be parsed with the element
+     * walker (oversized payloads, or a parser failure). Drops the text body of
+     * {@code <script>}/{@code <style>} blocks, then removes every remaining tag.
+     * Lossy by design — document structure is gone — but the result carries no
+     * markup, so it is safe to store and render downstream.
+     */
+    private String stripMarkupLossy(String rawHtml) {
+        String noScript = SCRIPT_STYLE_BLOCK.matcher(rawHtml).replaceAll(" ");
+        String noTags = ANY_TAG.matcher(noScript).replaceAll(" ");
+        return collapseBlankLines(noTags);
     }
 
     /**

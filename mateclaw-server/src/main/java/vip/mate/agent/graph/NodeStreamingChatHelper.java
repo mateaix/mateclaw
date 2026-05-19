@@ -179,20 +179,40 @@ public class NodeStreamingChatHelper {
     }
 
     /**
-     * RFC-009 Phase 4 — map an {@link ErrorType} to the matching pool
+     * Map an {@link ErrorType} to the matching pool
      * {@link vip.mate.llm.failover.AvailableProviderPool.RemovalSource} for
-     * HARD failures (AUTH / BILLING / MODEL_NOT_FOUND). Returns {@code null}
-     * for SOFT errors and benign types — those keep the provider in-pool and
-     * are handled by {@link vip.mate.llm.failover.ProviderHealthTracker}'s
-     * cooldown instead.
+     * provider-wide HARD failures (AUTH / BILLING). Returns {@code null} for
+     * SOFT errors, benign types, and model-scoped errors — those keep the
+     * provider in-pool.
+     *
+     * <p>{@code MODEL_NOT_FOUND} is deliberately excluded: it means the
+     * provider rejected one specific model id, not that the provider is
+     * unusable. Evicting the whole provider would needlessly take its other
+     * models offline. SOFT errors are absorbed by
+     * {@link vip.mate.llm.failover.ProviderHealthTracker}'s cooldown instead.</p>
      */
     private static vip.mate.llm.failover.AvailableProviderPool.RemovalSource hardRemovalSource(ErrorType type) {
         if (type == null) return null;
         return switch (type) {
             case AUTH_ERROR -> vip.mate.llm.failover.AvailableProviderPool.RemovalSource.AUTH_ERROR;
             case BILLING -> vip.mate.llm.failover.AvailableProviderPool.RemovalSource.BILLING;
-            case MODEL_NOT_FOUND -> vip.mate.llm.failover.AvailableProviderPool.RemovalSource.MODEL_NOT_FOUND;
             default -> null;
+        };
+    }
+
+    /**
+     * True when {@code type} reflects the <i>provider's own health</i> (auth,
+     * billing, rate limit, server error, empty response) rather than something
+     * specific to the requested model or prompt. Only provider-level failures
+     * should feed pool eviction and the consecutive-failure cooldown tracker —
+     * a {@code MODEL_NOT_FOUND} / {@code CLIENT_ERROR} / {@code PROMPT_TOO_LONG}
+     * says nothing about whether the provider's other models still work.
+     */
+    private static boolean isProviderLevelFailure(ErrorType type) {
+        if (type == null) return false;
+        return switch (type) {
+            case NONE, PROMPT_TOO_LONG, CLIENT_ERROR, THINKING_BLOCK_ERROR, MODEL_NOT_FOUND -> false;
+            default -> true;
         };
     }
 
@@ -521,15 +541,23 @@ public class NodeStreamingChatHelper {
                     removeFromPool(primaryProviderId, ErrorType.AUTH_ERROR, lastResult.errorMessage());
                     break;
                 }
-                // RFC-009 P3.2: BILLING / MODEL_NOT_FOUND — provider-side hard failures
-                // that won't change on retry. Skip to fallback chain (a different
-                // provider may have credits, or the model name may be valid there).
-                if (lastResult.errorType() == ErrorType.BILLING
-                        || lastResult.errorType() == ErrorType.MODEL_NOT_FOUND) {
-                    log.warn("[{}] Primary error={} — skipping same-model retries, handing off to fallback chain",
-                            phase, lastResult.errorType());
+                // BILLING — provider-side hard failure (out of credit). Won't change
+                // on retry and affects every model on the provider, so evict it and
+                // hand off to the fallback chain (a different provider may have credits).
+                if (lastResult.errorType() == ErrorType.BILLING) {
+                    log.warn("[{}] Primary billing failure — skipping same-model retries, handing off to fallback chain", phase);
                     recordPrimary(false);
-                    removeFromPool(primaryProviderId, lastResult.errorType(), lastResult.errorMessage());
+                    removeFromPool(primaryProviderId, ErrorType.BILLING, lastResult.errorMessage());
+                    break;
+                }
+                // MODEL_NOT_FOUND — the provider rejected this specific model id. The
+                // provider itself is healthy, so do NOT evict it from the pool or
+                // record a provider-level failure: that would take its sibling models
+                // down too. Just skip same-model retries and hand off to the fallback
+                // chain — a different provider may recognize the model name.
+                if (lastResult.errorType() == ErrorType.MODEL_NOT_FOUND) {
+                    log.warn("[{}] Primary model not found — handing off to fallback chain "
+                            + "(provider kept available for its other models)", phase);
                     break;
                 }
                 // CLIENT_ERROR (400 Bad Request): 不重试（参数/格式错误重试也不会变）
@@ -560,18 +588,32 @@ public class NodeStreamingChatHelper {
                     logPerfSummary(phase, conversationId, callStartMs, llmCallCount, retryCount, failoverCount);
                     return lastResult;
                 }
-                // Any other non-null errored result with a classified type that doStreamCall
-                // chose NOT to retry (i.e. UNKNOWN, or RATE_LIMIT/SERVER_ERROR past MAX_RETRIES)
-                // must exit — otherwise we silently spin through attempts and waste seconds
-                // per turn on unrecoverable errors like DashScope's "url error" / unknown model.
+                // RATE_LIMIT / SERVER_ERROR past their retry budget are provider-level
+                // failures: the same model will not recover within this turn, but a
+                // different provider can. Break to the fallback chain instead of
+                // returning — recordPrimary(false) runs once at the post-loop provider
+                // health check below, and if every fallback also fails the chain
+                // walker re-surfaces this same error to the caller.
+                if (lastResult.errorType() == ErrorType.RATE_LIMIT
+                        || lastResult.errorType() == ErrorType.SERVER_ERROR) {
+                    log.warn("[{}] Primary exhausted retries (type={}) — handing off to fallback chain",
+                            phase, lastResult.errorType());
+                    break;
+                }
+                // Any other non-null errored result (e.g. UNKNOWN) that doStreamCall
+                // chose NOT to retry must exit — otherwise we silently spin through
+                // attempts and waste seconds per turn on unrecoverable errors like
+                // DashScope's "url error" / unknown model.
                 recordPrimary(false);
                 logPerfSummary(phase, conversationId, callStartMs, llmCallCount, retryCount, failoverCount);
                 return lastResult;
             }
             // lastResult == null 表示需要重试
         }
-        // If we exhausted the retry loop without a verdict, primary effectively failed.
-        if (!primarySkipped && lastResult != null && lastResult.errorType() != ErrorType.NONE) {
+        // If we exhausted the retry loop without a verdict, primary effectively
+        // failed. Only count it against provider health for provider-level errors —
+        // a MODEL_NOT_FOUND break above must not nudge the provider toward cooldown.
+        if (!primarySkipped && lastResult != null && isProviderLevelFailure(lastResult.errorType())) {
             recordPrimary(false);
         }
 
@@ -621,11 +663,17 @@ public class NodeStreamingChatHelper {
                 logPerfSummary(phase, conversationId, callStartMs, llmCallCount, retryCount, failoverCount);
                 return fallbackResult;
             }
-            if (healthTracker != null) healthTracker.recordFailure(entry.providerId());
+            // Only provider-level failures count toward the cooldown tracker. A
+            // null result is a retryable soft failure; a MODEL_NOT_FOUND result is
+            // model-scoped and must not penalise an otherwise-healthy provider.
+            if (healthTracker != null
+                    && (fallbackResult == null || isProviderLevelFailure(fallbackResult.errorType()))) {
+                healthTracker.recordFailure(entry.providerId());
+            }
             if (fallbackResult != null) {
-                // RFC-009 Phase 4: HARD errors evict from the pool so later
-                // walks skip this provider outright. SOFT errors keep it
-                // in-pool and let the tracker's cooldown absorb the blip.
+                // HARD errors (auth / billing) evict the provider from the pool so
+                // later walks skip it outright. SOFT and model-scoped errors keep it
+                // in-pool — absorbed by the tracker's cooldown or simply retried.
                 removeFromPool(entry.providerId(), fallbackResult.errorType(), fallbackResult.errorMessage());
                 lastResult = fallbackResult; // remember most recent to report if the whole chain fails
             }

@@ -520,6 +520,11 @@ public class ChatController {
             AtomicBoolean finalized = new AtomicBoolean(false);
             try {
                 conversationService.getOrCreateConversation(conversationId, agentId, username, workspaceId);
+                // Pin the model the user picked for this conversation so later
+                // turns (and the runtime model resolver) honour it independently
+                // of every other conversation.
+                conversationService.updateConversationModel(conversationId,
+                        request.getModelProvider(), request.getModelName());
                 List<MessageContentPart> requestParts = normalizeRequestParts(request);
                 String promptText = buildPromptText(message, requestParts);
                 conversationService.saveMessage(conversationId, "user", message, requestParts);
@@ -1151,6 +1156,14 @@ public class ChatController {
         private Long lastEventId;
         /** 思考深度：off / low / medium / high / max，null 表示跟随 Agent 默认 */
         private String thinkingLevel;
+        /**
+         * Provider id of the model the user picked for this conversation.
+         * Paired with {@link #modelName}; null means "no per-conversation
+         * override — use the agent / global default".
+         */
+        private String modelProvider;
+        /** Model id the user picked for this conversation. See {@link #modelProvider}. */
+        private String modelName;
     }
 
     /**

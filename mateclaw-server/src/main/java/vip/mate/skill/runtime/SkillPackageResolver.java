@@ -73,6 +73,12 @@ public class SkillPackageResolver {
      */
     private final AcpSkillWrapperToolFactory acpWrapperFactory;
     /**
+     * Script-entrypoint wrapper factory for skills that declare a
+     * {@code scripts} manifest block. {@code @Lazy} to match the sibling
+     * wrapper factories and stay clear of bean construction-order loops.
+     */
+    private final ScriptSkillWrapperToolFactory scriptWrapperFactory;
+    /**
      * {@code @Lazy} on ToolRegistry — same lazy-resolution loop as
      * {@code SkillDependencyChecker}; without this we'd reach for the
      * registry before its plugin tools have wired up.
@@ -109,6 +115,7 @@ public class SkillPackageResolver {
                                  SkillMapper skillMapper,
                                  @Lazy WikiSkillWrapperToolFactory wikiWrapperFactory,
                                  @Lazy AcpSkillWrapperToolFactory acpWrapperFactory,
+                                 @Lazy ScriptSkillWrapperToolFactory scriptWrapperFactory,
                                  @Lazy ToolRegistry toolRegistry) {
         this.frontmatterParser = frontmatterParser;
         this.manifestParser = manifestParser;
@@ -120,6 +127,7 @@ public class SkillPackageResolver {
         this.skillMapper = skillMapper;
         this.wikiWrapperFactory = wikiWrapperFactory;
         this.acpWrapperFactory = acpWrapperFactory;
+        this.scriptWrapperFactory = scriptWrapperFactory;
         this.toolRegistry = toolRegistry;
     }
 
@@ -533,6 +541,11 @@ public class SkillPackageResolver {
             // registeredWrappers map so deregistration covers both.
             applyAcpWrappers(resolved, manifest);
 
+            // Skills that declare a scripts[] block get one typed wrapper
+            // tool per entrypoint, so a script consuming structured input
+            // is driven by schema fields instead of a hand-built JSON arg.
+            applyScriptWrappers(resolved, manifest);
+
             // Build requirement lookup for feature checks.
             Map<String, SkillManifest.RequirementDef> reqByKey = new LinkedHashMap<>();
             for (SkillManifest.RequirementDef r : manifest.getRequires()) {
@@ -804,6 +817,58 @@ public class SkillPackageResolver {
                 manifest.getAllowedTools() == null ? java.util.List.of() : manifest.getAllowedTools());
         for (String wrapperName : acpWrapperFactory.wrapperNames(manifest)) {
             if (!mergedAllowed.contains(wrapperName)) mergedAllowed.add(wrapperName);
+        }
+        manifest.setAllowedTools(mergedAllowed);
+    }
+
+    /**
+     * Register typed wrapper tools for a skill's declared script entrypoints
+     * (the {@code scripts} manifest block). Parallel structure to
+     * {@link #applyKnowledgeWrappers} / {@link #applyAcpWrappers}.
+     *
+     * <p>Skipped for {@code knowledge} / {@code acp} skills: those types own
+     * the wrapper slot, and this method must never deregister wrappers a
+     * sibling branch just registered. Also skipped when the skill declares
+     * no entrypoints, is disabled, or has no directory.
+     */
+    private void applyScriptWrappers(ResolvedSkill resolved, SkillManifest manifest) {
+        String type = manifest.getType();
+        if ("knowledge".equalsIgnoreCase(type) || "acp".equalsIgnoreCase(type)) {
+            return;
+        }
+        boolean hasScripts = manifest.getScripts() != null && !manifest.getScripts().isEmpty();
+        if (!hasScripts || !resolved.isEnabled() || resolved.getSkillDir() == null) {
+            return;
+        }
+        // Fresh build so a re-resolve diff-updates the registry cleanly.
+        // applyKnowledgeWrappers already cleared any prior set for a
+        // non-knowledge skill; this is a no-op safety net.
+        deregisterSkillWrappers(resolved.getId());
+
+        java.util.List<ToolCallback> wrappers = scriptWrapperFactory.buildWrappers(resolved, manifest);
+        if (wrappers.isEmpty()) {
+            return;
+        }
+        java.util.Set<String> registered = new java.util.LinkedHashSet<>();
+        Long entityId = resolved.getId();
+        for (ToolCallback cb : wrappers) {
+            String name = cb.getToolDefinition().name();
+            registered.add(name);
+            toolRegistry.registerPluginTool(cb, () ->
+                    entityId != null && resolved.isEnabled());
+        }
+        if (entityId != null) {
+            registeredWrappers.put(entityId, registered);
+        }
+
+        // Append wrapper names to allowedTools so getEffectiveAllowedTools
+        // surfaces them like any other manifest-declared tool.
+        java.util.List<String> mergedAllowed = new java.util.ArrayList<>(
+                manifest.getAllowedTools() == null ? java.util.List.of() : manifest.getAllowedTools());
+        for (String wrapperName : scriptWrapperFactory.wrapperNames(manifest)) {
+            if (!mergedAllowed.contains(wrapperName)) {
+                mergedAllowed.add(wrapperName);
+            }
         }
         manifest.setAllowedTools(mergedAllowed);
     }

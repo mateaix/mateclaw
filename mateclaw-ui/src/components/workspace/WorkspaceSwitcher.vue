@@ -127,7 +127,7 @@ onMounted(() => {
   store.fetchWorkspaces()
 })
 
-function onSelect(id: number) {
+function onSelect(id: string) {
   open.value = false
   if (id !== currentWorkspaceId.value) {
     store.switchWorkspace(id)

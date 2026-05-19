@@ -374,6 +374,7 @@ public class WikiTool {
                 .set("message", "Page created successfully")
                 .set("title", page.getTitle())
                 .set("slug", page.getSlug())
+                .set("pageId", page.getId())
                 .set("kbId", kbId)
                 .toString();
     }
@@ -817,8 +818,8 @@ public class WikiTool {
     // ==================== Helpers ====================
 
     private Long resolveKbId(Long agentId) {
-        List<WikiKnowledgeBaseEntity> kbs = kbService.listByAgentId(agentId);
-        return kbs.isEmpty() ? null : kbs.get(0).getId();
+        WikiKnowledgeBaseEntity kb = kbService.resolvePrimaryKb(agentId);
+        return kb == null ? null : kb.getId();
     }
 
     private JSONArray resolveSourceFiles(String sourceRawIdsJson) {

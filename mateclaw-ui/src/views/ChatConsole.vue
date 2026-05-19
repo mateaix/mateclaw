@@ -342,7 +342,11 @@ const providersUnavailable = ref(false)
 // otherwise the model selector trigger would show its 配置模型 fallback even
 // though there IS an active model.
 const enabledModels = ref<ModelConfig[]>([])
+// The model the CURRENT conversation uses. Per-conversation — switching it
+// never leaks into other conversations (see selectModel / applyConversationModel).
 const activeModels = ref<ActiveModelsInfo | null>(null)
+// Global default model — seeds the selector for conversations with no pin yet.
+const globalDefaultModel = ref<{ providerId: string; model: string } | null>(null)
 const pendingAttachments = ref<ChatAttachment[]>([])
 const uploadingAttachment = ref(false)
 
@@ -379,18 +383,30 @@ function onAgentPicked(value: string | number | null) {
   }
 }
 
-async function selectModel(value: string) {
+function selectModel(value: string) {
   const [providerId, model] = value.split('::')
   if (!providerId || !model) return
-  modelSaving.value = true
-  try {
-    const res: any = await modelApi.setActive({ providerId, model })
-    activeModels.value = res.data || { activeLlm: { providerId, model } }
-    await loadModelState()
-  } catch (e) {
-    mcToast.error(t('chat.switchModelFailed'))
-  } finally {
-    modelSaving.value = false
+  // Per-conversation model: switching here only affects THIS conversation.
+  // The backend pins it onto the conversation row when the next message is
+  // sent (see sendChatMessage payload); we also patch the local list entry so
+  // re-opening the conversation restores the choice without a round-trip.
+  activeModels.value = { activeLlm: { providerId, model } }
+  const conv = conversations.value.find(c => c.conversationId === currentConversationId.value)
+  if (conv) {
+    conv.modelProvider = providerId
+    conv.modelName = model
+  }
+}
+
+/**
+ * Point the model selector at a conversation's pinned model, or the global
+ * default when the conversation has no pin yet (fresh chat, IM, cron).
+ */
+function applyConversationModel(conv?: Conversation | null) {
+  if (conv?.modelProvider && conv?.modelName) {
+    activeModels.value = { activeLlm: { providerId: conv.modelProvider, model: conv.modelName } }
+  } else if (globalDefaultModel.value) {
+    activeModels.value = { activeLlm: { ...globalDefaultModel.value } }
   }
 }
 
@@ -590,6 +606,25 @@ function markConversationViewed(conversationId: string | undefined, lastActiveTi
 }
 
 const currentRuntimeModel = computed(() => {
+  // Bind to the per-conversation active model — the same source the model
+  // selector reads — so the indicator updates the instant the user switches.
+  // Reading the global defaultModel here left the indicator frozen on the
+  // default while the selector moved.
+  const providerId = activeModels.value?.activeLlm?.providerId
+  const modelName = activeModels.value?.activeLlm?.model
+  if (providerId && modelName) {
+    const provider = providers.value.find((p) => p.id === providerId)
+    const all = provider ? [...(provider.models || []), ...(provider.extraModels || [])] : []
+    const hit = all.find((m) => m.id === modelName || m.name === modelName)
+    if (hit) return `${hit.name || hit.id} (${hit.id})`
+    // Viewer-level users get an empty providers list — resolve via /models/enabled.
+    const em = enabledModels.value.find(
+      (m) => m.provider === providerId && (m.modelName === modelName || m.name === modelName)
+    )
+    if (em) return em.name ? `${em.name} (${em.modelName})` : em.modelName
+    return modelName
+  }
+  // No active model resolved yet — fall back to the global default, then the agent.
   if (defaultModel.value?.name && defaultModel.value?.modelName) {
     return `${defaultModel.value.name} (${defaultModel.value.modelName})`
   }
@@ -1013,7 +1048,16 @@ async function loadModelState() {
       modelApi.listEnabled(),
     ])
     defaultModel.value = defaultRes.data || null
-    activeModels.value = activeRes.data || null
+    const ga = activeRes.data?.activeLlm
+    globalDefaultModel.value = ga?.providerId && ga?.model
+      ? { providerId: ga.providerId, model: ga.model }
+      : null
+    // Seed the selector when no conversation has set it yet (fresh chat, or
+    // before a conversation is selected). A conversation that already has a
+    // model keeps it — selectConversation/applyConversationModel own that.
+    if (!activeModels.value && globalDefaultModel.value) {
+      activeModels.value = { activeLlm: { ...globalDefaultModel.value } }
+    }
     enabledModels.value = enabledRes.data || []
   } catch (e) {
     mcToast.error(t('chat.loadModelFailed'))
@@ -1177,6 +1221,8 @@ async function selectConversation(conv: Conversation) {
   }
   currentConversationId.value = conv.conversationId
   selectedAgentId.value = conv.agentId || selectedAgentId.value
+  // Restore this conversation's pinned model into the selector.
+  applyConversationModel(conv)
   // Reset cron placeholder state up front; the immediate fetch below repopulates
   // it for cron conversations so the user doesn't wait up to 4s for the next tick.
   activeCronRuns.value = []
@@ -1308,6 +1354,8 @@ function newConversation() {
   resetForNewConversation()
   currentConversationId.value = `conv_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
   messages.value = []
+  // A fresh conversation starts on the global default model.
+  applyConversationModel()
 }
 
 // The sidebar performs the delete API call(s) and emits the removed ids.
@@ -1475,6 +1523,8 @@ async function handleSendMessage(content: string) {
       agentId: selectedAgentId.value,
       contentParts,
       thinkingLevel: thinkingLevel.value,
+      modelProvider: activeModels.value?.activeLlm?.providerId,
+      modelName: activeModels.value?.activeLlm?.model,
       attachments: outgoingAttachments.map(a => ({
         type: 'file' as const,
         fileUrl: a.url,
@@ -1928,6 +1978,8 @@ function handleCodeCopy(e: MouseEvent) {
 }
 
 .agent-badge-icon {
+  display: flex;
+  align-items: center;
   font-size: 14px;
 }
 

@@ -32,10 +32,10 @@
             <template v-else-if="isDragging">{{ t('wiki.dropToUpload') }}</template>
             <template v-else>{{ t('wiki.dropFiles') }}</template>
           </span>
-          <span class="upload-hint">.txt, .md, .pdf, .docx</span>
+          <span class="upload-hint">.txt .md .csv .pdf .docx .xlsx .pptx .html</span>
         </div>
       </div>
-      <input ref="fileInput" type="file" style="display:none" accept=".txt,.md,.pdf,.docx,.doc" multiple @change="handleFileSelect" />
+      <input ref="fileInput" type="file" style="display:none" accept=".txt,.md,.csv,.pdf,.docx,.doc,.xlsx,.xls,.pptx,.ppt,.html,.htm" multiple @change="handleFileSelect" />
       <button class="btn-secondary add-text-btn" @click="showAddText = true">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>

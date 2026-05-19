@@ -14,9 +14,7 @@
     <div v-if="contradictions.length > 0" class="contradiction-bar" @click="showContradictions = !showContradictions">
       <span class="contradiction-dot" />
       <span>{{ t('memory.facts.contradictions', { count: contradictions.length }) }}</span>
-      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <polyline :points="showContradictions ? '18 15 12 9 6 15' : '6 9 12 15 18 9'" />
-      </svg>
+      <MemoryIcon :name="showContradictions ? 'chevron-up' : 'chevron-down'" :size="12" />
     </div>
 
     <!-- Contradiction inbox -->
@@ -33,19 +31,10 @@
     </Transition>
 
     <!-- Loading -->
-    <div v-if="loading" class="fact-loading">
-      <div class="skeleton-card" v-for="i in 3" :key="i"><div class="skeleton-line" /><div class="skeleton-line short" /></div>
-    </div>
+    <MemorySkeleton v-if="loading" />
 
     <!-- Empty -->
-    <div v-else-if="facts.length === 0" class="fact-empty">
-      <svg class="empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <polyline points="21 8 21 21 3 21 3 8"/>
-        <rect x="1" y="3" width="22" height="5"/>
-        <line x1="10" y1="12" x2="14" y2="12"/>
-      </svg>
-      <p>{{ t('memory.facts.empty') }}</p>
-    </div>
+    <MemoryEmptyState v-else-if="facts.length === 0" icon="archive" :text="t('memory.facts.empty')" />
 
     <!-- Fact cards -->
     <div v-else class="fact-cards">
@@ -63,20 +52,13 @@
           <span class="fact-use-count" v-if="fact.useCount > 0">{{ t('memory.facts.used', { n: fact.useCount }) }}</span>
           <div class="fact-actions">
             <button class="action-btn helpful" @click="feedback(fact.id, 'HELPFUL')" :title="t('memory.facts.helpful')">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"/>
-              </svg>
+              <MemoryIcon name="thumbs-up" :size="14" />
             </button>
             <button class="action-btn unhelpful" @click="feedback(fact.id, 'UNHELPFUL')" :title="t('memory.facts.unhelpful')">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3zm7-13h2.67A2.31 2.31 0 0 1 22 4v7a2.31 2.31 0 0 1-2.33 2H17"/>
-              </svg>
+              <MemoryIcon name="thumbs-down" :size="14" />
             </button>
             <button class="action-btn forget" @click="forget(fact.id)" :title="t('memory.facts.forget')">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <polyline points="3 6 5 6 21 6"/>
-                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-              </svg>
+              <MemoryIcon name="trash" :size="14" />
             </button>
           </div>
         </div>
@@ -86,11 +68,14 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, watch } from 'vue'
+import { ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { mcToast } from '@/composables/useMcToast'
 import { http } from '@/api'
 import FactTrustBar from './FactTrustBar.vue'
+import MemoryIcon from './MemoryIcon.vue'
+import MemorySkeleton from './MemorySkeleton.vue'
+import MemoryEmptyState from './MemoryEmptyState.vue'
 
 const props = defineProps<{ agentId: string | number }>()
 const { t } = useI18n()
@@ -126,7 +111,7 @@ function search() { loadFacts() }
 async function feedback(factId: number, kind: string) {
   try {
     await http.post(`/memory/${props.agentId}/facts/${factId}/feedback`, { kind })
-    mcToast.success(kind === 'HELPFUL' ? '👍' : '👎')
+    mcToast.success(t('memory.facts.' + (kind === 'HELPFUL' ? 'helpful' : 'unhelpful')))
     loadFacts()
   } catch (e: any) { mcToast.error(e.message || 'Failed') }
 }
@@ -211,14 +196,6 @@ async function resolve(contradictionId: number, resolution: string) {
 .action-btn.helpful:hover { color: #34c759; }
 .action-btn.unhelpful:hover { color: #ff9f0a; }
 .action-btn.forget:hover { background: rgba(255,59,48,0.1); color: #ff3b30; }
-
-/* States */
-.fact-loading { padding: 8px 0; }
-.skeleton-card { padding: 12px; margin-bottom: 6px; }
-.skeleton-line { height: 10px; border-radius: 4px; background: var(--mc-border-light); margin-bottom: 8px; }
-.skeleton-line.short { width: 60%; }
-.fact-empty { display: flex; flex-direction: column; align-items: center; padding: 40px 0; color: var(--mc-text-tertiary); }
-.empty-icon { width: 32px; height: 32px; margin-bottom: 10px; opacity: 0.7; }
 
 .slide-down-enter-active, .slide-down-leave-active { transition: all 0.2s ease; }
 .slide-down-enter-from, .slide-down-leave-to { opacity: 0; transform: translateY(-8px); }

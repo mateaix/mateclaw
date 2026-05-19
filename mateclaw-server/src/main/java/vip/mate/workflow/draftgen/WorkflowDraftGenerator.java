@@ -103,7 +103,16 @@ public class WorkflowDraftGenerator {
 
             # 命名
 
-            workflow.name 与 step.name 用英文 kebab-case (collect-sales-data / ask-finance-approval)。description 用用户母语。
+            workflow.name 用英文 kebab-case (daily-sales-summary)。
+            step.name 与 outputVar 一律用英文 snake_case (collect_sales_data / sales_summary)。它们会作为标识符进入 Pebble 表达式——连字符会被解析成减号，导致工作流运行期崩溃。绝不能在 step.name 或 outputVar 里用连字符。
+            description 用用户母语。
+
+            # 跨步引用（promptTemplate / dispatch content / write_memory content / expression 里引用上游产出）
+
+            引用上游步骤的产出，只能写 {{ outputs.<outputVar> }} —— <outputVar> 必须是某个更早步骤声明的 outputVar 字段，绝对不是 step.name。
+            outputContentType 为 json 时可取子字段：{{ outputs.<outputVar>.<field> }}；为 text 时直接 {{ outputs.<outputVar> }}，不带子字段。
+            正例：上游 step 的 outputVar 是 news_data → 下游写 {{ outputs.news_data }}。
+            反例：{{ outputs.search-competitor-news.news_data }} —— 既用了 step.name 又带了连字符，必然运行失败。
 
             # 占位字段
 
@@ -184,6 +193,10 @@ public class WorkflowDraftGenerator {
                     .call()
                     .content();
         } catch (Exception e) {
+            // Log the full cause chain — the controller / agent tool only
+            // surface getMessage(), so without this a provider-side failure
+            // (auth, NPE in the chat client, ...) leaves no stack trace.
+            log.error("Workflow draft generator chat call failed", e);
             throw new IllegalStateException(
                     "Workflow draft generator chat call failed: " + e.getMessage(), e);
         }

@@ -2,14 +2,7 @@
   <Transition name="slide-down">
     <div v-if="card" class="morning-card">
       <div class="morning-card__header">
-        <span class="morning-card__icon">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M17 18a5 5 0 0 0-10 0"/><line x1="12" y1="2" x2="12" y2="9"/>
-            <line x1="4.22" y1="10.22" x2="5.64" y2="11.64"/><line x1="1" y1="18" x2="3" y2="18"/>
-            <line x1="21" y1="18" x2="23" y2="18"/><line x1="18.36" y1="11.64" x2="19.78" y2="10.22"/>
-            <line x1="23" y1="22" x2="1" y2="22"/><polyline points="8 6 12 2 16 6"/>
-          </svg>
-        </span>
+        <MemoryIcon name="sunrise" :size="16" class="morning-card__icon" />
         <span class="morning-card__title">{{ t('memory.morningCard.title') }}</span>
         <button class="morning-card__close" @click="dismiss">&times;</button>
       </div>
@@ -28,6 +21,7 @@
 import { ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { http } from '@/api'
+import MemoryIcon from './MemoryIcon.vue'
 
 const props = defineProps<{ agentId: string | number }>()
 const { t } = useI18n()
@@ -61,7 +55,7 @@ async function dismiss() {
   align-items: center;
   gap: 6px;
 }
-.morning-card__icon { display: inline-flex; align-items: center; color: var(--mc-primary); }
+.morning-card__icon { color: var(--mc-primary); }
 .morning-card__title { flex: 1; font-size: 13px; font-weight: 600; color: var(--mc-text-primary); }
 .morning-card__close {
   background: none; border: none; font-size: 16px; color: var(--mc-text-tertiary);

@@ -61,12 +61,12 @@ public class WikiContextService {
             return "";
         }
 
-        List<WikiKnowledgeBaseEntity> kbs = kbService.listByAgentId(agentId);
-        if (kbs.isEmpty()) {
+        WikiKnowledgeBaseEntity primaryKb = kbService.resolvePrimaryKb(agentId);
+        if (primaryKb == null) {
             return "";
         }
 
-        Long kbId = kbs.get(0).getId();
+        Long kbId = primaryKb.getId();
         List<PageSearchResult> hits = hybridRetriever.search(kbId, userMessage, "hybrid", 5);
         if (hits.isEmpty()) {
             return "";

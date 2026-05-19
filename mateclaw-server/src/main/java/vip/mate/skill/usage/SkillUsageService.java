@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import vip.mate.skill.lifecycle.SkillLifecycleService;
 import vip.mate.skill.repository.SkillUsageStatMapper;
 import vip.mate.skill.runtime.model.ResolvedSkill;
 
@@ -18,6 +19,8 @@ import java.util.stream.Collectors;
 public class SkillUsageService {
 
     private final SkillUsageStatMapper mapper;
+    /** Bubbles the load event up to {@code mate_skill.last_activity_at} for the lifecycle curator. */
+    private final SkillLifecycleService lifecycleService;
 
     public void recordLoaded(ResolvedSkill skill, Long agentId, String conversationId,
                              String filePath, int tokenEstimate) {
@@ -51,6 +54,9 @@ public class SkillUsageService {
                 row.setLastTokenEstimate(tokenEstimate);
                 mapper.updateById(row);
             }
+            // Mirror the activity anchor onto mate_skill so the lifecycle
+            // curator's daily scan stays a single indexed select.
+            lifecycleService.bumpActivity(skill.getId());
         } catch (Exception e) {
             log.debug("Failed to record skill usage for {}: {}", skill.getName(), e.getMessage());
         }

@@ -130,6 +130,26 @@ public class SkillEntity {
     /** RFC-042 §2.3 — wall-clock time of the last scan write-back. */
     private LocalDateTime securityScanTime;
 
+    /**
+     * Lifecycle state for the time-window archival state machine:
+     * {@code active} / {@code stale} / {@code archived}. Defaults to
+     * {@code active} via the column DEFAULT.
+     */
+    private String lifecycleState;
+
+    /** User-pinned skill — exempt from automatic archival. */
+    private Boolean pinned;
+
+    /**
+     * Activity anchor, cached from {@code mate_skill_usage_stat.last_loaded_at}
+     * so the daily lifecycle sweep is a single indexed select instead of a
+     * join. {@code null} falls back to {@code createTime} as the anchor.
+     */
+    private LocalDateTime lastActivityAt;
+
+    /** Wall-clock time the skill entered the archived state. */
+    private LocalDateTime archivedAt;
+
     @TableField(fill = FieldFill.INSERT)
     private LocalDateTime createTime;
 

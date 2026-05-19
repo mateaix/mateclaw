@@ -62,7 +62,7 @@ public class DashboardController {
         if (job != null && job.getWorkspaceId() != null) {
             long wsId = workspaceId != null ? workspaceId : 1L;
             if (!job.getWorkspaceId().equals(wsId)) {
-                throw new MateClawException("err.common.wrong_workspace", "资源不属于当前工作区");
+                throw new MateClawException("err.common.wrong_workspace", 403, "资源不属于当前工作区");
             }
         }
         return R.ok(cronJobRunService.listByJobId(cronJobId, Math.min(limit, 100)));

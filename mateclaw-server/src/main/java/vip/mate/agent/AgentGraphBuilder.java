@@ -126,9 +126,41 @@ public class AgentGraphBuilder {
     }
 
     /**
-     * 根据 AgentEntity 构建完整的 Agent 实例
+     * 根据 AgentEntity 构建完整的 Agent 实例（沿用 Agent / 全局默认模型）。
      */
     public BaseAgent build(AgentEntity entity) {
+        return build(entity, null, null);
+    }
+
+    /**
+     * Resolve the model the runtime should use, honouring the precedence
+     * <em>conversation pin &gt; Agent model override &gt; global default</em>.
+     * A conversation pin that no longer resolves to an enabled model (the model
+     * was disabled or deleted after it was picked) silently degrades to the
+     * Agent / global default rather than failing the chat.
+     */
+    private ModelConfigEntity resolveRuntimeBaseModel(String modelProvider, String modelName,
+                                                      String agentModelName) {
+        if (modelProvider != null && !modelProvider.isBlank()
+                && modelName != null && !modelName.isBlank()) {
+            ModelConfigEntity pinned = modelConfigService.findEnabledModel(modelProvider, modelName);
+            if (pinned != null) {
+                return pinned;
+            }
+            log.info("Conversation model pin {}/{} is no longer an enabled model — "
+                    + "falling back to the Agent / global default", modelProvider, modelName);
+        }
+        return modelConfigService.resolveModel(agentModelName);
+    }
+
+    /**
+     * 根据 AgentEntity 构建完整的 Agent 实例。
+     *
+     * <p>{@code modelProvider} / {@code modelName} carry an optional
+     * per-conversation model pin; when both are blank the build falls back to
+     * the Agent's model override, then the global default.</p>
+     */
+    public BaseAgent build(AgentEntity entity, String modelProvider, String modelName) {
         AgentToolSet toolSet = toolRegistry.getEnabledToolSet();
 
         // 过滤掉 denied 工具，使模型完全看不到它们（防止 prompt injection 利用 schema）
@@ -142,17 +174,16 @@ public class AgentGraphBuilder {
         Set<String> boundTools = agentBindingService.getEffectiveToolNames(entity.getId());
         toolSet = toolSet.withAllowedToolsOnly(boundTools); // null = 全局默认
 
-        // RFC-090 §9.2 调整 C — pick a primary model that satisfies
-        // the agent's bound-skill requires-model. Falls back to the
-        // global default when no preferred provider satisfies, so the
-        // existing "no default model" error path stays intact.
-        // Honor per-Agent model override when set.
-        // resolveModel() looks up entity.modelName in enabled-only models;
-        // null / blank / unmatched silently fall back to getDefaultModel(),
-        // preserving the legacy behavior for Agents without an override.
+        // Resolve the base model with the precedence: per-conversation pin >
+        // per-Agent model override > global default. resolveRuntimeBaseModel
+        // looks up enabled-only models and silently degrades an unmatched pin /
+        // override to the global default, preserving the legacy behaviour for
+        // Agents and conversations without an explicit choice.
+        // providerRouter.selectPrimary below may still swap this for a model
+        // that satisfies a bound skill's requires-model constraint.
         ModelConfigEntity globalDefault;
         try {
-            globalDefault = modelConfigService.resolveModel(entity.getModelName());
+            globalDefault = resolveRuntimeBaseModel(modelProvider, modelName, entity.getModelName());
         } catch (Exception e) {
             throw new MateClawException("err.agent.no_default_model", "无法构建 Agent：请先在「设置 → 模型」中配置并启用默认模型");
         }

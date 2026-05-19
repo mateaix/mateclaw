@@ -32,7 +32,7 @@
           <div class="model-groups" ref="listRef">
             <template v-for="group in filteredGroups" :key="group.provider.id">
               <div class="model-group-header">
-                <span class="model-group-header__name">{{ group.provider.name }}</span>
+                <span class="model-group-header__name" :title="group.provider.name">{{ group.provider.name }}</span>
                 <span v-if="group.provider.isLocal" class="model-group-header__badge model-group-header__badge--local">Local</span>
                 <!-- Liveness dot — UNPROBED = grey, COOLDOWN = amber, LIVE = none.
                      v2 R3: when showAllStates, also surface UNCONFIGURED / REMOVED chips
@@ -417,9 +417,21 @@ watch(open, async (isOpen) => {
   user-select: none;
 }
 
+/* The provider name takes the remaining width and truncates; the status
+   chip / Fix button keep their natural size on the same line. Without
+   min-width:0 the long name would squeeze the chip and wrap its text. */
+.model-group-header__name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 .model-group-header__badge {
   display: inline-flex;
   align-items: center;
+  flex: 0 0 auto;
   height: 16px;
   padding: 0 5px;
   border-radius: 4px;
@@ -427,6 +439,7 @@ watch(open, async (isOpen) => {
   font-weight: 600;
   letter-spacing: 0.02em;
   text-transform: uppercase;
+  white-space: nowrap;
 }
 
 .model-group-header__badge--local {
@@ -437,6 +450,7 @@ watch(open, async (isOpen) => {
 /* RFC-073 liveness dot — sits next to the provider name */
 .model-group-header__dot {
   display: inline-block;
+  flex: 0 0 auto;
   width: 7px;
   height: 7px;
   border-radius: 50%;
@@ -458,6 +472,7 @@ watch(open, async (isOpen) => {
 .model-group-header__chip {
   display: inline-flex;
   align-items: center;
+  flex: 0 0 auto;
   height: 16px;
   padding: 0 6px;
   border-radius: 4px;
@@ -465,6 +480,7 @@ watch(open, async (isOpen) => {
   font-weight: 600;
   letter-spacing: 0.02em;
   text-transform: none;
+  white-space: nowrap;
 }
 .model-group-header__chip--warn {
   background: rgba(245, 158, 11, 0.15);
@@ -483,7 +499,7 @@ watch(open, async (isOpen) => {
 .dark .model-group-header__chip--info { color: #93c5fd; }
 
 .model-group-header__fix {
-  margin-left: auto;
+  flex: 0 0 auto;
   height: 18px;
   padding: 0 8px;
   border-radius: 4px;
@@ -491,6 +507,7 @@ watch(open, async (isOpen) => {
   background: transparent;
   color: var(--mc-text-secondary);
   font-size: 11px;
+  white-space: nowrap;
   cursor: pointer;
   transition: background 0.12s, color 0.12s, border-color 0.12s;
 }

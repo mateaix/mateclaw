@@ -164,10 +164,12 @@ public class WikiProcessingJobService {
     }
 
     private static boolean isHardError(String errorCode) {
+        // Only provider-wide failures evict a provider from the shared pool. A
+        // MODEL_NOT_FOUND is model-scoped — it must not take the provider's other
+        // models offline for every other consumer of the pool.
         return errorCode != null && (
             errorCode.equals("AUTH_ERROR") ||
-            errorCode.equals("BILLING") ||
-            errorCode.equals("MODEL_NOT_FOUND"));
+            errorCode.equals("BILLING"));
     }
 
     private void notifyPoolHardError(Long modelId, String errorCode) {
