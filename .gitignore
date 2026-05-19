@@ -114,3 +114,6 @@ outputs/
 
 # Git worktrees
 .worktrees/
+
+# Local superpowers design docs (not for repo)
+docs/superpowers/
