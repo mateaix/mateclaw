@@ -105,4 +105,85 @@ class FeishuCardFormatterTest {
     void detect_shortPlainText_returnsPlainText() {
         assertEquals(PLAIN_TEXT, FeishuCardFormatter.detect("好的，明白了。"));
     }
+
+    // ==================== render() ====================
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void render_markdown_hasSchema20AndLarkMdElement() {
+        String md = "## 标题\n- 第一条\n- 第二条";
+        var card = FeishuCardFormatter.render(md, MARKDOWN);
+
+        assertEquals("2.0", card.get("schema"));
+        assertNotNull(card.get("header"));
+        var body = (java.util.Map<String, Object>) card.get("body");
+        var elems = (java.util.List<java.util.Map<String, Object>>) body.get("elements");
+        assertEquals("div", elems.get(0).get("tag"));
+        var text = (java.util.Map<String, Object>) elems.get(0).get("text");
+        assertEquals("lark_md", text.get("tag"));
+        assertEquals(md, text.get("content"));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void render_longText_hasNoHeaderAndPlainTextElement() {
+        String content = "x".repeat(150) + "\n\n" + "y".repeat(155);
+        var card = FeishuCardFormatter.render(content, LONG_TEXT);
+
+        assertEquals("2.0", card.get("schema"));
+        assertNull(card.get("header"));
+        var body = (java.util.Map<String, Object>) card.get("body");
+        var elems = (java.util.List<java.util.Map<String, Object>>) body.get("elements");
+        var text = (java.util.Map<String, Object>) elems.get(0).get("text");
+        assertEquals("plain_text", text.get("tag"));
+        assertEquals(content, text.get("content"));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void render_jsonObject_hasColumnSetPerField() {
+        var card = FeishuCardFormatter.render("{\"name\":\"Alice\",\"score\":95}", JSON);
+
+        assertEquals("2.0", card.get("schema"));
+        assertNull(card.get("header")); // 摘要卡片无 header
+        var body = (java.util.Map<String, Object>) card.get("body");
+        var elems = (java.util.List<java.util.Map<String, Object>>) body.get("elements");
+        assertEquals(2, elems.size()); // 2 个字段 → 2 个 column_set
+        assertEquals("column_set", elems.get(0).get("tag"));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void render_jsonArrayFewColumns_usesTableComponent() {
+        var card = FeishuCardFormatter.render("[{\"a\":1,\"b\":2},{\"a\":3,\"b\":4}]", JSON);
+
+        var body = (java.util.Map<String, Object>) card.get("body");
+        var elems = (java.util.List<java.util.Map<String, Object>>) body.get("elements");
+        assertEquals("table", elems.get(0).get("tag"));
+        assertNotNull(elems.get(0).get("columns"));
+        assertNotNull(elems.get(0).get("rows"));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void render_jsonArrayManyColumns_usesDivPerItem() {
+        // >4 字段 → 列表卡片（每条 item 一个 div）
+        var card = FeishuCardFormatter.render(
+                "[{\"a\":1,\"b\":2,\"c\":3,\"d\":4,\"e\":5}]", JSON);
+
+        var body = (java.util.Map<String, Object>) card.get("body");
+        var elems = (java.util.List<java.util.Map<String, Object>>) body.get("elements");
+        assertEquals("div", elems.get(0).get("tag"));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void render_plainText_fallsBackToLongTextLayout() {
+        // PLAIN_TEXT 传入 render()（"always" 模式下会发生）→ 应渲染为 plain_text div
+        var card = FeishuCardFormatter.render("简单的一句话", PLAIN_TEXT);
+        var body = (java.util.Map<String, Object>) card.get("body");
+        var elems = (java.util.List<java.util.Map<String, Object>>) body.get("elements");
+        var text = (java.util.Map<String, Object>) elems.get(0).get("text");
+        assertEquals("plain_text", text.get("tag"));
+    }
 }
