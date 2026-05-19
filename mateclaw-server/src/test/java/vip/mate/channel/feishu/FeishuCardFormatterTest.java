@@ -262,4 +262,12 @@ class FeishuCardFormatterTest {
         assertEquals(2, elems.size()); // 2 fields → 2 column_sets
         assertEquals("column_set", elems.get(0).get("tag"));
     }
+
+    @Test
+    void detect_markdownWithJsonBlockSecond_returnsJson() {
+        // JSON 对象代码块在原始数组块后面，应该仍能识别
+        // 原始数组 [1,2,3] 不是有效 JSON，但 JSON 对象 {"ok":true} 是
+        String md = "示例：\n```\n[1,2,3]\n```\n\n结果：\n```json\n{\"ok\":true,\"count\":5}\n```";
+        assertEquals(JSON, FeishuCardFormatter.detect(md));
+    }
 }

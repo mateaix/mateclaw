@@ -36,13 +36,16 @@ final class FeishuCardFormatter {
         }
 
         if (s.contains("```")) {
-            String extracted = extractJsonCodeBlock(s);
-            if (extracted != null && extracted.length() <= JSON_MAX_LEN) {
-                try {
-                    JsonNode node = MAPPER.readTree(extracted);
-                    if (node.isObject() && !node.isEmpty()) return ContentFormat.JSON;
-                    if (node.isArray() && node.size() > 0 && node.get(0).isObject()) return ContentFormat.JSON;
-                } catch (Exception ignored) {}
+            Matcher cm = JSON_CODE_BLOCK.matcher(s);
+            while (cm.find()) {
+                String extracted = cm.group(1).strip();
+                if (extracted.length() <= JSON_MAX_LEN) {
+                    try {
+                        JsonNode node = MAPPER.readTree(extracted);
+                        if (node.isObject() && !node.isEmpty()) return ContentFormat.JSON;
+                        if (node.isArray() && node.size() > 0 && node.get(0).isObject()) return ContentFormat.JSON;
+                    } catch (Exception ignored) {}
+                }
             }
             return ContentFormat.MARKDOWN;
         }
@@ -107,8 +110,9 @@ final class FeishuCardFormatter {
             if (node.isArray())  return renderJsonArray(node);
         } catch (Exception ignored) {}
 
-        String extracted = extractJsonCodeBlock(content);
-        if (extracted != null) {
+        Matcher rm = JSON_CODE_BLOCK.matcher(content);
+        while (rm.find()) {
+            String extracted = rm.group(1).strip();
             try {
                 JsonNode node = MAPPER.readTree(extracted);
                 if (node.isObject()) return renderJsonObject(node);
