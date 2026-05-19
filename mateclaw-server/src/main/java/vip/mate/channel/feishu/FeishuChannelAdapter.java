@@ -1294,6 +1294,11 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter {
     }
 
     public void sendCard(String targetId, Map<String, Object> cardJson) {
+        if (httpClient == null) {
+            log.warn("[feishu] Channel not started, cannot send card");
+            return;
+        }
+        ensureTokenValid();
         String apiBase = getApiBaseUrl();
         String receiveIdType = targetId.startsWith("ou_") ? "open_id" : "chat_id";
         try {
@@ -1320,6 +1325,11 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter {
     }
 
     public void updateCard(String messageId, Map<String, Object> cardJson) {
+        if (httpClient == null) {
+            log.warn("[feishu] Channel not started, cannot update card");
+            return;
+        }
+        ensureTokenValid();
         String apiBase = getApiBaseUrl();
         try {
             String jsonBody = objectMapper.writeValueAsString(Map.of(
