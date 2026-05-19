@@ -408,37 +408,34 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter {
 
     // ==================== @提及检测 ====================
 
-    /**
-     * 判断 WebSocket 事件中机器人是否被 @提及
-     * 使用飞书 SDK 的 getMentions() 精确匹配，无需 botPrefix 文本匹配。
-     */
     private boolean isBotMentionedInEvent(com.lark.oapi.service.im.v1.model.MentionEvent[] mentions) {
-        if (mentions == null || mentions.length == 0) return false;
-        String myOpenId = getBotOpenId();
-        if (myOpenId == null) return false;
+        return eventMentionsContainBot(mentions, getBotOpenId());
+    }
+
+    private boolean isBotMentionedInWebhookMessage(Map<String, Object> message) {
+        Object mentionsObj = message.get("mentions");
+        if (!(mentionsObj instanceof List<?> list)) return false;
+        return webhookMentionsContainBot(list, getBotOpenId());
+    }
+
+    /** Package-private for testing: 判断 SDK mentions 数组中是否包含指定 open_id */
+    static boolean eventMentionsContainBot(com.lark.oapi.service.im.v1.model.MentionEvent[] mentions,
+                                           String botOpenId) {
+        if (mentions == null || mentions.length == 0 || botOpenId == null) return false;
         for (var mention : mentions) {
-            if (mention.getId() != null && myOpenId.equals(mention.getId().getOpenId())) {
-                return true;
-            }
+            if (mention.getId() != null && botOpenId.equals(mention.getId().getOpenId())) return true;
         }
         return false;
     }
 
-    /**
-     * 判断 Webhook JSON 消息中机器人是否被 @提及
-     * Webhook 消息的 mentions 字段结构：[{"key":"...","id":{"open_id":"ou_xxx"},"name":"..."}]
-     */
-    @SuppressWarnings("unchecked")
-    private boolean isBotMentionedInWebhookMessage(Map<String, Object> message) {
-        Object mentionsObj = message.get("mentions");
-        if (!(mentionsObj instanceof List<?> mentions)) return false;
-        String myOpenId = getBotOpenId();
-        if (myOpenId == null) return false;
+    /** Package-private for testing: 判断 Webhook mentions 列表中是否包含指定 open_id */
+    static boolean webhookMentionsContainBot(List<?> mentions, String botOpenId) {
+        if (mentions == null || botOpenId == null) return false;
         for (Object item : mentions) {
             if (!(item instanceof Map<?, ?> mention)) continue;
             Object idObj = mention.get("id");
             if (!(idObj instanceof Map<?, ?> id)) continue;
-            if (myOpenId.equals(id.get("open_id"))) return true;
+            if (botOpenId.equals(id.get("open_id"))) return true;
         }
         return false;
     }
