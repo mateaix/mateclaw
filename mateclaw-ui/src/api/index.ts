@@ -185,6 +185,8 @@ export const skillApi = {
     enabled?: boolean
     /** 'PASSED' / 'FAILED' — filters by security_scan_status. */
     scanStatus?: string
+    /** 'active' / 'stale' / 'archived' — filters by lifecycle_state. */
+    lifecycleState?: string
   } = {}) => http.get('/skills', { params }),
   /** Tab count aggregate — returns { all, builtin, mcp, dynamic } */
   counts: () => http.get('/skills/counts'),
@@ -217,6 +219,35 @@ export const skillApi = {
     http.post(`/skills/${id}/secrets`, { key, value }),
   deleteSecret: (id: string | number, key: string) =>
     http.delete(`/skills/${id}/secrets/${encodeURIComponent(key)}`),
+
+  // ---- Lifecycle curator ----
+  /** Pin / unpin a skill — pinned skills are never auto-archived. */
+  pin: (id: string | number, pinned: boolean) =>
+    http.post(`/skills/${id}/pin`, { pinned }),
+  /**
+   * Manually archive a skill. When the skill is bound to an enabled agent
+   * and {@code force} is false, the backend replies HTTP 409 with
+   * {@code code: 'BOUND_SKILL_CONFIRM_REQUIRED'} and a {@code boundAgents}
+   * list; retry with {@code force: true} to confirm.
+   */
+  archive: (id: string | number, opts: { force?: boolean; reason?: string } = {}) =>
+    http.post(`/skills/${id}/archive`, { reason: opts.reason ?? null },
+      { params: { force: opts.force ?? false } }),
+  /** Restore an archived skill back to active. */
+  restore: (id: string | number) => http.post(`/skills/${id}/restore`),
+  /** Curator control-panel status (config / control / counts / lastReport). */
+  curatorStatus: () => http.get('/skills/curator/status'),
+  /** Run a curator dry-run preview immediately. */
+  curatorDryRun: () => http.post('/skills/curator/dry-run'),
+  /** Activate (apply transitions) or deactivate (preview-only) the curator. */
+  curatorActivate: (activate: boolean) =>
+    http.post('/skills/curator/activate', null, { params: { activate } }),
+  curatorPause: () => http.post('/skills/curator/pause'),
+  curatorResume: () => http.post('/skills/curator/resume'),
+  /** List recent curator run report ids. */
+  curatorReports: () => http.get('/skills/curator/reports'),
+  /** Read one curator run report (parsed run.json). */
+  curatorReport: (runId: string) => http.get(`/skills/curator/reports/${runId}`),
 }
 
 /** Shape returned by GET /skills/{id}/secrets. */

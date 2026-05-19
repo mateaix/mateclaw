@@ -183,6 +183,12 @@ const router = createRouter({
               meta: { title: 'Settings - Cron Jobs', requiredCapability: 'manage:agents' },
             },
             {
+              path: 'skill-curator',
+              name: 'SettingsSkillCurator',
+              component: () => import('@/views/Settings/SkillCurator/index.vue'),
+              meta: { title: 'Settings - Skill Curator', requiredCapability: 'manage:settings' },
+            },
+            {
               path: 'workflows',
               name: 'SettingsWorkflows',
               component: () => import('@/views/Workflows.vue'),

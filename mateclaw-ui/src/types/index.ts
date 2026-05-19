@@ -285,6 +285,14 @@ export interface Skill {
   securityScanResult?: string
   /** RFC-042 §2.3 — wall-clock time of the last scan */
   securityScanTime?: string
+  /** Lifecycle curator state: 'active' / 'stale' / 'archived' */
+  lifecycleState?: string
+  /** User-pinned skill — exempt from automatic archival */
+  pinned?: boolean
+  /** Last activity timestamp — drives the curator's idle window */
+  lastActivityAt?: string
+  /** When the curator moved this skill to archived state */
+  archivedAt?: string
 }
 
 /** 运行时解析状态（来自 /runtime/status） */
