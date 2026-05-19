@@ -54,6 +54,8 @@ import java.util.concurrent.TimeUnit;
  * - stale_event_threshold_seconds: 过滤旧事件阈值（默认 30，0 禁用）
  * - card_format: 卡片格式化模式 "auto"（默认）| "always" | "never"
  *               auto: 根据内容自动检测；always: 全部包卡片；never: 全部纯文本（降级/调试用）
+ * - require_mention: 群聊中是否需要 @机器人 才响应（默认 false）
+ *               true: 仅当消息中 @了机器人才处理；通过飞书 mentions 字段精确判断，无需配置 botPrefix
  *
  * @author MateClaw Team
  */
@@ -96,6 +98,9 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter {
 
     /** 旧事件过滤默认阈值（秒）：超过 30 秒的事件视为重连后回放 */
     private static final long DEFAULT_STALE_THRESHOLD_SECONDS = 30L;
+
+    /** 机器人自身 open_id 缓存（用于 require_mention 精确判断，懒加载） */
+    private volatile String botOpenId;
 
     public FeishuChannelAdapter(ChannelEntity channelEntity,
                                 ChannelMessageRouter messageRouter,
@@ -397,7 +402,73 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter {
             senderOpenId = sender.getSenderId().getOpenId();
         }
 
-        handleFeishuMessage(messageId, messageType, contentStr, chatId, chatType, senderOpenId, parentId, event);
+        boolean isBotMentioned = isBotMentionedInEvent(message.getMentions());
+        handleFeishuMessage(messageId, messageType, contentStr, chatId, chatType, senderOpenId, parentId, isBotMentioned, event);
+    }
+
+    // ==================== @提及检测 ====================
+
+    /**
+     * 判断 WebSocket 事件中机器人是否被 @提及
+     * 使用飞书 SDK 的 getMentions() 精确匹配，无需 botPrefix 文本匹配。
+     */
+    private boolean isBotMentionedInEvent(com.lark.oapi.service.im.v1.model.MentionEvent[] mentions) {
+        if (mentions == null || mentions.length == 0) return false;
+        String myOpenId = getBotOpenId();
+        if (myOpenId == null) return false;
+        for (var mention : mentions) {
+            if (mention.getId() != null && myOpenId.equals(mention.getId().getOpenId())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 判断 Webhook JSON 消息中机器人是否被 @提及
+     * Webhook 消息的 mentions 字段结构：[{"key":"...","id":{"open_id":"ou_xxx"},"name":"..."}]
+     */
+    @SuppressWarnings("unchecked")
+    private boolean isBotMentionedInWebhookMessage(Map<String, Object> message) {
+        Object mentionsObj = message.get("mentions");
+        if (!(mentionsObj instanceof List<?> mentions)) return false;
+        String myOpenId = getBotOpenId();
+        if (myOpenId == null) return false;
+        for (Object item : mentions) {
+            if (!(item instanceof Map<?, ?> mention)) continue;
+            Object idObj = mention.get("id");
+            if (!(idObj instanceof Map<?, ?> id)) continue;
+            if (myOpenId.equals(id.get("open_id"))) return true;
+        }
+        return false;
+    }
+
+    /**
+     * 获取机器人自身的 open_id（懒加载并缓存）
+     * 调用 /open-apis/bot/v3/info 接口，失败时返回 null（降级到放行，保持兼容）
+     */
+    private String getBotOpenId() {
+        if (botOpenId != null) return botOpenId;
+        try {
+            ensureTokenValid();
+            String apiBase = getApiBaseUrl();
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(apiBase + "/open-apis/bot/v3/info"))
+                    .header("Authorization", "Bearer " + tenantAccessToken)
+                    .GET()
+                    .timeout(Duration.ofSeconds(5))
+                    .build();
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            Map<?, ?> body = objectMapper.readValue(response.body(), Map.class);
+            Map<?, ?> bot = (Map<?, ?>) body.get("bot");
+            if (bot != null) {
+                botOpenId = (String) bot.get("open_id");
+                log.info("[feishu] Bot open_id fetched and cached: {}", botOpenId);
+            }
+        } catch (Exception e) {
+            log.warn("[feishu] Failed to fetch bot open_id, require_mention will allow message: {}", e.getMessage());
+        }
+        return botOpenId;
     }
 
     // ==================== Token 管理 ====================
@@ -543,7 +614,8 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter {
                 }
             }
 
-            handleFeishuMessage(messageId, messageType, contentStr, chatId, chatType, senderOpenId, parentId, payload);
+            boolean isBotMentioned = isBotMentionedInWebhookMessage(message);
+            handleFeishuMessage(messageId, messageType, contentStr, chatId, chatType, senderOpenId, parentId, isBotMentioned, payload);
 
         } catch (Exception e) {
             log.error("[feishu] Failed to handle webhook: {}", e.getMessage(), e);
@@ -568,7 +640,14 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter {
      */
     private void handleFeishuMessage(String messageId, String messageType, String contentStr,
                                       String chatId, String chatType, String senderOpenId,
-                                      String parentId, Object rawPayload) {
+                                      String parentId, boolean isBotMentioned, Object rawPayload) {
+        // require_mention 群聊过滤：群聊中必须 @机器人才响应
+        boolean isGroup = "group".equals(chatType);
+        if (isGroup && getConfigBoolean("require_mention", false) && !isBotMentioned) {
+            log.debug("[feishu] require_mention=true but bot not mentioned, ignoring messageId={}", messageId);
+            return;
+        }
+
         // 消息去重
         if (messageId != null && !processedMessageIds.add(messageId)) {
             log.debug("[feishu] Duplicate message_id: {}, skipping", messageId);
@@ -609,7 +688,6 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter {
         }
 
         // 生成短会话后缀
-        boolean isGroup = "group".equals(chatType);
         String shortSuffix = generateShortSessionSuffix(chatId, senderOpenId, isGroup);
 
         ChannelMessage channelMessage = ChannelMessage.builder()
