@@ -204,4 +204,62 @@ class FeishuCardFormatterTest {
         var text = (java.util.Map<String, Object>) elems.get(0).get("text");
         assertEquals("plain_text", text.get("tag"));
     }
+
+    // ==================== detect() — Markdown 内嵌 JSON ====================
+
+    @Test
+    void detect_markdownWithJsonObjectCodeBlock_returnsJson() {
+        String md = "上海今天天气如下：\n\n```json\n{\"city\":\"上海\",\"temp\":24}\n```";
+        assertEquals(JSON, FeishuCardFormatter.detect(md));
+    }
+
+    @Test
+    void detect_markdownWithBareCodeBlockContainingJson_returnsJson() {
+        // 无 json 标注的代码块，内容是 JSON 对象也识别
+        String md = "结果：\n```\n{\"status\":\"ok\"}\n```";
+        assertEquals(JSON, FeishuCardFormatter.detect(md));
+    }
+
+    @Test
+    void detect_markdownWithJsonArrayCodeBlock_returnsJson() {
+        String md = "列表：\n```json\n[{\"a\":1},{\"a\":2}]\n```";
+        assertEquals(JSON, FeishuCardFormatter.detect(md));
+    }
+
+    @Test
+    void detect_markdownWithPrimitiveArrayCodeBlock_returnsMarkdown() {
+        // 原始类型数组不识别为 JSON
+        String md = "数据：\n```json\n[1,2,3]\n```";
+        assertEquals(MARKDOWN, FeishuCardFormatter.detect(md));
+    }
+
+    @Test
+    void detect_markdownWithNonJsonCodeBlock_returnsMarkdown() {
+        // Python 代码块不识别为 JSON
+        String md = "代码：\n```python\nprint('hello')\n```";
+        assertEquals(MARKDOWN, FeishuCardFormatter.detect(md));
+    }
+
+    @Test
+    void detect_markdownWithEmptyJsonObjectCodeBlock_returnsMarkdown() {
+        // 空对象 {} 不识别为 JSON
+        String md = "空：\n```json\n{}\n```";
+        assertEquals(MARKDOWN, FeishuCardFormatter.detect(md));
+    }
+
+    // ==================== render() — Markdown 内嵌 JSON ====================
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void render_markdownWithJsonCodeBlock_rendersAsSummaryCard() {
+        String md = "天气结果：\n```json\n{\"city\":\"上海\",\"temp\":24}\n```";
+        var card = FeishuCardFormatter.render(md, JSON);
+
+        assertEquals("2.0", card.get("schema"));
+        assertNull(card.get("header")); // JSON object card has no header
+        var body = (java.util.Map<String, Object>) card.get("body");
+        var elems = (java.util.List<java.util.Map<String, Object>>) body.get("elements");
+        assertEquals(2, elems.size()); // 2 fields → 2 column_sets
+        assertEquals("column_set", elems.get(0).get("tag"));
+    }
 }

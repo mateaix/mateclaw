@@ -7,6 +7,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 final class FeishuCardFormatter {
@@ -17,6 +18,8 @@ final class FeishuCardFormatter {
     private static final int JSON_MAX_LEN = 32_000;
     private static final Pattern HEADER    = Pattern.compile("(?m)^#{1,6}\\s");
     private static final Pattern TABLE_SEP = Pattern.compile("(?m)^\\|[\\s|:-]+\\|\\s*$");
+    private static final Pattern JSON_CODE_BLOCK =
+            Pattern.compile("(?s)```(?:json)?\\s*([\\[{][\\s\\S]*?[\\]\\}])\\s*```");
 
     private FeishuCardFormatter() {}
 
@@ -32,7 +35,17 @@ final class FeishuCardFormatter {
             } catch (Exception ignored) {}
         }
 
-        if (s.contains("```"))               return ContentFormat.MARKDOWN;
+        if (s.contains("```")) {
+            String extracted = extractJsonCodeBlock(s);
+            if (extracted != null && extracted.length() <= JSON_MAX_LEN) {
+                try {
+                    JsonNode node = MAPPER.readTree(extracted);
+                    if (node.isObject() && !node.isEmpty()) return ContentFormat.JSON;
+                    if (node.isArray() && node.size() > 0 && node.get(0).isObject()) return ContentFormat.JSON;
+                } catch (Exception ignored) {}
+            }
+            return ContentFormat.MARKDOWN;
+        }
         if (HEADER.matcher(s).find())         return ContentFormat.MARKDOWN;
         if (TABLE_SEP.matcher(s).find())      return ContentFormat.MARKDOWN;
         if (bulletCount(s) >= 2)              return ContentFormat.MARKDOWN;
@@ -50,6 +63,11 @@ final class FeishuCardFormatter {
                             || t.matches("^\\d+\\.\\s.*");
                 })
                 .count();
+    }
+
+    private static String extractJsonCodeBlock(String s) {
+        Matcher m = JSON_CODE_BLOCK.matcher(s);
+        return m.find() ? m.group(1).strip() : null;
     }
 
     // ==================== 渲染层 ====================
@@ -88,6 +106,15 @@ final class FeishuCardFormatter {
             if (node.isObject()) return renderJsonObject(node);
             if (node.isArray())  return renderJsonArray(node);
         } catch (Exception ignored) {}
+
+        String extracted = extractJsonCodeBlock(content);
+        if (extracted != null) {
+            try {
+                JsonNode node = MAPPER.readTree(extracted);
+                if (node.isObject()) return renderJsonObject(node);
+                if (node.isArray())  return renderJsonArray(node);
+            } catch (Exception ignored) {}
+        }
         return renderLongText(content);
     }
 
