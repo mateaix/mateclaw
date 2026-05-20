@@ -45,10 +45,6 @@ import java.util.concurrent.TimeUnit;
  *       preserve {@code scopes} (Claude Code &gt;= 2.1.81 requires
  *       {@code user:inference}) and any future fields we don't know about.</li>
  * </ol>
- *
- * <p>Reference: hermes-agent
- * {@code anthropic_adapter._write_claude_code_credentials} (line 684-727)
- * and {@code _write_claude_code_credentials_to_keychain} (line 730+).
  */
 @Slf4j
 @Component

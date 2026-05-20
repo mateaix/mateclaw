@@ -140,9 +140,20 @@ public class ModelDiscoveryService {
     );
 
     /**
+     * Model-id prefixes that mark an embedding model. These pass the chat-focused
+     * acceptable-id check (so the manual "Add model" form works) but must be
+     * excluded from chat-style runtime probes and from "new chat models" auto
+     * suggestions — they only speak the embeddings protocol, not chat completion.
+     */
+    private static final Set<String> EMBEDDING_MODEL_PREFIXES = Set.of(
+            "text-embedding-",
+            "embedding-"
+    );
+
+    /**
      * Allow-list prefixes for DashScope models that are known to work on the native
-     * chat protocol. An empty set means "no prefix filter" (we still apply DENY).
-     * Extend conservatively as new families are verified.
+     * protocol (chat or embedding). An empty set means "no prefix filter" (we still
+     * apply DENY). Extend conservatively as new families are verified.
      */
     private static final Set<String> DASHSCOPE_NATIVE_ALLOW_PREFIXES = Set.of(
             "qwen-",          // qwen-max / qwen-plus / qwen-turbo / qwen-coder-* / qwen-long
@@ -151,7 +162,8 @@ public class ModelDiscoveryService {
             "deepseek-",      // deepseek-v3.x / deepseek-r1*
             "baichuan",
             "yi-",
-            "llama"
+            "llama",
+            "text-embedding-" // DashScope embedding models (text-embedding-v1/v2/v3/v4)
     );
 
     // ==================== 模型发现 ====================
@@ -182,10 +194,13 @@ public class ModelDiscoveryService {
                 .map(ModelConfigEntity::getModelName)
                 .collect(Collectors.toSet());
 
-        // Only propose models that passed the probe (or were not probed) as "new"
+        // Only propose models that passed the probe (or were not probed) as "new".
+        // Embedding models are catalog-visible but excluded from the chat-discovery
+        // suggestion bucket — adding them as chat models would 400 at runtime.
         List<ModelInfoDTO> newModels = discovered.stream()
                 .filter(m -> !existingIds.contains(m.getId()))
                 .filter(m -> !Boolean.FALSE.equals(m.getProbeOk()))
+                .filter(m -> !isEmbeddingModelId(m.getId()))
                 .toList();
 
         return new DiscoverResult(discovered, newModels, discovered.size(), newModels.size());
@@ -235,6 +250,18 @@ public class ModelDiscoveryService {
     }
 
     /**
+     * Returns true when a model id looks like an embedding model (e.g.
+     * {@code text-embedding-v3}). Used to skip chat-style probes and to keep
+     * embedding entries out of the "new chat models to add" auto-suggestion.
+     * Package-private for unit tests.
+     */
+    static boolean isEmbeddingModelId(String modelId) {
+        if (modelId == null) return false;
+        String lower = modelId.toLowerCase();
+        return EMBEDDING_MODEL_PREFIXES.stream().anyMatch(lower::startsWith);
+    }
+
+    /**
      * Defensive guard for code paths that persist a model id without going through
      * discovery (e.g. the manual "Add model" form). Throws a MateClawException with
      * a user-friendly message if the id is known to be unusable under the provider's
@@ -269,6 +296,13 @@ public class ModelDiscoveryService {
         Semaphore sem = new Semaphore(MAX_PROBE_CONCURRENCY);
         List<CompletableFuture<Void>> futures = new ArrayList<>(discovered.size());
         for (ModelInfoDTO dto : discovered) {
+            if (isEmbeddingModelId(dto.getId())) {
+                // Embedding models don't speak chat completion — sendTestPrompt would
+                // 400 with InvalidParameter. Leave probeOk null (no warning badge)
+                // and surface a clear, non-error reason in probeError.
+                dto.setProbeError("Embedding model — not chat-probeable");
+                continue;
+            }
             futures.add(CompletableFuture.runAsync(() -> {
                 try { sem.acquire(); }
                 catch (InterruptedException ie) { Thread.currentThread().interrupt(); return; }

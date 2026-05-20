@@ -1,14 +1,15 @@
 ---
 name: node-inspect-debugger
 description: Debug Node.js via --inspect + Chrome DevTools Protocol CLI.
-version: 1.0.0
+version: 1.1.0
 tags:
 - debugging
 - nodejs
 - node-inspect
 - cdp
 - breakpoints
-- ui-tui
+- electron
+- vite
 author: ported
 ---
 # Node.js Inspect Debugger
@@ -24,15 +25,17 @@ Two tools, pick one:
 
 **Prefer `node inspect` first.** It's always available and the REPL is fast.
 
+In this repo the Node.js surfaces are the front-end packages — `mateclaw-ui`, `mateclaw-webchat`, and the Electron desktop app `mateclaw-desktop`. The Spring Boot backend is a JVM process and is not a target for this skill.
+
 ## When to Use
 
-- A Node test fails and you need to see intermediate state
-- ui-tui crashes or behaves wrong and you want to inspect React/Ink state pre-render
-- tui_gateway child processes (`_SlashWorker`, PTY bridge workers) misbehave
+- A Node-based build or packaging step (a Vite build, an `electron-builder` hook, a `scripts/` helper) fails and you need to see intermediate state
+- The Electron desktop **main process** (`mateclaw-desktop`) crashes, hangs on startup, or mishandles the bundled Java backend child process
+- A Vite dev server or a build plugin behaves wrong and `console.log` can't reach the value
 - You need to inspect a value in a closure that `console.log` can't reach without patching
 - Perf: attach to a running process to capture a CPU profile or heap snapshot
 
-**Don't use for:** things `console.log` solves in under a minute. Breakpoint-driven debugging is heavier; use it when the payoff is real.
+**Don't use for:** things `console.log` solves in under a minute. Breakpoint-driven debugging is heavier; use it when the payoff is real. The Electron **renderer** is a Chromium page, not a Node target — debug it with the window's built-in DevTools, not `node inspect`.
 
 ## Quick Reference: `node inspect` REPL
 
@@ -72,7 +75,7 @@ The `debug>` prompt accepts:
 
 ## Attaching to a Running Process
 
-When the process is already running (e.g. a long-lived dev server or the TUI gateway):
+When the process is already running (e.g. a Vite dev server, or the Electron main process):
 
 ```bash
 # 1. Send SIGUSR1 to enable the inspector on an existing process
@@ -152,7 +155,7 @@ const CDP = require('chrome-remote-interface');
 
   // Set a breakpoint by URL regex + line
   await Debugger.setBreakpointByUrl({
-    urlRegex: '.*app\\.tsx$',
+    urlRegex: '.*dist-electron/main/index\\.js$',
     lineNumber: 119,       // 0-indexed
     columnNumber: 0,
   });
@@ -167,74 +170,67 @@ Run it:
 node /tmp/cdp-debug.js
 ```
 
-the agent-specific note: `chrome-remote-interface` is NOT in `ui-tui/package.json`. Install it to a throwaway location if you don't want to dirty the project:
+`chrome-remote-interface` is not a dependency of any package in this repo. Install it to a throwaway location so you don't dirty a project's `package.json`:
 
 ```bash
 mkdir -p /tmp/cdp-tools && cd /tmp/cdp-tools && npm i chrome-remote-interface
 NODE_PATH=/tmp/cdp-tools/node_modules node /tmp/cdp-debug.js
 ```
 
-## Debugging the agent ui-tui
+## Debugging the Electron Desktop App
 
-The TUI is built Ink + tsx. Two common scenarios:
+`mateclaw-desktop` is an Electron app. The **main process** is a Node process — `electron/main/index.ts`, compiled by Vite to `dist-electron/main/index.js` (the `main` field in `package.json`). It spawns the Java backend as a child process. The **renderer** is a Chromium `BrowserWindow` — debug that with the window's DevTools, not this skill.
 
-### Debugging a single Ink component under dev
+### Launch the main process paused
 
-`ui-tui/package.json` has `npm run dev` (tsx --watch). Add `--inspect-brk` by running tsx directly:
+Electron forwards `--inspect` / `--inspect-brk` to its main process. Build the Electron output first so there is a `dist-electron/` to run:
 
 ```bash
-cd /path/to/your/project/ui-tui
-npm run build    # produce dist/ once so transpile isn't needed on first load
-node --inspect-brk dist/entry.js
+cd mateclaw-desktop
+npm run build                          # produces dist/ and dist-electron/
+npx electron --inspect-brk=9229 .      # Electron starts, paused on the main process first line
 # In another terminal:
-node inspect -p <node pid>
+node inspect ws://127.0.0.1:9229/<uuid>
 ```
 
 Then inside `debug>`:
 
 ```
-sb('dist/app.js', 220)     # or wherever the suspect render is
+sb('dist-electron/main/index.js', 220)   # e.g. the suspect line in window/backend setup
 cont
 ```
 
-When it pauses, `repl` → inspect `props`, state refs, `useInput` handler values, etc.
+When it pauses, `repl` → inspect `mainWindow`, `javaProcess`, `BACKEND_PORT`, the updater state, etc.
 
-### Debugging a running `the agent --tui`
+### Attach to an already-running desktop app
 
-The TUI spawns Node from the Python CLI. Easiest path:
+The Electron main process is the one launched without a `--type=` flag (renderer/GPU/utility processes carry `--type=`):
 
 ```bash
-# 1. Launch TUI
-the agent --tui &
-TUI_PID=$(pgrep -f 'ui-tui/dist/entry' | head -1)
+# Find the main process PID (the entry without --type=)
+ps aux | grep -i 'mateclaw-desktop' | grep -v -- '--type='
 
-# 2. Enable inspector on that Node PID
-kill -SIGUSR1 "$TUI_PID"
+# Enable the inspector on it
+kill -SIGUSR1 <main-pid>
 
-# 3. Find the WS URL
+# Find the WS URL and attach
 curl -s http://127.0.0.1:9229/json/list | jq -r '.[0].webSocketDebuggerUrl'
-
-# 4. Attach
 node inspect ws://127.0.0.1:9229/<uuid>
 ```
 
-Interacting with the TUI (typing in its window) continues to advance execution; your debugger can pause it on a breakpoint at any `sb(...)`.
+The Java backend that the main process spawns is a JVM, not a Node target — it will not appear in `/json/list`. To debug that, use the JVM's own remote-debug flags, not this skill.
 
-### Debugging `_SlashWorker` / PTY child processes
+## Debugging a Vite Dev Server
 
-Those are Python, not Node — use the `python-debugpy` skill for them. Only Node portions (Ink UI, tui_gateway client, tsx-run tests under `ui-tui/`) use this skill.
-
-## Running Vitest Tests Under the Debugger
+`mateclaw-ui`, `mateclaw-webchat`, and `mateclaw-desktop` all run `vite` for `dev`. To step through Vite config or a build plugin, run Vite's binary under the inspector instead of the `pnpm dev` wrapper:
 
 ```bash
-cd /path/to/your/project/ui-tui
-# Run a single test file paused on entry
-node --inspect-brk ./node_modules/vitest/vitest.mjs run --no-file-parallelism src/app/foo.test.tsx
+cd mateclaw-ui
+node --inspect-brk ./node_modules/vite/bin/vite.js
+# In another terminal: node inspect -p <pid>, then sb('vite.config.ts', N), cont
 ```
 
-In another terminal: `node inspect -p <pid>`, then `sb('src/app/foo.tsx', 42)`, `cont`.
-
-Use `--no-file-parallelism` (vitest) or `--runInBand` (jest) so only one worker exists — debugging a pool is painful.
+This pauses inside the Node process that loads `vite.config.ts` and runs plugin hooks. The browser-side Vue code it serves is not reachable here — that runs in the browser and is debugged with browser DevTools.
 
 ## Heap Snapshots & CPU Profiles (Non-interactive)
 
@@ -261,7 +257,7 @@ require('fs').writeFileSync('/tmp/heap.heapsnapshot', chunks.join(''));
 
 ## Common Pitfalls
 
-1. **Wrong line numbers in TS source.** Breakpoints hit the emitted JS, not the `.ts`. Either (a) break in the built `dist/*.js`, or (b) enable sourcemaps (`node --enable-source-maps`) and use `sb('src/app.tsx', N)` — but only with CDP clients that follow sourcemaps. `node inspect` CLI does not.
+1. **Wrong line numbers in TS source.** Breakpoints hit the emitted JS, not the `.ts`. Either (a) break in the built file (`dist-electron/main/index.js`), or (b) enable sourcemaps (`node --enable-source-maps`) and use `sb('electron/main/index.ts', N)` — but only with CDP clients that follow sourcemaps. The `node inspect` CLI does not.
 
 2. **`--inspect` vs `--inspect-brk`.** `--inspect` starts the inspector but doesn't pause; your script races past your first breakpoint if you attach too late. Use `--inspect-brk` when you need to set breakpoints before any code runs.
 
@@ -270,11 +266,11 @@ require('fs').writeFileSync('/tmp/heap.heapsnapshot', chunks.join(''));
    curl -s http://127.0.0.1:9229/json/list   # lists all inspectable targets on the host
    ```
 
-4. **Child processes.** `--inspect` on a parent does NOT inspect its children. Use `NODE_OPTIONS='--inspect-brk' node parent.js` to propagate to every child; be aware they all need unique ports (Node auto-increments when `NODE_OPTIONS='--inspect'` is inherited).
+4. **Child processes.** `--inspect` on a parent does NOT inspect its children. Electron itself is multi-process, and the desktop main process additionally spawns the Java backend. Use `NODE_OPTIONS='--inspect-brk' node parent.js` to propagate to every Node child; be aware they all need unique ports (Node auto-increments when `NODE_OPTIONS='--inspect'` is inherited).
 
 5. **Background kills.** If you `Ctrl+C` out of `node inspect` while the target is paused, the target stays paused. Either `cont` first, or `kill` the target explicitly.
 
-6. **Running `node inspect` through an agent terminal.** It's a PTY-friendly REPL. In the agent, launch it with `terminal(pty=true)` or `background=true` + `process(action='submit', data='...')`. Non-PTY foreground mode will work for one-shot commands but not for interactive stepping.
+6. **Running `node inspect` through the agent's shell tool.** The `execute_shell_command` tool is one-shot and non-interactive — it cannot drive the interactive `debug>` REPL. For interactive stepping, run `node inspect` in a real terminal yourself. For agent-driven debugging, prefer the scripted CDP driver above: it is fully non-interactive and runs fine as a single `execute_shell_command` call.
 
 7. **Security.** `--inspect=0.0.0.0:9229` exposes arbitrary code execution. Always bind to `127.0.0.1` (the default) unless you have an isolated network.
 

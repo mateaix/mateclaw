@@ -63,7 +63,14 @@ public class AvailableToolService {
     private void appendBuiltinTools(List<AvailableToolDTO> out) {
         for (ToolEntity t : toolService.listEnabledTools()) {
             if (t == null || t.getName() == null || t.getName().isBlank()) continue;
-            out.add(AvailableToolDTO.fromBuiltin(t));
+            // Dispatch by toolType so channel-native tools (registered by
+            // ChannelToolService) land in their own picker group rather
+            // than getting lumped under "Built-in".
+            if ("channel".equals(t.getToolType())) {
+                out.add(AvailableToolDTO.fromChannel(t));
+            } else {
+                out.add(AvailableToolDTO.fromBuiltin(t));
+            }
         }
     }
 

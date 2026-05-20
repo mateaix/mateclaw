@@ -24,7 +24,7 @@ public class ConversationWindowProperties {
     /** 摘要自身最大 token 数（仅作 LLM maxToken 参数上限，实际预算由动态计算） */
     private int summaryMaxTokens = 800;
 
-    // ==================== 动态压缩配置（Hermes 风格） ====================
+    // ==================== 动态压缩配置 ====================
 
     /** 尾部保护的最小消息数（即使 token 预算用完也至少保留这么多） */
     private int protectLastMinMessages = 10;

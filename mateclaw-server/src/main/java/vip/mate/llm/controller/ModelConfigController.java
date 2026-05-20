@@ -3,6 +3,7 @@ package vip.mate.llm.controller;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.*;
 import vip.mate.common.result.R;
 import vip.mate.llm.model.*;
@@ -22,6 +23,7 @@ import java.util.List;
 import java.util.Map;
 import vip.mate.workspace.core.annotation.RequireWorkspaceRole;
 
+@Slf4j
 @Tag(name = "模型配置管理")
 @RestController
 @RequestMapping("/api/v1/models")
@@ -154,10 +156,10 @@ public class ModelConfigController {
     }
 
     @Operation(summary = "从 Provider 删除模型")
-    @DeleteMapping("/{providerId}/models/{modelId}")
+    @DeleteMapping("/{providerId}/models")
     @RequireWorkspaceRole("admin")
     public R<ProviderInfoDTO> removeProviderModel(@PathVariable String providerId,
-                                                  @PathVariable String modelId) {
+                                                  @RequestParam String modelId) {
         return R.ok(modelProviderService.removeModel(providerId, modelId));
     }
 
@@ -224,10 +226,10 @@ public class ModelConfigController {
     }
 
     @Operation(summary = "测试单个模型可用性")
-    @PostMapping("/{providerId}/models/{modelId}/test")
+    @PostMapping("/{providerId}/models/test")
     @RequireWorkspaceRole("admin")
     public R<TestResult> testModel(@PathVariable String providerId,
-                                    @PathVariable String modelId) {
+                                   @RequestParam String modelId) {
         return R.ok(modelDiscoveryService.testModel(providerId, modelId));
     }
 
@@ -264,6 +266,11 @@ public class ModelConfigController {
             result.put("model", config.getModelName());
             result.put("message", "连通性测试成功");
         } catch (Exception e) {
+            // log.warn (not error) — connectivity test failures are user-input /
+            // upstream-API problems, not system-side incidents. The stack trace
+            // is still attached so operators can diagnose, but it stops firing
+            // monitoring alerts that key off ERROR-level events.
+            log.warn("[EmbeddingTest] modelId={} test failed", modelId, e);
             result.put("success", false);
             result.put("message", e.getMessage());
         }

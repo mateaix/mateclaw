@@ -554,8 +554,23 @@ public class ChannelMessageRouter {
                             denyOutcome.messagesRewritten());
                     return;
 
+                } else if (adapter.usesInteractiveApprovalCards()) {
+                    // Channel approves via button-clicks on an interactive
+                    // card, NOT via /approve text. A casual follow-up
+                    // message from the user during the wait window MUST
+                    // NOT auto-cancel the pending — the button click is
+                    // the canonical decision path. Treat the new message
+                    // as a fresh turn; the pending stays alive until the
+                    // user clicks Approve / Deny, the GC TTL expires, or
+                    // the workflow explicitly resolves it.
+                    log.info("[{}] Non-approval message while pending exists; channel uses card buttons so NOT auto-cancelling pendingId={}",
+                            adapter.getChannelType(), pending.getPendingId());
+                    // Fall through to process the new message normally.
                 } else {
                     // Non-approval message while a pending exists → treat as implicit deny.
+                    // Text-command channels rely on this: the user is told
+                    // "type /approve <id>" and anything else is an implicit
+                    // change of mind.
                     approvalService.resolve(pending.getPendingId(), message.getSenderId(), "denied");
                     conversationService.removeApprovalPlaceholders(conversationId);
                     String cancelHint = "⛔ 审批已取消。将继续处理您的新消息。";
@@ -696,6 +711,15 @@ public class ChannelMessageRouter {
 
                         // 语音回复：异步 TTS 合成并追加发送（先文本后语音，不阻塞）
                         maybeGenerateVoiceReply(message, adapter, replyTarget, conversationId, reply, channelEntity);
+
+                        // Per-channel completion ack (e.g. Feishu ✅ reaction).
+                        // No-op for adapters that haven't overridden the hook.
+                        try {
+                            adapter.onAgentCompleted(message);
+                        } catch (Exception hookErr) {
+                            log.debug("[{}] onAgentCompleted hook failed (non-fatal): {}",
+                                    adapter.getChannelType(), hookErr.getMessage());
+                        }
                     }
                 }
             } finally {
@@ -812,6 +836,12 @@ public class ChannelMessageRouter {
                 if (replyTarget != null) {
                     maybeGenerateVoiceReply(message, streamingAdapter, replyTarget,
                             conversationId, finalContent, channelEntity);
+                }
+                try {
+                    streamingAdapter.onAgentCompleted(message);
+                } catch (Exception hookErr) {
+                    log.debug("[{}] onAgentCompleted hook failed (non-fatal): {}",
+                            channelType, hookErr.getMessage());
                 }
                 return saved != null ? saved.getId() : null;
             }

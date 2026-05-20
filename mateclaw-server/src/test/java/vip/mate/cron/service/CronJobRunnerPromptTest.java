@@ -38,7 +38,10 @@ class CronJobRunnerPromptTest {
         ChatOrigin channelOrigin = new ChatOrigin(
                 7L, "cron_7", "system", 1L, null,
                 /* channelId */ 9L, new ChannelTarget("group-a", null, null),
-                /* cronOrigin */ true);
+                /* cronOrigin */ true,
+                /* senderName */ null,
+                /* channelType */ "feishu",
+                /* chatId */ "group-a");
         String prompt = CronJobRunner.buildCronPrompt("提醒喝水", channelOrigin);
 
         assertTrue(prompt.contains("[定时任务执行说明]"));

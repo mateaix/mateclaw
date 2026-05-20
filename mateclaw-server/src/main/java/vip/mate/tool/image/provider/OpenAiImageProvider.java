@@ -23,8 +23,7 @@ import java.util.Set;
  * 同步模式：返回图片 URL（DALL-E 系列）或 base64 data URL（gpt-image-2 系列）。
  * 复用已有的 OpenAI LLM provider 的 API Key。
  *
- * <p>gpt-image-2 三档质量做成 3 个虚拟 model ID（参考 hermes-agent
- * plugins/image_gen/openai/__init__.py 的 model catalog 设计），让 picker
+ * <p>gpt-image-2 三档质量做成 3 个虚拟 model ID，让 picker
  * 能直接选 fast/balanced/high。三档底层都打到 API model {@code "gpt-image-2"}，
  * 区别仅在 {@code quality} 参数。
  *

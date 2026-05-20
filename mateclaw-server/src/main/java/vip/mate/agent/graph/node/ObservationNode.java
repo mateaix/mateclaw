@@ -72,7 +72,7 @@ public class ObservationNode implements NodeAction {
         // 合并为单条观察记录
         String combinedObservation = String.join("\n---\n", processedObservations);
 
-        // Budget Pressure Warning（Hermes 风格）：接近上限时注入警告到工具结果中
+        // Budget Pressure Warning：接近上限时注入警告到工具结果中
         // LLM 下一轮 reasoning 时能看到，从而主动收束，而非被硬性截断
         if (maxIterations > 0) {
             int progress = (int) ((double) nextIteration / maxIterations * 100);

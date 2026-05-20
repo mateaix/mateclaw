@@ -16,8 +16,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *       AND {@code oauth-2025-04-20}, comma-joined (no spaces).</li>
  *   <li>{@code User-Agent} must be the bare {@code claude-cli/<ver>} —
  *       NOT {@code claude-cli/<ver> (external, cli)}. The {@code (external, cli)}
- *       suffix is what hermes-agent and other third-party clients append, and
- *       Anthropic uses it as a fingerprint to rate-limit the anti-abuse path.
+ *       suffix is what third-party clients append, and Anthropic uses it as a
+ *       fingerprint to rate-limit the anti-abuse path.
  *       Real Claude Code emits the bare form via the official JS SDK.</li>
  * </ol>
  */
@@ -36,7 +36,7 @@ class ClaudeCodeApiHeadersTest {
     }
 
     @Test
-    @DisplayName("allBetas: common betas appear before OAuth-only betas (matches hermes-agent ordering)")
+    @DisplayName("allBetas: common betas appear before OAuth-only betas")
     void allBetas_orderedCommonFirst() {
         String result = headers.allBetas();
         int oauthIdx = result.indexOf("oauth-2025-04-20");

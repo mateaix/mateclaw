@@ -83,7 +83,7 @@ public class ReasoningNode implements NodeAction {
     private static final int DASHSCOPE_MAX_OUTPUT_TOKENS = 8192;
 
     /**
-     * Hermes-agent style enforcement clause appended to every ReasoningNode
+     * Tool-use enforcement clause appended to every ReasoningNode
      * system prompt. Treats narration ("I will now …") as a protocol violation
      * to prevent the recurring failure mode where a model says it will call a
      * tool but emits the description as final_answer text instead.
@@ -347,7 +347,8 @@ public class ReasoningNode implements NodeAction {
         // the previous tail-only retry path silently dropped the wiki
         // segment which led to "answer regressed after compaction"
         // complaints on long sessions.
-        List<Message> nonHistoryPrefix = buildNonHistoryPrefix(systemPrompt, workspaceBasePath, agentIdStr, userMsg);
+        List<Message> nonHistoryPrefix = buildNonHistoryPrefix(systemPrompt, workspaceBasePath, agentIdStr, userMsg,
+                accessor.chatOrigin());
 
         if (conversationWindowManager != null) {
             // Pass conversationId + workspaceBasePath so oversized older
@@ -709,10 +710,11 @@ public class ReasoningNode implements NodeAction {
     List<Message> buildNonHistoryPrefix(String systemPrompt,
                                         String workspaceBasePath,
                                         String agentIdStr,
-                                        String userMsg) {
+                                        String userMsg,
+                                        vip.mate.agent.context.ChatOrigin chatOrigin) {
         List<Message> prefix = new ArrayList<>();
         prefix.add(new SystemMessage(systemPrompt));
-        prefix.add(new UserMessage(RuntimeContextInjector.buildContextMessage(workspaceBasePath)));
+        prefix.add(new UserMessage(RuntimeContextInjector.buildContextMessage(workspaceBasePath, null, chatOrigin)));
         if (wikiContextService != null && agentIdStr != null && !agentIdStr.isEmpty()) {
             try {
                 Long parsedAgentId = Long.parseLong(agentIdStr);

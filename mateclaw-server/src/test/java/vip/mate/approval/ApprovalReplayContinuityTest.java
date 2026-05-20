@@ -41,7 +41,10 @@ class ApprovalReplayContinuityTest {
                 /* workspaceBasePath */ "/data/ws/5",
                 /* channelId */ 9L,
                 /* channelTarget */ new ChannelTarget("group-a", "thread-1", "bot-001"),
-                /* cronOrigin */ false);
+                /* cronOrigin */ false,
+                /* senderName */ "Alice",
+                /* channelType */ "wecom",
+                /* chatId */ "group-a");
 
         String json = objectMapper.writeValueAsString(original);
         ChatOrigin restored = workflow.restoreChatOrigin(json);

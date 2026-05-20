@@ -643,7 +643,7 @@ public class SkillService {
             return "";
         }
 
-        // --- 第零层：Skill 自治引导（RFC-023，对标 hermes-agent prompt_builder.py:164-171） ---
+        // --- 第零层：Skill 自治引导 ---
         StringBuilder catalog = new StringBuilder();
         catalog.append("\n\n## Skill Management\n\n");
         catalog.append("After completing a complex task (5+ tool calls), fixing a tricky error, ");

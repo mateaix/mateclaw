@@ -494,7 +494,7 @@ export const modelApi = {
   addProviderModel: (providerId: string, data: any) =>
     http.post(`/models/${providerId}/models`, data),
   removeProviderModel: (providerId: string, modelId: string) =>
-    http.delete(`/models/${providerId}/models/${encodeURIComponent(modelId)}`),
+    http.delete(`/models/${providerId}/models`, { params: { modelId } }),
   getActive: () => http.get('/models/active'),
   setActive: (data: { providerId: string; model: string }) =>
     http.put('/models/active', data),
@@ -506,7 +506,7 @@ export const modelApi = {
   testConnection: (providerId: string) =>
     http.post(`/models/${providerId}/test-connection`),
   testModel: (providerId: string, modelId: string) =>
-    http.post(`/models/${providerId}/models/${encodeURIComponent(modelId)}/test`),
+    http.post(`/models/${providerId}/models/test`, null, { params: { modelId } }),
 
   // ==================== RFC-074: enabled / catalog ====================
   /** Full provider catalog including enabled=false rows; powers the Add Provider drawer. */
@@ -671,6 +671,8 @@ export const securityApi = {
   toggleRule: (ruleId: string, enabled: boolean) =>
     http.put(`/security/guard/rules/${ruleId}/toggle?enabled=${enabled}`),
   deleteRule: (ruleId: string) => http.delete(`/security/guard/rules/${ruleId}`),
+  exportRules: () => http.get('/security/guard/rules/export'),
+  importRules: (data: { rules: any[] }) => http.post('/security/guard/rules/import', data),
   listAuditLogs: (params?: any) => http.get('/security/audit/logs', { params }),
   getAuditStats: () => http.get('/security/audit/stats'),
   listApprovals: (params?: any) => http.get('/security/approvals', { params }),

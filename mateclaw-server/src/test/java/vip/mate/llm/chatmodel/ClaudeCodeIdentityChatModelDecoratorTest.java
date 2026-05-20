@@ -28,7 +28,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * Verifies the OAuth-mode prompt rewriting that prevents Anthropic's edge
  * from rate-limiting MateClaw traffic. Each test corresponds to one of the
- * transforms hermes-agent applies on {@code is_oauth=True} requests.
+ * transforms applied on OAuth-authenticated requests.
  */
 class ClaudeCodeIdentityChatModelDecoratorTest {
 
@@ -56,8 +56,8 @@ class ClaudeCodeIdentityChatModelDecoratorTest {
         Prompt input = new Prompt(List.of(new UserMessage("hello")));
         Prompt result = d.transform(input);
 
-        // First message must be a system message with just the identity prefix —
-        // hermes-agent does the same: system = [cc_block] when none was supplied.
+        // First message must be a system message with just the identity prefix:
+        // when none was supplied, system = [identity block].
         Message first = result.getInstructions().get(0);
         assertTrue(first instanceof SystemMessage);
         assertEquals(ClaudeCodeIdentityChatModelDecorator.CLAUDE_CODE_SYSTEM_PREFIX,
@@ -70,9 +70,8 @@ class ClaudeCodeIdentityChatModelDecoratorTest {
     @DisplayName("transform is idempotent — second pass doesn't double-prefix")
     void transform_idempotent() {
         // Defends against accidental double-wrapping (e.g. nested decorators or
-        // a re-issue of the same Prompt). hermes-agent doesn't have this concern
-        // because its rewrite happens in one place; we keep this guard so the
-        // identity prefix doesn't compound to "You are Claude Code...You are Claude Code...".
+        // a re-issue of the same Prompt). The guard keeps the identity prefix
+        // from compounding to "You are Claude Code...You are Claude Code...".
         ClaudeCodeIdentityChatModelDecorator d = new ClaudeCodeIdentityChatModelDecorator(noopDelegate());
         Prompt original = new Prompt(List.of(new SystemMessage("Body"), new UserMessage("hi")));
         Prompt once = d.transform(original);

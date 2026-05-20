@@ -494,8 +494,9 @@ public class StepExecutionNode implements NodeAction {
                 8. 每一步最多做一个必要的检查和一个必要的执行，不要无意义循环。
                 """;
         messages.add(new SystemMessage(enhancedSystemPrompt));
-        // 注入运行时上下文（当前时间 + 工作目录）
-        messages.add(new UserMessage(RuntimeContextInjector.buildContextMessage(workspaceBasePath)));
+        // 注入运行时上下文（当前时间 + 工作目录 + 发起者上下文）
+        messages.add(new UserMessage(
+                RuntimeContextInjector.buildContextMessage(workspaceBasePath, null, accessor.chatOrigin())));
 
         // Layer 2: Working context（对话历史 + 步骤结果的受控长度摘要）
         String workingContext = accessor.workingContext();

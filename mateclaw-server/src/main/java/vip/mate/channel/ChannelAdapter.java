@@ -142,6 +142,24 @@ public interface ChannelAdapter {
                 vip.mate.channel.notification.ApprovalNotificationService.staticBuildText(notice));
     }
 
+    /**
+     * Does this adapter deliver approval decisions through an
+     * interactive card (button click → card.action callback) rather
+     * than the text-command flow ({@code /approve <id>} / {@code /deny <id>})?
+     *
+     * <p>Controls {@code ChannelMessageRouter}'s "non-approval message →
+     * auto-cancel pending" heuristic. The heuristic was designed for
+     * the text flow where the user is expected to type
+     * {@code /approve} and anything else is an implicit "I changed my
+     * mind". With interactive cards the user clicks a button, and
+     * unrelated chat messages during the wait window must NOT
+     * auto-cancel the pending. Default false (text flow); WeCom +
+     * Feishu (when card dispatcher is wired) override to true.
+     */
+    default boolean usesInteractiveApprovalCards() {
+        return false;
+    }
+
     // ==================== 主动推送 ====================
 
     /**
@@ -256,5 +274,25 @@ public interface ChannelAdapter {
         return isRunning()
                 ? ChannelHealth.up(getChannelType(), null, java.time.Instant.now())
                 : ChannelHealth.outOfService(getChannelType(), null);
+    }
+
+    // ==================== Lifecycle hooks ====================
+
+    /**
+     * Fires after the router has successfully delivered the agent's reply
+     * for the given inbound message. Channels that want to acknowledge
+     * completion (e.g. Feishu adds a ✅ reaction on the user's original
+     * message) override this; the default is a no-op so the router can
+     * call it unconditionally without checking adapter type.
+     *
+     * <p>Called only on the happy path — error replies, approval-pending
+     * branches, and stream exceptions skip this hook.
+     *
+     * <p>Implementations MUST be cheap and non-blocking; they run on the
+     * router's processing thread. Use a background thread for any
+     * platform API call.
+     */
+    default void onAgentCompleted(ChannelMessage inboundMessage) {
+        // no-op; opt-in per adapter
     }
 }

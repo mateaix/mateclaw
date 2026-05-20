@@ -28,7 +28,7 @@ class ChatOriginTest {
     void roundTripThroughToolContext_preservesAllFields() {
         ChannelTarget target = new ChannelTarget("user-42", "thread-abc", "bot-001");
         ChatOrigin original = new ChatOrigin(7L, "wechat:42", "u123", 5L,
-                "/data/ws/5", 9L, target, false);
+                "/data/ws/5", 9L, target, false, null, null, null);
 
         ToolContext ctx = original.toToolContext();
         ChatOrigin restored = ChatOrigin.from(ctx);
@@ -75,7 +75,7 @@ class ChatOriginTest {
     void jsonSerialization_isStableAndForwardCompatible() throws Exception {
         ObjectMapper om = new ObjectMapper();
         ChatOrigin origin = new ChatOrigin(7L, "wechat:42", "u123", 5L,
-                "/data/ws/5", 9L, new ChannelTarget("user-42", "thread-abc", "bot-001"), false);
+                "/data/ws/5", 9L, new ChannelTarget("user-42", "thread-abc", "bot-001"), false, null, null, null);
 
         String json = om.writeValueAsString(origin);
         ChatOrigin restored = om.readValue(json, ChatOrigin.class);

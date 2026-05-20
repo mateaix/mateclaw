@@ -7,7 +7,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 默认策略：在 system / tools / messages 尾部最多打 4 个缓存断点（仿 hermes-agent {@code system_and_3}）。
+ * 默认策略：在 system / tools / messages 尾部最多打 4 个缓存断点。
  *
  * <p>断点选择规则（按优先级递减）：
  * <ol>

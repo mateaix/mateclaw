@@ -22,9 +22,6 @@ import java.util.regex.Pattern;
  * where Claude Code isn't installed locally (the OAuth flow may still work via
  * a manually-imported credentials file).
  *
- * <p>Reference: hermes-agent {@code anthropic_adapter._detect_claude_code_version}
- * (line 239) + {@code _CLAUDE_CODE_VERSION_FALLBACK} (line 235).
- *
  * <p>Result is cached for the JVM lifetime (Anthropic's UA validation tolerates
  * a stable version per process). Restart MateClaw to pick up a Claude Code
  * upgrade.
@@ -36,7 +33,7 @@ public class ClaudeCodeVersionDetector {
     /**
      * Static fallback version. Update this when bumping the floor at which
      * Anthropic accepts spoofed Claude Code traffic (track Anthropic's
-     * announcements + hermes-agent's same constant for cadence).
+     * announcements for cadence).
      */
     static final String FALLBACK_VERSION = "2.1.74";
 

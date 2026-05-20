@@ -46,6 +46,27 @@ public final class RuntimeContextInjector {
      * 构建运行时上下文消息（i18n 版本）。
      */
     public static String buildContextMessage(String workspaceBasePath, vip.mate.i18n.I18nService i18n) {
+        return buildContextMessage(workspaceBasePath, i18n, null);
+    }
+
+    /**
+     * Build the runtime-context message and (when {@code origin} is non-null
+     * and carries IM channel context) append a short "who is talking, where,
+     * via what channel" block so the agent's system prompt can personalise
+     * its reply. Same cache discipline as the simpler overloads — the block
+     * stays well under the spring-ai user-cache threshold (≥1024 chars).
+     *
+     * <p>The sender block is suppressed when:
+     * <ul>
+     *   <li>{@code origin} is null or {@link ChatOrigin#EMPTY}</li>
+     *   <li>the origin carries no IM context (web / cron) — both produce
+     *       a null {@code channelType} or {@code "web"}</li>
+     * </ul>
+     * Web and cron callers thus see exactly the same prompt as before.
+     */
+    public static String buildContextMessage(String workspaceBasePath,
+                                              vip.mate.i18n.I18nService i18n,
+                                              ChatOrigin origin) {
         LocalDateTime now = LocalDateTime.now(ZONE);
         String dateStr = now.format(DATE_FMT);
         String timeStr = now.format(TIME_FMT);
@@ -67,6 +88,37 @@ public final class RuntimeContextInjector {
                 sb.append("\nYou can only read/write files and execute commands within this directory and its subdirectories.");
             }
         }
+
+        appendSenderBlockIfPresent(sb, origin);
         return sb.toString();
+    }
+
+    /**
+     * Append a sender / channel / chat block when the origin carries
+     * meaningful IM context. Format is intentionally one line per
+     * fact so it's both LLM-readable and easy to log-grep.
+     */
+    private static void appendSenderBlockIfPresent(StringBuilder sb, ChatOrigin origin) {
+        if (origin == null || origin == ChatOrigin.EMPTY) return;
+        String channelType = origin.channelType();
+        // Only inject for real IM channels — web / null / cron should
+        // see the previous prompt verbatim so their cache hit rate
+        // and existing eval baselines don't shift.
+        if (channelType == null || channelType.isBlank()
+                || "web".equalsIgnoreCase(channelType)
+                || origin.cronOrigin()) {
+            return;
+        }
+        sb.append("\n[system-context] Channel: ").append(channelType);
+        if (origin.senderName() != null && !origin.senderName().isBlank()) {
+            sb.append("\n[system-context] Sender: ").append(origin.senderName());
+        }
+        if (origin.requesterId() != null && !origin.requesterId().isBlank()) {
+            sb.append(" (id=").append(origin.requesterId()).append(')');
+        }
+        if (origin.chatId() != null && !origin.chatId().isBlank()) {
+            sb.append("\n[system-context] Chat: ").append(origin.chatId())
+              .append(" (group conversation — multiple users may follow up)");
+        }
     }
 }

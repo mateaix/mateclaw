@@ -10,6 +10,11 @@ import vip.mate.tool.guard.engine.ToolGuardRuleRegistry;
 import vip.mate.tool.guard.model.ToolGuardRuleEntity;
 import vip.mate.tool.guard.repository.ToolGuardRuleMapper;
 
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
 /**
  * 工具安全规则 CRUD 服务
  */
@@ -94,6 +99,11 @@ public class ToolGuardRuleService {
         if (existing == null) {
             throw new IllegalArgumentException("Rule not found: " + ruleId);
         }
+        // 内置规则只允许调整策略字段；内容字段（pattern / category / name 等）由
+        // 代码侧种子管理，写进 DB 也会在下次启动被覆盖回去，提前在这里拦掉以免误用。
+        if (Boolean.TRUE.equals(existing.getBuiltin())) {
+            return updateBuiltinPolicy(ruleId, update);
+        }
 
         if (update.getName() != null) {
             requireNonBlank(update.getName(), "Rule name");
@@ -151,6 +161,130 @@ public class ToolGuardRuleService {
         }
         ruleMapper.deleteById(existing.getId());
         ruleRegistry.reload();
+    }
+
+    /**
+     * 更新内置规则时，限制只允许调整策略字段（severity / decision / priority / enabled
+     * / excludePattern）。内容字段（pattern / category / name 等）由代码侧种子管理，
+     * UI 改动也会在下次重启被覆盖回去，提前在 API 层拦截避免误用。
+     */
+    public ToolGuardRuleEntity updateBuiltinPolicy(String ruleId, ToolGuardRuleEntity patch) {
+        ToolGuardRuleEntity existing = getByRuleId(ruleId);
+        if (existing == null) {
+            throw new IllegalArgumentException("Rule not found: " + ruleId);
+        }
+        if (!Boolean.TRUE.equals(existing.getBuiltin())) {
+            throw new IllegalArgumentException("Rule is not builtin: " + ruleId);
+        }
+        if (patch.getSeverity() != null) existing.setSeverity(patch.getSeverity());
+        if (patch.getDecision() != null) existing.setDecision(patch.getDecision());
+        if (patch.getPriority() != null) existing.setPriority(patch.getPriority());
+        if (patch.getEnabled() != null) existing.setEnabled(patch.getEnabled());
+        if (patch.getExcludePattern() != null) existing.setExcludePattern(patch.getExcludePattern());
+        ruleMapper.updateById(existing);
+        ruleRegistry.reload();
+        return existing;
+    }
+
+    /**
+     * 导出全部规则（含 builtin），格式可被 importRules 直接吃回去。
+     * 导出时保留 ruleId 作为主键标识，省略 id / createTime / updateTime / deleted 这些
+     * 部署敏感的字段；builtin 标志保留，import 时用来判断走 builtin policy 通道还是
+     * 创建/覆盖 custom 规则。
+     */
+    public Map<String, Object> exportRules() {
+        List<ToolGuardRuleEntity> all = ruleMapper.selectList(
+                new LambdaQueryWrapper<ToolGuardRuleEntity>()
+                        .orderByDesc(ToolGuardRuleEntity::getPriority));
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (ToolGuardRuleEntity r : all) {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("ruleId", r.getRuleId());
+            row.put("name", r.getName());
+            row.put("description", r.getDescription());
+            row.put("toolName", r.getToolName());
+            row.put("paramName", r.getParamName());
+            row.put("category", r.getCategory());
+            row.put("severity", r.getSeverity());
+            row.put("decision", r.getDecision());
+            row.put("pattern", r.getPattern());
+            row.put("excludePattern", r.getExcludePattern());
+            row.put("remediation", r.getRemediation());
+            row.put("priority", r.getPriority());
+            row.put("enabled", r.getEnabled());
+            row.put("builtin", r.getBuiltin());
+            rows.add(row);
+        }
+        Map<String, Object> envelope = new LinkedHashMap<>();
+        envelope.put("schema", "mateclaw.tool-guard.rules.v1");
+        envelope.put("exportedAt", java.time.OffsetDateTime.now().toString());
+        envelope.put("count", rows.size());
+        envelope.put("rules", rows);
+        return envelope;
+    }
+
+    /**
+     * 导入规则。upsert 语义：
+     * <ul>
+     *   <li>ruleId 已存在 + builtin → 仅同步策略字段（severity / decision / priority / enabled / excludePattern）；</li>
+     *   <li>ruleId 已存在 + custom → 全字段覆盖；</li>
+     *   <li>ruleId 不存在 → 作为 custom 规则插入（强制 builtin=false，避免被 import 篡改内置标记）。</li>
+     * </ul>
+     */
+    public Map<String, Object> importRules(List<ToolGuardRuleEntity> incoming) {
+        if (incoming == null || incoming.isEmpty()) {
+            throw new IllegalArgumentException("No rules to import");
+        }
+        int inserted = 0;
+        int updatedBuiltin = 0;
+        int updatedCustom = 0;
+        int skipped = 0;
+        List<String> errors = new ArrayList<>();
+
+        for (ToolGuardRuleEntity rule : incoming) {
+            try {
+                if (rule.getRuleId() == null || rule.getRuleId().isBlank()) {
+                    skipped++;
+                    errors.add("missing ruleId");
+                    continue;
+                }
+                if (rule.getPattern() == null || rule.getPattern().isBlank()) {
+                    skipped++;
+                    errors.add(rule.getRuleId() + ": missing pattern");
+                    continue;
+                }
+                String rid = rule.getRuleId().trim();
+                ToolGuardRuleEntity existing = getByRuleId(rid);
+                if (existing == null) {
+                    rule.setRuleId(rid);
+                    rule.setBuiltin(false);
+                    if (rule.getEnabled() == null) rule.setEnabled(true);
+                    if (rule.getPriority() == null) rule.setPriority(100);
+                    if (rule.getSeverity() == null) rule.setSeverity("HIGH");
+                    if (rule.getDecision() == null) rule.setDecision("NEEDS_APPROVAL");
+                    ruleMapper.insert(rule);
+                    inserted++;
+                } else if (Boolean.TRUE.equals(existing.getBuiltin())) {
+                    updateBuiltinPolicy(rid, rule);
+                    updatedBuiltin++;
+                } else {
+                    updateRule(rid, rule);
+                    updatedCustom++;
+                }
+            } catch (Exception e) {
+                skipped++;
+                errors.add((rule.getRuleId() == null ? "<no id>" : rule.getRuleId())
+                        + ": " + e.getMessage());
+            }
+        }
+        ruleRegistry.reload();
+        Map<String, Object> summary = new LinkedHashMap<>();
+        summary.put("inserted", inserted);
+        summary.put("updatedBuiltin", updatedBuiltin);
+        summary.put("updatedCustom", updatedCustom);
+        summary.put("skipped", skipped);
+        summary.put("errors", errors);
+        return summary;
     }
 
     /**
