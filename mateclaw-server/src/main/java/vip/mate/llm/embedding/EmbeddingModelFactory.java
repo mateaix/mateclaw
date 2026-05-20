@@ -165,7 +165,11 @@ public class EmbeddingModelFactory {
                     "Provider '" + provider.getProviderId() + "' 未完成配置（缺少 API Key 或 Base URL）");
         }
         String apiKey = provider.getApiKey();
-        if (!providerService.hasUsableApiKey(apiKey)) {
+        // Mirror the chat model builder: only require an API key when the provider row says so.
+        // Keyless providers (requireApiKey=false, e.g. OpenCode, local Ollama) must be allowed
+        // through; otherwise their cloud-model connection test passes but embedding test fails.
+        boolean keyRequired = !Boolean.FALSE.equals(provider.getRequireApiKey());
+        if (keyRequired && !providerService.hasUsableApiKey(apiKey)) {
             throw new MateClawException("err.embedding.openai_key_invalid",
                     "Provider API Key 未配置或无效: " + provider.getProviderId());
         }
@@ -175,10 +179,11 @@ public class EmbeddingModelFactory {
                     "Provider Base URL 未配置: " + provider.getProviderId());
         }
 
+        String effectiveApiKey = providerService.hasUsableApiKey(apiKey) ? apiKey.trim() : "";
         // 最简构造：不做 chat-specific 的 header 重写、reasoning patch 等
         OpenAiApi api = OpenAiApi.builder()
                 .baseUrl(baseUrl)
-                .apiKey(apiKey.trim())
+                .apiKey(effectiveApiKey)
                 .embeddingsPath(resolveEmbeddingsPath(baseUrl))
                 .build();
 
