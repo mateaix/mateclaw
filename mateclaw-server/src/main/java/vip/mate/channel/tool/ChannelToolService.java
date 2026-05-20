@@ -21,8 +21,10 @@ import vip.mate.tool.repository.ToolMapper;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -184,6 +186,12 @@ public class ChannelToolService {
             }
         }
 
+        // 0. Cross-process orphan sweep — catches rows left over from channels
+        // that were deleted while this node was down (the unregister loop below
+        // only sees channels this process once registered, so without the sweep
+        // pre-existing orphans live forever).
+        sweepOrphans(desired.keySet());
+
         // 1. Unregister channels no longer in the desired set
         for (Long goneId : new ArrayList<>(registered.keySet())) {
             if (!desired.containsKey(goneId)) {
@@ -220,7 +228,7 @@ public class ChannelToolService {
             return;
         }
         Map<String, String> nameMap = upsertToolRows(ch, descriptors);
-        seedGuardRules(descriptors, nameMap);
+        seedGuardRules(ch, descriptors, nameMap);
 
         ChannelToolContext context = new ChannelToolContext(
                 ch.getId(), ch.getName(), ch.getChannelType(), ch.getAgentId(),
@@ -321,7 +329,9 @@ public class ChannelToolService {
      * safe. Triggers a registry reload so the new rule is immediately
      * visible to the next invocation.
      */
-    private void seedGuardRules(List<ChannelToolDescriptor> descriptors, Map<String, String> nameMap) {
+    private void seedGuardRules(ChannelEntity ch, List<ChannelToolDescriptor> descriptors, Map<String, String> nameMap) {
+        String legacyName = "Channel write tool — approval required";
+        String channelScopedName = legacyName + " (" + ch.getName() + ")";
         boolean changed = false;
         for (ChannelToolDescriptor d : descriptors) {
             if (!d.mutating()) continue;
@@ -330,10 +340,20 @@ public class ChannelToolService {
             String ruleId = "channel_tool:" + actualName;
             ToolGuardRuleEntity existing = guardRuleMapper.selectOne(
                     new LambdaQueryWrapper<ToolGuardRuleEntity>().eq(ToolGuardRuleEntity::getRuleId, ruleId));
-            if (existing != null) continue; // already seeded — never override user edits
+            if (existing != null) {
+                // One-time migration: rename rows that still carry the original
+                // hardcoded label so the UI can tell channels apart. User-edited
+                // names (anything other than the legacy literal) are preserved.
+                if (legacyName.equals(existing.getName())) {
+                    existing.setName(channelScopedName);
+                    guardRuleMapper.updateById(existing);
+                    changed = true;
+                }
+                continue;
+            }
             ToolGuardRuleEntity row = new ToolGuardRuleEntity();
             row.setRuleId(ruleId);
-            row.setName("Channel write tool — approval required");
+            row.setName(channelScopedName);
             row.setDescription("Auto-seeded approval gate for channel-native write tool " + actualName);
             row.setToolName(actualName);
             row.setParamName("args");
@@ -361,6 +381,49 @@ public class ChannelToolService {
             } catch (Exception e) {
                 log.debug("[channel-tool] guard rule reload failed (non-fatal): {}", e.getMessage());
             }
+        }
+    }
+
+    /**
+     * Reverse reconciliation: drop any channel-scoped {@code mate_tool} row
+     * whose {@code channel_id} is not in the live set, then drop any seeded
+     * {@code mate_tool_guard_rule} whose target tool no longer exists. Closes
+     * the gap left by {@link #reconcile()}'s unregister loop, which only sees
+     * channels this process registered itself — orphans from channels deleted
+     * while the node was down survived previously.
+     */
+    private void sweepOrphans(Set<Long> liveChannelIds) {
+        List<ToolEntity> channelTools = toolMapper.selectList(
+                new LambdaQueryWrapper<ToolEntity>().eq(ToolEntity::getToolType, "channel"));
+        List<Long> staleToolIds = channelTools.stream()
+                .filter(t -> t.getChannelId() == null || !liveChannelIds.contains(t.getChannelId()))
+                .map(ToolEntity::getId)
+                .toList();
+        if (!staleToolIds.isEmpty()) {
+            toolMapper.delete(new LambdaQueryWrapper<ToolEntity>().in(ToolEntity::getId, staleToolIds));
+            log.info("[channel-tool] Swept {} orphan mate_tool row(s)", staleToolIds.size());
+        }
+
+        Set<String> liveChannelToolNames = new HashSet<>();
+        for (ToolEntity t : channelTools) {
+            if (t.getChannelId() != null && liveChannelIds.contains(t.getChannelId())) {
+                liveChannelToolNames.add(t.getName());
+            }
+        }
+        List<ToolGuardRuleEntity> seededRules = guardRuleMapper.selectList(
+                new LambdaQueryWrapper<ToolGuardRuleEntity>().likeRight(ToolGuardRuleEntity::getRuleId, "channel_tool:"));
+        List<Long> staleRuleIds = seededRules.stream()
+                .filter(r -> !liveChannelToolNames.contains(r.getToolName()))
+                .map(ToolGuardRuleEntity::getId)
+                .toList();
+        if (!staleRuleIds.isEmpty()) {
+            guardRuleMapper.delete(new LambdaQueryWrapper<ToolGuardRuleEntity>().in(ToolGuardRuleEntity::getId, staleRuleIds));
+            try {
+                guardRuleRegistry.reload();
+            } catch (Exception e) {
+                log.debug("[channel-tool] guard rule reload after sweep failed (non-fatal): {}", e.getMessage());
+            }
+            log.info("[channel-tool] Swept {} orphan mate_tool_guard_rule row(s)", staleRuleIds.size());
         }
     }
 

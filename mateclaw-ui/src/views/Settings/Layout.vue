@@ -25,10 +25,14 @@
               </router-link>
             </el-tooltip>
           </template>
-          <!-- 折叠切换按钮 -->
-          <button class="nav-collapse-btn" @click="toggleNav" :title="navCollapsed ? t('common.expandSidebar') : t('common.collapseSidebar')">
-            <svg v-if="!navCollapsed" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
-            <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+          <!-- Floating collapse toggle, pinned to the bottom of the nav -->
+          <button
+            class="nav-collapse-btn"
+            @click="toggleNav"
+            :title="navCollapsed ? t('common.expandSidebar') : t('common.collapseSidebar')"
+          >
+            <svg v-if="!navCollapsed" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+            <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
           </button>
         </div>
 
@@ -278,24 +282,53 @@ function isActive(path: string) {
 .nav-divider { font-size: 10px; font-weight: 700; color: var(--mc-text-tertiary); text-transform: uppercase; letter-spacing: 0.1em; padding: 12px 8px 4px; margin-top: 2px; }
 
 .nav-collapse-btn {
+  align-self: center;
+  margin-top: auto;
+  margin-bottom: 8px;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 100%;
+  width: 32px;
   height: 32px;
-  margin-top: auto;
-  border: none;
-  border-top: 1px solid var(--mc-border-light);
-  background: transparent;
-  color: var(--mc-text-tertiary);
+  padding: 0;
+  border: 1px solid rgba(217, 109, 70, 0.22);
+  border-radius: 50%;
+  background: var(--mc-primary-bg);
+  color: var(--mc-primary);
   cursor: pointer;
-  transition: all 0.15s;
   flex-shrink: 0;
+  box-shadow:
+    0 6px 16px rgba(217, 109, 70, 0.18),
+    0 2px 4px rgba(217, 109, 70, 0.10),
+    inset 0 1px 0 rgba(255, 255, 255, 0.6);
+  transition:
+    background 0.18s ease,
+    color 0.18s ease,
+    border-color 0.18s ease,
+    box-shadow 0.18s ease,
+    transform 0.18s cubic-bezier(0.4, 0, 0.2, 1);
+  position: sticky;
+  bottom: 8px;
 }
 
 .nav-collapse-btn:hover {
-  background: var(--mc-bg-muted);
-  color: var(--mc-text-primary);
+  background: var(--mc-primary);
+  color: #fff;
+  border-color: var(--mc-primary);
+  box-shadow:
+    0 10px 22px rgba(217, 109, 70, 0.34),
+    0 3px 6px rgba(217, 109, 70, 0.20);
+  transform: scale(1.06);
+}
+
+.nav-collapse-btn:active {
+  transform: scale(0.96);
+  transition-duration: 0.08s;
+}
+
+.nav-collapse-btn:focus-visible {
+  outline: 2px solid var(--mc-primary);
+  outline-offset: 2px;
 }
 
 .settings-content {

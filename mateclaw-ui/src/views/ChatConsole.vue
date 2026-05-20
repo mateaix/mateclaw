@@ -366,12 +366,14 @@ const headerBtnRef = ref<HTMLElement | null>(null)
 
 const headerMenuItems = computed<DropdownMenuItem[]>(() => [
   { key: 'config', label: t('chat.configModel') },
+  { key: 'sessions', label: t('chat.openSessions') },
   { divider: true },
   { key: 'clear', label: t('chat.clearMessages'), danger: true },
 ])
 
 function onHeaderMenuSelect(item: DropdownMenuItem) {
   if (item.key === 'config') goToModelSettings()
+  else if (item.key === 'sessions') router.push('/sessions')
   else if (item.key === 'clear') clearMessages()
 }
 

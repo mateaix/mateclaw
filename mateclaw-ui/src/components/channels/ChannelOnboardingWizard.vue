@@ -81,6 +81,40 @@
             </div>
           </div>
 
+          <!-- QQ scan-to-bind (hybrid: shown alongside the manual fields so
+               users can fall back to copy-paste if the portal blocks the
+               vendor tag or they prefer the developer console). -->
+          <div v-if="channelType === 'qq'" class="oauth-card oauth-card--hybrid">
+            <p class="oauth-headline">{{ t('channels.qqRegister.hint') }}</p>
+            <button
+              v-if="!qqAuth.qrcodeUrl.value"
+              type="button"
+              class="oauth-btn"
+              :disabled="qqAuth.loading.value"
+              @click="qqAuth.start()"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/>
+                <rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="3" height="3"/>
+                <line x1="21" y1="14" x2="21" y2="17"/><line x1="14" y1="21" x2="17" y2="21"/>
+              </svg>
+              {{ qqAuth.loading.value ? t('channels.qqRegister.buttonLoading') : t('channels.qqRegister.button') }}
+            </button>
+            <div v-if="qqAuth.loading.value && !qqAuth.qrcodeUrl.value" class="oauth-qr-loading">
+              <div class="spinner" />
+              <p class="oauth-qr-status">{{ t('channels.qqRegister.qrcodeLoading') }}…</p>
+            </div>
+            <div v-if="qqAuth.qrcodeUrl.value" class="oauth-qr">
+              <img :src="qqAuth.qrcodeUrl.value" alt="QR Code" class="oauth-qr-img" />
+              <p class="oauth-qr-status" :class="qqAuth.status.value">
+                <template v-if="qqAuth.status.value === 'confirmed'">{{ t('channels.qqRegister.confirmed') }}</template>
+                <template v-else-if="qqAuth.status.value === 'expired'">{{ t('channels.qqRegister.expired') }}</template>
+                <template v-else-if="qqAuth.status.value === 'denied'">{{ t('channels.qqRegister.denied') }}</template>
+                <template v-else>{{ t('channels.qqRegister.scanHint') }}</template>
+              </p>
+            </div>
+          </div>
+
           <!-- How to get credentials (collapsed by default) -->
           <details v-if="!isOAuthStyle && webhookGuide" class="how-to">
             <summary class="how-to-summary">
@@ -280,6 +314,7 @@ import {
 import { useWecomBotAuth } from '@/composables/channels/useWecomBotAuth'
 import { useWeixinQrcodePoll } from '@/composables/channels/useWeixinQrcodePoll'
 import { useDingTalkAppRegister } from '@/composables/channels/useDingTalkAppRegister'
+import { useQqAppRegister } from '@/composables/channels/useQqAppRegister'
 import { useFeishuAppRegister } from '@/composables/channels/useFeishuAppRegister'
 import AgentPickerDialog from '@/components/common/AgentPickerDialog.vue'
 
@@ -399,6 +434,13 @@ const feishuAuth = useFeishuAppRegister(({ appId, appSecret }) => {
   channelConfig.value.app_id = appId
   channelConfig.value.app_secret = appSecret
   void onSaveAndTest()
+})
+
+// QQ scan-to-bind is hybrid (kept alongside manual fields), so we don't
+// auto-advance — let the user see fields populated and click Next when ready.
+const qqAuth = useQqAppRegister(({ appId, clientSecret }) => {
+  channelConfig.value.app_id = appId
+  channelConfig.value.client_secret = clientSecret
 })
 
 const needsQrDisplay = computed(() => QR_DISPLAY_TYPES.has(channelType.value))

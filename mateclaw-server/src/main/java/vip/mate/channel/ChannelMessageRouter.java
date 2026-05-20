@@ -7,6 +7,7 @@ import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 import vip.mate.agent.AgentService;
 import vip.mate.agent.context.ChatOrigin;
+import vip.mate.agent.model.AgentEntity;
 import vip.mate.approval.ApprovalWorkflowService;
 import vip.mate.approval.ResolveOutcome;
 import vip.mate.approval.PendingApproval;
@@ -584,8 +585,40 @@ public class ChannelMessageRouter {
             }
             // ======= 审批拦截层结束 =======
 
-            // 确保会话存在（workspace 感知）
-            conversationService.getOrCreateSharedConversation(conversationId, agentId, channelEntity.getWorkspaceId());
+            // Ensure the conversation exists, seeded with the agent's
+            // currently-configured default model so per-conversation model
+            // selection works for IM channels too (issue #183).
+            //
+            // Two-part behaviour, both inside getOrCreateSharedConversation:
+            //   1. Brand-new conversation → write defaultModelName so the
+            //      very first turn picks the right model; user can later
+            //      switch via the admin UI (updateConversationModel) and the
+            //      override sticks.
+            //   2. Pre-existing conversation with model still null (legacy
+            //      rows created before #183 fix) → backfill once, then leave
+            //      alone. Already-pinned conversations are never overwritten.
+            //
+            // We pass provider=null because AgentEntity doesn't carry a
+            // provider field — the downstream ProviderChatModelFactory
+            // resolves provider from the model name. The seed logic in
+            // ConversationService treats (null, name) as no-seed (both
+            // fields must be non-blank to take effect), which is the
+            // correct defensive behaviour: we only pin when we have a
+            // complete (provider, model) pair from the admin UI.
+            String agentDefaultModel = null;
+            try {
+                AgentEntity agentEntity = agentService.getAgent(agentId);
+                agentDefaultModel = agentEntity.getModelName();
+            } catch (Exception e) {
+                // Agent deleted / disabled mid-flight — don't block message
+                // intake. Downstream agentService.chatStructuredStream will
+                // surface the real error to the user.
+                log.debug("[{}] Could not load agent {} for model-seed lookup: {}",
+                        adapter.getChannelType(), agentId, e.getMessage());
+            }
+            conversationService.getOrCreateSharedConversation(
+                    conversationId, agentId, channelEntity.getWorkspaceId(),
+                    null, agentDefaultModel);
 
             // 更新渠道会话存储（用于主动推送）
             String replyTarget = resolveReplyTarget(message);

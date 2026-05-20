@@ -274,8 +274,17 @@ const router = createRouter({
           component: () => import('@/views/Forbidden.vue'),
           meta: { title: 'Forbidden' },
         },
+        // ==================== Sessions admin ====================
+        // Cross-channel conversation manager. Surfaced from ChatConsole's
+        // header overflow menu so the user can audit / switch model per
+        // conversation without leaving the chat surface.
+        {
+          path: 'sessions',
+          name: 'Sessions',
+          component: () => import('@/views/Sessions.vue'),
+          meta: { title: 'sessions.title' },
+        },
         // ==================== Redirects (backward compatibility) ====================
-        { path: 'sessions', redirect: '/chat' },
         { path: 'workspace', redirect: '/settings/agent-context' },
         { path: 'security/workspaces', redirect: '/settings/workspaces' },
         { path: 'security/members', redirect: '/settings/members' },

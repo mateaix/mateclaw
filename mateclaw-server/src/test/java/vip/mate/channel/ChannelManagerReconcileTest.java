@@ -60,6 +60,8 @@ class ChannelManagerReconcileTest {
                 mock(vip.mate.channel.media.GeneratedFileScrubber.class),
                 mock(vip.mate.channel.feishu.FeishuStreamingCardManager.class),
                 mock(vip.mate.channel.feishu.cards.FeishuCardDispatcher.class),
+                mock(vip.mate.channel.feishu.FeishuClientFactory.class),
+                mock(vip.mate.stt.SttService.class),
                 election);
         adapter = new TrackingAdapter();
     }

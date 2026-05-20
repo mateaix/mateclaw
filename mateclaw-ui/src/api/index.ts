@@ -154,6 +154,13 @@ export const chatApi = {
 // ==================== Conversation ====================
 export const conversationApi = {
   list: () => http.get('/conversations'),
+  /**
+   * Paginated list used by the Sessions admin page. Keyword matches title
+   * or conversationId server-side; ChatConsole's left panel still uses the
+   * non-paginated list() because it shows a per-agent rolling history.
+   */
+  page: (params: { page?: number; size?: number; keyword?: string }) =>
+    http.get('/conversations/page', { params }),
   listMessages: (conversationId: string, params?: { beforeId?: number; limit?: number }) =>
     http.get(`/conversations/${conversationId}/messages`, { params }),
   getStatus: (conversationId: string) =>
@@ -166,6 +173,14 @@ export const conversationApi = {
     http.put(`/conversations/${conversationId}/title`, { title }),
   setPinned: (conversationId: string, pinned: boolean) =>
     http.put(`/conversations/${conversationId}/pin`, { pinned }),
+  /**
+   * Pin this conversation to a specific (provider, model). Closes issue
+   * #183 — lets the admin UI switch model for IM-channel conversations
+   * (Feishu / DingTalk / WeCom / Telegram / Discord / QQ / Slack / WeChat),
+   * not just for the Web channel. Both params required and non-empty.
+   */
+  setModel: (conversationId: string, modelProvider: string, modelName: string) =>
+    http.put(`/conversations/${conversationId}/model`, { modelProvider, modelName }),
   batchDelete: (conversationIds: string[]) =>
     http.post('/conversations/batch-delete', { conversationIds }),
 }
@@ -448,6 +463,11 @@ export const channelApi = {
     http.post('/channels/webhook/dingtalk/register/begin'),
   dingtalkRegisterStatus: (sessionId: string) =>
     http.get(`/channels/webhook/dingtalk/register/status?session=${encodeURIComponent(sessionId)}`),
+  // QQ Bot scan-to-bind (Lite portal). Uses the unified channel QR auth endpoint.
+  qqRegisterBegin: () =>
+    http.post('/channels/qrcode/qq/begin'),
+  qqRegisterStatus: (sessionId: string) =>
+    http.get(`/channels/qrcode/qq/status?session=${encodeURIComponent(sessionId)}`),
 }
 
 // ==================== MCP Server ====================

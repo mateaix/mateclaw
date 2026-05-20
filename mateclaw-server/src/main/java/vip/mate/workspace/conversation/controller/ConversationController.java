@@ -42,6 +42,22 @@ public class ConversationController {
     }
 
     /**
+     * 分页查询会话列表（用于会话管理页）。
+     * <p>会话管理页可能跨多个 IM 渠道，单页全量返回会拖慢首屏。
+     */
+    @Operation(summary = "分页查询会话列表")
+    @GetMapping("/page")
+    public R<com.baomidou.mybatisplus.core.metadata.IPage<ConversationVO>> page(
+            Authentication auth,
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId,
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "20") int size,
+            @RequestParam(required = false) String keyword) {
+        String username = auth != null ? auth.getName() : "anonymous";
+        return R.ok(conversationService.pageConversations(username, workspaceId, page, size, keyword));
+    }
+
+    /**
      * 获取指定会话的消息历史（支持分页）。
      * <p>
      * 不传 limit 时返回全部消息（向后兼容）。
@@ -138,6 +154,37 @@ public class ConversationController {
             return R.fail(403, "无权操作该会话");
         }
         conversationService.setPinned(conversationId, Boolean.TRUE.equals(body.get("pinned")));
+        return R.ok();
+    }
+
+    /**
+     * Pin a conversation to a specific (provider, model) pair so subsequent
+     * messages — including those from IM channels (Feishu / DingTalk / WeCom
+     * / Telegram / Discord / QQ / Slack / WeChat) — use that model instead
+     * of falling back to the agent or global default. Closes issue #183
+     * where IM conversations could never be steered away from the agent's
+     * configured default via the admin UI.
+     *
+     * <p>Both fields must be non-blank to take effect — a half-populated
+     * payload is silently ignored at the service layer (see
+     * {@link ConversationService#updateConversationModel}). Passing
+     * existing matching values is a no-op (no DB write).
+     */
+    @Operation(summary = "切换会话使用的模型 (provider + model name)")
+    @PutMapping("/{conversationId}/model")
+    public R<Void> setModel(@PathVariable String conversationId,
+                            @RequestBody Map<String, String> body,
+                            Authentication auth) {
+        String username = auth != null ? auth.getName() : "anonymous";
+        if (!conversationService.isConversationOwner(conversationId, username)) {
+            return R.fail(403, "无权操作该会话");
+        }
+        String provider = body.get("modelProvider");
+        String modelName = body.get("modelName");
+        if (provider == null || provider.isBlank() || modelName == null || modelName.isBlank()) {
+            return R.fail("modelProvider 和 modelName 都必须提供");
+        }
+        conversationService.updateConversationModel(conversationId, provider.trim(), modelName.trim());
         return R.ok();
     }
 
