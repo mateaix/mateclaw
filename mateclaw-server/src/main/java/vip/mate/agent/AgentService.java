@@ -497,9 +497,15 @@ public class AgentService {
 
     /**
      * Resolve (and cache) the Agent graph for a conversation, honouring the
-     * conversation's pinned model. Conversations with no pin — IM channels,
-     * cron, sub-tasks, or rows not yet created — resolve to the shared Agent /
-     * global-default graph.
+     * conversation's pinned model. Conversations with no pin — IM channels
+     * before issue #183 fix, cron, sub-tasks, or rows not yet created —
+     * resolve to the shared Agent / global-default graph.
+     *
+     * <p>Defensive normalisation: a half-populated pair (provider but no
+     * model, or vice versa) is treated as unpinned. Without this guard, a
+     * partially-cleared admin UI write could end up cached as a key like
+     * {@code "volcano::"} which {@link #getOrBuildAgent} would then try to
+     * build, only to fail at provider-resolution time on every turn.
      */
     private BaseAgent getOrBuildAgentForConversation(Long agentId, String conversationId) {
         String provider = null;
@@ -509,11 +515,24 @@ public class AgentService {
                     new LambdaQueryWrapper<ConversationEntity>()
                             .eq(ConversationEntity::getConversationId, conversationId));
             if (conv != null) {
-                provider = conv.getModelProvider();
-                modelName = conv.getModelName();
+                provider = blankToNull(conv.getModelProvider());
+                modelName = blankToNull(conv.getModelName());
+                // Half-populated pair → treat as unpinned. Pinning requires
+                // a complete (provider, model) tuple — see #183 follow-up
+                // hardening so a stale row written by an earlier broken
+                // admin UI release doesn't loop the cache on an invalid key.
+                if (provider == null || modelName == null) {
+                    provider = null;
+                    modelName = null;
+                }
             }
         }
         return getOrBuildAgent(agentId, provider, modelName);
+    }
+
+    /** Map empty / whitespace strings to null so the pinned-check is one branch. */
+    private static String blankToNull(String s) {
+        return (s == null || s.isBlank()) ? null : s;
     }
 
     private BaseAgent getOrBuildAgent(Long agentId) {

@@ -109,6 +109,24 @@ public class ChannelManager {
     private final vip.mate.channel.feishu.cards.FeishuCardDispatcher feishuCardDispatcher;
 
     /**
+     * Per-channelId SDK {@link com.lark.oapi.Client} cache. Injected into
+     * {@link vip.mate.channel.feishu.FeishuChannelAdapter} so inbound
+     * file/image/audio/video downloads go through
+     * {@code client.im().v1().messageResource().get(...)} instead of the
+     * legacy hand-rolled HTTP path — token refresh, retries, and domain
+     * switching are then handled by the SDK.
+     */
+    private final vip.mate.channel.feishu.FeishuClientFactory feishuClientFactory;
+
+    /**
+     * Speech-to-text service used by the Feishu adapter to transcribe
+     * inbound voice messages. WeCom and DingTalk get ASR text directly
+     * from their webhooks; Feishu does not, so the adapter has to call
+     * STT itself before the agent can reason about the message.
+     */
+    private final vip.mate.stt.SttService sttService;
+
+    /**
      * Distributed leader election. Channels whose adapter reports
      * {@link ChannelAdapter#requiresSingleLeader()} are gated on a lease so
      * only one node opens the upstream WebSocket / long-poll at a time.
@@ -1175,7 +1193,7 @@ public class ChannelManager {
             case "dingtalk" -> new DingTalkChannelAdapter(channel, messageRouter, objectMapper, generatedFileCache);
             case "feishu" -> new FeishuChannelAdapter(channel, messageRouter, objectMapper,
                     feishuMediaUploader, generatedFileScrubber, feishuStreamingCardManager,
-                    feishuCardDispatcher);
+                    feishuCardDispatcher, feishuClientFactory, generatedFileCache, sttService);
             case "telegram" -> new TelegramChannelAdapter(channel, messageRouter, objectMapper);
             case "discord" -> new DiscordChannelAdapter(channel, messageRouter, objectMapper);
             case "wecom" -> new WeComChannelAdapter(channel, messageRouter, objectMapper,
