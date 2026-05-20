@@ -449,7 +449,12 @@ public class NodeStreamingChatHelper {
                 // Reactor Netty wraps the raw socket cause in WebClientRequestException;
                 // surface that wrapper too so retries fire even when the cause chain
                 // string is "WebClientRequestException ...; nested ... SSLException".
-                || msg.contains("WebClientRequestException")) {
+                || msg.contains("WebClientRequestException")
+                // SiliconFlow and some other providers return "network connection error"
+                // in the response body when their backend is under high load or the
+                // upstream connection to the model server is disrupted. This is a
+                // transient server-side failure — classify as retryable.
+                || msg.contains("network connection error")) {
             return ErrorType.SERVER_ERROR;
         }
         return ErrorType.UNKNOWN;
@@ -1502,6 +1507,11 @@ public class NodeStreamingChatHelper {
         if (msg.contains("rate_limit") || msg.contains("429")) return "Rate limit exceeded, please retry later";
         if (msg.contains("timeout") || msg.contains("Timeout")) return "Request timeout, please retry";
         if (msg.contains("502") || msg.contains("503") || msg.contains("504")) return "Model service temporarily unavailable";
+        // SiliconFlow and similar providers surface "network connection error" when their
+        // backend is under high load or the upstream model connection is disrupted.
+        // Treat this as a transient failure so the user gets a retry-oriented message.
+        if (combined.contains("network connection error"))
+            return "Model service network error, please retry in a moment";
         // 截断过长的原始消息
         return msg.length() > 100 ? msg.substring(0, 100) + "..." : msg;
     }
