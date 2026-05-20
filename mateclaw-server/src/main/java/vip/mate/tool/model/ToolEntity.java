@@ -49,6 +49,16 @@ public class ToolEntity {
     /** 是否系统内置 */
     private Boolean builtin;
 
+    /**
+     * For channel-native tools ({@code tool_type="channel"}), the
+     * {@code mate_channel.id} that materialised this tool. {@link
+     * vip.mate.channel.tool.ChannelToolService} uses this column to
+     * delete a channel's tool rows when its config row is removed and
+     * to detect "config changed → rebuild tool" cases. Null for
+     * built-in / MCP / skill tools.
+     */
+    private Long channelId;
+
     @TableField(fill = FieldFill.INSERT)
     private LocalDateTime createTime;
 

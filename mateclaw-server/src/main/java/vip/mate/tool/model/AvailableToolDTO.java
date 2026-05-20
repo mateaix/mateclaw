@@ -93,4 +93,43 @@ public class AvailableToolDTO {
                 .unavailableReason(null)
                 .build();
     }
+
+    /**
+     * Channel-native tool — exposed by a
+     * {@link vip.mate.channel.tool.ChannelToolProvider} and registered
+     * by {@code ChannelToolService}. Grouped per owning channel so the
+     * picker shows "Channel · {channelName}" rather than mixing them
+     * into the generic Built-in bucket.
+     */
+    public static AvailableToolDTO fromChannel(ToolEntity t) {
+        // displayName format set by ChannelToolService is "{base} ({channelName})";
+        // the channel name is what we surface in the picker group label.
+        String channelName = extractChannelName(t.getDisplayName());
+        String groupLabel = channelName.isEmpty() ? "Channel" : "Channel · " + channelName;
+        String groupKey = t.getChannelId() != null ? "channel:" + t.getChannelId() : "channel";
+        return AvailableToolDTO.builder()
+                .rowId("channel#" + t.getName())
+                .source("channel")
+                .providerId(t.getChannelId())
+                .providerName(channelName)
+                .name(t.getName())
+                .rawName(t.getName())
+                .description(t.getDescription() != null ? t.getDescription() : "")
+                .group(groupLabel)
+                .groupId(groupKey)
+                .stale(false)
+                .available(true)
+                .unavailableReason(null)
+                .build();
+    }
+
+    private static String extractChannelName(String displayName) {
+        if (displayName == null) return "";
+        int open = displayName.lastIndexOf('(');
+        int close = displayName.lastIndexOf(')');
+        if (open > 0 && close > open) {
+            return displayName.substring(open + 1, close).trim();
+        }
+        return "";
+    }
 }

@@ -40,6 +40,12 @@ public class ChannelService {
      * Spring's eager constructor wiring.
      */
     private final ObjectProvider<FeishuClientFactory> feishuClientFactoryProvider;
+    /**
+     * Reconcile hook for channel-native tools. {@link ObjectProvider}
+     * for the same reasons as above — service still works in test
+     * contexts that don't load the channel-tool subsystem.
+     */
+    private final ObjectProvider<vip.mate.channel.tool.ChannelToolService> channelToolServiceProvider;
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
 
     /**
@@ -169,6 +175,19 @@ public class ChannelService {
             FeishuClientFactory factory = feishuClientFactoryProvider.getIfAvailable();
             if (factory != null) {
                 factory.evict(channelId);
+            }
+        }
+        // Trigger an immediate channel-tool reconcile on this node so
+        // newly-enabled / -disabled / -reconfigured channels' tool sets
+        // align before the next reconcile tick. Other nodes catch up
+        // within ChannelToolService.RECONCILE_INTERVAL_SECONDS.
+        vip.mate.channel.tool.ChannelToolService cts =
+                channelToolServiceProvider.getIfAvailable();
+        if (cts != null) {
+            try {
+                cts.syncNow();
+            } catch (Exception e) {
+                log.debug("[ChannelService] syncNow() failed (non-fatal): {}", e.getMessage());
             }
         }
     }
