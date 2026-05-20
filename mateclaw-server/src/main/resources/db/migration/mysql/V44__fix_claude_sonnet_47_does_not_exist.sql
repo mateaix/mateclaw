@@ -2,9 +2,9 @@
 -- is no claude-sonnet-4-7 model. Calls return HTTP 404 with body
 -- {"type":"not_found_error","message":"model: claude-sonnet-4-7"}.
 --
--- Reference: hermes-agent anthropic_adapter.py _ANTHROPIC_OUTPUT_LIMITS
--- (lines 65-93) lists claude-opus-4-7 but no claude-sonnet-4-7. The latest
--- released Sonnet remains claude-sonnet-4-6 (released alongside Opus 4.6).
+-- Anthropic's current model line includes claude-opus-4-7 but no
+-- claude-sonnet-4-7. The latest released Sonnet remains claude-sonnet-4-6
+-- (released alongside Opus 4.6).
 --
 -- Strategy: rename in place — preserve ids 1000000271, 1000000273, 1000000281
 -- so user-customised settings (default flag, enabled flag) survive.

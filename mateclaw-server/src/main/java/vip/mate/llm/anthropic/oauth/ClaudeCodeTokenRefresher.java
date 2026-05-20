@@ -32,16 +32,13 @@ import java.util.Map;
  * <p>The refresh request is a vanilla OAuth 2.0 refresh-token grant with the
  * public Claude Code {@code client_id}. We must spoof the Claude Code
  * {@code User-Agent} — Anthropic's edge filters drop unrecognised UAs.
- *
- * <p>Reference: hermes-agent {@code anthropic_adapter._refresh_claude_code_token}
- * (line 605+).
  */
 @Slf4j
 @Component
 @RequiredArgsConstructor
 public class ClaudeCodeTokenRefresher {
 
-    /** Public Claude Code OAuth client_id. Same value hermes-agent and OpenCode use. */
+    /** Public Claude Code OAuth client_id. */
     static final String CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 
     /** Endpoints tried in order until one succeeds. */

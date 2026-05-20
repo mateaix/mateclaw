@@ -104,6 +104,39 @@ class FeishuMentionTest {
         assertFalse(FeishuChannelAdapter.webhookMentionsContainBot(List.of(mention), BOT_ID));
     }
 
+    // ==================== isGroupNonMentionDrop (gate matrix) ====================
+
+    @Test
+    void gate_groupRequireMentionBotMentioned_passesThrough() {
+        assertFalse(FeishuChannelAdapter.isGroupNonMentionDrop(true, true, true, BOT_ID));
+    }
+
+    @Test
+    void gate_groupRequireMentionBotNotMentioned_dropsWhenOpenIdKnown() {
+        assertTrue(FeishuChannelAdapter.isGroupNonMentionDrop(true, true, false, BOT_ID));
+    }
+
+    @Test
+    void gate_groupRequireMentionBotNotMentioned_failsOpenWhenOpenIdUnknown() {
+        // Bot identity unavailable (API outage / pending fetch) → degrade to allow.
+        // This was the bug the original PR shipped with: gate dropped instead of fell open.
+        assertFalse(FeishuChannelAdapter.isGroupNonMentionDrop(true, true, false, null));
+    }
+
+    @Test
+    void gate_p2pAlwaysPasses_regardlessOfRequireMention() {
+        // require_mention only applies to group chat; DMs are never gated.
+        assertFalse(FeishuChannelAdapter.isGroupNonMentionDrop(false, true, false, BOT_ID));
+        assertFalse(FeishuChannelAdapter.isGroupNonMentionDrop(false, true, false, null));
+        assertFalse(FeishuChannelAdapter.isGroupNonMentionDrop(false, true, true, BOT_ID));
+    }
+
+    @Test
+    void gate_requireMentionDisabled_passesThrough() {
+        assertFalse(FeishuChannelAdapter.isGroupNonMentionDrop(true, false, false, BOT_ID));
+        assertFalse(FeishuChannelAdapter.isGroupNonMentionDrop(true, false, false, null));
+    }
+
     // ==================== helpers ====================
 
     private static MentionEvent mentionEvent(String openId) {

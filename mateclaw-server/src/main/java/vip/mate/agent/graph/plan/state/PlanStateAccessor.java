@@ -107,6 +107,17 @@ public final class PlanStateAccessor {
         return state.value(MateClawStateKeys.TRACE_ID, "");
     }
 
+    /**
+     * The {@link vip.mate.agent.context.ChatOrigin} forwarded into graph
+     * state by {@code MateClawStateAccessor.OutputBuilder.chatOrigin}.
+     * Returns {@link vip.mate.agent.context.ChatOrigin#EMPTY} when nothing
+     * was injected (legacy callers / non-channel entry points).
+     */
+    public vip.mate.agent.context.ChatOrigin chatOrigin() {
+        return state.<vip.mate.agent.context.ChatOrigin>value(MateClawStateKeys.CHAT_ORIGIN)
+                .orElse(vip.mate.agent.context.ChatOrigin.EMPTY);
+    }
+
     // ===== 会话消息（复用 MateClawStateKeys.MESSAGES）=====
 
     @SuppressWarnings("unchecked")

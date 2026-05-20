@@ -1280,6 +1280,15 @@ public class WeComChannelAdapter extends AbstractChannelAdapter {
      * {@link #handleMessageCallback} stashed in {@link #replyContexts}.
      */
     @Override
+    public boolean usesInteractiveApprovalCards() {
+        // Same gate as sendApprovalNotice below — without the dispatcher
+        // wired we fall back to the inherited text path, and the router
+        // should treat unrelated follow-up messages as implicit deny
+        // (existing behaviour).
+        return cardDispatcher != null;
+    }
+
+    @Override
     public void sendApprovalNotice(String targetId,
             vip.mate.channel.notification.ApprovalNotice notice) {
         if (cardDispatcher == null) {
@@ -1303,7 +1312,7 @@ public class WeComChannelAdapter extends AbstractChannelAdapter {
         try {
             Map<String, Object> card = kindOpt.get().renderer().render(notice);
             replyTemplateCard(ctx.frameReqId(), card);
-        } catch (vip.mate.channel.wecom.cards.CardOversizedException oversized) {
+        } catch (vip.mate.channel.cards.CardOversizedException oversized) {
             log.warn("[wecom] approval card oversized, falling back to text: {}", oversized.getMessage());
             super.sendApprovalNotice(targetId, notice);
         } catch (Exception e) {

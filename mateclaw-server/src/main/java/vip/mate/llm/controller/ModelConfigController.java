@@ -266,7 +266,11 @@ public class ModelConfigController {
             result.put("model", config.getModelName());
             result.put("message", "连通性测试成功");
         } catch (Exception e) {
-            log.error("[EmbeddingTest] modelId={} test failed", modelId, e);
+            // log.warn (not error) — connectivity test failures are user-input /
+            // upstream-API problems, not system-side incidents. The stack trace
+            // is still attached so operators can diagnose, but it stops firing
+            // monitoring alerts that key off ERROR-level events.
+            log.warn("[EmbeddingTest] modelId={} test failed", modelId, e);
             result.put("success", false);
             result.put("message", e.getMessage());
         }

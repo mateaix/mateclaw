@@ -26,7 +26,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 会话历史上下文窗口管理器（Hermes 风格升级版）
+ * 会话历史上下文窗口管理器（四阶段压缩升级版）
  * <p>
  * 四阶段压缩策略：
  * <ol>
@@ -274,7 +274,7 @@ public class ConversationWindowManager {
         }
         int historyBudget = effectiveMax - reservedTokens;
 
-        // 尾部保护 token 预算：阈值的 20%（与 Hermes 一致）
+        // 尾部保护 token 预算：阈值的 20%
         int tailTokenBudget = (int) (triggerThreshold * 0.20);
 
         return compactMessages(messages, historyBudget, tailTokenBudget, chatModel,

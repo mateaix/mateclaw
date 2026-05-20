@@ -36,9 +36,6 @@ import java.util.concurrent.TimeUnit;
  *   }
  * }
  * </pre>
- *
- * <p>Reference: hermes-agent {@code anthropic_adapter._read_claude_code_credentials_from_keychain}
- * (line 470) and {@code read_claude_code_credentials} (line 530).
  */
 @Slf4j
 @Component
@@ -48,8 +45,8 @@ public class ClaudeCodeCredentialsReader {
     /** macOS Keychain service name written by Claude Code. */
     static final String KEYCHAIN_SERVICE_NAME = "Claude Code-credentials";
 
-    /** Hermes also queries {@code ~/.claude.json primaryApiKey} but that's a
-     *  managed key, not OAuth — intentionally not read here. */
+    /** {@code ~/.claude.json primaryApiKey} is a managed key, not OAuth —
+     *  intentionally not read here. */
     static final Path JSON_CREDENTIALS_PATH =
             Paths.get(System.getProperty("user.home"), ".claude", ".credentials.json");
 

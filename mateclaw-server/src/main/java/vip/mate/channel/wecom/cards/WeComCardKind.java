@@ -1,5 +1,7 @@
 package vip.mate.channel.wecom.cards;
 
+import vip.mate.channel.cards.CardOversizedException;
+
 /**
  * Description of one kind of interactive WeCom template card the
  * dispatcher knows how to route, along with the two functional callbacks

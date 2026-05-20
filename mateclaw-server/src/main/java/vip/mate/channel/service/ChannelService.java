@@ -5,7 +5,9 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
+import vip.mate.channel.feishu.FeishuClientFactory;
 import vip.mate.channel.model.ChannelEntity;
 import vip.mate.channel.repository.ChannelMapper;
 import vip.mate.exception.MateClawException;
@@ -30,6 +32,20 @@ public class ChannelService {
 
     private final ChannelMapper channelMapper;
     private final ObjectMapper objectMapper;
+    /**
+     * Cache-eviction hook for the Feishu SDK client. {@link ObjectProvider}
+     * defers the lookup so this service stays usable in test contexts
+     * that don't load the Feishu beans, and so a future cycle (Feishu
+     * components transitively depending on this service) cannot crash
+     * Spring's eager constructor wiring.
+     */
+    private final ObjectProvider<FeishuClientFactory> feishuClientFactoryProvider;
+    /**
+     * Reconcile hook for channel-native tools. {@link ObjectProvider}
+     * for the same reasons as above — service still works in test
+     * contexts that don't load the channel-tool subsystem.
+     */
+    private final ObjectProvider<vip.mate.channel.tool.ChannelToolService> channelToolServiceProvider;
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
 
     /**
@@ -121,6 +137,7 @@ public class ChannelService {
             channel.setConfigJson(enrichWebChatConfig(channel.getConfigJson(), existing.getConfigJson()));
         }
         channelMapper.updateById(channel);
+        invalidateChannelCaches(channel.getId(), channel.getChannelType());
         log.info("Updated channel: {}", existing.getName());
         return channel;
     }
@@ -131,6 +148,7 @@ public class ChannelService {
     public void deleteChannel(Long id) {
         ChannelEntity channel = getChannel(id);
         channelMapper.deleteById(id);
+        invalidateChannelCaches(id, channel.getChannelType());
         log.info("Deleted channel: {}", channel.getName());
     }
 
@@ -141,8 +159,37 @@ public class ChannelService {
         ChannelEntity channel = getChannel(id);
         channel.setEnabled(enabled);
         channelMapper.updateById(channel);
+        invalidateChannelCaches(id, channel.getChannelType());
         log.info("Channel {} {}", channel.getName(), enabled ? "enabled" : "disabled");
         return channel;
+    }
+
+    /**
+     * Drop any cached per-channel SDK clients / tool registrations
+     * after a mutation. Today this only matters for Feishu (whose
+     * {@link FeishuClientFactory} caches a client per channelId);
+     * RFC 47's channel-tool reconcile service will hook in here too.
+     */
+    private void invalidateChannelCaches(Long channelId, String channelType) {
+        if ("feishu".equals(channelType)) {
+            FeishuClientFactory factory = feishuClientFactoryProvider.getIfAvailable();
+            if (factory != null) {
+                factory.evict(channelId);
+            }
+        }
+        // Trigger an immediate channel-tool reconcile on this node so
+        // newly-enabled / -disabled / -reconfigured channels' tool sets
+        // align before the next reconcile tick. Other nodes catch up
+        // within ChannelToolService.RECONCILE_INTERVAL_SECONDS.
+        vip.mate.channel.tool.ChannelToolService cts =
+                channelToolServiceProvider.getIfAvailable();
+        if (cts != null) {
+            try {
+                cts.syncNow();
+            } catch (Exception e) {
+                log.debug("[ChannelService] syncNow() failed (non-fatal): {}", e.getMessage());
+            }
+        }
     }
 
     private String enrichWebChatConfig(String incomingConfigJson, String existingConfigJson) {

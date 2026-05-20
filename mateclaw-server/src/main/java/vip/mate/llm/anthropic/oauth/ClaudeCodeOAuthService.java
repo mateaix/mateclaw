@@ -31,9 +31,6 @@ import java.util.Optional;
  * <p>This service does NOT handle the OAuth login flow itself — that is
  * RFC-062 PR-4. Until then, MateClaw piggybacks on whatever credentials the
  * user already has on disk from their installed Claude Code client.
- *
- * <p>Reference: hermes-agent {@code anthropic_adapter._get_claude_code_token}
- * + {@code _ensure_claude_code_token_fresh} (lines 540-605).
  */
 @Slf4j
 @Service

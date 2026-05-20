@@ -19,7 +19,7 @@ import java.util.Map;
  *
  * <p>映射规则（对应 RFC-014 Change 1 的 SystemAndTailCacheStrategy 默认行为）：
  * <ul>
- *   <li>{@code includeToolsBlock=true} → {@link AnthropicCacheStrategy#CONVERSATION_HISTORY}（system + tools + 最新一段对话；最完整也最贴近 hermes-agent system_and_3）</li>
+ *   <li>{@code includeToolsBlock=true} → {@link AnthropicCacheStrategy#CONVERSATION_HISTORY}（system + tools + 最新一段对话；覆盖最完整）</li>
  *   <li>{@code includeToolsBlock=false} → {@link AnthropicCacheStrategy#SYSTEM_ONLY}</li>
  *   <li>{@code ttl=extended-1h} → SYSTEM/USER 两个消息类型映射为 {@link AnthropicCacheTtl#ONE_HOUR}</li>
  *   <li>{@code minPromptTokens} → 转字符长度（× 4，粗粒度估算）作为 SYSTEM 段的 min content length</li>

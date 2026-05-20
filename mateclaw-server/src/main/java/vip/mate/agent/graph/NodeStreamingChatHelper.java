@@ -772,7 +772,7 @@ public class NodeStreamingChatHelper {
                                             boolean broadcast, int attempt) {
         if (attempt > 0) {
             long delay = Math.min(BACKOFF_BASE_MS * (1L << (attempt - 1)), BACKOFF_CAP_MS);
-            // 加入 jitter 防止雷群效应（Hermes 风格）
+            // 加入 jitter 防止雷群效应
             delay += ThreadLocalRandom.current().nextLong(0, Math.max(1, delay / 2));
             delay = Math.min(delay, BACKOFF_CAP_MS);
             log.warn("[{}] Retry attempt {}/{} after {}ms for conversation {}",
@@ -813,7 +813,7 @@ public class NodeStreamingChatHelper {
         AtomicInteger cacheWriteTokens = new AtomicInteger(0);
 
         // thinking-only soft cap 触发后设为 true，外层轮询线程据此 dispose 订阅。
-        // 注意：内容流的字符级 / 句子级重复检测已整体移除（参考 Hermes 思路：
+        // 注意：内容流的字符级 / 句子级重复检测已整体移除（设计取舍：
         // agent 不替模型审核输出退化，靠 max_tokens + max_iterations 兜底）；
         // 仅保留 thinking-only 这条体积兜底，处理 volcengine-plan 等 provider
         // 在 thinking 通道堆字符不出 content 的死循环（生产 trace c1eefa45）。

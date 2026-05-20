@@ -47,7 +47,8 @@ class ReasoningNodePtlPromptTest {
                 "you are a helpful assistant",
                 "/workspace/active",
                 "42",
-                "investigate the bug in module X");
+                "investigate the bug in module X",
+                vip.mate.agent.context.ChatOrigin.EMPTY);
 
         // Three layers: System, runtime-context UserMessage, wiki UserMessage.
         assertThat(prefix).hasSize(3);
@@ -72,9 +73,11 @@ class ReasoningNodePtlPromptTest {
         ReasoningNode node = newNode(wikiContextService);
 
         List<Message> a = node.buildNonHistoryPrefix(
-                "sys", "/workspace", "42", "goal");
+                "sys", "/workspace", "42", "goal",
+                vip.mate.agent.context.ChatOrigin.EMPTY);
         List<Message> b = node.buildNonHistoryPrefix(
-                "sys", "/workspace", "42", "goal");
+                "sys", "/workspace", "42", "goal",
+                vip.mate.agent.context.ChatOrigin.EMPTY);
 
         assertThat(a).hasSameSizeAs(b);
         for (int i = 0; i < a.size(); i++) {
@@ -94,7 +97,8 @@ class ReasoningNodePtlPromptTest {
                 "you are a helpful assistant",
                 "/workspace/active",
                 "42",
-                "investigate the bug in module X");
+                "investigate the bug in module X",
+                vip.mate.agent.context.ChatOrigin.EMPTY);
 
         assertThat(prefix).hasSize(2);
         assertThat(prefix.get(0)).isInstanceOf(SystemMessage.class);
@@ -107,7 +111,8 @@ class ReasoningNodePtlPromptTest {
         ReasoningNode node = newNode(wikiContextService);
 
         List<Message> prefix = node.buildNonHistoryPrefix(
-                "sys", "/workspace", "not-a-number", "goal");
+                "sys", "/workspace", "not-a-number", "goal",
+                vip.mate.agent.context.ChatOrigin.EMPTY);
 
         // Non-numeric agentId is the contract carried over from the
         // pre-refactor codebase — skip wiki injection rather than throwing.
@@ -126,7 +131,8 @@ class ReasoningNodePtlPromptTest {
         ReasoningNode node = newNode(wikiContextService);
 
         List<Message> prefix = node.buildNonHistoryPrefix(
-                "sys", "/workspace", "42", "goal");
+                "sys", "/workspace", "42", "goal",
+                vip.mate.agent.context.ChatOrigin.EMPTY);
 
         assertThat(prefix).hasSize(2);
     }

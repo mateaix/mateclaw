@@ -1349,6 +1349,13 @@ export default {
         ruleIdDuplicate: '规则 ID 已存在',
         saveFailed: '保存规则失败',
       },
+      exportBtn: '导出 JSON',
+      importBtn: '导入 JSON',
+      exportFileName: 'mateclaw-guard-rules-{date}.json',
+      importPromptHint: '上传通过"导出"产生的 JSON 文件；内置规则只会同步策略字段。',
+      importSummary: '导入完成：新增 {inserted}，更新内置 {updatedBuiltin}，更新自定义 {updatedCustom}，跳过 {skipped}',
+      importFailed: '导入失败：{msg}',
+      builtinLockedHint: '内置规则的名称、模式与分类由系统管理，此处仅可调整严重度、决策、优先级、白名单与启用状态。',
     },
     fileGuard: {
       title: '文件防护',

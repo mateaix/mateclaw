@@ -103,7 +103,7 @@ public class BuiltinSkillSeedService implements ApplicationRunner {
         // from the previous successful run AND the DB still holds the same
         // number of builtin rows, nothing on disk changed since last seed
         // and we can skip the parse / select / update loop entirely.
-        // Hermes-style trick: stat-only check, no content read.
+        // The check is stat-only — no content read.
         Map<String, long[]> currentManifest = buildResourceManifest(resources);
         SeedSnapshot snapshot = loadSnapshot();
         if (snapshot != null

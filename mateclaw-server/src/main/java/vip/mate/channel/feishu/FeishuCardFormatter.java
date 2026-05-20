@@ -19,7 +19,7 @@ final class FeishuCardFormatter {
     private static final Pattern HEADER    = Pattern.compile("(?m)^#{1,6}\\s");
     private static final Pattern TABLE_SEP = Pattern.compile("(?m)^\\|[\\s|:-]+\\|\\s*$");
     private static final Pattern JSON_CODE_BLOCK =
-            Pattern.compile("(?s)```(?:json)?\\s*([\\[{][\\s\\S]*?[\\]\\}])\\s*```");
+            Pattern.compile("(?s)```(?:json)?\\s*([\\[{][\\s\\S]*?[\\]}])\\s*```");
 
     private FeishuCardFormatter() {}
 
@@ -68,24 +68,35 @@ final class FeishuCardFormatter {
                 .count();
     }
 
-    private static String extractJsonCodeBlock(String s) {
-        Matcher m = JSON_CODE_BLOCK.matcher(s);
-        return m.find() ? m.group(1).strip() : null;
-    }
-
     // ==================== 渲染层 ====================
 
+    /** Default markdown card header used when the channel doesn't override it. */
+    static final String DEFAULT_MARKDOWN_HEADER = "AI 助手";
+
     static Map<String, Object> render(String content, ContentFormat format) {
+        return render(content, format, DEFAULT_MARKDOWN_HEADER);
+    }
+
+    /**
+     * Renders the card for the given content/format pair. {@code markdownHeader}
+     * controls the title shown above markdown cards — pass null or blank to
+     * suppress the header entirely. JSON and long-text/plain-text layouts ignore
+     * the header (they have never carried one).
+     */
+    static Map<String, Object> render(String content, ContentFormat format, String markdownHeader) {
         return switch (format) {
             case JSON      -> renderJson(content);
-            case MARKDOWN  -> renderMarkdown(content);
+            case MARKDOWN  -> renderMarkdown(content, markdownHeader);
             case LONG_TEXT, PLAIN_TEXT -> renderLongText(content);
         };
     }
 
-    private static Map<String, Object> renderMarkdown(String content) {
+    private static Map<String, Object> renderMarkdown(String content, String headerText) {
+        Map<String, Object> header = (headerText == null || headerText.isBlank())
+                ? null
+                : Map.of("title", Map.of("tag", "plain_text", "content", headerText));
         return cardOf(
-            Map.of("title", Map.of("tag", "plain_text", "content", "AI 助手")),
+            header,
             List.of(Map.of(
                 "tag", "div",
                 "text", Map.of("tag", "lark_md", "content", content)

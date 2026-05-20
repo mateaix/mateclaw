@@ -1457,6 +1457,13 @@ export default {
         ruleIdDuplicate: 'Rule ID already exists',
         saveFailed: 'Failed to save rule',
       },
+      exportBtn: 'Export JSON',
+      importBtn: 'Import JSON',
+      exportFileName: 'mateclaw-guard-rules-{date}.json',
+      importPromptHint: 'Upload a JSON exported by this UI. Built-in rules only sync their policy fields.',
+      importSummary: 'Import done: {inserted} added, {updatedBuiltin} built-in updated, {updatedCustom} custom updated, {skipped} skipped',
+      importFailed: 'Import failed: {msg}',
+      builtinLockedHint: 'Built-in rule name, pattern and category are system-managed. You can only adjust severity, decision, priority, exclude pattern and enabled state.',
     },
     fileGuard: {
       title: 'File Guard',

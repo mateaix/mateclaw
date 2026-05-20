@@ -5,9 +5,24 @@
         <h2 class="section-title">{{ t('security.toolGuard.title') }}</h2>
         <p class="section-desc">{{ t('security.toolGuard.desc') }}</p>
       </div>
-      <button class="btn-primary" @click="openCreateRuleModal">
-        {{ t('security.toolGuard.addRule') }}
-      </button>
+      <div class="header-actions">
+        <button class="btn-secondary" @click="exportRules">
+          {{ t('security.toolGuard.exportBtn') }}
+        </button>
+        <button class="btn-secondary" @click="triggerImport">
+          {{ t('security.toolGuard.importBtn') }}
+        </button>
+        <input
+          ref="importFileInput"
+          type="file"
+          accept="application/json,.json"
+          style="display:none"
+          @change="onImportFile"
+        />
+        <button class="btn-primary" @click="openCreateRuleModal">
+          {{ t('security.toolGuard.addRule') }}
+        </button>
+      </div>
     </div>
 
     <!-- Global Config -->
@@ -144,6 +159,9 @@
             <button class="modal-close" @click="showRuleModal = false">&times;</button>
           </div>
           <div class="modal-body">
+            <div v-if="editingBuiltin" class="builtin-hint">
+              {{ t('security.toolGuard.builtinLockedHint') }}
+            </div>
             <div class="form-grid">
               <div class="form-group" v-if="!editingRule">
                 <label>{{ t('security.toolGuard.fields.ruleId') }} <span class="required">*</span></label>
@@ -156,11 +174,11 @@
               </div>
               <div class="form-group">
                 <label>{{ t('security.toolGuard.fields.name') }} <span class="required">*</span></label>
-                <input v-model="ruleForm.name" class="form-input" required />
+                <input v-model="ruleForm.name" class="form-input" :disabled="editingBuiltin" required />
               </div>
               <div class="form-group">
                 <label>{{ t('security.toolGuard.fields.pattern') }} <span class="required">*</span></label>
-                <input v-model="ruleForm.pattern" class="form-input mono" placeholder="regex pattern" required />
+                <input v-model="ruleForm.pattern" class="form-input mono" :disabled="editingBuiltin" placeholder="regex pattern" required />
               </div>
               <div class="form-group">
                 <label>{{ t('security.toolGuard.fields.severity') }}</label>
@@ -174,7 +192,7 @@
               </div>
               <div class="form-group">
                 <label>{{ t('security.toolGuard.fields.category') }}</label>
-                <select v-model="ruleForm.category" class="form-input">
+                <select v-model="ruleForm.category" class="form-input" :disabled="editingBuiltin">
                   <option value="COMMAND_INJECTION">COMMAND_INJECTION</option>
                   <option value="DATA_EXFILTRATION">DATA_EXFILTRATION</option>
                   <option value="PATH_TRAVERSAL">PATH_TRAVERSAL</option>
@@ -195,15 +213,19 @@
               </div>
               <div class="form-group">
                 <label>{{ t('security.toolGuard.fields.toolName') }}</label>
-                <input v-model="ruleForm.toolName" class="form-input" placeholder="execute_shell_command" />
+                <input v-model="ruleForm.toolName" class="form-input" :disabled="editingBuiltin" placeholder="execute_shell_command" />
               </div>
               <div class="form-group">
                 <label>{{ t('security.toolGuard.fields.remediation') }}</label>
-                <input v-model="ruleForm.remediation" class="form-input" />
+                <input v-model="ruleForm.remediation" class="form-input" :disabled="editingBuiltin" />
               </div>
               <div class="form-group">
                 <label>{{ t('security.toolGuard.fields.priority') }}</label>
                 <input v-model.number="ruleForm.priority" type="number" class="form-input" />
+              </div>
+              <div class="form-group">
+                <label>{{ t('security.toolGuard.fields.excludePattern') }}</label>
+                <input v-model="ruleForm.excludePattern" class="form-input mono" placeholder="regex" />
               </div>
             </div>
           </div>
@@ -218,7 +240,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { mcToast } from '@/composables/useMcToast'
 import { securityApi } from '@/api'
@@ -302,6 +324,8 @@ function removeDeniedTool(tool: string) {
 const rules = ref<GuardRule[]>([])
 const showRuleModal = ref(false)
 const editingRule = ref<GuardRule | null>(null)
+const editingBuiltin = computed(() => !!editingRule.value?.builtin)
+const importFileInput = ref<HTMLInputElement | null>(null)
 const ruleForm = reactive({
   ruleId: '',
   name: '',
@@ -312,6 +336,7 @@ const ruleForm = reactive({
   toolName: '',
   remediation: '',
   priority: 100,
+  excludePattern: '',
 })
 
 async function loadRules() {
@@ -335,6 +360,7 @@ function openCreateRuleModal() {
     toolName: '',
     remediation: '',
     priority: 100,
+    excludePattern: '',
   })
   showRuleModal.value = true
 }
@@ -351,6 +377,7 @@ function openEditRuleModal(rule: GuardRule) {
     toolName: rule.toolName || '',
     remediation: rule.remediation || '',
     priority: rule.priority,
+    excludePattern: (rule as any).excludePattern || '',
   })
   showRuleModal.value = true
 }
@@ -406,6 +433,60 @@ async function deleteRule(rule: GuardRule) {
   }
 }
 
+// ==================== Import / Export ====================
+
+async function exportRules() {
+  try {
+    const res: any = await securityApi.exportRules()
+    const blob = new Blob([JSON.stringify(res.data, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    const date = new Date().toISOString().slice(0, 10)
+    a.href = url
+    a.download = t('security.toolGuard.exportFileName', { date })
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  } catch (e: any) {
+    mcToast.error(e?.msg || e?.message || t('security.toolGuard.importFailed', { msg: '' }))
+  }
+}
+
+function triggerImport() {
+  importFileInput.value?.click()
+}
+
+async function onImportFile(ev: Event) {
+  const input = ev.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+  try {
+    const text = await file.text()
+    const parsed = JSON.parse(text)
+    const rulesPayload = Array.isArray(parsed) ? parsed : parsed.rules
+    if (!Array.isArray(rulesPayload)) {
+      mcToast.error(t('security.toolGuard.importFailed', { msg: 'invalid JSON: missing rules[]' }))
+      return
+    }
+    const res: any = await securityApi.importRules({ rules: rulesPayload })
+    const s = res.data || {}
+    mcToast.success(
+      t('security.toolGuard.importSummary', {
+        inserted: s.inserted ?? 0,
+        updatedBuiltin: s.updatedBuiltin ?? 0,
+        updatedCustom: s.updatedCustom ?? 0,
+        skipped: s.skipped ?? 0,
+      }),
+    )
+    await loadRules()
+  } catch (e: any) {
+    mcToast.error(t('security.toolGuard.importFailed', { msg: e?.msg || e?.message || '' }))
+  } finally {
+    input.value = ''
+  }
+}
+
 // ==================== Init ====================
 
 onMounted(async () => {
@@ -431,5 +512,17 @@ onMounted(async () => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.header-actions { display: flex; gap: 8px; align-items: center; }
+
+.builtin-hint {
+  background: var(--mc-bg-warning, #fffbeb);
+  color: var(--mc-text-warning, #92400e);
+  border: 1px solid var(--mc-border-warning, #fde68a);
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 12px;
+  margin-bottom: 12px;
 }
 </style>
