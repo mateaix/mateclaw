@@ -1632,6 +1632,7 @@ export default {
       session: '会话',
       source: '来源',
       agent: 'Agent',
+      model: '模型',
       messages: '消息',
       status: '状态',
       lastActive: '最后活跃',
@@ -1646,6 +1647,12 @@ export default {
     deleteConfirm: '确定要删除这个会话吗？',
     deleteTitle: '确认删除',
     deleteFailed: '删除会话失败',
+    switchModel: '切换该会话使用的模型',
+    modelSwitched: '已切换会话模型',
+    modelSwitchFailed: '切换模型失败',
+    model: {
+      default: '默认',
+    },
     time: {
       justNow: '刚刚',
       minutesAgo: '{n} 分钟前',

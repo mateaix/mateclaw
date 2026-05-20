@@ -1740,6 +1740,7 @@ export default {
       session: 'Session',
       source: 'Source',
       agent: 'Agent',
+      model: 'Model',
       messages: 'Messages',
       status: 'Status',
       lastActive: 'Last Active',
@@ -1754,6 +1755,12 @@ export default {
     deleteConfirm: 'Are you sure you want to delete this session?',
     deleteTitle: 'Confirm Delete',
     deleteFailed: 'Failed to delete session',
+    switchModel: 'Switch the model used for this conversation',
+    modelSwitched: 'Model switched',
+    modelSwitchFailed: 'Failed to switch model',
+    model: {
+      default: 'Default',
+    },
     time: {
       justNow: 'Just now',
       minutesAgo: '{n}m ago',

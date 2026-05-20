@@ -23,6 +23,7 @@
             <th>{{ t('sessions.columns.session') }}</th>
             <th>{{ t('sessions.columns.source') }}</th>
             <th>{{ t('sessions.columns.agent') }}</th>
+            <th>{{ t('sessions.columns.model') }}</th>
             <th>{{ t('sessions.columns.messages') }}</th>
             <th>{{ t('sessions.columns.status') }}</th>
             <th>{{ t('sessions.columns.lastActive') }}</th>
@@ -48,6 +49,28 @@
                 <span class="agent-icon-sm"><SkillIcon :value="session.agentIcon" :size="16" :fallback="'🤖'" /></span>
                 <span>{{ session.agentName || '-' }}</span>
               </div>
+            </td>
+            <td>
+              <!-- Closes #183: per-conversation model selector available for
+                   IM channels too, not just Web. The selector mounts only
+                   when this row is expanded so the table stays light. -->
+              <ModelSelector
+                v-if="modelEditingId === session.conversationId"
+                :providers="providers"
+                :active-value="modelValue(session)"
+                :active-label="modelLabel(session)"
+                :saving="modelSavingId === session.conversationId"
+                :show-all-states="true"
+                @select="(val) => onModelSelect(session, val)"
+                @navigate-fix="onProviderFix"
+              />
+              <button v-else class="model-chip" :title="t('sessions.switchModel')"
+                      @click="openModelEditor(session)">
+                <span class="model-chip__name">{{ modelLabel(session) || t('sessions.model.default') }}</span>
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="6 9 12 15 18 9"/>
+                </svg>
+              </button>
             </td>
             <td>
               <span class="msg-count">{{ session.messageCount }}</span>
@@ -76,7 +99,7 @@
             </td>
           </tr>
           <tr v-if="filteredSessions.length === 0">
-            <td colspan="7" class="empty-row">
+            <td colspan="8" class="empty-row">
               <div class="empty-state">
                 <span class="empty-icon">💬</span>
                 <p>{{ t('sessions.empty') }}</p>
@@ -95,15 +118,22 @@ import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { mcToast } from '@/composables/useMcToast'
 import { mcConfirm } from '@/components/common/useConfirm'
-import { conversationApi } from '@/api/index'
+import { conversationApi, modelApi } from '@/api/index'
 import { channelIconUrl, sourceLabel } from '@/utils/channelSource'
-import type { Conversation } from '@/types/index'
+import type { Conversation, ProviderInfo } from '@/types/index'
 import SkillIcon from '@/components/common/SkillIcon.vue'
+import ModelSelector from '@/components/chat/ModelSelector.vue'
 
 const router = useRouter()
 const { t } = useI18n()
 const sessions = ref<Conversation[]>([])
 const searchText = ref('')
+
+// Per-conversation model selection state (closes #183). Loaded once on mount,
+// not per-row, because providers don't change during a session-list view.
+const providers = ref<ProviderInfo[]>([])
+const modelEditingId = ref<string | null>(null)
+const modelSavingId = ref<string | null>(null)
 
 const filteredSessions = computed(() => {
   if (!searchText.value) return sessions.value
@@ -114,13 +144,27 @@ const filteredSessions = computed(() => {
   )
 })
 
-onMounted(loadSessions)
+onMounted(async () => {
+  await loadSessions()
+  await loadProviders()
+})
 
 async function loadSessions() {
   try {
     const res: any = await conversationApi.list()
     sessions.value = res.data || []
   } catch (e: any) { mcToast.error(t('sessions.loadFailed')) }
+}
+
+async function loadProviders() {
+  try {
+    const res: any = await modelApi.listEnabled()
+    providers.value = res.data || []
+  } catch (e: any) {
+    // Non-fatal: model selector just falls back to the "no providers"
+    // empty state; session list still works.
+    providers.value = []
+  }
 }
 
 function viewSession(session: Conversation) {
@@ -138,6 +182,77 @@ async function deleteSession(conversationId: string) {
     await conversationApi.delete(conversationId)
     await loadSessions()
   } catch (e: any) { mcToast.error(t('sessions.deleteFailed')) }
+}
+
+// ==================== Model selection (#183) ====================
+
+/** Composite key consumed by ModelSelector: "{providerId}::{modelName}". */
+function modelValue(session: Conversation): string {
+  const p = session.modelProvider
+  const m = session.modelName
+  return p && m ? `${p}::${m}` : ''
+}
+
+/**
+ * Human-friendly label shown in the chip and the selector trigger.
+ * Pre-resolves the provider name from the loaded providers list; falls
+ * back to the raw id when providers haven't loaded yet (rare race) or
+ * the provider was since removed.
+ */
+function modelLabel(session: Conversation): string {
+  const p = session.modelProvider
+  const m = session.modelName
+  if (!p || !m) return ''
+  const provider = providers.value.find(x => x.id === p)
+  const providerName = provider?.name || p
+  return `${providerName} / ${m}`
+}
+
+function openModelEditor(session: Conversation) {
+  modelEditingId.value = session.conversationId
+}
+
+async function onModelSelect(session: Conversation, value: string) {
+  // ModelSelector emits the same "{providerId}::{modelName}" composite key
+  // we hand it back in :active-value. Split + persist.
+  const sep = value.indexOf('::')
+  if (sep <= 0) {
+    modelEditingId.value = null
+    return
+  }
+  const providerId = value.slice(0, sep)
+  const modelName = value.slice(sep + 2)
+  if (!providerId || !modelName) {
+    modelEditingId.value = null
+    return
+  }
+  // Skip the round-trip when nothing changed (user re-picked current model).
+  if (session.modelProvider === providerId && session.modelName === modelName) {
+    modelEditingId.value = null
+    return
+  }
+  modelSavingId.value = session.conversationId
+  try {
+    await conversationApi.setModel(session.conversationId, providerId, modelName)
+    // Local mutation: avoid a full reload — the table is sorted by lastActive
+    // and a re-list would jump the row out from under the user's cursor.
+    session.modelProvider = providerId
+    session.modelName = modelName
+    mcToast.success(t('sessions.modelSwitched'))
+  } catch (e: any) {
+    mcToast.error(e?.response?.data?.message || t('sessions.modelSwitchFailed'))
+  } finally {
+    modelSavingId.value = null
+    modelEditingId.value = null
+  }
+}
+
+function onProviderFix(provider: { id: string }) {
+  // Match ChatConsole's behaviour: jump to the model-settings page with the
+  // provider deep-linked so the user can fix credentials / enable it, then
+  // come back and switch model.
+  modelEditingId.value = null
+  router.push({ path: '/settings/models', query: { providerId: provider.id } })
 }
 
 
@@ -178,6 +293,11 @@ function formatTime(time?: string) {
 .agent-cell { display: flex; align-items: center; gap: 6px; }
 .agent-icon-sm { font-size: 16px; }
 .msg-count { background: var(--mc-bg-sunken); padding: 2px 8px; border-radius: 10px; font-size: 12px; font-weight: 500; }
+/* Model chip: collapsed state for the per-conversation model selector
+   (issue #183). Click opens the inline ModelSelector dropdown. */
+.model-chip { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; background: var(--mc-bg-sunken); border: 1px solid var(--mc-border); border-radius: 6px; font-size: 12px; color: var(--mc-text-secondary); cursor: pointer; max-width: 220px; transition: all 0.15s; }
+.model-chip:hover { background: var(--mc-bg-elevated); border-color: var(--mc-primary); color: var(--mc-text-primary); }
+.model-chip__name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .status-badge { padding: 3px 10px; border-radius: 20px; font-size: 12px; font-weight: 500; }
 .status-active { background: var(--mc-primary-bg); color: var(--mc-primary); }
 .status-closed { background: var(--mc-bg-sunken); color: var(--mc-text-tertiary); }

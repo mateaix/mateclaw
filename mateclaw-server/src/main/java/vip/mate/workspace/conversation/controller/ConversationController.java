@@ -142,6 +142,37 @@ public class ConversationController {
     }
 
     /**
+     * Pin a conversation to a specific (provider, model) pair so subsequent
+     * messages — including those from IM channels (Feishu / DingTalk / WeCom
+     * / Telegram / Discord / QQ / Slack / WeChat) — use that model instead
+     * of falling back to the agent or global default. Closes issue #183
+     * where IM conversations could never be steered away from the agent's
+     * configured default via the admin UI.
+     *
+     * <p>Both fields must be non-blank to take effect — a half-populated
+     * payload is silently ignored at the service layer (see
+     * {@link ConversationService#updateConversationModel}). Passing
+     * existing matching values is a no-op (no DB write).
+     */
+    @Operation(summary = "切换会话使用的模型 (provider + model name)")
+    @PutMapping("/{conversationId}/model")
+    public R<Void> setModel(@PathVariable String conversationId,
+                            @RequestBody Map<String, String> body,
+                            Authentication auth) {
+        String username = auth != null ? auth.getName() : "anonymous";
+        if (!conversationService.isConversationOwner(conversationId, username)) {
+            return R.fail(403, "无权操作该会话");
+        }
+        String provider = body.get("modelProvider");
+        String modelName = body.get("modelName");
+        if (provider == null || provider.isBlank() || modelName == null || modelName.isBlank()) {
+            return R.fail("modelProvider 和 modelName 都必须提供");
+        }
+        conversationService.updateConversationModel(conversationId, provider.trim(), modelName.trim());
+        return R.ok();
+    }
+
+    /**
      * 批量删除会话（仅删除当前用户有权操作的会话）
      */
     @Operation(summary = "批量删除会话")

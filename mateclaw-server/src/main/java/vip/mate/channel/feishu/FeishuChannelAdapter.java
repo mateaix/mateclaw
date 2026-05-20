@@ -155,10 +155,25 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
      */
     private final vip.mate.tool.document.GeneratedFileCache generatedFileCache;
 
+    /**
+     * STT service for transcribing inbound voice messages. Feishu, unlike
+     * WeCom / DingTalk, does NOT include ASR text in the webhook payload —
+     * its inbound audio carries only a {@code file_key}. So we download the
+     * bytes (via {@link #downloadResource}) and run them through
+     * {@link vip.mate.stt.SttService} here, prepending the transcript as a
+     * text {@link MessageContentPart} so the agent reasons over actual
+     * content instead of the bare {@code "[音频]"} placeholder.
+     *
+     * <p>Nullable for legacy callers / tests — STT is skipped entirely when
+     * absent, and the message still goes through as audio-only (degraded
+     * but not broken).
+     */
+    private final vip.mate.stt.SttService sttService;
+
     public FeishuChannelAdapter(ChannelEntity channelEntity,
                                 ChannelMessageRouter messageRouter,
                                 ObjectMapper objectMapper) {
-        this(channelEntity, messageRouter, objectMapper, null, null, null, null, null, null);
+        this(channelEntity, messageRouter, objectMapper, null, null, null, null, null, null, null);
     }
 
     public FeishuChannelAdapter(ChannelEntity channelEntity,
@@ -167,7 +182,7 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
                                 FeishuMediaUploader mediaUploader,
                                 GeneratedFileScrubber generatedFileScrubber) {
         this(channelEntity, messageRouter, objectMapper, mediaUploader, generatedFileScrubber,
-                null, null, null, null);
+                null, null, null, null, null);
     }
 
     public FeishuChannelAdapter(ChannelEntity channelEntity,
@@ -177,7 +192,7 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
                                 GeneratedFileScrubber generatedFileScrubber,
                                 FeishuStreamingCardManager streamingCardManager) {
         this(channelEntity, messageRouter, objectMapper, mediaUploader,
-                generatedFileScrubber, streamingCardManager, null, null, null);
+                generatedFileScrubber, streamingCardManager, null, null, null, null);
     }
 
     public FeishuChannelAdapter(ChannelEntity channelEntity,
@@ -188,7 +203,7 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
                                 FeishuStreamingCardManager streamingCardManager,
                                 vip.mate.channel.feishu.cards.FeishuCardDispatcher cardDispatcher) {
         this(channelEntity, messageRouter, objectMapper, mediaUploader,
-                generatedFileScrubber, streamingCardManager, cardDispatcher, null, null);
+                generatedFileScrubber, streamingCardManager, cardDispatcher, null, null, null);
     }
 
     public FeishuChannelAdapter(ChannelEntity channelEntity,
@@ -200,6 +215,21 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
                                 vip.mate.channel.feishu.cards.FeishuCardDispatcher cardDispatcher,
                                 FeishuClientFactory clientFactory,
                                 vip.mate.tool.document.GeneratedFileCache generatedFileCache) {
+        this(channelEntity, messageRouter, objectMapper, mediaUploader,
+                generatedFileScrubber, streamingCardManager, cardDispatcher,
+                clientFactory, generatedFileCache, null);
+    }
+
+    public FeishuChannelAdapter(ChannelEntity channelEntity,
+                                ChannelMessageRouter messageRouter,
+                                ObjectMapper objectMapper,
+                                FeishuMediaUploader mediaUploader,
+                                GeneratedFileScrubber generatedFileScrubber,
+                                FeishuStreamingCardManager streamingCardManager,
+                                vip.mate.channel.feishu.cards.FeishuCardDispatcher cardDispatcher,
+                                FeishuClientFactory clientFactory,
+                                vip.mate.tool.document.GeneratedFileCache generatedFileCache,
+                                vip.mate.stt.SttService sttService) {
         super(channelEntity, messageRouter, objectMapper);
         this.mediaUploader = mediaUploader;
         this.generatedFileScrubber = generatedFileScrubber;
@@ -207,6 +237,7 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
         this.cardDispatcher = cardDispatcher;
         this.clientFactory = clientFactory;
         this.generatedFileCache = generatedFileCache;
+        this.sttService = sttService;
         // Feishu WebSocket reconnect: 2s→4s→8s→16s→30s, infinite retry
         this.backoff = new ExponentialBackoff(2000, 30000, 2.0, -1);
     }
@@ -1331,9 +1362,21 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
                 case "audio" -> {
                     String fileKey = (String) contentObj.get("file_key");
                     if (fileKey != null) {
-                        DownloadedResource dl = maybeDownloadResource(messageId, fileKey, "file", null);
+                        // Feishu voice messages are always opus (no extension on the
+                        // wire) — give downloadResource the hint so the on-disk file
+                        // ends in .opus and SttService gets a usable MIME for routing.
+                        DownloadedResource dl = maybeDownloadResource(messageId, fileKey, "file", "voice.opus");
                         MessageContentPart part = MessageContentPart.audio(fileKey, null);
                         applyDownload(part, dl);
+                        // STT hop: inject the transcript as a sibling text part BEFORE
+                        // the audio part so ChannelMessageRouter.buildPromptFromParts
+                        // sees real content instead of just "[音频]". WeCom / DingTalk
+                        // skip this step because their webhooks already include ASR
+                        // text; Feishu does not.
+                        String transcript = transcribeInboundAudio(dl);
+                        if (transcript != null && !transcript.isBlank()) {
+                            parts.add(MessageContentPart.text(transcript));
+                        }
                         parts.add(part);
                     }
                     yield "[音频]";
@@ -1569,6 +1612,52 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
      * caller can keep the part as a bare {@code file_key} placeholder
      * when download was disabled / failed.
      */
+    /**
+     * Read the downloaded audio bytes from disk and run them through
+     * {@link vip.mate.stt.SttService}. Returns the transcribed text, or
+     * {@code null} when STT is not wired, disabled, the download didn't
+     * produce a usable path, or every provider failed.
+     *
+     * <p>Best-effort by design — STT failure must not block the agent
+     * from seeing the audio part. The user gets the "[音频]" placeholder
+     * and any agent that's tooled-up can still investigate.
+     */
+    // Package-private for unit tests.
+    String transcribeInboundAudio(DownloadedResource dl) {
+        if (sttService == null || dl == null || dl.path() == null) {
+            return null;
+        }
+        try {
+            byte[] audioBytes = Files.readAllBytes(Path.of(dl.path()));
+            if (audioBytes.length == 0) {
+                log.debug("[feishu-stt] empty audio file at {}, skipping STT", dl.path());
+                return null;
+            }
+            String fileName = dl.fileName() != null ? dl.fileName() : "voice.opus";
+            String contentType = dl.contentType() != null ? dl.contentType() : "audio/opus";
+            // language=null → SttService falls back to the system-settings
+            // UI language hint; works for both Chinese and English without
+            // needing per-channel config.
+            Map<String, Object> result = sttService.transcribe(
+                    audioBytes, fileName, contentType, null);
+            if (!Boolean.TRUE.equals(result.get("success"))) {
+                log.warn("[feishu-stt] transcription failed: {}", result.get("error"));
+                return null;
+            }
+            String text = (String) result.get("text");
+            if (text == null || text.isBlank()) {
+                log.debug("[feishu-stt] transcription returned empty text");
+                return null;
+            }
+            log.info("[feishu-stt] transcribed {} bytes → {} chars",
+                    audioBytes.length, text.length());
+            return text;
+        } catch (Exception e) {
+            log.warn("[feishu-stt] transcription threw: {}", e.getMessage());
+            return null;
+        }
+    }
+
     // Package-private for unit tests.
     static void applyDownload(MessageContentPart part, DownloadedResource dl) {
         if (dl == null || part == null) return;

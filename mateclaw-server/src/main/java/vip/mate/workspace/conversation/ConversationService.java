@@ -189,12 +189,43 @@ public class ConversationService {
     }
 
     /**
-     * 获取或创建共享渠道会话（workspace 感知）
+     * 获取或创建共享渠道会话（workspace 感知）。
+     *
+     * <p>Delegates to the 5-arg overload with {@code null} model defaults —
+     * preserves the legacy behavior for any caller that doesn't have an
+     * agent-level model to inherit from.
      */
     @Transactional
     public ConversationEntity getOrCreateSharedConversation(String conversationId, Long agentId, Long workspaceId) {
+        return getOrCreateSharedConversation(conversationId, agentId, workspaceId, null, null);
+    }
+
+    /**
+     * Get-or-create variant that seeds the conversation's pinned model from
+     * an agent-level default. Used by the IM channel path
+     * ({@code ChannelMessageRouter}) so that new IM conversations inherit
+     * the agent's currently-configured model as a baseline.
+     *
+     * <p><b>Idempotent on the model fields</b>: the {@code defaultModelProvider}
+     * / {@code defaultModelName} are written <i>only</i> when the conversation
+     * is freshly inserted. For an existing conversation — including one the
+     * user already pinned to a different model via the admin UI — the model
+     * fields are left untouched. This is the core fix for issue #183: the
+     * IM channel call site supplies the agent default, but a user-pinned
+     * model wins on every subsequent message.
+     *
+     * <p>Both defaults must be non-blank to take effect. A half-populated
+     * pair (provider without name, or vice versa) is treated as no seed —
+     * matches {@link #updateConversationModel} so a malformed agent row
+     * doesn't pin an unusable model.
+     */
+    @Transactional
+    public ConversationEntity getOrCreateSharedConversation(String conversationId, Long agentId, Long workspaceId,
+                                                            String defaultModelProvider, String defaultModelName) {
         ConversationEntity conv = conversationMapper.selectOne(new LambdaQueryWrapper<ConversationEntity>()
                 .eq(ConversationEntity::getConversationId, conversationId));
+        boolean seedModel = defaultModelProvider != null && !defaultModelProvider.isBlank()
+                && defaultModelName != null && !defaultModelName.isBlank();
         if (conv == null) {
             conv = new ConversationEntity();
             conv.setConversationId(conversationId);
@@ -204,6 +235,13 @@ public class ConversationService {
             conv.setTitle("新对话");
             conv.setMessageCount(0);
             conv.setLastActiveTime(LocalDateTime.now());
+            // Seed the agent-default model so the very first turn picks the
+            // right provider. Subsequent admin-UI switches go through
+            // updateConversationModel and override this baseline.
+            if (seedModel) {
+                conv.setModelProvider(defaultModelProvider);
+                conv.setModelName(defaultModelName);
+            }
             try {
                 conversationMapper.insert(conv);
             } catch (org.springframework.dao.DuplicateKeyException e) {
@@ -224,6 +262,19 @@ public class ConversationService {
         }
         if (conv.getAgentId() == null && agentId != null) {
             conv.setAgentId(agentId);
+            changed = true;
+        }
+        // Backfill model on an already-existing conversation only when BOTH
+        // model fields are still null. Pinning is sticky once set: if the
+        // user (or an earlier turn) wrote either column, we don't touch it.
+        // This handles legacy IM conversations created before this fix
+        // landed — they get the agent default on next inbound message and
+        // remain pinned thereafter.
+        if (seedModel
+                && (conv.getModelProvider() == null || conv.getModelProvider().isBlank())
+                && (conv.getModelName() == null || conv.getModelName().isBlank())) {
+            conv.setModelProvider(defaultModelProvider);
+            conv.setModelName(defaultModelName);
             changed = true;
         }
         if (changed) {
