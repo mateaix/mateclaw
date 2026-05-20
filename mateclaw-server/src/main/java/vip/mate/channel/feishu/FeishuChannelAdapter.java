@@ -441,8 +441,28 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter {
     }
 
     /**
-     * 获取机器人自身的 open_id（懒加载并缓存）
-     * 调用 /open-apis/bot/v3/info 接口，失败时返回 null（降级到放行，保持兼容）
+     * Package-private for testing: returns true when a group message should be dropped
+     * because {@code require_mention} is on, the bot was not mentioned, AND we know our
+     * own open_id (so we trust the negative answer).
+     *
+     * <p>When {@code botOpenId} is {@code null} the bot identity is unavailable — either
+     * the {@code /open-apis/bot/v3/info} fetch hasn't succeeded yet, or it failed and is
+     * in the negative-cache window. In that case the gate falls open so a transient
+     * Feishu API outage doesn't silence the bot in every group it's in. The accompanying
+     * warn-level log makes the degraded mode visible.
+     */
+    static boolean isGroupNonMentionDrop(boolean isGroup,
+                                         boolean requireMention,
+                                         boolean isBotMentioned,
+                                         String botOpenId) {
+        return isGroup && requireMention && !isBotMentioned && botOpenId != null;
+    }
+
+    /**
+     * Fetches the bot's own open_id once and caches it. Returns {@code null} when
+     * the fetch fails — callers that consult this value (currently the
+     * {@code require_mention} gate) must treat {@code null} as "identity unknown"
+     * and fall open so a transient API outage doesn't silence the bot.
      */
     private String getBotOpenId() {
         if (botOpenId != null) return botOpenId;
@@ -463,7 +483,7 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter {
                 log.info("[feishu] Bot open_id fetched and cached: {}", botOpenId);
             }
         } catch (Exception e) {
-            log.warn("[feishu] Failed to fetch bot open_id, require_mention will allow message: {}", e.getMessage());
+            log.warn("[feishu] Failed to fetch bot open_id; require_mention gate will fall open until next attempt: {}", e.getMessage());
         }
         return botOpenId;
     }
@@ -638,11 +658,18 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter {
     private void handleFeishuMessage(String messageId, String messageType, String contentStr,
                                       String chatId, String chatType, String senderOpenId,
                                       String parentId, boolean isBotMentioned, Object rawPayload) {
-        // require_mention 群聊过滤：群聊中必须 @机器人才响应
+        // require_mention 群聊过滤：群聊中必须 @机器人才响应。
+        // 当 botOpenId 为 null 时（API 抖动 / 尚未拉取成功），失败回退到放行 —
+        // 避免飞书 /open-apis/bot/v3/info 短暂不可用时整个群机器人变哑巴。
         boolean isGroup = "group".equals(chatType);
-        if (isGroup && getConfigBoolean("require_mention", false) && !isBotMentioned) {
-            log.debug("[feishu] require_mention=true but bot not mentioned, ignoring messageId={}", messageId);
+        boolean requireMention = getConfigBoolean("require_mention", false);
+        if (isGroupNonMentionDrop(isGroup, requireMention, isBotMentioned, botOpenId)) {
+            log.debug("[feishu] require_mention=true but bot not mentioned, dropping messageId={}", messageId);
             return;
+        }
+        if (isGroup && requireMention && !isBotMentioned) {
+            // botOpenId is null here — identity unknown, gate falls open.
+            log.warn("[feishu] require_mention=true but bot open_id unavailable; allowing messageId={}", messageId);
         }
 
         // 消息去重
