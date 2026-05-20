@@ -354,6 +354,7 @@ public class ModelConfigService {
         ModelConfigEntity duplicate = modelConfigMapper.selectOne(new LambdaQueryWrapper<ModelConfigEntity>()
                 .eq(ModelConfigEntity::getProvider, entity.getProvider())
                 .eq(ModelConfigEntity::getModelName, entity.getModelName())
+                .eq(ModelConfigEntity::getDeleted, 0)
                 .ne(currentId != null, ModelConfigEntity::getId, currentId)
                 .last("LIMIT 1"));
         if (duplicate != null) {
