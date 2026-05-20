@@ -8,6 +8,9 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.document.MetadataMode;
 import org.springframework.ai.embedding.EmbeddingModel;
+import org.springframework.ai.model.ApiKey;
+import org.springframework.ai.model.NoopApiKey;
+import org.springframework.ai.model.SimpleApiKey;
 import org.springframework.ai.openai.OpenAiEmbeddingModel;
 import org.springframework.ai.openai.OpenAiEmbeddingOptions;
 import org.springframework.ai.openai.api.OpenAiApi;
@@ -179,11 +182,17 @@ public class EmbeddingModelFactory {
                     "Provider Base URL 未配置: " + provider.getProviderId());
         }
 
-        String effectiveApiKey = providerService.hasUsableApiKey(apiKey) ? apiKey.trim() : "";
+        // Mirror the chat path: real keys go through SimpleApiKey so a Bearer header
+        // is attached, while keyless providers (requireApiKey=false, e.g. Ollama,
+        // OpenCode) get a NoopApiKey so no Authorization header is sent at all —
+        // strict gateways reject "Authorization: Bearer " with an empty token.
+        ApiKey apiKeyImpl = providerService.hasUsableApiKey(apiKey)
+                ? new SimpleApiKey(apiKey.trim())
+                : new NoopApiKey();
         // 最简构造：不做 chat-specific 的 header 重写、reasoning patch 等
         OpenAiApi api = OpenAiApi.builder()
                 .baseUrl(baseUrl)
-                .apiKey(effectiveApiKey)
+                .apiKey(apiKeyImpl)
                 .embeddingsPath(resolveEmbeddingsPath(baseUrl))
                 .build();
 
