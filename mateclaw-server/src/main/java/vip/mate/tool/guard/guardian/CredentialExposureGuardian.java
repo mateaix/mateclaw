@@ -1,25 +1,32 @@
 package vip.mate.tool.guard.guardian;
 
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
+import vip.mate.tool.guard.engine.ToolGuardRuleRegistry;
 import vip.mate.tool.guard.model.*;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 /**
  * 凭据泄露守卫
  * <p>
  * 检测工具参数中可能包含的敏感凭据信息。
- * alwaysRun=true，不受 guarded tools 范围限制。
+ * 遵从数据库规则开关，禁用对应规则后不再触发。
  */
 @Slf4j
 @Component
+@RequiredArgsConstructor
 public class CredentialExposureGuardian implements ToolGuardGuardian {
+
+    private final ToolGuardRuleRegistry ruleRegistry;
 
     private static final Map<String, Pattern> COMPILED = new ConcurrentHashMap<>();
 
@@ -48,14 +55,24 @@ public class CredentialExposureGuardian implements ToolGuardGuardian {
                     "检测到 GitHub Personal Access Token")
     );
 
+    /** 从注册表中获取当前已启用的规则 ID 集合 */
+    private Set<String> enabledRuleIds() {
+        return ruleRegistry.getAllEnabled().stream()
+                .map(ToolGuardRuleEntity::getRuleId)
+                .collect(Collectors.toSet());
+    }
+
     @Override
     public boolean supports(ToolInvocationContext context) {
-        return true;
+        // 只要有任意一条凭据规则启用，就参与评估
+        Set<String> enabled = enabledRuleIds();
+        return RULES.stream().anyMatch(r -> enabled.contains(r.ruleId()));
     }
 
     @Override
     public boolean alwaysRun() {
-        return true;
+        // 不再强制运行，由 supports() 根据数据库开关决定是否参与
+        return false;
     }
 
     @Override
@@ -68,23 +85,28 @@ public class CredentialExposureGuardian implements ToolGuardGuardian {
         String raw = context.rawArguments();
         if (raw == null || raw.isEmpty()) return List.of();
 
+        Set<String> enabled = enabledRuleIds();
         List<GuardFinding> findings = new ArrayList<>();
         for (CredentialRule rule : RULES) {
+            // 跳过在数据库中已禁用的规则
+            if (!enabled.contains(rule.ruleId())) {
+                continue;
+            }
             Pattern p = COMPILED.computeIfAbsent(rule.pattern,
                     r -> Pattern.compile(r, Pattern.CASE_INSENSITIVE));
             Matcher matcher = p.matcher(raw);
             if (matcher.find()) {
                 String snippet = extractSnippet(raw, matcher.start(), 30);
                 findings.add(new GuardFinding(
-                        rule.ruleId,
+                        rule.ruleId(),
                         GuardSeverity.HIGH,
                         GuardCategory.CREDENTIAL_EXPOSURE,
-                        rule.title,
-                        rule.description,
+                        rule.title(),
+                        rule.description(),
                         "请移除凭据信息，使用环境变量或密钥管理服务",
                         context.toolName(),
                         null,
-                        rule.pattern,
+                        rule.pattern(),
                         maskCredential(snippet)
                 ));
             }
