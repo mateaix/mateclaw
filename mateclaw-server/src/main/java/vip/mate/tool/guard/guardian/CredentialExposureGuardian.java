@@ -2,6 +2,7 @@ package vip.mate.tool.guard.guardian;
 
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
+import vip.mate.tool.guard.engine.ToolGuardRuleRegistry;
 import vip.mate.tool.guard.model.*;
 
 import java.util.ArrayList;
@@ -16,6 +17,9 @@ import java.util.regex.Pattern;
  * <p>
  * 检测工具参数中可能包含的敏感凭据信息。
  * alwaysRun=true，不受 guarded tools 范围限制。
+ * <p>
+ * 优先从 ToolGuardRuleRegistry 加载数据库规则（支持 enabled 开关）；
+ * 若数据库中无凭据规则则 fallback 到内置硬编码规则。
  */
 @Slf4j
 @Component
@@ -25,7 +29,7 @@ public class CredentialExposureGuardian implements ToolGuardGuardian {
 
     private record CredentialRule(String ruleId, String pattern, String title, String description) {}
 
-    private static final List<CredentialRule> RULES = List.of(
+    private static final List<CredentialRule> BUILTIN_RULES = List.of(
             new CredentialRule("CRED_PASSWORD_ASSIGN",
                     "(password|secret|api[_-]?key|token)\\s*=\\s*['\"]?\\S{8,}",
                     "凭据信息暴露",
@@ -48,6 +52,12 @@ public class CredentialExposureGuardian implements ToolGuardGuardian {
                     "检测到 GitHub Personal Access Token")
     );
 
+    private final ToolGuardRuleRegistry ruleRegistry;
+
+    public CredentialExposureGuardian(ToolGuardRuleRegistry ruleRegistry) {
+        this.ruleRegistry = ruleRegistry;
+    }
+
     @Override
     public boolean supports(ToolInvocationContext context) {
         return true;
@@ -68,8 +78,47 @@ public class CredentialExposureGuardian implements ToolGuardGuardian {
         String raw = context.rawArguments();
         if (raw == null || raw.isEmpty()) return List.of();
 
+        // 优先使用数据库规则（已按 enabled=true 过滤，禁用规则不在列表内）
+        List<ToolGuardRuleEntity> dbRules = ruleRegistry.getAllEnabled().stream()
+                .filter(r -> GuardCategory.CREDENTIAL_EXPOSURE.name().equals(r.getCategory()))
+                .toList();
+
+        if (!dbRules.isEmpty()) {
+            return evaluateDbRules(dbRules, raw, context);
+        }
+
+        // 数据库无凭据规则时 fallback 到内置规则
+        return evaluateBuiltinRules(raw, context);
+    }
+
+    private List<GuardFinding> evaluateDbRules(List<ToolGuardRuleEntity> dbRules,
+                                                String raw, ToolInvocationContext context) {
         List<GuardFinding> findings = new ArrayList<>();
-        for (CredentialRule rule : RULES) {
+        for (ToolGuardRuleEntity rule : dbRules) {
+            Pattern p = ruleRegistry.getCompiledPattern(rule.getPattern());
+            Matcher matcher = p.matcher(raw);
+            if (matcher.find()) {
+                String snippet = extractSnippet(raw, matcher.start(), 30);
+                findings.add(new GuardFinding(
+                        rule.getRuleId(),
+                        GuardSeverity.valueOf(rule.getSeverity()),
+                        GuardCategory.CREDENTIAL_EXPOSURE,
+                        rule.getName(),
+                        rule.getDescription(),
+                        rule.getRemediation(),
+                        context.toolName(),
+                        null,
+                        rule.getPattern(),
+                        maskCredential(snippet)
+                ));
+            }
+        }
+        return findings;
+    }
+
+    private List<GuardFinding> evaluateBuiltinRules(String raw, ToolInvocationContext context) {
+        List<GuardFinding> findings = new ArrayList<>();
+        for (CredentialRule rule : BUILTIN_RULES) {
             Pattern p = COMPILED.computeIfAbsent(rule.pattern,
                     r -> Pattern.compile(r, Pattern.CASE_INSENSITIVE));
             Matcher matcher = p.matcher(raw);

@@ -330,6 +330,14 @@ public class ToolGuardRuleSeedService implements ApplicationRunner {
                 GuardSeverity.HIGH, GuardCategory.CREDENTIAL_EXPOSURE, "BLOCK",
                 null, gf("CRED_PRIVATE_KEY"), 140));
 
+        rules.add(rule("CRED_JWT_TOKEN", gn("CRED_JWT_TOKEN"), "eyJ[A-Za-z0-9_-]{10,}\\.eyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]+",
+                GuardSeverity.HIGH, GuardCategory.CREDENTIAL_EXPOSURE, "NEEDS_APPROVAL",
+                null, gf("CRED_JWT_TOKEN"), 140));
+
+        rules.add(rule("CRED_GITHUB_TOKEN", gn("CRED_GITHUB_TOKEN"), "gh[pousr]_[A-Za-z0-9_]{36,}",
+                GuardSeverity.HIGH, GuardCategory.CREDENTIAL_EXPOSURE, "NEEDS_APPROVAL",
+                null, gf("CRED_GITHUB_TOKEN"), 140));
+
         return rules;
     }
 
