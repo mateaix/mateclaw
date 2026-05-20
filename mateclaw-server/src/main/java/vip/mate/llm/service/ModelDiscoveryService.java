@@ -141,8 +141,8 @@ public class ModelDiscoveryService {
 
     /**
      * Allow-list prefixes for DashScope models that are known to work on the native
-     * chat protocol. An empty set means "no prefix filter" (we still apply DENY).
-     * Extend conservatively as new families are verified.
+     * protocol (chat or embedding). An empty set means "no prefix filter" (we still
+     * apply DENY). Extend conservatively as new families are verified.
      */
     private static final Set<String> DASHSCOPE_NATIVE_ALLOW_PREFIXES = Set.of(
             "qwen-",          // qwen-max / qwen-plus / qwen-turbo / qwen-coder-* / qwen-long
@@ -151,7 +151,8 @@ public class ModelDiscoveryService {
             "deepseek-",      // deepseek-v3.x / deepseek-r1*
             "baichuan",
             "yi-",
-            "llama"
+            "llama",
+            "text-embedding-" // DashScope embedding models (text-embedding-v1/v2/v3/v4)
     );
 
     // ==================== 模型发现 ====================
