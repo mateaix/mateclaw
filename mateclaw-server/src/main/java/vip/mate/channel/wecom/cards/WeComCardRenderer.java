@@ -1,5 +1,7 @@
 package vip.mate.channel.wecom.cards;
 
+import vip.mate.channel.cards.CardOversizedException;
+
 import vip.mate.channel.notification.ApprovalNotice;
 
 import java.util.Map;

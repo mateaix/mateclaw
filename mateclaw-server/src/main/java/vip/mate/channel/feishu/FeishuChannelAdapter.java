@@ -134,10 +134,13 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
     /** CardKit streaming-card manager. Nullable for legacy callers / tests. */
     private final FeishuStreamingCardManager streamingCardManager;
 
+    /** Interactive-card dispatcher (approval cards etc.). Nullable for legacy callers / tests. */
+    private final vip.mate.channel.feishu.cards.FeishuCardDispatcher cardDispatcher;
+
     public FeishuChannelAdapter(ChannelEntity channelEntity,
                                 ChannelMessageRouter messageRouter,
                                 ObjectMapper objectMapper) {
-        this(channelEntity, messageRouter, objectMapper, null, null, null);
+        this(channelEntity, messageRouter, objectMapper, null, null, null, null);
     }
 
     public FeishuChannelAdapter(ChannelEntity channelEntity,
@@ -145,7 +148,7 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
                                 ObjectMapper objectMapper,
                                 FeishuMediaUploader mediaUploader,
                                 GeneratedFileScrubber generatedFileScrubber) {
-        this(channelEntity, messageRouter, objectMapper, mediaUploader, generatedFileScrubber, null);
+        this(channelEntity, messageRouter, objectMapper, mediaUploader, generatedFileScrubber, null, null);
     }
 
     public FeishuChannelAdapter(ChannelEntity channelEntity,
@@ -154,10 +157,22 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
                                 FeishuMediaUploader mediaUploader,
                                 GeneratedFileScrubber generatedFileScrubber,
                                 FeishuStreamingCardManager streamingCardManager) {
+        this(channelEntity, messageRouter, objectMapper, mediaUploader,
+                generatedFileScrubber, streamingCardManager, null);
+    }
+
+    public FeishuChannelAdapter(ChannelEntity channelEntity,
+                                ChannelMessageRouter messageRouter,
+                                ObjectMapper objectMapper,
+                                FeishuMediaUploader mediaUploader,
+                                GeneratedFileScrubber generatedFileScrubber,
+                                FeishuStreamingCardManager streamingCardManager,
+                                vip.mate.channel.feishu.cards.FeishuCardDispatcher cardDispatcher) {
         super(channelEntity, messageRouter, objectMapper);
         this.mediaUploader = mediaUploader;
         this.generatedFileScrubber = generatedFileScrubber;
         this.streamingCardManager = streamingCardManager;
+        this.cardDispatcher = cardDispatcher;
         // Feishu WebSocket reconnect: 2s→4s→8s→16s→30s, infinite retry
         this.backoff = new ExponentialBackoff(2000, 30000, 2.0, -1);
     }
@@ -310,6 +325,20 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
                 .onP2ChatMemberBotAddedV1(new ImService.P2ChatMemberBotAddedV1Handler() {
                     @Override
                     public void handle(com.lark.oapi.service.im.v1.model.P2ChatMemberBotAddedV1 event) {}
+                })
+                // Interactive card button clicks (Schema 2.0) — routed through cardDispatcher
+                .onP2CardActionTrigger(new com.lark.oapi.event.cardcallback.P2CardActionTriggerHandler() {
+                    @Override
+                    public com.lark.oapi.event.cardcallback.model.P2CardActionTriggerResponse handle(
+                            com.lark.oapi.event.cardcallback.model.P2CardActionTrigger event) {
+                        if (!running.get()) return null;
+                        try {
+                            handleCardActionTrigger(event);
+                        } catch (Exception e) {
+                            log.error("[feishu] Failed to handle card action: {}", e.getMessage(), e);
+                        }
+                        return null;
+                    }
                 })
                 .build();
 
@@ -858,6 +887,70 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
         if (messageId == null || messageId.isBlank()) return;
         if (!getConfigBoolean("enable_done_reaction", true)) return;
         addReactionAsync(messageId, "DONE");
+    }
+
+    // ==================== Approval card ====================
+
+    /**
+     * Render the approval notice as a Schema-2.0 interactive button card
+     * so the user can approve / deny in-channel without bouncing to the
+     * web UI. Falls back to the inherited markdown-text path when the
+     * dispatcher isn't wired (legacy constructors / test rigs), the
+     * card oversizes, or the platform refuses to deliver.
+     */
+    @Override
+    public void sendApprovalNotice(String targetId,
+            vip.mate.channel.notification.ApprovalNotice notice) {
+        if (cardDispatcher == null || notice == null || targetId == null) {
+            super.sendApprovalNotice(targetId, notice);
+            return;
+        }
+        var kindOpt = cardDispatcher.lookupByName(
+                vip.mate.channel.feishu.cards.tool_guard.ToolGuardCardKindFactory.KIND_NAME);
+        if (kindOpt.isEmpty()) {
+            super.sendApprovalNotice(targetId, notice);
+            return;
+        }
+        try {
+            Map<String, Object> cardJson = kindOpt.get().renderer().render(notice);
+            boolean sent = sendCard(targetId, cardJson);
+            if (!sent) {
+                log.warn("[feishu-toolguard] sendCard returned false; falling back to text");
+                super.sendApprovalNotice(targetId, notice);
+            }
+        } catch (vip.mate.channel.cards.CardOversizedException e) {
+            log.warn("[feishu-toolguard] approval card oversized ({}); falling back to text", e.getMessage());
+            super.sendApprovalNotice(targetId, notice);
+        } catch (Exception e) {
+            log.error("[feishu-toolguard] render/send approval card failed; falling back to text: {}",
+                    e.getMessage(), e);
+            super.sendApprovalNotice(targetId, notice);
+        }
+    }
+
+    /**
+     * Dispatch a {@code P2CardActionTrigger} (button click on an
+     * interactive card) to the matching {@code FeishuCardKind} via the
+     * dispatcher. No-op if no dispatcher wired or no kind matches.
+     */
+    private void handleCardActionTrigger(
+            com.lark.oapi.event.cardcallback.model.P2CardActionTrigger event) {
+        if (cardDispatcher == null || event == null || event.getEvent() == null) {
+            return;
+        }
+        com.lark.oapi.event.cardcallback.model.P2CardActionTriggerData data = event.getEvent();
+        com.lark.oapi.event.cardcallback.model.CallBackAction action = data.getAction();
+        if (action == null || action.getValue() == null) {
+            return;
+        }
+        Object actionField = action.getValue().get("action");
+        String actionStr = actionField != null ? actionField.toString() : null;
+        var kindOpt = cardDispatcher.lookupByAction(actionStr);
+        if (kindOpt.isEmpty()) {
+            log.debug("[feishu] No card kind registered for action={}", actionStr);
+            return;
+        }
+        kindOpt.get().handler().handle(this, data);
     }
 
     /**

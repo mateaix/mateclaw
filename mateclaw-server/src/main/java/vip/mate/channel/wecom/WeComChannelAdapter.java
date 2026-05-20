@@ -1303,7 +1303,7 @@ public class WeComChannelAdapter extends AbstractChannelAdapter {
         try {
             Map<String, Object> card = kindOpt.get().renderer().render(notice);
             replyTemplateCard(ctx.frameReqId(), card);
-        } catch (vip.mate.channel.wecom.cards.CardOversizedException oversized) {
+        } catch (vip.mate.channel.cards.CardOversizedException oversized) {
             log.warn("[wecom] approval card oversized, falling back to text: {}", oversized.getMessage());
             super.sendApprovalNotice(targetId, notice);
         } catch (Exception e) {

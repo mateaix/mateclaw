@@ -101,6 +101,14 @@ public class ChannelManager {
     private final vip.mate.channel.feishu.FeishuStreamingCardManager feishuStreamingCardManager;
 
     /**
+     * Feishu interactive-card dispatcher. Drives
+     * {@code FeishuChannelAdapter.sendApprovalNotice} (button-card render)
+     * and routes inbound {@code P2CardActionTrigger} events to the right
+     * card kind's handler (e.g. tool-guard approve / deny).
+     */
+    private final vip.mate.channel.feishu.cards.FeishuCardDispatcher feishuCardDispatcher;
+
+    /**
      * Distributed leader election. Channels whose adapter reports
      * {@link ChannelAdapter#requiresSingleLeader()} are gated on a lease so
      * only one node opens the upstream WebSocket / long-poll at a time.
@@ -1166,7 +1174,8 @@ public class ChannelManager {
             case "web" -> new WebChannelAdapter(channel, messageRouter, objectMapper);
             case "dingtalk" -> new DingTalkChannelAdapter(channel, messageRouter, objectMapper, generatedFileCache);
             case "feishu" -> new FeishuChannelAdapter(channel, messageRouter, objectMapper,
-                    feishuMediaUploader, generatedFileScrubber, feishuStreamingCardManager);
+                    feishuMediaUploader, generatedFileScrubber, feishuStreamingCardManager,
+                    feishuCardDispatcher);
             case "telegram" -> new TelegramChannelAdapter(channel, messageRouter, objectMapper);
             case "discord" -> new DiscordChannelAdapter(channel, messageRouter, objectMapper);
             case "wecom" -> new WeComChannelAdapter(channel, messageRouter, objectMapper,

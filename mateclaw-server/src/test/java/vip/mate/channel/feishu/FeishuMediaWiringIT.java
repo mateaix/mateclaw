@@ -34,6 +34,7 @@ class FeishuMediaWiringIT {
     @Autowired private FeishuSizePolicy sizePolicy;
     @Autowired private GeneratedFileScrubber scrubber;
     @Autowired private FeishuStreamingCardManager streamingCardManager;
+    @Autowired private vip.mate.channel.feishu.cards.FeishuCardDispatcher cardDispatcher;
     @Autowired private List<MediaUploader> uploaderBeans;
     @Autowired private List<MediaSizePolicy> policyBeans;
 
@@ -45,6 +46,9 @@ class FeishuMediaWiringIT {
         assertNotNull(sizePolicy);
         assertNotNull(scrubber);
         assertNotNull(streamingCardManager);
+        assertNotNull(cardDispatcher);
+        assertTrue(cardDispatcher.registeredKindNames().contains("tool_guard_approval"),
+                "tool_guard kind should be auto-registered on dispatcher construction");
     }
 
     @Test
