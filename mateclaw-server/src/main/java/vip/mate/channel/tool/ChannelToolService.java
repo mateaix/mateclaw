@@ -12,6 +12,9 @@ import org.springframework.stereotype.Component;
 import vip.mate.channel.model.ChannelEntity;
 import vip.mate.channel.repository.ChannelMapper;
 import vip.mate.tool.ToolRegistry;
+import vip.mate.tool.guard.engine.ToolGuardRuleRegistry;
+import vip.mate.tool.guard.model.ToolGuardRuleEntity;
+import vip.mate.tool.guard.repository.ToolGuardRuleMapper;
 import vip.mate.tool.model.ToolEntity;
 import vip.mate.tool.repository.ToolMapper;
 
@@ -68,6 +71,8 @@ public class ChannelToolService {
     private final ToolMapper toolMapper;
     private final ToolRegistry toolRegistry;
     private final ObjectMapper objectMapper;
+    private final ToolGuardRuleMapper guardRuleMapper;
+    private final ToolGuardRuleRegistry guardRuleRegistry;
 
     /** Indexed at startup: channelType → provider. */
     private Map<String, ChannelToolProvider> providersByType = Map.of();
@@ -89,12 +94,16 @@ public class ChannelToolService {
                                ChannelMapper channelMapper,
                                ToolMapper toolMapper,
                                ToolRegistry toolRegistry,
-                               ObjectMapper objectMapper) {
+                               ObjectMapper objectMapper,
+                               ToolGuardRuleMapper guardRuleMapper,
+                               ToolGuardRuleRegistry guardRuleRegistry) {
         this.providerBeans = providerBeans != null ? providerBeans : List.of();
         this.channelMapper = channelMapper;
         this.toolMapper = toolMapper;
         this.toolRegistry = toolRegistry;
         this.objectMapper = objectMapper;
+        this.guardRuleMapper = guardRuleMapper;
+        this.guardRuleRegistry = guardRuleRegistry;
     }
 
     @PostConstruct
@@ -211,6 +220,7 @@ public class ChannelToolService {
             return;
         }
         Map<String, String> nameMap = upsertToolRows(ch, descriptors);
+        seedGuardRules(descriptors, nameMap);
 
         ChannelToolContext context = new ChannelToolContext(
                 ch.getId(), ch.getName(), ch.getChannelType(), ch.getAgentId(),
@@ -297,6 +307,61 @@ public class ChannelToolService {
             }
         }
         return nameMap;
+    }
+
+    /**
+     * Seed one HIGH-severity DB rule per mutating descriptor so the
+     * tool's invocation gets evaluated by {@code DbRuleGuardian} →
+     * {@code NEEDS_APPROVAL}. The rule pattern is {@code ".*"} so
+     * every invocation matches; the severity is what drives the
+     * approval decision, not pattern specificity.
+     *
+     * <p>Idempotent: a stable {@code rule_id} per (tool, channel) +
+     * {@code ON DUPLICATE KEY UPDATE}-style upsert keeps re-reconcile
+     * safe. Triggers a registry reload so the new rule is immediately
+     * visible to the next invocation.
+     */
+    private void seedGuardRules(List<ChannelToolDescriptor> descriptors, Map<String, String> nameMap) {
+        boolean changed = false;
+        for (ChannelToolDescriptor d : descriptors) {
+            if (!d.mutating()) continue;
+            String actualName = nameMap.get(d.name());
+            if (actualName == null) continue;
+            String ruleId = "channel_tool:" + actualName;
+            ToolGuardRuleEntity existing = guardRuleMapper.selectOne(
+                    new LambdaQueryWrapper<ToolGuardRuleEntity>().eq(ToolGuardRuleEntity::getRuleId, ruleId));
+            if (existing != null) continue; // already seeded — never override user edits
+            ToolGuardRuleEntity row = new ToolGuardRuleEntity();
+            row.setRuleId(ruleId);
+            row.setName("Channel write tool — approval required");
+            row.setDescription("Auto-seeded approval gate for channel-native write tool " + actualName);
+            row.setToolName(actualName);
+            row.setParamName("args");
+            row.setCategory("SENSITIVE_FILE_ACCESS");
+            row.setSeverity("HIGH");
+            row.setDecision("NEEDS_APPROVAL");
+            row.setPattern(".*");          // every invocation matches
+            row.setRemediation("Confirm the requested change is intended, then approve.");
+            row.setBuiltin(false);
+            row.setEnabled(true);
+            row.setPriority(100);
+            try {
+                guardRuleMapper.insert(row);
+                changed = true;
+                log.info("[channel-tool] Seeded approval rule for write tool {}", actualName);
+            } catch (org.springframework.dao.DuplicateKeyException race) {
+                // Another node beat us to it — the existing row is fine.
+            } catch (Exception e) {
+                log.warn("[channel-tool] Failed to seed guard rule for {}: {}", actualName, e.getMessage());
+            }
+        }
+        if (changed) {
+            try {
+                guardRuleRegistry.reload();
+            } catch (Exception e) {
+                log.debug("[channel-tool] guard rule reload failed (non-fatal): {}", e.getMessage());
+            }
+        }
     }
 
     private void deleteToolRows(Long channelId) {

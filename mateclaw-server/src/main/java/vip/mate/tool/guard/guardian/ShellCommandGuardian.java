@@ -39,7 +39,15 @@ public class ShellCommandGuardian implements ToolGuardGuardian {
 
     @Override
     public boolean supports(ToolInvocationContext context) {
-        return context.toolName() != null && SHELL_TOOL_NAMES.contains(context.toolName());
+        if (context.toolName() == null || !SHELL_TOOL_NAMES.contains(context.toolName())) {
+            return false;
+        }
+        // Mutual-exclusion gate with DbRuleGuardian: when DB rules
+        // exist for this shell tool, DbRuleGuardian evaluates them
+        // and we skip — keeping the two paths strictly disjoint.
+        // Empty DB rules → we own this invocation and fall through to
+        // the hard-coded built-in shell rules below.
+        return ruleRegistry.getRulesForTool(context.toolName()).isEmpty();
     }
 
     @Override
