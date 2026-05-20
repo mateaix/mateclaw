@@ -333,7 +333,7 @@ public class NodeStreamingChatHelper {
      */
     private static final int CONTENT_REPEAT_CHECK_INTERVAL = 200;
 
-    private static final int MAX_RETRIES = 5;
+    private static final int MAX_RETRIES = 10;
     // RATE_LIMIT: fail fast to failover chain — staying on the same
     // provider during a rate-limit window wastes time without recovery.
     // SERVER_ERROR keeps MAX_RETRIES (upstream flaps often self-heal).
