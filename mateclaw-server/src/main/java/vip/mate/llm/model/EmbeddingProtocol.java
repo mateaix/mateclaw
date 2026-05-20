@@ -10,7 +10,9 @@ package vip.mate.llm.model;
  *   <li>OpenAI 兼容协议的 embedding 统一走 /v1/embeddings</li>
  * </ul>
  * <p>
- * 通过 {@link #fromProviderId} 从 providerId 推断协议，新增 provider 时只需扩展这里。
+ * <b>注意</b>：{@link EmbeddingModelFactory} 现在优先通过 {@code chatModel} 列判断协议
+ * （与 {@link ModelProtocol#fromChatModel} 保持一致），{@link #fromProviderId} 已不再使用。
+ * 保留该方法仅作参考；不要在新代码中调用它。
  *
  * @author MateClaw Team
  */

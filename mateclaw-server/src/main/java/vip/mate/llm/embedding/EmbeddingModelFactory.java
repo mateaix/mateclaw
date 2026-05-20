@@ -111,9 +111,16 @@ public class EmbeddingModelFactory {
                     "Embedding provider '" + modelConfig.getProvider() + "' not found in mate_model_provider");
         }
 
-        EmbeddingProtocol protocol = EmbeddingProtocol.fromProviderId(provider.getProviderId());
-        log.info("[EmbeddingFactory] Building embedding model: provider={}, model={}, protocol={}",
-                provider.getProviderId(), modelConfig.getModelName(), protocol);
+        // Use chatModel column (same signal as ModelProtocol.fromChatModel) rather than
+        // providerId substring matching. dashscope-compat has "dashscope" in its id but
+        // uses OpenAIChatModel + compatible-mode URL — routing it to DASHSCOPE_EMBEDDING
+        // causes DashScopeApi to construct a native path that returns 404 against the
+        // compat base URL.
+        EmbeddingProtocol protocol = "DashScopeChatModel".equals(provider.getChatModel())
+                ? EmbeddingProtocol.DASHSCOPE_EMBEDDING
+                : EmbeddingProtocol.OPENAI_EMBEDDING;
+        log.info("[EmbeddingFactory] Building embedding model: provider={}, chatModel={}, model={}, protocol={}",
+                provider.getProviderId(), provider.getChatModel(), modelConfig.getModelName(), protocol);
 
         return switch (protocol) {
             case DASHSCOPE_EMBEDDING -> buildDashScope(provider, modelConfig);
