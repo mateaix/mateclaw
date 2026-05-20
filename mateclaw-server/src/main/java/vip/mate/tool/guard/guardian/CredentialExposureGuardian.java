@@ -86,45 +86,56 @@ public class CredentialExposureGuardian implements ToolGuardGuardian {
         String raw = context.rawArguments();
         if (raw == null || raw.isEmpty()) return List.of();
 
-        List<GuardFinding> findings = new ArrayList<>();
+        // 优先使用数据库规则（已按 enabled=true 过滤，禁用规则不在列表内）
+        List<ToolGuardRuleEntity> dbRules = ruleRegistry.getAllEnabled().stream()
+                .filter(r -> GuardCategory.CREDENTIAL_EXPOSURE.name().equals(r.getCategory()))
+                .toList();
 
-        // 1) 优先使用 DB 规则（受 UI 启用/禁用开关控制）
-        List<ToolGuardRuleEntity> dbRules = ruleRegistry.getRulesByCategory(
-                GuardCategory.CREDENTIAL_EXPOSURE.name());
         if (!dbRules.isEmpty()) {
-            for (ToolGuardRuleEntity rule : dbRules) {
-                if (rule.getPattern() == null || rule.getPattern().isBlank()) continue;
-                Pattern p = ruleRegistry.getCompiledPattern(rule.getPattern());
-                Matcher matcher = p.matcher(raw);
-                if (!matcher.find()) continue;
-
-                // 排除模式（白名单）
-                if (rule.getExcludePattern() != null && !rule.getExcludePattern().isBlank()) {
-                    Pattern exclude = ruleRegistry.getCompiledExcludePattern(rule.getExcludePattern());
-                    if (exclude.matcher(raw).find()) continue;
-                }
-
-                String snippet = extractSnippet(raw, matcher.start(), 30);
-                GuardSeverity severity = parseSeverity(rule.getSeverity());
-                GuardDecision decision = parseDecision(rule.getDecision());
-                findings.add(new GuardFinding(
-                        rule.getRuleId(),
-                        severity,
-                        GuardCategory.CREDENTIAL_EXPOSURE,
-                        rule.getName(),
-                        rule.getDescription(),
-                        rule.getRemediation(),
-                        context.toolName(),
-                        rule.getParamName(),
-                        rule.getPattern(),
-                        maskCredential(snippet),
-                        decision
-                ));
-            }
-            return findings;
+            return evaluateDbRules(dbRules, raw, context);
         }
 
-        // 2) DB 未初始化 → 回退内置规则
+        // 数据库无凭据规则时 fallback 到内置规则
+        return evaluateBuiltinRules(raw, context);
+    }
+
+    private List<GuardFinding> evaluateDbRules(List<ToolGuardRuleEntity> dbRules,
+                                                String raw, ToolInvocationContext context) {
+        List<GuardFinding> findings = new ArrayList<>();
+        for (ToolGuardRuleEntity rule : dbRules) {
+            if (rule.getPattern() == null || rule.getPattern().isBlank()) continue;
+            Pattern p = ruleRegistry.getCompiledPattern(rule.getPattern());
+            Matcher matcher = p.matcher(raw);
+            if (!matcher.find()) continue;
+
+            // 排除模式（白名单）
+            if (rule.getExcludePattern() != null && !rule.getExcludePattern().isBlank()) {
+                Pattern exclude = ruleRegistry.getCompiledExcludePattern(rule.getExcludePattern());
+                if (exclude.matcher(raw).find()) continue;
+            }
+
+            String snippet = extractSnippet(raw, matcher.start(), 30);
+            GuardSeverity severity = parseSeverity(rule.getSeverity());
+            GuardDecision decision = parseDecision(rule.getDecision());
+            findings.add(new GuardFinding(
+                    rule.getRuleId(),
+                    severity,
+                    GuardCategory.CREDENTIAL_EXPOSURE,
+                    rule.getName(),
+                    rule.getDescription(),
+                    rule.getRemediation(),
+                    context.toolName(),
+                    rule.getParamName(),
+                    rule.getPattern(),
+                    maskCredential(snippet),
+                    decision
+            ));
+        }
+        return findings;
+    }
+
+    private List<GuardFinding> evaluateBuiltinRules(String raw, ToolInvocationContext context) {
+        List<GuardFinding> findings = new ArrayList<>();
         for (CredentialRule rule : BUILTIN_FALLBACK) {
             Pattern p = COMPILED.computeIfAbsent(rule.pattern,
                     r -> Pattern.compile(r, Pattern.CASE_INSENSITIVE));
