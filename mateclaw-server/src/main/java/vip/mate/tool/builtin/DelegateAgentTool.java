@@ -125,7 +125,12 @@ public class DelegateAgentTool {
             "setGoal",
             "addGoalCriterion",
             "completeGoal",
-            "getGoalStatus"
+            "getGoalStatus",
+            // Employee authoring spawns persistent agents; a delegated child
+            // doing so risks recursive team creation and privilege creep, so
+            // it stays with the parent (same stance as delegate* recursion
+            // guards above). The read-only capability catalog is fine to keep.
+            "create_employee"
     );
 
     /** Executor for parallel delegation — one JDK 21 virtual thread per child agent. */
