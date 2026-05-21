@@ -168,6 +168,49 @@ public final class MateClawStateKeys {
     /** Source references observed from successful tool results during this run. */
     public static final String SOURCE_EVIDENCE_LEDGER = "source_evidence_ledger";
 
+    // ===== Persistent goal — cross-turn objective lock-in =====
+
+    /**
+     * Active goal snapshot bound to the conversation; null when no goal.
+     * Injected by {@code buildInitialState} from {@code GoalService.findActiveByConversation}.
+     * Read by GoalEvaluationNode + its dispatcher.
+     */
+    public static final String ACTIVE_GOAL = "active_goal";
+
+    /**
+     * Map snapshot of the latest evaluation pass (score/gap/decision/...).
+     * Written by GoalEvaluationNode; consumed by the SSE accumulator for
+     * the {@code goal_evaluated} event payload.
+     */
+    public static final String GOAL_EVALUATION_RESULT = "goal_evaluation_result";
+
+    /**
+     * True when GoalEvaluationNode injected a follow-up prompt and the
+     * dispatcher should re-enter the reasoning loop (or PlanGeneration in
+     * the Plan-Execute graph) instead of terminating to END.
+     */
+    public static final String GOAL_FOLLOWUP_INJECTED = "goal_followup_injected";
+
+    /**
+     * Follow-up user-message text to append to MESSAGES on graph re-entry.
+     * ReasoningNode (or PlanGenerationNode) reads this on its way in,
+     * appends to MESSAGES, then clears the value so the second pass
+     * cannot double-inject.
+     */
+    public static final String GOAL_FOLLOWUP_PROMPT = "goal_followup_prompt";
+
+    /**
+     * Re-entry guard: GoalEvaluationNode sets this true on its first run
+     * of a graph invocation; the FinalAnswerNode→GoalEvaluation conditional
+     * edge skips re-entering the node when it's already true. Combined with
+     * the dispatcher's followup clearing of FINAL_ANSWER, this bounds
+     * follow-ups to at most one per graph run.
+     */
+    public static final String GOAL_EVALUATED_THIS_RUN = "goal_evaluated_this_run";
+
+    /** Graph-node identifier for the GoalEvaluationNode. */
+    public static final String GOAL_EVALUATION_NODE = "goal_evaluation";
+
     // ===== RFC-063r: ChatOrigin propagation through the StateGraph =====
 
     /**
