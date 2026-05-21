@@ -2,6 +2,7 @@ package vip.mate.agent.graph.executor;
 
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.messages.ToolResponseMessage;
+import vip.mate.agent.context.StructuredTruncator;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.stereotype.Component;
@@ -230,16 +231,16 @@ public class ToolResultStorage {
         if (body == null || body.length() <= maxChars) {
             return body;
         }
-        int markerBudget = 120;
-        int available = Math.max(200, maxChars - markerBudget);
+        String marker = "\n\n... [tool result compacted for model context: tool="
+                + toolName + ", original_chars=" + body.length() + ". "
+                + StructuredTruncator.FIDELITY_NOTE + "] ...\n\n";
+        int available = Math.max(200, maxChars - marker.length());
         int headLen = Math.max(100, (int) (available * 0.45));
         int tailLen = Math.max(100, available - headLen);
         if (headLen + tailLen >= body.length()) {
             return body;
         }
-        String marker = "\n\n... [tool result compacted for model context: tool="
-                + toolName + ", original_chars=" + body.length() + "] ...\n\n";
-        return body.substring(0, headLen) + marker + body.substring(body.length() - tailLen);
+        return StructuredTruncator.truncate(body, headLen, tailLen, marker);
     }
 
     private static int aggregateSize(List<ToolResponseMessage.ToolResponse> responses) {
@@ -251,14 +252,16 @@ public class ToolResultStorage {
     }
 
     private String buildPreview(String fullResult, String toolName, Path spillFile) {
-        int previewLen = Math.min(props.getPreviewHeadChars(), fullResult.length());
-        String head = fullResult.substring(0, previewLen);
+        // Snap the preview to a complete JSON element so the model never sees a value
+        // severed mid-token (which invites it to fabricate the omitted fields).
+        String head = StructuredTruncator.headSlice(fullResult, props.getPreviewHeadChars());
         return SPILL_MARKER_PREFIX
                 + " tool=" + toolName
                 + " full_chars=" + fullResult.length()
                 + " path=" + spillFile.toAbsolutePath()
-                + "\n[Preview — first " + previewLen + " of " + fullResult.length()
-                + " chars. Use read_file with the path above to retrieve the rest.]\n"
+                + "\n[Preview — first " + head.length() + " of " + fullResult.length()
+                + " chars. The preview is INCOMPLETE: use read_file with the path above to "
+                + "retrieve the full result. Do NOT infer or fabricate the omitted content.]\n"
                 + head
                 + "\n…[truncated]";
     }

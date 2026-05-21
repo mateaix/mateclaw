@@ -209,7 +209,7 @@ mate:
         large-result-threshold: 32000
         min-rounds-for-summarize: 25
         head-ratio: 0.4
-        truncation-marker: "\n\n... [内容已截断，共 %d 字符，保留前后关键片段] ...\n\n"
+        truncation-marker: "\n\n...[TRUNCATED: %d chars total, middle omitted. Do NOT infer or fabricate omitted content; retrieve the full data (e.g. read_file) or tell the user the result is incomplete.]...\n\n"
     tool:
       timeout:
         default-timeout-seconds: 300
