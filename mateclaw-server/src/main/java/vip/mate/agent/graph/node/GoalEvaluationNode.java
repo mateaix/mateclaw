@@ -90,6 +90,13 @@ public class GoalEvaluationNode implements NodeAction {
             return Map.of();
         }
 
+        // Every skip path below emits a goal_evaluated event with a reason
+        // so the frontend can flip the breathing-halo state back off. The
+        // chat composable's `message_complete` handler optimistically sets
+        // evaluating=true; without a balancing event the ring would stay
+        // in that state forever after e.g. a max-iterations turn.
+        Long goalIdForEvents = (goalOpt.get() instanceof GoalEntity ge) ? ge.getId() : null;
+
         // ReAct path: FinalAnswerNode wrote a canonical finishReason that
         // determines whether this turn counts. Plan-Execute usually doesn't
         // set finishReason on the happy path, so we only enforce these
@@ -105,12 +112,14 @@ public class GoalEvaluationNode implements NodeAction {
                 log.debug("[GoalEvaluationNode] skipping evaluation (REACT finishReason={})", fr);
                 return MateClawStateAccessor.output()
                         .goalEvaluatedThisRun(true)
+                        .events(List.of(skippedEvent(goalIdForEvents, "react_finish_reason:" + fr)))
                         .build();
             }
         }
         if (accessor.awaitingApproval()) {
             return MateClawStateAccessor.output()
                     .goalEvaluatedThisRun(true)
+                    .events(List.of(skippedEvent(goalIdForEvents, "awaiting_approval")))
                     .build();
         }
 
@@ -119,6 +128,7 @@ public class GoalEvaluationNode implements NodeAction {
             log.warn("[GoalEvaluationNode] ACTIVE_GOAL is not a GoalEntity: {}", goalObj.getClass());
             return MateClawStateAccessor.output()
                     .goalEvaluatedThisRun(true)
+                    .events(List.of(skippedEvent(null, "non_goal_entity")))
                     .build();
         }
 
@@ -127,6 +137,7 @@ public class GoalEvaluationNode implements NodeAction {
             log.warn("[GoalEvaluationNode] terminalAnswer empty (flavor={}); skipping evaluation", flavor);
             return MateClawStateAccessor.output()
                     .goalEvaluatedThisRun(true)
+                    .events(List.of(skippedEvent(goal.getId(), "empty_terminal_answer")))
                     .build();
         }
 
@@ -163,6 +174,7 @@ public class GoalEvaluationNode implements NodeAction {
             return MateClawStateAccessor.output()
                     .goalEvaluationResult(GoalEvaluationResult.fallback("node_exception").toMap())
                     .goalEvaluatedThisRun(true)
+                    .events(List.of(skippedEvent(goal.getId(), "evaluator_or_persist_failed")))
                     .build();
         }
 
@@ -203,6 +215,7 @@ public class GoalEvaluationNode implements NodeAction {
             return MateClawStateAccessor.output()
                     .goalEvaluationResult(result.toMap())
                     .goalEvaluatedThisRun(true)
+                    .events(List.of(skippedEvent(refreshed.getId(), "terminal_write_failed")))
                     .build();
         }
 
@@ -277,5 +290,19 @@ public class GoalEvaluationNode implements NodeAction {
     /** Stand-in for a missing {@code GraphEventPublisher.custom()} factory. */
     private static GraphEventPublisher.GraphEvent goalEvent(String type, Map<String, Object> data) {
         return new GraphEventPublisher.GraphEvent(type, Map.copyOf(data), System.currentTimeMillis());
+    }
+
+    /**
+     * Builds a goal_evaluated event for skip paths so the frontend can
+     * unconditionally flip its "evaluating" flag off after every turn that
+     * has an active goal — even when the evaluator never ran. The reason
+     * field lets us tell apart "normal continue" from "skipped because of
+     * max iterations" in logs / future telemetry without ambiguity.
+     */
+    private static GraphEventPublisher.GraphEvent skippedEvent(Long goalId, String reason) {
+        return goalEvent("goal_evaluated", Map.of(
+                "goalId", goalId == null ? "" : String.valueOf(goalId),
+                "skipped", true,
+                "reason", reason == null ? "" : reason));
     }
 }
