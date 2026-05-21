@@ -3663,4 +3663,15 @@ export default {
     goChat: 'Go to chat',
     goBack: 'Go back',
   },
+  goal: {
+    inlinePrompt: 'Looks like this spans several turns. Set it as a goal so I can track it?',
+    inlinePromptAccept: 'Yes',
+    inlinePromptDecline: 'No thanks',
+    autoFollowup: 'Auto continuation',
+    completedTitle: 'Goal completed',
+    completedDetail: 'Stored in long-term memory; askable later',
+    exhaustedTitle: 'Budget exhausted',
+    exhaustedDetailTurns: 'Turn budget ({used}/{budget}) exhausted.',
+    exhaustedDetailLlm: 'LLM call budget exhausted.',
+  },
 } as const

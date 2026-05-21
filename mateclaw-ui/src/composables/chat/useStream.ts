@@ -44,6 +44,11 @@ export type SSEEventType =
   | 'delegation_progress'
   | 'delegation_end'
   | 'delegation_child_complete'
+  // Persistent goal events (RFC 48) — emitted by GoalEvaluationNode
+  | 'goal_evaluated'
+  | 'goal_followup'
+  | 'goal_completed'
+  | 'goal_exhausted'
   // Stream lifecycle + per-iteration boundaries (single-turn UX overhaul).
   // The parser handles arbitrary `event:` lines via parseEvent — these names
   // exist in the union purely so TypeScript callers can register handlers

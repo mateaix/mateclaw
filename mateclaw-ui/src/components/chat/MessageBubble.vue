@@ -10,7 +10,17 @@
     <!-- 头像 -->
     <div class="msg-avatar" :class="`${role}-avatar`">
       <slot name="avatar">
-        <img v-if="role === 'assistant'" src="/logo/mateclaw_logo_s.png" alt="" class="avatar-logo" />
+        <!-- RFC 48 Jobs-cut: when the assistant has an active goal, wrap
+             the logo in GoalAvatarRing so the progress ring + breathing
+             halo + hover tooltip all sit naturally around the avatar.
+             The component renders only the slot content when no goal
+             exists, so non-goal turns look identical to before. -->
+        <GoalAvatarRing
+          v-if="role === 'assistant'"
+          :conversation-id="message.conversationId"
+        >
+          <img src="/logo/mateclaw_logo_s.png" alt="" class="avatar-logo" />
+        </GoalAvatarRing>
         <span v-else>{{ avatarIcon }}</span>
       </slot>
     </div>
@@ -433,6 +443,7 @@ import BrowserTimeline from './BrowserTimeline.vue'
 import ToolCallSegment from './ToolCallSegment.vue'
 import ThinkingSegment from './ThinkingSegment.vue'
 import ContentSegment from './ContentSegment.vue'
+import GoalAvatarRing from '@/components/goal/GoalAvatarRing.vue'
 import PlanStepsPanel from './PlanStepsPanel.vue'
 import UserMessageContent from './UserMessageContent.vue'
 import type { BrowserAction } from './BrowserTimeline.vue'

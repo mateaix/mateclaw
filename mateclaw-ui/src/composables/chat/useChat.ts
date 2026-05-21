@@ -13,6 +13,7 @@ import { ref, computed } from 'vue'
 import { useMessages } from './useMessages'
 import { useStream } from './useStream'
 import { useMessageQueue } from './useMessageQueue'
+import { useGoalStore } from '@/stores/useGoalStore'
 import type { Message, MessageContentPart, MessageSegment, StreamPhase, HeartbeatData, QueuedMessage, PhaseEventData } from '@/types'
 import { classifyBackendError, type ChatErrorInfo } from '@/types/chatError'
 import { http } from '@/api'
@@ -1587,6 +1588,36 @@ export function useChat(options: UseChatOptions): UseChatReturn {
         })
         .catch(() => {})
     }
+  })
+
+  // ===== Goal events (RFC 48) =====
+  // Forward GoalEvaluationNode emissions to the goal store. The store
+  // owns active-goal cache + the per-conv "evaluating" flag that drives
+  // the avatar ring's breathing halo.
+  const goalStore = useGoalStore()
+
+  stream.on('goal_evaluated', (data) => {
+    if (isStaleEvent(data)) return
+    const cid = data?.conversationId || streamConversationId
+    if (cid) goalStore.handleSseEvent(cid, 'goal_evaluated', data)
+  })
+
+  stream.on('goal_followup', (data) => {
+    if (isStaleEvent(data)) return
+    const cid = data?.conversationId || streamConversationId
+    if (cid) goalStore.handleSseEvent(cid, 'goal_followup', data)
+  })
+
+  stream.on('goal_completed', (data) => {
+    if (isStaleEvent(data)) return
+    const cid = data?.conversationId || streamConversationId
+    if (cid) goalStore.handleSseEvent(cid, 'goal_completed', data)
+  })
+
+  stream.on('goal_exhausted', (data) => {
+    if (isStaleEvent(data)) return
+    const cid = data?.conversationId || streamConversationId
+    if (cid) goalStore.handleSseEvent(cid, 'goal_exhausted', data)
   })
 
   // ===== Send message (supports sending while generating) =====
