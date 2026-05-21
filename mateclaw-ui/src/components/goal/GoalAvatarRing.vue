@@ -10,8 +10,15 @@ import { useGoalStore } from '@/stores/useGoalStore'
  * adds a breathing halo while the evaluator is in flight, and exposes a
  * hover tooltip with the title + most recent gap text.
  *
- * The avatar itself is rendered by the parent (MessageBubble) inside the
- * default slot; this component is a position-relative wrapper.
+ * Design notes (v2 cut after manual QA):
+ * - The ring sits {@link RING_GAP} px outside the avatar so it reads as a
+ *   halo, not a border welded onto the skin. The previous 1-px gap fused
+ *   the ring into the orange logo and looked like accidental clipping.
+ * - The track uses a neutral, near-transparent gray instead of the brand
+ *   orange so it doesn't compete with the orange logo for attention. The
+ *   fill stays brand-orange because the user *should* see progress.
+ * - A subtle drop-shadow lifts the ring outside the avatar's flat plane
+ *   so the halo metaphor reads even at small sizes (34 px default).
  */
 const props = defineProps<{
   conversationId: string | null | undefined
@@ -21,9 +28,13 @@ const props = defineProps<{
 
 const goalStore = useGoalStore()
 
+const RING_GAP = 5
+const STROKE_WIDTH = 2
+
 const size = computed(() => props.size ?? 34)
-const ringSize = computed(() => size.value + 6)
-const radius = computed(() => size.value / 2 + 1)
+const radius = computed(() => size.value / 2 + RING_GAP)
+const ringSize = computed(() => size.value + RING_GAP * 2 + STROKE_WIDTH)
+const ringOffset = computed(() => `-${RING_GAP + STROKE_WIDTH / 2}px`)
 const circumference = computed(() => 2 * Math.PI * radius.value)
 
 const goal = computed(() =>
@@ -73,7 +84,7 @@ const tooltip = computed(() => {
       :width="ringSize"
       :height="ringSize"
       :viewBox="`0 0 ${ringSize} ${ringSize}`"
-      :style="{ top: `-3px`, left: `-3px` }"
+      :style="{ top: ringOffset, left: ringOffset }"
       aria-hidden="true"
     >
       <circle
@@ -110,36 +121,70 @@ const tooltip = computed(() => {
   position: absolute;
   pointer-events: none;
   transform: rotate(-90deg);
+  transition: transform 220ms cubic-bezier(0.4, 0, 0.2, 1);
 }
+/* Hover invites — the ring lifts and brightens, telegraphing "you can
+ * inspect me". Stays subtle to keep the steady-state quiet. */
+.avatar-with-ring.has-goal:hover .ring {
+  transform: rotate(-90deg) scale(1.06);
+}
+
+/* Track is the always-shown ghost of the ring — it is what tells the
+ * user "this conversation has a goal" even when progress is 0%. It uses
+ * the same hue as the fill (currentColor) at low opacity so the ring
+ * reads as a single object: one shape, one color, two intensities.
+ *
+ * Why not neutral gray: gray + brand-orange logo + brand-orange fill
+ * was three colors fighting in 34 px. With the same hue, the track
+ * recedes naturally when the fill arc passes over it.
+ */
 .ring-track {
-  stroke: rgba(217, 119, 87, 0.16);
+  stroke: currentColor;
+  stroke-opacity: 0.22;
   stroke-width: 2;
 }
+
 .ring-fill {
   stroke-width: 2;
-  transition: stroke-dashoffset 600ms ease, stroke 200ms ease;
+  transition: stroke-dashoffset 600ms ease, stroke 200ms ease, filter 200ms ease;
+  /* Tiny glow lifts the arc off the flat plane so the halo metaphor
+   * reads at 34 px without making the ring look heavy. */
+  filter: drop-shadow(0 0 1.5px currentColor);
 }
+.avatar-with-ring.has-goal:hover .ring-fill {
+  filter: drop-shadow(0 0 3px currentColor);
+}
+
+/* Both track and fill inherit color from these classes — track via
+ * currentColor at low opacity, fill via explicit stroke + filter glow. */
+.avatar-with-ring.has-goal { color: #d97757; }
+.avatar-with-ring.has-goal .ring-fill.stroke-evaluating,
+.avatar-with-ring.is-evaluating { color: #b6905b; }
+.avatar-with-ring.has-goal .ring-fill.stroke-completed { color: #2f8a6d; }
+.avatar-with-ring.has-goal .ring-fill.stroke-exhausted { color: #c5663d; }
+
 .stroke-active { stroke: #d97757; }
 .stroke-evaluating { stroke: #b6905b; }
 .stroke-completed { stroke: #2f8a6d; }
 .stroke-exhausted { stroke: #c5663d; }
 
-/* Breathing halo only while the evaluator is in flight. */
+/* Breathing halo only while the evaluator is in flight. Sized to sit
+ * outside the new ring radius so it doesn't bleed into the avatar. */
 .avatar-with-ring.is-evaluating::before {
   content: '';
   position: absolute;
-  top: -6px;
-  left: -6px;
-  right: -6px;
-  bottom: -6px;
+  top: -9px;
+  left: -9px;
+  right: -9px;
+  bottom: -9px;
   border-radius: 50%;
-  background: radial-gradient(circle, rgba(182, 144, 91, 0.30) 0%, transparent 70%);
+  background: radial-gradient(circle, rgba(182, 144, 91, 0.32) 0%, transparent 65%);
   animation: goal-breathe 1.6s ease-in-out infinite;
   pointer-events: none;
 }
 @keyframes goal-breathe {
-  0%, 100% { transform: scale(0.85); opacity: 0.6; }
-  50% { transform: scale(1.05); opacity: 1; }
+  0%, 100% { transform: scale(0.85); opacity: 0.5; }
+  50% { transform: scale(1.08); opacity: 1; }
 }
 
 .followup-mark {
@@ -156,6 +201,7 @@ const tooltip = computed(() => {
   line-height: 12px;
   text-align: center;
   font-weight: 600;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
 }
 
 /* Tooltip: shown on hover only — keeps the steady state quiet. */
@@ -163,25 +209,27 @@ const tooltip = computed(() => {
   visibility: hidden;
   opacity: 0;
   position: absolute;
-  left: calc(100% + 12px);
+  left: calc(100% + 14px);
   top: 50%;
   transform: translateY(-50%);
   white-space: nowrap;
-  max-width: 320px;
+  max-width: 360px;
   text-overflow: ellipsis;
   overflow: hidden;
   background: var(--mc-text-primary, #1d1612);
   color: var(--mc-bg-elevated, #ffffff);
-  padding: 6px 12px;
+  padding: 7px 12px;
   border-radius: 8px;
   font-size: 12px;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
-  transition: opacity 150ms ease;
+  line-height: 1.4;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.22);
+  transition: opacity 150ms ease, transform 150ms ease;
   z-index: 10;
   pointer-events: none;
 }
 .avatar-with-ring:hover .goal-tip {
   visibility: visible;
   opacity: 1;
+  transform: translateY(-50%) translateX(2px);
 }
 </style>
