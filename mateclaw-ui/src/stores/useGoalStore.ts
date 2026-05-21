@@ -41,6 +41,19 @@ export const useGoalStore = defineStore('goal', () => {
     at: number
   } | null>>({})
 
+  // Per-conversation flag: "the goal evaluator just chose to inject a
+  // followup prompt, and the next assistant message that opens belongs
+  // to that followup turn." Consumed (cleared) by the chat composable's
+  // `message_start` handler so the message gets stamped exactly once.
+  const pendingFollowupByConv = ref<Record<string, boolean>>({})
+
+  // Assistant message IDs that came from auto-followup turns, grouped by
+  // conversation. MessageBubble reads this to show the small ↻ glyph on
+  // the avatar — the only visible signal that a turn was auto-triggered.
+  // Kept in memory only; on refetch the metadata persists server-side via
+  // the message's `metadata.fromFollowup` flag (handled by ChatHistory).
+  const followupMessageIdsByConv = ref<Record<string, Set<string>>>({})
+
   const loading = ref(false)
 
   async function loadActiveForConversation(conversationId: string) {
@@ -152,7 +165,12 @@ export const useGoalStore = defineStore('goal', () => {
         break
       }
       case 'goal_followup': {
-        // The next assistant turn will land soon; nothing to do for the ring.
+        // The next assistant turn will land soon. Flag the conversation
+        // so the chat composable can stamp the upcoming message as a
+        // followup turn when its `message_start` arrives. The ring keeps
+        // its evaluating state until message_complete fires for that
+        // followup turn — so the user sees breathe → still → breathe.
+        pendingFollowupByConv.value[conversationId] = true
         break
       }
       case 'goal_completed': {
@@ -246,12 +264,47 @@ export const useGoalStore = defineStore('goal', () => {
     recentTerminalByConv.value[conversationId] = null
   }
 
+  // ==================== Followup attribution helpers ====================
+
+  /**
+   * Consume the pending-followup flag for this conversation if it's
+   * set, returning true when the caller should stamp the just-opened
+   * assistant message as a followup turn. Idempotent — calling twice
+   * returns false the second time.
+   */
+  function consumePendingFollowup(conversationId: string): boolean {
+    if (!conversationId) return false
+    const pending = pendingFollowupByConv.value[conversationId]
+    if (pending) {
+      pendingFollowupByConv.value[conversationId] = false
+      return true
+    }
+    return false
+  }
+
+  function markFollowupMessage(conversationId: string, messageId: string) {
+    if (!conversationId || !messageId) return
+    let set = followupMessageIdsByConv.value[conversationId]
+    if (!set) {
+      set = new Set<string>()
+      followupMessageIdsByConv.value[conversationId] = set
+    }
+    set.add(messageId)
+  }
+
+  function isFollowupMessage(conversationId: string, messageId: string): boolean {
+    if (!conversationId || !messageId) return false
+    return followupMessageIdsByConv.value[conversationId]?.has(messageId) ?? false
+  }
+
   return {
     activeGoalByConv,
     evaluatingByConv,
     eventsByGoal,
     dismissedPromptByConv,
     recentTerminalByConv,
+    pendingFollowupByConv,
+    followupMessageIdsByConv,
     loading,
     loadActiveForConversation,
     create,
@@ -269,6 +322,9 @@ export const useGoalStore = defineStore('goal', () => {
     clearDismissedPrompt,
     recentTerminal,
     clearRecentTerminal,
+    consumePendingFollowup,
+    markFollowupMessage,
+    isFollowupMessage,
   }
 })
 

@@ -1065,7 +1065,9 @@ const goalTerminalForCurrent = computed(() =>
 const goalSystemLineTitle = computed(() => {
   const t = goalTerminalForCurrent.value
   if (!t) return ''
-  return t.status === 'completed' ? `🎉 ${t.title}` : `⚠ ${t.title}`
+  // The leading icon is owned by GoalSystemLine (✦ / ⚠) so we don't
+  // prepend one here — doing so produced "✦ 🎉 …" double-glyph titles.
+  return t.status === 'completed' ? `目标达成 · ${t.title}` : `这次的预算用完了 · ${t.title}`
 })
 const goalSystemLineDetail = computed(() => {
   const t = goalTerminalForCurrent.value

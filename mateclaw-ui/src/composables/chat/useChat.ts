@@ -345,6 +345,12 @@ export function useChat(options: UseChatOptions): UseChatReturn {
     headers: streamHeaders,
   })
 
+  // Goal store is referenced from several stream handlers (message_start
+  // for followup attribution, message_complete for the evaluating halo,
+  // plus the dedicated goal_* events below). Resolve once up front so
+  // the handlers don't each pull their own copy.
+  const goalStore = useGoalStore()
+
   // ===== Async-task lifecycle bridge =====
   // Generative tools (music / video / image) return a taskId synchronously and
   // finish asynchronously via `async_task_completed`. If the upstream provider
@@ -456,6 +462,13 @@ export function useChat(options: UseChatOptions): UseChatReturn {
     const assistantMessage = createAssistantMessage('', streamConversationId)
     ;(assistantMessage as any)._turnId = activeTurnId
     currentAssistantId.value = assistantMessage.id as string
+
+    // Auto-followup attribution: if the goal evaluator just decided to
+    // inject a followup, the message that just opened belongs to that
+    // turn. Stamp it so MessageBubble can render the small ↻ glyph.
+    if (streamConversationId && goalStore.consumePendingFollowup(streamConversationId)) {
+      goalStore.markFollowupMessage(streamConversationId, String(assistantMessage.id))
+    }
   })
 
   stream.on('warning', (data) => {
@@ -528,6 +541,19 @@ export function useChat(options: UseChatOptions): UseChatReturn {
       if (msg?.content && streamConversationId) {
         triggerAutoTts(streamConversationId, msg.content)
       }
+    }
+
+    // Goal-evaluator breathing halo: when an assistant message finishes
+    // and this conversation has an active goal, the backend's evaluation
+    // node runs next. Flip the per-conv flag so GoalAvatarRing paints the
+    // breathing halo until `goal_evaluated` resets it. Skip when no goal
+    // is active — the halo should be quiet for ordinary turns.
+    if (
+      data.status === 'completed'
+      && streamConversationId
+      && goalStore.activeGoal(streamConversationId)
+    ) {
+      goalStore.markEvaluating(streamConversationId, true)
     }
   })
 
@@ -1590,11 +1616,10 @@ export function useChat(options: UseChatOptions): UseChatReturn {
     }
   })
 
-  // ===== Goal events (RFC 48) =====
-  // Forward GoalEvaluationNode emissions to the goal store. The store
-  // owns active-goal cache + the per-conv "evaluating" flag that drives
+  // ===== Goal events =====
+  // Forward goal evaluator emissions to the goal store. The store owns
+  // the active-goal cache + the per-conv "evaluating" flag that drives
   // the avatar ring's breathing halo.
-  const goalStore = useGoalStore()
 
   stream.on('goal_evaluated', (data) => {
     if (isStaleEvent(data)) return

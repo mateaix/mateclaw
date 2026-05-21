@@ -10,14 +10,16 @@
     <!-- 头像 -->
     <div class="msg-avatar" :class="`${role}-avatar`">
       <slot name="avatar">
-        <!-- RFC 48 Jobs-cut: when the assistant has an active goal, wrap
-             the logo in GoalAvatarRing so the progress ring + breathing
-             halo + hover tooltip all sit naturally around the avatar.
-             The component renders only the slot content when no goal
-             exists, so non-goal turns look identical to before. -->
+        <!-- When the assistant has an active goal, wrap the logo in
+             GoalAvatarRing so the progress ring + breathing halo + hover
+             tooltip all sit naturally around the avatar. The component
+             renders only the slot content when no goal exists, so non-
+             goal turns look identical to before. The followup ↻ glyph
+             appears on messages that came from an auto-followup turn. -->
         <GoalAvatarRing
           v-if="role === 'assistant'"
           :conversation-id="message.conversationId"
+          :show-followup-mark="isFollowupTurn"
         >
           <img src="/logo/mateclaw_logo_s.png" alt="" class="avatar-logo" />
         </GoalAvatarRing>
@@ -444,6 +446,7 @@ import ToolCallSegment from './ToolCallSegment.vue'
 import ThinkingSegment from './ThinkingSegment.vue'
 import ContentSegment from './ContentSegment.vue'
 import GoalAvatarRing from '@/components/goal/GoalAvatarRing.vue'
+import { useGoalStore } from '@/stores/useGoalStore'
 import PlanStepsPanel from './PlanStepsPanel.vue'
 import UserMessageContent from './UserMessageContent.vue'
 import type { BrowserAction } from './BrowserTimeline.vue'
@@ -485,6 +488,19 @@ const hovered = ref(false)
 
 const avatarIcon = computed(() => {
   return role.value === 'user' ? props.userIcon : props.assistantIcon
+})
+
+// Followup attribution: an assistant message that opened right after a
+// `goal_followup` SSE event belongs to an auto-followup turn. The chat
+// composable stamps the message via goalStore on `message_start`; this
+// computed reads it back so the ↻ glyph renders on exactly those turns.
+const goalStore = useGoalStore()
+const isFollowupTurn = computed(() => {
+  if (role.value !== 'assistant') return false
+  const cid = props.message.conversationId
+  const mid = props.message.id
+  if (!cid || mid == null) return false
+  return goalStore.isFollowupMessage(String(cid), String(mid))
 })
 
 // --- 错误卡片 ---
