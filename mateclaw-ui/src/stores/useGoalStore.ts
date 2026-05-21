@@ -30,7 +30,11 @@ export const useGoalStore = defineStore('goal', () => {
     loading.value = true
     try {
       const res: any = await goalApi.findActive(conversationId)
-      const goal: Goal | null = res?.data ?? res ?? null
+        // mateclaw axios interceptor returns the R envelope itself:
+      // { code, msg, data: Goal | null }. The goal lives at .data; when
+      // the conversation has no active goal, .data is null (NOT undefined,
+      // so `?? res` would clobber it with the envelope — that was the bug).
+      const goal: Goal | null = res?.data ?? null
       activeGoalByConv.value[conversationId] = goal
       return goal
     } catch (e) {
@@ -58,7 +62,7 @@ export const useGoalStore = defineStore('goal', () => {
         exitCriteria: opts.exitCriteria,
         autoFollowupEnabled: opts.autoFollowup,
       })
-      const goal: Goal = res?.data ?? res
+      const goal: Goal = res?.data
       activeGoalByConv.value[conversationId] = goal
       return goal
     } catch (e) {
@@ -79,7 +83,7 @@ export const useGoalStore = defineStore('goal', () => {
   async function pause(goal: Goal) {
     try {
       const res: any = await goalApi.pause(goal.id)
-      activeGoalByConv.value[goal.conversationId] = res?.data ?? res
+      activeGoalByConv.value[goal.conversationId] = res?.data
     } catch (e) {
       console.error('[goal] pause failed', e)
     }
@@ -88,7 +92,7 @@ export const useGoalStore = defineStore('goal', () => {
   async function resume(goal: Goal) {
     try {
       const res: any = await goalApi.resume(goal.id)
-      activeGoalByConv.value[goal.conversationId] = res?.data ?? res
+      activeGoalByConv.value[goal.conversationId] = res?.data
     } catch (e) {
       console.error('[goal] resume failed', e)
     }
@@ -97,7 +101,7 @@ export const useGoalStore = defineStore('goal', () => {
   async function loadEvents(goalId: string) {
     try {
       const res: any = await goalApi.events(goalId)
-      const events: GoalEvent[] = res?.data ?? res ?? []
+      const events: GoalEvent[] = res?.data ?? []
       eventsByGoal.value[goalId] = events
       return events
     } catch (e) {
