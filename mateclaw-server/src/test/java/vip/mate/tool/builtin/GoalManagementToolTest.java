@@ -35,6 +35,7 @@ import static org.mockito.Mockito.when;
 class GoalManagementToolTest {
 
     @Mock private GoalService goalService;
+    @Mock private vip.mate.channel.web.ChatStreamTracker streamTracker;
 
     private GoalProperties properties;
     private GoalManagementTool tool;
@@ -43,7 +44,7 @@ class GoalManagementToolTest {
     void setUp() {
         properties = new GoalProperties();
         properties.setEnabled(true);
-        tool = new GoalManagementTool(goalService, properties, new ObjectMapper());
+        tool = new GoalManagementTool(goalService, properties, new ObjectMapper(), streamTracker);
     }
 
     private ToolContext ctxWith(String convId, Long agentId, String requester) {

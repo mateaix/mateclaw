@@ -10,6 +10,7 @@ import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Component;
 import vip.mate.agent.context.ChatOrigin;
+import vip.mate.channel.web.ChatStreamTracker;
 import vip.mate.exception.MateClawException;
 import vip.mate.goal.config.GoalProperties;
 import vip.mate.goal.model.GoalCreateRequest;
@@ -40,6 +41,7 @@ public class GoalManagementTool {
     private final GoalService goalService;
     private final GoalProperties properties;
     private final ObjectMapper objectMapper;
+    private final ChatStreamTracker streamTracker;
 
     @Tool(description = """
             Set a persistent goal for the current conversation. The agent will \
@@ -89,6 +91,7 @@ public class GoalManagementTool {
                 ? origin.requesterId() : "system";
         try {
             GoalEntity created = goalService.create(req, username);
+            broadcastGoalEvent(created.getConversationId(), "goal_created", created);
             return successJson(Map.of(
                     "goalId", String.valueOf(created.getId()),
                     "status", created.getStatus().getValue(),
@@ -119,6 +122,7 @@ public class GoalManagementTool {
         String username = resolveUsername(ctx);
         try {
             GoalEntity updated = goalService.appendCriterion(goal.getId(), criterion.trim(), username);
+            broadcastGoalEvent(updated.getConversationId(), "goal_updated", updated);
             return successJson(Map.of(
                     "goalId", String.valueOf(updated.getId()),
                     "exitCriteria", updated.getExitCriteria() == null ? "" : updated.getExitCriteria()));
@@ -144,6 +148,14 @@ public class GoalManagementTool {
                 true, "manual", 0, 0L);
         try {
             GoalEntity completed = goalService.markCompleted(goal.getId(), synthetic);
+            // Broadcast a goal_completed event with the same shape as the
+            // GoalEvaluationNode auto-completed path, so the frontend
+            // handler doesn't need to branch on which path completed it.
+            if (streamTracker != null && completed.getConversationId() != null) {
+                streamTracker.broadcastObject(completed.getConversationId(), "goal_completed", Map.of(
+                        "goalId", String.valueOf(completed.getId()),
+                        "score", synthetic.score()));
+            }
             return successJson(Map.of(
                     "goalId", String.valueOf(completed.getId()),
                     "status", completed.getStatus().getValue()));
@@ -200,6 +212,29 @@ public class GoalManagementTool {
             return objectMapper.writeValueAsString(payload);
         } catch (JsonProcessingException e) {
             return "{\"ok\":true}";
+        }
+    }
+
+    /**
+     * Broadcast a goal-namespaced SSE event so the frontend store can
+     * refresh its active-goal cache without waiting for the user to
+     * reload. Best-effort: a missing stream (e.g. cron-origin tool call
+     * with no SSE subscriber) is not an error path.
+     */
+    private void broadcastGoalEvent(String conversationId, String eventName, GoalEntity goal) {
+        if (streamTracker == null || conversationId == null || conversationId.isBlank()) {
+            return;
+        }
+        // Send the full goal payload so the store can hydrate without an
+        // extra GET round-trip. Long IDs are stringified at the wire by
+        // ToStringSerializer; the rest of the payload is plain JSON.
+        try {
+            streamTracker.broadcastObject(conversationId, eventName, Map.of(
+                    "goalId", String.valueOf(goal.getId()),
+                    "conversationId", conversationId,
+                    "goal", goal));
+        } catch (Exception e) {
+            log.debug("[GoalManagementTool] broadcast {} failed: {}", eventName, e.getMessage());
         }
     }
 

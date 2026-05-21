@@ -1620,6 +1620,18 @@ export function useChat(options: UseChatOptions): UseChatReturn {
     if (cid) goalStore.handleSseEvent(cid, 'goal_exhausted', data)
   })
 
+  stream.on('goal_created', (data) => {
+    if (isStaleEvent(data)) return
+    const cid = data?.conversationId || streamConversationId
+    if (cid) goalStore.handleSseEvent(cid, 'goal_created', data)
+  })
+
+  stream.on('goal_updated', (data) => {
+    if (isStaleEvent(data)) return
+    const cid = data?.conversationId || streamConversationId
+    if (cid) goalStore.handleSseEvent(cid, 'goal_updated', data)
+  })
+
   // ===== Send message (supports sending while generating) =====
 
   const sendMessage = async (content: string, options: SendMessageOptions) => {

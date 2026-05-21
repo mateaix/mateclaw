@@ -151,6 +151,22 @@ export const useGoalStore = defineStore('goal', () => {
         activeGoalByConv.value[conversationId] = null
         break
       }
+      case 'goal_created':
+      case 'goal_updated': {
+        // Tool-side mutation from GoalManagementTool. Payload carries the
+        // full goal snapshot so we can hydrate the cache without a GET.
+        // Falls back to a fetch when the payload shape is unexpected so
+        // future server-side changes don't silently degrade the UX.
+        const fresh = data?.goal as Goal | undefined
+        if (fresh && typeof fresh.id === 'string') {
+          activeGoalByConv.value[conversationId] = fresh
+        } else {
+          // Best-effort refetch — runs async; don't await inside the
+          // synchronous SSE handler.
+          void loadActiveForConversation(conversationId)
+        }
+        break
+      }
       default:
         // Not a goal event — caller filters by prefix, this is a safety net.
         break

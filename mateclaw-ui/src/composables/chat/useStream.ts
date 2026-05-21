@@ -49,6 +49,11 @@ export type SSEEventType =
   | 'goal_followup'
   | 'goal_completed'
   | 'goal_exhausted'
+  // Tool-side goal mutations (GoalManagementTool) — emitted when the
+  // agent invokes setGoal / addGoalCriterion so the store can refresh
+  // without a full page reload.
+  | 'goal_created'
+  | 'goal_updated'
   // Stream lifecycle + per-iteration boundaries (single-turn UX overhaul).
   // The parser handles arbitrary `event:` lines via parseEvent — these names
   // exist in the union purely so TypeScript callers can register handlers
