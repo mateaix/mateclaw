@@ -118,7 +118,14 @@ public class DelegateAgentTool {
             // long-term memory surface.
             "remember",
             "remember_structured",
-            "forget_structured"
+            "forget_structured",
+            // RFC 48 — goal ownership is bound to the parent conversation.
+            // A child mutating the parent's goal would let sub-agents
+            // declare the parent's goal "completed" or replace its budget.
+            "setGoal",
+            "addGoalCriterion",
+            "completeGoal",
+            "getGoalStatus"
     );
 
     /** Executor for parallel delegation — one JDK 21 virtual thread per child agent. */
