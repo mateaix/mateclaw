@@ -11,6 +11,7 @@ import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 import vip.mate.channel.web.ChatStreamTracker;
 import vip.mate.llm.chatmodel.AssistantThinkingRelay;
+import vip.mate.llm.chatmodel.ReasoningContentCache;
 
 import reactor.core.Disposable;
 
@@ -1206,6 +1207,10 @@ public class NodeStreamingChatHelper {
 
         AssistantMessage assembledMessage = buildAssistantMessageWithThinking(fullContent, fullThinking, finalToolCalls);
 
+        // Cache reasoning_content for MiMo-style providers that require it on
+        // subsequent turns.
+        cacheReasoningContent(fullThinking, finalToolCalls);
+
         recordCacheMetrics(phase, promptTok, completionTok, cacheReadTok, cacheWriteTok);
         return new StreamResult(fullContent, fullThinking, assembledMessage,
                 finalToolCalls, !finalToolCalls.isEmpty(), promptTok, completionTok,
@@ -1234,6 +1239,10 @@ public class NodeStreamingChatHelper {
         }
 
         AssistantMessage assembledMessage = buildAssistantMessageWithThinking(fullContent, fullThinking, finalToolCalls);
+
+        // Cache reasoning_content for MiMo-style providers that require it on
+        // subsequent turns. The cache replays real values instead of empty strings.
+        cacheReasoningContent(fullThinking, finalToolCalls);
 
         recordCacheMetrics(phase, promptTok, completionTok, cacheReadTok, cacheWriteTok);
         return new StreamResult(fullContent, fullThinking, assembledMessage,
@@ -1266,6 +1275,24 @@ public class NodeStreamingChatHelper {
             builder.properties(Map.of("reasoningContent", fullThinking));
         }
         return builder.build();
+    }
+
+    /**
+     * Store reasoning content in the cache for cross-turn replay.
+     * Only caches when there are tool calls (MiMo requires reasoning_content
+     * specifically on assistant messages with tool_calls).
+     */
+    private static void cacheReasoningContent(String fullThinking,
+                                               List<AssistantMessage.ToolCall> toolCalls) {
+        if (fullThinking == null || fullThinking.isBlank()) return;
+        if (toolCalls == null || toolCalls.isEmpty()) return;
+        List<String> ids = toolCalls.stream()
+                .map(AssistantMessage.ToolCall::id)
+                .filter(id -> id != null && !id.isEmpty())
+                .toList();
+        if (!ids.isEmpty()) {
+            ReasoningContentCache.store(ids, fullThinking);
+        }
     }
 
     /**
