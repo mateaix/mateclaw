@@ -82,11 +82,13 @@ class PatchReasoningContentTest {
     @BeforeEach
     void clearRelay() {
         AssistantThinkingRelay.clearAll();
+        ReasoningContentCache.clear();
     }
 
     @AfterEach
     void clearRelayAfter() {
         AssistantThinkingRelay.clearAll();
+        ReasoningContentCache.clear();
     }
 
     // ---------- No-relay, no-thinking-mode path ----------
@@ -426,5 +428,74 @@ class PatchReasoningContentTest {
                 "DEEPSEEK plain prior-turn assistant gets ' ' so request validates");
         assertEquals(" ", out.messages().get(3).reasoningContent(),
                 "DEEPSEEK plain in-turn assistant gets ' ' as before");
+    }
+
+    // ---------- XIAOMI_MIMO policy + cross-turn cache replay ----------
+
+    @Test
+    @DisplayName("XIAOMI_MIMO cross-turn tool_call: cache hit replays real reasoning_content")
+    void xiaomiMimoCrossTurn_replaysCachedReasoning() {
+        // Prior turn produced a tool_call with real thinking; NodeStreamingChatHelper
+        // stored it in the cache keyed by tool_call_id. On the next turn, the same
+        // assistant message is replayed as history with reasoning_content=null —
+        // resolveCrossTurnReasoning must fetch the cached value before falling
+        // back to the policy's empty " ".
+        ReasoningContentCache.store(List.of("call_1"), "real-prior-thinking");
+
+        // Empty relay: no in-turn thinking (current turn hasn't produced one yet).
+        String token = AssistantThinkingRelay.stash(List.of(""), null);
+
+        ChatCompletionRequest req = request(List.of(
+                user("q1"),
+                assistantToolCall("a1", null),   // i=1, cross-turn (1 <= 2), tool_call id="call_1"
+                user("q2")                       // i=2, lastUserIdx
+        ), token);
+
+        ChatCompletionRequest out = OpenAiRequestRewriter.patchReasoningContent(req, provider("xiaomi-mimo"));
+
+        assertEquals("real-prior-thinking", out.messages().get(1).reasoningContent(),
+                "XIAOMI_MIMO cross-turn tool_call must replay cached reasoning_content over the ' ' fallback");
+    }
+
+    @Test
+    @DisplayName("XIAOMI_MIMO cross-turn tool_call: cache miss falls back to ' '")
+    void xiaomiMimoCrossTurnCacheMiss_fallsBackToSpace() {
+        // No cache entry for call_1 — the multi-turn path must still validate by
+        // injecting the policy's emptyFallback so MiMo doesn't 400.
+        String token = AssistantThinkingRelay.stash(List.of(""), null);
+
+        ChatCompletionRequest req = request(List.of(
+                user("q1"),
+                assistantToolCall("a1", null),   // i=1, cross-turn, no cache entry
+                user("q2")
+        ), token);
+
+        ChatCompletionRequest out = OpenAiRequestRewriter.patchReasoningContent(req, provider("xiaomi-mimo"));
+
+        assertEquals(" ", out.messages().get(1).reasoningContent(),
+                "XIAOMI_MIMO cross-turn cache miss falls back to ' ' so the request still validates");
+    }
+
+    @Test
+    @DisplayName("XIAOMI_MIMO plain cross-turn assistant (no tool_calls) also patched via patchNonToolCall=true")
+    void xiaomiMimoCrossTurnPlainAssistant_patchedWithSpace() {
+        // XIAOMI_MIMO mirrors DEEPSEEK: patchNonToolCall=true means even plain
+        // text assistants in prior turns must carry reasoning_content. Cache
+        // can't help here (no tool_call_ids to key on) — fallback is " ".
+        String token = AssistantThinkingRelay.stash(List.of("", ""), null);
+
+        ChatCompletionRequest req = request(List.of(
+                user("q1"),
+                new ChatCompletionMessage("plain a1", Role.ASSISTANT),  // i=1, cross-turn, no tool_calls
+                user("q2"),
+                new ChatCompletionMessage("plain a2", Role.ASSISTANT)   // i=3, in-turn, no tool_calls
+        ), token);
+
+        ChatCompletionRequest out = OpenAiRequestRewriter.patchReasoningContent(req, provider("xiaomi-mimo"));
+
+        assertEquals(" ", out.messages().get(1).reasoningContent(),
+                "XIAOMI_MIMO plain prior-turn assistant gets ' ' (patchNonToolCall=true + patchCrossTurn=true)");
+        assertEquals(" ", out.messages().get(3).reasoningContent(),
+                "XIAOMI_MIMO plain in-turn assistant gets ' ' (patchNonToolCall=true)");
     }
 }

@@ -28,7 +28,6 @@ import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.function.IntSupplier;
 
 /**
  * Default implementation. Concurrency safety relies on:
@@ -183,45 +182,49 @@ public class GoalServiceImpl implements GoalService {
     @Override
     @Transactional
     public GoalEntity update(Long id, GoalUpdateRequest req, String username) {
-        GoalEntity g = getById(id);
-        ensureNotTerminal(g, "update");
+        // Pre-validate constant fields once; the actual not-terminal check
+        // happens inside the builder against the fresh entity so a status
+        // flip between this method's entry and a CAS retry is honoured.
+        if (req.getTurnBudget() != null) validateBudget(req.getTurnBudget(), "turnBudget");
+        if (req.getLlmCallBudget() != null) validateBudget(req.getLlmCallBudget(), "llmCallBudget");
 
-        LambdaUpdateWrapper<GoalEntity> w = baseLockedUpdate(g);
-        boolean changed = false;
-        if (req.getTitle() != null && !req.getTitle().isBlank()) {
-            w.set(GoalEntity::getTitle, req.getTitle().trim()); changed = true;
-        }
-        if (req.getDescription() != null) {
-            w.set(GoalEntity::getDescription, req.getDescription()); changed = true;
-        }
-        if (req.getExitCriteria() != null) {
-            w.set(GoalEntity::getExitCriteria, req.getExitCriteria()); changed = true;
-        }
-        if (req.getSuccessCheckPrompt() != null) {
-            w.set(GoalEntity::getSuccessCheckPrompt, req.getSuccessCheckPrompt()); changed = true;
-        }
-        if (req.getTurnBudget() != null) {
-            validateBudget(req.getTurnBudget(), "turnBudget");
-            w.set(GoalEntity::getTurnBudget, req.getTurnBudget()); changed = true;
-        }
-        if (req.getLlmCallBudget() != null) {
-            validateBudget(req.getLlmCallBudget(), "llmCallBudget");
-            w.set(GoalEntity::getLlmCallBudget, req.getLlmCallBudget()); changed = true;
-        }
-        if (req.getAutoFollowupEnabled() != null) {
-            w.set(GoalEntity::getAutoFollowupEnabled, req.getAutoFollowupEnabled()); changed = true;
-        }
-        if (req.getFollowupCooldownSeconds() != null) {
-            w.set(GoalEntity::getFollowupCooldownSeconds, req.getFollowupCooldownSeconds());
-            changed = true;
-        }
-        if (!changed) {
-            return g;
-        }
-        bumpVersionAndTime(w);
-        retryOptimistic(() -> goalMapper.update(null, w), "update");
-        recordAudit("goal.updated", g, Map.of("by", username));
-        return goalMapper.selectById(id);
+        GoalEntity updated = retryOptimistic(id, "update", fresh -> {
+            ensureNotTerminal(fresh, "update");
+            LambdaUpdateWrapper<GoalEntity> w = baseLockedUpdate(fresh);
+            boolean changed = false;
+            if (req.getTitle() != null && !req.getTitle().isBlank()) {
+                w.set(GoalEntity::getTitle, req.getTitle().trim()); changed = true;
+            }
+            if (req.getDescription() != null) {
+                w.set(GoalEntity::getDescription, req.getDescription()); changed = true;
+            }
+            if (req.getExitCriteria() != null) {
+                w.set(GoalEntity::getExitCriteria, req.getExitCriteria()); changed = true;
+            }
+            if (req.getSuccessCheckPrompt() != null) {
+                w.set(GoalEntity::getSuccessCheckPrompt, req.getSuccessCheckPrompt()); changed = true;
+            }
+            if (req.getTurnBudget() != null) {
+                w.set(GoalEntity::getTurnBudget, req.getTurnBudget()); changed = true;
+            }
+            if (req.getLlmCallBudget() != null) {
+                w.set(GoalEntity::getLlmCallBudget, req.getLlmCallBudget()); changed = true;
+            }
+            if (req.getAutoFollowupEnabled() != null) {
+                w.set(GoalEntity::getAutoFollowupEnabled, req.getAutoFollowupEnabled()); changed = true;
+            }
+            if (req.getFollowupCooldownSeconds() != null) {
+                w.set(GoalEntity::getFollowupCooldownSeconds, req.getFollowupCooldownSeconds());
+                changed = true;
+            }
+            if (!changed) {
+                return null; // idempotent no-op
+            }
+            bumpVersionAndTime(w);
+            return w;
+        });
+        recordAudit("goal.updated", updated, Map.of("by", username));
+        return updated;
     }
 
     @Override
@@ -251,31 +254,33 @@ public class GoalServiceImpl implements GoalService {
     @Override
     @Transactional
     public GoalEntity abandon(Long id, String username) {
-        GoalEntity g = getById(id);
-        ensureNotTerminal(g, "abandon");
         // Allows abandon from both ACTIVE and PAUSED.
-        LambdaUpdateWrapper<GoalEntity> w = baseLockedUpdate(g)
-                .set(GoalEntity::getStatus, GoalStatus.ABANDONED);
-        bumpVersionAndTime(w);
-        retryOptimistic(() -> goalMapper.update(null, w), "abandon");
+        GoalEntity updated = retryOptimistic(id, "abandon", fresh -> {
+            ensureNotTerminal(fresh, "abandon");
+            LambdaUpdateWrapper<GoalEntity> w = baseLockedUpdate(fresh)
+                    .set(GoalEntity::getStatus, GoalStatus.ABANDONED);
+            bumpVersionAndTime(w);
+            return w;
+        });
         writeEvent(id, GoalEventType.ABANDONED, null, Map.of("by", username));
-        recordAudit("goal.abandoned", g, Map.of("by", username));
-        return goalMapper.selectById(id);
+        recordAudit("goal.abandoned", updated, Map.of("by", username));
+        return updated;
     }
 
     @Override
     @Transactional
     public GoalEntity markCompleted(Long id, GoalEvaluationResult result) {
-        GoalEntity g = getById(id);
-        if (g.getStatus().isTerminal()) return g; // idempotent
-        LambdaUpdateWrapper<GoalEntity> w = baseLockedUpdate(g)
-                .set(GoalEntity::getStatus, GoalStatus.COMPLETED);
-        if (result != null) {
-            w.set(GoalEntity::getCompletionScore, result.score())
-             .set(GoalEntity::getProgressSummary, result.gap());
-        }
-        bumpVersionAndTime(w);
-        retryOptimistic(() -> goalMapper.update(null, w), "markCompleted");
+        GoalEntity g = retryOptimistic(id, "markCompleted", fresh -> {
+            if (fresh.getStatus().isTerminal()) return null; // idempotent
+            LambdaUpdateWrapper<GoalEntity> w = baseLockedUpdate(fresh)
+                    .set(GoalEntity::getStatus, GoalStatus.COMPLETED);
+            if (result != null) {
+                w.set(GoalEntity::getCompletionScore, result.score())
+                 .set(GoalEntity::getProgressSummary, result.gap());
+            }
+            bumpVersionAndTime(w);
+            return w;
+        });
         Map<String, Object> detail = new LinkedHashMap<>();
         detail.put("finalScore", result != null ? result.score() : null);
         detail.put("agentLlmCallsUsed", g.getAgentLlmCallsUsed());
@@ -283,7 +288,7 @@ public class GoalServiceImpl implements GoalService {
         writeEvent(id, GoalEventType.COMPLETED, null, detail);
         recordAudit("goal.completed", g, detail);
 
-        // RFC 48 PR5 — forward to long-term memory. Best-effort: a failing
+        // Forward to long-term memory on completion. Best-effort: a failing
         // memory pipeline must not roll back the DB transition.
         if (memoryManager != null) {
             try {
@@ -300,18 +305,19 @@ public class GoalServiceImpl implements GoalService {
             }
         }
 
-        return goalMapper.selectById(id);
+        return g;
     }
 
     @Override
     @Transactional
     public GoalEntity markExhausted(Long id, String reason) {
-        GoalEntity g = getById(id);
-        if (g.getStatus().isTerminal()) return g;
-        LambdaUpdateWrapper<GoalEntity> w = baseLockedUpdate(g)
-                .set(GoalEntity::getStatus, GoalStatus.EXHAUSTED);
-        bumpVersionAndTime(w);
-        retryOptimistic(() -> goalMapper.update(null, w), "markExhausted");
+        GoalEntity g = retryOptimistic(id, "markExhausted", fresh -> {
+            if (fresh.getStatus().isTerminal()) return null;
+            LambdaUpdateWrapper<GoalEntity> w = baseLockedUpdate(fresh)
+                    .set(GoalEntity::getStatus, GoalStatus.EXHAUSTED);
+            bumpVersionAndTime(w);
+            return w;
+        });
         Map<String, Object> detail = new LinkedHashMap<>();
         detail.put("reason", reason != null ? reason : "unknown");
         detail.put("turnsUsed", g.getTurnsUsed());
@@ -319,7 +325,7 @@ public class GoalServiceImpl implements GoalService {
         detail.put("evalLlmCallsUsed", g.getEvalLlmCallsUsed());
         writeEvent(id, GoalEventType.EXHAUSTED, null, detail);
         recordAudit("goal.exhausted", g, detail);
-        return goalMapper.selectById(id);
+        return g;
     }
 
     // ==================== Evaluation bookkeeping ====================
@@ -328,23 +334,30 @@ public class GoalServiceImpl implements GoalService {
     @Transactional
     public void recordEvaluation(Long id, GoalEvaluationResult result,
                                  int agentLlmCallsDelta, int evalLlmCallsDelta) {
-        GoalEntity g = getById(id);
-        if (g.getStatus().isTerminal()) return; // ignore late evaluations
+        // Cheap pre-check so terminal goals also skip the event write — the
+        // in-loop guard below still protects against a status flip during a
+        // contended retry, but it would also issue the event log entry that
+        // a no-op skip should not produce.
+        GoalEntity initial = goalMapper.selectById(id);
+        if (initial == null || initial.getStatus().isTerminal()) return;
 
         int agentDelta = Math.max(0, agentLlmCallsDelta);
         int evalDelta = Math.max(0, evalLlmCallsDelta);
 
-        LambdaUpdateWrapper<GoalEntity> w = baseLockedUpdate(g)
-                .setSql("turns_used = turns_used + 1")
-                .setSql("agent_llm_calls_used = agent_llm_calls_used + " + agentDelta)
-                .setSql("eval_llm_calls_used = eval_llm_calls_used + " + evalDelta)
-                .set(GoalEntity::getLastEvaluationAt, LocalDateTime.now());
-        if (result != null) {
-            w.set(GoalEntity::getCompletionScore, result.score())
-             .set(GoalEntity::getProgressSummary, result.gap());
-        }
-        bumpVersionAndTime(w);
-        retryOptimistic(() -> goalMapper.update(null, w), "recordEvaluation");
+        retryOptimistic(id, "recordEvaluation", fresh -> {
+            if (fresh.getStatus().isTerminal()) return null; // ignore late evaluations
+            LambdaUpdateWrapper<GoalEntity> w = baseLockedUpdate(fresh)
+                    .setSql("turns_used = turns_used + 1")
+                    .setSql("agent_llm_calls_used = agent_llm_calls_used + " + agentDelta)
+                    .setSql("eval_llm_calls_used = eval_llm_calls_used + " + evalDelta)
+                    .set(GoalEntity::getLastEvaluationAt, LocalDateTime.now());
+            if (result != null) {
+                w.set(GoalEntity::getCompletionScore, result.score())
+                 .set(GoalEntity::getProgressSummary, result.gap());
+            }
+            bumpVersionAndTime(w);
+            return w;
+        });
 
         Map<String, Object> detail = new LinkedHashMap<>();
         if (result != null) {
@@ -379,12 +392,18 @@ public class GoalServiceImpl implements GoalService {
     @Override
     @Transactional
     public void recordFollowupInjected(Long id, String prompt) {
-        GoalEntity g = getById(id);
-        if (g.getStatus().isTerminal()) return;
-        LambdaUpdateWrapper<GoalEntity> w = baseLockedUpdate(g)
-                .set(GoalEntity::getLastFollowupAt, LocalDateTime.now());
-        bumpVersionAndTime(w);
-        retryOptimistic(() -> goalMapper.update(null, w), "recordFollowupInjected");
+        // Mirror recordEvaluation's pre-check so a late followup on a
+        // terminal goal does not produce an event-log entry.
+        GoalEntity initial = goalMapper.selectById(id);
+        if (initial == null || initial.getStatus().isTerminal()) return;
+
+        GoalEntity g = retryOptimistic(id, "recordFollowupInjected", fresh -> {
+            if (fresh.getStatus().isTerminal()) return null;
+            LambdaUpdateWrapper<GoalEntity> w = baseLockedUpdate(fresh)
+                    .set(GoalEntity::getLastFollowupAt, LocalDateTime.now());
+            bumpVersionAndTime(w);
+            return w;
+        });
         writeEvent(id, GoalEventType.FOLLOWUP_INJECTED, null, Map.of(
                 "prompt", prompt != null ? prompt : "",
                 "turnsUsed", g.getTurnsUsed()));
@@ -396,19 +415,22 @@ public class GoalServiceImpl implements GoalService {
         if (criterion == null || criterion.isBlank()) {
             throw new MateClawException("err.goal.criterion_empty", 400, "Criterion must not be empty");
         }
-        GoalEntity g = getById(id);
-        ensureNotTerminal(g, "appendCriterion");
-        String existing = g.getExitCriteria() != null ? g.getExitCriteria() : "";
-        String merged = existing.isEmpty() ? criterion.trim()
-                : existing + "\n+ " + criterion.trim();
-        LambdaUpdateWrapper<GoalEntity> w = baseLockedUpdate(g)
-                .set(GoalEntity::getExitCriteria, merged);
-        bumpVersionAndTime(w);
-        retryOptimistic(() -> goalMapper.update(null, w), "appendCriterion");
+        String trimmed = criterion.trim();
+        // Merge against the freshly refetched criteria so a concurrent
+        // addCriterion never silently overwrites a sibling's append.
+        GoalEntity g = retryOptimistic(id, "appendCriterion", fresh -> {
+            ensureNotTerminal(fresh, "appendCriterion");
+            String existing = fresh.getExitCriteria() != null ? fresh.getExitCriteria() : "";
+            String merged = existing.isEmpty() ? trimmed : existing + "\n+ " + trimmed;
+            LambdaUpdateWrapper<GoalEntity> w = baseLockedUpdate(fresh)
+                    .set(GoalEntity::getExitCriteria, merged);
+            bumpVersionAndTime(w);
+            return w;
+        });
         writeEvent(id, GoalEventType.CRITERION_ADDED, null, Map.of(
-                "criterion", criterion.trim(),
+                "criterion", trimmed,
                 "by", username));
-        return goalMapper.selectById(id);
+        return g;
     }
 
     // ==================== Internals ====================
@@ -463,10 +485,48 @@ public class GoalServiceImpl implements GoalService {
          .set(GoalEntity::getUpdateTime, LocalDateTime.now());
     }
 
-    private void retryOptimistic(IntSupplier update, String op) {
+    /**
+     * Builder that takes the just-refetched goal entity and either returns a
+     * fully prepared {@link LambdaUpdateWrapper} (with version pinned to the
+     * fresh row) or returns {@code null} to signal "no-op, treat as success"
+     * for idempotent skips (e.g. terminal-state guards).
+     */
+    @FunctionalInterface
+    private interface UpdateBuilder {
+        LambdaUpdateWrapper<GoalEntity> build(GoalEntity fresh);
+    }
+
+    /**
+     * Refetch + rebuild + CAS loop. The builder is invoked on each attempt
+     * against a freshly loaded entity so the {@code WHERE version=?} clause
+     * always matches the current row version. Returns the post-update entity
+     * (or the unchanged fresh entity when the builder signals a no-op).
+     *
+     * <p>This replaces the earlier single-shot wrapper capture which could
+     * not recover from the very first CAS miss — once {@code oldVersion}
+     * went stale, all subsequent retries with the same wrapper were
+     * doomed. Refetching per attempt is the correct shape for optimistic
+     * locking: read, build delta against the read, CAS on the read's
+     * version.
+     */
+    private GoalEntity retryOptimistic(Long id, String op, UpdateBuilder builder) {
         for (int i = 0; i < OPTIMISTIC_LOCK_MAX_RETRIES; i++) {
-            int rows = update.getAsInt();
-            if (rows > 0) return;
+            GoalEntity fresh = goalMapper.selectById(id);
+            if (fresh == null) {
+                throw new MateClawException("err.goal.not_found", 404,
+                        "Goal not found: " + id);
+            }
+            LambdaUpdateWrapper<GoalEntity> w = builder.build(fresh);
+            if (w == null) {
+                // Builder declined to issue a write (idempotent skip). Treat
+                // as success — callers like markCompleted hit this when the
+                // goal already moved to a terminal state via another path.
+                return fresh;
+            }
+            int rows = goalMapper.update(null, w);
+            if (rows > 0) {
+                return goalMapper.selectById(id);
+            }
             log.debug("[GoalService] Optimistic lock miss on {} (attempt {}/{})",
                     op, i + 1, OPTIMISTIC_LOCK_MAX_RETRIES);
         }
@@ -475,21 +535,23 @@ public class GoalServiceImpl implements GoalService {
                         + OPTIMISTIC_LOCK_MAX_RETRIES + " retries");
     }
 
+
     private GoalEntity flipStatus(Long id, GoalStatus from, GoalStatus to,
                                   String eventType, String auditAction, String username) {
-        GoalEntity g = getById(id);
-        if (g.getStatus() != from) {
-            throw new MateClawException("err.goal.bad_transition", 409,
-                    "Cannot transition " + g.getStatus().getValue() + " -> " + to.getValue());
-        }
-        LambdaUpdateWrapper<GoalEntity> w = baseLockedUpdate(g)
-                .set(GoalEntity::getStatus, to);
-        bumpVersionAndTime(w);
-        retryOptimistic(() -> goalMapper.update(null, w), to.getValue());
+        GoalEntity g = retryOptimistic(id, to.getValue(), fresh -> {
+            if (fresh.getStatus() != from) {
+                throw new MateClawException("err.goal.bad_transition", 409,
+                        "Cannot transition " + fresh.getStatus().getValue() + " -> " + to.getValue());
+            }
+            LambdaUpdateWrapper<GoalEntity> w = baseLockedUpdate(fresh)
+                    .set(GoalEntity::getStatus, to);
+            bumpVersionAndTime(w);
+            return w;
+        });
         writeEvent(id, eventType, null, Map.of("by", username,
                 "from", from.getValue(), "to", to.getValue()));
         recordAudit(auditAction, g, Map.of("by", username));
-        return goalMapper.selectById(id);
+        return g;
     }
 
     private void writeEvent(Long goalId, String type, Long messageId, Map<String, Object> detail) {

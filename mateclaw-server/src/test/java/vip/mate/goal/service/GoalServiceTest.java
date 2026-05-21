@@ -331,6 +331,39 @@ class GoalServiceTest {
         verify(goalMapper, times(3)).update(any(), any(LambdaUpdateWrapper.class));
     }
 
+    /**
+     * Regression: after the first CAS miss the retry loop must refetch the
+     * entity so the rebuilt wrapper carries the current version. Previously
+     * the wrapper was captured once with version=oldVersion, so once stale
+     * it could never succeed even when contention cleared.
+     */
+    @Test
+    void update_succeedsOnSecondAttempt_afterRefetchPicksUpFreshVersion() {
+        GoalEntity v0 = persisted(1L, GoalStatus.ACTIVE);
+        v0.setVersion(0);
+        GoalEntity v1 = persisted(1L, GoalStatus.ACTIVE);
+        v1.setVersion(1);
+        GoalEntity v2 = persisted(1L, GoalStatus.ACTIVE);
+        v2.setVersion(2);
+        // First refetch returns v0 (stale — CAS will miss). Second refetch
+        // returns v1 (fresh — CAS will succeed). Third call (post-update
+        // selectById) returns the final v2 state for the return value.
+        when(goalMapper.selectById(1L)).thenReturn(v0, v1, v2);
+        // First update misses (rows=0), second update succeeds (rows=1).
+        when(goalMapper.update(any(), any(LambdaUpdateWrapper.class)))
+                .thenReturn(0).thenReturn(1);
+
+        GoalUpdateRequest upd = new GoalUpdateRequest();
+        upd.setTitle("retry-survives");
+
+        GoalEntity out = service.update(1L, upd, "alice");
+        assertNotNull(out);
+        // Two update attempts (one miss + one hit) plus three selectById
+        // calls (two for the loop refetch, one for the post-update return).
+        verify(goalMapper, times(2)).update(any(), any(LambdaUpdateWrapper.class));
+        verify(goalMapper, times(3)).selectById(1L);
+    }
+
     @Test
     void findActiveByConversation_returnsNull_forBlankInput() {
         assertNull(service.findActiveByConversation(""));

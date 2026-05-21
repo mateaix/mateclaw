@@ -59,6 +59,15 @@ public enum ModelFamily {
     DEEPSEEK_V4_REASONING(false, false, true, false, false, true),
 
     /**
+     * Xiaomi MiMo thinking 模型：MiMo-VL-*、mimo-* 系列。
+     * <p>
+     * MiMo 的 thinking 模式与 DeepSeek 类似：响应返回 {@code reasoning_content}，
+     * 后续多轮请求必须将 {@code reasoning_content} 传回，否则 API 返回 400 错误。
+     * 约束：保留 max_tokens；不支持 reasoning_effort；temperature/topP 用配置值。
+     */
+    MIMO_THINKING(false, false, false, false, false, true),
+
+    /**
      * 通用 thinking 模型（名称含 "thinking" 或 "reasoner" 但不匹配上述族）：
      * 如 qwen3-235b-a22b-thinking-2507
      * <p>
@@ -158,6 +167,11 @@ public enum ModelFamily {
         // DeepSeek reasoning 族：仅 deepseek-reasoner
         if (normalized.equals("deepseek-reasoner")) {
             return DEEPSEEK_REASONER;
+        }
+
+        // Xiaomi MiMo thinking 族：mimo-* / MiMo-VL-* 系列
+        if (normalized.startsWith("mimo")) {
+            return MIMO_THINKING;
         }
 
         // 通用 thinking 族：名称含 thinking / reasoner 关键词

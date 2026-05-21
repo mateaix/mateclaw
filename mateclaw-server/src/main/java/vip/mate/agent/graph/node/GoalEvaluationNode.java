@@ -137,47 +137,92 @@ public class GoalEvaluationNode implements NodeAction {
             recent = recent.subList(recent.size() - max, recent.size());
         }
 
-        GoalEvaluationResult result = evaluationService.evaluate(goal, recent, terminal);
+        // Evaluator + persistence wrapped together: the just-emitted final
+        // answer is the user-visible thing and must NOT be lost just because
+        // a provider timeout or DB hiccup happens on the way to the
+        // bookkeeping write. On any failure we mark the run as evaluated
+        // (so the conditional edge above won't loop us back) and route to
+        // the normal terminal path — the user still sees their answer; the
+        // goal stays in whatever state it was before this turn.
+        GoalEvaluationResult result;
+        GoalEntity refreshed;
+        try {
+            result = evaluationService.evaluate(goal, recent, terminal);
 
-        // Pre-eval agent_llm count snapshot — the bookkeeping helper folds
-        // it into the per-goal counter so future turns see growing usage.
-        int agentLlmDelta = accessor.llmCallCount();
-        int evalLlmDelta = result.llmCallsConsumed();
-        goalService.recordEvaluation(goal.getId(), result, agentLlmDelta, evalLlmDelta);
+            // Pre-eval agent_llm count snapshot — the bookkeeping helper
+            // folds it into the per-goal counter so future turns see
+            // growing usage.
+            int agentLlmDelta = accessor.llmCallCount();
+            int evalLlmDelta = result.llmCallsConsumed();
+            goalService.recordEvaluation(goal.getId(), result, agentLlmDelta, evalLlmDelta);
 
-        GoalEntity refreshed = goalService.getById(goal.getId());
-
-        // Decision branches.
-        if (result.completed() || result.score() >= 0.95) {
-            goalService.markCompleted(refreshed.getId(), result);
+            refreshed = goalService.getById(goal.getId());
+        } catch (Throwable t) {
+            log.warn("[GoalEvaluationNode] evaluator/persist failed for goal={} — skipping this pass: {}",
+                    goal.getId(), t.toString());
             return MateClawStateAccessor.output()
-                    .goalEvaluationResult(result.toMap())
+                    .goalEvaluationResult(GoalEvaluationResult.fallback("node_exception").toMap())
                     .goalEvaluatedThisRun(true)
-                    .events(List.of(goalEvent("goal_completed", Map.of(
-                            "goalId", String.valueOf(refreshed.getId()),
-                            "score", result.score()))))
                     .build();
         }
 
-        if (goalService.isBudgetExhausted(refreshed)) {
-            String reason = goalService.exhaustionReason(refreshed);
-            goalService.markExhausted(refreshed.getId(), reason);
+        // Decision branches. Each terminal write is wrapped so a DB hiccup
+        // (e.g. optimistic-lock conflict exceeding retries, memory sync
+        // failure on completion) does not propagate into the chat graph
+        // and abort the streamed answer the user already sees.
+        try {
+            if (result.completed() || result.score() >= 0.95) {
+                goalService.markCompleted(refreshed.getId(), result);
+                return MateClawStateAccessor.output()
+                        .goalEvaluationResult(result.toMap())
+                        .goalEvaluatedThisRun(true)
+                        .events(List.of(goalEvent("goal_completed", Map.of(
+                                "goalId", String.valueOf(refreshed.getId()),
+                                "score", result.score()))))
+                        .build();
+            }
+
+            if (goalService.isBudgetExhausted(refreshed)) {
+                String reason = goalService.exhaustionReason(refreshed);
+                goalService.markExhausted(refreshed.getId(), reason);
+                return MateClawStateAccessor.output()
+                        .goalEvaluationResult(result.toMap())
+                        .goalEvaluatedThisRun(true)
+                        .events(List.of(goalEvent("goal_exhausted", Map.of(
+                                "goalId", String.valueOf(refreshed.getId()),
+                                "turnsUsed", refreshed.getTurnsUsed(),
+                                "agentLlmCallsUsed", refreshed.getAgentLlmCallsUsed(),
+                                "evalLlmCallsUsed", refreshed.getEvalLlmCallsUsed(),
+                                "totalLlmCallsUsed", refreshed.totalLlmCallsUsed(),
+                                "reason", reason))))
+                        .build();
+            }
+        } catch (Throwable t) {
+            log.warn("[GoalEvaluationNode] terminal write failed for goal={} — degrading to evaluated-only: {}",
+                    refreshed.getId(), t.toString());
             return MateClawStateAccessor.output()
                     .goalEvaluationResult(result.toMap())
                     .goalEvaluatedThisRun(true)
-                    .events(List.of(goalEvent("goal_exhausted", Map.of(
-                            "goalId", String.valueOf(refreshed.getId()),
-                            "turnsUsed", refreshed.getTurnsUsed(),
-                            "agentLlmCallsUsed", refreshed.getAgentLlmCallsUsed(),
-                            "evalLlmCallsUsed", refreshed.getEvalLlmCallsUsed(),
-                            "totalLlmCallsUsed", refreshed.totalLlmCallsUsed(),
-                            "reason", reason))))
                     .build();
         }
 
-        Optional<String> followup = followupService.maybeBuildFollowup(refreshed, result);
+        Optional<String> followup;
+        try {
+            followup = followupService.maybeBuildFollowup(refreshed, result);
+        } catch (Throwable t) {
+            log.warn("[GoalEvaluationNode] followup planning failed for goal={}: {}",
+                    refreshed.getId(), t.toString());
+            followup = Optional.empty();
+        }
         if (followup.isPresent()) {
-            goalService.recordFollowupInjected(refreshed.getId(), followup.get());
+            try {
+                goalService.recordFollowupInjected(refreshed.getId(), followup.get());
+            } catch (Throwable t) {
+                log.warn("[GoalEvaluationNode] recordFollowupInjected failed — emitting followup anyway: {}",
+                        t.toString());
+                // Continue: the in-memory state-machine path still works
+                // even if the audit row could not be written.
+            }
             MateClawStateAccessor.OutputBuilder out = MateClawStateAccessor.output()
                     .goalEvaluationResult(result.toMap())
                     .goalFollowupInjected(true)

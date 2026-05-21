@@ -65,4 +65,15 @@ class ModelFamilyTest {
         assertEquals(ModelFamily.STANDARD, ModelFamily.detect(""));
         assertEquals(ModelFamily.STANDARD, ModelFamily.detect("   "));
     }
+
+    @Test
+    @DisplayName("Xiaomi MiMo models → MIMO_THINKING (reasoning_content relay required)")
+    void mimo_thinking() {
+        assertEquals(ModelFamily.MIMO_THINKING, ModelFamily.detect("mimo-v2-flash"));
+        assertEquals(ModelFamily.MIMO_THINKING, ModelFamily.detect("MiMo-VL-7B-RL"));
+        assertTrue(ModelFamily.MIMO_THINKING.isThinking(),
+                "Mimo must be flagged as thinking so reasoning_content is patched");
+        assertFalse(ModelFamily.MIMO_THINKING.supportsReasoningEffort(),
+                "Mimo does not accept the reasoning_effort parameter");
+    }
 }

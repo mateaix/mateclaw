@@ -137,12 +137,17 @@ final class OpenAiRequestRewriter {
             if (next != null && !next.isEmpty()) {
                 injected = next;
             } else {
-                injected = policy.emptyFallback;
-                if (injected == null && policy.warnOnMissingReal) {
-                    log.warn("[patchReasoningContent] provider={} requires real reasoning_content "
-                                    + "but relay has no value for assistant message at index {}; "
-                                    + "leaving null so provider returns explicit error.",
-                            providerIdOrUnknown(provider), i);
+                // For cross-turn messages, try the reasoning content cache
+                // (real values from prior responses) before falling back to empty.
+                injected = resolveCrossTurnReasoning(msg, i <= lastUserIdx);
+                if (injected == null) {
+                    injected = policy.emptyFallback;
+                    if (injected == null && policy.warnOnMissingReal) {
+                        log.warn("[patchReasoningContent] provider={} requires real reasoning_content "
+                                        + "but relay has no value for assistant message at index {}; "
+                                        + "leaving null so provider returns explicit error.",
+                                providerIdOrUnknown(provider), i);
+                    }
                 }
             }
             if (injected == null && msg.reasoningContent() == null) {
@@ -225,10 +230,11 @@ final class OpenAiRequestRewriter {
      * OpenAI-compatible gateway) might still require the patch.
      */
     private enum FallbackPolicy {
-        DEEPSEEK(" ",  false, true,  true),
-        KIMI    (" ",  false, false, false),
-        OPENAI  (" ",  false, false, false),
-        DEFAULT (" ",  false, false, false);
+        DEEPSEEK    (" ",  false, true,  true),
+        KIMI        (" ",  false, false, false),
+        OPENAI      (" ",  false, false, false),
+        XIAOMI_MIMO (" ",  false, true,  true),
+        DEFAULT     (" ",  false, false, false);
 
         final String emptyFallback;
         final boolean warnOnMissingReal;
@@ -253,6 +259,7 @@ final class OpenAiRequestRewriter {
                 case "deepseek" -> DEEPSEEK;
                 case "kimi-cn", "kimi-intl", "kimi-code" -> KIMI;
                 case "openai", "azure-openai" -> OPENAI;
+                case "xiaomi-mimo" -> XIAOMI_MIMO;
                 default -> DEFAULT;
             };
         }
@@ -304,6 +311,22 @@ final class OpenAiRequestRewriter {
     private static boolean requiresReasoningContentPatch(String modelName) {
         ModelFamily family = ModelFamily.detect(modelName);
         return family.isThinking();
+    }
+
+    /**
+     * Look up cached reasoning content for cross-turn assistant messages.
+     * Returns the cached value, or {@code null} if no cache hit (caller falls
+     * back to the policy's empty fallback).
+     */
+    private static String resolveCrossTurnReasoning(
+            OpenAiApi.ChatCompletionMessage msg, boolean isCrossTurn) {
+        if (!isCrossTurn) return null;
+        if (msg.toolCalls() == null || msg.toolCalls().isEmpty()) return null;
+        List<String> ids = msg.toolCalls().stream()
+                .map(tc -> tc.id())
+                .filter(id -> id != null && !id.isEmpty())
+                .toList();
+        return ReasoningContentCache.get(ids);
     }
 
     // ==================== reasoning_effort sanitizing ====================

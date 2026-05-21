@@ -14,6 +14,7 @@ import vip.mate.goal.model.GoalStatus;
 import vip.mate.goal.model.GoalUpdateRequest;
 import vip.mate.goal.service.GoalService;
 import vip.mate.workspace.conversation.ConversationService;
+import vip.mate.workspace.conversation.model.ConversationEntity;
 
 import java.util.Map;
 
@@ -72,16 +73,66 @@ class GoalControllerTest {
         return r;
     }
 
+    private ConversationEntity conv(String convId, Long agentId, Long workspaceId) {
+        ConversationEntity c = new ConversationEntity();
+        c.setConversationId(convId);
+        c.setUsername("alice");
+        c.setAgentId(agentId);
+        c.setWorkspaceId(workspaceId);
+        return c;
+    }
+
     // ==================== create ====================
 
     @Test
     void create_succeeds_whenOwner() {
         when(conversationService.isConversationOwner("conv-1", "alice")).thenReturn(true);
+        when(conversationService.findByConversationId("conv-1")).thenReturn(conv("conv-1", 10L, 1L));
         when(goalService.create(any(), eq("alice")))
                 .thenReturn(goal(1L, "conv-1", GoalStatus.ACTIVE));
         R<GoalEntity> result = controller.create(req("conv-1"), auth);
         assertNotNull(result.getData());
         assertEquals(1L, result.getData().getId());
+    }
+
+    @Test
+    void create_overridesAgentAndWorkspace_fromConversation() {
+        // Request claims agentId=99 / workspaceId=77 — the controller must
+        // ignore those and use the conversation's own bindings instead.
+        when(conversationService.isConversationOwner("conv-1", "alice")).thenReturn(true);
+        when(conversationService.findByConversationId("conv-1")).thenReturn(conv("conv-1", 42L, 7L));
+        when(goalService.create(any(), eq("alice")))
+                .thenReturn(goal(1L, "conv-1", GoalStatus.ACTIVE));
+        GoalCreateRequest r = req("conv-1");
+        r.setAgentId(99L);
+        r.setWorkspaceId(77L);
+        controller.create(r, auth);
+        org.mockito.ArgumentCaptor<GoalCreateRequest> captor =
+                org.mockito.ArgumentCaptor.forClass(GoalCreateRequest.class);
+        verify(goalService).create(captor.capture(), eq("alice"));
+        assertEquals(42L, captor.getValue().getAgentId());
+        assertEquals(7L, captor.getValue().getWorkspaceId());
+    }
+
+    @Test
+    void create_returns404_whenConversationMissing() {
+        when(conversationService.isConversationOwner("conv-1", "alice")).thenReturn(true);
+        when(conversationService.findByConversationId("conv-1")).thenReturn(null);
+        MateClawException ex = assertThrows(MateClawException.class,
+                () -> controller.create(req("conv-1"), auth));
+        assertEquals(404, ex.getCode());
+        verify(goalService, never()).create(any(), anyString());
+    }
+
+    @Test
+    void create_returns409_whenConversationHasNoAgent() {
+        when(conversationService.isConversationOwner("conv-1", "alice")).thenReturn(true);
+        when(conversationService.findByConversationId("conv-1"))
+                .thenReturn(conv("conv-1", null, 1L));
+        MateClawException ex = assertThrows(MateClawException.class,
+                () -> controller.create(req("conv-1"), auth));
+        assertEquals(409, ex.getCode());
+        verify(goalService, never()).create(any(), anyString());
     }
 
     @Test

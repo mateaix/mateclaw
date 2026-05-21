@@ -546,7 +546,25 @@ public class AgentGraphBuilder {
                             Map.of(
                                     PlanStateKeys.PLAN_GENERATION_NODE, PlanStateKeys.PLAN_GENERATION_NODE,
                                     StateGraph.END, StateGraph.END))
-                    .addEdge(PlanStateKeys.DIRECT_ANSWER_NODE, StateGraph.END);
+                    // DIRECT_ANSWER_NODE handles trivial requests that bypass the
+                    // multi-step plan. For active goals, the direct answer is still
+                    // a turn — without this edge, turns_used / score / completion
+                    // would never tick on plan-execute conversations whose every
+                    // reply happened to be simple enough to short-circuit through
+                    // the direct path. Mirror PLAN_SUMMARY_NODE's gate so non-goal
+                    // turns still go straight to END (no goal node invocation).
+                    .addConditionalEdges(PlanStateKeys.DIRECT_ANSWER_NODE,
+                            AsyncEdgeAction.edge_async(state -> {
+                                MateClawStateAccessor a = new MateClawStateAccessor(state);
+                                boolean hasGoal = a.hasActiveGoal();
+                                boolean already = a.goalEvaluatedThisRun();
+                                return (hasGoal && !already)
+                                        ? MateClawStateKeys.GOAL_EVALUATION_NODE
+                                        : StateGraph.END;
+                            }),
+                            Map.of(
+                                    MateClawStateKeys.GOAL_EVALUATION_NODE, MateClawStateKeys.GOAL_EVALUATION_NODE,
+                                    StateGraph.END, StateGraph.END));
 
             return graph.compile(CompileConfig.builder()
                     .recursionLimit(frameworkRecursionLimit())

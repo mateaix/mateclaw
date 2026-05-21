@@ -21,6 +21,7 @@ import vip.mate.goal.model.GoalEventEntity;
 import vip.mate.goal.model.GoalUpdateRequest;
 import vip.mate.goal.service.GoalService;
 import vip.mate.workspace.conversation.ConversationService;
+import vip.mate.workspace.conversation.model.ConversationEntity;
 
 import java.util.List;
 import java.util.Map;
@@ -53,6 +54,22 @@ public class GoalController {
     public R<GoalEntity> create(@RequestBody GoalCreateRequest req, Authentication auth) {
         String username = currentUsername(auth);
         requireOwner(req.getConversationId(), username);
+        // Derive agentId/workspaceId from the conversation itself so the
+        // caller cannot attribute the goal to an unrelated agent/workspace
+        // they don't own. The request fields for these two are intentionally
+        // ignored — audit, memory sync, listing, and future policy hooks all
+        // assume the goal mirrors its conversation's identity.
+        ConversationEntity conv = conversationService.findByConversationId(req.getConversationId());
+        if (conv == null) {
+            throw new MateClawException("err.goal.conversation_not_found", 404,
+                    "Conversation not found: " + req.getConversationId());
+        }
+        if (conv.getAgentId() == null) {
+            throw new MateClawException("err.goal.conversation_has_no_agent", 409,
+                    "Conversation " + req.getConversationId() + " has no bound agent");
+        }
+        req.setAgentId(conv.getAgentId());
+        req.setWorkspaceId(conv.getWorkspaceId() != null ? conv.getWorkspaceId() : 1L);
         GoalEntity g = goalService.create(req, username);
         return R.ok(g);
     }
