@@ -1297,6 +1297,25 @@ public class ConversationService {
     }
 
     /**
+     * Look up a conversation by its string (UUID-style) id, returning the
+     * full entity or {@code null} when not found. Read-only — does not
+     * create or mutate.
+     *
+     * <p>Callers that need to derive {@code agentId} / {@code workspaceId}
+     * from a conversation (so the request cannot lie about either) should
+     * use this rather than re-running the {@code LambdaQueryWrapper}
+     * boilerplate inline.
+     */
+    public ConversationEntity findByConversationId(String conversationId) {
+        if (conversationId == null || conversationId.isBlank()) {
+            return null;
+        }
+        return conversationMapper.selectOne(
+                new LambdaQueryWrapper<ConversationEntity>()
+                        .eq(ConversationEntity::getConversationId, conversationId));
+    }
+
+    /**
      * Get the persisted stream status for a conversation.
      *
      * <p>获取会话的持久化流状态。

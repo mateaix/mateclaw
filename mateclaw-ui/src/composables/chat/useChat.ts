@@ -13,6 +13,7 @@ import { ref, computed } from 'vue'
 import { useMessages } from './useMessages'
 import { useStream } from './useStream'
 import { useMessageQueue } from './useMessageQueue'
+import { useGoalStore } from '@/stores/useGoalStore'
 import type { Message, MessageContentPart, MessageSegment, StreamPhase, HeartbeatData, QueuedMessage, PhaseEventData } from '@/types'
 import { classifyBackendError, type ChatErrorInfo } from '@/types/chatError'
 import { http } from '@/api'
@@ -344,6 +345,12 @@ export function useChat(options: UseChatOptions): UseChatReturn {
     headers: streamHeaders,
   })
 
+  // Goal store is referenced from several stream handlers (message_start
+  // for followup attribution, message_complete for the evaluating halo,
+  // plus the dedicated goal_* events below). Resolve once up front so
+  // the handlers don't each pull their own copy.
+  const goalStore = useGoalStore()
+
   // ===== Async-task lifecycle bridge =====
   // Generative tools (music / video / image) return a taskId synchronously and
   // finish asynchronously via `async_task_completed`. If the upstream provider
@@ -455,6 +462,13 @@ export function useChat(options: UseChatOptions): UseChatReturn {
     const assistantMessage = createAssistantMessage('', streamConversationId)
     ;(assistantMessage as any)._turnId = activeTurnId
     currentAssistantId.value = assistantMessage.id as string
+
+    // Auto-followup attribution: if the goal evaluator just decided to
+    // inject a followup, the message that just opened belongs to that
+    // turn. Stamp it so MessageBubble can render the small ↻ glyph.
+    if (streamConversationId && goalStore.consumePendingFollowup(streamConversationId)) {
+      goalStore.markFollowupMessage(streamConversationId, String(assistantMessage.id))
+    }
   })
 
   stream.on('warning', (data) => {
@@ -527,6 +541,26 @@ export function useChat(options: UseChatOptions): UseChatReturn {
       if (msg?.content && streamConversationId) {
         triggerAutoTts(streamConversationId, msg.content)
       }
+    }
+
+    // Goal-evaluator breathing halo: when an assistant message finishes
+    // and this conversation has an active goal, the backend's evaluation
+    // node runs next. Flip the per-conv flag so GoalAvatarRing paints the
+    // breathing halo until `goal_evaluated` resets it.
+    //
+    // Skip when:
+    //   - the conversation has no active goal (ordinary turn, no halo)
+    //   - the evaluator already fired in this turn (SSE order under the
+    //     structured stream is goal_evaluated → done → message_complete,
+    //     so re-arming here would leave the halo stuck on after the
+    //     evaluator already cleared it)
+    if (
+      data.status === 'completed'
+      && streamConversationId
+      && goalStore.activeGoal(streamConversationId)
+      && !goalStore.recentlyEvaluated(streamConversationId)
+    ) {
+      goalStore.markEvaluating(streamConversationId, true)
     }
   })
 
@@ -712,8 +746,8 @@ export function useChat(options: UseChatOptions): UseChatReturn {
 
   // ===== Agent event handlers =====
 
-  // Body of tool_call_started — extracted so delegation_batch can replay the
-  // same behavior for buffered child events without duplicating logic.
+  // Body of tool_call_started. Used directly and reused once (split out as a
+  // function ⟶ no logic duplication).
   function handleToolCallStarted(data: any) {
     if (isStaleEvent(data)) return
     streamPhase.value = 'executing_tool'
@@ -967,31 +1001,48 @@ export function useChat(options: UseChatOptions): UseChatReturn {
       ? rawPayload
       : (() => { try { return JSON.parse(String(rawPayload || '{}')) } catch { return {} } })()
 
-    if (data.originalEvent === 'tool_call_started') {
-      const toolName = childData?.toolName || ''
-      if (toolName) {
-        delegSeg.toolArgs = (delegSeg.toolArgs || '') + `\n  → ${toolName}`
+    // Build a structured child timeline on the delegation segment instead of
+    // jamming tool names into toolArgs as text. The timeline holds the child
+    // agent's own plan checklist + the tools it called, so the UI can render
+    // a proper nested view (see ToolCallSegment.vue delegation branch).
+    const timeline = (delegSeg.childTimeline ||= { tools: [] })
+    if (!timeline.tools) timeline.tools = []
+
+    switch (data.originalEvent) {
+      case 'tool_call_started': {
+        const name = childData?.toolName || ''
+        if (name) timeline.tools.push({ name, status: 'running' })
+        break
       }
-    } else if (data.originalEvent === 'tool_call_completed') {
-      const toolName = childData?.toolName || ''
-      const success = childData?.success !== false
-      if (toolName) {
-        // Replace the matching "→ toolName" hint with "✓/✗ toolName"
-        delegSeg.toolArgs = (delegSeg.toolArgs || '').replace(
-          new RegExp(`\\n  → ${toolName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`),
-          `\n  ${success ? '✓' : '✗'} ${toolName}`)
+      case 'tool_call_completed': {
+        const name = childData?.toolName || ''
+        const ok = childData?.success !== false
+        // Match the most recent running entry with this name.
+        const entry = [...timeline.tools].reverse()
+          .find(t => t.name === name && t.status === 'running')
+        if (entry) entry.status = ok ? 'completed' : 'error'
+        break
       }
-    } else if (data.originalEvent === 'phase') {
-      const phase = childData?.phase || String(rawPayload || '')
-      const phaseHints: Record<string, string> = {
-        reasoning: '…',
-        executing_tool: '→',
-        planning: '📋',
-        summarizing: '✍',
+      case 'plan_created': {
+        const steps = childData?.steps
+        if (Array.isArray(steps)) {
+          timeline.plan = { planId: childData?.planId ?? '', steps, currentStep: 0, stepResults: [] }
+        }
+        break
       }
-      const hint = phaseHints[phase]
-      if (hint && !delegSeg.toolArgs?.endsWith(hint)) {
-        delegSeg.toolArgs = (delegSeg.toolArgs || '').trimEnd() + ' ' + hint
+      case 'plan_step_started': {
+        if (timeline.plan && typeof childData?.index === 'number') {
+          timeline.plan.currentStep = childData.index
+        }
+        break
+      }
+      case 'plan_step_completed': {
+        if (timeline.plan && typeof childData?.index === 'number') {
+          const results = [...(timeline.plan.stepResults || [])]
+          results[childData.index] = { result: childData.result ?? '', status: 'completed' }
+          timeline.plan.stepResults = results
+        }
+        break
       }
     }
     flushSegmentsToMessage()
@@ -1072,6 +1123,9 @@ export function useChat(options: UseChatOptions): UseChatReturn {
         if (delegSeg) {
           delegSeg.status = data.success ? 'completed' : 'error'
           delegSeg.toolSuccess = data.success
+          if (data.resultPreview) {
+            delegSeg.toolResult = data.resultPreview
+          }
           if (data.durationMs) {
             delegSeg.toolArgs = (delegSeg.toolArgs || '').trimEnd() + ` (${Math.round(data.durationMs / 1000)}s)`
           }
@@ -1177,26 +1231,9 @@ export function useChat(options: UseChatOptions): UseChatReturn {
     flushSegmentsToMessage()
   })
 
-  stream.on('delegation_batch', (data) => {
-    if (isStaleEvent(data)) return
-    // Buffered child events from a delegated subagent. Replay them in order
-    // through the same handlers as live events so segment state stays
-    // consistent with the rest of the timeline.
-    const events = Array.isArray(data?.events) ? data.events : []
-    for (const ev of events) {
-      const evData = ev?.data ?? {}
-      switch (ev?.event) {
-        case 'tool_call_started':
-          handleToolCallStarted(evData)
-          break
-        case 'tool_call_completed':
-          handleToolCallCompleted(evData)
-          break
-        // Other event kinds (phase / thinking_delta / content_delta / etc.)
-        // are not currently produced inside batches; extend here when added.
-      }
-    }
-  })
+  // Delegation batch envelopes are unpacked server-side into individual
+  // delegation_progress events (see DelegateAgentTool.relayBatchEnvelope),
+  // so the frontend only handles delegation_progress — no batch handler needed.
 
   stream.on('plan_created', (data) => {
     if (isStaleEvent(data)) return
@@ -1587,6 +1624,47 @@ export function useChat(options: UseChatOptions): UseChatReturn {
         })
         .catch(() => {})
     }
+  })
+
+  // ===== Goal events =====
+  // Forward goal evaluator emissions to the goal store. The store owns
+  // the active-goal cache + the per-conv "evaluating" flag that drives
+  // the avatar ring's breathing halo.
+
+  stream.on('goal_evaluated', (data) => {
+    if (isStaleEvent(data)) return
+    const cid = data?.conversationId || streamConversationId
+    if (cid) goalStore.handleSseEvent(cid, 'goal_evaluated', data)
+  })
+
+  stream.on('goal_followup', (data) => {
+    if (isStaleEvent(data)) return
+    const cid = data?.conversationId || streamConversationId
+    if (cid) goalStore.handleSseEvent(cid, 'goal_followup', data)
+  })
+
+  stream.on('goal_completed', (data) => {
+    if (isStaleEvent(data)) return
+    const cid = data?.conversationId || streamConversationId
+    if (cid) goalStore.handleSseEvent(cid, 'goal_completed', data)
+  })
+
+  stream.on('goal_exhausted', (data) => {
+    if (isStaleEvent(data)) return
+    const cid = data?.conversationId || streamConversationId
+    if (cid) goalStore.handleSseEvent(cid, 'goal_exhausted', data)
+  })
+
+  stream.on('goal_created', (data) => {
+    if (isStaleEvent(data)) return
+    const cid = data?.conversationId || streamConversationId
+    if (cid) goalStore.handleSseEvent(cid, 'goal_created', data)
+  })
+
+  stream.on('goal_updated', (data) => {
+    if (isStaleEvent(data)) return
+    const cid = data?.conversationId || streamConversationId
+    if (cid) goalStore.handleSseEvent(cid, 'goal_updated', data)
   })
 
   // ===== Send message (supports sending while generating) =====

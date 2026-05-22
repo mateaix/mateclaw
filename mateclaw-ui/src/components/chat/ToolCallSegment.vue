@@ -56,11 +56,45 @@ const isRead = computed(() => {
 const isSuccess = computed(() => props.segment.status === 'completed' && props.segment.toolSuccess !== false)
 const isError = computed(() => props.segment.status === 'error' || props.segment.toolSuccess === false)
 const isRunning = computed(() => props.segment.status === 'running')
+
+// Nested subagent timeline relayed from the child conversation: the child's own
+// plan checklist + the tools it called. Only present on delegation segments.
+const childTimeline = computed(() => isDelegation.value ? props.segment.childTimeline : undefined)
+const childPlan = computed(() => childTimeline.value?.plan)
+const childTools = computed(() => childTimeline.value?.tools || [])
+const hasChildActivity = computed(() =>
+  !!childPlan.value || childTools.value.length > 0
+)
+
+// The body is expandable when there's any nested detail to show – either the
+// child's activity timeline or the final result preview.
+const hasBody = computed(() => hasChildActivity.value || !!props.segment.toolResult)
+
+function childStepStatus(i: number): 'pending' | 'running' | 'completed' {
+  const plan = childPlan.value
+  if (!plan) return 'pending'
+  const done = plan.stepResults?.[i]
+  if (done?.status === 'completed') return 'completed'
+  if (i === plan.currentStep) return 'running'
+  return 'pending'
+}
+
+// Compact progress hint shown in the delegation header (e.g. "2/3" plan steps,
+// or "4 tools") so collapsed delegations still convey what the subagent did.
+const childProgress = computed(() => {
+  const plan = childPlan.value
+  if (plan?.steps?.length) {
+    const done = plan.stepResults?.filter(r => r?.status === 'completed').length || 0
+    return `${done}/${plan.steps.length}`
+  }
+  const n = childTools.value.length
+  return n ? `${n} ${n === 1 ? 'tool' : 'tools'}` : ''
+})
 </script>
 
 <template>
   <div class="seg-tool" :class="{ 'is-running': isRunning, 'is-success': isSuccess, 'is-error': isError }">
-    <div class="seg-tool__header" @click="segment.toolResult ? (expanded = !expanded) : null">
+    <div class="seg-tool__header" @click="hasBody ? (expanded = !expanded) : null">
       <span class="seg-tool__status">
         <el-icon v-if="isRunning" class="is-loading" :size="13"><Loading /></el-icon>
         <el-icon v-else-if="isSuccess" :size="13"><Select /></el-icon>
@@ -72,17 +106,50 @@ const isRunning = computed(() => props.segment.status === 'running')
         <el-icon v-else :size="12"><Setting /></el-icon>
       </span>
       <span class="seg-tool__name">{{ displayName }}</span>
+      <span v-if="isDelegation && childProgress" class="seg-tool__badge">{{ childProgress }}</span>
       <span v-if="truncatedArgs" class="seg-tool__args">{{ truncatedArgs }}</span>
       <el-icon
-        v-if="segment.toolResult"
+        v-if="hasBody"
         class="seg-tool__arrow"
         :class="{ 'is-open': expanded }"
         :size="11"
       ><ArrowDown /></el-icon>
     </div>
     <Transition name="seg-slide">
-      <div v-if="expanded && segment.toolResult" class="seg-tool__body">
-        <pre>{{ resultPreview }}</pre>
+      <div v-if="expanded && hasBody" class="seg-tool__body">
+        <!-- Nested subagent timeline (delegation segments) -->
+        <div v-if="hasChildActivity" class="seg-child">
+          <!-- The child agent's own plan checklist, if it ran in plan mode -->
+          <div v-if="childPlan" class="seg-child__plan">
+            <div
+              v-for="(step, i) in childPlan.steps"
+              :key="i"
+              class="seg-child__step"
+              :class="`is-${childStepStatus(i)}`"
+            >
+              <el-icon v-if="childStepStatus(i) === 'running'" class="is-loading" :size="11"><Loading /></el-icon>
+              <el-icon v-else-if="childStepStatus(i) === 'completed'" :size="11"><Select /></el-icon>
+              <span v-else class="seg-child__dot"></span>
+              <span class="seg-child__step-text">{{ step }}</span>
+            </div>
+          </div>
+          <!-- The tools the child agent called -->
+          <div v-if="childTools.length" class="seg-child__tools">
+            <div
+              v-for="(t, i) in childTools"
+              :key="i"
+              class="seg-child__tool"
+              :class="`is-${t.status}`"
+            >
+              <el-icon v-if="t.status === 'running'" class="is-loading" :size="11"><Loading /></el-icon>
+              <el-icon v-else-if="t.status === 'completed'" :size="11"><Select /></el-icon>
+              <el-icon v-else :size="11"><CloseBold /></el-icon>
+              <span class="seg-child__tool-name">{{ getToolLabel(t.name) }}</span>
+            </div>
+          </div>
+        </div>
+        <!-- Final tool/agent result preview -->
+        <pre v-if="segment.toolResult">{{ resultPreview }}</pre>
       </div>
     </Transition>
   </div>
@@ -176,6 +243,51 @@ const isRunning = computed(() => props.segment.status === 'running')
 
 .seg-tool__body {
   padding: 0 10px 6px 22px;
+}
+
+.seg-tool__badge {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--mc-text-tertiary);
+  background: var(--mc-bg-muted);
+  border-radius: 8px;
+  padding: 0 6px;
+  line-height: 16px;
+}
+
+/* Nested subagent timeline */
+.seg-child {
+  margin-bottom: 6px;
+}
+.seg-child__plan {
+  margin-bottom: 6px;
+  padding-left: 4px;
+  border-left: 2px solid var(--mc-border-light);
+}
+.seg-child__step,
+.seg-child__tool {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--mc-text-tertiary);
+}
+.seg-child__step.is-running,
+.seg-child__tool.is-running { color: var(--mc-primary); }
+.seg-child__step.is-completed,
+.seg-child__tool.is-completed { color: var(--mc-text-secondary); }
+.seg-child__tool.is-error { color: var(--mc-danger); }
+.seg-child__dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--mc-text-quaternary, #c0c0c0);
+  flex-shrink: 0;
+  margin: 0 3px;
+}
+.seg-child__tools {
+  padding-left: 6px;
 }
 .seg-tool__body pre {
   margin: 0;

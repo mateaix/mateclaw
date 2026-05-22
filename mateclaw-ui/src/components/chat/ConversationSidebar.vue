@@ -107,6 +107,11 @@
               <div v-else class="conv-title" @dblclick.stop="startRename(conv)">
                 <span>{{ conv.title }}</span>
                 <span
+                  v-if="convGoalStatus(conv.conversationId) === 'active'"
+                  class="conv-goal-dot"
+                  :title="t('goal.sidebarActive', '此对话有正在进行的目标')"
+                ></span>
+                <span
                   v-if="hasUnread(conv)"
                   class="conv-unread-dot"
                   :title="t('chat.hasUnread', '有新内容')"
@@ -193,6 +198,16 @@ import { channelIconUrl } from '@/utils/channelSource'
 import { mcToast } from '@/composables/useMcToast'
 import { mcConfirm } from '@/components/common/useConfirm'
 import type { Conversation, Agent } from '@/types'
+import { useGoalStore } from '@/stores/useGoalStore'
+
+const goalStore = useGoalStore()
+/** Sidebar marker: a 6 px dot next to the conv title when that conv
+ *  has an active goal. Color tracks status (orange = in progress).
+ *  Falls back silently when the store hasn't loaded this conv yet. */
+function convGoalStatus(cid: string): string | null {
+  const g = goalStore.activeGoalByConv?.[cid]
+  return g?.status ?? null
+}
 
 const props = defineProps<{
   conversations: Conversation[]
@@ -682,6 +697,22 @@ function onMenuSelect(item: DropdownMenuItem) {
   margin-left: 6px;
   flex-shrink: 0;
   vertical-align: middle;
+}
+
+/* Sidebar marker for "this conversation has an active goal". Same hue
+ * family as the avatar ring; sits at 60% opacity so it whispers rather
+ * than competes with unread / running indicators on the same row. */
+.conv-goal-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--mc-primary, #d97757);
+  opacity: 0.7;
+  margin-left: 6px;
+  flex-shrink: 0;
+  vertical-align: middle;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--mc-primary, #d97757) 18%, transparent);
 }
 
 .conv-item.is-running {

@@ -168,6 +168,15 @@ export interface MessageSegment {
   approval?: PendingApprovalMeta
   /** type=plan */
   plan?: PlanMeta
+  /**
+   * For delegation segments (toolName starts with "→"): the subagent's own
+   * activity, relayed from the child conversation. Renders as a nested timeline
+   * (its plan checklist + the tools it called) instead of jammed text in toolArgs.
+   */
+  childTimeline?: {
+    plan?: PlanMeta
+    tools?: { name: string; status: 'running' | 'completed' | 'error' }[]
+  }
   /** 时间戳 */
   timestamp?: number
   /**

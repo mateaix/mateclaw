@@ -14,6 +14,7 @@ import org.springframework.ai.chat.prompt.ChatOptions;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.openai.OpenAiChatOptions;
 import vip.mate.agent.GraphEventPublisher;
+import vip.mate.agent.context.StructuredTruncator;
 import vip.mate.agent.graph.NodeStreamingChatHelper;
 import vip.mate.agent.graph.state.MateClawStateAccessor;
 import vip.mate.agent.prompt.PromptLoader;
@@ -120,7 +121,8 @@ public class SummarizingNode implements NodeAction {
             log.warn("[SummarizingNode] Summarization LLM call failed: {}, using raw observations as fallback",
                     result.errorMessage());
             String fallback = observationText.length() > 500
-                    ? observationText.substring(0, 500) + "...[摘要生成失败，已截断]"
+                    ? StructuredTruncator.headSlice(observationText.toString(), 500)
+                            + "\n...[摘要生成失败，仅保留原始观察的前部片段；数据不完整，请勿编造、补全或重新编号缺失内容]"
                     : observationText.toString();
             AssistantMessage fallbackMsg = new AssistantMessage("[工具观察摘要(降级)]\n" + fallback);
             return MateClawStateAccessor.output()

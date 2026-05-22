@@ -923,10 +923,10 @@ public class ConversationWindowManager {
                     }
                     String data = r.responseData();
                     if (data != null && data.length() > 500) {
-                        String head = data.substring(0, 200);
-                        String tail = data.substring(data.length() - 200);
+                        String marker = "\n...[trimmed " + data.length() + " chars; "
+                                + StructuredTruncator.FIDELITY_NOTE + "]...\n";
                         newResponses.add(new ToolResponseMessage.ToolResponse(
-                                r.id(), r.name(), head + "\n...[trimmed " + data.length() + " chars]...\n" + tail));
+                                r.id(), r.name(), StructuredTruncator.truncate(data, 200, 200, marker)));
                         changed = true;
                     } else {
                         newResponses.add(r);
@@ -1097,9 +1097,9 @@ public class ConversationWindowManager {
 
             String text = msg.getText();
             if (text != null && text.length() > CONTENT_MAX) {
-                text = text.substring(0, CONTENT_HEAD)
-                        + "\n...[截断 " + text.length() + " 字符]...\n"
-                        + text.substring(text.length() - CONTENT_TAIL);
+                String marker = "\n...[truncated " + text.length() + " chars; "
+                        + StructuredTruncator.FIDELITY_NOTE + "]...\n";
+                text = StructuredTruncator.truncate(text, CONTENT_HEAD, CONTENT_TAIL, marker);
             }
 
             sb.append(role).append(": ").append(text != null ? text : "").append("\n\n");

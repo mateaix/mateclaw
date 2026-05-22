@@ -1,6 +1,7 @@
 package vip.mate.agent.graph.observation;
 
 import lombok.extern.slf4j.Slf4j;
+import vip.mate.agent.context.StructuredTruncator;
 import vip.mate.config.GraphObservationProperties;
 
 import java.util.List;
@@ -94,12 +95,11 @@ public class ObservationProcessor {
         int headLen = (int) (available * effectiveHeadRatio);
         int tailLen = available - headLen;
 
-        String head = text.substring(0, headLen);
-        String tail = text.substring(originalLen - tailLen);
+        String result = StructuredTruncator.truncate(text, headLen, tailLen, marker);
 
         log.info("[Observation] Truncated from {} to {} chars (limit={}, headRatio={})",
-                originalLen, head.length() + tail.length(), maxLen, effectiveHeadRatio);
-        return head + marker + tail;
+                originalLen, result.length(), maxLen, effectiveHeadRatio);
+        return result;
     }
 
     /**

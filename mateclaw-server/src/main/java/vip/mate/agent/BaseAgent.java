@@ -118,6 +118,14 @@ public abstract class BaseAgent {
     protected MultimodalRouter multimodalRouter;
     protected MediaCaptionService mediaCaptionService;
 
+    /**
+     * RFC 48 — wired by {@link AgentGraphBuilder#build} so the agent's
+     * {@code buildInitialState} can inject {@code ACTIVE_GOAL} from the
+     * conversation's active goal row. Nullable when the goal subsystem
+     * is off / not wired (legacy tests with minimal builders).
+     */
+    protected vip.mate.goal.service.GoalService goalService;
+
     /** Locale used when prompting the vision sidecar. Defaults to zh-CN when unset. */
     protected java.util.Locale userLocale = java.util.Locale.SIMPLIFIED_CHINESE;
 
