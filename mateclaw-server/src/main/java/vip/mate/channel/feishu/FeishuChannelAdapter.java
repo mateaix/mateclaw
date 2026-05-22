@@ -377,7 +377,11 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
                         }
                     }
                 })
-                // Silently ignore message reaction events to avoid HandlerNotFoundException
+                // Silently ignore all other IM events to avoid HandlerNotFoundException.
+                // When the SDK receives an event without a registered handler, it throws
+                // HandlerNotFoundException → SDK catches it and sends a 500 response →
+                // the Feishu server may close the WebSocket connection. The exception is
+                // swallowed inside the SDK so it never appears in application logs.
                 .onP2MessageReactionCreatedV1(new ImService.P2MessageReactionCreatedV1Handler() {
                     @Override
                     public void handle(com.lark.oapi.service.im.v1.model.P2MessageReactionCreatedV1 event) {}
@@ -386,10 +390,45 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
                     @Override
                     public void handle(com.lark.oapi.service.im.v1.model.P2MessageReactionDeletedV1 event) {}
                 })
-                // Silently ignore bot added to chat event to avoid HandlerNotFoundException (#153)
+                .onP2MessageReadV1(new ImService.P2MessageReadV1Handler() {
+                    @Override
+                    public void handle(com.lark.oapi.service.im.v1.model.P2MessageReadV1 event) {}
+                })
+                .onP2MessageRecalledV1(new ImService.P2MessageRecalledV1Handler() {
+                    @Override
+                    public void handle(com.lark.oapi.service.im.v1.model.P2MessageRecalledV1 event) {}
+                })
                 .onP2ChatMemberBotAddedV1(new ImService.P2ChatMemberBotAddedV1Handler() {
                     @Override
                     public void handle(com.lark.oapi.service.im.v1.model.P2ChatMemberBotAddedV1 event) {}
+                })
+                .onP2ChatMemberBotDeletedV1(new ImService.P2ChatMemberBotDeletedV1Handler() {
+                    @Override
+                    public void handle(com.lark.oapi.service.im.v1.model.P2ChatMemberBotDeletedV1 event) {}
+                })
+                .onP2ChatMemberUserAddedV1(new ImService.P2ChatMemberUserAddedV1Handler() {
+                    @Override
+                    public void handle(com.lark.oapi.service.im.v1.model.P2ChatMemberUserAddedV1 event) {}
+                })
+                .onP2ChatMemberUserDeletedV1(new ImService.P2ChatMemberUserDeletedV1Handler() {
+                    @Override
+                    public void handle(com.lark.oapi.service.im.v1.model.P2ChatMemberUserDeletedV1 event) {}
+                })
+                .onP2ChatMemberUserWithdrawnV1(new ImService.P2ChatMemberUserWithdrawnV1Handler() {
+                    @Override
+                    public void handle(com.lark.oapi.service.im.v1.model.P2ChatMemberUserWithdrawnV1 event) {}
+                })
+                .onP2ChatUpdatedV1(new ImService.P2ChatUpdatedV1Handler() {
+                    @Override
+                    public void handle(com.lark.oapi.service.im.v1.model.P2ChatUpdatedV1 event) {}
+                })
+                .onP2ChatDisbandedV1(new ImService.P2ChatDisbandedV1Handler() {
+                    @Override
+                    public void handle(com.lark.oapi.service.im.v1.model.P2ChatDisbandedV1 event) {}
+                })
+                .onP2ChatAccessEventBotP2pChatEnteredV1(new ImService.P2ChatAccessEventBotP2pChatEnteredV1Handler() {
+                    @Override
+                    public void handle(com.lark.oapi.service.im.v1.model.P2ChatAccessEventBotP2pChatEnteredV1 event) {}
                 })
                 // Interactive card button clicks (Schema 2.0) — routed through cardDispatcher.
                 // The returned P2CardActionTriggerResponse is how Schema-2.0
