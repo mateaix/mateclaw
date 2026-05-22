@@ -606,6 +606,7 @@ public class AgentBindingService implements AgentBindingResolver {
             "search",
             "browser_use",
             "read_file",
+            "send_file",
             "write_file",
             "edit_file",
             "execute_shell_command",
