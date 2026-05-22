@@ -824,7 +824,17 @@ html.dark .hljs-deletion { color: #e06c75; background: rgba(224, 108, 117, 0.1);
 
 .markdown-body p { margin: 8px 0; }
 .markdown-body ul, .markdown-body ol { padding-left: 1.5rem; margin: 8px 0; }
-.markdown-body table { border-collapse: collapse; width: 100%; margin: 12px 0; }
+.markdown-body table {
+  border-collapse: collapse;
+  /* display:block + overflow-x:auto turns a wide table into its own horizontal
+     scroll region instead of overflowing the message bubble and getting clipped
+     by the list's overflow-x:hidden. Narrow tables still stretch to full width. */
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  margin: 12px 0;
+}
 .markdown-body th, .markdown-body td { border: 1px solid var(--mc-table-border); padding: 8px 12px; text-align: left; }
 .markdown-body th { background: var(--mc-table-header-bg); font-weight: 600; }
 .markdown-body blockquote {

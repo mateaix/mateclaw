@@ -200,6 +200,8 @@ const childProgress = computed(() => {
   color: var(--mc-text-secondary);
   user-select: none;
   transition: color 0.15s;
+  min-width: 0;
+  overflow: hidden;
 }
 .seg-tool__header:hover {
   color: var(--mc-text-primary);

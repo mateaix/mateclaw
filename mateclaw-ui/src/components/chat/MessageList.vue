@@ -226,6 +226,11 @@ watch(
   flex-direction: column;
   gap: 14px;
   min-height: 100%;
+  /* Allow children to shrink below their intrinsic content width so a wide
+     tool-call line or table scrolls/ellipsizes internally instead of pushing
+     the column wider than the (overflow-x: hidden) viewport and getting clipped. */
+  min-width: 0;
+  max-width: 100%;
 }
 
 /* ==================== 空状态 / 欢迎屏 ==================== */
