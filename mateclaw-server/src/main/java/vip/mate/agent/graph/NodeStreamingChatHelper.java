@@ -11,6 +11,7 @@ import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 import vip.mate.channel.web.ChatStreamTracker;
 import vip.mate.llm.chatmodel.AssistantThinkingRelay;
+import vip.mate.llm.chatmodel.ReasoningContentCache;
 
 import reactor.core.Disposable;
 
@@ -333,11 +334,22 @@ public class NodeStreamingChatHelper {
      */
     private static final int CONTENT_REPEAT_CHECK_INTERVAL = 200;
 
-    private static final int MAX_RETRIES = 10;
+    /**
+     * Maximum retry attempts for SERVER_ERROR / transient network failures.
+     * Total LLM calls per turn = MAX_RETRIES + 1 (attempt 0 is the initial,
+     * attempts 1..MAX_RETRIES are the retries). Bumped from 5 to 10 in
+     * commit 1dd99b68 so sustained wiki batch load can ride out provider
+     * flaps without surfacing the error.
+     *
+     * <p>Package-private so {@code LaneDPerformanceFixesTest} can stay in
+     * sync without a magic number — when this value changes again, the
+     * test follows automatically.
+     */
+    static final int MAX_RETRIES = 10;
     // RATE_LIMIT: fail fast to failover chain — staying on the same
     // provider during a rate-limit window wastes time without recovery.
     // SERVER_ERROR keeps MAX_RETRIES (upstream flaps often self-heal).
-    private static final int MAX_RETRIES_RATE_LIMIT = 2;
+    static final int MAX_RETRIES_RATE_LIMIT = 2;
     private static final long BACKOFF_BASE_MS = 3000;
     private static final long BACKOFF_CAP_MS = 60_000;
 
@@ -1195,6 +1207,10 @@ public class NodeStreamingChatHelper {
 
         AssistantMessage assembledMessage = buildAssistantMessageWithThinking(fullContent, fullThinking, finalToolCalls);
 
+        // Cache reasoning_content for MiMo-style providers that require it on
+        // subsequent turns.
+        cacheReasoningContent(fullThinking, finalToolCalls);
+
         recordCacheMetrics(phase, promptTok, completionTok, cacheReadTok, cacheWriteTok);
         return new StreamResult(fullContent, fullThinking, assembledMessage,
                 finalToolCalls, !finalToolCalls.isEmpty(), promptTok, completionTok,
@@ -1223,6 +1239,10 @@ public class NodeStreamingChatHelper {
         }
 
         AssistantMessage assembledMessage = buildAssistantMessageWithThinking(fullContent, fullThinking, finalToolCalls);
+
+        // Cache reasoning_content for MiMo-style providers that require it on
+        // subsequent turns. The cache replays real values instead of empty strings.
+        cacheReasoningContent(fullThinking, finalToolCalls);
 
         recordCacheMetrics(phase, promptTok, completionTok, cacheReadTok, cacheWriteTok);
         return new StreamResult(fullContent, fullThinking, assembledMessage,
@@ -1255,6 +1275,24 @@ public class NodeStreamingChatHelper {
             builder.properties(Map.of("reasoningContent", fullThinking));
         }
         return builder.build();
+    }
+
+    /**
+     * Store reasoning content in the cache for cross-turn replay.
+     * Only caches when there are tool calls (MiMo requires reasoning_content
+     * specifically on assistant messages with tool_calls).
+     */
+    private static void cacheReasoningContent(String fullThinking,
+                                               List<AssistantMessage.ToolCall> toolCalls) {
+        if (fullThinking == null || fullThinking.isBlank()) return;
+        if (toolCalls == null || toolCalls.isEmpty()) return;
+        List<String> ids = toolCalls.stream()
+                .map(AssistantMessage.ToolCall::id)
+                .filter(id -> id != null && !id.isEmpty())
+                .toList();
+        if (!ids.isEmpty()) {
+            ReasoningContentCache.store(ids, fullThinking);
+        }
     }
 
     /**

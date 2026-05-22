@@ -10,6 +10,7 @@ import vip.mate.tool.builtin.ToolExecutionContext;
 import vip.mate.agent.AgentToolSet;
 import vip.mate.agent.GraphEventPublisher;
 import vip.mate.agent.context.ChatOrigin;
+import vip.mate.agent.context.StructuredTruncator;
 import vip.mate.agent.graph.state.DirectToolOutput;
 import vip.mate.agent.graph.state.SourceEvidenceLedger;
 import vip.mate.approval.ApprovalWorkflowService;
@@ -163,21 +164,21 @@ public class ToolExecutionExecutor {
     static String truncateToolResult(String result, int maxChars) {
         if (result == null || result.length() <= maxChars) return result;
         int rawLen = result.length();
-        // 检测尾部 2000 字符是否含错误模式
+        // Detect an error pattern in the trailing 2000 chars and bias toward the tail when present.
         String tailRegion = result.substring(Math.max(0, rawLen - 2000));
         boolean errorDetected = ERROR_TAIL_PATTERN.matcher(tailRegion).find();
         double headRatio = errorDetected ? 0.2 : 0.4;
         if (errorDetected) {
             log.info("[ToolExecutor] Error pattern detected in tail, preserving 80% tail (headRatio=0.2)");
         }
+        String marker = "\n\n...[TRUNCATED: original " + rawLen + " chars, middle omitted. "
+                + StructuredTruncator.FIDELITY_NOTE + "]...\n\n";
         int headLen = (int) (maxChars * headRatio);
-        int tailLen = maxChars - headLen - 80;
+        int tailLen = maxChars - headLen - marker.length();
         if (tailLen <= 0) tailLen = maxChars / 2;
         log.info("[ToolExecutor] Truncated tool result from {} to {} chars (headRatio={})",
                 rawLen, maxChars, headRatio);
-        return result.substring(0, headLen)
-                + "\n\n... [结果已截断，原始 " + rawLen + " 字符，保留首尾关键片段] ...\n\n"
-                + result.substring(rawLen - tailLen);
+        return StructuredTruncator.truncate(result, headLen, tailLen, marker);
     }
 
     private final Map<String, ToolCallback> toolCallbackMap;

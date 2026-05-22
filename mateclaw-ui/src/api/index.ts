@@ -1187,3 +1187,76 @@ export const triggerApi = {
     data?: Record<string, unknown>
   }) => http.post('/triggers/events', envelope),
 }
+
+// ==================== Persistent goals (RFC 48) ====================
+//
+// Snowflake IDs are sent as strings end-to-end — the backend's
+// ToStringSerializer makes responses strings, and request payloads keep
+// them as strings to dodge JS Number precision loss. See CLAUDE.md
+// "ID Handling — Snowflake Precision Convention".
+export interface Goal {
+  id: string
+  conversationId: string
+  agentId: string
+  workspaceId: string
+  createdBy: string
+  title: string
+  description: string
+  exitCriteria?: string | null
+  status: 'active' | 'paused' | 'completed' | 'abandoned' | 'exhausted'
+  turnBudget: number
+  turnsUsed: number
+  llmCallBudget: number
+  agentLlmCallsUsed: number
+  evalLlmCallsUsed: number
+  progressSummary?: string | null
+  completionScore?: number | null
+  lastEvaluationAt?: string | null
+  autoFollowupEnabled: boolean
+  followupCooldownSeconds: number
+  lastFollowupAt?: string | null
+  createTime: string
+  updateTime: string
+}
+
+export interface GoalEvent {
+  id: string
+  goalId: string
+  eventType: string
+  messageId?: string | null
+  detailJson?: string | null
+  createTime: string
+}
+
+export const goalApi = {
+  create: (data: {
+    conversationId: string
+    agentId: string | number
+    workspaceId: string | number
+    title: string
+    description?: string
+    exitCriteria?: string
+    turnBudget?: number
+    llmCallBudget?: number
+    autoFollowupEnabled?: boolean
+    followupCooldownSeconds?: number
+  }) => http.post<Goal>('/goals', data),
+
+  findActive: (conversationId: string) =>
+    http.get<Goal | null>(`/goals/by-conversation/${conversationId}`),
+
+  get: (id: string) => http.get<Goal>(`/goals/${id}`),
+
+  events: (id: string, limit = 100) =>
+    http.get<GoalEvent[]>(`/goals/${id}/events`, { params: { limit } }),
+
+  list: (params?: { status?: string; limit?: number }) =>
+    http.get<Goal[]>('/goals', { params }),
+
+  update: (id: string, data: Partial<Goal>) => http.patch<Goal>(`/goals/${id}`, data),
+  pause: (id: string) => http.post<Goal>(`/goals/${id}/pause`),
+  resume: (id: string) => http.post<Goal>(`/goals/${id}/resume`),
+  abandon: (id: string) => http.post<Goal>(`/goals/${id}/abandon`),
+  addCriterion: (id: string, criterion: string) =>
+    http.post<Goal>(`/goals/${id}/criteria`, { criterion }),
+}

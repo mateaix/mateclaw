@@ -10,7 +10,19 @@
     <!-- 头像 -->
     <div class="msg-avatar" :class="`${role}-avatar`">
       <slot name="avatar">
-        <img v-if="role === 'assistant'" src="/logo/mateclaw_logo_s.png" alt="" class="avatar-logo" />
+        <!-- When the assistant has an active goal, wrap the logo in
+             GoalAvatarRing so the progress ring + breathing halo + hover
+             tooltip all sit naturally around the avatar. The component
+             renders only the slot content when no goal exists, so non-
+             goal turns look identical to before. The followup ↻ glyph
+             appears on messages that came from an auto-followup turn. -->
+        <GoalAvatarRing
+          v-if="role === 'assistant'"
+          :conversation-id="message.conversationId"
+          :show-followup-mark="isFollowupTurn"
+        >
+          <img src="/logo/mateclaw_logo_s.png" alt="" class="avatar-logo" />
+        </GoalAvatarRing>
         <span v-else>{{ avatarIcon }}</span>
       </slot>
     </div>
@@ -18,11 +30,14 @@
     <!-- 消息体 -->
     <div class="msg-body" :class="`${role}-body`">
       <div class="msg-bubble" :class="`${role}-bubble`">
+        <!-- Plan-step panel — always rendered at the top of the bubble whenever
+             this turn has a plan, in both the segmented and fallback render
+             paths, so plan-mode progress is never buried in a collapsed panel. -->
+        <PlanStepsPanel v-if="planMeta" :plan="planMeta" :is-generating="isGenerating" />
+
         <!-- ===== 分段式渲染模式（Claude Code 风格）===== -->
         <template v-if="useSegmentedView">
           <div class="segments-view">
-            <!-- 计划步骤面板（始终显示在 segments 之上） -->
-            <PlanStepsPanel v-if="planMeta" :plan="planMeta" :is-generating="isGenerating" />
             <template v-for="iter in groupedIterations" :key="iter.key">
               <!-- Iteration interrupted before any output landed — surface a chip
                    so the user knows the agent moved on instead of silently
@@ -105,9 +120,6 @@
 
           <Transition name="thinking-slide">
             <div v-if="executionExpanded" class="execution-content">
-              <!-- Plan 步骤进度 -->
-              <PlanStepsPanel v-if="planMeta" :plan="planMeta" :is-generating="isGenerating" />
-
               <!-- 工具调用列表 -->
               <div v-if="toolCallsMeta.length" class="tool-calls">
                 <div
@@ -127,7 +139,7 @@
                 </div>
               </div>
 
-              <div v-if="!toolCallsMeta.length && !planMeta" class="execution-empty">
+              <div v-if="!toolCallsMeta.length" class="execution-empty">
                 {{ currentPhaseName }}...
               </div>
             </div>
@@ -433,6 +445,8 @@ import BrowserTimeline from './BrowserTimeline.vue'
 import ToolCallSegment from './ToolCallSegment.vue'
 import ThinkingSegment from './ThinkingSegment.vue'
 import ContentSegment from './ContentSegment.vue'
+import GoalAvatarRing from '@/components/goal/GoalAvatarRing.vue'
+import { useGoalStore } from '@/stores/useGoalStore'
 import PlanStepsPanel from './PlanStepsPanel.vue'
 import UserMessageContent from './UserMessageContent.vue'
 import type { BrowserAction } from './BrowserTimeline.vue'
@@ -474,6 +488,19 @@ const hovered = ref(false)
 
 const avatarIcon = computed(() => {
   return role.value === 'user' ? props.userIcon : props.assistantIcon
+})
+
+// Followup attribution: an assistant message that opened right after a
+// `goal_followup` SSE event belongs to an auto-followup turn. The chat
+// composable stamps the message via goalStore on `message_start`; this
+// computed reads it back so the ↻ glyph renders on exactly those turns.
+const goalStore = useGoalStore()
+const isFollowupTurn = computed(() => {
+  if (role.value !== 'assistant') return false
+  const cid = props.message.conversationId
+  const mid = props.message.id
+  if (!cid || mid == null) return false
+  return goalStore.isFollowupMessage(String(cid), String(mid))
 })
 
 // --- 错误卡片 ---
@@ -947,8 +974,18 @@ const segments = computed<MessageSegment[]>(() => {
   return segs
 })
 
-/** 是否使用分段模式渲染（有 segments 数据且包含多个分段） */
-const useSegmentedView = computed(() => segments.value.length > 1)
+/**
+ * Use segmented rendering when there are multiple segments, OR when the turn
+ * contains a delegation segment. Delegations live in `segments` but not in
+ * `metadata.toolCalls`, so the fallback path (which only reads toolCalls)
+ * renders nothing for them — a single-step plan that delegates to a subagent
+ * would otherwise show the subagent call as completely invisible. Forcing
+ * segmented view here makes delegation surface as a timeline entry.
+ */
+const useSegmentedView = computed(() =>
+  segments.value.length > 1 ||
+  segments.value.some(s => s.type === 'tool_call' && (s.toolName || '').startsWith('→'))
+)
 
 /**
  * Group segments by iterationIndex so each ReAct iteration renders as its own
@@ -1141,8 +1178,9 @@ const executionPhaseLabel = computed(() => {
 
 const showExecutionPanel = computed(() => {
   if (role.value !== 'assistant') return false
-  // 审批卡片有独立的渲染区域，但 execution panel 也应该在审批阶段展示上下文
-  return toolCallsMeta.value.length > 0 || !!planMeta.value
+  // The plan-step panel renders top-level outside this execution panel,
+  // so plan presence alone no longer keeps an (otherwise empty) panel open.
+  return toolCallsMeta.value.length > 0
     || (isGenerating.value && parsedMetadata.value?.currentPhase)
     || !!pendingApproval.value
 })

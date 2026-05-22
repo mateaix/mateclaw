@@ -547,6 +547,29 @@ public class StateGraphReActAgent extends BaseAgent implements StructuredStreamC
         origin = origin.withConversationId(conversationId)
                 .withWorkspace(origin.workspaceId(), workspaceBasePath);
         inputs.put(CHAT_ORIGIN, origin);
+
+        // RFC 48 — inject active goal snapshot for GoalEvaluationNode.
+        // The node + dispatcher both bail out when ACTIVE_GOAL is absent,
+        // so this is a no-op for conversations without a bound goal.
+        // GOAL_EVALUATED_THIS_RUN explicitly seeded so the FinalAnswer→
+        // GoalEvaluation conditional edge sees a clean false on each new
+        // chat invocation (RFC 48 §6.3 exhaustsBudgetAndStopsLooping
+        // depends on this — every new chat is a fresh evaluation pass).
+        if (goalService != null && conversationId != null && !conversationId.isBlank()) {
+            try {
+                vip.mate.goal.model.GoalEntity active =
+                        goalService.findActiveByConversation(conversationId);
+                if (active != null) {
+                    inputs.put(MateClawStateKeys.ACTIVE_GOAL, active);
+                }
+            } catch (Exception e) {
+                log.warn("[{}] findActiveByConversation failed: {}", agentName, e.getMessage());
+            }
+        }
+        inputs.put(MateClawStateKeys.GOAL_EVALUATED_THIS_RUN, false);
+        inputs.put(MateClawStateKeys.GOAL_FOLLOWUP_INJECTED, false);
+        inputs.put(MateClawStateKeys.GOAL_FOLLOWUP_PROMPT, "");
+
         return inputs;
     }
 

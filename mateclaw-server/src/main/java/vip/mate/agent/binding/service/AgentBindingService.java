@@ -566,6 +566,16 @@ public class AgentBindingService implements AgentBindingResolver {
             "delegateAsync",
             "taskOutput",
             "listAvailableAgents",
+            // Persistent-goal management (RFC 48). These are agent-wide
+            // primitives — the user can decide mid-conversation that this
+            // task is a multi-turn goal, and the assistant must be able to
+            // lock it in. Pre-fix, business agents like "数据分析师" with
+            // tight bindings rejected setGoal as "not in my toolset",
+            // observed during PR4 manual QA.
+            "setGoal",
+            "addGoalCriterion",
+            "completeGoal",
+            "getGoalStatus",
             // Document / media generation — agent-wide capabilities, never
             // declared inside any skill manifest. Pre-Phase-2b these were
             // universally visible; the new gate silently strips them whenever

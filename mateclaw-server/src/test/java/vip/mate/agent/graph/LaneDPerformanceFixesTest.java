@@ -169,7 +169,7 @@ class LaneDPerformanceFixesTest {
         }
 
         @Test
-        @DisplayName("SERVER_ERROR keeps full MAX_RETRIES=5 (not capped like RATE_LIMIT)")
+        @DisplayName("SERVER_ERROR keeps full MAX_RETRIES (not capped like RATE_LIMIT)")
         void serverErrorKeepsFullRetries() {
             AtomicInteger callCount = new AtomicInteger(0);
             ChatModel model = mock(ChatModel.class);
@@ -181,12 +181,17 @@ class LaneDPerformanceFixesTest {
             var helper = helper(model);
             var result = helper.streamCall(model, smallPrompt(), "conv-d2b", "reasoning");
 
-            // SERVER_ERROR should use the full MAX_RETRIES=5 (6 total calls: attempt 0-5),
-            // NOT the reduced MAX_RETRIES_RATE_LIMIT=2.
-            assertTrue(callCount.get() > 3,
-                    "SERVER_ERROR should retry more than RATE_LIMIT (>3 calls), but got " + callCount.get());
-            assertEquals(6, callCount.get(),
-                    "SERVER_ERROR should try 6 times total (attempt 0 through 5)");
+            // SERVER_ERROR should use the full MAX_RETRIES budget, NOT the reduced
+            // MAX_RETRIES_RATE_LIMIT=2. Total calls = MAX_RETRIES + 1 (attempt 0 +
+            // MAX_RETRIES retries). Reading the constant directly keeps this test
+            // in sync if MAX_RETRIES changes again — last bumped 5 -> 10 in
+            // commit 1dd99b68 to ride out provider flaps under wiki batch load.
+            int expectedCalls = NodeStreamingChatHelper.MAX_RETRIES + 1;
+            assertTrue(callCount.get() > NodeStreamingChatHelper.MAX_RETRIES_RATE_LIMIT + 1,
+                    "SERVER_ERROR should retry more than RATE_LIMIT, but got " + callCount.get());
+            assertEquals(expectedCalls, callCount.get(),
+                    "SERVER_ERROR should try " + expectedCalls + " times total " +
+                    "(attempt 0 through " + NodeStreamingChatHelper.MAX_RETRIES + ")");
         }
 
         @Test

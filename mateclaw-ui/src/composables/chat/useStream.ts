@@ -44,6 +44,16 @@ export type SSEEventType =
   | 'delegation_progress'
   | 'delegation_end'
   | 'delegation_child_complete'
+  // Persistent goal events (RFC 48) — emitted by GoalEvaluationNode
+  | 'goal_evaluated'
+  | 'goal_followup'
+  | 'goal_completed'
+  | 'goal_exhausted'
+  // Tool-side goal mutations (GoalManagementTool) — emitted when the
+  // agent invokes setGoal / addGoalCriterion so the store can refresh
+  // without a full page reload.
+  | 'goal_created'
+  | 'goal_updated'
   // Stream lifecycle + per-iteration boundaries (single-turn UX overhaul).
   // The parser handles arbitrary `event:` lines via parseEvent — these names
   // exist in the union purely so TypeScript callers can register handlers
@@ -57,7 +67,6 @@ export type SSEEventType =
   | 'iteration_end'
   | 'content_truncated'
   | 'tool_result_chunk'
-  | 'delegation_batch'
   // Recovery affordance for non-transient errors (ERROR_FALLBACK turns)
   | 'feedback_event'
   // Context compaction lifecycle. Fired by ConversationWindowManager

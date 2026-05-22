@@ -118,7 +118,19 @@ public class DelegateAgentTool {
             // long-term memory surface.
             "remember",
             "remember_structured",
-            "forget_structured"
+            "forget_structured",
+            // RFC 48 — goal ownership is bound to the parent conversation.
+            // A child mutating the parent's goal would let sub-agents
+            // declare the parent's goal "completed" or replace its budget.
+            "setGoal",
+            "addGoalCriterion",
+            "completeGoal",
+            "getGoalStatus",
+            // Employee authoring spawns persistent agents; a delegated child
+            // doing so risks recursive team creation and privilege creep, so
+            // it stays with the parent (same stance as delegate* recursion
+            // guards above). The read-only capability catalog is fine to keep.
+            "create_employee"
     );
 
     /** Executor for parallel delegation — one JDK 21 virtual thread per child agent. */
@@ -878,6 +890,11 @@ public class DelegateAgentTool {
     private ChildResult runSingleChild(int taskIndex, AgentEntity target, String task,
                                         String parentConversationId, String childConversationId,
                                         ChatOrigin parentOrigin) {
+        boolean relayChildEvents = parentConversationId != null && streamTracker.isRunning(parentConversationId);
+        if (relayChildEvents) {
+            streamTracker.register(childConversationId);
+            streamTracker.incrementFlux(childConversationId);
+        }
         DelegationContext.enter(parentConversationId, deniedToolsForChild());
         try {
             long startTime = System.currentTimeMillis();
@@ -897,6 +914,9 @@ public class DelegateAgentTool {
                     taskIndex, target.getName(), e.getMessage());
             return ChildResult.ofError(taskIndex, target.getName(), e.getMessage());
         } finally {
+            if (relayChildEvents) {
+                streamTracker.complete(childConversationId);
+            }
             DelegationContext.exit();
         }
     }
@@ -1097,9 +1117,14 @@ public class DelegateAgentTool {
         return childConvId;
     }
 
+    /** Child event types that are relayed to the parent for the nested delegation timeline. */
+    private static final Set<String> RELAYED_CHILD_EVENTS = Set.of(
+            "tool_call_started", "tool_call_completed", "phase",
+            "plan_created", "plan_step_started", "plan_step_completed");
+
     private Runnable registerRelay(String childConvId, String parentConvId, String childAgentName) {
         return streamTracker.addEventRelay(childConvId, (eventName, jsonData) -> {
-            if ("tool_call_started".equals(eventName) || "tool_call_completed".equals(eventName) || "phase".equals(eventName)) {
+            if (RELAYED_CHILD_EVENTS.contains(eventName)) {
                 try {
                     // Parse jsonData into a plain Object so the frontend receives a proper
                     // JSON object under "data", not a string containing serialized JSON.
@@ -1137,26 +1162,63 @@ public class DelegateAgentTool {
     private Runnable registerBatchedRelay(String childConvId, String parentConvId, String childAgentName) {
         return streamTracker.addBatchedEventRelay(childConvId, parentConvId, 5, 500L,
                 (eventName, jsonData) -> {
-                    if ("tool_call_started".equals(eventName)
-                            || "tool_call_completed".equals(eventName)
-                            || "phase".equals(eventName)) {
-                        try {
-                            Object parsedData;
-                            try {
-                                parsedData = objectMapper.readValue(jsonData, Object.class);
-                            } catch (Exception ignored) {
-                                parsedData = jsonData;
-                            }
-                            streamTracker.broadcastObject(parentConvId, "delegation_progress", Map.of(
-                                    "childConversationId", childConvId,
-                                    "childAgentName", childAgentName,
-                                    "originalEvent", eventName,
-                                    "data", parsedData));
-                        } catch (Exception e) {
-                            log.debug("Batched relay error: {}", e.getMessage());
-                        }
+                    // The batched relay delivers (1) pass-through events directly
+                    // (plan/phase/error) and (2) batched tool-calls as a
+                    // "delegation_batch" envelope. Unpack each form to a stream
+                    // of delegation_progress events on the parent so the frontend
+                    // only handles a single event shape (see useChat delegation_progress).
+                    if ("delegation_batch".equals(eventName)) {
+                        relayBatchEnvelope(jsonData, childConvId, parentConvId, childAgentName);
+                    } else if (RELAYED_CHILD_EVENTS.contains(eventName)) {
+                        relayChildEvent(eventName, jsonData, childConvId, parentConvId, childAgentName);
                     }
                 });
+    }
+
+    /** Forward one child event to the parent as a delegation_progress envelope. */
+    private void relayChildEvent(String eventName, String jsonData,
+                                 String childConvId, String parentConvId, String childAgentName) {
+        try {
+            Object parsedData;
+            try {
+                parsedData = objectMapper.readValue(jsonData, Object.class);
+            } catch (Exception ignored) {
+                parsedData = jsonData;
+            }
+            streamTracker.broadcastObject(parentConvId, "delegation_progress", Map.of(
+                    "childConversationId", childConvId,
+                    "childAgentName", childAgentName,
+                    "originalEvent", eventName,
+                    "data", parsedData));
+        } catch (Exception e) {
+            log.debug("Child event relay error: {}", e.getMessage());
+        }
+    }
+
+    /** Unpack a delegation_batch envelope and replay each entry as delegation_progress. */
+    @SuppressWarnings("unchecked")
+    private void relayBatchEnvelope(String envelopeJson, String childConvId,
+                                    String parentConvId, String childAgentName) {
+        try {
+            Map<String, Object> envelope = objectMapper.readValue(envelopeJson, Map.class);
+            Object eventsObj = envelope.get("events");
+            if (!(eventsObj instanceof List<?> events)) return;
+            for (Object entryObj : events) {
+                if (!(entryObj instanceof Map<?, ?> entry)) continue;
+                Object name = entry.get("event");
+                Object payload = entry.get("data");
+                if (name == null) continue;
+                if (!RELAYED_CHILD_EVENTS.contains(name.toString())) continue;
+                String payloadJson = payload == null
+                        ? "{}"
+                        : (payload instanceof String s ? s : objectMapper.writeValueAsString(payload));
+                relayChildEvent(name.toString(),
+                        payloadJson,
+                        childConvId, parentConvId, childAgentName);
+            }
+        } catch (Exception e) {
+            log.debug("Batch envelope relay error: {}", e.getMessage());
+        }
     }
 
     private void broadcastEnd(String parentConvId, String childConvId, String agentName, ChildResult result) {

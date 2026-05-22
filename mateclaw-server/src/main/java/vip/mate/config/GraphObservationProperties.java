@@ -34,7 +34,9 @@ public class GraphObservationProperties {
     private double headRatio = 0.4;
 
     /** Truncation marker; %d is replaced with original char count. */
-    private String truncationMarker = "\n\n... [内容已截断，共 %d 字符，保留前后关键片段] ...\n\n";
+    private String truncationMarker = "\n\n...[TRUNCATED: %d chars total, middle omitted. Do NOT infer or "
+            + "fabricate omitted content; retrieve the full data (e.g. read_file) or tell the user "
+            + "the result is incomplete.]...\n\n";
 
     /** Tail-keep ratio when an error pattern is detected at the tail (prefer keeping error info). */
     private double errorTailRatio = 0.8;

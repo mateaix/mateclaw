@@ -394,6 +394,11 @@ public class ChatStreamTracker {
                     || "error".equals(eventName)
                     || "tool_approval_requested".equals(eventName)
                     || "phase".equals(eventName)
+                    // Plan lifecycle events from a child agent: flush buffered
+                    // tool calls first so the parent timeline preserves order.
+                    || "plan_created".equals(eventName)
+                    || "plan_step_started".equals(eventName)
+                    || "plan_step_completed".equals(eventName)
                     || "done".equals(eventName);
         }
 

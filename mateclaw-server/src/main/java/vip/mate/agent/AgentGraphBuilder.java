@@ -21,6 +21,7 @@ import vip.mate.agent.graph.edge.ObservationDispatcher;
 import vip.mate.agent.graph.edge.ReasoningDispatcher;
 import vip.mate.agent.graph.lifecycle.ReActLifecycleListener;
 import vip.mate.agent.graph.node.*;
+import vip.mate.agent.graph.state.MateClawStateAccessor;
 import vip.mate.agent.graph.observation.ObservationProcessor;
 import vip.mate.agent.graph.plan.StateGraphPlanExecuteAgent;
 import vip.mate.agent.graph.plan.edge.PlanGenerationDispatcher;
@@ -111,6 +112,10 @@ public class AgentGraphBuilder {
     private final vip.mate.llm.chatmodel.DashScopeChatModelBuilder dashScopeBuilder;
     private final vip.mate.llm.routing.MultimodalRouter multimodalRouter;
     private final vip.mate.llm.routing.MediaCaptionService mediaCaptionService;
+    private final vip.mate.goal.service.GoalService goalService;
+    private final vip.mate.goal.service.GoalEvaluationService goalEvaluationService;
+    private final vip.mate.goal.service.GoalFollowupService goalFollowupService;
+    private final vip.mate.goal.config.GoalProperties goalProperties;
 
     /**
      * Optional audit pipeline. Setter injection (rather than a constructor
@@ -305,6 +310,11 @@ public class AgentGraphBuilder {
         agent.runtimeProviderId = provider != null ? provider.getProviderId() : "";
         agent.runtimeModelConfig = runtimeModel;
         agent.toolSet = toolSet;
+        // RFC 48 — wire the goal lookup so buildInitialState can inject
+        // ACTIVE_GOAL. The node itself stays inert until goalProperties.enabled
+        // flips true, but tests need findActiveByConversation to work even
+        // when the runtime path is disabled.
+        agent.goalService = goalService;
         agent.multimodalRouter = multimodalRouter;
         agent.mediaCaptionService = mediaCaptionService;
         agent.userLocale = resolveLocale();
@@ -467,6 +477,16 @@ public class AgentGraphBuilder {
                     .addStrategy(MateClawStateKeys.SOURCE_EVIDENCE_LEDGER, KeyStrategy.REPLACE)
                     // Multimodal sidecar routing decision for the current turn.
                     .addStrategy(MateClawStateKeys.ROUTING_DECISION, KeyStrategy.REPLACE)
+                    // RFC 48 — persistent goal state keys must be registered in
+                    // BOTH graph KeyStrategyFactory blocks. The architecture
+                    // coverage test only checks "appears somewhere"; the
+                    // GoalStateKeyDoubleRegistrationTest below verifies the
+                    // double registration explicitly.
+                    .addStrategy(MateClawStateKeys.ACTIVE_GOAL, KeyStrategy.REPLACE)
+                    .addStrategy(MateClawStateKeys.GOAL_EVALUATION_RESULT, KeyStrategy.REPLACE)
+                    .addStrategy(MateClawStateKeys.GOAL_FOLLOWUP_INJECTED, KeyStrategy.REPLACE)
+                    .addStrategy(MateClawStateKeys.GOAL_FOLLOWUP_PROMPT, KeyStrategy.REPLACE)
+                    .addStrategy(MateClawStateKeys.GOAL_EVALUATED_THIS_RUN, KeyStrategy.REPLACE)
                     .build();
 
             // Graph 拓扑：
@@ -474,7 +494,16 @@ public class AgentGraphBuilder {
             //   ├→ DIRECT_ANSWER_NODE → END
             //   └→ STEP_EXECUTION → (StepProgressDispatcher)
             //       ├→ STEP_EXECUTION (loop)
-            //       └→ PLAN_SUMMARY → END
+            //       └→ PLAN_SUMMARY → (active goal?)
+            //                          ├→ GOAL_EVALUATION → (followup?)
+            //                          │                     ├→ PLAN_GENERATION (re-plan)
+            //                          │                     └→ END
+            //                          └→ END
+
+            GoalEvaluationNode goalEvalNode = new GoalEvaluationNode(
+                    goalEvaluationService, goalFollowupService, goalService, goalProperties,
+                    conversationWindowManager, conversationService,
+                    vip.mate.goal.service.GraphFlavor.PLAN_EXECUTE);
 
             StateGraph graph = new StateGraph("plan-execute-agent", keyStrategyFactory)
                     .addNode(PlanStateKeys.PLAN_GENERATION_NODE,
@@ -485,6 +514,8 @@ public class AgentGraphBuilder {
                             AsyncNodeAction.node_async(planSummaryNode))
                     .addNode(PlanStateKeys.DIRECT_ANSWER_NODE,
                             AsyncNodeAction.node_async(directAnswerNode))
+                    .addNode(MateClawStateKeys.GOAL_EVALUATION_NODE,
+                            AsyncNodeAction.node_async(goalEvalNode))
                     .addEdge(StateGraph.START, PlanStateKeys.PLAN_GENERATION_NODE)
                     .addConditionalEdges(PlanStateKeys.PLAN_GENERATION_NODE,
                             AsyncEdgeAction.edge_async(new PlanGenerationDispatcher()),
@@ -497,8 +528,43 @@ public class AgentGraphBuilder {
                                     PlanStateKeys.STEP_EXECUTION_NODE, PlanStateKeys.STEP_EXECUTION_NODE,
                                     PlanStateKeys.PLAN_SUMMARY_NODE, PlanStateKeys.PLAN_SUMMARY_NODE,
                                     StateGraph.END, StateGraph.END))
-                    .addEdge(PlanStateKeys.PLAN_SUMMARY_NODE, StateGraph.END)
-                    .addEdge(PlanStateKeys.DIRECT_ANSWER_NODE, StateGraph.END);
+                    .addConditionalEdges(PlanStateKeys.PLAN_SUMMARY_NODE,
+                            AsyncEdgeAction.edge_async(state -> {
+                                MateClawStateAccessor a = new MateClawStateAccessor(state);
+                                boolean hasGoal = a.hasActiveGoal();
+                                boolean already = a.goalEvaluatedThisRun();
+                                return (hasGoal && !already)
+                                        ? MateClawStateKeys.GOAL_EVALUATION_NODE
+                                        : StateGraph.END;
+                            }),
+                            Map.of(
+                                    MateClawStateKeys.GOAL_EVALUATION_NODE, MateClawStateKeys.GOAL_EVALUATION_NODE,
+                                    StateGraph.END, StateGraph.END))
+                    .addConditionalEdges(MateClawStateKeys.GOAL_EVALUATION_NODE,
+                            AsyncEdgeAction.edge_async(new vip.mate.agent.graph.edge.GoalEvaluationDispatcher(
+                                    PlanStateKeys.PLAN_GENERATION_NODE, StateGraph.END)),
+                            Map.of(
+                                    PlanStateKeys.PLAN_GENERATION_NODE, PlanStateKeys.PLAN_GENERATION_NODE,
+                                    StateGraph.END, StateGraph.END))
+                    // DIRECT_ANSWER_NODE handles trivial requests that bypass the
+                    // multi-step plan. For active goals, the direct answer is still
+                    // a turn — without this edge, turns_used / score / completion
+                    // would never tick on plan-execute conversations whose every
+                    // reply happened to be simple enough to short-circuit through
+                    // the direct path. Mirror PLAN_SUMMARY_NODE's gate so non-goal
+                    // turns still go straight to END (no goal node invocation).
+                    .addConditionalEdges(PlanStateKeys.DIRECT_ANSWER_NODE,
+                            AsyncEdgeAction.edge_async(state -> {
+                                MateClawStateAccessor a = new MateClawStateAccessor(state);
+                                boolean hasGoal = a.hasActiveGoal();
+                                boolean already = a.goalEvaluatedThisRun();
+                                return (hasGoal && !already)
+                                        ? MateClawStateKeys.GOAL_EVALUATION_NODE
+                                        : StateGraph.END;
+                            }),
+                            Map.of(
+                                    MateClawStateKeys.GOAL_EVALUATION_NODE, MateClawStateKeys.GOAL_EVALUATION_NODE,
+                                    StateGraph.END, StateGraph.END));
 
             return graph.compile(CompileConfig.builder()
                     .recursionLimit(frameworkRecursionLimit())
@@ -655,7 +721,21 @@ public class AgentGraphBuilder {
                     .addStrategy(MateClawStateKeys.SOURCE_EVIDENCE_LEDGER, KeyStrategy.REPLACE)
                     // Multimodal sidecar routing decision for the current turn.
                     .addStrategy(MateClawStateKeys.ROUTING_DECISION, KeyStrategy.REPLACE)
+                    // RFC 48 — persistent goal state keys must be registered in
+                    // BOTH graph KeyStrategyFactory blocks. See
+                    // GoalStateKeyDoubleRegistrationTest for the strict
+                    // double-registration check.
+                    .addStrategy(MateClawStateKeys.ACTIVE_GOAL, KeyStrategy.REPLACE)
+                    .addStrategy(MateClawStateKeys.GOAL_EVALUATION_RESULT, KeyStrategy.REPLACE)
+                    .addStrategy(MateClawStateKeys.GOAL_FOLLOWUP_INJECTED, KeyStrategy.REPLACE)
+                    .addStrategy(MateClawStateKeys.GOAL_FOLLOWUP_PROMPT, KeyStrategy.REPLACE)
+                    .addStrategy(MateClawStateKeys.GOAL_EVALUATED_THIS_RUN, KeyStrategy.REPLACE)
                     .build();
+
+            GoalEvaluationNode goalEvalNode = new GoalEvaluationNode(
+                    goalEvaluationService, goalFollowupService, goalService, goalProperties,
+                    conversationWindowManager, conversationService,
+                    vip.mate.goal.service.GraphFlavor.REACT);
 
             StateGraph graph = new StateGraph("react-agent-v2", keyStrategyFactory)
                     .addNode(MateClawStateKeys.REASONING_NODE,
@@ -670,6 +750,8 @@ public class AgentGraphBuilder {
                             AsyncNodeAction.node_async(limitExceededNode))
                     .addNode(MateClawStateKeys.FINAL_ANSWER_NODE,
                             AsyncNodeAction.node_async(finalAnswerNode))
+                    .addNode(MateClawStateKeys.GOAL_EVALUATION_NODE,
+                            AsyncNodeAction.node_async(goalEvalNode))
                     .addEdge(StateGraph.START, MateClawStateKeys.REASONING_NODE)
                     .addConditionalEdges(MateClawStateKeys.REASONING_NODE,
                             AsyncEdgeAction.edge_async(new ReasoningDispatcher()),
@@ -686,7 +768,26 @@ public class AgentGraphBuilder {
                                     MateClawStateKeys.FINAL_ANSWER_NODE, MateClawStateKeys.FINAL_ANSWER_NODE))
                     .addEdge(MateClawStateKeys.SUMMARIZING_NODE, MateClawStateKeys.REASONING_NODE)
                     .addEdge(MateClawStateKeys.LIMIT_EXCEEDED_NODE, MateClawStateKeys.FINAL_ANSWER_NODE)
-                    .addEdge(MateClawStateKeys.FINAL_ANSWER_NODE, StateGraph.END);
+                    // FinalAnswer -> (active goal && not yet evaluated this run) ? GoalEvaluation : END
+                    .addConditionalEdges(MateClawStateKeys.FINAL_ANSWER_NODE,
+                            AsyncEdgeAction.edge_async(state -> {
+                                MateClawStateAccessor a = new MateClawStateAccessor(state);
+                                boolean hasGoal = a.hasActiveGoal();
+                                boolean already = a.goalEvaluatedThisRun();
+                                return (hasGoal && !already)
+                                        ? MateClawStateKeys.GOAL_EVALUATION_NODE
+                                        : StateGraph.END;
+                            }),
+                            Map.of(
+                                    MateClawStateKeys.GOAL_EVALUATION_NODE, MateClawStateKeys.GOAL_EVALUATION_NODE,
+                                    StateGraph.END, StateGraph.END))
+                    // GoalEvaluation -> (followup injected) ? Reasoning : END
+                    .addConditionalEdges(MateClawStateKeys.GOAL_EVALUATION_NODE,
+                            AsyncEdgeAction.edge_async(new vip.mate.agent.graph.edge.GoalEvaluationDispatcher(
+                                    MateClawStateKeys.REASONING_NODE, StateGraph.END)),
+                            Map.of(
+                                    MateClawStateKeys.REASONING_NODE, MateClawStateKeys.REASONING_NODE,
+                                    StateGraph.END, StateGraph.END));
 
             return graph.compile(CompileConfig.builder()
                     .recursionLimit(frameworkRecursionLimit())
