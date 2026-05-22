@@ -1161,6 +1161,8 @@ export default {
       extraInstructionsHint: 'Optional. Use for output format, process checklists, or boundary rules.',
       maxIterations: 'Max Iterations',
       defaultThinkingLevel: 'Default Thinking Level',
+      workspaceBasePath: 'Working Directory',
+      workspaceBasePathHint: 'Optional. Set a dedicated working directory for this employee (relative to workspace root). Leave blank to inherit the workspace default.',
       modelName: 'Model',
       modelGlobalDefault: 'Use global default',
       modelHint: 'Override the global default model for this employee. Leave blank to follow Settings → Models.',
@@ -1196,6 +1198,7 @@ export default {
       backstory: 'e.g. Spent 10 years in data — believes in asking the right question before writing SQL...',
       extraInstructions: 'Optional: output format, process checklist, or boundary rules...',
       tags: 'tag1,tag2',
+      workspaceBasePath: 'e.g. projects/code-review',
     },
     messages: {
       noDescription: 'No description',

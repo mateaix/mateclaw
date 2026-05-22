@@ -324,13 +324,16 @@ public class AgentGraphBuilder {
         agent.topP = runtimeModel.getTopP();
         agent.toolCallingEnabled = toolCallingEnabled;
 
-        // 查找工作区活动目录
-        if (entity.getWorkspaceId() != null) {
+        // Agent 级别覆盖优先，否则继承工作区
+        if (entity.getWorkspaceBasePath() != null && !entity.getWorkspaceBasePath().isBlank()) {
+            agent.workspaceBasePath = entity.getWorkspaceBasePath();
+            log.info("Agent {} using agent-level basePath: {}", entity.getName(), agent.workspaceBasePath);
+        } else if (entity.getWorkspaceId() != null) {
             try {
                 var workspace = workspaceService.getById(entity.getWorkspaceId());
                 if (workspace != null && workspace.getBasePath() != null && !workspace.getBasePath().isBlank()) {
                     agent.workspaceBasePath = workspace.getBasePath();
-                    log.info("Agent {} bound to workspace basePath: {}", entity.getName(), agent.workspaceBasePath);
+                    log.info("Agent {} inherited workspace basePath: {}", entity.getName(), agent.workspaceBasePath);
                 }
             } catch (Exception e) {
                 log.warn("Failed to lookup workspace basePath for agent {}: {}", entity.getName(), e.getMessage());
