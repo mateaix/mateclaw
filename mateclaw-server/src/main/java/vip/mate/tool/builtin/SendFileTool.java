@@ -82,9 +82,6 @@ public class SendFileTool {
             @ToolParam(description = "Display name for the file (e.g. 'report.pdf'). Omit to use the original filename", required = false) String fileName,
             @Nullable ToolContext ctx) {
 
-        JSONObject result = new JSONObject();
-        result.set("filePath", filePath);
-
         try {
             Path path;
             try {
@@ -123,15 +120,17 @@ public class SendFileTool {
             String mimeType = resolveMimeType(displayName);
 
             String url = stash(bytes, displayName, mimeType);
-            result.set("status", "sent");
-            result.set("fileName", displayName);
-            result.set("fileSize", fileSize);
-            result.set("url", url);
 
             log.info("[SendFile] Sending {} ({}, {} bytes) via generated file cache",
                     displayName, mimeType, fileSize);
 
-            return JSONUtil.toJsonPrettyStr(result);
+            // Return in the same format as GeneratedFileLink so the channel
+            // adapter's GeneratedFileScrubber detects the URL and sends the
+            // file as a native attachment. The LLM MUST echo the URL in its
+            // reply for the scrubber to pick it up.
+            return displayName + " 已发送：[" + displayName + "](" + url + ")（链接 10 分钟内有效）。\n"
+                    + "重要：回答用户时**必须**使用上述相对路径 `" + url + "`，"
+                    + "**不要**添加任何 https://、http:// 域名前缀，前端会自动拼接当前主机。";
 
         } catch (Exception e) {
             log.error("[SendFile] Failed to send file: {}", e.getMessage(), e);
