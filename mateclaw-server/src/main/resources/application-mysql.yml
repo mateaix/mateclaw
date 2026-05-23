@@ -17,7 +17,15 @@ spring:
     driver-class-name: com.mysql.cj.jdbc.Driver
     username: ${DB_USERNAME:root}
     password: ${DB_PASSWORD:mateclaw123}
-
+    # Hikari连接池配置
+    hikari:
+      connection-timeout: 30000
+      maximum-pool-size: 20
+      minimum-idle: 10
+      idle-timeout: 600000
+      max-lifetime: 1800000
+      connection-test-query: SELECT 1
+      pool-name: HikariPool-Mate-Claw
   flyway:
     locations:
       - classpath:db/migration/mysql
