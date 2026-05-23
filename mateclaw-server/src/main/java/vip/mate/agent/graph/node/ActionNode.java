@@ -2,6 +2,8 @@ package vip.mate.agent.graph.node;
 
 import com.alibaba.cloud.ai.graph.OverAllState;
 import com.alibaba.cloud.ai.graph.action.NodeAction;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
@@ -27,6 +29,14 @@ import static vip.mate.agent.graph.state.MateClawStateKeys.*;
  */
 @Slf4j
 public class ActionNode implements NodeAction {
+
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+
+    /** Function name of the explicit skill-load tool, mirrored from SkillLoadTool. */
+    private static final String LOAD_SKILL_TOOL = "load_skill";
+
+    /** Function name of the extension-tool activator, mirrored from EnableExtensionTool. */
+    private static final String ENABLE_TOOL = "enable_tool";
 
     private final ToolExecutionExecutor executor;
     private final vip.mate.channel.web.ChatStreamTracker streamTracker;
@@ -133,6 +143,98 @@ public class ActionNode implements NodeAction {
             output.forcedToolCall("");
         }
 
+        // Pin skills the model loaded this run so the next reasoning turn's
+        // catalog ranks them first and the model stops re-loading the same
+        // skill it already pulled into message history. Tools cannot mutate
+        // graph state directly, so the load is detected here from the tool
+        // calls and merged into LOADED_SKILLS (read-merge-write, REPLACE key).
+        Set<String> requestedSkills = extractLoadedSkillNames(toolCalls);
+        if (!requestedSkills.isEmpty()) {
+            Set<String> merged = new LinkedHashSet<>(accessor.loadedSkills());
+            if (merged.addAll(requestedSkills)) {
+                output.loadedSkills(Set.copyOf(merged));
+            }
+        }
+
+        // Same mechanism for enable_tool: record the activated extension tools so
+        // ReasoningNode's next turn adds them back to the advertised callbacks.
+        Set<String> enabledTools = extractEnabledToolNames(toolCalls);
+        if (!enabledTools.isEmpty()) {
+            Set<String> merged = new LinkedHashSet<>(accessor.enabledExtensionTools());
+            if (merged.addAll(enabledTools)) {
+                output.enabledExtensionTools(Set.copyOf(merged));
+            }
+        }
+
         return output.build();
+    }
+
+    /**
+     * Extract the {@code toolName} argument of every {@code enable_tool} call in
+     * this batch. Like {@link #extractLoadedSkillNames}, an unknown name is
+     * harmless: the reasoning-node split only activates names that resolve to an
+     * extension-tier tool actually in the agent's set.
+     */
+    static Set<String> extractEnabledToolNames(List<AssistantMessage.ToolCall> toolCalls) {
+        if (toolCalls == null || toolCalls.isEmpty()) {
+            return Set.of();
+        }
+        Set<String> names = new LinkedHashSet<>();
+        for (AssistantMessage.ToolCall tc : toolCalls) {
+            if (tc == null || !ENABLE_TOOL.equals(tc.name())) {
+                continue;
+            }
+            String name = parseStringArg(tc.arguments(), "toolName", "tool_name", "name");
+            if (name != null && !name.isBlank()) {
+                names.add(name.trim());
+            }
+        }
+        return names;
+    }
+
+    /**
+     * Extract the {@code skillName} argument of every {@code load_skill} call in
+     * this batch. The names are used only to bias catalog ordering, so an
+     * unparseable or unknown name is harmless (it simply never matches a
+     * visible skill) — failures are swallowed rather than aborting the batch.
+     */
+    static Set<String> extractLoadedSkillNames(List<AssistantMessage.ToolCall> toolCalls) {
+        if (toolCalls == null || toolCalls.isEmpty()) {
+            return Set.of();
+        }
+        Set<String> names = new LinkedHashSet<>();
+        for (AssistantMessage.ToolCall tc : toolCalls) {
+            if (tc == null || !LOAD_SKILL_TOOL.equals(tc.name())) {
+                continue;
+            }
+            String name = parseStringArg(tc.arguments(), "skillName", "skill_name", "name");
+            if (name != null && !name.isBlank()) {
+                names.add(name.trim());
+            }
+        }
+        return names;
+    }
+
+    /**
+     * Read the first present, non-null string value among {@code keys} from a
+     * tool-call arguments JSON object. Returns null on malformed JSON or when
+     * none of the keys are present.
+     */
+    private static String parseStringArg(String argumentsJson, String... keys) {
+        if (argumentsJson == null || argumentsJson.isBlank()) {
+            return null;
+        }
+        try {
+            JsonNode node = OBJECT_MAPPER.readTree(argumentsJson);
+            for (String key : keys) {
+                JsonNode value = node.get(key);
+                if (value != null && !value.isNull()) {
+                    return value.asText();
+                }
+            }
+            return null;
+        } catch (Exception e) {
+            return null;
+        }
     }
 }

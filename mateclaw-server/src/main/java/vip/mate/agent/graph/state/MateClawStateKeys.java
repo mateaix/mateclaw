@@ -222,4 +222,32 @@ public final class MateClawStateKeys {
      * workspace context.
      */
     public static final String CHAT_ORIGIN = "chat_origin";
+
+    // ===== Skill progressive disclosure (REPLACE strategy) =====
+
+    /**
+     * Names of skills explicitly loaded via the {@code load_skill} tool during
+     * this graph run. Stored as a {@code Set<String>} and used to pin recently
+     * loaded skills to the top of the runtime skill catalog so a multi-iteration
+     * loop stops re-loading the same skill it already pulled into message
+     * history. ActionNode reads the prior value and writes back the merged set
+     * (read-merge-write under the REPLACE strategy).
+     * <p>
+     * MUST be registered in both the ReAct and Plan-Execute KeyStrategyFactory
+     * blocks or the framework will drop it on multi-node merges, leaving the
+     * catalog ranker blind to in-run loads.
+     */
+    public static final String LOADED_SKILLS = "loaded_skills";
+
+    /**
+     * Function names of extension-tier tools activated via {@code enable_tool}
+     * during this run. Stored as a {@code Set<String>}; ReasoningNode adds these
+     * back to the active tool callbacks on its next turn so an enabled extension
+     * tool becomes callable within the same ReAct loop. ActionNode reads the
+     * prior value and writes back the merged set (read-merge-write under REPLACE).
+     * <p>
+     * MUST be registered in both KeyStrategyFactory blocks (see
+     * {@link #LOADED_SKILLS}).
+     */
+    public static final String ENABLED_EXTENSION_TOOLS = "enabled_extension_tools";
 }

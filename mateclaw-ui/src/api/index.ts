@@ -431,6 +431,13 @@ export const toolApi = {
   delete: (id: string | number) => http.delete(`/tools/${id}`),
   toggle: (id: string | number, enabled: boolean) =>
     http.put(`/tools/${id}/toggle?enabled=${enabled}`),
+  /**
+   * Set a builtin/channel tool's progressive-disclosure tier
+   * ('core' | 'extension'). MCP/ACP/skill tools are tiered at their owning
+   * source and return 409 here.
+   */
+  setDisclosureTier: (id: string | number, tier: 'core' | 'extension') =>
+    http.put(`/tools/${id}/disclosure-tier`, { tier }),
 }
 
 // ==================== Channel ====================
@@ -486,6 +493,9 @@ export const mcpApi = {
     http.put(`/mcp/servers/${id}/toggle?enabled=${enabled}`),
   test: (id: string | number) => http.post(`/mcp/servers/${id}/test`),
   refresh: () => http.post('/mcp/servers/refresh'),
+  /** Set the whole server's tool disclosure tier ('core' | 'extension'). */
+  setDisclosureTier: (id: string | number, tier: 'core' | 'extension') =>
+    http.put(`/mcp/servers/${id}/disclosure-tier`, { tier }),
 }
 
 // ==================== Plan ====================

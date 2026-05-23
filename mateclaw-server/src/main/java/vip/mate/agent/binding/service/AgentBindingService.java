@@ -544,8 +544,13 @@ public class AgentBindingService implements AgentBindingResolver {
             // CRUD primitives above — a skill-bound agent must still be able
             // to locate a fact by keyword instead of reading whole files.
             "search_workspace_memory",
+            // Progressive tool disclosure — meta tool that activates an
+            // extension-tier tool for the rest of the conversation. Must be
+            // agent-wide so the model can always surface hidden tools.
+            "enable_tool",
             // Skill discovery / dispatch — skills are docs, not callables;
             // these helpers let the LLM read SKILL.md / run scripts.
+            "load_skill",
             "readSkillFile",
             "runSkillScript",
             "listSkillFiles",

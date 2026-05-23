@@ -59,6 +59,15 @@ public class ToolEntity {
      */
     private Long channelId;
 
+    /**
+     * Progressive disclosure tier: {@code core} (always advertised to the LLM)
+     * or {@code extension} (hidden behind the extension-tools catalog until the
+     * model calls {@code enable_tool}). Admin override for builtin / channel
+     * atomic tools; sensible defaults for unset rows live in
+     * {@code ToolDisclosureService}.
+     */
+    private String disclosureTier;
+
     @TableField(fill = FieldFill.INSERT)
     private LocalDateTime createTime;
 

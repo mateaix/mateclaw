@@ -152,6 +152,19 @@ public class McpServerService {
         return entity;
     }
 
+    /**
+     * Set the disclosure tier ({@code core} / {@code extension}) for the whole
+     * server's tool group. No reconnect needed — tiering only affects how the
+     * tools are advertised to the LLM.
+     */
+    public McpServerEntity setDisclosureTier(Long id, String tier) {
+        McpServerEntity entity = getById(id);
+        entity.setDisclosureTier(vip.mate.tool.disclosure.DisclosureTier.fromToken(tier).token());
+        mcpServerMapper.updateById(entity);
+        log.info("MCP server disclosure tier set: name={}, tier={}", entity.getName(), entity.getDisclosureTier());
+        return entity;
+    }
+
     // ==================== Runtime Operations ====================
 
     public ConnectionResult testConnection(McpServerEntity entity) {
@@ -264,6 +277,9 @@ public class McpServerService {
         copy.setLastConnectedTime(entity.getLastConnectedTime());
         copy.setToolCount(entity.getToolCount());
         copy.setBuiltin(entity.getBuiltin());
+        // Disclosure tier is not sensitive and the UI relies on it to render the
+        // per-server core/extension pill — dropping it made the field always null.
+        copy.setDisclosureTier(entity.getDisclosureTier());
         copy.setCreateTime(entity.getCreateTime());
         copy.setUpdateTime(entity.getUpdateTime());
 

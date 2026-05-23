@@ -508,6 +508,9 @@ export interface Tool {
   paramsSchema?: string
   enabled: boolean
   builtin?: boolean
+  /** Progressive-disclosure tier: 'core' | 'extension'. Null/absent = core. */
+  disclosureTier?: string
+  channelId?: string | number
   createTime: string
 }
 

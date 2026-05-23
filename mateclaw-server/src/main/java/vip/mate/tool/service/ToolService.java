@@ -73,4 +73,16 @@ public class ToolService {
         toolMapper.updateById(tool);
         return tool;
     }
+
+    /**
+     * Set the disclosure tier ({@code core} / {@code extension}) of a builtin or
+     * channel atomic tool. MCP / ACP / skill tools are tiered at their owning
+     * source, not here — the controller rejects those before calling this.
+     */
+    public ToolEntity setDisclosureTier(Long id, String tier) {
+        ToolEntity tool = getTool(id);
+        tool.setDisclosureTier(vip.mate.tool.disclosure.DisclosureTier.fromToken(tier).token());
+        toolMapper.updateById(tool);
+        return tool;
+    }
 }

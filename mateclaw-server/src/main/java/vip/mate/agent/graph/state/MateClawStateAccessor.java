@@ -228,6 +228,26 @@ public final class MateClawStateAccessor {
         return state.<ChatOrigin>value(CHAT_ORIGIN).orElse(ChatOrigin.EMPTY);
     }
 
+    // ===== Skill progressive disclosure =====
+
+    /**
+     * Skills loaded via {@code load_skill} so far this run. Empty when none
+     * have been loaded (the common first-iteration case).
+     */
+    @SuppressWarnings("unchecked")
+    public Set<String> loadedSkills() {
+        return state.<Set<String>>value(LOADED_SKILLS).orElse(Set.of());
+    }
+
+    /**
+     * Extension tools activated via {@code enable_tool} so far this run. Empty
+     * when none have been enabled (the common case).
+     */
+    @SuppressWarnings("unchecked")
+    public Set<String> enabledExtensionTools() {
+        return state.<Set<String>>value(ENABLED_EXTENSION_TOOLS).orElse(Set.of());
+    }
+
     // ===== Token Usage =====
 
     public int promptTokens() {
@@ -472,6 +492,16 @@ public final class MateClawStateAccessor {
         // ---- RFC-063r: ChatOrigin ----
         public OutputBuilder chatOrigin(ChatOrigin origin) {
             return put(CHAT_ORIGIN, origin);
+        }
+
+        // ---- Skill progressive disclosure ----
+        public OutputBuilder loadedSkills(Set<String> names) {
+            return put(LOADED_SKILLS, names);
+        }
+
+        // ---- Tool progressive disclosure ----
+        public OutputBuilder enabledExtensionTools(Set<String> names) {
+            return put(ENABLED_EXTENSION_TOOLS, names);
         }
 
         // ---- Token Usage ----

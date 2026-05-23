@@ -102,6 +102,18 @@ public class ReasoningNode implements NodeAction {
 
     private final ChatModel chatModel;
     private final List<ToolCallback> toolCallbacks;
+    /**
+     * Full agent tool set, used for the per-turn disclosure split. Null in the
+     * legacy {@code (ChatModel, List)} path — that path falls back to
+     * {@link #toolCallbacks} verbatim with no split.
+     */
+    private final AgentToolSet toolSet;
+    /**
+     * Splits tools into core + already-enabled extensions per
+     * {@code ENABLED_EXTENSION_TOOLS}. Null disables the split (advertise the
+     * full {@link #toolCallbacks}).
+     */
+    private final vip.mate.tool.disclosure.ToolDisclosureService toolDisclosureService;
     private final String reasoningEffort;
     /**
      * PR-1.2 (RFC-049 L1-B): Whether the bound model's {@code ModelFamily} accepts
@@ -116,6 +128,12 @@ public class ReasoningNode implements NodeAction {
     private final int maxOutputTokens;
     /** Wiki 相关性注入（可选，null 时跳过） */
     private final vip.mate.wiki.service.WikiContextService wikiContextService;
+    /**
+     * Renders the {@code ## Skills} catalog each turn so its ordering reacts to
+     * skills loaded this run (load_skill pins). Null in legacy / test
+     * constructors — when null, no catalog segment is appended.
+     */
+    private final vip.mate.skill.runtime.SkillCatalogRenderer skillCatalogRenderer;
 
     public ReasoningNode(ChatModel chatModel, AgentToolSet toolSet, String reasoningEffort,
                          NodeStreamingChatHelper streamingHelper,
@@ -159,8 +177,45 @@ public class ReasoningNode implements NodeAction {
                          ConversationWindowManager conversationWindowManager,
                          ChatStreamTracker streamTracker, int maxOutputTokens,
                          vip.mate.wiki.service.WikiContextService wikiContextService) {
+        this(chatModel, toolSet, reasoningEffort, supportsReasoningEffort, streamingHelper,
+                conversationWindowManager, streamTracker, maxOutputTokens, wikiContextService, null);
+    }
+
+    /**
+     * Primary constructor with the runtime {@link vip.mate.skill.runtime.SkillCatalogRenderer}.
+     * The catalog is rendered each turn (ordered by skills loaded this run)
+     * instead of being baked into the system prompt, so the prompt-cache prefix
+     * stays stable and load_skill pins float to the top.
+     */
+    public ReasoningNode(ChatModel chatModel, AgentToolSet toolSet, String reasoningEffort,
+                         boolean supportsReasoningEffort,
+                         NodeStreamingChatHelper streamingHelper,
+                         ConversationWindowManager conversationWindowManager,
+                         ChatStreamTracker streamTracker, int maxOutputTokens,
+                         vip.mate.wiki.service.WikiContextService wikiContextService,
+                         vip.mate.skill.runtime.SkillCatalogRenderer skillCatalogRenderer) {
+        this(chatModel, toolSet, reasoningEffort, supportsReasoningEffort, streamingHelper,
+                conversationWindowManager, streamTracker, maxOutputTokens, wikiContextService,
+                skillCatalogRenderer, null);
+    }
+
+    /**
+     * Primary constructor with the {@link vip.mate.tool.disclosure.ToolDisclosureService}.
+     * When non-null, {@code buildChatOptions} advertises only core tools plus
+     * the extensions enabled this run; when null, the full tool set is advertised.
+     */
+    public ReasoningNode(ChatModel chatModel, AgentToolSet toolSet, String reasoningEffort,
+                         boolean supportsReasoningEffort,
+                         NodeStreamingChatHelper streamingHelper,
+                         ConversationWindowManager conversationWindowManager,
+                         ChatStreamTracker streamTracker, int maxOutputTokens,
+                         vip.mate.wiki.service.WikiContextService wikiContextService,
+                         vip.mate.skill.runtime.SkillCatalogRenderer skillCatalogRenderer,
+                         vip.mate.tool.disclosure.ToolDisclosureService toolDisclosureService) {
         this.chatModel = chatModel;
+        this.toolSet = toolSet;
         this.toolCallbacks = toolSet.callbacks();
+        this.toolDisclosureService = toolDisclosureService;
         this.reasoningEffort = reasoningEffort;
         this.supportsReasoningEffort = supportsReasoningEffort;
         this.streamingHelper = streamingHelper;
@@ -168,6 +223,7 @@ public class ReasoningNode implements NodeAction {
         this.streamTracker = streamTracker;
         this.maxOutputTokens = maxOutputTokens > 0 ? maxOutputTokens : DEFAULT_MAX_OUTPUT_TOKENS;
         this.wikiContextService = wikiContextService;
+        this.skillCatalogRenderer = skillCatalogRenderer;
     }
 
     public ReasoningNode(ChatModel chatModel, AgentToolSet toolSet, String reasoningEffort,
@@ -192,7 +248,9 @@ public class ReasoningNode implements NodeAction {
     @Deprecated
     public ReasoningNode(ChatModel chatModel, List<ToolCallback> toolCallbacks) {
         this.chatModel = chatModel;
+        this.toolSet = null;
         this.toolCallbacks = toolCallbacks;
+        this.toolDisclosureService = null;
         this.reasoningEffort = null;
         this.supportsReasoningEffort = false;
         this.streamingHelper = null;
@@ -200,6 +258,7 @@ public class ReasoningNode implements NodeAction {
         this.streamTracker = null;
         this.maxOutputTokens = DEFAULT_MAX_OUTPUT_TOKENS;
         this.wikiContextService = null;
+        this.skillCatalogRenderer = null;
     }
 
     @Override
@@ -350,6 +409,18 @@ public class ReasoningNode implements NodeAction {
         List<Message> nonHistoryPrefix = buildNonHistoryPrefix(systemPrompt, workspaceBasePath, agentIdStr, userMsg,
                 accessor.chatOrigin());
 
+        // Append the runtime-rendered skill catalog as a SEPARATE SystemMessage
+        // right after the skeleton system prompt. Keeping it out of the baked
+        // prompt keeps the stable prefix's prompt-cache hash intact, while
+        // re-rendering each turn lets skills loaded this run (load_skill) pin
+        // to the top of the catalog. Reused verbatim by the PTL retry branch.
+        if (skillCatalogRenderer != null) {
+            String skillCatalog = skillCatalogRenderer.render(accessor.loadedSkills());
+            if (skillCatalog != null && !skillCatalog.isBlank()) {
+                nonHistoryPrefix.add(1, new SystemMessage(skillCatalog));
+            }
+        }
+
         if (conversationWindowManager != null) {
             // Pass conversationId + workspaceBasePath so oversized older
             // tool results can be spilled to the workspace spill directory
@@ -366,7 +437,15 @@ public class ReasoningNode implements NodeAction {
         log.info("[ReasoningNode] thinkingLevel={}, effectiveReasoningEffort={}, nodeDefault={}",
                 ThinkingLevelHolder.get(), effectiveReasoning, this.reasoningEffort);
 
-        ChatOptions options = buildChatOptions(effectiveReasoning);
+        // Progressive disclosure: advertise only core tools plus the extensions
+        // enabled this run, computed fresh each turn from ENABLED_EXTENSION_TOOLS
+        // so an enable_tool call earlier in this loop takes effect immediately.
+        // Falls back to the full tool set when no disclosure service is wired.
+        List<ToolCallback> activeCallbacks = (toolDisclosureService != null && toolSet != null)
+                ? toolDisclosureService.split(toolSet, accessor.enabledExtensionTools()).activeCallbacks()
+                : toolCallbacks;
+
+        ChatOptions options = buildChatOptions(effectiveReasoning, activeCallbacks);
 
         Prompt prompt = new Prompt(promptMessages, options);
 
@@ -376,7 +455,7 @@ public class ReasoningNode implements NodeAction {
         // PTL compact retry 会再 +1。
         int nextLlmCallCount = accessor.llmCallCount() + 1;
         log.debug("[ReasoningNode] Calling LLM with {} messages, {} tool definitions, iteration {}/{}, llmCallCount={}",
-                promptMessages.size(), toolCallbacks.size(),
+                promptMessages.size(), activeCallbacks.size(),
                 accessor.iterationCount(), accessor.maxIterations(), nextLlmCallCount);
 
         GraphEventPublisher.GraphEvent phaseEvent = GraphEventPublisher.phase("reasoning",
@@ -742,12 +821,12 @@ public class ReasoningNode implements NodeAction {
      * - AnthropicChatModel → AnthropicChatOptions（支持 extended thinking）
      * - 其他（OpenAI/DashScope）→ OpenAiChatOptions（支持 reasoningEffort）
      */
-    private ChatOptions buildChatOptions(String effectiveReasoning) {
+    private ChatOptions buildChatOptions(String effectiveReasoning, List<ToolCallback> activeCallbacks) {
         // Anthropic 协议模型（AnthropicChatModel）：MiniMax 也用此协议但不支持 thinking
         if (chatModel instanceof org.springframework.ai.anthropic.AnthropicChatModel anthropicModel) {
             org.springframework.ai.anthropic.AnthropicChatOptions.Builder builder =
                     org.springframework.ai.anthropic.AnthropicChatOptions.builder()
-                    .toolCallbacks(toolCallbacks)
+                    .toolCallbacks(activeCallbacks)
                     .internalToolExecutionEnabled(false);
 
             // 仅对真正的 Claude 模型启用 extended thinking（MiniMax 等走 Anthropic 协议但不支持）
@@ -792,7 +871,7 @@ public class ReasoningNode implements NodeAction {
             effectiveMaxTokens = DASHSCOPE_MAX_OUTPUT_TOKENS;
         }
         OpenAiChatOptions.Builder oaiBuilder = OpenAiChatOptions.builder()
-                .toolCallbacks(toolCallbacks)
+                .toolCallbacks(activeCallbacks)
                 .maxTokens(effectiveMaxTokens);
         if (StringUtils.hasText(effectiveReasoning)) {
             oaiBuilder.reasoningEffort(effectiveReasoning);

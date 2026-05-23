@@ -1541,6 +1541,12 @@ export default {
       enable: '启用',
       disable: '停用',
     },
+    tier: {
+      core: '核心',
+      extension: '扩展',
+      coreHint: '当前为核心：该 server 的工具直接进入模型可调用列表。点击改为扩展。',
+      extensionHint: '当前为扩展：该 server 的工具进入工具盒，模型调用 enable_tool 后激活。点击改为核心。',
+    },
     kv: {
       envKey: 'KEY',
       envValue: '值',
@@ -1623,6 +1629,7 @@ export default {
       toggleSuccess: '状态已更新',
       refreshSuccess: '全量刷新完成',
       saveFailed: '保存失败',
+      tierFailed: '调整披露分级失败',
       empty: '暂无 MCP 连接',
       emptyDesc: '添加一个 MCP 连接来扩展 Agent 的能力',
     },
@@ -1679,6 +1686,21 @@ export default {
       actions: '操作',
     },
     empty: '暂无已注册工具',
+    sections: {
+      core: '核心工具',
+      extension: '扩展工具',
+      countItems: '{n} 项',
+    },
+    tier: {
+      toCore: '→ 核心',
+      toExtension: '→ 扩展',
+      toCoreHint: '改为核心：直接进入模型可调用列表',
+      toExtensionHint: '改为扩展：进入工具盒目录，调用 enable_tool 后激活',
+      locked: '由来源决定',
+      lockedHint: 'MCP / ACP / Skill 工具的分级由所属 server / endpoint / skill 决定，请到对应页面修改',
+      core: { desc: '直接进入模型可调用列表' },
+      extension: { desc: '进入工具盒目录，模型调用 enable_tool 后激活' },
+    },
     modal: {
       editTitle: '编辑工具',
       newTitle: '注册工具',
@@ -1705,6 +1727,7 @@ export default {
       deleteTitle: '确认删除',
       deleteFailed: '删除工具失败',
       toggleFailed: '切换工具状态失败',
+      tierFailed: '调整工具分级失败',
     },
   },
   skillTemplates: {
@@ -3221,6 +3244,14 @@ export default {
       enabled: '已启用',
       disabled: '已禁用',
       scanFailed: '扫描失败',
+    },
+    sections: {
+      enabled: '已启用',
+      available: '未启用',
+      countItems: '{n} 项',
+      emptyEnabled: '暂无已启用的技能',
+      emptyEnabledDesc: '从下方"未启用"区启用一个，或从模板/导入新建。',
+      emptyAvailable: '暂无未启用的技能',
     },
     sort: {
       recommended: '推荐排序',

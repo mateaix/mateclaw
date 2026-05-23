@@ -68,6 +68,7 @@
           @edit="openEditModal"
           @test="testServer"
           @toggle="toggleServer"
+          @set-tier="setServerTier"
         />
       </div>
       <div v-if="installedTotal > pageSize" class="mcp-pager-row">
@@ -140,6 +141,8 @@ import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import McPagination from '@/components/common/McPagination.vue'
 import { mcConfirm } from '@/components/common/useConfirm'
+import { mcToast } from '@/composables/useMcToast'
+import { mcpApi } from '@/api/index'
 import { useMcpServers } from '@/composables/useMcpServers'
 import McpCard from './mcp/McpCard.vue'
 import McpFormModal from './mcp/McpFormModal.vue'
@@ -210,6 +213,15 @@ async function onDelete(server: McpServer) {
   if (!confirmed) return
   const ok = await removeServer(server)
   if (ok) modalVisible.value = false
+}
+
+async function setServerTier(server: McpServer, tier: 'core' | 'extension') {
+  try {
+    await mcpApi.setDisclosureTier(server.id, tier)
+    await reload()
+  } catch (e: any) {
+    mcToast.error(e?.message || t('mcp.messages.tierFailed'))
+  }
 }
 
 onMounted(reload)
