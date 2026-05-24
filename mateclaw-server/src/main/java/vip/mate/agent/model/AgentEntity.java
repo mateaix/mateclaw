@@ -131,6 +131,7 @@ public class AgentEntity {
     @TableField(value = "tools_disabled")
     private Boolean toolsDisabled;
 
+
     @TableField(fill = FieldFill.INSERT)
     private LocalDateTime createTime;
 
