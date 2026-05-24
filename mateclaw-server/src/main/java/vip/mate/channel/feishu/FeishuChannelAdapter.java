@@ -32,6 +32,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -83,8 +84,45 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
     /** 定时 Token 刷新任务 */
     private ScheduledFuture<?> tokenRefreshFuture;
 
-    /** 消息去重：最近处理过的 message_id */
+    /** 消息去重：最近处理过的 message_id（实例级，处理重连回放和 SDK 双投递） */
     private final Set<String> processedMessageIds = ConcurrentHashMap.newKeySet();
+
+    /**
+     * 跨 adapter 全局去重：同一 app_id 的多个渠道实例共享此映射。
+     * <p>飞书 WS 长连接会把消息广播给同一 app 的所有活跃连接，当多个 adapter 使用相同
+     * app_id（例如同一个 bot 配置了多个渠道）时，每个 adapter 都会收到同一条消息。
+     * 全局去重确保一条消息只被一个 adapter 处理。
+     * <p>Key: app_id；Value: 已处理的 message_id 集合（大小超过 {@link #GLOBAL_DEDUP_MAX} 时半数淘汰）。
+     */
+    private static final ConcurrentHashMap<String, Set<String>> GLOBAL_PROCESSED_IDS_BY_APP =
+            new ConcurrentHashMap<>();
+
+    private static final int GLOBAL_DEDUP_MAX = 10_000;
+
+    /**
+     * 群内 bot 别名缓存：chatId → 学到的别名集合（openId / unionId / userId / name）。
+     * <p>飞书 SDK 投递的 mention 里，bot 的标识可能是群内自定义别名（{@code ou_357e...} / 自定义名称），
+     * 而不是 {@code /bot/v3/info} 返回的全局 openId / app_name。我们在双投递场景下
+     * 机会性地学习这些别名，后续单事件投递的消息就能命中缓存。
+     */
+    private final ConcurrentHashMap<String, Set<String>> chatBotAliases = new ConcurrentHashMap<>();
+
+    /**
+     * Per-messageId mention tracker（带 TTL）。
+     * <p>飞书 SDK 经常对同一条消息双投递：一份 mentions 含 bot 的<em>全局身份</em>（来自 /bot/v3/info），
+     * 另一份含 bot 的<em>群内别名</em>。我们累积同一 messageId 下所有投递看到的 mention 标识，
+     * 一旦其中任何一份被识别为 @bot，就把累积的全部标识写入 {@link #chatBotAliases}。
+     */
+    private final ConcurrentHashMap<String, MentionTrack> mentionTracker = new ConcurrentHashMap<>();
+
+    /** mention tracker 条目 TTL（60s 远大于双投递的真实间隔，几个 ms 级别）。 */
+    private static final long MENTION_TRACK_TTL_MS = 60_000L;
+
+    private static final class MentionTrack {
+        final Set<String> seenIds = ConcurrentHashMap.newKeySet();
+        final long createdAtMs = System.currentTimeMillis();
+        volatile boolean matched = false;
+    }
 
     /** 昵称缓存：open_id → 显示名称 */
     private final ConcurrentHashMap<String, String> nicknameCache = new ConcurrentHashMap<>();
@@ -113,6 +151,9 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
 
     /** Bot's own open_id, fetched once from /open-apis/bot/v3/info and cached. */
     private volatile String botOpenId;
+
+    /** Bot's display name (app_name), fetched alongside open_id. Used for name-based mention matching. */
+    private volatile String botName;
 
     /** Serializes lazy bot-open-id fetches so concurrent group messages share one API roundtrip. */
     private final Object botOpenIdLock = new Object();
@@ -331,9 +372,12 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
         // a torn write that could re-cache a stale id.
         synchronized (botOpenIdLock) {
             this.botOpenId = null;
+            this.botName = null;
             this.botOpenIdLastFailureMs = 0L;
         }
         this.processedMessageIds.clear();
+        this.chatBotAliases.clear();
+        this.mentionTracker.clear();
         this.nicknameCache.clear();
         this.quotedMessageCache.clear();
         log.info("[feishu] Feishu channel stopped");
@@ -637,20 +681,119 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
         String chatId = message.getChatId();
         String chatType = message.getChatType();
         String parentId = message.getParentId();
-
         String senderOpenId = null;
-        if (sender != null && sender.getSenderId() != null) {
-            senderOpenId = sender.getSenderId().getOpenId();
+        String senderType = null;
+        if (sender != null) {
+            senderType = sender.getSenderType();
+            if (sender.getSenderId() != null) {
+                senderOpenId = sender.getSenderId().getOpenId();
+            }
+        }
+        if ("app".equals(senderType)) {
+            log.debug("[feishu] Ignoring bot-originated message (sender_type=app): messageId={}", messageId);
+            return;
         }
 
-        boolean isBotMentioned = isBotMentionedInEvent(message.getMentions());
+        com.lark.oapi.service.im.v1.model.MentionEvent[] mentions = message.getMentions();
+        boolean isBotMentioned = detectBotMentionWithLearning(mentions, chatId, messageId);
         handleFeishuMessage(messageId, messageType, contentStr, chatId, chatType, senderOpenId, parentId, isBotMentioned, event);
     }
 
     // ==================== @提及检测 ====================
 
-    private boolean isBotMentionedInEvent(com.lark.oapi.service.im.v1.model.MentionEvent[] mentions) {
-        return eventMentionsContainBot(mentions, getBotOpenId());
+    /**
+     * 判断本次事件是否 @ 了 bot，并机会性地学习"群内 bot 别名"。
+     *
+     * <p>飞书 SDK 在群内对同一条 @bot 的消息会双投递两个事件，两次的 mentions 数据形态不同：
+     * <ul>
+     *   <li>一份带 bot 的<em>全局身份</em>（与 {@code /open-apis/bot/v3/info} 返回的 openId / app_name 一致）；</li>
+     *   <li>一份带 bot 的<em>群内别名</em>（用户给 bot 起的 chat-scope 名，openId 也是另一套）。</li>
+     * </ul>
+     * 重启后第一条消息能命中"全局身份"那一份直接匹配；后续消息往往只来一份"群内别名"。
+     * 本方法在双投递可见时把两份的所有标识聚合到 {@link #chatBotAliases}，后续单事件投递就能命中缓存放行。
+     *
+     * <p>识别顺序：
+     * <ol>
+     *   <li>直接匹配 {@code /bot/v3/info} 拿到的 botOpenId / botName；</li>
+     *   <li>查 {@link #chatBotAliases} 缓存里学到的群内别名；</li>
+     *   <li>双投递推断：同一 messageId 之前的事件已被识别 → 本事件的 mentions 也是 bot 的别名。</li>
+     * </ol>
+     */
+    private boolean detectBotMentionWithLearning(com.lark.oapi.service.im.v1.model.MentionEvent[] mentions,
+                                                 String chatId, String messageId) {
+        if (mentions == null || mentions.length == 0) {
+            return false;
+        }
+        if (log.isDebugEnabled()) {
+            StringBuilder sb = new StringBuilder("[");
+            for (int i = 0; i < mentions.length; i++) {
+                var m = mentions[i];
+                if (i > 0) sb.append(", ");
+                var mid = m.getId();
+                sb.append("{name=").append(m.getName())
+                  .append(", openId=").append(mid != null ? mid.getOpenId() : "null")
+                  .append(", key=").append(m.getKey()).append("}");
+            }
+            sb.append("]");
+            log.debug("[feishu] mention detection: messageId={}, botOpenId={}, botName={}, mentions={}",
+                    messageId, getBotOpenId(), botName, sb);
+        }
+
+        cleanupMentionTracker();
+
+        // 把本次事件看到的所有标识累积到 per-messageId tracker —— 即使本次匹配不上，
+        // 后到的事件如果匹配成功，learnFromTrack 会把它们一起 cache。
+        MentionTrack track = null;
+        if (messageId != null) {
+            track = mentionTracker.computeIfAbsent(messageId, k -> new MentionTrack());
+            collectMentionIdentifiers(mentions, track.seenIds);
+        }
+
+        String botOid = getBotOpenId();
+
+        // 1. 直接匹配 bot 的全局身份
+        if (eventMentionsContainBot(mentions, botOid, botName)) {
+            learnFromTrack(chatId, track);
+            if (track != null) track.matched = true;
+            return true;
+        }
+
+        // 2. 群内已学习别名命中
+        if (chatId != null) {
+            Set<String> learned = chatBotAliases.get(chatId);
+            if (learned != null && mentionMatchesAnyAlias(mentions, learned)) {
+                log.info("[feishu] @bot matched via learned chat alias: chatId={}, messageId={}", chatId, messageId);
+                learnFromTrack(chatId, track);
+                if (track != null) track.matched = true;
+                return true;
+            }
+        }
+
+        // 3. 双投递学习：同 messageId 的另一次投递已被识别 → 本事件 mentions 是 bot 别名
+        if (track != null && track.matched) {
+            log.info("[feishu] @bot inferred via dual-delivery learning: chatId={}, messageId={}", chatId, messageId);
+            learnFromTrack(chatId, track);
+            return true;
+        }
+
+        return false;
+    }
+
+    private void learnFromTrack(String chatId, MentionTrack track) {
+        if (chatId == null || track == null || track.seenIds.isEmpty()) return;
+        Set<String> aliases = chatBotAliases.computeIfAbsent(chatId, k -> ConcurrentHashMap.newKeySet());
+        int before = aliases.size();
+        aliases.addAll(track.seenIds);
+        int added = aliases.size() - before;
+        if (added > 0) {
+            log.info("[feishu] Learned {} new bot alias(es) for chat={} (cache size={})",
+                    added, chatId, aliases.size());
+        }
+    }
+
+    private void cleanupMentionTracker() {
+        long cutoff = System.currentTimeMillis() - MENTION_TRACK_TTL_MS;
+        mentionTracker.entrySet().removeIf(e -> e.getValue().createdAtMs < cutoff);
     }
 
     private boolean isBotMentionedInWebhookMessage(Map<String, Object> message) {
@@ -659,12 +802,51 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
         return webhookMentionsContainBot(list, getBotOpenId());
     }
 
-    /** Package-private for testing: 判断 SDK mentions 数组中是否包含指定 open_id */
+    /** Package-private for testing: 判断 SDK mentions 数组中是否包含指定 bot */
     static boolean eventMentionsContainBot(com.lark.oapi.service.im.v1.model.MentionEvent[] mentions,
-                                           String botOpenId) {
-        if (mentions == null || mentions.length == 0 || botOpenId == null) return false;
+                                           String botOpenId, String botName) {
+        if (mentions == null || mentions.length == 0) return false;
         for (var mention : mentions) {
-            if (mention.getId() != null && botOpenId.equals(mention.getId().getOpenId())) return true;
+            var id = mention.getId();
+            // 匹配 openId、unionId、userId 中的任意一个
+            if (id != null && botOpenId != null) {
+                if (botOpenId.equals(id.getOpenId())) return true;
+                if (botOpenId.equals(id.getUnionId())) return true;
+                if (botOpenId.equals(id.getUserId())) return true;
+            }
+            // 飞书 SDK 对 bot mention 可能使用不同 ID 体系，fallback 到 name 匹配
+            if (botName != null && botName.equals(mention.getName())) return true;
+        }
+        return false;
+    }
+
+    /** Package-private for testing: 把 mentions 中每个非空 openId / unionId / userId / name 灌入 sink。 */
+    static void collectMentionIdentifiers(com.lark.oapi.service.im.v1.model.MentionEvent[] mentions,
+                                          Set<String> sink) {
+        if (mentions == null || sink == null) return;
+        for (var mention : mentions) {
+            var id = mention.getId();
+            if (id != null) {
+                if (id.getOpenId() != null) sink.add(id.getOpenId());
+                if (id.getUnionId() != null) sink.add(id.getUnionId());
+                if (id.getUserId() != null) sink.add(id.getUserId());
+            }
+            if (mention.getName() != null) sink.add(mention.getName());
+        }
+    }
+
+    /** Package-private for testing: mentions 中是否有任意 openId / unionId / userId / name 命中 aliases 集合。 */
+    static boolean mentionMatchesAnyAlias(com.lark.oapi.service.im.v1.model.MentionEvent[] mentions,
+                                          Set<String> aliases) {
+        if (mentions == null || mentions.length == 0 || aliases == null || aliases.isEmpty()) return false;
+        for (var mention : mentions) {
+            var id = mention.getId();
+            if (id != null) {
+                if (id.getOpenId() != null && aliases.contains(id.getOpenId())) return true;
+                if (id.getUnionId() != null && aliases.contains(id.getUnionId())) return true;
+                if (id.getUserId() != null && aliases.contains(id.getUserId())) return true;
+            }
+            if (mention.getName() != null && aliases.contains(mention.getName())) return true;
         }
         return false;
     }
@@ -734,7 +916,10 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
                 Map<?, ?> bot = (Map<?, ?>) body.get("bot");
                 if (bot != null && bot.get("open_id") instanceof String openId && !openId.isBlank()) {
                     botOpenId = openId;
-                    log.info("[feishu] Bot open_id fetched and cached: {}", openId);
+                    if (bot.get("app_name") instanceof String name && !name.isBlank()) {
+                        botName = name;
+                    }
+                    log.info("[feishu] Bot info fetched: open_id={}, name={}", openId, botName);
                     return openId;
                 }
                 // 2xx with no bot.open_id field → treat as transient failure.
@@ -794,6 +979,7 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(apiBase + "/open-apis/auth/v3/tenant_access_token/internal"))
                     .header("Content-Type", "application/json; charset=utf-8")
+                    .timeout(Duration.ofSeconds(10))
                     .POST(HttpRequest.BodyPublishers.ofString(jsonBody))
                     .build();
 
@@ -888,14 +1074,20 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
             String chatType = (String) message.get("chat_type");
             String parentId = (String) message.get("parent_id");
 
-            // 提取发送者 open_id
+            // 提取发送者 open_id 和 sender_type
             Map<String, Object> sender = (Map<String, Object>) event.get("sender");
             String senderOpenId = null;
+            String senderType = null;
             if (sender != null) {
+                senderType = (String) sender.get("sender_type");
                 Map<String, Object> senderIdObj = (Map<String, Object>) sender.get("sender_id");
                 if (senderIdObj != null) {
                     senderOpenId = (String) senderIdObj.get("open_id");
                 }
+            }
+            if ("app".equals(senderType)) {
+                log.info("[feishu] Ignoring bot-originated message (sender_type=app): messageId={}", messageId);
+                return Map.of("code", 0);
             }
 
             boolean isBotMentioned = isBotMentionedInWebhookMessage(message);
@@ -946,25 +1138,52 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
             cacheRecentFile(messageId, messageType, contentStr, conversationId);
         }
 
+        // allowed_chat_ids 过滤：同一 bot 多个渠道时，按 chatId 分流。
+        // 过滤在 dedup 之前，保证被过滤掉的消息不会占用 dedup 槽位，
+        // 让负责该 chat 的其他 adapter 仍能正常处理。
+        // p2p 消息（chatId=null）始终通过，不受 allowed_chat_ids 约束。
+        String allowedChatIdsConf = getConfigString("allowed_chat_ids", null);
+        if (allowedChatIdsConf != null && !allowedChatIdsConf.isBlank() && chatId != null) {
+            boolean allowed = java.util.Arrays.stream(allowedChatIdsConf.split(","))
+                    .map(String::trim).anyMatch(chatId::equals);
+            if (!allowed) {
+                log.debug("[feishu] Chat {} not in allowed_chat_ids, skipping messageId={}", chatId, messageId);
+                return;
+            }
+        }
+
+        // 实例级消息去重（处理 SDK 双投递和重连回放）
+        if (messageId != null && !processedMessageIds.add(messageId)) {
+            log.info("[feishu] Duplicate message_id (instance dedup): {}, skipping", messageId);
+            return;
+        }
+        cleanupProcessedIds();
+
+        // 跨 adapter 全局去重：同一 app_id 的多个渠道实例共享，防止同一条消息被多个 adapter 重复处理。
+        // 在实例级 dedup 之后，确保通过实例级 dedup 的事件只有一个 adapter 继续处理。
+        String appId = getConfigString("app_id", "");
+        if (messageId != null && !appId.isEmpty()) {
+            Set<String> globalIds = GLOBAL_PROCESSED_IDS_BY_APP.computeIfAbsent(
+                    appId, k -> ConcurrentHashMap.newKeySet());
+            if (!globalIds.add(messageId)) {
+                log.info("[feishu] Duplicate message_id (cross-adapter dedup): {}, skipping", messageId);
+                return;
+            }
+            cleanupGlobalProcessedIds(appId, globalIds);
+        }
+
         // require_mention 群聊过滤：群聊中必须 @机器人才响应。
         // 当 botOpenId 为 null 时（API 抖动 / 尚未拉取成功），失败回退到放行 —
         // 避免飞书 /open-apis/bot/v3/info 短暂不可用时整个群机器人变哑巴。
         boolean requireMention = getConfigBoolean("require_mention", false);
         if (isGroupNonMentionDrop(isGroup, requireMention, isBotMentioned, botOpenId)) {
-            log.debug("[feishu] require_mention=true but bot not mentioned, dropping messageId={}", messageId);
+            log.info("[feishu] require_mention=true but bot not mentioned, dropping messageId={}", messageId);
             return;
         }
         if (isGroup && requireMention && !isBotMentioned) {
             // botOpenId is null here — identity unknown, gate falls open.
             log.warn("[feishu] require_mention=true but bot open_id unavailable; allowing messageId={}", messageId);
         }
-
-        // 消息去重
-        if (messageId != null && !processedMessageIds.add(messageId)) {
-            log.debug("[feishu] Duplicate message_id: {}, skipping", messageId);
-            return;
-        }
-        cleanupProcessedIds();
 
         // 添加消息反应（非阻塞，表示"已收到"）
         if (messageId != null && getConfigBoolean("enable_reaction", true)) {
@@ -982,19 +1201,24 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
         String textContent = extractContentParts(messageId, messageType, contentStr, contentParts);
 
         if (contentParts.isEmpty() && (textContent == null || textContent.isBlank())) {
-            log.debug("[feishu] Empty message content, ignoring");
+            log.info("[feishu] Empty message content after extract, ignoring: id={}, type={}, contentStr={}",
+                    messageId, messageType, contentStr);
             return;
         }
 
         // 引用消息（用户在飞书里"引用"了之前的某条消息回复）：拉取被引用消息内容并注入上下文，
         // 让 agent 能理解 "解释一下" 这种缺主语的引用回复 —— 不然就只看到"解释一下"三个字。
         if (parentId != null && !parentId.isBlank() && getConfigBoolean("enable_quoted_context", true)) {
+            log.info("[feishu] Quoted message detected: parentId={}", parentId);
             String quotedText = fetchQuotedMessageText(parentId);
             if (quotedText != null && !quotedText.isBlank()) {
                 String prefix = "[引用消息: " + quotedText + "]\n";
                 textContent = prefix + (textContent != null ? textContent : "");
                 // 同步加一个 text part 到最前面，让多模态消息也能看到引用上下文
                 contentParts.add(0, MessageContentPart.text(prefix));
+                log.info("[feishu] Injected quoted context: {}", quotedText);
+            } else {
+                log.info("[feishu] Quoted message fetch returned null/blank for parentId={}", parentId);
             }
         }
 
@@ -1022,16 +1246,36 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
 
         // replyToken ��留完整 chatId（��送消息需要完整 ID）
         channelMessage.setReplyToken(chatId);
+
+        log.info("[feishu] ChannelMessage built: chatId={}, replyToken={}, content='{}'",
+                channelMessage.getChatId(), channelMessage.getReplyToken(),
+                channelMessage.getContent() != null ? channelMessage.getContent().substring(0, Math.min(50, channelMessage.getContent().length())) : "null");
+
         onMessage(channelMessage);
     }
 
     /**
-     * 清理旧的去重记录：超过 1000 条时保留最近添加的（移除最早的一半）
+     * 清理实例级去重记录：超过 1000 条时保留最近添加的（移除最早的一半）
      */
     private void cleanupProcessedIds() {
         if (processedMessageIds.size() > 1000) {
             int toRemove = processedMessageIds.size() / 2;
             var iterator = processedMessageIds.iterator();
+            while (iterator.hasNext() && toRemove > 0) {
+                iterator.next();
+                iterator.remove();
+                toRemove--;
+            }
+        }
+    }
+
+    /**
+     * 清理全局跨 adapter 去重记录：超过 {@link #GLOBAL_DEDUP_MAX} 条时移除最早的一半
+     */
+    private static void cleanupGlobalProcessedIds(String appId, Set<String> ids) {
+        if (ids.size() > GLOBAL_DEDUP_MAX) {
+            int toRemove = ids.size() / 2;
+            var iterator = ids.iterator();
             while (iterator.hasNext() && toRemove > 0) {
                 iterator.next();
                 iterator.remove();
@@ -1379,25 +1623,23 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
         return null;
     }
 
-    // ==================== 会话 ID 优化 ====================
+    // ==================== 会话 ID ====================
 
     /**
-     * 生成更短的会话标识后缀
-     * - 群聊：app_id 后 4 位 + "_" + chat_id 后 8 位
-     * - 私聊：open_id 后 12 位
+     * 生成会话标识后缀。
+     * - 群聊：直接使用完整 chat_id（全局唯一，不含 app_id，避免同一群在多 bot 场景下
+     *   因 app_id 不同而分裂成多条会话，导致前端时而可见时而不可见）
+     * - 私聊：使用完整 sender open_id
      */
     private String generateShortSessionSuffix(String chatId, String openId, boolean isGroup) {
         if (isGroup && chatId != null) {
-            String appId = getConfigString("app_id", "");
-            String appSuffix = appId.length() >= 4 ? appId.substring(appId.length() - 4) : appId;
-            String chatSuffix = chatId.length() >= 8 ? chatId.substring(chatId.length() - 8) : chatId;
-            return appSuffix + "_" + chatSuffix;
+            return chatId;
         }
         if (openId != null) {
-            return openId.length() >= 12 ? openId.substring(openId.length() - 12) : openId;
+            return openId;
         }
         if (chatId != null) {
-            return chatId.length() >= 12 ? chatId.substring(chatId.length() - 12) : chatId;
+            return chatId;
         }
         return null;
     }
@@ -1466,7 +1708,6 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
             }
 
             if (fileKey == null) return;
-
             // Download file bytes
             DownloadedResource dl = "image".equals(messageType)
                     ? maybeDownloadImage(messageId, fileKey)

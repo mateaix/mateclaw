@@ -4,56 +4,84 @@ import com.lark.oapi.service.im.v1.model.MentionEvent;
 import com.lark.oapi.service.im.v1.model.UserId;
 import org.junit.jupiter.api.Test;
 
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 class FeishuMentionTest {
 
     private static final String BOT_ID = "ou_bot123";
+    private static final String BOT_NAME = "TestBot";
     private static final String OTHER_ID = "ou_user456";
 
     // ==================== eventMentionsContainBot ====================
 
     @Test
     void event_nullMentions_returnsFalse() {
-        assertFalse(FeishuChannelAdapter.eventMentionsContainBot(null, BOT_ID));
+        assertFalse(FeishuChannelAdapter.eventMentionsContainBot(null, BOT_ID, BOT_NAME));
     }
 
     @Test
     void event_emptyMentions_returnsFalse() {
-        assertFalse(FeishuChannelAdapter.eventMentionsContainBot(new MentionEvent[0], BOT_ID));
+        assertFalse(FeishuChannelAdapter.eventMentionsContainBot(new MentionEvent[0], BOT_ID, BOT_NAME));
     }
 
     @Test
     void event_nullBotOpenId_returnsFalse() {
         MentionEvent mention = mentionEvent(BOT_ID);
-        assertFalse(FeishuChannelAdapter.eventMentionsContainBot(new MentionEvent[]{mention}, null));
+        assertFalse(FeishuChannelAdapter.eventMentionsContainBot(new MentionEvent[]{mention}, null, BOT_NAME));
     }
 
     @Test
     void event_botIsMentioned_returnsTrue() {
         MentionEvent mention = mentionEvent(BOT_ID);
-        assertTrue(FeishuChannelAdapter.eventMentionsContainBot(new MentionEvent[]{mention}, BOT_ID));
+        assertTrue(FeishuChannelAdapter.eventMentionsContainBot(new MentionEvent[]{mention}, BOT_ID, BOT_NAME));
     }
 
     @Test
     void event_onlyOtherUserMentioned_returnsFalse() {
         MentionEvent mention = mentionEvent(OTHER_ID);
-        assertFalse(FeishuChannelAdapter.eventMentionsContainBot(new MentionEvent[]{mention}, BOT_ID));
+        assertFalse(FeishuChannelAdapter.eventMentionsContainBot(new MentionEvent[]{mention}, BOT_ID, BOT_NAME));
     }
 
     @Test
     void event_botAmongMultipleMentions_returnsTrue() {
         MentionEvent[] mentions = {mentionEvent(OTHER_ID), mentionEvent(BOT_ID)};
-        assertTrue(FeishuChannelAdapter.eventMentionsContainBot(mentions, BOT_ID));
+        assertTrue(FeishuChannelAdapter.eventMentionsContainBot(mentions, BOT_ID, BOT_NAME));
     }
 
     @Test
     void event_mentionWithNullId_skippedSafely() {
         MentionEvent mention = MentionEvent.newBuilder().key("@_user_xxx").build(); // no id set
-        assertFalse(FeishuChannelAdapter.eventMentionsContainBot(new MentionEvent[]{mention}, BOT_ID));
+        assertFalse(FeishuChannelAdapter.eventMentionsContainBot(new MentionEvent[]{mention}, BOT_ID, BOT_NAME));
+    }
+
+    @Test
+    void event_botNameMatches_returnsTrue() {
+        // 飞书 SDK 对 bot mention 使用不同 ID 体系时，fallback 到 name 匹配
+        UserId userId = UserId.newBuilder().openId("ou_different_id").build();
+        MentionEvent mention = MentionEvent.newBuilder().id(userId).name(BOT_NAME).key("@_user_1").build();
+        assertTrue(FeishuChannelAdapter.eventMentionsContainBot(new MentionEvent[]{mention}, BOT_ID, BOT_NAME));
+    }
+
+    @Test
+    void event_nameMismatchIdMismatch_returnsFalse() {
+        UserId userId = UserId.newBuilder().openId("ou_different_id").build();
+        MentionEvent mention = MentionEvent.newBuilder().id(userId).name("SomeOtherBot").key("@_user_1").build();
+        assertFalse(FeishuChannelAdapter.eventMentionsContainBot(new MentionEvent[]{mention}, BOT_ID, BOT_NAME));
+    }
+
+    @Test
+    void event_nullBotName_onlyIdMatchWorks() {
+        // botName 为 null 时，只靠 ID 匹配
+        MentionEvent mention = mentionEvent(BOT_ID);
+        assertTrue(FeishuChannelAdapter.eventMentionsContainBot(new MentionEvent[]{mention}, BOT_ID, null));
+        UserId userId = UserId.newBuilder().openId("ou_different_id").build();
+        MentionEvent mention2 = MentionEvent.newBuilder().id(userId).name(BOT_NAME).build();
+        assertFalse(FeishuChannelAdapter.eventMentionsContainBot(new MentionEvent[]{mention2}, BOT_ID, null));
     }
 
     // ==================== webhookMentionsContainBot ====================
@@ -135,6 +163,78 @@ class FeishuMentionTest {
     void gate_requireMentionDisabled_passesThrough() {
         assertFalse(FeishuChannelAdapter.isGroupNonMentionDrop(true, false, false, BOT_ID));
         assertFalse(FeishuChannelAdapter.isGroupNonMentionDrop(true, false, false, null));
+    }
+
+    // ==================== collectMentionIdentifiers ====================
+
+    @Test
+    void collect_nullOrEmpty_noop() {
+        Set<String> sink = new HashSet<>();
+        FeishuChannelAdapter.collectMentionIdentifiers(null, sink);
+        FeishuChannelAdapter.collectMentionIdentifiers(new MentionEvent[0], sink);
+        assertTrue(sink.isEmpty());
+    }
+
+    @Test
+    void collect_gathersAllNonNullIdentifiers() {
+        UserId uid = UserId.newBuilder().openId("ou_a").unionId("on_a").userId("u_a").build();
+        MentionEvent m = MentionEvent.newBuilder().id(uid).name("Alice").build();
+        Set<String> sink = new HashSet<>();
+        FeishuChannelAdapter.collectMentionIdentifiers(new MentionEvent[]{m}, sink);
+        assertEquals(Set.of("ou_a", "on_a", "u_a", "Alice"), sink);
+    }
+
+    @Test
+    void collect_skipsNullFields() {
+        UserId uid = UserId.newBuilder().openId("ou_a").build();  // no unionId / userId
+        MentionEvent m = MentionEvent.newBuilder().id(uid).build();  // no name
+        Set<String> sink = new HashSet<>();
+        FeishuChannelAdapter.collectMentionIdentifiers(new MentionEvent[]{m}, sink);
+        assertEquals(Set.of("ou_a"), sink);
+    }
+
+    // ==================== mentionMatchesAnyAlias ====================
+
+    @Test
+    void aliasMatch_emptyMentionsOrAliases_returnsFalse() {
+        Set<String> aliases = Set.of("ou_x");
+        assertFalse(FeishuChannelAdapter.mentionMatchesAnyAlias(null, aliases));
+        assertFalse(FeishuChannelAdapter.mentionMatchesAnyAlias(new MentionEvent[0], aliases));
+        UserId uid = UserId.newBuilder().openId("ou_x").build();
+        MentionEvent m = MentionEvent.newBuilder().id(uid).build();
+        assertFalse(FeishuChannelAdapter.mentionMatchesAnyAlias(new MentionEvent[]{m}, Set.of()));
+        assertFalse(FeishuChannelAdapter.mentionMatchesAnyAlias(new MentionEvent[]{m}, null));
+    }
+
+    @Test
+    void aliasMatch_openIdHit_returnsTrue() {
+        UserId uid = UserId.newBuilder().openId("ou_chat_alias").build();
+        MentionEvent m = MentionEvent.newBuilder().id(uid).build();
+        assertTrue(FeishuChannelAdapter.mentionMatchesAnyAlias(new MentionEvent[]{m}, Set.of("ou_chat_alias")));
+    }
+
+    @Test
+    void aliasMatch_unionIdHit_returnsTrue() {
+        UserId uid = UserId.newBuilder().unionId("on_alias").build();
+        MentionEvent m = MentionEvent.newBuilder().id(uid).build();
+        assertTrue(FeishuChannelAdapter.mentionMatchesAnyAlias(new MentionEvent[]{m}, Set.of("on_alias")));
+    }
+
+    @Test
+    void aliasMatch_nameHit_returnsTrue() {
+        // 群内别名场景：mention 里只有 chat-scope openId + 自定义名
+        UserId uid = UserId.newBuilder().openId("ou_chat_only").build();
+        MentionEvent m = MentionEvent.newBuilder().id(uid).name("拉格纳罗斯").build();
+        // 缓存里只有 name（极端 case），仍要能命中
+        assertTrue(FeishuChannelAdapter.mentionMatchesAnyAlias(new MentionEvent[]{m}, Set.of("拉格纳罗斯")));
+    }
+
+    @Test
+    void aliasMatch_noOverlap_returnsFalse() {
+        UserId uid = UserId.newBuilder().openId("ou_x").unionId("on_x").build();
+        MentionEvent m = MentionEvent.newBuilder().id(uid).name("Unknown").build();
+        assertFalse(FeishuChannelAdapter.mentionMatchesAnyAlias(new MentionEvent[]{m},
+                Set.of("ou_other", "on_other", "OtherBot")));
     }
 
     // ==================== helpers ====================
