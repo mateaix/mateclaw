@@ -1351,8 +1351,10 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
      * files to the matching {@code data/chat-uploads/} directory.
      */
     private String buildConversationId(String chatId, String senderOpenId, boolean isGroup) {
-        String suffix = generateShortSessionSuffix(chatId, senderOpenId, isGroup);
-        return suffix != null ? CHANNEL_TYPE + ":" + suffix : null;
+        // Mirror ChannelMessageRouter#buildConversationId:
+        //   groups → feishu:{chatId},  DMs → feishu:{full senderOpenId}
+        String identifier = chatId != null ? chatId : senderOpenId;
+        return identifier != null ? CHANNEL_TYPE + ":" + identifier : null;
     }
 
     // ==================== Per-chat recent file cache ====================
@@ -1423,14 +1425,14 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
                     dl.fileUrl(), contentType);
 
             // Append to per-conversation cache (cap at RECENT_FILE_MAX_PER_CHAT)
-            recentFileCache.get(conversationId, k -> new ArrayList<>());
-            List<RecentFileEntry> list = new ArrayList<>(
-                    recentFileCache.getIfPresent(conversationId));
-            list.add(entry);
-            if (list.size() > RECENT_FILE_MAX_PER_CHAT) {
-                list = list.subList(list.size() - RECENT_FILE_MAX_PER_CHAT, list.size());
-            }
-            recentFileCache.put(conversationId, list);
+            recentFileCache.asMap().compute(conversationId, (k, existing) -> {
+                List<RecentFileEntry> list = existing != null ? new ArrayList<>(existing) : new ArrayList<>();
+                list.add(entry);
+                if (list.size() > RECENT_FILE_MAX_PER_CHAT) {
+                    list = list.subList(list.size() - RECENT_FILE_MAX_PER_CHAT, list.size());
+                }
+                return list;
+            });
 
             log.info("[feishu] Cached recent file for conversation={}: {} ({} bytes, {})",
                     conversationId, entry.fileName(), Files.size(dest), contentType);
