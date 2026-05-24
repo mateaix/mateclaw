@@ -200,13 +200,33 @@ public final class MateClawStateKeys {
     public static final String GOAL_FOLLOWUP_PROMPT = "goal_followup_prompt";
 
     /**
-     * Re-entry guard: GoalEvaluationNode sets this true on its first run
-     * of a graph invocation; the FinalAnswerNode→GoalEvaluation conditional
-     * edge skips re-entering the node when it's already true. Combined with
-     * the dispatcher's followup clearing of FINAL_ANSWER, this bounds
-     * follow-ups to at most one per graph run.
+     * Re-entry guard for TERMINAL evaluation passes: GoalEvaluationNode sets
+     * this true only when it ENDS the run (completed / exhausted / skip /
+     * continue-without-followup). The FinalAnswerNode→GoalEvaluation edge skips
+     * re-entering once it's true. The followup branch deliberately leaves it
+     * false so the self-continuation loop can re-evaluate the next answer; that
+     * loop is bounded instead by {@link #GOAL_FOLLOWUP_COUNT} (per-run cap) plus
+     * the goal's turn / LLM-call budgets.
      */
     public static final String GOAL_EVALUATED_THIS_RUN = "goal_evaluated_this_run";
+
+    /**
+     * Number of auto-followups already injected in THIS graph run (one user
+     * turn). Bounds the self-continuation loop per single message — independent
+     * of the goal's cross-turn turn_budget — so one message can't drive an
+     * unbounded number of autonomous steps or exhaust the graph recursion
+     * limit. Implicitly 0 at the start of each graph invocation.
+     */
+    public static final String GOAL_FOLLOWUP_COUNT = "goal_followup_count";
+
+    /**
+     * Cumulative agent LLM-call count already billed to the goal in THIS graph
+     * run. The run-to-completion loop evaluates multiple times per run while
+     * {@link #LLM_CALL_COUNT} keeps growing; recording only
+     * (current − accounted) on each pass avoids re-billing earlier calls and
+     * exhausting the goal's LLM budget prematurely. Implicitly 0 at run start.
+     */
+    public static final String GOAL_ACCOUNTED_LLM_CALL_COUNT = "goal_accounted_llm_call_count";
 
     /** Graph-node identifier for the GoalEvaluationNode. */
     public static final String GOAL_EVALUATION_NODE = "goal_evaluation";
@@ -222,4 +242,32 @@ public final class MateClawStateKeys {
      * workspace context.
      */
     public static final String CHAT_ORIGIN = "chat_origin";
+
+    // ===== Skill progressive disclosure (REPLACE strategy) =====
+
+    /**
+     * Names of skills explicitly loaded via the {@code load_skill} tool during
+     * this graph run. Stored as a {@code Set<String>} and used to pin recently
+     * loaded skills to the top of the runtime skill catalog so a multi-iteration
+     * loop stops re-loading the same skill it already pulled into message
+     * history. ActionNode reads the prior value and writes back the merged set
+     * (read-merge-write under the REPLACE strategy).
+     * <p>
+     * MUST be registered in both the ReAct and Plan-Execute KeyStrategyFactory
+     * blocks or the framework will drop it on multi-node merges, leaving the
+     * catalog ranker blind to in-run loads.
+     */
+    public static final String LOADED_SKILLS = "loaded_skills";
+
+    /**
+     * Function names of extension-tier tools activated via {@code enable_tool}
+     * during this run. Stored as a {@code Set<String>}; ReasoningNode adds these
+     * back to the active tool callbacks on its next turn so an enabled extension
+     * tool becomes callable within the same ReAct loop. ActionNode reads the
+     * prior value and writes back the merged set (read-merge-write under REPLACE).
+     * <p>
+     * MUST be registered in both KeyStrategyFactory blocks (see
+     * {@link #LOADED_SKILLS}).
+     */
+    public static final String ENABLED_EXTENSION_TOOLS = "enabled_extension_tools";
 }

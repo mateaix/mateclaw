@@ -19,8 +19,12 @@ It is **admin-only** (`ROLE_ADMIN`), live (auto-refresh every 5 s, pausable), an
 
 ## Where it lives
 
-- **Route:** `/backstage`
-- **Sidebar:** top-level entry under *Operate*
+::: tip 1.4.0: the live view folded into the Employees page
+As of v1.4.0, this live runtime view is folded into the **Employees page**. `/backstage` now **redirects to** `/agents?view=live`, and the Employees page has a segmented **Roster / Live** toggle — "Live" is the runtime console described here. The `/backstage` route below still works; it just lands on the Employees page's live view.
+:::
+
+- **Route:** `/backstage` (redirects to `/agents?view=live`)
+- **Sidebar:** the **Live** segment of the Employees page; when an employee is stuck, the sidebar surfaces an **orange "stuck employee" dot** that links straight to this live view
 - **Authorization:** the JWT must carry `ROLE_ADMIN`. Non-admins get a 403 from every `/api/v1/admin/agent-runtime/*` endpoint, and the route guard hides the link from the sidebar entirely.
 
 ---

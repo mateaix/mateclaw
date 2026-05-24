@@ -646,6 +646,16 @@ public class BrowserUseTool {
     /** Detects the {@code await} keyword as a whole word to decide whether eval code needs an async wrapper. */
     private static final Pattern TOP_LEVEL_AWAIT = Pattern.compile("\\bawait\\b");
 
+    /**
+     * Playwright raises this exact message when a bare-expression eval contains a
+     * top-level {@code return}. Such snippets are safe to retry inside an async
+     * IIFE, where {@code return} surfaces the value.
+     */
+    private static boolean isIllegalReturn(PlaywrightException ex) {
+        String m = ex.getMessage();
+        return m != null && m.contains("Illegal return statement");
+    }
+
     private String doEval(String sessionKey, String code) {
         if (code == null || code.isBlank()) {
             return error("code is required for action=eval");
@@ -660,12 +670,28 @@ public class BrowserUseTool {
         Page page = session.page;
 
         // Playwright evaluates the supplied string as a plain expression, which
-        // rejects top-level `await`. Wrap such snippets in an async IIFE so the
-        // agent can await promises; Playwright auto-resolves the returned one.
+        // rejects both top-level `await` and top-level `return` ("SyntaxError:
+        // Illegal return statement"). Snippets that use `await` are wrapped up
+        // front in an async IIFE (valid for `await` and `return` alike).
+        // A top-level `return` only fails at eval time, so we retry once wrapped
+        // rather than pre-wrapping on a naive `return` match — that would mangle
+        // bare expressions containing a nested return (e.g. arr.map(x => {
+        // return x; })) into an IIFE with no top-level return, yielding undefined.
         String script = TOP_LEVEL_AWAIT.matcher(code).find()
                 ? "(async () => {" + code + "})()"
                 : code;
-        Object evalResult = page.evaluate(script);
+        Object evalResult;
+        try {
+            evalResult = page.evaluate(script);
+        } catch (PlaywrightException ex) {
+            if (script.equals(code) && isIllegalReturn(ex)) {
+                log.debug("[BrowserUse] eval had a top-level return; retrying wrapped in async IIFE");
+                script = "(async () => {" + code + "})()";
+                evalResult = page.evaluate(script);
+            } else {
+                throw ex;
+            }
+        }
         String resultStr = evalResult != null ? evalResult.toString() : "null";
 
         if (resultStr.length() > 10_000) {

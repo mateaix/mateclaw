@@ -85,6 +85,16 @@ public class McpServerEntity {
     /** 是否系统内置 */
     private Boolean builtin;
 
+    /**
+     * Progressive disclosure tier for the whole server's tool group:
+     * {@code core} (always advertised) or {@code extension} (hidden behind the
+     * extension-tools catalog until {@code enable_tool} activates an individual
+     * tool). Defaults to {@code core} so MCP tools stay directly callable; an
+     * admin can move a noisy server to {@code extension} to keep it out of every
+     * agent's tool schema until needed.
+     */
+    private String disclosureTier;
+
     @TableField(fill = FieldFill.INSERT)
     private LocalDateTime createTime;
 

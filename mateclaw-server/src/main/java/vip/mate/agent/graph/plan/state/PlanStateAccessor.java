@@ -246,8 +246,10 @@ public final class PlanStateAccessor {
                                         NodeStreamingChatHelper.StreamResult result) {
             int existingPrompt = currentState.value(MateClawStateKeys.PROMPT_TOKENS, 0);
             int existingCompletion = currentState.value(MateClawStateKeys.COMPLETION_TOKENS, 0);
+            int existingLlmCalls = currentState.value(MateClawStateKeys.LLM_CALL_COUNT, 0);
             map.put(MateClawStateKeys.PROMPT_TOKENS, existingPrompt + result.promptTokens());
             map.put(MateClawStateKeys.COMPLETION_TOKENS, existingCompletion + result.completionTokens());
+            map.put(MateClawStateKeys.LLM_CALL_COUNT, existingLlmCalls + 1);
             return this;
         }
 

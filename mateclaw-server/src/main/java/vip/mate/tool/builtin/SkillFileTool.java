@@ -40,18 +40,19 @@ public class SkillFileTool {
     private final SkillUsageService usageService;
 
     @Tool(description = """
-        Read a file from a skill's directory (SKILL.md, references/, or scripts/).
+        Read a file from a skill's directory (SKILL.md, references/, scripts/, or templates/).
         Use this when you need to access skill documentation or reference files.
 
         Parameters:
         - skillName: Name of the skill (e.g., "channel_message")
-        - filePath: Relative path within skill directory, must start with "references/" or "scripts/"
-                    (e.g., "references/config.md", "scripts/helper.py")
+        - filePath: Relative path within skill directory, must start with "references/", "scripts/",
+                    or "templates/" (e.g., "references/config.md", "scripts/helper.py",
+                    "templates/template.html")
                     To read SKILL.md itself, use "SKILL.md" as filePath
 
         Returns: File content as string, or error message if file not found or access denied.
 
-        Security: Only files under references/ and scripts/ can be accessed. Path traversal is blocked.
+        Security: Only files under references/, scripts/, and templates/ can be accessed. Path traversal is blocked.
         """)
     public String readSkillFile(
         @JsonProperty(required = true)
@@ -59,7 +60,7 @@ public class SkillFileTool {
         String skillName,
 
         @JsonProperty(required = true)
-        @JsonPropertyDescription("Relative file path (e.g., 'references/doc.md' or 'scripts/run.py')")
+        @JsonPropertyDescription("Relative file path (e.g., 'references/doc.md', 'scripts/run.py', or 'templates/template.html')")
         String filePath,
 
         @JsonProperty(required = false)

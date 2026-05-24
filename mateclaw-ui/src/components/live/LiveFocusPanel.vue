@@ -94,13 +94,20 @@
           <!-- Helpers (subagents) -->
           <div v-if="subagents.length > 0" class="focus-section">
             <div class="focus-section-title">{{ t('live.detail.helpers') }}</div>
-            <div v-for="sub in subagents" :key="sub.subagentId" class="focus-sub-row">
+            <div
+              v-for="sub in subagents"
+              :key="sub.subagentId"
+              class="focus-sub-row"
+              :style="{ marginLeft: (((sub.depth ?? 1) - 1) * 16) + 'px' }"
+            >
               <div class="focus-sub-icon" :style="avatarBgStyle(sub)">
                 <SkillIcon v-if="sub.agentIcon" :value="sub.agentIcon" :size="20" fallback="🤖" />
                 <span v-else class="focus-sub-letter">{{ avatarLetter(sub) }}</span>
               </div>
               <div class="focus-sub-body">
-                <div class="focus-sub-name">{{ sub.agentName || sub.subagentId }}</div>
+                <div class="focus-sub-name">
+                  <span v-if="(sub.depth ?? 1) > 1" class="focus-sub-depth" aria-hidden="true">↳ </span>{{ sub.agentName || sub.subagentId }}
+                </div>
                 <div class="focus-sub-meta">
                   {{ sub.lastTool || sub.currentPhase || sub.status }} · {{ formatAge(sub.ageMs) }}
                 </div>
@@ -634,6 +641,10 @@ html.dark .focus-tile-warn {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.focus-sub-depth {
+  color: var(--mc-text-tertiary);
+  font-weight: 400;
 }
 
 .focus-sub-meta {

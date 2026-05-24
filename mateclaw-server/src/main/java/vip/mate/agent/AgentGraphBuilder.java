@@ -43,6 +43,7 @@ import vip.mate.llm.routing.ProviderRouter;
 import vip.mate.llm.service.ModelConfigService;
 import vip.mate.llm.service.ModelProviderService;
 import vip.mate.planning.service.PlanningService;
+import vip.mate.skill.runtime.SkillCatalogRenderer;
 import vip.mate.skill.service.SkillService;
 import vip.mate.system.service.SystemSettingService;
 import vip.mate.tool.ToolRegistry;
@@ -78,6 +79,13 @@ public class AgentGraphBuilder {
     private final AgentBindingService agentBindingService;
     private final SkillService skillService;
     private final vip.mate.skill.runtime.SkillRuntimeService skillRuntimeService;
+    private final vip.mate.tool.disclosure.ToolDisclosureService toolDisclosureService;
+    private final vip.mate.agent.progress.ProgressLedgerService progressLedgerService;
+
+    /** Escape hatch: when false, the load_skill meta tool is not advertised. */
+    @org.springframework.beans.factory.annotation.Value(
+            "${mateclaw.skill.disclosure.load-skill-tool.enabled:true}")
+    private boolean loadSkillToolEnabled;
     private final ConversationService conversationService;
     private final ModelConfigService modelConfigService;
     private final ModelProviderService modelProviderService;
@@ -179,6 +187,13 @@ public class AgentGraphBuilder {
         Set<String> boundTools = agentBindingService.getEffectiveToolNames(entity.getId());
         toolSet = toolSet.withAllowedToolsOnly(boundTools); // null = 全局默认
 
+        // Escape hatch: drop the load_skill meta tool entirely when disabled, so
+        // it isn't advertised regardless of binding (the catalog guidance falls
+        // back to readSkillFile — see SkillRuntimeService).
+        if (!loadSkillToolEnabled) {
+            toolSet = toolSet.excluding(java.util.Set.of("load_skill"));
+        }
+
         // Resolve the base model with the precedence: per-conversation pin >
         // per-Agent model override > global default. resolveRuntimeBaseModel
         // looks up enabled-only models and silently degrades an unmatched pin /
@@ -275,8 +290,27 @@ public class AgentGraphBuilder {
             }
         }
 
-        String enhancedPrompt = buildEnhancedPrompt(entity, builtinSearchEnabled,
-                boundTools, runtimeModel.getMaxInputTokens());
+        String enhancedPrompt = buildEnhancedPrompt(entity, builtinSearchEnabled);
+
+        // Runtime skill-catalog renderer — captures this agent's bound skills,
+        // effective tool allowlist, model window and workspace; invoked each
+        // turn by the reasoning / step-execution nodes with the skills loaded
+        // so far this run so load_skill pins float to the top of the catalog.
+        SkillCatalogRenderer skillCatalogRenderer = buildSkillCatalogRenderer(
+                entity, boundTools, runtimeModel.getMaxInputTokens());
+
+        // Extension-tool catalog — only for ReAct. The dynamic tool split runs
+        // in ReasoningNode; Plan-Execute keeps advertising every tool (it has no
+        // action node to record enable_tool), so baking the catalog there would
+        // describe an enable_tool flow that can never take effect.
+        boolean isPlanExecute = "plan_execute".equals(entity.getAgentType());
+        if (!isPlanExecute) {
+            String extensionCatalog = toolDisclosureService.renderExtensionCatalog(
+                    toolSet, runtimeModel.getMaxInputTokens());
+            if (extensionCatalog != null && !extensionCatalog.isBlank()) {
+                enhancedPrompt = enhancedPrompt + extensionCatalog;
+            }
+        }
 
         // 当前仅支持 DashScope 和 OpenAI-compatible，其他协议直接拒绝
         if (!supportsStateGraph(protocol)) {
@@ -287,12 +321,12 @@ public class AgentGraphBuilder {
         BaseAgent agent;
         boolean toolCallingEnabled;
         if ("plan_execute".equals(entity.getAgentType())) {
-            agent = buildPlanExecuteAgent(toolSet, runtimeModel, maxIter, entity.getId());
+            agent = buildPlanExecuteAgent(toolSet, runtimeModel, maxIter, entity.getId(), skillCatalogRenderer);
             toolCallingEnabled = true;
             log.info("Built StateGraph Plan-Execute agent: {} (maxIterations={}, tools={}, protocol={})",
                     entity.getName(), maxIter, toolSet.size(), protocol.getId());
         } else {
-            agent = buildReActAgent(toolSet, runtimeModel, maxIter, entity.getId());
+            agent = buildReActAgent(toolSet, runtimeModel, maxIter, entity.getId(), skillCatalogRenderer);
             // StateGraph 路径下工具调用由 ActionNode 控制，始终启用
             toolCallingEnabled = true;
             log.info("Built StateGraph ReAct agent: {} (maxIterations={}, tools={}, protocol={})",
@@ -351,10 +385,16 @@ public class AgentGraphBuilder {
 
     StateGraphReActAgent buildReActAgent(AgentToolSet toolSet, ModelConfigEntity runtimeModel,
                                          int maxIter, Long agentId) {
+        return buildReActAgent(toolSet, runtimeModel, maxIter, agentId, null);
+    }
+
+    StateGraphReActAgent buildReActAgent(AgentToolSet toolSet, ModelConfigEntity runtimeModel,
+                                         int maxIter, Long agentId, SkillCatalogRenderer skillCatalogRenderer) {
         ChatModel chatModel = buildRuntimeChatModel(runtimeModel);
         ChatClient chatClient = ChatClient.create(chatModel);
         String reasoningEffort = resolveReasoningEffortForModel(runtimeModel);
-        CompiledGraph compiledGraph = buildReActGraph(toolSet, chatModel, maxIter, reasoningEffort, runtimeModel, agentId);
+        CompiledGraph compiledGraph = buildReActGraph(toolSet, chatModel, maxIter, reasoningEffort,
+                runtimeModel, agentId, skillCatalogRenderer);
         return new StateGraphReActAgent(chatClient, conversationService, compiledGraph,
                 chatModel, conversationWindowManager, toolSet);
     }
@@ -365,10 +405,17 @@ public class AgentGraphBuilder {
 
     StateGraphPlanExecuteAgent buildPlanExecuteAgent(AgentToolSet toolSet, ModelConfigEntity runtimeModel,
                                                      int maxIter, Long agentId) {
+        return buildPlanExecuteAgent(toolSet, runtimeModel, maxIter, agentId, null);
+    }
+
+    StateGraphPlanExecuteAgent buildPlanExecuteAgent(AgentToolSet toolSet, ModelConfigEntity runtimeModel,
+                                                     int maxIter, Long agentId,
+                                                     SkillCatalogRenderer skillCatalogRenderer) {
         ChatModel chatModel = buildRuntimeChatModel(runtimeModel);
         ChatClient chatClient = ChatClient.create(chatModel);
         String reasoningEffort = resolveReasoningEffortForModel(runtimeModel);
-        CompiledGraph graph = buildPlanExecuteGraph(toolSet, chatModel, maxIter, reasoningEffort, runtimeModel, agentId);
+        CompiledGraph graph = buildPlanExecuteGraph(toolSet, chatModel, maxIter, reasoningEffort,
+                runtimeModel, agentId, skillCatalogRenderer);
         return new StateGraphPlanExecuteAgent(chatClient, conversationService, graph, planningService,
                 chatModel, conversationWindowManager, toolSet);
     }
@@ -385,6 +432,13 @@ public class AgentGraphBuilder {
     CompiledGraph buildPlanExecuteGraph(AgentToolSet toolSet, ChatModel chatModel, int maxIterations,
                                          String reasoningEffort, ModelConfigEntity primaryModelConfig,
                                          Long agentId) {
+        return buildPlanExecuteGraph(toolSet, chatModel, maxIterations, reasoningEffort,
+                primaryModelConfig, agentId, null);
+    }
+
+    CompiledGraph buildPlanExecuteGraph(AgentToolSet toolSet, ChatModel chatModel, int maxIterations,
+                                         String reasoningEffort, ModelConfigEntity primaryModelConfig,
+                                         Long agentId, SkillCatalogRenderer skillCatalogRenderer) {
         try {
             List<vip.mate.llm.failover.FallbackEntry> fallbackChain = buildFallbackChain(primaryModelConfig, agentId);
             NodeStreamingChatHelper streamingHelper = new NodeStreamingChatHelper(
@@ -402,7 +456,7 @@ public class AgentGraphBuilder {
                 executor.setAuditEventService(auditEventService);
             }
             PlanGenerationNode planGenerationNode = new PlanGenerationNode(chatModel, planningService, streamingHelper, conversationWindowManager, toolSet);
-            StepExecutionNode stepExecutionNode = new StepExecutionNode(chatModel, toolSet, executor, planningService, streamTracker, reasoningEffort, streamingHelper, conversationWindowManager);
+            StepExecutionNode stepExecutionNode = new StepExecutionNode(chatModel, toolSet, executor, planningService, streamTracker, reasoningEffort, streamingHelper, conversationWindowManager, skillCatalogRenderer);
             PlanSummaryNode planSummaryNode = new PlanSummaryNode(chatModel, planningService, streamingHelper);
             DirectAnswerNode directAnswerNode = new DirectAnswerNode();
 
@@ -466,6 +520,7 @@ public class AgentGraphBuilder {
                     // Token Usage
                     .addStrategy(MateClawStateKeys.PROMPT_TOKENS, KeyStrategy.REPLACE)
                     .addStrategy(MateClawStateKeys.COMPLETION_TOKENS, KeyStrategy.REPLACE)
+                    .addStrategy(MateClawStateKeys.LLM_CALL_COUNT, KeyStrategy.REPLACE)
                     .addStrategy(MateClawStateKeys.RUNTIME_MODEL_NAME, KeyStrategy.REPLACE)
                     .addStrategy(MateClawStateKeys.RUNTIME_PROVIDER_ID, KeyStrategy.REPLACE)
                     // SourceEvidenceLedger: ActionNode 把每轮 ToolResponse 抽取出的
@@ -487,6 +542,15 @@ public class AgentGraphBuilder {
                     .addStrategy(MateClawStateKeys.GOAL_FOLLOWUP_INJECTED, KeyStrategy.REPLACE)
                     .addStrategy(MateClawStateKeys.GOAL_FOLLOWUP_PROMPT, KeyStrategy.REPLACE)
                     .addStrategy(MateClawStateKeys.GOAL_EVALUATED_THIS_RUN, KeyStrategy.REPLACE)
+                    .addStrategy(MateClawStateKeys.GOAL_FOLLOWUP_COUNT, KeyStrategy.REPLACE)
+                    .addStrategy(MateClawStateKeys.GOAL_ACCOUNTED_LLM_CALL_COUNT, KeyStrategy.REPLACE)
+                    // Skill progressive disclosure — pinned skills loaded this
+                    // run. Registered in BOTH graphs so the read-merge-write in
+                    // ActionNode is not dropped on multi-node merges.
+                    .addStrategy(MateClawStateKeys.LOADED_SKILLS, KeyStrategy.REPLACE)
+                    // Tool progressive disclosure — extensions enabled this run.
+                    // Registered in BOTH graphs for the same merge-safety reason.
+                    .addStrategy(MateClawStateKeys.ENABLED_EXTENSION_TOOLS, KeyStrategy.REPLACE)
                     .build();
 
             // Graph 拓扑：
@@ -610,6 +674,13 @@ public class AgentGraphBuilder {
     CompiledGraph buildReActGraph(AgentToolSet toolSet, ChatModel chatModel, int maxIterations,
                                    String reasoningEffort, ModelConfigEntity primaryModelConfig,
                                    Long agentId) {
+        return buildReActGraph(toolSet, chatModel, maxIterations, reasoningEffort,
+                primaryModelConfig, agentId, null);
+    }
+
+    CompiledGraph buildReActGraph(AgentToolSet toolSet, ChatModel chatModel, int maxIterations,
+                                   String reasoningEffort, ModelConfigEntity primaryModelConfig,
+                                   Long agentId, SkillCatalogRenderer skillCatalogRenderer) {
         try {
             List<vip.mate.llm.failover.FallbackEntry> fallbackChain = buildFallbackChain(primaryModelConfig, agentId);
             NodeStreamingChatHelper streamingHelper = new NodeStreamingChatHelper(
@@ -633,12 +704,14 @@ public class AgentGraphBuilder {
                     && ModelFamily.detect(primaryModelConfig.getModelName()).supportsReasoningEffort();
             ReasoningNode reasoningNode = new ReasoningNode(chatModel, toolSet, reasoningEffort,
                     supportsReasoningEffort,
-                    streamingHelper, conversationWindowManager, streamTracker, 0, wikiContextService);
+                    streamingHelper, conversationWindowManager, streamTracker, 0, wikiContextService,
+                    skillCatalogRenderer, toolDisclosureService, progressLedgerService);
             ActionNode actionNode = new ActionNode(executor, streamTracker);
             ObservationProcessor observationProcessor = new ObservationProcessor(graphObservationProperties);
             ObservationNode observationNode = new ObservationNode(observationProcessor, streamTracker);
             SummarizingNode summarizingNode = new SummarizingNode(chatModel, streamingHelper, streamTracker);
-            LimitExceededNode limitExceededNode = new LimitExceededNode(chatModel, observationProcessor, streamingHelper, i18nService);
+            LimitExceededNode limitExceededNode = new LimitExceededNode(
+                    chatModel, observationProcessor, streamingHelper, i18nService, progressLedgerService);
             FinalAnswerNode finalAnswerNode = new FinalAnswerNode(generatedFileCache);
 
             KeyStrategyFactory keyStrategyFactory = KeyStrategy.builder()
@@ -730,6 +803,15 @@ public class AgentGraphBuilder {
                     .addStrategy(MateClawStateKeys.GOAL_FOLLOWUP_INJECTED, KeyStrategy.REPLACE)
                     .addStrategy(MateClawStateKeys.GOAL_FOLLOWUP_PROMPT, KeyStrategy.REPLACE)
                     .addStrategy(MateClawStateKeys.GOAL_EVALUATED_THIS_RUN, KeyStrategy.REPLACE)
+                    .addStrategy(MateClawStateKeys.GOAL_FOLLOWUP_COUNT, KeyStrategy.REPLACE)
+                    .addStrategy(MateClawStateKeys.GOAL_ACCOUNTED_LLM_CALL_COUNT, KeyStrategy.REPLACE)
+                    // Skill progressive disclosure — pinned skills loaded this
+                    // run. Registered in BOTH graphs so the read-merge-write in
+                    // ActionNode is not dropped on multi-node merges.
+                    .addStrategy(MateClawStateKeys.LOADED_SKILLS, KeyStrategy.REPLACE)
+                    // Tool progressive disclosure — extensions enabled this run.
+                    // Registered in BOTH graphs for the same merge-safety reason.
+                    .addStrategy(MateClawStateKeys.ENABLED_EXTENSION_TOOLS, KeyStrategy.REPLACE)
                     .build();
 
             GoalEvaluationNode goalEvalNode = new GoalEvaluationNode(
@@ -1088,8 +1170,7 @@ public class AgentGraphBuilder {
 
     // ==================== Prompt 构建 ====================
 
-    private String buildEnhancedPrompt(AgentEntity entity, boolean builtinSearchEnabled,
-                                       Set<String> boundTools, Integer maxInputTokens) {
+    private String buildEnhancedPrompt(AgentEntity entity, boolean builtinSearchEnabled) {
         // The agent's own systemPrompt encodes its identity (role / goal /
         // backstory). The memory block from workspace files (AGENTS.md, SOUL.md,
         // PROFILE.md, MEMORY.md, ...) augments that identity with durable
@@ -1111,10 +1192,11 @@ public class AgentGraphBuilder {
         }
         String basePrompt = basePromptBuilder.toString();
 
-        // 使用 skill runtime 构建技能增强（per-agent 绑定过滤 + 工作区隔离）
-        Set<Long> boundSkillIds = agentBindingService.getBoundSkillIds(entity.getId());
-        String skillEnhancement = skillRuntimeService.buildSkillPromptEnhancement(
-                boundSkillIds, boundTools, maxInputTokens, entity.getId(), entity.getWorkspaceId());
+        // The skill catalog (## Skills) is NOT baked here. It is rendered at
+        // runtime by the reasoning / step-execution nodes via
+        // SkillCatalogRenderer so its ordering can react to skills loaded this
+        // run (load_skill pins). Keeping it out of the baked system prompt also
+        // keeps the prompt-cache prefix stable across turns.
 
         // 工具调用指导
         String toolGuidance = """
@@ -1231,7 +1313,22 @@ public class AgentGraphBuilder {
         // Wiki 知识库上下文注入
         String wikiContext = wikiContextService.buildWikiContext(entity.getId());
 
-        return basePrompt + skillEnhancement + toolGuidance + searchGuidance + wikiContext;
+        return basePrompt + toolGuidance + searchGuidance + wikiContext;
+    }
+
+    /**
+     * Build the per-agent {@link SkillCatalogRenderer}. Captures the agent's
+     * bound skills, effective tool allowlist, model window and workspace once;
+     * the returned renderer is invoked each turn with the skills loaded so far
+     * this run so {@code load_skill} pins float to the top of the catalog.
+     */
+    private SkillCatalogRenderer buildSkillCatalogRenderer(AgentEntity entity, Set<String> boundTools,
+                                                           Integer maxInputTokens) {
+        Set<Long> boundSkillIds = agentBindingService.getBoundSkillIds(entity.getId());
+        Long agentId = entity.getId();
+        Long workspaceId = entity.getWorkspaceId();
+        return loaded -> skillRuntimeService.buildSkillPromptEnhancement(
+                boundSkillIds, boundTools, maxInputTokens, agentId, workspaceId, loaded);
     }
 
     /**

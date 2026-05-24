@@ -31,6 +31,14 @@
       <div v-if="!isCatalog" class="mcp-card-meta">
         {{ t('mcp.card.toolCount', { n: server!.toolCount || 0 }) }}
         <template v-if="lastSeen"> · {{ lastSeen }}</template>
+        <button
+          class="mcp-tier-pill"
+          :class="{ 'mcp-tier-pill--ext': tier === 'extension' }"
+          :title="tier === 'extension' ? t('mcp.tier.extensionHint') : t('mcp.tier.coreHint')"
+          @click.stop="emit('setTier', server!, tier === 'extension' ? 'core' : 'extension')"
+        >
+          {{ tier === 'extension' ? t('mcp.tier.extension') : t('mcp.tier.core') }}
+        </button>
       </div>
     </div>
 
@@ -130,6 +138,7 @@ const emit = defineEmits<{
   (e: 'edit', server: McpServer): void
   (e: 'test', server: McpServer): void
   (e: 'toggle', server: McpServer): void
+  (e: 'setTier', server: McpServer, tier: 'core' | 'extension'): void
   (e: 'add', entry: McpCatalogEntry): void
   (e: 'docs', url: string): void
 }>()
@@ -137,6 +146,11 @@ const emit = defineEmits<{
 const { t } = useI18n()
 
 const isCatalog = computed(() => !!props.catalogEntry)
+// Whole-server disclosure tier; defaults to core (matches the DB default) so
+// MCP tools stay directly callable until an admin moves the server to extension.
+const tier = computed<'core' | 'extension'>(() =>
+  props.server?.disclosureTier === 'extension' ? 'extension' : 'core',
+)
 const displayName = computed(() =>
   isCatalog.value ? props.catalogEntry!.name : props.server!.name,
 )
@@ -316,6 +330,23 @@ function onPrimaryAction() {
   font-size: 11px;
   color: var(--mc-text-tertiary);
 }
+
+.mcp-tier-pill {
+  margin-left: 6px;
+  padding: 1px 7px;
+  border: 1px solid var(--mc-border);
+  background: var(--mc-bg-sunken);
+  color: var(--mc-text-tertiary);
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.mcp-tier-pill:hover { border-color: var(--mc-primary); color: var(--mc-primary); }
+.mcp-tier-pill--ext { background: var(--mc-primary-bg); color: var(--mc-primary); border-color: transparent; }
 
 /* Always-visible enable toggle on installed cards. Sits to the right
    of the card body; hover-reveal actions slide in to its left. */

@@ -303,6 +303,21 @@ Memory isn't just something that *happens to* an agent. The agent itself can act
 | `write_workspace_memory_file` | Create or overwrite a file (full replace) |
 | `edit_workspace_memory_file` | Find-and-replace edit (incremental, `replaceAll` supported) |
 
+### Keyword search over its own memory
+
+::: tip New in 1.4.0
+An employee can do more than read whole files — during a conversation it can **search all of its workspace memory files by keyword** and jump straight to the line.
+:::
+
+This is an agent runtime capability: the employee supplies a keyword and the system searches across its own workspace memory files:
+
+- **Tokenization** — CJK is split into 2-character sliding windows, Latin text on whitespace, so both languages match
+- **Per-file weighted scoring** — hits in core files like `AGENTS.md` / `MEMORY.md` / `PROFILE.md` rank above hits in the daily ledger
+- **What comes back** — each hit gives a filename + line number + an 80-char context snippet (matched term highlighted) + a relevance score
+- **Scan scope** — up to ~50 candidate files, sorted by score, highest first
+
+Use it when the employee wants to confirm "did I note this before?" or recover a specific decision spread across many days of notes — without pulling whole files into context.
+
 ### Examples
 
 **List:**
@@ -341,6 +356,41 @@ Memory isn't just something that *happens to* an agent. The agent itself can act
 - No absolute paths, no `..` directory traversal
 - `write` is a full overwrite — read first if you care about existing content
 - Newly created files have `enabled=false` by default
+
+---
+
+## Memory snapshot export / import
+
+::: tip New in 1.4.0
+An employee's entire accumulated memory can be packaged into a ZIP and taken with you — for backup, migration to another deployment, or cloning a coworker who "already knows you."
+:::
+
+A snapshot packages an employee's core memory into a single ZIP:
+
+- `AGENTS.md` / `MEMORY.md` / `PROFILE.md` / `SOUL.md` / `KNOWLEDGE.md`
+- daily ledger files (`memory/YYYY-MM-DD.md`)
+- a `manifest.json` (what's in the package, and which employee it came from)
+
+### Three endpoints
+
+| Method | Path | Role | What it does |
+|--------|------|------|--------------|
+| GET | `/api/v1/agents/{agentId}/workspace/memory/export` | Viewer | Export the ZIP — even read-only access can take a backup |
+| POST | `.../workspace/memory/import/preview` | Member | **Dry run**: parse the ZIP, classify each file as create / update / skip, write nothing |
+| POST | `.../workspace/memory/import` | Member | Apply the import, written **atomically** |
+
+Preview to see the diff, confirm, then import — you always know what will change before it does.
+
+### Safety guards
+
+- **Whitelist** — only the file types listed above are accepted; everything else is ignored
+- **Zip-bomb guards** — ≤ 500 entries, ≤ 1 MB each (uncompressed), ≤ 16 MB total; anything over is rejected
+- **UI toggle state is not serialized** — `enabled` / `sortOrder` are kept out of the snapshot; on import into a new employee the target decides them by seed rules, rather than forcing the source's toggle state
+
+### UI
+
+- The **Agent Context page right panel** has **Export / Import** buttons
+- Import shows a **diff** first (what's created, overwritten, skipped) and only writes after you confirm
 
 ---
 

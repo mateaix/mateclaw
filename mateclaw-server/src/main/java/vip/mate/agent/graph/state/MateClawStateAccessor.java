@@ -228,6 +228,26 @@ public final class MateClawStateAccessor {
         return state.<ChatOrigin>value(CHAT_ORIGIN).orElse(ChatOrigin.EMPTY);
     }
 
+    // ===== Skill progressive disclosure =====
+
+    /**
+     * Skills loaded via {@code load_skill} so far this run. Empty when none
+     * have been loaded (the common first-iteration case).
+     */
+    @SuppressWarnings("unchecked")
+    public Set<String> loadedSkills() {
+        return state.<Set<String>>value(LOADED_SKILLS).orElse(Set.of());
+    }
+
+    /**
+     * Extension tools activated via {@code enable_tool} so far this run. Empty
+     * when none have been enabled (the common case).
+     */
+    @SuppressWarnings("unchecked")
+    public Set<String> enabledExtensionTools() {
+        return state.<Set<String>>value(ENABLED_EXTENSION_TOOLS).orElse(Set.of());
+    }
+
     // ===== Token Usage =====
 
     public int promptTokens() {
@@ -271,6 +291,16 @@ public final class MateClawStateAccessor {
 
     public String goalFollowupPrompt() {
         return state.value(GOAL_FOLLOWUP_PROMPT, "");
+    }
+
+    /** Auto-followups already injected in this graph run (0 at run start). */
+    public int goalFollowupCount() {
+        return state.value(GOAL_FOLLOWUP_COUNT, 0);
+    }
+
+    /** Cumulative agent LLM calls already billed to the goal this run (0 at run start). */
+    public int goalAccountedLlmCallCount() {
+        return state.value(GOAL_ACCOUNTED_LLM_CALL_COUNT, 0);
     }
 
     /**
@@ -474,6 +504,16 @@ public final class MateClawStateAccessor {
             return put(CHAT_ORIGIN, origin);
         }
 
+        // ---- Skill progressive disclosure ----
+        public OutputBuilder loadedSkills(Set<String> names) {
+            return put(LOADED_SKILLS, names);
+        }
+
+        // ---- Tool progressive disclosure ----
+        public OutputBuilder enabledExtensionTools(Set<String> names) {
+            return put(ENABLED_EXTENSION_TOOLS, names);
+        }
+
         // ---- Token Usage ----
 
         /** 将本次 LLM 调用的 usage 累加到 state 已有值上 */
@@ -502,6 +542,14 @@ public final class MateClawStateAccessor {
 
         public OutputBuilder goalEvaluatedThisRun(boolean v) {
             return put(GOAL_EVALUATED_THIS_RUN, v);
+        }
+
+        public OutputBuilder goalFollowupCount(int n) {
+            return put(GOAL_FOLLOWUP_COUNT, n);
+        }
+
+        public OutputBuilder goalAccountedLlmCallCount(int n) {
+            return put(GOAL_ACCOUNTED_LLM_CALL_COUNT, n);
         }
 
         /** Wipe FINAL_ANSWER on follow-up so the next graph pass doesn't

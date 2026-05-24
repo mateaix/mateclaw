@@ -202,6 +202,10 @@ curl -X POST http://localhost:18088/api/v1/security/guard/rules \
   }'
 ```
 
+### 凭证规则的开关（1.4.0）
+
+凭证规则现在支持**逐条开关**——每条规则可单独 enable / disable，可单独设定决定（allow / deny / require_approval），整套守护规则还可以 **JSON 导出 / 导入**，方便在多套部署之间迁移或版本化管理。
+
 ### 危险模式检测
 
 除了用户定义的规则之外，MateClaw 的 shell 工具内置了一套危险模式检测——不管你的规则怎么写，有些模式本身就是危险的。`find -delete`、`rm -rf /`、用管道把 `bash` 接到下载上之类的模式，**即使有规则本来会 allow，也会强制触发更高级别的审批**。
@@ -370,14 +374,20 @@ mateclaw:
 - **记忆文件**——每个 Agent 的记忆在它工作空间的目录下面
 - **渠道**——每个渠道归属于一个工作空间
 
-### 角色
+### 角色（四级 RBAC）
 
-| 角色 | 能做什么 |
-|------|----------|
-| **Owner** | 所有事，包括删除工作空间 |
-| **Admin** | 除了删除工作空间或变更 owner 之外的所有事 |
-| **Member** | 用 Agent、读写 wiki、创建会话 |
-| **Viewer** | 只读——看得到 Agent 和 KB，不能创建或修改 |
+权限**叠加**——高角色继承低角色的全部能力。
+
+| 角色 | 能力（继承下层后新增） |
+|------|------------------------|
+| **Viewer** | `chat`、`view:wiki`。只读。为了让聊天能跑通，Viewer 还能读取当前激活模型、读取员工的工作空间文件。 |
+| **Member** | Viewer + `view:memory`、`view:dashboard`、`manage:wiki`、`manage:agents` |
+| **Admin** | Member + `manage:skills`、`manage:channels`、`manage:models`、`manage:security`、`manage:settings` |
+| **Owner** | 与 Admin 相同，外加 owner 专属：删除工作空间、转移所有权 |
+
+**后端是能力的唯一真相源**——后端维护一份 `RoleCapabilities` 映射，前端从不本地推导。切换工作空间后、或遇到与权限相关的 403 时，前端调用 `GET /api/v1/workspaces/{id}/access`，拿回 `memberRole`、`isGlobalAdmin`、`effectiveRole`、`capabilities`。
+
+**全局管理员 vs 工作空间角色**：`mate_user.role='admin'` 是系统级全局管理员——管理用户、创建工作空间，以 owner 等同的权限横跨**所有**工作空间（即便它不是某工作空间的成员）；`mate_workspace_member.role` 是每工作空间的角色。系统级端点（模型 / provider / OAuth / 数据源、用户管理、创建工作空间）要求全局管理员（`@RequireGlobalAdmin`）；工作空间级端点（技能 / 工具 / 插件）要求工作空间角色——读需要 Member、写需要 Admin。
 
 完整细节在 [工作空间](./workspaces)。
 

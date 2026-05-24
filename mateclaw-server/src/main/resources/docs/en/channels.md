@@ -20,6 +20,21 @@ v1.3.0 lands a wave of long-run stability and group-collaboration work in the ch
 WeCom-specific tuning lives in [WeCom deep tuning](./wecom-tuning).
 :::
 
+::: tip 1.4.0 channel-layer hardening
+v1.4.0 makes Feishu a first-class channel — interactive cards, streaming cards, approval cards, native tools, media in/out — plus QR binding for QQ:
+
+- **Feishu interactive cards (Schema 2.0)** — structured replies auto-render as Feishu interactive cards; short plain text stays text
+- **Feishu approval cards** — tool-guard approval flows arrive as an Approve / Deny button card; one tap runs the tool to completion
+- **Feishu streaming cards (CardKit)** — replies stream char-by-char into a single card
+- **Feishu inbound voice transcription** — voice messages go through STT and reach the agent as text
+- **Feishu inbound file / audio / video download** — no longer images only; `media_download_enabled` **now defaults to true in 1.4.0**
+- **Feishu channel-native tools** — calendar lookup and doc read / write, no MCP server required
+- **QQ QR binding** — QQ gets the same scan-to-bind onboarding as DingTalk / Feishu
+- **Per-conversation model selection across all IM channels** — IM conversations remember a per-conversation model, just like web
+
+Feishu specifics are spelled out in the [Feishu](#feishu-lark) section below.
+:::
+
 ---
 
 ## The nine channels
@@ -247,6 +262,97 @@ curl -X POST http://localhost:18088/api/v1/channels \
 
 Webhook URL: `https://your-domain/api/v1/channels/webhook/feishu`
 
+### Feishu 1.4.0 enhancements
+
+v1.4.0 upgrades Feishu from "can send and receive text" into a full rich-interaction channel. Most of these work with zero config — they're listed here so you know where the switches live and what the defaults are.
+
+#### Interactive cards (Schema 2.0)
+
+Structured replies — JSON, Markdown with headers / tables / lists, long text — auto-render as Feishu **interactive cards**; short plain text still goes out as a normal text message.
+
+| Config | Default | What it does |
+|--------|---------|--------------|
+| `card_format` | `auto` | `auto` decides by content; `always` forces cards (for debugging); `never` forces plain text |
+| `card_header` | `AI 助手` | Card title text; set to an empty string to suppress the header |
+
+The JSON card payload is capped at ~32 KB; anything larger degrades to plain text.
+
+#### Approval cards
+
+Tool-guard approval flows arrive as a card with **Approve / Deny** buttons. Tapping **Approve** injects a synthetic `/approve`, tapping **Deny** injects `/deny`, and the agent then runs the approved tool end-to-end — approval and execution close the loop in the same conversation, no detour back to the web console.
+
+#### Streaming cards (CardKit)
+
+Replies stream char-by-char into a **single card** instead of waiting for the whole answer before sending.
+
+- `card_streaming_enabled` (default `true`)
+- The first token appears immediately; subsequent updates are throttled at 500ms
+- On CardKit failure it falls back to accumulate-then-send
+
+#### Inbound voice transcription
+
+Feishu voice messages go through speech-to-text (STT) and are fed to the agent as text — the agent sees real words, not an `[audio]` placeholder. **Auto-enabled once STT is configured**, no extra switch.
+
+#### Inbound file / audio / video download
+
+Before 1.4.0 only images were downloaded; now files, audio, and video are downloaded too, cached locally, and surfaced to the agent via `/api/v1/files/generated/{id}`.
+
+::: warning Default change
+`media_download_enabled` **now defaults to `true`** in 1.4.0. If disk usage or privacy matters to you, set it explicitly to `false` to opt out.
+:::
+
+Size and format limits: images cap at 10 MB (auto-compressed beyond that); files / audio / video cap at 30 MB; audio is opus-only and video is mp4-only, with everything else degrading to plain file handling.
+
+#### Outbound generated files → native attachments
+
+File URLs the agent generates are turned back into native Feishu **attachments** sent directly. On a cache miss, the reply carries a retry hint instead of a dead link.
+
+#### Channel-native tools (no MCP server)
+
+Bind a Feishu channel and the agent immediately gains three native Feishu tools, **no separate MCP server required**:
+
+| Tool | Type | Default |
+|------|------|---------|
+| `feishu_calendar_list_events` | read | on |
+| `feishu_doc_read` | read | on |
+| `feishu_doc_create` | write | off, approval-gated |
+
+DB-seeded guard rules automatically apply `NEEDS_APPROVAL` to mutating tools (e.g. `feishu_doc_create`), triggering the approval-card flow above.
+
+#### Sender context injection
+
+In group chats the agent needs to know who's talking. When a Feishu message comes in, the agent prompt automatically carries Channel / Sender / (in groups) Chat context lines. **No config.**
+
+#### DONE reaction
+
+After a successful reply, the bot adds a ✅ reaction to the inbound message as a lightweight "handled" receipt. `enable_done_reaction` (default `true`).
+
+#### Mention filtering
+
+By default the bot responds to anyone in a group chat. Set `require_mention` to `true` (default `false`) and only an @mention triggers it — the check uses the Feishu SDK's mentions field. The bot's own open_id is prefetched on startup with a 60s negative cache (if it can't be resolved, the gate falls open rather than locking the whole group on a single failure).
+
+```bash
+curl -X POST http://localhost:18088/api/v1/channels \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <token>" \
+  -d '{
+    "name": "Feishu Bot",
+    "type": "feishu",
+    "agentId": 1,
+    "config": {
+      "appId": "cli_your_app_id",
+      "appSecret": "your-app-secret",
+      "card_format": "auto",
+      "card_header": "AI 助手",
+      "card_streaming_enabled": true,
+      "media_download_enabled": true,
+      "enable_done_reaction": true,
+      "require_mention": false
+    },
+    "enabled": true
+  }'
+```
+
 ---
 
 ## WeCom (WeChat Work)
@@ -376,6 +482,25 @@ curl -X POST http://localhost:18088/api/v1/channels \
 ---
 
 ## QQ
+
+WebSocket / callback modes, on the official bot platform.
+
+### One-click QR binding (recommended, v1.4.0+)
+
+Like DingTalk / Feishu, QQ now supports scan-to-bind — no manual copying of AppID / AppSecret from the open platform.
+
+1. `Channels → New → choose type: QQ`
+2. In the form, click **Bind QQ App via QR** — a QR code unfolds
+3. Scan it with QQ and **confirm authorization**
+4. Back in the form, **AppID and AppSecret are auto-filled**
+
+::: tip What's happening under the hood
+This goes through the QQ Open Platform Lite portal: MateClaw mints a temporary session and the credentials land in the form via an AES-256-GCM encrypted exchange. The session is valid for 12 minutes and auto-invalidates on expiry. **No hand-copied credentials anywhere in the flow.**
+:::
+
+### Manual app creation (fallback)
+
+If the QR flow can't reach QQ on your network:
 
 1. [QQ Open Platform](https://q.qq.com/) → create a bot application
    ![QQ Open Platform](/images/channels/qq/01-open-platform.png) ![Create Bot](/images/channels/qq/02-create-bot.png)
@@ -507,6 +632,12 @@ Every channel conversation records where it came from. In the session management
 ## Voice for every channel
 
 IM channels (WeCom, WeChat, DingTalk) support voice input. Transcription via DashScope or OpenAI Whisper, with multi-path fallback for WeChat's encrypted voice CDN. Voice replies are synthesized via text-to-speech and sent back as audio messages.
+
+---
+
+## Per-conversation model selection (all IM channels)
+
+As of 1.4.0, IM channel conversations **remember a per-conversation model**, just like web. Each IM conversation seeds a conversation-level model when it's created, and later replies respect that choice rather than always falling back to the agent's default model. See [Chat & Messaging](./chat) for the web-side switching detail.
 
 ---
 

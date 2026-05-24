@@ -5,6 +5,9 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -148,5 +151,39 @@ class DelegationContextTest {
         // Main thread state should be unaffected
         assertEquals(1, DelegationContext.currentDepth());
         assertEquals("main-thread-conv", DelegationContext.parentConversationId());
+    }
+
+    // ===== Explicit depth (async/parallel recursion-cap bypass guard) =====
+
+    @Test
+    @DisplayName("Explicit-depth enter reports the depth verbatim, not stack size")
+    void explicitDepthReportedVerbatim() {
+        DelegationContext.enter("conv", Set.of(), "root", "sub", 3);
+        assertEquals(3, DelegationContext.currentDepth());
+        DelegationContext.exit();
+        assertEquals(0, DelegationContext.currentDepth());
+    }
+
+    @Test
+    @DisplayName("Explicit childDepth survives the executor-thread hop (async/parallel bypass guard)")
+    void explicitDepthSurvivesExecutorThreadHop() throws Exception {
+        // Async/parallel children run on a fresh executor thread with an EMPTY
+        // stack. Before the fix, currentDepth() used stack size and reset to 1
+        // here, letting a child exceed MAX_DELEGATION_DEPTH at every hop.
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        try {
+            Future<Integer> f = executor.submit(() -> {
+                assertEquals(0, DelegationContext.currentDepth()); // fresh thread, empty stack
+                // Enter with the real tree depth computed on the dispatching thread.
+                DelegationContext.enter("childConv", Set.of(), "root", "sub", 3);
+                int observed = DelegationContext.currentDepth();
+                DelegationContext.exit();
+                return observed;
+            });
+            assertEquals(3, f.get(),
+                    "child on a fresh thread must observe the explicit childDepth, not the stack size");
+        } finally {
+            executor.shutdownNow();
+        }
     }
 }

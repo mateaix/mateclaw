@@ -75,11 +75,16 @@ public class ToolGuardCardHandler implements WeComCardHandler {
         }
         PendingApproval pending = opt.get();
 
-        // ---- 3. Identity check ----
+        // ---- 3. Identity check (fail-closed) ----
+        // Agent/cron ("system") or unattributed (null) approvals have no human
+        // requester to match the clicker against; a group card would let any
+        // member resolve a guarded action. Reject here (mirrors the feishu card
+        // handler + router) so we never renderResolved a click the router will
+        // then refuse to execute. These approvals go through the admin console.
         String originalRequester = pending.getUserId();
-        boolean isAuthorized = originalRequester == null
-                || "system".equals(originalRequester)
-                || originalRequester.equals(clickerUserId);
+        boolean isAuthorized = originalRequester != null
+                && !"system".equals(originalRequester)
+                && originalRequester.equals(clickerUserId);
         if (!isAuthorized) {
             log.warn("[wecom-toolguard] Unauthorised click: clicker={} != requester={}, pending={}",
                     abbrev(clickerUserId), abbrev(originalRequester), pendingId);

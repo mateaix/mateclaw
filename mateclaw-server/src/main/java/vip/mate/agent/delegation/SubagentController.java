@@ -131,11 +131,15 @@ public class SubagentController {
     }
 
     /**
-     * List the sub-agents currently active under {@code parentConversationId}.
-     * The query parameter is mandatory: returning all subagents process-wide
-     * would let any logged-in user enumerate other tenants' delegation trees.
+     * List the sub-agents currently active in the delegation tree rooted at
+     * {@code parentConversationId} — the user-facing conversation. Returns the
+     * whole tree (direct children plus deeper descendants), so a multi-level
+     * delegation is fully visible. The query parameter is mandatory: returning
+     * all subagents process-wide would let any logged-in user enumerate other
+     * tenants' delegation trees. Tenant isolation is enforced on this root
+     * conversation, which the caller owns.
      */
-    @Operation(summary = "List active sub-agents under a parent conversation")
+    @Operation(summary = "List active sub-agents in a conversation's delegation tree")
     @GetMapping("/active")
     @RequireGlobalAdmin
     public R<Map<String, Object>> listActive(@RequestParam(required = false) String parentConversationId,
@@ -147,7 +151,7 @@ public class SubagentController {
         if (!conversationService.isConversationOwner(parentConversationId, username)) {
             throw new MateClawException(403, "not the owner of conversation " + parentConversationId);
         }
-        List<Map<String, Object>> snapshot = registry.snapshot(parentConversationId).stream()
+        List<Map<String, Object>> snapshot = registry.snapshotTree(parentConversationId).stream()
                 .map(this::toResponseDto)
                 .toList();
         return R.ok(Map.of("subagents", snapshot));
@@ -167,6 +171,8 @@ public class SubagentController {
         dto.put("subagentId", rec.subagentId());
         dto.put("parentConversationId", rec.parentConversationId());
         dto.put("childConversationId", rec.childConversationId());
+        dto.put("parentSubagentId", rec.parentSubagentId());
+        dto.put("depth", rec.depth());
         dto.put("agentId", rec.agentId());
         dto.put("goal", rec.goal());
         dto.put("startedAt", rec.startedAt());

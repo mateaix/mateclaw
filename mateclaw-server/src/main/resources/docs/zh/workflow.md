@@ -203,6 +203,10 @@ v0 = internal alpha。**7 种 step mode + 6 种 trigger pattern**。`loop` / `in
 
 工作流的实际启动只能通过 [触发器（Triggers）](./triggers.md) 或 `await_approval` 恢复——v0 没有"立即手动跑一次"的 endpoint。详见上方 API 参考。
 
+::: tip 1.4.0：触发器现在在调度中心里
+v1.4.0 起，**定时任务**和**触发器**合并为单个**调度中心**页面（`设置 → 调度中心`，路由 `/settings/scheduler`），分**计划任务 / 事件触发器 / 运行历史**三个 tab。要给工作流挂触发器，去调度中心的**事件触发器** tab 新建一条 `target_type=workflow` 的规则。详见 [触发器](./triggers.md)。
+:::
+
 ---
 
 ## API 参考

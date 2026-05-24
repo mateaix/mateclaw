@@ -9,6 +9,8 @@ import vip.mate.tool.model.ToolEntity;
 import vip.mate.tool.repository.ToolMapper;
 
 import java.util.List;
+import java.util.LinkedHashSet;
+import java.util.Set;
 
 /**
  * 工具业务服务
@@ -24,11 +26,11 @@ public class ToolService {
     private final ToolRegistry toolRegistry;
 
     public List<ToolEntity> listTools() {
-        return toolRegistry.listToolEntities();
+        return enrichRuntimeNames(toolRegistry.listToolEntities());
     }
 
     public List<ToolEntity> listEnabledTools() {
-        return toolRegistry.listEnabledToolEntities();
+        return enrichRuntimeNames(toolRegistry.listEnabledToolEntities());
     }
 
     public ToolEntity getTool(Long id) {
@@ -36,7 +38,7 @@ public class ToolService {
         if (tool == null) {
             throw new MateClawException("err.tool.not_found", "工具不存在: " + id);
         }
-        return tool;
+        return enrichRuntimeNames(tool);
     }
 
     public ToolEntity createTool(ToolEntity tool) {
@@ -45,7 +47,7 @@ public class ToolService {
             tool.setEnabled(true);
         }
         toolMapper.insert(tool);
-        return tool;
+        return enrichRuntimeNames(tool);
     }
 
     public ToolEntity updateTool(ToolEntity tool) {
@@ -53,10 +55,10 @@ public class ToolService {
         if (Boolean.TRUE.equals(existing.getBuiltin())) {
             existing.setEnabled(tool.getEnabled());
             toolMapper.updateById(existing);
-            return existing;
+            return enrichRuntimeNames(existing);
         }
         toolMapper.updateById(tool);
-        return tool;
+        return enrichRuntimeNames(tool);
     }
 
     public void deleteTool(Long id) {
@@ -71,6 +73,64 @@ public class ToolService {
         ToolEntity tool = getTool(id);
         tool.setEnabled(enabled);
         toolMapper.updateById(tool);
+        return enrichRuntimeNames(tool);
+    }
+
+    /**
+     * Set the disclosure tier ({@code core} / {@code extension}) of a builtin or
+     * channel atomic tool. MCP / ACP / skill tools are tiered at their owning
+     * source, not here — the controller rejects those before calling this.
+     */
+    public ToolEntity setDisclosureTier(Long id, String tier) {
+        ToolEntity tool = getTool(id);
+        tool.setDisclosureTier(vip.mate.tool.disclosure.DisclosureTier.fromToken(tier).token());
+        toolMapper.updateById(tool);
+        return enrichRuntimeNames(tool);
+    }
+
+    private List<ToolEntity> enrichRuntimeNames(List<ToolEntity> tools) {
+        if (tools == null || tools.isEmpty()) {
+            return tools;
+        }
+        vip.mate.agent.AgentToolSet set;
+        try {
+            set = toolRegistry.getAllToolBeanSetForAdmin();
+        } catch (Exception e) {
+            log.debug("Unable to enrich tool runtime names: {}", e.getMessage());
+            return tools;
+        }
+        for (ToolEntity tool : tools) {
+            enrichRuntimeNames(tool, set);
+        }
+        return tools;
+    }
+
+    private ToolEntity enrichRuntimeNames(ToolEntity tool) {
+        if (tool == null) {
+            return null;
+        }
+        try {
+            enrichRuntimeNames(tool, toolRegistry.getAllToolBeanSetForAdmin());
+        } catch (Exception e) {
+            log.debug("Unable to enrich tool runtime names for {}: {}", tool.getName(), e.getMessage());
+        }
         return tool;
+    }
+
+    private static void enrichRuntimeNames(ToolEntity tool, vip.mate.agent.AgentToolSet set) {
+        if (tool == null || set == null) {
+            return;
+        }
+        Set<String> aliases = new LinkedHashSet<>();
+        if (tool.getName() != null && !tool.getName().isBlank()) {
+            aliases.add(tool.getName());
+        }
+        if (tool.getBeanName() != null && !tool.getBeanName().isBlank()) {
+            aliases.add(tool.getBeanName());
+        }
+        Set<String> names = set.functionNamesFor(aliases);
+        if (!names.isEmpty()) {
+            tool.setRuntimeNames(List.copyOf(names));
+        }
     }
 }

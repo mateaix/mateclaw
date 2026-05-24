@@ -202,6 +202,10 @@ curl -X POST http://localhost:18088/api/v1/security/guard/rules \
   }'
 ```
 
+### Credential-rule toggles (1.4.0)
+
+Credential rules now support **per-rule control** — each rule can be enabled/disabled individually, each rule carries its own decision (allow / deny / require_approval), and the entire guard rule set can be **exported and imported as JSON** for migrating between deployments or version-controlling your policy.
+
 ### Dangerous pattern detection
 
 In addition to user-defined rules, MateClaw's shell tool has built-in detection for patterns that are dangerous no matter what. `find -delete`, `rm -rf /`, piped downloads through `bash`, and similar patterns trigger elevated approval even if a rule would otherwise allow them.
@@ -370,14 +374,20 @@ Workspaces are how MateClaw keeps multiple teams' data separate. Every agent, sk
 - **Memory files** — every agent's memory is under its workspace's directory
 - **Channels** — each channel belongs to a workspace
 
-### Roles
+### Roles (four-tier RBAC)
 
-| Role | Can do |
-|------|--------|
-| **Owner** | Everything, including deleting the workspace |
-| **Admin** | Everything except deleting/changing owner |
-| **Member** | Use agents, read/write wiki, create conversations |
-| **Viewer** | Read-only — see agents and KBs, can't create or modify |
+Capabilities are **additive** — a higher role inherits everything below it.
+
+| Role | Capabilities (added on top of the tier below) |
+|------|-----------------------------------------------|
+| **Viewer** | `chat`, `view:wiki`. Read-only. So that chat works, a Viewer can also read the active model and read an employee's workspace files. |
+| **Member** | Viewer + `view:memory`, `view:dashboard`, `manage:wiki`, `manage:agents` |
+| **Admin** | Member + `manage:skills`, `manage:channels`, `manage:models`, `manage:security`, `manage:settings` |
+| **Owner** | Same as Admin, plus owner-only: delete the workspace, transfer ownership |
+
+**The backend is the single source of truth for capabilities** — it holds a `RoleCapabilities` mapping, and the frontend never derives them locally. After a workspace switch, or on a capability-related 403, the frontend calls `GET /api/v1/workspaces/{id}/access`, which returns `memberRole`, `isGlobalAdmin`, `effectiveRole`, and `capabilities`.
+
+**Global admin vs workspace role**: `mate_user.role='admin'` is the system-wide global admin — it manages users, creates workspaces, and spans **all** workspaces with owner-equivalent power even where it isn't a member; `mate_workspace_member.role` is per-workspace. System-level endpoints (models / providers / OAuth / datasources, user management, workspace creation) require a global admin (`@RequireGlobalAdmin`); workspace-scoped endpoints (skills / tools / plugins) require a workspace role — reads need Member, writes need Admin.
 
 Full details in [Workspaces](./workspaces).
 

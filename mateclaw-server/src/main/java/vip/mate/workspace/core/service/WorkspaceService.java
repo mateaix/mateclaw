@@ -269,12 +269,12 @@ public class WorkspaceService {
         // 检查是否已是成员
         WorkspaceMemberEntity existing = getMembership(workspaceId, userId);
         if (existing != null) {
-            throw new MateClawException("err.workspace.member_exists", "用户已经是该工作区的成员");
+            throw new MateClawException("err.workspace.member_exists", 409, "用户已经是该工作区的成员");
         }
         WorkspaceMemberEntity member = new WorkspaceMemberEntity();
         member.setWorkspaceId(workspaceId);
         member.setUserId(userId);
-        member.setRole(role != null ? role : "member");
+        member.setRole(normalizeAssignableRole(role));
         memberMapper.insert(member);
         evictMembershipCache(workspaceId, userId);
         log.info("Added member to workspace: userId={}, workspaceId={}, role={}", userId, workspaceId, member.getRole());
@@ -284,24 +284,35 @@ public class WorkspaceService {
     public WorkspaceMemberEntity updateMemberRole(Long workspaceId, Long userId, String role) {
         WorkspaceMemberEntity member = getMembership(workspaceId, userId);
         if (member == null) {
-            throw new MateClawException("err.workspace.not_member", "用户不是该工作区的成员");
+            throw new MateClawException("err.workspace.not_member", 404, "用户不是该工作区的成员");
         }
         if ("owner".equals(member.getRole())) {
-            throw new MateClawException("err.workspace.cannot_modify_owner", "不能修改工作区拥有者的角色");
+            throw new MateClawException("err.workspace.cannot_modify_owner", 400, "不能修改工作区拥有者的角色");
         }
-        member.setRole(role);
+        member.setRole(normalizeAssignableRole(role));
         memberMapper.updateById(member);
         evictMembershipCache(workspaceId, userId);
         return member;
     }
 
+    private String normalizeAssignableRole(String role) {
+        String normalized = role == null || role.isBlank() ? "member" : role.trim();
+        return switch (normalized) {
+            case "admin", "member", "viewer" -> normalized;
+            case "owner" -> throw new MateClawException(
+                    "err.workspace.invalid_member_role", 400, "不能通过成员管理授予 owner 角色");
+            default -> throw new MateClawException(
+                    "err.workspace.invalid_member_role", 400, "无效的成员角色: " + normalized);
+        };
+    }
+
     public void removeMember(Long workspaceId, Long userId) {
         WorkspaceMemberEntity member = getMembership(workspaceId, userId);
         if (member == null) {
-            throw new MateClawException("err.workspace.not_member", "用户不是该工作区的成员");
+            throw new MateClawException("err.workspace.not_member", 404, "用户不是该工作区的成员");
         }
         if ("owner".equals(member.getRole())) {
-            throw new MateClawException("err.workspace.cannot_remove_owner", "不能移除工作区拥有者");
+            throw new MateClawException("err.workspace.cannot_remove_owner", 400, "不能移除工作区拥有者");
         }
         memberMapper.deleteById(member.getId());
         evictMembershipCache(workspaceId, userId);

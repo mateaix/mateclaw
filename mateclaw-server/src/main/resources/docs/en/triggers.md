@@ -102,15 +102,21 @@ The HTTP entry (`POST /api/v1/triggers/events`) → envelope wrap → dedup chec
 
 ## Managing triggers from the UI
 
+::: tip 1.4.0 change: merged into the Scheduler
+As of v1.4.0, **Scheduled Jobs** and **Triggers** are merged into a single **Scheduler** page (`Settings → Scheduler`, route `/settings/scheduler`) with three tabs: **Scheduled Jobs** / **Event Triggers** / **Run History**. Each tab shows an item count next to its title; the top-right action button is context-aware (it's "New" on the Scheduled Jobs / Event Triggers tabs, "Refresh" on the History tab); Run History **spans both** — execution records for both scheduled jobs and triggers live here.
+
+The old routes redirect automatically: `/cron-jobs` and `/settings/triggers` each land on the matching Scheduler tab.
+:::
+
 ### Entry point
 
-`Triggers` (sidebar) → list + **+ New** drawer.
+`Settings → Scheduler` (sidebar) → **Event Triggers** tab. In v1.4.0 the trigger list was redesigned from the old wide table into **rule cards** — one card per trigger, showing pattern type / target / enabled state at a glance. Click **+ New Trigger** to open the drawer.
 
 ### Creating a trigger
 
 The drawer has structured forms per pattern type — no hand-written `pattern_json`:
 
-- `cron` → cron expression input + timezone dropdown + next-fire preview
+- `cron` → cron expression input + timezone dropdown + next-fire preview. The expression can be typed by hand, or click the edit button beside the input to open the **visual cron editor** (see below)
 - `channel_message` → channel type (optional) + sender id exact-match (optional)
 - `agent_lifecycle` → agent (optional) + phase: `spawned` / `terminated` / `crashed` (optional)
 - `content_match` → substring (**required**), matched case-insensitively against envelope `data.content`
@@ -118,6 +124,40 @@ The drawer has structured forms per pattern type — no hand-written `pattern_js
 - `webhook` → no extra fields in v0 (transparent passthrough)
 
 Save → trigger persists; with `enabled=true` it's registered with the right engine immediately (cron → ShedLock; others → envelope router).
+
+### Visual cron editor (new in 1.4.0)
+
+You don't have to hand-write the cron expression. Click the edit button beside the expression input to open a **segmented editor**: minute / hour / day / month / day-of-week each get a tab, and each segment offers "every / specific value / range / step"; a row of **presets** up top (every minute, on the hour, daily at midnight, every Monday…) fills it in with one click; at the bottom is a **live human-readable preview** that translates the current expression into plain language (e.g. "every day at 09:00").
+
+This editor is the **same component shared by Scheduled Jobs and Triggers**:
+
+- **Scheduled Jobs** use **5-field** cron (minute hour day month day-of-week)
+- **Triggers** use **6-field** cron (with seconds: second minute hour day month day-of-week) — an extra leading seconds field
+
+The input itself also carries a one-line readable preview, so you can confirm what your hand-typed expression parsed to without opening the editor.
+
+---
+
+## Scheduled-task types (task type)
+
+Every job on the **Scheduled Jobs** tab of the Scheduler has a `task_type` that decides what it does when it runs. This is the authoritative list of cron task types (the six event-trigger pattern types are covered above):
+
+| task type | Behavior | Binds an employee? | Notes |
+|---|---|---|---|
+| `text` / `agent` / `reminder` | Starts an employee conversation on the cron schedule | **Yes** (agent required) | Classic scheduled conversation; the result routes to the conversation |
+| `wiki_process` | Processes a knowledge base offline on the cron schedule | **No** | New in 1.4.0 — see below |
+
+### `wiki_process`: off-peak KB processing (new in 1.4.0)
+
+`wiki_process` lets you schedule **knowledge-base processing** to run offline during low-traffic windows instead of saturating the processing queue the moment an upload finishes. It **binds no employee** — it's a system task: no conversation, no chat.
+
+When creating one you only fill in:
+
+- **cron expression** (use the visual editor above, 5-field)
+- **KB selector** — which KB this job processes
+- an optional **"force reprocess"** toggle — when on, already-processed raw materials are rerun too (`force`)
+
+On each tick, the job **asynchronously queues** that KB's raw materials for processing and logs one row in Run History, of the form `queued N raw material(s)` (a `(force)` suffix is appended when force is on). **Note it does not route to any conversation** — it just hands work to the processing queue; check progress on the [LLM Wiki](./wiki.md) page.
 
 ### Payload template
 

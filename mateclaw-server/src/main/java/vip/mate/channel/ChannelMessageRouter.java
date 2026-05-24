@@ -488,6 +488,47 @@ public class ChannelMessageRouter {
         return null;
     }
 
+    /**
+     * Identity gate shared by /approve and /deny (group-chat safety): only the
+     * original human requester may resolve a pending. Agent/cron ("system") and
+     * unattributed (null) approvals are fail-closed in IM — any group member
+     * could otherwise approve OR deny/cancel a guarded action — and must be
+     * handled from the admin console. Sends the rejection notice + logs and
+     * returns {@code false} when the caller is not authorized.
+     */
+    private boolean approvalResolveAuthorized(PendingApproval pending, ChannelMessage message,
+                                              ChannelAdapter adapter, String replyTarget) {
+        String originalRequester = pending.getUserId();
+        boolean systemOriginated = originalRequester == null || "system".equals(originalRequester);
+        if (systemOriginated || !originalRequester.equals(message.getSenderId())) {
+            adapter.sendMessage(replyTarget, systemOriginated
+                    ? "⚠️ 该审批由系统/定时任务发起，请在管理端处理。"
+                    : "⚠️ 只有原始请求者可以审批此操作。");
+            log.warn("[{}] Approval resolve rejected: sender={} != requester={} (systemOriginated={})",
+                    adapter.getChannelType(), message.getSenderId(), originalRequester, systemOriginated);
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * When an /approve or /deny command carries an explicit short pendingId
+     * (e.g. "/deny a1b2c3"), verify it matches the conversation's current
+     * pending before resolving — otherwise a stale or copy-pasted id would
+     * silently act on the wrong pending. Sends the mismatch notice and returns
+     * {@code true} (caller must abort) when the ids don't line up.
+     */
+    private boolean pendingIdMismatch(String userText, PendingApproval pending,
+                                      ChannelAdapter adapter, String replyTarget) {
+        String shortId = extractShortId(userText);
+        if (shortId != null && !pending.getPendingId().startsWith(shortId)) {
+            adapter.sendMessage(replyTarget, "⚠️ 审批ID不匹配。当前待审批: "
+                    + pending.getPendingId().substring(0, Math.min(6, pending.getPendingId().length())));
+            return true;
+        }
+        return false;
+    }
+
     // ==================== 消息处理（原 route 逻辑 + 审批拦截层） ====================
 
     /**
@@ -510,20 +551,12 @@ public class ChannelMessageRouter {
                 String replyTarget = resolveReplyTarget(message);
 
                 if (isApproveCommand(userText)) {
-                    // pendingId 校验：如果命令包含 shortId，验证是否匹配当前 pending
-                    String shortId = extractShortId(userText);
-                    if (shortId != null && !pending.getPendingId().startsWith(shortId)) {
-                        adapter.sendMessage(replyTarget, "⚠️ 审批ID不匹配。当前待审批: "
-                                + pending.getPendingId().substring(0, Math.min(6, pending.getPendingId().length())));
+                    // pendingId 校验：approve / deny 共用——命令带 shortId 时必须匹配当前 pending。
+                    if (pendingIdMismatch(userText, pending, adapter, replyTarget)) {
                         return;
                     }
-                    // 身份校验：只有原始请求者可以审批（群聊安全）
-                    String originalRequester = pending.getUserId();
-                    if (originalRequester != null && !"system".equals(originalRequester)
-                            && !originalRequester.equals(message.getSenderId())) {
-                        adapter.sendMessage(replyTarget, "⚠️ 只有原始请求者可以审批此操作。");
-                        log.warn("[{}] Approval rejected: sender={} != requester={}",
-                                adapter.getChannelType(), message.getSenderId(), originalRequester);
+                    // 身份校验：approve / deny 共用同一道门禁（群聊安全 + system/null fail-closed）。
+                    if (!approvalResolveAuthorized(pending, message, adapter, replyTarget)) {
                         return;
                     }
                     // Approve via IM: workflow.resolveAndConsume runs DB + metadata + memory atomically.
@@ -542,9 +575,24 @@ public class ChannelMessageRouter {
                     return;
 
                 } else if (isDenyCommand(userText)) {
+                    // pendingId 校验：与 approve 一致——命令带 shortId 时必须匹配当前 pending，
+                    // 否则 /deny <其它ID> 会错误地拒绝当前 conversation 的 pending。
+                    if (pendingIdMismatch(userText, pending, adapter, replyTarget)) {
+                        return;
+                    }
+                    // 身份校验：deny 与 approve 共用门禁。否则群里任意成员可拒绝/取消他人的
+                    // pending，system/null 发起的审批也会被任意人 deny（取消审批、清 placeholder、
+                    // 写入 denied 状态）；这类审批改到管理端处理。
+                    if (!approvalResolveAuthorized(pending, message, adapter, replyTarget)) {
+                        return;
+                    }
                     // Deny via IM: workflow.resolve owns the full state-machine transition.
                     ResolveOutcome denyOutcome = approvalService.resolve(
                             pending.getPendingId(), message.getSenderId(), "denied");
+                    if (denyOutcome.isAlreadyResolved()) {
+                        adapter.sendMessage(replyTarget, "⚠️ 审批记录已过期或已被处理。");
+                        return;
+                    }
                     conversationService.removeApprovalPlaceholders(conversationId);
                     String denyHint = "⛔ 已拒绝执行工具: " + pending.getToolName();
                     persistAndBroadcastApprovalHint(conversationId, denyHint,

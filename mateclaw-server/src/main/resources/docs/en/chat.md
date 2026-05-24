@@ -171,6 +171,62 @@ A conversation is a sequence of messages scoped to a single agent and a single u
 
 The segment representation is what powers the progressive display. It also makes the database the source of truth — the UI can reconstruct any past response exactly as it looked while streaming.
 
+### Per-conversation model selection
+
+::: tip Added in 1.4.0
+The model selector in the chat header now binds a model **to the conversation**, not as a global switch. See [issue #150](https://github.com/matevip/mateclaw/issues/150).
+:::
+
+Switching the model in the header affects **only this conversation**: the choice is stored on the conversation and takes effect starting with the **next message**. A conversation you never set explicitly falls back to the workspace default model. The runtime model indicator stays in sync with whatever is pinned on the conversation — what you see is what the next turn actually uses.
+
+This isolation also makes model config more robust: **a single bad model id no longer takes its whole provider offline**. The broken conversation only affects itself; everything else keeps running.
+
+### Conversation list management
+
+::: tip Added in 1.4.0
+The conversation sidebar grew from a plain history list into an actionable operations panel. See [issue #144](https://github.com/matevip/mateclaw/issues/144).
+:::
+
+- **Pin / unpin** — from each row's `⋮` overflow menu. Important threads stay at the top in a "Pinned" group.
+- **Multi-select batch delete** — enter multi-select mode and a checkbox appears on each row; tick several and delete them in one go.
+- **Filter by employee** — when the workspace has **2 or more employees**, a dropdown appears at the top of the sidebar to filter the list by employee (hidden with a single employee, so there's no pointless control).
+- **Status dots** — read each conversation's state at a glance: currently generating (blue pulse), an active goal in progress, or unread content.
+
+### Global keyboard shortcuts
+
+::: tip Added in 1.4.0
+Two global shortcuts let you jump between conversations without touching the mouse. The hint lives in the sidebar footer.
+:::
+
+| Shortcut | Action |
+|----------|--------|
+| `Ctrl/Cmd + K` | Open the employee picker to jump to any chat |
+| `Ctrl/Cmd + N` | Start a new conversation |
+
+`Ctrl+N` does not fire while you're typing in an input or textarea — its native behavior is left alone.
+
+### Session Admin page
+
+::: tip Added in 1.4.0
+When conversations outgrow the sidebar, reach a dedicated admin page from the chat header overflow menu ("Session Admin"), at `/sessions`.
+:::
+
+This page exists for the "lots of conversations" case:
+
+- **Server-side pagination** — no more cramming thousands of conversations into the sidebar.
+- **Search by title or ID** — filter as you type to locate a specific conversation.
+- **Depth-styled card layout** — one card per conversation, denser than the sidebar.
+- **Inline editable model chip** — each row shows and switches that conversation's model directly, without entering it first.
+- **Back button** — one click returns you to the chat console.
+
+### Shared employee picker
+
+::: tip Added in 1.4.0
+A single shared picker dialog is reused in three places: the sidebar, the `Ctrl+K` shortcut, and the new-conversation modal.
+:::
+
+All three entry points open the **same dialog** with identical behavior. Agent icons inside it are **color-coded per employee**, so in a multi-employee workspace you can tell who's who at a glance.
+
 ---
 
 ## Context window management

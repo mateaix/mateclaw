@@ -89,10 +89,16 @@ public class SubagentHeartbeat {
             if (rec.status().compareAndSet("running", "stale")) {
                 Map<String, Object> payload = new LinkedHashMap<>();
                 payload.put("subagentId", rec.subagentId());
+                payload.put("parentSubagentId", rec.parentSubagentId());
+                payload.put("depth", rec.depth());
                 payload.put("cycles", sc);
                 payload.put("lastTool", currentTool != null ? currentTool : "");
                 payload.put("elapsedMs", System.currentTimeMillis() - rec.startedAt());
-                streamTracker.broadcastObject(rec.parentConversationId(), "subagent_stale", payload);
+                // Broadcast to the root (human-facing) conversation so the event
+                // reaches the stream the user is watching at any tree depth.
+                String target = rec.rootConversationId() != null
+                        ? rec.rootConversationId() : rec.parentConversationId();
+                streamTracker.broadcastObject(target, "subagent_stale", payload);
                 log.info("[SubagentHeartbeat] subagent {} marked stale after {} idle cycles (limit={})",
                         rec.subagentId(), sc, limit);
             }

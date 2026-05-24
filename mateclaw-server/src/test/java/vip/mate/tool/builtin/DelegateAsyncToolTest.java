@@ -30,6 +30,7 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -91,7 +92,8 @@ class DelegateAsyncToolTest {
         AgentEntity target = makeAgent(10L, "Researcher");
         when(agentMapper.selectOne(any())).thenReturn(target);
         when(subagentRegistry.isSpawnPaused("parent-conv-1")).thenReturn(false);
-        when(subagentRegistry.register(anyString(), anyString(), anyLong(), anyString(), any()))
+        when(subagentRegistry.register(anyString(), anyString(), anyLong(), anyString(), any(),
+                any(), anyInt(), anyString()))
                 .thenReturn("sa-1");
 
         AsyncTaskEntity entity = new AsyncTaskEntity();
@@ -121,7 +123,8 @@ class DelegateAsyncToolTest {
     void delegateAsyncRequestJsonShape() throws Exception {
         AgentEntity target = makeAgent(10L, "Researcher");
         when(agentMapper.selectOne(any())).thenReturn(target);
-        when(subagentRegistry.register(anyString(), anyString(), anyLong(), anyString(), any()))
+        when(subagentRegistry.register(anyString(), anyString(), anyLong(), anyString(), any(),
+                any(), anyInt(), anyString()))
                 .thenReturn("sa-2");
         AsyncTaskEntity entity = new AsyncTaskEntity();
         entity.setTaskId("tid-200");
@@ -137,7 +140,14 @@ class DelegateAsyncToolTest {
         Map<String, Object> payload = objectMapper.readValue(jsonCaptor.getValue(), new TypeReference<>() {});
         assertThat(payload).containsEntry("parentConversationId", "parent-conv-1")
                 .containsEntry("label", "myLabel")
-                .containsEntry("task", "task body");
+                .containsEntry("task", "task body")
+                // Durable async identity — task_output's route-B authorization reads
+                // these persisted fields (the registry is process-local), so lock them.
+                .containsEntry("rootConversationId", "parent-conv-1")
+                .containsEntry("subagentId", "sa-2")
+                .containsEntry("depth", 1);
+        // A top-level spawn has no parent subagent, so the key is omitted entirely.
+        assertThat(payload).doesNotContainKey("parentSubagentId");
         assertThat(payload.get("childConversationId")).asString().startsWith("child-");
         assertThat(((Number) payload.get("childAgentId")).longValue()).isEqualTo(10L);
     }
@@ -147,7 +157,8 @@ class DelegateAsyncToolTest {
     void delegateAsyncConcurrencyCap() throws Exception {
         AgentEntity target = makeAgent(10L, "Researcher");
         when(agentMapper.selectOne(any())).thenReturn(target);
-        when(subagentRegistry.register(anyString(), anyString(), anyLong(), anyString(), any()))
+        when(subagentRegistry.register(anyString(), anyString(), anyLong(), anyString(), any(),
+                any(), anyInt(), anyString()))
                 .thenReturn("sa-cap");
         when(asyncTaskService.submitOneShot(anyString(), anyString(), any(), anyString(), anyString(), any()))
                 .thenThrow(new IllegalStateException("已达到最大并行任务数（3），请等待现有任务完成"));
@@ -175,7 +186,8 @@ class DelegateAsyncToolTest {
             assertThat(parsed).containsEntry("error", true);
         }
         verify(asyncTaskService, never()).submitOneShot(any(), any(), any(), any(), any(), any());
-        verify(subagentRegistry, never()).register(any(), any(), any(), any(), any());
+        verify(subagentRegistry, never()).register(any(), any(), any(), any(), any(),
+                any(), anyInt(), any());
     }
 
     @Test
@@ -201,7 +213,8 @@ class DelegateAsyncToolTest {
         assertThat(parsed).containsEntry("error", true);
         assertThat((String) parsed.get("message")).contains("paused");
         verify(asyncTaskService, never()).submitOneShot(any(), any(), any(), any(), any(), any());
-        verify(subagentRegistry, never()).register(any(), any(), any(), any(), any());
+        verify(subagentRegistry, never()).register(any(), any(), any(), any(), any(),
+                any(), anyInt(), any());
     }
 
     @Test
@@ -244,6 +257,42 @@ class DelegateAsyncToolTest {
         assertThat(parsed).containsEntry("status", "succeeded")
                 .containsEntry("result", "child final answer");
         assertThat(((Number) parsed.get("duration_ms")).longValue()).isGreaterThanOrEqualTo(0L);
+    }
+
+    @Test
+    @DisplayName("taskOutput authorized via root conversation when caller is the root of a child-spawned task")
+    void taskOutputAllowedViaRootConversation() throws Exception {
+        // A (grand)child stamped its OWN conversation as parentConversationId, but
+        // rootConversationId points back at the user-facing conversation the root
+        // agent runs in. The root agent (caller) must be able to poll that task even
+        // though it is not the immediate spawn conversation.
+        AsyncTaskEntity entity = new AsyncTaskEntity();
+        entity.setTaskId("tid-root");
+        entity.setTaskType("agent_delegate");
+        entity.setStatus("succeeded");
+        entity.setCreatedBy("user-1");
+        entity.setResultJson("deep result");
+        entity.setProgress(100);
+        entity.setCreateTime(LocalDateTime.now().minusSeconds(5));
+        entity.setUpdateTime(LocalDateTime.now());
+        Map<String, Object> req = new LinkedHashMap<>();
+        req.put("parentConversationId", "child-conv-2");   // NOT the caller's conversation
+        req.put("rootConversationId", "parent-conv-1");     // caller IS the root
+        req.put("childConversationId", "child-conv-3");
+        req.put("childAgentId", 10L);
+        req.put("subagentId", "sa-deep");
+        req.put("depth", 2);
+        req.put("task", "deep task");
+        req.put("label", "");
+        entity.setRequestJson(objectMapper.writeValueAsString(req));
+        when(asyncTaskService.findEntityByTaskId("tid-root")).thenReturn(entity);
+
+        // Caller runs in parent-conv-1: != taskParentConv but == taskRootConv → allowed.
+        String result = tool.taskOutput("tid-root", false, null, makeCtx("user-1", "parent-conv-1"));
+        Map<String, Object> parsed = objectMapper.readValue(result, new TypeReference<>() {});
+        assertThat(parsed).doesNotContainKey("error");
+        assertThat(parsed).containsEntry("status", "succeeded")
+                .containsEntry("result", "deep result");
     }
 
     @Test

@@ -44,6 +44,12 @@ export type SSEEventType =
   | 'delegation_progress'
   | 'delegation_end'
   | 'delegation_child_complete'
+  // Fire-and-forget delegation: a subagent spawned to run detached. Its result
+  // is retrieved later via task_output, so it enters the timeline as a node
+  // marked "running in background" rather than one that resolves this turn.
+  | 'delegation_async_spawned'
+  // Heartbeat watchdog flagged a sub-agent as making no observable progress
+  | 'subagent_stale'
   // Persistent goal events (RFC 48) — emitted by GoalEvaluationNode
   | 'goal_evaluated'
   | 'goal_followup'

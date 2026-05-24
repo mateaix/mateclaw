@@ -544,8 +544,13 @@ public class AgentBindingService implements AgentBindingResolver {
             // CRUD primitives above — a skill-bound agent must still be able
             // to locate a fact by keyword instead of reading whole files.
             "search_workspace_memory",
+            // Progressive tool disclosure — meta tool that activates an
+            // extension-tier tool for the rest of the conversation. Must be
+            // agent-wide so the model can always surface hidden tools.
+            "enable_tool",
             // Skill discovery / dispatch — skills are docs, not callables;
             // these helpers let the LLM read SKILL.md / run scripts.
+            "load_skill",
             "readSkillFile",
             "runSkillScript",
             "listSkillFiles",
@@ -576,6 +581,12 @@ public class AgentBindingService implements AgentBindingResolver {
             "addGoalCriterion",
             "completeGoal",
             "getGoalStatus",
+            // Conversation-scoped progress ledger — same rationale as the
+            // goal primitives above. Long multi-step research / drafting
+            // tasks need it on every business agent, not just the planner,
+            // since context-window trims can otherwise let an agent forget
+            // what it has already produced and re-do work or stall.
+            "progress_update",
             // Document / media generation — agent-wide capabilities, never
             // declared inside any skill manifest. Pre-Phase-2b these were
             // universally visible; the new gate silently strips them whenever
@@ -606,6 +617,7 @@ public class AgentBindingService implements AgentBindingResolver {
             "search",
             "browser_use",
             "read_file",
+            "send_file",
             "write_file",
             "edit_file",
             "execute_shell_command",

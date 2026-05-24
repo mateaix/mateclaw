@@ -127,6 +127,34 @@ export interface PlanMeta {
   stepResults?: { result: string; status: string }[]
 }
 
+/** One tool the subagent called, shown in the nested delegation timeline. */
+export interface DelegationToolEntry {
+  name: string
+  status: 'running' | 'completed' | 'error'
+}
+
+/**
+ * A subagent at depth >= 2 in the delegation tree (a grandchild and deeper).
+ * Built on the frontend from the flat delegation_* event stream, keyed by
+ * subagentId and nested by parentSubagentId.
+ */
+export interface DelegationNode {
+  subagentId: string
+  agentName: string
+  status: 'running' | 'completed' | 'error'
+  depth: number
+  task?: string
+  plan?: PlanMeta
+  tools?: DelegationToolEntry[]
+  result?: string
+  durationMs?: number
+  /** Heartbeat watchdog flagged this subagent as making no observable progress. */
+  stale?: boolean
+  /** Spawned via fire-and-forget delegation: runs detached, result via task_output. */
+  async?: boolean
+  children: DelegationNode[]
+}
+
 export interface PendingApprovalMeta {
   pendingId: string
   toolName: string
@@ -171,12 +199,19 @@ export interface MessageSegment {
   /**
    * For delegation segments (toolName starts with "→"): the subagent's own
    * activity, relayed from the child conversation. Renders as a nested timeline
-   * (its plan checklist + the tools it called) instead of jammed text in toolArgs.
+   * (its plan checklist + the tools it called + any grandchildren it delegated)
+   * instead of jammed text in toolArgs. The depth-1 child is the segment itself;
+   * `children` holds depth-2+ subagents as a recursive tree.
    */
   childTimeline?: {
     plan?: PlanMeta
-    tools?: { name: string; status: 'running' | 'completed' | 'error' }[]
+    tools?: DelegationToolEntry[]
+    children?: DelegationNode[]
   }
+  /** For a delegation segment: heartbeat flagged the subagent as stalled (no progress). */
+  delegationStale?: boolean
+  /** For a delegation segment: spawned fire-and-forget, runs detached (result via task_output). */
+  delegationAsync?: boolean
   /** 时间戳 */
   timestamp?: number
   /**
@@ -468,11 +503,16 @@ export interface Tool {
   description?: string
   beanName?: string
   toolType: string
+  /** Runtime @Tool function names shown to the model, when resolvable. */
+  runtimeNames?: string[]
   icon?: string
   mcpEndpoint?: string
   paramsSchema?: string
   enabled: boolean
   builtin?: boolean
+  /** Progressive-disclosure tier: 'core' | 'extension'. Null/absent = core. */
+  disclosureTier?: string
+  channelId?: string | number
   createTime: string
 }
 
