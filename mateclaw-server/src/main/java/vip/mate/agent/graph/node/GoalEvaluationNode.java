@@ -160,10 +160,13 @@ public class GoalEvaluationNode implements NodeAction {
         try {
             result = evaluationService.evaluate(goal, recent, terminal);
 
-            // Pre-eval agent_llm count snapshot — the bookkeeping helper
-            // folds it into the per-goal counter so future turns see
-            // growing usage.
-            int agentLlmDelta = accessor.llmCallCount();
+            // Bill only the NEW agent LLM calls since the last accounted point.
+            // The run-to-completion loop evaluates multiple times per graph run
+            // while LLM_CALL_COUNT keeps growing, so passing the cumulative value
+            // raw would re-bill earlier calls on every pass and exhaust the
+            // goal's LLM budget prematurely. The followup branch advances the
+            // accounted marker; terminal branches don't (the run ends there).
+            int agentLlmDelta = Math.max(0, accessor.llmCallCount() - accessor.goalAccountedLlmCallCount());
             int evalLlmDelta = result.llmCallsConsumed();
             goalService.recordEvaluation(goal.getId(), result, agentLlmDelta, evalLlmDelta);
 
@@ -219,6 +222,7 @@ public class GoalEvaluationNode implements NodeAction {
                     .build();
         }
 
+        int followupCountThisRun = accessor.goalFollowupCount();
         Optional<String> followup;
         try {
             followup = followupService.maybeBuildFollowup(refreshed, result);
@@ -227,7 +231,18 @@ public class GoalEvaluationNode implements NodeAction {
                     refreshed.getId(), t.toString());
             followup = Optional.empty();
         }
-        if (followup.isPresent()) {
+        // Per-run safety net: cap the autonomous self-continuation loop so a
+        // single user message can't drive an unbounded number of steps or
+        // approach the graph recursion limit. When the cap is hit we fall
+        // through to the terminal "continue, no followup" path — the goal stays
+        // active and the cross-message turn / LLM budget (or the user) carries
+        // it on.
+        boolean perRunCapReached = followupCountThisRun >= properties.getMaxFollowupsPerRun();
+        if (followup.isPresent() && perRunCapReached) {
+            log.info("[GoalEvaluationNode] per-run followup cap reached ({}/{}) for goal={}; ending this run",
+                    followupCountThisRun, properties.getMaxFollowupsPerRun(), refreshed.getId());
+        }
+        if (followup.isPresent() && !perRunCapReached) {
             try {
                 goalService.recordFollowupInjected(refreshed.getId(), followup.get());
             } catch (Throwable t) {
@@ -240,7 +255,18 @@ public class GoalEvaluationNode implements NodeAction {
                     .goalEvaluationResult(result.toMap())
                     .goalFollowupInjected(true)
                     .goalFollowupPrompt(followup.get())
-                    .goalEvaluatedThisRun(true)
+                    .goalFollowupCount(followupCountThisRun + 1)
+                    // Advance the LLM-billing marker to the current cumulative
+                    // count so the NEXT evaluation in this run charges only its
+                    // own delta (see agentLlmDelta above).
+                    .goalAccountedLlmCallCount(accessor.llmCallCount())
+                    // Deliberately NOT setting goalEvaluatedThisRun(true): leaving
+                    // it false lets the NEXT answer be re-evaluated, turning the
+                    // old single-step behaviour into run-to-completion. The loop
+                    // is bounded by the per-run cap above plus the turn / LLM
+                    // budgets; the dispatcher treats any terminal pass
+                    // (goalEvaluatedThisRun == true) as END even if this flag
+                    // lingers true under the REPLACE key strategy.
                     .needsToolCall(false)
                     .events(List.of(goalEvent("goal_followup", Map.of(
                             "goalId", String.valueOf(refreshed.getId()),

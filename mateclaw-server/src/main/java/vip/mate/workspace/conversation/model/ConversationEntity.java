@@ -61,6 +61,17 @@ public class ConversationEntity {
     /** Model id this conversation is pinned to. See {@link #modelProvider}. */
     private String modelName;
 
+    /**
+     * Per-conversation progress notebook JSON (see V100 migration).
+     * <p>
+     * Map of {@code stepKey -> {label, status, note, updatedAt}}, written by
+     * the {@code progress_update} tool and rendered into the system prompt
+     * before each LLM call to survive message-window trimming. NULL means
+     * "no ledger yet" — the runtime suppresses the snapshot.
+     */
+    @TableField(value = "progress_ledger", updateStrategy = FieldStrategy.ALWAYS)
+    private String progressLedger;
+
     @TableField(fill = FieldFill.INSERT)
     private LocalDateTime createTime;
 

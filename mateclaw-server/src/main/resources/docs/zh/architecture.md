@@ -134,7 +134,7 @@ mateclaw/
 
 - `agent/graph/StateGraphReActAgent.java`——装配 ReAct 循环
 - `agent/graph/plan/StateGraphPlanExecuteAgent.java`——装配 Plan-and-Execute 图
-- `agent/graph/node/`——`ReasoningNode`、`ActionNode`、`ObservationNode`、`FinalAnswerNode`、`SummarizingNode`、`LimitExceededNode`
+- `agent/graph/node/`——`ReasoningNode`、`ActionNode`、`ObservationNode`、`FinalAnswerNode`、`SummarizingNode`、`LimitExceededNode`、`GoalEvaluationNode`
 - `agent/graph/plan/node/`——`PlanGenerationNode`、`StepExecutionNode`、`PlanSummaryNode`、`DirectAnswerNode`
 - `agent/graph/edge/` + `plan/edge/`——基于状态决定下一个节点的 dispatcher 函数
 - `agent/graph/state/MateClawStateKeys.java`——共享 state 对象的 key
@@ -148,6 +148,17 @@ mateclaw/
 **加 Agent 行为**——在 `agent/graph/node/` 创建新节点，或在 `agent/graph/edge/` 创建新边 dispatcher。把它接进 `AgentGraphBuilder`。通过 `MateClawStateAccessor` 读写 state。
 
 **不要**创建新的 `XxxAgent` 类。你会把图已经在做的事情重新实现一遍。
+
+### 目标评估节点（1.4.0+）
+
+图（ReAct 和 Plan-Execute 都有）现在在 `FinalAnswerNode` 把最终答案流式输出之后再跑一个 `GoalEvaluationNode`：它给目标完成度打分，并可选地注入一条自动跟进消息，把没达成的目标继续推进。
+
+### 其他 1.4.0 运行时变化
+
+- **渐进式工具/技能披露**——工具披露层把工具分成核心层（core）和扩展层（extension）两档；`enable_tool` / `load_skill` 让员工按需激活扩展工具、按需加载技能，从而把系统提示保持得足够小。
+- **多级子员工委派树**——父员工到子员工的委派是递归的、有深度上限的，构成一棵树；子图的事件实时回流到根会话。
+- **ChannelToolProvider SPI**——渠道（比如飞书）可以把平台能力直接作为员工工具暴露出来，不需要单独的 MCP 服务器。
+- **工作空间 RBAC**——能力（capability）由后端的「角色 → 能力」映射解析，同时门禁 REST 接口和前端路由/菜单。
 
 ### 共享 state key
 

@@ -1219,6 +1219,7 @@ watch(isGenerating, (generating) => {
   flex-direction: column;
   gap: 2px;
   padding: 4px 0;
+  min-width: 0;
 }
 
 /* Iteration "no output" chip (interrupted iteration). */
@@ -1290,7 +1291,11 @@ watch(isGenerating, (generating) => {
   display: flex;
   gap: 12px;
   align-items: flex-start;
-  max-width: 920px;
+  width: 100%;
+  /* Cap at 920px on wide screens but never exceed the actual content column —
+     keeps the bubble container-relative so it narrows with the chat panel. */
+  max-width: min(920px, 100%);
+  min-width: 0;
   margin-bottom: 6px;
 }
 
@@ -1353,6 +1358,7 @@ watch(isGenerating, (generating) => {
   font-size: 15px;
   line-height: 1.7;
   word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .assistant-bubble {

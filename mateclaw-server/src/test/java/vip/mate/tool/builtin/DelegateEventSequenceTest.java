@@ -24,6 +24,7 @@ import vip.mate.channel.web.ChatStreamTracker;
 import vip.mate.workspace.conversation.ConversationService;
 
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
 
@@ -257,5 +258,92 @@ class DelegateEventSequenceTest {
         // 2 recognized events → 2 progress broadcasts (heartbeat and token are filtered out)
         assertEquals(2, progressCount,
                 "Should have exactly 2 delegation_progress events (tool_call_started + phase), got: " + events);
+    }
+
+    // ===== Nested delegation: grandchild events route to root with tree identity =====
+
+    @Test
+    @DisplayName("A child delegating a grandchild broadcasts to root with parentSubagentId + depth=2")
+    @SuppressWarnings("unchecked")
+    void nestedDelegationRoutesGrandchildToRootWithIdentity() {
+        AgentEntity child = makeAgent(100L, "Child");
+        AgentEntity grandchild = makeAgent(200L, "Grandchild");
+        when(agentMapper.selectOne(any(LambdaQueryWrapper.class)))
+                .thenReturn(child)        // root delegates Child
+                .thenReturn(grandchild);  // Child delegates Grandchild
+
+        String rootConv = "root-conv";
+        ToolExecutionContext.set(rootConv, "admin");
+        when(streamTracker.isRunning(rootConv)).thenReturn(true);
+        when(streamTracker.addBatchedEventRelay(anyString(), anyString(), anyInt(), anyLong(), any()))
+                .thenReturn(() -> {});
+
+        // Capture each created child conversation + its immediate parent so we can
+        // assert the grandchild's immediate parent is the Child's conversation,
+        // not the root — the createChildConversation(childConvId, ..., parent) call.
+        List<String> createdConvs = new java.util.ArrayList<>();
+        List<String> createdParents = new java.util.ArrayList<>();
+        doAnswer(inv -> {
+            createdConvs.add(inv.getArgument(0));
+            createdParents.add(inv.getArgument(4));
+            return null;
+        }).when(conversationService).createChildConversation(
+                anyString(), anyLong(), anyString(), anyLong(), anyString());
+
+        // When the Child runs, the real ToolExecutionExecutor would switch the
+        // ToolExecutionContext to the Child's own conversation. Reproduce that so
+        // the grandchild's immediate parent resolves to childConv, while its
+        // events must still target rootConv (carried via DelegationContext).
+        when(agentService.chat(eq(100L), anyString(), anyString(), any()))
+                .thenAnswer(inv -> {
+                    String childConv = inv.getArgument(2);
+                    ToolExecutionContext.set(childConv, "admin");
+                    try {
+                        return delegateAgentTool.delegateToAgent("Grandchild", "gtask", null, null);
+                    } finally {
+                        ToolExecutionContext.set(rootConv, "admin");
+                    }
+                });
+        when(agentService.chat(eq(200L), anyString(), anyString(), any()))
+                .thenReturn("grandchild done");
+
+        delegateAgentTool.delegateToAgent("Child", "ctask", null, null);
+
+        ArgumentCaptor<String> convCap = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<String> evCap = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<Object> payloadCap = ArgumentCaptor.forClass(Object.class);
+        verify(streamTracker, atLeast(4)).broadcastObject(convCap.capture(), evCap.capture(), payloadCap.capture());
+
+        Map<String, Object> childStart = null;
+        Map<String, Object> grandStart = null;
+        for (int i = 0; i < evCap.getAllValues().size(); i++) {
+            if (!"delegation_start".equals(evCap.getAllValues().get(i))) continue;
+            Map<String, Object> p = (Map<String, Object>) payloadCap.getAllValues().get(i);
+            // Every delegation_start — at any depth — targets the root conversation.
+            assertEquals(rootConv, convCap.getAllValues().get(i),
+                    "delegation_start must target the root conversation");
+            String name = String.valueOf(p.get("childAgentName"));
+            if ("Child".equals(name)) childStart = p;
+            else if ("Grandchild".equals(name)) grandStart = p;
+        }
+        assertNotNull(childStart, "child delegation_start present");
+        assertNotNull(grandStart, "grandchild delegation_start present");
+
+        // depth-1 child: depth=1, no parentSubagentId.
+        assertEquals(1, ((Number) childStart.get("depth")).intValue());
+        assertNull(childStart.get("parentSubagentId"), "depth-1 child carries no parentSubagentId");
+
+        // depth-2 grandchild: depth=2, parented to the child's subagentId.
+        assertEquals(2, ((Number) grandStart.get("depth")).intValue());
+        assertNotNull(grandStart.get("parentSubagentId"), "grandchild must carry parentSubagentId");
+        assertEquals(childStart.get("subagentId"), grandStart.get("parentSubagentId"),
+                "grandchild's parentSubagentId must equal the child's subagentId");
+
+        // Two child conversations were created: [0] = Child (parent=root),
+        // [1] = Grandchild (parent must be the Child's conversation, not root).
+        assertEquals(2, createdConvs.size(), "Child + Grandchild conversations created");
+        assertEquals(rootConv, createdParents.get(0), "Child's immediate parent is the root conversation");
+        assertEquals(createdConvs.get(0), createdParents.get(1),
+                "Grandchild's immediate parent must be the Child's conversation");
     }
 }

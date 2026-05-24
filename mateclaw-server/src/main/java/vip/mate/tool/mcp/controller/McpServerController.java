@@ -31,6 +31,7 @@ import vip.mate.workspace.core.annotation.RequireWorkspaceRole;
 public class McpServerController {
 
     private final McpServerService mcpServerService;
+    private final vip.mate.tool.disclosure.ToolDisclosureService toolDisclosureService;
 
     @Operation(summary = "获取 MCP Server 列表")
     @GetMapping
@@ -76,6 +77,20 @@ public class McpServerController {
     public R<McpServerEntity> toggle(@PathVariable Long id, @RequestParam boolean enabled) {
         McpServerEntity toggled = mcpServerService.toggle(id, enabled);
         return R.ok(mcpServerService.sanitize(toggled));
+    }
+
+    @Operation(summary = "设置 MCP Server 披露分级（core / extension），整组工具跟随")
+    @PutMapping("/{id}/disclosure-tier")
+    @RequireWorkspaceRole("admin")
+    public R<McpServerEntity> setDisclosureTier(@PathVariable Long id,
+                                                @RequestBody java.util.Map<String, String> body) {
+        String tier = body == null ? null : body.get("tier");
+        if (!vip.mate.tool.disclosure.DisclosureTier.isValidToken(tier)) {
+            return R.fail(400, "tier must be 'core' or 'extension'");
+        }
+        McpServerEntity updated = mcpServerService.setDisclosureTier(id, tier);
+        toolDisclosureService.invalidate();
+        return R.ok(mcpServerService.sanitize(updated));
     }
 
     @Operation(summary = "测试 MCP Server 连接")

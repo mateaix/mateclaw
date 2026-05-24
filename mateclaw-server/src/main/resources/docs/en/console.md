@@ -38,6 +38,13 @@ Six groups matching the intent-based information architecture:
 
 Pages you don't have permission to see (based on workspace role) are hidden.
 
+### Sidebar notification badges (new in 1.4.0)
+
+The sidebar surfaces live badges in two spots to flag things needing your attention:
+
+- **Pending approvals** — a red count badge; clicking jumps to [Security & Approval](./security)
+- **Stuck employees** — an orange dot; clicking jumps to the **Live** runtime view on the Employees page (see [Backstage](./backstage))
+
 ### Auth guard
 
 Every route except `/login` is protected by a `beforeEach` route guard checking for a valid JWT in `localStorage`. Set `VITE_SKIP_AUTH=true` in development to bypass.
@@ -68,7 +75,7 @@ Username/password form with password visibility toggle.
 Shown automatically on first login. Four-step wizard:
 
 1. **Welcome** — short product overview
-2. **Configure a model** — pick a provider and paste an API key (or OAuth into ChatGPT Plus, or auto-detect Ollama)
+2. **Configure a model** — pick a provider and paste an API key (or OAuth into ChatGPT Plus, or auto-detect Ollama); as of 1.4.0 this step does **provider enablement** directly — tick the providers you want and they're live
 3. **Pick an agent template** — seeds a default agent based on your choice
 4. **Send the first message** — a test prompt so you can see streaming work
 
@@ -162,10 +169,15 @@ Generate media interactively without going through an agent.
 
 **Route:** `/sessions`
 
+::: tip 1.4.0: a real Sessions admin page
+As of v1.4.0 `/sessions` is a standalone Sessions admin page, reached from the **chat header overflow menu**. It has **server-side pagination** + search by **title / ID**, a depth-styled **card layout**, and an **inline editable model chip** per row — change a session's default model right from the list.
+:::
+
 Browse conversations across every agent and channel.
 
-- Search by keyword
+- Search by keyword (title / ID, server-side pagination)
 - Session title, ID, agent, message count, status, last active
+- **Inline editable model chip** per row
 - Channel source icon
 - Jump to chat console with session open
 - Delete historical sessions
@@ -222,9 +234,13 @@ Card grid for eight IM channels plus web.
 
 ---
 
-### 12. Cron Jobs
+### 12. Cron Jobs (Scheduler)
 
-**Route:** `/cron-jobs`
+**Route:** `/settings/scheduler` (old `/cron-jobs` redirects here)
+
+::: tip 1.4.0: merged into the unified Scheduler
+As of v1.4.0, **Scheduled Jobs** and **Triggers** are merged into a single **Scheduler** page (`Settings → Scheduler`) with three tabs: **Scheduled Jobs / Event Triggers / Run History**, each showing an item count, with a context-aware top-right action button. Scheduled Jobs gain the `wiki_process` type (off-peak KB processing) and a **visual cron editor**. See [Triggers](./triggers).
+:::
 
 Scheduled tasks that trigger agent conversations.
 
@@ -262,6 +278,7 @@ External database connections agents can query through the SQL query skill.
 **Route:** `/dashboard`
 
 - Summary cards — active agents, conversations today, tool calls today, pending approvals
+- **Model-config card** (new in 1.4.0) — lists enabled LLM providers, each with a **liveness status** and its **active model**, plus a link to model settings
 - **Trend chart** — messages / tool calls / token usage over 7 / 30 / 90 days
 - **Top agents / top tools** — ranked by usage
 - Recent approval activity
@@ -278,7 +295,7 @@ System health checks. Backend reachability, database, model providers, channels,
 
 ### 17. Settings
 
-Sub-route layout with four child pages.
+Sub-route layout with four child pages. A floating button pinned to the bottom of the settings sub-nav **collapses/expands** it (new in 1.4.0).
 
 #### 17.1 Models
 
@@ -508,7 +525,7 @@ Response is read incrementally via `ReadableStream` and parsed segment by segmen
 /mcp-servers               — MCP Servers
 
 /channels                  — Channels
-/cron-jobs                 — Cron Jobs
+/settings/scheduler        — Scheduler (Scheduled Jobs / Event Triggers / Run History; old /cron-jobs redirects here)
 /datasources               — Datasources
 /token-usage               — Token Usage
 /dashboard                 — Dashboard

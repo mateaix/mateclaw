@@ -14,7 +14,7 @@ import { useMessages } from './useMessages'
 import { useStream } from './useStream'
 import { useMessageQueue } from './useMessageQueue'
 import { useGoalStore } from '@/stores/useGoalStore'
-import type { Message, MessageContentPart, MessageSegment, StreamPhase, HeartbeatData, QueuedMessage, PhaseEventData } from '@/types'
+import type { Message, MessageContentPart, MessageSegment, StreamPhase, HeartbeatData, QueuedMessage, PhaseEventData, DelegationNode, DelegationToolEntry, PlanMeta } from '@/types'
 import { classifyBackendError, type ChatErrorInfo } from '@/types/chatError'
 import { http } from '@/api'
 
@@ -940,43 +940,159 @@ export function useChat(options: UseChatOptions): UseChatReturn {
   })
 
   // ===== Agent delegation events =====
+  // Delegations form a tree: a depth-1 child is a top-level tool_call segment
+  // (keyed by its subagentId); depth-2+ subagents are DelegationNode entries
+  // nested under an ancestor via parentSubagentId. Every delegation_* event
+  // carries subagentId/parentSubagentId/depth so the flat event stream can be
+  // reassembled into that tree on the frontend (see DelegationNodeView.vue).
+
+  type DelegContainer = { plan?: PlanMeta; tools?: DelegationToolEntry[]; children?: DelegationNode[] }
+
+  /** A depth-1 delegation segment, looked up by its subagentId (or childConversationId). */
+  function findDelegSegment(segs: MessageSegment[], subagentId?: string, childConvId?: string): MessageSegment | undefined {
+    if (subagentId) {
+      const byId = segs.find(s => s.type === 'tool_call' && s.id === subagentId)
+      if (byId) return byId
+    }
+    if (childConvId) return segs.find(s => s.type === 'tool_call' && s.id === childConvId)
+    return undefined
+  }
+
+  /** Recursively find a DelegationNode by subagentId. */
+  function findNode(nodes: DelegationNode[] | undefined, subagentId: string): DelegationNode | undefined {
+    if (!nodes) return undefined
+    for (const n of nodes) {
+      if (n.subagentId === subagentId) return n
+      const deep = findNode(n.children, subagentId)
+      if (deep) return deep
+    }
+    return undefined
+  }
+
+  function ensureTimeline(seg: MessageSegment): DelegContainer {
+    const t = (seg.childTimeline ||= {})
+    if (!t.tools) t.tools = []
+    if (!t.children) t.children = []
+    return t
+  }
+
+  function ensureNodeContainer(node: DelegationNode): DelegContainer {
+    if (!node.tools) node.tools = []
+    if (!node.children) node.children = []
+    return node
+  }
+
+  /** Resolve the progress container (plan/tools/children) for a subagent at any depth. */
+  function resolveContainer(segs: MessageSegment[], subagentId?: string, childConvId?: string): DelegContainer | undefined {
+    const seg = findDelegSegment(segs, subagentId, childConvId)
+    if (seg) return ensureTimeline(seg)
+    if (subagentId) {
+      for (const s of segs) {
+        const node = findNode(s.childTimeline?.children, subagentId)
+        if (node) return ensureNodeContainer(node)
+      }
+    }
+    return undefined
+  }
+
+  /** Mark a subagent (segment or nested node) complete by subagentId. */
+  function markDelegComplete(segs: MessageSegment[], subagentId: string | undefined, childConvId: string | undefined,
+                             success: boolean, resultPreview?: string, durationMs?: number): boolean {
+    const seg = findDelegSegment(segs, subagentId, childConvId)
+    if (seg) {
+      seg.status = success ? 'completed' : 'error'
+      seg.toolSuccess = success
+      if (resultPreview) seg.toolResult = resultPreview
+      if (durationMs) seg.toolArgs = (seg.toolArgs || '').trimEnd() + ` (${Math.round(durationMs / 1000)}s)`
+      return true
+    }
+    if (subagentId) {
+      for (const s of segs) {
+        const node = findNode(s.childTimeline?.children, subagentId)
+        if (node) {
+          node.status = success ? 'completed' : 'error'
+          if (resultPreview) node.result = resultPreview
+          if (durationMs) node.durationMs = durationMs
+          return true
+        }
+      }
+    }
+    return false
+  }
+
+  /** Create a depth-1 segment (top of tree) or a nested DelegationNode (deeper). */
+  function addDelegation(segs: MessageSegment[], info: any, opts: { async?: boolean } = {}) {
+    const subagentId: string | undefined = info.subagentId
+    const parentSubagentId: string | undefined = info.parentSubagentId
+    const agentName: string = info.childAgentName || 'Agent'
+    const depth: number = info.depth || 1
+    const task: string = info.task || ''
+
+    if (parentSubagentId) {
+      // depth-2+: attach under the parent subagent's container.
+      const parent = resolveContainer(segs, parentSubagentId)
+      if (!parent) return
+      if (!findNode(parent.children, subagentId || '')) {
+        parent.children!.push({
+          subagentId: subagentId || genSegId(),
+          agentName, status: 'running', depth, task,
+          tools: [], children: [],
+          ...(opts.async ? { async: true } : {})
+        })
+      }
+      return
+    }
+    // depth-1: a top-level segment, keyed by subagentId for stable lookup.
+    // Dedup against SSE replay / a duplicated start re-creating the same segment.
+    const segId = subagentId || info.childConversationId || genSegId()
+    if (segs.some(s => s.type === 'tool_call' && s.id === segId)) return
+    segs.push({
+      id: segId,
+      type: 'tool_call',
+      status: 'running',
+      toolName: `→ ${agentName}`,
+      toolArgs: task,
+      childTimeline: { tools: [], children: [] },
+      timestamp: Date.now(),
+      ...(opts.async ? { delegationAsync: true } : {})
+    })
+  }
+
   stream.on('delegation_start', (data) => {
     if (isStaleEvent(data)) return
     streamPhase.value = 'executing_tool'
-    if (currentAssistantId.value) {
-      const segs = currentSegments.value
-      // Close any running thinking/content segment
-      const runningSeg = segs.findLast((s: MessageSegment) => s.status === 'running')
-      if (runningSeg) runningSeg.status = 'completed'
+    if (!currentAssistantId.value) return
+    const segs = currentSegments.value
 
-      if (data.parallel && Array.isArray(data.children)) {
-        // Parallel mode: one segment per child. Use childConversationId as the segment ID
-        // so downstream events (delegation_child_complete, delegation_progress) can look up
-        // the correct row by stable ID instead of agent name — which is not unique when
-        // two concurrent tasks go to the same agent.
-        for (const child of data.children) {
-          segs.push({
-            id: child.childConversationId || genSegId(),
-            type: 'tool_call',
-            status: 'running',
-            toolName: `→ ${child.childAgentName || 'Agent'}`,
-            toolArgs: child.task || '',
-            timestamp: Date.now()
-          })
-        }
-      } else {
-        // Single-task mode: same stable ID approach
-        segs.push({
-          id: data.childConversationId || genSegId(),
-          type: 'tool_call',
-          status: 'running',
-          toolName: `→ ${data.childAgentName || 'Agent'}`,
-          toolArgs: data.task || '',
-          timestamp: Date.now()
-        })
+    if (data.parallel && Array.isArray(data.children)) {
+      // Only close a running root-level content/thinking segment when these are
+      // top-level (depth-1) delegations; nested ones don't touch the root timeline.
+      const topLevel = data.children.some((c: any) => !c.parentSubagentId)
+      if (topLevel) {
+        const running = segs.findLast((s: MessageSegment) => s.status === 'running' && (s.type === 'thinking' || s.type === 'content'))
+        if (running) running.status = 'completed'
       }
-      flushSegmentsToMessage()
+      for (const child of data.children) addDelegation(segs, child)
+    } else {
+      if (!data.parentSubagentId) {
+        const running = segs.findLast((s: MessageSegment) => s.status === 'running' && (s.type === 'thinking' || s.type === 'content'))
+        if (running) running.status = 'completed'
+      }
+      addDelegation(segs, data)
     }
+    flushSegmentsToMessage()
+  })
+
+  // Fire-and-forget delegation. The parent agent keeps running after spawning,
+  // so unlike delegation_start we do NOT close the parent's running content/thinking
+  // segment. The child runs detached and its result is fetched later via task_output,
+  // so it is marked async and rendered as "running in background" rather than a
+  // spinner that never resolves on this turn.
+  stream.on('delegation_async_spawned', (data) => {
+    if (isStaleEvent(data)) return
+    if (!currentAssistantId.value) return
+    addDelegation(currentSegments.value, data, { async: true })
+    flushSegmentsToMessage()
   })
 
   stream.on('delegation_progress', (data) => {
@@ -984,41 +1100,27 @@ export function useChat(options: UseChatOptions): UseChatReturn {
     if (!currentAssistantId.value) return
     const segs = currentSegments.value
 
-    // Primary lookup: by stable childConversationId (set as the segment ID at creation time).
-    // Fallback: any running delegation segment (for older backends that don't send the field).
-    const delegSeg = (data.childConversationId
-      ? segs.find((s: MessageSegment) => s.id === data.childConversationId)
-      : undefined)
-      || segs.findLast((s: MessageSegment) =>
-          s.type === 'tool_call' && s.status === 'running' && s.toolName?.startsWith('→'))
+    const container = resolveContainer(segs, data.subagentId, data.childConversationId)
+    if (!container) return
+    if (!container.tools) container.tools = []
 
-    if (!delegSeg) return
-
-    // Normalize data.data: the backend relays the child event's JSON payload.
-    // After the P2 fix it arrives as an object; be defensive for older backends.
+    // Normalize data.data: the backend relays the child event's JSON payload as
+    // an object; be defensive for older backends that sent a JSON string.
     const rawPayload = data.data
     const childData: Record<string, any> = rawPayload && typeof rawPayload === 'object'
       ? rawPayload
       : (() => { try { return JSON.parse(String(rawPayload || '{}')) } catch { return {} } })()
 
-    // Build a structured child timeline on the delegation segment instead of
-    // jamming tool names into toolArgs as text. The timeline holds the child
-    // agent's own plan checklist + the tools it called, so the UI can render
-    // a proper nested view (see ToolCallSegment.vue delegation branch).
-    const timeline = (delegSeg.childTimeline ||= { tools: [] })
-    if (!timeline.tools) timeline.tools = []
-
     switch (data.originalEvent) {
       case 'tool_call_started': {
         const name = childData?.toolName || ''
-        if (name) timeline.tools.push({ name, status: 'running' })
+        if (name) container.tools.push({ name, status: 'running' })
         break
       }
       case 'tool_call_completed': {
         const name = childData?.toolName || ''
         const ok = childData?.success !== false
-        // Match the most recent running entry with this name.
-        const entry = [...timeline.tools].reverse()
+        const entry = [...container.tools].reverse()
           .find(t => t.name === name && t.status === 'running')
         if (entry) entry.status = ok ? 'completed' : 'error'
         break
@@ -1026,21 +1128,21 @@ export function useChat(options: UseChatOptions): UseChatReturn {
       case 'plan_created': {
         const steps = childData?.steps
         if (Array.isArray(steps)) {
-          timeline.plan = { planId: childData?.planId ?? '', steps, currentStep: 0, stepResults: [] }
+          container.plan = { planId: childData?.planId ?? '', steps, currentStep: 0, stepResults: [] }
         }
         break
       }
       case 'plan_step_started': {
-        if (timeline.plan && typeof childData?.index === 'number') {
-          timeline.plan.currentStep = childData.index
+        if (container.plan && typeof childData?.index === 'number') {
+          container.plan.currentStep = childData.index
         }
         break
       }
       case 'plan_step_completed': {
-        if (timeline.plan && typeof childData?.index === 'number') {
-          const results = [...(timeline.plan.stepResults || [])]
+        if (container.plan && typeof childData?.index === 'number') {
+          const results = [...(container.plan.stepResults || [])]
           results[childData.index] = { result: childData.result ?? '', status: 'completed' }
-          timeline.plan.stepResults = results
+          container.plan.stepResults = results
         }
         break
       }
@@ -1049,90 +1151,62 @@ export function useChat(options: UseChatOptions): UseChatReturn {
   })
 
   // Per-child completion: fires as soon as each individual child agent finishes,
-  // before the overall delegation_end. Marks that child's segment done immediately
-  // so the user sees incremental progress rather than a bulk update at the end.
+  // before the overall delegation_end, so the user sees incremental progress.
   stream.on('delegation_child_complete', (data) => {
     if (isStaleEvent(data)) return
     if (!currentAssistantId.value) return
-    const segs = currentSegments.value
-    // Prefer childConversationId (stable) over agent name (non-unique)
-    const delegSeg = (data.childConversationId
-      ? segs.find((s: MessageSegment) => s.id === data.childConversationId)
-      : undefined)
-      || segs.findLast((s: MessageSegment) =>
-          s.type === 'tool_call' && s.status === 'running' && s.toolName?.startsWith('→'))
-    if (delegSeg) {
-      delegSeg.status = data.success ? 'completed' : 'error'
-      delegSeg.toolSuccess = data.success
-      if (data.durationMs) {
-        const durSec = Math.round(data.durationMs / 1000)
-        delegSeg.toolArgs = (delegSeg.toolArgs || '').trimEnd() + ` (${durSec}s)`
-      }
-      // Write resultPreview for both success and failure so ToolCallSegment can show
-      // an expand arrow with the child agent's actual output, not just a green/red dot.
-      if (data.resultPreview) {
-        delegSeg.toolResult = data.resultPreview
-      }
-    }
+    markDelegComplete(currentSegments.value, data.subagentId, data.childConversationId,
+      !!data.success, data.resultPreview, data.durationMs)
     flushSegmentsToMessage()
   })
 
   stream.on('delegation_end', (data) => {
     if (isStaleEvent(data)) return
-    if (currentAssistantId.value) {
-      const segs = currentSegments.value
-      if (data.parallel) {
-        // Parallel mode: use per-child results if available (new backend),
-        // fall back to aggregate success flag for older backends.
-        if (Array.isArray(data.childResults) && data.childResults.length > 0) {
-          for (const cr of data.childResults) {
-            // Primary: stable childConversationId lookup. Fallback: agent name substring.
-            const seg = (cr.childConversationId
-              ? segs.find((s: MessageSegment) => s.id === cr.childConversationId)
-              : undefined)
-              || segs.findLast((s: MessageSegment) =>
-                  s.type === 'tool_call' && s.toolName?.includes(cr.agentName || ''))
-            if (seg && seg.status === 'running') {
-              // Segment not yet closed by delegation_child_complete (e.g. timed-out child).
-              // Write whatever result info is available so ToolCallSegment can show content.
-              seg.status = cr.success ? 'completed' : 'error'
-              seg.toolSuccess = cr.success
-              if (cr.durationMs) {
-                const durSec = Math.round(cr.durationMs / 1000)
-                seg.toolArgs = (seg.toolArgs || '').trimEnd() + ` (${durSec}s)`
-              }
-              // Show error reason for failures; for successes leave toolResult empty here
-              // (delegation_child_complete already wrote the preview before we get to delegation_end).
-              if (cr.error) {
-                seg.toolResult = cr.error
-              }
-            }
+    if (!currentAssistantId.value) return
+    const segs = currentSegments.value
+    if (data.parallel) {
+      if (Array.isArray(data.childResults) && data.childResults.length > 0) {
+        for (const cr of data.childResults) {
+          // delegation_child_complete usually closed each child already; only
+          // patch those still running (e.g. a timed-out child).
+          const seg = findDelegSegment(segs, cr.subagentId, cr.childConversationId)
+          const stillRunning = seg ? seg.status === 'running'
+            : !!(cr.subagentId && findNode(segs.flatMap(s => s.childTimeline?.children || []), cr.subagentId)?.status === 'running')
+          if (stillRunning) {
+            markDelegComplete(segs, cr.subagentId, cr.childConversationId, !!cr.success,
+              cr.error || undefined, cr.durationMs)
           }
-        } else {
-          // Legacy fallback: mark all remaining running delegation segments with overall status
-          segs.filter((s: MessageSegment) =>
-            s.type === 'tool_call' && s.status === 'running' && s.toolName?.startsWith('→'))
-            .forEach((s: MessageSegment) => {
-              s.status = data.success ? 'completed' : 'error'
-            })
         }
       } else {
-        // Single-task mode
-        const delegSeg = segs.findLast((s: MessageSegment) =>
+        // Legacy fallback: mark all remaining running top-level delegations.
+        segs.filter((s: MessageSegment) =>
           s.type === 'tool_call' && s.status === 'running' && s.toolName?.startsWith('→'))
-        if (delegSeg) {
-          delegSeg.status = data.success ? 'completed' : 'error'
-          delegSeg.toolSuccess = data.success
-          if (data.resultPreview) {
-            delegSeg.toolResult = data.resultPreview
-          }
-          if (data.durationMs) {
-            delegSeg.toolArgs = (delegSeg.toolArgs || '').trimEnd() + ` (${Math.round(data.durationMs / 1000)}s)`
-          }
-        }
+          .forEach((s: MessageSegment) => { s.status = data.success ? 'completed' : 'error' })
       }
-      flushSegmentsToMessage()
+    } else {
+      markDelegComplete(segs, data.subagentId, data.childConversationId,
+        !!data.success, data.resultPreview, data.durationMs)
     }
+    flushSegmentsToMessage()
+  })
+
+  // Heartbeat watchdog flagged a subagent as making no observable progress.
+  // Mark the matching segment/node stale so the timeline can surface it; the
+  // subagent stays "running" (stale ≠ finished — it may still recover).
+  stream.on('subagent_stale', (data) => {
+    if (isStaleEvent(data)) return
+    if (!currentAssistantId.value || !data.subagentId) return
+    const segs = currentSegments.value
+    const seg = findDelegSegment(segs, data.subagentId)
+    if (seg) {
+      seg.delegationStale = true
+    } else {
+      for (const s of segs) {
+        const node = findNode(s.childTimeline?.children, data.subagentId)
+        if (node) { node.stale = true; break }
+      }
+    }
+    flushSegmentsToMessage()
   })
 
   // ===== Stream lifecycle (pre-token) events =====

@@ -36,6 +36,15 @@ public class GoalProperties {
     private int autoFollowupCooldownSeconds = 0;
 
     /**
+     * Max auto-followups injected within a single graph run (one user turn).
+     * Caps the self-continuation loop so one message can't drive too many
+     * autonomous steps or approach the graph recursion limit. The goal's
+     * overall {@code turn_budget} still bounds total turns across messages;
+     * this is the tighter per-message safety net.
+     */
+    private int maxFollowupsPerRun = 8;
+
+    /**
      * Provider/model id for the evaluator. Empty string means "use the
      * same model as the chat agent" — convenient for dev, expensive in
      * production. Operators should point this at a cheap model.

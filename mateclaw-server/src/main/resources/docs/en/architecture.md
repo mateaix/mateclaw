@@ -134,7 +134,7 @@ This is the most important thing to know if you're contributing to the backend.
 
 - `agent/graph/StateGraphReActAgent.java` — assembles the ReAct loop
 - `agent/graph/plan/StateGraphPlanExecuteAgent.java` — assembles the Plan-and-Execute graph
-- `agent/graph/node/` — `ReasoningNode`, `ActionNode`, `ObservationNode`, `FinalAnswerNode`, `SummarizingNode`, `LimitExceededNode`
+- `agent/graph/node/` — `ReasoningNode`, `ActionNode`, `ObservationNode`, `FinalAnswerNode`, `SummarizingNode`, `LimitExceededNode`, `GoalEvaluationNode`
 - `agent/graph/plan/node/` — `PlanGenerationNode`, `StepExecutionNode`, `PlanSummaryNode`, `DirectAnswerNode`
 - `agent/graph/edge/` + `plan/edge/` — dispatcher functions that decide the next node based on state
 - `agent/graph/state/MateClawStateKeys.java` — the keys for the shared state object
@@ -148,6 +148,17 @@ This is the most important thing to know if you're contributing to the backend.
 **Adding agent behavior** — create a new node in `agent/graph/node/` or a new edge dispatcher in `agent/graph/edge/`. Wire it into `AgentGraphBuilder`. Read and write state through `MateClawStateAccessor`.
 
 **Don't** create a new `XxxAgent` class. You'll be reimplementing what the graph already does.
+
+### Goal-evaluation node (1.4.0+)
+
+The graph (both ReAct and Plan-Execute) now runs a `GoalEvaluationNode` after `FinalAnswerNode` has streamed the final answer: it scores how completely the goal was met and can optionally inject an auto-followup message to keep pushing any unmet goals forward.
+
+### Other 1.4.0 runtime changes
+
+- **Progressive tool/skill disclosure** — a tool-disclosure layer splits tools into core and extension tiers; `enable_tool` / `load_skill` let an employee activate extension tools / load skills on demand, keeping the system prompt small.
+- **Multi-level subagent delegation** — parent-to-child delegation is recursive and depth-capped, forming a tree; child-graph events are relayed back to the root conversation in real time.
+- **ChannelToolProvider SPI** — channels (e.g. Feishu) can expose platform capabilities directly as agent tools without a separate MCP server.
+- **Workspace RBAC** — capabilities are resolved from a backend role→capability mapping that gates both REST endpoints and frontend routes/menus.
 
 ### Shared state keys
 

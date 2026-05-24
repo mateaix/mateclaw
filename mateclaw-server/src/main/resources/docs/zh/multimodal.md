@@ -17,7 +17,7 @@
 | **DashScope** | 通义万相 | 阿里的图像模型，默认云端选项 |
 | **OpenAI** | DALL-E 3 | 标准 DALL-E 端点 |
 | **fal.ai** | Flux | 通过 fal.ai 跑 Flux，快 |
-| **Google Imagen** | Imagen 3 | 需要 Google Cloud 凭证 |
+| **Google（Nano Banana）** | gemini-3-pro-image-preview、gemini-2.5-flash-image | 走原生 Gemini 路径；**支持图像编辑**——见下方 [Nano Banana](#nano-banana) |
 | **智谱** | CogView | 对中文 prompt 原生支持 |
 | **MiniMax** | —— | 同步异步都可以 |
 
@@ -60,6 +60,17 @@ Agent：image_generate(prompt="把背景改成森林",
 - `qwen-image-edit` / `qwen-image-edit-plus` / `qwen-image-edit-max`（**纯编辑**）
 
 在 [模型配置](./models#两个-dashscope-区别) 文档里有更全的模型清单。
+
+#### Nano Banana
+
+::: tip 1.4.0 新增
+Google 的图像生成走 **Nano Banana Pro**（`gemini-3-pro-image-preview`），通过[原生 Gemini 路径](./models#原生-gemini)调用，不经过 OpenAI 兼容层。
+:::
+
+因为走的是原生 `generateContent` 端点，图像工具会把输入图片作为**内联 part**直接传给模型——所以 Nano Banana 不只是文生图，**还支持图像编辑**（图生图）。用法和上面的 [Image edit](#image-edit) 完全一致：传 `image` / `images` 参数引用一张或多张参考图即可。
+
+- **Nano Banana Pro** —— `gemini-3-pro-image-preview`（默认）
+- **Nano Banana** —— `gemini-2.5-flash-image`（另一个 Google 图像模型）
 
 ### 视频生成 —— 六个供应商
 

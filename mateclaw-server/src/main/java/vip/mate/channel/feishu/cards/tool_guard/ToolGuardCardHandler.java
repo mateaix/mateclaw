@@ -100,11 +100,16 @@ public class ToolGuardCardHandler implements FeishuCardHandler {
         }
         PendingApproval pending = opt.get();
 
-        // ---- 3. Identity check
+        // ---- 3. Identity check (fail-closed)
+        // Agent/cron ("system") or unattributed (null) approvals have no human
+        // requester to match the clicker against. A guarded-tool card landing in
+        // a group chat would otherwise let ANY member click Approve and run the
+        // tool. Those approvals must be resolved from the admin console instead,
+        // so only an exact requester==clicker match is authorized here.
         String originalRequester = pending.getUserId();
-        boolean authorized = originalRequester == null
-                || "system".equals(originalRequester)
-                || originalRequester.equals(clickerOpenId);
+        boolean authorized = originalRequester != null
+                && !"system".equals(originalRequester)
+                && originalRequester.equals(clickerOpenId);
         if (!authorized) {
             log.warn("[feishu-toolguard] Unauthorised click: clicker={} != requester={}, pending={}",
                     abbrev(clickerOpenId), abbrev(originalRequester), pendingId);

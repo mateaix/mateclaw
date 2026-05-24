@@ -131,11 +131,25 @@ mateclaw:
   # MCP server 配置已迁移至数据库（mate_mcp_server 表），通过 UI 管理
   mcp:
     enabled: true
+  tools:
+    disclosure:
+      # progressive: extension-tier tools are hidden behind the extension-tools
+      #   catalog until the model calls enable_tool. By default that's the heavy
+      #   generative / browser tools; MCP servers default to core (visible) and
+      #   an admin can move a noisy one to extension per server.
+      # legacy: advertise every bound tool up front (pre-disclosure behavior).
+      mode: ${MATECLAW_TOOLS_DISCLOSURE_MODE:progressive}
   skill:
     workspace:
       root: ${user.home}/.mateclaw/skills
       auto-init: true
       delete-policy: archive
+    disclosure:
+      load-skill-tool:
+        # When false, the load_skill meta tool is not advertised to agents and
+        # the skill catalog guidance falls back to readSkillFile. Escape hatch
+        # for operators who don't want the explicit skill-load entry point.
+        enabled: ${MATECLAW_SKILL_LOAD_SKILL_TOOL_ENABLED:true}
     curator:
       enabled: true
       cron: "0 0 2 * * *"         # daily 02:00 — staggered away from wiki / backup jobs

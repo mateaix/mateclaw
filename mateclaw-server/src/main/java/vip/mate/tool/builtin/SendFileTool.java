@@ -16,13 +16,15 @@ import java.nio.file.Path;
 import java.util.Map;
 
 /**
- * 内置工具：将服务器上的现有文件发送给用户
+ * Built-in tool: send an existing server file to the user.
  * <p>
- * 读取指定路径的文件，放入 {@link GeneratedFileCache} 生成临时下载链接，
- * 由渠道适配器（飞书/钉钉/Telegram 等）自动检测并作为原生附件发送。
+ * Reads the file at the given path and stores it in {@link GeneratedFileCache}
+ * to mint a short-lived download link, which channel adapters (Feishu, DingTalk,
+ * Telegram, etc.) auto-detect and deliver as a native attachment.
  * <p>
- * 与 {@link ReadFileTool} 不同，此工具处理任意文件类型（包括二进制文件），
- * 目标是将文件作为附件发送而非读取其文本内容。
+ * Unlike {@link ReadFileTool}, this handles any file type (including binary
+ * files): the goal is to deliver the file as an attachment rather than read
+ * its text content.
  *
  * @author MateClaw Team
  */
@@ -128,9 +130,7 @@ public class SendFileTool {
             // adapter's GeneratedFileScrubber detects the URL and sends the
             // file as a native attachment. The LLM MUST echo the URL in its
             // reply for the scrubber to pick it up.
-            return displayName + " 已发送：[" + displayName + "](" + url + ")（链接 10 分钟内有效）。\n"
-                    + "重要：回答用户时**必须**使用上述相对路径 `" + url + "`，"
-                    + "**不要**添加任何 https://、http:// 域名前缀，前端会自动拼接当前主机。";
+            return i18n.msg("tool.send_file.success", displayName, url);
 
         } catch (Exception e) {
             log.error("[SendFile] Failed to send file: {}", e.getMessage(), e);

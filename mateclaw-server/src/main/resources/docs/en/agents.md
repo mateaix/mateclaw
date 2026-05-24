@@ -116,6 +116,55 @@ An agent doesn't work alone. One agent can delegate to another — or to **three
 
 Example: coding agent takes the Jira ticket, research agent pulls competitor data, writing agent drafts the Slack reply. Three in parallel, results flow back to the orchestrator.
 
+### Multi-level subagent delegation tree
+
+::: tip New in 1.4.0
+Delegation is no longer flat. A parent employee can delegate to children, and those children can delegate further — **recursively, up to 3 levels deep**. A temporary team can grow its own hierarchy for a specific task.
+:::
+
+Three delegation tools, one per cadence:
+
+- **`delegateToAgent`** — synchronous. Hand a sub-task to a specific employee, wait for it to finish, and return only after the child's final result. Optional `inheritParentContext` carries the parent conversation's recent context to the child, so you don't have to re-explain the background.
+- **`delegateParallel`** — fan out. Delegate to several children at once; each runs in its own isolated session and the results are collected together.
+- **`delegateAsync`** — background. Returns a `task_id` immediately while the child runs in the background; fetch the result later with **`taskOutput`**. `taskOutput` has an **attribution gate** — only the **same conversation + the same user** that spawned the task can read its result, preventing cross-conversation / cross-user leakage.
+
+Children deny a default set of tools so the tree can't run away:
+
+- `delegateToAgent` / `delegateParallel` (recursion guard — children can't launch their own synchronous/parallel delegations, avoiding a delegation storm)
+- the `setGoal` family + the `remember` family (goal and memory ownership stays with the parent)
+- `create_employee` (children can't conjure new employees)
+
+This default deny list is tunable via `mateclaw.delegation.child-denied-tools`.
+
+Delegation pairs with the [Goals](./goals) system — the parent sets goals, breaks the work down, and delegates sub-tasks; children focus on execution.
+
+### UI — nested subagent timeline + always-on plan panel
+
+The ChatConsole draws the whole delegation tree, not a flat log:
+
+- **Delegation start** is marked clearly
+- Each child shows its **name / depth / task excerpt**
+- **Completion badges**: success / timeout / error, plus duration and content length
+- Every subagent has a stable **id + parentId + depth**, so the nesting is legible in the timeline — you can see exactly who delegated to whom
+- **The plan panel is always on** — no longer Plan-and-Execute only; delegation-tree progress folds into the same panel
+
+---
+
+## Build a team from one sentence: the digital-employee builder skill
+
+::: tip New in 1.4.0
+Don't want to create employees one at a time? Give it a sentence and let the "digital-employee builder" skill assemble the whole team for you.
+:::
+
+The skill starts from your one sentence and runs the full chain:
+
+1. **Clarify the requirement** — it pins down the vague sentence first, confirming the problem you're actually trying to solve
+2. **Design the roles** — breaks it into **2 to 6** complementary roles
+3. **Create each one** — calls `create_employee` per role to produce real, usable employees
+4. **Chain them into a workflow draft** — links the employees into a [workflow](./workflow) draft you can tweak right away
+
+The companion tool **`list_capability_catalog`** lets the skill survey which tools / skills / knowledge bases the deployment has available before assigning capabilities to roles. Created employees are **enabled on creation** — no extra toggle to flip.
+
 ---
 
 ## Deep thinking
@@ -233,6 +282,7 @@ Why the turn ended:
 These are things the runtime does so agents don't fail in ways you'd have to debug:
 
 - **Context pruning** — when the context window gets too full, earlier turns get summarized by the LLM and the summary replaces them. Cached for 30 minutes. Injected as a user message, not a system message, to prevent prompt injection from historical content.
+- **Structured compaction (on prompt-too-long)** — when the model returns "prompt too long," the runtime walks a four-stage escalation: **soft trim → hard clear → pre-prune → LLM structured summary**. At every stage it **always preserves the prefix** — the system prompt + the goal anchor stay intact — and injects the final summary as a UserMessage. Delegation tool results are **never compacted** (they're a child's hard-won output; lose them and they're gone). After a failed summary there's a **10-minute cooldown**, so the runtime won't keep hammering the LLM inside the same over-budget turn.
 - **Thinking recovery** — if a stream breaks mid-response, the partial thinking and content persist and show up when the conversation reloads.
 - **Iteration limit handler** — instead of crashing when `max_iterations` is hit, the runtime forces a best-effort summary answer.
 - **Stale stream cleanup** — every open SSE stream is tracked, abandoned ones are reaped automatically.

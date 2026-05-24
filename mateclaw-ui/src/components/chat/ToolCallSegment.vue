@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
-import { Loading, Select, CloseBold, ArrowDown, Document, Setting, Connection } from '@element-plus/icons-vue'
+import { Loading, Select, CloseBold, ArrowDown, Document, Setting, Connection, WarningFilled, Clock } from '@element-plus/icons-vue'
 import { useToolLabel } from '@/composables/useToolLabel'
 import type { MessageSegment } from '@/types'
+import DelegationNodeView from './DelegationNodeView.vue'
 
 const props = defineProps<{
   segment: MessageSegment
@@ -56,14 +57,20 @@ const isRead = computed(() => {
 const isSuccess = computed(() => props.segment.status === 'completed' && props.segment.toolSuccess !== false)
 const isError = computed(() => props.segment.status === 'error' || props.segment.toolSuccess === false)
 const isRunning = computed(() => props.segment.status === 'running')
+// A delegation flagged by the heartbeat watchdog as making no progress.
+const isStalled = computed(() => isDelegation.value && isRunning.value && !!props.segment.delegationStale)
+// Fire-and-forget delegation: runs detached, result comes via task_output later.
+// Takes visual priority over the running spinner so the row doesn't spin forever.
+const isAsync = computed(() => isDelegation.value && !!props.segment.delegationAsync)
 
 // Nested subagent timeline relayed from the child conversation: the child's own
 // plan checklist + the tools it called. Only present on delegation segments.
 const childTimeline = computed(() => isDelegation.value ? props.segment.childTimeline : undefined)
 const childPlan = computed(() => childTimeline.value?.plan)
 const childTools = computed(() => childTimeline.value?.tools || [])
+const childNodes = computed(() => childTimeline.value?.children || [])
 const hasChildActivity = computed(() =>
-  !!childPlan.value || childTools.value.length > 0
+  !!childPlan.value || childTools.value.length > 0 || childNodes.value.length > 0
 )
 
 // The body is expandable when there's any nested detail to show – either the
@@ -96,7 +103,8 @@ const childProgress = computed(() => {
   <div class="seg-tool" :class="{ 'is-running': isRunning, 'is-success': isSuccess, 'is-error': isError }">
     <div class="seg-tool__header" @click="hasBody ? (expanded = !expanded) : null">
       <span class="seg-tool__status">
-        <el-icon v-if="isRunning" class="is-loading" :size="13"><Loading /></el-icon>
+        <el-icon v-if="isAsync" class="seg-tool__async" :title="$t('chat.subagentAsync')" :size="13"><Clock /></el-icon>
+        <el-icon v-else-if="isRunning" class="is-loading" :size="13"><Loading /></el-icon>
         <el-icon v-else-if="isSuccess" :size="13"><Select /></el-icon>
         <el-icon v-else :size="13"><CloseBold /></el-icon>
       </span>
@@ -107,6 +115,7 @@ const childProgress = computed(() => {
       </span>
       <span class="seg-tool__name">{{ displayName }}</span>
       <span v-if="isDelegation && childProgress" class="seg-tool__badge">{{ childProgress }}</span>
+      <el-icon v-if="isStalled" class="seg-tool__stale" :title="$t('chat.subagentStalled')" :size="12"><WarningFilled /></el-icon>
       <span v-if="truncatedArgs" class="seg-tool__args">{{ truncatedArgs }}</span>
       <el-icon
         v-if="hasBody"
@@ -147,6 +156,9 @@ const childProgress = computed(() => {
               <span class="seg-child__tool-name">{{ getToolLabel(t.name) }}</span>
             </div>
           </div>
+
+          <!-- Grandchildren and deeper: the child agent's own delegations -->
+          <DelegationNodeView v-for="c in childNodes" :key="c.subagentId" :node="c" />
         </div>
         <!-- Final tool/agent result preview -->
         <pre v-if="segment.toolResult">{{ resultPreview }}</pre>
@@ -188,6 +200,8 @@ const childProgress = computed(() => {
   color: var(--mc-text-secondary);
   user-select: none;
   transition: color 0.15s;
+  min-width: 0;
+  overflow: hidden;
 }
 .seg-tool__header:hover {
   color: var(--mc-text-primary);
@@ -253,6 +267,14 @@ const childProgress = computed(() => {
   border-radius: 8px;
   padding: 0 6px;
   line-height: 16px;
+}
+.seg-tool__stale {
+  flex-shrink: 0;
+  color: var(--mc-warning, #e6a23c);
+}
+.seg-tool__async {
+  flex-shrink: 0;
+  color: var(--mc-text-tertiary);
 }
 
 /* Nested subagent timeline */

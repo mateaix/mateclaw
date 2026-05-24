@@ -24,8 +24,8 @@ public final class GeneratedFileLink {
                                   GeneratedFileCache cache, String typeLabel) {
         String url = stash(bytes, displayName, mimeType, cache);
         return typeLabel + "已生成：[" + displayName + "](" + url + ")（链接 10 分钟内有效）。\n"
-                + "重要：回答用户时**必须**使用上述相对路径 `" + url + "`，"
-                + "**不要**添加任何 https://、http:// 域名前缀，前端会自动拼接当前主机。";
+                + "重要：回答用户时**必须**使用上述 markdown 链接格式 [" + displayName + "](" + url + ")，"
+                + "保持相对路径原样，**不要**用反引号包裹路径，也**不要**添加任何 https://、http:// 域名前缀。";
     }
 
     /**
@@ -45,9 +45,10 @@ public final class GeneratedFileLink {
                 ? typeLabel + " generated from " + sourceFileCount + " files"
                 : typeLabel + " generated";
         return prefix + ": [" + displayName + "](" + url + ") (link valid for 10 minutes).\n"
-                + "IMPORTANT: when replying to the user you **must** use the relative path `"
-                + url + "` verbatim. Do **not** prepend any https://, http:// or domain — "
-                + "the frontend will resolve the current host automatically.";
+                + "IMPORTANT: when replying to the user you **must** keep the markdown link form ["
+                + displayName + "](" + url + ") above. Keep the relative path verbatim — do **not** "
+                + "wrap it in backticks and do **not** prepend any https://, http:// or domain "
+                + "(the frontend resolves the current host automatically).";
     }
 
     private static String stash(byte[] bytes, String displayName, String mimeType,

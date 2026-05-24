@@ -17,7 +17,7 @@ Configure once. Use everywhere.
 | **DashScope** | Wanxiang | Alibaba's image model, default cloud option |
 | **OpenAI** | DALL-E 3 | Standard DALL-E endpoint |
 | **fal.ai** | Flux | Fast Flux inference via fal.ai |
-| **Google Imagen** | Imagen 3 | Google Cloud credentials required |
+| **Google (Nano Banana)** | gemini-3-pro-image-preview, gemini-2.5-flash-image | Via the native Gemini path; **supports image editing** — see [Nano Banana](#nano-banana) below |
 | **Zhipu** | CogView | Native Chinese prompt support |
 | **MiniMax** | — | Sync and async both supported |
 
@@ -60,6 +60,17 @@ Agent: image_generate(prompt="replace background with forest",
 - `qwen-image-edit` / `qwen-image-edit-plus` / `qwen-image-edit-max` (**edit-only**)
 
 A fuller model catalog lives in [Models](./models#two-dashscope-variants).
+
+#### Nano Banana
+
+::: tip New in 1.4.0
+Google image generation runs through **Nano Banana Pro** (`gemini-3-pro-image-preview`) via the [native Gemini path](./models#native-gemini), not an OpenAI-compatibility shim.
+:::
+
+Because it uses the native `generateContent` endpoint, the image tool passes input images as **inline parts** straight to the model — so Nano Banana isn't just text-to-image, it **supports image editing** (image-to-image) too. It works exactly like [Image edit](#image-edit) above: pass the `image` / `images` parameter to reference one or more source images.
+
+- **Nano Banana Pro** — `gemini-3-pro-image-preview` (default)
+- **Nano Banana** — `gemini-2.5-flash-image` (another Google image model)
 
 ### Video generation — six providers
 

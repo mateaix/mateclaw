@@ -16,7 +16,7 @@ Every endpoint except `/api/v1/auth/login` requires a JWT in the `Authorization`
 Authorization: Bearer <token>
 ```
 
-For deep behavior, read the feature page — [Chat & Messaging](./chat), [Agents](./agents), [Tools](./tools), [Security & Approval](./security), [LLM Wiki](./wiki), [Multimodal](./multimodal), [Memory](./memory), [Channels](./channels), [Models](./models), [Workspaces](./workspaces), [Doctor](./doctor).
+For deep behavior, read the feature page — [Chat & Messaging](./chat), [Agents](./agents), [Tools](./tools), [Security & Approval](./security), [LLM Wiki](./wiki), [Multimodal](./multimodal), [Memory](./memory), [Channels](./channels), [Models](./models), [Workspaces](./workspaces), [Goals](./goals), [Doctor](./doctor).
 
 ---
 
@@ -83,7 +83,9 @@ Event types and schema are documented in [Chat & Messaging](./chat).
 
 ```
 GET    /api/v1/conversations                       # List (?page&size&agentId)
+GET    /api/v1/conversations/page?page=&size=&keyword=  # Paginated sessions (with keyword search)
 GET    /api/v1/conversations/{id}/messages         # Get messages
+PUT    /api/v1/conversations/{id}/model            # Set the model used by this conversation
 DELETE /api/v1/conversations/{id}                  # Delete
 DELETE /api/v1/conversations/{id}/messages         # Clear messages
 GET    /api/v1/conversations/{id}/status           # Conversation status
@@ -109,6 +111,10 @@ DELETE /api/v1/agents/{id}/workspace/files/{filename}         # Delete
 GET    /api/v1/agents/{id}/workspace/prompt-files             # Which files are injected
 PUT    /api/v1/agents/{id}/workspace/prompt-files             # Set prompt file list
 
+GET    /api/v1/agents/{agentId}/workspace/memory/export           # Export memory snapshot
+POST   /api/v1/agents/{agentId}/workspace/memory/import/preview   # Preview import (no writes)
+POST   /api/v1/agents/{agentId}/workspace/memory/import           # Import memory snapshot
+
 GET    /api/v1/agents/templates        # List templates
 POST   /api/v1/agents/templates/{id}   # Create from template
 ```
@@ -121,6 +127,7 @@ POST   /api/v1/agents/templates/{id}   # Create from template
 GET    /api/v1/tools                               # List
 PUT    /api/v1/tools/{id}                          # Update
 PUT    /api/v1/tools/{id}/toggle?enabled={bool}    # Toggle
+PUT    /api/v1/tools/{id}/disclosure-tier          # Set disclosure tier (core / extension)
 POST   /api/v1/tools/{name}/test                   # Test directly
 ```
 
@@ -323,6 +330,9 @@ GET    /api/v1/channels/health                                   # Aggregate hea
 
 GET    /api/v1/channels/webhook/weixin/qrcode                    # WeChat iLink QR code
 GET    /api/v1/channels/webhook/weixin/qrcode/status             # QR scan status
+
+POST   /api/v1/channels/qrcode/qq/begin                          # Begin QQ scan-to-bind
+GET    /api/v1/channels/qrcode/qq/status                         # QQ scan-to-bind status
 ```
 
 ### Channel webhook callbacks
@@ -396,6 +406,19 @@ GET    /api/v1/triggers/{id}/events                     # Event history for this
 
 ---
 
+## Goals (1.4.0+)
+
+Goal-completion scoring and auto-followup behavior in [Goals](./goals).
+
+```
+POST   /api/v1/goals                                   # Create goal
+GET    /api/v1/goals/{id}                               # Get goal
+PATCH  /api/v1/goals/{id}                               # Update goal (partial)
+GET    /api/v1/goals/{id}/events                        # Evaluation event history for this goal
+```
+
+---
+
 ## Token usage
 
 ```
@@ -435,10 +458,27 @@ GET    /api/v1/workspaces/{id}                        # Get
 POST   /api/v1/workspaces                             # Create
 PUT    /api/v1/workspaces/{id}                        # Update
 DELETE /api/v1/workspaces/{id}                        # Delete (owner only)
-GET    /api/v1/workspaces/{id}/members                # List members
-POST   /api/v1/workspaces/{id}/members                # Add member
-DELETE /api/v1/workspaces/{id}/members/{userId}       # Remove member
-PUT    /api/v1/workspaces/{id}/members/{userId}/role  # Change role
+GET    /api/v1/workspaces/{id}/access                 # Caller's access info (see below)
+```
+
+### Members & RBAC (1.4.0+)
+
+`/access` returns the caller's effective permissions in the workspace; the frontend uses it to render routes and menus:
+
+```json
+{
+  "memberRole": "editor",
+  "isGlobalAdmin": false,
+  "effectiveRole": "editor",
+  "capabilities": ["workspace.read", "conversation.write", "..."]
+}
+```
+
+```
+GET    /api/v1/workspaces/{id}/members                  # List members
+POST   /api/v1/workspaces/{id}/members                  # Add member
+PUT    /api/v1/workspaces/{id}/members/{memberId}       # Update member (role, etc.)
+DELETE /api/v1/workspaces/{id}/members/{memberId}       # Remove member
 ```
 
 ---

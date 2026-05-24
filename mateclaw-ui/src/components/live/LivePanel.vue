@@ -287,7 +287,39 @@ function progressFillStyle(run: LiveRunCard) {
 }
 
 function childrenOf(run: LiveRunCard): LiveSubagentCard[] {
-  return snapshot.value?.subagents.filter(s => s.parentConversationId === run.conversationId) ?? []
+  // Group by the root conversation so the whole delegation tree shows under its
+  // run — including grandchildren, whose immediate parent is a child
+  // conversation, not this run. Fall back to parentConversationId for records
+  // emitted before rootConversationId existed.
+  const subs = (snapshot.value?.subagents ?? [])
+    .filter(s => (s.rootConversationId ?? s.parentConversationId) === run.conversationId)
+
+  // Pre-order DFS by parentSubagentId so each child renders directly above its
+  // own descendants, not after every same-depth sibling. A plain depth sort
+  // attaches a grandchild under the wrong sibling once a run has >1 branch.
+  const byParent = new Map<string | null, LiveSubagentCard[]>()
+  for (const s of subs) {
+    const key = s.parentSubagentId ?? null
+    const bucket = byParent.get(key)
+    if (bucket) bucket.push(s)
+    else byParent.set(key, [s])
+  }
+
+  const ordered: LiveSubagentCard[] = []
+  const seen = new Set<string>()
+  const walk = (parentId: string | null) => {
+    for (const node of byParent.get(parentId) ?? []) {
+      if (seen.has(node.subagentId)) continue // guard against cycles / duplicate ids
+      seen.add(node.subagentId)
+      ordered.push(node)
+      walk(node.subagentId)
+    }
+  }
+  walk(null) // depth-1 children (parentSubagentId null) are the subtree roots
+
+  // Append any orphan whose parent isn't in this set so it never disappears.
+  for (const s of subs) if (!seen.has(s.subagentId)) ordered.push(s)
+  return ordered
 }
 
 function openDetail(run: LiveRunCard) {
