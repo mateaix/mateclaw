@@ -1,6 +1,8 @@
 package vip.mate.dashboard.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -28,6 +30,7 @@ public class DashboardService {
 
     private final MessageMapper messageMapper;
     private final ConversationMapper conversationMapper;
+    private final ObjectMapper objectMapper;
 
     /**
      * 获取概览统计（今日/本周/本月）— 实时查询
@@ -111,32 +114,29 @@ public class DashboardService {
                 .ge(MessageEntity::getCreateTime, startTime)
                 .le(MessageEntity::getCreateTime, endTime)
                 .eq(MessageEntity::getDeleted, 0)
-                .select(MessageEntity::getPromptTokens, MessageEntity::getCompletionTokens);
+                .select(MessageEntity::getPromptTokens, MessageEntity::getCompletionTokens,
+                        MessageEntity::getMetadata);
         if (wsConversationIds != null) {
             tokenWrapper.in(MessageEntity::getConversationId, wsConversationIds);
         }
 
         List<MessageEntity> assistantMessages = messageMapper.selectList(tokenWrapper);
 
-        long totalTokens = 0, promptTokens = 0, completionTokens = 0;
+        // Tool calls are not stored as standalone role="tool" rows; each agent
+        // turn records them inside the assistant message's metadata JSON
+        // (metadata.toolCalls, with metadata.segments[type=tool_call] as the
+        // streaming-timeline fallback). Counting role="tool" therefore always
+        // returned 0. We reuse the assistant messages already loaded for token
+        // accounting and sum the tool-call entries from each row's metadata.
+        long totalTokens = 0, promptTokens = 0, completionTokens = 0, toolCalls = 0;
         for (MessageEntity m : assistantMessages) {
             int pt = m.getPromptTokens() != null ? m.getPromptTokens() : 0;
             int ct = m.getCompletionTokens() != null ? m.getCompletionTokens() : 0;
             promptTokens += pt;
             completionTokens += ct;
             totalTokens += pt + ct;
+            toolCalls += countToolCalls(m.getMetadata());
         }
-
-        // Tool 调用数（role = tool 的消息）
-        LambdaQueryWrapper<MessageEntity> toolWrapper = new LambdaQueryWrapper<MessageEntity>()
-                .eq(MessageEntity::getRole, "tool")
-                .ge(MessageEntity::getCreateTime, startTime)
-                .le(MessageEntity::getCreateTime, endTime)
-                .eq(MessageEntity::getDeleted, 0);
-        if (wsConversationIds != null) {
-            toolWrapper.in(MessageEntity::getConversationId, wsConversationIds);
-        }
-        long toolCalls = messageMapper.selectCount(toolWrapper);
 
         Map<String, Object> stats = new LinkedHashMap<>();
         stats.put("conversations", conversations);
@@ -146,5 +146,52 @@ public class DashboardService {
         stats.put("completionTokens", completionTokens);
         stats.put("toolCalls", toolCalls);
         return stats;
+    }
+
+    /**
+     * Count tool invocations recorded on a single assistant message.
+     * <p>
+     * Tool calls live in the message's {@code metadata} JSON, not as separate
+     * rows. The canonical list is {@code metadata.toolCalls}; older messages may
+     * only carry the streaming timeline, so we fall back to counting
+     * {@code metadata.segments} entries whose {@code type} is {@code tool_call}.
+     * Parsing failures are treated as zero so a malformed row never breaks the
+     * dashboard.
+     */
+    long countToolCalls(String metadataJson) {
+        if (metadataJson == null || metadataJson.isBlank() || "{}".equals(metadataJson.trim())) {
+            return 0;
+        }
+        try {
+            // H2's JSON column hands the value back as a quoted JSON string
+            // literal (double-encoded); MySQL returns the object directly. Mirror
+            // MessageVO.parseMetadataToObject and unwrap one string layer first,
+            // otherwise readTree yields a TextNode and toolCalls is never found.
+            String json = metadataJson.trim();
+            if (json.startsWith("\"") && json.endsWith("\"")) {
+                json = objectMapper.readValue(json, String.class);
+            }
+            if (json.isBlank() || "{}".equals(json)) {
+                return 0;
+            }
+            JsonNode root = objectMapper.readTree(json);
+            JsonNode toolCalls = root.get("toolCalls");
+            if (toolCalls != null && toolCalls.isArray() && !toolCalls.isEmpty()) {
+                return toolCalls.size();
+            }
+            JsonNode segments = root.get("segments");
+            if (segments != null && segments.isArray()) {
+                long count = 0;
+                for (JsonNode seg : segments) {
+                    if ("tool_call".equals(seg.path("type").asText())) {
+                        count++;
+                    }
+                }
+                return count;
+            }
+        } catch (Exception e) {
+            log.debug("Failed to parse message metadata for tool-call count: {}", e.getMessage());
+        }
+        return 0;
     }
 }
