@@ -1055,6 +1055,8 @@ export default {
       extraInstructionsHint: '可选。用于细化输出格式、流程清单或边界规则。',
       maxIterations: '最大迭代次数',
       defaultThinkingLevel: '默认思考深度',
+      workspaceBasePath: '工作目录',
+      workspaceBasePathHint: '可选。为该员工指定独立的工作目录（相对于工作区根目录）。留空则继承工作区默认目录。',
       modelName: '模型',
       modelGlobalDefault: '使用全局默认模型',
       modelHint: '为该员工单独指定模型，留空则跟随「设置 → 模型」中的全局默认。',
@@ -1090,6 +1092,7 @@ export default {
       backstory: '例：在数据里待了十年，相信先问对问题再写 SQL...',
       extraInstructions: '可选：补充输出格式、流程清单或边界规则...',
       tags: 'tag1,tag2',
+      workspaceBasePath: '例如：projects/code-review',
     },
     messages: {
       noDescription: '暂无描述',
