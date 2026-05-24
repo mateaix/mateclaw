@@ -90,6 +90,17 @@ public class ReasoningNode implements NodeAction {
      */
     private static final int MAX_EMPTY_COMPLETION_RETRIES = 2;
 
+    /**
+     * Number of newest tool-response messages kept verbatim in the model
+     * input; older ones have their bodies collapsed to a one-line "old
+     * output cleared" placeholder while keeping the toolCallId / tool name
+     * so the assistant/tool pairing remains valid. The latest few results
+     * are what the model is reasoning over right now — beyond that, the
+     * content is history and re-call (or read_file on the spill path) is
+     * cheaper than carrying every previous body forward across iterations.
+     */
+    private static final int KEEP_RECENT_TOOL_RESPONSES = 3;
+
     /** Continuation nudge appended to the prompt when the model returns an empty turn. */
     private static final String EMPTY_COMPLETION_NUDGE =
             "Your previous turn was empty. If the task is not yet complete, continue now "
@@ -514,6 +525,15 @@ public class ReasoningNode implements NodeAction {
         }
 
         if (conversationWindowManager != null) {
+            // Age-based compaction first: drop the body of tool responses
+            // older than the K most recent into a one-line placeholder that
+            // keeps the toolCallId / tool name (so the assistant/tool pair
+            // stays valid) and, for spilled bodies, preserves the on-disk
+            // path so read_file can still recover the original. Without
+            // this, even spilled previews (~1-2 KB each) accumulate across
+            // 30+ tool calls and bloat the prompt the model sees every turn.
+            messages = conversationWindowManager.compactAgedToolResponses(
+                    messages, KEEP_RECENT_TOOL_RESPONSES);
             // Pass conversationId + workspaceBasePath so oversized older
             // tool results can be spilled to the workspace spill directory
             // (preserving the full body for read_file recovery) instead of
