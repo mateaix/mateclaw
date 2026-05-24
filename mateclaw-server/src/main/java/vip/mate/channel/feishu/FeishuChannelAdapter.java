@@ -1409,8 +1409,11 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
             // Save to data/chat-uploads/{conversationId}/
             Path uploadDir = Path.of("data", "chat-uploads", conversationId);
             Files.createDirectories(uploadDir);
-            String safeName = (dl.fileName() != null && !dl.fileName().isBlank())
-                    ? dl.fileName() : fileKey.replaceAll("[^a-zA-Z0-9._-]", "_");
+            String rawName = (dl.fileName() != null && !dl.fileName().isBlank())
+                    ? dl.fileName() : fileKey;
+            String safeName = Path.of(rawName).getFileName().toString()
+                    .replaceAll("[^a-zA-Z0-9._-]", "_");
+            if (safeName.isBlank()) safeName = "file";
             String storedName = System.currentTimeMillis() + "_" + safeName;
             Path dest = uploadDir.resolve(storedName);
             Files.copy(Path.of(dl.path()), dest, StandardCopyOption.REPLACE_EXISTING);
