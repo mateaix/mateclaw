@@ -3,6 +3,7 @@ package vip.mate.trigger.dispatch;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.event.EventListener;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Component;
 import vip.mate.channel.event.ChannelMessageReceivedEvent;
 import vip.mate.trigger.ingest.TriggerEventEnvelope;
@@ -31,6 +32,7 @@ public class ChannelMessageEventBridge {
 
     private final TriggerEventIngestService ingestService;
 
+    @Async
     @EventListener
     public void onChannelMessage(ChannelMessageReceivedEvent event) {
         if (event == null) return;
