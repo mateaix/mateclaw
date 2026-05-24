@@ -271,6 +271,11 @@
                 <option value="max">{{ t('agents.thinkingLevels.max') }}</option>
               </select>
             </div>
+            <div class="form-group full-width">
+              <label class="form-label">{{ t('agents.fields.workspaceBasePath') }}</label>
+              <input v-model="form.workspaceBasePath" class="form-input" :placeholder="t('agents.placeholders.workspaceBasePath')" />
+              <p class="form-hint">{{ t('agents.fields.workspaceBasePathHint') }}</p>
+            </div>
             <!--
               Identity triad: role + goal + backstory map to H2 sections in
               the stored systemPrompt. The card tagline is derived from
@@ -703,6 +708,7 @@ const defaultForm = (): Partial<Agent> & { name: string; defaultThinkingLevel: s
   tags: '',
   enabled: true,
   defaultThinkingLevel: null,
+  workspaceBasePath: null,
 })
 
 const form = ref(defaultForm())
@@ -890,6 +896,7 @@ async function openEditModal(agent: Agent) {
     tags: agent.tags || '',
     enabled: agent.enabled,
     defaultThinkingLevel: (agent as any).defaultThinkingLevel || null,
+    workspaceBasePath: agent.workspaceBasePath || null,
   }
   profileForm.value = parsePrompt(agent.systemPrompt)
   modalTab.value = 'basic'
