@@ -176,49 +176,73 @@ public class ProviderRouter {
     }
 
     /**
-     * Pick a primary {@link ModelConfigEntity} that satisfies as many
-     * required modalities as possible. Falls back to the global default
-     * when nothing better is configured.
+     * 选择主模型：两轮筛选。
      *
-     * <p>Logic: try each preferred provider in turn; for each, ask
-     * {@link ModelProviderService#getDefaultModelByProvider} for its
-     * default chat model and check capability resolution. First match
-     * wins. If nothing matches, return the global default unchanged.
+     * <p>第 1 轮（capability 满足优先）：偏好提供商 → 全局默认。
+     * <p>第 2 轮（不限 capability，兜底）：偏好提供商 → 全局默认。
+     *
+     * <p>无偏好提供商时跳过偏好部分，直接走全局默认路径（行为不变）。
      */
     public ModelConfigEntity selectPrimary(Long agentId, ModelConfigEntity globalDefault) {
         if (agentId == null) return globalDefault;
+
+        List<String> preferred = bindingService.getPreferredProviderIds(agentId);
+        Set<Modality> requiredModalities = resolveRequiredModalities(agentId);
+
+        // 第 1 轮：满足 capability 的提供商（偏好优先，全局兜底）
+        if (requiredModalities != null) {
+            // 1a. 偏好提供商中满足 capability 的
+            for (String providerId : preferred) {
+                ModelConfigEntity candidate = pickProviderDefault(providerId);
+                if (candidate == null) continue;
+                if (satisfies(candidate, requiredModalities)) {
+                    log.info("[ProviderRouter] agent={} 主模型={}/{}（偏好，满足 {}）",
+                            agentId, candidate.getProvider(), candidate.getModelName(), requiredModalities);
+                    return candidate;
+                }
+            }
+            // 1b. 全局默认满足 capability 的
+            if (globalDefault != null && satisfies(globalDefault, requiredModalities)) {
+                log.info("[ProviderRouter] agent={} 主模型={}/{}（全局，满足 {}）",
+                        agentId, globalDefault.getProvider(), globalDefault.getModelName(), requiredModalities);
+                return globalDefault;
+            }
+        }
+
+        // 第 2 轮：不限 capability（兜底，偏好优先，全局最后）
+        // 2a. 任意可用的偏好提供商
+        for (String providerId : preferred) {
+            ModelConfigEntity candidate = pickProviderDefault(providerId);
+            if (candidate == null) continue;
+            log.info("[ProviderRouter] agent={} 主模型={}/{}（偏好，不限能力）",
+                    agentId, candidate.getProvider(), candidate.getModelName());
+            return candidate;
+        }
+        // 2b. 全局默认（最终兜底）
+        if (globalDefault != null) {
+            log.info("[ProviderRouter] agent={} 主模型={}/{}（全局默认）",
+                    agentId, globalDefault.getProvider(), globalDefault.getModelName());
+            return globalDefault;
+        }
+
+        return null;
+    }
+
+    /** 无 capability 需求时返回 null，跳过第 1 轮。 */
+    private Set<Modality> resolveRequiredModalities(Long agentId) {
         Set<String> needs = aggregateModelNeeds(agentId);
-        if (needs.isEmpty()) return globalDefault;
-        Set<Modality> requiredModalities = needs.stream()
+        if (needs == null || needs.isEmpty()) return null;
+        Set<Modality> mods = needs.stream()
                 .map(this::mapToModality)
                 .filter(java.util.Objects::nonNull)
                 .collect(java.util.stream.Collectors.toCollection(
                         () -> EnumSet.noneOf(Modality.class)));
-        if (requiredModalities.isEmpty()) return globalDefault;
+        return mods.isEmpty() ? null : mods;
+    }
 
-        // Already satisfies? Skip the search.
-        if (globalDefault != null) {
-            EnumSet<Modality> resolved = capabilityService.resolve(
-                    globalDefault.getModelName(), globalDefault.getModalities());
-            if (resolved.containsAll(requiredModalities)) return globalDefault;
-        }
-
-        List<String> preferred = bindingService.getPreferredProviderIds(agentId);
-        for (String providerId : preferred) {
-            ModelConfigEntity candidate = pickProviderDefault(providerId);
-            if (candidate == null) continue;
-            EnumSet<Modality> resolved = capabilityService.resolve(
-                    candidate.getModelName(), candidate.getModalities());
-            if (resolved.containsAll(requiredModalities)) {
-                log.info("[ProviderRouter] agent={} switched primary to {}/{} for needs={}",
-                        agentId, candidate.getProvider(), candidate.getModelName(),
-                        requiredModalities);
-                return candidate;
-            }
-        }
-        // No preferred provider satisfied; keep the diagnostic warning
-        // path on the original default so the user sees the gap in logs.
-        return globalDefault;
+    private boolean satisfies(ModelConfigEntity model, Set<Modality> required) {
+        return capabilityService.resolve(model.getModelName(), model.getModalities())
+                .containsAll(required);
     }
 
     private ModelConfigEntity pickProviderDefault(String providerId) {
