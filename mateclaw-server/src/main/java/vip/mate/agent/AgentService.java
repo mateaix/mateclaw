@@ -25,6 +25,7 @@ import vip.mate.workspace.conversation.model.ConversationEntity;
 import vip.mate.workspace.conversation.repository.ConversationMapper;
 
 import java.util.List;
+import java.time.Duration;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
@@ -237,6 +238,26 @@ public class AgentService {
         }
     }
 
+    /**
+     * Sync chat that also captures token usage and runtime model attribution
+     * from the agent graph's {@code _usage_final} event. Equivalent to
+     * subscribing to {@link #chatStructuredStream} and joining all content
+     * deltas — produces the same assistant text as {@link #chat} but exposes
+     * the usage figures so callers can persist them on the assistant message.
+     *
+     * <p>Prefer this entry over {@link #chat} for any path that writes the
+     * reply to {@code mate_message} (sync HTTP endpoint, voice WebSocket,
+     * cron task, post-approval replay); the plain {@link #chat} stays as the
+     * thin wrapper for fire-and-forget invocations where usage is not needed.
+     */
+    public ChatResult chatWithUsage(Long agentId, String message, String conversationId) {
+        return chatWithUsage(agentId, message, conversationId, ChatOrigin.EMPTY);
+    }
+
+    public ChatResult chatWithUsage(Long agentId, String message, String conversationId, ChatOrigin origin) {
+        return collectChatResult(chatStructuredStream(agentId, message, conversationId, "", null, origin));
+    }
+
     public Flux<String> chatStream(Long agentId, String message, String conversationId) {
         return chatStream(agentId, message, conversationId, ChatOrigin.EMPTY);
     }
@@ -360,6 +381,42 @@ public class AgentService {
         } finally {
             ChatOriginHolder.clear();
         }
+    }
+
+    /**
+     * Replay-after-approval that also captures token usage and runtime model
+     * attribution. Mirrors {@link #chatWithUsage} for the
+     * approval-resumption path used by {@code ChannelMessageRouter}.
+     */
+    public ChatResult chatWithReplayWithUsage(Long agentId, String userMessage, String conversationId,
+                                               String toolCallPayload, ChatOrigin origin) {
+        return collectChatResult(chatWithReplayStream(agentId, userMessage, conversationId,
+                toolCallPayload, "", origin != null ? origin : ChatOrigin.EMPTY));
+    }
+
+    /**
+     * Subscribe to a structured stream and collapse it into a single
+     * {@link ChatResult}: append all content deltas, capture the trailing
+     * {@code _usage_final} event for token and model attribution.
+     */
+    private ChatResult collectChatResult(Flux<StreamDelta> stream) {
+        StringBuilder content = new StringBuilder();
+        final int[] usage = {0, 0};
+        final String[] modelInfo = {null, null};
+        stream.doOnNext(delta -> {
+            if (delta.isEvent() && "_usage_final".equals(delta.eventType())) {
+                Map<String, Object> data = delta.eventData();
+                usage[0] = ((Number) data.getOrDefault("promptTokens", 0)).intValue();
+                usage[1] = ((Number) data.getOrDefault("completionTokens", 0)).intValue();
+                Object model = data.get("runtimeModelName");
+                Object provider = data.get("runtimeProviderId");
+                if (model != null) modelInfo[0] = model.toString();
+                if (provider != null) modelInfo[1] = provider.toString();
+            } else if (delta.content() != null) {
+                content.append(delta.content());
+            }
+        }).blockLast(Duration.ofMinutes(10));
+        return new ChatResult(content.toString(), usage[0], usage[1], modelInfo[0], modelInfo[1]);
     }
 
     /**
@@ -621,6 +678,25 @@ public class AgentService {
 
         public int thinkingLength() {
             return thinking != null ? thinking.length() : 0;
+        }
+    }
+
+    // ==================== ChatResult ====================
+
+    /**
+     * Sync chat result carrying the assistant reply alongside the usage
+     * attribution that the streaming path exposes via the {@code _usage_final}
+     * event. Use this when callers need to persist {@code promptTokens} /
+     * {@code completionTokens} / {@code runtimeModel} / {@code runtimeProvider}
+     * on the assistant message row but cannot subscribe to the structured
+     * stream directly (cron tasks, sync HTTP endpoints, voice WebSocket,
+     * post-approval replays).
+     */
+    public record ChatResult(String content, int promptTokens, int completionTokens,
+                              String runtimeModel, String runtimeProvider) {
+
+        public static ChatResult contentOnly(String content) {
+            return new ChatResult(content != null ? content : "", 0, 0, null, null);
         }
     }
 }

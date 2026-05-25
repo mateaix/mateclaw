@@ -614,15 +614,15 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
     }
 
     /**
-     * 关闭 WebSocket 连接
+     * 关闭 WebSocket 连接。
      * <p>
      * 必须主动关闭底层 WebSocket 连接并触发 SDK 的内部清理（停止 pingLoop、
      * 释放 ExecutorService）。仅置空引用会导致旧连接的 pingLoop 和线程池
      * 持续运行，造成文件描述符和线程泄漏，最终使新连接无法建立。
      * <p>
-     * SDK 的 {@code disconnect()} 是 protected 的，无法直接调用。通过反射
-     * 获取内部 {@code conn} 字段并发送 close(1000) 触发 SDK 的
-     * {@code onClosed → disconnect()} 清理链路。
+     * SDK 2.7.0 起暴露了 public {@code close()} 入口，内部调用 protected
+     * {@code disconnect()} 完成 {@code conn.close(1000) → executor.shutdown() →
+     * 字段清零} 的全套清理。直接调用即可，无需反射。
      */
     private void stopWebSocket() {
         cancelSilentDisconnectWatchdog();
@@ -633,17 +633,9 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
         }
         if (wsClient != null) {
             try {
-                // 反射获取 protected conn 字段，发送 close(1000) 触发 SDK 清理
-                var connField = wsClient.getClass().getDeclaredField("conn");
-                connField.setAccessible(true);
-                Object conn = connField.get(wsClient);
-                if (conn != null) {
-                    // conn 是 OkHttp WebSocket，close(1000) 会触发 onClosed → disconnect()
-                    var closeMethod = conn.getClass().getMethod("close", int.class, String.class);
-                    closeMethod.invoke(conn, 1000, "client closed");
-                }
+                wsClient.close();
             } catch (Exception e) {
-                log.debug("[feishu] Error during WebSocket disconnect: {}", e.getMessage());
+                log.warn("[feishu] WebSocket close failed: {}", e.getMessage());
             }
         }
         wsClient = null;

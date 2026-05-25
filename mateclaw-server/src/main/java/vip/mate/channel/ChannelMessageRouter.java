@@ -732,10 +732,22 @@ public class ChannelMessageRouter {
                     // for any Web SSE viewer of the same conversationId.
                     StringBuilder replyAccumulator = new StringBuilder();
                     final String channelType = adapter.getChannelType();
+                    // Token usage + model attribution: capture _usage_final event emitted at stream end
+                    final int[] usage = {0, 0}; // [promptTokens, completionTokens]
+                    final String[] modelInfo = {null, null}; // [runtimeModel, runtimeProvider]
                     agentService.chatStructuredStream(agentId, promptText, conversationId,
                                     message.getSenderId(), chatOrigin)
                             .doOnNext(delta -> {
                                 if (delta.isEvent()) {
+                                    if ("_usage_final".equals(delta.eventType())) {
+                                        Map<String, Object> data = delta.eventData();
+                                        usage[0] = ((Number) data.getOrDefault("promptTokens", 0)).intValue();
+                                        usage[1] = ((Number) data.getOrDefault("completionTokens", 0)).intValue();
+                                        Object model = data.get("runtimeModelName");
+                                        Object provider = data.get("runtimeProviderId");
+                                        if (model != null) modelInfo[0] = model.toString();
+                                        if (provider != null) modelInfo[1] = provider.toString();
+                                    }
                                     mirrorPlanEventToTracker(conversationId, delta, channelType);
                                 } else if (delta.content() != null) {
                                     // Match the legacy agentService.chat() behavior: include
@@ -770,7 +782,8 @@ public class ChannelMessageRouter {
                         boolean isError = errorClassifier.isErrorReply(reply);
                         String status = isError ? "error" : "completed";
                         MessageEntity saved = conversationService.saveMessage(
-                                conversationId, "assistant", reply, null, status);
+                                conversationId, "assistant", reply, null, status,
+                                usage[0], usage[1], modelInfo[0], modelInfo[1]);
                         savedAssistantId = saved != null ? saved.getId() : null;
                         if (!isError) {
                             publishConversationCompletedEvent(agentId, conversationId, message.getContent(), reply);
@@ -884,8 +897,21 @@ public class ChannelMessageRouter {
             // only reads `delta.content()` and would otherwise eat plan_created /
             // plan_step_* events, leaving the Web Console mirror with no
             // PlanStepsPanel for IM-routed conversations.
-            Flux<AgentService.StreamDelta> mirroredStream = stream.doOnNext(delta ->
-                    mirrorPlanEventToTracker(conversationId, delta, channelType));
+            // Token usage + model attribution: capture _usage_final event emitted at stream end
+            final int[] usage = {0, 0}; // [promptTokens, completionTokens]
+            final String[] modelInfo = {null, null}; // [runtimeModel, runtimeProvider]
+            Flux<AgentService.StreamDelta> mirroredStream = stream.doOnNext(delta -> {
+                if (delta.isEvent() && "_usage_final".equals(delta.eventType())) {
+                    Map<String, Object> data = delta.eventData();
+                    usage[0] = ((Number) data.getOrDefault("promptTokens", 0)).intValue();
+                    usage[1] = ((Number) data.getOrDefault("completionTokens", 0)).intValue();
+                    Object model = data.get("runtimeModelName");
+                    Object provider = data.get("runtimeProviderId");
+                    if (model != null) modelInfo[0] = model.toString();
+                    if (provider != null) modelInfo[1] = provider.toString();
+                }
+                mirrorPlanEventToTracker(conversationId, delta, channelType);
+            });
 
             // Step 2: 委托渠道渲染（渠道内部消费 Flux 并处理 UI 更新）
             String finalContent = streamingAdapter.processStream(mirroredStream, message, conversationId);
@@ -905,7 +931,8 @@ public class ChannelMessageRouter {
                 boolean isError = errorClassifier.isErrorReply(finalContent);
                 String status = isError ? "error" : "completed";
                 MessageEntity saved = conversationService.saveMessage(
-                        conversationId, "assistant", finalContent, null, status);
+                        conversationId, "assistant", finalContent, null, status,
+                        usage[0], usage[1], modelInfo[0], modelInfo[1]);
                 if (!isError) {
                     publishConversationCompletedEvent(agentId, conversationId, promptText, finalContent);
                 }
@@ -990,8 +1017,9 @@ public class ChannelMessageRouter {
                 replayOrigin = chatOriginFactory.from(
                         channelEntity, triggerMessage, conversationId, /* workspaceBasePath */ null);
             }
-            String reply = agentService.chatWithReplay(
+            AgentService.ChatResult replayResult = agentService.chatWithReplayWithUsage(
                     agentId, replayPrompt, conversationId, consumed.getToolCallPayload(), replayOrigin);
+            String reply = replayResult.content();
 
             // Persist the replay result. If the LLM 400'd during replay,
             // the error reply must also get status='error' — otherwise the
@@ -999,7 +1027,9 @@ public class ChannelMessageRouter {
             // into the prompt and re-trigger the same failure.
             boolean isError = errorClassifier.isErrorReply(reply);
             conversationService.saveMessage(conversationId, "assistant", reply, null,
-                    isError ? "error" : "completed");
+                    isError ? "error" : "completed",
+                    replayResult.promptTokens(), replayResult.completionTokens(),
+                    replayResult.runtimeModel(), replayResult.runtimeProvider());
 
             // 发送回复
             adapter.renderAndSend(replyTarget, reply);
