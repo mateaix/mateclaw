@@ -5,7 +5,6 @@ import org.springframework.stereotype.Component;
 import vip.mate.tool.guard.model.*;
 
 import java.util.List;
-import java.util.Set;
 
 /**
  * 策略解析器
@@ -15,44 +14,66 @@ import java.util.Set;
  *   <li>Guardian 只负责发现风险事实</li>
  *   <li>PolicyResolver 负责把事实映射为执行策略</li>
  * </ul>
- * 采用 findings-driven approval 策略，不按工具类型默认审批。
+ * 聚合规则（取最严格者）：
+ * <ol>
+ *   <li>遍历每条 finding，得到该 finding 的目标 decision：</li>
+ *   <ul>
+ *     <li>若 finding 显式带 decision（来自 DB 规则），用之；</li>
+ *     <li>否则按 severity 回退：CRITICAL→BLOCK，HIGH/MEDIUM→NEEDS_APPROVAL，LOW/INFO→ALLOW。</li>
+ *   </ul>
+ *   <li>取所有 finding 中最严格的：BLOCK &gt; NEEDS_APPROVAL &gt; ALLOW。</li>
+ * </ol>
  */
 @Slf4j
 @Component
 public class ToolPolicyResolver {
 
-    /**
-     * 根据 findings 和上下文产出最终裁决
-     * <p>
-     * 策略（findings-driven approval）：
-     * <ul>
-     *   <li>无 findings → ALLOW（普通命令直接执行）</li>
-     *   <li>CRITICAL → BLOCK（极端危险直接阻断）</li>
-     *   <li>HIGH → NEEDS_APPROVAL（高风险需审批）</li>
-     *   <li>MEDIUM → NEEDS_APPROVAL（中风险需审批）</li>
-     * </ul>
-     */
     public GuardDecision resolve(List<GuardFinding> findings, ToolInvocationContext context) {
-        // 无 findings → 直接允许（不再按工具类型默认审批）
         if (findings == null || findings.isEmpty()) {
             return GuardDecision.ALLOW;
         }
 
-        GuardSeverity maxSeverity = findings.stream()
-                .map(GuardFinding::severity)
-                .reduce(GuardSeverity.INFO, GuardSeverity::max);
+        GuardDecision aggregate = GuardDecision.ALLOW;
+        for (GuardFinding f : findings) {
+            GuardDecision perFinding = resolveSingle(f);
+            aggregate = stricter(aggregate, perFinding);
+            if (aggregate == GuardDecision.BLOCK) {
+                return aggregate;
+            }
+        }
+        return aggregate;
+    }
 
-        // CRITICAL → 直接 BLOCK
-        if (maxSeverity.isAtLeast(GuardSeverity.CRITICAL)) {
+    /**
+     * 单条 finding 的目标 decision：显式优先，否则按 severity 默认映射
+     */
+    private GuardDecision resolveSingle(GuardFinding finding) {
+        if (finding.decision() != null) {
+            return finding.decision();
+        }
+        GuardSeverity sev = finding.severity();
+        if (sev == null) {
+            return GuardDecision.ALLOW;
+        }
+        if (sev.isAtLeast(GuardSeverity.CRITICAL)) {
             return GuardDecision.BLOCK;
         }
-
-        // HIGH / MEDIUM → 需要审批
-        if (maxSeverity.isAtLeast(GuardSeverity.MEDIUM)) {
+        if (sev.isAtLeast(GuardSeverity.MEDIUM)) {
             return GuardDecision.NEEDS_APPROVAL;
         }
+        return GuardDecision.ALLOW;
+    }
 
-        // LOW / INFO → 允许
+    /**
+     * 取两个 decision 的严格上界：BLOCK > NEEDS_APPROVAL > ALLOW
+     */
+    private GuardDecision stricter(GuardDecision a, GuardDecision b) {
+        if (a == GuardDecision.BLOCK || b == GuardDecision.BLOCK) {
+            return GuardDecision.BLOCK;
+        }
+        if (a == GuardDecision.NEEDS_APPROVAL || b == GuardDecision.NEEDS_APPROVAL) {
+            return GuardDecision.NEEDS_APPROVAL;
+        }
         return GuardDecision.ALLOW;
     }
 
@@ -61,14 +82,12 @@ public class ToolPolicyResolver {
      */
     public String buildSummary(List<GuardFinding> findings, GuardDecision decision) {
         if (findings == null || findings.isEmpty()) {
-            // 无 findings 时不应该有 NEEDS_APPROVAL 或 BLOCK
             return null;
         }
 
         StringBuilder sb = new StringBuilder();
         sb.append("检测到 ").append(findings.size()).append(" 项安全风险");
 
-        // 列出最高风险的发现
         findings.stream()
                 .filter(f -> f.severity() != null && f.severity().isAtLeast(GuardSeverity.MEDIUM))
                 .limit(3)

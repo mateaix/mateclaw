@@ -40,6 +40,7 @@ public class SkillManifestParser {
             "dashboard", "self-evolution", "self_evolution",
             "knowledge",
             "acp",
+            "scripts",
             // legacy / housekeeping fields that aren't manifest-relevant
             "metadata"
     );
@@ -102,6 +103,7 @@ public class SkillManifestParser {
                 .selfEvolution(parseSelfEvolution(coalesce(fm, "self-evolution", "self_evolution")))
                 .knowledge(parseKnowledge(fm.get("knowledge")))
                 .acp(parseAcp(fm.get("acp")))
+                .scripts(parseScripts(fm.get("scripts")))
                 .extras(extractUnknown(fm));
 
         return b.build();
@@ -259,6 +261,37 @@ public class SkillManifestParser {
                 .rerank(bool(m, "rerank", false))
                 .boundKbId(resolvedId)
                 .build();
+    }
+
+    // ==================== scripts ====================
+
+    /**
+     * Parse the {@code scripts} block — a list of script entrypoint maps.
+     * The per-entry {@code parameters} map is carried through as a raw
+     * JSON Schema object; nested maps / lists from the YAML parse stay
+     * intact so the wrapper factory can serialize them verbatim.
+     */
+    @SuppressWarnings("unchecked")
+    private List<SkillManifest.ScriptDef> parseScripts(Object rawScripts) {
+        if (!(rawScripts instanceof List<?> list)) return List.of();
+        List<SkillManifest.ScriptDef> out = new ArrayList<>();
+        for (Object item : list) {
+            if (!(item instanceof Map<?, ?> map)) continue;
+            Map<String, Object> m = (Map<String, Object>) map;
+            Map<String, Object> parameters = m.get("parameters") instanceof Map<?, ?> p
+                    ? toStringObjectMap((Map<?, ?>) p) : Map.of();
+            out.add(SkillManifest.ScriptDef.builder()
+                    .id(string(m, "id"))
+                    .label(string(m, "label"))
+                    .path(string(m, "path"))
+                    .description(string(m, "description"))
+                    .fixedArgs(stringList(coalesce(m, "fixed_args", "fixedArgs")))
+                    .parameters(parameters)
+                    .argStyle(stringOrDefault(m, "arg_style",
+                            stringOrDefault(m, "argStyle", "json")))
+                    .build());
+        }
+        return out;
     }
 
     @SuppressWarnings("unchecked")

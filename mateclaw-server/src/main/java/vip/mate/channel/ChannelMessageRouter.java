@@ -7,6 +7,7 @@ import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 import vip.mate.agent.AgentService;
 import vip.mate.agent.context.ChatOrigin;
+import vip.mate.agent.model.AgentEntity;
 import vip.mate.approval.ApprovalWorkflowService;
 import vip.mate.approval.ResolveOutcome;
 import vip.mate.approval.PendingApproval;
@@ -270,26 +271,46 @@ public class ChannelMessageRouter {
         synchronized (pendingMessages) {
             PendingMessage existing = pendingMessages.get(conversationId);
             if (existing != null) {
-                // 合并到已有的 pending 消息
-                if (existing.timer != null) {
-                    existing.timer.cancel(false);
-                }
-                existing.appendContent(message.getContent());
-                int mergedLen = existing.getMergedContent().length();
-                long debounceMs = pickDebounceMs(mergedLen);
-                existing.timer = debounceScheduler.schedule(
-                        () -> flushPending(conversationId), debounceMs, TimeUnit.MILLISECONDS);
-                if (debounceMs > DEBOUNCE_MS) {
-                    log.info("[{}] Long-text merger active: conversationId={}, mergedLen={}, debounce={}ms (paste-split suspected)",
-                            channelType, conversationId, mergedLen, debounceMs);
+                // Sender boundary in groups: when a different user sends to the
+                // same group within the debounce window, merging would attribute
+                // both fragments to whoever sent first — the LLM then loses the
+                // ability to tell who asked what. Flush the existing buffer
+                // immediately so each user's text rides its own pending window.
+                // Reentrant on `pendingMessages`, so the inner flushPending's
+                // synchronized block re-acquires safely on the same thread.
+                String existingSender = existing.firstMessage.getSenderId();
+                String incomingSender = message.getSenderId();
+                boolean sameSender = isSameSender(existingSender, incomingSender);
+                if (!sameSender) {
+                    log.info("[{}] Sender boundary in conversation {}: flushing pending from sender={}, accepting new sender={}",
+                            channelType, conversationId, existingSender, incomingSender);
+                    if (existing.timer != null) {
+                        existing.timer.cancel(false);
+                    }
+                    flushPending(conversationId);
+                    // Fall through to create a fresh pending for the new sender.
                 } else {
-                    log.debug("[{}] Message merged with pending (debounce {}ms): conversationId={}",
-                            channelType, debounceMs, conversationId);
+                    // Same sender — original paste-split / rapid-follow merge path.
+                    if (existing.timer != null) {
+                        existing.timer.cancel(false);
+                    }
+                    existing.appendContent(message.getContent());
+                    int mergedLen = existing.getMergedContent().length();
+                    long debounceMs = pickDebounceMs(mergedLen);
+                    existing.timer = debounceScheduler.schedule(
+                            () -> flushPending(conversationId), debounceMs, TimeUnit.MILLISECONDS);
+                    if (debounceMs > DEBOUNCE_MS) {
+                        log.info("[{}] Long-text merger active: conversationId={}, mergedLen={}, debounce={}ms (paste-split suspected)",
+                                channelType, conversationId, mergedLen, debounceMs);
+                    } else {
+                        log.debug("[{}] Message merged with pending (debounce {}ms): conversationId={}",
+                                channelType, debounceMs, conversationId);
+                    }
+                    return;
                 }
-                return;
             }
 
-            // 首条消息，创建 PendingMessage 并设定防抖定时器
+            // 首条消息（或 sender boundary 之后的新 sender），创建 PendingMessage 并设定防抖定时器
             PendingMessage pending = new PendingMessage(message, adapter, channelEntity);
             pendingMessages.put(conversationId, pending);
             int firstLen = message.getContent() != null ? message.getContent().length() : 0;
@@ -467,6 +488,47 @@ public class ChannelMessageRouter {
         return null;
     }
 
+    /**
+     * Identity gate shared by /approve and /deny (group-chat safety): only the
+     * original human requester may resolve a pending. Agent/cron ("system") and
+     * unattributed (null) approvals are fail-closed in IM — any group member
+     * could otherwise approve OR deny/cancel a guarded action — and must be
+     * handled from the admin console. Sends the rejection notice + logs and
+     * returns {@code false} when the caller is not authorized.
+     */
+    private boolean approvalResolveAuthorized(PendingApproval pending, ChannelMessage message,
+                                              ChannelAdapter adapter, String replyTarget) {
+        String originalRequester = pending.getUserId();
+        boolean systemOriginated = originalRequester == null || "system".equals(originalRequester);
+        if (systemOriginated || !originalRequester.equals(message.getSenderId())) {
+            adapter.sendMessage(replyTarget, systemOriginated
+                    ? "⚠️ 该审批由系统/定时任务发起，请在管理端处理。"
+                    : "⚠️ 只有原始请求者可以审批此操作。");
+            log.warn("[{}] Approval resolve rejected: sender={} != requester={} (systemOriginated={})",
+                    adapter.getChannelType(), message.getSenderId(), originalRequester, systemOriginated);
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * When an /approve or /deny command carries an explicit short pendingId
+     * (e.g. "/deny a1b2c3"), verify it matches the conversation's current
+     * pending before resolving — otherwise a stale or copy-pasted id would
+     * silently act on the wrong pending. Sends the mismatch notice and returns
+     * {@code true} (caller must abort) when the ids don't line up.
+     */
+    private boolean pendingIdMismatch(String userText, PendingApproval pending,
+                                      ChannelAdapter adapter, String replyTarget) {
+        String shortId = extractShortId(userText);
+        if (shortId != null && !pending.getPendingId().startsWith(shortId)) {
+            adapter.sendMessage(replyTarget, "⚠️ 审批ID不匹配。当前待审批: "
+                    + pending.getPendingId().substring(0, Math.min(6, pending.getPendingId().length())));
+            return true;
+        }
+        return false;
+    }
+
     // ==================== 消息处理（原 route 逻辑 + 审批拦截层） ====================
 
     /**
@@ -489,20 +551,12 @@ public class ChannelMessageRouter {
                 String replyTarget = resolveReplyTarget(message);
 
                 if (isApproveCommand(userText)) {
-                    // pendingId 校验：如果命令包含 shortId，验证是否匹配当前 pending
-                    String shortId = extractShortId(userText);
-                    if (shortId != null && !pending.getPendingId().startsWith(shortId)) {
-                        adapter.sendMessage(replyTarget, "⚠️ 审批ID不匹配。当前待审批: "
-                                + pending.getPendingId().substring(0, Math.min(6, pending.getPendingId().length())));
+                    // pendingId 校验：approve / deny 共用——命令带 shortId 时必须匹配当前 pending。
+                    if (pendingIdMismatch(userText, pending, adapter, replyTarget)) {
                         return;
                     }
-                    // 身份校验：只有原始请求者可以审批（群聊安全）
-                    String originalRequester = pending.getUserId();
-                    if (originalRequester != null && !"system".equals(originalRequester)
-                            && !originalRequester.equals(message.getSenderId())) {
-                        adapter.sendMessage(replyTarget, "⚠️ 只有原始请求者可以审批此操作。");
-                        log.warn("[{}] Approval rejected: sender={} != requester={}",
-                                adapter.getChannelType(), message.getSenderId(), originalRequester);
+                    // 身份校验：approve / deny 共用同一道门禁（群聊安全 + system/null fail-closed）。
+                    if (!approvalResolveAuthorized(pending, message, adapter, replyTarget)) {
                         return;
                     }
                     // Approve via IM: workflow.resolveAndConsume runs DB + metadata + memory atomically.
@@ -521,9 +575,24 @@ public class ChannelMessageRouter {
                     return;
 
                 } else if (isDenyCommand(userText)) {
+                    // pendingId 校验：与 approve 一致——命令带 shortId 时必须匹配当前 pending，
+                    // 否则 /deny <其它ID> 会错误地拒绝当前 conversation 的 pending。
+                    if (pendingIdMismatch(userText, pending, adapter, replyTarget)) {
+                        return;
+                    }
+                    // 身份校验：deny 与 approve 共用门禁。否则群里任意成员可拒绝/取消他人的
+                    // pending，system/null 发起的审批也会被任意人 deny（取消审批、清 placeholder、
+                    // 写入 denied 状态）；这类审批改到管理端处理。
+                    if (!approvalResolveAuthorized(pending, message, adapter, replyTarget)) {
+                        return;
+                    }
                     // Deny via IM: workflow.resolve owns the full state-machine transition.
                     ResolveOutcome denyOutcome = approvalService.resolve(
                             pending.getPendingId(), message.getSenderId(), "denied");
+                    if (denyOutcome.isAlreadyResolved()) {
+                        adapter.sendMessage(replyTarget, "⚠️ 审批记录已过期或已被处理。");
+                        return;
+                    }
                     conversationService.removeApprovalPlaceholders(conversationId);
                     String denyHint = "⛔ 已拒绝执行工具: " + pending.getToolName();
                     persistAndBroadcastApprovalHint(conversationId, denyHint,
@@ -534,8 +603,23 @@ public class ChannelMessageRouter {
                             denyOutcome.messagesRewritten());
                     return;
 
+                } else if (adapter.usesInteractiveApprovalCards()) {
+                    // Channel approves via button-clicks on an interactive
+                    // card, NOT via /approve text. A casual follow-up
+                    // message from the user during the wait window MUST
+                    // NOT auto-cancel the pending — the button click is
+                    // the canonical decision path. Treat the new message
+                    // as a fresh turn; the pending stays alive until the
+                    // user clicks Approve / Deny, the GC TTL expires, or
+                    // the workflow explicitly resolves it.
+                    log.info("[{}] Non-approval message while pending exists; channel uses card buttons so NOT auto-cancelling pendingId={}",
+                            adapter.getChannelType(), pending.getPendingId());
+                    // Fall through to process the new message normally.
                 } else {
                     // Non-approval message while a pending exists → treat as implicit deny.
+                    // Text-command channels rely on this: the user is told
+                    // "type /approve <id>" and anything else is an implicit
+                    // change of mind.
                     approvalService.resolve(pending.getPendingId(), message.getSenderId(), "denied");
                     conversationService.removeApprovalPlaceholders(conversationId);
                     String cancelHint = "⛔ 审批已取消。将继续处理您的新消息。";
@@ -549,8 +633,40 @@ public class ChannelMessageRouter {
             }
             // ======= 审批拦截层结束 =======
 
-            // 确保会话存在（workspace 感知）
-            conversationService.getOrCreateSharedConversation(conversationId, agentId, channelEntity.getWorkspaceId());
+            // Ensure the conversation exists, seeded with the agent's
+            // currently-configured default model so per-conversation model
+            // selection works for IM channels too (issue #183).
+            //
+            // Two-part behaviour, both inside getOrCreateSharedConversation:
+            //   1. Brand-new conversation → write defaultModelName so the
+            //      very first turn picks the right model; user can later
+            //      switch via the admin UI (updateConversationModel) and the
+            //      override sticks.
+            //   2. Pre-existing conversation with model still null (legacy
+            //      rows created before #183 fix) → backfill once, then leave
+            //      alone. Already-pinned conversations are never overwritten.
+            //
+            // We pass provider=null because AgentEntity doesn't carry a
+            // provider field — the downstream ProviderChatModelFactory
+            // resolves provider from the model name. The seed logic in
+            // ConversationService treats (null, name) as no-seed (both
+            // fields must be non-blank to take effect), which is the
+            // correct defensive behaviour: we only pin when we have a
+            // complete (provider, model) pair from the admin UI.
+            String agentDefaultModel = null;
+            try {
+                AgentEntity agentEntity = agentService.getAgent(agentId);
+                agentDefaultModel = agentEntity.getModelName();
+            } catch (Exception e) {
+                // Agent deleted / disabled mid-flight — don't block message
+                // intake. Downstream agentService.chatStructuredStream will
+                // surface the real error to the user.
+                log.debug("[{}] Could not load agent {} for model-seed lookup: {}",
+                        adapter.getChannelType(), agentId, e.getMessage());
+            }
+            conversationService.getOrCreateSharedConversation(
+                    conversationId, agentId, channelEntity.getWorkspaceId(),
+                    null, agentDefaultModel);
 
             // 更新渠道会话存储（用于主动推送）
             String replyTarget = resolveReplyTarget(message);
@@ -569,11 +685,20 @@ public class ChannelMessageRouter {
             }
 
             // 保存用户消息（带 contentParts）
+            // Group sender attribution: tag the persisted content + the
+            // prompt with [@sender] in groups so the LLM can disambiguate
+            // multiple users sharing one conversation. Single chats pass
+            // through unchanged (chatId is null).
             List<MessageContentPart> parts = message.getContentParts();
-            conversationService.saveMessage(conversationId, "user", message.getContent(), parts);
+            String attributedContent = applyGroupTag(message, message.getContent());
+            conversationService.saveMessage(conversationId, "user", attributedContent, parts);
 
             // 构建 prompt（语音输入时注入场景提示词）
             String promptText = buildPromptFromParts(message.getContent(), parts, message.getInputMode());
+            // Re-apply the tag in case the prompt was assembled from
+            // non-text parts (image/file) where buildPromptFromParts
+            // ignored `content`. Idempotent: skips when already prefixed.
+            promptText = applyGroupTag(message, promptText);
 
             // 注册到 ChatStreamTracker：让 graph 节点广播的事件（phase / content_delta / tool_call_* 等）
             // 能被 ChatConsole observer 订阅到。不注册 → broadcast() 会因 state==null 短路丢弃。
@@ -667,6 +792,15 @@ public class ChannelMessageRouter {
 
                         // 语音回复：异步 TTS 合成并追加发送（先文本后语音，不阻塞）
                         maybeGenerateVoiceReply(message, adapter, replyTarget, conversationId, reply, channelEntity);
+
+                        // Per-channel completion ack (e.g. Feishu ✅ reaction).
+                        // No-op for adapters that haven't overridden the hook.
+                        try {
+                            adapter.onAgentCompleted(message);
+                        } catch (Exception hookErr) {
+                            log.debug("[{}] onAgentCompleted hook failed (non-fatal): {}",
+                                    adapter.getChannelType(), hookErr.getMessage());
+                        }
                     }
                 }
             } finally {
@@ -783,6 +917,12 @@ public class ChannelMessageRouter {
                 if (replyTarget != null) {
                     maybeGenerateVoiceReply(message, streamingAdapter, replyTarget,
                             conversationId, finalContent, channelEntity);
+                }
+                try {
+                    streamingAdapter.onAgentCompleted(message);
+                } catch (Exception hookErr) {
+                    log.debug("[{}] onAgentCompleted hook failed (non-fatal): {}",
+                            channelType, hookErr.getMessage());
                 }
                 return saved != null ? saved.getId() : null;
             }
@@ -960,9 +1100,13 @@ public class ChannelMessageRouter {
 
         conversationService.getOrCreateConversation(conversationId, agentId, username, channelEntity.getWorkspaceId());
         List<MessageContentPart> parts = message.getContentParts();
-        conversationService.saveMessage(conversationId, "user", message.getContent(), parts);
+        // Mirror processMessage's group attribution for the streaming path
+        // (Web channel today; future streaming IM channels inherit it).
+        String attributedContent = applyGroupTag(message, message.getContent());
+        conversationService.saveMessage(conversationId, "user", attributedContent, parts);
 
         String promptText = buildPromptFromParts(message.getContent(), parts, message.getInputMode());
+        promptText = applyGroupTag(message, promptText);
         // RFC-063r §2.5: forward ChatOrigin so tools created during this
         // streaming conversation inherit channel binding.
         ChatOrigin origin = chatOriginFactory.from(
@@ -1028,6 +1172,70 @@ public class ChannelMessageRouter {
     private String buildConversationId(ChannelMessage message) {
         String identifier = message.getChatId() != null ? message.getChatId() : message.getSenderId();
         return message.getChannelType() + ":" + identifier;
+    }
+
+    /**
+     * Build a sender-attribution tag for group messages. Returns
+     * {@code [@senderName]} when the message is from a multi-user channel
+     * context (chatId is set), else {@code null} for 1:1 chats.
+     *
+     * <p>Without this tag, three users asking three different questions in
+     * the same group conversation collapse into an unattributed wall of
+     * "user:" turns and the LLM can no longer tell who is asking what —
+     * it answers based on the most-recent text and ignores the rest.
+     * Single chats are unaffected because chatId is null there.
+     *
+     * <p>Prefer {@code senderName} when populated; otherwise fall back to
+     * {@code senderId}. WeCom currently sets both to the same opaque
+     * openid which is still useful for disambiguation; future channels
+     * (DingTalk, Slack) carry friendlier display names that flow through
+     * unchanged.
+     *
+     * @return sender tag like {@code [@Alice]}, or {@code null} if the
+     *         message is not from a group context.
+     */
+    static String buildGroupTag(ChannelMessage message) {
+        if (message == null) return null;
+        String chatId = message.getChatId();
+        if (chatId == null || chatId.isBlank()) return null;
+        String name = (message.getSenderName() != null && !message.getSenderName().isBlank())
+                ? message.getSenderName() : message.getSenderId();
+        if (name == null || name.isBlank()) return null;
+        return "[@" + name + "]";
+    }
+
+    /**
+     * Apply {@link #buildGroupTag} to {@code content}. Idempotent: if
+     * {@code content} already starts with the tag (e.g. an upstream
+     * adapter has pre-attributed it), returns it unchanged so we don't
+     * double-stamp. No-op for single chats.
+     */
+    static String applyGroupTag(ChannelMessage message, String content) {
+        String tag = buildGroupTag(message);
+        if (tag == null) return content;
+        // Empty content: leave empty rather than persist or prompt with a
+        // bare "[@Alice]" — the message had no payload to attribute.
+        if (content == null || content.isEmpty()) return content;
+        if (content.startsWith(tag)) return content;
+        return tag + " " + content;
+    }
+
+    /**
+     * Decision helper for the debounce merger: should an incoming message
+     * from {@code incomingSender} merge into a pending buffer started by
+     * {@code existingSender}? True only when the senders match — different
+     * senders in the same conversation (a group context) must NOT merge,
+     * else the second user's text gets attributed to the first.
+     *
+     * <p>Null-handling: a null {@code existingSender} means "no buffer to
+     * merge into" so the answer is always false; a null
+     * {@code incomingSender} (rare, but seen in test fixtures) is also
+     * not allowed to silently merge — returning false routes to the
+     * "create new pending" branch which is safe.
+     */
+    static boolean isSameSender(String existingSender, String incomingSender) {
+        if (existingSender == null || incomingSender == null) return false;
+        return existingSender.equals(incomingSender);
     }
 
     /**

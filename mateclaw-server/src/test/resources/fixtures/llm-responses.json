@@ -1,0 +1,8 @@
+{
+  "Generate a structured analysis": "{\"entities\":[{\"name\":\"Sample\",\"type\":\"concept\",\"confidence\":\"EXTRACTED\",\"evidence\":\"placeholder\"}],\"connections\":[]}",
+  "Summarize the following document": "This document describes a sample knowledge base entry.",
+  "Plan which wiki concepts": "{\"create\":[],\"update\":[],\"crossLinks\":[]}",
+  "Caption this image": "A diagram with three boxes labeled X, Y and Z connected by directed arrows.",
+  "Rebuild the wiki hot cache": "## Last Updated\n2026-05-02 — placeholder activity\n\n## Key Recent Facts\n- (none)\n\n## Recent Changes\n- (none)\n\n## Active Threads\n- (none)\n",
+  "__default__": "[mock] generic LLM response"
+}

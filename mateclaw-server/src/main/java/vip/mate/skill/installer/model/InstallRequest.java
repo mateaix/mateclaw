@@ -24,4 +24,20 @@ public class InstallRequest {
 
     /** 若同名 skill 已存在，是否覆盖 */
     private Boolean overwrite = false;
+
+    /**
+     * Bypass the empty-bundle prune guard. Default {@code false} keeps
+     * existing scripts/references when the new bundle has zero entries
+     * for that bucket — protects against malformed uploads. Set to
+     * {@code true} only when you really want to clear out a bucket via
+     * an intentionally empty bundle.
+     */
+    private Boolean forcePrune = false;
+
+    /**
+     * Owning workspace for the installed skill. Stamped by the controller
+     * from the {@code X-Workspace-Id} header — never trusted from a raw
+     * client body. {@code null} falls back to the default workspace.
+     */
+    private Long workspaceId;
 }

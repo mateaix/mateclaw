@@ -1,0 +1,15 @@
+-- V118: Purge residual deleted=1 rows from mate_model_config.
+--
+-- V20 retired soft-delete project-wide and physically deleted every deleted=1
+-- row that existed at that point. V81 then re-introduced an isolated tombstone
+-- on id=1000000172 (the bogus 'qwen3-plus' catalog entry) — keeping the row
+-- around as a logical audit trail. The runtime never re-uses ids and treats
+-- `deleted` as a vestige now that @TableLogic is gone, so a tombstoned row
+-- has no value beyond leaking into LambdaQueryWrapper queries that don't
+-- explicitly filter `deleted=0`.
+--
+-- The validateModel uniqueness check fix in #173 plugged one such leak; this
+-- migration eliminates the underlying class of bug by aligning mate_model_config
+-- with the V20 hard-delete posture. Idempotent: a no-op on databases without
+-- tombstones.
+DELETE FROM mate_model_config WHERE deleted = 1;

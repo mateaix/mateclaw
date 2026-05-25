@@ -2,6 +2,7 @@ package vip.mate.wiki.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.embedding.EmbeddingModel;
@@ -16,12 +17,17 @@ import vip.mate.system.repository.SystemSettingMapper;
 import vip.mate.wiki.WikiProperties;
 import vip.mate.wiki.model.WikiChunkEntity;
 import vip.mate.wiki.model.WikiKnowledgeBaseEntity;
+import vip.mate.wiki.model.WikiPageEntity;
 import vip.mate.wiki.repository.WikiChunkMapper;
+import vip.mate.wiki.repository.WikiPageMapper;
+import vip.mate.wiki.repository.WikiRawMaterialMapper;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * RFC-011 + Embedding-UI-Config: Wiki 嵌入服务
@@ -42,15 +48,86 @@ import java.util.List;
 public class WikiEmbeddingService {
 
     private final WikiChunkMapper chunkMapper;
+    private final WikiPageMapper pageMapper;
+    private final WikiRawMaterialMapper rawMaterialMapper;
     private final WikiProperties properties;
     private final EmbeddingModelFactory factory;
     private final ModelConfigService modelConfigService;
     private final WikiKnowledgeBaseService kbService;
     private final SystemSettingMapper systemSettingMapper;
     private final vip.mate.llm.service.ModelProviderService modelProviderService;
+    private final WikiEmbeddingInputBuilder inputBuilder;
 
     /** 系统默认 embedding 模型的 mate_system_setting key */
     public static final String SYSTEM_SETTING_DEFAULT_EMBEDDING_ID = "embedding.default.model.id";
+
+    /**
+     * Returns the embedding input format version this service stamps onto
+     * each chunk. The builder's constant is the source of truth; the
+     * {@code mate.wiki.embedding-text-version-current} property exists only
+     * to support ops overrides and is validated against the builder at
+     * startup ({@link #verifyConfiguredInputVersion()}).
+     */
+    public String currentInputVersion() {
+        String configured = properties.getEmbeddingTextVersionCurrent();
+        return (configured == null || configured.isBlank()) ? inputBuilder.currentVersion() : configured.trim();
+    }
+
+    /**
+     * Validate the configured embedding input version against the builder
+     * constant on startup. A blank config is normal (the builder version is
+     * used). A config below the builder is allowed with a WARN so a KB can
+     * be embedded against an older format during a gradual rollback. A
+     * config above the builder fails fast — it almost always means the
+     * config was deployed ahead of the code.
+     */
+    @PostConstruct
+    void verifyConfiguredInputVersion() {
+        String configured = properties.getEmbeddingTextVersionCurrent();
+        if (configured == null || configured.isBlank()) {
+            log.info("[WikiEmbedding] Embedding input version: {} (from builder)", inputBuilder.currentVersion());
+            return;
+        }
+        String builderVersion = inputBuilder.currentVersion();
+        int cmp = compareInputVersions(configured.trim(), builderVersion);
+        if (cmp == 0) {
+            log.info("[WikiEmbedding] Embedding input version: {} (matches builder)", configured);
+        } else if (cmp < 0) {
+            log.warn("[WikiEmbedding] Configured embedding input version {} is older than builder {}; "
+                    + "new embeddings will still be stamped with the configured value. "
+                    + "Clear mate.wiki.embedding-text-version-current to use the builder default.",
+                    configured, builderVersion);
+        } else {
+            throw new IllegalStateException(
+                    "Configured embedding input version " + configured + " is newer than builder version "
+                            + builderVersion + ". The builder code is older than the deployment config; "
+                            + "upgrade the application or clear mate.wiki.embedding-text-version-current.");
+        }
+    }
+
+    /**
+     * Compare version tags of the form {@code v\d+} numerically (so v2 > v10
+     * does not happen). Falls back to case-insensitive string compare when
+     * either side does not match the expected pattern.
+     */
+    static int compareInputVersions(String a, String b) {
+        Integer ai = parseNumericVersion(a);
+        Integer bi = parseNumericVersion(b);
+        if (ai != null && bi != null) {
+            return Integer.compare(ai, bi);
+        }
+        return a.compareToIgnoreCase(b);
+    }
+
+    private static Integer parseNumericVersion(String tag) {
+        if (tag == null || tag.length() < 2) return null;
+        if (tag.charAt(0) != 'v' && tag.charAt(0) != 'V') return null;
+        try {
+            return Integer.parseInt(tag.substring(1));
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
 
     /**
      * 判断全局是否有可用的 embedding 能力（任何 enabled 的 embedding 模型配置）
@@ -116,8 +193,10 @@ public class WikiEmbeddingService {
     /**
      * 批量嵌入指定 KB 中缺失 embedding 的 chunk。
      * <p>
-     * 只嵌入 embedding 为 NULL 或 embeddingModel 与当前解析出的模型不一致的 chunk。
-     * 模型切换时自动触发全量重嵌（通过 embedding_model 字段比对）。
+     * Pending criteria: embedding is NULL, the stored embedding_model differs
+     * from the currently-resolved model, or the stored embedding_text_version
+     * differs from the active builder version. Switching the embedding model
+     * or bumping the input format both trigger a full re-embed pass.
      */
     public int embedMissingChunks(Long kbId) {
         Resolved r = resolveForKb(kbId);
@@ -127,17 +206,21 @@ public class WikiEmbeddingService {
         }
 
         String modelName = r.modelName();
+        String inputVersion = currentInputVersion();
         List<WikiChunkEntity> pending = chunkMapper.selectList(
                 new LambdaQueryWrapper<WikiChunkEntity>()
                         .eq(WikiChunkEntity::getKbId, kbId)
                         .and(w -> w.isNull(WikiChunkEntity::getEmbedding)
-                                   .or().ne(WikiChunkEntity::getEmbeddingModel, modelName)));
+                                   .or().ne(WikiChunkEntity::getEmbeddingModel, modelName)
+                                   .or().isNull(WikiChunkEntity::getEmbeddingTextVersion)
+                                   .or().ne(WikiChunkEntity::getEmbeddingTextVersion, inputVersion)));
 
         if (pending.isEmpty()) {
             log.debug("[WikiEmbedding] No chunks need embedding for kbId={}", kbId);
             return 0;
         }
 
+        RawTitleLookup titleLookup = preloadTitlesFor(pending);
         int batchSize = Math.max(1, properties.getEmbeddingBatchSize());
         int maxChars = Math.max(500, properties.getEmbeddingMaxChars());
         int threshold = Math.max(1, properties.getEmbeddingConsecutiveFailureThreshold());
@@ -165,7 +248,7 @@ public class WikiEmbeddingService {
 
             // Short chunks: existing batch path
             if (!shortBatch.isEmpty()) {
-                int embedded = embedShortBatch(shortBatch, r.model(), modelName, kbId);
+                int embedded = embedShortBatch(shortBatch, r.model(), modelName, kbId, inputVersion, titleLookup);
                 total += embedded;
                 if (embedded == 0) {
                     consecutiveFailures++;
@@ -180,7 +263,7 @@ public class WikiEmbeddingService {
 
             // Long chunks: each goes through sub-segment split + mean pool
             for (WikiChunkEntity longChunk : longChunks) {
-                if (embedLongChunk(longChunk, r.model(), modelName, maxChars)) {
+                if (embedLongChunk(longChunk, r.model(), modelName, maxChars, inputVersion, titleLookup)) {
                     total++;
                     consecutiveFailures = 0;
                 } else {
@@ -218,15 +301,19 @@ public class WikiEmbeddingService {
      * Returns the number of chunks that were successfully embedded and persisted.
      */
     private int embedShortBatch(List<WikiChunkEntity> batch, EmbeddingModel model,
-                                 String modelName, Long kbId) {
+                                 String modelName, Long kbId,
+                                 String inputVersion, RawTitleLookup titleLookup) {
         try {
-            List<String> inputs = batch.stream().map(WikiChunkEntity::getContent).toList();
+            List<String> inputs = batch.stream()
+                    .map(c -> inputBuilder.build(c, titleLookup))
+                    .toList();
             EmbeddingResponse resp = model.call(new EmbeddingRequest(inputs, null));
             for (int i = 0; i < batch.size(); i++) {
                 float[] vec = resp.getResults().get(i).getOutput();
                 WikiChunkEntity chunk = batch.get(i);
                 chunk.setEmbedding(floatsToBytes(vec));
                 chunk.setEmbeddingModel(modelName);
+                chunk.setEmbeddingTextVersion(inputVersion);
                 chunkMapper.updateById(chunk);
             }
             return batch.size();
@@ -248,12 +335,24 @@ public class WikiEmbeddingService {
      * Returns true if at least one sub-segment succeeded and the chunk was persisted.
      */
     private boolean embedLongChunk(WikiChunkEntity chunk, EmbeddingModel model,
-                                    String modelName, int maxChars) {
-        List<String> segments = splitForEmbedding(chunk.getContent(), maxChars);
-        if (segments.isEmpty()) {
+                                    String modelName, int maxChars,
+                                    String inputVersion, RawTitleLookup titleLookup) {
+        // Prepend the metadata prefix to every sub-segment so the per-segment
+        // embeddings carry the same context before mean-pooling. The split
+        // budget is reduced by the prefix length to keep each enriched segment
+        // under the provider's per-input cap; the floor of 500 keeps the
+        // splitter from collapsing to single-char windows when a pathological
+        // metadata prefix appears.
+        String prefix = inputBuilder.buildPrefix(chunk, titleLookup);
+        int segmentBudget = Math.max(500, maxChars - prefix.length());
+        List<String> rawSegments = splitForEmbedding(chunk.getContent(), segmentBudget);
+        if (rawSegments.isEmpty()) {
             log.warn("[WikiEmbedding] Chunk {} produced no embeddable segments after split", chunk.getId());
             return false;
         }
+        List<String> segments = prefix.isEmpty()
+                ? rawSegments
+                : rawSegments.stream().map(s -> prefix + s).toList();
         log.info("[WikiEmbedding] Chunk {} ({} chars) split into {} sub-segments",
                 chunk.getId(), chunk.getContent().length(), segments.size());
 
@@ -286,6 +385,7 @@ public class WikiEmbeddingService {
         float[] pooled = averageAndNormalize(vectors);
         chunk.setEmbedding(floatsToBytes(pooled));
         chunk.setEmbeddingModel(modelName);
+        chunk.setEmbeddingTextVersion(inputVersion);
         chunkMapper.updateById(chunk);
         return true;
     }
@@ -355,6 +455,74 @@ public class WikiEmbeddingService {
     }
 
     /**
+     * Embed a wiki page's content directly so the semantic retriever can match
+     * vocabulary that exists in the synthesised page but not in any source
+     * raw's chunks (typical for transformation-generated synthesis pages).
+     * Idempotent: skips when the stored embedding is already current for the
+     * resolved model + input version.
+     *
+     * @return {@code true} when the page row was updated with a fresh embedding
+     */
+    public boolean embedPage(Long pageId) {
+        if (pageId == null) return false;
+        WikiPageEntity page = pageMapper.selectById(pageId);
+        if (page == null) {
+            log.warn("[WikiEmbedding] embedPage: page not found id={}", pageId);
+            return false;
+        }
+        Resolved r = resolveForKb(page.getKbId());
+        if (r == null) {
+            log.debug("[WikiEmbedding] embedPage: no embedding model for kbId={}", page.getKbId());
+            return false;
+        }
+        String inputVersion = currentInputVersion();
+        // Short-circuit when this page is already embedded against the same
+        // model + input format — nothing to do.
+        if (page.getEmbedding() != null
+                && r.modelName().equals(page.getEmbeddingModel())
+                && inputVersion.equals(page.getEmbeddingTextVersion())) {
+            return false;
+        }
+
+        String input = buildPageEmbeddingInput(page);
+        if (input.isBlank()) return false;
+        int maxChars = Math.max(500, properties.getEmbeddingMaxChars());
+        if (input.length() > maxChars) input = input.substring(0, maxChars);
+
+        try {
+            EmbeddingResponse resp = r.model().call(new EmbeddingRequest(List.of(input), null));
+            float[] vec = resp.getResults().get(0).getOutput();
+            page.setEmbedding(floatsToBytes(vec));
+            page.setEmbeddingModel(r.modelName());
+            page.setEmbeddingTextVersion(inputVersion);
+            pageMapper.updateById(page);
+            log.info("[WikiEmbedding] Embedded page id={} kbId={} model={} ({} chars)",
+                    pageId, page.getKbId(), r.modelName(), input.length());
+            return true;
+        } catch (Exception e) {
+            log.warn("[WikiEmbedding] embedPage failed id={}: {}", pageId, e.getMessage());
+            return false;
+        }
+    }
+
+    /** Concatenates the fields that best capture a page's topic — title +
+     *  summary + content prefix — so the embedding picks up both the
+     *  vocabulary the LLM authored and the source-derived material. */
+    private String buildPageEmbeddingInput(WikiPageEntity page) {
+        StringBuilder sb = new StringBuilder();
+        if (page.getTitle() != null && !page.getTitle().isBlank()) {
+            sb.append("# ").append(page.getTitle()).append("\n\n");
+        }
+        if (page.getSummary() != null && !page.getSummary().isBlank()) {
+            sb.append(page.getSummary()).append("\n\n");
+        }
+        if (page.getContent() != null && !page.getContent().isBlank()) {
+            sb.append(page.getContent());
+        }
+        return sb.toString();
+    }
+
+    /**
      * 查询向量化（混合搜索时调用，需指定 KB 以便解析对应模型）
      */
     public float[] embedQuery(Long kbId, String query) {
@@ -375,14 +543,71 @@ public class WikiEmbeddingService {
     }
 
     /**
+     * Snapshot of how many chunks in a KB still need to be re-embedded
+     * against the current model + input version. Powers the admin "embedding
+     * drift" indicator without exposing internal pending logic.
+     */
+    public EmbeddingDrift describeDrift(Long kbId) {
+        String inputVersion = currentInputVersion();
+        Resolved r = resolveForKb(kbId);
+        String modelName = r == null ? null : r.modelName();
+
+        long totalEmbedded = chunkMapper.selectCount(
+                new LambdaQueryWrapper<WikiChunkEntity>()
+                        .eq(WikiChunkEntity::getKbId, kbId)
+                        .isNotNull(WikiChunkEntity::getEmbedding));
+
+        LambdaQueryWrapper<WikiChunkEntity> pendingQ = new LambdaQueryWrapper<WikiChunkEntity>()
+                .eq(WikiChunkEntity::getKbId, kbId)
+                .and(w -> {
+                    w.isNull(WikiChunkEntity::getEmbedding)
+                            .or().isNull(WikiChunkEntity::getEmbeddingTextVersion)
+                            .or().ne(WikiChunkEntity::getEmbeddingTextVersion, inputVersion);
+                    if (modelName != null) {
+                        w.or().ne(WikiChunkEntity::getEmbeddingModel, modelName);
+                    }
+                });
+        List<WikiChunkEntity> pending = chunkMapper.selectList(pendingQ);
+
+        long pendingChars = 0;
+        for (WikiChunkEntity c : pending) {
+            if (c.getContent() != null) pendingChars += c.getContent().length();
+        }
+        // Provider-agnostic token approximation; ~4 chars per token covers
+        // English and is conservative for Chinese (which is denser per token).
+        long pendingTokens = pendingChars / 4;
+
+        return new EmbeddingDrift(inputVersion, pending.size(), totalEmbedded, pendingTokens);
+    }
+
+    /** Result of {@link #describeDrift(Long)}; serialized into KB stats. */
+    public record EmbeddingDrift(
+            String currentEmbeddingTextVersion,
+            int pendingReembedChunks,
+            long totalEmbeddedChunks,
+            long pendingReembedEstimatedTokens) {}
+
+    /**
      * 清空指定 KB 的所有 embedding（模型切换时调用）
      */
     public void clearEmbeddings(Long kbId) {
         chunkMapper.update(null, new LambdaUpdateWrapper<WikiChunkEntity>()
                 .eq(WikiChunkEntity::getKbId, kbId)
                 .set(WikiChunkEntity::getEmbedding, null)
-                .set(WikiChunkEntity::getEmbeddingModel, null));
+                .set(WikiChunkEntity::getEmbeddingModel, null)
+                .set(WikiChunkEntity::getEmbeddingTextVersion, null));
         log.info("[WikiEmbedding] Cleared all embeddings for kbId={}", kbId);
+    }
+
+    private RawTitleLookup preloadTitlesFor(List<WikiChunkEntity> chunks) {
+        if (chunks == null || chunks.isEmpty()) {
+            return RawTitleLookups.empty();
+        }
+        Set<Long> rawIds = new HashSet<>();
+        for (WikiChunkEntity c : chunks) {
+            if (c.getRawId() != null) rawIds.add(c.getRawId());
+        }
+        return RawTitleLookups.preload(rawMaterialMapper, rawIds);
     }
 
     // ==================== 私有 helper ====================

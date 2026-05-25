@@ -1,6 +1,7 @@
 ---
 name: dingtalk_channel_connect
 version: "1.3.0"
+optional: true
 description: "使用可见浏览器自动完成 MateClaw 钉钉渠道接入。遇到登录页必须暂停等待用户手动登录后继续。"
 dependencies:
   tools:

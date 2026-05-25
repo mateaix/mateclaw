@@ -169,19 +169,18 @@ public class ToolGuardRuleSeedService implements ApplicationRunner {
                         log.debug("[RuleSeed] Rule {} insert failed: {}", rule.getRuleId(), e.getMessage());
                     }
                 } else if (needsUpdate(existing, rule)) {
-                    // 已存在但内容有变化 → 更新
+                    // 已存在但内容字段有变化 → 同步代码侧拥有的字段（content fields）。
+                    // 严格保留用户侧拥有的策略字段（severity / decision / priority / enabled
+                    // / excludePattern）—— 这些一旦用户在 UI 上调整，重启后不应被覆盖。
                     ruleMapper.update(null,
                             new LambdaUpdateWrapper<ToolGuardRuleEntity>()
                                     .eq(ToolGuardRuleEntity::getRuleId, rule.getRuleId())
                                     .set(ToolGuardRuleEntity::getName, rule.getName())
                                     .set(ToolGuardRuleEntity::getDescription, rule.getDescription())
                                     .set(ToolGuardRuleEntity::getPattern, rule.getPattern())
-                                    .set(ToolGuardRuleEntity::getSeverity, rule.getSeverity())
                                     .set(ToolGuardRuleEntity::getCategory, rule.getCategory())
-                                    .set(ToolGuardRuleEntity::getDecision, rule.getDecision())
                                     .set(ToolGuardRuleEntity::getToolName, rule.getToolName())
-                                    .set(ToolGuardRuleEntity::getRemediation, rule.getRemediation())
-                                    .set(ToolGuardRuleEntity::getPriority, rule.getPriority()));
+                                    .set(ToolGuardRuleEntity::getRemediation, rule.getRemediation()));
                     updated++;
                 } else {
                     unchanged++;
@@ -195,16 +194,21 @@ public class ToolGuardRuleSeedService implements ApplicationRunner {
     }
 
     /**
-     * 判断已有 builtin 规则是否需要更新（任一核心字段有变化即需要）
+     * 判断已有 builtin 规则是否需要更新。
+     * <p>
+     * 只比较"内容字段"（代码侧拥有，应当随版本升级同步）：
+     * name / description / pattern / category / toolName / remediation。
+     * <p>
+     * 故意不比较"策略字段"（用户侧拥有，UI 可调）：severity / decision / priority / enabled / excludePattern。
+     * 这样用户把某条 builtin 规则的 decision 从 NEEDS_APPROVAL 改成 BLOCK、或者关闭某条规则，
+     * 重启不会把改动覆盖回种子初值。
      */
     private boolean needsUpdate(ToolGuardRuleEntity existing, ToolGuardRuleEntity expected) {
-        return !Objects.equals(existing.getPattern(), expected.getPattern())
-                || !Objects.equals(existing.getSeverity(), expected.getSeverity())
+        return !Objects.equals(existing.getName(), expected.getName())
+                || !Objects.equals(existing.getDescription(), expected.getDescription())
+                || !Objects.equals(existing.getPattern(), expected.getPattern())
                 || !Objects.equals(existing.getCategory(), expected.getCategory())
-                || !Objects.equals(existing.getDecision(), expected.getDecision())
                 || !Objects.equals(existing.getToolName(), expected.getToolName())
-                || !Objects.equals(existing.getPriority(), expected.getPriority())
-                || !Objects.equals(existing.getName(), expected.getName())
                 || !Objects.equals(existing.getRemediation(), expected.getRemediation());
     }
 
@@ -329,6 +333,16 @@ public class ToolGuardRuleSeedService implements ApplicationRunner {
         rules.add(rule("CRED_PRIVATE_KEY", gn("CRED_PRIVATE_KEY"), "-----BEGIN\\s+(RSA\\s+)?PRIVATE\\s+KEY-----",
                 GuardSeverity.HIGH, GuardCategory.CREDENTIAL_EXPOSURE, "BLOCK",
                 null, gf("CRED_PRIVATE_KEY"), 140));
+
+        rules.add(rule("CRED_JWT_TOKEN", gn("CRED_JWT_TOKEN"),
+                "eyJ[A-Za-z0-9_-]{10,}\\.eyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]+",
+                GuardSeverity.HIGH, GuardCategory.CREDENTIAL_EXPOSURE, "NEEDS_APPROVAL",
+                null, gf("CRED_JWT_TOKEN"), 140));
+
+        rules.add(rule("CRED_GITHUB_TOKEN", gn("CRED_GITHUB_TOKEN"),
+                "gh[pousr]_[A-Za-z0-9_]{36,}",
+                GuardSeverity.HIGH, GuardCategory.CREDENTIAL_EXPOSURE, "NEEDS_APPROVAL",
+                null, gf("CRED_GITHUB_TOKEN"), 140));
 
         return rules;
     }

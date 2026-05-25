@@ -22,6 +22,7 @@ import vip.mate.workflow.repository.WorkflowRunStepMapper;
 import vip.mate.workflow.service.WorkflowService;
 
 import java.util.List;
+import vip.mate.workspace.core.annotation.RequireWorkspaceRole;
 
 /**
  * REST surface for workflow CRUD + draft / publish / run inspection.
@@ -51,21 +52,27 @@ public class WorkflowController {
 
     @Operation(summary = "List workflows in the workspace")
     @GetMapping
+    @RequireWorkspaceRole("admin")
     public R<List<WorkflowEntity>> list(@RequestHeader("X-Workspace-Id") long workspaceId) {
         return R.ok(workflowService.listByWorkspace(workspaceId));
     }
 
-    @Operation(summary = "Get a workflow by id (includes inline draft).")
+    @Operation(summary = "Get a workflow by id (includes inline draft + latest published graph).")
     @GetMapping("/{id}")
+    @RequireWorkspaceRole("admin")
     public R<WorkflowEntity> get(@PathVariable long id,
                                  @RequestHeader("X-Workspace-Id") long workspaceId) {
         WorkflowEntity row = workflowService.get(id, workspaceId);
         if (row == null) return R.fail("workflow not found: " + id);
+        // Surface the published revision's graph so the editor can render a
+        // published workflow whose inline draft was cleared at publish time.
+        workflowService.attachPublishedGraph(row);
         return R.ok(row);
     }
 
     @Operation(summary = "Create a workflow row (draft starts empty).")
     @PostMapping
+    @RequireWorkspaceRole("admin")
     public R<WorkflowEntity> create(@RequestBody WorkflowEntity workflow,
                                     @RequestHeader("X-Workspace-Id") long workspaceId) {
         // Force the workspace from the trusted header — the request body
@@ -77,6 +84,7 @@ public class WorkflowController {
 
     @Operation(summary = "Update workflow metadata (name / description / enabled).")
     @PutMapping("/{id}")
+    @RequireWorkspaceRole("admin")
     public R<WorkflowEntity> update(@PathVariable long id,
                                     @RequestBody WorkflowMetadataRequest body,
                                     @RequestHeader("X-Workspace-Id") long workspaceId) {
@@ -86,6 +94,7 @@ public class WorkflowController {
 
     @Operation(summary = "Save the inline draft graph_json without compiling.")
     @PutMapping("/{id}/draft")
+    @RequireWorkspaceRole("admin")
     public R<WorkflowEntity> saveDraft(@PathVariable long id,
                                        @RequestBody WorkflowDraftRequest body,
                                        @RequestParam(value = "userId", required = false) Long userId,
@@ -95,6 +104,7 @@ public class WorkflowController {
 
     @Operation(summary = "Compile the draft and surface diagnostics without persisting a revision.")
     @PostMapping("/{id}/compile")
+    @RequireWorkspaceRole("admin")
     public ResponseEntity<?> compileDraft(@PathVariable long id,
                                           @RequestHeader("X-Workspace-Id") long workspaceId) {
         WorkflowEntity row = workflowService.get(id, workspaceId);
@@ -131,6 +141,7 @@ public class WorkflowController {
 
     @Operation(summary = "Compile the draft and persist a new revision pointed at by latest_revision_id.")
     @PostMapping("/{id}/publish")
+    @RequireWorkspaceRole("admin")
     public ResponseEntity<?> publish(@PathVariable long id,
                                      @RequestBody(required = false) WorkflowPublishRequest body,
                                      @RequestParam(value = "userId", required = false) Long userId,
@@ -154,6 +165,7 @@ public class WorkflowController {
 
     @Operation(summary = "Soft-delete a workflow row.")
     @DeleteMapping("/{id}")
+    @RequireWorkspaceRole("admin")
     public R<Void> delete(@PathVariable long id,
                           @RequestHeader("X-Workspace-Id") long workspaceId) {
         workflowService.delete(id, workspaceId);
@@ -162,6 +174,7 @@ public class WorkflowController {
 
     @Operation(summary = "List the most recent runs for a workflow.")
     @GetMapping("/{id}/runs")
+    @RequireWorkspaceRole("admin")
     public R<List<WorkflowRunEntity>> listRuns(@PathVariable long id,
                                                @RequestParam(value = "limit", defaultValue = "50") int limit,
                                                @RequestHeader("X-Workspace-Id") long workspaceId) {
@@ -182,6 +195,7 @@ public class WorkflowController {
 
     @Operation(summary = "List paused runs across the workspace so operators can resume them.")
     @GetMapping("/runs/paused")
+    @RequireWorkspaceRole("admin")
     public R<List<PausedRunSummary>> listPausedRuns(@RequestParam(value = "limit", defaultValue = "50") int limit,
                                                     @RequestHeader("X-Workspace-Id") long workspaceId) {
         // Without this listing surface, an await_approval pause is only
@@ -212,6 +226,7 @@ public class WorkflowController {
 
     @Operation(summary = "Inspect a single run with its step rows for replay / debugging.")
     @GetMapping("/runs/{runId}")
+    @RequireWorkspaceRole("admin")
     public R<RunDetail> getRun(@PathVariable long runId,
                                @RequestHeader("X-Workspace-Id") long workspaceId) {
         WorkflowRunEntity run = runMapper.selectById(runId);
@@ -238,6 +253,7 @@ public class WorkflowController {
 
     @Operation(summary = "Generate a workflow draft from a natural-language description.")
     @PostMapping("/draft/generate")
+    @RequireWorkspaceRole("admin")
     public ResponseEntity<?> generateDraft(@RequestBody DraftGenerateRequest body,
                                            @RequestHeader("X-Workspace-Id") long workspaceId) {
         if (draftGenerator == null) {
@@ -258,6 +274,7 @@ public class WorkflowController {
 
     @Operation(summary = "List the canonical workflow templates the generator can apply directly.")
     @GetMapping("/draft/templates")
+    @RequireWorkspaceRole("admin")
     public R<List<vip.mate.workflow.draftgen.WorkflowDraftTemplate>> listDraftTemplates() {
         if (draftTemplates == null) return R.ok(List.of());
         return R.ok(draftTemplates.all());
@@ -265,6 +282,7 @@ public class WorkflowController {
 
     @Operation(summary = "Compile arbitrary draft JSON without persisting — used by the template picker / generator preview to surface real ACL + schema diagnostics before a workflow row exists.")
     @PostMapping("/draft/preview-compile")
+    @RequireWorkspaceRole("admin")
     public ResponseEntity<?> previewCompile(@RequestBody WorkflowDraftRequest body,
                                             @RequestHeader("X-Workspace-Id") long workspaceId) {
         if (body == null || body.draftJson() == null || body.draftJson().isBlank()) {

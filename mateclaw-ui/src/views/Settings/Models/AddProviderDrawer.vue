@@ -109,7 +109,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+import { mcToast } from '@/composables/useMcToast'
 import type { ProviderInfo } from '@/types'
 import ProviderCatalogRow from './ProviderCatalogRow.vue'
 
@@ -181,7 +181,7 @@ function onEscape(event: KeyboardEvent) {
 
 async function onEnable(p: ProviderInfo) {
   await props.enableProvider(p.id)
-  ElMessage.success(t('settings.model.enabledToast', { name: p.name }))
+  mcToast.success(t('settings.model.enabledToast', { name: p.name }))
 }
 </script>
 

@@ -47,18 +47,33 @@ public class LimitExceededNode implements NodeAction {
     private final NodeStreamingChatHelper streamingHelper;
     /** Optional i18n service; nullable so legacy/tests without Spring context still work. */
     private final I18nService i18n;
+    /**
+     * Optional ledger loader. When set, the conversation's progress snapshot
+     * (done / in-progress / pending) is appended to the LLM's context so the
+     * "graceful wrap-up" answer can be honest about which steps actually
+     * finished and which were still pending when the iteration cap hit.
+     * Null in legacy/test constructors — the wrap behaves as before.
+     */
+    private final vip.mate.agent.progress.ProgressLedgerService progressLedgerService;
 
     public LimitExceededNode(ChatModel chatModel, ObservationProcessor observationProcessor,
                              NodeStreamingChatHelper streamingHelper) {
-        this(chatModel, observationProcessor, streamingHelper, null);
+        this(chatModel, observationProcessor, streamingHelper, null, null);
     }
 
     public LimitExceededNode(ChatModel chatModel, ObservationProcessor observationProcessor,
                              NodeStreamingChatHelper streamingHelper, I18nService i18n) {
+        this(chatModel, observationProcessor, streamingHelper, i18n, null);
+    }
+
+    public LimitExceededNode(ChatModel chatModel, ObservationProcessor observationProcessor,
+                             NodeStreamingChatHelper streamingHelper, I18nService i18n,
+                             vip.mate.agent.progress.ProgressLedgerService progressLedgerService) {
         this.chatModel = chatModel;
         this.observationProcessor = observationProcessor;
         this.streamingHelper = streamingHelper;
         this.i18n = i18n;
+        this.progressLedgerService = progressLedgerService;
     }
 
     /**
@@ -66,7 +81,7 @@ public class LimitExceededNode implements NodeAction {
      */
     @Deprecated
     public LimitExceededNode(ChatModel chatModel, ObservationProcessor observationProcessor) {
-        this(chatModel, observationProcessor, null, null);
+        this(chatModel, observationProcessor, null, null, null);
     }
 
     @Override
@@ -98,6 +113,25 @@ public class LimitExceededNode implements NodeAction {
                     observationProcessor.getMaxTotalObservationChars());
         } else {
             contextForLLM = i18n != null ? i18n.msg("agent.limit_exceeded.empty_context") : "(no tool results)";
+        }
+
+        // Prepend the conversation's progress ledger snapshot when available
+        // so the wrap-up answer can be honest about partial completion ("4/10
+        // models researched, 6 still pending") rather than vaguely describing
+        // "what I tried". Without this, hitting the iteration cap on a
+        // 10-step task produces a useless catch-all message — observed in
+        // round-4 of the LLM-review smoke test.
+        String ledgerSnapshot = null;
+        if (progressLedgerService != null && conversationId != null && !conversationId.isBlank()) {
+            try {
+                ledgerSnapshot = progressLedgerService.load(conversationId).renderSnapshot();
+            } catch (Exception e) {
+                log.warn("[LimitExceededNode] Failed to load progress ledger for {}: {}",
+                        conversationId, e.getMessage());
+            }
+        }
+        if (ledgerSnapshot != null) {
+            contextForLLM = ledgerSnapshot + "\n\n---\n\n" + contextForLLM;
         }
 
         // 构建 prompt

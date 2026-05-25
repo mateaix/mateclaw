@@ -19,12 +19,19 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * Google Imagen 图片生成 Provider — 使用 Gemini API 的图片生成能力
- * <p>
- * 同步模式：直接返回 Base64 图片数据。
- * 复用已有的 Google/Gemini LLM provider 的 API Key。
- * <p>
- * API: POST https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent
+ * Google Gemini native image provider — "Nano Banana".
+ *
+ * <p>Calls the Gemini {@code generateContent} endpoint with
+ * {@code responseModalities:[TEXT,IMAGE]} and returns the inline base64 image
+ * as a {@code data:} URI. Supports both text-to-image and image editing /
+ * image-to-image: reference images from {@link ImageGenerationRequest#getInputImages()}
+ * are sent as {@code inlineData} parts alongside the prompt.
+ *
+ * <p>Default model is Nano Banana Pro ({@code gemini-3-pro-image-preview}); the
+ * original Nano Banana ({@code gemini-2.5-flash-image}) is also available.
+ * Reuses the {@code gemini} LLM provider's API key — no separate credential.
+ *
+ * <p>API: POST https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent
  *
  * @author MateClaw Team
  */
@@ -37,7 +44,10 @@ public class GoogleImagenProvider implements ImageGenerationProvider {
     private final ObjectMapper objectMapper;
 
     private static final String BASE_URL = "https://generativelanguage.googleapis.com";
-    private static final String DEFAULT_MODEL = "gemini-2.0-flash-preview-image-generation";
+    /** Nano Banana Pro — Gemini 3 Pro image generation. */
+    private static final String DEFAULT_MODEL = "gemini-3-pro-image-preview";
+    /** LLM provider id whose API key this image provider reuses. */
+    private static final String LLM_PROVIDER_ID = "gemini";
 
     @Override
     public String id() {
@@ -46,7 +56,7 @@ public class GoogleImagenProvider implements ImageGenerationProvider {
 
     @Override
     public String label() {
-        return "Google Imagen";
+        return "Google Gemini Image (Nano Banana)";
     }
 
     @Override
@@ -61,7 +71,7 @@ public class GoogleImagenProvider implements ImageGenerationProvider {
 
     @Override
     public Set<ImageCapability> capabilities() {
-        return Set.of(ImageCapability.TEXT_TO_IMAGE);
+        return Set.of(ImageCapability.TEXT_TO_IMAGE, ImageCapability.IMAGE_EDIT);
     }
 
     @Override
@@ -69,17 +79,17 @@ public class GoogleImagenProvider implements ImageGenerationProvider {
         return ImageProviderCapabilities.builder()
                 .modes(capabilities())
                 .supportedSizes(List.of("1024x1024", "1024x1536", "1536x1024", "1024x1792", "1792x1024"))
-                .aspectRatios(List.of("1:1", "3:4", "4:3", "9:16", "16:9"))
-                .maxCount(4)
+                .aspectRatios(List.of("1:1", "2:3", "3:2", "3:4", "4:3", "9:16", "16:9"))
+                .maxCount(1)
                 .defaultModel(DEFAULT_MODEL)
-                .models(List.of("gemini-2.0-flash-preview-image-generation", "imagen-4.0-generate-preview", "imagen-4.0-ultra-generate-preview"))
+                .models(List.of("gemini-3-pro-image-preview", "gemini-2.5-flash-image"))
                 .build();
     }
 
     @Override
     public boolean isAvailable(SystemSettingsDTO config) {
         try {
-            return modelProviderService.isProviderConfigured("google");
+            return modelProviderService.isProviderConfigured(LLM_PROVIDER_ID);
         } catch (Exception e) {
             return false;
         }
@@ -90,21 +100,36 @@ public class GoogleImagenProvider implements ImageGenerationProvider {
         try {
             String apiKey = getApiKey();
             if (apiKey == null) {
-                return ImageSubmitResult.failure(id(), "Google API Key 未配置");
+                return ImageSubmitResult.failure(id(), "Gemini API Key 未配置");
             }
 
             String model = request.getModel() != null && !request.getModel().isBlank()
                     ? request.getModel() : DEFAULT_MODEL;
 
-            // 构建请求体
             ObjectNode body = objectMapper.createObjectNode();
 
-            // contents
+            // contents — one user turn holding the prompt text plus any reference images.
             ArrayNode contents = body.putArray("contents");
             ObjectNode content = contents.addObject();
             content.put("role", "user");
             ArrayNode parts = content.putArray("parts");
-            parts.addObject().put("text", request.getPrompt());
+
+            if (request.getPrompt() != null && !request.getPrompt().isBlank()) {
+                parts.addObject().put("text", request.getPrompt());
+            }
+            // Reference images (image edit / image-to-image): inline as base64 parts.
+            List<ImageReference> inputImages = request.getInputImages();
+            boolean editing = inputImages != null && !inputImages.isEmpty();
+            if (inputImages != null) {
+                for (ImageReference ref : inputImages) {
+                    if (ref == null || ref.data() == null || ref.data().length == 0) {
+                        continue;
+                    }
+                    ObjectNode inlineData = parts.addObject().putObject("inlineData");
+                    inlineData.put("mimeType", ref.mimeType() != null ? ref.mimeType() : "image/png");
+                    inlineData.put("data", Base64.getEncoder().encodeToString(ref.data()));
+                }
+            }
 
             // generationConfig
             ObjectNode genConfig = body.putObject("generationConfig");
@@ -112,9 +137,18 @@ public class GoogleImagenProvider implements ImageGenerationProvider {
             modalities.add("TEXT");
             modalities.add("IMAGE");
 
-            if (request.getAspectRatio() != null) {
-                ObjectNode imageConfig = genConfig.putObject("imageConfig");
+            ObjectNode imageConfig = objectMapper.createObjectNode();
+            if (request.getAspectRatio() != null && !request.getAspectRatio().isBlank()) {
                 imageConfig.put("aspectRatio", request.getAspectRatio());
+            }
+            // Nano Banana Pro resolution tier (1K / 2K / 4K) — opt-in via extraParams.
+            Object imageSize = request.getExtraParams() != null
+                    ? request.getExtraParams().get("imageSize") : null;
+            if (imageSize instanceof String sizeTier && !sizeTier.isBlank()) {
+                imageConfig.put("imageSize", sizeTier);
+            }
+            if (!imageConfig.isEmpty()) {
+                genConfig.set("imageConfig", imageConfig);
             }
 
             String url = BASE_URL + "/v1beta/models/" + model + ":generateContent?key=" + apiKey;
@@ -122,33 +156,35 @@ public class GoogleImagenProvider implements ImageGenerationProvider {
             HttpResponse response = HttpRequest.post(url)
                     .header("Content-Type", "application/json")
                     .body(body.toString())
-                    .timeout(60_000)
+                    .timeout(120_000)
                     .execute();
 
             if (response.getStatus() != 200) {
                 String errBody = response.body();
-                log.warn("[Google Imagen] Failed: HTTP {} - {}", response.getStatus(), errBody);
-                return ImageSubmitResult.failure(id(), "Google Imagen 失败: HTTP " + response.getStatus());
+                log.warn("[Nano Banana] Failed: HTTP {} - {}", response.getStatus(), errBody);
+                return ImageSubmitResult.failure(id(), "Gemini 图像生成失败: HTTP " + response.getStatus());
             }
 
             JsonNode result = objectMapper.readTree(response.body());
             List<String> imageUrls = extractImagesFromResponse(result);
 
             if (imageUrls.isEmpty()) {
-                return ImageSubmitResult.failure(id(), "Google Imagen 未返回图片");
+                return ImageSubmitResult.failure(id(), "Gemini 未返回图片");
             }
 
-            log.info("[Google Imagen] Generated {} images (model={})", imageUrls.size(), model);
+            log.info("[Nano Banana] Generated {} image(s) (model={}, editing={})",
+                    imageUrls.size(), model, editing);
             return ImageSubmitResult.syncSuccess(id(), imageUrls);
 
         } catch (Exception e) {
-            log.error("[Google Imagen] Error: {}", e.getMessage(), e);
-            return ImageSubmitResult.failure(id(), "Google Imagen 异常: " + e.getMessage());
+            log.error("[Nano Banana] Error: {}", e.getMessage(), e);
+            return ImageSubmitResult.failure(id(), "Gemini 图像生成异常: " + e.getMessage());
         }
     }
 
     /**
-     * 从 Gemini 响应中提取 Base64 图片，转换为 data URI
+     * Extract base64 images from a Gemini generateContent response, converting
+     * each {@code inlineData} part to a {@code data:} URI.
      */
     private List<String> extractImagesFromResponse(JsonNode result) {
         List<String> images = new ArrayList<>();
@@ -159,7 +195,7 @@ public class GoogleImagenProvider implements ImageGenerationProvider {
                 JsonNode parts = candidate.path("content").path("parts");
                 if (parts.isArray()) {
                     for (JsonNode part : parts) {
-                        // 尝试 inlineData 或 inline_data
+                        // Accept both inlineData (camelCase) and inline_data (snake_case).
                         JsonNode inlineData = part.has("inlineData") ? part.get("inlineData")
                                 : part.path("inline_data");
                         if (inlineData.has("data")) {
@@ -167,7 +203,6 @@ public class GoogleImagenProvider implements ImageGenerationProvider {
                                     ? inlineData.get("mimeType").asText("image/png")
                                     : inlineData.path("mime_type").asText("image/png");
                             String base64Data = inlineData.get("data").asText();
-                            // 返回 data URI 格式
                             images.add("data:" + mimeType + ";base64," + base64Data);
                         }
                     }
@@ -179,7 +214,7 @@ public class GoogleImagenProvider implements ImageGenerationProvider {
 
     private String getApiKey() {
         try {
-            return modelProviderService.getProviderConfig("google").getApiKey();
+            return modelProviderService.getProviderConfig(LLM_PROVIDER_ID).getApiKey();
         } catch (Exception e) {
             return null;
         }

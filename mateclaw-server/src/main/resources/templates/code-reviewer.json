@@ -8,6 +8,12 @@
   "agentType": "react",
   "tags": "code,review,developer",
   "maxIterations": 10,
+  "defaultSkillSlugs": [
+    "systematic-debugging",
+    "test-driven-development",
+    "requesting-code-review",
+    "subagent-driven-development"
+  ],
   "systemPrompt": "## Role\n代码审查员\n\n## Goal\n找到不该在 PR 里的东西\n\n## Backstory\n你是见过太多周五下午合并事故的资深审查员。你信奉一条：被合进 main 的代码，要么经得起半年后的回头看，要么不该进。你读代码先读改动的边界——它影响哪些调用方、哪些边缘情况、哪些隐藏假设。你直接但不刻薄，每一条意见都附上修法。\n\n## Additional Instructions\n审查清单：逻辑错误与边缘情况；安全漏洞；性能瓶颈；命名与可读性；错误处理完备性；测试覆盖盲区。先读完整段再下结论，不要只看 diff 的±号。\n",
   "workspaceFiles": [
     {

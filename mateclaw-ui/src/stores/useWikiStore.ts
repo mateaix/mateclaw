@@ -1,4 +1,4 @@
-import { defineStore } from 'pinia'
+import { acceptHMRUpdate, defineStore } from 'pinia'
 import { ref } from 'vue'
 import { wikiApi } from '@/api/index'
 
@@ -26,7 +26,8 @@ export interface WikiRawMaterial {
   lastProcessedAt: string | null
   errorMessage: string | null
   createTime: string
-  // RFC-012 M2 v2 UI：两阶段消化进度字段（后端在 route 后写 total，每页完成后 +1 done）
+  // Two-stage ingestion progress: backend writes total after routing and
+  // increments done as each generated page finishes.
   progressPhase: string | null
   progressTotal: number
   progressDone: number
@@ -46,16 +47,16 @@ export interface WikiPage {
   version: number
   lastUpdatedBy: string
   pageType?: string | null
-  // RFC-051 PR-2: locked=1 blocks AI/tool/UI deletion (combined with pageType=system
-  // for the built-in overview/log pages, but users can lock any page).
+  // locked=1 blocks AI/tool/UI deletion. System pages are locked by default,
+  // but users can lock any page.
   locked?: number | null
-  // RFC-051 PR-7: archived=1 hides the page from default list/search/related.
+  // archived=1 hides the page from default list/search/related.
   archived?: number | null
   createTime: string
   updateTime: string
 }
 
-/** RFC-051 PR-8: shared protection check used by viewer + list to gate delete UI. */
+/** Shared protection check used by viewer and list to gate delete UI. */
 export function isProtectedPage(page: WikiPage | null | undefined): boolean {
   if (!page) return false
   if (page.pageType === 'system') return true
@@ -109,6 +110,14 @@ export const useWikiStore = defineStore('wiki', () => {
     }
   }
 
+  function backToLibrary() {
+    currentKB.value = null
+    currentPage.value = null
+    rawMaterials.value = []
+    pages.value = []
+    selectedRawId.value = null
+  }
+
   async function fetchRawMaterials(kbId: number) {
     const res: any = await wikiApi.listRaw(kbId)
     rawMaterials.value = res.data || []
@@ -118,6 +127,27 @@ export const useWikiStore = defineStore('wiki', () => {
     const res: any = await wikiApi.listPages(kbId, rawId ?? undefined)
     pages.value = res.data || []
     if (!rawId) totalPageCount.value = pages.value.length
+  }
+
+  // Background refreshes (job completion, SSE events, fallback polling) must
+  // not drop the user's active raw-material filter. Re-fetch the page list
+  // scoped to selectedRawId whenever a filter is applied — otherwise the list
+  // silently reverts to every material's pages while the filter banner still
+  // claims a filter is active.
+  async function refreshCurrentKB() {
+    if (!currentKB.value) return
+    const kbId = currentKB.value.id
+    const [kbRes] = await Promise.all([
+      wikiApi.getKB(kbId),
+      fetchRawMaterials(kbId),
+      fetchPages(kbId, selectedRawId.value ?? undefined),
+    ])
+    const nextKB = (kbRes as any).data || kbRes
+    currentKB.value = nextKB
+    const idx = knowledgeBases.value.findIndex(kb => kb.id === kbId)
+    if (idx >= 0) {
+      knowledgeBases.value[idx] = nextKB
+    }
   }
 
   async function filterPagesByRaw(kbId: number, rawId: number) {
@@ -165,7 +195,7 @@ export const useWikiStore = defineStore('wiki', () => {
   async function scanDirectory(kbId: number) {
     const res: any = await wikiApi.scanDirectory(kbId)
     const result = res.data || res
-    // 扫描后刷新材料列表
+    // Refresh materials after the scan imports new rows.
     await fetchRawMaterials(kbId)
     return result
   }
@@ -183,8 +213,10 @@ export const useWikiStore = defineStore('wiki', () => {
     selectKB,
     createKB,
     deleteKB,
+    backToLibrary,
     fetchRawMaterials,
     fetchPages,
+    refreshCurrentKB,
     filterPagesByRaw,
     clearRawFilter,
     loadPage,
@@ -193,3 +225,9 @@ export const useWikiStore = defineStore('wiki', () => {
     scanDirectory,
   }
 })
+
+// Enable HMR for this store: editing it during `pnpm dev` patches the live
+// store instead of requiring a full page reload. Stripped from prod builds.
+if (import.meta.hot) {
+  import.meta.hot.accept(acceptHMRUpdate(useWikiStore, import.meta.hot))
+}

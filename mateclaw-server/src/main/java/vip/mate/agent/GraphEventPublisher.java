@@ -46,6 +46,22 @@ public final class GraphEventPublisher {
     public static final String EVENT_FINISH_REASON = "finish_reason";
 
     /**
+     * User-facing recovery affordances offered after a turn ends in a
+     * non-transient error. Carries the error type + message + a
+     * data-driven list of actions ({@code retry}, {@code regenerate},
+     * {@code report}) so the frontend can render the right buttons
+     * without hard-coding which categories deserve which actions.
+     *
+     * <p>Sibling to {@link #EVENT_FINISH_REASON} (which only carries the
+     * machine-readable reason). The two are kept separate so legacy
+     * consumers of {@code finish_reason} don't have to learn a new
+     * payload shape — and so a future graph branch (e.g. evidence-
+     * insufficient → "rerun with the listed files attached") can emit
+     * feedback affordances without abusing the finish_reason channel.
+     */
+    public static final String EVENT_FEEDBACK = "feedback_event";
+
+    /**
      * Multimodal sidecar routing decision for the current turn. Emitted once
      * per turn before the graph starts streaming; the channel-side accumulator
      * stores it under {@code metadata.routing} so the chat UI can show which
@@ -222,6 +238,30 @@ public final class GraphEventPublisher {
         long ts = System.currentTimeMillis();
         return new GraphEvent(EVENT_FINISH_REASON, Map.of(
                 "reason", reason != null ? reason : "",
+                "timestamp", ts
+        ), ts);
+    }
+
+    /**
+     * Emit a recovery-affordance event for the frontend. {@code errorType}
+     * mirrors the {@code NodeStreamingChatHelper.ErrorType} value (e.g.
+     * {@code AUTH_ERROR}, {@code BILLING}, {@code MODEL_NOT_FOUND}, or
+     * the generic {@code UNKNOWN}); {@code errorMessage} is the
+     * user-friendly text already displayed in the bubble; {@code actions}
+     * is the ordered list of buttons to render. Default offering is the
+     * standard {@code retry / regenerate / report} triad — call sites
+     * can narrow this if a category has limitations (e.g. AUTH_ERROR
+     * shouldn't offer "retry" until the key is fixed).
+     */
+    public static GraphEvent feedback(String errorType, String errorMessage,
+                                       java.util.List<String> actions) {
+        long ts = System.currentTimeMillis();
+        return new GraphEvent(EVENT_FEEDBACK, Map.of(
+                "errorType", errorType != null ? errorType : "",
+                "errorMessage", errorMessage != null ? errorMessage : "",
+                "actions", actions != null && !actions.isEmpty()
+                        ? actions
+                        : java.util.List.of("retry", "regenerate", "report"),
                 "timestamp", ts
         ), ts);
     }

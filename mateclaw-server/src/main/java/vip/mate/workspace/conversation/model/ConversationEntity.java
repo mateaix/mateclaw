@@ -48,6 +48,30 @@ public class ConversationEntity {
     /** 父会话 ID（委派场景下，子会话记录其父会话的 conversationId） */
     private String parentConversationId;
 
+    /** Pin flag: 0 = normal, 1 = pinned to the top of the sidebar list */
+    private Integer pinned;
+
+    /**
+     * Provider id of the model this conversation is pinned to. NULL means
+     * "inherit" — fall back to the agent's model override, then the global
+     * default. Paired with {@link #modelName}.
+     */
+    private String modelProvider;
+
+    /** Model id this conversation is pinned to. See {@link #modelProvider}. */
+    private String modelName;
+
+    /**
+     * Per-conversation progress notebook JSON (see V100 migration).
+     * <p>
+     * Map of {@code stepKey -> {label, status, note, updatedAt}}, written by
+     * the {@code progress_update} tool and rendered into the system prompt
+     * before each LLM call to survive message-window trimming. NULL means
+     * "no ledger yet" — the runtime suppresses the snapshot.
+     */
+    @TableField(value = "progress_ledger", updateStrategy = FieldStrategy.ALWAYS)
+    private String progressLedger;
+
     @TableField(fill = FieldFill.INSERT)
     private LocalDateTime createTime;
 

@@ -62,11 +62,12 @@ public class SkillTemplateService {
      * Instantiate the template by id, substituting fields, and create
      * the skill. Returns the created {@link SkillEntity}.
      *
-     * @param templateId id from the registry (e.g. {@code tcm-qa})
-     * @param values     user-supplied field values; missing required
-     *                   fields throw a translatable exception
+     * @param templateId  id from the registry (e.g. {@code tcm-qa})
+     * @param values      user-supplied field values; missing required
+     *                    fields throw a translatable exception
+     * @param workspaceId owning workspace for the created skill
      */
-    public SkillEntity instantiate(String templateId, Map<String, Object> values) {
+    public SkillEntity instantiate(String templateId, Map<String, Object> values, Long workspaceId) {
         SkillTemplate template = registry.find(templateId);
         if (template == null) {
             throw new MateClawException("err.skill_template.not_found",
@@ -97,6 +98,7 @@ public class SkillTemplateService {
         entity.setAuthor("skill-template-wizard");
         entity.setSkillContent(skillMd);
         entity.setEnabled(true);
+        entity.setWorkspaceId(workspaceId);
 
         SkillEntity created = skillService.createSkill(entity);
 

@@ -39,58 +39,13 @@
           </div>
           <div class="form-group">
             <label class="form-label">{{ t('channels.fields.bindAgent') }}</label>
-            <!-- Custom dropdown so SkillIcon renders pi:* glyphs; native
-                 <select><option> can't host the component. Mirrors the
-                 ChannelOnboardingWizard step-3 pattern. -->
-            <div class="agent-select" :class="{ open: agentDropdownOpen }">
-              <button
-                type="button"
-                class="agent-select-trigger"
-                @click="agentDropdownOpen = !agentDropdownOpen"
-              >
-                <span class="agent-select-trigger__icon" :style="{ color: agentIconColor(selectedAgent?.icon) }">
-                  <SkillIcon :value="selectedAgent?.icon" :size="20" :fallback="'🤖'" />
-                </span>
-                <span class="agent-select-trigger__name">{{
-                  selectedAgent?.name || t('channels.placeholders.selectAgent')
-                }}</span>
-                <svg
-                  class="agent-select-trigger__arrow"
-                  :class="{ open: agentDropdownOpen }"
-                  width="12" height="12" viewBox="0 0 24 24" fill="none"
-                  stroke="currentColor" stroke-width="2"
-                ><polyline points="6 9 12 15 18 9"/></svg>
-              </button>
-              <Transition name="fade">
-                <div
-                  v-if="agentDropdownOpen"
-                  class="agent-dropdown-backdrop"
-                  @click="agentDropdownOpen = false"
-                ></div>
-              </Transition>
-              <Transition name="agent-dropdown">
-                <div v-if="agentDropdownOpen" class="agent-dropdown">
-                  <div
-                    v-for="a in agents"
-                    :key="a.id"
-                    class="agent-dropdown-item"
-                    :class="{ active: String(a.id) === String(form.agentId) }"
-                    @click="onSelectAgent(a)"
-                  >
-                    <span class="agent-dropdown-item__icon" :style="{ color: agentIconColor(a.icon) }">
-                      <SkillIcon :value="a.icon" :size="18" :fallback="'🤖'" />
-                    </span>
-                    <span class="agent-dropdown-item__name">{{ a.name }}</span>
-                    <span v-if="String(a.id) === String(form.agentId)" class="agent-dropdown-item__check">
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-                    </span>
-                  </div>
-                  <div v-if="agents.length === 0" class="agent-dropdown-empty">
-                    {{ t('chat.loadingAgents') }}
-                  </div>
-                </div>
-              </Transition>
-            </div>
+            <AgentPickerDialog
+              block
+              :model-value="form.agentId ?? null"
+              :agents="props.agents"
+              :placeholder="t('channels.placeholders.selectAgent')"
+              @update:model-value="(v) => (form.agentId = v ?? undefined)"
+            />
           </div>
         </div>
 
@@ -235,6 +190,43 @@
                   <template v-else-if="feishuRegister.status.value === 'denied'">{{ t('channels.feishuRegister.denied') }}</template>
                   <template v-else-if="feishuRegister.status.value === 'error'">{{ t('channels.feishuRegister.error') }}</template>
                   <template v-else>{{ t('channels.feishuRegister.scanHint') }}</template>
+                </p>
+              </div>
+            </div>
+
+            <!-- QQ 扫码绑定（QQ 开放平台 Lite portal） -->
+            <div v-if="form.channelType === 'qq'" class="qq-register-card">
+              <div class="qq-register-header">
+                <strong>{{ t('channels.qqRegister.title') }}</strong>
+              </div>
+              <p class="qq-register-hint">{{ t('channels.qqRegister.hint') }}</p>
+              <button
+                type="button"
+                class="qq-register-btn"
+                @click="qqRegister.start()"
+                :disabled="qqRegister.loading.value || qqRegister.status.value === 'waiting'"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/>
+                  <rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="3" height="3"/>
+                  <line x1="21" y1="14" x2="21" y2="17"/><line x1="14" y1="21" x2="17" y2="21"/>
+                  <line x1="21" y1="21" x2="21" y2="21"/>
+                </svg>
+                {{ qqRegister.loading.value
+                  ? t('channels.qqRegister.buttonLoading')
+                  : t('channels.qqRegister.button') }}
+              </button>
+              <div v-if="qqRegister.loading.value && !qqRegister.qrcodeUrl.value" class="qq-register-qrcode qq-register-qrcode--loading">
+                <div class="qq-register-qrcode-spinner"></div>
+                <p class="qq-register-status">{{ t('channels.qqRegister.qrcodeLoading') }}…</p>
+              </div>
+              <div v-else-if="qqRegister.qrcodeUrl.value" class="qq-register-qrcode">
+                <img :src="qqRegister.qrcodeUrl.value" :alt="t('channels.qqRegister.button')" class="qq-register-qrcode-img" />
+                <p class="qq-register-status" :class="qqRegister.status.value">
+                  <template v-if="qqRegister.status.value === 'confirmed'">{{ t('channels.qqRegister.confirmed') }}</template>
+                  <template v-else-if="qqRegister.status.value === 'expired'">{{ t('channels.qqRegister.expired') }}</template>
+                  <template v-else-if="qqRegister.status.value === 'denied'">{{ t('channels.qqRegister.denied') }}</template>
+                  <template v-else>{{ t('channels.qqRegister.scanHint') }}</template>
                 </p>
               </div>
             </div>
@@ -468,7 +460,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+import { mcToast } from '@/composables/useMcToast'
 import { CHANNEL_FIELD_DEFS } from '@/types'
 import { copyToClipboard } from '@/utils/clipboard'
 import type { Agent, Channel, ChannelFieldDef } from '@/types'
@@ -487,8 +479,8 @@ import { useWeixinQrcodePoll } from '@/composables/channels/useWeixinQrcodePoll'
 import { useWecomBotAuth } from '@/composables/channels/useWecomBotAuth'
 import { useFeishuAppRegister } from '@/composables/channels/useFeishuAppRegister'
 import { useDingTalkAppRegister } from '@/composables/channels/useDingTalkAppRegister'
-import SkillIcon from '@/components/common/SkillIcon.vue'
-import { agentIconColor } from '@/utils/agentIconColor'
+import { useQqAppRegister } from '@/composables/channels/useQqAppRegister'
+import AgentPickerDialog from '@/components/common/AgentPickerDialog.vue'
 
 interface Props {
   modelValue: boolean
@@ -538,20 +530,6 @@ const showAdvanced = ref(false)
 const accessControl = ref<AccessControlValue>(defaultAccessControl())
 const renderConfig = ref<RenderConfigValue>(defaultRenderConfig())
 
-// ========== Custom agent dropdown ==========
-// Native <select><option> can't render <SkillIcon> for pi:* glyphs;
-// mirror the ChatConsole.vue / ChannelOnboardingWizard.vue pattern.
-const agentDropdownOpen = ref(false)
-const selectedAgent = computed<Agent | null>(() => {
-  const id = form.value.agentId
-  if (id == null) return null
-  return props.agents.find(a => String(a.id) === String(id)) ?? null
-})
-function onSelectAgent(a: Agent) {
-  form.value.agentId = a.id as any
-  agentDropdownOpen.value = false
-}
-
 // ========== Auth composables ==========
 
 const weixin = useWeixinQrcodePoll(({ botToken, baseUrl }) => {
@@ -590,6 +568,15 @@ const feishuRegister = useFeishuAppRegister(({ appId, appSecret }) => {
 // feishu's flow, returns client_id/client_secret instead.
 const dingtalkRegister = useDingTalkAppRegister(({ clientId, clientSecret }) => {
   channelConfig.value.client_id = clientId
+  channelConfig.value.client_secret = clientSecret
+  form.value.enabled = true
+})
+
+// QQ Bot scan-to-bind via the Lite portal — fills app_id/client_secret.
+// The user must have created the bot on q.qq.com beforehand; this flow only
+// skips the manual copy-paste of credentials.
+const qqRegister = useQqAppRegister(({ appId, clientSecret }) => {
+  channelConfig.value.app_id = appId
   channelConfig.value.client_secret = clientSecret
   form.value.enabled = true
 })
@@ -695,16 +682,16 @@ async function copyWebhookUrl() {
     copyLabel.value = t('channels.webhook.copied')
     setTimeout(() => { copyLabel.value = t('channels.webhook.copy') }, 2000)
   } catch {
-    ElMessage.warning(t('channels.webhook.copyFailed'))
+    mcToast.warning(t('channels.webhook.copyFailed'))
   }
 }
 
 async function copyText(text: string) {
   try {
     await copyToClipboard(text)
-    ElMessage.success(t('common.copied'))
+    mcToast.success(t('common.copied'))
   } catch {
-    ElMessage.warning(t('channels.webhook.copyFailed'))
+    mcToast.warning(t('channels.webhook.copyFailed'))
   }
 }
 
@@ -840,7 +827,7 @@ function save() {
     if (rawConfigJson.value.trim()) {
       try { JSON.parse(rawConfigJson.value) }
       catch {
-        ElMessage.error(t('channels.messages.invalidJson'))
+        mcToast.error(t('channels.messages.invalidJson'))
         return
       }
     }
@@ -928,6 +915,24 @@ function save() {
 .dingtalk-register-status.confirmed { color: #10b981; font-weight: 500; }
 .dingtalk-register-status.expired { color: #f56c6c; }
 .dingtalk-register-status.denied { color: #f56c6c; }
+
+/* QQ scan-to-bind (QQ Open Platform Lite portal) */
+.qq-register-card { background: linear-gradient(135deg, rgba(20,134,255,0.05), rgba(96,165,250,0.05)); border: 1px solid rgba(20,134,255,0.2); border-radius: 10px; padding: 14px 16px; margin-bottom: 16px; }
+.qq-register-header { font-size: 13px; color: var(--mc-text-primary); margin-bottom: 6px; }
+.qq-register-hint { font-size: 12px; color: var(--mc-text-secondary); margin: 0 0 10px 0; line-height: 1.6; }
+.qq-register-btn { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; padding: 10px 16px; background: #1486ff; color: #fff; border: none; border-radius: 8px; font-size: 14px; font-weight: 500; cursor: pointer; transition: all 0.2s; }
+.qq-register-btn:hover:not(:disabled) { background: #0d6fd9; transform: translateY(-1px); box-shadow: 0 2px 8px rgba(20,134,255,0.3); }
+.qq-register-btn:active:not(:disabled) { transform: translateY(0); }
+.qq-register-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+.qq-register-qrcode { display: flex; flex-direction: column; align-items: center; margin-top: 16px; padding: 16px; background: #fff; border-radius: 8px; border: 1px solid var(--mc-border); }
+.qq-register-qrcode-img { width: 200px; height: 200px; border-radius: 4px; }
+.qq-register-qrcode--loading { min-height: 240px; justify-content: center; }
+.qq-register-qrcode-spinner { width: 40px; height: 40px; border: 3px solid rgba(20,134,255,0.2); border-top-color: #1486ff; border-radius: 50%; animation: qq-register-spin 0.8s linear infinite; }
+@keyframes qq-register-spin { to { transform: rotate(360deg); } }
+.qq-register-status { font-size: 13px; color: var(--mc-text-secondary); margin-top: 10px; transition: color 0.2s; text-align: center; }
+.qq-register-status.confirmed { color: #10b981; font-weight: 500; }
+.qq-register-status.expired { color: #f56c6c; }
+.qq-register-status.denied { color: #f56c6c; }
 
 /* Feishu one-click register */
 .feishu-register-card { background: linear-gradient(135deg, rgba(0,128,255,0.05), rgba(99,102,241,0.05)); border: 1px solid rgba(99,102,241,0.2); border-radius: 10px; padding: 14px 16px; margin-bottom: 16px; }
@@ -1018,69 +1023,6 @@ function save() {
 
 .json-hint { font-size: 12px; color: var(--mc-text-tertiary); margin: 0 0 8px; }
 .json-editor { font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace; font-size: 13px; line-height: 1.5; tab-size: 2; }
-
-/* ===== Agent custom dropdown (mirrors ChatConsole.vue / wizard pattern) =====
-   Native <select><option> can't host <SkillIcon> for pi:* glyphs.
-   z-index has to clear the modal-overlay (1000). */
-.agent-select { position: relative; }
-.agent-select-trigger {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 12px;
-  border: 1px solid var(--mc-border);
-  border-radius: 10px;
-  font-size: 14px;
-  color: var(--mc-text-primary);
-  background: var(--mc-bg-elevated);
-  cursor: pointer;
-  outline: none;
-  transition: border-color 0.15s;
-  box-sizing: border-box;
-}
-.agent-select-trigger:hover { border-color: var(--mc-primary); }
-.agent-select.open .agent-select-trigger { border-color: var(--mc-primary); box-shadow: 0 0 0 3px rgba(217,119,87,0.12); }
-.agent-select-trigger__icon { font-size: 18px; line-height: 1; flex-shrink: 0; display: inline-flex; }
-.agent-select-trigger__name { flex: 1; text-align: left; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.agent-select-trigger__arrow { flex-shrink: 0; color: var(--mc-text-tertiary); transition: transform 0.2s; }
-.agent-select-trigger__arrow.open { transform: rotate(180deg); }
-
-.agent-dropdown-backdrop { position: fixed; inset: 0; z-index: 1099; }
-.agent-dropdown {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  right: 0;
-  z-index: 1100;
-  background: var(--mc-bg-elevated);
-  border: 1px solid var(--mc-border);
-  border-radius: 12px;
-  padding: 6px;
-  box-shadow: 0 8px 32px rgba(0,0,0,0.12);
-  max-height: 280px;
-  overflow-y: auto;
-}
-.agent-dropdown-item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
-  border-radius: 8px;
-  cursor: pointer;
-  transition: background 0.12s;
-}
-.agent-dropdown-item:hover { background: var(--mc-bg-sunken); }
-.agent-dropdown-item.active { background: var(--mc-primary-bg); }
-.agent-dropdown-item__icon { font-size: 20px; line-height: 1; flex-shrink: 0; display: inline-flex; }
-.agent-dropdown-item__name { flex: 1; font-size: 14px; font-weight: 500; color: var(--mc-text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.agent-dropdown-item__check { flex-shrink: 0; color: var(--mc-primary); }
-.agent-dropdown-empty { padding: 16px; text-align: center; font-size: 13px; color: var(--mc-text-tertiary); }
-
-.agent-dropdown-enter-active { transition: all 0.15s ease-out; }
-.agent-dropdown-leave-active { transition: all 0.1s ease-in; }
-.agent-dropdown-enter-from { opacity: 0; transform: translateY(-6px) scale(0.97); }
-.agent-dropdown-leave-to { opacity: 0; transform: translateY(-4px) scale(0.98); }
 
 .fade-enter-active, .fade-leave-active { transition: opacity 0.15s; }
 .fade-enter-from, .fade-leave-to { opacity: 0; }

@@ -13,8 +13,6 @@ import java.util.List;
  *   <li>Post-turn sync (async persistence)</li>
  *   <li>Agent tools (Spring AI @Tool beans)</li>
  * </ul>
- * <p>
- * Inspired by Hermes Agent's MemoryProvider architecture.
  *
  * @author MateClaw Team
  */

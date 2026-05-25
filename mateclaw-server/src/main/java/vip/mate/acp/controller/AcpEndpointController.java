@@ -11,6 +11,7 @@ import vip.mate.common.result.R;
 
 import java.util.List;
 import java.util.Map;
+import vip.mate.workspace.core.annotation.RequireWorkspaceRole;
 
 /**
  * RFC-090 Phase 7 — REST surface for managing ACP endpoints.
@@ -29,24 +30,28 @@ public class AcpEndpointController {
 
     @Operation(summary = "List ACP endpoints")
     @GetMapping
+    @RequireWorkspaceRole("admin")
     public R<List<AcpEndpointEntity>> list() {
         return R.ok(service.list());
     }
 
     @Operation(summary = "Get ACP endpoint by id")
     @GetMapping("/{id}")
+    @RequireWorkspaceRole("admin")
     public R<AcpEndpointEntity> get(@PathVariable Long id) {
         return R.ok(service.get(id));
     }
 
     @Operation(summary = "Create a custom ACP endpoint")
     @PostMapping
+    @RequireWorkspaceRole("admin")
     public R<AcpEndpointEntity> create(@RequestBody AcpEndpointEntity body) {
         return R.ok(service.create(body));
     }
 
     @Operation(summary = "Update an ACP endpoint")
     @PutMapping("/{id}")
+    @RequireWorkspaceRole("admin")
     public R<AcpEndpointEntity> update(@PathVariable Long id,
                                         @RequestBody AcpEndpointEntity body) {
         return R.ok(service.update(id, body));
@@ -54,6 +59,7 @@ public class AcpEndpointController {
 
     @Operation(summary = "Delete an ACP endpoint (builtins are protected)")
     @DeleteMapping("/{id}")
+    @RequireWorkspaceRole("admin")
     public R<Void> delete(@PathVariable Long id) {
         service.delete(id);
         return R.ok();
@@ -61,6 +67,7 @@ public class AcpEndpointController {
 
     @Operation(summary = "Enable / disable an ACP endpoint")
     @PutMapping("/{id}/toggle")
+    @RequireWorkspaceRole("admin")
     public R<AcpEndpointEntity> toggle(@PathVariable Long id,
                                         @RequestParam boolean enabled) {
         return R.ok(service.toggle(id, enabled));
@@ -72,6 +79,7 @@ public class AcpEndpointController {
      */
     @Operation(summary = "Test ACP endpoint connection (initialize handshake)")
     @PostMapping("/{id}/test")
+    @RequireWorkspaceRole("admin")
     public R<Map<String, Object>> test(@PathVariable Long id) {
         AcpEndpointEntity endpoint = service.get(id);
         return R.ok(tester.testEndpoint(endpoint));

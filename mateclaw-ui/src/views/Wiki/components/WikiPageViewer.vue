@@ -13,8 +13,8 @@
       <p class="summary-text">{{ store.currentPage.summary }}</p>
     </div>
 
-    <!-- Actions bar -->
-    <div class="page-actions-bar">
+    <!-- Actions bar — write actions, hidden for read-only viewers -->
+    <div v-if="canManageWiki" class="page-actions-bar">
       <button class="btn-secondary btn-sm" @click="editing = !editing">
         {{ editing ? t('common.cancel') : t('common.edit') }}
       </button>
@@ -99,6 +99,7 @@
 import { ref, computed, watch, onMounted, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useWikiStore, isProtectedPage, type WikiPage } from '@/stores/useWikiStore'
+import { useWorkspaceStore } from '@/stores/useWorkspaceStore'
 import { wikiApi } from '@/api/index'
 import { useMarkdownRenderer } from '@/composables/useMarkdownRenderer'
 import { Link, SetUp } from '@element-plus/icons-vue'
@@ -109,7 +110,12 @@ import ImageLightbox from './ImageLightbox.vue'
 
 const { t } = useI18n()
 const store = useWikiStore()
+const workspace = useWorkspaceStore()
 const { renderMarkdown } = useMarkdownRenderer()
+
+// Editing, enriching, repairing and deleting pages all require manage:wiki.
+// Read-only viewers get the rendered page without the action bar.
+const canManageWiki = computed(() => workspace.can('manage:wiki'))
 
 const editing = ref(false)
 const editContent = ref('')
@@ -180,7 +186,8 @@ async function handleDelete() {
   try {
     await wikiApi.deletePage(store.currentKB.id, store.currentPage.slug)
     store.currentPage = null
-    await store.fetchPages(store.currentKB.id)
+    // Keep the active raw-material filter so the list doesn't jump to all pages.
+    await store.fetchPages(store.currentKB.id, store.selectedRawId)
   } catch (e: any) {
     alert(e?.message || 'Delete failed')
   }

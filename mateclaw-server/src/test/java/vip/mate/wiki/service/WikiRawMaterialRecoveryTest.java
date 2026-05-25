@@ -6,7 +6,9 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.context.ApplicationEventPublisher;
+import vip.mate.system.featureflag.FeatureFlagService;
 import vip.mate.tool.builtin.DocumentExtractTool;
+import vip.mate.tool.image.vision.ImageVisionService;
 import vip.mate.wiki.WikiProperties;
 import vip.mate.wiki.event.WikiProcessingEvent;
 import vip.mate.wiki.model.WikiRawMaterialEntity;
@@ -36,9 +38,13 @@ class WikiRawMaterialRecoveryTest {
         eventPublisher = mock(ApplicationEventPublisher.class);
         WikiChunkService chunkService = mock(WikiChunkService.class);
         DocumentExtractTool docTool = mock(DocumentExtractTool.class);
+        ImageVisionService visionService = mock(ImageVisionService.class);
+        PdfImageExtractor pdfImageExtractor = mock(PdfImageExtractor.class);
+        FeatureFlagService featureFlagService = mock(FeatureFlagService.class);
         props = new WikiProperties();
         props.setAutoProcessOnUpload(true);
-        service = new WikiRawMaterialService(rawMapper, kbService, props, eventPublisher, docTool, chunkService);
+        service = new WikiRawMaterialService(rawMapper, kbService, props, eventPublisher, docTool,
+                chunkService, visionService, pdfImageExtractor, featureFlagService);
     }
 
     private WikiRawMaterialEntity stuckRow(Long id, Long kbId) {

@@ -55,10 +55,13 @@ public class AgentController {
     @GetMapping
     @RequireWorkspaceRole("viewer")
     public R<List<AgentEntity>> list(
-            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId,
+            @RequestParam(value = "enabled", required = false) Boolean enabled) {
         // 无 header 时强制使用默认 workspace，不返回全局数据
         long wsId = workspaceId != null ? workspaceId : 1L;
-        return R.ok(agentService.listAgentsByWorkspace(wsId));
+        // enabled=true: chat selectors hide disabled agents.
+        // enabled=null: admin management page sees enabled + disabled.
+        return R.ok(agentService.listAgentsByWorkspace(wsId, enabled));
     }
 
     @Operation(summary = "获取Agent详情")
@@ -187,6 +190,7 @@ public class AgentController {
             @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
         AgentEntity agent = agentService.getAgent(id);
         verifyResourceWorkspace(agent != null ? agent.getWorkspaceId() : null, workspaceId);
+        verifyAgentEnabled(agent);
 
         // RFC-058 PR-1: Utf8SseEmitter 显式 charset=UTF-8，防止中文 SSE 乱码
         SseEmitter emitter = new Utf8SseEmitter(5 * 60 * 1000L);
@@ -226,6 +230,7 @@ public class AgentController {
             @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
         AgentEntity agent = agentService.getAgent(id);
         verifyResourceWorkspace(agent != null ? agent.getWorkspaceId() : null, workspaceId);
+        verifyAgentEnabled(agent);
         return R.ok(agentService.chat(id, request.getMessage(), request.getConversationId()));
     }
 
@@ -238,6 +243,7 @@ public class AgentController {
             @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
         AgentEntity agent = agentService.getAgent(id);
         verifyResourceWorkspace(agent != null ? agent.getWorkspaceId() : null, workspaceId);
+        verifyAgentEnabled(agent);
         return R.ok(agentService.execute(id, request.getMessage(), request.getConversationId()));
     }
 
@@ -264,7 +270,22 @@ public class AgentController {
     private void verifyResourceWorkspace(Long resourceWorkspaceId, Long headerWorkspaceId) {
         long requestedWs = headerWorkspaceId != null ? headerWorkspaceId : 1L;
         if (resourceWorkspaceId != null && !resourceWorkspaceId.equals(requestedWs)) {
-            throw new MateClawException("err.common.wrong_workspace", "资源不属于当前工作区");
+            throw new MateClawException("err.common.wrong_workspace", 403, "资源不属于当前工作区");
+        }
+    }
+
+    /**
+     * Block runtime calls against an agent flagged as disabled.
+     *
+     * <p>{@code AgentService#getOrBuildAgent} also checks the flag, but only on
+     * a cache miss — once the {@code BaseAgent} instance is warm, a flip to
+     * disabled would silently keep serving requests until something else
+     * invalidates the cache. Enforcing here at the controller closes that gap
+     * for every external entry point.
+     */
+    private void verifyAgentEnabled(AgentEntity agent) {
+        if (agent != null && !Boolean.TRUE.equals(agent.getEnabled())) {
+            throw new MateClawException("err.agent.disabled", "Agent 已禁用: " + agent.getName());
         }
     }
 

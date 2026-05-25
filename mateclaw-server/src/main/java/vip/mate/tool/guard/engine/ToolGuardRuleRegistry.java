@@ -67,6 +67,19 @@ public class ToolGuardRuleRegistry implements ApplicationRunner {
     }
 
     /**
+     * 按 category 取所有已启用规则（不限工具）。
+     * 用于 alwaysRun 类的横切 Guardian（凭据扫描、PII 扫描等）。
+     */
+    public List<ToolGuardRuleEntity> getRulesByCategory(String category) {
+        if (category == null || category.isEmpty()) {
+            return List.of();
+        }
+        return allRules.stream()
+                .filter(r -> category.equals(r.getCategory()))
+                .collect(Collectors.toList());
+    }
+
+    /**
      * 获取所有已启用规则
      */
     public List<ToolGuardRuleEntity> getAllEnabled() {

@@ -16,6 +16,7 @@ import vip.mate.common.result.R;
 import vip.mate.system.featureflag.repository.FeatureFlagMapper;
 
 import java.util.List;
+import vip.mate.workspace.core.annotation.RequireWorkspaceRole;
 
 /**
  * Admin endpoints for runtime feature-flag toggling.
@@ -37,6 +38,7 @@ public class FeatureFlagController {
 
     /** Lists every flag currently registered, including disabled and whitelisted ones. */
     @GetMapping
+    @RequireWorkspaceRole("admin")
     public R<List<FeatureFlagEntity>> list() {
         return R.ok(mapper.selectList(null));
     }
@@ -46,6 +48,7 @@ public class FeatureFlagController {
      * body are touched; unspecified fields preserve their current values.
      */
     @PutMapping("/{flagKey}")
+    @RequireWorkspaceRole("admin")
     public R<Void> update(@PathVariable @NotBlank String flagKey,
                            @RequestBody UpdateRequest req) {
         FeatureFlagEntity flag = mapper.selectOne(

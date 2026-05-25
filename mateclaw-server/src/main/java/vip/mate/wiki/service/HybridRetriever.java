@@ -211,13 +211,15 @@ public class HybridRetriever {
 
     // ==================== Internal methods ====================
 
-    /** Semantic search: chunk cosine → aggregate to page level */
+    /** Semantic search: chunk cosine → aggregate to page level, then merged
+     *  with direct page-level cosine when a page has its own embedding.
+     *  The page-level signal covers synthesis pages whose vocabulary doesn't
+     *  appear in any source raw's chunks. */
     private List<RankedItem> semanticSearch(Long kbId, String query, int limit) {
         float[] queryVec = embeddingService.embedQuery(kbId, query);
         if (queryVec == null) return List.of();
 
         List<WikiChunkEntity> allChunks = chunkService.listByKbId(kbId);
-        if (allChunks.isEmpty()) return List.of();
 
         Map<Long, Float> chunkScores = new HashMap<>();
         for (WikiChunkEntity chunk : allChunks) {
@@ -230,6 +232,14 @@ public class HybridRetriever {
         List<WikiPageEntity> allPages = pageService.listByKbId(kbId);
         Map<Long, Double> pageScores = new HashMap<>();
         for (WikiPageEntity page : allPages) {
+            // Direct page-level signal: the page carries its own embedding
+            // (typical for transformation synthesis pages).
+            if (page.getEmbedding() != null) {
+                float[] pageVec = WikiEmbeddingService.bytesToFloats(page.getEmbedding());
+                float pageScore = WikiEmbeddingService.cosine(queryVec, pageVec);
+                pageScores.merge(page.getId(), (double) pageScore, Math::max);
+            }
+            // Transitive signal: chunks of any source raw this page references.
             String rawIds = page.getSourceRawIds();
             if (rawIds == null) continue;
             for (String rawIdStr : rawIds.replaceAll("[\\[\\]\\s]", "").split(",")) {

@@ -18,6 +18,8 @@ import vip.mate.wiki.job.model.WikiProcessingJobEntity;
 import vip.mate.wiki.model.WikiKnowledgeBaseEntity;
 import vip.mate.wiki.model.WikiPageEntity;
 import vip.mate.wiki.model.WikiRawMaterialEntity;
+import vip.mate.wiki.model.WikiTransformationEntity;
+import vip.mate.wiki.model.WikiTransformationRunEntity;
 import vip.mate.wiki.repository.WikiRawMaterialMapper;
 import vip.mate.wiki.service.*;
 
@@ -58,6 +60,16 @@ public class WikiTool {
     /** RFC-051 PR-4: optional on-demand compile. Tool surface skipped when missing. */
     @Autowired(required = false)
     private WikiCompileService compileService;
+
+    /** Optional transformation engine. Tools degrade with a clear error when missing. */
+    @Autowired(required = false)
+    private WikiTransformationService transformationService;
+
+    @Autowired(required = false)
+    private WikiTransformationExecutor transformationExecutor;
+
+    @Autowired(required = false)
+    private WikiTransformationAggregator transformationAggregator;
 
     public WikiTool(WikiPageService pageService,
                      WikiKnowledgeBaseService kbService,
@@ -362,6 +374,7 @@ public class WikiTool {
                 .set("message", "Page created successfully")
                 .set("title", page.getTitle())
                 .set("slug", page.getSlug())
+                .set("pageId", page.getId())
                 .set("kbId", kbId)
                 .toString();
     }
@@ -632,11 +645,181 @@ public class WikiTool {
         return "Wikilink enrichment queued for: " + slug;
     }
 
+    // ==================== Transformations ====================
+
+    @Tool(description = """
+            List the transformation templates available to this agent's wiki KB.
+            Each result has a name (use it with wiki_apply_transformation), a
+            human title, and a description of what the prompt produces.
+            """)
+    public String wiki_list_transformations(
+            @ToolParam(description = "Agent ID") Long agentId) {
+        Long kbId = resolveKbId(agentId);
+        if (kbId == null) return error("No wiki knowledge base found for this agent");
+        if (transformationService == null) return error("Transformations not available");
+
+        WikiKnowledgeBaseEntity kb = kbService.getById(kbId);
+        Long wsId = (kb == null || kb.getWorkspaceId() == null) ? 1L : kb.getWorkspaceId();
+
+        List<WikiTransformationEntity> templates = transformationService.listForKb(kbId, wsId);
+        JSONArray arr = new JSONArray();
+        for (WikiTransformationEntity t : templates) {
+            if (Boolean.FALSE.equals(t.getEnabled())) continue;
+            arr.add(JSONUtil.createObj()
+                    .set("name", t.getName())
+                    .set("title", t.getTitle())
+                    .set("description", t.getDescription())
+                    .set("applyDefault", Boolean.TRUE.equals(t.getApplyDefault())));
+        }
+        return JSONUtil.createObj().set("kbId", kbId).set("transformations", arr).toString();
+    }
+
+    @Tool(description = """
+            Run a transformation template against one raw material and return the
+            generated text. Use wiki_list_transformations first to discover names.
+            The run is also persisted so the result is visible in the wiki UI.
+            """)
+    public String wiki_apply_transformation(
+            @ToolParam(description = "Agent ID") Long agentId,
+            @ToolParam(description = "Transformation name (from wiki_list_transformations)") String name,
+            @ToolParam(description = "Raw material ID to run the transformation against") Long rawId) {
+        if (name == null || name.isBlank()) return error("name is required");
+        if (rawId == null) return error("rawId is required");
+        Long kbId = resolveKbId(agentId);
+        if (kbId == null) return error("No wiki knowledge base found for this agent");
+        if (transformationService == null || transformationExecutor == null) {
+            return error("Transformations not available");
+        }
+
+        WikiKnowledgeBaseEntity kb = kbService.getById(kbId);
+        Long wsId = (kb == null || kb.getWorkspaceId() == null) ? 1L : kb.getWorkspaceId();
+
+        WikiTransformationEntity template = transformationService.findByName(kbId, wsId, name).orElse(null);
+        if (template == null) return error("Transformation not found: " + name);
+
+        try {
+            WikiTransformationRunEntity run = transformationExecutor.runOnRawSync(template, rawId, "agent_tool");
+            if (run == null) return error("Transformation is disabled: " + name);
+            if ("failed".equals(run.getStatus())) {
+                return error("Transformation failed: " + run.getError());
+            }
+            return JSONUtil.createObj()
+                    .set("ok", true)
+                    .set("runId", run.getId())
+                    .set("transformation", template.getName())
+                    .set("output", run.getOutput())
+                    .toString();
+        } catch (IllegalStateException | IllegalArgumentException e) {
+            return error(e.getMessage());
+        } catch (Exception e) {
+            log.warn("[WikiTool] wiki_apply_transformation failed: {}", e.getMessage());
+            return error("Apply failed: " + e.getMessage());
+        }
+    }
+
+    @Tool(description = """
+            Run a transformation template against an existing wiki page and return
+            the generated text. Use this when you want to derive a new artifact
+            from an existing page — e.g. "summarize the contract-review page",
+            "extract action items from this meeting-notes page". The run output
+            is persisted in the wiki UI; pass slug (not page id) for convenience.
+            """)
+    public String wiki_apply_transformation_to_page(
+            @ToolParam(description = "Agent ID") Long agentId,
+            @ToolParam(description = "Transformation name (from wiki_list_transformations)") String name,
+            @ToolParam(description = "Source wiki page slug to run the transformation against") String slug) {
+        if (name == null || name.isBlank()) return error("name is required");
+        if (slug == null || slug.isBlank()) return error("slug is required");
+        Long kbId = resolveKbId(agentId);
+        if (kbId == null) return error("No wiki knowledge base found for this agent");
+        if (transformationService == null || transformationExecutor == null) {
+            return error("Transformations not available");
+        }
+
+        WikiPageEntity page = pageService.getBySlug(kbId, slug);
+        if (page == null) return error("Page not found: " + slug);
+
+        WikiKnowledgeBaseEntity kb = kbService.getById(kbId);
+        Long wsId = (kb == null || kb.getWorkspaceId() == null) ? 1L : kb.getWorkspaceId();
+
+        WikiTransformationEntity template = transformationService.findByName(kbId, wsId, name).orElse(null);
+        if (template == null) return error("Transformation not found: " + name);
+
+        try {
+            WikiTransformationRunEntity run = transformationExecutor.runOnPageSync(template, page.getId(), "agent_tool");
+            if (run == null) return error("Transformation is disabled: " + name);
+            if ("failed".equals(run.getStatus())) {
+                return error("Transformation failed: " + run.getError());
+            }
+            return JSONUtil.createObj()
+                    .set("ok", true)
+                    .set("runId", run.getId())
+                    .set("transformation", template.getName())
+                    .set("inputPage", slug)
+                    .set("output", run.getOutput())
+                    .toString();
+        } catch (IllegalStateException | IllegalArgumentException e) {
+            return error(e.getMessage());
+        } catch (Exception e) {
+            log.warn("[WikiTool] wiki_apply_transformation_to_page failed: {}", e.getMessage());
+            return error("Apply failed: " + e.getMessage());
+        }
+    }
+
+    @Tool(description = """
+            Aggregate all completed runs of a transformation template across every
+            raw material in this KB into a single synthesis wiki page. Use this
+            after running a template against multiple sources to get a KB-level
+            unified document (e.g. one consolidated 题型库 across 5 different
+            mock exam PDFs, one customer-account brief across all sources for an
+            account). Idempotent — re-running upserts the same slug.
+            """)
+    public String wiki_aggregate_transformation(
+            @ToolParam(description = "Agent ID") Long agentId,
+            @ToolParam(description = "Transformation name (from wiki_list_transformations)") String name) {
+        if (name == null || name.isBlank()) return error("name is required");
+        Long kbId = resolveKbId(agentId);
+        if (kbId == null) return error("No wiki knowledge base found for this agent");
+        if (transformationService == null || transformationAggregator == null) {
+            return error("Transformations not available");
+        }
+
+        WikiKnowledgeBaseEntity kb = kbService.getById(kbId);
+        Long wsId = (kb == null || kb.getWorkspaceId() == null) ? 1L : kb.getWorkspaceId();
+
+        WikiTransformationEntity template = transformationService.findByName(kbId, wsId, name).orElse(null);
+        if (template == null) return error("Transformation not found: " + name);
+
+        try {
+            var res = transformationAggregator.aggregate(template, kbId, "agent_tool");
+            if (res.pageId() == null) {
+                return JSONUtil.createObj()
+                        .set("ok", true)
+                        .set("aggregated", false)
+                        .set("reason", res.title())
+                        .toString();
+            }
+            return JSONUtil.createObj()
+                    .set("ok", true)
+                    .set("aggregated", true)
+                    .set("pageSlug", res.slug())
+                    .set("pageTitle", res.title())
+                    .set("sourcesUsed", res.sourcesUsed())
+                    .set("created", res.created())
+                    .toString();
+        } catch (IllegalStateException | IllegalArgumentException e) {
+            return error(e.getMessage());
+        } catch (Exception e) {
+            log.warn("[WikiTool] wiki_aggregate_transformation failed: {}", e.getMessage());
+            return error("Aggregate failed: " + e.getMessage());
+        }
+    }
+
     // ==================== Helpers ====================
 
     private Long resolveKbId(Long agentId) {
-        List<WikiKnowledgeBaseEntity> kbs = kbService.listByAgentId(agentId);
-        return kbs.isEmpty() ? null : kbs.get(0).getId();
+        WikiKnowledgeBaseEntity kb = kbService.resolvePrimaryKb(agentId);
+        return kb == null ? null : kb.getId();
     }
 
     private JSONArray resolveSourceFiles(String sourceRawIdsJson) {

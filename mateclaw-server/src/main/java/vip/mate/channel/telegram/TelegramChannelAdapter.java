@@ -165,8 +165,13 @@ public class TelegramChannelAdapter extends AbstractChannelAdapter {
      * - connection_mode=polling → Polling
      * - connection_mode 缺失 + webhook_url 非空 → Webhook（兼容旧配置）
      * - 其余 → Polling
+     *
+     * <p>Package-private so {@link #requiresSingleLeader()} can mirror the
+     * same predicate — the two answers must stay in lockstep, otherwise a
+     * single change to mode detection here would silently mis-classify the
+     * channel for multi-node coordination.
      */
-    private boolean resolveWebhookMode() {
+    boolean resolveWebhookMode() {
         String connectionMode = getConfigString("connection_mode");
         String webhookUrl = getConfigString("webhook_url");
         boolean hasWebhookUrl = webhookUrl != null && !webhookUrl.isBlank();
@@ -792,6 +797,21 @@ public class TelegramChannelAdapter extends AbstractChannelAdapter {
     @Override
     public String getChannelType() {
         return CHANNEL_TYPE;
+    }
+
+    /**
+     * Long-polling mode runs a {@code getUpdates(offset=…)} loop that
+     * acknowledges each delivered update; multiple nodes polling the same
+     * bot token would steal updates from each other (whichever node calls
+     * {@code getUpdates} next consumes the queue, and the others get
+     * nothing). The leader gate ensures only one node polls at a time.
+     *
+     * <p>Webhook mode is exempt: Telegram POSTs to a public URL fanned
+     * by the load balancer, so every node may safely receive callbacks.
+     */
+    @Override
+    public boolean requiresSingleLeader() {
+        return !resolveWebhookMode();
     }
 
     /** RFC-025 Change 4 入站文本净化上限（防止 caption 含超长二进制撑爆 prompt）。 */

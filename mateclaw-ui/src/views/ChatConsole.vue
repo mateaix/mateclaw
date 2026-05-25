@@ -8,125 +8,21 @@
         </Transition>
 
     <!-- 会话侧边栏 -->
-    <div class="conversation-panel" :class="{ 'mobile-open': convPanelOpen, 'conv-collapsed': convPanelCollapsed && !isMobile }">
-      <div class="panel-header">
-        <div v-if="!convPanelCollapsed || isMobile" class="panel-header-copy">
-          <div class="panel-kicker">{{ $t('nav.chat') }}</div>
-          <h2 class="panel-title">{{ $t('chat.conversations') }}</h2>
-        </div>
-        <button class="new-chat-btn" @click="newConversation" :title="`${$t('chat.newChat')} (⌘N)`">
-          <el-icon><Plus /></el-icon>
-        </button>
-      </div>
-      <!-- 折叠切换按钮 -->
-      <button v-if="!isMobile" class="conv-collapse-btn" @click="toggleConvPanel" :title="convPanelCollapsed ? $t('common.expandSidebar') : $t('common.collapseSidebar')">
-        <svg v-if="!convPanelCollapsed" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
-        <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
-      </button>
-
-      <div class="agent-selector">
-        <button class="agent-select-trigger" @click="agentDropdownOpen = !agentDropdownOpen" :title="`${$t('chat.selectAgent')} (⌘K)`">
-          <span class="agent-select-trigger__icon" :style="{ color: agentIconColor(currentAgent?.icon) }"><SkillIcon :value="currentAgent?.icon" :size="24" :fallback="'🤖'" /></span>
-          <span v-if="!convPanelCollapsed || isMobile" class="agent-select-trigger__name">{{ currentAgent?.name || $t('chat.selectAgent') }}</span>
-          <svg v-if="!convPanelCollapsed || isMobile" class="agent-select-trigger__arrow" :class="{ open: agentDropdownOpen }" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
-        </button>
-        <Transition name="fade">
-          <div v-if="agentDropdownOpen" class="agent-dropdown-backdrop" @click="agentDropdownOpen = false"></div>
-        </Transition>
-        <Transition name="agent-dropdown">
-          <div v-if="agentDropdownOpen" class="agent-dropdown">
-            <div
-              v-for="agent in agents"
-              :key="agent.id"
-              class="agent-dropdown-item"
-              :class="{ active: String(agent.id) === String(selectedAgentId) }"
-              @click="selectAgent(agent)"
-            >
-              <span class="agent-dropdown-item__icon" :style="{ color: agentIconColor(agent.icon) }"><SkillIcon :value="agent.icon" :size="18" :fallback="'🤖'" /></span>
-              <div class="agent-dropdown-item__info">
-                <span class="agent-dropdown-item__name">{{ agent.name }}</span>
-                <span class="agent-dropdown-item__desc">{{ agentTagline(agent) }}</span>
-              </div>
-              <span v-if="String(agent.id) === String(selectedAgentId)" class="agent-dropdown-item__check">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-              </span>
-            </div>
-            <div v-if="agents.length === 0" class="agent-dropdown-empty">{{ $t('chat.loadingAgents') }}</div>
-          </div>
-        </Transition>
-      </div>
-
-      <div class="conversation-list">
-        <template v-for="group in groupedConversations" :key="group.label">
-          <div v-if="!convPanelCollapsed || isMobile" class="conv-group-title">{{ group.label }}</div>
-          <div
-            v-for="conv in group.items"
-            :key="conv.conversationId"
-            class="conv-item"
-            :class="{
-              active: currentConversationId === conv.conversationId,
-              'is-running': conv.streamStatus === 'running',
-            }"
-            @click="selectConversation(conv)"
-          >
-            <div class="conv-icon">
-              <img :src="channelIconUrl(conv.source)" width="14" height="14" alt="" />
-              <span
-                v-if="conv.streamStatus === 'running'"
-                class="conv-running-dot"
-                :title="$t('chat.streamGenerating')"
-              ></span>
-            </div>
-            <div v-if="!convPanelCollapsed || isMobile" class="conv-info">
-              <input
-                v-if="renamingConvId === conv.conversationId"
-                v-model="renameText"
-                class="conv-title-input"
-                @keydown.enter="confirmRename(conv)"
-                @keydown.escape="cancelRename"
-                @blur="confirmRename(conv)"
-                @click.stop
-                ref="renameInputRef"
-              />
-              <div v-else class="conv-title" @dblclick.stop="startRename(conv)">
-                <span>{{ conv.title }}</span>
-                <!-- Unread dot for the unified tasks conversation: when a
-                     cron run lands but the user hasn't opened the conversation
-                     since, show a small accent dot. Avoids needing a server-side
-                     last-viewed table for MVP — localStorage tracks per-conv
-                     last-view timestamp, sidebar compares to lastActiveTime. -->
-                <span
-                  v-if="hasUnread(conv)"
-                  class="conv-unread-dot"
-                  :title="$t('chat.hasUnread', '有新内容')"
-                ></span>
-                <span
-                  v-if="conv.streamStatus === 'running'"
-                  class="conv-running-badge"
-                  :title="$t('chat.streamGenerating')"
-                >
-                  <span class="conv-running-badge-pulse"></span>
-                  {{ $t('chat.streamGenerating') }}
-                </span>
-              </div>
-              <div class="conv-meta">
-                <span>{{ $t('chat.messages', { count: conv.messageCount }) }}</span>
-                <span class="conv-dot">·</span>
-                <span>{{ formatConversationTime(conv.lastActiveTime) }}</span>
-              </div>
-            </div>
-            <button v-if="!convPanelCollapsed || isMobile" class="conv-delete" @click.stop="confirmDeleteConversation(conv.conversationId)" :title="$t('common.delete')">
-              <el-icon><Delete /></el-icon>
-            </button>
-          </div>
-        </template>
-
-        <div v-if="conversations.length === 0" class="empty-convs">
-          <p>{{ $t('chat.noConversations') }}</p>
-          <p>{{ $t('chat.startNewChat') }}</p>
-        </div>
-      </div>
-    </div>
+    <ConversationSidebar
+      :conversations="conversations"
+      :current-conversation-id="currentConversationId"
+      :agents="agents"
+      :selected-agent-id="selectedAgentId"
+      :collapsed="convPanelCollapsed"
+      :mobile-open="convPanelOpen"
+      :is-mobile="isMobile"
+      @select="selectConversation"
+      @new-chat="newConversation"
+      @agent-picked="onAgentPicked"
+      @toggle-collapse="toggleConvPanel"
+      @refresh="loadConversations"
+      @deleted="onConversationsDeleted"
+    />
 
     <!-- 主聊天区域 -->
     <div
@@ -166,7 +62,6 @@
               <span class="agent-badge-icon" :style="{ color: agentIconColor(currentAgent.icon) }"><SkillIcon :value="currentAgent.icon" :size="22" :fallback="'🤖'" /></span>
               <div class="agent-badge-text">
                 <span class="agent-badge-name">{{ currentAgent.name }}</span>
-                <span v-if="currentAgentTagline" class="agent-badge-tagline">{{ currentAgentTagline }}</span>
               </div>
               <span class="status-dot" :class="connectionStatusClass" :title="connectionStatusLabel"></span>
             </div>
@@ -188,25 +83,21 @@
           />
           <!-- Overflow menu -->
           <div class="header-overflow-wrap">
-            <button class="header-btn" @click="headerMenuOpen = !headerMenuOpen" :title="$t('common.more') || 'More'">
+            <button ref="headerBtnRef" class="header-btn" @click="headerMenuOpen = !headerMenuOpen" :title="$t('common.more')">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/></svg>
             </button>
-            <Transition name="fade">
-              <div v-if="headerMenuOpen" class="header-menu-backdrop" @click="headerMenuOpen = false"></div>
-            </Transition>
-            <Transition name="agent-dropdown">
-              <div v-if="headerMenuOpen" class="header-menu">
-                <button class="header-menu-item" @click="headerMenuOpen = false; goToModelSettings()">
-                  <el-icon><Setting /></el-icon>
-                  <span>{{ $t('chat.configModel') }}</span>
-                </button>
-                <div class="header-menu-divider"></div>
-                <button class="header-menu-item header-menu-item--danger" @click="handleClearMessages">
-                  <el-icon><Delete /></el-icon>
-                  <span>{{ $t('chat.clearMessages') }}</span>
-                </button>
-              </div>
-            </Transition>
+            <DropdownMenu
+              :open="headerMenuOpen"
+              :anchor="headerBtnRef"
+              :items="headerMenuItems"
+              @select="onHeaderMenuSelect"
+              @close="headerMenuOpen = false"
+            >
+              <template #item-icon="{ item }">
+                <el-icon v-if="item.key === 'config'"><Setting /></el-icon>
+                <el-icon v-else-if="item.key === 'clear'"><Delete /></el-icon>
+              </template>
+            </DropdownMenu>
           </div>
         </div>
       </div>
@@ -273,6 +164,31 @@
         </div>
       </div>
 
+      <!-- Terminal-state announcement after a goal completed or exhausted
+           in this conversation. Auto-dismisses when the user clicks × or
+           starts a new goal. -->
+      <GoalSystemLine
+        v-if="goalTerminalForCurrent && currentConversationId"
+        :variant="goalTerminalForCurrent.status"
+        :title="goalSystemLineTitle"
+        :detail="goalSystemLineDetail"
+        class="goal-system-line-slot"
+        @click.stop="onGoalSystemLineDismiss"
+      />
+
+      <!-- Inline "set a goal?" invitation shown after the first assistant
+           reply when the conversation has no active goal and the user
+           hasn't dismissed it for this conv. -->
+      <GoalSetInlinePrompt
+        v-if="showGoalSetPrompt"
+        :conversation-id="currentConversationId"
+        :agent-id="String(selectedAgentId)"
+        :workspace-id="String(currentWorkspaceId || '1')"
+        :suggested-title="goalSuggestedTitle"
+        class="goal-set-prompt-slot"
+        @dismiss="onGoalPromptDismiss"
+      />
+
       <!-- 流式处理 Loading 栏（消息和输入框之间） -->
       <StreamLoadingBar
         :is-loading="isGenerating && !blockingPrompt"
@@ -284,6 +200,7 @@
         :running-tool-name="currentRunningToolName"
         :has-queued="hasQueued"
         :lifecycle-stage="lifecycleStage"
+        :compact-status="compactStatus"
       />
 
       <!-- Multimodal routing hint: shown when pending attachments require a
@@ -340,12 +257,12 @@
 import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
-import { mcConfirm } from '@/components/common/useConfirm'
-import { ChatDotRound, Delete, Plus, Setting, UploadFilled } from '@element-plus/icons-vue'
+import { mcToast } from '@/composables/useMcToast'
+import { ChatDotRound, Delete, Setting, UploadFilled } from '@element-plus/icons-vue'
 import { conversationApi, agentApi, modelApi, chatApi, cronJobApi } from '@/api/index'
-import { channelIconUrl } from '@/utils/channelSource'
 import { copyToClipboard } from '@/utils/clipboard'
+import { useFileDrop } from '@/composables/useFileDrop'
+import { useIsMobile, useMediaQuery, BREAKPOINTS } from '@/composables/useBreakpoint'
 import { useChat } from '@/composables/chat/useChat'
 import { reconstructErrorInfo } from '@/types/chatError'
 import { reconcileMessages, extractMessages } from '@/utils/messageReconcile'
@@ -355,7 +272,8 @@ import type { Conversation, Agent, ModelConfig, ProviderInfo, ActiveModelsInfo, 
 import MessageList from '@/components/chat/MessageList.vue'
 import RecoverableModelBanner from '@/components/chat/RecoverableModelBanner.vue'
 import SkillIcon from '@/components/common/SkillIcon.vue'
-import { parsePrompt, deriveTagline } from '@/utils/agentPromptProfile'
+import ConversationSidebar from '@/components/chat/ConversationSidebar.vue'
+import DropdownMenu, { type DropdownMenuItem } from '@/components/common/DropdownMenu.vue'
 import { agentIconColor } from '@/utils/agentIconColor'
 import ChatInput from '@/components/chat/ChatInput.vue'
 import MultimodalRoutingHint from '@/components/chat/MultimodalRoutingHint.vue'
@@ -365,30 +283,32 @@ import ModelSelector from '@/components/chat/ModelSelector.vue'
 import { useEChartsRenderer } from '@/composables/useEChartsRenderer'
 import { useKatexRenderer } from '@/composables/useKatexRenderer'
 import { useMermaidRenderer, handleMermaidDownload } from '@/composables/useMermaidRenderer'
+import { useGoalStore } from '@/stores/useGoalStore'
+import { useWorkspaceStore } from '@/stores/useWorkspaceStore'
+import GoalSetInlinePrompt from '@/components/goal/GoalSetInlinePrompt.vue'
+import GoalSystemLine from '@/components/goal/GoalSystemLine.vue'
 
 // ============ Talk Mode ============
 const showTalkMode = ref(false)
 
 // ============ 移动端 & 响应式状态 ============
-const isMobile = ref(false)
 const convPanelOpen = ref(false)
 const convPanelCollapsed = ref(localStorage.getItem('mc-conv-collapsed') === 'true')
-let mobileQuery: MediaQueryList | null = null
-let mediumQuery: MediaQueryList | null = null
 const userExplicitConvCollapse = ref(localStorage.getItem('mc-conv-collapsed') === 'true')
 
-function handleMobileChange(e: MediaQueryListEvent | MediaQueryList) {
-  isMobile.value = e.matches
-  if (!e.matches) convPanelOpen.value = false
-}
+const isMobile = useIsMobile()
+const compactViewport = useMediaQuery(BREAKPOINTS.compact)
 
-function handleConvMediumChange(e: MediaQueryListEvent | MediaQueryList) {
-  if (e.matches && !userExplicitConvCollapse.value) {
-    convPanelCollapsed.value = true
-  } else if (!e.matches && !userExplicitConvCollapse.value) {
-    convPanelCollapsed.value = false
-  }
-}
+// Leaving the mobile breakpoint closes the conversation drawer.
+watch(isMobile, (mobile) => {
+  if (!mobile) convPanelOpen.value = false
+})
+
+// Auto-collapse the conversation panel on narrow desktop unless the user
+// toggled it explicitly.
+watch(compactViewport, (compact) => {
+  if (!userExplicitConvCollapse.value) convPanelCollapsed.value = compact
+}, { immediate: true })
 
 function toggleConvPanel() {
   convPanelCollapsed.value = !convPanelCollapsed.value
@@ -442,7 +362,20 @@ const recoverablePrompt = ref(false)
 const recoverableDismissed = ref(false)
 const defaultModel = ref<ModelConfig | null>(null)
 const providers = ref<ProviderInfo[]>([])
+// True when /models 403s for a viewer-level user. Provider config (API keys,
+// base URLs, liveness) is admin-only, so viewers chat without it; the prompt
+// flags fall back to "trust the active model" in that branch.
+const providersUnavailable = ref(false)
+// Mirror of /models/enabled (viewer-accessible). Used to resolve the display
+// name of the active model when providers is empty for viewer-level users —
+// otherwise the model selector trigger would show its 配置模型 fallback even
+// though there IS an active model.
+const enabledModels = ref<ModelConfig[]>([])
+// The model the CURRENT conversation uses. Per-conversation — switching it
+// never leaks into other conversations (see selectModel / applyConversationModel).
 const activeModels = ref<ActiveModelsInfo | null>(null)
+// Global default model — seeds the selector for conversations with no pin yet.
+const globalDefaultModel = ref<{ providerId: string; model: string } | null>(null)
 const pendingAttachments = ref<ChatAttachment[]>([])
 const uploadingAttachment = ref(false)
 
@@ -457,101 +390,62 @@ const thinkingLevel = computed(() => thinkingEnabled.value ? 'high' : 'off')
 watch(thinkingEnabled, (v) => localStorage.setItem('mateclaw_thinking', v ? 'on' : 'off'))
 
 // Dropdowns & menus
-const agentDropdownOpen = ref(false)
-
 const headerMenuOpen = ref(false)
+const headerBtnRef = ref<HTMLElement | null>(null)
 
-function selectAgent(agent: Agent) {
-  agentDropdownOpen.value = false
-  if (String(agent.id) !== String(selectedAgentId.value)) {
-    selectedAgentId.value = agent.id
+const headerMenuItems = computed<DropdownMenuItem[]>(() => [
+  { key: 'config', label: t('chat.configModel') },
+  { key: 'sessions', label: t('chat.openSessions') },
+  { divider: true },
+  { key: 'clear', label: t('chat.clearMessages'), danger: true },
+])
+
+function onHeaderMenuSelect(item: DropdownMenuItem) {
+  if (item.key === 'config') goToModelSettings()
+  else if (item.key === 'sessions') router.push('/sessions')
+  else if (item.key === 'clear') clearMessages()
+}
+
+function onAgentPicked(value: string | number | null) {
+  if (value == null) return
+  if (String(value) !== String(selectedAgentId.value)) {
+    selectedAgentId.value = value
     newConversation()
   }
 }
 
-async function selectModel(value: string) {
+function selectModel(value: string) {
   const [providerId, model] = value.split('::')
   if (!providerId || !model) return
-  modelSaving.value = true
-  try {
-    const res: any = await modelApi.setActive({ providerId, model })
-    activeModels.value = res.data || { activeLlm: { providerId, model } }
-    await loadModelState()
-  } catch (e) {
-    ElMessage.error(t('chat.switchModelFailed'))
-  } finally {
-    modelSaving.value = false
+  // Per-conversation model: switching here only affects THIS conversation.
+  // The backend pins it onto the conversation row when the next message is
+  // sent (see sendChatMessage payload); we also patch the local list entry so
+  // re-opening the conversation restores the choice without a round-trip.
+  activeModels.value = { activeLlm: { providerId, model } }
+  const conv = conversations.value.find(c => c.conversationId === currentConversationId.value)
+  if (conv) {
+    conv.modelProvider = providerId
+    conv.modelName = model
   }
 }
 
-function handleClearMessages() {
-  headerMenuOpen.value = false
-  clearMessages()
-}
-
-// Conversation rename
-const renamingConvId = ref('')
-const renameText = ref('')
-const renameInputRef = ref<HTMLInputElement | null>(null)
-
-function startRename(conv: Conversation) {
-  renamingConvId.value = conv.conversationId
-  renameText.value = conv.title || ''
-  nextTick(() => {
-    renameInputRef.value?.focus()
-    renameInputRef.value?.select()
-  })
-}
-
-async function confirmRename(conv: Conversation) {
-  const newTitle = renameText.value.trim()
-  renamingConvId.value = ''
-  if (!newTitle || newTitle === conv.title) return
-  conv.title = newTitle
-  try {
-    await conversationApi.rename(conv.conversationId, newTitle)
-  } catch {
-    // revert on fail — reload
-    await loadConversations()
+/**
+ * Point the model selector at a conversation's pinned model, or the global
+ * default when the conversation has no pin yet (fresh chat, IM, cron).
+ */
+function applyConversationModel(conv?: Conversation | null) {
+  if (conv?.modelProvider && conv?.modelName) {
+    activeModels.value = { activeLlm: { providerId: conv.modelProvider, model: conv.modelName } }
+  } else if (globalDefaultModel.value) {
+    activeModels.value = { activeLlm: { ...globalDefaultModel.value } }
   }
 }
 
-function cancelRename() {
-  renamingConvId.value = ''
-}
+// 拖拽上传 — useFileDrop owns the hover/counter state; the directory-aware
+// payload handling (electron paths vs web FileSystem entries) stays here.
+const { isDragging, onDragEnter, onDragLeave, onDrop } = useFileDrop(processDroppedItems)
 
-// Delete with confirmation
-async function confirmDeleteConversation(conversationId: string) {
-  const ok = await mcConfirm({
-    title: t('common.confirm'),
-    message: t('chat.deleteConfirm') || 'Delete this conversation?',
-    tone: 'danger',
-  })
-  if (ok) deleteConversation(conversationId)
-}
-
-// 拖拽上传
-const isDragging = ref(false)
-let dragCounter = 0
-
-function onDragEnter(e: DragEvent) {
-  dragCounter++
-  if (e.dataTransfer?.types.includes('Files')) {
-    isDragging.value = true
-  }
-}
-
-function onDragLeave() {
-  dragCounter--
-  if (dragCounter === 0) {
-    isDragging.value = false
-  }
-}
-
-async function onDrop(e: DragEvent) {
-  dragCounter = 0
-  isDragging.value = false
-
+async function processDroppedItems(e: DragEvent) {
   const dtFiles = Array.from(e.dataTransfer?.files || [])
   const items = Array.from(e.dataTransfer?.items || [])
 
@@ -664,6 +558,7 @@ const {
   hasQueued,
   queueSize,
   heartbeat,
+  compactStatus,
   lifecycleStage,
   sendMessage: sendChatMessage,
   stopGeneration: stopChatGeneration,
@@ -718,17 +613,6 @@ const connectionStatusLabel = computed(() => {
 // ============ 计算属性 ============
 const currentAgent = computed(() => agents.value.find(a => String(a.id) === String(selectedAgentId.value)))
 
-/** Tagline derived from the agent's role/goal — same source of truth as the
- *  Agents page card, so the chat header reads the employee identically.
- *  Falls back to the agent's description when no triad is set. */
-function agentTagline(agent: Agent): string {
-  const profile = parsePrompt(agent.systemPrompt)
-  return deriveTagline(profile, agent.description) || (agent.description || '')
-}
-
-const currentAgentTagline = computed(() =>
-  currentAgent.value ? agentTagline(currentAgent.value) : '',
-)
 /** Human label for the agent's runtime mode — surfaces in the badge tooltip
  *  only, never in the visible header. */
 const currentAgentRuntimeMode = computed(() => {
@@ -737,10 +621,9 @@ const currentAgentRuntimeMode = computed(() => {
   return a.agentType === 'react' ? t('agents.types.react') : t('agents.types.planExecute')
 })
 
-// 按日期分组的会话列表
 // Per-conversation last-viewed timestamp store (localStorage-backed, MVP).
-// Keyed by conversationId. Updated when user opens a conversation; read by
-// hasUnread() to decide whether to render the small accent dot in the sidebar.
+// Keyed by conversationId. Updated when the user opens a conversation; the
+// sidebar reads it (ConversationSidebar.hasUnread) to render the accent dot.
 // Will move to a server-side table once we want cross-device read state.
 const VIEWED_KEY_PREFIX = 'mc-conv-viewed:'
 function markConversationViewed(conversationId: string | undefined, lastActiveTime?: string) {
@@ -752,60 +635,27 @@ function markConversationViewed(conversationId: string | undefined, lastActiveTi
     // localStorage full / disabled — degrade silently; dot just stays on.
   }
 }
-function hasUnread(conv: Conversation): boolean {
-  // Only the unified tasks_<wsId> conversation gets the unread treatment.
-  // Regular chats have explicit user attention via the streaming bubble itself,
-  // and IM-mirror conversations carry their own platform badges in IM apps.
-  if (!conv.conversationId || !conv.conversationId.startsWith('tasks_')) return false
-  if (!conv.lastActiveTime) return false
-  const lastActive = new Date(conv.lastActiveTime).getTime()
-  if (!Number.isFinite(lastActive)) return false
-  let viewed = 0
-  try {
-    viewed = Number(localStorage.getItem(VIEWED_KEY_PREFIX + conv.conversationId) || '0')
-  } catch {
-    // Treat as never-viewed when storage is unavailable.
-  }
-  // Currently-active conversation is implicitly read.
-  if (currentConversationId.value === conv.conversationId) return false
-  return lastActive > viewed
-}
-
-const groupedConversations = computed(() => {
-  const now = new Date()
-  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
-  const yesterdayStart = todayStart - 86400000
-  const last7Start = todayStart - 7 * 86400000
-
-  // Pinned group always sits at the top so the unified cron output (tasks_<wsId>)
-  // is reachable in one glance even after a busy day pushes other conversations
-  // ahead of it. Only the unified-cron conversation pattern is pinned for now;
-  // we'll generalize when we have other always-visible conversations.
-  const pinned: Conversation[] = []
-  const groups: { label: string; items: Conversation[] }[] = [
-    { label: t('chat.datePinned', '置顶'), items: pinned },
-    { label: t('chat.dateToday'), items: [] },
-    { label: t('chat.dateYesterday'), items: [] },
-    { label: t('chat.dateLast7Days'), items: [] },
-    { label: t('chat.dateEarlier'), items: [] },
-  ]
-
-  for (const conv of conversations.value) {
-    if (conv.conversationId && conv.conversationId.startsWith('tasks_')) {
-      pinned.push(conv)
-      continue
-    }
-    const ts = conv.lastActiveTime ? new Date(conv.lastActiveTime).getTime() : 0
-    if (ts >= todayStart) groups[1].items.push(conv)
-    else if (ts >= yesterdayStart) groups[2].items.push(conv)
-    else if (ts >= last7Start) groups[3].items.push(conv)
-    else groups[4].items.push(conv)
-  }
-
-  return groups.filter(g => g.items.length > 0)
-})
 
 const currentRuntimeModel = computed(() => {
+  // Bind to the per-conversation active model — the same source the model
+  // selector reads — so the indicator updates the instant the user switches.
+  // Reading the global defaultModel here left the indicator frozen on the
+  // default while the selector moved.
+  const providerId = activeModels.value?.activeLlm?.providerId
+  const modelName = activeModels.value?.activeLlm?.model
+  if (providerId && modelName) {
+    const provider = providers.value.find((p) => p.id === providerId)
+    const all = provider ? [...(provider.models || []), ...(provider.extraModels || [])] : []
+    const hit = all.find((m) => m.id === modelName || m.name === modelName)
+    if (hit) return `${hit.name || hit.id} (${hit.id})`
+    // Viewer-level users get an empty providers list — resolve via /models/enabled.
+    const em = enabledModels.value.find(
+      (m) => m.provider === providerId && (m.modelName === modelName || m.name === modelName)
+    )
+    if (em) return em.name ? `${em.name} (${em.modelName})` : em.modelName
+    return modelName
+  }
+  // No active model resolved yet — fall back to the global default, then the agent.
   if (defaultModel.value?.name && defaultModel.value?.modelName) {
     return `${defaultModel.value.name} (${defaultModel.value.modelName})`
   }
@@ -845,7 +695,18 @@ const activeModelValue = computed(() => {
 const activeModelLabel = computed(() => {
   if (!activeModelValue.value) return ''
   const match = eligibleModels.value.find(m => m.value === activeModelValue.value)
-  return match?.label || ''
+  if (match?.label) return match.label
+  // Viewer-level users have an empty providers list (admin-only endpoint), so
+  // eligibleModels is empty even when there IS an active model. Fall back to
+  // the viewer-readable /models/enabled list to resolve a display name —
+  // otherwise the trigger button would read "配置模型" forever.
+  const providerId = activeModels.value?.activeLlm?.providerId
+  const modelName = activeModels.value?.activeLlm?.model
+  if (!providerId || !modelName) return ''
+  const hit = enabledModels.value.find(m =>
+    m.provider === providerId && (m.modelName === modelName || m.name === modelName))
+  if (hit) return hit.name ? `${hit.name} (${hit.modelName})` : hit.modelName
+  return `${providerId} / ${modelName}`
 })
 
 const activeProvider = computed(() => {
@@ -969,22 +830,46 @@ const eligibleModels = computed(() => {
 })
 
 // ============ 生命周期 ============
-function handleKeyboardShortcuts(e: KeyboardEvent) {
-  const mod = e.metaKey || e.ctrlKey
-  if (mod && e.key === 'n') {
-    e.preventDefault()
+// Global shortcuts (Ctrl+K agents, Ctrl+N new chat) live in MainLayout so they
+// work from any page; this view reacts to the dispatched event when mounted.
+function handleChatShortcut(e: Event) {
+  const action = (e as CustomEvent).detail as 'newChat' | undefined
+  if (action === 'newChat') {
     newConversation()
-    chatInputRef.value?.focus?.()
+    nextTick(() => chatInputRef.value?.focus?.())
   }
-  if (mod && e.key === 'k') {
-    e.preventDefault()
-    agentDropdownOpen.value = !agentDropdownOpen.value
+}
+
+// Cross-page hand-off from MainLayout's global shortcuts: read once on mount
+// (before loadAgents triggers syncRouteState, which would wipe the action key)
+// and apply after agents are loaded so the dropdown actually has something to show.
+let pendingRouteAction: 'newChat' | '' = ''
+
+function captureRouteAction() {
+  const action = route.query.action
+  if (action === 'newChat') {
+    pendingRouteAction = action
+  }
+}
+
+function applyPendingRouteAction() {
+  const action = pendingRouteAction
+  pendingRouteAction = ''
+  if (action === 'newChat') {
+    newConversation()
+    nextTick(() => chatInputRef.value?.focus?.())
   }
 }
 
 // 轮询定时器：让 ChatConsole 能实时感知外部渠道（WeChat/DingTalk/…）推进来的新消息，
 // 无需 F5 即可看到侧栏列表更新和选中会话的消息/流状态。
 let activityPollTimer: number | null = null
+// Reentrancy guard: setInterval fires every ACTIVITY_POLL_MS regardless of
+// whether the previous async pollActivity has finished. If one cycle runs long
+// (slow reconnectStream / sluggish backend), unguarded ticks stack up and run
+// concurrently, multiplying in-flight requests. This flag keeps one cycle at a
+// time — late ticks become no-ops until the running cycle returns.
+let activityPolling = false
 const ACTIVITY_POLL_MS = 4000
 
 // Cron progress placeholder: when a cron job is mid-run on the currently
@@ -1058,56 +943,59 @@ function hasLocalOnlyFailedTail(): boolean {
 async function pollActivity() {
   // 页面不可见时不轮询，避免切到别的标签还在空耗
   if (typeof document !== 'undefined' && document.hidden) return
+  // Skip when the previous cycle is still running so slow polls can't stack.
+  if (activityPolling) return
+  activityPolling = true
   try {
-    await loadConversations()
-  } catch {
-    // 静默失败，下一轮再试
-  }
-  // 自己没在生成时才刷新当前选中会话的消息 + 探测是否该接入流
-  if (currentConversationId.value && !isGenerating.value && streamPhase.value !== 'awaiting_approval') {
-    const cid = currentConversationId.value
     try {
-      const statusRes: any = await conversationApi.getStatus(cid)
-      if (currentConversationId.value !== cid) return
-      const running = statusRes?.data?.streamStatus === 'running'
-      if (running) {
-        // 外部渠道正在跑：
-        // 1. 先从 DB 拉消息，把刚插入的 user 消息（"你在干什么"之类）带进来，
-        //    否则只接入流的话前端只能看到 assistant content_delta，看不到用户问题。
-        // 2. 再接入流，让后续 content_delta 实时累积到 assistant 气泡。
-        await refreshCurrentConversationMessages(cid)
-        if (currentConversationId.value !== cid || isGenerating.value) return
-        await reconnectStream(cid)
-      } else if (!hasLocalOnlyFailedTail()) {
-        // 不在跑：从 DB 对齐消息（新 user 消息 / 刚落库 assistant 会合并进来）。
-        // 但若末尾是本地失败气泡（SSE setup 失败一类，后端从未持久化过），
-        // 就跳过对齐 —— 不然这次的 user/失败 assistant 会被 DB 快照覆盖掉，
-        // 用户除了上面的 toast 看不到任何痕迹。
-        await refreshCurrentConversationMessages(cid)
-      }
+      await loadConversations()
     } catch {
-      // 忽略探测失败
+      // 静默失败，下一轮再试
     }
-    // Cron progress placeholder — independent of streamStatus because cron
-    // runs use the non-streaming chat() path, so streamStatus stays idle.
-    await refreshActiveCronRuns(cid)
+    // 自己没在生成时才刷新当前选中会话的消息 + 探测是否该接入流
+    if (currentConversationId.value && !isGenerating.value && streamPhase.value !== 'awaiting_approval') {
+      const cid = currentConversationId.value
+      try {
+        const statusRes: any = await conversationApi.getStatus(cid)
+        if (currentConversationId.value !== cid) return
+        const running = statusRes?.data?.streamStatus === 'running'
+        if (running) {
+          // 外部渠道正在跑：
+          // 1. 先从 DB 拉消息，把刚插入的 user 消息（"你在干什么"之类）带进来，
+          //    否则只接入流的话前端只能看到 assistant content_delta，看不到用户问题。
+          // 2. 再接入流，让后续 content_delta 实时累积到 assistant 气泡。
+          await refreshCurrentConversationMessages(cid)
+          if (currentConversationId.value !== cid || isGenerating.value) return
+          await reconnectStream(cid)
+        } else if (!hasLocalOnlyFailedTail()) {
+          // 不在跑：从 DB 对齐消息（新 user 消息 / 刚落库 assistant 会合并进来）。
+          // 但若末尾是本地失败气泡（SSE setup 失败一类，后端从未持久化过），
+          // 就跳过对齐 —— 不然这次的 user/失败 assistant 会被 DB 快照覆盖掉，
+          // 用户除了上面的 toast 看不到任何痕迹。
+          await refreshCurrentConversationMessages(cid)
+        }
+      } catch {
+        // 忽略探测失败
+      }
+      // Cron progress placeholder — independent of streamStatus because cron
+      // runs use the non-streaming chat() path, so streamStatus stays idle.
+      await refreshActiveCronRuns(cid)
+    }
+  } finally {
+    activityPolling = false
   }
 }
 
 onMounted(async () => {
-  document.addEventListener('keydown', handleKeyboardShortcuts)
+  captureRouteAction()
+  window.addEventListener('mc:chat-shortcut', handleChatShortcut)
   document.addEventListener('click', handleCodeCopy)
   startECharts()
   startKatex()
   startMermaid()
-  mobileQuery = window.matchMedia('(max-width: 768px)')
-  handleMobileChange(mobileQuery)
-  mobileQuery.addEventListener('change', handleMobileChange)
-  mediumQuery = window.matchMedia('(max-width: 1200px)')
-  handleConvMediumChange(mediumQuery)
-  mediumQuery.addEventListener('change', handleConvMediumChange)
   await Promise.all([loadAgents(), loadModelState(), loadConversations()])
   await hydrateStateFromRoute()
+  applyPendingRouteAction()
   activityPollTimer = window.setInterval(pollActivity, ACTIVITY_POLL_MS)
   elapsedTickTimer = window.setInterval(() => {
     if (activeCronRuns.value.length > 0) elapsedNow.value = Date.now()
@@ -1115,13 +1003,11 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
-  document.removeEventListener('keydown', handleKeyboardShortcuts)
+  window.removeEventListener('mc:chat-shortcut', handleChatShortcut)
   document.removeEventListener('click', handleCodeCopy)
   disposeECharts()
   disposeKatex()
   disposeMermaid()
-  mobileQuery?.removeEventListener('change', handleMobileChange)
-  mediumQuery?.removeEventListener('change', handleConvMediumChange)
   if (activityPollTimer !== null) {
     clearInterval(activityPollTimer)
     activityPollTimer = null
@@ -1140,12 +1026,117 @@ onBeforeUnmount(() => {
 })
 
 watch(() => route.query, () => {
+  // If a fresh action arrives (e.g. user re-fires Ctrl+K via the URL while
+  // the view is already alive), pick it up immediately.
+  captureRouteAction()
+  if (pendingRouteAction) applyPendingRouteAction()
   void hydrateStateFromRoute()
 })
 
 watch([selectedAgentId, currentConversationId], () => {
   syncRouteState()
 })
+
+// Load the active goal whenever the user switches conversation. The
+// avatar ring listens on goalStore.activeGoalByConv[cid]; without this
+// fetch the ring would only appear after an SSE event mutated the store.
+const goalStore = useGoalStore()
+const workspaceStoreForGoal = useWorkspaceStore()
+const currentWorkspaceId = computed(() => workspaceStoreForGoal.currentWorkspaceId ?? '1')
+watch(currentConversationId, async (cid) => {
+  if (cid) {
+    await goalStore.loadActiveForConversation(cid)
+  }
+}, { immediate: true })
+
+// Derive props for the inline prompt + system-line slots that sit
+// between MessageList and ChatInput. The prompt shows only when:
+//   1) there's a current conversation, agent, and at least one assistant
+//      reply (otherwise the prompt is premature);
+//   2) there's no active goal (the ring already covers active state);
+//   3) the user hasn't dismissed the prompt on this conv;
+//   4) we're not mid-stream (don't pop suggestions while the agent
+//      is still typing).
+const goalTerminalForCurrent = computed(() =>
+  currentConversationId.value
+    ? goalStore.recentTerminal(currentConversationId.value)
+    : null,
+)
+const goalSystemLineTitle = computed(() => {
+  const t = goalTerminalForCurrent.value
+  if (!t) return ''
+  // The leading icon is owned by GoalSystemLine (✦ / ⚠) so we don't
+  // prepend one here — doing so produced "✦ 🎉 …" double-glyph titles.
+  return t.status === 'completed' ? `目标达成 · ${t.title}` : `这次的预算用完了 · ${t.title}`
+})
+const goalSystemLineDetail = computed(() => {
+  const t = goalTerminalForCurrent.value
+  if (!t) return ''
+  if (t.status === 'completed') {
+    return t.score != null
+      ? `已完成 · final score ${t.score.toFixed(2)}`
+      : '已完成 · 总结已存入长期记忆'
+  }
+  // exhausted
+  if (t.reason === 'turn_budget') return '预算轮数用完。'
+  if (t.reason === 'llm_call_budget') return 'LLM 调用预算用完。'
+  return '预算耗尽。'
+})
+
+const showGoalSetPrompt = computed(() => {
+  if (!currentConversationId.value || !selectedAgentId.value) return false
+  if (isGenerating.value) return false
+  // Active goal? The ring covers that — no need for a prompt.
+  if (goalStore.activeGoal(currentConversationId.value)) return false
+  // Recent terminal still showing? Let the user dismiss that first.
+  if (goalTerminalForCurrent.value) return false
+  if (goalStore.isPromptDismissed(currentConversationId.value)) return false
+  // Need at least one user → assistant exchange so the prompt has
+  // context to derive a suggested title from.
+  const hasAssistantReply = messages.value.some(m => m.role === 'assistant')
+  if (!hasAssistantReply) return false
+  // Heuristic: don't claim "this looks multi-turn" without evidence. Fire
+  // the prompt only when at least one signal of a real ongoing task is
+  // present. Without these the prompt fires after one-shot Q&A like
+  // "三句话告诉我 X" and the copy lies to the user.
+  const userTurns = messages.value.filter(m => m.role === 'user').length
+  if (userTurns >= 2) return true // multiple user messages = ongoing thread
+  // Single-turn case: only suggest if the agent did non-trivial work.
+  return messages.value.some(m => {
+    if (m.role !== 'assistant') return false
+    const md: any = (m as any).metadata
+    if (!md) return false
+    // Tool calls — strongest signal of real work.
+    if (Array.isArray(md.toolCalls) && md.toolCalls.length > 0) return true
+    // Plan steps — Plan-Execute agent ran a multi-step plan.
+    if (md.plan && Array.isArray(md.plan.steps) && md.plan.steps.length > 1) return true
+    // Multiple ReAct iterations / segments — agent looped.
+    if (Array.isArray(md.segments) && md.segments.length > 3) return true
+    return false
+  })
+})
+
+// Build a sensible default title from the conversation's first user
+// message. The user can always edit later via the goal page.
+const goalSuggestedTitle = computed(() => {
+  const firstUser = messages.value.find(m => m.role === 'user')
+  const raw = (firstUser?.content || '').trim()
+  if (!raw) return '新目标'
+  // 80 char clip mirrors GoalController.create validation.
+  return raw.length > 80 ? raw.slice(0, 77) + '...' : raw
+})
+
+function onGoalPromptDismiss() {
+  if (currentConversationId.value) {
+    goalStore.dismissPrompt(currentConversationId.value)
+  }
+}
+
+function onGoalSystemLineDismiss() {
+  if (currentConversationId.value) {
+    goalStore.clearRecentTerminal(currentConversationId.value)
+  }
+}
 
 // Refetch agent capabilities (modalities + sidecar config) on agent change so
 // the multimodal routing hint above the input box can react synchronously when
@@ -1163,33 +1154,63 @@ watch(selectedAgentId, async (id) => {
 // ============ 方法 ============
 async function loadAgents() {
   try {
-    const res: any = await agentApi.list()
+    // Hide disabled agents from the picker — they cannot be chatted with
+    // (the chat endpoints reject disabled agents), so showing them invites
+    // a confusing failure path. The admin Agents view passes no filter.
+    const res: any = await agentApi.list({ enabled: true })
     agents.value = res.data || []
     // 只有在 URL 没有指定 agentId 且当前无选中时，才默认选第一个
     if (agents.value.length > 0 && !selectedAgentId.value && !route.query.agentId) {
       selectedAgentId.value = agents.value[0].id
     }
   } catch (e) {
-    ElMessage.error(t('chat.loadAgentsFailed'))
+    mcToast.error(t('chat.loadAgentsFailed'))
   }
 }
 
 async function loadModelState() {
+  // /default + /active + /enabled are viewer-accessible and required to chat.
+  // /models (provider list) is admin-only because it returns API keys + base
+  // URLs; viewers degrade to "trust the active model, skip the liveness
+  // banner" and resolve the label via /enabled instead.
   try {
-    const [defaultRes, providersRes, activeRes]: any = await Promise.all([
+    const [defaultRes, activeRes, enabledRes]: any = await Promise.all([
       modelApi.getDefault(),
-      modelApi.listProviders(),
       modelApi.getActive(),
+      modelApi.listEnabled(),
     ])
     defaultModel.value = defaultRes.data || null
-    providers.value = providersRes.data || []
-    activeModels.value = activeRes.data || null
-    recomputePromptFlags()
+    const ga = activeRes.data?.activeLlm
+    globalDefaultModel.value = ga?.providerId && ga?.model
+      ? { providerId: ga.providerId, model: ga.model }
+      : null
+    // Seed the selector when no conversation has set it yet (fresh chat, or
+    // before a conversation is selected). A conversation that already has a
+    // model keeps it — selectConversation/applyConversationModel own that.
+    if (!activeModels.value && globalDefaultModel.value) {
+      activeModels.value = { activeLlm: { ...globalDefaultModel.value } }
+    }
+    enabledModels.value = enabledRes.data || []
   } catch (e) {
-    ElMessage.error(t('chat.loadModelFailed'))
+    mcToast.error(t('chat.loadModelFailed'))
     blockingPrompt.value = true
     recoverablePrompt.value = false
+    return
   }
+  try {
+    const providersRes: any = await modelApi.listProviders()
+    providers.value = providersRes.data || []
+    providersUnavailable.value = false
+  } catch (e: any) {
+    if (e?.response?.status === 403) {
+      providers.value = []
+      providersUnavailable.value = true
+    } else {
+      // Non-403 failure is still a real problem worth surfacing.
+      mcToast.error(t('chat.loadModelFailed'))
+    }
+  }
+  recomputePromptFlags()
 }
 
 /**
@@ -1204,6 +1225,16 @@ function recomputePromptFlags() {
   const active = activeModels.value?.activeLlm
   if (!active?.providerId || !active?.model) {
     blockingPrompt.value = true
+    recoverablePrompt.value = false
+    recoverableDismissed.value = false
+    return
+  }
+  // Viewer-level users cannot read the provider list (admin-only because it
+  // returns API keys), so we can't compute liveness. Trust the active model
+  // and let the agent runtime surface any per-call failure instead of
+  // blocking the entire chat surface.
+  if (providersUnavailable.value) {
+    blockingPrompt.value = false
     recoverablePrompt.value = false
     recoverableDismissed.value = false
     return
@@ -1236,7 +1267,7 @@ async function loadConversations() {
     const res: any = await conversationApi.list()
     conversations.value = res.data || []
   } catch (e) {
-    ElMessage.error(t('chat.loadConversationsFailed'))
+    mcToast.error(t('chat.loadConversationsFailed'))
   }
 }
 
@@ -1322,6 +1353,8 @@ async function selectConversation(conv: Conversation) {
   }
   currentConversationId.value = conv.conversationId
   selectedAgentId.value = conv.agentId || selectedAgentId.value
+  // Restore this conversation's pinned model into the selector.
+  applyConversationModel(conv)
   // Reset cron placeholder state up front; the immediate fetch below repopulates
   // it for cron conversations so the user doesn't wait up to 4s for the next tick.
   activeCronRuns.value = []
@@ -1443,7 +1476,7 @@ async function selectConversation(conv: Conversation) {
       await reconnectStream(requestedConvId)
     }
   } catch (e) {
-    ElMessage.error(t('chat.loadMessagesFailed'))
+    mcToast.error(t('chat.loadMessagesFailed'))
   }
 }
 
@@ -1453,19 +1486,19 @@ function newConversation() {
   resetForNewConversation()
   currentConversationId.value = `conv_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
   messages.value = []
+  // A fresh conversation starts on the global default model.
+  applyConversationModel()
 }
 
-async function deleteConversation(conversationId: string) {
-  try {
-    await conversationApi.delete(conversationId)
-    conversations.value = conversations.value.filter(c => c.conversationId !== conversationId)
-    if (currentConversationId.value === conversationId) {
-      resetStreamingState()
-      messages.value = []
-      currentConversationId.value = ''
-    }
-  } catch (e) {
-    ElMessage.error(t('chat.deleteConversationFailed'))
+// The sidebar performs the delete API call(s) and emits the removed ids.
+// Drop them from the local list and reset the chat area if the conversation
+// currently open was among those deleted.
+function onConversationsDeleted(ids: string[]) {
+  conversations.value = conversations.value.filter(c => !ids.includes(c.conversationId))
+  if (ids.includes(currentConversationId.value)) {
+    resetStreamingState()
+    messages.value = []
+    currentConversationId.value = ''
   }
 }
 
@@ -1479,8 +1512,6 @@ async function clearMessages() {
     messages.value = []
   }
 }
-
-// onAgentChange removed — replaced by selectAgent()
 
 // onModelChange removed — replaced by selectModel()
 
@@ -1550,7 +1581,7 @@ async function handleSendMessage(content: string) {
   const trimmed = content.trim().toLowerCase()
   if (trimmed === '/approve' || trimmed === '/deny') {
     if (!currentConversationId.value) {
-      ElMessage.warning('No active conversation')
+      mcToast.warning('No active conversation')
       inputText.value = ''
       chatInputRef.value?.clear?.()
       return
@@ -1561,7 +1592,7 @@ async function handleSendMessage(content: string) {
       m => m.role === 'assistant' && (m as any).metadata?.pendingApproval?.status === 'pending_approval'
     )
     if (!pendingMsg) {
-      ElMessage.warning('No pending approval to process')
+      mcToast.warning('No pending approval to process')
       inputText.value = ''
       chatInputRef.value?.clear?.()
       return
@@ -1585,7 +1616,7 @@ async function handleSendMessage(content: string) {
       console.error('Approval stream failed:', e)
       // 回滚乐观更新
       ;(pendingMsg as any).metadata.pendingApproval.status = 'pending_approval'
-      ElMessage.error(e?.message || 'Approval failed')
+      mcToast.error(e?.message || 'Approval failed')
     }
     return
   }
@@ -1624,6 +1655,8 @@ async function handleSendMessage(content: string) {
       agentId: selectedAgentId.value,
       contentParts,
       thinkingLevel: thinkingLevel.value,
+      modelProvider: activeModels.value?.activeLlm?.providerId,
+      modelName: activeModels.value?.activeLlm?.model,
       attachments: outgoingAttachments.map(a => ({
         type: 'file' as const,
         fileUrl: a.url,
@@ -1692,7 +1725,7 @@ async function reconnectStream(conversationId: string) {
     await reconnectChatStream(conversationId)
   } catch (e) {
     console.error('[ChatConsole] Reconnect failed:', e)
-    ElMessage.warning(t('chat.reconnectFailed') || 'Stream reconnection failed')
+    mcToast.warning(t('chat.reconnectFailed') || 'Stream reconnection failed')
   }
 }
 
@@ -1733,7 +1766,7 @@ async function handleFileSelect(files: File[]) {
       })
     }
   } catch (e) {
-    ElMessage.error(t('chat.uploadFailed'))
+    mcToast.error(t('chat.uploadFailed'))
   } finally {
     uploadingAttachment.value = false
   }
@@ -1899,15 +1932,6 @@ function parseThinkingContent(raw: string): { content: string; thinking: string;
   }
 }
 
-function formatConversationTime(time?: string) {
-  if (!time) return t('chat.timeJustNow')
-  const date = new Date(time)
-  const diff = Date.now() - date.getTime()
-  if (diff < 60 * 60 * 1000) return t('chat.timeMinutesAgo', { n: Math.max(1, Math.floor(diff / (60 * 1000))) })
-  if (diff < 24 * 60 * 60 * 1000) return t('chat.timeHoursAgo', { n: Math.floor(diff / (60 * 60 * 1000)) })
-  return date.toLocaleDateString()
-}
-
 function handleCodeCopy(e: MouseEvent) {
   // Mermaid download button shares the same global click delegation. Handle
   // it first so the SVG export beats the copy-button selector below if the
@@ -1933,7 +1957,7 @@ function handleCodeCopy(e: MouseEvent) {
       if (textEl) textEl.textContent = t('chat.copy')
     }, 1500)
   }).catch(() => {
-    ElMessage.error(t('chat.copyFailed'))
+    mcToast.error(t('chat.copyFailed'))
   })
 }
 </script>
@@ -1986,466 +2010,6 @@ function handleCodeCopy(e: MouseEvent) {
   height: 100%;
   overflow: hidden;
   min-height: 0;
-}
-
-.conversation-panel {
-  width: 248px;
-  min-width: 248px;
-  background: linear-gradient(180deg, var(--mc-panel-top), var(--mc-panel-bottom));
-  border-right: 1px solid var(--mc-border-light);
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  transition: width 0.25s ease, min-width 0.25s ease;
-}
-
-.conversation-panel.conv-collapsed {
-  width: 54px;
-  min-width: 54px;
-}
-
-.conversation-panel.conv-collapsed .panel-header {
-  justify-content: center;
-  padding: 14px 8px 12px;
-}
-
-.conversation-panel.conv-collapsed .agent-selector {
-  padding: 10px 6px 12px;
-}
-
-.conversation-panel.conv-collapsed .agent-select-trigger {
-  justify-content: center;
-  padding: 8px;
-}
-
-.conversation-panel.conv-collapsed .agent-dropdown {
-  position: fixed;
-  top: auto;
-  left: 62px;
-  right: auto;
-  min-width: 260px;
-}
-
-.conversation-panel.conv-collapsed .conv-item {
-  justify-content: center;
-  padding: 10px 6px;
-}
-
-.conversation-panel.conv-collapsed .conv-icon {
-  margin: 0;
-}
-
-.conv-collapse-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 100%;
-  height: 28px;
-  border: none;
-  border-bottom: 1px solid var(--mc-border-light);
-  background: transparent;
-  color: var(--mc-text-tertiary);
-  cursor: pointer;
-  transition: all 0.15s;
-  flex-shrink: 0;
-}
-
-.conv-collapse-btn:hover {
-  background: var(--mc-bg-muted);
-  color: var(--mc-text-primary);
-}
-
-.panel-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 14px 14px 12px;
-  border-bottom: 1px solid var(--mc-border-light);
-}
-
-.panel-header-copy {
-  min-width: 0;
-}
-
-.panel-kicker {
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--mc-accent);
-  margin-bottom: 4px;
-}
-
-.panel-title {
-  font-size: 16px;
-  font-weight: 700;
-  color: var(--mc-text-primary);
-  margin: 0;
-  letter-spacing: -0.03em;
-}
-
-.new-chat-btn {
-  width: 28px;
-  height: 28px;
-  border: 1px solid var(--mc-border);
-  background: var(--mc-panel-raised);
-  border-radius: 10px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--mc-text-primary);
-  transition: all 0.15s;
-}
-
-.new-chat-btn:hover {
-  background: var(--mc-primary);
-  border-color: var(--mc-primary);
-  color: white;
-}
-
-.agent-selector {
-  padding: 10px 12px 12px;
-  border-bottom: 1px solid var(--mc-border-light);
-  position: relative;
-}
-
-.agent-select-trigger {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  border: 1px solid var(--mc-border);
-  border-radius: 12px;
-  font-size: 13px;
-  color: var(--mc-text-primary);
-  background: var(--mc-bg-sunken);
-  cursor: pointer;
-  outline: none;
-  transition: all 0.15s;
-}
-
-.agent-select-trigger:hover {
-  border-color: var(--mc-primary);
-  background: var(--mc-bg-elevated);
-}
-
-.agent-select-trigger__icon {
-  font-size: 18px;
-  line-height: 1;
-}
-
-.agent-select-trigger__name {
-  flex: 1;
-  text-align: left;
-  font-weight: 500;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.agent-select-trigger__arrow {
-  flex-shrink: 0;
-  color: var(--mc-text-tertiary);
-  transition: transform 0.2s;
-}
-
-.agent-select-trigger__arrow.open {
-  transform: rotate(180deg);
-}
-
-.agent-dropdown-backdrop,
-.model-dropdown-backdrop,
-.header-menu-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 99;
-}
-
-.agent-dropdown {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 12px;
-  right: 12px;
-  min-width: 240px;
-  z-index: 100;
-  background: var(--mc-bg-elevated);
-  border: 1px solid var(--mc-border);
-  border-radius: 14px;
-  padding: 6px;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
-  max-height: 320px;
-  overflow-y: auto;
-}
-
-.agent-dropdown-item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
-  border-radius: 10px;
-  cursor: pointer;
-  transition: background 0.12s;
-}
-
-.agent-dropdown-item:hover {
-  background: var(--mc-bg-sunken);
-}
-
-.agent-dropdown-item.active {
-  background: var(--mc-primary-bg);
-}
-
-.agent-dropdown-item__icon {
-  font-size: 24px;
-  line-height: 1;
-  flex-shrink: 0;
-}
-
-.agent-dropdown-item__info {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.agent-dropdown-item__name {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--mc-text-primary);
-}
-
-.agent-dropdown-item__desc {
-  font-size: 11px;
-  color: var(--mc-text-tertiary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.agent-dropdown-item__check {
-  flex-shrink: 0;
-  color: var(--mc-primary);
-}
-
-.agent-dropdown-empty {
-  padding: 16px;
-  text-align: center;
-  font-size: 13px;
-  color: var(--mc-text-tertiary);
-}
-
-.agent-dropdown-enter-active {
-  transition: all 0.15s ease-out;
-}
-.agent-dropdown-leave-active {
-  transition: all 0.1s ease-in;
-}
-.agent-dropdown-enter-from {
-  opacity: 0;
-  transform: translateY(-6px) scale(0.97);
-}
-.agent-dropdown-leave-to {
-  opacity: 0;
-  transform: translateY(-4px) scale(0.98);
-}
-
-.conversation-list {
-  flex: 1;
-  overflow-y: auto;
-  padding: 8px;
-}
-
-.conv-group-title {
-  padding: 10px 10px 6px;
-  font-size: 10px;
-  font-weight: 700;
-  color: var(--mc-text-tertiary);
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
-}
-
-.conv-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 11px;
-  border-radius: 14px;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-
-.conv-item:hover {
-  background: var(--mc-bg-sunken);
-  transform: translateY(-1px);
-}
-
-.conv-item.active {
-  background: var(--mc-primary-bg);
-}
-
-.conv-item:hover .conv-delete {
-  opacity: 1;
-}
-
-.conv-icon {
-  color: var(--mc-text-tertiary);
-  flex-shrink: 0;
-  position: relative;
-}
-
-.conv-item.active .conv-icon {
-  color: var(--mc-primary);
-}
-
-/* 正在执行：图标右上角脉冲小点（折叠与展开态均可见） */
-.conv-running-dot {
-  position: absolute;
-  top: -2px;
-  right: -2px;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: #fbbf24;
-  box-shadow: 0 0 4px rgba(251, 191, 36, 0.6), 0 0 0 2px var(--mc-bg-primary, #fff);
-  animation: pulse-dot 1.2s infinite;
-  pointer-events: none;
-}
-
-/* Inline unread accent dot — shown next to title when a conversation has
-   activity since the user's last view (currently scoped to tasks_<wsId>). */
-.conv-unread-dot {
-  display: inline-block;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--mc-primary, #d97757);
-  margin-left: 6px;
-  flex-shrink: 0;
-  vertical-align: middle;
-}
-
-.conv-item.is-running {
-  background: color-mix(in srgb, #fbbf24 8%, transparent);
-}
-
-.conv-item.is-running:hover {
-  background: color-mix(in srgb, #fbbf24 14%, var(--mc-bg-sunken));
-}
-
-.conv-item.is-running.active {
-  background: var(--mc-primary-bg);
-}
-
-/* 展开态：标题右侧"生成中..."小徽章 */
-.conv-running-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  flex-shrink: 0;
-  font-size: 10px;
-  font-weight: 500;
-  color: #b45309;
-  background: rgba(251, 191, 36, 0.15);
-  border: 1px solid rgba(251, 191, 36, 0.3);
-  padding: 1px 6px 1px 5px;
-  border-radius: 10px;
-  line-height: 1.3;
-  white-space: nowrap;
-}
-
-.conv-running-badge-pulse {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: #f59e0b;
-  animation: pulse-dot 1.2s infinite;
-}
-
-.conv-info {
-  flex: 1;
-  overflow: hidden;
-}
-
-.conv-title {
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--mc-text-primary);
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-}
-
-/* 标题文本本身承担省略号；flex 父级上的 overflow:hidden 会阻止 ellipsis 正常工作 */
-.conv-title > span:first-child {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  min-width: 0;
-  flex: 1 1 auto;
-}
-
-.conv-item.active .conv-title {
-  color: var(--mc-primary);
-}
-
-.conv-meta {
-  font-size: 11px;
-  color: var(--mc-text-tertiary);
-  margin-top: 1px;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.conv-dot {
-  color: var(--mc-text-tertiary);
-}
-
-.conv-title-input {
-  width: 100%;
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--mc-text-primary);
-  background: var(--mc-bg-elevated);
-  border: 1px solid var(--mc-primary);
-  border-radius: 6px;
-  padding: 2px 6px;
-  outline: none;
-  box-shadow: 0 0 0 2px rgba(217, 119, 87, 0.15);
-}
-
-.conv-delete {
-  opacity: 0;
-  width: 22px;
-  height: 22px;
-  border: none;
-  background: none;
-  cursor: pointer;
-  color: var(--mc-text-tertiary);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 4px;
-  padding: 0;
-  flex-shrink: 0;
-  transition: all 0.15s;
-}
-
-.conv-delete:hover {
-  background: var(--mc-danger-bg);
-  color: var(--mc-danger);
-}
-
-.empty-convs {
-  text-align: center;
-  padding: 32px 16px;
-  color: var(--mc-text-tertiary);
-  font-size: 13px;
-  line-height: 1.8;
 }
 
 .chat-area {
@@ -2546,6 +2110,8 @@ function handleCodeCopy(e: MouseEvent) {
 }
 
 .agent-badge-icon {
+  display: flex;
+  align-items: center;
   font-size: 14px;
 }
 
@@ -2566,16 +2132,6 @@ function handleCodeCopy(e: MouseEvent) {
   line-height: 1.2;
 }
 
-/* The tagline answers "what does this employee do" — runtime mode lives in
-   the badge tooltip, not on screen, so we don't compete for attention. */
-.agent-badge-tagline {
-  font-size: 11px;
-  color: var(--mc-text-secondary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  line-height: 1.2;
-}
 
 .status-dot {
   width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; margin-left: 2px;
@@ -2597,49 +2153,6 @@ function handleCodeCopy(e: MouseEvent) {
 /* Header overflow menu */
 .header-overflow-wrap {
   position: relative;
-}
-
-.header-menu {
-  position: absolute;
-  top: calc(100% + 4px);
-  right: 0;
-  z-index: 100;
-  min-width: 180px;
-  background: var(--mc-bg-elevated);
-  border: 1px solid var(--mc-border);
-  border-radius: 12px;
-  padding: 4px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
-}
-
-.header-menu-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  padding: 9px 12px;
-  border: none;
-  background: none;
-  border-radius: 8px;
-  font-size: 13px;
-  color: var(--mc-text-primary);
-  cursor: pointer;
-  transition: background 0.12s;
-}
-
-.header-menu-item:hover {
-  background: var(--mc-bg-sunken);
-}
-
-.header-menu-item--danger:hover {
-  background: var(--mc-danger-bg);
-  color: var(--mc-danger);
-}
-
-.header-menu-divider {
-  height: 1px;
-  background: var(--mc-border-light);
-  margin: 2px 8px;
 }
 
 .header-btn {
@@ -2750,24 +2263,6 @@ function handleCodeCopy(e: MouseEvent) {
     overflow: hidden !important;
     border-radius: 0;
     border: none;
-  }
-
-  .conversation-panel {
-    position: fixed;
-    left: 0;
-    top: 0;
-    bottom: 0;
-    z-index: 100;
-    width: 272px;
-    min-width: 272px;
-    transform: translateX(-100%);
-    transition: transform 0.25s ease;
-    box-shadow: none;
-  }
-
-  .conversation-panel.mobile-open {
-    transform: translateX(0);
-    box-shadow: 4px 0 16px rgba(0, 0, 0, 0.1);
   }
 
   .conv-backdrop {

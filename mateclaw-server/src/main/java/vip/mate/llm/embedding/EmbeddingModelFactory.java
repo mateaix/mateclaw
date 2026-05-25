@@ -2,12 +2,15 @@ package vip.mate.llm.embedding;
 
 import com.alibaba.cloud.ai.autoconfigure.dashscope.DashScopeConnectionProperties;
 import com.alibaba.cloud.ai.dashscope.api.DashScopeApi;
-import com.alibaba.cloud.ai.dashscope.embedding.DashScopeEmbeddingModel;
-import com.alibaba.cloud.ai.dashscope.embedding.DashScopeEmbeddingOptions;
+import com.alibaba.cloud.ai.dashscope.embedding.text.DashScopeEmbeddingModel;
+import com.alibaba.cloud.ai.dashscope.embedding.text.DashScopeEmbeddingOptions;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.document.MetadataMode;
 import org.springframework.ai.embedding.EmbeddingModel;
+import org.springframework.ai.model.ApiKey;
+import org.springframework.ai.model.NoopApiKey;
+import org.springframework.ai.model.SimpleApiKey;
 import org.springframework.ai.openai.OpenAiEmbeddingModel;
 import org.springframework.ai.openai.OpenAiEmbeddingOptions;
 import org.springframework.ai.openai.api.OpenAiApi;
@@ -22,6 +25,7 @@ import vip.mate.llm.model.ModelProviderEntity;
 import vip.mate.llm.service.ModelProviderService;
 
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Pattern;
 
 /**
  * Embedding 模型工厂
@@ -54,6 +58,14 @@ public class EmbeddingModelFactory {
 
     /** 构造 API 时共享的 retry template（用 Spring AI 默认） */
     private static final RetryTemplate DEFAULT_RETRY = RetryUtils.DEFAULT_RETRY_TEMPLATE;
+
+    /**
+     * Trailing "/v{digits}" segment in a base URL — the OpenAI-compatible
+     * convention (/v1 OpenAI, /v3 Volcano Ark, /v4 Zhipu). When the base URL
+     * already carries a version segment, the default "/v1/embeddings" path
+     * would build a broken URL like ".../api/paas/v4/v1/embeddings".
+     */
+    private static final Pattern BASE_URL_VERSION_SUFFIX = Pattern.compile(".*/v\\d+$");
 
     /** 按 modelConfig.id 缓存 EmbeddingModel，config 变更时调用 {@link #evict} 清除 */
     private final ConcurrentHashMap<Long, EmbeddingModel> cache = new ConcurrentHashMap<>();
@@ -93,6 +105,25 @@ public class EmbeddingModelFactory {
         cache.clear();
     }
 
+    /**
+     * Pick the embedding protocol from the provider's {@code chatModel} column.
+     * Package-private for unit testing.
+     * <p>
+     * dashscope-compat carries 'dashscope' in its providerId but is wired with
+     * OpenAIChatModel + compatible-mode base URL, so substring-matching the
+     * providerId routed it to the native DashScope embedding endpoint and 404'd.
+     * Using the {@code chatModel} column matches {@link ModelProtocol#fromChatModel}
+     * for the chat path — same signal, same case-insensitive trim semantics.
+     */
+    static EmbeddingProtocol resolveEmbeddingProtocol(String chatModel) {
+        if (chatModel == null || chatModel.isBlank()) {
+            return EmbeddingProtocol.OPENAI_EMBEDDING;
+        }
+        return "DashScopeChatModel".equalsIgnoreCase(chatModel.trim())
+                ? EmbeddingProtocol.DASHSCOPE_EMBEDDING
+                : EmbeddingProtocol.OPENAI_EMBEDDING;
+    }
+
     // ==================== 内部实现 ====================
 
     private EmbeddingModel doBuild(ModelConfigEntity modelConfig) {
@@ -102,9 +133,9 @@ public class EmbeddingModelFactory {
                     "Embedding provider '" + modelConfig.getProvider() + "' not found in mate_model_provider");
         }
 
-        EmbeddingProtocol protocol = EmbeddingProtocol.fromProviderId(provider.getProviderId());
-        log.info("[EmbeddingFactory] Building embedding model: provider={}, model={}, protocol={}",
-                provider.getProviderId(), modelConfig.getModelName(), protocol);
+        EmbeddingProtocol protocol = resolveEmbeddingProtocol(provider.getChatModel());
+        log.info("[EmbeddingFactory] Building embedding model: provider={}, chatModel={}, model={}, protocol={}",
+                provider.getProviderId(), provider.getChatModel(), modelConfig.getModelName(), protocol);
 
         return switch (protocol) {
             case DASHSCOPE_EMBEDDING -> buildDashScope(provider, modelConfig);
@@ -149,7 +180,11 @@ public class EmbeddingModelFactory {
                     "Provider '" + provider.getProviderId() + "' 未完成配置（缺少 API Key 或 Base URL）");
         }
         String apiKey = provider.getApiKey();
-        if (!providerService.hasUsableApiKey(apiKey)) {
+        // Mirror the chat model builder: only require an API key when the provider row says so.
+        // Keyless providers (requireApiKey=false, e.g. OpenCode, local Ollama) must be allowed
+        // through; otherwise their cloud-model connection test passes but embedding test fails.
+        boolean keyRequired = !Boolean.FALSE.equals(provider.getRequireApiKey());
+        if (keyRequired && !providerService.hasUsableApiKey(apiKey)) {
             throw new MateClawException("err.embedding.openai_key_invalid",
                     "Provider API Key 未配置或无效: " + provider.getProviderId());
         }
@@ -159,11 +194,18 @@ public class EmbeddingModelFactory {
                     "Provider Base URL 未配置: " + provider.getProviderId());
         }
 
+        // Mirror the chat path: real keys go through SimpleApiKey so a Bearer header
+        // is attached, while keyless providers (requireApiKey=false, e.g. Ollama,
+        // OpenCode) get a NoopApiKey so no Authorization header is sent at all —
+        // strict gateways reject "Authorization: Bearer " with an empty token.
+        ApiKey apiKeyImpl = providerService.hasUsableApiKey(apiKey)
+                ? new SimpleApiKey(apiKey.trim())
+                : new NoopApiKey();
         // 最简构造：不做 chat-specific 的 header 重写、reasoning patch 等
         OpenAiApi api = OpenAiApi.builder()
                 .baseUrl(baseUrl)
-                .apiKey(apiKey.trim())
-                .embeddingsPath("/v1/embeddings")
+                .apiKey(apiKeyImpl)
+                .embeddingsPath(resolveEmbeddingsPath(baseUrl))
                 .build();
 
         OpenAiEmbeddingOptions options = OpenAiEmbeddingOptions.builder()
@@ -180,5 +222,18 @@ public class EmbeddingModelFactory {
         while (u.endsWith("/")) u = u.substring(0, u.length() - 1);
         if (u.endsWith("/v1")) u = u.substring(0, u.length() - 3);
         return u;
+    }
+
+    /**
+     * Resolve the embeddings path. Defaults to {@code /v1/embeddings}; when the
+     * base URL already ends with a version segment (Zhipu {@code /v4}, Volcano
+     * Ark {@code /v3}, …), drop the leading {@code /v1} so the request hits
+     * {@code <base>/embeddings} instead of a 404 at {@code <base>/v1/embeddings}.
+     */
+    private String resolveEmbeddingsPath(String baseUrl) {
+        if (baseUrl != null && BASE_URL_VERSION_SUFFIX.matcher(baseUrl).matches()) {
+            return "/embeddings";
+        }
+        return "/v1/embeddings";
     }
 }

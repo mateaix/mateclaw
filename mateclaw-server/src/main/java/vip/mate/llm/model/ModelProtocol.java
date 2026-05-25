@@ -10,7 +10,7 @@ public enum ModelProtocol {
     /**
      * RFC-062: same Anthropic Messages API but authenticated with the user's
      * Claude Code OAuth token (Pro/Max subscription) instead of an API key.
-     * Routed by {@code AgentClaudeCodeChatModelBuilder}.
+     * Routed by {@code ClaudeCodeChatModelBuilder}.
      */
     ANTHROPIC_CLAUDE_CODE("anthropic-claude-code", "ClaudeCodeChatModel"),
     GEMINI_NATIVE("gemini-native", "GeminiChatModel"),

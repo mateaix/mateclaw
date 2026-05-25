@@ -43,7 +43,7 @@ public class ChannelController {
     private final ChannelVerifierRegistry verifierRegistry;
     private final ObjectMapper objectMapper;
 
-    @RequireWorkspaceRole("viewer")
+    @RequireWorkspaceRole("admin")
     @Operation(summary = "获取渠道列表")
     @GetMapping
     public R<List<ChannelEntity>> list(
@@ -52,7 +52,7 @@ public class ChannelController {
         return R.ok(channelService.listChannelsByWorkspace(wsId));
     }
 
-    @RequireWorkspaceRole("viewer")
+    @RequireWorkspaceRole("admin")
     @Operation(summary = "按类型获取渠道列表")
     @GetMapping("/type/{channelType}")
     public R<List<ChannelEntity>> listByType(@PathVariable String channelType,
@@ -61,7 +61,7 @@ public class ChannelController {
         return R.ok(channelService.listChannelsByTypeAndWorkspace(channelType, wsId));
     }
 
-    @RequireWorkspaceRole("viewer")
+    @RequireWorkspaceRole("admin")
     @Operation(summary = "获取渠道详情")
     @GetMapping("/{id}")
     public R<ChannelEntity> get(@PathVariable Long id,
@@ -140,7 +140,7 @@ public class ChannelController {
         return R.ok(channelManager.getStatus());
     }
 
-    @RequireWorkspaceRole("viewer")
+    @RequireWorkspaceRole("admin")
     @Operation(summary = "获取指定渠道的实时健康状态（真连接状态，前端绿点应该绑这个）")
     @GetMapping("/{id}/health")
     public R<Map<String, Object>> health(@PathVariable Long id,
@@ -236,7 +236,7 @@ public class ChannelController {
     private void verifyResourceWorkspace(Long resourceWorkspaceId, Long headerWorkspaceId) {
         long requestedWs = headerWorkspaceId != null ? headerWorkspaceId : 1L;
         if (resourceWorkspaceId != null && !resourceWorkspaceId.equals(requestedWs)) {
-            throw new MateClawException("err.common.wrong_workspace", "资源不属于当前工作区");
+            throw new MateClawException("err.common.wrong_workspace", 403, "资源不属于当前工作区");
         }
     }
 }

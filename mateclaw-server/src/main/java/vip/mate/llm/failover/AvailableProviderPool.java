@@ -18,12 +18,14 @@ import java.util.concurrent.ConcurrentHashMap;
  * <ul>
  *   <li><b>Add</b> — at startup ({@code ProviderInitProbe}), on user-triggered
  *       reprobe, or after a {@code ModelConfigChangedEvent}.</li>
- *   <li><b>Remove</b> — when a request hits a HARD error (AUTH_ERROR /
- *       BILLING / MODEL_NOT_FOUND) — these don't self-heal, so retrying on
+ *   <li><b>Remove</b> — when a request hits a provider-wide HARD error
+ *       (AUTH_ERROR / BILLING) — these don't self-heal, so retrying on
  *       every subsequent call wastes the user's time. SOFT errors
  *       (RATE_LIMIT / SERVER_ERROR / EMPTY_RESPONSE) keep the provider in
  *       the pool and are handled by {@link ProviderHealthTracker}'s short
- *       cooldown instead.</li>
+ *       cooldown instead. A rejected model id (MODEL_NOT_FOUND) is
+ *       model-scoped, not provider-scoped, and never evicts the provider —
+ *       its sibling models stay usable.</li>
  * </ul>
  *
  * <p>State is process-local; a restart re-runs the init probe. That's
@@ -107,15 +109,17 @@ public class AvailableProviderPool {
     public record RemovalReason(RemovalSource source, String message, long removedAtMs) {}
 
     /**
-     * Categorical source of a pool removal. Mirrors the HARD error types from
-     * {@code NodeStreamingChatHelper.ErrorType} plus {@link #INIT_PROBE} for
-     * startup probe failures. SOFT errors (RATE_LIMIT / SERVER_ERROR) never
-     * appear here — they're handled by {@link ProviderHealthTracker} cooldown.
+     * Categorical source of a pool removal. Covers the provider-wide HARD
+     * error types from {@code NodeStreamingChatHelper.ErrorType} plus
+     * {@link #INIT_PROBE} for startup probe failures. SOFT errors (RATE_LIMIT /
+     * SERVER_ERROR) never appear here — they're handled by
+     * {@link ProviderHealthTracker} cooldown. A rejected model id is
+     * model-scoped and never removes a whole provider, so there is no
+     * {@code MODEL_NOT_FOUND} source.
      */
     public enum RemovalSource {
         AUTH_ERROR,
         BILLING,
-        MODEL_NOT_FOUND,
         INIT_PROBE,
         MANUAL
     }

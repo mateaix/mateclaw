@@ -1,0 +1,100 @@
+use_default_settings:
+  engines:
+    keep_only:
+      - google
+      - google_news_rss
+      - bing
+      - 360search
+      - sogou
+      - bilibili
+      - 微信公众号
+
+general:
+  instance_name: "MateClaw Search"
+  donation_url: false
+  contact_url: false
+  enable_metrics: false
+
+search:
+  default_lang: "zh-CN"
+  safe_search: 0
+  ban_time_on_fail: 30
+  max_ban_time_on_fail: 300
+  formats:
+    - html
+    - json
+
+server:
+  secret_key: "${SEARXNG_SECRET:-please-change-me-to-a-random-32-char-string}"
+  limiter: false
+  image_proxy: false
+  bind_address: "0.0.0.0"
+  port: 8080
+
+ui:
+  static_use_hash: true
+
+engines:
+  - name: google
+    engine: google
+    shortcut: g
+    region: zh-CN
+    disabled: false
+    weight: 4
+    categories: [general]
+    proxies:
+      all://:
+        - http://mihomo.zeabur.internal:10808
+
+  - name: baidu
+    engine: baidu
+    shortcut: bd
+    disabled: false
+    weight: 2
+
+  - name: bing
+    engine: bing
+    shortcut: b
+    region: zh-CN
+    disabled: false
+    weight: 3
+    categories: [general]
+
+  - name: 360search
+    engine: 360search
+    shortcut: "360"
+    categories: [general]
+    disabled: false
+    weight: 1
+
+  - name: sogou
+    engine: sogou
+    shortcut: sg
+    categories: [general]
+    timeout: 6.0
+    disabled: false
+    weight: 1
+
+  - name: google-news
+    engine: google_news_rss
+    shortcut: gnrss
+    categories: [news]
+    timeout: 30.0
+    enabled: true
+    proxies:
+      all://:
+        - http://mihomo.zeabur.internal:10808
+
+  - name: bilibili
+    engine: bilibili
+    shortcut: bil
+    timeout: 5.0
+    disabled: false
+    categories: [videos]
+
+  - name: 微信公众号
+    engine: sogou_weixin
+    shortcut: wx
+    timeout: 6.0
+    disabled: false
+    categories: ["social media"]

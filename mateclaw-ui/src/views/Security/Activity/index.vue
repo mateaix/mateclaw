@@ -201,8 +201,9 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useIsMobile } from '@/composables/useBreakpoint'
 import { activityApi } from '@/api'
 import McPagination from '@/components/common/McPagination.vue'
 
@@ -230,11 +231,7 @@ interface ActivityEvent {
  * drawer to full-width sheet, and to drop the size-switcher /
  * jumper when there's no horizontal room for them.
  */
-const isMobile = ref(false)
-let mq: MediaQueryList | null = null
-function syncMobile(e: MediaQueryListEvent | MediaQueryList) {
-  isMobile.value = e.matches
-}
+const isMobile = useIsMobile()
 
 const drawerSize = computed(() => isMobile.value ? '100%' : '720px')
 
@@ -462,14 +459,7 @@ function absoluteTime(event: ActivityEvent): string {
 }
 
 onMounted(() => {
-  mq = window.matchMedia('(max-width: 768px)')
-  syncMobile(mq)
-  mq.addEventListener('change', syncMobile)
   loadEvents()
-})
-
-onBeforeUnmount(() => {
-  mq?.removeEventListener('change', syncMobile)
 })
 </script>
 

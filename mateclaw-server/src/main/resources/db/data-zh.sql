@@ -5,26 +5,26 @@ MERGE INTO mate_user (id, username, password, nickname, role, enabled, create_ti
 KEY (id)
 VALUES (1, 'admin', '$2a$10$7JB720yubVSZvUI0rEqK/.VqGOZTH.ulu33dHOiBE8ByOhJIrdAu2', 'MateClaw Admin', 'admin', TRUE, NOW(), NOW(), 0);
 
--- 默认 Agent：通用助手（ReAct 模式）
+-- 默认数字员工：通用助手（ReAct 模式）
 MERGE INTO mate_agent (id, name, description, agent_type, system_prompt, model_name, max_iterations, enabled, icon, tags, create_time, update_time, deleted)
 KEY (id)
-VALUES (1000000001, 'MateClaw Assistant', '默认 AI 助手，基于 ReAct 模式，支持工具调用', 'react',
-        '你是 MateClaw，一个智能 AI 助手。你可以帮助用户回答问题、分析数据、执行任务。请用中文回复，保持专业、友好的态度。',
+VALUES (1000000001, '通用助手', '日常问答、数据分析、工具调用都能搞定的全能助手', 'react',
+        '你是 MateClaw 的通用助手。你可以帮助用户回答问题、分析数据、调用工具完成任务。请用中文回复，保持专业、友好的态度。',
         NULL, 100, TRUE, 'pi:robot-face-happy', 'default,assistant', NOW(), NOW(), 0);
 
--- 默认 Agent：任务规划助手（Plan-Execute 模式）
+-- 默认数字员工：任务规划师（Plan-Execute 模式）
 MERGE INTO mate_agent (id, name, description, agent_type, system_prompt, model_name, max_iterations, enabled, icon, tags, create_time, update_time, deleted)
 KEY (id)
-VALUES (1000000002, 'Task Planner', '任务规划助手，适合复杂多步骤任务', 'plan_execute',
-        '你是一个专业的任务规划和执行助手。你擅长将复杂目标分解为可执行的步骤，并逐步完成。请用中文回复。',
+VALUES (1000000002, '任务规划师', '把复杂目标拆成可执行步骤，逐步推进直到完成', 'plan_execute',
+        '你是一位专业的任务规划师。你擅长将复杂目标分解为可执行的步骤，并逐步完成。请用中文回复。',
         NULL, 100, TRUE, 'pi:clipboard-note', 'planning,task', NOW(), NOW(), 0);
 
--- StateGraph ReAct Agent（支持 StateGraph 架构）
+-- 默认数字员工：推理分析师（显式推理循环 + 工具调用）
 MERGE INTO mate_agent (id, name, description, agent_type, system_prompt, model_name, max_iterations, enabled, icon, tags, create_time, update_time, deleted)
 KEY (id)
-VALUES (1000000003, 'StateGraph ReAct', '基于 StateGraph 的 ReAct Agent，支持显式推理循环和工具调用', 'react',
-        '你是基于 StateGraph 架构的智能助手。你可以使用工具来帮助用户解决问题。请用中文回复，保持专业、友好的态度。',
-        NULL, 100, TRUE, 'pi:cpu', 'react,stategraph,tools', NOW(), NOW(), 0);
+VALUES (1000000003, '推理分析师', '分步思考、推理过程清晰可见，适合需要"想清楚再回答"的问题', 'react',
+        '你是一位推理分析师，善于深度推理。面对问题时，请先分步思考、清晰呈现推理过程，再调用工具或给出答案。请用中文回复，保持专业、友好的态度。',
+        NULL, 100, TRUE, 'pi:cpu', 'react,reasoning,tools', NOW(), NOW(), 0);
 
 -- ==================== 本地模型 Provider（优先展示） ====================
 
@@ -108,6 +108,10 @@ VALUES ('anthropic', 'Anthropic', 'sk-ant-', 'AnthropicChatModel', '', 'https://
 MERGE INTO mate_model_provider (provider_id, name, api_key_prefix, chat_model, api_key, base_url, generate_kwargs, is_custom, is_local, support_model_discovery, support_connection_check, freeze_url, require_api_key, create_time, update_time)
 KEY (provider_id)
 VALUES ('gemini', 'Google Gemini', '', 'GeminiChatModel', '', 'https://generativelanguage.googleapis.com', '{}', FALSE, FALSE, TRUE, TRUE, TRUE, TRUE, NOW(), NOW());
+
+MERGE INTO mate_model_provider (provider_id, name, api_key_prefix, chat_model, api_key, base_url, generate_kwargs, is_custom, is_local, support_model_discovery, support_connection_check, freeze_url, require_api_key, create_time, update_time)
+KEY (provider_id)
+VALUES ('xai', 'xAI (Grok)', 'xai-', 'OpenAIChatModel', '', 'https://api.x.ai/v1', '{}', FALSE, FALSE, TRUE, TRUE, TRUE, TRUE, NOW(), NOW());
 
 MERGE INTO mate_model_provider (provider_id, name, api_key_prefix, chat_model, api_key, base_url, generate_kwargs, is_custom, is_local, support_model_discovery, support_connection_check, freeze_url, require_api_key, create_time, update_time)
 KEY (provider_id)
@@ -277,6 +281,10 @@ MERGE INTO mate_model_config (id, name, provider, model_name, description, tempe
 (1000000159, 'Gemini 2.5 Flash', 'gemini', 'gemini-2.5-flash', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
 (1000000160, 'Gemini 2.5 Flash Lite', 'gemini', 'gemini-2.5-flash-lite', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
 (1000000161, 'Gemini 2.0 Flash', 'gemini', 'gemini-2.0-flash', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000340, 'Grok 4', 'xai', 'grok-4', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000341, 'Grok 4 Fast', 'xai', 'grok-4-fast', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000342, 'Grok 3', 'xai', 'grok-3', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000343, 'Grok 3 Mini', 'xai', 'grok-3-mini', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
 (1000000200, 'GPT-5', 'openrouter', 'openai/gpt-5', 'OpenRouter 代理 GPT-5', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
 (1000000201, 'Claude Opus 4.6', 'openrouter', 'anthropic/claude-opus-4-6', 'OpenRouter 代理 Claude Opus 4.6', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
 (1000000202, 'Claude Sonnet 4.6', 'openrouter', 'anthropic/claude-sonnet-4-6', 'OpenRouter 代理 Claude Sonnet 4.6', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),

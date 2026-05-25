@@ -91,6 +91,18 @@ public class SkillManifest {
     /** Set when {@code type=acp}. Resolves to a {@code mate_acp_endpoint} row. */
     private AcpBinding acp;
 
+    // ==================== type=code script entrypoints ====================
+
+    /**
+     * Declared script entrypoints from the {@code scripts} frontmatter
+     * block. Each entry is exposed to the model as a typed wrapper tool —
+     * the model fills schema-described fields and the runtime serializes
+     * them into process arguments, so a script consuming a JSON payload
+     * never depends on the model hand-crafting a JSON string.
+     */
+    @Builder.Default
+    private List<ScriptDef> scripts = List.of();
+
     // ==================== Forward-compat catch-all ====================
 
     /** Unknown frontmatter keys are stashed here so a future field
@@ -196,6 +208,45 @@ public class SkillManifest {
          * endpoint slug couldn't be resolved.
          */
         private Long resolvedEndpointId;
+    }
+
+    /**
+     * One script entrypoint declared under the {@code scripts} block. The
+     * resolver turns each into a typed wrapper tool named
+     * {@code skill_<skill>_<id>}.
+     */
+    @Data
+    @Builder
+    @JsonInclude(JsonInclude.Include.NON_EMPTY)
+    public static class ScriptDef {
+        /** Stable id; forms the suffix of the generated wrapper tool name. */
+        private String id;
+        /** Human-readable label for the entrypoint. */
+        private String label;
+        /** Script path relative to the skill directory (e.g. {@code scripts/run.py}). */
+        private String path;
+        /** What the entrypoint does — surfaced as the wrapper tool description. */
+        private String description;
+        /**
+         * Literal arguments prepended before the typed arguments. Lets one
+         * dispatcher script back several entrypoints — e.g. a fixed method
+         * name as {@code argv[1]} with the typed JSON payload as {@code argv[2]}.
+         */
+        @Builder.Default
+        private List<String> fixedArgs = List.of();
+        /**
+         * Raw JSON Schema object describing the entrypoint's parameters,
+         * forwarded verbatim as the wrapper tool's input schema.
+         */
+        @Builder.Default
+        private Map<String, Object> parameters = Map.of();
+        /**
+         * How typed arguments reach the script process:
+         * {@code json} (default) forwards one compact JSON argument;
+         * {@code flags} forwards each property as a {@code --key value} pair.
+         */
+        @Builder.Default
+        private String argStyle = "json";
     }
 
     @Data

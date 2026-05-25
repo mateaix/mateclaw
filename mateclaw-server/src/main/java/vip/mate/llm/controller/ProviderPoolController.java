@@ -21,6 +21,7 @@ import vip.mate.llm.service.ModelProviderService;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import vip.mate.workspace.core.annotation.RequireGlobalAdmin;
 
 /**
  * RFC-009 Phase 4 — read-only diagnostic endpoint for the provider pool.
@@ -49,6 +50,7 @@ public class ProviderPoolController {
 
     @Operation(summary = "查询所有 provider 的池状态 + 冷却信息")
     @GetMapping
+    @RequireGlobalAdmin
     public R<List<ProviderPoolEntryDTO>> snapshot() {
         Map<String, RemovalReason> poolView = providerPool.snapshot();
         Map<String, ProviderHealthSnapshot> healthView = healthTracker.snapshot();
@@ -81,6 +83,7 @@ public class ProviderPoolController {
 
     @Operation(summary = "手动重新探测某个 provider，立即更新池状态")
     @PostMapping("/{providerId}/reprobe")
+    @RequireGlobalAdmin
     public R<ReprobeResultDTO> reprobe(@PathVariable String providerId) {
         ProbeResult result = initProbe.probeOne(providerId);
         return R.ok(new ReprobeResultDTO(

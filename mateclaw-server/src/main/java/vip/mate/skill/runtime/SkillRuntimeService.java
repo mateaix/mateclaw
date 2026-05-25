@@ -63,6 +63,16 @@ public class SkillRuntimeService {
     private final AcpSkillBridge acpSkillBridge;
     private final SkillUsageService usageService;
 
+    /**
+     * Mirrors {@code mateclaw.skill.disclosure.load-skill-tool.enabled}. When
+     * false the catalog guidance points at {@code readSkillFile} instead of
+     * {@code load_skill} (which is also unregistered upstream). Field-initialised
+     * to true so non-Spring unit construction keeps the default behavior.
+     */
+    @org.springframework.beans.factory.annotation.Value(
+            "${mateclaw.skill.disclosure.load-skill-tool.enabled:true}")
+    private boolean loadSkillToolEnabled = true;
+
     @Autowired
     public SkillRuntimeService(SkillService skillService,
                                SkillPackageResolver packageResolver,
@@ -345,25 +355,64 @@ public class SkillRuntimeService {
     public String buildSkillPromptEnhancement(Set<Long> boundSkillIds,
                                               Set<String> effectiveToolNames,
                                               Integer maxInputTokens) {
-        return buildSkillPromptEnhancement(boundSkillIds, effectiveToolNames, maxInputTokens, null);
+        return buildSkillPromptEnhancement(boundSkillIds, effectiveToolNames, maxInputTokens, null, null);
     }
 
     public String buildSkillPromptEnhancement(Set<Long> boundSkillIds,
                                               Set<String> effectiveToolNames,
                                               Integer maxInputTokens,
                                               Long agentId) {
+        return buildSkillPromptEnhancement(boundSkillIds, effectiveToolNames, maxInputTokens, agentId, null);
+    }
+
+    /**
+     * 构建技能目录提示片段（支持按 Agent 工作区隔离）。
+     *
+     * @param agentWorkspaceId 调用 Agent 的工作区 ID。非 null 时，目录只保留
+     *                         内置技能（全局）与该工作区拥有的技能；其他工作区
+     *                         的技能不会注入 prompt。null 表示不做工作区过滤
+     *                         （调试预览等全局场景）。
+     */
+    public String buildSkillPromptEnhancement(Set<Long> boundSkillIds,
+                                              Set<String> effectiveToolNames,
+                                              Integer maxInputTokens,
+                                              Long agentId,
+                                              Long agentWorkspaceId) {
+        return buildSkillPromptEnhancement(boundSkillIds, effectiveToolNames, maxInputTokens,
+                agentId, agentWorkspaceId, Set.of());
+    }
+
+    /**
+     * Build the skill catalog prompt segment, pinning skills loaded this run to
+     * the top so a multi-iteration loop stops re-loading the same skill.
+     *
+     * @param loadedThisRunNames names of skills loaded via {@code load_skill}
+     *                           during the current graph run; sorted to the top
+     *                           of the catalog ahead of the usage-history
+     *                           signals. Never {@code null}.
+     */
+    public String buildSkillPromptEnhancement(Set<Long> boundSkillIds,
+                                              Set<String> effectiveToolNames,
+                                              Integer maxInputTokens,
+                                              Long agentId,
+                                              Long agentWorkspaceId,
+                                              Set<String> loadedThisRunNames) {
         List<ResolvedSkill> activeSkills;
         if (boundSkillIds != null) {
-            // Per-agent 过滤：从全局 enabled skills 中按 ID 过滤。RFC-090
-            // §14.1 — must use the same features-aware gate as
-            // refreshActiveSkills() so legacy dependencyReady drift
-            // doesn't silently let setup-needed manifest skills through
-            // (or hide partially-ready features that should be visible).
-            List<SkillEntity> enabledSkills = skillService.listEnabledSkills();
-            activeSkills = enabledSkills.stream()
-                    .filter(s -> boundSkillIds.contains(s.getId()))
-                    .map(packageResolver::resolve)
-                    .filter(SkillRuntimeService::passesActiveGate)
+            // Per-agent filter: pick the agent's bound subset from the
+            // already-merged active set (real + MCP/ACP virtual). Using
+            // getActiveSkills() — instead of a fresh
+            // skillService.listEnabledSkills() walk — is what makes bound
+            // virtual skills surface in the prompt catalog. The earlier
+            // implementation only looked at mate_skill rows, so a user
+            // who explicitly checked an MCP/ACP card in the agent picker
+            // got its tools (via AgentBindingService.getEffectiveToolNames)
+            // but lost the corresponding `## Skills` catalog row, which
+            // confused the LLM when it tried to dispatch by skill name.
+            // Cache-backed get + same passesActiveGate semantics, so this
+            // is strictly additive for real skills.
+            activeSkills = getActiveSkills().stream()
+                    .filter(s -> s.getId() != null && boundSkillIds.contains(s.getId()))
                     .collect(java.util.stream.Collectors.toList());
         } else {
             activeSkills = getActiveSkills();
@@ -377,6 +426,16 @@ public class SkillRuntimeService {
         activeSkills = activeSkills.stream()
                 .filter(s -> matchesCurrentPlatform(s, currentOs))
                 .collect(java.util.stream.Collectors.toList());
+        // Workspace filter — a workspace-B agent must not see workspace-A's
+        // skills in its catalog. Builtin skills are global; virtual MCP
+        // skills carry no workspace (null) and stay globally visible. Only
+        // applied when the caller supplies the agent's workspace; the debug
+        // preview passes null to keep its global view.
+        if (agentWorkspaceId != null) {
+            activeSkills = activeSkills.stream()
+                    .filter(s -> matchesWorkspace(s, agentWorkspaceId))
+                    .collect(java.util.stream.Collectors.toList());
+        }
         if (activeSkills.isEmpty()) {
             return "";
         }
@@ -391,13 +450,16 @@ public class SkillRuntimeService {
         int descLimit = promptDescriptionLimit(maxInputTokens);
         Set<String> recentNames = usageService.recentLoadedSkillNames(agentId, 8);
         Set<String> frequentNames = usageService.frequentlyLoadedSkillNames(8);
-        List<ResolvedSkill> sorted = SkillCatalogSorter.sortResolved(visibleSkills, SkillCatalogSort.RECOMMENDED)
-                .stream()
-                .sorted(java.util.Comparator
-                        .comparingInt((ResolvedSkill s) -> recentNames.contains(s.getName()) ? 0 : 1)
-                        .thenComparingInt(s -> frequentNames.contains(s.getName()) ? 0 : 1)
-                        .thenComparing(SkillCatalogSorter.resolvedComparator(SkillCatalogSort.RECOMMENDED)))
-                .toList();
+        // Boost freshly installed skills for a short window so a skill the
+        // user *just* added is visible in the compact catalog before it has
+        // any usage history. Without this, qwen-turbo-style 8-entry budgets
+        // hide new skills behind 40+ existing ones, and the LLM tells the
+        // user "no such skill" minutes after they uploaded it.
+        java.time.LocalDateTime recencyCutoff = java.time.LocalDateTime.now().minus(NEW_SKILL_BOOST_WINDOW);
+        Set<String> loadedNames = loadedThisRunNames == null ? Set.of() : loadedThisRunNames;
+        List<ResolvedSkill> sorted = applyCatalogSignals(
+                SkillCatalogSorter.sortResolved(visibleSkills, SkillCatalogSort.RECOMMENDED),
+                loadedNames, recentNames, frequentNames, recencyCutoff);
         List<ResolvedSkill> pinned = sorted.stream()
                 .filter(s -> s.getId() != null && boundIds.contains(s.getId()))
                 .toList();
@@ -411,10 +473,29 @@ public class SkillRuntimeService {
         StringBuilder sb = new StringBuilder();
         sb.append("\n\n## Skills\n");
         sb.append("This is a compact catalog. If a listed skill matches the task, ");
-        sb.append("first call `readSkillFile(skillName=<name>, filePath=\"SKILL.md\")` and follow its instructions. ");
-        sb.append("If none of these skills match, call `listAvailableSkills()` to inspect the broader catalog. ");
+        if (loadSkillToolEnabled) {
+            sb.append("first call `load_skill(skillName=<name>)` to pull its SKILL.md into the conversation, ");
+            sb.append("then follow its instructions. Once loaded, the skill stays available in the conversation — ");
+            sb.append("do not load it again. ");
+        } else {
+            sb.append("first call `readSkillFile(skillName=<name>, filePath=\"SKILL.md\")` to read its instructions, ");
+            sb.append("then follow them. ");
+        }
+        sb.append("If none of these skills match, call `listAvailableSkills()` to inspect the broader catalog ");
+        sb.append("(it accepts `keyword=<part of name>` and `limit=` up to 50 — use them to search by topic ");
+        sb.append("when the default page is truncated). ");
+        sb.append("If the user names a specific skill that isn't in this table, ");
+        if (loadSkillToolEnabled) {
+            sb.append("call `load_skill(skillName=\"<exact-name>\")` directly — ");
+        } else {
+            sb.append("call `readSkillFile(skillName=\"<exact-name>\", filePath=\"SKILL.md\")` directly — ");
+        }
+        sb.append("the catalog above is intentionally compact and doesn't list every active skill. ");
         sb.append("Skills are documentation packages — calling a skill name as a tool will fail. ");
-        sb.append("Skills with a `scripts/` directory expose `runSkillScript`; SKILL.md will name the script when needed.\n\n");
+        sb.append("To read a skill's reference or script files, use ");
+        sb.append("`readSkillFile(skillName=<name>, filePath=\"references/...\")`. ");
+        sb.append("Skills with a `scripts/` directory expose `runSkillScript`; ");
+        sb.append("SKILL.md will name the script when needed.\n\n");
         sb.append("| Skill | Status | Description |\n");
         sb.append("|-------|--------|-------------|\n");
         for (ResolvedSkill skill : selected) {
@@ -448,10 +529,59 @@ public class SkillRuntimeService {
         return sb.toString();
     }
 
+    /**
+     * Apply the catalog ranking signals on top of the RECOMMENDED base order.
+     * Priority, highest first: loaded this run, freshly installed, recently
+     * loaded (DB history), frequently loaded (DB history), then the RECOMMENDED
+     * comparator as the stable tiebreak.
+     * <p>
+     * Package-private and static so it can be unit-tested without standing up
+     * the full service.
+     */
+    static List<ResolvedSkill> applyCatalogSignals(List<ResolvedSkill> recommended,
+                                                   Set<String> loadedThisRunNames,
+                                                   Set<String> recentNames,
+                                                   Set<String> frequentNames,
+                                                   java.time.LocalDateTime recencyCutoff) {
+        Set<String> loaded = loadedThisRunNames == null ? Set.of() : loadedThisRunNames;
+        Set<String> recent = recentNames == null ? Set.of() : recentNames;
+        Set<String> frequent = frequentNames == null ? Set.of() : frequentNames;
+        return recommended.stream()
+                .sorted(java.util.Comparator
+                        .comparingInt((ResolvedSkill s) -> loaded.contains(s.getName()) ? 0 : 1)
+                        .thenComparingInt(s -> isRecentlyInstalled(s, recencyCutoff) ? 0 : 1)
+                        .thenComparingInt(s -> recent.contains(s.getName()) ? 0 : 1)
+                        .thenComparingInt(s -> frequent.contains(s.getName()) ? 0 : 1)
+                        .thenComparing(SkillCatalogSorter.resolvedComparator(SkillCatalogSort.RECOMMENDED)))
+                .toList();
+    }
+
     private static boolean isVisibleWithTools(ResolvedSkill skill, Set<String> effectiveToolNames) {
         if (effectiveToolNames == null) return true;
         Set<String> tools = skill.getEffectiveAllowedTools();
         return tools == null || tools.isEmpty() || effectiveToolNames.containsAll(tools);
+    }
+
+    /**
+     * Treat skills installed within this window as "new" for the prompt
+     * catalog ranker. Long enough that a user who installs on Friday and
+     * comes back Monday still sees the boost; short enough that the
+     * catalog reverts to usage-based ordering before the boost slot
+     * crowds out genuinely useful skills.
+     */
+    public static final java.time.Duration NEW_SKILL_BOOST_WINDOW = java.time.Duration.ofDays(7);
+
+    /**
+     * Returns true if the skill's row was created after {@code cutoff}.
+     * Builtins and virtual MCP/ACP skills typically have no createTime;
+     * they are not boosted (the user didn't just install them). Public so
+     * the user-facing {@code listAvailableSkills} catalog can apply the
+     * same boost as the prompt enhancement.
+     */
+    public static boolean isRecentlyInstalled(ResolvedSkill skill, java.time.LocalDateTime cutoff) {
+        if (skill == null || skill.getCreateTime() == null) return false;
+        if (skill.isBuiltin()) return false;
+        return skill.getCreateTime().isAfter(cutoff);
     }
 
     private static int promptCatalogEntryLimit(Integer maxInputTokens) {
@@ -537,5 +667,18 @@ public class SkillRuntimeService {
             if (currentOs.equalsIgnoreCase(p.trim())) return true;
         }
         return false;
+    }
+
+    /**
+     * True when the skill is visible to an agent in {@code agentWorkspaceId}.
+     * Builtin skills are global, virtual MCP-derived skills carry no
+     * workspace ({@code null}) and are likewise global; every other skill is
+     * visible only inside its owning workspace.
+     */
+    static boolean matchesWorkspace(ResolvedSkill skill, long agentWorkspaceId) {
+        if (skill.isBuiltin()) return true;
+        Long skillWs = skill.getWorkspaceId();
+        if (skillWs == null) return true;
+        return skillWs == agentWorkspaceId;
     }
 }

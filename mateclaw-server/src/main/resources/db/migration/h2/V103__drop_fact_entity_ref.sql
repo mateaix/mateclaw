@@ -1,0 +1,15 @@
+-- Drop the dead mate_fact_entity_ref table.
+--
+-- Introduced in V29 to back a multi-hop "find facts related to entity X"
+-- query, but no writer was ever shipped — FactProjectionBuilder only
+-- populated mate_fact, never mate_fact_entity_ref. The downstream
+-- FactQueryService.related() and the fact_related agent tool therefore
+-- always returned empty results, and the table was missing an agent_id
+-- column that would have been needed for tenancy isolation if a writer
+-- ever did land. Removing the empty table + the dead Java code (deleted
+-- in the same change set) keeps the fact projection honest about what
+-- it actually offers.
+--
+-- If multi-hop fact graph queries become desirable later, add agent_id
+-- from day one and ship the writer in the same change.
+DROP TABLE IF EXISTS mate_fact_entity_ref;

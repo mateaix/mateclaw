@@ -3,18 +3,13 @@ package vip.mate.llm.chatmodel;
 import java.time.Duration;
 
 /**
- * RFC-03 Lane B1 — central resolver for the per-LLM-request HTTP read
- * timeout, so {@link vip.mate.llm.model.ModelConfigEntity#getRequestTimeoutSeconds()}
- * can override the legacy 180s default without each chatmodel builder
- * inventing its own fallback chain.
+ * Central resolver for the per-LLM-request HTTP read timeout, so
+ * {@link vip.mate.llm.model.ModelConfigEntity#getRequestTimeoutSeconds()}
+ * can override the default 180s without each chatmodel builder inventing
+ * its own fallback chain.
  *
- * <p>Used by:
- * <ul>
- *   <li>{@code AgentAnthropicChatModelBuilder.applyHttpTimeouts}</li>
- *   <li>{@code AgentAnthropicChatModelBuilder.applyHttpTimeoutsToWebClient}</li>
- *   <li>{@code AgentClaudeCodeChatModelBuilder} (via Anthropic helper)</li>
- *   <li>{@code AgentGraphBuilder} legacy timeout helpers</li>
- * </ul>
+ * <p>Used by the OpenAI-compatible, Anthropic and Claude Code chat model
+ * builders to apply consistent connect / read timeouts.
  *
  * <p>Connect timeout stays at the canonical 10s — long-tail thinking
  * latency manifests on the read path, not on connect.
@@ -27,7 +22,7 @@ public final class HttpTimeouts {
     /**
      * Default read timeout when no per-model override is set. Matches the
      * historical hardcoded value so unset rows behave identically to the
-     * pre-RFC-03 baseline.
+     * earlier baseline.
      */
     public static final Duration DEFAULT_READ_TIMEOUT = Duration.ofSeconds(180);
 

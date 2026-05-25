@@ -51,6 +51,15 @@ public class WikiChunkEntity {
     /** RFC-011：生成该 embedding 的模型名称（切模型时需全量重嵌） */
     private String embeddingModel;
 
+    /**
+     * Identifies the input format used to produce the stored embedding.
+     * <p>
+     * Set to the embedding input builder's current version on every write.
+     * NULL signals a legacy content-only embedding from before the builder
+     * existed and is treated as stale on the next re-embed pass.
+     */
+    private String embeddingTextVersion;
+
     /** RFC-051: source page number (PDF/PPTX) when known; null otherwise. */
     private Integer pageNumber;
 

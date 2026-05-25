@@ -1,6 +1,6 @@
 package vip.mate.agent;
 
-// PR-0b: DashScope imports moved with the construction code into AgentDashScopeChatModelBuilder.
+// PR-0b: DashScope imports moved with the construction code into DashScopeChatModelBuilder.
 import com.alibaba.cloud.ai.graph.CompiledGraph;
 import com.alibaba.cloud.ai.graph.CompileConfig;
 import com.alibaba.cloud.ai.graph.KeyStrategy;
@@ -8,35 +8,12 @@ import com.alibaba.cloud.ai.graph.KeyStrategyFactory;
 import com.alibaba.cloud.ai.graph.StateGraph;
 import com.alibaba.cloud.ai.graph.action.AsyncEdgeAction;
 import com.alibaba.cloud.ai.graph.action.AsyncNodeAction;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import io.micrometer.observation.ObservationRegistry;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-// PR-0b: Anthropic imports moved with the construction code into AgentAnthropicChatModelBuilder.
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.model.ChatModel;
-import org.springframework.ai.model.ApiKey;
-import org.springframework.ai.model.NoopApiKey;
-import org.springframework.ai.model.SimpleApiKey;
-import org.springframework.ai.openai.OpenAiChatModel;
-import org.springframework.ai.openai.OpenAiChatOptions;
-import org.springframework.ai.openai.api.OpenAiApi;
-import org.springframework.ai.retry.RetryUtils;
-import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.retry.support.RetryTemplate;
 import org.springframework.stereotype.Component;
-import org.springframework.http.HttpHeaders;
-import org.springframework.util.LinkedMultiValueMap;
-import org.springframework.util.MultiValueMap;
-import org.springframework.util.StringUtils;
-import org.springframework.http.client.JdkClientHttpRequestFactory;
-import org.springframework.web.client.RestClient;
-import java.net.http.HttpClient;
-import java.time.Duration;
-import org.springframework.web.reactive.function.client.WebClient;
-import org.springframework.web.reactive.function.client.WebClientResponseException;
-import reactor.core.publisher.Flux;
-import vip.mate.agent.ThinkingLevelHolder;
 import vip.mate.agent.graph.StateGraphReActAgent;
 import vip.mate.agent.graph.NodeStreamingChatHelper;
 import vip.mate.agent.graph.executor.ToolExecutionExecutor;
@@ -44,6 +21,7 @@ import vip.mate.agent.graph.edge.ObservationDispatcher;
 import vip.mate.agent.graph.edge.ReasoningDispatcher;
 import vip.mate.agent.graph.lifecycle.ReActLifecycleListener;
 import vip.mate.agent.graph.node.*;
+import vip.mate.agent.graph.state.MateClawStateAccessor;
 import vip.mate.agent.graph.observation.ObservationProcessor;
 import vip.mate.agent.graph.plan.StateGraphPlanExecuteAgent;
 import vip.mate.agent.graph.plan.edge.PlanGenerationDispatcher;
@@ -55,6 +33,8 @@ import vip.mate.agent.binding.service.AgentBindingService;
 import vip.mate.agent.model.AgentEntity;
 import vip.mate.config.GraphObservationProperties;
 import vip.mate.exception.MateClawException;
+import vip.mate.llm.chatmodel.OpenAiCompatibleChatModelBuilder;
+import vip.mate.llm.chatmodel.ReasoningEffortResolver;
 import vip.mate.llm.model.ModelConfigEntity;
 import vip.mate.llm.model.ModelFamily;
 import vip.mate.llm.model.ModelProtocol;
@@ -63,6 +43,7 @@ import vip.mate.llm.routing.ProviderRouter;
 import vip.mate.llm.service.ModelConfigService;
 import vip.mate.llm.service.ModelProviderService;
 import vip.mate.planning.service.PlanningService;
+import vip.mate.skill.runtime.SkillCatalogRenderer;
 import vip.mate.skill.service.SkillService;
 import vip.mate.system.service.SystemSettingService;
 import vip.mate.tool.ToolRegistry;
@@ -98,6 +79,13 @@ public class AgentGraphBuilder {
     private final AgentBindingService agentBindingService;
     private final SkillService skillService;
     private final vip.mate.skill.runtime.SkillRuntimeService skillRuntimeService;
+    private final vip.mate.tool.disclosure.ToolDisclosureService toolDisclosureService;
+    private final vip.mate.agent.progress.ProgressLedgerService progressLedgerService;
+
+    /** Escape hatch: when false, the load_skill meta tool is not advertised. */
+    @org.springframework.beans.factory.annotation.Value(
+            "${mateclaw.skill.disclosure.load-skill-tool.enabled:true}")
+    private boolean loadSkillToolEnabled;
     private final ConversationService conversationService;
     private final ModelConfigService modelConfigService;
     private final ModelProviderService modelProviderService;
@@ -109,12 +97,8 @@ public class AgentGraphBuilder {
     private final ApprovalWorkflowService approvalService;
     private final ChatStreamTracker streamTracker;
     private final SystemSettingService systemSettingService;
-    // PR-0b: dashScopeChatModel + dashScopeConnectionProperties live on AgentDashScopeChatModelBuilder now.
+    // PR-0b: dashScopeChatModel + dashScopeConnectionProperties live on DashScopeChatModelBuilder now.
     private final RetryTemplate retryTemplate;
-    private final ObjectProvider<ObservationRegistry> observationRegistryProvider;
-    private final ObjectProvider<RestClient.Builder> restClientBuilderProvider;
-    private final ObjectProvider<WebClient.Builder> webClientBuilderProvider;
-    private final ObjectMapper objectMapper;
     private final GraphObservationProperties graphObservationProperties;
     private final vip.mate.config.ToolTimeoutProperties toolTimeoutProperties;
     private final MemoryManager memoryManager;
@@ -131,10 +115,15 @@ public class AgentGraphBuilder {
     private final vip.mate.llm.failover.ProviderHealthTracker providerHealthTracker;
     private final vip.mate.llm.chatmodel.ProviderChatModelFactory chatModelFactory;
     private final vip.mate.llm.failover.AvailableProviderPool providerPool;
-    /** PR-0b: DashScope-specific construction lives here now; we only call into it for the search-on log. */
-    private final vip.mate.agent.chatmodel.AgentDashScopeChatModelBuilder dashScopeBuilder;
+    private final vip.mate.tool.document.GeneratedFileCache generatedFileCache;
+    /** DashScope-specific construction lives here; only called for the built-in-search log. */
+    private final vip.mate.llm.chatmodel.DashScopeChatModelBuilder dashScopeBuilder;
     private final vip.mate.llm.routing.MultimodalRouter multimodalRouter;
     private final vip.mate.llm.routing.MediaCaptionService mediaCaptionService;
+    private final vip.mate.goal.service.GoalService goalService;
+    private final vip.mate.goal.service.GoalEvaluationService goalEvaluationService;
+    private final vip.mate.goal.service.GoalFollowupService goalFollowupService;
+    private final vip.mate.goal.config.GoalProperties goalProperties;
 
     /**
      * Optional audit pipeline. Setter injection (rather than a constructor
@@ -150,9 +139,41 @@ public class AgentGraphBuilder {
     }
 
     /**
-     * 根据 AgentEntity 构建完整的 Agent 实例
+     * 根据 AgentEntity 构建完整的 Agent 实例（沿用 Agent / 全局默认模型）。
      */
     public BaseAgent build(AgentEntity entity) {
+        return build(entity, null, null);
+    }
+
+    /**
+     * Resolve the model the runtime should use, honouring the precedence
+     * <em>conversation pin &gt; Agent model override &gt; global default</em>.
+     * A conversation pin that no longer resolves to an enabled model (the model
+     * was disabled or deleted after it was picked) silently degrades to the
+     * Agent / global default rather than failing the chat.
+     */
+    private ModelConfigEntity resolveRuntimeBaseModel(String modelProvider, String modelName,
+                                                      String agentModelName) {
+        if (modelProvider != null && !modelProvider.isBlank()
+                && modelName != null && !modelName.isBlank()) {
+            ModelConfigEntity pinned = modelConfigService.findEnabledModel(modelProvider, modelName);
+            if (pinned != null) {
+                return pinned;
+            }
+            log.info("Conversation model pin {}/{} is no longer an enabled model — "
+                    + "falling back to the Agent / global default", modelProvider, modelName);
+        }
+        return modelConfigService.resolveModel(agentModelName);
+    }
+
+    /**
+     * 根据 AgentEntity 构建完整的 Agent 实例。
+     *
+     * <p>{@code modelProvider} / {@code modelName} carry an optional
+     * per-conversation model pin; when both are blank the build falls back to
+     * the Agent's model override, then the global default.</p>
+     */
+    public BaseAgent build(AgentEntity entity, String modelProvider, String modelName) {
         AgentToolSet toolSet = toolRegistry.getEnabledToolSet();
 
         // 过滤掉 denied 工具，使模型完全看不到它们（防止 prompt injection 利用 schema）
@@ -166,17 +187,23 @@ public class AgentGraphBuilder {
         Set<String> boundTools = agentBindingService.getEffectiveToolNames(entity.getId());
         toolSet = toolSet.withAllowedToolsOnly(boundTools); // null = 全局默认
 
-        // RFC-090 §9.2 调整 C — pick a primary model that satisfies
-        // the agent's bound-skill requires-model. Falls back to the
-        // global default when no preferred provider satisfies, so the
-        // existing "no default model" error path stays intact.
-        // Honor per-Agent model override when set.
-        // resolveModel() looks up entity.modelName in enabled-only models;
-        // null / blank / unmatched silently fall back to getDefaultModel(),
-        // preserving the legacy behavior for Agents without an override.
+        // Escape hatch: drop the load_skill meta tool entirely when disabled, so
+        // it isn't advertised regardless of binding (the catalog guidance falls
+        // back to readSkillFile — see SkillRuntimeService).
+        if (!loadSkillToolEnabled) {
+            toolSet = toolSet.excluding(java.util.Set.of("load_skill"));
+        }
+
+        // Resolve the base model with the precedence: per-conversation pin >
+        // per-Agent model override > global default. resolveRuntimeBaseModel
+        // looks up enabled-only models and silently degrades an unmatched pin /
+        // override to the global default, preserving the legacy behaviour for
+        // Agents and conversations without an explicit choice.
+        // providerRouter.selectPrimary below may still swap this for a model
+        // that satisfies a bound skill's requires-model constraint.
         ModelConfigEntity globalDefault;
         try {
-            globalDefault = modelConfigService.resolveModel(entity.getModelName());
+            globalDefault = resolveRuntimeBaseModel(modelProvider, modelName, entity.getModelName());
         } catch (Exception e) {
             throw new MateClawException("err.agent.no_default_model", "无法构建 Agent：请先在「设置 → 模型」中配置并启用默认模型");
         }
@@ -234,7 +261,8 @@ public class AgentGraphBuilder {
         Map<String, Object> providerKwargs = modelProviderService.readProviderGenerateKwargs(provider);
         if (protocol == ModelProtocol.DASHSCOPE_NATIVE) {
             builtinSearchEnabled = dashScopeBuilder.isBuiltinSearchEnabled(runtimeModel, provider);
-        } else if (isKimiProvider(provider) && Boolean.TRUE.equals(providerKwargs.get("enableSearch"))) {
+        } else if (OpenAiCompatibleChatModelBuilder.isKimiProvider(provider)
+                && Boolean.TRUE.equals(providerKwargs.get("enableSearch"))) {
             builtinSearchEnabled = true;
         }
         if (builtinSearchEnabled) {
@@ -262,8 +290,27 @@ public class AgentGraphBuilder {
             }
         }
 
-        String enhancedPrompt = buildEnhancedPrompt(entity, builtinSearchEnabled,
-                boundTools, runtimeModel.getMaxInputTokens());
+        String enhancedPrompt = buildEnhancedPrompt(entity, builtinSearchEnabled);
+
+        // Runtime skill-catalog renderer — captures this agent's bound skills,
+        // effective tool allowlist, model window and workspace; invoked each
+        // turn by the reasoning / step-execution nodes with the skills loaded
+        // so far this run so load_skill pins float to the top of the catalog.
+        SkillCatalogRenderer skillCatalogRenderer = buildSkillCatalogRenderer(
+                entity, boundTools, runtimeModel.getMaxInputTokens());
+
+        // Extension-tool catalog — only for ReAct. The dynamic tool split runs
+        // in ReasoningNode; Plan-Execute keeps advertising every tool (it has no
+        // action node to record enable_tool), so baking the catalog there would
+        // describe an enable_tool flow that can never take effect.
+        boolean isPlanExecute = "plan_execute".equals(entity.getAgentType());
+        if (!isPlanExecute) {
+            String extensionCatalog = toolDisclosureService.renderExtensionCatalog(
+                    toolSet, runtimeModel.getMaxInputTokens());
+            if (extensionCatalog != null && !extensionCatalog.isBlank()) {
+                enhancedPrompt = enhancedPrompt + extensionCatalog;
+            }
+        }
 
         // 当前仅支持 DashScope 和 OpenAI-compatible，其他协议直接拒绝
         if (!supportsStateGraph(protocol)) {
@@ -274,12 +321,12 @@ public class AgentGraphBuilder {
         BaseAgent agent;
         boolean toolCallingEnabled;
         if ("plan_execute".equals(entity.getAgentType())) {
-            agent = buildPlanExecuteAgent(toolSet, runtimeModel, maxIter, entity.getId());
+            agent = buildPlanExecuteAgent(toolSet, runtimeModel, maxIter, entity.getId(), skillCatalogRenderer);
             toolCallingEnabled = true;
             log.info("Built StateGraph Plan-Execute agent: {} (maxIterations={}, tools={}, protocol={})",
                     entity.getName(), maxIter, toolSet.size(), protocol.getId());
         } else {
-            agent = buildReActAgent(toolSet, runtimeModel, maxIter, entity.getId());
+            agent = buildReActAgent(toolSet, runtimeModel, maxIter, entity.getId(), skillCatalogRenderer);
             // StateGraph 路径下工具调用由 ActionNode 控制，始终启用
             toolCallingEnabled = true;
             log.info("Built StateGraph ReAct agent: {} (maxIterations={}, tools={}, protocol={})",
@@ -297,6 +344,11 @@ public class AgentGraphBuilder {
         agent.runtimeProviderId = provider != null ? provider.getProviderId() : "";
         agent.runtimeModelConfig = runtimeModel;
         agent.toolSet = toolSet;
+        // RFC 48 — wire the goal lookup so buildInitialState can inject
+        // ACTIVE_GOAL. The node itself stays inert until goalProperties.enabled
+        // flips true, but tests need findActiveByConversation to work even
+        // when the runtime path is disabled.
+        agent.goalService = goalService;
         agent.multimodalRouter = multimodalRouter;
         agent.mediaCaptionService = mediaCaptionService;
         agent.userLocale = resolveLocale();
@@ -306,13 +358,16 @@ public class AgentGraphBuilder {
         agent.topP = runtimeModel.getTopP();
         agent.toolCallingEnabled = toolCallingEnabled;
 
-        // 查找工作区活动目录
-        if (entity.getWorkspaceId() != null) {
+        // Agent 级别覆盖优先，否则继承工作区
+        if (entity.getWorkspaceBasePath() != null && !entity.getWorkspaceBasePath().isBlank()) {
+            agent.workspaceBasePath = entity.getWorkspaceBasePath();
+            log.info("Agent {} using agent-level basePath: {}", entity.getName(), agent.workspaceBasePath);
+        } else if (entity.getWorkspaceId() != null) {
             try {
                 var workspace = workspaceService.getById(entity.getWorkspaceId());
                 if (workspace != null && workspace.getBasePath() != null && !workspace.getBasePath().isBlank()) {
                     agent.workspaceBasePath = workspace.getBasePath();
-                    log.info("Agent {} bound to workspace basePath: {}", entity.getName(), agent.workspaceBasePath);
+                    log.info("Agent {} inherited workspace basePath: {}", entity.getName(), agent.workspaceBasePath);
                 }
             } catch (Exception e) {
                 log.warn("Failed to lookup workspace basePath for agent {}: {}", entity.getName(), e.getMessage());
@@ -333,10 +388,16 @@ public class AgentGraphBuilder {
 
     StateGraphReActAgent buildReActAgent(AgentToolSet toolSet, ModelConfigEntity runtimeModel,
                                          int maxIter, Long agentId) {
+        return buildReActAgent(toolSet, runtimeModel, maxIter, agentId, null);
+    }
+
+    StateGraphReActAgent buildReActAgent(AgentToolSet toolSet, ModelConfigEntity runtimeModel,
+                                         int maxIter, Long agentId, SkillCatalogRenderer skillCatalogRenderer) {
         ChatModel chatModel = buildRuntimeChatModel(runtimeModel);
         ChatClient chatClient = ChatClient.create(chatModel);
         String reasoningEffort = resolveReasoningEffortForModel(runtimeModel);
-        CompiledGraph compiledGraph = buildReActGraph(toolSet, chatModel, maxIter, reasoningEffort, runtimeModel, agentId);
+        CompiledGraph compiledGraph = buildReActGraph(toolSet, chatModel, maxIter, reasoningEffort,
+                runtimeModel, agentId, skillCatalogRenderer);
         return new StateGraphReActAgent(chatClient, conversationService, compiledGraph,
                 chatModel, conversationWindowManager, toolSet);
     }
@@ -347,10 +408,17 @@ public class AgentGraphBuilder {
 
     StateGraphPlanExecuteAgent buildPlanExecuteAgent(AgentToolSet toolSet, ModelConfigEntity runtimeModel,
                                                      int maxIter, Long agentId) {
+        return buildPlanExecuteAgent(toolSet, runtimeModel, maxIter, agentId, null);
+    }
+
+    StateGraphPlanExecuteAgent buildPlanExecuteAgent(AgentToolSet toolSet, ModelConfigEntity runtimeModel,
+                                                     int maxIter, Long agentId,
+                                                     SkillCatalogRenderer skillCatalogRenderer) {
         ChatModel chatModel = buildRuntimeChatModel(runtimeModel);
         ChatClient chatClient = ChatClient.create(chatModel);
         String reasoningEffort = resolveReasoningEffortForModel(runtimeModel);
-        CompiledGraph graph = buildPlanExecuteGraph(toolSet, chatModel, maxIter, reasoningEffort, runtimeModel, agentId);
+        CompiledGraph graph = buildPlanExecuteGraph(toolSet, chatModel, maxIter, reasoningEffort,
+                runtimeModel, agentId, skillCatalogRenderer);
         return new StateGraphPlanExecuteAgent(chatClient, conversationService, graph, planningService,
                 chatModel, conversationWindowManager, toolSet);
     }
@@ -367,6 +435,13 @@ public class AgentGraphBuilder {
     CompiledGraph buildPlanExecuteGraph(AgentToolSet toolSet, ChatModel chatModel, int maxIterations,
                                          String reasoningEffort, ModelConfigEntity primaryModelConfig,
                                          Long agentId) {
+        return buildPlanExecuteGraph(toolSet, chatModel, maxIterations, reasoningEffort,
+                primaryModelConfig, agentId, null);
+    }
+
+    CompiledGraph buildPlanExecuteGraph(AgentToolSet toolSet, ChatModel chatModel, int maxIterations,
+                                         String reasoningEffort, ModelConfigEntity primaryModelConfig,
+                                         Long agentId, SkillCatalogRenderer skillCatalogRenderer) {
         try {
             List<vip.mate.llm.failover.FallbackEntry> fallbackChain = buildFallbackChain(primaryModelConfig, agentId);
             NodeStreamingChatHelper streamingHelper = new NodeStreamingChatHelper(
@@ -384,7 +459,7 @@ public class AgentGraphBuilder {
                 executor.setAuditEventService(auditEventService);
             }
             PlanGenerationNode planGenerationNode = new PlanGenerationNode(chatModel, planningService, streamingHelper, conversationWindowManager, toolSet);
-            StepExecutionNode stepExecutionNode = new StepExecutionNode(chatModel, toolSet, executor, planningService, streamTracker, reasoningEffort, streamingHelper, conversationWindowManager);
+            StepExecutionNode stepExecutionNode = new StepExecutionNode(chatModel, toolSet, executor, planningService, streamTracker, reasoningEffort, streamingHelper, conversationWindowManager, skillCatalogRenderer);
             PlanSummaryNode planSummaryNode = new PlanSummaryNode(chatModel, planningService, streamingHelper);
             DirectAnswerNode directAnswerNode = new DirectAnswerNode();
 
@@ -448,6 +523,7 @@ public class AgentGraphBuilder {
                     // Token Usage
                     .addStrategy(MateClawStateKeys.PROMPT_TOKENS, KeyStrategy.REPLACE)
                     .addStrategy(MateClawStateKeys.COMPLETION_TOKENS, KeyStrategy.REPLACE)
+                    .addStrategy(MateClawStateKeys.LLM_CALL_COUNT, KeyStrategy.REPLACE)
                     .addStrategy(MateClawStateKeys.RUNTIME_MODEL_NAME, KeyStrategy.REPLACE)
                     .addStrategy(MateClawStateKeys.RUNTIME_PROVIDER_ID, KeyStrategy.REPLACE)
                     // SourceEvidenceLedger: ActionNode 把每轮 ToolResponse 抽取出的
@@ -459,6 +535,25 @@ public class AgentGraphBuilder {
                     .addStrategy(MateClawStateKeys.SOURCE_EVIDENCE_LEDGER, KeyStrategy.REPLACE)
                     // Multimodal sidecar routing decision for the current turn.
                     .addStrategy(MateClawStateKeys.ROUTING_DECISION, KeyStrategy.REPLACE)
+                    // RFC 48 — persistent goal state keys must be registered in
+                    // BOTH graph KeyStrategyFactory blocks. The architecture
+                    // coverage test only checks "appears somewhere"; the
+                    // GoalStateKeyDoubleRegistrationTest below verifies the
+                    // double registration explicitly.
+                    .addStrategy(MateClawStateKeys.ACTIVE_GOAL, KeyStrategy.REPLACE)
+                    .addStrategy(MateClawStateKeys.GOAL_EVALUATION_RESULT, KeyStrategy.REPLACE)
+                    .addStrategy(MateClawStateKeys.GOAL_FOLLOWUP_INJECTED, KeyStrategy.REPLACE)
+                    .addStrategy(MateClawStateKeys.GOAL_FOLLOWUP_PROMPT, KeyStrategy.REPLACE)
+                    .addStrategy(MateClawStateKeys.GOAL_EVALUATED_THIS_RUN, KeyStrategy.REPLACE)
+                    .addStrategy(MateClawStateKeys.GOAL_FOLLOWUP_COUNT, KeyStrategy.REPLACE)
+                    .addStrategy(MateClawStateKeys.GOAL_ACCOUNTED_LLM_CALL_COUNT, KeyStrategy.REPLACE)
+                    // Skill progressive disclosure — pinned skills loaded this
+                    // run. Registered in BOTH graphs so the read-merge-write in
+                    // ActionNode is not dropped on multi-node merges.
+                    .addStrategy(MateClawStateKeys.LOADED_SKILLS, KeyStrategy.REPLACE)
+                    // Tool progressive disclosure — extensions enabled this run.
+                    // Registered in BOTH graphs for the same merge-safety reason.
+                    .addStrategy(MateClawStateKeys.ENABLED_EXTENSION_TOOLS, KeyStrategy.REPLACE)
                     .build();
 
             // Graph 拓扑：
@@ -466,7 +561,16 @@ public class AgentGraphBuilder {
             //   ├→ DIRECT_ANSWER_NODE → END
             //   └→ STEP_EXECUTION → (StepProgressDispatcher)
             //       ├→ STEP_EXECUTION (loop)
-            //       └→ PLAN_SUMMARY → END
+            //       └→ PLAN_SUMMARY → (active goal?)
+            //                          ├→ GOAL_EVALUATION → (followup?)
+            //                          │                     ├→ PLAN_GENERATION (re-plan)
+            //                          │                     └→ END
+            //                          └→ END
+
+            GoalEvaluationNode goalEvalNode = new GoalEvaluationNode(
+                    goalEvaluationService, goalFollowupService, goalService, goalProperties,
+                    conversationWindowManager, conversationService,
+                    vip.mate.goal.service.GraphFlavor.PLAN_EXECUTE);
 
             StateGraph graph = new StateGraph("plan-execute-agent", keyStrategyFactory)
                     .addNode(PlanStateKeys.PLAN_GENERATION_NODE,
@@ -477,6 +581,8 @@ public class AgentGraphBuilder {
                             AsyncNodeAction.node_async(planSummaryNode))
                     .addNode(PlanStateKeys.DIRECT_ANSWER_NODE,
                             AsyncNodeAction.node_async(directAnswerNode))
+                    .addNode(MateClawStateKeys.GOAL_EVALUATION_NODE,
+                            AsyncNodeAction.node_async(goalEvalNode))
                     .addEdge(StateGraph.START, PlanStateKeys.PLAN_GENERATION_NODE)
                     .addConditionalEdges(PlanStateKeys.PLAN_GENERATION_NODE,
                             AsyncEdgeAction.edge_async(new PlanGenerationDispatcher()),
@@ -489,8 +595,43 @@ public class AgentGraphBuilder {
                                     PlanStateKeys.STEP_EXECUTION_NODE, PlanStateKeys.STEP_EXECUTION_NODE,
                                     PlanStateKeys.PLAN_SUMMARY_NODE, PlanStateKeys.PLAN_SUMMARY_NODE,
                                     StateGraph.END, StateGraph.END))
-                    .addEdge(PlanStateKeys.PLAN_SUMMARY_NODE, StateGraph.END)
-                    .addEdge(PlanStateKeys.DIRECT_ANSWER_NODE, StateGraph.END);
+                    .addConditionalEdges(PlanStateKeys.PLAN_SUMMARY_NODE,
+                            AsyncEdgeAction.edge_async(state -> {
+                                MateClawStateAccessor a = new MateClawStateAccessor(state);
+                                boolean hasGoal = a.hasActiveGoal();
+                                boolean already = a.goalEvaluatedThisRun();
+                                return (hasGoal && !already)
+                                        ? MateClawStateKeys.GOAL_EVALUATION_NODE
+                                        : StateGraph.END;
+                            }),
+                            Map.of(
+                                    MateClawStateKeys.GOAL_EVALUATION_NODE, MateClawStateKeys.GOAL_EVALUATION_NODE,
+                                    StateGraph.END, StateGraph.END))
+                    .addConditionalEdges(MateClawStateKeys.GOAL_EVALUATION_NODE,
+                            AsyncEdgeAction.edge_async(new vip.mate.agent.graph.edge.GoalEvaluationDispatcher(
+                                    PlanStateKeys.PLAN_GENERATION_NODE, StateGraph.END)),
+                            Map.of(
+                                    PlanStateKeys.PLAN_GENERATION_NODE, PlanStateKeys.PLAN_GENERATION_NODE,
+                                    StateGraph.END, StateGraph.END))
+                    // DIRECT_ANSWER_NODE handles trivial requests that bypass the
+                    // multi-step plan. For active goals, the direct answer is still
+                    // a turn — without this edge, turns_used / score / completion
+                    // would never tick on plan-execute conversations whose every
+                    // reply happened to be simple enough to short-circuit through
+                    // the direct path. Mirror PLAN_SUMMARY_NODE's gate so non-goal
+                    // turns still go straight to END (no goal node invocation).
+                    .addConditionalEdges(PlanStateKeys.DIRECT_ANSWER_NODE,
+                            AsyncEdgeAction.edge_async(state -> {
+                                MateClawStateAccessor a = new MateClawStateAccessor(state);
+                                boolean hasGoal = a.hasActiveGoal();
+                                boolean already = a.goalEvaluatedThisRun();
+                                return (hasGoal && !already)
+                                        ? MateClawStateKeys.GOAL_EVALUATION_NODE
+                                        : StateGraph.END;
+                            }),
+                            Map.of(
+                                    MateClawStateKeys.GOAL_EVALUATION_NODE, MateClawStateKeys.GOAL_EVALUATION_NODE,
+                                    StateGraph.END, StateGraph.END));
 
             return graph.compile(CompileConfig.builder()
                     .recursionLimit(frameworkRecursionLimit())
@@ -536,6 +677,13 @@ public class AgentGraphBuilder {
     CompiledGraph buildReActGraph(AgentToolSet toolSet, ChatModel chatModel, int maxIterations,
                                    String reasoningEffort, ModelConfigEntity primaryModelConfig,
                                    Long agentId) {
+        return buildReActGraph(toolSet, chatModel, maxIterations, reasoningEffort,
+                primaryModelConfig, agentId, null);
+    }
+
+    CompiledGraph buildReActGraph(AgentToolSet toolSet, ChatModel chatModel, int maxIterations,
+                                   String reasoningEffort, ModelConfigEntity primaryModelConfig,
+                                   Long agentId, SkillCatalogRenderer skillCatalogRenderer) {
         try {
             List<vip.mate.llm.failover.FallbackEntry> fallbackChain = buildFallbackChain(primaryModelConfig, agentId);
             NodeStreamingChatHelper streamingHelper = new NodeStreamingChatHelper(
@@ -559,13 +707,15 @@ public class AgentGraphBuilder {
                     && ModelFamily.detect(primaryModelConfig.getModelName()).supportsReasoningEffort();
             ReasoningNode reasoningNode = new ReasoningNode(chatModel, toolSet, reasoningEffort,
                     supportsReasoningEffort,
-                    streamingHelper, conversationWindowManager, streamTracker, 0, wikiContextService);
+                    streamingHelper, conversationWindowManager, streamTracker, 0, wikiContextService,
+                    skillCatalogRenderer, toolDisclosureService, progressLedgerService);
             ActionNode actionNode = new ActionNode(executor, streamTracker);
             ObservationProcessor observationProcessor = new ObservationProcessor(graphObservationProperties);
             ObservationNode observationNode = new ObservationNode(observationProcessor, streamTracker);
             SummarizingNode summarizingNode = new SummarizingNode(chatModel, streamingHelper, streamTracker);
-            LimitExceededNode limitExceededNode = new LimitExceededNode(chatModel, observationProcessor, streamingHelper, i18nService);
-            FinalAnswerNode finalAnswerNode = new FinalAnswerNode();
+            LimitExceededNode limitExceededNode = new LimitExceededNode(
+                    chatModel, observationProcessor, streamingHelper, i18nService, progressLedgerService);
+            FinalAnswerNode finalAnswerNode = new FinalAnswerNode(generatedFileCache);
 
             KeyStrategyFactory keyStrategyFactory = KeyStrategy.builder()
                     // 输入字段
@@ -647,7 +797,30 @@ public class AgentGraphBuilder {
                     .addStrategy(MateClawStateKeys.SOURCE_EVIDENCE_LEDGER, KeyStrategy.REPLACE)
                     // Multimodal sidecar routing decision for the current turn.
                     .addStrategy(MateClawStateKeys.ROUTING_DECISION, KeyStrategy.REPLACE)
+                    // RFC 48 — persistent goal state keys must be registered in
+                    // BOTH graph KeyStrategyFactory blocks. See
+                    // GoalStateKeyDoubleRegistrationTest for the strict
+                    // double-registration check.
+                    .addStrategy(MateClawStateKeys.ACTIVE_GOAL, KeyStrategy.REPLACE)
+                    .addStrategy(MateClawStateKeys.GOAL_EVALUATION_RESULT, KeyStrategy.REPLACE)
+                    .addStrategy(MateClawStateKeys.GOAL_FOLLOWUP_INJECTED, KeyStrategy.REPLACE)
+                    .addStrategy(MateClawStateKeys.GOAL_FOLLOWUP_PROMPT, KeyStrategy.REPLACE)
+                    .addStrategy(MateClawStateKeys.GOAL_EVALUATED_THIS_RUN, KeyStrategy.REPLACE)
+                    .addStrategy(MateClawStateKeys.GOAL_FOLLOWUP_COUNT, KeyStrategy.REPLACE)
+                    .addStrategy(MateClawStateKeys.GOAL_ACCOUNTED_LLM_CALL_COUNT, KeyStrategy.REPLACE)
+                    // Skill progressive disclosure — pinned skills loaded this
+                    // run. Registered in BOTH graphs so the read-merge-write in
+                    // ActionNode is not dropped on multi-node merges.
+                    .addStrategy(MateClawStateKeys.LOADED_SKILLS, KeyStrategy.REPLACE)
+                    // Tool progressive disclosure — extensions enabled this run.
+                    // Registered in BOTH graphs for the same merge-safety reason.
+                    .addStrategy(MateClawStateKeys.ENABLED_EXTENSION_TOOLS, KeyStrategy.REPLACE)
                     .build();
+
+            GoalEvaluationNode goalEvalNode = new GoalEvaluationNode(
+                    goalEvaluationService, goalFollowupService, goalService, goalProperties,
+                    conversationWindowManager, conversationService,
+                    vip.mate.goal.service.GraphFlavor.REACT);
 
             StateGraph graph = new StateGraph("react-agent-v2", keyStrategyFactory)
                     .addNode(MateClawStateKeys.REASONING_NODE,
@@ -662,6 +835,8 @@ public class AgentGraphBuilder {
                             AsyncNodeAction.node_async(limitExceededNode))
                     .addNode(MateClawStateKeys.FINAL_ANSWER_NODE,
                             AsyncNodeAction.node_async(finalAnswerNode))
+                    .addNode(MateClawStateKeys.GOAL_EVALUATION_NODE,
+                            AsyncNodeAction.node_async(goalEvalNode))
                     .addEdge(StateGraph.START, MateClawStateKeys.REASONING_NODE)
                     .addConditionalEdges(MateClawStateKeys.REASONING_NODE,
                             AsyncEdgeAction.edge_async(new ReasoningDispatcher()),
@@ -678,7 +853,26 @@ public class AgentGraphBuilder {
                                     MateClawStateKeys.FINAL_ANSWER_NODE, MateClawStateKeys.FINAL_ANSWER_NODE))
                     .addEdge(MateClawStateKeys.SUMMARIZING_NODE, MateClawStateKeys.REASONING_NODE)
                     .addEdge(MateClawStateKeys.LIMIT_EXCEEDED_NODE, MateClawStateKeys.FINAL_ANSWER_NODE)
-                    .addEdge(MateClawStateKeys.FINAL_ANSWER_NODE, StateGraph.END);
+                    // FinalAnswer -> (active goal && not yet evaluated this run) ? GoalEvaluation : END
+                    .addConditionalEdges(MateClawStateKeys.FINAL_ANSWER_NODE,
+                            AsyncEdgeAction.edge_async(state -> {
+                                MateClawStateAccessor a = new MateClawStateAccessor(state);
+                                boolean hasGoal = a.hasActiveGoal();
+                                boolean already = a.goalEvaluatedThisRun();
+                                return (hasGoal && !already)
+                                        ? MateClawStateKeys.GOAL_EVALUATION_NODE
+                                        : StateGraph.END;
+                            }),
+                            Map.of(
+                                    MateClawStateKeys.GOAL_EVALUATION_NODE, MateClawStateKeys.GOAL_EVALUATION_NODE,
+                                    StateGraph.END, StateGraph.END))
+                    // GoalEvaluation -> (followup injected) ? Reasoning : END
+                    .addConditionalEdges(MateClawStateKeys.GOAL_EVALUATION_NODE,
+                            AsyncEdgeAction.edge_async(new vip.mate.agent.graph.edge.GoalEvaluationDispatcher(
+                                    MateClawStateKeys.REASONING_NODE, StateGraph.END)),
+                            Map.of(
+                                    MateClawStateKeys.REASONING_NODE, MateClawStateKeys.REASONING_NODE,
+                                    StateGraph.END, StateGraph.END));
 
             return graph.compile(CompileConfig.builder()
                     .recursionLimit(frameworkRecursionLimit())
@@ -698,7 +892,10 @@ public class AgentGraphBuilder {
                 // RFC-062: Claude Code OAuth tunnels through the same Messages API
                 // wrapped in AnthropicChatModel — same StateGraph capability surface.
                 || protocol == ModelProtocol.ANTHROPIC_CLAUDE_CODE
-                || protocol == ModelProtocol.OPENAI_CHATGPT;
+                || protocol == ModelProtocol.OPENAI_CHATGPT
+                // Gemini native generateContent — GeminiChatModel exposes the same
+                // streaming + tool-calling surface the StateGraph nodes rely on.
+                || protocol == ModelProtocol.GEMINI_NATIVE;
     }
 
     // ==================== 模型构建 ====================
@@ -972,12 +1169,11 @@ public class AgentGraphBuilder {
     }
 
     // PR-0b: legacy single-fallback buildFallbackModel deleted (already @Deprecated, no callers).
-    // PR-0b: isDashScopeSearchEnabled moved to AgentDashScopeChatModelBuilder.
+    // PR-0b: isDashScopeSearchEnabled moved to DashScopeChatModelBuilder.
 
     // ==================== Prompt 构建 ====================
 
-    private String buildEnhancedPrompt(AgentEntity entity, boolean builtinSearchEnabled,
-                                       Set<String> boundTools, Integer maxInputTokens) {
+    private String buildEnhancedPrompt(AgentEntity entity, boolean builtinSearchEnabled) {
         // The agent's own systemPrompt encodes its identity (role / goal /
         // backstory). The memory block from workspace files (AGENTS.md, SOUL.md,
         // PROFILE.md, MEMORY.md, ...) augments that identity with durable
@@ -999,10 +1195,11 @@ public class AgentGraphBuilder {
         }
         String basePrompt = basePromptBuilder.toString();
 
-        // 使用 skill runtime 构建技能增强（per-agent 绑定过滤）
-        Set<Long> boundSkillIds = agentBindingService.getBoundSkillIds(entity.getId());
-        String skillEnhancement = skillRuntimeService.buildSkillPromptEnhancement(
-                boundSkillIds, boundTools, maxInputTokens, entity.getId());
+        // The skill catalog (## Skills) is NOT baked here. It is rendered at
+        // runtime by the reasoning / step-execution nodes via
+        // SkillCatalogRenderer so its ordering can react to skills loaded this
+        // run (load_skill pins). Keeping it out of the baked system prompt also
+        // keeps the prompt-cache prefix stable across turns.
 
         // 工具调用指导
         String toolGuidance = """
@@ -1062,6 +1259,7 @@ public class AgentGraphBuilder {
                 Do not assume you cannot access local resources - try calling the appropriate tool first.
                 If a tool requires approval due to security policies, the system will prompt the user for confirmation.
                 Only state you cannot access something if no relevant tool is available.
+                Do not claim a tool-generated file, URL, UUID, path, task id, or success result before the corresponding tool call has completed. If a tool is needed, call the tool first, then report only the actual returned result.
 
                 ## Multi-Part Question Guidelines
                 When the user asks multiple questions or requests multiple tasks in a single message:
@@ -1118,1233 +1316,32 @@ public class AgentGraphBuilder {
         // Wiki 知识库上下文注入
         String wikiContext = wikiContextService.buildWikiContext(entity.getId());
 
-        return basePrompt + skillEnhancement + toolGuidance + searchGuidance + wikiContext;
-    }
-
-    // ==================== 模型选项构建 ====================
-
-    // PR-0b: buildDashScopeOptions moved to AgentDashScopeChatModelBuilder
-
-    /** Transitional public visibility for {@code chatmodel} sub-package builders; will move into the builder in PR-0c (OpenAI). */
-    public OpenAiChatOptions buildOpenAiOptions(ModelConfigEntity runtimeModel, ModelProviderEntity provider) {
-        OpenAiChatOptions.Builder builder = OpenAiChatOptions.builder();
-        Map<String, Object> kwargs = modelProviderService.readProviderGenerateKwargs(provider);
-        String modelName = runtimeModel.getModelName();
-        ModelFamily family = ModelFamily.detect(modelName);
-
-        if (StringUtils.hasText(modelName)) {
-            builder.model(modelName);
-        }
-
-        // temperature：部分模型族强制 1.0
-        Double temperature = resolveOpenAiTemperature(modelName, runtimeModel.getTemperature(), kwargs, family);
-        if (temperature != null) {
-            builder.temperature(temperature);
-        }
-
-        // max_tokens / max_completion_tokens：按模型族路由
-        if (family.suppressMaxTokens()) {
-            // OPENAI_REASONING 族：禁止 max_tokens，改用 max_completion_tokens
-            // fallback 优先级：kwargs.maxCompletionTokens > kwargs.maxTokens > config.maxTokens
-            Integer kwargsMaxTokens = resolveIntegerOption("maxTokens", runtimeModel.getMaxTokens(), kwargs);
-            Integer maxCompletionTokens = resolveIntegerOption("maxCompletionTokens", kwargsMaxTokens, kwargs);
-            if (maxCompletionTokens != null) {
-                builder.maxCompletionTokens(maxCompletionTokens);
-            }
-            log.debug("ModelFamily {} suppressed max_tokens, using max_completion_tokens={} for model {}",
-                    family, maxCompletionTokens, modelName);
-        } else {
-            // 其他模型族：正常使用 max_tokens
-            Integer maxTokens = resolveIntegerOption("maxTokens", runtimeModel.getMaxTokens(), kwargs);
-            if (maxTokens != null) {
-                builder.maxTokens(maxTokens);
-            }
-            // 仍允许通过 generateKwargs 手动指定 maxCompletionTokens
-            Integer maxCompletionTokens = resolveIntegerOption("maxCompletionTokens", null, kwargs);
-            if (maxCompletionTokens != null) {
-                builder.maxCompletionTokens(maxCompletionTokens);
-            }
-        }
-
-        // top_p：部分模型族禁止发送
-        Double topP = resolveOpenAiTopP(modelName, runtimeModel.getTopP(), kwargs, family);
-        if (topP != null) {
-            builder.topP(topP);
-        }
-
-        // reasoning_effort：仅支持的模型族才注入
-        String reasoningEffort = resolveReasoningEffort(modelName, kwargs, family);
-        if (StringUtils.hasText(reasoningEffort)) {
-            builder.reasoningEffort(reasoningEffort);
-        }
-
-        // 内置搜索：模型级字段优先，provider generateKwargs 作为 fallback
-        boolean searchEnabled = Boolean.TRUE.equals(runtimeModel.getEnableSearch())
-                || Boolean.TRUE.equals(kwargs.get("enableSearch"));
-        if (searchEnabled) {
-            String strategy = runtimeModel.getSearchStrategy();
-            if (!StringUtils.hasText(strategy)) {
-                strategy = (String) kwargs.get("searchStrategy");
-            }
-            OpenAiApi.ChatCompletionRequest.WebSearchOptions.SearchContextSize contextSize;
-            try {
-                contextSize = StringUtils.hasText(strategy)
-                        ? OpenAiApi.ChatCompletionRequest.WebSearchOptions.SearchContextSize.valueOf(strategy.toUpperCase())
-                        : OpenAiApi.ChatCompletionRequest.WebSearchOptions.SearchContextSize.MEDIUM;
-            } catch (IllegalArgumentException e) {
-                contextSize = OpenAiApi.ChatCompletionRequest.WebSearchOptions.SearchContextSize.MEDIUM;
-            }
-            builder.webSearchOptions(new OpenAiApi.ChatCompletionRequest.WebSearchOptions(contextSize, null));
-        }
-
-        OpenAiChatOptions options = builder.build();
-        options.setInternalToolExecutionEnabled(false);
-        // 注意：不设置 parallelToolCalls — 设为 false 会导致无 tools 时 OpenAI 返回 400：
-        // "parallel_tool_calls is only allowed when 'tools' are specified"
-        // 保持 null 让 Spring AI 不序列化该字段，由各 Node 在有 tools 时自行控制。
-        options.setStreamUsage(true);
-        return options;
-    }
-
-    // ==================== OpenAI API 构建 ====================
-
-    /** Transitional public visibility for {@code chatmodel} sub-package builders; will move into the builder in PR-0b. */
-    public OpenAiApi buildOpenAiApi(ModelProviderEntity provider) {
-        return buildOpenAiApi(provider, null);
+        return basePrompt + toolGuidance + searchGuidance + wikiContext;
     }
 
     /**
-     * Overload that accepts a per-model read-timeout override (seconds).
-     * Threaded into both the sync RestClient and streaming WebClient so
-     * timeout behavior is consistent across blocking and streaming chat
-     * completions. Null falls back to the default 180s.
+     * Build the per-agent {@link SkillCatalogRenderer}. Captures the agent's
+     * bound skills, effective tool allowlist, model window and workspace once;
+     * the returned renderer is invoked each turn with the skills loaded so far
+     * this run so {@code load_skill} pins float to the top of the catalog.
      */
-    public OpenAiApi buildOpenAiApi(ModelProviderEntity provider, Integer readTimeoutOverride) {
-        if (provider == null || !modelProviderService.isProviderConfigured(provider.getProviderId())) {
-            throw new MateClawException("err.agent.provider_not_configured", "Provider 未完成配置，请在模型设置中填写有效的 API Key 和 Base URL");
-        }
-        String apiKey = provider.getApiKey();
-        // Honor the provider's requireApiKey flag instead of hard-failing on every empty key.
-        // Local + key-free providers (Ollama, LM Studio, MLX, llama.cpp, OpenCode) declare
-        // requireApiKey=false; for them an empty / placeholder key means "no Authorization
-        // header" — Spring AI's NoopApiKey expresses that. Without this the chat path
-        // rejected providers that probe / discovery / connection-test all considered usable.
-        boolean keyRequired = !Boolean.FALSE.equals(provider.getRequireApiKey());
-        if (keyRequired && !modelProviderService.hasUsableApiKey(apiKey)) {
-            throw new MateClawException("err.agent.provider_apikey_invalid", "Provider API Key 未配置或无效: " + provider.getProviderId());
-        }
-        String baseUrl = normalizeOpenAiBaseUrl(provider.getBaseUrl());
-        if (!StringUtils.hasText(baseUrl)) {
-            throw new MateClawException("err.agent.provider_baseurl_missing", "Provider Base URL 未配置: " + provider.getProviderId());
-        }
-        Map<String, Object> kwargs = modelProviderService.readProviderGenerateKwargs(provider);
-        MultiValueMap<String, String> headers = buildOpenAiHeaders(kwargs);
-        String completionsPath = resolveOpenAiCompletionsPath(baseUrl, kwargs);
-        RestClient.Builder restClientBuilder = applyHttpTimeouts(
-                restClientBuilderProvider.getIfAvailable(RestClient::builder), readTimeoutOverride);
-        WebClient.Builder webClientBuilder = applyHttpTimeoutsToWebClient(
-                webClientBuilderProvider.getIfAvailable(WebClient::builder), readTimeoutOverride);
-
-        // Spring AI OpenAiApi 构造函数会先 set User-Agent 为 "spring-ai"，再 addAll 我们的 headers，
-        // 导致自定义 User-Agent 被追加而非覆盖。因此对需要伪装客户端身份的 provider（如 kimi-code），
-        // 通过 RestClient/WebClient 拦截器在请求发出前强制覆盖 headers。
-        Map<String, String> overrideHeaders = extractOverrideHeaders(kwargs);
-        if (!overrideHeaders.isEmpty()) {
-            restClientBuilder = restClientBuilder.requestInterceptor((request, body, execution) -> {
-                HttpHeaders reqHeaders = request.getHeaders();
-                overrideHeaders.forEach(reqHeaders::set);
-                return execution.execute(request, body);
-            });
-            webClientBuilder = webClientBuilder.filter((request, next) -> {
-                org.springframework.web.reactive.function.client.ClientRequest modified =
-                        org.springframework.web.reactive.function.client.ClientRequest.from(request)
-                                .headers(h -> overrideHeaders.forEach(h::set))
-                                .build();
-                return next.exchange(modified);
-            });
-        }
-
-        boolean kimiSearchEnabled = isKimiProvider(provider)
-                && Boolean.TRUE.equals(kwargs.get("enableSearch"));
-
-        ApiKey apiKeyImpl = (keyRequired && StringUtils.hasText(apiKey))
-                ? new SimpleApiKey(apiKey.trim())
-                : new NoopApiKey();
-        return new OpenAiApi(
-                baseUrl,
-                apiKeyImpl,
-                headers,
-                completionsPath,
-                "/v1/embeddings",
-                restClientBuilder,
-                webClientBuilder,
-                RetryUtils.DEFAULT_RESPONSE_ERROR_HANDLER) {
-            @Override
-            public org.springframework.http.ResponseEntity<OpenAiApi.ChatCompletion> chatCompletionEntity(
-                    OpenAiApi.ChatCompletionRequest chatRequest,
-                    MultiValueMap<String, String> additionalHttpHeader) {
-                chatRequest = sanitizeReasoningEffortForProvider(chatRequest, provider);
-                chatRequest = patchReasoningContent(chatRequest, provider);
-                chatRequest = stripReasoningEffortIfIncompatible(chatRequest);
-                chatRequest = stripAutoToolChoice(chatRequest);
-                chatRequest = patchVideoMediaContent(chatRequest);
-                if (kimiSearchEnabled) {
-                    chatRequest = injectKimiWebSearch(chatRequest);
-                }
-                logOpenAiRequest(provider, chatRequest);
-                try {
-                    return super.chatCompletionEntity(chatRequest, additionalHttpHeader);
-                } catch (WebClientResponseException e) {
-                    logOpenAiError(provider, e);
-                    throw e;
-                }
-            }
-
-            @Override
-            public Flux<OpenAiApi.ChatCompletionChunk> chatCompletionStream(
-                    OpenAiApi.ChatCompletionRequest chatRequest,
-                    MultiValueMap<String, String> additionalHttpHeader) {
-                chatRequest = sanitizeReasoningEffortForProvider(chatRequest, provider);
-                chatRequest = patchReasoningContent(chatRequest, provider);
-                chatRequest = stripReasoningEffortIfIncompatible(chatRequest);
-                chatRequest = stripAutoToolChoice(chatRequest);
-                chatRequest = patchVideoMediaContent(chatRequest);
-                if (kimiSearchEnabled) {
-                    chatRequest = injectKimiWebSearch(chatRequest);
-                }
-                logOpenAiRequest(provider, chatRequest);
-                return super.chatCompletionStream(chatRequest, additionalHttpHeader)
-                        .doOnError(error -> {
-                            if (error instanceof WebClientResponseException e) {
-                                logOpenAiError(provider, e);
-                            }
-                        });
-            }
-        };
-    }
-
-    // ==================== DashScope API 构建 ====================
-
-    // PR-0b: buildDashScopeApi moved to AgentDashScopeChatModelBuilder
-
-    // ==================== Anthropic API 构建 ====================
-
-    // PR-0b: buildAnthropicApi + buildAnthropicOptions moved to AgentAnthropicChatModelBuilder
-
-    // ==================== 参数解析辅助方法 ====================
-
-    private Double resolveOpenAiTemperature(String modelName, Double configuredTemperature,
-                                               Map<String, Object> kwargs, ModelFamily family) {
-        Double overriddenTemperature = resolveDoubleOption("temperature", configuredTemperature, kwargs);
-        if (family.fixedTemperatureOne()) {
-            if (overriddenTemperature == null || Double.compare(overriddenTemperature, 1.0d) != 0) {
-                log.info("ModelFamily {} forced temperature=1.0 for model {}", family, modelName);
-            }
-            return 1.0d;
-        }
-        return overriddenTemperature;
-    }
-
-    private Double resolveOpenAiTopP(String modelName, Double configuredTopP,
-                                     Map<String, Object> kwargs, ModelFamily family) {
-        if (family.suppressTopP()) {
-            return null;
-        }
-        return resolveDoubleOption("topP", configuredTopP, kwargs);
-    }
-
-    private boolean requiresFixedTemperatureOne(String modelName) {
-        return ModelFamily.detect(modelName).fixedTemperatureOne();
-    }
-
-    private String resolveReasoningEffort(String modelName, Map<String, Object> kwargs, ModelFamily family) {
-        // PR-1.1 (RFC-049 L1-A): Only families that actually accept reasoning_effort may receive
-        // it. Previously only the default-inject branch checked capability; the generateKwargs
-        // override branch did not, so a provider-level `reasoningEffort: "high"` would leak to
-        // deepseek-chat / kimi-k2 / deepseek-reasoner etc., triggering the incident documented
-        // in RFC-049 (DeepSeek "reasoning_content missing" 400).
-        if (!family.supportsReasoningEffort()) {
-            Object overridden = findOptionValue(kwargs, "reasoningEffort");
-            if (overridden != null) {
-                log.warn("Dropping reasoningEffort='{}' from generateKwargs — model '{}' (family={}) "
-                                + "does not accept reasoning_effort. For DeepSeek thinking use "
-                                + "extra_body.thinking; for Kimi thinking the model activates it natively.",
-                        overridden, modelName, family);
-            }
-            return null;
-        }
-        // generateKwargs 显式覆盖始终优先（仅在白名单族内）
-        Object value = findOptionValue(kwargs, "reasoningEffort");
-        if (value instanceof String text && StringUtils.hasText(text)) {
-            return text.trim();
-        }
-        // 仅支持 reasoning_effort 的模型族才自动注入默认值
-        if (family.isThinking()) {
-            return "medium";
-        }
-        return null;
-    }
-
-    private boolean isThinkingModel(String modelName) {
-        return ModelFamily.detect(modelName).isThinking();
+    private SkillCatalogRenderer buildSkillCatalogRenderer(AgentEntity entity, Set<String> boundTools,
+                                                           Integer maxInputTokens) {
+        Set<Long> boundSkillIds = agentBindingService.getBoundSkillIds(entity.getId());
+        Long agentId = entity.getId();
+        Long workspaceId = entity.getWorkspaceId();
+        return loaded -> skillRuntimeService.buildSkillPromptEnhancement(
+                boundSkillIds, boundTools, maxInputTokens, agentId, workspaceId, loaded);
     }
 
     /**
-     * 从 ModelConfigEntity 中解析 reasoningEffort，用于传递给 StepExecutionNode / ReasoningNode。
-     * 复用已有的 resolveReasoningEffort + isThinkingModel 逻辑。
+     * Resolve the {@code reasoning_effort} to pass to the reasoning /
+     * step-execution nodes for the given model.
      */
     private String resolveReasoningEffortForModel(ModelConfigEntity runtimeModel) {
         ModelProviderEntity provider = modelProviderService.getProviderConfig(runtimeModel.getProvider());
         Map<String, Object> kwargs = modelProviderService.readProviderGenerateKwargs(provider);
         ModelFamily family = ModelFamily.detect(runtimeModel.getModelName());
-        return resolveReasoningEffort(runtimeModel.getModelName(), kwargs, family);
-    }
-
-    private Double resolveDoubleOption(String key, Double fallback, Map<String, Object> kwargs) {
-        Object value = findOptionValue(kwargs, key);
-        if (value instanceof Number number) {
-            return number.doubleValue();
-        }
-        if (value instanceof String text && StringUtils.hasText(text)) {
-            try {
-                return Double.parseDouble(text.trim());
-            } catch (NumberFormatException ignored) {
-                log.warn("Invalid double generateKwargs value for {}: {}", key, text);
-            }
-        }
-        return fallback;
-    }
-
-    private Integer resolveIntegerOption(String key, Integer fallback, Map<String, Object> kwargs) {
-        Object value = findOptionValue(kwargs, key);
-        if (value instanceof Number number) {
-            return number.intValue();
-        }
-        if (value instanceof String text && StringUtils.hasText(text)) {
-            try {
-                return Integer.parseInt(text.trim());
-            } catch (NumberFormatException ignored) {
-                log.warn("Invalid integer generateKwargs value for {}: {}", key, text);
-            }
-        }
-        return fallback;
-    }
-
-    @SuppressWarnings("unchecked")
-    private Object findOptionValue(Map<String, Object> kwargs, String key) {
-        Object direct = findKwarg(kwargs, key);
-        if (direct != null) {
-            return direct;
-        }
-        String snakeCase = key.replaceAll("([a-z])([A-Z])", "$1_$2").toLowerCase();
-        if (!snakeCase.equals(key)) {
-            return findKwarg(kwargs, snakeCase);
-        }
-        return null;
-    }
-
-    @SuppressWarnings("unchecked")
-    private Object findKwarg(Map<String, Object> kwargs, String key) {
-        if (kwargs == null || kwargs.isEmpty()) {
-            return null;
-        }
-        if (kwargs.containsKey(key)) {
-            return kwargs.get(key);
-        }
-        Object chatOptions = kwargs.get("chatOptions");
-        if (chatOptions instanceof Map<?, ?> optionsMap) {
-            return ((Map<String, Object>) optionsMap).get(key);
-        }
-        return null;
-    }
-
-    // ==================== URL 规范化 ====================
-
-    // PR-0b: normalizeDashScopeBaseUrl moved to AgentDashScopeChatModelBuilder
-
-    private String normalizeOpenAiBaseUrl(String baseUrl) {
-        if (!StringUtils.hasText(baseUrl)) {
-            return null;
-        }
-        String normalized = baseUrl.trim();
-        if (normalized.endsWith("/")) {
-            normalized = normalized.substring(0, normalized.length() - 1);
-        }
-        if (normalized.endsWith("/v1")) {
-            normalized = normalized.substring(0, normalized.length() - 3);
-        }
-        return normalized;
-    }
-
-    // ==================== Kimi 内置搜索 ====================
-
-    private static boolean isKimiProvider(ModelProviderEntity provider) {
-        if (provider == null) return false;
-        String id = provider.getProviderId();
-        return "kimi-cn".equals(id) || "kimi-intl".equals(id);
-    }
-
-    /**
-     * 为 Kimi 请求注入 $web_search builtin tool。
-     * Kimi 的内置搜索通过 tools 数组中声明 {"type":"builtin_function","function":{"name":"$web_search"}} 实现。
-     * 由于 Spring AI 的 FunctionTool.Type 只有 FUNCTION，无法直接构造 builtin_function 类型，
-     * 因此通过 extraBody 注入原始 JSON 结构覆盖 tools 字段（包含原有 tools + $web_search）。
-     */
-    private static OpenAiApi.ChatCompletionRequest injectKimiWebSearch(OpenAiApi.ChatCompletionRequest request) {
-        // 构造 $web_search entry 作为 Map
-        Map<String, Object> webSearchTool = Map.of(
-                "type", "builtin_function",
-                "function", Map.of("name", "$web_search")
-        );
-
-        // 将原有 tools 转为 List<Map> 并追加 $web_search
-        List<Map<String, Object>> allTools = new ArrayList<>();
-        if (request.tools() != null) {
-            for (OpenAiApi.FunctionTool tool : request.tools()) {
-                Map<String, Object> toolMap = new LinkedHashMap<>();
-                toolMap.put("type", "function");
-                if (tool.getFunction() != null) {
-                    Map<String, Object> funcMap = new LinkedHashMap<>();
-                    funcMap.put("name", tool.getFunction().getName());
-                    if (tool.getFunction().getDescription() != null) {
-                        funcMap.put("description", tool.getFunction().getDescription());
-                    }
-                    if (tool.getFunction().getParameters() != null) {
-                        funcMap.put("parameters", tool.getFunction().getParameters());
-                    }
-                    if (tool.getFunction().getStrict() != null) {
-                        funcMap.put("strict", tool.getFunction().getStrict());
-                    }
-                    toolMap.put("function", funcMap);
-                }
-                allTools.add(toolMap);
-            }
-        }
-        allTools.add(webSearchTool);
-
-        // 通过 extraBody 注入 tools（覆盖原有 tools 字段），同时清空原 tools 避免重复序列化
-        Map<String, Object> extraBody = new LinkedHashMap<>();
-        if (request.extraBody() != null) {
-            extraBody.putAll(request.extraBody());
-        }
-        extraBody.put("tools", allTools);
-
-        return new OpenAiApi.ChatCompletionRequest(
-                request.messages(),
-                request.model(),
-                request.store(),
-                request.metadata(),
-                request.frequencyPenalty(),
-                request.logitBias(),
-                request.logprobs(),
-                request.topLogprobs(),
-                request.maxTokens(),
-                request.maxCompletionTokens(),
-                request.n(),
-                request.outputModalities(),
-                request.audioParameters(),
-                request.presencePenalty(),
-                request.responseFormat(),
-                request.seed(),
-                request.serviceTier(),
-                request.stop(),
-                request.stream(),
-                request.streamOptions(),
-                request.temperature(),
-                request.topP(),
-                null,  // tools — 清空，由 extraBody 接管
-                request.toolChoice(),
-                request.parallelToolCalls(),
-                request.user(),
-                request.reasoningEffort(),
-                request.webSearchOptions(),
-                request.verbosity(),
-                request.promptCacheKey(),
-                request.safetyIdentifier(),
-                extraBody
-        );
-    }
-
-    // PR-0b: reflection helpers (readApiKey/BaseUrl/DashScopeApiFromDefaultChatModel)
-    //         moved to AgentDashScopeChatModelBuilder
-
-    // ==================== 日志辅助 ====================
-
-    private MultiValueMap<String, String> buildOpenAiHeaders(Map<String, Object> kwargs) {
-        LinkedMultiValueMap<String, String> headers = new LinkedMultiValueMap<>();
-        headers.add("User-Agent", "MateClaw/1.0");
-        Object headerObject = kwargs.get("headers");
-        if (headerObject instanceof Map<?, ?> headerMap) {
-            headerMap.forEach((key, value) -> {
-                if (key != null && value != null) {
-                    headers.set(String.valueOf(key), String.valueOf(value));
-                }
-            });
-        }
-        return headers;
-    }
-
-    /**
-     * RFC-012 M1：给 LLM 调用走的 RestClient 显式配置超时，避免 socket 永久挂起等待。
-     * <p>
-     * 使用 {@link JdkClientHttpRequestFactory}（基于 Java 11+ {@link HttpClient}），原因：
-     * <ul>
-     *   <li>原生支持 HTTP/2 / ALPN 协商（Kimi 等现代 LLM provider 默认 HTTP/2）</li>
-     *   <li>自动处理 {@code Content-Encoding: gzip} 解压（{@code SimpleClientHttpRequestFactory}
-     *       基于旧的 {@code HttpURLConnection}，不会自动解压，会把 gzip 流误标为
-     *       {@code application/octet-stream} 导致 RestClient 抛 "Error extracting response"）</li>
-     *   <li>对 chunked transfer + 非标准 content-type 的回退处理符合现代 spec</li>
-     * </ul>
-     * <p>
-     * connectTimeout=10s（任何 LLM 提供方都不该超过这个建立连接时间）；
-     * readTimeout=180s（覆盖 nginx 60s 网关超时 + 留足真实长响应余量；超时后由上层 retry 接管）。
-     */
-    private RestClient.Builder applyHttpTimeouts(RestClient.Builder builder) {
-        return applyHttpTimeouts(builder, null);
-    }
-
-    /**
-     * Overload that accepts a per-model read-timeout override (seconds).
-     * Null falls back to the default 180s.
-     */
-    private RestClient.Builder applyHttpTimeouts(RestClient.Builder builder, Integer readTimeoutOverride) {
-        HttpClient httpClient = HttpClient.newBuilder()
-                .connectTimeout(vip.mate.llm.chatmodel.HttpTimeouts.CONNECT_TIMEOUT)
-                .build();
-        JdkClientHttpRequestFactory rf = new JdkClientHttpRequestFactory(httpClient);
-        rf.setReadTimeout(vip.mate.llm.chatmodel.HttpTimeouts.resolveReadTimeout(readTimeoutOverride));
-        return builder.requestFactory(rf);
-    }
-
-    /**
-     * Apply equivalent timeouts to the WebClient that backs OpenAI-compatible
-     * STREAMING calls (chat completions with {@code stream:true}). The
-     * RestClient version above only protects synchronous HTTP — without this,
-     * the streaming code path uses the default {@code WebClient} which has
-     * neither connect nor read timeout, so a stalled provider can hang the
-     * call forever (observed: a single volcengine-plan request held the agent
-     * thread for 9+ minutes with no error, until the user manually pressed
-     * Stop). That kept the failover chain idle because nothing threw.
-     * <p>
-     * Uses {@link JdkClientHttpConnector} with the same {@link HttpClient} we
-     * already use for the RestClient so the dependency surface stays clean
-     * (reactor-netty is not on this project's classpath — Spring's webflux
-     * starter is excluded by design).
-     */
-    private WebClient.Builder applyHttpTimeoutsToWebClient(WebClient.Builder builder) {
-        return applyHttpTimeoutsToWebClient(builder, null);
-    }
-
-    /**
-     * Overload with the same per-model override semantics as
-     * {@link #applyHttpTimeouts(RestClient.Builder, Integer)}.
-     */
-    private WebClient.Builder applyHttpTimeoutsToWebClient(WebClient.Builder builder, Integer readTimeoutOverride) {
-        HttpClient httpClient = HttpClient.newBuilder()
-                .connectTimeout(vip.mate.llm.chatmodel.HttpTimeouts.CONNECT_TIMEOUT)
-                .build();
-        org.springframework.http.client.reactive.JdkClientHttpConnector connector =
-                new org.springframework.http.client.reactive.JdkClientHttpConnector(httpClient);
-        connector.setReadTimeout(vip.mate.llm.chatmodel.HttpTimeouts.resolveReadTimeout(readTimeoutOverride));
-        return builder.clientConnector(connector);
-    }
-
-    /**
-     * 从 generateKwargs.headers 中提取需要强制覆盖的 headers。
-     * 用于通过 RestClient/WebClient 拦截器绕过 Spring AI OpenAiApi 的默认 User-Agent。
-     */
-    private Map<String, String> extractOverrideHeaders(Map<String, Object> kwargs) {
-        Map<String, String> result = new java.util.HashMap<>();
-        Object headerObject = kwargs.get("headers");
-        if (headerObject instanceof Map<?, ?> headerMap) {
-            headerMap.forEach((key, value) -> {
-                if (key != null && value != null) {
-                    result.put(String.valueOf(key), String.valueOf(value));
-                }
-            });
-        }
-        return result;
-    }
-
-    // Trailing "/v{digits}" segment in a base URL — the OpenAI-compatible convention
-    // (/v1 OpenAI, /v3 Volcano Ark, /v4 Zhipu). When the baseUrl already carries this
-    // segment, the default /v1 prefix on the path must be stripped to avoid building
-    // a broken URL like /api/v3/v1/chat/completions.
-    private static final java.util.regex.Pattern OPENAI_BASE_URL_VERSION_SUFFIX =
-            java.util.regex.Pattern.compile(".*/v\\d+$");
-
-    private String resolveOpenAiCompletionsPath(String baseUrl, Map<String, Object> kwargs) {
-        Object raw = kwargs.get("completionsPath");
-        boolean explicit = raw instanceof String value && StringUtils.hasText(value);
-        String path = explicit ? ((String) raw).trim() : "/v1/chat/completions";
-        if (!path.startsWith("/")) {
-            path = "/" + path;
-        }
-        // An explicit completionsPath is honored as-is. Otherwise, dedupe the /v1
-        // prefix when the baseUrl already ends with /v{N} (Volcano Engine Ark /v3,
-        // Zhipu /v4, etc.).
-        if (!explicit
-                && baseUrl != null
-                && OPENAI_BASE_URL_VERSION_SUFFIX.matcher(baseUrl).matches()
-                && path.startsWith("/v1/")) {
-            path = path.substring(3);
-        }
-        return path;
-    }
-
-    /**
-     * Consume the {@link AssistantThinkingRelay} entry and rebuild the outbound
-     * {@link OpenAiApi.ChatCompletionRequest} so that assistant tool-call / thinking
-     * messages carry the correct {@code reasoning_content}.
-     *
-     * <p>PR-2 (RFC-049 §2.3.2): This is the consumer side of the relay.
-     * {@code NodeStreamingChatHelper.doStreamCall} stashes per-assistant thinking
-     * keyed on a token embedded in {@code request.user()}. Here we:
-     * <ol>
-     *   <li>{@link AssistantThinkingRelay#take(String)} the entry and restore
-     *       {@code request.user()} to {@code entry.originalUser()} (internal token
-     *       never reaches the provider).</li>
-     *   <li>Compute {@code lastUserIdx} (the boundary of the current user turn),
-     *       symmetric to {@code stripThinkingFromPrompt}. Assistant messages at
-     *       {@code i <= lastUserIdx} are prior-turn history: their
-     *       {@code reasoning_content} must stay null. Only {@code i > lastUserIdx}
-     *       messages are eligible for patching.</li>
-     *   <li>Select a {@link FallbackPolicy} by {@code providerId}. When relay has
-     *       a real value, we use it; when empty, the policy decides whether to
-     *       inject {@code " "} (legacy tolerance: KIMI/OPENAI/DEFAULT) or leave
-     *       {@code null} to surface an explicit provider error (DEEPSEEK).</li>
-     * </ol>
-     *
-     * <p>The relay iterator advances for every assistant message (including
-     * prior-turn ones) to stay positionally aligned with the producer's extraction
-     * in {@code NodeStreamingChatHelper.extractAssistantThinkings}.
-     */
-    static OpenAiApi.ChatCompletionRequest patchReasoningContent(
-            OpenAiApi.ChatCompletionRequest request, ModelProviderEntity provider) {
-        if (request.messages() == null || request.messages().isEmpty()) {
-            return request;
-        }
-
-        // 1. Consume relay (if any) and compute the sanitized user field.
-        AssistantThinkingRelay.RelayEntry entry = AssistantThinkingRelay.take(request.user());
-        String sanitizedUser = (entry != null)
-                ? entry.originalUser()
-                : (AssistantThinkingRelay.isToken(request.user()) ? null : request.user());
-
-        // 2. Detect thinking mode — unchanged from the prior design except that relay
-        //    presence is also a trigger.
-        boolean thinkingMode = request.reasoningEffort() != null
-                || requiresReasoningContentPatch(request.model())
-                || request.messages().stream().anyMatch(m ->
-                        m.role() == OpenAiApi.ChatCompletionMessage.Role.ASSISTANT
-                                && m.reasoningContent() != null)
-                || entry != null;
-        if (!thinkingMode) {
-            // Nothing to patch but we may still need to strip a leaked relay token from user.
-            return request.user() != null && !request.user().equals(sanitizedUser)
-                    ? rebuildWithUser(request, sanitizedUser)
-                    : request;
-        }
-
-        // 3. Find lastUserIdx so we can skip cross-turn assistants.
-        int lastUserIdx = -1;
-        for (int i = request.messages().size() - 1; i >= 0; i--) {
-            if (request.messages().get(i).role() == OpenAiApi.ChatCompletionMessage.Role.USER) {
-                lastUserIdx = i;
-                break;
-            }
-        }
-
-        FallbackPolicy policy = FallbackPolicy.forProvider(provider);
-        java.util.Iterator<String> it = (entry != null)
-                ? entry.thinkings().iterator()
-                : java.util.Collections.emptyIterator();
-
-        // 4. Walk messages, patching only in-turn assistants; always advance iterator
-        //    for all assistants so producer/consumer positions stay aligned.
-        boolean anyPatched = false;
-        List<OpenAiApi.ChatCompletionMessage> patched = new ArrayList<>(request.messages().size());
-        for (int i = 0; i < request.messages().size(); i++) {
-            OpenAiApi.ChatCompletionMessage msg = request.messages().get(i);
-            if (msg.role() != OpenAiApi.ChatCompletionMessage.Role.ASSISTANT) {
-                patched.add(msg);
-                continue;
-            }
-
-            String next = it.hasNext() ? it.next() : null;
-
-            // Already has a real value: leave alone
-            if (msg.reasoningContent() != null && !msg.reasoningContent().isBlank()) {
-                patched.add(msg);
-                continue;
-            }
-
-            // Cross-turn assistant: usually skip per stripThinkingFromPrompt's
-            // "thinking resets across user turns" rule. But DeepSeek (since
-            // 2026-04) requires reasoning_content even on prior-turn assistants
-            // and rejects requests where any prior assistant has it null. For
-            // policies with patchCrossTurn=true, fall through and patch with
-            // the empty fallback (" ") so multi-turn conversations don't 400
-            // before sanitizeForLlm has a chance to filter the previous error.
-            if (i <= lastUserIdx && !policy.patchCrossTurn) {
-                patched.add(msg);
-                continue;
-            }
-
-            boolean hasToolCalls = msg.toolCalls() != null && !msg.toolCalls().isEmpty();
-            if (!hasToolCalls && !policy.patchNonToolCall) {
-                patched.add(msg);
-                continue;
-            }
-
-            String injected;
-            if (next != null && !next.isEmpty()) {
-                injected = next;
-            } else {
-                injected = policy.emptyFallback;
-                if (injected == null && policy.warnOnMissingReal) {
-                    log.warn("[patchReasoningContent] provider={} requires real reasoning_content "
-                                    + "but relay has no value for assistant message at index {}; "
-                                    + "leaving null so provider returns explicit error.",
-                            providerIdOrUnknown(provider), i);
-                }
-            }
-            if (injected == null && msg.reasoningContent() == null) {
-                // No change — keep original
-                patched.add(msg);
-                continue;
-            }
-            patched.add(new OpenAiApi.ChatCompletionMessage(
-                    msg.rawContent(), msg.role(), msg.name(), msg.toolCallId(),
-                    msg.toolCalls(), msg.refusal(), msg.audioOutput(),
-                    msg.annotations(), injected));
-            anyPatched = true;
-        }
-
-        boolean userChanged = request.user() != null && !request.user().equals(sanitizedUser)
-                || (request.user() == null && sanitizedUser != null);
-        if (!anyPatched && !userChanged) {
-            return request;
-        }
-
-        // 5. Rebuild with patched messages + sanitized user.
-        return new OpenAiApi.ChatCompletionRequest(
-                patched,
-                request.model(),
-                request.store(),
-                request.metadata(),
-                request.frequencyPenalty(),
-                request.logitBias(),
-                request.logprobs(),
-                request.topLogprobs(),
-                request.maxTokens(),
-                request.maxCompletionTokens(),
-                request.n(),
-                request.outputModalities(),
-                request.audioParameters(),
-                request.presencePenalty(),
-                request.responseFormat(),
-                request.seed(),
-                request.serviceTier(),
-                request.stop(),
-                request.stream(),
-                request.streamOptions(),
-                request.temperature(),
-                request.topP(),
-                request.tools(),
-                request.toolChoice(),
-                request.parallelToolCalls(),
-                sanitizedUser,
-                request.reasoningEffort(),
-                request.webSearchOptions(),
-                request.verbosity(),
-                request.promptCacheKey(),
-                request.safetyIdentifier(),
-                request.extraBody()
-        );
-    }
-
-    /**
-     * PR-2 (RFC-049 §2.3.2): Provider-keyed policy for how {@code patchReasoningContent}
-     * should behave when the relay has no real thinking for an in-turn assistant message.
-     *
-     * <ul>
-     *   <li>{@code emptyFallback}: value to inject when relay has no real value —
-     *       {@code null} means leave {@code reasoning_content} null (DeepSeek);
-     *       {@code " "} preserves Spring AI 1.1.4 legacy tolerance (Kimi/OpenAI/unknown).</li>
-     *   <li>{@code warnOnMissingReal}: emit WARN when {@code emptyFallback==null} fires —
-     *       only DeepSeek wants this, because there a missing value means we have a bug.</li>
-     *   <li>{@code patchNonToolCall}: whether to patch assistant messages without tool_calls —
-     *       DeepSeek's contract applies to all in-turn assistant messages, others only
-     *       to tool_call messages (historical behavior).</li>
-     * </ul>
-     *
-     * {@code DEFAULT} intentionally keeps the legacy {@code " "} tolerance rather than
-     * going no-op: an unrecognized provider (self-hosted DeepSeek-like backend, custom
-     * OpenAI-compatible gateway) might still require the patch — noop would regress
-     * those into new 400s.
-     */
-    private enum FallbackPolicy {
-        // RFC-049 follow-up (2026-04-27): DEEPSEEK previously used (null, true, true)
-        // to "surface explicit provider error" when the producer-side relay had no
-        // captured reasoning_content. In practice this kept failing every multi-tool
-        // turn that crossed a summarizing boundary — the summarizer-produced
-        // assistant message has no reasoning_content by construction, the relay
-        // iterator has no entry for it, and DeepSeek returns 400 inside the same
-        // turn (not just multi-turn replay), aborting the whole graph at the
-        // reasoning step right after summarizing. Switching to the same " "
-        // tolerance KIMI/OPENAI use restores forward progress; the producer-side
-        // capture gap remains a real bug to fix in RFC-049 PR-3 but doesn't
-        // belong on the user-facing failure path.
-        //
-        // 2026-04-29 follow-up: DeepSeek tightened thinking-mode validation to
-        // require reasoning_content on EVERY assistant message in the request,
-        // including prior-turn history. We never persist reasoning_content to
-        // mate_message, so any conversation with >=1 prior turn fails with
-        // 400 "reasoning_content must be passed back" on the very first reasoning
-        // call. patchCrossTurn=true lets us extend the " " fallback to prior-turn
-        // assistants too, restoring forward progress for multi-turn IM chats.
-        // Real reasoning_content recovery (RFC-049 PR-3) is the proper long-term
-        // fix; this keeps users unblocked.
-        DEEPSEEK(" ",  false, true,  true),
-        KIMI    (" ",  false, false, false),
-        OPENAI  (" ",  false, false, false),
-        DEFAULT (" ",  false, false, false);
-
-        final String emptyFallback;
-        final boolean warnOnMissingReal;
-        final boolean patchNonToolCall;
-        /** Whether to also patch prior-turn assistants ({@code i <= lastUserIdx}). */
-        final boolean patchCrossTurn;
-
-        FallbackPolicy(String emptyFallback, boolean warnOnMissingReal,
-                       boolean patchNonToolCall, boolean patchCrossTurn) {
-            this.emptyFallback = emptyFallback;
-            this.warnOnMissingReal = warnOnMissingReal;
-            this.patchNonToolCall = patchNonToolCall;
-            this.patchCrossTurn = patchCrossTurn;
-        }
-
-        static FallbackPolicy forProvider(ModelProviderEntity provider) {
-            if (provider == null || provider.getProviderId() == null) {
-                return DEFAULT;
-            }
-            String id = provider.getProviderId().toLowerCase();
-            return switch (id) {
-                case "deepseek" -> DEEPSEEK;
-                case "kimi-cn", "kimi-intl", "kimi-code" -> KIMI;
-                case "openai", "azure-openai" -> OPENAI;
-                default -> DEFAULT;
-            };
-        }
-    }
-
-    /**
-     * Rebuild a {@link OpenAiApi.ChatCompletionRequest} with only the {@code user} field
-     * replaced. Used when {@code patchReasoningContent} has no assistant-message changes
-     * but must strip a relay token from the outbound {@code user} field.
-     */
-    private static OpenAiApi.ChatCompletionRequest rebuildWithUser(
-            OpenAiApi.ChatCompletionRequest request, String newUser) {
-        return new OpenAiApi.ChatCompletionRequest(
-                request.messages(),
-                request.model(),
-                request.store(),
-                request.metadata(),
-                request.frequencyPenalty(),
-                request.logitBias(),
-                request.logprobs(),
-                request.topLogprobs(),
-                request.maxTokens(),
-                request.maxCompletionTokens(),
-                request.n(),
-                request.outputModalities(),
-                request.audioParameters(),
-                request.presencePenalty(),
-                request.responseFormat(),
-                request.seed(),
-                request.serviceTier(),
-                request.stop(),
-                request.stream(),
-                request.streamOptions(),
-                request.temperature(),
-                request.topP(),
-                request.tools(),
-                request.toolChoice(),
-                request.parallelToolCalls(),
-                newUser,
-                request.reasoningEffort(),
-                request.webSearchOptions(),
-                request.verbosity(),
-                request.promptCacheKey(),
-                request.safetyIdentifier(),
-                request.extraBody()
-        );
-    }
-
-    /**
-     * PR-1.3 (RFC-049 L1-C): Provider-first sanitization of {@code reasoning_effort}.
-     *
-     * <p>Authoritative judgement uses the target {@code provider.getProviderId()} as a
-     * whitelist (default-deny). Only OpenAI official providers are allowed to carry
-     * {@code reasoning_effort}; everything else — known non-supporters (DeepSeek / Kimi /
-     * DashScope / Ollama / …) and any unrecognized providerId (self-hosted gateways,
-     * OpenRouter / Together / aggregators) — is stripped unconditionally.
-     *
-     * <p>The reason we intentionally distrust {@code request.model()} here: MateClaw's
-     * failover chain (RFC-009) can reuse the same {@code Prompt} and {@code OpenAiChatOptions}
-     * across providers, and {@code OpenAiChatOptions.model} was set to the primary's model
-     * name (e.g. {@code gpt-5}). If the sanitizer only checked {@code ModelFamily.detect(
-     * request.model())}, a failover hop from GPT-5 → DeepSeek would see model name
-     * "gpt-5" → OPENAI_REASONING → {@code supportsReasoningEffort == true} and quietly
-     * forward the primary's {@code reasoning_effort} to DeepSeek, re-triggering the
-     * incident this RFC exists to fix.
-     *
-     * <p>Only when the provider is on the whitelist do we fall through to the
-     * {@link ModelFamily} check (e.g. within OpenAI, {@code gpt-4} still wouldn't support
-     * reasoning_effort). Outside the whitelist, no runtime check on model is trusted.
-     *
-     * <p>Adding a new provider to the whitelist must be an explicit PR with a sanitizer
-     * test — do not add a catch-all default-allow branch.
-     */
-    static OpenAiApi.ChatCompletionRequest sanitizeReasoningEffortForProvider(
-            OpenAiApi.ChatCompletionRequest request, ModelProviderEntity provider) {
-        if (request == null || request.reasoningEffort() == null) {
-            return request;
-        }
-
-        if (!isReasoningEffortWhitelistedProvider(provider)) {
-            log.warn("[reasoning_effort sanitizer] provider={} is not on the reasoning_effort "
-                            + "whitelist (only openai/azure-openai are); stripping value='{}' "
-                            + "(request.model()='{}' may be leaked from failover primary).",
-                    providerIdOrUnknown(provider), request.reasoningEffort(), request.model());
-            return rebuildWithReasoningEffort(request, null);
-        }
-
-        ModelFamily targetFamily = ModelFamily.detect(request.model());
-        if (!targetFamily.supportsReasoningEffort()) {
-            log.warn("[reasoning_effort sanitizer] provider={} model={} family={} does not "
-                            + "support reasoning_effort; stripping value='{}'.",
-                    provider.getProviderId(), request.model(), targetFamily, request.reasoningEffort());
-            return rebuildWithReasoningEffort(request, null);
-        }
-        return request;
-    }
-
-    /**
-     * Whitelist of providers known to accept {@code reasoning_effort} on
-     * {@code /v1/chat/completions} (or {@code /v1/responses}). Anything else is denied.
-     * Adding a provider here must come with a corresponding sanitizer test case.
-     */
-    static boolean isReasoningEffortWhitelistedProvider(ModelProviderEntity provider) {
-        if (provider == null || provider.getProviderId() == null) {
-            return false;
-        }
-        String id = provider.getProviderId().toLowerCase();
-        return switch (id) {
-            case "openai", "azure-openai" -> true;
-            default -> false;
-        };
-    }
-
-    private static String providerIdOrUnknown(ModelProviderEntity p) {
-        return (p == null || p.getProviderId() == null) ? "<unknown>" : p.getProviderId();
-    }
-
-    /**
-     * Rebuild a {@link OpenAiApi.ChatCompletionRequest} with a new {@code reasoningEffort}
-     * value (typically {@code null} to strip). Mirrors the record canonical-constructor
-     * pattern used by {@link #stripReasoningEffortIfIncompatible}.
-     */
-    private static OpenAiApi.ChatCompletionRequest rebuildWithReasoningEffort(
-            OpenAiApi.ChatCompletionRequest request, String newReasoningEffort) {
-        return new OpenAiApi.ChatCompletionRequest(
-                request.messages(),
-                request.model(),
-                request.store(),
-                request.metadata(),
-                request.frequencyPenalty(),
-                request.logitBias(),
-                request.logprobs(),
-                request.topLogprobs(),
-                request.maxTokens(),
-                request.maxCompletionTokens(),
-                request.n(),
-                request.outputModalities(),
-                request.audioParameters(),
-                request.presencePenalty(),
-                request.responseFormat(),
-                request.seed(),
-                request.serviceTier(),
-                request.stop(),
-                request.stream(),
-                request.streamOptions(),
-                request.temperature(),
-                request.topP(),
-                request.tools(),
-                request.toolChoice(),
-                request.parallelToolCalls(),
-                request.user(),
-                newReasoningEffort,
-                request.webSearchOptions(),
-                request.verbosity(),
-                request.promptCacheKey(),
-                request.safetyIdentifier(),
-                request.extraBody()
-        );
-    }
-
-    /**
-     * GPT-5 兼容性：在 /v1/chat/completions 路径下，tools 与 reasoning_effort 不可同时存在。
-     * <p>
-     * 当检测到 gpt-5* 模型同时携带 tools 和 reasoning_effort 时，自动移除 reasoning_effort 并记录警告日志。
-     * 若需使用 reasoning_effort，应改用 /v1/responses 接口（通过 generateKwargs 的 completionsPath 配置）。
-     */
-    private static OpenAiApi.ChatCompletionRequest stripReasoningEffortIfIncompatible(
-            OpenAiApi.ChatCompletionRequest request) {
-        if (request.reasoningEffort() == null) {
-            return request;
-        }
-        if (request.tools() == null || request.tools().isEmpty()) {
-            return request;
-        }
-        String model = request.model();
-        if (model == null || !model.trim().toLowerCase().startsWith("gpt-5")) {
-            return request;
-        }
-
-        log.warn("[GPT-5 兼容] 模型 {} 在 chat/completions 下同时携带 tools 和 reasoning_effort，"
-                        + "自动移除 reasoning_effort 以避免 400 错误。"
-                        + "如需 reasoning_effort，请将 completionsPath 配置为 /v1/responses",
-                model);
-
-        return new OpenAiApi.ChatCompletionRequest(
-                request.messages(),
-                request.model(),
-                request.store(),
-                request.metadata(),
-                request.frequencyPenalty(),
-                request.logitBias(),
-                request.logprobs(),
-                request.topLogprobs(),
-                request.maxTokens(),
-                request.maxCompletionTokens(),
-                request.n(),
-                request.outputModalities(),
-                request.audioParameters(),
-                request.presencePenalty(),
-                request.responseFormat(),
-                request.seed(),
-                request.serviceTier(),
-                request.stop(),
-                request.stream(),
-                request.streamOptions(),
-                request.temperature(),
-                request.topP(),
-                request.tools(),
-                request.toolChoice(),
-                request.parallelToolCalls(),
-                request.user(),
-                null,  // reasoningEffort — 移除
-                request.webSearchOptions(),
-                request.verbosity(),
-                request.promptCacheKey(),
-                request.safetyIdentifier(),
-                request.extraBody()
-        );
-    }
-
-    private static boolean requiresReasoningContentPatch(String modelName) {
-        ModelFamily family = ModelFamily.detect(modelName);
-        return family.isThinking();
-    }
-
-    /**
-     * Strip {@code tool_choice="auto"} from outbound chat-completion requests.
-     *
-     * <p>Per the OpenAI spec, omitting {@code tool_choice} when {@code tools} is non-empty
-     * is functionally equivalent to {@code "auto"} (the server defaults to auto-pick).
-     * Stripping the explicit literal {@code "auto"}:
-     * <ul>
-     *   <li>does not change behavior on compliant servers (e.g. OpenAI, DashScope) — they
-     *       still default to auto when tools are present</li>
-     *   <li>unblocks strict OpenAI-compatible self-hosted serving frameworks that reject
-     *       {@code tool_choice="auto"} at request validation time unless launched with an
-     *       auto-tool-choice opt-in flag, which is a common reason custom endpoints
-     *       respond with a generic 400 / "body=None" Pydantic error</li>
-     * </ul>
-     *
-     * <p>Explicit values other than {@code "auto"} ({@code "none"}, {@code "required"},
-     * or a specific function descriptor) are passed through unchanged.
-     */
-    private static OpenAiApi.ChatCompletionRequest stripAutoToolChoice(OpenAiApi.ChatCompletionRequest request) {
-        Object tc = request.toolChoice();
-        if (tc == null || !"auto".equals(String.valueOf(tc))) {
-            return request;
-        }
-        return new OpenAiApi.ChatCompletionRequest(
-                request.messages(),
-                request.model(),
-                request.store(),
-                request.metadata(),
-                request.frequencyPenalty(),
-                request.logitBias(),
-                request.logprobs(),
-                request.topLogprobs(),
-                request.maxTokens(),
-                request.maxCompletionTokens(),
-                request.n(),
-                request.outputModalities(),
-                request.audioParameters(),
-                request.presencePenalty(),
-                request.responseFormat(),
-                request.seed(),
-                request.serviceTier(),
-                request.stop(),
-                request.stream(),
-                request.streamOptions(),
-                request.temperature(),
-                request.topP(),
-                request.tools(),
-                null,  // toolChoice — strip "auto" so strict OpenAI-compatible servers accept the request
-                request.parallelToolCalls(),
-                request.user(),
-                request.reasoningEffort(),
-                request.webSearchOptions(),
-                request.verbosity(),
-                request.promptCacheKey(),
-                request.safetyIdentifier(),
-                request.extraBody()
-        );
-    }
-
-    /**
-     * 将 Spring AI 错误地序列化为 image_url 的视频内容块转换为 video_url 格式。
-     * <p>
-     * Spring AI 1.x 的 MediaContent 没有 video_url 类型，所有非 audio/pdf 的 Media
-     * 都被序列化为 image_url。智谱 GLM-5V 等模型要求视频使用 video_url 格式，
-     * 否则会报"图片输入格式/解析错误"。
-     * <p>
-     * 此方法遍历 user 消息的 rawContent，将 data:video/* 前缀的 image_url 替换为 video_url。
-     */
-    @SuppressWarnings("unchecked")
-    private static OpenAiApi.ChatCompletionRequest patchVideoMediaContent(OpenAiApi.ChatCompletionRequest request) {
-        if (request.messages() == null || request.messages().isEmpty()) {
-            return request;
-        }
-
-        boolean needsPatch = false;
-        for (var msg : request.messages()) {
-            if (msg.role() == OpenAiApi.ChatCompletionMessage.Role.USER) {
-                Object raw = msg.rawContent();
-                if (raw instanceof List<?> parts) {
-                    for (Object part : parts) {
-                        // 检查是否为 MediaContent record
-                        if (part instanceof OpenAiApi.ChatCompletionMessage.MediaContent mc
-                                && "image_url".equals(mc.type())
-                                && mc.imageUrl() != null
-                                && mc.imageUrl().url() != null
-                                && mc.imageUrl().url().startsWith("data:video/")) {
-                            needsPatch = true;
-                            break;
-                        }
-                        // 检查是否为 Map（Spring AI 内部用 LinkedHashMap 表示 content parts）
-                        if (part instanceof java.util.Map<?,?> map) {
-                            Object type = map.get("type");
-                            if ("image_url".equals(type)) {
-                                Object imgUrlObj = map.get("image_url");
-                                if (imgUrlObj instanceof java.util.Map<?,?> imgUrl) {
-                                    Object url = imgUrl.get("url");
-                                    if (url instanceof String urlStr && urlStr.startsWith("data:video/")) {
-                                        needsPatch = true;
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            if (needsPatch) break;
-        }
-        if (!needsPatch) {
-            return request;
-        }
-
-        List<OpenAiApi.ChatCompletionMessage> patched = request.messages().stream().map(msg -> {
-            if (msg.role() != OpenAiApi.ChatCompletionMessage.Role.USER || !(msg.rawContent() instanceof List<?> parts)) {
-                return msg;
-            }
-            List<Object> newParts = new ArrayList<>();
-            for (Object part : parts) {
-                String videoDataUrl = null;
-
-                // 场景 1：MediaContent record（Spring AI 原生构建）
-                if (part instanceof OpenAiApi.ChatCompletionMessage.MediaContent mc
-                        && "image_url".equals(mc.type())
-                        && mc.imageUrl() != null && mc.imageUrl().url() != null
-                        && mc.imageUrl().url().startsWith("data:video/")) {
-                    videoDataUrl = mc.imageUrl().url();
-                }
-                // 场景 2：Map（Jackson 反序列化或 Spring AI 内部用 Map 表示）
-                if (videoDataUrl == null && part instanceof java.util.Map<?,?> map
-                        && "image_url".equals(map.get("type"))) {
-                    Object imgUrlObj = map.get("image_url");
-                    if (imgUrlObj instanceof java.util.Map<?,?> imgUrl) {
-                        Object url = imgUrl.get("url");
-                        if (url instanceof String urlStr && urlStr.startsWith("data:video/")) {
-                            videoDataUrl = urlStr;
-                        }
-                    }
-                }
-
-                if (videoDataUrl != null) {
-                    // 替换为 video_url 格式
-                    newParts.add(Map.of(
-                            "type", "video_url",
-                            "video_url", Map.of("url", videoDataUrl)
-                    ));
-                } else {
-                    newParts.add(part);
-                }
-            }
-            return new OpenAiApi.ChatCompletionMessage(
-                    newParts, msg.role(), msg.name(), msg.toolCallId(),
-                    msg.toolCalls(), msg.refusal(), msg.audioOutput(),
-                    msg.annotations(), msg.reasoningContent());
-        }).toList();
-
-        return new OpenAiApi.ChatCompletionRequest(
-                patched,
-                request.model(), request.store(), request.metadata(),
-                request.frequencyPenalty(), request.logitBias(),
-                request.logprobs(), request.topLogprobs(),
-                request.maxTokens(), request.maxCompletionTokens(),
-                request.n(), request.outputModalities(), request.audioParameters(),
-                request.presencePenalty(), request.responseFormat(),
-                request.seed(), request.serviceTier(), request.stop(),
-                request.stream(), request.streamOptions(),
-                request.temperature(), request.topP(),
-                request.tools(), request.toolChoice(), request.parallelToolCalls(),
-                request.user(), request.reasoningEffort(),
-                request.webSearchOptions(), request.verbosity(),
-                request.promptCacheKey(), request.safetyIdentifier(),
-                request.extraBody()
-        );
-    }
-
-    private void logOpenAiRequest(ModelProviderEntity provider, OpenAiApi.ChatCompletionRequest chatRequest) {
-        try {
-            log.info("OpenAI-compatible request: provider={}, body={}",
-                    provider.getProviderId(), objectMapper.writeValueAsString(chatRequest));
-        } catch (Exception e) {
-            log.warn("Failed to serialize OpenAI-compatible request for {}: {}",
-                    provider.getProviderId(), e.getMessage());
-        }
-    }
-
-    private void logOpenAiError(ModelProviderEntity provider, WebClientResponseException e) {
-        log.error("OpenAI-compatible error: provider={}, status={}, body={}",
-                provider.getProviderId(), e.getStatusCode(), e.getResponseBodyAsString());
+        return ReasoningEffortResolver.resolveReasoningEffort(runtimeModel.getModelName(), kwargs, family);
     }
 }

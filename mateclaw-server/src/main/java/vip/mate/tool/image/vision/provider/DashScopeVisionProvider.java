@@ -8,10 +8,11 @@ import vip.mate.llm.service.ModelProviderService;
  * DashScope vision provider — uses {@code qwen-vl-max} via the
  * OpenAI-compatible endpoint at {@code /compatible-mode/v1/chat/completions}.
  *
- * <p>Default for the Chinese cloud rollout: API keys are typically
- * available (DASHSCOPE_API_KEY is mandatory for the rest of the
- * platform) and per-image cost is the lowest of the supported vendors,
- * so this provider sits at the front of the auto-detect chain.
+ * <p>Sits at the front of the auto-detect chain when a DashScope provider row
+ * is configured in the admin UI: per-image cost is the lowest of the supported
+ * vendors, and DashScope is the most common first provider added on the
+ * Chinese cloud rollout. Falls back to the next provider in the chain when no
+ * DashScope API key is available.
  */
 @Component
 public class DashScopeVisionProvider extends OpenAiCompatibleVisionProvider {

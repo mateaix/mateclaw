@@ -16,69 +16,88 @@
           </button>
         </div>
 
-        <!-- 工具列表 -->
-        <div class="tools-table-wrap mc-surface-card">
-          <table class="tools-table">
-        <thead>
-          <tr>
-            <th>{{ t('tools.columns.tool') }}</th>
-            <th>{{ t('tools.columns.type') }}</th>
-            <th>{{ t('tools.columns.status') }}</th>
-            <th>{{ t('tools.columns.actions') }}</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="tool in tools" :key="tool.id" class="tool-row">
-            <td>
-              <div class="tool-info">
-                <div class="tool-icon-wrap">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
-                  </svg>
-                </div>
-                <div>
-                  <div class="tool-name">{{ tool.name }}</div>
-                  <div class="tool-desc">{{ tool.description }}</div>
-                  <code class="tool-bean">{{ tool.beanName }}</code>
-                </div>
-              </div>
-            </td>
-            <td>
-              <span class="type-badge" :class="'type-' + tool.toolType">{{ tool.toolType }}</span>
-            </td>
-            <td>
-              <label class="toggle-switch">
-                <input type="checkbox" :checked="tool.enabled" @change="toggleTool(tool)" />
-                <span class="toggle-slider"></span>
-              </label>
-            </td>
-            <td>
-              <div class="row-actions">
-                <button class="row-btn" @click="openEditModal(tool)">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
-                    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
-                  </svg>
-                </button>
-                <button class="row-btn danger" @click="deleteTool(tool.id)">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <polyline points="3 6 5 6 21 6"/>
-                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>
-                  </svg>
-                </button>
-              </div>
-            </td>
-          </tr>
-          <tr v-if="tools.length === 0">
-            <td colspan="4" class="empty-row">
-              <div class="empty-state">
-                <span class="empty-icon">🔧</span>
-                <p>{{ t('tools.empty') }}</p>
-              </div>
-            </td>
-          </tr>
-        </tbody>
-          </table>
+        <!-- 工具列表：核心 / 扩展 双段式 -->
+        <div v-for="section in sections" :key="section.key" class="tools-section">
+          <div class="tools-section-head">
+            <span class="tools-section-title">{{ section.label }}</span>
+            <span class="tools-section-count">{{ t('tools.sections.countItems', { n: section.rows.length }) }}</span>
+            <span class="tools-section-hint">{{ section.hint }}</span>
+          </div>
+          <div class="tools-table-wrap mc-surface-card">
+            <table class="tools-table">
+              <thead>
+                <tr>
+                  <th>{{ t('tools.columns.tool') }}</th>
+                  <th>{{ t('tools.columns.type') }}</th>
+                  <th>{{ t('tools.columns.status') }}</th>
+                  <th>{{ t('tools.columns.actions') }}</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="tool in section.rows" :key="tool.id" class="tool-row">
+                  <td>
+                    <div class="tool-info">
+                      <div class="tool-icon-wrap">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
+                        </svg>
+                      </div>
+                      <div>
+                        <div class="tool-name">{{ primaryToolName(tool) }}</div>
+                        <div class="tool-desc">{{ tool.description }}</div>
+                        <div class="tool-meta-line">
+                          <code v-if="tool.name && tool.name !== primaryToolName(tool)" class="tool-bean">{{ tool.name }}</code>
+                          <code v-if="tool.beanName" class="tool-bean">{{ tool.beanName }}</code>
+                        </div>
+                      </div>
+                    </div>
+                  </td>
+                  <td>
+                    <span class="type-badge" :class="'type-' + tool.toolType">{{ tool.toolType }}</span>
+                  </td>
+                  <td>
+                    <label class="toggle-switch">
+                      <input type="checkbox" :checked="tool.enabled" @change="toggleTool(tool)" />
+                      <span class="toggle-slider"></span>
+                    </label>
+                  </td>
+                  <td>
+                    <div class="row-actions">
+                      <button
+                        v-if="canEditTier(tool)"
+                        class="row-btn tier-btn"
+                        :title="section.key === 'core' ? t('tools.tier.toExtensionHint') : t('tools.tier.toCoreHint')"
+                        @click="moveTier(tool, section.key === 'core' ? 'extension' : 'core')"
+                      >
+                        {{ section.key === 'core' ? t('tools.tier.toExtension') : t('tools.tier.toCore') }}
+                      </button>
+                      <span v-else class="tier-locked" :title="t('tools.tier.lockedHint')">{{ t('tools.tier.locked') }}</span>
+                      <button class="row-btn" @click="openEditModal(tool)">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                          <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                        </svg>
+                      </button>
+                      <button class="row-btn danger" @click="deleteTool(tool.id)">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <polyline points="3 6 5 6 21 6"/>
+                          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>
+                        </svg>
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+                <tr v-if="section.rows.length === 0">
+                  <td colspan="4" class="empty-row">
+                    <div class="empty-state">
+                      <span class="empty-icon">🔧</span>
+                      <p>{{ t('tools.empty') }}</p>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
     </div>
@@ -128,15 +147,56 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+import { mcToast } from '@/composables/useMcToast'
 import { mcConfirm } from '@/components/common/useConfirm'
 import { toolApi } from '@/api/index'
 import type { Tool } from '@/types/index'
 
 const { t } = useI18n()
 const tools = ref<Tool[]>([])
+
+type Tier = 'core' | 'extension'
+
+function effectiveTier(tool: Tool): Tier {
+  return tool.disclosureTier === 'extension' ? 'extension' : 'core'
+}
+
+function primaryToolName(tool: Tool): string {
+  const runtimeName = Array.isArray(tool.runtimeNames) ? tool.runtimeNames[0] : ''
+  return runtimeName || tool.name
+}
+
+// Only builtin / channel atomic tools are tiered on the row itself; MCP / ACP /
+// skill tools are tiered at their owning source, so their control is locked.
+function canEditTier(tool: Tool): boolean {
+  return tool.toolType === 'builtin' || tool.toolType === 'channel'
+}
+
+const sections = computed(() => [
+  {
+    key: 'core' as Tier,
+    label: t('tools.sections.core'),
+    hint: t('tools.tier.core.desc'),
+    rows: tools.value.filter((tool) => effectiveTier(tool) === 'core'),
+  },
+  {
+    key: 'extension' as Tier,
+    label: t('tools.sections.extension'),
+    hint: t('tools.tier.extension.desc'),
+    rows: tools.value.filter((tool) => effectiveTier(tool) === 'extension'),
+  },
+])
+
+async function moveTier(tool: Tool, tier: Tier) {
+  try {
+    await toolApi.setDisclosureTier(tool.id, tier)
+    await loadTools()
+  } catch (e: any) {
+    mcToast.error(e?.message || t('tools.messages.tierFailed'))
+  }
+}
 const showModal = ref(false)
 const editingTool = ref<Tool | null>(null)
 
@@ -183,7 +243,7 @@ async function saveTool() {
     }
     closeModal()
     await loadTools()
-  } catch (e: any) { ElMessage.error(e?.message || t('tools.messages.saveFailed')) }
+  } catch (e: any) { mcToast.error(e?.message || t('tools.messages.saveFailed')) }
 }
 
 async function deleteTool(id: string | number) {
@@ -196,19 +256,27 @@ async function deleteTool(id: string | number) {
   try {
     await toolApi.delete(id)
     await loadTools()
-  } catch (e: any) { ElMessage.error(e?.message || t('tools.messages.deleteFailed')) }
+  } catch (e: any) { mcToast.error(e?.message || t('tools.messages.deleteFailed')) }
 }
 
 async function toggleTool(tool: Tool) {
   try {
     await toolApi.toggle(tool.id, !tool.enabled)
     await loadTools()
-  } catch (e: any) { ElMessage.error(e?.message || t('tools.messages.toggleFailed')) }
+  } catch (e: any) { mcToast.error(e?.message || t('tools.messages.toggleFailed')) }
 }
 </script>
 
 <style scoped>
 .tools-page { gap: 18px; }
+.tools-section { display: flex; flex-direction: column; gap: 10px; margin-bottom: 22px; }
+.tools-section-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.tools-section-title { font-size: 15px; font-weight: 700; color: var(--mc-text-primary); }
+.tools-section-count { font-size: 12px; font-weight: 600; color: var(--mc-text-secondary); background: var(--mc-bg-muted); padding: 2px 8px; border-radius: 10px; }
+.tools-section-hint { font-size: 12px; color: var(--mc-text-tertiary); }
+.tier-btn { width: auto; padding: 0 10px; font-size: 12px; font-weight: 600; white-space: nowrap; color: var(--mc-text-secondary); }
+.tier-btn:hover { color: var(--mc-primary); border-color: var(--mc-primary); }
+.tier-locked { display: inline-flex; align-items: center; padding: 0 8px; font-size: 11px; color: var(--mc-text-tertiary); cursor: help; }
 .btn-primary { display: flex; align-items: center; gap: 6px; padding: 10px 16px; background: linear-gradient(135deg, var(--mc-primary), var(--mc-primary-hover)); color: white; border: none; border-radius: 14px; font-size: 14px; font-weight: 600; cursor: pointer; box-shadow: var(--mc-shadow-soft); }
 .btn-primary:hover { background: var(--mc-primary-hover); }
 .btn-primary:disabled { background: var(--mc-border); cursor: not-allowed; }
@@ -225,8 +293,9 @@ async function toggleTool(tool: Tool) {
 .tool-icon-wrap { width: 36px; height: 36px; background: linear-gradient(135deg, rgba(217,109,87,0.12), rgba(24,74,69,0.08)); border-radius: 12px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; color: var(--mc-text-secondary); }
 .tool-name { font-weight: 500; color: var(--mc-text-primary); }
 .tool-desc { font-size: 12px; color: var(--mc-text-tertiary); margin-top: 1px; }
+.tool-meta-line { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
 .bean-name { background: var(--mc-bg-sunken); padding: 2px 8px; border-radius: 4px; font-size: 12px; color: var(--mc-text-primary); }
-.tool-bean { display: inline-block; margin-top: 4px; padding: 1px 6px; background: var(--mc-bg-sunken); border-radius: 4px; font-size: 11px; color: var(--mc-text-tertiary); font-family: var(--mc-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace); }
+.tool-bean { display: inline-block; padding: 1px 6px; background: var(--mc-bg-sunken); border-radius: 4px; font-size: 11px; color: var(--mc-text-tertiary); font-family: var(--mc-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace); }
 .type-badge { padding: 3px 10px; border-radius: 10px; font-size: 12px; font-weight: 500; }
 .type-builtin { background: var(--mc-primary-bg); color: var(--mc-primary); }
 .type-mcp { background: var(--mc-primary-bg); color: var(--mc-primary-hover); }

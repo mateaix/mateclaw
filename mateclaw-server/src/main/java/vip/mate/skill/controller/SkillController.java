@@ -8,6 +8,7 @@ import org.springframework.web.bind.annotation.*;
 import vip.mate.common.result.R;
 import vip.mate.agent.AgentService;
 import vip.mate.agent.binding.model.AgentSkillBinding;
+import vip.mate.workspace.core.annotation.RequireWorkspaceRole;
 import vip.mate.agent.binding.repository.AgentSkillBindingMapper;
 import vip.mate.agent.binding.service.AgentBindingService;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
@@ -23,8 +24,17 @@ import vip.mate.skill.synthesis.SkillSynthesisService;
 import vip.mate.skill.runtime.SkillRuntimeService;
 import vip.mate.skill.runtime.model.ResolvedSkill;
 import vip.mate.skill.workspace.BundledSkillSyncer;
+import vip.mate.skill.workspace.SkillFileSyncer;
 import vip.mate.skill.workspace.SkillWorkspaceManager;
+import vip.mate.exception.MateClawException;
+import vip.mate.skill.lifecycle.ConfirmRequiredException;
+import vip.mate.skill.lifecycle.LifecycleTransition;
+import vip.mate.skill.lifecycle.SkillCuratorJob;
+import vip.mate.skill.lifecycle.SkillCuratorReport;
+import vip.mate.skill.lifecycle.SkillCuratorReportStore;
+import vip.mate.skill.lifecycle.SkillLifecycleService;
 
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -49,6 +59,7 @@ public class SkillController {
     private final SkillRuntimeService skillRuntimeService;
     private final SkillWorkspaceManager workspaceManager;
     private final BundledSkillSyncer bundledSkillSyncer;
+    private final SkillFileSyncer skillFileSyncer;
     private final SkillSynthesisService synthesisService;
     private final SkillDependencyChecker dependencyChecker;
     private final SkillLessonsService lessonsService;
@@ -57,10 +68,15 @@ public class SkillController {
     private final AgentBindingService agentBindingService;
     private final vip.mate.skill.mcp.McpSkillBridge mcpSkillBridge;
     private final vip.mate.skill.acp.AcpSkillBridge acpSkillBridge;
+    private final SkillLifecycleService skillLifecycleService;
+    private final SkillCuratorJob skillCuratorJob;
+    private final SkillCuratorReportStore skillCuratorReportStore;
 
     @Operation(summary = "获取技能分页列表（RFC-042 §2.1）")
     @GetMapping
+    @RequireWorkspaceRole("member")
     public R<IPage<SkillEntity>> list(
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId,
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "20") int size,
             @RequestParam(required = false) String keyword,
@@ -70,13 +86,20 @@ public class SkillController {
             @RequestParam(required = false) String sort,
             @RequestParam(required = false) String source,
             @RequestParam(required = false) String runtime,
+            @RequestParam(required = false) String lifecycleState,
             @RequestParam(required = false) Long agentId) {
         Set<Long> pinnedSkillIds = agentId != null ? agentBindingService.getBoundSkillIds(agentId) : Set.of();
         if (pinnedSkillIds == null) pinnedSkillIds = Set.of();
         IPage<SkillEntity> dbPage = skillService.pageSkills(
-                page, size, keyword, skillType, enabled, scanStatus, sort, source, runtime, pinnedSkillIds);
-        List<SkillEntity> virtualSkills = visibleVirtualSkills(
-                keyword, skillType, enabled, scanStatus, sort, source, runtime);
+                page, size, keyword, skillType, enabled, scanStatus, sort, source, runtime,
+                pinnedSkillIds, workspaceId, lifecycleState);
+        // Virtual MCP/ACP skills mirror live servers and carry no lifecycle
+        // state — exclude them whenever the caller filters by lifecycleState
+        // (stale / archived / active), otherwise they leak into every tab.
+        List<SkillEntity> virtualSkills = (lifecycleState != null && !lifecycleState.isBlank())
+                ? List.of()
+                : visibleVirtualSkills(
+                        workspaceId, keyword, skillType, enabled, scanStatus, sort, source, runtime);
         if (!virtualSkills.isEmpty()) {
             VirtualPageMergeResult merged = mergeVirtualTailPageRecords(
                     dbPage.getRecords(), virtualSkills, dbPage.getTotal(), page, size);
@@ -88,9 +111,11 @@ public class SkillController {
 
     @Operation(summary = "获取各类型技能计数（tab 徽章用）")
     @GetMapping("/counts")
-    public R<Map<String, Long>> counts() {
-        Map<String, Long> result = skillService.countByType();
-        Set<String> realNames = realSkillNames();
+    @RequireWorkspaceRole("member")
+    public R<Map<String, Long>> counts(
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        Map<String, Long> result = skillService.countByType(workspaceId);
+        Set<String> realNames = realSkillNames(workspaceId);
         // RFC-090 §3.2 — virtual MCP-derived skills aren't in mate_skill,
         // so countByType() misses them. Fold in the live count so the
         // "MCP" and "all" tab badges match what the list endpoint shows.
@@ -137,6 +162,14 @@ public class SkillController {
         return filterShadowedVirtualSkills(virtualSkills, realSkillNames).size();
     }
 
+    /** Keep only enabled rows — gates virtual skills into enabled-only endpoints. */
+    static List<SkillEntity> enabledOnly(List<SkillEntity> skills) {
+        if (skills == null || skills.isEmpty()) return List.of();
+        return skills.stream()
+                .filter(s -> s != null && Boolean.TRUE.equals(s.getEnabled()))
+                .toList();
+    }
+
     /**
      * Keep MyBatis-Plus as the source of truth for DB pagination and append
      * live virtual ACP/MCP rows after the DB rows. This produces one stable
@@ -180,7 +213,8 @@ public class SkillController {
 
     record VirtualPageMergeResult(List<SkillEntity> records, long total) {}
 
-    private List<SkillEntity> visibleVirtualSkills(String keyword,
+    private List<SkillEntity> visibleVirtualSkills(Long workspaceId,
+                                                   String keyword,
                                                    String skillType,
                                                    Boolean enabled,
                                                    String scanStatus,
@@ -192,7 +226,7 @@ public class SkillController {
         boolean includeAcpVirtuals = isAllSkillType(effectiveSource) || "acp".equalsIgnoreCase(effectiveSource);
         if (!includeMcpVirtuals && !includeAcpVirtuals) return List.of();
 
-        Set<String> realNames = realSkillNames();
+        Set<String> realNames = realSkillNames(workspaceId);
         List<SkillEntity> result = new ArrayList<>();
         if (includeMcpVirtuals) {
             try {
@@ -240,17 +274,64 @@ public class SkillController {
         return value != null && value.toLowerCase().contains(lowerCaseNeedle);
     }
 
-    private Set<String> realSkillNames() {
-        return skillService.listSkills().stream()
+    /**
+     * Names of every real {@code mate_skill} row visible in {@code
+     * workspaceId} (builtin + workspace-owned). Used to shadow same-named
+     * MCP/ACP virtual skills so the catalog never shows two cards for one
+     * capability.
+     */
+    private Set<String> realSkillNames(Long workspaceId) {
+        return skillService.listSkills(workspaceId).stream()
                 .map(SkillEntity::getName)
                 .collect(java.util.stream.Collectors.toSet());
     }
 
     @Operation(summary = "重新扫描单个技能（RFC-042 §2.3.4）")
     @PostMapping("/{id}/rescan")
-    public R<SkillEntity> rescan(@PathVariable Long id) {
+    @RequireWorkspaceRole("admin")
+    public R<SkillEntity> rescan(@PathVariable Long id,
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
         rejectVirtualSkillMutation(id);
+        verifyResourceWorkspace(skillService.getSkill(id), workspaceId);
         return R.ok(skillService.rescanSecurity(id));
+    }
+
+    @Operation(summary = "Re-sync this skill's bundle files from DB → local workspace cache",
+            description = "Use after an out-of-band scripts/ change or to recover a missing local cache " +
+                    "in a multi-instance deployment. Pulls every mate_skill_file row owned by the skill " +
+                    "down to disk; if no rows exist yet but local files do, ingests them into the canonical store.")
+    @PostMapping("/{id}/sync-files")
+    @RequireWorkspaceRole("admin")
+    public R<Map<String, Object>> syncFiles(@PathVariable Long id,
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        rejectVirtualSkillMutation(id);
+        SkillEntity skill = skillService.getSkill(id);
+        verifyResourceWorkspace(skill, workspaceId);
+        var report = skillFileSyncer.syncOne(skill);
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("skillId", id);
+        body.put("name", skill.getName());
+        body.put("filesMaterialized", report.filesMaterialized());
+        body.put("filesAlreadyCurrent", report.filesAlreadyCurrent());
+        body.put("filesBackfilledFromDisk", report.filesBackfilledFromDisk());
+        body.put("backfilledFromDisk", report.didBackfillFromDisk());
+        return R.ok(body);
+    }
+
+    @Operation(summary = "Re-sync every skill's bundle files (admin)",
+            description = "Bulk variant of /sync-files; primarily for ops debugging when you suspect " +
+                    "the local workspace is out of sync with the canonical store.")
+    @PostMapping("/sync-files")
+    @RequireWorkspaceRole("admin")
+    public R<Map<String, Object>> syncAllFiles() {
+        var report = skillFileSyncer.syncAll();
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("skillsConsidered", report.skillsConsidered());
+        body.put("skillsBackfilled", report.skillsBackfilled());
+        body.put("filesMaterialized", report.filesMaterialized());
+        body.put("filesAlreadyCurrent", report.filesAlreadyCurrent());
+        body.put("filesBackfilledFromDisk", report.filesBackfilledFromDisk());
+        return R.ok(body);
     }
 
     /**
@@ -272,27 +353,54 @@ public class SkillController {
         }
     }
 
+    /**
+     * Reject access to a skill that the request's workspace doesn't own.
+     * Builtin skills are global and exempt — every workspace may read and
+     * (where role permits) toggle them. The interceptor already verified
+     * the caller's role inside {@code workspaceId}; this guard closes the
+     * remaining gap where a member of workspace B targets a skill id that
+     * actually belongs to workspace A.
+     */
+    private void verifyResourceWorkspace(SkillEntity skill, Long headerWorkspaceId) {
+        if (skill == null || Boolean.TRUE.equals(skill.getBuiltin())) {
+            return;
+        }
+        long requested = headerWorkspaceId != null
+                ? headerWorkspaceId : SkillService.DEFAULT_WORKSPACE_ID;
+        long owner = skill.getWorkspaceId() != null
+                ? skill.getWorkspaceId() : SkillService.DEFAULT_WORKSPACE_ID;
+        if (owner != requested) {
+            throw new vip.mate.exception.MateClawException("err.common.wrong_workspace", 403,
+                    "Skill " + skill.getId() + " does not belong to the current workspace");
+        }
+    }
+
     @Operation(summary = "获取已启用技能列表")
     @GetMapping("/enabled")
-    public R<List<SkillEntity>> listEnabled() {
+    @RequireWorkspaceRole("member")
+    public R<List<SkillEntity>> listEnabled(
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
         // Mirror the merging the paginated /skills endpoint does so the agent
         // edit picker (which calls this endpoint) sees MCP- and ACP-derived
         // virtual skills alongside the persisted ones. The shadow base must
         // include all real skill names — including disabled ones — so a
         // disabled real skill correctly suppresses its same-named virtual
         // twin, matching /skills and /counts.
-        List<SkillEntity> result = new ArrayList<>(skillService.listEnabledSkills());
-        Set<String> realNames = realSkillNames();
+        // The bridges surface disabled MCP/ACP servers too (so the Skills
+        // page can show a toggled-off card); this endpoint is enabled-only,
+        // so the virtual rows are filtered to enabled before merging.
+        List<SkillEntity> result = new ArrayList<>(skillService.listEnabledSkills(workspaceId));
+        Set<String> realNames = realSkillNames(workspaceId);
 
         try {
-            result.addAll(filterShadowedVirtualSkills(
-                    mcpSkillBridge.listMcpDerivedSkillEntities(), realNames));
+            result.addAll(enabledOnly(filterShadowedVirtualSkills(
+                    mcpSkillBridge.listMcpDerivedSkillEntities(), realNames)));
         } catch (Exception e) {
             // Bridge failure must not 500 the picker — same defensive stance as /counts.
         }
         try {
-            result.addAll(filterShadowedVirtualSkills(
-                    acpSkillBridge.listAcpDerivedSkillEntities(), realNames));
+            result.addAll(enabledOnly(filterShadowedVirtualSkills(
+                    acpSkillBridge.listAcpDerivedSkillEntities(), realNames)));
         } catch (Exception e) {
             // Bridge failure must not 500 the picker — same defensive stance as /counts.
         }
@@ -301,19 +409,25 @@ public class SkillController {
 
     @Operation(summary = "按类型获取技能列表")
     @GetMapping("/type/{skillType}")
-    public R<List<SkillEntity>> listByType(@PathVariable String skillType) {
-        return R.ok(skillService.listSkillsByType(skillType));
+    @RequireWorkspaceRole("member")
+    public R<List<SkillEntity>> listByType(@PathVariable String skillType,
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        return R.ok(skillService.listSkillsByType(skillType, workspaceId));
     }
 
     @Operation(summary = "获取已启用技能摘要（按类型分组）")
     @GetMapping("/summary")
-    public R<Map<String, List<String>>> summary() {
-        return R.ok(skillService.getEnabledSkillSummary());
+    @RequireWorkspaceRole("member")
+    public R<Map<String, List<String>>> summary(
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        return R.ok(skillService.getEnabledSkillSummary(workspaceId));
     }
 
     @Operation(summary = "获取技能详情")
     @GetMapping("/{id}")
-    public R<SkillEntity> get(@PathVariable Long id) {
+    @RequireWorkspaceRole("member")
+    public R<SkillEntity> get(@PathVariable Long id,
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
         // RFC-090 §3.2 — virtual MCP-derived skills synthesize a row
         // on demand from the live MCP server entity.
         if (vip.mate.skill.mcp.McpSkillBridge.isVirtualMcpSkillId(id)) {
@@ -329,19 +443,31 @@ public class SkillController {
             SkillEntity ent = acpSkillBridge.findEntityById(id);
             return ent != null ? R.ok(ent) : R.fail("ACP-derived skill not found: " + id);
         }
-        return R.ok(skillService.getSkill(id));
+        SkillEntity skill = skillService.getSkill(id);
+        verifyResourceWorkspace(skill, workspaceId);
+        return R.ok(skill);
     }
 
     @Operation(summary = "创建技能")
     @PostMapping
-    public R<SkillEntity> create(@RequestBody SkillEntity skill) {
+    @RequireWorkspaceRole("admin")
+    public R<SkillEntity> create(
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId,
+            @RequestBody SkillEntity skill) {
+        // Always stamp the owning workspace from the request context — never
+        // trust a workspaceId in the request body.
+        skill.setWorkspaceId(workspaceId != null
+                ? workspaceId : SkillService.DEFAULT_WORKSPACE_ID);
         return R.ok(skillService.createSkill(skill));
     }
 
     @Operation(summary = "更新技能")
     @PutMapping("/{id}")
-    public R<SkillEntity> update(@PathVariable Long id, @RequestBody SkillEntity skill) {
+    @RequireWorkspaceRole("admin")
+    public R<SkillEntity> update(@PathVariable Long id, @RequestBody SkillEntity skill,
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
         rejectVirtualSkillMutation(id);
+        verifyResourceWorkspace(skillService.getSkill(id), workspaceId);
         skill.setId(id);
         return R.ok(skillService.updateSkill(skill));
     }
@@ -357,21 +483,35 @@ public class SkillController {
      */
     @Operation(summary = "硬删除技能 (admin only — 物理删除 + 工作区清空)")
     @DeleteMapping("/{id}")
-    public R<Void> delete(@PathVariable Long id) {
+    @RequireWorkspaceRole("admin")
+    public R<Void> delete(@PathVariable Long id,
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
         rejectVirtualSkillMutation(id);
+        verifyResourceWorkspace(skillService.getSkill(id), workspaceId);
         skillService.hardDeleteSkill(id);
         return R.ok();
     }
 
     @Operation(summary = "启用/禁用技能")
     @PutMapping("/{id}/toggle")
-    public R<SkillEntity> toggle(@PathVariable Long id, @RequestParam boolean enabled) {
+    @RequireWorkspaceRole("admin")
+    public R<SkillEntity> toggle(@PathVariable Long id, @RequestParam boolean enabled,
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        // A virtual MCP skill mirrors an MCP server — toggling it enables /
+        // disables that server, keeping the Skills page and Settings ▸ MCP
+        // Connections in sync. ACP virtual skills have no such mapping and
+        // stay read-only via rejectVirtualSkillMutation below.
+        if (vip.mate.skill.mcp.McpSkillBridge.isVirtualMcpSkillId(id)) {
+            return R.ok(mcpSkillBridge.toggleVirtualSkill(id, enabled));
+        }
         rejectVirtualSkillMutation(id);
+        verifyResourceWorkspace(skillService.getSkill(id), workspaceId);
         return R.ok(skillService.toggleSkill(id, enabled));
     }
 
     @Operation(summary = "预览技能 Prompt 增强效果（调试用，与 Agent 真实运行时一致）")
     @GetMapping("/prompt-preview")
+    @RequireWorkspaceRole("admin")
     public R<Map<String, Object>> promptPreview() {
         String prompt = skillRuntimeService.buildSkillPromptEnhancement();
         return R.ok(Map.of(
@@ -385,6 +525,7 @@ public class SkillController {
 
     @Operation(summary = "获取 active skills 运行时视图")
     @GetMapping("/runtime/active")
+    @RequireWorkspaceRole("admin")
     public R<Map<String, Object>> getActiveSkills() {
         List<ResolvedSkill> skills = skillRuntimeService.getActiveSkills();
         return R.ok(Map.of("count", skills.size(), "skills", skills));
@@ -392,12 +533,14 @@ public class SkillController {
 
     @Operation(summary = "获取所有技能的运行时解析状态（管理页面使用）")
     @GetMapping("/runtime/status")
+    @RequireWorkspaceRole("admin")
     public R<List<ResolvedSkill>> getRuntimeStatus() {
         return R.ok(skillRuntimeService.resolveAllSkillsStatus());
     }
 
     @Operation(summary = "刷新 active skills 缓存，resync=true 时同步内置技能到 workspace")
     @PostMapping("/runtime/refresh")
+    @RequireWorkspaceRole("admin")
     public R<Map<String, Object>> refreshRuntime(
             @RequestParam(defaultValue = "false") boolean resync) {
         List<String> resynced = List.of();
@@ -423,6 +566,7 @@ public class SkillController {
      */
     @Operation(summary = "Pre-flight requirement statuses for a skill (RFC-090)")
     @GetMapping("/{id}/requirements")
+    @RequireWorkspaceRole("member")
     public R<Map<String, Object>> requirements(@PathVariable Long id) {
         ResolvedSkill resolved = skillRuntimeService.resolveAllSkillsStatus().stream()
                 .filter(r -> r != null && id.equals(r.getId()))
@@ -488,6 +632,7 @@ public class SkillController {
      */
     @Operation(summary = "List agents that can use this skill (RFC-090 §14.2)")
     @GetMapping("/{id}/employees")
+    @RequireWorkspaceRole("member")
     public R<List<Map<String, Object>>> employees(@PathVariable Long id) {
         // Explicit bindings: agent_skill rows pointing to this skill.
         List<AgentSkillBinding> explicitBindings = agentSkillBindingMapper.selectList(
@@ -554,6 +699,7 @@ public class SkillController {
      */
     @Operation(summary = "Read per-skill LESSONS.md (RFC-090 §11.4)")
     @GetMapping("/{id}/lessons")
+    @RequireWorkspaceRole("member")
     public R<Map<String, Object>> getLessons(@PathVariable Long id) {
         ResolvedSkill resolved = skillRuntimeService.resolveAllSkillsStatus().stream()
                 .filter(r -> r != null && id.equals(r.getId()))
@@ -584,6 +730,7 @@ public class SkillController {
 
     @Operation(summary = "Clear all lessons for a skill (RFC-090 §11.4)")
     @PostMapping("/{id}/lessons/clear")
+    @RequireWorkspaceRole("admin")
     public R<Map<String, Object>> clearLessons(@PathVariable Long id) {
         ResolvedSkill resolved = skillRuntimeService.resolveAllSkillsStatus().stream()
                 .filter(r -> r != null && id.equals(r.getId()))
@@ -598,14 +745,17 @@ public class SkillController {
 
     @Operation(summary = "从对话历史合成 Skill（RFC-023）")
     @PostMapping("/synthesize-from-conversation")
-    public R<Map<String, Object>> synthesizeFromConversation(@RequestBody Map<String, Object> body) {
+    @RequireWorkspaceRole("admin")
+    public R<Map<String, Object>> synthesizeFromConversation(@RequestBody Map<String, Object> body,
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
         String conversationId = (String) body.get("conversationId");
         Long agentId = body.get("agentId") != null ? Long.valueOf(body.get("agentId").toString()) : null;
         if (conversationId == null || conversationId.isBlank()) {
             return R.fail("conversationId is required");
         }
 
-        SkillSynthesisService.SynthesisResult result = synthesisService.synthesize(conversationId, agentId);
+        SkillSynthesisService.SynthesisResult result = synthesisService.synthesize(
+                conversationId, agentId, workspaceId);
 
         if (result.blocked()) {
             return R.ok(Map.of(
@@ -630,8 +780,11 @@ public class SkillController {
 
     @Operation(summary = "将 skill 导出到工作区目录")
     @PostMapping("/{id}/export-workspace")
-    public R<Map<String, Object>> exportToWorkspace(@PathVariable Long id) {
+    @RequireWorkspaceRole("admin")
+    public R<Map<String, Object>> exportToWorkspace(@PathVariable Long id,
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
         SkillEntity skill = skillService.getSkill(id);
+        verifyResourceWorkspace(skill, workspaceId);
         var path = workspaceManager.exportToWorkspace(skill.getName(), skill.getSkillContent());
         if (path == null) {
             return R.ok(Map.of("success", false, "message", "Failed to export workspace"));
@@ -641,8 +794,136 @@ public class SkillController {
 
     @Operation(summary = "获取 skill 工作区信息")
     @GetMapping("/{id}/workspace")
-    public R<Map<String, Object>> getWorkspaceInfo(@PathVariable Long id) {
+    @RequireWorkspaceRole("admin")
+    public R<Map<String, Object>> getWorkspaceInfo(@PathVariable Long id,
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
         SkillEntity skill = skillService.getSkill(id);
+        verifyResourceWorkspace(skill, workspaceId);
         return R.ok(workspaceManager.getWorkspaceInfo(skill.getName()));
     }
+
+    // ==================== Skill lifecycle & curator ====================
+
+    @Operation(summary = "钉住/取消钉住技能（钉住的技能不会被自动归档）")
+    @PostMapping("/{id}/pin")
+    @RequireWorkspaceRole("admin")
+    public R<SkillEntity> pin(@PathVariable Long id,
+            @RequestBody(required = false) PinRequest body,
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        rejectVirtualSkillMutation(id);
+        verifyResourceWorkspace(skillService.getSkill(id), workspaceId);
+        boolean pinned = body != null && Boolean.TRUE.equals(body.pinned());
+        return R.ok(skillLifecycleService.setPinned(id, pinned));
+    }
+
+    @Operation(summary = "手动归档技能")
+    @PostMapping("/{id}/archive")
+    @RequireWorkspaceRole("admin")
+    public R<SkillEntity> archive(@PathVariable Long id,
+            @RequestParam(defaultValue = "false") boolean force,
+            @RequestBody(required = false) ArchiveRequest body,
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        rejectVirtualSkillMutation(id);
+        SkillEntity skill = skillService.getSkill(id);
+        verifyResourceWorkspace(skill, workspaceId);
+        if (Boolean.TRUE.equals(skill.getBuiltin())) {
+            throw new MateClawException("err.skill.builtin_not_archivable", 400,
+                    "Cannot archive builtin skill: " + skill.getName());
+        }
+        String state = skill.getLifecycleState() == null ? "active" : skill.getLifecycleState();
+        if ("archived".equals(state)) {
+            throw new MateClawException("err.skill.already_archived", 409,
+                    "Skill already archived: " + skill.getName());
+        }
+        // Bound skills are not silently archived: require an explicit
+        // second-pass confirmation (force=true) so the admin sees which
+        // agents lose the capability.
+        if (!force) {
+            List<ConfirmRequiredException.AgentRow> bound =
+                    agentBindingService.enabledAgentsBoundToSkill(id);
+            if (!bound.isEmpty()) {
+                throw new ConfirmRequiredException("BOUND_SKILL_CONFIRM_REQUIRED",
+                        "Skill is explicitly bound to " + bound.size()
+                                + " agent(s); pass force=true to confirm", bound);
+            }
+        }
+        String reason = body != null && body.reason() != null ? body.reason() : "manual:admin";
+        skillLifecycleService.applyManual(skill, LifecycleTransition.TO_ARCHIVED,
+                LocalDateTime.now(), reason);
+        return R.ok(skillService.getSkill(id));
+    }
+
+    @Operation(summary = "恢复已归档的技能")
+    @PostMapping("/{id}/restore")
+    @RequireWorkspaceRole("admin")
+    public R<SkillEntity> restore(@PathVariable Long id,
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        rejectVirtualSkillMutation(id);
+        verifyResourceWorkspace(skillService.getSkill(id), workspaceId);
+        return R.ok(skillLifecycleService.restore(id));
+    }
+
+    @Operation(summary = "立即运行一次 curator 预览（dry-run）")
+    @PostMapping("/curator/dry-run")
+    @RequireWorkspaceRole("admin")
+    public R<SkillCuratorReport> curatorDryRun() {
+        return R.ok(skillCuratorJob.dryRunNow());
+    }
+
+    @Operation(summary = "激活/取消激活 curator（真正归档 vs 仅预览）")
+    @PostMapping("/curator/activate")
+    @RequireWorkspaceRole("admin")
+    public R<Map<String, Object>> curatorActivate(
+            @RequestParam(defaultValue = "true") boolean activate) {
+        skillCuratorJob.activate(activate);
+        return R.ok(skillCuratorJob.status());
+    }
+
+    @Operation(summary = "暂停 curator 定时扫描")
+    @PostMapping("/curator/pause")
+    @RequireWorkspaceRole("admin")
+    public R<Map<String, Object>> curatorPause() {
+        skillCuratorJob.setPaused(true);
+        return R.ok(skillCuratorJob.status());
+    }
+
+    @Operation(summary = "恢复 curator 定时扫描")
+    @PostMapping("/curator/resume")
+    @RequireWorkspaceRole("admin")
+    public R<Map<String, Object>> curatorResume() {
+        skillCuratorJob.setPaused(false);
+        return R.ok(skillCuratorJob.status());
+    }
+
+    @Operation(summary = "curator 控制面状态")
+    @GetMapping("/curator/status")
+    @RequireWorkspaceRole("member")
+    public R<Map<String, Object>> curatorStatus() {
+        return R.ok(skillCuratorJob.status());
+    }
+
+    @Operation(summary = "列出最近的 curator 运行报告")
+    @GetMapping("/curator/reports")
+    @RequireWorkspaceRole("member")
+    public R<List<String>> curatorReports() {
+        return R.ok(skillCuratorReportStore.listRunIds(20));
+    }
+
+    @Operation(summary = "读取某次 curator 运行报告")
+    @GetMapping("/curator/reports/{runId}")
+    @RequireWorkspaceRole("member")
+    public R<Object> curatorReport(@PathVariable String runId) {
+        Object report = skillCuratorReportStore.readRun(runId);
+        if (report == null) {
+            throw new MateClawException("err.skill.curator_report_not_found", 404,
+                    "Curator report not found: " + runId);
+        }
+        return R.ok(report);
+    }
+
+    /** Body of {@code POST /skills/{id}/pin}. */
+    public record PinRequest(Boolean pinned) {}
+
+    /** Optional body of {@code POST /skills/{id}/archive}. */
+    public record ArchiveRequest(String reason) {}
 }

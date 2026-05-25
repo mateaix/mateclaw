@@ -15,6 +15,7 @@ import vip.mate.wiki.model.WikiPageEntity;
 import vip.mate.wiki.repository.WikiPageCitationMapper;
 import vip.mate.wiki.service.*;
 
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -35,6 +36,7 @@ public class WikiRelationController {
     private final HybridRetriever hybridRetriever;
     private final ApplicationEventPublisher eventPublisher;
     private final ObjectMapper objectMapper;
+    private final WikiEmbeddingService embeddingService;
 
     // ==================== RFC-029: Relations ====================
 
@@ -95,20 +97,32 @@ public class WikiRelationController {
         long enrichedCount = pageService.listByKbIdWithContent(kbId).stream()
                 .filter(p -> p.getContent() != null && p.getContent().contains("[["))
                 .count();
-        // Use listByKbId (all statuses) instead of listQueued (queued-only)
+        // Use listByKbId (all statuses) instead of listQueued (queued-only).
+        // A raw material accumulates one job row per (re)processing attempt;
+        // only its most recent job reflects current state. Collapse to the
+        // latest job per raw (highest snowflake id wins) so a failed attempt
+        // that a later successful reprocess superseded stops being counted.
         var allJobs = jobMapper.listByKbId(kbId, 200);
-        int failedJobCount = (int) allJobs.stream()
+        Map<Long, WikiProcessingJobEntity> latestByRaw = new HashMap<>();
+        for (WikiProcessingJobEntity job : allJobs) {
+            latestByRaw.merge(job.getRawId(), job,
+                    (a, b) -> a.getId() >= b.getId() ? a : b);
+        }
+        int failedJobCount = (int) latestByRaw.values().stream()
                 .filter(j -> "failed".equals(j.getStatus()))
                 .count();
-        int runningJobCount = (int) allJobs.stream()
+        int runningJobCount = (int) latestByRaw.values().stream()
                 .filter(j -> "running".equals(j.getStatus()))
                 .count();
+
+        WikiEmbeddingService.EmbeddingDrift drift = embeddingService.describeDrift(kbId);
 
         return Map.of(
                 "pageCount", pageCount,
                 "enrichedPageCount", enrichedCount,
                 "failedJobCount", failedJobCount,
-                "runningJobCount", runningJobCount
+                "runningJobCount", runningJobCount,
+                "embeddingDrift", drift
         );
     }
 

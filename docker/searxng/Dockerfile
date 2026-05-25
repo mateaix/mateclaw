@@ -6,4 +6,5 @@
 # SearXNGSearchProvider, so this override is required.
 FROM searxng/searxng:latest
 
-COPY settings.yml /etc/searxng/settings.yml
+COPY docker/searxng/settings.yml /etc/searxng/settings.yml
+COPY docker/searxng/engines/* /usr/local/searxng/searx/engines

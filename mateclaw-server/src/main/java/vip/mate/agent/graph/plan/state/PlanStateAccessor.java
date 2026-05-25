@@ -107,6 +107,17 @@ public final class PlanStateAccessor {
         return state.value(MateClawStateKeys.TRACE_ID, "");
     }
 
+    /**
+     * The {@link vip.mate.agent.context.ChatOrigin} forwarded into graph
+     * state by {@code MateClawStateAccessor.OutputBuilder.chatOrigin}.
+     * Returns {@link vip.mate.agent.context.ChatOrigin#EMPTY} when nothing
+     * was injected (legacy callers / non-channel entry points).
+     */
+    public vip.mate.agent.context.ChatOrigin chatOrigin() {
+        return state.<vip.mate.agent.context.ChatOrigin>value(MateClawStateKeys.CHAT_ORIGIN)
+                .orElse(vip.mate.agent.context.ChatOrigin.EMPTY);
+    }
+
     // ===== 会话消息（复用 MateClawStateKeys.MESSAGES）=====
 
     @SuppressWarnings("unchecked")
@@ -235,8 +246,10 @@ public final class PlanStateAccessor {
                                         NodeStreamingChatHelper.StreamResult result) {
             int existingPrompt = currentState.value(MateClawStateKeys.PROMPT_TOKENS, 0);
             int existingCompletion = currentState.value(MateClawStateKeys.COMPLETION_TOKENS, 0);
+            int existingLlmCalls = currentState.value(MateClawStateKeys.LLM_CALL_COUNT, 0);
             map.put(MateClawStateKeys.PROMPT_TOKENS, existingPrompt + result.promptTokens());
             map.put(MateClawStateKeys.COMPLETION_TOKENS, existingCompletion + result.completionTokens());
+            map.put(MateClawStateKeys.LLM_CALL_COUNT, existingLlmCalls + 1);
             return this;
         }
 

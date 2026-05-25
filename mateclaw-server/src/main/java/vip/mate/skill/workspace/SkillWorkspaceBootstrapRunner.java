@@ -10,36 +10,51 @@ import org.springframework.stereotype.Component;
 import java.util.List;
 
 /**
- * Skill 工作区启动初始化
- * <p>
- * 1. 确保 workspace root 目录存在
- * 2. 将 classpath 下预置技能同步到 workspace
- *    - 首次：创建并同步
- *    - 后续：比对 SKILL.md frontmatter 中的 version 字段，
- *      bundled version 更高时归档旧版本并覆盖升级
- * <p>
- * Order(195) — 在 DatabaseBootstrapRunner(200) 之前执行。
+ * Skill workspace bootstrap.
+ * <ol>
+ *   <li>Ensure the workspace root exists.</li>
+ *   <li>Sync classpath-bundled skills into the workspace
+ *       (first install creates them; later starts upgrade only when the
+ *       bundled SKILL.md frontmatter version is strictly newer).</li>
+ *   <li>Materialize {@code mate_skill_file} rows down to each node's
+ *       local cache so multi-instance deployments share the same
+ *       scripts/references regardless of which node accepted the upload.
+ *       Also backfills any pre-V112 on-disk-only skill files into the
+ *       canonical store.</li>
+ * </ol>
+ *
+ * <p>Order(210) — runs after {@code DatabaseBootstrapRunner}(200) so the
+ * skill rows the syncer needs to read are already loaded.
  *
  * @author MateClaw Team
  */
 @Slf4j
 @Component
-@Order(195)
+@Order(210)
 @RequiredArgsConstructor
 public class SkillWorkspaceBootstrapRunner implements ApplicationRunner {
 
     private final SkillWorkspaceManager workspaceManager;
     private final BundledSkillSyncer bundledSkillSyncer;
+    private final SkillFileSyncer skillFileSyncer;
 
     @Override
     public void run(ApplicationArguments args) {
         var root = workspaceManager.getWorkspaceRoot();
         log.info("Skill workspace root ready: {}", root);
 
-        // 同步 classpath 下预置技能到 workspace
         List<String> synced = bundledSkillSyncer.sync();
         if (!synced.isEmpty()) {
             log.info("Synced {} bundled skill(s) to workspace: {}", synced.size(), synced);
         }
+
+        // Pull canonical bundle files from DB → local cache (and one-time
+        // backfill of pre-V112 disk-only skills back into the DB).
+        var report = skillFileSyncer.syncAll();
+        log.info("Skill file sync: skills={}, materialized={}, current={}, " +
+                        "diskBackfilled(skills={}, files={})",
+                report.skillsConsidered(), report.filesMaterialized(),
+                report.filesAlreadyCurrent(),
+                report.skillsBackfilled(), report.filesBackfilledFromDisk());
     }
 }

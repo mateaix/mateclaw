@@ -1,5 +1,6 @@
 package vip.mate.agent.service;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -8,9 +9,14 @@ import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import vip.mate.agent.AgentService;
+import vip.mate.agent.binding.service.AgentBindingService;
 import vip.mate.agent.model.AgentEntity;
 import vip.mate.agent.model.TemplateDTO;
 import vip.mate.exception.MateClawException;
+import vip.mate.skill.model.SkillEntity;
+import vip.mate.skill.repository.SkillMapper;
+import vip.mate.tool.model.AvailableToolDTO;
+import vip.mate.tool.service.AvailableToolService;
 import vip.mate.workspace.document.WorkspaceFileService;
 
 import java.io.IOException;
@@ -18,6 +24,7 @@ import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
@@ -36,6 +43,9 @@ public class TemplateService {
     private final AgentService agentService;
     private final WorkspaceFileService workspaceFileService;
     private final ObjectMapper objectMapper;
+    private final AgentBindingService agentBindingService;
+    private final SkillMapper skillMapper;
+    private final AvailableToolService availableToolService;
 
     /**
      * 列出所有可用模板
@@ -135,7 +145,121 @@ public class TemplateService {
             }
         }
 
+        // 4. Pre-bind skills the template declares so a hired agent is
+        // usable out of the box ("数据分析师" already knows SQL, "代码审查员"
+        // already has the test-driven-development playbook). Resolution
+        // failures (slug missing in this workspace) are skipped with a
+        // warning; bind-service exceptions still propagate and roll back
+        // the @Transactional hire — see helper Javadoc.
+        applyDefaultSkillBindings(template, created);
+
+        // 5. Pre-bind any standalone tools the template wants. Picker
+        // outage and unknown names are dropped with a warning; a
+        // setToolBindings exception still propagates (same contract as
+        // skills) — see helper Javadoc.
+        applyDefaultToolBindings(template, created);
+
         return created;
+    }
+
+    /**
+     * Resolve {@link TemplateDTO#getDefaultSkillSlugs()} to skill ids inside
+     * the agent's own workspace and pre-bind them.
+     *
+     * <p><b>Failure contract — read carefully.</b>
+     * <ul>
+     *   <li><b>Resolution failures</b> (slug not present in the agent's
+     *       workspace, blank entries) → logged and dropped. A template MUST
+     *       stay applyable on an offline upgrade or partial-seed install
+     *       where some bundled skills haven't landed yet.</li>
+     *   <li><b>Service-layer failures</b>
+     *       ({@link AgentBindingService#setSkillBindings} throws — e.g. a
+     *       race deletes the skill row between resolve and bind, or the
+     *       workspace check rejects it) → <em>propagate</em>. Because
+     *       {@link #applyTemplate} runs under {@code @Transactional}, this
+     *       rolls back the whole hire. That's deliberate: such a throw is
+     *       a real wiring/race problem, and pretending the hire succeeded
+     *       would leave the user with a half-configured agent.</li>
+     * </ul>
+     *
+     * <p>Reads the workspace off the just-persisted {@link AgentEntity}
+     * rather than a separate parameter so the lookup and the validator
+     * inside {@code AgentBindingService.requireSameWorkspace} can never
+     * disagree on which workspace they're talking about.
+     */
+    private void applyDefaultSkillBindings(TemplateDTO template, AgentEntity created) {
+        List<String> slugs = template.getDefaultSkillSlugs();
+        if (slugs == null || slugs.isEmpty()) return;
+
+        // Mirror the fallback inside AgentBindingService.requireSameWorkspace:
+        // a null workspace_id on a row is treated as workspace 1, so the
+        // lookup needs to agree or we'd silently turn `eq(workspaceId, null)`
+        // into `IS NULL` and match nothing.
+        Long workspaceId = created.getWorkspaceId() == null ? 1L : created.getWorkspaceId();
+
+        List<Long> resolvedIds = new ArrayList<>();
+        for (String slug : slugs) {
+            if (slug == null || slug.isBlank()) continue;
+            SkillEntity skill = skillMapper.selectOne(new LambdaQueryWrapper<SkillEntity>()
+                    .eq(SkillEntity::getName, slug.trim())
+                    .eq(SkillEntity::getWorkspaceId, workspaceId));
+            if (skill == null) {
+                log.warn("[Template] template {} requested skill slug '{}' not found in workspace {}; skipping",
+                        template.getId(), slug, workspaceId);
+                continue;
+            }
+            resolvedIds.add(skill.getId());
+        }
+        if (resolvedIds.isEmpty()) return;
+
+        agentBindingService.setSkillBindings(created.getId(), resolvedIds);
+        log.info("[Template] template {} pre-bound {} skill(s) on agent {}",
+                template.getId(), resolvedIds.size(), created.getId());
+    }
+
+    /**
+     * Pre-filter the template's tool names through the picker so
+     * {@link AgentBindingService#setToolBindings} sees only resolvable names
+     * — its own validation would otherwise abort the call on the first
+     * unknown name and leave the agent with no tool bindings at all.
+     *
+     * <p>Failure contract mirrors {@link #applyDefaultSkillBindings}:
+     * picker outage and unknown names are dropped with a warning; an
+     * exception from {@code setToolBindings} itself still propagates and
+     * rolls back the hire.
+     */
+    private void applyDefaultToolBindings(TemplateDTO template, AgentEntity created) {
+        List<String> names = template.getDefaultToolNames();
+        if (names == null || names.isEmpty()) return;
+
+        Set<String> bindable;
+        try {
+            bindable = availableToolService.listAvailable().stream()
+                    .filter(AvailableToolDTO::isAvailable)
+                    .map(AvailableToolDTO::getName)
+                    .collect(Collectors.toSet());
+        } catch (Exception e) {
+            log.warn("[Template] picker unavailable during template {} apply; skipping tool pre-bind: {}",
+                    template.getId(), e.getMessage());
+            return;
+        }
+
+        List<String> filtered = new ArrayList<>();
+        for (String name : names) {
+            if (name == null || name.isBlank()) continue;
+            String trimmed = name.trim();
+            if (bindable.contains(trimmed)) {
+                filtered.add(trimmed);
+            } else {
+                log.warn("[Template] template {} requested tool '{}' not currently bindable; skipping",
+                        template.getId(), trimmed);
+            }
+        }
+        if (filtered.isEmpty()) return;
+
+        agentBindingService.setToolBindings(created.getId(), filtered);
+        log.info("[Template] template {} pre-bound {} tool(s) on agent {}",
+                template.getId(), filtered.size(), created.getId());
     }
 
     /**

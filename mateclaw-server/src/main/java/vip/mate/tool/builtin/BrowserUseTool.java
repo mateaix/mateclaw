@@ -26,6 +26,7 @@ import java.nio.file.Paths;
 import java.util.Base64;
 import java.util.List;
 import java.util.concurrent.*;
+import java.util.regex.Pattern;
 
 /**
  * 浏览器自动化工具
@@ -98,7 +99,7 @@ public class BrowserUseTool {
         - screenshot: Take a screenshot. Optional path to save file; returns base64 if no path.
         - click: Click an element. Requires selector (CSS selector).
         - type: Type text into an element. Requires selector and text.
-        - eval: Execute JavaScript on the page. Requires code parameter.
+        - eval: Execute JavaScript on the page. Requires code parameter. Top-level await is supported; use `return` to surface a value.
         - connect_cdp: Connect to an existing Chrome via CDP. Requires url (e.g. "http://localhost:9222").
         - list_cdp_targets: Scan local ports (9000-10000) for CDP endpoints. Optional cdpPort for single port.
         - navigate_back: Go back in browser history.
@@ -109,7 +110,7 @@ public class BrowserUseTool {
             @ToolParam(description = "URL to navigate to (for open), or CDP base URL (for connect_cdp, e.g. http://localhost:9222)", required = false) String url,
             @ToolParam(description = "CSS selector for target element (for click/type)", required = false) String selector,
             @ToolParam(description = "Text to type (for action=type)", required = false) String text,
-            @ToolParam(description = "JavaScript code to execute (for action=eval)", required = false) String code,
+            @ToolParam(description = "JavaScript code to execute (for action=eval). Top-level await is allowed; add `return` to return a value when the snippet uses await.", required = false) String code,
             @ToolParam(description = "File path to save screenshot (for action=screenshot)", required = false) String path,
             @ToolParam(description = "Launch visible browser window (for action=start, default false)", required = false) Boolean headed,
             @ToolParam(description = "Single CDP port to scan (for action=list_cdp_targets)", required = false) Integer cdpPort,
@@ -642,6 +643,19 @@ public class BrowserUseTool {
         return JSONUtil.toJsonPrettyStr(result);
     }
 
+    /** Detects the {@code await} keyword as a whole word to decide whether eval code needs an async wrapper. */
+    private static final Pattern TOP_LEVEL_AWAIT = Pattern.compile("\\bawait\\b");
+
+    /**
+     * Playwright raises this exact message when a bare-expression eval contains a
+     * top-level {@code return}. Such snippets are safe to retry inside an async
+     * IIFE, where {@code return} surfaces the value.
+     */
+    private static boolean isIllegalReturn(PlaywrightException ex) {
+        String m = ex.getMessage();
+        return m != null && m.contains("Illegal return statement");
+    }
+
     private String doEval(String sessionKey, String code) {
         if (code == null || code.isBlank()) {
             return error("code is required for action=eval");
@@ -655,7 +669,29 @@ public class BrowserUseTool {
         session.touch();
         Page page = session.page;
 
-        Object evalResult = page.evaluate(code);
+        // Playwright evaluates the supplied string as a plain expression, which
+        // rejects both top-level `await` and top-level `return` ("SyntaxError:
+        // Illegal return statement"). Snippets that use `await` are wrapped up
+        // front in an async IIFE (valid for `await` and `return` alike).
+        // A top-level `return` only fails at eval time, so we retry once wrapped
+        // rather than pre-wrapping on a naive `return` match — that would mangle
+        // bare expressions containing a nested return (e.g. arr.map(x => {
+        // return x; })) into an IIFE with no top-level return, yielding undefined.
+        String script = TOP_LEVEL_AWAIT.matcher(code).find()
+                ? "(async () => {" + code + "})()"
+                : code;
+        Object evalResult;
+        try {
+            evalResult = page.evaluate(script);
+        } catch (PlaywrightException ex) {
+            if (script.equals(code) && isIllegalReturn(ex)) {
+                log.debug("[BrowserUse] eval had a top-level return; retrying wrapped in async IIFE");
+                script = "(async () => {" + code + "})()";
+                evalResult = page.evaluate(script);
+            } else {
+                throw ex;
+            }
+        }
         String resultStr = evalResult != null ? evalResult.toString() : "null";
 
         if (resultStr.length() > 10_000) {

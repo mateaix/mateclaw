@@ -41,14 +41,16 @@
         <!-- 分类 Tab -->
         <div class="category-tabs mc-surface-card">
           <button v-for="tab in categoryTabs" :key="tab.value" class="cat-tab"
-            :class="{ active: query.skillType === tab.value }" @click="onTabChange(tab.value)">
-            <span class="cat-icon">{{ tab.icon }}</span>
+            :class="{ active: isTabActive(tab), 'cat-tab--lifecycle': tab.kind === 'lifecycle' }"
+            @click="onTabChange(tab)">
+            <SkillLineIcon :name="tab.icon" :size="15" class="cat-icon" />
             {{ tab.label }}
-            <span class="cat-count">{{ getCategoryCount(tab.value) }}</span>
+            <span class="cat-count">{{ getCategoryCount(tab) }}</span>
           </button>
         </div>
 
-        <!-- Search + status filter (RFC-042 §2.1) -->
+        <!-- Search + sort. Enabled vs disabled is now the section split below,
+             so the old status dropdown is gone. -->
         <div class="skill-filter-bar mc-surface-card">
           <input
             v-model="query.keyword"
@@ -56,12 +58,6 @@
             type="search"
             :placeholder="t('skills.search.placeholder')"
           />
-          <select v-model="query.statusFilter" class="skill-status-filter" @change="onFilterChange">
-            <option value="">{{ t('skills.filter.all') }}</option>
-            <option value="enabled">{{ t('skills.filter.enabled') }}</option>
-            <option value="disabled">{{ t('skills.filter.disabled') }}</option>
-            <option value="scan_failed">{{ t('skills.filter.scanFailed') }}</option>
-          </select>
           <select v-model="query.sort" class="skill-status-filter" @change="onFilterChange">
             <option value="recommended">{{ t('skills.sort.recommended') }}</option>
             <option value="name">{{ t('skills.sort.name') }}</option>
@@ -71,12 +67,19 @@
           </select>
         </div>
 
-        <!-- Skill grid — RFC-090 §4.2 (Phase 1 slim).
+        <!-- Enabled / Available two-section layout. Each section paginates
+             independently via the enabled=true|false query split.
              Card surfaces 5 things: icon · name · status · description · actions.
              All findings, deps, paths, lessons, used-by are in the detail drawer. -->
-        <div class="skill-grid" v-if="skills.length > 0">
+        <div v-for="section in skillSections" :key="section.key" class="skill-section">
+          <div class="skill-section-head">
+            <span class="skill-section-title">{{ section.label }}</span>
+            <span class="skill-section-count">{{ t('skills.sections.countItems', { n: section.state.total }) }}</span>
+          </div>
+
+          <div class="skill-grid" v-if="section.state.items.length > 0">
           <div
-            v-for="skill in skills"
+            v-for="skill in section.state.items"
             :key="skill.id"
             class="skill-card mc-surface-card"
             :class="{ disabled: !skill.enabled }"
@@ -98,12 +101,16 @@
                 <!-- RFC-042 §2.2.4 — slug under display name when they differ -->
                 <div v-if="hasI18nName(skill)" class="skill-slug">{{ skill.name }}</div>
               </div>
-              <!-- Issue #83: virtual MCP/ACP skills are view-only mirrors of the
-                   underlying MCP/ACP server row, with no mate_skill row to flip.
-                   Hiding the toggle here matches how the configure / delete
-                   buttons are gated below; users enable/disable from the
-                   Settings ▸ MCP connection page instead. -->
-              <label v-if="!isSkillRowVirtual(skill)" class="toggle-switch" @click.stop>
+              <!-- MCP-derived skills accept the enable/disable toggle — it
+                   forwards to the underlying MCP server connection, so the
+                   Skills page and Settings ▸ MCP Connections stay in sync.
+                   ACP-derived skills have no such mapping and stay read-only
+                   (padlock); configure / delete are gated for both below. -->
+              <label
+                v-if="!isSkillRowVirtual(skill) || isMcpSkillRow(skill)"
+                class="toggle-switch"
+                @click.stop
+              >
                 <input type="checkbox" :checked="skill.enabled" @change="toggleSkill(skill)" />
                 <span class="toggle-slider"></span>
               </label>
@@ -128,6 +135,12 @@
               </span>
               <span class="source-label" :class="getSourceClass(skill)">{{ getSourceLabel(skill) }}</span>
               <span v-if="skill.version" class="skill-version">v{{ skill.version }}</span>
+              <span
+                v-if="!isSkillRowVirtual(skill) && skill.lastActivityAt"
+                class="lifecycle-badge"
+                :class="{ 'lifecycle-badge--stale': skill.lifecycleState === 'stale',
+                          'lifecycle-badge--archived': skill.lifecycleState === 'archived' }"
+              ><SkillLineIcon name="clock" :size="11" />{{ lastUsedLabel(skill) }}</span>
             </div>
 
             <div class="skill-footer" @click.stop>
@@ -170,21 +183,22 @@
           </div>
         </div>
 
-        <div v-else class="empty-state mc-surface-card">
-          <div class="empty-icon">🛠️</div>
-          <h3>{{ t('skills.empty') }}</h3>
-          <p>{{ t('skills.emptyDesc') }}</p>
-        </div>
+          <div v-else class="empty-state mc-surface-card">
+            <div class="empty-icon">🛠️</div>
+            <h3>{{ section.key === 'enabled' ? t('skills.sections.emptyEnabled') : t('skills.sections.emptyAvailable') }}</h3>
+            <p v-if="section.key === 'enabled'">{{ t('skills.sections.emptyEnabledDesc') }}</p>
+          </div>
 
-        <!-- Pagination (RFC-042 §2.1) — MateClaw frosted-pill component. -->
-        <div class="skill-pagination">
-          <McPagination
-            v-model:page="query.page"
-            v-model:size="query.size"
-            :total="total"
-            :sizes="[20, 50]"
-            @change="onPagerChange"
-          />
+          <!-- Per-section pagination — MateClaw frosted-pill component. -->
+          <div v-if="section.state.total > section.state.size" class="skill-pagination">
+            <McPagination
+              v-model:page="section.state.page"
+              v-model:size="section.state.size"
+              :total="section.state.total"
+              :sizes="[20, 50]"
+              @change="() => loadSegment(section.key)"
+            />
+          </div>
         </div>
       </div>
     </div>
@@ -199,41 +213,21 @@
       :skill-name="preflightSkillName"
     />
 
-    <!-- Skill detail drawer.
-         Mirrors Settings/Models/AddProviderDrawer.vue — Teleport + frosted
-         glass, iOS-spring slide, mobile bottom-sheet, dark variants. The
-         old el-drawer was off-brand and didn't match the rest of the app. -->
-    <Teleport to="body">
-      <Transition name="mc-drawer-fade">
-        <div
-          v-if="detailDrawerVisible && detailSkill"
-          class="mc-drawer-overlay"
-          :class="{ 'mc-drawer-overlay--wide': editingBody }"
-          @click.self="closeDetailDrawer"
-        >
-          <div class="mc-drawer-panel" :class="{ 'mc-drawer-panel--wide': editingBody }">
-            <div class="mc-drawer-header">
-              <div class="mc-drawer-header__meta">
-                <span class="mc-drawer-icon-shell">
-                  <SkillIcon :value="detailSkill.icon" :size="24" />
-                </span>
-                <div>
-                  <h3 class="mc-drawer-title">{{ resolveSkillName(detailSkill) }}</h3>
-                  <p class="mc-drawer-subtitle">
-                    {{ editingBody ? t('skills.detail.editingSource') : (detailSkill.description || detailSkill.name) }}
-                  </p>
-                </div>
-              </div>
-              <button
-                class="mc-drawer-close"
-                :title="t('common.cancel')"
-                @click="closeDetailDrawer"
-              >
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
-                  <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-                </svg>
-              </button>
-            </div>
+    <!-- Skill detail/edit drawer — frosted shell comes from MateDrawer;
+         the existing .mc-drawer-content wrapper below stays so the
+         tab/block/takeover styles keep working without renaming. -->
+    <MateDrawer
+      :visible="detailDrawerVisible && !!detailSkill"
+      :title="detailSkill ? resolveSkillName(detailSkill) : ''"
+      :subtitle="detailSkill ? (editingBody ? t('skills.detail.editingSource') : (detailSkill.description || detailSkill.name)) : ''"
+      :size="editingBody ? 'lg' : 'md'"
+      :close-label="t('common.cancel')"
+      @close="closeDetailDrawer"
+    >
+      <template v-if="detailSkill" #icon>
+        <SkillIcon :value="detailSkill.icon" :size="24" />
+      </template>
+      <template v-if="detailSkill">
 
             <!-- Body-edit takeover: the entire drawer becomes one editor.
                  Tabs and other blocks are hidden so the user can think in
@@ -291,6 +285,9 @@
           <button class="detail-tab" :class="{ active: detailTab === 'lessons' }" @click="detailTab = 'lessons'">
             {{ t('skills.detail.lessons') }}
           </button>
+          <button class="detail-tab" :class="{ active: detailTab === 'secrets' }" @click="detailTab = 'secrets'">
+            {{ t('skills.detail.secrets') }}
+          </button>
           <button class="detail-tab" :class="{ active: detailTab === 'memory' }" @click="detailTab = 'memory'">
             {{ t('skills.detail.memory') }}
             <span v-if="detailEmployees.length > 0" class="tab-count">{{ detailEmployees.length }}</span>
@@ -300,6 +297,42 @@
         <!-- Overview tab — manifest-projected chips (read-only) +
              DB-only display overrides (editable) + collapsed manifest. -->
         <div v-if="detailTab === 'overview'" class="detail-section">
+          <!-- Lifecycle: state + last-used + pin / archive / restore. -->
+          <div v-if="!isVirtualSkill" class="detail-block">
+            <div class="detail-block-head">
+              <h4 class="detail-block-title">{{ t('skills.lifecycle.section') }}</h4>
+            </div>
+            <div class="meta-chips">
+              <span class="meta-chip">
+                <span class="meta-chip-label">{{ t('skills.lifecycle.state') }}</span>
+                <span class="lc-pill" :class="'lc-' + (detailSkill.lifecycleState || 'active')">
+                  {{ t('skills.lifecycle.states.' + (detailSkill.lifecycleState || 'active')) }}
+                </span>
+              </span>
+              <span class="meta-chip">
+                <span class="meta-chip-label">{{ t('skills.lifecycle.lastUsed') }}</span>
+                {{ lastUsedLabel(detailSkill) }}
+              </span>
+            </div>
+            <div class="lifecycle-actions">
+              <label class="lifecycle-pin" :title="t('skills.lifecycle.pinHint')">
+                <input type="checkbox" :checked="!!detailSkill.pinned" @change="togglePin(detailSkill)" />
+                <SkillLineIcon name="pin" :size="14" />
+                <span>{{ t('skills.lifecycle.pin') }}</span>
+              </label>
+              <button
+                v-if="detailSkill.lifecycleState === 'archived'"
+                class="lc-btn lc-btn--restore"
+                @click="restoreSkill(detailSkill)"
+              >{{ t('skills.lifecycle.restore') }}</button>
+              <button
+                v-else-if="detailSkill.skillType !== 'builtin'"
+                class="lc-btn lc-btn--archive"
+                @click="archiveSkill(detailSkill)"
+              >{{ t('skills.lifecycle.archive') }}</button>
+            </div>
+          </div>
+
           <!-- Manifest-projected fields (chips, read-only).
                These columns are overwritten by SkillPackageResolver from
                manifest_json on every resolve, so editing them on the row
@@ -581,11 +614,19 @@
           <p v-else-if="!detailLessonsRaw" class="detail-empty">{{ t('skills.detail.noLessons') }}</p>
           <pre v-else class="detail-pre">{{ detailLessonsRaw }}</pre>
         </div>
-            </div>
-          </div>
+
+        <!-- Per-skill secrets — env-var key/value table.
+             Plaintext never leaves the server; the panel shows masked
+             previews and routes write/delete through the SkillSecretController. -->
+        <div v-if="detailTab === 'secrets'" class="detail-section">
+          <SkillSecretsPanel
+            :skill-id="detailSkill?.id ?? null"
+            :visible="detailTab === 'secrets'"
+          />
         </div>
-      </Transition>
-    </Teleport>
+            </div>
+      </template>
+    </MateDrawer>
 
     <!-- New-skill modal (Layer-1 redesign).
          Reduced to 2 fields. The user's job here is "name it and confirm
@@ -663,21 +704,39 @@
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+import { mcToast } from '@/composables/useMcToast'
 import { skillApi, skillInstallApi } from '@/api/index'
 import type { Skill, SkillRuntimeStatus, SkillSecurityFinding } from '@/types/index'
 import ImportHubDialog from '@/components/skill/ImportHubDialog.vue'
 import PreflightInstallDialog from '@/components/skill/PreflightInstallDialog.vue'
+import SkillSecretsPanel from '@/components/skill/SkillSecretsPanel.vue'
 import McPagination from '@/components/common/McPagination.vue'
+import MateDrawer from '@/components/common/MateDrawer.vue'
 import SkillIcon from '@/components/common/SkillIcon.vue'
 import SkillIconPicker from '@/components/common/SkillIconPicker.vue'
+import SkillLineIcon from '@/components/skill/SkillLineIcon.vue'
 import { mcConfirm } from '@/components/common/useConfirm'
 import { useSkillName } from '@/composables/useSkillName'
 
 const { t } = useI18n()
 const { resolveSkillName, hasI18nName } = useSkillName()
-const skills = ref<Skill[]>([])
-const total = ref(0)
+
+/** Two independently-paginated sections: enabled vs disabled. The per-card
+ *  status pill still marks blocked / scan-failed skills within each section. */
+interface SkillSegment {
+  items: Skill[]
+  total: number
+  page: number
+  size: number
+}
+const segments = reactive<{ enabled: SkillSegment; available: SkillSegment }>({
+  enabled: { items: [], total: 0, page: 1, size: 20 },
+  available: { items: [], total: 0, page: 1, size: 20 },
+})
+const skillSections = computed(() => [
+  { key: 'enabled' as const, label: t('skills.sections.enabled'), state: segments.enabled },
+  { key: 'available' as const, label: t('skills.sections.available'), state: segments.available },
+])
 const counts = ref<Record<string, number>>({})
 const runtimeStatusMap = ref<Record<string, SkillRuntimeStatus>>({})
 const showModal = ref(false)
@@ -686,12 +745,11 @@ const refreshing = ref(false)
 const showImportDialog = ref(false)
 
 const query = reactive({
-  page: 1,
-  size: 20,
   keyword: '',
   skillType: 'all' as string,
-  statusFilter: '' as string,
   sort: 'recommended' as string,
+  /** '' = active+stale catalog; 'stale' / 'archived' = lifecycle tabs. */
+  lifecycleState: '' as string,
 })
 
 /** Per-skill UI state for the RFC-042 §2.3 findings panel. */
@@ -705,7 +763,7 @@ const rescanning = ref<Record<string, boolean>>({})
  *  tab for back-compat with any deep links that may pass it. */
 const detailDrawerVisible = ref(false)
 const detailSkill = ref<Skill | null>(null)
-const detailTab = ref<'overview' | 'body' | 'manifest' | 'tools' | 'features' | 'security' | 'lessons' | 'memory'>('overview')
+const detailTab = ref<'overview' | 'body' | 'manifest' | 'tools' | 'features' | 'security' | 'lessons' | 'secrets' | 'memory'>('overview')
 const detailLessonsRaw = ref<string>('')
 const detailLessonsLoading = ref(false)
 const detailEmployees = ref<Array<{ id: number; name: string; icon?: string; binding?: 'explicit' | 'implicit' }>>([])
@@ -757,17 +815,22 @@ const editBodyForm = ref<{ skillContent: string; sourceCode: string }>({
  *  at creation time. Everything else is filled in via the drawer. */
 const newForm = ref<{ name: string; description: string; icon: string }>({ name: '', description: '', icon: '' })
 
-/** Virtual MCP-derived skills synthesize their id from
- *  {@link McpSkillBridge#VIRTUAL_ID_BASE} (= 9e18). The DB update path
- *  doesn't know about them, so the drawer hides the Edit affordance.
- *  Using string-length is robust against JS number precision loss past 2^53. */
+/** Virtual MCP/ACP-derived skills are read-only mirrors of a connection
+ *  row — there is no mate_skill row to edit or delete, so the drawer hides
+ *  the Edit affordance. The bridge encodes their ids with the sign bit set,
+ *  so a virtual id is always negative while real Snowflake ids are always
+ *  positive. Checking the leading '-' is precision-safe — no Number()
+ *  round-trip that would corrupt ids past 2^53. */
 function isVirtualSkillId(id: unknown): boolean {
   if (id === null || id === undefined) return false
-  const idStr = String(id)
-  return idStr.length >= 19 && idStr.startsWith('9')
+  return String(id).trim().startsWith('-')
 }
 /** Per-row check used by the card-level configure / delete buttons. */
 const isSkillRowVirtual = (skill: { id?: unknown } | null | undefined) => isVirtualSkillId(skill?.id)
+/** MCP-derived rows stay read-only for edit/delete, but their enable/disable
+ *  toggle is honored — it forwards to the underlying MCP server connection. */
+const isMcpSkillRow = (skill: { skillType?: unknown } | null | undefined) =>
+  skill?.skillType === 'mcp'
 const isVirtualSkill = computed(() => isVirtualSkillId(detailSkill.value?.id))
 const isBuiltinDetail = computed(() => detailSkill.value?.skillType === 'builtin' || !!detailSkill.value?.builtin)
 
@@ -793,7 +856,7 @@ function openPreflight(skill: Skill) {
 async function onSkillInstalled(payload?: { name?: string }) {
   await loadAll()
   if (!payload?.name) return
-  const installed = skills.value.find(s => s.name === payload.name)
+  const installed = findLoadedSkill(s => s.name === payload.name)
   if (!installed) return
   if (needsSetup(installed)) {
     openPreflight(installed)
@@ -807,7 +870,9 @@ const detailManifest = computed(() => detailRuntime.value?.manifest ?? null)
 const detailManifestPretty = computed(() =>
   detailManifest.value ? JSON.stringify(detailManifest.value, null, 2) : '',
 )
-const detailEffectiveTools = computed(() => detailRuntime.value?.effectiveAllowedTools || [])
+const detailEffectiveTools = computed(() =>
+  detailRuntime.value?.effectiveAllowedToolsDisplay || detailRuntime.value?.effectiveAllowedTools || [],
+)
 const detailToolsCount = computed(() => detailEffectiveTools.value.length)
 const detailFeatures = computed(() => {
   const m = detailManifest.value
@@ -819,7 +884,7 @@ const detailFeaturesCount = computed(() => detailFeatures.value.length)
 
 function openDetailDrawer(
   skill: Skill,
-  tab: 'overview' | 'body' | 'tools' | 'features' | 'security' | 'lessons' | 'memory' = 'overview',
+  tab: 'overview' | 'body' | 'tools' | 'features' | 'security' | 'lessons' | 'secrets' | 'memory' = 'overview',
   opts: { editIdentity?: boolean; editBody?: boolean } = {},
 ) {
   detailSkill.value = skill
@@ -872,7 +937,7 @@ async function clearLessons() {
     await skillApi.clearLessons(detailSkill.value.id)
     detailLessonsRaw.value = ''
   } catch (e: any) {
-    ElMessage.error(typeof e === 'string' ? e : e?.message || t('skills.messages.deleteFailed'))
+    mcToast.error(typeof e === 'string' ? e : e?.message || t('skills.messages.deleteFailed'))
   }
 }
 
@@ -888,17 +953,30 @@ watch(detailTab, (tab) => {
 })
 
 const categoryTabs = computed(() => [
-  { label: t('skills.tabs.all'), value: 'all', icon: '🗂️' },
-  { label: t('skills.tabs.builtin'), value: 'builtin', icon: '🔧' },
-  { label: t('skills.tabs.mcp'), value: 'mcp', icon: '🔌' },
+  { label: t('skills.tabs.all'), value: 'all', icon: 'all', kind: 'source' },
+  { label: t('skills.tabs.builtin'), value: 'builtin', icon: 'builtin', kind: 'source' },
+  { label: t('skills.tabs.mcp'), value: 'mcp', icon: 'mcp', kind: 'source' },
   // ACP (Agent Communication Protocol) — auto-bridged from
   // Settings ▸ ACP Endpoints; one card per enabled endpoint.
-  { label: t('skills.tabs.acp'), value: 'acp', icon: '🤝' },
-  { label: t('skills.tabs.dynamic'), value: 'dynamic', icon: '📦' },
+  { label: t('skills.tabs.acp'), value: 'acp', icon: 'acp', kind: 'source' },
+  { label: t('skills.tabs.dynamic'), value: 'dynamic', icon: 'dynamic', kind: 'source' },
+  // Lifecycle tabs — orthogonal to skillType; they filter by lifecycle_state.
+  { label: t('skills.tabs.stale'), value: 'stale', icon: 'clock', kind: 'lifecycle' },
+  { label: t('skills.tabs.archived'), value: 'archived', icon: 'archive', kind: 'lifecycle' },
 ])
 
-function getCategoryCount(category: string) {
-  return counts.value[category] ?? 0
+/** Stale / archived counts, sourced from the curator status endpoint. */
+const lifecycleCounts = ref<Record<string, number>>({})
+
+function getCategoryCount(tab: { value: string; kind: string }) {
+  if (tab.kind === 'lifecycle') return lifecycleCounts.value[tab.value] ?? 0
+  return counts.value[tab.value] ?? 0
+}
+
+function isTabActive(tab: { value: string; kind: string }) {
+  return tab.kind === 'lifecycle'
+    ? query.lifecycleState === tab.value
+    : !query.lifecycleState && query.skillType === tab.value
 }
 
 function parseTags(tags: string): string[] {
@@ -914,7 +992,22 @@ async function loadAll() {
   // transient "checking" state until runtimeStatusMap populates.
   loadCounts()
   loadRuntimeStatus()
+  loadLifecycleCounts()
   await loadSkills()
+}
+
+/** Stale / archived tab counts — best-effort, from the curator status endpoint. */
+async function loadLifecycleCounts() {
+  try {
+    const res: any = await skillApi.curatorStatus()
+    const c = res.data?.counts || {}
+    lifecycleCounts.value = {
+      stale: Number(c.stale) || 0,
+      archived: Number(c.archived) || 0,
+    }
+  } catch {
+    lifecycleCounts.value = {}
+  }
 }
 
 /** Coalesce keyword edits into one server call per 300ms so typing doesn't thrash. */
@@ -922,39 +1015,53 @@ let searchDebounce: ReturnType<typeof setTimeout> | null = null
 watch(() => query.keyword, () => {
   if (searchDebounce) clearTimeout(searchDebounce)
   searchDebounce = setTimeout(() => {
-    query.page = 1
+    resetSegmentPages()
     loadSkills()
   }, 300)
 })
 
-function onTabChange(tab: string) {
-  query.skillType = tab
-  query.page = 1
+function onTabChange(tab: { value: string; kind: string }) {
+  if (tab.kind === 'lifecycle') {
+    query.lifecycleState = tab.value
+    query.skillType = 'all'
+  } else {
+    query.lifecycleState = ''
+    query.skillType = tab.value
+  }
+  resetSegmentPages()
   loadSkills()
 }
 
 function onFilterChange() {
-  query.page = 1
+  resetSegmentPages()
   loadSkills()
 }
 
-/** McPagination emits a single change event with both page and size,
- *  so we don't need separate handlers — just reload the list. */
-function onPagerChange() {
-  loadSkills()
+/** Reset both sections to page 1 — used whenever a shared filter changes. */
+function resetSegmentPages() {
+  segments.enabled.page = 1
+  segments.available.page = 1
 }
 
-async function loadSkills(allowPageClamp = true) {
+/** Reload both sections. Kept named loadSkills so existing call sites
+ *  (create / toggle / delete / refresh) reload the whole view unchanged. */
+async function loadSkills() {
+  await Promise.all([loadSegment('enabled'), loadSegment('available')])
+}
+
+async function loadSegment(key: 'enabled' | 'available', allowPageClamp = true) {
+  const seg = segments[key]
   try {
-    const params: Record<string, unknown> = { page: query.page, size: query.size }
+    const params: Record<string, unknown> = {
+      page: seg.page,
+      size: seg.size,
+      // The enabled flag IS the section split: 已启用 vs 未启用.
+      enabled: key === 'enabled',
+    }
     if (query.keyword) params.keyword = query.keyword.trim()
     if (query.skillType && query.skillType !== 'all') params.skillType = query.skillType
     if (query.sort) params.sort = query.sort
-    // Map the single status filter onto the backend's two independent params:
-    // enabled (bool) and scanStatus (PASSED/FAILED). scan_failed implies any enabled state.
-    if (query.statusFilter === 'enabled') params.enabled = true
-    else if (query.statusFilter === 'disabled') params.enabled = false
-    else if (query.statusFilter === 'scan_failed') params.scanStatus = 'FAILED'
+    if (query.lifecycleState) params.lifecycleState = query.lifecycleState
 
     const res: any = await skillApi.page(params)
     const data = res.data || {}
@@ -966,31 +1073,29 @@ async function loadSkills(allowPageClamp = true) {
     // successor; issue #48).
     const reportedTotal = Number(data.total) || 0
     if (reportedTotal > 0) {
-      const pageCount = Math.max(1, Math.ceil(reportedTotal / query.size))
-      if (allowPageClamp && query.page > pageCount) {
-        query.page = pageCount
-        await loadSkills(false)
+      const pageCount = Math.max(1, Math.ceil(reportedTotal / seg.size))
+      if (allowPageClamp && seg.page > pageCount) {
+        seg.page = pageCount
+        await loadSegment(key, false)
         return
       }
-      total.value = reportedTotal
+      seg.total = reportedTotal
     } else if (records.length > 0) {
-      total.value = records.length >= query.size
-        ? query.page * query.size + 1
-        : (query.page - 1) * query.size + records.length
-      // eslint-disable-next-line no-console
-      console.warn('[SkillMarket] backend returned records but total=0; rebuild server JAR to pick up the DbType fix')
+      seg.total = records.length >= seg.size
+        ? seg.page * seg.size + 1
+        : (seg.page - 1) * seg.size + records.length
     } else {
-      if (allowPageClamp && query.page > 1) {
-        query.page = 1
-        await loadSkills(false)
+      if (allowPageClamp && seg.page > 1) {
+        seg.page = 1
+        await loadSegment(key, false)
         return
       }
-      total.value = 0
+      seg.total = 0
     }
-    skills.value = records
+    seg.items = records
   } catch (e) {
-    skills.value = []
-    total.value = 0
+    seg.items = []
+    seg.total = 0
   }
 }
 
@@ -1047,11 +1152,11 @@ async function createSkillFromModal() {
     await loadAll()
     const created: Skill | undefined = res?.data
     if (created) {
-      const fresh = skills.value.find(s => s.id === created.id) || created
+      const fresh = findLoadedSkill(s => s.id === created.id) || created
       openDetailDrawer(fresh, 'overview', { editIdentity: true })
     }
   } catch (e: any) {
-    ElMessage.error(typeof e === 'string' ? e : e?.message || t('skills.messages.saveFailed'))
+    mcToast.error(typeof e === 'string' ? e : e?.message || t('skills.messages.saveFailed'))
   } finally {
     creating.value = false
   }
@@ -1129,9 +1234,9 @@ async function saveIdentity() {
       detailSkill.value = { ...detailSkill.value, ...updated }
     }
     editingIdentity.value = false
-    ElMessage.success(t('skills.messages.saveSuccess'))
+    mcToast.success(t('skills.messages.saveSuccess'))
   } catch (e: any) {
-    ElMessage.error(typeof e === 'string' ? e : e?.message || t('skills.messages.saveFailed'))
+    mcToast.error(typeof e === 'string' ? e : e?.message || t('skills.messages.saveFailed'))
   } finally {
     savingEdit.value = false
   }
@@ -1171,9 +1276,9 @@ async function saveBody() {
     // Body change → next resolve re-projects icon/version/author from the
     // new frontmatter, so refresh runtime status to pick those up.
     loadRuntimeStatus()
-    ElMessage.success(t('skills.detail.sourceSavedReprojection'))
+    mcToast.success(t('skills.detail.sourceSavedReprojection'))
   } catch (e: any) {
-    ElMessage.error(typeof e === 'string' ? e : e?.message || t('skills.messages.saveFailed'))
+    mcToast.error(typeof e === 'string' ? e : e?.message || t('skills.messages.saveFailed'))
   } finally {
     savingEdit.value = false
   }
@@ -1188,9 +1293,22 @@ function closeDetailDrawer() {
   detailDrawerVisible.value = false
 }
 
+/** Find a loaded skill across both sections (read-only lookups). */
+function findLoadedSkill(pred: (s: Skill) => boolean): Skill | undefined {
+  return segments.enabled.items.find(pred) || segments.available.items.find(pred)
+}
+
+/** Patch a row in-place in whichever section holds it, so a panel update
+ *  doesn't need a full reload. (Enable-toggle, which moves a skill between
+ *  sections, reloads both sections instead.) */
 function patchSkillInPlace(updated: Skill) {
-  const idx = skills.value.findIndex(s => s.id === updated.id)
-  if (idx >= 0) skills.value.splice(idx, 1, { ...skills.value[idx], ...updated })
+  for (const seg of [segments.enabled, segments.available]) {
+    const idx = seg.items.findIndex(s => s.id === updated.id)
+    if (idx >= 0) {
+      seg.items.splice(idx, 1, { ...seg.items[idx], ...updated })
+      return
+    }
+  }
 }
 
 async function deleteSkill(idOrSkill: string | number | Skill) {
@@ -1200,7 +1318,7 @@ async function deleteSkill(idOrSkill: string | number | Skill) {
   // Resolve to the skill record so we can call the uninstall path by name.
   const skill: Skill | undefined = typeof idOrSkill === 'object'
     ? idOrSkill
-    : skills.value.find(s => s.id === idOrSkill)
+    : findLoadedSkill(s => s.id === idOrSkill)
   if (!skill) return
   const ok = await mcConfirm({
     title: t('skills.messages.deleteTitle'),
@@ -1212,24 +1330,98 @@ async function deleteSkill(idOrSkill: string | number | Skill) {
     await skillInstallApi.uninstall(skill.name)
     await loadAll()
   } catch (e: any) {
-    ElMessage.error(typeof e === 'string' ? e : e?.message || t('skills.messages.deleteFailed'))
+    mcToast.error(typeof e === 'string' ? e : e?.message || t('skills.messages.deleteFailed'))
   }
 }
 
 async function toggleSkill(skill: Skill) {
-  // Issue #83: short-circuit if a programmatic caller reaches this for a
-  // virtual skill (the UI hides the toggle, but defense-in-depth keeps the
-  // toast accurate when the backend would otherwise return err.skill.not_found
-  // on builds that pre-date the rejectVirtualSkillMutation guard).
-  if (isSkillRowVirtual(skill)) {
-    ElMessage.warning(t('skills.virtualReadonlyHint'))
+  // MCP virtual skills support enable/disable — the backend forwards it to
+  // the underlying MCP server. ACP virtual skills stay read-only: the UI
+  // hides their toggle, and this short-circuit keeps the toast accurate if
+  // a programmatic caller still reaches here.
+  if (isSkillRowVirtual(skill) && !isMcpSkillRow(skill)) {
+    mcToast.warning(t('skills.virtualReadonlyHint'))
     return
   }
   try {
     await skillApi.toggle(skill.id, !skill.enabled)
     await loadAll()
   } catch (e: any) {
-    ElMessage.error(typeof e === 'string' ? e : e?.message || t('skills.messages.toggleFailed'))
+    mcToast.error(typeof e === 'string' ? e : e?.message || t('skills.messages.toggleFailed'))
+  }
+}
+
+// ==================== Lifecycle: pin / archive / restore ====================
+
+/** Human-readable "last used" label from {@code lastActivityAt}. */
+function lastUsedLabel(skill: Skill): string {
+  const ts = skill.lastActivityAt
+  if (!ts) return t('skills.lifecycle.neverUsed')
+  const then = new Date(ts).getTime()
+  if (Number.isNaN(then)) return t('skills.lifecycle.neverUsed')
+  const days = Math.floor((Date.now() - then) / 86400000)
+  if (days <= 0) return t('skills.lifecycle.today')
+  return t('skills.lifecycle.daysAgo', { n: days })
+}
+
+async function togglePin(skill: Skill) {
+  try {
+    const res: any = await skillApi.pin(skill.id, !skill.pinned)
+    if (detailSkill.value && detailSkill.value.id === skill.id) {
+      detailSkill.value = { ...detailSkill.value, ...(res.data || {}) }
+    }
+    await loadSkills()
+    loadLifecycleCounts()
+  } catch (e: any) {
+    mcToast.error(typeof e === 'string' ? e : e?.message || t('skills.lifecycle.pinFailed'))
+  }
+}
+
+async function archiveSkill(skill: Skill) {
+  const ok = await mcConfirm({
+    title: t('skills.lifecycle.archiveTitle'),
+    message: t('skills.lifecycle.archiveConfirm', { name: resolveSkillName(skill) }),
+    tone: 'danger',
+  })
+  if (!ok) return
+  await doArchive(skill, false)
+}
+
+/** Archive call with the bound-skill 409 confirm handshake. */
+async function doArchive(skill: Skill, force: boolean) {
+  try {
+    await skillApi.archive(skill.id, { force })
+    mcToast.success(t('skills.lifecycle.archiveSuccess'))
+    closeDetailDrawer()
+    await loadAll()
+  } catch (e: any) {
+    const resp = e?.response
+    if (!force && resp?.status === 409 && resp?.data?.code === 'BOUND_SKILL_CONFIRM_REQUIRED') {
+      const bound = (resp.data.boundAgents || []) as Array<{ name?: string }>
+      const confirmForce = await mcConfirm({
+        title: t('skills.lifecycle.boundConfirmTitle'),
+        message: t('skills.lifecycle.boundConfirmBody', {
+          name: resolveSkillName(skill),
+          count: bound.length,
+          agents: bound.map(a => a.name).filter(Boolean).join('、'),
+        }),
+        tone: 'danger',
+      })
+      if (confirmForce) await doArchive(skill, true)
+      return
+    }
+    mcToast.error(typeof e === 'string' ? e : e?.message || t('skills.lifecycle.archiveFailed'))
+  }
+}
+
+async function restoreSkill(skill: Skill) {
+  try {
+    await skillApi.restore(skill.id)
+    mcToast.success(t('skills.lifecycle.restoreSuccess'))
+    closeDetailDrawer()
+    await loadAll()
+  } catch (e: any) {
+    mcToast.error(typeof e === 'string' ? e : e?.message || t('skills.lifecycle.restoreFailed'))
   }
 }
 
@@ -1238,9 +1430,9 @@ async function handleRefreshRuntime() {
   try {
     await skillApi.refreshRuntime()
     await loadRuntimeStatus()
-    ElMessage.success(t('skills.refreshSuccess'))
+    mcToast.success(t('skills.refreshSuccess'))
   } catch (e: any) {
-    ElMessage.error(typeof e === 'string' ? e : e?.message || t('skills.refreshFailed'))
+    mcToast.error(typeof e === 'string' ? e : e?.message || t('skills.refreshFailed'))
   } finally {
     refreshing.value = false
   }
@@ -1273,9 +1465,8 @@ async function rescanSkill(skill: Skill) {
     const updated: Skill | undefined = res?.data
     if (updated) {
       // Patch the row in-place so the panel updates without a full page reload.
-      const idx = skills.value.findIndex(s => s.id === skill.id)
-      if (idx >= 0) skills.value.splice(idx, 1, { ...skills.value[idx], ...updated })
-      ElMessage.success(
+      patchSkillInPlace(updated)
+      mcToast.success(
         updated.securityScanStatus === 'FAILED'
           ? t('skills.security.rescanStillFailed')
           : t('skills.security.rescanPassed')
@@ -1284,7 +1475,7 @@ async function rescanSkill(skill: Skill) {
     // Refresh runtime status too so the in-memory badges stay in sync.
     await loadRuntimeStatus()
   } catch (e: any) {
-    ElMessage.error(typeof e === 'string' ? e : e?.message || t('skills.security.rescanFailed'))
+    mcToast.error(typeof e === 'string' ? e : e?.message || t('skills.security.rescanFailed'))
   } finally {
     rescanning.value = { ...rescanning.value, [key]: false }
   }
@@ -1721,6 +1912,11 @@ html.dark .scan-finding-item { background: rgba(255, 255, 255, 0.05); }
 }
 
 /* 技能网格 */
+.skill-section { margin-top: 22px; }
+.skill-section:first-of-type { margin-top: 8px; }
+.skill-section-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 12px; }
+.skill-section-title { font-size: 15px; font-weight: 700; color: var(--mc-text-primary); }
+.skill-section-count { font-size: 12px; font-weight: 600; color: var(--mc-text-secondary); background: var(--mc-bg-muted); padding: 2px 8px; border-radius: 10px; }
 .skill-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 18px; }
 .skill-card {
   padding: 18px;
@@ -2153,128 +2349,10 @@ html.dark .scan-finding-item { background: rgba(255, 255, 255, 0.05); }
   color: var(--mc-text-tertiary);
 }
 
-/* ============================================================
- * MateClaw frosted-glass drawer
- * Mirrors Settings/Models/AddProviderDrawer.vue so the skill
- * detail surface lives in the same visual language as the rest
- * of the app — depth via translucency, not borders.
- * ============================================================ */
-.mc-drawer-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(20, 14, 10, 0.32);
-  backdrop-filter: blur(8px) saturate(140%);
-  -webkit-backdrop-filter: blur(8px) saturate(140%);
-  z-index: 1500;
-  display: flex;
-  justify-content: flex-end;
-}
-:global(html.dark .mc-drawer-overlay) {
-  background: rgba(0, 0, 0, 0.5);
-}
-
-.mc-drawer-panel {
-  width: 640px;
-  max-width: 92vw;
-  height: 100%;
-  background: rgba(255, 250, 245, 0.78);
-  backdrop-filter: blur(48px) saturate(180%);
-  -webkit-backdrop-filter: blur(48px) saturate(180%);
-  border-left: 1px solid rgba(255, 255, 255, 0.4);
-  box-shadow: -24px 0 60px rgba(25, 14, 8, 0.16);
-  display: flex;
-  flex-direction: column;
-  animation: mc-drawer-slide 0.36s cubic-bezier(0.32, 0.72, 0, 1);
-  transition: width 0.32s cubic-bezier(0.32, 0.72, 0, 1);
-}
-.mc-drawer-panel--wide {
-  /* Editing SKILL.md needs room — 640 was cramped for code authoring. */
-  width: 880px;
-}
-:global(html.dark .mc-drawer-panel) {
-  background: rgba(32, 26, 22, 0.82);
-  border-left-color: rgba(255, 255, 255, 0.10);
-  box-shadow: -24px 0 60px rgba(0, 0, 0, 0.5);
-}
-
-@keyframes mc-drawer-slide {
-  from { transform: translateX(100%); }
-  to { transform: translateX(0); }
-}
-
-.mc-drawer-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 22px 26px 18px;
-  border-bottom: 1px solid rgba(123, 88, 67, 0.10);
-  flex-shrink: 0;
-}
-:global(html.dark .mc-drawer-header) {
-  border-bottom-color: rgba(255, 255, 255, 0.06);
-}
-.mc-drawer-header__meta {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  min-width: 0;
-}
-.mc-drawer-icon-shell {
-  flex-shrink: 0;
-  width: 40px;
-  height: 40px;
-  border-radius: 12px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 22px;
-  background: rgba(255, 255, 255, 0.55);
-  box-shadow: inset 0 0 0 1px rgba(123, 88, 67, 0.10);
-}
-:global(html.dark .mc-drawer-icon-shell) {
-  background: rgba(255, 255, 255, 0.06);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
-}
-.mc-drawer-title {
-  margin: 0 0 2px;
-  font-size: 17px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-  color: var(--mc-text-primary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.mc-drawer-subtitle {
-  margin: 0;
-  font-size: 12px;
-  line-height: 1.5;
-  color: var(--mc-text-tertiary);
-  display: -webkit-box;
-  -webkit-line-clamp: 1;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-.mc-drawer-close {
-  background: transparent;
-  border: 0;
-  padding: 8px;
-  border-radius: 999px;
-  cursor: pointer;
-  color: var(--mc-text-tertiary);
-  flex-shrink: 0;
-  transition: background 0.15s ease, color 0.15s ease;
-}
-.mc-drawer-close:hover {
-  background: rgba(123, 88, 67, 0.08);
-  color: var(--mc-text-primary);
-}
-:global(html.dark .mc-drawer-close:hover) {
-  background: rgba(255, 255, 255, 0.08);
-  color: var(--mc-text-primary);
-}
-
+/* Drawer shell (overlay, panel, header, close, mobile sheet) comes
+ * from MateDrawer; its body is a bare flex-column shell. This
+ * .mc-drawer-content wrapper is what hosts either tabbed sections
+ * (default) or a full-bleed SKILL.md editor (takeover). */
 .mc-drawer-content {
   flex: 1;
   overflow-y: auto;
@@ -2471,38 +2549,39 @@ html.dark .scan-finding-item { background: rgba(255, 255, 255, 0.05); }
   color: #fff;
 }
 
-.mc-drawer-fade-enter-active,
-.mc-drawer-fade-leave-active {
-  transition: opacity 0.22s ease;
+/* ==================== Lifecycle / curator ==================== */
+.cat-tab--lifecycle { margin-left: 4px; }
+.lifecycle-badge {
+  display: inline-flex; align-items: center; gap: 3px;
+  font-size: 11px; color: var(--mc-text-tertiary);
+  padding: 1px 7px; border-radius: 999px; background: var(--mc-bg-sunken);
 }
-.mc-drawer-fade-enter-from,
-.mc-drawer-fade-leave-to {
-  opacity: 0;
-}
+.lifecycle-badge--stale { color: #b9770e; background: rgba(243, 156, 18, 0.14); }
+.lifecycle-badge--archived { color: var(--mc-text-tertiary); background: var(--mc-bg-muted); }
 
-/* Mobile: bottom sheet so the drawer doesn't crush 92vw. */
-@media (max-width: 768px) {
-  .mc-drawer-overlay {
-    justify-content: stretch;
-    align-items: flex-end;
-  }
-  .mc-drawer-panel,
-  .mc-drawer-panel--wide {
-    width: 100%;
-    max-width: 100%;
-    height: 92vh;
-    border-left: 0;
-    border-top: 1px solid rgba(255, 255, 255, 0.4);
-    border-top-left-radius: 20px;
-    border-top-right-radius: 20px;
-    animation: mc-drawer-slide-up 0.32s cubic-bezier(0.32, 0.72, 0, 1);
-  }
-  :global(html.dark .mc-drawer-panel) {
-    border-top-color: rgba(255, 255, 255, 0.08);
-  }
-  @keyframes mc-drawer-slide-up {
-    from { transform: translateY(100%); }
-    to { transform: translateY(0); }
-  }
+.lc-pill {
+  display: inline-block; padding: 1px 8px; border-radius: 999px;
+  font-size: 11px; font-weight: 600;
 }
+.lc-active { color: #1e8e3e; background: rgba(46, 160, 67, 0.14); }
+.lc-stale { color: #b9770e; background: rgba(243, 156, 18, 0.16); }
+.lc-archived { color: var(--mc-text-secondary); background: var(--mc-bg-sunken); }
+
+.lifecycle-actions {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 10px;
+}
+.lifecycle-pin {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 13px; color: var(--mc-text-secondary); cursor: pointer; user-select: none;
+}
+.lifecycle-pin input { cursor: pointer; }
+.lc-btn {
+  padding: 5px 14px; border-radius: 8px; font-size: 13px; font-weight: 600;
+  cursor: pointer; border: 1px solid var(--mc-border); background: var(--mc-bg-muted);
+  color: var(--mc-text-secondary); transition: all 0.15s;
+}
+.lc-btn:hover { border-color: var(--mc-text-tertiary); }
+.lc-btn--archive:hover { color: #d14343; border-color: #d14343; }
+.lc-btn--restore { color: var(--mc-primary); border-color: var(--mc-primary); }
+.lc-btn--restore:hover { background: var(--mc-primary); color: #fff; }
 </style>

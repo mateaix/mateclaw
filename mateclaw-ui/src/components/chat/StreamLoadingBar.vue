@@ -36,6 +36,28 @@ interface LifecycleStage {
   since: number
 }
 
+/** Latest compact_status SSE event from useChat. Renders an inline chip
+ *  so the user can see that the pause is the window manager compacting
+ *  history, not a network stall. */
+interface CompactStatus {
+  status: 'start' | 'pair_safe' | 'summarize' | 'done' | 'skipped' | 'failed'
+  preTokens?: number
+  postTokens?: number
+  messagesIn?: number
+  messagesSummarized?: number
+  tailKept?: number
+  toolResultsSpilled?: number
+  reason?: string
+  anchored?: boolean
+  fromCache?: boolean
+  movedFrom?: number
+  movedTo?: number
+  summaryBudget?: number
+  trigger?: string
+  fallbackKept?: number
+  timestamp?: number
+}
+
 interface Props {
   isLoading: boolean
   toolCount?: number
@@ -53,6 +75,8 @@ interface Props {
   hasQueued?: boolean
   /** Fine-grained pre-token stage. Preferred over `phase` while no token has arrived. */
   lifecycleStage?: LifecycleStage | null
+  /** Latest compact_status event. When non-null and not 'done', the bar shows compaction copy. */
+  compactStatus?: CompactStatus | null
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -66,6 +90,7 @@ const props = withDefaults(defineProps<Props>(), {
   runningToolName: '',
   hasQueued: false,
   lifecycleStage: null,
+  compactStatus: null,
 })
 
 const { t } = useI18n()
@@ -119,7 +144,51 @@ const inPreTokenWindow = computed(() => {
   return !!ls && ls.stage !== 'streaming'
 })
 
+/**
+ * Compaction copy. Takes priority over both lifecycleStage and phase
+ * while the compactor is mid-pass (any status except done/skipped/failed)
+ * because the user cares more about "we paused to compact" than the
+ * underlying llm-request lifecycle. After done/skipped/failed we let the
+ * regular phase text take over — the chip's transient hint suffices.
+ */
+const compactStatusText = computed(() => {
+  const cs = props.compactStatus
+  if (!cs) return ''
+  switch (cs.status) {
+    case 'start':
+      return cs.preTokens
+        ? t('chat.compactStartWithTokens', { tokens: formatTokens(cs.preTokens) })
+        : t('chat.compactStart')
+    case 'pair_safe':
+      return t('chat.compactPairSafe')
+    case 'summarize': {
+      const n = cs.messagesSummarized ?? cs.messagesIn ?? 0
+      return n > 0
+        ? t('chat.compactSummarizeWithCount', { count: n })
+        : t('chat.compactSummarize')
+    }
+    default:
+      return ''
+  }
+})
+
+const isCompactActive = computed(() => {
+  const s = props.compactStatus?.status
+  return s === 'start' || s === 'pair_safe' || s === 'summarize'
+})
+
+function formatTokens(n: number): string {
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k tokens`
+  return `${n} tokens`
+}
+
 const statusText = computed(() => {
+  // Compaction copy wins while a pass is in flight. Done/skipped/failed
+  // fall through to the regular phase text so the chip releases focus.
+  if (isCompactActive.value) {
+    const cText = compactStatusText.value
+    if (cText) return cText
+  }
   // Prefer fine-grained pre-token text when no first delta has arrived yet.
   if (inPreTokenWindow.value && props.lifecycleStage) {
     const key = lifecycleI18nMap[props.lifecycleStage.stage]

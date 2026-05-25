@@ -25,10 +25,14 @@
               </router-link>
             </el-tooltip>
           </template>
-          <!-- 折叠切换按钮 -->
-          <button class="nav-collapse-btn" @click="toggleNav" :title="navCollapsed ? t('common.expandSidebar') : t('common.collapseSidebar')">
-            <svg v-if="!navCollapsed" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
-            <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+          <!-- Floating collapse toggle, pinned to the bottom of the nav -->
+          <button
+            class="nav-collapse-btn"
+            @click="toggleNav"
+            :title="navCollapsed ? t('common.expandSidebar') : t('common.collapseSidebar')"
+          >
+            <svg v-if="!navCollapsed" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+            <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
           </button>
         </div>
 
@@ -43,41 +47,39 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, onMounted, onBeforeUnmount } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
+import { useMediaQuery, BREAKPOINTS } from '@/composables/useBreakpoint'
 import { useI18n } from 'vue-i18n'
 
 const route = useRoute()
 const { t } = useI18n()
 
-// 折叠状态
+// Routes that benefit from extra editor width — the sub-nav auto-collapses
+// to a 56px rail unless the user has explicitly toggled it open.
+const COMPACT_ROUTES = ['/settings/workflows']
+
 const navCollapsed = ref(localStorage.getItem('mc-settings-nav-collapsed') === 'true')
-const userExplicit = ref(localStorage.getItem('mc-settings-nav-collapsed') === 'true')
-let mediumQuery: MediaQueryList | null = null
+const userExplicit = ref(localStorage.getItem('mc-settings-nav-collapsed') !== null)
+const compactViewport = useMediaQuery(BREAKPOINTS.compact)
 
 function toggleNav() {
   navCollapsed.value = !navCollapsed.value
-  userExplicit.value = navCollapsed.value
+  userExplicit.value = true
   localStorage.setItem('mc-settings-nav-collapsed', String(navCollapsed.value))
 }
 
-function handleMediumChange(e: MediaQueryListEvent | MediaQueryList) {
-  if (e.matches && !userExplicit.value) {
-    navCollapsed.value = true
-  } else if (!e.matches && !userExplicit.value) {
-    navCollapsed.value = false
-  }
+function isCompactRoute(path: string): boolean {
+  return COMPACT_ROUTES.some((p) => path.startsWith(p))
 }
 
-onMounted(() => {
-  mediumQuery = window.matchMedia('(max-width: 1200px)')
-  handleMediumChange(mediumQuery)
-  mediumQuery.addEventListener('change', handleMediumChange)
-})
+function recomputeAuto() {
+  if (userExplicit.value) return
+  navCollapsed.value = isCompactRoute(route.path) || compactViewport.value
+}
 
-onBeforeUnmount(() => {
-  mediumQuery?.removeEventListener('change', handleMediumChange)
-})
+watch(() => route.path, recomputeAuto)
+watch(compactViewport, recomputeAuto, { immediate: true })
 
 const sections = computed(() => [
   {
@@ -152,9 +154,9 @@ const sections = computed(() => [
   // Divider: Advanced
   { id: 'divider-advanced', path: '', label: t('settings.sections.advanced'), icon: '', isDivider: true },
   {
-    id: 'cron-jobs',
-    path: '/settings/cron-jobs',
-    label: t('nav.cronJobs'),
+    id: 'scheduler',
+    path: '/settings/scheduler',
+    label: t('nav.scheduler', 'Scheduler'),
     icon: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>',
   },
   {
@@ -164,10 +166,10 @@ const sections = computed(() => [
     icon: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>',
   },
   {
-    id: 'triggers',
-    path: '/settings/triggers',
-    label: t('nav.triggers', 'Triggers'),
-    icon: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>',
+    id: 'skill-curator',
+    path: '/settings/skill-curator',
+    label: t('settings.sections.skillCurator', 'Skill Curator'),
+    icon: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 8v13H3V8"/><rect x="1" y="3" width="22" height="5" rx="1"/><line x1="10" y1="12" x2="14" y2="12"/></svg>',
   },
   {
     id: 'datasources',
@@ -280,24 +282,53 @@ function isActive(path: string) {
 .nav-divider { font-size: 10px; font-weight: 700; color: var(--mc-text-tertiary); text-transform: uppercase; letter-spacing: 0.1em; padding: 12px 8px 4px; margin-top: 2px; }
 
 .nav-collapse-btn {
+  align-self: center;
+  margin-top: auto;
+  margin-bottom: 8px;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 100%;
+  width: 32px;
   height: 32px;
-  margin-top: auto;
-  border: none;
-  border-top: 1px solid var(--mc-border-light);
-  background: transparent;
-  color: var(--mc-text-tertiary);
+  padding: 0;
+  border: 1px solid rgba(217, 109, 70, 0.22);
+  border-radius: 50%;
+  background: var(--mc-primary-bg);
+  color: var(--mc-primary);
   cursor: pointer;
-  transition: all 0.15s;
   flex-shrink: 0;
+  box-shadow:
+    0 6px 16px rgba(217, 109, 70, 0.18),
+    0 2px 4px rgba(217, 109, 70, 0.10),
+    inset 0 1px 0 rgba(255, 255, 255, 0.6);
+  transition:
+    background 0.18s ease,
+    color 0.18s ease,
+    border-color 0.18s ease,
+    box-shadow 0.18s ease,
+    transform 0.18s cubic-bezier(0.4, 0, 0.2, 1);
+  position: sticky;
+  bottom: 8px;
 }
 
 .nav-collapse-btn:hover {
-  background: var(--mc-bg-muted);
-  color: var(--mc-text-primary);
+  background: var(--mc-primary);
+  color: #fff;
+  border-color: var(--mc-primary);
+  box-shadow:
+    0 10px 22px rgba(217, 109, 70, 0.34),
+    0 3px 6px rgba(217, 109, 70, 0.20);
+  transform: scale(1.06);
+}
+
+.nav-collapse-btn:active {
+  transform: scale(0.96);
+  transition-duration: 0.08s;
+}
+
+.nav-collapse-btn:focus-visible {
+  outline: 2px solid var(--mc-primary);
+  outline-offset: 2px;
 }
 
 .settings-content {

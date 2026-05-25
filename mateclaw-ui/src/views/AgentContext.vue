@@ -6,12 +6,7 @@
     <div class="workspace-header workspace-header--compact">
       <h1 class="page-title page-title--compact">{{ t('agentContext.title') }}</h1>
       <div class="header-actions mc-surface-card">
-        <select v-model="selectedAgentId" class="agent-select" @change="onAgentChange">
-          <option value="" disabled>{{ t('agentContext.selectAgent') }}</option>
-          <option v-for="agent in agents" :key="agent.id" :value="agent.id">
-            {{ plainTextIcon(agent.icon) }} {{ agent.name }}
-          </option>
-        </select>
+        <AgentPickerDialog v-model="selectedAgentId" :agents="agents" />
       </div>
     </div>
 
@@ -34,12 +29,41 @@
                   <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
                 </svg>
               </button>
+              <button
+                class="icon-btn"
+                :disabled="!selectedAgentId || exportInFlight"
+                @click="exportMemorySnapshot"
+                :title="t('agentContext.exportSnapshot')"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                  <polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+                </svg>
+              </button>
+              <button
+                class="icon-btn"
+                :disabled="!selectedAgentId || importInFlight"
+                @click="onImportClick"
+                :title="t('agentContext.importSnapshot')"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                  <polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+                </svg>
+              </button>
               <button class="icon-btn" @click="fetchFiles" :title="t('common.reset')">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
                 </svg>
               </button>
             </div>
+            <input
+              ref="importFileInput"
+              type="file"
+              accept=".zip,application/zip"
+              class="visually-hidden"
+              @change="onImportFilePicked"
+            />
           </div>
           <p class="info-text">{{ t('agentContext.coreFilesDesc') }}</p>
           <div class="divider"></div>
@@ -167,6 +191,99 @@
       </div>
     </div>
 
+    <!-- Import preview dialog (glass) -->
+    <Transition name="mc-glass-fade">
+      <div v-if="showImportDialog" class="mc-glass-overlay" @click.self="closeImportDialog">
+        <div class="mc-glass-panel import-panel" role="dialog" aria-modal="true">
+          <div class="mc-glass-head">
+            <div class="mc-glass-head-text">
+              <h2>{{ t('agentContext.importSnapshotTitle') }}</h2>
+              <p v-if="importFileName" class="mc-glass-subtitle">{{ importFileName }}</p>
+            </div>
+            <button class="mc-glass-close" @click="closeImportDialog" :aria-label="t('common.cancel')">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+              </svg>
+            </button>
+          </div>
+
+          <div class="mc-glass-body">
+            <div v-if="importLoading" class="import-loading">
+              <span class="import-spinner"></span>
+              <span>{{ importLoadingMessage }}</span>
+            </div>
+
+            <template v-else-if="importPreview">
+              <!-- Will create -->
+              <section class="diff-section">
+                <header class="diff-section-head">
+                  <span class="diff-pill diff-pill--create">●</span>
+                  <span class="diff-section-label">{{ t('agentContext.importPreviewWillCreate') }}</span>
+                  <span class="diff-section-count">{{ importPreview.willCreate.length }}</span>
+                </header>
+                <ul v-if="importPreview.willCreate.length" class="diff-list">
+                  <li v-for="name in importPreview.willCreate" :key="'c-' + name" class="diff-row diff-row--create">
+                    <span class="diff-row-icon">＋</span>
+                    <span class="diff-row-name">{{ name }}</span>
+                  </li>
+                </ul>
+                <p v-else class="diff-empty">{{ t('agentContext.importPreviewCreateNone') }}</p>
+              </section>
+
+              <!-- Will update -->
+              <section class="diff-section">
+                <header class="diff-section-head">
+                  <span class="diff-pill diff-pill--update">●</span>
+                  <span class="diff-section-label">{{ t('agentContext.importPreviewWillUpdate') }}</span>
+                  <span class="diff-section-count">{{ importPreview.willUpdate.length }}</span>
+                </header>
+                <ul v-if="importPreview.willUpdate.length" class="diff-list">
+                  <li v-for="diff in importPreview.willUpdate" :key="'u-' + diff.filename" class="diff-row diff-row--update">
+                    <span class="diff-row-icon">⟳</span>
+                    <div class="diff-row-body">
+                      <span class="diff-row-name">{{ diff.filename }}</span>
+                      <span class="diff-row-meta">{{ t('agentContext.importPreviewUpdateMeta', { old: diff.oldSize, new: diff.newSize }) }}</span>
+                    </div>
+                  </li>
+                </ul>
+                <p v-else class="diff-empty">{{ t('agentContext.importPreviewCreateNone') }}</p>
+              </section>
+
+              <!-- Will skip -->
+              <section v-if="importPreview.willSkip.length" class="diff-section">
+                <header class="diff-section-head">
+                  <span class="diff-pill diff-pill--skip">●</span>
+                  <span class="diff-section-label">{{ t('agentContext.importPreviewWillSkip') }}</span>
+                  <span class="diff-section-count">{{ importPreview.willSkip.length }}</span>
+                </header>
+                <ul class="diff-list">
+                  <li v-for="skip in importPreview.willSkip" :key="'s-' + skip.filename" class="diff-row diff-row--skip">
+                    <span class="diff-row-icon">−</span>
+                    <div class="diff-row-body">
+                      <span class="diff-row-name">{{ skip.filename }}</span>
+                      <span class="diff-row-meta">{{ t('agentContext.importPreviewSkipReason', { reason: skip.reason }) }}</span>
+                    </div>
+                  </li>
+                </ul>
+              </section>
+
+              <p v-if="!hasAnyChange" class="diff-empty diff-empty--all">{{ t('agentContext.importPreviewEmpty') }}</p>
+              <p v-else class="import-confirm-hint">{{ t('agentContext.importConfirmHint') }}</p>
+            </template>
+          </div>
+
+          <div class="mc-glass-foot">
+            <button class="mc-glass-btn mc-glass-btn--ghost" @click="closeImportDialog">{{ t('common.cancel') }}</button>
+            <button
+              class="mc-glass-btn mc-glass-btn--primary"
+              :disabled="!canApplyImport"
+              @click="applyImport"
+            >{{ t('agentContext.importApply') }}</button>
+          </div>
+        </div>
+      </div>
+    </Transition>
+
     <!-- 新建文件弹窗 -->
     <div v-if="showNewFileDialog" class="modal-overlay">
       <div class="modal small-modal">
@@ -205,14 +322,14 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+import { mcToast } from '@/composables/useMcToast'
 import { mcConfirm } from '@/components/common/useConfirm'
 import { agentApi, agentContextApi } from '@/api/index'
 import { copyToClipboard } from '@/utils/clipboard'
 import type { Agent, WorkspaceFile } from '@/types/index'
 import { useMarkdownRenderer } from '@/composables/useMarkdownRenderer'
 import { handleMermaidDownload } from '@/composables/useMermaidRenderer'
-import { plainTextIcon } from '@/composables/usePixelarticons'
+import AgentPickerDialog from '@/components/common/AgentPickerDialog.vue'
 
 const { renderMarkdown } = useMarkdownRenderer()
 
@@ -237,6 +354,39 @@ const previewMode = ref<'off' | 'split' | 'preview'>('off')
 // 新建文件
 const showNewFileDialog = ref(false)
 const newFilename = ref('')
+
+// 记忆快照导出 / 导入
+interface FileDiff {
+  filename: string
+  oldSize: number
+  newSize: number
+  oldHash: string
+  newHash: string
+}
+interface SkipEntry {
+  filename: string
+  reason: string
+}
+interface ImportPreview {
+  willCreate: string[]
+  willUpdate: FileDiff[]
+  willSkip: SkipEntry[]
+}
+const importFileInput = ref<HTMLInputElement | null>(null)
+const showImportDialog = ref(false)
+const importPreview = ref<ImportPreview | null>(null)
+const importPendingFile = ref<File | null>(null)
+const importLoading = ref(false)
+const importLoadingMessage = ref('')
+const exportInFlight = ref(false)
+const importInFlight = ref(false)
+const importFileName = computed(() => importPendingFile.value?.name ?? '')
+const hasAnyChange = computed(() => {
+  const p = importPreview.value
+  if (!p) return false
+  return p.willCreate.length > 0 || p.willUpdate.length > 0
+})
+const canApplyImport = computed(() => !importLoading.value && !!importPreview.value && hasAnyChange.value)
 
 const hasChanges = computed(() => fileContent.value !== originalContent.value)
 
@@ -293,12 +443,8 @@ async function loadAgents() {
       selectedAgentId.value = agents.value[0].id
     }
   } catch {
-    ElMessage.error(t('agentContext.loadFailed'))
+    mcToast.error(t('agentContext.loadFailed'))
   }
-}
-
-function onAgentChange() {
-  // watch 已处理
 }
 
 async function fetchFiles() {
@@ -307,7 +453,7 @@ async function fetchFiles() {
     const res: any = await agentContextApi.listFiles(selectedAgentId.value)
     files.value = res.data || []
   } catch {
-    ElMessage.error(t('agentContext.loadFailed'))
+    mcToast.error(t('agentContext.loadFailed'))
   }
 }
 
@@ -352,7 +498,7 @@ async function onFileClick(file: WorkspaceFile) {
     fileContent.value = data?.content || ''
     originalContent.value = fileContent.value
   } catch {
-    ElMessage.error(t('agentContext.loadFileFailed'))
+    mcToast.error(t('agentContext.loadFileFailed'))
   }
 }
 
@@ -362,10 +508,10 @@ async function saveContent() {
   try {
     await agentContextApi.saveFile(selectedAgentId.value, selectedFile.value.filename, fileContent.value)
     originalContent.value = fileContent.value
-    ElMessage.success(t('agentContext.saveSuccess'))
+    mcToast.success(t('agentContext.saveSuccess'))
     await fetchFiles()
   } catch {
-    ElMessage.error(t('agentContext.saveFailed'))
+    mcToast.error(t('agentContext.saveFailed'))
   } finally {
     saving.value = false
   }
@@ -387,9 +533,9 @@ async function toggleFileEnabled(file: WorkspaceFile) {
     // 同步本地 file 状态
     const f = files.value.find(x => x.filename === file.filename)
     if (f) f.enabled = isEnabling
-    ElMessage.success(t('agentContext.promptUpdated'))
+    mcToast.success(t('agentContext.promptUpdated'))
   } catch {
-    ElMessage.error(t('agentContext.promptUpdateFailed'))
+    mcToast.error(t('agentContext.promptUpdateFailed'))
   }
 }
 
@@ -405,21 +551,21 @@ async function confirmDeleteFile() {
 
   try {
     await agentContextApi.deleteFile(selectedAgentId.value, name)
-    ElMessage.success(t('agentContext.deleteSuccess'))
+    mcToast.success(t('agentContext.deleteSuccess'))
     selectedFile.value = null
     fileContent.value = ''
     originalContent.value = ''
     await fetchFiles()
     await fetchPromptFiles()
   } catch {
-    ElMessage.error(t('agentContext.deleteFailed'))
+    mcToast.error(t('agentContext.deleteFailed'))
   }
 }
 
 async function createNewFile() {
   const name = newFilename.value.trim()
   if (!isValidFilename.value) {
-    ElMessage.warning(t('agentContext.invalidFilename'))
+    mcToast.warning(t('agentContext.invalidFilename'))
     return
   }
   try {
@@ -433,8 +579,108 @@ async function createNewFile() {
       onFileClick(newFile)
     }
   } catch {
-    ElMessage.error(t('agentContext.saveFailed'))
+    mcToast.error(t('agentContext.saveFailed'))
   }
+}
+
+// ---- memory snapshot: export ----
+async function exportMemorySnapshot() {
+  if (!selectedAgentId.value || exportInFlight.value) return
+  exportInFlight.value = true
+  try {
+    const blob = await agentContextApi.exportMemorySnapshot(selectedAgentId.value)
+    // Build a timestamped filename so successive backups don't collide on disk.
+    // Pattern: memory-agent-<id>-YYYYMMDD-HHmm.zip
+    const stamp = formatStamp(new Date())
+    const filename = `memory-agent-${selectedAgentId.value}-${stamp}.zip`
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+    mcToast.success(t('agentContext.exportSuccess'))
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : ''
+    mcToast.error(msg ? `${t('agentContext.exportFailed')}: ${msg}` : t('agentContext.exportFailed'))
+  } finally {
+    exportInFlight.value = false
+  }
+}
+
+// ---- memory snapshot: import ----
+function onImportClick() {
+  if (!selectedAgentId.value || importInFlight.value) return
+  // Reset the input so picking the same file twice still fires `change`.
+  if (importFileInput.value) importFileInput.value.value = ''
+  importFileInput.value?.click()
+}
+
+async function onImportFilePicked(event: Event) {
+  const target = event.target as HTMLInputElement | null
+  const file = target?.files?.[0]
+  if (!file) return
+  importPendingFile.value = file
+  importPreview.value = null
+  showImportDialog.value = true
+  importLoading.value = true
+  importLoadingMessage.value = t('agentContext.importPreviewing')
+  try {
+    const res: any = await agentContextApi.previewImportMemorySnapshot(selectedAgentId.value, file)
+    importPreview.value = (res?.data ?? null) as ImportPreview | null
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : ''
+    mcToast.error(msg ? `${t('agentContext.importPreviewFailed')}: ${msg}` : t('agentContext.importPreviewFailed'))
+    closeImportDialog()
+  } finally {
+    importLoading.value = false
+  }
+}
+
+function closeImportDialog() {
+  showImportDialog.value = false
+  importPreview.value = null
+  importPendingFile.value = null
+}
+
+async function applyImport() {
+  if (!canApplyImport.value || !importPendingFile.value || !selectedAgentId.value) return
+  importLoading.value = true
+  importLoadingMessage.value = t('agentContext.importApplying')
+  importInFlight.value = true
+  try {
+    const res: any = await agentContextApi.applyImportMemorySnapshot(selectedAgentId.value, importPendingFile.value)
+    const applied = Number(res?.data?.applied ?? 0)
+    const skipped = Number(res?.data?.skipped ?? 0)
+    mcToast.success(t('agentContext.importApplied', { applied, skipped }))
+    closeImportDialog()
+    // Re-fetch so the file list and any edited file reflect overwrites.
+    await fetchFiles()
+    await fetchPromptFiles()
+    if (selectedFile.value) {
+      const stillThere = files.value.find(f => f.filename === selectedFile.value?.filename)
+      if (stillThere) {
+        await onFileClick(stillThere)
+      } else {
+        selectedFile.value = null
+        fileContent.value = ''
+        originalContent.value = ''
+      }
+    }
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : ''
+    mcToast.error(msg ? `${t('agentContext.importFailed')}: ${msg}` : t('agentContext.importFailed'))
+  } finally {
+    importLoading.value = false
+    importInFlight.value = false
+  }
+}
+
+function formatStamp(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`
 }
 
 function formatSize(bytes: number): string {
@@ -482,8 +728,6 @@ function formatTime(time?: string): string {
 .page-title--compact { font-size: clamp(24px, 2.5vw, 32px); font-weight: 800; letter-spacing: -0.03em; margin: 0; }
 .page-desc { font-size: 15px; color: var(--mc-text-secondary); margin: 0; line-height: 1.7; max-width: 720px; }
 .header-actions { display: flex; gap: 8px; align-items: center; padding: 12px; border-radius: 18px; flex-shrink: 0; }
-.agent-select { padding: 10px 14px; border: 1px solid var(--mc-border); border-radius: 12px; background: var(--mc-bg-elevated); color: var(--mc-text-primary); font-size: 14px; outline: none; min-width: 240px; cursor: pointer; }
-.agent-select:focus { border-color: var(--mc-primary); }
 
 /* 空状态 */
 .empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; flex: 1; text-align: center; }
@@ -500,7 +744,8 @@ function formatTime(time?: string): string {
 .section-title { font-size: 14px; font-weight: 600; color: var(--mc-text-primary); margin: 0; }
 .panel-actions { display: flex; gap: 4px; }
 .icon-btn { width: 30px; height: 30px; border: 1px solid var(--mc-border); background: var(--mc-bg-elevated); border-radius: 8px; cursor: pointer; display: flex; align-items: center; justify-content: center; color: var(--mc-text-secondary); transition: all 0.15s; }
-.icon-btn:hover { background: var(--mc-bg-sunken); color: var(--mc-text-primary); }
+.icon-btn:hover:not(:disabled) { background: var(--mc-bg-sunken); color: var(--mc-text-primary); }
+.icon-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 .info-text { font-size: 12px; color: var(--mc-text-tertiary); padding: 6px 16px 0; margin: 0; line-height: 1.4; }
 .divider { height: 1px; background: var(--mc-border-light); margin: 10px 16px; }
 
@@ -569,6 +814,189 @@ function formatTime(time?: string): string {
 
 .empty-editor { display: flex; align-items: center; justify-content: center; flex: 1; color: var(--mc-text-tertiary); font-size: 14px; }
 
+/* ===== Memory snapshot — glass import dialog ===== */
+.visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+
+.mc-glass-overlay {
+  position: fixed; inset: 0;
+  background: rgba(20, 14, 10, 0.32);
+  backdrop-filter: blur(8px) saturate(140%);
+  -webkit-backdrop-filter: blur(8px) saturate(140%);
+  z-index: 2000;
+  display: flex; align-items: center; justify-content: center; padding: 20px;
+}
+:global(html.dark) .mc-glass-overlay { background: rgba(0, 0, 0, 0.55); }
+
+.mc-glass-panel {
+  width: 100%; max-width: 560px;
+  max-height: 80vh;
+  display: flex; flex-direction: column;
+  background: rgba(255, 250, 245, 0.88);
+  backdrop-filter: blur(48px) saturate(180%);
+  -webkit-backdrop-filter: blur(48px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  border-radius: 18px;
+  box-shadow: 0 24px 60px rgba(25, 14, 8, 0.22), 0 2px 6px rgba(25, 14, 8, 0.08);
+  animation: mc-glass-pop 0.28s cubic-bezier(0.32, 0.72, 0, 1.2);
+}
+:global(html.dark) .mc-glass-panel {
+  background: rgba(32, 26, 22, 0.88);
+  border-color: rgba(255, 255, 255, 0.10);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6), 0 2px 6px rgba(0, 0, 0, 0.4);
+}
+@keyframes mc-glass-pop {
+  from { opacity: 0; transform: scale(0.94) translateY(6px); }
+  to   { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+.mc-glass-fade-enter-active, .mc-glass-fade-leave-active { transition: opacity 0.18s ease; }
+.mc-glass-fade-enter-from, .mc-glass-fade-leave-to { opacity: 0; }
+
+.mc-glass-head {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 12px;
+  padding: 20px 24px 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.4);
+}
+:global(html.dark) .mc-glass-head { border-bottom-color: rgba(255, 255, 255, 0.06); }
+.mc-glass-head-text h2 { font-size: 16px; font-weight: 600; color: var(--mc-text-primary); margin: 0; line-height: 1.4; }
+.mc-glass-subtitle { font-size: 12px; color: var(--mc-text-tertiary); margin: 4px 0 0; word-break: break-all; }
+.mc-glass-close {
+  width: 32px; height: 32px; border: none; background: rgba(255, 255, 255, 0.35);
+  cursor: pointer; color: var(--mc-text-tertiary);
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 10px; flex-shrink: 0;
+  transition: background 0.18s ease, color 0.18s ease;
+}
+.mc-glass-close:hover { background: rgba(255, 255, 255, 0.6); color: var(--mc-text-primary); }
+:global(html.dark) .mc-glass-close { background: rgba(255, 255, 255, 0.05); }
+:global(html.dark) .mc-glass-close:hover { background: rgba(255, 255, 255, 0.12); color: var(--mc-text-primary); }
+
+.mc-glass-body {
+  padding: 16px 24px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+
+.mc-glass-foot {
+  display: flex; justify-content: flex-end; gap: 10px;
+  padding: 14px 24px 18px;
+  border-top: 1px solid rgba(255, 255, 255, 0.4);
+}
+:global(html.dark) .mc-glass-foot { border-top-color: rgba(255, 255, 255, 0.06); }
+
+.mc-glass-btn {
+  padding: 8px 16px; font-size: 14px; font-weight: 500;
+  border-radius: 10px; cursor: pointer;
+  transition: background 0.18s ease, transform 0.12s ease;
+}
+.mc-glass-btn:disabled { cursor: not-allowed; opacity: 0.55; }
+.mc-glass-btn--ghost {
+  background: rgba(255, 255, 255, 0.4);
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  color: var(--mc-text-primary);
+}
+.mc-glass-btn--ghost:hover:not(:disabled) { background: rgba(255, 255, 255, 0.65); }
+:global(html.dark) .mc-glass-btn--ghost {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.10);
+}
+:global(html.dark) .mc-glass-btn--ghost:hover:not(:disabled) { background: rgba(255, 255, 255, 0.12); }
+.mc-glass-btn--primary {
+  background: var(--mc-primary); color: white;
+  border: 1px solid var(--mc-primary);
+  box-shadow: 0 4px 14px rgba(217, 119, 87, 0.32);
+}
+.mc-glass-btn--primary:hover:not(:disabled) { background: var(--mc-primary-hover); }
+
+/* Loading state */
+.import-loading {
+  display: flex; align-items: center; gap: 12px;
+  padding: 20px 4px; color: var(--mc-text-secondary); font-size: 14px;
+}
+.import-spinner {
+  width: 18px; height: 18px;
+  border: 2px solid rgba(217, 119, 87, 0.25);
+  border-top-color: var(--mc-primary);
+  border-radius: 50%;
+  animation: mc-import-spin 0.7s linear infinite;
+}
+@keyframes mc-import-spin { to { transform: rotate(360deg); } }
+
+/* Diff sections */
+.diff-section {
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, 0.45);
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  border-radius: 12px;
+}
+:global(html.dark) .diff-section {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.08);
+}
+.diff-section-head {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12px; font-weight: 600; color: var(--mc-text-secondary);
+  text-transform: uppercase; letter-spacing: 0.04em;
+  margin-bottom: 8px;
+}
+.diff-section-count {
+  margin-left: auto;
+  font-size: 11px; font-weight: 600; color: var(--mc-text-tertiary);
+  background: rgba(0, 0, 0, 0.06); padding: 2px 7px; border-radius: 9px;
+  letter-spacing: 0;
+}
+:global(html.dark) .diff-section-count { background: rgba(255, 255, 255, 0.08); }
+.diff-pill { font-size: 18px; line-height: 1; }
+.diff-pill--create { color: #16a34a; }
+.diff-pill--update { color: #f59e0b; }
+.diff-pill--skip   { color: #94a3b8; }
+
+.diff-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.diff-row {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--mc-text-primary);
+}
+.diff-row-icon {
+  flex-shrink: 0;
+  font-family: 'SF Mono', Monaco, Consolas, monospace;
+  font-size: 13px; font-weight: 700; line-height: 20px;
+  width: 18px; text-align: center;
+}
+.diff-row-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.diff-row-name { font-weight: 500; word-break: break-all; }
+.diff-row-meta { font-size: 11px; color: var(--mc-text-tertiary); }
+
+.diff-row--create { background: rgba(22, 163, 74, 0.08); }
+.diff-row--create .diff-row-icon { color: #16a34a; }
+.diff-row--update { background: rgba(245, 158, 11, 0.10); }
+.diff-row--update .diff-row-icon { color: #f59e0b; }
+.diff-row--skip   { background: rgba(148, 163, 184, 0.10); }
+.diff-row--skip .diff-row-icon { color: #94a3b8; }
+
+.diff-empty { font-size: 12px; color: var(--mc-text-tertiary); margin: 0; padding: 4px 2px; }
+.diff-empty--all { padding: 24px 0; text-align: center; font-size: 13px; }
+
+.import-confirm-hint {
+  margin: 8px 2px 0;
+  padding: 8px 12px;
+  font-size: 12px; color: var(--mc-text-secondary);
+  background: rgba(217, 119, 87, 0.10);
+  border-radius: 8px;
+  border-left: 3px solid var(--mc-primary);
+}
+:global(html.dark) .import-confirm-hint { background: rgba(217, 119, 87, 0.16); }
+
+@media (max-width: 600px) {
+  .mc-glass-panel { max-width: 100%; max-height: 90vh; }
+  .mc-glass-head, .mc-glass-body, .mc-glass-foot { padding-left: 18px; padding-right: 18px; }
+}
+
 /* 弹窗 */
 .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; z-index: 1000; padding: 20px; }
 .modal { background: var(--mc-bg-elevated); border: 1px solid var(--mc-border); border-radius: 16px; width: 100%; max-width: 420px; box-shadow: 0 20px 60px rgba(0,0,0,0.15); }
@@ -608,7 +1036,8 @@ function formatTime(time?: string): string {
     min-width: 0;
   }
 
-  .agent-select {
+  .header-actions :deep(.mc-agent-picker),
+  .header-actions :deep(.mc-agent-picker__trigger) {
     width: 100%;
     min-width: 0;
   }

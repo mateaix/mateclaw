@@ -235,6 +235,9 @@ class ProviderInitProbeTest {
         p.setChatModel(protocol.getChatModelClass());
         p.setApiKey("sk-test");
         p.setBaseUrl("https://example.com");
+        // RFC-074: probe filters out enabled=false rows. The pre-RFC-074 default
+        // for these test fixtures was "everything participates" — preserve that.
+        p.setEnabled(true);
         return p;
     }
 

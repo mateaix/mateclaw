@@ -167,6 +167,36 @@ class NodeStreamingChatHelperFailoverTest {
     }
 
     // ============================================================
+    // C5 regression: RATE_LIMIT (429) must fall back, not surface
+    // ============================================================
+
+    /**
+     * Prior to this fix a rate-limited primary exhausted its 2 same-model
+     * retries and then {@code return}ed the 429 error result directly,
+     * skipping the fallback chain entirely — the 429 surfaced as the
+     * conversation's answer even though other providers were healthy.
+     * After the fix RATE_LIMIT breaks out to the chain walker, mirroring
+     * AUTH_ERROR / BILLING.
+     *
+     * <p>Note: this test waits out two real retry backoffs (~3s + ~6s) on
+     * the primary before the hand-off, so it runs for ~10s by design.</p>
+     */
+    @Test
+    @DisplayName("C5 (regression): primary RATE_LIMIT (429) hands off to the fallback chain")
+    void rateLimitFallsBack() {
+        ChatModel primary = errorModel(new RuntimeException("429 Too Many Requests"));
+        ChatModel fallback = successModel("recovered after rate limit");
+        var helper = helper(primary, List.of(new FallbackEntry("dashscope", fallback)), "zhipu-cn");
+
+        var result = helper.streamCall(primary, smallPrompt(), "conv-c5", "reasoning");
+
+        assertEquals("recovered after rate limit", result.text(),
+                "a rate-limited primary must fail over instead of surfacing the 429");
+        verify(primary, atLeast(2)).stream(any(Prompt.class));
+        verify(fallback, times(1)).stream(any(Prompt.class));
+    }
+
+    // ============================================================
     // Bonus: confirm no infinite loop / regression on success path
     // ============================================================
 

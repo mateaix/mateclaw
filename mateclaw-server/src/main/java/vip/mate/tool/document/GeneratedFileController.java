@@ -39,8 +39,11 @@ public class GeneratedFileController {
                     HttpHeaders headers = new HttpHeaders();
                     headers.setContentType(MediaType.parseMediaType(entry.mimeType()));
                     // RFC 5987 filename* lets non-ASCII names round-trip in browsers.
+                    String disposition = entry.mimeType() != null && entry.mimeType().startsWith("image/")
+                            ? "inline"
+                            : "attachment";
                     headers.add(HttpHeaders.CONTENT_DISPOSITION,
-                            "attachment; filename=\"" + sanitizeAscii(entry.filename())
+                            disposition + "; filename=\"" + sanitizeAscii(entry.filename())
                                     + "\"; filename*=UTF-8''" + encodedName);
                     headers.setContentLength(entry.bytes().length);
                     return ResponseEntity.ok().headers(headers).body(entry.bytes());

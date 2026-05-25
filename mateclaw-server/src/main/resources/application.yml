@@ -67,10 +67,19 @@ spring:
       enabled: ${H2_CONSOLE_ENABLED:false}
       path: /h2-console
 
-  # Spring AI Alibaba (DashScope) - Spring AI Alibaba 1.1.x 配置路径
+  # Spring AI Alibaba (DashScope) — Spring AI Alibaba 1.1.x configuration path.
+  #
+  # The api-key here is only consumed by Spring AI Alibaba's auto-configured beans
+  # as a *fallback*. The real source of truth for every provider/key/model is the
+  # admin UI ("Settings → Models", persisted in mate_model_provider /
+  # mate_model_config); AgentDashScopeChatModelBuilder resolves the key per-request
+  # from the provider row first, only falling back to this property when the row
+  # is incomplete. The placeholder default keeps DashScopeChatAutoConfiguration
+  # happy at startup when no env var is set (Docker / fresh install) — leave it
+  # alone unless you know what you're doing.
   ai:
     dashscope:
-      api-key: ${DASHSCOPE_API_KEY:your-dashscope-api-key-here}
+      api-key: ${DASHSCOPE_API_KEY:configure-in-admin-ui}
       chat:
         options:
           model: qwen-max
@@ -122,11 +131,34 @@ mateclaw:
   # MCP server 配置已迁移至数据库（mate_mcp_server 表），通过 UI 管理
   mcp:
     enabled: true
+  tools:
+    disclosure:
+      # progressive: extension-tier tools are hidden behind the extension-tools
+      #   catalog until the model calls enable_tool. By default that's the heavy
+      #   generative / browser tools; MCP servers default to core (visible) and
+      #   an admin can move a noisy one to extension per server.
+      # legacy: advertise every bound tool up front (pre-disclosure behavior).
+      mode: ${MATECLAW_TOOLS_DISCLOSURE_MODE:progressive}
   skill:
     workspace:
       root: ${user.home}/.mateclaw/skills
       auto-init: true
       delete-policy: archive
+    disclosure:
+      load-skill-tool:
+        # When false, the load_skill meta tool is not advertised to agents and
+        # the skill catalog guidance falls back to readSkillFile. Escape hatch
+        # for operators who don't want the explicit skill-load entry point.
+        enabled: ${MATECLAW_SKILL_LOAD_SKILL_TOOL_ENABLED:true}
+    curator:
+      enabled: true
+      cron: "0 0 2 * * *"         # daily 02:00 — staggered away from wiki / backup jobs
+      stale-after-days: 30
+      archive-after-days: 90
+      scope: AGENT_CREATED         # AGENT_CREATED | ALL_DYNAMIC | OFF
+      protect-prefixes:
+        - "sys-"
+        - "ops-"
     hub:
       base-url: https://clawhub.ai
       search-path: /api/v1/search
@@ -171,6 +203,14 @@ mateclaw:
         enabled: true
         failure-threshold: 3
         cooldown-ms: 300000
+  # Multi-agent delegation (DelegateAgentTool).
+  delegation:
+    # Wall-clock budget for one delegateParallel batch (shared across all
+    # children — they run concurrently on virtual threads, so this is total
+    # latency, not per-child). 300 s headroom is needed because thinking
+    # models (Kimi / GLM / MiniMax) routinely take 90–290 s per LLM turn
+    # when the child must produce multi-section structured output.
+    parallel-timeout-seconds: 300
 
 # MateClaw Agent 配置
 mate:
@@ -183,22 +223,24 @@ mate:
         large-result-threshold: 32000
         min-rounds-for-summarize: 25
         head-ratio: 0.4
-        truncation-marker: "\n\n... [内容已截断，共 %d 字符，保留前后关键片段] ...\n\n"
+        truncation-marker: "\n\n...[TRUNCATED: %d chars total, middle omitted. Do NOT infer or fabricate omitted content; retrieve the full data (e.g. read_file) or tell the user the result is incomplete.]...\n\n"
     tool:
       timeout:
         default-timeout-seconds: 300
         per-category:
           shell: 120
           web: 30
-    # RFC-008 Phase 3: tool-result three-layer budget (per-result spill + per-turn aggregate budget).
-    # Layer 1 (per-tool cap) lives inside individual tools; Layer 2 spills oversized
-    # single results to disk; Layer 3 enforces an aggregate cap on the combined
-    # response size of one tool turn. The full output is preserved on disk and
-    # the in-context preview points the agent at the spill file (read_file tool).
+    # Tool-result budget (per-result spill + per-turn aggregate budget).
+    # The executor tries to spill the RAW result first so the full output is
+    # preserved on disk; the in-context preview points the agent at the spill
+    # file via read_file. When spill is disabled, the tool is on the exclusion
+    # list, the body is at or below the threshold, or the disk write fails,
+    # the executor falls back to inline hard-truncation to the same character
+    # cap. Per-turn aggregate caps the combined size across one tool turn.
     tool-result:
       enabled: true
-      per-result-threshold-chars: 16000   # was 4000 — prevents WebSearch spill-to-disk
-      per-turn-budget-chars: 32000        # was 16000 — headroom for multi-tool turns
+      per-result-threshold-chars: 8000    # aligned with executor hard cap; > this size → spill, ≤ → inline verbatim
+      per-turn-budget-chars: 32000        # headroom for multi-tool turns
       preview-head-chars: 800
       excluded-tool-inline-chars: 2500
       storage-base-dir: ""
@@ -210,6 +252,14 @@ mate:
       excluded-tools:
         - read_file
         - read_workspace_memory_file
+      # Spill files are deleted after this many days. Default 0 disables the
+      # scheduled sweep entirely so a summary/preview that points at a spill
+      # path stays valid for the whole life of the conversation. Files are
+      # still purged when the conversation is deleted explicitly via
+      # ConversationService.deleteConversation. Raise to a positive value if
+      # disk pressure outweighs recoverability for your deployment.
+      retention-days: 0
+      cleanup-cron: "0 0 3 * * ?"
     conversation:
       window:
         # 测试时临时调低：2000 token ≈ 2000 中文字，3 轮对话即可触发压缩

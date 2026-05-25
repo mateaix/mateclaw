@@ -43,6 +43,7 @@ export interface Agent {
   enabled: boolean
   icon?: string
   tags?: string
+  workspaceBasePath?: string
   createTime?: string
   updateTime?: string
 }
@@ -65,6 +66,11 @@ export interface Conversation {
   status?: 'active' | 'closed'
   streamStatus?: 'idle' | 'running'
   source?: string
+  pinned?: number
+  /** Provider id of the model this conversation is pinned to (per-conversation model). */
+  modelProvider?: string
+  /** Model id this conversation is pinned to. Paired with modelProvider. */
+  modelName?: string
   lastActiveTime?: string
   updateTime?: string
   createTime?: string
@@ -122,6 +128,34 @@ export interface PlanMeta {
   stepResults?: { result: string; status: string }[]
 }
 
+/** One tool the subagent called, shown in the nested delegation timeline. */
+export interface DelegationToolEntry {
+  name: string
+  status: 'running' | 'completed' | 'error'
+}
+
+/**
+ * A subagent at depth >= 2 in the delegation tree (a grandchild and deeper).
+ * Built on the frontend from the flat delegation_* event stream, keyed by
+ * subagentId and nested by parentSubagentId.
+ */
+export interface DelegationNode {
+  subagentId: string
+  agentName: string
+  status: 'running' | 'completed' | 'error'
+  depth: number
+  task?: string
+  plan?: PlanMeta
+  tools?: DelegationToolEntry[]
+  result?: string
+  durationMs?: number
+  /** Heartbeat watchdog flagged this subagent as making no observable progress. */
+  stale?: boolean
+  /** Spawned via fire-and-forget delegation: runs detached, result via task_output. */
+  async?: boolean
+  children: DelegationNode[]
+}
+
 export interface PendingApprovalMeta {
   pendingId: string
   toolName: string
@@ -163,6 +197,22 @@ export interface MessageSegment {
   approval?: PendingApprovalMeta
   /** type=plan */
   plan?: PlanMeta
+  /**
+   * For delegation segments (toolName starts with "→"): the subagent's own
+   * activity, relayed from the child conversation. Renders as a nested timeline
+   * (its plan checklist + the tools it called + any grandchildren it delegated)
+   * instead of jammed text in toolArgs. The depth-1 child is the segment itself;
+   * `children` holds depth-2+ subagents as a recursive tree.
+   */
+  childTimeline?: {
+    plan?: PlanMeta
+    tools?: DelegationToolEntry[]
+    children?: DelegationNode[]
+  }
+  /** For a delegation segment: heartbeat flagged the subagent as stalled (no progress). */
+  delegationStale?: boolean
+  /** For a delegation segment: spawned fire-and-forget, runs detached (result via task_output). */
+  delegationAsync?: boolean
   /** 时间戳 */
   timestamp?: number
   /**
@@ -177,6 +227,12 @@ export interface MessageSegment {
   repetitionWarning?: 'char_pattern' | 'sentence_repetition'
   /** Number of trailing characters dropped when the repetition guard fired. */
   truncatedChars?: number
+  /** Backend marked this model-predicted tool result as replaced by a later actual tool result. */
+  superseded?: boolean
+  /** Segment ID that replaced this pre-tool prediction. */
+  supersededBySegmentId?: string
+  /** Machine-readable reason for superseding this segment. */
+  supersededReason?: string
 }
 
 export interface MessageMetadata {
@@ -274,6 +330,14 @@ export interface Skill {
   securityScanResult?: string
   /** RFC-042 §2.3 — wall-clock time of the last scan */
   securityScanTime?: string
+  /** Lifecycle curator state: 'active' / 'stale' / 'archived' */
+  lifecycleState?: string
+  /** User-pinned skill — exempt from automatic archival */
+  pinned?: boolean
+  /** Last activity timestamp — drives the curator's idle window */
+  lastActivityAt?: string
+  /** When the curator moved this skill to archived state */
+  archivedAt?: string
 }
 
 /** 运行时解析状态（来自 /runtime/status） */
@@ -311,6 +375,8 @@ export interface SkillRuntimeStatus {
   activeFeatures?: string[]
   /** Tools advertised to the LLM after feature filtering */
   effectiveAllowedTools?: string[]
+  /** Human-readable tool names for display after feature filtering */
+  effectiveAllowedToolsDisplay?: string[]
 }
 
 /** RFC-090 §14.6 — typed view onto manifest_json */
@@ -438,11 +504,16 @@ export interface Tool {
   description?: string
   beanName?: string
   toolType: string
+  /** Runtime @Tool function names shown to the model, when resolvable. */
+  runtimeNames?: string[]
   icon?: string
   mcpEndpoint?: string
   paramsSchema?: string
   enabled: boolean
   builtin?: boolean
+  /** Progressive-disclosure tier: 'core' | 'extension'. Null/absent = core. */
+  disclosureTier?: string
+  channelId?: string | number
   createTime: string
 }
 
@@ -915,9 +986,9 @@ export interface CronJob {
   name: string
   cronExpression: string
   timezone: string
-  agentId: string | number
+  agentId: string | number | null
   agentName?: string
-  taskType: 'text' | 'agent' | 'reminder'
+  taskType: 'text' | 'agent' | 'reminder' | 'wiki_process'
   triggerMessage?: string
   requestBody?: string
   enabled: boolean

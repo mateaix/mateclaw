@@ -91,10 +91,11 @@
         <!-- ZIP 上传 -->
         <div v-if="activeTab === 'zip'" class="tab-content">
           <div class="upload-zone"
-               :class="{ 'drag-over': dragOver, 'has-file': zipFile }"
-               @dragover.prevent="dragOver = true"
-               @dragleave="dragOver = false"
-               @drop.prevent="handleDrop"
+               :class="{ 'drag-over': isDragging, 'has-file': zipFile }"
+               @dragenter.prevent="onDragEnter"
+               @dragover.prevent
+               @dragleave.prevent="onDragLeave"
+               @drop.prevent="onDrop"
                @click="triggerFileInput">
             <input ref="zipInputRef" type="file" accept=".zip" class="hidden-input" @change="handleFileSelect" />
             <svg v-if="!zipFile" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="opacity: 0.4; margin-bottom: 8px;">
@@ -149,7 +150,8 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+import { mcToast } from '@/composables/useMcToast'
+import { useFileDrop } from '@/composables/useFileDrop'
 import { skillInstallApi } from '@/api/index'
 import type { InstallTask, HubSkillInfo } from '@/types/index'
 
@@ -177,7 +179,7 @@ const overwriteExisting = ref(false)
 const currentTask = ref<InstallTask | null>(null)
 const zipFile = ref<File | null>(null)
 const zipInputRef = ref<HTMLInputElement | null>(null)
-const dragOver = ref(false)
+const { isDragging, onDragEnter, onDragLeave, onDrop } = useFileDrop(handleDroppedZip)
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
 watch(() => props.visible, (val) => {
@@ -215,7 +217,7 @@ async function doInstall(bundleUrl: string) {
     currentTask.value = res.data
     startPolling(res.data.taskId)
   } catch (e: any) {
-    ElMessage.error(e?.message || t('skills.import.failed'))
+    mcToast.error(e?.message || t('skills.import.failed'))
     installing.value = false
   }
 }
@@ -231,7 +233,7 @@ function startPolling(taskId: string) {
         stopPolling()
         installing.value = false
         if (status === 'COMPLETED') {
-          ElMessage.success(t('skills.import.installed'))
+          mcToast.success(t('skills.import.installed'))
           // The install task's result envelope carries `{name, enabled, sourceUrl, ...}`.
           // Hand the slug along so the parent can pop preflight for the
           // freshly-installed skill if its requirements aren't met.
@@ -256,7 +258,7 @@ async function cancelInstall() {
   if (!currentTask.value) return
   try {
     await skillInstallApi.cancelInstall(currentTask.value.taskId)
-    ElMessage.info(t('skills.import.cancelled'))
+    mcToast.info(t('skills.import.cancelled'))
   } catch {
     // ignore
   }
@@ -272,18 +274,17 @@ function handleFileSelect(e: Event) {
   if (file && file.name.endsWith('.zip')) {
     zipFile.value = file
   } else if (file) {
-    ElMessage.warning(t('skills.import.invalidZip'))
+    mcToast.warning(t('skills.import.invalidZip'))
   }
   input.value = ''
 }
 
-function handleDrop(e: DragEvent) {
-  dragOver.value = false
+function handleDroppedZip(e: DragEvent) {
   const file = e.dataTransfer?.files?.[0]
   if (file && file.name.endsWith('.zip')) {
     zipFile.value = file
   } else {
-    ElMessage.warning(t('skills.import.invalidZip'))
+    mcToast.warning(t('skills.import.invalidZip'))
   }
 }
 
@@ -296,7 +297,7 @@ function formatSize(bytes: number): string {
 async function uploadZip() {
   if (!zipFile.value) return
   if (zipFile.value.size > 50 * 1024 * 1024) {
-    ElMessage.error(t('skills.import.tooLarge'))
+    mcToast.error(t('skills.import.tooLarge'))
     return
   }
   installing.value = true
@@ -305,11 +306,11 @@ async function uploadZip() {
       enable: enableAfterInstall.value,
       overwrite: overwriteExisting.value,
     })
-    ElMessage.success(t('skills.import.uploadSuccess'))
+    mcToast.success(t('skills.import.uploadSuccess'))
     zipFile.value = null
     emit('installed', { name: res?.data?.name })
   } catch (e: any) {
-    ElMessage.error(e?.response?.data?.msg || e?.message || t('skills.import.uploadFailed'))
+    mcToast.error(e?.response?.data?.msg || e?.message || t('skills.import.uploadFailed'))
   } finally {
     installing.value = false
   }
@@ -325,7 +326,7 @@ async function doSearch() {
     searchResults.value = res.data || []
     searchDone.value = true
   } catch (e: any) {
-    ElMessage.error(e?.message || t('skills.import.searchFailed'))
+    mcToast.error(e?.message || t('skills.import.searchFailed'))
     searchResults.value = []
     searchDone.value = true
   } finally {

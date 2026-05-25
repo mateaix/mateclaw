@@ -41,7 +41,8 @@ Based on [Cocoon AI's architecture-diagram-generator](https://github.com/Cocoon-
 1. User describes their system architecture (components, connections, technologies)
 2. Generate the HTML file following the design system below
 3. Save with `write_file` to a `.html` file (e.g. `~/architecture-diagram.html`)
-4. User opens in any browser — works offline, no dependencies
+4. **If the user wants to view/share the diagram in chat (web console, WeCom / 企业微信, DingTalk, Feishu, Telegram, ...): call `render_html_image(filePath="<the .html path>", filename="<name>")`** and return the markdown link it produces. IM channels can only deliver rasterised images natively, so a PNG is required for the diagram to appear inline rather than as a dead link or a file attachment.
+5. Otherwise, the user opens the `.html` directly in a browser — works offline, no dependencies.
 
 ### Output Location
 
@@ -50,9 +51,19 @@ Save diagrams to a user-specified path, or default to the current working direct
 ./[project-name]-architecture.html
 ```
 
-### Preview
+### Delivering through chat / IM channels
 
-After saving, suggest the user open it:
+When the current channel is anything other than a local browser session, follow up `write_file` with:
+
+```
+render_html_image(filePath="./architecture-diagram.html", filename="architecture")
+```
+
+This returns a `/api/v1/files/generated/<id>` URL with `image/png` MIME. The channel layer detects the image MIME and uploads the PNG as a native image message (so it renders inline in WeCom / DingTalk / Feishu / Telegram / Web). Without this step, an `.html` artifact reaches IM channels as either a dead markdown link or, at best, a non-previewable file attachment.
+
+### Local preview
+
+After saving, the user can open the `.html` directly:
 ```bash
 # macOS
 open ./my-architecture.html

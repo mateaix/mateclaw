@@ -1,6 +1,6 @@
 import { ref, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+import { mcToast } from '@/composables/useMcToast'
 import { channelApi } from '@/api'
 
 export type FeishuRegisterStatus = '' | 'pending' | 'waiting' | 'confirmed' | 'expired' | 'denied' | 'error'
@@ -52,13 +52,13 @@ export function useFeishuAppRegister(onConfirmed: (r: FeishuRegisterResult) => v
       sessionId = res?.data?.session_id || res?.session_id || ''
       if (!sessionId) {
         loading.value = false
-        ElMessage.error(t('channels.feishuRegister.startFailed'))
+        mcToast.error(t('channels.feishuRegister.startFailed'))
         return
       }
       status.value = 'pending'
     } catch {
       loading.value = false
-      ElMessage.error(t('channels.feishuRegister.startFailed'))
+      mcToast.error(t('channels.feishuRegister.startFailed'))
       return
     }
 
@@ -91,7 +91,7 @@ export function useFeishuAppRegister(onConfirmed: (r: FeishuRegisterResult) => v
           const appSecret = data.client_secret || ''
           if (appId && appSecret) {
             onConfirmed({ appId, appSecret })
-            ElMessage.success(t('channels.feishuRegister.confirmed'))
+            mcToast.success(t('channels.feishuRegister.confirmed'))
           }
           return
         }
@@ -99,15 +99,15 @@ export function useFeishuAppRegister(onConfirmed: (r: FeishuRegisterResult) => v
         if (s === 'expired') {
           stopPolling()
           loading.value = false
-          ElMessage.warning(t('channels.feishuRegister.expired'))
+          mcToast.warning(t('channels.feishuRegister.expired'))
         } else if (s === 'denied') {
           stopPolling()
           loading.value = false
-          ElMessage.warning(t('channels.feishuRegister.denied'))
+          mcToast.warning(t('channels.feishuRegister.denied'))
         } else if (s === 'error') {
           stopPolling()
           loading.value = false
-          ElMessage.error(t('channels.feishuRegister.error'))
+          mcToast.error(t('channels.feishuRegister.error'))
         }
       } catch {
         // Silent — transient network errors should not abort the loop.

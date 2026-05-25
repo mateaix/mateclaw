@@ -122,7 +122,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+import { mcToast } from '@/composables/useMcToast'
 import { tokenUsageApi } from '@/api/index'
 import type { TokenUsageSummary } from '@/types/tokenUsage'
 
@@ -157,7 +157,7 @@ async function fetchData() {
     data.value = res.data || null
   } catch (e: any) {
     const msg = t('tokenUsage.loadFailed')
-    ElMessage.error(msg)
+    mcToast.error(msg)
     error.value = msg
     data.value = null
   } finally {

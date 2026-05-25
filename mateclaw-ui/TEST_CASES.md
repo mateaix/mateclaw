@@ -7,7 +7,7 @@
 
 ## 前置条件
 
-1. 后端启动：`cd mateclaw-server && mvn spring-boot:run`（需设置 `DASHSCOPE_API_KEY`）
+1. 后端启动：`cd mateclaw-server && mvn spring-boot:run`（零环境变量，启动后到「设置 → 模型」加 LLM 供应商）
 2. 前端启动：`cd mateclaw-ui && pnpm dev`
 3. 访问 http://localhost:5173，登录
 

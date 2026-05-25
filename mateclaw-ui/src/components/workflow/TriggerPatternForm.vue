@@ -4,15 +4,12 @@
     <template v-if="patternType === 'cron'">
       <div class="pf-field">
         <span class="pf-label">{{ t('triggers.pattern.cronExpression') }}</span>
-        <input
-          v-model.trim="form.cron"
-          class="pf-input mono"
-          :placeholder="t('triggers.pattern.cronExpressionPlaceholder')"
-          spellcheck="false"
-          @input="emitFromForm"
+        <CronExpressionField
+          :model-value="form.cron || ''"
+          with-seconds
+          @update:model-value="onCronChange"
         />
         <small v-if="errors.cron" class="pf-err">{{ errors.cron }}</small>
-        <small v-else class="pf-hint">{{ t('triggers.pattern.cronExpressionHint') }}</small>
       </div>
       <div class="pf-field">
         <span class="pf-label">{{ t('triggers.pattern.cronTimezone') }}</span>
@@ -86,10 +83,14 @@
     <template v-else-if="patternType === 'agent_lifecycle'">
       <div class="pf-field">
         <span class="pf-label">{{ t('triggers.pattern.agentId') }}</span>
+        <!-- type=text + inputmode=numeric so 19-digit Snowflake IDs aren't
+             coerced through JS Number (input[type=number] silently truncates
+             values past 2^53-1 even when v-model has no .number modifier). -->
         <input
-          v-model.number="form.agentId"
-          type="number"
-          min="0"
+          v-model.trim="form.agentId"
+          type="text"
+          inputmode="numeric"
+          pattern="\d*"
           class="pf-input"
           :placeholder="t('triggers.pattern.agentIdPlaceholder')"
           @input="emitFromForm"
@@ -113,7 +114,7 @@
     <template v-else-if="patternType === 'workflow_completion'">
       <div class="pf-field">
         <span class="pf-label">{{ t('triggers.pattern.sourceWorkflowId') }}</span>
-        <select v-model.number="form.sourceWorkflowId" class="pf-input" @change="emitFromForm">
+        <select v-model="form.sourceWorkflowId" class="pf-input" @change="emitFromForm">
           <option :value="undefined">{{ t('triggers.pattern.sourceWorkflowAny') }}</option>
           <option v-for="wf in availableWorkflows" :key="wf.id" :value="wf.id">
             #{{ wf.id }} — {{ wf.name || '(unnamed)' }}
@@ -163,6 +164,7 @@
 import { reactive, ref, watch, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { WorkflowSummary } from '@/api'
+import CronExpressionField from '@/components/common/CronExpressionField.vue'
 
 interface Props {
   /** Pattern type (cron / channel_message / …) drives which form is shown. */
@@ -190,9 +192,12 @@ interface FormState {
   senderEquals?: string
   contentContains?: string
   substring?: string
-  agentId?: number | null
+  // IDs are kept as strings to survive 19-digit Snowflake values through
+  // v-model without precision loss; matcher's longOrNull accepts both
+  // numeric and string forms in pattern_json.
+  agentId?: string | null
   phase?: string
-  sourceWorkflowId?: number
+  sourceWorkflowId?: string | number
   stateFilter?: string
 }
 
@@ -220,9 +225,15 @@ function loadFromJson(json: string) {
     if (typeof parsed.senderEquals === 'string') form.senderEquals = parsed.senderEquals
     if (typeof parsed.contentContains === 'string') form.contentContains = parsed.contentContains
     if (typeof parsed.substring === 'string') form.substring = parsed.substring
-    if (typeof parsed.agentId === 'number') form.agentId = parsed.agentId
+    // Accept both number and string — pattern_json may store IDs either way
+    // depending on who wrote it (matcher's longOrNull accepts both too).
+    if (typeof parsed.agentId === 'number' || typeof parsed.agentId === 'string') { // snowflake-precision-ok: explicit dual-form handling, then String()
+      form.agentId = String(parsed.agentId)
+    }
     if (typeof parsed.phase === 'string') form.phase = parsed.phase
-    if (typeof parsed.sourceWorkflowId === 'number') form.sourceWorkflowId = parsed.sourceWorkflowId
+    if (typeof parsed.sourceWorkflowId === 'number' || typeof parsed.sourceWorkflowId === 'string') { // snowflake-precision-ok: explicit dual-form handling, then String()
+      form.sourceWorkflowId = String(parsed.sourceWorkflowId)
+    }
     if (typeof parsed.stateFilter === 'string') form.stateFilter = parsed.stateFilter
   } catch (e) {
     rawError.value = (e as Error).message
@@ -247,14 +258,17 @@ function buildJsonFromForm(): string {
       if (form.substring) out.substring = form.substring
       break
     case 'agent_lifecycle':
-      if (typeof form.agentId === 'number' && !Number.isNaN(form.agentId)) {
-        out.agentId = form.agentId
+      // Emit IDs as JSON strings to preserve Snowflake precision. The
+      // matcher's longOrNull parses either form, so this stays compatible
+      // with any pattern_json written previously as a JSON number.
+      if (form.agentId != null && String(form.agentId).trim() !== '') {
+        out.agentId = String(form.agentId).trim()
       }
       if (form.phase) out.phase = form.phase
       break
     case 'workflow_completion':
-      if (typeof form.sourceWorkflowId === 'number') {
-        out.sourceWorkflowId = form.sourceWorkflowId
+      if (form.sourceWorkflowId != null && String(form.sourceWorkflowId) !== '') {
+        out.sourceWorkflowId = String(form.sourceWorkflowId)
       }
       if (form.stateFilter) out.stateFilter = form.stateFilter
       break
@@ -295,6 +309,13 @@ function emitFromForm() {
   Object.assign(errors, validate())
   emit('update:modelValue', buildJsonFromForm())
   emit('validation', { ...errors })
+}
+
+// Cron is edited through the shared CronExpressionField; mirror its value
+// into the form and re-run the standard emit + validation pipeline.
+function onCronChange(value: string) {
+  form.cron = value
+  emitFromForm()
 }
 
 function onRawInput(e: Event) {

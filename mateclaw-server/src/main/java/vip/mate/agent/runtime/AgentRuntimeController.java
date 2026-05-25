@@ -18,16 +18,17 @@ import vip.mate.workspace.conversation.ConversationService;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import vip.mate.workspace.core.annotation.RequireGlobalAdmin;
 
 /**
- * Admin-only Backstage surface: the global view of every in-flight agent
+ * Admin-only live runtime surface: the global view of every in-flight agent
  * turn plus the controls to friendly-stop, force-recycle, or sweep stuck
  * runs. Distinct from {@code /api/v1/subagents/...} which is per-conversation
  * owner-scoped — this controller is intentionally cross-tenant for the
  * operator role.
  */
 @Slf4j
-@Tag(name = "Agent Runtime (Backstage)")
+@Tag(name = "Agent Runtime (Live)")
 @RestController
 @RequestMapping("/api/v1/admin/agent-runtime")
 @RequiredArgsConstructor
@@ -42,6 +43,7 @@ public class AgentRuntimeController {
 
     @Operation(summary = "Snapshot of every in-flight agent turn")
     @GetMapping("/snapshot")
+    @RequireGlobalAdmin
     public R<AgentRuntimeAggregator.RuntimeSnapshot> snapshot(Authentication auth) {
         requireAdmin(auth);
         return R.ok(aggregator.snapshot());
@@ -49,6 +51,7 @@ public class AgentRuntimeController {
 
     @Operation(summary = "Friendly stop — request the run to wind down at its next checkpoint")
     @PostMapping("/runs/{conversationId}/stop")
+    @RequireGlobalAdmin
     public R<Map<String, Object>> stopFriendly(@PathVariable String conversationId,
                                                Authentication auth) {
         requireAdmin(auth);
@@ -59,6 +62,7 @@ public class AgentRuntimeController {
 
     @Operation(summary = "Force recycle — dispose flux + drop RunState; use after friendly stop ignored")
     @PostMapping("/runs/{conversationId}/recycle")
+    @RequireGlobalAdmin
     public R<Map<String, Object>> recycle(@PathVariable String conversationId,
                                           Authentication auth) {
         requireAdmin(auth);
@@ -72,6 +76,7 @@ public class AgentRuntimeController {
 
     @Operation(summary = "Interrupt one sub-agent (admin override of ownership check)")
     @PostMapping("/subagents/{subagentId}/interrupt")
+    @RequireGlobalAdmin
     public R<Map<String, Object>> interruptSubagent(@PathVariable String subagentId,
                                                     Authentication auth) {
         requireAdmin(auth);
@@ -87,6 +92,7 @@ public class AgentRuntimeController {
      */
     @Operation(summary = "Recycle every run currently flagged as stuck")
     @PostMapping("/sweep")
+    @RequireGlobalAdmin
     public R<Map<String, Object>> sweep(Authentication auth) {
         requireAdmin(auth);
         AgentRuntimeAggregator.RuntimeSnapshot snap = aggregator.snapshot();

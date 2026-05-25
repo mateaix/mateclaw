@@ -16,7 +16,12 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, watch } from 'vue'
 import { VueMonacoEditor, loader } from '@guolao/vue-monaco-editor'
-import * as monaco from 'monaco-editor'
+// Precise imports replace `import * as monaco from 'monaco-editor'` — the
+// barrel pulled in TypeScript / CSS / HTML language workers (~8.7 MB) that
+// this JSON editor never touches. The editor.api entry exposes the same
+// `monaco` namespace surface we need (registerLanguage, KeyMod, etc.).
+import * as monaco from 'monaco-editor/esm/vs/editor/editor.api.js'
+import 'monaco-editor/esm/vs/language/json/monaco.contribution.js'
 // Vite's ?worker imports — Monaco loads its language workers as separate
 // JS bundles, and without this MonacoEnvironment shim the editor falls
 // back to fetching from a CDN URL ('vs/base/worker/workerMain.js') that

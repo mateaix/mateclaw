@@ -12,46 +12,52 @@ FROM node:22-alpine AS frontend-builder
 RUN npm install -g pnpm@10 --silent
 WORKDIR /frontend
 # Install dependencies first (layer cache)
-COPY mateclaw-ui/package.json mateclaw-ui/pnpm-lock.yaml mateclaw-ui/.npmrc ./
-RUN pnpm install --frozen-lockfile --ignore-scripts && pnpm rebuild
-
-# Build with increased Node heap to avoid OOM during vite build
-ENV NODE_OPTIONS="--max-old-space-size=4096"
+COPY mateclaw-ui/package.json mateclaw-ui/pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
 # Copy source and build
 COPY mateclaw-ui/ ./
 # Override outDir: vite.config.ts writes to ../mateclaw-server/…/static which
 # is outside this container; call vite directly to control --outDir.
+# NODE_OPTIONS=--max-old-space-size=6144 keeps Rollup's `rendering chunks`
+# phase from getting SIGKILL'd by the host kernel's OOM-killer on memory-
+# constrained servers. The earlier removal of this flag relied on lazy-
+# loading + manualChunks dropping the per-chunk peak, but Rollup still
+# minifies several vendor chunks (monaco / mermaid / echarts) in parallel
+# so the cumulative working set blows past Node's default ~1.5 GB heap
+# and trips the OOM-killer mid-build. The fix is not the heap flag
+# itself; it is keeping the build reproducible on smaller hosts.
 # Skipping vue-tsc here is intentional — type errors are caught in CI, not in
 # the production Docker image build.
-RUN pnpm exec vite build --outDir /static --emptyOutDir
+RUN NODE_OPTIONS=--max-old-space-size=6144 pnpm exec vite build --outDir /static --emptyOutDir
 
 # Stage 2 — Backend (Maven)
 FROM maven:3.9-eclipse-temurin-21 AS builder
 
 # Optional Maven extra flags passed at build time.
 # Set MAVEN_FLAGS=-Paliyun-first in .env (or via --build-arg) to put Aliyun
-# repos first — speeds up builds dramatically inside mainland China.
+# repos first. This speeds up builds inside mainland China.
 ARG MAVEN_FLAGS=""
 
 # Inject mirror settings to avoid Maven Central timeouts in restricted networks
 COPY mateclaw-server/settings.xml /root/.m2/settings.xml
 
-# Build and install plugin-api into the local Maven cache first
-WORKDIR /plugin-api
-COPY mateclaw-plugin-api/pom.xml ./pom.xml
-COPY mateclaw-plugin-api/src ./src
-RUN mvn install -Dmaven.test.skip=true -q ${MAVEN_FLAGS}
-
-# Pre-fetch mateclaw-server dependencies (uses mirror, so this won't hang)
+# Copy the root parent plus module POMs first for Docker layer caching.
 WORKDIR /build
-COPY mateclaw-server/pom.xml .
-RUN mvn dependency:go-offline -q ${MAVEN_FLAGS}
+COPY pom.xml ./pom.xml
+COPY mateclaw-plugin-api/pom.xml mateclaw-plugin-api/pom.xml
+COPY mateclaw-server/pom.xml mateclaw-server/pom.xml
+COPY mateclaw-plugin-sample/pom.xml mateclaw-plugin-sample/pom.xml
+
+# Pre-fetch backend dependencies through the reactor so the parent POM,
+# dependencyManagement, and internal module versions all resolve consistently.
+RUN mvn -pl mateclaw-server -am dependency:go-offline -q ${MAVEN_FLAGS}
 
 # Copy backend source and inject pre-built frontend into the right classpath location
-COPY mateclaw-server/src ./src
-COPY --from=frontend-builder /static ./src/main/resources/static
+COPY mateclaw-plugin-api/src mateclaw-plugin-api/src
+COPY mateclaw-server/src mateclaw-server/src
+COPY --from=frontend-builder /static mateclaw-server/src/main/resources/static
 
-RUN mvn package -Dmaven.test.skip=true -q ${MAVEN_FLAGS}
+RUN mvn -pl mateclaw-server -am package -Dmaven.test.skip=true -q ${MAVEN_FLAGS}
 
 # Stage 3 — Runtime
 #
@@ -60,11 +66,11 @@ RUN mvn package -Dmaven.test.skip=true -q ${MAVEN_FLAGS}
 # pre-installed. This avoids the `playwright install` step and the Alpine/musl
 # incompatibility that blocks browser_use on minimal images.
 #
-# We pin to the exact Playwright version declared in pom.xml (1.52.0). If you
+# We pin to the exact Playwright version declared in the root pom.xml. If you
 # bump the Java dependency, bump this tag in lockstep — Microsoft rebuilds each
 # tag with the matching driver, so mismatched versions cause the java driver to
 # re-download browsers at runtime (defeating the whole point of this image).
-FROM mcr.microsoft.com/playwright:v1.52.0-noble
+FROM mcr.microsoft.com/playwright:v1.59.0-noble
 WORKDIR /app
 
 # JDK 21 is NOT part of the base image (it ships Node for the JS driver).
@@ -96,6 +102,11 @@ RUN apt-get update \
         tzdata \
     && rm -rf /var/lib/apt/lists/*
 
+# Install Playwright Python bindings so Python-based browser tools
+# (browser_use, etc.) can reuse the bundled browsers under
+# PLAYWRIGHT_BROWSERS_PATH without re-downloading them.
+RUN pip3 install --break-system-packages playwright
+
 # Tell Playwright Java where Microsoft's image stored the browsers.
 # BrowserLauncher's BUNDLED strategy will then succeed without extra config.
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
@@ -103,7 +114,7 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
     JAVA_TOOL_OPTIONS="-Duser.timezone=Asia/Shanghai" \
     PIP_INDEX_URL=https://pypi.org/simple \
     PIP_TRUSTED_HOST=pypi.org
-
-COPY --from=builder /build/target/*.jar app.jar
+COPY --from=builder /build/mateclaw-server/target/*.jar app.jar
 EXPOSE 18088
+EXPOSE 1455
 ENTRYPOINT ["java", "-jar", "-Dspring.profiles.active=mysql", "app.jar"]

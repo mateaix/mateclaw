@@ -6,7 +6,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import vip.mate.memory.fact.model.FactContradictionEntity;
 import vip.mate.memory.fact.model.FactEntity;
-import vip.mate.memory.fact.model.FactEntityRefEntity;
 import vip.mate.memory.fact.repository.FactMapper;
 
 import java.time.LocalDateTime;
@@ -24,7 +23,6 @@ import java.util.List;
 public class FactQueryService {
 
     private final FactMapper factMapper;
-    private final vip.mate.memory.fact.repository.FactEntityRefMapper refMapper;
     private final vip.mate.memory.fact.repository.FactContradictionMapper contradictionMapper;
 
     /**
@@ -37,27 +35,6 @@ public class FactQueryService {
                         .eq(FactEntity::getDeleted, 0)
                         .and(w -> w.like(FactEntity::getSubject, entity)
                                 .or().like(FactEntity::getObjectValue, entity))
-                        .orderByDesc(FactEntity::getTrust)
-                        .last("LIMIT 20"));
-    }
-
-    /**
-     * Find related facts via entity references (multi-hop).
-     */
-    public List<FactEntity> related(Long agentId, String entity, int hops) {
-        // Find fact IDs that reference this entity
-        List<FactEntityRefEntity> refs = refMapper.selectList(
-                new LambdaQueryWrapper<FactEntityRefEntity>()
-                        .like(FactEntityRefEntity::getEntityName, entity)
-                        .last("LIMIT 50"));
-        List<Long> factIds = refs.stream().map(FactEntityRefEntity::getFactId).distinct().toList();
-        if (factIds.isEmpty()) return List.of();
-
-        return factMapper.selectList(
-                new LambdaQueryWrapper<FactEntity>()
-                        .eq(FactEntity::getAgentId, agentId)
-                        .eq(FactEntity::getDeleted, 0)
-                        .in(FactEntity::getId, factIds)
                         .orderByDesc(FactEntity::getTrust)
                         .last("LIMIT 20"));
     }

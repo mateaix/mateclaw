@@ -13,6 +13,7 @@ import org.springframework.web.client.RestClient;
 import vip.mate.exception.MateClawException;
 import vip.mate.llm.model.ModelProviderEntity;
 import vip.mate.llm.repository.ModelProviderMapper;
+import vip.mate.llm.service.ModelProviderService;
 
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
@@ -73,9 +74,11 @@ public class OpenAIOAuthService {
     private static final String SCOPES = "openid profile email offline_access";
     private static final String PROVIDER_ID = "openai-chatgpt";
     private static final int CALLBACK_PORT = 1455;
+    private static final String DEFAULT_CALLBACK_BIND_HOST = "127.0.0.1";
 
     private final ModelProviderMapper modelProviderMapper;
     private final ObjectMapper objectMapper;
+    private final ModelProviderService modelProviderService;
     private final RestClient restClient = RestClient.create();
 
     /** state → code_verifier 缓存 */
@@ -240,15 +243,17 @@ public class OpenAIOAuthService {
 
         // Try to bind synchronously up front so callers can detect failure.
         HttpServer server;
+        String bindHost = resolveCallbackBindHost();
         try {
-            server = HttpServer.create(new InetSocketAddress("127.0.0.1", CALLBACK_PORT), 0);
+            server = HttpServer.create(new InetSocketAddress(bindHost, CALLBACK_PORT), 0);
         } catch (java.net.BindException e) {
-            log.warn("OAuth callback bind failed on port {} (in-use or restricted): {}",
-                    CALLBACK_PORT, e.getMessage());
+            log.warn("OAuth callback bind failed on {}:{} (in-use or restricted): {}",
+                    bindHost, CALLBACK_PORT, e.getMessage());
             pendingStates.remove(expectedState);
             return false;
         } catch (java.io.IOException e) {
-            log.warn("OAuth callback HttpServer.create IO error: {}", e.getMessage());
+            log.warn("OAuth callback HttpServer.create IO error on {}:{}: {}",
+                    bindHost, CALLBACK_PORT, e.getMessage());
             pendingStates.remove(expectedState);
             return false;
         }
@@ -311,7 +316,8 @@ public class OpenAIOAuthService {
 
                 boundServer.start();
                 activeCallbackServer = boundServer;
-                log.info("OAuth 回调服务器已启动在 http://127.0.0.1:{}", CALLBACK_PORT);
+                log.info("OAuth 回调服务器已启动，监听 {}:{}，浏览器回调地址 {}",
+                        bindHost, CALLBACK_PORT, REDIRECT_URI);
 
                 // 3 分钟超时自动关闭
                 CompletableFuture.delayedExecutor(3, TimeUnit.MINUTES).execute(() -> {
@@ -490,6 +496,7 @@ public class OpenAIOAuthService {
             provider.setOauthAccountId(accountId);
         }
         modelProviderMapper.updateById(provider);
+        modelProviderService.activateFirstModelIfDefaultUnavailable(PROVIDER_ID);
         log.info("OpenAI OAuth token 已保存，expires_in={}s, accountId={}", expiresIn, accountId);
     }
 
@@ -534,6 +541,15 @@ public class OpenAIOAuthService {
             } catch (Exception ignored) {}
             activeCallbackServer = null;
         }
+    }
+
+    String resolveCallbackBindHost() {
+        String configured = System.getProperty("mateclaw.oauth.openai.callback-bind-host",
+                System.getenv("MATECLAW_OAUTH_OPENAI_CALLBACK_BIND_HOST"));
+        if (!StringUtils.hasText(configured)) {
+            return DEFAULT_CALLBACK_BIND_HOST;
+        }
+        return configured.trim();
     }
 
     // ==================== PKCE 工具 ====================

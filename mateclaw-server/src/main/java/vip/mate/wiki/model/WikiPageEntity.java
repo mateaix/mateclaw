@@ -73,6 +73,20 @@ public class WikiPageEntity {
      */
     private Integer archived;
 
+    /**
+     * Page-level embedding (float32 little-endian) used by the semantic
+     * retriever to surface pages whose generated content does not appear
+     * in any source raw's chunks — typically synthesis pages produced by
+     * a transformation. {@code null} = not yet embedded.
+     */
+    private byte[] embedding;
+
+    /** Model name that produced {@link #embedding}; used for re-embed detection. */
+    private String embeddingModel;
+
+    /** Input-format version for {@link #embedding}; bumped when the embedding builder changes. */
+    private String embeddingTextVersion;
+
     @TableField(fill = FieldFill.INSERT)
     private LocalDateTime createTime;
 

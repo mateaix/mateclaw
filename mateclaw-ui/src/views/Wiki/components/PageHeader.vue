@@ -24,7 +24,7 @@
         <el-icon :size="12"><Link /></el-icon>
         {{ t('wiki.page.enriched') }}
       </span>
-      <button v-else class="btn-mini-enrich" @click="$emit('enrich')">
+      <button v-else-if="canManageWiki" class="btn-mini-enrich" @click="$emit('enrich')">
         <el-icon :size="12"><Link /></el-icon>
         {{ t('wiki.page.enrich') }}
       </button>
@@ -41,8 +41,13 @@
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Link } from '@element-plus/icons-vue'
+import { useWorkspaceStore } from '@/stores/useWorkspaceStore'
 
 const { t } = useI18n()
+const workspace = useWorkspaceStore()
+
+// Enriching a page (adding cross-links) is a write action — viewers only read.
+const canManageWiki = computed(() => workspace.can('manage:wiki'))
 
 const props = defineProps<{
   page: {

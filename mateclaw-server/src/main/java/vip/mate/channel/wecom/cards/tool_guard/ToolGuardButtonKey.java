@@ -2,7 +2,7 @@ package vip.mate.channel.wecom.cards.tool_guard;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import vip.mate.channel.wecom.cards.CardOversizedException;
+import vip.mate.channel.cards.CardOversizedException;
 
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;

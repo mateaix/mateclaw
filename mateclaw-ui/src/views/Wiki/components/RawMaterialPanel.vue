@@ -1,7 +1,7 @@
 <template>
   <div class="raw-panel">
     <!-- Upload + Add text row -->
-    <div class="upload-row">
+    <div v-if="canManageWiki" class="upload-row">
       <div
         class="upload-zone"
         :class="{ 'is-dragging': isDragging, 'is-uploading': uploadingFiles.length > 0 }"
@@ -32,10 +32,10 @@
             <template v-else-if="isDragging">{{ t('wiki.dropToUpload') }}</template>
             <template v-else>{{ t('wiki.dropFiles') }}</template>
           </span>
-          <span class="upload-hint">.txt, .md, .pdf, .docx</span>
+          <span class="upload-hint">.txt .md .csv .pdf .docx .xlsx .pptx .html</span>
         </div>
       </div>
-      <input ref="fileInput" type="file" style="display:none" accept=".txt,.md,.pdf,.docx,.doc" multiple @change="handleFileSelect" />
+      <input ref="fileInput" type="file" style="display:none" accept=".txt,.md,.csv,.pdf,.docx,.doc,.xlsx,.xls,.pptx,.ppt,.html,.htm" multiple @change="handleFileSelect" />
       <button class="btn-secondary add-text-btn" @click="showAddText = true">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
@@ -45,7 +45,7 @@
     </div>
 
     <!-- Directory scan -->
-    <div class="dir-scan-row">
+    <div v-if="canManageWiki" class="dir-scan-row">
       <div class="dir-input-wrap">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
@@ -163,7 +163,7 @@
               {{ raw.errorMessage }}
             </span>
           </div>
-          <div class="raw-item-actions">
+          <div v-if="canManageWiki" class="raw-item-actions">
             <button
               v-if="raw.processingStatus === 'processing' && !cancellingIds.has(raw.id)"
               class="btn-icon btn-icon-danger" :title="t('wiki.cancel')"
@@ -286,20 +286,27 @@
 <script setup lang="ts">
 import { ref, reactive, computed, watch, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+import { mcToast } from '@/composables/useMcToast'
+import { useFileDrop } from '@/composables/useFileDrop'
 import { Download } from '@element-plus/icons-vue'
 import { useWikiStore } from '@/stores/useWikiStore'
+import { useWorkspaceStore } from '@/stores/useWorkspaceStore'
 import { wikiApi } from '@/api/index'
 import JobStageBar from './JobStageBar.vue'
 import type { WikiProcessingJob } from '@/composables/useWikiJobPoller'
 
 const { t } = useI18n()
 const store = useWikiStore()
+const workspace = useWorkspaceStore()
+
+// Uploading, scanning and (re)processing raw material all require manage:wiki.
+// Viewers can still see the material list but get no write controls.
+const canManageWiki = computed(() => workspace.can('manage:wiki'))
 const fileInput = ref<HTMLInputElement | null>(null)
 
-// RFC-012 M3：当列表中存在 processing 的材料时，优先订阅后端 SSE 实时进度流，
-// 60s 兜底拉取 processingStatus / fetchRawMaterials 作为 SSE 断线降级（DB 是真源）。
-// 处理完毕（无 processing 项）自动断开 SSE + 停止兜底轮询；组件卸载时也会清理。
+// While raw materials are active, subscribe to the backend SSE progress stream.
+// A slower polling fallback keeps the UI in sync if SSE reconnects or misses a
+// terminal event. The database remains the source of truth.
 let sse: EventSource | null = null
 let fallbackTimer: number | null = null
 let activeKbId: number | null = null
@@ -319,7 +326,7 @@ function applyProgressEvent(payload: any) {
 function openSse(kbId: number) {
   closeSse()
   activeKbId = kbId
-  // Vite 代理 /api → :18088；EventSource 走相对路径即可
+  // Vite proxies /api to the backend, so EventSource can use a relative URL.
   const es = new EventSource(`/api/v1/wiki/knowledge-bases/${kbId}/progress`)
   sse = es
 
@@ -353,7 +360,7 @@ function openSse(kbId: number) {
       }
       // Clear stale job entry so JobStageBar hides
       delete rawJobs[data.rawId]
-      if (store.currentKB) store.fetchRawMaterials(store.currentKB.id)
+      if (store.currentKB) void store.refreshCurrentKB()
     } catch { /* ignore */ }
   })
   es.addEventListener('raw.failed', (ev: MessageEvent) => {
@@ -363,7 +370,7 @@ function openSse(kbId: number) {
       if (raw) raw.processingStatus = 'failed'
       // Clear stale job entry
       delete rawJobs[data.rawId]
-      if (store.currentKB) store.fetchRawMaterials(store.currentKB.id)
+      if (store.currentKB) void store.refreshCurrentKB()
     } catch { /* ignore */ }
   })
   es.onerror = () => {
@@ -389,7 +396,7 @@ watch(
       // 60s fallback polling
       if (fallbackTimer == null) {
         fallbackTimer = window.setInterval(() => {
-          if (store.currentKB) store.fetchRawMaterials(store.currentKB.id)
+          if (store.currentKB) void store.refreshCurrentKB()
         }, 60000)
       }
     } else {
@@ -445,9 +452,9 @@ async function pollJobs() {
       }
     } catch { /* ignore */ }
   }
-  // When any job reaches terminal, refresh raw materials to sync status badges
+  // When any job reaches terminal, refresh wiki metadata, pages, and raw badges.
   if (anyTerminal) {
-    await store.fetchRawMaterials(kbId)
+    await store.refreshCurrentKB()
   }
   // Continue polling while there are still processing/pending raws
   const stillActive = store.rawMaterials.some(
@@ -493,21 +500,12 @@ const scanning = ref(false)
 const scanResult = ref<{ scanned: number; added: number; skipped: number } | null>(null)
 
 // ─── Drag-over state ──────────────────────────────────────────────────────────
-// Use a counter to handle nested dragenter/dragleave without flickering.
-const isDragging = ref(false)
-let dragCounter = 0
+const { isDragging, onDragEnter, onDragLeave, onDrop: handleDrop } = useFileDrop(uploadDroppedFiles)
 
-function onDragEnter() {
-  dragCounter++
-  isDragging.value = true
-}
-
-function onDragLeave() {
-  dragCounter--
-  if (dragCounter <= 0) {
-    dragCounter = 0
-    isDragging.value = false
-  }
+async function uploadDroppedFiles(event: DragEvent) {
+  if (!event.dataTransfer?.files || !store.currentKB) return
+  const kbId = store.currentKB.id
+  await Promise.all(Array.from(event.dataTransfer.files).map(f => uploadFile(kbId, f)))
 }
 
 // ─── Optimistic upload items ──────────────────────────────────────────────────
@@ -550,7 +548,7 @@ async function uploadFile(kbId: number, file: File) {
   } catch (err: any) {
     item.status = 'error'
     item.errorMsg = err?.response?.data?.message || err?.message || t('wiki.uploadFailed', { name: file.name })
-    ElMessage.error(t('wiki.uploadFailed', { name: file.name }))
+    mcToast.error(t('wiki.uploadFailed', { name: file.name }))
   }
 }
 
@@ -567,14 +565,6 @@ async function handleFileSelect(event: Event) {
   input.value = ''
 }
 
-async function handleDrop(event: DragEvent) {
-  // Reset drag state
-  dragCounter = 0
-  isDragging.value = false
-  if (!event.dataTransfer?.files || !store.currentKB) return
-  const kbId = store.currentKB.id
-  await Promise.all(Array.from(event.dataTransfer.files).map(f => uploadFile(kbId, f)))
-}
 
 async function handleAddText() {
   if (!store.currentKB) return
@@ -653,7 +643,7 @@ async function downloadRaw(raw: { id: number; title?: string }) {
     setTimeout(() => URL.revokeObjectURL(url), 0)
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
-    ElMessage.error(`${t('wiki.downloadFailed')}: ${msg}`)
+    mcToast.error(`${t('wiki.downloadFailed')}: ${msg}`)
   }
 }
 

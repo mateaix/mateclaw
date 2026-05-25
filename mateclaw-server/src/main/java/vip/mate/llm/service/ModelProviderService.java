@@ -238,11 +238,14 @@ public class ModelProviderService {
 
     public boolean isProviderAvailable(String providerId) {
         ModelProviderEntity provider = getProvider(providerId);
-        return isProviderConfigured(provider) && hasModels(providerId);
+        return isProviderEnabledAndConfigured(provider) && hasModels(providerId);
     }
 
     public String getProviderUnavailableReason(String providerId) {
         ModelProviderEntity provider = getProvider(providerId);
+        if (!Boolean.TRUE.equals(provider.getEnabled())) {
+            return "Provider 未启用";
+        }
         if (!isProviderConfigured(provider)) {
             // Issue #81: emit a precise reason based on which row-level fields are
             // missing, rather than the previous protocol-blind heuristic. The new
@@ -330,7 +333,7 @@ public class ModelProviderService {
     }
 
     private void tryAutoActivateModel(String providerId, ModelProviderEntity provider) {
-        if (!isProviderConfigured(provider)) {
+        if (!isProviderEnabledAndConfigured(provider)) {
             return;
         }
         List<ModelConfigEntity> providerModels = modelConfigService.listModelsByProvider(providerId);
@@ -341,7 +344,7 @@ public class ModelProviderService {
         try {
             ModelConfigEntity currentDefault = modelConfigService.getDefaultModel();
             ModelProviderEntity defaultProvider = modelProviderMapper.selectById(currentDefault.getProvider());
-            if (!isProviderConfigured(defaultProvider)) {
+            if (!isProviderEnabledAndConfigured(defaultProvider)) {
                 shouldAutoActivate = true;
             }
         } catch (MateClawException e) {
@@ -351,6 +354,16 @@ public class ModelProviderService {
             ModelConfigEntity firstModel = providerModels.get(0);
             modelConfigService.setDefaultModel(providerId, firstModel.getModelName());
         }
+    }
+
+    /**
+     * OAuth/device-code completion updates credentials outside the normal provider
+     * config endpoint. Reuse the same default-model promotion logic so a freshly
+     * connected OAuth provider is immediately selectable by chat.
+     */
+    public void activateFirstModelIfDefaultUnavailable(String providerId) {
+        ModelProviderEntity provider = getProvider(providerId);
+        tryAutoActivateModel(providerId, provider);
     }
 
     private ModelProviderEntity getProvider(String providerId) {
@@ -551,9 +564,28 @@ public class ModelProviderService {
             return false;
         }
         String normalized = apiKey.trim();
+        // Reject masked display values (the UI sends "********" when the user
+        // didn't re-type the key) and known placeholder sentinels — without this
+        // check, the chat / embedding fallback chain happily forwards the
+        // placeholder to the LLM endpoint, which then returns a 401 at request
+        // time. "configure-in-admin-ui" is the application.yml default that
+        // keeps DashScopeChatAutoConfiguration happy at startup when no env var
+        // is set; "your-*-api-key-here" are legacy sentinels from earlier
+        // .env.example / application.yml versions.
         return !normalized.contains("*")
+                && !"configure-in-admin-ui".equalsIgnoreCase(normalized)
                 && !"your-dashscope-api-key-here".equalsIgnoreCase(normalized)
                 && !"your-api-key-here".equalsIgnoreCase(normalized);
+    }
+
+    public boolean isProviderEnabledAndConfigured(String providerId) {
+        return isProviderEnabledAndConfigured(getProvider(providerId));
+    }
+
+    private boolean isProviderEnabledAndConfigured(ModelProviderEntity provider) {
+        return provider != null
+                && Boolean.TRUE.equals(provider.getEnabled())
+                && isProviderConfigured(provider);
     }
 
     public Map<String, Object> readProviderGenerateKwargs(ModelProviderEntity provider) {

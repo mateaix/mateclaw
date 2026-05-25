@@ -21,6 +21,7 @@ import vip.mate.workflow.runtime.WorkflowResumer;
 import vip.mate.workflow.service.WorkflowService;
 
 import java.nio.charset.StandardCharsets;
+import vip.mate.workspace.core.annotation.RequireWorkspaceRole;
 
 /**
  * HTTP surface for resuming an {@code await_approval} pause.
@@ -54,6 +55,7 @@ public class WorkflowResumeController {
 
     @Operation(summary = "Resume a paused workflow run with the given outcome.")
     @PostMapping("/{runId}/resume")
+    @RequireWorkspaceRole("admin")
     public ResponseEntity<?> resume(@PathVariable long runId,
                                     @RequestBody ResumeRequest body,
                                     @RequestHeader("X-Workspace-Id") long workspaceId) {

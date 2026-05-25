@@ -10,6 +10,7 @@ import vip.mate.tool.builtin.ToolExecutionContext;
 import vip.mate.agent.AgentToolSet;
 import vip.mate.agent.GraphEventPublisher;
 import vip.mate.agent.context.ChatOrigin;
+import vip.mate.agent.context.StructuredTruncator;
 import vip.mate.agent.graph.state.DirectToolOutput;
 import vip.mate.agent.graph.state.SourceEvidenceLedger;
 import vip.mate.approval.ApprovalWorkflowService;
@@ -79,21 +80,69 @@ public class ToolExecutionExecutor {
     );
 
     /**
-     * Layer 1 — hard truncation cap applied to every tool result before it
-     * reaches ToolResultStorage (Layer 2 spill) or the LLM prompt.
+     * Inline hard-truncate cap for a single tool result. Acts as the fallback
+     * when raw-first spill cannot run (storage disabled, tool excluded, body
+     * already at-or-below the spill threshold, or disk write failed).
      *
-     * <p>Two-level budget chain (RFC-008 / RFC-06 D-5):
+     * <p>Per-tool-result handling chain:
      * <pre>
-     *   raw tool result
-     *     → truncateToolResult(..., MAX_TOOL_RESULT_CHARS=8000)   // Layer 1: hard cap
-     *     → persistIfOversized(..., perResultThresholdChars=16000) // Layer 2: spill to disk
-     *     → enforceTurnBudget(..., perTurnBudgetChars=32000)      // Layer 3: per-turn aggregate
+     *   raw tool result (full bytes)
+     *     → spillRawOrTruncate(...)
+     *         ├─ persistIfOversized(...) tries to write the raw body to disk
+     *         │     when size &gt; perResultThresholdChars and tool is not
+     *         │     in the spill exclusion list. Returns a SPILL_MARKER preview
+     *         │     on success, or the original string otherwise.
+     *         └─ if no SPILL_MARKER on the return, truncateToolResult(...)
+     *               caps inline to MAX_TOOL_RESULT_CHARS so a multi-MB raw
+     *               body never enters the model prompt.
+     *     → enforceTurnBudget(..., perTurnBudgetChars=32000)   // per-turn aggregate
      * </pre>
-     * Layer 1 runs first and is intentionally kept at 8000 to prevent oversized
-     * results from inflating the prompt. Layers 2/3 thresholds are configured in
-     * {@link ToolResultProperties} and application.yml.
+     * Spill must see the RAW result so the full output is preserved on disk
+     * and the model can call {@code read_file} on the spill path. Truncating
+     * before spilling would write a pre-shortened blob to disk, defeating the
+     * "ground truth on disk" guarantee. {@link ToolResultProperties} controls
+     * the thresholds; this constant stays in code because it is the safety
+     * net for the failure case and should not vary by deployment.
      */
     private static final int MAX_TOOL_RESULT_CHARS = 8000;
+
+    /**
+     * Raw-first spill: try to write the full result to disk via the spill
+     * store; only fall back to inline hard-truncate when no spill marker
+     * comes back. Caller distinguishes spill success from "returned
+     * unchanged" by checking {@link ToolResultStorage#SPILL_MARKER_PREFIX}
+     * on the returned string — otherwise an IO failure or under-threshold
+     * body would slip through indistinguishable from a successful spill,
+     * and a multi-MB raw body could end up in the model prompt.
+     *
+     * <p>Package-private + static so the spill/truncate decision is unit
+     * testable in isolation from the rest of the executor.
+     *
+     * @param storage          spill store; {@code null} skips the spill attempt
+     * @param maxTruncateChars fallback inline hard cap
+     * @param result           raw tool output (may be {@code null})
+     * @param toolName         used in the spill preview header
+     * @param toolUseId        unique within the conversation; becomes the file name
+     * @param conversationId   spill files are scoped per conversation; blank/null falls back to "unknown"
+     * @param workspaceBasePath where the spill directory lives when set
+     * @return the SPILL_MARKER preview when spill succeeded, otherwise the
+     *         original string (when ≤ threshold) or the inline-truncated string.
+     */
+    static String spillRawOrTruncate(ToolResultStorage storage, int maxTruncateChars,
+                                     String result, String toolName, String toolUseId,
+                                     String conversationId, String workspaceBasePath) {
+        if (result == null) return null;
+        if (storage != null) {
+            String safeConv = conversationId != null && !conversationId.isEmpty()
+                    ? conversationId : "unknown";
+            String candidate = storage.persistIfOversized(
+                    result, toolName, toolUseId, safeConv, workspaceBasePath);
+            if (candidate != null && candidate.startsWith(ToolResultStorage.SPILL_MARKER_PREFIX)) {
+                return candidate;
+            }
+        }
+        return truncateToolResult(result, maxTruncateChars);
+    }
 
     /** 尾部错误模式检测 */
     private static final java.util.regex.Pattern ERROR_TAIL_PATTERN = java.util.regex.Pattern.compile(
@@ -115,21 +164,21 @@ public class ToolExecutionExecutor {
     static String truncateToolResult(String result, int maxChars) {
         if (result == null || result.length() <= maxChars) return result;
         int rawLen = result.length();
-        // 检测尾部 2000 字符是否含错误模式
+        // Detect an error pattern in the trailing 2000 chars and bias toward the tail when present.
         String tailRegion = result.substring(Math.max(0, rawLen - 2000));
         boolean errorDetected = ERROR_TAIL_PATTERN.matcher(tailRegion).find();
         double headRatio = errorDetected ? 0.2 : 0.4;
         if (errorDetected) {
             log.info("[ToolExecutor] Error pattern detected in tail, preserving 80% tail (headRatio=0.2)");
         }
+        String marker = "\n\n...[TRUNCATED: original " + rawLen + " chars, middle omitted. "
+                + StructuredTruncator.FIDELITY_NOTE + "]...\n\n";
         int headLen = (int) (maxChars * headRatio);
-        int tailLen = maxChars - headLen - 80;
+        int tailLen = maxChars - headLen - marker.length();
         if (tailLen <= 0) tailLen = maxChars / 2;
         log.info("[ToolExecutor] Truncated tool result from {} to {} chars (headRatio={})",
                 rawLen, maxChars, headRatio);
-        return result.substring(0, headLen)
-                + "\n\n... [结果已截断，原始 " + rawLen + " 字符，保留首尾关键片段] ...\n\n"
-                + result.substring(rawLen - tailLen);
+        return StructuredTruncator.truncate(result, headLen, tailLen, marker);
     }
 
     private final Map<String, ToolCallback> toolCallbackMap;
@@ -443,6 +492,17 @@ public class ToolExecutionExecutor {
             }
             ToolCallback callback = toolCallbackMap.get(toolName);
             if (callback == null) {
+                SkillRedirect redirect = tryAutoRedirectSkillCall(toolName, arguments, safeOrigin);
+                if (redirect != null) {
+                    // Auto-redirect succeeds with success=true on the SSE event so the
+                    // model treats the SKILL.md content as the answer to a different,
+                    // valid question (rather than as another failed call to recover from).
+                    events.add(GraphEventPublisher.toolComplete(
+                            toolCall.id(), toolName, redirect.response(), true));
+                    allResponses.add(new ToolResponseMessage.ToolResponse(
+                            toolCall.id(), toolName, redirect.response()));
+                    continue;
+                }
                 String msg = skillAwareNotFoundMessage(toolName);
                 log.warn("[ToolExecutor] {}", msg);
                 events.add(GraphEventPublisher.toolComplete(toolCall.id(), toolName, msg, false));
@@ -521,6 +581,18 @@ public class ToolExecutionExecutor {
 
         ToolCallback callback = toolCallbackMap.get(toolName);
         if (callback == null) {
+            // Same auto-redirect for pre-approved replays — a stale skill-as-tool
+            // approval shouldn't dead-end the conversation either.
+            ChatOrigin replayOriginForRedirect = ChatOrigin.EMPTY
+                    .withConversationId(conversationId)
+                    .withWorkspace(null, workspaceBasePath);
+            SkillRedirect redirect = tryAutoRedirectSkillCall(toolName, callArguments, replayOriginForRedirect);
+            if (redirect != null) {
+                events.add(GraphEventPublisher.toolComplete(
+                        toolCall.id(), toolName, redirect.response(), true));
+                return new ToolResponseMessage.ToolResponse(
+                        toolCall.id(), toolName, redirect.response());
+            }
             String msg = skillAwareNotFoundMessage(toolName);
             log.warn("[ToolExecutor] Pre-approved {}", msg);
             events.add(GraphEventPublisher.toolComplete(toolCall.id(), toolName, msg, false));
@@ -558,16 +630,13 @@ public class ToolExecutionExecutor {
                         toolCall.id(), toolName, DIRECT_TOOL_PLACEHOLDER);
             }
 
-            // RFC-008 Layer 1 first, then Layer 2 — match the non-replay path
-            // in executeSingleTool so behavior stays symmetric across approval
-            // replays. The caller-supplied conversationId scopes spill files
-            // into the same per-conversation directory layout.
-            result = truncateToolResult(result, MAX_TOOL_RESULT_CHARS);
-            if (resultStorage != null && result != null) {
-                String spillConv = conversationId != null && !conversationId.isEmpty() ? conversationId : "unknown";
-                result = resultStorage.persistIfOversized(
-                        result, toolName, toolCall.id(), spillConv, workspaceBasePath);
-            }
+            // Raw-first spill, inline truncate as fallback. Symmetric with the
+            // non-replay path in executeSingleTool. The caller-supplied
+            // conversationId scopes spill files into the per-conversation
+            // directory layout. See spillRawOrTruncate javadoc for why the
+            // order matters.
+            result = spillRawOrTruncate(resultStorage, MAX_TOOL_RESULT_CHARS,
+                    result, toolName, toolCall.id(), conversationId, workspaceBasePath);
             log.info("[ToolExecutor] Pre-approved tool {} returned {} chars{}", toolName, rawLen,
                     result != null && result.length() < rawLen ? " (now " + result.length() + " after spill/truncate)" : "");
             events.add(GraphEventPublisher.toolComplete(toolCall.id(), toolName, result, true));
@@ -783,20 +852,16 @@ public class ToolExecutionExecutor {
                 }
             }
 
-            // RFC-008 Layer 1: hard truncation cap to prevent oversized results
-            // from inflating the prompt. Runs FIRST (before spill) so the spill
-            // store doesn't need to handle multi-MB writes for run-of-the-mill
-            // greps that happen to spit out a long stdout.
-            result = truncateToolResult(result, MAX_TOOL_RESULT_CHARS);
-            // RFC-008 Layer 2: spill oversized results to disk and replace
-            // with preview + path. Falls back to truncation when spilling is
-            // disabled or fails. Spill preserves the full output (read_file can
-            // retrieve it); the Layer 1 truncation above already capped the
-            // inline portion, so this layer mostly catches near-cap residues.
-            if (resultStorage != null && result != null) {
-                result = resultStorage.persistIfOversized(
-                        result, toolName, pc.toolCall.id(), pc.conversationId, pc.workspaceBasePath);
-            }
+            // Raw-first spill: write the full output to disk and replace
+            // with preview + path so the model can call read_file for the
+            // ground truth. Fall back to inline truncate only when spilling
+            // is disabled, the tool is on the exclusion list, the body is
+            // already under the spill threshold, or the disk write fails.
+            // Truncating before spilling would persist a pre-shortened body
+            // to disk and silently lose data the model could otherwise
+            // recover.
+            result = spillRawOrTruncate(resultStorage, MAX_TOOL_RESULT_CHARS,
+                    result, toolName, pc.toolCall.id(), pc.conversationId, pc.workspaceBasePath);
             log.info("[ToolExecutor] Tool {} returned {} chars{}", toolName, rawLen,
                     result != null && result.length() < rawLen ? " (now " + result.length() + " after spill/truncate)" : "");
             events.add(GraphEventPublisher.toolComplete(pc.toolCall.id(), toolName, result, true));
@@ -1047,6 +1112,79 @@ public class ToolExecutionExecutor {
             }
         }
         return "Tool not found: " + toolName;
+    }
+
+    /**
+     * Holder for an auto-redirect outcome: the SKILL.md content (wrapped
+     * with a one-line nudge) that we substitute as the tool response when
+     * the LLM mistakenly calls a skill name as if it were a tool.
+     *
+     * <p>{@code success=true} on the substituted response so the model
+     * doesn't read it as "tool failed, try harder" — semantically we
+     * answered a different question than the one it asked, and we want
+     * the model to follow the redirect rather than thrash.
+     */
+    private record SkillRedirect(String response) {}
+
+    /**
+     * When the LLM calls a skill name as if it were a tool, transparently
+     * fetch its SKILL.md and return that as the tool response. Smaller
+     * models (qwen-turbo et al.) often can't act on a "not a tool — go
+     * read X first" hint; they keep emitting the same wrong call until the
+     * iteration cap. With auto-redirect, the model receives runnable
+     * instructions on the very first attempt and can copy the runSkillScript
+     * shape from SKILL.md verbatim.
+     *
+     * <p>Returns {@code null} if {@code toolName} isn't a registered skill,
+     * if {@code readSkillFile} isn't available in this agent's tool set, or
+     * if the redirect call itself errored — the caller then falls through
+     * to the usual {@code skillAwareNotFoundMessage} hint.
+     */
+    private SkillRedirect tryAutoRedirectSkillCall(String toolName, String originalArgs, ChatOrigin origin) {
+        if (skillRuntimeService == null || toolName == null || toolName.isBlank()) return null;
+        try {
+            boolean isSkill = skillRuntimeService.getActiveSkills().stream()
+                    .anyMatch(s -> s.getName() != null && s.getName().equalsIgnoreCase(toolName));
+            if (!isSkill) return null;
+        } catch (Exception e) {
+            log.debug("[ToolExecutor] auto-redirect skill lookup failed: {}", e.getMessage());
+            return null;
+        }
+
+        ToolCallback readSkillFile = toolCallbackMap.get("readSkillFile");
+        if (readSkillFile == null) {
+            log.debug("[ToolExecutor] readSkillFile not bound to this agent — cannot auto-redirect '{}'", toolName);
+            return null;
+        }
+
+        String redirectArgs = "{\"skillName\":\""
+                + jsonStringEscape(toolName)
+                + "\",\"filePath\":\"SKILL.md\"}";
+        String skillMd;
+        try {
+            ToolContext ctx = (origin != null ? origin : ChatOrigin.EMPTY).toToolContext();
+            skillMd = readSkillFile.call(redirectArgs, ctx);
+        } catch (Exception e) {
+            log.warn("[ToolExecutor] Auto-redirect readSkillFile failed for '{}': {}", toolName, e.getMessage());
+            return null;
+        }
+
+        log.info("[ToolExecutor] Auto-redirected skill-as-tool call '{}' → readSkillFile (returned {} chars)",
+                toolName, skillMd != null ? skillMd.length() : 0);
+
+        String safeArgs = originalArgs == null || originalArgs.isBlank() ? "{}" : originalArgs;
+        String response = String.format(
+                "[auto-redirect] You called '%s' as a tool, but it's a Skill (documentation package). "
+                + "Its SKILL.md is loaded below — read the script invocation example, then call "
+                + "`runSkillScript(skillName=\"%s\", scriptPath=\"scripts/<file from SKILL.md>\", args=[...])` "
+                + "to actually run it. Your original payload was: %s%n%n---%n%s",
+                toolName, toolName, safeArgs, skillMd == null ? "" : skillMd);
+        return new SkillRedirect(response);
+    }
+
+    /** Minimal JSON string escaping for the synthetic readSkillFile arg payload. */
+    private static String jsonStringEscape(String s) {
+        return s.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
     // ==================== 内部数据类 ====================

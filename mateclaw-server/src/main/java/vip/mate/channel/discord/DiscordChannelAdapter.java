@@ -373,6 +373,18 @@ public class DiscordChannelAdapter extends AbstractChannelAdapter {
         return CHANNEL_TYPE;
     }
 
+    /**
+     * Discord enforces a single Gateway session per bot token (any duplicate
+     * {@code IDENTIFY} closes the previous shard) and there is no active
+     * webhook fallback in this adapter — the legacy webhook endpoint is
+     * a no-op. The leader gate ensures only one node holds the Gateway
+     * connection at a time.
+     */
+    @Override
+    public boolean requiresSingleLeader() {
+        return true;
+    }
+
     // ==================== Webhook 兼容（保留接口，不再使用） ====================
 
     /**

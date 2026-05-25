@@ -520,6 +520,11 @@ public class ChatController {
             AtomicBoolean finalized = new AtomicBoolean(false);
             try {
                 conversationService.getOrCreateConversation(conversationId, agentId, username, workspaceId);
+                // Pin the model the user picked for this conversation so later
+                // turns (and the runtime model resolver) honour it independently
+                // of every other conversation.
+                conversationService.updateConversationModel(conversationId,
+                        request.getModelProvider(), request.getModelName());
                 List<MessageContentPart> requestParts = normalizeRequestParts(request);
                 String promptText = buildPromptText(message, requestParts);
                 conversationService.saveMessage(conversationId, "user", message, requestParts);
@@ -932,7 +937,7 @@ public class ChatController {
         String username = auth != null ? auth.getName() : "anonymous";
         // 权限校验：已认证用户需验证会话归属，匿名用户（permitAll）直接放行
         if (auth != null && !conversationService.isConversationOwner(conversationId, username)) {
-            return R.fail("无权操作该会话");
+            return R.fail(403, "无权操作该会话");
         }
         boolean stopped = streamTracker.requestStop(conversationId);
 
@@ -975,7 +980,7 @@ public class ChatController {
             Authentication auth) {
         String username = auth != null ? auth.getName() : "anonymous";
         if (auth != null && !conversationService.isConversationOwner(conversationId, username)) {
-            return R.fail("无权操作该会话");
+            return R.fail(403, "无权操作该会话");
         }
 
         if (!streamTracker.isRunning(conversationId)) {
@@ -1024,7 +1029,7 @@ public class ChatController {
 
         String username = auth != null ? auth.getName() : null;
         if (username == null) {
-            return R.fail("未登录，请先登录");
+            return R.fail(401, "未登录，请先登录");
         }
         conversationService.getOrCreateConversation(request.getConversationId(), agentId, username, workspaceId);
         conversationService.saveMessage(request.getConversationId(), "user", request.getMessage(), request.getContentParts());
@@ -1047,7 +1052,7 @@ public class ChatController {
         // 校验会话归属（会话可能尚未创建，此时允许上传——后续 stream/chat 会创建并绑定用户）
         if (conversationService.conversationExists(conversationId)
                 && !conversationService.isConversationOwner(conversationId, username)) {
-            return R.fail("无权操作该会话");
+            return R.fail(403, "无权操作该会话");
         }
         if (file.isEmpty()) {
             return R.fail("上传文件不能为空");
@@ -1151,6 +1156,14 @@ public class ChatController {
         private Long lastEventId;
         /** 思考深度：off / low / medium / high / max，null 表示跟随 Agent 默认 */
         private String thinkingLevel;
+        /**
+         * Provider id of the model the user picked for this conversation.
+         * Paired with {@link #modelName}; null means "no per-conversation
+         * override — use the agent / global default".
+         */
+        private String modelProvider;
+        /** Model id the user picked for this conversation. See {@link #modelProvider}. */
+        private String modelName;
     }
 
     /**
@@ -1424,6 +1437,29 @@ public class ChatController {
             if (savedAssistant.getRuntimeProvider() != null && !savedAssistant.getRuntimeProvider().isBlank()) {
                 payload.put("runtimeProvider", savedAssistant.getRuntimeProvider());
             }
+            // Surface the server-authoritative segments timeline. The live SSE
+            // path builds metadata.segments from streamed deltas only, so
+            // server-side annotations added at persist time (e.g. the
+            // 'superseded' marker the SegmentSupersedeDetector writes onto
+            // pre-tool model claims that the actual tool result replaced)
+            // never reach the in-memory message until a page reload triggers
+            // a refetch via /messages. Inlining them in the done payload lets
+            // the client merge the markers onto its local segments by id
+            // without an extra HTTP round-trip.
+            String rawMetadata = savedAssistant.getMetadata();
+            if (rawMetadata != null && !rawMetadata.isBlank()) {
+                try {
+                    Map<String, Object> parsed = objectMapper.readValue(rawMetadata,
+                            new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {});
+                    Object segs = parsed.get("segments");
+                    if (segs instanceof java.util.List<?> list && !list.isEmpty()) {
+                        payload.put("segments", segs);
+                    }
+                } catch (Exception ignored) {
+                    // Best-effort: malformed metadata just means the client falls
+                    // back to its existing "wait for reload" reconcile path.
+                }
+            }
         }
         if (promptTokens > 0) payload.put("promptTokens", promptTokens);
         if (completionTokens > 0) payload.put("completionTokens", completionTokens);
@@ -1646,6 +1682,14 @@ public class ChatController {
          * having to guess from text. Empty string until the event arrives.
          */
         private String finishReason = "";
+        /**
+         * Recovery affordance payload from {@link
+         * vip.mate.agent.GraphEventPublisher#feedback}. Persisted into
+         * {@code metadata.feedbackEvent} so a page reload still surfaces
+         * the retry/regenerate/report card on the failed assistant
+         * bubble. Null when the turn ended cleanly.
+         */
+        private Map<String, Object> feedbackEvent = null;
         private Long planId = null;
         private List<String> planSteps = List.of();
         private Integer currentPlanStep = null;
@@ -1691,6 +1735,15 @@ public class ChatController {
                         finishReason = String.valueOf(reason);
                     }
                 }
+                if (vip.mate.agent.GraphEventPublisher.EVENT_FEEDBACK
+                        .equals(delta.eventType())) {
+                    // Snapshot the affordance payload so it persists into
+                    // message metadata. The same event is also rebroadcast
+                    // live (via the broadcastEvent fall-through below) so
+                    // an already-mounted UI sees it instantly without
+                    // waiting for the message-save round trip.
+                    feedbackEvent = delta.eventData();
+                }
                 if (vip.mate.agent.GraphEventPublisher.EVENT_ROUTING_DECISION.equals(delta.eventType())) {
                     // Captured at turn start; persisted under metadata.routing so the
                     // chat UI can render which sidecar (if any) was invoked. Internal
@@ -1709,7 +1762,15 @@ public class ChatController {
 
             // content_delta
             if (delta.content() != null && !delta.content().isBlank()) {
-                content.append(delta.content());
+                // segmentOnly deltas route per-iteration narration to the
+                // segments timeline only — the persisted top-level content
+                // field stays clean so it carries the final answer span,
+                // not "我来…让我…" concatenations across iterations (issue
+                // #120 narration leg). segmentOnly implies persistenceOnly,
+                // so no broadcast either.
+                if (!delta.segmentOnly()) {
+                    content.append(delta.content());
+                }
                 streamTracker.updatePhase(conversationId, "drafting_answer");
                 if (!delta.persistenceOnly()) {
                     broadcastEvent(conversationId, "content_delta", Map.of("delta", delta.content()));
@@ -1728,7 +1789,9 @@ public class ChatController {
 
             // thinking_delta
             if (delta.thinking() != null && !delta.thinking().isBlank()) {
-                thinking.append(delta.thinking());
+                if (!delta.segmentOnly()) {
+                    thinking.append(delta.thinking());
+                }
                 if (!delta.persistenceOnly()) {
                     broadcastEvent(conversationId, "thinking_delta", Map.of("delta", delta.thinking()));
                 }
@@ -1807,6 +1870,11 @@ public class ChatController {
             } else if ("tool_call_started".equals(eventType)) {
                 // toolCalls（兼容）
                 Map<String, Object> tc = new LinkedHashMap<>();
+                // toolCallId is required for history replay to pair the persisted
+                // assistant tool_call with its tool_response — providers reject any
+                // sequence whose ids don't match. Always record it (empty string
+                // when the upstream event didn't carry one, e.g. forced tool calls).
+                tc.put("toolCallId", String.valueOf(data.getOrDefault("toolCallId", "")));
                 tc.put("name", data.getOrDefault("toolName", ""));
                 tc.put("arguments", data.getOrDefault("arguments", ""));
                 tc.put("status", "running");
@@ -1814,6 +1882,7 @@ public class ChatController {
                 // segments: 关闭 running thinking/content，插入 tool_call
                 finalizeRunningSegments("thinking", "content");
                 var seg = newSegment("tool_call");
+                seg.put("toolCallId", String.valueOf(data.getOrDefault("toolCallId", "")));
                 seg.put("toolName", data.getOrDefault("toolName", ""));
                 seg.put("toolArgs", data.getOrDefault("arguments", ""));
                 segments.add(seg);
@@ -1831,10 +1900,17 @@ public class ChatController {
                 }
             } else if ("tool_call_completed".equals(eventType)) {
                 String toolName = String.valueOf(data.getOrDefault("toolName", ""));
-                // toolCalls（兼容）
+                String toolCallId = String.valueOf(data.getOrDefault("toolCallId", ""));
+                // toolCalls（兼容）— prefer toolCallId match so parallel calls of
+                // the same tool don't collide on the running+toolName fallback.
                 for (int i = toolCalls.size() - 1; i >= 0; i--) {
                     Map<String, Object> tc = toolCalls.get(i);
-                    if ("running".equals(tc.get("status")) && toolName.equals(tc.get("name"))) {
+                    boolean matches = (!toolCallId.isEmpty()
+                                && toolCallId.equals(String.valueOf(tc.getOrDefault("toolCallId", ""))))
+                            || (toolCallId.isEmpty()
+                                && "running".equals(tc.get("status"))
+                                && toolName.equals(tc.get("name")));
+                    if (matches) {
                         tc.put("result", data.getOrDefault("result", ""));
                         tc.put("success", data.getOrDefault("success", true));
                         tc.put("status", "completed");
@@ -1844,8 +1920,13 @@ public class ChatController {
                 // segments: 标记对应 tool_call 完成
                 for (int i = segments.size() - 1; i >= 0; i--) {
                     var seg = segments.get(i);
-                    if ("tool_call".equals(seg.get("type")) && "running".equals(seg.get("status"))
-                            && toolName.equals(seg.get("toolName"))) {
+                    if (!"tool_call".equals(seg.get("type"))) continue;
+                    boolean matches = (!toolCallId.isEmpty()
+                                && toolCallId.equals(String.valueOf(seg.getOrDefault("toolCallId", ""))))
+                            || (toolCallId.isEmpty()
+                                && "running".equals(seg.get("status"))
+                                && toolName.equals(seg.get("toolName")));
+                    if (matches) {
                         seg.put("status", "completed");
                         seg.put("toolResult", data.getOrDefault("result", ""));
                         seg.put("toolSuccess", data.getOrDefault("success", true));
@@ -1937,6 +2018,7 @@ public class ChatController {
         synchronized String toMetadataJson() {
             finalizeToolCalls();
             finalizeRunningSegments("thinking", "content", "tool_call");
+            SegmentSupersedeDetector.markSuperseded(segments);
             try {
                 Map<String, Object> metadata = new LinkedHashMap<>();
                 if (!toolCalls.isEmpty()) {
@@ -1981,6 +2063,15 @@ public class ChatController {
                     // turns from long-term memory promotion) instead of doing
                     // brittle text matching on the assistant content.
                     metadata.put("finishReason", finishReason);
+                }
+                if (feedbackEvent != null && !feedbackEvent.isEmpty()) {
+                    // Persist the recovery-affordance payload so the
+                    // retry/regenerate/report card survives page reload.
+                    // Stored as-is (errorType, errorMessage, actions,
+                    // timestamp) — frontend MessageBubble reads
+                    // metadata.feedbackEvent and renders one button per
+                    // entry in `actions`.
+                    metadata.put("feedbackEvent", feedbackEvent);
                 }
                 if (routingDecision != null && !routingDecision.isEmpty()) {
                     metadata.put("routing", routingDecision);

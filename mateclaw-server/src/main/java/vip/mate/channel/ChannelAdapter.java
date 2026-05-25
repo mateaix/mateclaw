@@ -142,6 +142,24 @@ public interface ChannelAdapter {
                 vip.mate.channel.notification.ApprovalNotificationService.staticBuildText(notice));
     }
 
+    /**
+     * Does this adapter deliver approval decisions through an
+     * interactive card (button click → card.action callback) rather
+     * than the text-command flow ({@code /approve <id>} / {@code /deny <id>})?
+     *
+     * <p>Controls {@code ChannelMessageRouter}'s "non-approval message →
+     * auto-cancel pending" heuristic. The heuristic was designed for
+     * the text flow where the user is expected to type
+     * {@code /approve} and anything else is an implicit "I changed my
+     * mind". With interactive cards the user clicks a button, and
+     * unrelated chat messages during the wait window must NOT
+     * auto-cancel the pending. Default false (text flow); WeCom +
+     * Feishu (when card dispatcher is wired) override to true.
+     */
+    default boolean usesInteractiveApprovalCards() {
+        return false;
+    }
+
     // ==================== 主动推送 ====================
 
     /**
@@ -200,6 +218,34 @@ public interface ChannelAdapter {
     }
 
     /**
+     * Whether this adapter must run on exactly one node in a multi-instance
+     * deployment.
+     *
+     * <p>Return {@code true} when the underlying transport rejects multiple
+     * concurrent connections from the same credentials — e.g. a bot WebSocket
+     * gateway that enforces a per-app connection cap, or a long-polling
+     * endpoint where multiple consumers would steal updates from each other.
+     * The channel manager will gate {@link #start()} on a distributed lease
+     * so only one node connects at a time, and failover to another node when
+     * the lease holder dies.
+     *
+     * <p>Webhook-based channels (DingTalk, WeCom, Slack, …) should leave this
+     * at the default {@code false}: inbound HTTP traffic is fanned out by the
+     * load balancer, so every node may safely subscribe.
+     *
+     * <p>Scope: this hook is honored by the framework for <b>DB-backed
+     * channels</b> registered via {@code ChannelManager.startChannel}. For
+     * plugin-registered channels the framework can only gate the initial
+     * register attempt — there is no follower retry, no hot-swap, and no
+     * disable-detection (plugins have a register/unregister lifecycle, not
+     * a DB-driven one). Plugin authors needing full single-leader semantics
+     * should depend on {@code ChannelLeaderElection} directly.
+     */
+    default boolean requiresSingleLeader() {
+        return false;
+    }
+
+    /**
      * RFC-024 Change 2：本 adapter 认为"多久没活动就视作 stale 需要重启"的阈值。
      *
      * <p>通用默认 60 分钟；长轮询类渠道（如 iLink 微信）应覆盖为 5 分钟，
@@ -228,5 +274,25 @@ public interface ChannelAdapter {
         return isRunning()
                 ? ChannelHealth.up(getChannelType(), null, java.time.Instant.now())
                 : ChannelHealth.outOfService(getChannelType(), null);
+    }
+
+    // ==================== Lifecycle hooks ====================
+
+    /**
+     * Fires after the router has successfully delivered the agent's reply
+     * for the given inbound message. Channels that want to acknowledge
+     * completion (e.g. Feishu adds a ✅ reaction on the user's original
+     * message) override this; the default is a no-op so the router can
+     * call it unconditionally without checking adapter type.
+     *
+     * <p>Called only on the happy path — error replies, approval-pending
+     * branches, and stream exceptions skip this hook.
+     *
+     * <p>Implementations MUST be cheap and non-blocking; they run on the
+     * router's processing thread. Use a background thread for any
+     * platform API call.
+     */
+    default void onAgentCompleted(ChannelMessage inboundMessage) {
+        // no-op; opt-in per adapter
     }
 }

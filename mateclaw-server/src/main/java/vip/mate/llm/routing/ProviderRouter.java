@@ -3,7 +3,6 @@ package vip.mate.llm.routing;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
-import vip.mate.agent.binding.service.AgentBindingService;
 import vip.mate.llm.model.ModelConfigEntity;
 import vip.mate.llm.service.ModelCapabilityService;
 import vip.mate.llm.service.ModelCapabilityService.Modality;
@@ -20,27 +19,22 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * RFC-090 §9.2 调整 C — diagnostics-first ProviderRouter.
+ * Capability-aware provider routing.
  *
- * <p>This first iteration does not yet rewrite the fallback chain order
- * (the existing {@code AgentBindingService.getPreferredProviderIds} +
- * {@link vip.mate.agent.AgentGraphBuilder#buildFallbackChain} flow is
- * already in place). Instead it:
+ * <p>Given an agent's bound skills, aggregates the {@code requires-model}
+ * capabilities they declare and uses that to:
+ * <ul>
+ *   <li>{@link #diagnosePrimary} — WARN when the chosen primary model is
+ *       missing a capability the bound skills require;</li>
+ *   <li>{@link #reorderForCapabilities} — lift providers that satisfy the
+ *       required modalities to the head of the fallback chain;</li>
+ *   <li>{@link #selectPrimary} — pick a primary model that satisfies the
+ *       required modalities, falling back to the global default.</li>
+ * </ul>
  *
- * <ol>
- *   <li>Aggregates {@code requires-model} from the agent's bound skills'
- *       manifests.</li>
- *   <li>Compares the union against the primary model's resolved
- *       capability set ({@link ModelCapabilityService#resolve}).</li>
- *   <li>Logs a clear WARN if a capability is missing — surfacing the
- *       same gap RFC-085's "ready" badge would render in UI.</li>
- * </ol>
- *
- * <p>Promoting this to actual chain re-ordering (i.e. "prefer providers
- * that satisfy modelNeeds") is straightforward once we have the data
- * for it: add a phase between {@code reorderByPreferences} and the
- * model build loop. That phase is intentionally not in this commit so
- * we can ship the diagnostics path independently and watch it in dev.
+ * <p>Binding data is read through {@link AgentBindingResolver}, an
+ * abstraction declared in this package so the routing layer never depends
+ * on the agent layer directly.
  */
 @Slf4j
 @Service
@@ -48,7 +42,7 @@ import java.util.Set;
 public class ProviderRouter {
 
     private final SkillRuntimeService skillRuntimeService;
-    private final AgentBindingService bindingService;
+    private final AgentBindingResolver bindingService;
     private final ModelCapabilityService capabilityService;
     private final ModelConfigService modelConfigService;
 
@@ -134,7 +128,7 @@ public class ProviderRouter {
         }
     }
 
-    // ==================== chain reorder (RFC-090 §9.2 调整 C) ====================
+    // ==================== chain reorder ====================
 
     /**
      * Re-rank an already preference-ordered provider list so providers
@@ -142,10 +136,9 @@ public class ProviderRouter {
      * float to the head. Stable order otherwise — providers that don't
      * satisfy keep their existing relative order.
      *
-     * <p>Called by {@link vip.mate.agent.AgentGraphBuilder#buildFallbackChain}
-     * after the user-preferences reorder. Only acts when bound skills
-     * actually declared {@code requires-model}; otherwise returns the
-     * input untouched.
+     * <p>Called when building the fallback chain, after the user-preferences
+     * reorder. Only acts when bound skills actually declared
+     * {@code requires-model}; otherwise returns the input untouched.
      */
     public List<ModelProviderEntity> reorderForCapabilities(Long agentId,
                                                              List<ModelProviderEntity> ordered) {

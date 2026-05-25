@@ -4,9 +4,13 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonPropertyDescription;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.annotation.Tool;
+import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Component;
+import vip.mate.agent.context.ChatOrigin;
 import vip.mate.skill.model.SkillEntity;
+import vip.mate.skill.runtime.SkillRuntimeService;
 import vip.mate.skill.runtime.SkillSecurityService;
 import vip.mate.skill.runtime.SkillValidationResult;
 import vip.mate.skill.service.SkillService;
@@ -17,8 +21,8 @@ import java.util.regex.Pattern;
 /**
  * RFC-023: Agent 自治 Skill 管理工具
  * <p>
- * 对标 hermes-agent 的 skill_manager_tool.py，让 Agent 在对话中自主创建、编辑、
- * 修补和删除 Skill。每次写入前强制安全扫描，失败则拒绝并返回原因。
+ * 让 Agent 在对话中自主创建、编辑、修补和删除 Skill。
+ * 每次写入前强制安全扫描，失败则拒绝并返回原因。
  * <p>
  * 系统 prompt 引导 Agent 使用此工具：
  * <blockquote>
@@ -37,6 +41,7 @@ public class SkillManageTool {
     private final SkillService skillService;
     private final SkillSecurityService securityService;
     private final SkillWorkspaceManager workspaceManager;
+    private final SkillRuntimeService runtimeService;
 
     /** Skill 名称格式：小写字母/数字/连字符/下划线/点，首字符必须是字母或数字 */
     private static final Pattern NAME_PATTERN = Pattern.compile("^[a-z0-9][a-z0-9._-]{0,63}$");
@@ -45,9 +50,25 @@ public class SkillManageTool {
 
     @vip.mate.tool.ConcurrencyUnsafe("create/edit/patch/delete on the shared skill registry; concurrent ops on the same skill name race")
     @Tool(description = """
-        Manage reusable skills: create, edit, patch, or delete skill procedures (SKILL.md format).
+        Manage the canonical SKILL.md content for a reusable skill: create, edit, patch,
+        or delete the skill itself (its body, version, description, frontmatter).
 
-        Use this tool to save successful approaches, workflows, and solutions as reusable skills.
+        USE THIS TOOL when the user (or you) wants to change WHAT a skill is:
+        - Create a new skill from scratch
+        - Rewrite an existing skill's body or steps
+        - Bump the version field in YAML frontmatter
+        - Fix a typo, outdated command, or wrong instruction inside SKILL.md
+        - Delete a skill
+
+        DO NOT use this tool to record a tip, observation, or lesson learned while USING
+        a skill — that belongs in record_lesson (per-skill LESSONS.md) or remember
+        (cross-skill memory). Lessons are notes ABOUT a skill; this tool rewrites the
+        skill itself.
+
+        Quick rule of thumb:
+        - "Update / fix / rewrite / change version of skill X"  → skill_manage
+        - "Remember that X works better when..." / "Note: ..."  → record_lesson or remember
+
         When to create a skill:
         - After completing a complex task (5+ tool calls)
         - After fixing a tricky error with a non-obvious solution
@@ -59,8 +80,8 @@ public class SkillManageTool {
 
         Actions:
         - create: Create a new skill with SKILL.md content (YAML frontmatter + markdown body)
-        - edit: Replace entire skill content (for major rewrites)
-        - patch: Find-and-replace a specific section (for small fixes)
+        - edit: Replace entire skill content (for major rewrites; preferred when changing version + body together)
+        - patch: Find-and-replace a specific section (for small targeted fixes)
         - delete: Remove a skill
 
         SKILL.md format example:
@@ -102,7 +123,12 @@ public class SkillManageTool {
 
             @JsonProperty
             @JsonPropertyDescription("For patch action: the new text to replace with")
-            String newText
+            String newText,
+
+            // RFC-063r §2.5: carries the calling agent's ChatOrigin; hidden
+            // from the LLM by JsonSchemaGenerator. Used to stamp the new
+            // skill with the agent's owning workspace.
+            @Nullable ToolContext toolContext
     ) {
         if (action == null || action.isBlank()) {
             return "Error: action is required (create | edit | patch | delete)";
@@ -117,8 +143,10 @@ public class SkillManageTool {
                     + "'. Must match: lowercase letters, digits, hyphens, dots (1-64 chars, start with letter/digit)";
         }
 
+        Long workspaceId = ChatOrigin.from(toolContext).workspaceId();
+
         return switch (action.strip().toLowerCase()) {
-            case "create" -> doCreate(normalizedName, content);
+            case "create" -> doCreate(normalizedName, content, workspaceId);
             case "edit"   -> doEdit(normalizedName, content);
             case "patch"  -> doPatch(normalizedName, oldText, newText);
             case "delete" -> doDelete(normalizedName);
@@ -128,7 +156,7 @@ public class SkillManageTool {
 
     // ==================== Create ====================
 
-    private String doCreate(String name, String content) {
+    private String doCreate(String name, String content, Long workspaceId) {
         if (content == null || content.isBlank()) {
             return "Error: content is required for create action. Provide full SKILL.md content.";
         }
@@ -157,6 +185,7 @@ public class SkillManageTool {
             skill.setBuiltin(false);
             skill.setVersion(extractVersion(content));
             skill.setSecurityScanStatus("PASSED");
+            skill.setWorkspaceId(workspaceId);
 
             skillService.createSkill(skill);
 
@@ -210,6 +239,8 @@ public class SkillManageTool {
             } catch (Exception e) {
                 log.warn("[SkillManage] Workspace export failed for '{}': {}", name, e.getMessage());
             }
+
+            rescanQuietly(existing);
 
             log.info("[SkillManage] Agent edited skill: name={}, contentLen={}", name, content.length());
             return "Skill '" + name + "' updated successfully (security scan: PASSED).";
@@ -280,6 +311,7 @@ public class SkillManageTool {
         try {
             existing.setSkillContent(patchedContent);
             existing.setDescription(extractDescription(patchedContent));
+            existing.setVersion(extractVersion(patchedContent));
             existing.setSecurityScanStatus("PASSED");
             skillService.updateSkill(existing);
 
@@ -288,6 +320,8 @@ public class SkillManageTool {
             } catch (Exception e) {
                 log.warn("[SkillManage] Workspace export failed for '{}': {}", name, e.getMessage());
             }
+
+            rescanQuietly(existing);
 
             log.info("[SkillManage] Agent patched skill: name={}", name);
             return "Skill '" + name + "' patched successfully (security scan: PASSED).";
@@ -354,6 +388,22 @@ public class SkillManageTool {
         } catch (Exception e) {
             log.error("[SkillManage] Security scan failed for '{}': {}", name, e.getMessage(), e);
             return "Error: security scan failed (" + e.getMessage() + "). Skill not saved.";
+        }
+    }
+
+    /**
+     * Synchronously re-run the resolver pipeline for the modified skill so
+     * the active-skills cache and any manifest-projected columns are
+     * coherent before this tool call returns. Without this, callers race
+     * the debounced 500ms workspace-event refresh and may observe stale
+     * state (e.g. the skill detail page showing the previous version).
+     */
+    private void rescanQuietly(SkillEntity skill) {
+        if (skill == null || runtimeService == null) return;
+        try {
+            runtimeService.rescanSingle(skill);
+        } catch (Exception e) {
+            log.warn("[SkillManage] Post-write rescan failed for '{}': {}", skill.getName(), e.getMessage());
         }
     }
 

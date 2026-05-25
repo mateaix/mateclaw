@@ -9,8 +9,11 @@ import vip.mate.auth.model.UserEntity;
 import vip.mate.auth.service.AuthService;
 import vip.mate.common.result.R;
 import vip.mate.exception.MateClawException;
+import vip.mate.workspace.core.annotation.RequireGlobalAdmin;
+import vip.mate.workspace.core.model.WorkspaceAccessVO;
 import vip.mate.workspace.core.model.WorkspaceEntity;
 import vip.mate.workspace.core.model.WorkspaceMemberEntity;
+import vip.mate.workspace.core.model.WorkspaceWithRoleVO;
 import vip.mate.workspace.core.service.WorkspaceService;
 
 import java.util.List;
@@ -32,11 +35,12 @@ public class WorkspaceController {
 
     // ==================== 工作区 CRUD ====================
 
-    @Operation(summary = "获取当前用户的工作区列表")
+    @Operation(summary = "获取当前用户的工作区列表（含 memberRole 与 effectiveRole）")
     @GetMapping
-    public R<List<WorkspaceEntity>> list(Authentication auth) {
-        Long userId = resolveUserId(auth);
-        return R.ok(workspaceService.listByUserId(userId));
+    public R<List<WorkspaceWithRoleVO>> list(Authentication auth) {
+        UserEntity user = resolveUser(auth);
+        boolean isGlobalAdmin = isGlobalAdmin(user);
+        return R.ok(workspaceService.listWithRoleByUserId(user.getId(), isGlobalAdmin));
     }
 
     @Operation(summary = "获取工作区详情")
@@ -45,8 +49,17 @@ public class WorkspaceController {
         return R.ok(workspaceService.getById(id));
     }
 
+    @Operation(summary = "获取当前用户在指定工作区的访问能力（路由守卫消费）")
+    @GetMapping("/{id}/access")
+    public R<WorkspaceAccessVO> getAccess(@PathVariable Long id, Authentication auth) {
+        UserEntity user = resolveUser(auth);
+        boolean isGlobalAdmin = isGlobalAdmin(user);
+        return R.ok(workspaceService.getAccess(id, user.getId(), isGlobalAdmin));
+    }
+
     @Operation(summary = "创建工作区")
     @PostMapping
+    @RequireGlobalAdmin
     public R<WorkspaceEntity> create(@RequestBody WorkspaceEntity entity, Authentication auth) {
         Long userId = resolveUserId(auth);
         return R.ok(workspaceService.create(entity, userId));
@@ -74,7 +87,11 @@ public class WorkspaceController {
 
     @Operation(summary = "获取工作区成员列表")
     @GetMapping("/{id}/members")
-    public R<List<WorkspaceMemberEntity>> listMembers(@PathVariable Long id) {
+    public R<List<WorkspaceMemberEntity>> listMembers(@PathVariable Long id, Authentication auth) {
+        UserEntity currentUser = resolveUser(auth);
+        if (!isGlobalAdmin(currentUser)) {
+            workspaceService.requirePermission(id, currentUser.getId(), "viewer");
+        }
         List<WorkspaceMemberEntity> members = workspaceService.listMembers(id);
         // 填充用户名/昵称
         for (WorkspaceMemberEntity m : members) {
@@ -113,12 +130,11 @@ public class WorkspaceController {
                 newUser.setNickname(body.containsKey("nickname")
                         ? body.get("nickname").toString() : username);
                 target = authService.createUser(newUser);
-            } else if (password != null && !password.isBlank()) {
-                // User exists AND admin provided a password — reset it.
-                // This fixes the case where an admin removes a member, re-adds
-                // them with a new password, but the stale password blocks login.
-                authService.resetPassword(target.getId(), password);
             }
+            // Existing users are added as-is. A workspace admin must NOT be able
+            // to reset another account's password (including a global admin's)
+            // through the member-add path — that would be an account-takeover
+            // vector. Password changes go through the dedicated reset flow.
             targetUserId = target.getId();
         } else {
             targetUserId = Long.valueOf(body.get("userId").toString());
@@ -128,33 +144,45 @@ public class WorkspaceController {
     }
 
     @Operation(summary = "更新成员角色")
-    @PutMapping("/{id}/members/{memberId}")
+    @PutMapping("/{id}/members/{targetUserId}")
     public R<WorkspaceMemberEntity> updateMemberRole(@PathVariable Long id,
-                                                      @PathVariable Long memberId,
+                                                      @PathVariable Long targetUserId,
                                                       @RequestBody Map<String, String> body,
                                                       Authentication auth) {
         Long userId = resolveUserId(auth);
         workspaceService.requirePermission(id, userId, "admin");
-        return R.ok(workspaceService.updateMemberRole(id, memberId, body.get("role")));
+        // Path variable is the member's USER id (not the membership row id):
+        // WorkspaceService resolves membership by (workspaceId, userId).
+        return R.ok(workspaceService.updateMemberRole(id, targetUserId, body.get("role")));
     }
 
     @Operation(summary = "移除工作区成员")
-    @DeleteMapping("/{id}/members/{memberId}")
-    public R<Void> removeMember(@PathVariable Long id, @PathVariable Long memberId, Authentication auth) {
+    @DeleteMapping("/{id}/members/{targetUserId}")
+    public R<Void> removeMember(@PathVariable Long id, @PathVariable Long targetUserId, Authentication auth) {
         Long userId = resolveUserId(auth);
         workspaceService.requirePermission(id, userId, "admin");
-        workspaceService.removeMember(id, memberId);
+        // Path variable is the member's USER id (not the membership row id):
+        // WorkspaceService resolves membership by (workspaceId, userId).
+        workspaceService.removeMember(id, targetUserId);
         return R.ok();
     }
 
     // ==================== 工具方法 ====================
 
     private Long resolveUserId(Authentication auth) {
+        return resolveUser(auth).getId();
+    }
+
+    private UserEntity resolveUser(Authentication auth) {
         String username = auth.getName();
         UserEntity user = authService.findByUsername(username);
         if (user == null) {
             throw new MateClawException("用户不存在: " + username);
         }
-        return user.getId();
+        return user;
+    }
+
+    private boolean isGlobalAdmin(UserEntity user) {
+        return user != null && "admin".equalsIgnoreCase(user.getRole());
     }
 }

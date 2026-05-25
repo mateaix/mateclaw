@@ -42,6 +42,22 @@ public class ConversationController {
     }
 
     /**
+     * 分页查询会话列表（用于会话管理页）。
+     * <p>会话管理页可能跨多个 IM 渠道，单页全量返回会拖慢首屏。
+     */
+    @Operation(summary = "分页查询会话列表")
+    @GetMapping("/page")
+    public R<com.baomidou.mybatisplus.core.metadata.IPage<ConversationVO>> page(
+            Authentication auth,
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId,
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "20") int size,
+            @RequestParam(required = false) String keyword) {
+        String username = auth != null ? auth.getName() : "anonymous";
+        return R.ok(conversationService.pageConversations(username, workspaceId, page, size, keyword));
+    }
+
+    /**
      * 获取指定会话的消息历史（支持分页）。
      * <p>
      * 不传 limit 时返回全部消息（向后兼容）。
@@ -56,7 +72,7 @@ public class ConversationController {
                              Authentication auth) {
         String username = auth != null ? auth.getName() : "anonymous";
         if (!conversationService.isConversationOwner(conversationId, username)) {
-            return R.fail("无权访问该会话");
+            return R.fail(403, "无权访问该会话");
         }
 
         // 向后兼容：不传 limit 则返回全部消息（旧前端行为）
@@ -101,7 +117,7 @@ public class ConversationController {
     public R<Void> delete(@PathVariable String conversationId, Authentication auth) {
         String username = auth != null ? auth.getName() : "anonymous";
         if (!conversationService.isConversationOwner(conversationId, username)) {
-            return R.fail("无权操作该会话");
+            return R.fail(403, "无权操作该会话");
         }
         conversationService.deleteConversation(conversationId);
         return R.ok();
@@ -115,7 +131,7 @@ public class ConversationController {
     public R<Void> rename(@PathVariable String conversationId, @RequestBody Map<String, String> body, Authentication auth) {
         String username = auth != null ? auth.getName() : "anonymous";
         if (!conversationService.isConversationOwner(conversationId, username)) {
-            return R.fail("无权操作该会话");
+            return R.fail(403, "无权操作该会话");
         }
         String title = body.getOrDefault("title", "").trim();
         if (title.isEmpty() || title.length() > 100) {
@@ -126,6 +142,78 @@ public class ConversationController {
     }
 
     /**
+     * 置顶 / 取消置顶会话
+     */
+    @Operation(summary = "置顶或取消置顶会话")
+    @PutMapping("/{conversationId}/pin")
+    public R<Void> setPinned(@PathVariable String conversationId,
+                             @RequestBody Map<String, Boolean> body,
+                             Authentication auth) {
+        String username = auth != null ? auth.getName() : "anonymous";
+        if (!conversationService.isConversationOwner(conversationId, username)) {
+            return R.fail(403, "无权操作该会话");
+        }
+        conversationService.setPinned(conversationId, Boolean.TRUE.equals(body.get("pinned")));
+        return R.ok();
+    }
+
+    /**
+     * Pin a conversation to a specific (provider, model) pair so subsequent
+     * messages — including those from IM channels (Feishu / DingTalk / WeCom
+     * / Telegram / Discord / QQ / Slack / WeChat) — use that model instead
+     * of falling back to the agent or global default. Closes issue #183
+     * where IM conversations could never be steered away from the agent's
+     * configured default via the admin UI.
+     *
+     * <p>Both fields must be non-blank to take effect — a half-populated
+     * payload is silently ignored at the service layer (see
+     * {@link ConversationService#updateConversationModel}). Passing
+     * existing matching values is a no-op (no DB write).
+     */
+    @Operation(summary = "切换会话使用的模型 (provider + model name)")
+    @PutMapping("/{conversationId}/model")
+    public R<Void> setModel(@PathVariable String conversationId,
+                            @RequestBody Map<String, String> body,
+                            Authentication auth) {
+        String username = auth != null ? auth.getName() : "anonymous";
+        if (!conversationService.isConversationOwner(conversationId, username)) {
+            return R.fail(403, "无权操作该会话");
+        }
+        String provider = body.get("modelProvider");
+        String modelName = body.get("modelName");
+        if (provider == null || provider.isBlank() || modelName == null || modelName.isBlank()) {
+            return R.fail("modelProvider 和 modelName 都必须提供");
+        }
+        conversationService.updateConversationModel(conversationId, provider.trim(), modelName.trim());
+        return R.ok();
+    }
+
+    /**
+     * 批量删除会话（仅删除当前用户有权操作的会话）
+     */
+    @Operation(summary = "批量删除会话")
+    @PostMapping("/batch-delete")
+    public R<Integer> batchDelete(@RequestBody Map<String, List<String>> body, Authentication auth) {
+        String username = auth != null ? auth.getName() : "anonymous";
+        List<String> ids = body.get("conversationIds");
+        if (ids == null || ids.isEmpty()) {
+            return R.fail("未指定要删除的会话");
+        }
+        int deleted = 0;
+        for (String conversationId : ids) {
+            if (conversationId == null || conversationId.isBlank()) {
+                continue;
+            }
+            if (!conversationService.isConversationOwner(conversationId, username)) {
+                continue;
+            }
+            conversationService.deleteConversation(conversationId);
+            deleted++;
+        }
+        return R.ok(deleted);
+    }
+
+    /**
      * 清空会话消息（保留会话记录）
      */
     @Operation(summary = "清空会话消息")
@@ -133,7 +221,7 @@ public class ConversationController {
     public R<Void> clearMessages(@PathVariable String conversationId, Authentication auth) {
         String username = auth != null ? auth.getName() : "anonymous";
         if (!conversationService.isConversationOwner(conversationId, username)) {
-            return R.fail("无权操作该会话");
+            return R.fail(403, "无权操作该会话");
         }
         conversationService.clearMessages(conversationId);
         return R.ok();
@@ -147,8 +235,14 @@ public class ConversationController {
     @GetMapping("/{conversationId}/status")
     public R<Map<String, String>> getStreamStatus(@PathVariable String conversationId, Authentication auth) {
         String username = auth != null ? auth.getName() : "anonymous";
+        // A freshly opened chat uses a client-generated id that is not persisted
+        // until the first message lands. The console polls this endpoint on an
+        // interval, so report idle for an unknown conversation instead of failing.
+        if (!conversationService.conversationExists(conversationId)) {
+            return R.ok(Map.of("streamStatus", "idle"));
+        }
         if (!conversationService.isConversationOwner(conversationId, username)) {
-            return R.fail("无权访问该会话");
+            return R.fail(403, "无权访问该会话");
         }
         if (streamTracker.isRunning(conversationId)) {
             return R.ok(Map.of("streamStatus", "running"));

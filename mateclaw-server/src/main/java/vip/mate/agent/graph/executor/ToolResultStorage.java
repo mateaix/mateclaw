@@ -2,6 +2,7 @@ package vip.mate.agent.graph.executor;
 
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.messages.ToolResponseMessage;
+import vip.mate.agent.context.StructuredTruncator;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.stereotype.Component;
@@ -57,6 +58,15 @@ public class ToolResultStorage {
 
     /** D-6: monotonically increasing spill counter for observability. */
     private final java.util.concurrent.atomic.AtomicLong spillCount = new java.util.concurrent.atomic.AtomicLong();
+
+    /**
+     * Workspace roots observed during this JVM's lifetime. Populated every
+     * time a successful spill resolves a base directory; consulted by the
+     * scheduled retention sweep and by {@link #purgeConversation} so we
+     * don't have to query the database for every workspace path. Cross-JVM
+     * orphans are not covered — that is documented in the cleanup javadoc.
+     */
+    private final java.util.Set<Path> observedRoots = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     public ToolResultStorage(ToolResultProperties props) {
         this.props = props;
@@ -221,16 +231,16 @@ public class ToolResultStorage {
         if (body == null || body.length() <= maxChars) {
             return body;
         }
-        int markerBudget = 120;
-        int available = Math.max(200, maxChars - markerBudget);
+        String marker = "\n\n... [tool result compacted for model context: tool="
+                + toolName + ", original_chars=" + body.length() + ". "
+                + StructuredTruncator.FIDELITY_NOTE + "] ...\n\n";
+        int available = Math.max(200, maxChars - marker.length());
         int headLen = Math.max(100, (int) (available * 0.45));
         int tailLen = Math.max(100, available - headLen);
         if (headLen + tailLen >= body.length()) {
             return body;
         }
-        String marker = "\n\n... [tool result compacted for model context: tool="
-                + toolName + ", original_chars=" + body.length() + "] ...\n\n";
-        return body.substring(0, headLen) + marker + body.substring(body.length() - tailLen);
+        return StructuredTruncator.truncate(body, headLen, tailLen, marker);
     }
 
     private static int aggregateSize(List<ToolResponseMessage.ToolResponse> responses) {
@@ -242,14 +252,16 @@ public class ToolResultStorage {
     }
 
     private String buildPreview(String fullResult, String toolName, Path spillFile) {
-        int previewLen = Math.min(props.getPreviewHeadChars(), fullResult.length());
-        String head = fullResult.substring(0, previewLen);
+        // Snap the preview to a complete JSON element so the model never sees a value
+        // severed mid-token (which invites it to fabricate the omitted fields).
+        String head = StructuredTruncator.headSlice(fullResult, props.getPreviewHeadChars());
         return SPILL_MARKER_PREFIX
                 + " tool=" + toolName
                 + " full_chars=" + fullResult.length()
                 + " path=" + spillFile.toAbsolutePath()
-                + "\n[Preview — first " + previewLen + " of " + fullResult.length()
-                + " chars. Use read_file with the path above to retrieve the rest.]\n"
+                + "\n[Preview — first " + head.length() + " of " + fullResult.length()
+                + " chars. The preview is INCOMPLETE: use read_file with the path above to "
+                + "retrieve the full result. Do NOT infer or fabricate the omitted content.]\n"
                 + head
                 + "\n…[truncated]";
     }
@@ -270,15 +282,162 @@ public class ToolResultStorage {
     }
 
     private Path resolveBaseDir(String workspaceBasePath) {
+        Path base;
         if (!props.getStorageBaseDir().isEmpty()) {
-            return Paths.get(props.getStorageBaseDir());
+            base = Paths.get(props.getStorageBaseDir());
+        } else if (workspaceBasePath != null && !workspaceBasePath.isBlank()) {
+            base = Paths.get(workspaceBasePath, ".mateclaw", "tool-results");
+        } else {
+            String tmp = System.getProperty("java.io.tmpdir");
+            if (tmp == null || tmp.isEmpty()) return null;
+            base = Paths.get(tmp, "mateclaw", "tool-results");
         }
-        if (workspaceBasePath != null && !workspaceBasePath.isBlank()) {
-            return Paths.get(workspaceBasePath, ".mateclaw", "tool-results");
+        // Register so the retention sweep and conversation-delete hook can
+        // reach this root even when the workspace path is no longer in scope.
+        observedRoots.add(base);
+        return base;
+    }
+
+    /**
+     * Roots currently known to this instance. Exposed package-private so the
+     * scheduled retention sweep and unit tests can enumerate them without
+     * touching the underlying set directly.
+     */
+    java.util.Set<Path> getObservedRoots() {
+        return java.util.Collections.unmodifiableSet(observedRoots);
+    }
+
+    /**
+     * Best-effort: delete every spill file and per-conversation directory
+     * older than {@link ToolResultProperties#getRetentionDays()} across all
+     * roots this storage has seen, plus the configured base dir and the
+     * tmpdir fallback. Returns the number of files deleted.
+     *
+     * <p>Workspaces that never received a spill in this JVM's lifetime are
+     * not covered. Persisting an observed-roots registry across restarts
+     * could fix that, but is intentionally out of scope — the operator-side
+     * remedy is to run a one-off cleanup with {@code storage-base-dir}
+     * pointed at the historical workspace.
+     */
+    public int cleanupExpired() {
+        if (props.getRetentionDays() <= 0) {
+            return 0;
+        }
+        long cutoffEpochMillis = System.currentTimeMillis()
+                - (long) props.getRetentionDays() * 24L * 60L * 60L * 1000L;
+
+        java.util.Set<Path> roots = new java.util.LinkedHashSet<>(observedRoots);
+        if (!props.getStorageBaseDir().isEmpty()) {
+            roots.add(Paths.get(props.getStorageBaseDir()));
         }
         String tmp = System.getProperty("java.io.tmpdir");
-        if (tmp == null || tmp.isEmpty()) return null;
-        return Paths.get(tmp, "mateclaw", "tool-results");
+        if (tmp != null && !tmp.isEmpty()) {
+            roots.add(Paths.get(tmp, "mateclaw", "tool-results"));
+        }
+
+        int deleted = 0;
+        for (Path root : roots) {
+            deleted += deleteExpiredUnder(root, cutoffEpochMillis);
+        }
+        if (deleted > 0) {
+            log.info("[ToolResultStorage] cleanup: {} spill files removed across {} root(s)",
+                    deleted, roots.size());
+        }
+        return deleted;
+    }
+
+    private int deleteExpiredUnder(Path root, long cutoffEpochMillis) {
+        if (root == null || !java.nio.file.Files.isDirectory(root)) {
+            return 0;
+        }
+        int deleted = 0;
+        try (java.util.stream.Stream<Path> stream = java.nio.file.Files.walk(root, 2)) {
+            for (Path p : (Iterable<Path>) stream::iterator) {
+                if (p.equals(root)) continue;
+                if (!java.nio.file.Files.isRegularFile(p)) continue;
+                try {
+                    long mtime = java.nio.file.Files.getLastModifiedTime(p).toMillis();
+                    if (mtime < cutoffEpochMillis) {
+                        java.nio.file.Files.deleteIfExists(p);
+                        deleted++;
+                    }
+                } catch (java.io.IOException ioe) {
+                    log.warn("[ToolResultStorage] failed to inspect spill file {}: {}", p, ioe.getMessage());
+                }
+            }
+        } catch (java.io.IOException ioe) {
+            log.warn("[ToolResultStorage] cleanup walk failed under {}: {}", root, ioe.getMessage());
+            return deleted;
+        }
+        // Best-effort: remove emptied per-conversation directories.
+        try (java.util.stream.Stream<Path> stream = java.nio.file.Files.list(root)) {
+            for (Path child : (Iterable<Path>) stream::iterator) {
+                if (!java.nio.file.Files.isDirectory(child)) continue;
+                try (java.util.stream.Stream<Path> kids = java.nio.file.Files.list(child)) {
+                    if (kids.findAny().isEmpty()) {
+                        java.nio.file.Files.deleteIfExists(child);
+                    }
+                } catch (java.io.IOException ignored) {
+                    // empty-check failure is not fatal — leave the directory alone
+                }
+            }
+        } catch (java.io.IOException ioe) {
+            log.warn("[ToolResultStorage] empty-dir sweep failed under {}: {}", root, ioe.getMessage());
+        }
+        return deleted;
+    }
+
+    /**
+     * Delete every spill file produced for {@code conversationId} across
+     * all observed roots, plus the configured base and tmpdir fallback.
+     * Called by {@code ConversationService.deleteConversation} so spill
+     * directories don't outlive the conversation that owns them.
+     *
+     * <p>Silently no-ops when nothing matches — a conversation that never
+     * spilled, or one whose workspace root was never observed in this JVM,
+     * is simply left alone. Returns the number of files deleted.
+     */
+    public int purgeConversation(String conversationId) {
+        if (conversationId == null || conversationId.isEmpty()) {
+            return 0;
+        }
+        String safeConv = sanitize(conversationId);
+        java.util.Set<Path> roots = new java.util.LinkedHashSet<>(observedRoots);
+        if (!props.getStorageBaseDir().isEmpty()) {
+            roots.add(Paths.get(props.getStorageBaseDir()));
+        }
+        String tmp = System.getProperty("java.io.tmpdir");
+        if (tmp != null && !tmp.isEmpty()) {
+            roots.add(Paths.get(tmp, "mateclaw", "tool-results"));
+        }
+        int deleted = 0;
+        for (Path root : roots) {
+            Path convDir = root.resolve(safeConv);
+            if (!java.nio.file.Files.isDirectory(convDir)) continue;
+            try (java.util.stream.Stream<Path> stream = java.nio.file.Files.list(convDir)) {
+                for (Path p : (Iterable<Path>) stream::iterator) {
+                    try {
+                        if (java.nio.file.Files.isRegularFile(p)) {
+                            java.nio.file.Files.deleteIfExists(p);
+                            deleted++;
+                        }
+                    } catch (java.io.IOException ioe) {
+                        log.warn("[ToolResultStorage] failed to delete spill file {}: {}", p, ioe.getMessage());
+                    }
+                }
+            } catch (java.io.IOException ioe) {
+                log.warn("[ToolResultStorage] purge walk failed under {}: {}", convDir, ioe.getMessage());
+            }
+            try {
+                java.nio.file.Files.deleteIfExists(convDir);
+            } catch (java.io.IOException ignored) {
+                // non-empty after deletes (another writer raced us) — fine, leave it
+            }
+        }
+        if (deleted > 0) {
+            log.info("[ToolResultStorage] purged {} spill file(s) for conversation {}", deleted, conversationId);
+        }
+        return deleted;
     }
 
     /** Strip path separators and reserved characters so user-supplied IDs cannot escape the directory. */

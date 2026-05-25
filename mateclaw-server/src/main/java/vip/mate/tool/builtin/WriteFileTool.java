@@ -20,8 +20,8 @@ import java.nio.file.Paths;
  * <p>
  * 安全说明：
  * <ul>
- *   <li>写入操作经过 ToolGuard 审批（DefaultToolGuard 对 file_write 工具默认返回 NEEDS_APPROVAL）</li>
- *   <li>覆写已有文件前需要用户确认</li>
+ *   <li>写入操作会经过 ToolGuard 安全检查；命中安全规则时会要求用户审批</li>
+ *   <li>路径边界由 {@code WorkspacePathGuard} 处理</li>
  * </ul>
  *
  * @author MateClaw Team
@@ -36,7 +36,7 @@ public class WriteFileTool {
     @vip.mate.tool.ConcurrencyUnsafe("file write — must serialize with reads/writes on overlapping paths")
     @Tool(description = "Write content to a file. Overwrites if exists, creates if not (auto-creates parent directories). "
             + "Returns structured JSON with filePath, bytesWritten. "
-            + "Requires user approval.")
+            + "May require user approval when security rules flag the write.")
     public String write_file(
             @ToolParam(description = "Absolute or relative file path") String filePath,
             @ToolParam(description = "Content to write to the file") String content) {

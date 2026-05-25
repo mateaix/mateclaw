@@ -39,7 +39,7 @@ public class ModelConfigEntity {
      * RFC-03 Lane B1 — per-model HTTP read timeout (seconds).
      *
      * <p>Null / zero / negative → fall back to the global default of 180s
-     * (existing behavior, see {@code AgentAnthropicChatModelBuilder.applyHttpTimeouts}
+     * (existing behavior, see {@code AnthropicChatModelBuilder.applyHttpTimeouts}
      * and the corresponding helper in {@code AgentGraphBuilder}). A positive
      * value overrides for this specific model.
      *

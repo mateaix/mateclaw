@@ -70,7 +70,7 @@
 <script setup lang="ts">
 import { ref, reactive, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+import { mcToast } from '@/composables/useMcToast'
 import { authApi } from '@/api/index'
 
 const props = defineProps<{ visible: boolean }>()
@@ -98,21 +98,21 @@ function close() {
 
 async function handleSubmit() {
   if (!form.oldPassword || !form.newPassword) {
-    ElMessage.warning(t('auth.fieldsRequired'))
+    mcToast.warning(t('auth.fieldsRequired'))
     return
   }
   if (form.newPassword !== form.confirmPassword) {
-    ElMessage.warning(t('auth.passwordMismatch'))
+    mcToast.warning(t('auth.passwordMismatch'))
     return
   }
   submitting.value = true
   try {
-    const userId = Number(localStorage.getItem('userId') || '1')
+    const userId = localStorage.getItem('userId') || '1'
     await authApi.changePassword(userId, form.oldPassword, form.newPassword)
-    ElMessage.success(t('auth.passwordChanged'))
+    mcToast.success(t('auth.passwordChanged'))
     close()
   } catch (error: any) {
-    ElMessage.error(error?.msg || error?.message || t('auth.passwordChangeFailed'))
+    mcToast.error(error?.msg || error?.message || t('auth.passwordChangeFailed'))
   } finally {
     submitting.value = false
   }

@@ -44,6 +44,22 @@ export type SSEEventType =
   | 'delegation_progress'
   | 'delegation_end'
   | 'delegation_child_complete'
+  // Fire-and-forget delegation: a subagent spawned to run detached. Its result
+  // is retrieved later via task_output, so it enters the timeline as a node
+  // marked "running in background" rather than one that resolves this turn.
+  | 'delegation_async_spawned'
+  // Heartbeat watchdog flagged a sub-agent as making no observable progress
+  | 'subagent_stale'
+  // Persistent goal events (RFC 48) — emitted by GoalEvaluationNode
+  | 'goal_evaluated'
+  | 'goal_followup'
+  | 'goal_completed'
+  | 'goal_exhausted'
+  // Tool-side goal mutations (GoalManagementTool) — emitted when the
+  // agent invokes setGoal / addGoalCriterion so the store can refresh
+  // without a full page reload.
+  | 'goal_created'
+  | 'goal_updated'
   // Stream lifecycle + per-iteration boundaries (single-turn UX overhaul).
   // The parser handles arbitrary `event:` lines via parseEvent — these names
   // exist in the union purely so TypeScript callers can register handlers
@@ -57,7 +73,13 @@ export type SSEEventType =
   | 'iteration_end'
   | 'content_truncated'
   | 'tool_result_chunk'
-  | 'delegation_batch'
+  // Recovery affordance for non-transient errors (ERROR_FALLBACK turns)
+  | 'feedback_event'
+  // Context compaction lifecycle. Fired by ConversationWindowManager
+  // around each compaction pass so the UI can show a progress chip
+  // (start → pair_safe → summarize → done/skipped/failed). Payload
+  // carries preTokens/postTokens/messagesSummarized/tailKept/etc.
+  | 'compact_status'
 
 export interface SSEEvent {
   type: SSEEventType
@@ -220,11 +242,12 @@ export function useStream(options: UseStreamOptions): UseStreamReturn {
         return
       }
       seenEventIds.add(event.id)
-      // Track highest id for reconnect Last-Event-ID echo. String compare is
-      // fine because ids are zero-padded server-side... actually they're plain
-      // numbers, so coerce to BigInt-safe numeric compare.
-      const incoming = Number(event.id)
-      const current = lastEventId.value === null ? -1 : Number(lastEventId.value)
+      // Track highest id for reconnect Last-Event-ID echo. SSE event ids are
+      // per-conversation sequential counters issued by ChatStreamTracker — not
+      // Snowflake — so coercing through Number is safe within JS's 2^53 ceiling
+      // (a single conversation would need 9 quadrillion events to overflow).
+      const incoming = Number(event.id) // snowflake-precision-ok: SSE sequence counter
+      const current = lastEventId.value === null ? -1 : Number(lastEventId.value) // snowflake-precision-ok: SSE sequence counter
       if (!Number.isNaN(incoming) && incoming > current) {
         lastEventId.value = event.id
       }
@@ -298,7 +321,7 @@ export function useStream(options: UseStreamOptions): UseStreamReturn {
     // switch. We only inject when the dedup state is still relevant
     // (sameConv) AND we actually have an id to echo.
     if (sameConv && lastEventId.value !== null && body && body.reconnect) {
-      const numericId = Number(lastEventId.value)
+      const numericId = Number(lastEventId.value) // snowflake-precision-ok: SSE sequence counter
       if (!Number.isNaN(numericId)) {
         body = { ...body, lastEventId: numericId }
       }

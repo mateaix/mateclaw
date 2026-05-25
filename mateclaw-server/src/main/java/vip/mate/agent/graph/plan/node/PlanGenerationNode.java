@@ -115,6 +115,20 @@ public class PlanGenerationNode implements NodeAction {
     public Map<String, Object> apply(OverAllState state) throws Exception {
         PlanStateAccessor accessor = new PlanStateAccessor(state);
         String goal = accessor.goal();
+
+        // Goal follow-up injection: GoalEvaluationNode requested a re-plan
+        // pass with extra guidance. The mid-pass plan state was wiped by
+        // the previous node, so we run the normal planning flow but
+        // append the follow-up prompt to the user goal so the planner
+        // sees "do these original objectives + this next step the
+        // evaluator just asked for".
+        String followupPrompt = state.value(MateClawStateKeys.GOAL_FOLLOWUP_PROMPT, "");
+        if (!followupPrompt.isEmpty()) {
+            log.info("[PlanGeneration] Goal follow-up active, augmenting goal with {} chars of guidance",
+                    followupPrompt.length());
+            goal = goal + "\n\n[Follow-up guidance]\n" + followupPrompt;
+        }
+
         String systemPrompt = accessor.systemPrompt();
         String agentId = state.value(MateClawStateKeys.TRACE_ID, "unknown");
         String conversationId = accessor.conversationId();
@@ -148,7 +162,11 @@ public class PlanGenerationNode implements NodeAction {
             List<Message> promptMessages = new ArrayList<>();
             promptMessages.add(new SystemMessage(PLANNING_PROMPT));
             String workspaceBasePath = state.value(MateClawStateKeys.WORKSPACE_BASE_PATH, "");
-            promptMessages.add(new UserMessage(RuntimeContextInjector.buildContextMessage(workspaceBasePath)));
+            vip.mate.agent.context.ChatOrigin chatOrigin =
+                    state.<vip.mate.agent.context.ChatOrigin>value(MateClawStateKeys.CHAT_ORIGIN)
+                            .orElse(vip.mate.agent.context.ChatOrigin.EMPTY);
+            promptMessages.add(new UserMessage(
+                    RuntimeContextInjector.buildContextMessage(workspaceBasePath, null, chatOrigin)));
 
             // Advertise available tools so the LLM can recognize when an action is possible,
             // but do NOT force "any tool usage implies multi-step" — single-hop tool use

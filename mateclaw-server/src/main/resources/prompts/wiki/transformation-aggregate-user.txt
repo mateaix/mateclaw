@@ -1,0 +1,9 @@
+## Template
+
+**{template_title}** — {template_description}
+
+The per-source extracts below were all produced by running this template.
+
+## Per-source outputs
+
+{outputs}

@@ -6,6 +6,7 @@ import lombok.Data;
 import vip.mate.skill.manifest.SkillManifest;
 
 import java.nio.file.Path;
+import java.time.LocalDateTime;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -72,6 +73,24 @@ public class ResolvedSkill {
     @Builder.Default
     private boolean builtin = false;
 
+    /**
+     * Owning workspace, copied from {@code mate_skill.workspace_id}. Builtin
+     * skills are global, so for them this is informational only. {@code null}
+     * for virtual MCP-derived skills (MCP servers carry no workspace) — the
+     * runtime treats a null workspace as globally visible.
+     */
+    private Long workspaceId;
+
+    /**
+     * Skill row create timestamp, copied from {@code mate_skill.create_time}.
+     * Used by the prompt-catalog ranker to surface freshly installed skills
+     * before they accumulate any usage stats — without this, a brand-new
+     * skill stays invisible behind the recent/frequent/alphabetical sort
+     * and the LLM ends up replying "no such skill" right after the user
+     * installed it. Null for virtual MCP/ACP skills that don't own a row.
+     */
+    private LocalDateTime createTime;
+
     // ==================== 安全扫描状态 ====================
 
     /** 是否被安全扫描阻断 */
@@ -129,6 +148,25 @@ public class ResolvedSkill {
      */
     @Builder.Default
     private Set<String> activeFeatures = Set.of();
+
+    /**
+     * Per-tool display-name decoration table, keyed by the prefixed callback
+     * name and valued by the human-readable form (e.g.
+     * {@code "mcp_4_fs_a1b2c3"} → {@code "mcp_4_fs_a1b2c3 (read_file)"}).
+     *
+     * <p>Populated by skill source providers that have a recoverable raw
+     * name (currently MCP-bridged skills); other sources leave it empty,
+     * in which case {@link #getEffectiveAllowedToolsDisplay()} falls
+     * through to the prefixed names unchanged.
+     *
+     * <p>Held internally rather than serialized: the wire shape exposes
+     * the decorated set via the derived getter, which keeps the
+     * source-of-truth (the feature filter in
+     * {@link #getEffectiveAllowedTools()}) in one place.
+     */
+    @JsonIgnore
+    @Builder.Default
+    private Map<String, String> toolDisplayNames = Map.of();
 
     /** RFC-090 §14.1 — replacement filter for {@code dependencyReady}. */
     public boolean hasAnyActiveFeature() {
@@ -196,6 +234,26 @@ public class ResolvedSkill {
                 }
                 out.add(t);
             }
+        }
+        return out;
+    }
+
+    /**
+     * Display-friendly companion to {@link #getEffectiveAllowedTools()}.
+     * Each prefixed callback name is replaced by its decorated form (e.g.
+     * {@code "mcp_4_fs_a1b2c3 (read_file)"}) when {@link #toolDisplayNames}
+     * carries an entry for it; names without a decoration entry are kept
+     * verbatim. Feature-filter semantics match the prefixed getter, so a
+     * tool that is hidden by a SETUP_NEEDED feature stays hidden here too.
+     */
+    public Set<String> getEffectiveAllowedToolsDisplay() {
+        Set<String> base = getEffectiveAllowedTools();
+        if (base.isEmpty() || toolDisplayNames == null || toolDisplayNames.isEmpty()) {
+            return base;
+        }
+        Set<String> out = new LinkedHashSet<>(base.size());
+        for (String name : base) {
+            out.add(toolDisplayNames.getOrDefault(name, name));
         }
         return out;
     }

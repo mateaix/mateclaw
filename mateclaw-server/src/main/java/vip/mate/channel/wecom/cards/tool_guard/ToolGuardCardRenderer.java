@@ -1,7 +1,7 @@
 package vip.mate.channel.wecom.cards.tool_guard;
 
 import vip.mate.channel.notification.ApprovalNotice;
-import vip.mate.channel.wecom.cards.CardOversizedException;
+import vip.mate.channel.cards.CardOversizedException;
 import vip.mate.channel.wecom.cards.WeComCardRenderer;
 
 import java.util.LinkedHashMap;

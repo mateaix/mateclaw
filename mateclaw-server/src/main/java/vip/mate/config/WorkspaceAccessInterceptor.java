@@ -9,10 +9,16 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Component;
 import org.springframework.web.method.HandlerMethod;
 import org.springframework.web.servlet.HandlerInterceptor;
+import org.springframework.web.servlet.HandlerMapping;
+import vip.mate.agent.model.AgentEntity;
+import vip.mate.agent.repository.AgentMapper;
 import vip.mate.auth.model.UserEntity;
 import vip.mate.auth.service.AuthService;
+import vip.mate.workspace.core.annotation.RequireGlobalAdmin;
 import vip.mate.workspace.core.annotation.RequireWorkspaceRole;
 import vip.mate.workspace.core.service.WorkspaceService;
+
+import java.util.Map;
 
 /**
  * Workspace 访问拦截器
@@ -33,6 +39,7 @@ public class WorkspaceAccessInterceptor implements HandlerInterceptor {
 
     private final WorkspaceService workspaceService;
     private final AuthService authService;
+    private final AgentMapper agentMapper;
 
     /** 默认 workspace ID（未传 header 时使用） */
     private static final long DEFAULT_WORKSPACE_ID = 1L;
@@ -44,9 +51,10 @@ public class WorkspaceAccessInterceptor implements HandlerInterceptor {
             return true;
         }
 
-        // 检查方法是否标注了 @RequireWorkspaceRole
+        // 检查注解：@RequireGlobalAdmin 与 @RequireWorkspaceRole 二选一
+        RequireGlobalAdmin globalAdmin = handlerMethod.getMethodAnnotation(RequireGlobalAdmin.class);
         RequireWorkspaceRole annotation = handlerMethod.getMethodAnnotation(RequireWorkspaceRole.class);
-        if (annotation == null) {
+        if (globalAdmin == null && annotation == null) {
             return true;
         }
 
@@ -64,15 +72,24 @@ public class WorkspaceAccessInterceptor implements HandlerInterceptor {
             return false;
         }
 
-        // 系统管理员跳过 workspace 权限检查（全局 admin 角色）
-        if ("admin".equalsIgnoreCase(user.getRole())) {
+        boolean isGlobalAdmin = "admin".equalsIgnoreCase(user.getRole());
+
+        // 全局 admin 注解：必须是 mate_user.role=admin，与工作区无关
+        if (globalAdmin != null && !isGlobalAdmin) {
+            log.warn("Global admin access denied: user={}, path={}", username, request.getRequestURI());
+            sendForbidden(response, "Global administrator role required");
+            return false;
+        }
+        if (globalAdmin != null) {
             return true;
         }
 
-        // 解析 workspace ID
-        long workspaceId = resolveWorkspaceId(request);
+        // @RequireWorkspaceRole 分支：全局 admin 跳过
+        if (isGlobalAdmin) {
+            return true;
+        }
 
-        // 检查成员资格 + 角色
+        long workspaceId = resolveWorkspaceId(request);
         String minRole = annotation.value();
         if (!workspaceService.hasPermissionCached(workspaceId, user.getId(), minRole)) {
             log.warn("Workspace access denied: user={}, workspaceId={}, requiredRole={}", username, workspaceId, minRole);
@@ -80,7 +97,48 @@ public class WorkspaceAccessInterceptor implements HandlerInterceptor {
             return false;
         }
 
+        // The role check above only proves the user belongs to the *header*
+        // workspace — not that a path-bound {agentId} actually lives there.
+        // Without this a member of workspace A could read workspace B's agent
+        // memory / context files by supplying B's agent id with their own header.
+        if (!agentBelongsToWorkspace(request, workspaceId)) {
+            log.warn("Cross-workspace agent access denied: user={}, workspaceId={}, path={}",
+                    username, workspaceId, request.getRequestURI());
+            sendForbidden(response, "Agent does not belong to the current workspace");
+            return false;
+        }
+
         return true;
+    }
+
+    /**
+     * When the matched route carries an {@code {agentId}} path variable, verify
+     * that agent belongs to the resolved workspace. Allows the request through
+     * when there is no agent id, the id is unparseable, the agent does not
+     * exist (so the handler can return its own 404), or the agent has not been
+     * assigned a workspace.
+     */
+    @SuppressWarnings("unchecked")
+    private boolean agentBelongsToWorkspace(HttpServletRequest request, long workspaceId) {
+        Object attr = request.getAttribute(HandlerMapping.URI_TEMPLATE_VARIABLES_ATTRIBUTE);
+        if (!(attr instanceof Map)) {
+            return true;
+        }
+        Object rawAgentId = ((Map<String, String>) attr).get("agentId");
+        if (rawAgentId == null) {
+            return true;
+        }
+        long agentId;
+        try {
+            agentId = Long.parseLong(rawAgentId.toString());
+        } catch (NumberFormatException e) {
+            return true;
+        }
+        AgentEntity agent = agentMapper.selectById(agentId);
+        if (agent == null || agent.getWorkspaceId() == null) {
+            return true;
+        }
+        return agent.getWorkspaceId() == workspaceId;
     }
 
     private long resolveWorkspaceId(HttpServletRequest request) {

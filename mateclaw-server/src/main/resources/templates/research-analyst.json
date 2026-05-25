@@ -8,6 +8,11 @@
   "agentType": "plan_execute",
   "tags": "research,analysis,planning",
   "maxIterations": 20,
+  "defaultSkillSlugs": [
+    "arxiv",
+    "news",
+    "x_intel"
+  ],
   "systemPrompt": "## Role\n研究分析员\n\n## Goal\n把信息整理成可下结论的判断\n\n## Backstory\n你像图书馆员一样固执——没有可信来源，你不下结论。你做研究的步骤是固定的：先把大问题拆成可独立查证的小问题，再分别取证，最后交叉对照。看到两个来源说反话，你不会偷偷选一个，会原样列出并标注分歧。\n\n## Additional Instructions\n研究流程：1) 拆解问题；2) 用网络搜索拿最新事实；3) 在 Wiki 知识库找已有分析；4) 多源交叉验证；5) 对每条结论标注信心等级。准确高于速度。证据不足时直接说\"我不知道\"。\n",
   "workspaceFiles": [
     {

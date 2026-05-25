@@ -8,6 +8,8 @@ import org.springframework.web.bind.annotation.*;
 import vip.mate.common.result.R;
 import vip.mate.system.model.SystemSettingsDTO;
 import vip.mate.system.service.SystemSettingService;
+import vip.mate.workspace.core.annotation.RequireGlobalAdmin;
+import vip.mate.workspace.core.annotation.RequireWorkspaceRole;
 
 @Tag(name = "系统设置")
 @RestController
@@ -19,12 +21,14 @@ public class SystemSettingController {
 
     @Operation(summary = "获取系统设置")
     @GetMapping
+    @RequireWorkspaceRole("admin")
     public R<SystemSettingsDTO> getSettings() {
         return R.ok(systemSettingService.getSettings());
     }
 
     @Operation(summary = "保存系统设置")
     @PutMapping
+    @RequireWorkspaceRole("admin")
     public R<SystemSettingsDTO> saveSettings(@RequestBody SystemSettingsDTO dto) {
         return R.ok(systemSettingService.saveSettings(dto));
     }
@@ -32,12 +36,15 @@ public class SystemSettingController {
     @Operation(summary = "获取当前语言")
     @GetMapping("/language")
     public R<String> getLanguage() {
+        // Stays anonymous via SecurityConfig (first-paint i18n).
         return R.ok(systemSettingService.getLanguage());
     }
 
     @Operation(summary = "更新当前语言")
     @PutMapping("/language")
+    @RequireGlobalAdmin
     public R<String> saveLanguage(@RequestBody LanguageRequest request) {
+        // System-wide setting; only the global admin may change it.
         return R.ok(systemSettingService.saveLanguage(request.getLanguage()));
     }
 
@@ -53,6 +60,7 @@ public class SystemSettingController {
      */
     @Operation(summary = "更新多模态 sidecar 配置")
     @PutMapping("/sidecar")
+    @RequireWorkspaceRole("admin")
     public R<SystemSettingsDTO> saveSidecar(@RequestBody SidecarRequest request) {
         return R.ok(systemSettingService.updateSidecarSettings(
                 request.getDefaultVisionModelId(),

@@ -9,6 +9,7 @@ import vip.mate.trigger.ingest.TriggerEventEnvelope;
 import vip.mate.trigger.ingest.TriggerEventIngestService;
 import vip.mate.trigger.model.TriggerEntity;
 import vip.mate.trigger.service.TriggerService;
+import vip.mate.workspace.core.annotation.RequireWorkspaceRole;
 
 import java.util.List;
 import java.util.Map;
@@ -30,12 +31,14 @@ public class TriggerController {
 
     @Operation(summary = "List triggers in the caller's workspace.")
     @GetMapping
+    @RequireWorkspaceRole("admin")
     public R<List<TriggerEntity>> list(@RequestHeader("X-Workspace-Id") long workspaceId) {
         return R.ok(triggerService.listByWorkspace(workspaceId));
     }
 
     @Operation(summary = "Get a trigger by id, scoped to the caller's workspace.")
     @GetMapping("/{id}")
+    @RequireWorkspaceRole("admin")
     public R<TriggerEntity> get(@PathVariable long id,
                                 @RequestHeader("X-Workspace-Id") long workspaceId) {
         TriggerEntity row = triggerService.get(id, workspaceId);
@@ -45,6 +48,7 @@ public class TriggerController {
 
     @Operation(summary = "Create a trigger; if enabled, registers it with the scheduler.")
     @PostMapping
+    @RequireWorkspaceRole("admin")
     public R<TriggerEntity> create(@RequestBody TriggerEntity trigger,
                                    @RequestHeader("X-Workspace-Id") long workspaceId) {
         // The controller forces workspace from the trusted header — the
@@ -59,6 +63,7 @@ public class TriggerController {
 
     @Operation(summary = "Update a trigger; pattern_version bumps when the cron expression changes.")
     @PutMapping("/{id}")
+    @RequireWorkspaceRole("admin")
     public R<TriggerEntity> update(@PathVariable long id,
                                    @RequestBody TriggerEntity trigger,
                                    @RequestHeader("X-Workspace-Id") long workspaceId) {
@@ -71,6 +76,7 @@ public class TriggerController {
 
     @Operation(summary = "Delete a trigger and unregister its schedule.")
     @DeleteMapping("/{id}")
+    @RequireWorkspaceRole("admin")
     public R<Void> delete(@PathVariable long id,
                           @RequestHeader("X-Workspace-Id") long workspaceId) {
         triggerService.delete(id, workspaceId);

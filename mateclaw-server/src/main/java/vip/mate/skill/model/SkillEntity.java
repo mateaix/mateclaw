@@ -97,7 +97,17 @@ public class SkillEntity {
     /** 标签（逗号分隔） */
     private String tags;
 
-    /** RFC-023：来源对话 ID（Agent 自治合成时记录） */
+    /**
+     * Owning workspace. The DB column has existed since the baseline schema
+     * (default = 1) but the field was missing from the entity, so MyBatis
+     * Plus silently ignored both reads and writes. Surfacing it here lets
+     * binding-time tenancy checks see the value; default behavior on insert
+     * remains "fall through to the column DEFAULT" because the field stays
+     * {@code null} in the no-arg create path.
+     */
+    private Long workspaceId;
+
+    /** 来源对话 ID（Agent 自治合成时记录） */
     private String sourceConversationId;
 
     /**
@@ -119,6 +129,26 @@ public class SkillEntity {
 
     /** RFC-042 §2.3 — wall-clock time of the last scan write-back. */
     private LocalDateTime securityScanTime;
+
+    /**
+     * Lifecycle state for the time-window archival state machine:
+     * {@code active} / {@code stale} / {@code archived}. Defaults to
+     * {@code active} via the column DEFAULT.
+     */
+    private String lifecycleState;
+
+    /** User-pinned skill — exempt from automatic archival. */
+    private Boolean pinned;
+
+    /**
+     * Activity anchor, cached from {@code mate_skill_usage_stat.last_loaded_at}
+     * so the daily lifecycle sweep is a single indexed select instead of a
+     * join. {@code null} falls back to {@code createTime} as the anchor.
+     */
+    private LocalDateTime lastActivityAt;
+
+    /** Wall-clock time the skill entered the archived state. */
+    private LocalDateTime archivedAt;
 
     @TableField(fill = FieldFill.INSERT)
     private LocalDateTime createTime;

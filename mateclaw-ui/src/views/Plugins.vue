@@ -113,7 +113,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+import { mcToast } from '@/composables/useMcToast'
 import { pluginApi } from '@/api'
 
 const { t } = useI18n()
@@ -145,7 +145,7 @@ async function loadPlugins() {
     const res = await pluginApi.list()
     plugins.value = res.data || []
   } catch (e: any) {
-    ElMessage.error(t('plugins.loadFailed'))
+    mcToast.error(t('plugins.loadFailed'))
   } finally {
     loading.value = false
   }
@@ -156,14 +156,14 @@ async function togglePlugin(plugin: PluginInfo) {
   try {
     if (plugin.enabled) {
       await pluginApi.disable(plugin.name)
-      ElMessage.success(t('plugins.disabled', { name: plugin.displayName || plugin.name }))
+      mcToast.success(t('plugins.disabled', { name: plugin.displayName || plugin.name }))
     } else {
       await pluginApi.enable(plugin.name)
-      ElMessage.success(t('plugins.enabled', { name: plugin.displayName || plugin.name }))
+      mcToast.success(t('plugins.enabled', { name: plugin.displayName || plugin.name }))
     }
     await loadPlugins()
   } catch (e: any) {
-    ElMessage.error(e.message || t('plugins.toggleFailed'))
+    mcToast.error(e.message || t('plugins.toggleFailed'))
     await loadPlugins()
   } finally {
     toggling.value = null

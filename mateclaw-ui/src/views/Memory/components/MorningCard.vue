@@ -2,7 +2,7 @@
   <Transition name="slide-down">
     <div v-if="card" class="morning-card">
       <div class="morning-card__header">
-        <span class="morning-card__icon">🌅</span>
+        <MemoryIcon name="sunrise" :size="16" class="morning-card__icon" />
         <span class="morning-card__title">{{ t('memory.morningCard.title') }}</span>
         <button class="morning-card__close" @click="dismiss">&times;</button>
       </div>
@@ -21,8 +21,9 @@
 import { ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { http } from '@/api'
+import MemoryIcon from './MemoryIcon.vue'
 
-const props = defineProps<{ agentId: number }>()
+const props = defineProps<{ agentId: string | number }>()
 const { t } = useI18n()
 const card = ref<any>(null)
 
@@ -54,7 +55,7 @@ async function dismiss() {
   align-items: center;
   gap: 6px;
 }
-.morning-card__icon { font-size: 16px; }
+.morning-card__icon { color: var(--mc-primary); }
 .morning-card__title { flex: 1; font-size: 13px; font-weight: 600; color: var(--mc-text-primary); }
 .morning-card__close {
   background: none; border: none; font-size: 16px; color: var(--mc-text-tertiary);

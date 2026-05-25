@@ -91,14 +91,14 @@ class AvailableProviderPoolTest {
     void snapshotMixedView() {
         pool.add("openai");
         pool.add("dashscope");
-        pool.remove("anthropic", RemovalSource.MODEL_NOT_FOUND, "model claude-99 not found");
+        pool.remove("anthropic", RemovalSource.BILLING, "402 insufficient credit");
 
         var snap = pool.snapshot();
         assertEquals(3, snap.size());
         assertNull(snap.get("openai"), "in-pool members appear with null value");
         assertNull(snap.get("dashscope"));
         assertNotNull(snap.get("anthropic"));
-        assertEquals(RemovalSource.MODEL_NOT_FOUND, snap.get("anthropic").source());
+        assertEquals(RemovalSource.BILLING, snap.get("anthropic").source());
     }
 
     @Test

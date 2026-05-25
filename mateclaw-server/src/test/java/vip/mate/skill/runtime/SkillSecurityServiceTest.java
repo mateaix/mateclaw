@@ -214,4 +214,65 @@ class SkillSecurityServiceTest {
         assertEquals(3, sudoFinding.getLineNumber());
         assertNotNull(sudoFinding.getSnippet());
     }
+
+    // ===== 扩充规则：反序列化 / 沙箱逃逸 / 混淆 / 资源耗尽 / 凭据 =====
+
+    @Test
+    @DisplayName("检测 pickle.loads 不可信反序列化 → HIGH → blocked")
+    void shouldBlockPickleDeserialize(@TempDir Path tempDir) throws IOException {
+        Files.writeString(tempDir.resolve("SKILL.md"), "---\nname: test\n---\n# Test");
+        Path scripts = Files.createDirectory(tempDir.resolve("scripts"));
+        Files.writeString(scripts.resolve("load.py"), "import pickle\nobj = pickle.loads(payload)\n");
+
+        SkillValidationResult result = securityService.scanDirectory(tempDir, "test_skill");
+
+        assertTrue(result.isBlocked());
+        assertTrue(result.getFindings().stream()
+                .anyMatch(f -> f.getRuleId().equals("PICKLE_DESERIALIZE")));
+    }
+
+    @Test
+    @DisplayName("检测 fork bomb → CRITICAL → blocked")
+    void shouldBlockForkBomb(@TempDir Path tempDir) throws IOException {
+        Files.writeString(tempDir.resolve("SKILL.md"), "---\nname: test\n---\n# Test");
+        Path scripts = Files.createDirectory(tempDir.resolve("scripts"));
+        Files.writeString(scripts.resolve("bomb.sh"), "#!/bin/bash\n:(){ :|:& };:\n");
+
+        SkillValidationResult result = securityService.scanDirectory(tempDir, "test_skill");
+
+        assertTrue(result.isBlocked());
+        assertEquals(SkillValidationResult.Severity.CRITICAL, result.getMaxSeverity());
+        assertTrue(result.getFindings().stream()
+                .anyMatch(f -> f.getRuleId().equals("FORK_BOMB")));
+    }
+
+    @Test
+    @DisplayName("检测读取 SSH 私钥 → HIGH → blocked")
+    void shouldBlockSecretFileRead(@TempDir Path tempDir) throws IOException {
+        Files.writeString(tempDir.resolve("SKILL.md"), "---\nname: test\n---\n# Test");
+        Path scripts = Files.createDirectory(tempDir.resolve("scripts"));
+        Files.writeString(scripts.resolve("steal.sh"), "cat ~/.ssh/id_rsa\n");
+
+        SkillValidationResult result = securityService.scanDirectory(tempDir, "test_skill");
+
+        assertTrue(result.isBlocked());
+        assertTrue(result.getFindings().stream()
+                .anyMatch(f -> f.getRuleId().equals("SECRET_FILE_READ")));
+    }
+
+    @Test
+    @DisplayName("Node child_process → MEDIUM → 警告但不阻断")
+    void shouldWarnNodeChildProcess(@TempDir Path tempDir) throws IOException {
+        Files.writeString(tempDir.resolve("SKILL.md"), "---\nname: test\n---\n# Test");
+        Path scripts = Files.createDirectory(tempDir.resolve("scripts"));
+        // spawn (not exec) so the existing EVAL_EXEC HIGH rule doesn't also fire
+        Files.writeString(scripts.resolve("run.js"), "const cp = require('child_process');\ncp.spawn('ls');\n");
+
+        SkillValidationResult result = securityService.scanDirectory(tempDir, "test_skill");
+
+        assertTrue(result.isPassed(), "MEDIUM should pass");
+        assertFalse(result.isBlocked(), "MEDIUM should not block");
+        assertTrue(result.getFindings().stream()
+                .anyMatch(f -> f.getRuleId().equals("NODE_CHILD_PROCESS")));
+    }
 }

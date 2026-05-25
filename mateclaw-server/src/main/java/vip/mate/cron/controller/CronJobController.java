@@ -38,7 +38,7 @@ public class CronJobController {
 
     @Operation(summary = "获取定时任务列表")
     @GetMapping
-    @RequireWorkspaceRole("viewer")
+    @RequireWorkspaceRole("member")
     public R<List<CronJobDTO>> list(
             @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
         return R.ok(cronJobService.list(resolve(workspaceId)));
@@ -46,7 +46,7 @@ public class CronJobController {
 
     @Operation(summary = "获取定时任务详情")
     @GetMapping("/{id}")
-    @RequireWorkspaceRole("viewer")
+    @RequireWorkspaceRole("member")
     public R<CronJobDTO> get(@PathVariable Long id,
             @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
         return R.ok(cronJobService.getById(id, resolve(workspaceId)));
@@ -70,7 +70,7 @@ public class CronJobController {
 
     @Operation(summary = "删除定时任务")
     @DeleteMapping("/{id}")
-    @RequireWorkspaceRole("admin")
+    @RequireWorkspaceRole("member")
     public R<Void> delete(@PathVariable Long id,
             @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
         cronJobService.delete(id, resolve(workspaceId));
@@ -103,7 +103,7 @@ public class CronJobController {
      */
     @Operation(summary = "查询会话下正在执行的定时任务运行")
     @GetMapping("/active-runs")
-    @RequireWorkspaceRole("viewer")
+    @RequireWorkspaceRole("member")
     public R<List<ActiveCronRunVO>> activeRuns(
             @RequestParam("conversationId") String conversationId) {
         return R.ok(cronJobRunService.listActiveByConversation(conversationId));

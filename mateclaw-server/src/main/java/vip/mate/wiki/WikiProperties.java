@@ -131,6 +131,22 @@ public class WikiProperties {
     private int embeddingMaxChars = 6000;
 
     /**
+     * Expected embedding-input format version. The authoritative source is
+     * the builder's {@code CURRENT_INPUT_VERSION} constant; this property
+     * exists for staged rollouts and ops overrides.
+     * <p>
+     * Behavior on startup:
+     * <ul>
+     *   <li>Blank: use the builder version.</li>
+     *   <li>Less than builder version: WARN and continue, so a KB can be
+     *       embedded against an older format during a gradual rollback.</li>
+     *   <li>Greater than builder version: fail fast — this usually means the
+     *       config was deployed ahead of the code that implements that format.</li>
+     * </ul>
+     */
+    private String embeddingTextVersionCurrent = "";
+
+    /**
      * Circuit-breaker threshold: abort an embedding pass after this many
      * consecutive batch failures (auth / rate-limit / network errors that
      * cause an entire batch to embed zero chunks). Without it, a broken

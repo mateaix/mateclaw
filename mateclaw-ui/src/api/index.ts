@@ -87,13 +87,18 @@ export const authApi = {
     http.post('/auth/login', data),
   listUsers: () => http.get('/auth/users'),
   createUser: (data: any) => http.post('/auth/users', data),
-  changePassword: (id: number, oldPassword: string, newPassword: string) =>
+  changePassword: (id: string | number, oldPassword: string, newPassword: string) =>
     http.put(`/auth/users/${id}/password`, null, { params: { oldPassword, newPassword } }),
 }
 
 // ==================== Agent ====================
 export const agentApi = {
-  list: () => http.get('/agents'),
+  /**
+   * @param params.enabled when `true`, restricts the result to enabled agents
+   *   (used by chat selectors so disabled agents disappear from the picker).
+   *   Omit to receive enabled + disabled (admin management page).
+   */
+  list: (params?: { enabled?: boolean }) => http.get('/agents', { params }),
   get: (id: string | number) => http.get(`/agents/${id}`),
   create: (data: any) => http.post('/agents', data),
   update: (id: string | number, data: any) => http.put(`/agents/${id}`, data),
@@ -149,6 +154,13 @@ export const chatApi = {
 // ==================== Conversation ====================
 export const conversationApi = {
   list: () => http.get('/conversations'),
+  /**
+   * Paginated list used by the Sessions admin page. Keyword matches title
+   * or conversationId server-side; ChatConsole's left panel still uses the
+   * non-paginated list() because it shows a per-agent rolling history.
+   */
+  page: (params: { page?: number; size?: number; keyword?: string }) =>
+    http.get('/conversations/page', { params }),
   listMessages: (conversationId: string, params?: { beforeId?: number; limit?: number }) =>
     http.get(`/conversations/${conversationId}/messages`, { params }),
   getStatus: (conversationId: string) =>
@@ -159,6 +171,18 @@ export const conversationApi = {
     http.delete(`/conversations/${conversationId}/messages`),
   rename: (conversationId: string, title: string) =>
     http.put(`/conversations/${conversationId}/title`, { title }),
+  setPinned: (conversationId: string, pinned: boolean) =>
+    http.put(`/conversations/${conversationId}/pin`, { pinned }),
+  /**
+   * Pin this conversation to a specific (provider, model). Closes issue
+   * #183 — lets the admin UI switch model for IM-channel conversations
+   * (Feishu / DingTalk / WeCom / Telegram / Discord / QQ / Slack / WeChat),
+   * not just for the Web channel. Both params required and non-empty.
+   */
+  setModel: (conversationId: string, modelProvider: string, modelName: string) =>
+    http.put(`/conversations/${conversationId}/model`, { modelProvider, modelName }),
+  batchDelete: (conversationIds: string[]) =>
+    http.post('/conversations/batch-delete', { conversationIds }),
 }
 
 // ==================== Skill ====================
@@ -176,6 +200,8 @@ export const skillApi = {
     enabled?: boolean
     /** 'PASSED' / 'FAILED' — filters by security_scan_status. */
     scanStatus?: string
+    /** 'active' / 'stale' / 'archived' — filters by lifecycle_state. */
+    lifecycleState?: string
   } = {}) => http.get('/skills', { params }),
   /** Tab count aggregate — returns { all, builtin, mcp, dynamic } */
   counts: () => http.get('/skills/counts'),
@@ -198,6 +224,53 @@ export const skillApi = {
   getLessons: (id: string | number) => http.get(`/skills/${id}/lessons`),
   clearLessons: (id: string | number) => http.post(`/skills/${id}/lessons/clear`),
   employees: (id: string | number) => http.get(`/skills/${id}/employees`),
+  /**
+   * Per-skill secrets — env-var-shaped key/value pairs that get injected
+   * into the script subprocess at runtime. Plaintext values never leave
+   * the server; list returns masked previews only.
+   */
+  listSecrets: (id: string | number) => http.get(`/skills/${id}/secrets`),
+  putSecret: (id: string | number, key: string, value: string) =>
+    http.post(`/skills/${id}/secrets`, { key, value }),
+  deleteSecret: (id: string | number, key: string) =>
+    http.delete(`/skills/${id}/secrets/${encodeURIComponent(key)}`),
+
+  // ---- Lifecycle curator ----
+  /** Pin / unpin a skill — pinned skills are never auto-archived. */
+  pin: (id: string | number, pinned: boolean) =>
+    http.post(`/skills/${id}/pin`, { pinned }),
+  /**
+   * Manually archive a skill. When the skill is bound to an enabled agent
+   * and {@code force} is false, the backend replies HTTP 409 with
+   * {@code code: 'BOUND_SKILL_CONFIRM_REQUIRED'} and a {@code boundAgents}
+   * list; retry with {@code force: true} to confirm.
+   */
+  archive: (id: string | number, opts: { force?: boolean; reason?: string } = {}) =>
+    http.post(`/skills/${id}/archive`, { reason: opts.reason ?? null },
+      { params: { force: opts.force ?? false } }),
+  /** Restore an archived skill back to active. */
+  restore: (id: string | number) => http.post(`/skills/${id}/restore`),
+  /** Curator control-panel status (config / control / counts / lastReport). */
+  curatorStatus: () => http.get('/skills/curator/status'),
+  /** Run a curator dry-run preview immediately. */
+  curatorDryRun: () => http.post('/skills/curator/dry-run'),
+  /** Activate (apply transitions) or deactivate (preview-only) the curator. */
+  curatorActivate: (activate: boolean) =>
+    http.post('/skills/curator/activate', null, { params: { activate } }),
+  curatorPause: () => http.post('/skills/curator/pause'),
+  curatorResume: () => http.post('/skills/curator/resume'),
+  /** List recent curator run report ids. */
+  curatorReports: () => http.get('/skills/curator/reports'),
+  /** Read one curator run report (parsed run.json). */
+  curatorReport: (runId: string) => http.get(`/skills/curator/reports/${runId}`),
+}
+
+/** Shape returned by GET /skills/{id}/secrets. */
+export interface SkillSecretSummary {
+  key: string
+  /** Masked preview, e.g. "abc...xyz". Plaintext is never shipped. */
+  preview: string
+  updatedAt: string
 }
 
 // ==================== Activity Feed (RFC-090 §4.5) ====================
@@ -206,8 +279,8 @@ export const activityApi = {
     http.get('/activity/feed', { params }),
 }
 
-// ==================== Backstage (admin runtime view) ====================
-export interface BackstageRunCard {
+// ==================== Live (admin runtime view) ====================
+export interface LiveRunCard {
   conversationId: string
   agentId: number | null
   agentName: string | null
@@ -229,10 +302,15 @@ export interface BackstageRunCard {
   subagentCount: number
 }
 
-export interface BackstageSubagentCard {
+export interface LiveSubagentCard {
   subagentId: string
   parentConversationId: string | null
   childConversationId: string | null
+  rootConversationId: string | null
+  /** subagentId of the immediate parent; null for first-level (depth-1) children. */
+  parentSubagentId: string | null
+  /** 1 for a first-level child, 2 for a grandchild, etc. */
+  depth: number
   agentId: number | null
   agentName: string | null
   agentIcon: string | null
@@ -244,7 +322,7 @@ export interface BackstageSubagentCard {
   ageMs: number
 }
 
-export interface BackstageSummary {
+export interface LiveSummary {
   running: number
   stuck: number
   orphan: number
@@ -252,15 +330,15 @@ export interface BackstageSummary {
   subagentsActive: number
 }
 
-export interface BackstageSnapshot {
-  summary: BackstageSummary
-  runs: BackstageRunCard[]
-  subagents: BackstageSubagentCard[]
+export interface LiveSnapshot {
+  summary: LiveSummary
+  runs: LiveRunCard[]
+  subagents: LiveSubagentCard[]
   timestamp: number
 }
 
-export const backstageApi = {
-  snapshot: () => http.get<{ data: BackstageSnapshot }>('/admin/agent-runtime/snapshot'),
+export const liveApi = {
+  snapshot: () => http.get<{ data: LiveSnapshot }>('/admin/agent-runtime/snapshot'),
   stop: (conversationId: string) =>
     http.post(`/admin/agent-runtime/runs/${encodeURIComponent(conversationId)}/stop`),
   recycle: (conversationId: string) =>
@@ -268,6 +346,19 @@ export const backstageApi = {
   interruptSubagent: (subagentId: string) =>
     http.post(`/admin/agent-runtime/subagents/${encodeURIComponent(subagentId)}/interrupt`),
   sweep: () => http.post('/admin/agent-runtime/sweep'),
+}
+
+// ==================== Notification summary (sidebar attention badges) ====================
+export interface NotificationSummary {
+  pendingApprovals: number
+  stuckAgents: number
+  failedCrons: number
+  downChannels: number
+  downMcps: number
+}
+
+export const notificationApi = {
+  summary: () => http.get<{ data: NotificationSummary }>('/notifications/summary'),
 }
 
 // ==================== ACP Endpoints (RFC-090 Phase 7) ====================
@@ -340,6 +431,13 @@ export const toolApi = {
   delete: (id: string | number) => http.delete(`/tools/${id}`),
   toggle: (id: string | number, enabled: boolean) =>
     http.put(`/tools/${id}/toggle?enabled=${enabled}`),
+  /**
+   * Set a builtin/channel tool's progressive-disclosure tier
+   * ('core' | 'extension'). MCP/ACP/skill tools are tiered at their owning
+   * source and return 409 here.
+   */
+  setDisclosureTier: (id: string | number, tier: 'core' | 'extension') =>
+    http.put(`/tools/${id}/disclosure-tier`, { tier }),
 }
 
 // ==================== Channel ====================
@@ -377,6 +475,11 @@ export const channelApi = {
     http.post('/channels/webhook/dingtalk/register/begin'),
   dingtalkRegisterStatus: (sessionId: string) =>
     http.get(`/channels/webhook/dingtalk/register/status?session=${encodeURIComponent(sessionId)}`),
+  // QQ Bot scan-to-bind (Lite portal). Uses the unified channel QR auth endpoint.
+  qqRegisterBegin: () =>
+    http.post('/channels/qrcode/qq/begin'),
+  qqRegisterStatus: (sessionId: string) =>
+    http.get(`/channels/qrcode/qq/status?session=${encodeURIComponent(sessionId)}`),
 }
 
 // ==================== MCP Server ====================
@@ -390,6 +493,9 @@ export const mcpApi = {
     http.put(`/mcp/servers/${id}/toggle?enabled=${enabled}`),
   test: (id: string | number) => http.post(`/mcp/servers/${id}/test`),
   refresh: () => http.post('/mcp/servers/refresh'),
+  /** Set the whole server's tool disclosure tier ('core' | 'extension'). */
+  setDisclosureTier: (id: string | number, tier: 'core' | 'extension') =>
+    http.put(`/mcp/servers/${id}/disclosure-tier`, { tier }),
 }
 
 // ==================== Plan ====================
@@ -423,7 +529,7 @@ export const modelApi = {
   addProviderModel: (providerId: string, data: any) =>
     http.post(`/models/${providerId}/models`, data),
   removeProviderModel: (providerId: string, modelId: string) =>
-    http.delete(`/models/${providerId}/models/${encodeURIComponent(modelId)}`),
+    http.delete(`/models/${providerId}/models`, { params: { modelId } }),
   getActive: () => http.get('/models/active'),
   setActive: (data: { providerId: string; model: string }) =>
     http.put('/models/active', data),
@@ -435,7 +541,7 @@ export const modelApi = {
   testConnection: (providerId: string) =>
     http.post(`/models/${providerId}/test-connection`),
   testModel: (providerId: string, modelId: string) =>
-    http.post(`/models/${providerId}/models/${encodeURIComponent(modelId)}/test`),
+    http.post(`/models/${providerId}/models/test`, null, { params: { modelId } }),
 
   // ==================== RFC-074: enabled / catalog ====================
   /** Full provider catalog including enabled=false rows; powers the Add Provider drawer. */
@@ -523,7 +629,10 @@ export const settingsApi = {
   // unrelated settings pages can't clobber them via partial payloads. This
   // endpoint is the only path that writes those fields unconditionally —
   // pass {defaultVisionModelId: null} here to explicitly clear a sidecar.
-  updateSidecar: (data: { defaultVisionModelId: number | null; defaultVideoModelId: number | null }) =>
+  // Model IDs are accepted as either JSON numbers or strings — Jackson
+  // coerces both into Long. The string form is preferred from the UI to
+  // sidestep JS Number precision loss on 19-digit Snowflake IDs.
+  updateSidecar: (data: { defaultVisionModelId: number | string | null; defaultVideoModelId: number | string | null }) =>
     http.put('/settings/sidecar', data),
 }
 
@@ -544,6 +653,44 @@ export const agentContextApi = {
     http.get(`/agents/${agentId}/workspace/prompt-files`),
   setPromptFiles: (agentId: string | number, files: string[]) =>
     http.put(`/agents/${agentId}/workspace/prompt-files`, { files }),
+
+  // Memory snapshot — export downloads a ZIP via native fetch (axios R<T>
+  // interceptor would mis-handle the binary body); import + preview go
+  // through axios with multipart so the standard auth / workspace headers
+  // flow automatically.
+  exportMemorySnapshot: async (agentId: string | number): Promise<Blob> => {
+    const token = localStorage.getItem('token')
+    const workspaceId = localStorage.getItem('mc-workspace-id')
+    const headers: Record<string, string> = {}
+    if (token) headers.Authorization = `Bearer ${token}`
+    if (workspaceId) headers['X-Workspace-Id'] = workspaceId
+    const url = `/api/v1/agents/${agentId}/workspace/memory/export`
+    const response = await fetch(url, { headers })
+    if (!response.ok) {
+      // Try to parse the standard R<T> error envelope for a useful message.
+      let detail = `HTTP ${response.status}`
+      try {
+        const body = await response.json()
+        if (body && typeof body.msg === 'string') detail = body.msg
+      } catch { /* ignore — non-JSON body */ }
+      throw new Error(detail)
+    }
+    return response.blob()
+  },
+  previewImportMemorySnapshot: (agentId: string | number, file: File) => {
+    const form = new FormData()
+    form.append('file', file)
+    return http.post(`/agents/${agentId}/workspace/memory/import/preview`, form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+  },
+  applyImportMemorySnapshot: (agentId: string | number, file: File) => {
+    const form = new FormData()
+    form.append('file', file)
+    return http.post(`/agents/${agentId}/workspace/memory/import`, form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+  },
 }
 
 // ==================== Security ====================
@@ -559,6 +706,8 @@ export const securityApi = {
   toggleRule: (ruleId: string, enabled: boolean) =>
     http.put(`/security/guard/rules/${ruleId}/toggle?enabled=${enabled}`),
   deleteRule: (ruleId: string) => http.delete(`/security/guard/rules/${ruleId}`),
+  exportRules: () => http.get('/security/guard/rules/export'),
+  importRules: (data: { rules: any[] }) => http.post('/security/guard/rules/import', data),
   listAuditLogs: (params?: any) => http.get('/security/audit/logs', { params }),
   getAuditStats: () => http.get('/security/audit/stats'),
   listApprovals: (params?: any) => http.get('/security/approvals', { params }),
@@ -640,7 +789,7 @@ export const wikiApi = {
   getBacklinks: (kbId: number, slug: string) =>
     http.get(`/wiki/knowledge-bases/${kbId}/pages/${encodeURIComponent(slug)}/backlinks`),
 
-  // RFC-051 PR-7: archived pages
+  // Archived pages
   listArchivedPages: (kbId: number) =>
     http.get(`/wiki/knowledge-bases/${kbId}/pages/archived`),
   archivePage: (kbId: number, slug: string) =>
@@ -653,11 +802,11 @@ export const wikiApi = {
   getProcessingStatus: (kbId: number) => http.get(`/wiki/knowledge-bases/${kbId}/processing-status`),
 
   // RFC-029: Relations
-  getRelatedPages: (kbId: number, slug: string, topK = 5) =>
+  getRelatedPages: (kbId: number | string, slug: string, topK = 5) =>
     http.get(`/wiki/kb/${kbId}/pages/${encodeURIComponent(slug)}/related`, { params: { topK } }),
   explainRelation: (kbId: number, slugA: string, slugB: string) =>
     http.get(`/wiki/kb/${kbId}/pages/${encodeURIComponent(slugA)}/relation/${encodeURIComponent(slugB)}`),
-  getPageCitations: (kbId: number, pageId: number) =>
+  getPageCitations: (kbId: number | string, pageId: number | string) =>
     http.get(`/wiki/kb/${kbId}/pages/${pageId}/citations`),
 
   // RFC-030: Jobs
@@ -675,12 +824,63 @@ export const wikiApi = {
   // RFC-032: Search preview
   searchPreview: (kbId: number, data: { query: string; mode?: string; topK?: number }) =>
     http.post(`/wiki/kb/${kbId}/search-preview`, data),
+
+  // Transformations: reusable prompt templates run over raw materials
+  listTransformations: (kbId?: number) =>
+    http.get('/wiki/transformations', kbId != null ? { params: { kbId } } : undefined),
+  getTransformation: (id: number) =>
+    http.get(`/wiki/transformations/${id}`),
+  createTransformation: (data: {
+    kbId?: number | null
+    name: string
+    title: string
+    description?: string
+    promptTemplate: string
+    applyDefault?: boolean
+    enabled?: boolean
+    modelId?: number | null
+    outputTarget?: 'none' | 'page'
+    outputFormat?: 'markdown' | 'json'
+    outputSchema?: string | null
+  }) =>
+    http.post('/wiki/transformations', data),
+  updateTransformation: (id: number, data: {
+    title?: string
+    description?: string
+    promptTemplate?: string
+    applyDefault?: boolean
+    enabled?: boolean
+    modelId?: number | null
+    outputTarget?: 'none' | 'page'
+    outputFormat?: 'markdown' | 'json'
+    outputSchema?: string | null
+  }) =>
+    http.put(`/wiki/transformations/${id}`, data),
+  deleteTransformation: (id: number) =>
+    http.delete(`/wiki/transformations/${id}`),
+  applyTransformation: (id: number, rawId: number, sync = true) =>
+    http.post(`/wiki/transformations/${id}/apply`, { rawId }, { params: { sync } }),
+  applyTransformationToPage: (id: number, pageId: number, sync = true) =>
+    http.post(`/wiki/transformations/${id}/apply`, { pageId }, { params: { sync } }),
+  aggregateTransformation: (id: number, kbId: number) =>
+    http.post(`/wiki/transformations/${id}/aggregate`, undefined, { params: { kbId } }),
+  listTransformationRuns: (params: { rawId?: number; kbId?: number; transformationId?: number; limit?: number }) =>
+    http.get('/wiki/transformations/runs', { params }),
+  getTransformationRun: (runId: number) =>
+    http.get(`/wiki/transformations/runs/${runId}`),
+  deleteTransformationRun: (runId: number) =>
+    http.delete(`/wiki/transformations/runs/${runId}`),
+  saveTransformationRunAsPage: (runId: number) =>
+    http.post(`/wiki/transformations/runs/${runId}/save-as-page`),
+  cancelTransformationRun: (runId: number) =>
+    http.post(`/wiki/transformations/runs/${runId}/cancel`),
 }
 
 // ==================== Workspace (Team) ====================
 export const workspaceTeamApi = {
   list: () => http.get('/workspaces'),
   get: (id: string | number) => http.get(`/workspaces/${id}`),
+  getAccess: (id: string | number) => http.get(`/workspaces/${id}/access`),
   create: (data: any) => http.post('/workspaces', data),
   update: (id: string | number, data: any) => http.put(`/workspaces/${id}`, data),
   delete: (id: string | number) => http.delete(`/workspaces/${id}`),
@@ -790,13 +990,19 @@ export const hotCacheApi = {
 
 export interface WorkflowSummary {
   id: number
-  workspaceId: number
+  workspaceId: string | number
   name: string
   description?: string
   enabled: boolean
   draftJson?: string
   draftUpdatedAt?: string
   latestRevisionId?: number
+  /** Human version number of the latest published revision (1, 2, 3…) — shown
+   *  as "v3" instead of the latestRevisionId snowflake. Null when unpublished. */
+  latestRevisionNumber?: number
+  /** Latest published revision's graph JSON — populated by GET /workflows/{id}
+   *  so the editor can render a published workflow whose draft was cleared. */
+  publishedGraphJson?: string
   createTime: string
   updateTime: string
 }
@@ -816,7 +1022,7 @@ export interface WorkflowRun {
   id: number
   workflowId: number
   revisionId: number
-  workspaceId: number
+  workspaceId: string | number
   state: string
   triggeredBy?: string
   initialInputRef?: string
@@ -879,7 +1085,7 @@ export interface ResumeResponse {
 }
 
 export const workflowApi = {
-  list: (workspaceId: number) =>
+  list: (workspaceId: string | number) =>
     http.get<WorkflowSummary[]>('/workflows', { params: { workspaceId } }),
   get: (id: number) => http.get<WorkflowSummary>(`/workflows/${id}`),
   create: (data: Partial<WorkflowSummary>) =>
@@ -950,12 +1156,15 @@ export interface WorkflowDraftTemplate {
 
 export interface TriggerSummary {
   id: number
-  workspaceId: number
+  workspaceId: string | number
   name?: string
   patternType: string
   patternJson: string
   targetType: string
-  targetId: number
+  // Snowflake ID — backend serializes Long as string (ToStringSerializer).
+  // Keep the union so v-model can hold the string form without TS errors
+  // and JS Number() coercion stays out of the round-trip.
+  targetId: number | string
   payloadTemplate?: string
   rateLimitPerMin: number
   dedupWindowSecs: number
@@ -977,7 +1186,7 @@ export interface TriggerSummary {
 }
 
 export const triggerApi = {
-  list: (workspaceId: number) =>
+  list: (workspaceId: string | number) =>
     http.get<TriggerSummary[]>('/triggers', { params: { workspaceId } }),
   get: (id: number) => http.get<TriggerSummary>(`/triggers/${id}`),
   create: (data: Partial<TriggerSummary>) =>
@@ -986,10 +1195,83 @@ export const triggerApi = {
     http.put<TriggerSummary>(`/triggers/${id}`, data),
   delete: (id: number) => http.delete(`/triggers/${id}`),
   ingestEvent: (envelope: {
-    workspaceId: number
+    workspaceId: string | number
     patternType: string
     eventId?: string
     senderId?: string
     data?: Record<string, unknown>
   }) => http.post('/triggers/events', envelope),
+}
+
+// ==================== Persistent goals (RFC 48) ====================
+//
+// Snowflake IDs are sent as strings end-to-end — the backend's
+// ToStringSerializer makes responses strings, and request payloads keep
+// them as strings to dodge JS Number precision loss. See CLAUDE.md
+// "ID Handling — Snowflake Precision Convention".
+export interface Goal {
+  id: string
+  conversationId: string
+  agentId: string
+  workspaceId: string
+  createdBy: string
+  title: string
+  description: string
+  exitCriteria?: string | null
+  status: 'active' | 'paused' | 'completed' | 'abandoned' | 'exhausted'
+  turnBudget: number
+  turnsUsed: number
+  llmCallBudget: number
+  agentLlmCallsUsed: number
+  evalLlmCallsUsed: number
+  progressSummary?: string | null
+  completionScore?: number | null
+  lastEvaluationAt?: string | null
+  autoFollowupEnabled: boolean
+  followupCooldownSeconds: number
+  lastFollowupAt?: string | null
+  createTime: string
+  updateTime: string
+}
+
+export interface GoalEvent {
+  id: string
+  goalId: string
+  eventType: string
+  messageId?: string | null
+  detailJson?: string | null
+  createTime: string
+}
+
+export const goalApi = {
+  create: (data: {
+    conversationId: string
+    agentId: string | number
+    workspaceId: string | number
+    title: string
+    description?: string
+    exitCriteria?: string
+    turnBudget?: number
+    llmCallBudget?: number
+    autoFollowupEnabled?: boolean
+    followupCooldownSeconds?: number
+  }) => http.post<Goal>('/goals', data),
+
+  findActive: (conversationId: string) =>
+    http.get<Goal | null>(`/goals/by-conversation/${conversationId}`),
+
+  get: (id: string) => http.get<Goal>(`/goals/${id}`),
+
+  events: (id: string, limit = 100) =>
+    http.get<GoalEvent[]>(`/goals/${id}/events`, { params: { limit } }),
+
+  list: (params?: { status?: string; limit?: number }) =>
+    http.get<Goal[]>('/goals', { params }),
+
+  update: (id: string, data: Partial<Goal>) => http.patch<Goal>(`/goals/${id}`, data),
+  pause: (id: string) => http.post<Goal>(`/goals/${id}/pause`),
+  resume: (id: string) => http.post<Goal>(`/goals/${id}/resume`),
+  abandon: (id: string) => http.post<Goal>(`/goals/${id}/abandon`),
+  addCriterion: (id: string, criterion: string) =>
+    http.post<Goal>(`/goals/${id}/criteria`, { criterion }),
 }

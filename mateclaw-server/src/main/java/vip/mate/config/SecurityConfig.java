@@ -8,6 +8,7 @@ import org.springframework.security.config.annotation.web.configuration.EnableWe
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.http.HttpMethod;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 
@@ -48,10 +49,12 @@ public class SecurityConfig {
             )
             .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
+                // GET /settings/language stays anonymous (first-paint i18n). PUT
+                // requires login + admin (see @RequireGlobalAdmin on the controller).
+                .requestMatchers(HttpMethod.GET, "/api/v1/settings/language").permitAll()
                 // 公开 API 接口
                 .requestMatchers(
                     "/api/v1/auth/login",
-                    "/api/v1/settings/language",
                     "/api/v1/agents/*/chat/stream",
                     "/api/v1/chat/stream",
                     "/api/v1/chat/*/stop",
