@@ -28,6 +28,8 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # ── 配置（按需修改） ────────────────────────────────────────────────────
 _token = os.environ.get("GITHUB_TOKEN", "")
+if not _token:
+    raise RuntimeError("环境变量 GITHUB_TOKEN 未设置，无法访问私有仓库")
 REPO_URL = f"https://{_token}@github.com/shenyuya/AILab.git"
 REPO_BRANCH = "main"
 CACHE_DIR = "/app/scripts/.sync_cache"           # sparse clone 缓存目录
@@ -57,8 +59,13 @@ log = logging.getLogger(__name__)
 
 # ── Git 操作 ────────────────────────────────────────────────────────────
 
-def run(cmd: list[str], cwd: str = None, timeout: int = 60) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+def run(cmd: list[str], cwd: str = None, timeout: int = 120) -> subprocess.CompletedProcess:
+    env = os.environ.copy()
+    # 若设置了代理则透传给 git
+    for key in ("https_proxy", "HTTPS_PROXY", "http_proxy", "HTTP_PROXY", "ALL_PROXY"):
+        if key in os.environ:
+            env[key] = os.environ[key]
+    return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout, env=env)
 
 
 def init_sparse_clone() -> None:
@@ -151,8 +158,8 @@ def _file_hash(path: str) -> str:
 
 
 def install_requirements() -> None:
-    log.info("检测到 requirements 变化，开始安装依赖")
-    result = run([PIP_BIN, "install", "-r", REQUIREMENTS], timeout=600)
+    log.info("开始安装依赖")
+    result = run([PIP_BIN, "install", "-r", REQUIREMENTS], timeout=1800)
     if result.returncode == 0:
         log.info("依赖安装成功")
     else:
@@ -276,6 +283,7 @@ def main():
     if not os.path.exists(os.path.join(CACHE_DIR, ".git")):
         init_sparse_clone()
         sync_dirs()
+        install_requirements()   # 首次部署强制安装，避免环境为空时跳过
 
     server = HTTPServer(("0.0.0.0", WEBHOOK_PORT), WebhookHandler)
     log.info("Webhook 监听 :%d，等待 GitHub push 事件", WEBHOOK_PORT)
