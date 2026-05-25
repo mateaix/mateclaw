@@ -107,6 +107,10 @@ RUN apt-get update \
 # PLAYWRIGHT_BROWSERS_PATH without re-downloading them.
 RUN pip3 install --break-system-packages playwright
 
+# Pre-trust GitHub's SSH host key so sync_github.py's git pull never
+# blocks on an interactive "Are you sure?" prompt.
+RUN mkdir -p /root/.ssh && ssh-keyscan -H github.com >> /root/.ssh/known_hosts
+
 # Tell Playwright Java where Microsoft's image stored the browsers.
 # BrowserLauncher's BUNDLED strategy will then succeed without extra config.
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
@@ -115,6 +119,13 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
     PIP_INDEX_URL=https://pypi.org/simple \
     PIP_TRUSTED_HOST=pypi.org
 COPY --from=builder /build/mateclaw-server/target/*.jar app.jar
+
+# Copy GitHub webhook sync script and startup entrypoint
+RUN mkdir -p /app/scripts/utils
+COPY mateclaw-server/sync_github.py /app/scripts/utils/sync_github.py
+COPY mateclaw-server/entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
 EXPOSE 18088
 EXPOSE 1455
-ENTRYPOINT ["java", "-jar", "-Dspring.profiles.active=mysql", "app.jar"]
+ENTRYPOINT ["/app/entrypoint.sh"]
