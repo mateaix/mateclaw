@@ -118,9 +118,16 @@ public class WebChatController {
                 // Pattern mirrors ChatController: always accumulate, only broadcast when the
                 // delta is not a persistence-only echo of content already streamed by inner nodes.
                 StringBuilder assistantReply = new StringBuilder();
+                // Token usage: capture _usage_final event emitted at stream end
+                final int[] usage = {0, 0}; // [promptTokens, completionTokens]
 
                 agentService.chatStructuredStream(agentId, message, conversationId, visitorId)
                         .doOnNext(delta -> {
+                            if (delta.isEvent() && "_usage_final".equals(delta.eventType())) {
+                                Map<String, Object> data = delta.eventData();
+                                usage[0] = ((Number) data.getOrDefault("promptTokens", 0)).intValue();
+                                usage[1] = ((Number) data.getOrDefault("completionTokens", 0)).intValue();
+                            }
                             if (delta.content() != null && !delta.content().isEmpty()) {
                                 assistantReply.append(delta.content());
                                 if (!delta.persistenceOnly()) {
@@ -139,7 +146,8 @@ public class WebChatController {
                             try {
                                 if (!reply.isBlank()) {
                                     conversationService.saveMessage(
-                                            conversationId, "assistant", reply, List.of());
+                                            conversationId, "assistant", reply, List.of(),
+                                            "completed", usage[0], usage[1], null, null);
                                 }
                                 completionPublisher.publish(
                                         agentId, conversationId, message, reply, "webchat");
