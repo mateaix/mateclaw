@@ -28,6 +28,8 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # ── 配置（按需修改） ────────────────────────────────────────────────────
 _token = os.environ.get("GITHUB_TOKEN", "")
+if not _token:
+    raise RuntimeError("环境变量 GITHUB_TOKEN 未设置，无法访问私有仓库")
 REPO_URL = f"https://{_token}@github.com/shenyuya/AILab.git"
 REPO_BRANCH = "main"
 CACHE_DIR = "/app/scripts/.sync_cache"           # sparse clone 缓存目录
@@ -57,8 +59,13 @@ log = logging.getLogger(__name__)
 
 # ── Git 操作 ────────────────────────────────────────────────────────────
 
-def run(cmd: list[str], cwd: str = None, timeout: int = 60) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+def run(cmd: list[str], cwd: str = None, timeout: int = 120) -> subprocess.CompletedProcess:
+    env = os.environ.copy()
+    # 若设置了代理则透传给 git
+    for key in ("https_proxy", "HTTPS_PROXY", "http_proxy", "HTTP_PROXY", "ALL_PROXY"):
+        if key in os.environ:
+            env[key] = os.environ[key]
+    return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout, env=env)
 
 
 def init_sparse_clone() -> None:
