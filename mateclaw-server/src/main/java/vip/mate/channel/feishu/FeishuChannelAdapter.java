@@ -554,14 +554,9 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
      * 释放 ExecutorService）。仅置空引用会导致旧连接的 pingLoop 和线程池
      * 持续运行，造成文件描述符和线程泄漏，最终使新连接无法建立。
      * <p>
-     * 走 SDK 内部 {@code disconnect()} 这条单一入口完成 cleanup —— 它本身就是
-     * SDK 在 {@code onClosed} 回调里调用的方法，包含
-     * {@code conn.close(1000) → executor.shutdown() → 字段清零} 的全套动作。
-     * 该方法在 SDK 2.6.1 中是 {@code protected}，外部需通过反射 + setAccessible
-     * 调用；SDK 2.7.1 起新增了 public {@code close()}，届时整段反射可以删除。
-     * <p>
-     * 反射失败（例如未来 SDK 重命名 {@code disconnect}）以 WARN 级别记录而非
-     * 静默吞掉，避免泄漏在升级后悄无声息地复发。
+     * SDK 2.7.0 起暴露了 public {@code close()} 入口，内部调用 protected
+     * {@code disconnect()} 完成 {@code conn.close(1000) → executor.shutdown() →
+     * 字段清零} 的全套清理。直接调用即可，无需反射。
      */
     private void stopWebSocket() {
         cancelSilentDisconnectWatchdog();
@@ -572,14 +567,9 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
         }
         if (wsClient != null) {
             try {
-                var disconnect = wsClient.getClass().getDeclaredMethod("disconnect");
-                disconnect.setAccessible(true);
-                disconnect.invoke(wsClient);
-            } catch (NoSuchMethodException e) {
-                log.warn("[feishu] SDK Client.disconnect() not found — WebSocket cleanup skipped, "
-                        + "leak may recur until SDK API is re-verified: {}", e.getMessage());
+                wsClient.close();
             } catch (Exception e) {
-                log.warn("[feishu] WebSocket disconnect failed: {}", e.getMessage());
+                log.warn("[feishu] WebSocket close failed: {}", e.getMessage());
             }
         }
         wsClient = null;

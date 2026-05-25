@@ -43,7 +43,7 @@
 
         <!-- Channel and platform SDKs -->
         <dingtalk-stream.version>1.3.12</dingtalk-stream.version>
-        <lark-oapi.version>2.6.1</lark-oapi.version>
+        <lark-oapi.version>2.7.1</lark-oapi.version>
         <jda.version>6.4.1</jda.version>
         <slack.version>1.48.1</slack.version>
 
