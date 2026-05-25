@@ -716,11 +716,25 @@ public class NodeStreamingChatHelper {
     private StreamResult doStreamCall(ChatModel chatModel, Prompt prompt,
                                        String conversationId, String phase,
                                        boolean broadcast, int attempt) {
+        // Collapse every SystemMessage in the prompt into a single SystemMessage
+        // at index 0. Some OpenAI-compatible providers (LM Studio's built-in
+        // server, certain strict vLLM / SGLang deployments) reject 400
+        // "System message must be at the beginning" when SystemMessages appear
+        // after user / assistant / tool messages — the runtime composes the
+        // non-history prefix from several SystemMessage segments (main prompt,
+        // skill catalog, progress-ledger snapshot) and some of them land mid-
+        // list. Permissive providers see an equivalent token sequence either
+        // way; non-OpenAI protocols (Anthropic, Vertex) extract the merged
+        // system into their top-level system field exactly as before.
+        // Preserves the input's options reference so downstream relay logic
+        // (options.user = relay token) keeps working.
+        Prompt outbound = MessageNormalizer.normalize(prompt);
+
         // PR-2 L4 (RFC-049 §2.4.2): normalize as a pre-egress step (not only on retry).
         // Strip reasoning_content from prior-turn AssistantMessages (i <= lastUserIdx),
         // preserving in-turn thinking (i > lastUserIdx) so DeepSeek's contract holds.
         // The returned Prompt shares `options` by reference with the input prompt.
-        Prompt outbound = stripThinkingFromPrompt(prompt);
+        outbound = stripThinkingFromPrompt(outbound);
 
         // RFC-049 follow-up (2026-04-27): trim trailing AssistantMessage from the
         // outbound prompt. Triggered in practice by the summarizing→reasoning
