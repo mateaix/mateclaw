@@ -159,7 +159,9 @@ def _file_hash(path: str) -> str:
 
 def install_requirements() -> None:
     log.info("开始安装依赖")
-    result = run([PIP_BIN, "install", "-r", REQUIREMENTS], timeout=1800)
+    result = run([PIP_BIN, "install", "-r", REQUIREMENTS,
+                  "-i", "https://pypi.tuna.tsinghua.edu.cn/simple",
+                  "--trusted-host", "pypi.tuna.tsinghua.edu.cn"], timeout=1800)
     if result.returncode == 0:
         log.info("依赖安装成功")
     else:
