@@ -158,8 +158,8 @@ def _file_hash(path: str) -> str:
 
 
 def install_requirements() -> None:
-    log.info("检测到 requirements 变化，开始安装依赖")
-    result = run([PIP_BIN, "install", "-r", REQUIREMENTS], timeout=600)
+    log.info("开始安装依赖")
+    result = run([PIP_BIN, "install", "-r", REQUIREMENTS], timeout=1800)
     if result.returncode == 0:
         log.info("依赖安装成功")
     else:
@@ -283,6 +283,7 @@ def main():
     if not os.path.exists(os.path.join(CACHE_DIR, ".git")):
         init_sparse_clone()
         sync_dirs()
+        install_requirements()   # 首次部署强制安装，避免环境为空时跳过
 
     server = HTTPServer(("0.0.0.0", WEBHOOK_PORT), WebhookHandler)
     log.info("Webhook 监听 :%d，等待 GitHub push 事件", WEBHOOK_PORT)
