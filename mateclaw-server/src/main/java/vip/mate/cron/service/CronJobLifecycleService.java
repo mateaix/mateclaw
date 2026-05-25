@@ -9,6 +9,7 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import vip.mate.agent.AgentService;
 import vip.mate.cron.delivery.CronJobCompletedEvent;
 import vip.mate.cron.model.CronJobEntity;
 import vip.mate.dashboard.model.CronJobRunEntity;
@@ -178,6 +179,20 @@ public class CronJobLifecycleService {
     public void finishRunAndPublish(CronJobEntity job, CronJobRunEntity run,
                                     String userMessage, AssistantMessage result,
                                     String conversationId, boolean silent) {
+        finishRunAndPublish(job, run, userMessage, result, conversationId, silent, null);
+    }
+
+    /**
+     * @param chatResult optional usage attribution from the LLM path; pass
+     *                   {@code null} for non-LLM paths (e.g. reminder
+     *                   direct-push) so the assistant row is persisted with
+     *                   zero token counts and null runtime model attribution.
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void finishRunAndPublish(CronJobEntity job, CronJobRunEntity run,
+                                    String userMessage, AssistantMessage result,
+                                    String conversationId, boolean silent,
+                                    AgentService.ChatResult chatResult) {
         String convId = conversationId != null ? conversationId : run.getConversationId();
         String text = result != null && result.getText() != null ? result.getText() : "";
 
@@ -197,7 +212,13 @@ public class CronJobLifecycleService {
             return;
         }
 
-        conversationService.saveMessage(convId, "assistant", text);
+        if (chatResult != null) {
+            conversationService.saveMessage(convId, "assistant", text, null, "completed",
+                    chatResult.promptTokens(), chatResult.completionTokens(),
+                    chatResult.runtimeModel(), chatResult.runtimeProvider());
+        } else {
+            conversationService.saveMessage(convId, "assistant", text);
+        }
 
         // Memory pipeline (existing behavior preserved — was inline in the
         // old executeJob; now lives behind the same publisher used by the

@@ -1035,8 +1035,11 @@ public class ChatController {
         conversationService.saveMessage(request.getConversationId(), "user", request.getMessage(), request.getContentParts());
 
         String promptText = buildPromptText(request.getMessage(), request.getContentParts());
-        String response = agentService.chat(agentId, promptText, request.getConversationId());
-        conversationService.saveMessage(request.getConversationId(), "assistant", response);
+        AgentService.ChatResult result = agentService.chatWithUsage(agentId, promptText, request.getConversationId());
+        String response = result.content();
+        conversationService.saveMessage(request.getConversationId(), "assistant", response, null, "completed",
+                result.promptTokens(), result.completionTokens(),
+                result.runtimeModel(), result.runtimeProvider());
         completionPublisher.publish(agentId, request.getConversationId(), request.getMessage(), response, "web");
         return R.ok(response);
     }
