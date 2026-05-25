@@ -43,6 +43,7 @@ export interface Agent {
   enabled: boolean
   icon?: string
   tags?: string
+  workspaceBasePath?: string
   createTime?: string
   updateTime?: string
 }
