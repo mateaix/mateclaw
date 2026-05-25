@@ -1164,7 +1164,7 @@ export default {
       maxIterations: 'Max Iterations',
       defaultThinkingLevel: 'Default Thinking Level',
       workspaceBasePath: 'Working Directory',
-      workspaceBasePathHint: 'Optional. Set a dedicated working directory for this employee (relative to workspace root). Leave blank to inherit the workspace default.',
+      workspaceBasePathHint: 'Optional. Set a dedicated working directory for this employee. Relative paths resolve under the workspace root; absolute paths are used as-is. Leave blank to inherit the workspace default.',
       modelName: 'Model',
       modelGlobalDefault: 'Use global default',
       modelHint: 'Override the global default model for this employee. Leave blank to follow Settings → Models.',

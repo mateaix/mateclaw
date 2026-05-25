@@ -1056,7 +1056,7 @@ export default {
       maxIterations: '最大迭代次数',
       defaultThinkingLevel: '默认思考深度',
       workspaceBasePath: '工作目录',
-      workspaceBasePathHint: '可选。为该员工指定独立的工作目录（相对于工作区根目录）。留空则继承工作区默认目录。',
+      workspaceBasePathHint: '可选。为该员工指定独立的工作目录：相对路径会基于工作区根目录解析，也可填写绝对路径。留空则继承工作区默认目录。',
       modelName: '模型',
       modelGlobalDefault: '使用全局默认模型',
       modelHint: '为该员工单独指定模型，留空则跟随「设置 → 模型」中的全局默认。',

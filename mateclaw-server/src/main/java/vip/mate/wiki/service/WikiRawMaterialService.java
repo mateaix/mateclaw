@@ -449,7 +449,7 @@ public class WikiRawMaterialService {
         // 二进制文件：调用 DocumentExtractTool 提取
         if (entity.getSourcePath() != null && !entity.getSourcePath().isBlank()) {
             try {
-                String result = documentExtractTool.extract_document_text(entity.getSourcePath(), null);
+                String result = documentExtractTool.extract_document_text(entity.getSourcePath(), null, null);
                 JSONObject json = JSONUtil.parseObj(result);
                 if (json.getBool("success", false)) {
                     String text = json.getStr("text");
