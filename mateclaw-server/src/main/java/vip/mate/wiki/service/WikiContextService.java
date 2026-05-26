@@ -138,25 +138,29 @@ public class WikiContextService {
         int totalChars = 0;
         int maxChars = properties.getMaxContextChars();
 
-        // Every page is rendered under its KB heading so the agent can see
-        // which KB each slug lives in. This becomes load-bearing when more
-        // than one KB is visible: wiki tools accept an optional `kbName`
-        // argument, and the LLM is expected to copy the heading text into
-        // that argument when reaching for a slug outside the primary KB.
-        // Without the heading the agent would call wiki_read_page(slug=...)
-        // without kbName and silently miss the slug — that's the surface of
-        // issue #224 mapped into the prompt-side context.
+        // Each KB renders as a HEADING-ONLY block (### <name>) followed by a
+        // metadata line and its page list. The heading deliberately contains
+        // ONLY the KB name — no em-dash, no parenthesised page count, no
+        // description — so the LLM can safely copy the entire post-### text
+        // verbatim into the `kbName` tool argument. The previous form
+        // "### <name> — <description> (N pages)" let the LLM paste the
+        // whole row into kbName and break the exact-match lookup.
         boolean multipleKbs = kbs.size() > 1;
 
         for (WikiKnowledgeBaseEntity kb : kbs) {
             List<WikiPageEntity> pages = pageService.listSummaries(kb.getId());
             if (pages.isEmpty()) continue;
 
-            sb.append("### ").append(kb.getName());
+            // Heading: pure KB name. This is what `kbName` expects verbatim.
+            sb.append("### ").append(kb.getName()).append("\n");
+            // Metadata line: page count first (easy to scan), then optional
+            // description. Lives on its own line so it can't be confused for
+            // part of the name.
+            sb.append(pages.size()).append(" pages");
             if (kb.getDescription() != null && !kb.getDescription().isBlank()) {
                 sb.append(" — ").append(kb.getDescription());
             }
-            sb.append(" (").append(pages.size()).append(" pages)\n\n");
+            sb.append("\n\n");
 
             boolean compact = pages.size() > 20;
 
@@ -183,11 +187,12 @@ public class WikiContextService {
 
         sb.append("Use wiki_read_page(slug) for details. Use wiki_search_pages(query) to search.\n");
         if (multipleKbs) {
-            sb.append("Multiple knowledge bases visible — every wiki tool takes an optional ")
-                    .append("`kbName` argument (the heading text above). Pass it when the slug ")
-                    .append("you want lives outside the agent's primary KB; otherwise the tool ")
-                    .append("falls back to the primary and may return 'page not found'. Call ")
-                    .append("wiki_list_kbs first if unsure which KB to target.\n");
+            sb.append("Multiple knowledge bases visible — every wiki tool takes an ")
+                    .append("optional `kbName` argument. Set it to the EXACT text after ")
+                    .append("`### ` on the heading line (do NOT include the page count or ")
+                    .append("description). When two KBs share a name, call wiki_list_kbs ")
+                    .append("and pass `kbId` instead. Omit both and the tool falls back to ")
+                    .append("the agent's primary KB, which may return 'page not found'.\n");
         }
         sb.append("</wiki-context>");
 

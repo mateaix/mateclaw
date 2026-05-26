@@ -122,4 +122,62 @@ class WikiKnowledgeBaseServiceTest {
         assertThat(service.findByName(7L, "")).isNull();
         assertThat(service.findByName(7L, "   ")).isNull();
     }
+
+    // ==================== findByName ambiguity + findAllByName + findVisibleById ====================
+    //
+    // mate_wiki_knowledge_base has no unique constraint on name (one DB row
+    // per workspace + (name nullable + duplicates allowed) by design), so
+    // a non-blank kbName can match more than one visible KB. The single-
+    // result findByName must not silently pick "the first one" in that
+    // case — callers route through findAllByName + an ambiguous-error
+    // surface so the LLM is forced to disambiguate by kbId.
+
+    @Test
+    @DisplayName("findByName returns null when more than one visible KB shares the name")
+    void findByNameAmbiguousReturnsNull() {
+        when(kbMapper.selectList(any())).thenReturn(List.of(
+                kb(100L, 7L, "Docs"),
+                kb(900L, null, "Docs")));
+
+        assertThat(service.findByName(7L, "Docs"))
+                .as("ambiguous matches collapse to null — caller must use findAllByName")
+                .isNull();
+    }
+
+    @Test
+    @DisplayName("findAllByName returns every visible KB sharing the name")
+    void findAllByNameReturnsAllMatches() {
+        when(kbMapper.selectList(any())).thenReturn(List.of(
+                kb(100L, 7L, "Docs"),
+                kb(900L, null, "Docs"),
+                kb(800L, null, "Other")));
+
+        List<WikiKnowledgeBaseEntity> hits = service.findAllByName(7L, "Docs");
+        assertThat(hits).hasSize(2);
+        assertThat(hits).extracting(WikiKnowledgeBaseEntity::getId).containsExactly(100L, 900L);
+    }
+
+    @Test
+    @DisplayName("findAllByName returns empty for blank kbName")
+    void findAllByNameBlankReturnsEmpty() {
+        assertThat(service.findAllByName(7L, null)).isEmpty();
+        assertThat(service.findAllByName(7L, "  ")).isEmpty();
+    }
+
+    @Test
+    @DisplayName("findVisibleById returns the KB only when it is in the agent's visibility set")
+    void findVisibleByIdGate() {
+        when(kbMapper.selectList(any())).thenReturn(List.of(
+                kb(100L, 7L, "Bound KB"),
+                kb(900L, null, "Shared KB")));
+
+        // Visible: returned.
+        assertThat(service.findVisibleById(7L, 100L)).isNotNull();
+        assertThat(service.findVisibleById(7L, 900L)).isNotNull();
+
+        // Not in visibility set: deliberate fail-closed gate so an LLM
+        // can't pivot to an arbitrary KB by guessing an id.
+        assertThat(service.findVisibleById(7L, 99999L)).isNull();
+        assertThat(service.findVisibleById(7L, null)).isNull();
+    }
 }

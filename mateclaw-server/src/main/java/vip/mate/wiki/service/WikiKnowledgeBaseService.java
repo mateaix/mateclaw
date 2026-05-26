@@ -146,16 +146,46 @@ public class WikiKnowledgeBaseService {
      * <p>
      * Match is exact and case-sensitive — the LLM is expected to copy the
      * name verbatim from {@code wiki_list_kbs} output. Returns {@code null}
-     * when no visible KB has that name, so callers can surface a "use
-     * wiki_list_kbs to discover names" hint instead of silently falling back
-     * to the primary KB (which would mask a bad pick).
+     * when zero OR more than one KB matches the name; callers wanting to
+     * distinguish the two cases (so the LLM can be told to disambiguate by
+     * id) should call {@link #findAllByName} instead. The single-match
+     * convenience contract here keeps the legacy call sites simple.
      */
     public WikiKnowledgeBaseEntity findByName(Long agentId, String kbName) {
+        List<WikiKnowledgeBaseEntity> matches = findAllByName(agentId, kbName);
+        return matches.size() == 1 ? matches.get(0) : null;
+    }
+
+    /**
+     * All KBs visible to {@code agentId} whose name matches {@code kbName}
+     * exactly. Returns an empty list when the name is blank or no KB matches;
+     * returns >1 entries when the workspace has duplicate KB names (no DB
+     * unique constraint protects against this), in which case the caller
+     * MUST disambiguate (typically by surfacing a kbId-based picker to the
+     * LLM) rather than silently picking the first one.
+     */
+    public List<WikiKnowledgeBaseEntity> findAllByName(Long agentId, String kbName) {
         if (kbName == null || kbName.isBlank()) {
-            return null;
+            return List.of();
         }
+        List<WikiKnowledgeBaseEntity> out = new java.util.ArrayList<>();
         for (WikiKnowledgeBaseEntity kb : listByAgentId(agentId)) {
             if (kbName.equals(kb.getName())) {
+                out.add(kb);
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Resolve a KB by id, but ONLY when it's in the agent's visibility set —
+     * a deliberate fail-closed gate so an LLM cannot pivot to an arbitrary KB
+     * by guessing or scraping an id from someone else's workspace.
+     */
+    public WikiKnowledgeBaseEntity findVisibleById(Long agentId, Long kbId) {
+        if (kbId == null) return null;
+        for (WikiKnowledgeBaseEntity kb : listByAgentId(agentId)) {
+            if (kbId.equals(kb.getId())) {
                 return kb;
             }
         }
