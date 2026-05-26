@@ -183,6 +183,7 @@ export default {
     startNewChat: '开始新对话吧',
     messages: '{count} 条消息',
     configModel: '配置模型',
+    modelSaveFailed: '模型切换未保存，下条消息可能仍走原模型',
     openSessions: '会话管理',
     clearMessages: '清空消息',
     goToModelSettings: '前往模型设置',

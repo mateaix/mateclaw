@@ -16,6 +16,7 @@ import vip.mate.channel.model.ChannelEntity;
 import vip.mate.channel.notification.ApprovalNotificationService;
 import vip.mate.channel.service.ChannelService;
 import vip.mate.channel.web.ChatStreamTracker;
+import vip.mate.exception.MateClawException;
 import vip.mate.memory.event.ConversationCompletionPublisher;
 import vip.mate.tts.TtsService;
 import vip.mate.workspace.conversation.ConversationService;
@@ -237,6 +238,25 @@ public class ChannelMessageRouter {
      * @param channelEntity 渠道配置（含关联 agentId）
      */
     public void enqueue(ChannelMessage message, ChannelAdapter adapter, ChannelEntity channelEntity) {
+        // The adapter caches the ChannelEntity it was constructed with, so a
+        // long-lived adapter (e.g. Feishu WS) keeps handing us a snapshot
+        // that may be stale by the time the message arrives. Refresh from
+        // the DB so a freshly-rebound agent (or any other routing-metadata
+        // change applied without a restart) is honoured immediately.
+        ChannelEntity fresh = freshChannelEntity(channelEntity);
+        if (fresh == null) {
+            // Channel deleted between adapter start and message arrival.
+            // Skip everything — even the trigger publish, since the channel
+            // no longer exists for downstream consumers to reference.
+            return;
+        }
+        if (!Boolean.TRUE.equals(fresh.getEnabled())) {
+            log.warn("[{}] Channel {} (id={}) is disabled; dropping message from {}",
+                    adapter.getChannelType(), fresh.getName(), fresh.getId(), message.getSenderId());
+            return;
+        }
+        channelEntity = fresh;
+
         // Fan out to the trigger pipeline FIRST — channel_message and
         // content_match triggers fire on every received message regardless
         // of whether the channel has an agent attached. If we returned
@@ -538,7 +558,31 @@ public class ChannelMessageRouter {
      */
     private void processMessage(ChannelMessage message, ChannelAdapter adapter,
                                 ChannelEntity channelEntity, String conversationId) {
+        // The snapshot captured at enqueue time can be stale: an admin may
+        // have rebound, deleted, or disabled the channel between debounce-
+        // queue and flush. Re-read here so the rest of this method sees the
+        // current state, and fail closed on deletion / disable so we don't
+        // process traffic for a channel the admin has shut down.
+        ChannelEntity fresh = freshChannelEntity(channelEntity);
+        if (fresh == null) {
+            log.warn("[{}] Channel id={} not found at processing time; dropping message from {}",
+                    adapter.getChannelType(),
+                    channelEntity != null ? channelEntity.getId() : null,
+                    message.getSenderId());
+            return;
+        }
+        if (!Boolean.TRUE.equals(fresh.getEnabled())) {
+            log.warn("[{}] Channel {} (id={}) is disabled at processing time; dropping message from {}",
+                    adapter.getChannelType(), fresh.getName(), fresh.getId(), message.getSenderId());
+            return;
+        }
+        channelEntity = fresh;
         Long agentId = channelEntity.getAgentId();
+        if (agentId == null) {
+            log.warn("[{}] Channel {} has no associated agent at processing time; dropping message from {}",
+                    adapter.getChannelType(), channelEntity.getName(), message.getSenderId());
+            return;
+        }
         log.info("[{}] Processing message: sender={}, conversationId={}, agentId={}",
                 adapter.getChannelType(), message.getSenderId(), conversationId, agentId);
 
@@ -1120,6 +1164,14 @@ public class ChannelMessageRouter {
      * 路由消息并使用流式处理（用于支持流式的渠道，如 Web）
      */
     public Flux<String> routeStream(ChannelMessage message, ChannelEntity channelEntity) {
+        ChannelEntity fresh = freshChannelEntity(channelEntity);
+        if (fresh == null) {
+            return Flux.error(new IllegalStateException("Channel no longer exists"));
+        }
+        if (!Boolean.TRUE.equals(fresh.getEnabled())) {
+            return Flux.error(new IllegalStateException("Channel is disabled"));
+        }
+        channelEntity = fresh;
         Long agentId = channelEntity.getAgentId();
         if (agentId == null) {
             return Flux.error(new IllegalStateException("Channel has no associated agent"));
@@ -1193,6 +1245,49 @@ public class ChannelMessageRouter {
     }
 
     // ==================== 工具方法 ====================
+
+    /**
+     * Re-read the channel row from the database so the rest of the message
+     * pipeline sees current routing metadata (agentId, workspaceId, identityJson)
+     * rather than the snapshot captured when the adapter was constructed.
+     *
+     * <p>Failure semantics:
+     * <ul>
+     *   <li><b>Channel deleted</b> — {@link ChannelService#getChannel} throws
+     *       a {@link MateClawException} with {@code msgKey="err.channel.not_found"}.
+     *       We return {@code null} so the caller drops the message: the channel
+     *       no longer exists, routing the message would land it against a row
+     *       that's been removed.</li>
+     *   <li><b>Transient lookup failure</b> — any other exception (DB blip,
+     *       NPE in mapper, …). We fall back to the snapshot so an isolated
+     *       infrastructure hiccup doesn't black-hole live traffic.</li>
+     * </ul>
+     *
+     * <p>{@code enabled=false} is NOT handled here — that's an admin decision
+     * the callers check separately, with channel-type-specific logging.
+     */
+    private ChannelEntity freshChannelEntity(ChannelEntity snapshot) {
+        if (snapshot == null || snapshot.getId() == null) {
+            return snapshot;
+        }
+        try {
+            ChannelEntity latest = channelService.getChannel(snapshot.getId());
+            return latest != null ? latest : snapshot;
+        } catch (MateClawException biz) {
+            if ("err.channel.not_found".equals(biz.getMsgKey())) {
+                log.warn("Channel id={} no longer exists; dropping incoming message",
+                        snapshot.getId());
+                return null;
+            }
+            log.debug("Transient channel lookup failure id={}, using snapshot: {}",
+                    snapshot.getId(), biz.getMessage());
+            return snapshot;
+        } catch (Exception e) {
+            log.debug("Failed to refresh ChannelEntity id={}, using snapshot: {}",
+                    snapshot.getId(), e.getMessage());
+            return snapshot;
+        }
+    }
 
     /**
      * 构建会话 ID
