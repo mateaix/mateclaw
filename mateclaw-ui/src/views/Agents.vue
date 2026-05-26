@@ -209,11 +209,17 @@
             </button>
             <button v-if="editingAgent" class="modal-tab" :class="{ active: modalTab === 'skills' }" @click="modalTab = 'skills'">
               {{ t('agents.tabs.skills', 'Skills') }}
-              <span v-if="selectedSkillIds.length" class="tab-badge">{{ selectedSkillIds.length }}</span>
+              <!-- Issue #184: when the disable flag is on, suppress the
+                   stale-pick count badge and show an "off" state instead —
+                   the count would otherwise contradict the disable toggle
+                   visible in the tab content. -->
+              <span v-if="form.skillsDisabled" class="tab-badge tab-badge--off">{{ t('agents.binding.disableAllSkillsBadge') }}</span>
+              <span v-else-if="selectedSkillIds.length" class="tab-badge">{{ selectedSkillIds.length }}</span>
             </button>
             <button v-if="editingAgent" class="modal-tab" :class="{ active: modalTab === 'tools' }" @click="modalTab = 'tools'">
               {{ t('agents.tabs.tools', 'Tools') }}
-              <span v-if="selectedToolNames.length" class="tab-badge">{{ selectedToolNames.length }}</span>
+              <span v-if="form.toolsDisabled" class="tab-badge tab-badge--off">{{ t('agents.binding.disableAllToolsBadge') }}</span>
+              <span v-else-if="selectedToolNames.length" class="tab-badge">{{ selectedToolNames.length }}</span>
             </button>
             <button v-if="editingAgent" class="modal-tab" :class="{ active: modalTab === 'providers' }" @click="modalTab = 'providers'">
               {{ t('agents.tabs.providers', 'Providers') }}
@@ -333,24 +339,55 @@
               <span class="binding-intro__kicker">{{ t('agents.binding.skillsKicker') }}</span>
               <p class="binding-intro__tagline">{{ t('agents.binding.skillsTagline') }}</p>
             </div>
+            <!-- Issue #184: explicit "no skills" toggle. Empty selection
+                 alone falls back to "inherit global default" (legacy
+                 contract), so users who want zero skills in the context
+                 need this dedicated bit. -->
+            <div class="binding-disable-row">
+              <label class="binding-disable-label">
+                <input type="checkbox" v-model="form.skillsDisabled" class="binding-disable-checkbox" />
+                <span class="binding-disable-text">
+                  <strong>{{ t('agents.binding.disableAllSkills') }}</strong>
+                  <span class="binding-disable-hint">{{ t('agents.binding.disableAllSkillsHint') }}</span>
+                </span>
+              </label>
+            </div>
             <p class="binding-hint">{{ t('agents.binding.skillsHint') }}</p>
             <div v-if="availableSkills.length === 0" class="binding-empty">{{ t('agents.binding.noSkills') }}</div>
             <template v-else>
-              <div class="binding-search">
+              <div class="binding-search" :class="{ 'binding-search--disabled': form.skillsDisabled }">
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
                 </svg>
-                <input v-model="skillBindingSearch" :placeholder="t('agents.binding.searchSkills')" />
+                <input v-model="skillBindingSearch" :placeholder="t('agents.binding.searchSkills')" :disabled="form.skillsDisabled" />
               </div>
               <div v-if="filteredAvailableSkills.length === 0" class="binding-empty binding-empty--compact">{{ t('agents.binding.noMatchingSkills') }}</div>
-              <div v-else class="binding-list">
+              <div v-else class="binding-list" :class="{ 'binding-list--disabled': form.skillsDisabled }">
                 <label
                   v-for="skill in filteredAvailableSkills"
                   :key="skill.id"
                   class="binding-item"
-                  :class="{ selected: selectedSkillIds.includes(skill.id) }"
+                  :class="{
+                    selected: !form.skillsDisabled && selectedSkillIds.includes(skill.id),
+                    'binding-item--inert': form.skillsDisabled,
+                  }"
                 >
-                  <input type="checkbox" :value="skill.id" v-model="selectedSkillIds" class="binding-checkbox" />
+                  <!-- Manual :checked instead of v-model: when skillsDisabled
+                       is on, the stale picks still live in selectedSkillIds
+                       (we keep them so flipping the toggle back off restores
+                       the previous selection in one click). Driving the
+                       checkbox from a derived expression lets us hide the
+                       stale checked state from the user without mutating
+                       the underlying array. The save path already clears
+                       the array on send when the flag is on. -->
+                  <input
+                    type="checkbox"
+                    :value="skill.id"
+                    :checked="!form.skillsDisabled && selectedSkillIds.includes(skill.id)"
+                    @change="onSkillToggle(skill.id, $event)"
+                    class="binding-checkbox"
+                    :disabled="form.skillsDisabled"
+                  />
                   <span class="binding-icon"><SkillIcon :value="skill.icon" :size="20" :fallback="'🧩'" /></span>
                   <div class="binding-info">
                     <span class="binding-name">{{ resolveSkillName(skill) }}</span>
@@ -371,13 +408,30 @@
               <span class="binding-intro__kicker">{{ t('agents.binding.toolsKicker') }}</span>
               <p class="binding-intro__tagline">{{ t('agents.binding.toolsTagline') }}</p>
             </div>
-            <details class="advanced-tools" :open="selectedToolNames.length > 0 || advancedToolsOpen">
+            <!-- Issue #184 mirror of the skills tab: explicit opt-out so the
+                 LLM advertises zero user-pickable tools (system-level
+                 memory primitives still pass — see backend SYSTEM_LEVEL_TOOLS). -->
+            <div class="binding-disable-row">
+              <label class="binding-disable-label">
+                <input type="checkbox" v-model="form.toolsDisabled" class="binding-disable-checkbox" />
+                <span class="binding-disable-text">
+                  <strong>{{ t('agents.binding.disableAllTools') }}</strong>
+                  <span class="binding-disable-hint">{{ t('agents.binding.disableAllToolsHint') }}</span>
+                </span>
+              </label>
+            </div>
+            <!-- Issue #184: when the disable flag is on, treat the count as
+                 zero for visual affordances — auto-open / count badge / chevron
+                 should all behave as if there are no picks, matching the
+                 "saving clears bindings" contract. The underlying array is
+                 left intact so toggling the flag back off restores them. -->
+            <details class="advanced-tools" :open="(!form.toolsDisabled && selectedToolNames.length > 0) || advancedToolsOpen">
               <summary class="advanced-tools-summary" @click.prevent="advancedToolsOpen = !advancedToolsOpen">
                 <span class="advanced-tools-title">
                   {{ t('agents.binding.advancedToolsTitle') }}
-                  <span v-if="selectedToolNames.length > 0" class="advanced-tools-count">{{ selectedToolNames.length }}</span>
+                  <span v-if="!form.toolsDisabled && selectedToolNames.length > 0" class="advanced-tools-count">{{ selectedToolNames.length }}</span>
                 </span>
-                <span class="advanced-tools-chevron">{{ (advancedToolsOpen || selectedToolNames.length > 0) ? '▾' : '▸' }}</span>
+                <span class="advanced-tools-chevron">{{ (advancedToolsOpen || (!form.toolsDisabled && selectedToolNames.length > 0)) ? '▾' : '▸' }}</span>
               </summary>
               <p class="binding-hint">{{ t('agents.binding.toolsHint') }}</p>
               <p class="binding-hint advanced-tools-note">{{ t('agents.binding.advancedToolsHint') }}</p>
@@ -423,9 +477,10 @@
                     :key="tool.rowId || `${group.groupId}#${tool.rawName}#${tool.name}`"
                     class="binding-item"
                     :class="{
-                      selected: tool._isSelected,
+                      selected: !form.toolsDisabled && tool._isSelected,
                       'binding-item--stale': tool.stale,
                       'binding-item--unavailable': !tool.available,
+                      'binding-item--inert': form.toolsDisabled,
                     }"
                     :title="!tool.available
                       ? t('agents.binding.toolUnavailableTooltip', { reason: tool.unavailableReason || '' })
@@ -437,12 +492,17 @@
                          both, so we drive each row's checked flag from
                          the pre-computed _isSelected derived in
                          availableToolGroups, which considers whether
-                         this row's name is owned by a bindable twin. -->
+                         this row's name is owned by a bindable twin.
+                         Issue #184: gate visual checked-state on the
+                         disable flag so stale picks don't show through
+                         when "this agent uses no user-pickable tools"
+                         is on. selectedToolNames is preserved so flipping
+                         the toggle back off restores the prior selection. -->
                     <input
                       type="checkbox"
                       class="binding-checkbox"
-                      :checked="tool._isSelected"
-                      :disabled="tool._isDisabled"
+                      :checked="!form.toolsDisabled && tool._isSelected"
+                      :disabled="tool._isDisabled || form.toolsDisabled"
                       @change="onToolToggle(tool.name, $event)"
                     />
                     <span class="binding-icon">
@@ -672,6 +732,24 @@ function onToolToggle(toolName: string, event: Event) {
     selectedToolNames.value = selectedToolNames.value.filter((n) => n !== toolName)
   }
 }
+
+/**
+ * Skill checkbox handler. Issue #184 — the row is driven by an explicit
+ * {@code :checked} expression instead of {@code v-model} so the visual
+ * checked state can be suppressed when {@code skillsDisabled} is on
+ * without dropping the picks from {@code selectedSkillIds}. Toggling
+ * the disable flag back off restores the prior selection in one click.
+ */
+function onSkillToggle(skillId: number | string, event: Event) {
+  const target = event.target as HTMLInputElement
+  if (target.checked) {
+    if (!selectedSkillIds.value.includes(skillId as number)) {
+      selectedSkillIds.value.push(skillId as number)
+    }
+  } else {
+    selectedSkillIds.value = selectedSkillIds.value.filter((id) => id !== skillId)
+  }
+}
 const selectedSkillIds = ref<number[]>([])
 const selectedToolNames = ref<string[]>([])
 // RFC-009 PR-3: per-agent provider preference order
@@ -709,6 +787,10 @@ const defaultForm = (): Partial<Agent> & { name: string; defaultThinkingLevel: s
   enabled: true,
   defaultThinkingLevel: null,
   workspaceBasePath: null,
+  // Issue #184 — explicit opt-out flags. Default false matches the legacy
+  // "zero rows = inherit global default" contract for newly-created agents.
+  skillsDisabled: false,
+  toolsDisabled: false,
 })
 
 const form = ref(defaultForm())
@@ -897,6 +979,8 @@ async function openEditModal(agent: Agent) {
     enabled: agent.enabled,
     defaultThinkingLevel: (agent as any).defaultThinkingLevel || null,
     workspaceBasePath: agent.workspaceBasePath || null,
+    skillsDisabled: agent.skillsDisabled === true,
+    toolsDisabled: agent.toolsDisabled === true,
   }
   profileForm.value = parsePrompt(agent.systemPrompt)
   modalTab.value = 'basic'
@@ -964,13 +1048,44 @@ async function saveAgent() {
       agentId = res.data?.id
     }
 
-    // Save bindings (only for existing agents or after create returns id)
+    // Sequential binding saves (issue #184). Two coupled concerns:
+    //
+    // 1. Disabled-flag intent must win over stale picks. The opt-out
+    //    toggles only disable the picker visually — selectedSkillIds /
+    //    selectedToolNames keep whatever was previously bound. If we sent
+    //    those stale picks to setSkills/setTools while the flag is on, the
+    //    backend's auto-clear self-heals the flag back to false (because
+    //    "non-empty save = concrete commitment"), and the user's "disable
+    //    everything" intent vanishes silently. So we clear the array here
+    //    before sending — saving [] preserves the flag, and the runtime
+    //    contract ("flag wins over rows") is honored.
+    //
+    // 2. Sequential order, not Promise.all. Parallel binding calls would
+    //    leave half-applied state on a partial failure; serial means we
+    //    know exactly which side persisted and can pull the authoritative
+    //    server state back if anything throws.
+    const skillIdsToSave = form.value.skillsDisabled ? [] : selectedSkillIds.value
+    const toolNamesToSave = form.value.toolsDisabled ? [] : selectedToolNames.value
+
     if (agentId && editingAgent.value) {
-      await Promise.all([
-        agentBindingApi.setSkills(agentId, selectedSkillIds.value),
-        agentBindingApi.setTools(agentId, selectedToolNames.value),
-        agentBindingApi.setProviderPreferences(agentId, selectedProviderIds.value),
-      ])
+      try {
+        await agentBindingApi.setSkills(agentId, skillIdsToSave)
+        await agentBindingApi.setTools(agentId, toolNamesToSave)
+        await agentBindingApi.setProviderPreferences(agentId, selectedProviderIds.value)
+      } catch (bindingError: any) {
+        mcToast.error(bindingError?.message || t('agents.messages.saveFailed'))
+        // Pull the authoritative server state back into the editing form so
+        // the user sees what actually persisted instead of stale picks.
+        try {
+          const fresh: any = await agentApi.get(agentId)
+          if (fresh?.data) {
+            await openEditModal(fresh.data)
+          }
+        } catch {
+          // Reload failure on top of binding failure: best effort, stop here.
+        }
+        return
+      }
     }
 
     mcToast.success(t('agents.messages.saveSuccess'))
@@ -1295,6 +1410,14 @@ html.dark .seg-count.warn {
   border-radius: 9px; background: var(--mc-primary); color: white;
   font-size: 11px; font-weight: 600;
 }
+/* Issue #184: "off" variant for the disable-all state. Neutral grey instead
+   of brand orange because the badge represents a constraint, not a count. */
+.tab-badge--off {
+  min-width: auto; padding: 0 8px;
+  background: var(--mc-bg-sunken, rgba(0,0,0,0.08));
+  color: var(--mc-text-tertiary);
+  border: 1px solid var(--mc-border-light);
+}
 
 /* Binding Tab */
 .binding-tab { min-height: 200px; }
@@ -1327,6 +1450,47 @@ html.dark .seg-count.warn {
 }
 .binding-empty { padding: 40px; text-align: center; color: var(--mc-text-tertiary); font-size: 14px; }
 .binding-empty--compact { padding: 24px 12px; }
+/* Issue #184 — opt-out row that sits above the picker list. */
+.binding-disable-row {
+  margin: 0 0 12px;
+  padding: 12px 14px;
+  border: 1px dashed var(--mc-border);
+  border-radius: 8px;
+  background: var(--mc-bg-sunken);
+}
+.binding-disable-label {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  cursor: pointer;
+}
+.binding-disable-checkbox {
+  flex-shrink: 0;
+  accent-color: var(--mc-primary);
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+}
+.binding-disable-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 13px;
+  color: var(--mc-text-primary);
+  line-height: 1.4;
+}
+.binding-disable-text strong { font-weight: 600; }
+.binding-disable-hint {
+  font-size: 12px;
+  color: var(--mc-text-tertiary);
+  line-height: 1.5;
+}
+/* When the opt-out is on, the picker list is still visible (so the user
+   can see what they're disabling) but rendered inert — no hover affordance,
+   greyed-out interactions. */
+.binding-search--disabled,
+.binding-list--disabled { opacity: 0.45; pointer-events: none; }
+.binding-item--inert { cursor: not-allowed; }
 .binding-search {
   display: flex;
   align-items: center;

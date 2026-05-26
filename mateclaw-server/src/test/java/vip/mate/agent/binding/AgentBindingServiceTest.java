@@ -431,4 +431,218 @@ class AgentBindingServiceTest {
         assertNotNull(count);
         assertEquals(0, count, "unbind 应该物理删除，而不是软删（软删会留 deleted=1 行，占用唯一索引槽位导致 rebind 失败）");
     }
+
+    // ==================== V126 binding-mode flags (issue #184) ====================
+
+    /**
+     * Flip the {@code skills_disabled} column on the seeded agent row.
+     * Tests need a direct lever because {@link AgentBindingService} only
+     * exposes the auto-clear side; setting the flag is the controller's job.
+     */
+    private void setSkillsDisabledFlag(boolean value) {
+        jdbcTemplate.update(
+                "UPDATE mate_agent SET skills_disabled = ? WHERE id = ?",
+                value, agentId);
+    }
+
+    /** Mirror of {@link #setSkillsDisabledFlag} for the tools toggle. */
+    private void setToolsDisabledFlag(boolean value) {
+        jdbcTemplate.update(
+                "UPDATE mate_agent SET tools_disabled = ? WHERE id = ?",
+                value, agentId);
+    }
+
+    /** Boolean column readback so the auto-clear assertions don't lie. */
+    private boolean readSkillsDisabledFlag() {
+        Boolean v = jdbcTemplate.queryForObject(
+                "SELECT skills_disabled FROM mate_agent WHERE id = ?",
+                Boolean.class, agentId);
+        return Boolean.TRUE.equals(v);
+    }
+
+    private boolean readToolsDisabledFlag() {
+        Boolean v = jdbcTemplate.queryForObject(
+                "SELECT tools_disabled FROM mate_agent WHERE id = ?",
+                Boolean.class, agentId);
+        return Boolean.TRUE.equals(v);
+    }
+
+    @Test
+    @DisplayName("issue #184: skills_disabled=true → getBoundSkillIds 返回 emptySet（不是 null）")
+    void getBoundSkillIdsReturnsEmptyWhenSkillsDisabled() {
+        // No binding rows at all + flag on. Pre-V126 contract returned null
+        // (= inherit global default); the new flag flips the read to an
+        // explicit "no skills" so SKILL.md catalog injection stays off.
+        setSkillsDisabledFlag(true);
+
+        Set<Long> result = bindingService.getBoundSkillIds(agentId);
+        assertNotNull(result, "skills_disabled=true 时绝不能返回 null —— 否则下游会把它当作 'inherit global default'");
+        assertTrue(result.isEmpty(), "应当是显式的空 set");
+    }
+
+    @Test
+    @DisplayName("issue #184: tools_disabled=true → getBoundToolNames 返回 emptySet（不是 null）")
+    void getBoundToolNamesReturnsEmptyWhenToolsDisabled() {
+        setToolsDisabledFlag(true);
+
+        Set<String> result = bindingService.getBoundToolNames(agentId);
+        assertNotNull(result, "tools_disabled=true 时绝不能返回 null");
+        assertTrue(result.isEmpty(), "应当是显式的空 set");
+    }
+
+    @Test
+    @DisplayName("issue #184 matrix (T,F,*,0): skillsDisabled 但无 tool 绑定 → effective 返回 null（工具继承全局默认）")
+    void skillsDisabledNoToolBindingsStillInheritsDefaultTools() {
+        // This is the critical case the design review caught: silently
+        // returning {SYSTEM + MCP} here would strip every non-MCP global
+        // built-in tool just because the user said "no skills". The fix
+        // returns null so AgentToolSet.withAllowedToolsOnly(null) → no
+        // restriction → global default tools flow through.
+        setSkillsDisabledFlag(true);
+
+        Set<String> effective = bindingService.getEffectiveToolNames(agentId);
+        assertNull(effective,
+                "skillsDisabled=true 但用户没主动限制工具时，effective 必须返回 null —— "
+                        + "否则非 MCP 的全局工具会被悄悄收窄掉");
+    }
+
+    @Test
+    @DisplayName("issue #184 matrix (T,F,*,>0): skillsDisabled + 显式 tool 绑定 → 仅这些 tool + SYSTEM + MCP-rule")
+    void skillsDisabledWithToolBindingsScopesToTools() {
+        seedBuiltinTool("scoped_tool_probe");
+        setSkillsDisabledFlag(true);
+        bindingService.setToolBindings(agentId, List.of("scoped_tool_probe"));
+
+        // Auto-clear is opt-in: we want to verify the matrix when both states
+        // coexist transiently (i.e. a client wrote tool bindings without
+        // touching the flag through the UI). bindSkill/setSkillBindings only
+        // clears its own flag; setToolBindings clears tools_disabled, not
+        // skills_disabled — so skills_disabled survives here.
+        Set<String> effective = bindingService.getEffectiveToolNames(agentId);
+        assertNotNull(effective, "存在显式 tool 绑定时不能返回 null");
+        assertTrue(effective.contains("scoped_tool_probe"), "用户勾选的工具必须在 allowlist");
+        assertTrue(effective.contains("record_lesson"), "system-level 内核工具必须保留");
+        assertFalse(effective.isEmpty());
+    }
+
+    @Test
+    @DisplayName("issue #184 matrix (F,T,0,*): toolsDisabled 无 skill 绑定 → 仅 system-level（不并入 MCP，不继承默认）")
+    void toolsDisabledReturnsSystemOnlyAndSkipsMcp() {
+        seedMcpServerWithOneTool(8_888_201L, "issue184-mcp", "leaked_probe");
+        setToolsDisabledFlag(true);
+
+        Set<String> effective = bindingService.getEffectiveToolNames(agentId);
+        assertNotNull(effective, "toolsDisabled=true 时绝不能返回 null（那会让全局默认工具又流回来）");
+        assertTrue(effective.contains("record_lesson"), "system-level memory 工具必须保留");
+        boolean hasMcp = effective.stream().anyMatch(n -> n != null && n.startsWith("mcp_"));
+        assertFalse(hasMcp,
+                "toolsDisabled=true 时 enabled MCP 工具绝不能自动并入 —— 否则用户的 '禁用所有工具' 意图被违背。"
+                        + "实际 allowlist: " + effective);
+    }
+
+    @Test
+    @DisplayName("issue #184 matrix (F,T,>0,*): toolsDisabled + skill 绑定 → skill 扩展 + SYSTEM（不并入 MCP）")
+    void toolsDisabledKeepsSkillExpansionButSkipsMcp() {
+        long skillId = 7_777_801L;
+        seedSkill(skillId);
+        bindingService.bindSkill(agentId, skillId);
+        seedMcpServerWithOneTool(8_888_202L, "issue184-mcp-b", "mcp_should_be_hidden");
+        setToolsDisabledFlag(true);
+
+        Set<String> effective = bindingService.getEffectiveToolNames(agentId);
+        assertNotNull(effective);
+        // Skill expansion is contingent on the resolved manifest declaring
+        // allowed_tools, which test fixtures don't seed; the contract we
+        // verify here is the MCP suppression + SYSTEM survival. (Skill
+        // expansion correctness is exercised in other tests / by the runtime.)
+        assertTrue(effective.contains("record_lesson"), "system-level 必须保留");
+        boolean hasMcp = effective.stream().anyMatch(n -> n != null && n.startsWith("mcp_"));
+        assertFalse(hasMcp, "toolsDisabled=true 即使有 skill 绑定也不能自动并入 MCP");
+    }
+
+    @Test
+    @DisplayName("issue #184 matrix (T,T,*,*): 两 flag 都开 → 仅 system-level，无 MCP，无默认")
+    void bothDisabledReturnsSystemOnly() {
+        seedMcpServerWithOneTool(8_888_203L, "issue184-mcp-c", "should_be_hidden");
+        setSkillsDisabledFlag(true);
+        setToolsDisabledFlag(true);
+
+        Set<String> effective = bindingService.getEffectiveToolNames(agentId);
+        assertNotNull(effective);
+        assertTrue(effective.contains("record_lesson"), "system-level 必须保留");
+        boolean hasMcp = effective.stream().anyMatch(n -> n != null && n.startsWith("mcp_"));
+        assertFalse(hasMcp, "两 flag 全开时 MCP 必须完全隐藏");
+        // Sanity: the set should be roughly the SYSTEM_LEVEL_TOOLS list —
+        // we don't enforce equality (the constant evolves) but it should be
+        // substantially smaller than the catalog of every enabled tool.
+        assertTrue(effective.size() < 100,
+                "两 flag 全开时返回的应该只是 system-level 内核工具，体积明显小于完整默认集。"
+                        + "实际大小: " + effective.size());
+    }
+
+    @Test
+    @DisplayName("issue #184: setSkillBindings 非空保存自动清掉 skills_disabled（数据层不留矛盾态）")
+    void setSkillBindingsNonEmptyAutoClearsSkillsDisabledFlag() {
+        long skillId = 7_777_802L;
+        seedSkill(skillId);
+        setSkillsDisabledFlag(true);
+        assertTrue(readSkillsDisabledFlag(), "前置：flag 应为 true");
+
+        bindingService.setSkillBindings(agentId, List.of(skillId));
+
+        assertFalse(readSkillsDisabledFlag(),
+                "写入非空 skill 绑定应当自动清掉 skills_disabled —— "
+                        + "否则 DB 会出现 'disabled=true + 有绑定行' 的矛盾态");
+    }
+
+    @Test
+    @DisplayName("issue #184: setSkillBindings 空保存不动 flag（toggle 自己拥有该位）")
+    void setSkillBindingsEmptySaveDoesNotTouchFlag() {
+        // Empty save is ambiguous: it might be "uncheck everything" from the
+        // UI that owns skills_disabled separately, or just "no rows". Letting
+        // the writer of the flag own it (agent PUT) keeps the toggle the
+        // single source of truth.
+        setSkillsDisabledFlag(true);
+        bindingService.setSkillBindings(agentId, List.of());
+
+        assertTrue(readSkillsDisabledFlag(),
+                "空保存不应清掉 flag —— 否则 UI 的'禁用所有技能' toggle 在用户'取消所有勾选'后会被悄悄翻掉");
+    }
+
+    @Test
+    @DisplayName("issue #184: bindSkill 单次绑定自动清掉 skills_disabled")
+    void bindSkillSingleAutoClearsSkillsDisabledFlag() {
+        long skillId = 7_777_803L;
+        seedSkill(skillId);
+        setSkillsDisabledFlag(true);
+
+        bindingService.bindSkill(agentId, skillId);
+
+        assertFalse(readSkillsDisabledFlag(),
+                "单条 bindSkill 也算明确的承诺，应当自动清掉 flag");
+    }
+
+    @Test
+    @DisplayName("issue #184: setToolBindings 非空保存自动清掉 tools_disabled")
+    void setToolBindingsNonEmptyAutoClearsToolsDisabledFlag() {
+        seedBuiltinTool("autoclear_probe");
+        setToolsDisabledFlag(true);
+        assertTrue(readToolsDisabledFlag(), "前置：flag 应为 true");
+
+        bindingService.setToolBindings(agentId, List.of("autoclear_probe"));
+
+        assertFalse(readToolsDisabledFlag(),
+                "写入非空 tool 绑定应当自动清掉 tools_disabled");
+    }
+
+    @Test
+    @DisplayName("issue #184: bindTool 单次绑定自动清掉 tools_disabled")
+    void bindToolSingleAutoClearsToolsDisabledFlag() {
+        setToolsDisabledFlag(true);
+
+        bindingService.bindTool(agentId, "autoclear_single_probe");
+
+        assertFalse(readToolsDisabledFlag(),
+                "单条 bindTool 也算明确的承诺，应当自动清掉 flag");
+    }
 }
