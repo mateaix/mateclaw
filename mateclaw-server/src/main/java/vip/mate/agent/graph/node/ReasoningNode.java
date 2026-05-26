@@ -21,7 +21,10 @@ import vip.mate.agent.GraphEventPublisher;
 import vip.mate.llm.chatmodel.ThinkingLevelHolder;
 import vip.mate.agent.graph.NodeStreamingChatHelper;
 import vip.mate.agent.context.ConversationWindowManager;
+import vip.mate.agent.context.LoopBudgetConfig;
+import vip.mate.agent.context.LoopMessageBudgeter;
 import vip.mate.agent.context.RuntimeContextInjector;
+import vip.mate.agent.context.TokenEstimator;
 import vip.mate.agent.graph.state.FinishReason;
 import vip.mate.agent.graph.state.MateClawStateAccessor;
 import vip.mate.agent.graph.state.MateClawStateKeys;
@@ -70,6 +73,36 @@ public class ReasoningNode implements NodeAction {
      * iteration count, not per-call tokens).
      */
     private static final int DEFAULT_MAX_OUTPUT_TOKENS = 16384;
+
+    /**
+     * Stateless singleton used to budget the per-iteration working message
+     * list. Static-final because the budgeter holds no mutable state — the
+     * choice keeps the existing ReasoningNode constructor surface unchanged
+     * (it already carries 13 parameters across 5 overloads) and makes the
+     * dependency obvious to anyone reading the class.
+     */
+    private static final LoopMessageBudgeter LOOP_BUDGETER = new LoopMessageBudgeter();
+
+    /**
+     * Fallback context window used when no provider-level value is wired in.
+     * Calibrated to the same default {@code ConversationWindowProperties}
+     * uses for its multi-turn budget so the two layers stay in sync. Models
+     * with smaller windows still benefit — the budgeter triggers earlier on
+     * raw message volume via {@code absoluteMaxMessages}.
+     */
+    private static final int DEFAULT_LOOP_CONTEXT_WINDOW_TOKENS = 128_000;
+
+    /**
+     * Conservative buffer added to the per-loop budget's reservedPrefixTokens
+     * to cover non-history prompt segments that are appended <em>after</em>
+     * the budget runs: the runtime-rendered skill catalog, runtime-context
+     * snapshot, wiki injection, progress ledger snapshot, and assorted
+     * marker SystemMessages. Underestimating here only delays the trigger
+     * slightly; loop invariants (anchor preservation, tool-pair integrity)
+     * are unaffected. Sized for a typical agent with 20–30 skills and
+     * moderate wiki content.
+     */
+    private static final int LOOP_PREFIX_AUXILIARY_RESERVE_TOKENS = 4_000;
 
     /**
      * DashScope's native chat API caps {@code max_tokens} at 8192 and returns a
@@ -319,6 +352,20 @@ public class ReasoningNode implements NodeAction {
         this.progressLedgerService = progressLedgerService;
     }
 
+    /**
+     * Context window used by the per-loop budgeter. Returns the
+     * conversation-window manager's effective max input tokens when one is
+     * wired in (so L1 and L2 stay calibrated to the same model window),
+     * otherwise the documented fallback.
+     */
+    private int loopContextWindowTokens() {
+        if (conversationWindowManager != null) {
+            int v = conversationWindowManager.getDefaultMaxInputTokens();
+            if (v > 0) return v;
+        }
+        return DEFAULT_LOOP_CONTEXT_WINDOW_TOKENS;
+    }
+
     public ReasoningNode(ChatModel chatModel, AgentToolSet toolSet, String reasoningEffort,
                          NodeStreamingChatHelper streamingHelper,
                          ConversationWindowManager conversationWindowManager) {
@@ -414,81 +461,50 @@ public class ReasoningNode implements NodeAction {
         systemPrompt = systemPrompt + TOOL_USE_ENFORCEMENT;
         List<Message> messages = accessor.messages();
 
-        // Guard against runaway message list growth.
+        // Per-loop budget: bound the working message list a single Reasoning
+        // iteration hands to the LLM. The previous fixed head=4 + tail=36 cut
+        // could lose the latest UserMessage once the ReAct loop accumulated
+        // tool calls/observations past ~70 messages — the user's question
+        // fell into the dropped middle, the LLM lost it, and the agent
+        // answered off-topic. LoopMessageBudgeter anchors the latest
+        // UserMessage as undroppable, sizes the tail by token budget instead
+        // of message count, and keeps the same bidirectional tool-pair
+        // integrity guard the old block already had. The L2 trim here is
+        // distinct from ConversationWindowManager (L1): L1 runs once per
+        // user turn and produces an LLM summary for multi-turn history; L2
+        // runs per reasoning iteration on what L1 already produced plus
+        // intra-turn tool-call growth.
         //
-        // CRITICAL: a naive head+tail cut can break the OpenAI-compatible protocol invariant
-        // that requires tool_call / tool_response pairs to be complete:
-        //
-        //   P0 (originally observed): AssistantMessage(tool_calls) falls into the dropped gap,
-        //      its ToolResponseMessage lands in the kept tail → provider sees an orphaned
-        //      ToolResponseMessage → kimi-code 400 "tool_call_id is not found".
-        //
-        //   P1 (symmetric): AssistantMessage(tool_calls) is kept in the head at the boundary,
-        //      its ToolResponseMessage falls into the dropped gap → provider sees an assistant
-        //      tool_call with no matching response → also a 400 on strict providers.
-        //
-        // Fix: perform the normal cut, then run an iterative bidirectional integrity pass until
-        // the list is stable:
-        //   • Remove any ToolResponseMessage whose parent AssistantMessage.tool_calls id was
-        //     dropped (P0).
-        //   • Remove any AssistantMessage whose tool_calls have no matching ToolResponseMessage
-        //     (P1).
-        // Iterate because a P1 removal could expose a new P0 orphan (and vice versa, though that
-        // is pathological in practice).  With ≤40 messages convergence is always fast.
-        // Dropping incomplete pairs is safe — prior iterations already processed those
-        // observations; the LLM needs the summary context, not the raw tool I/O.
-        final int MAX_LOOP_MESSAGES = 40;
-        if (messages.size() > MAX_LOOP_MESSAGES) {
-            log.warn("[ReasoningNode] Messages list too large ({} messages), trimming to {} for conversation {}",
-                    messages.size(), MAX_LOOP_MESSAGES, conversationId);
-            int headKeep = Math.min(4, messages.size());
-            int tailKeep = MAX_LOOP_MESSAGES - headKeep;
-            int tailStart = messages.size() - tailKeep;
-
-            List<Message> trimmed = new ArrayList<>(MAX_LOOP_MESSAGES);
-            trimmed.addAll(messages.subList(0, headKeep));
-            trimmed.addAll(messages.subList(tailStart, messages.size()));
-
-            // Iterative bidirectional integrity pass.
-            int totalRemoved = 0;
-            boolean changed;
-            do {
-                // Snapshot current tool_call ids and response ids.
-                Set<String> callIds = new java.util.HashSet<>();
-                Set<String> respIds = new java.util.HashSet<>();
-                for (Message m : trimmed) {
-                    if (m instanceof AssistantMessage am && am.getToolCalls() != null) {
-                        for (AssistantMessage.ToolCall tc : am.getToolCalls()) callIds.add(tc.id());
-                    }
-                    if (m instanceof ToolResponseMessage trm) {
-                        for (ToolResponseMessage.ToolResponse r : trm.getResponses()) respIds.add(r.id());
-                    }
-                }
-                int before = trimmed.size();
-                trimmed.removeIf(m -> {
-                    // P0: ToolResponseMessage whose parent tool_call was dropped
-                    if (m instanceof ToolResponseMessage trm) {
-                        return trm.getResponses().stream().anyMatch(r -> !callIds.contains(r.id()));
-                    }
-                    // P1: AssistantMessage whose tool_call has no ToolResponseMessage
-                    if (m instanceof AssistantMessage am && am.getToolCalls() != null
-                            && !am.getToolCalls().isEmpty()) {
-                        return am.getToolCalls().stream().anyMatch(tc -> !respIds.contains(tc.id()));
-                    }
-                    return false;
-                });
-                int removed = before - trimmed.size();
-                totalRemoved += removed;
-                changed = removed > 0;
-            } while (changed);
-
-            if (totalRemoved > 0) {
-                log.warn("[ReasoningNode] Removed {} message(s) with broken tool_call/response pairs "
-                        + "after trim (bidirectional integrity guard), conv={}", totalRemoved, conversationId);
-            }
-
-            messages = trimmed;
+        // Reserved prefix tokens cover the non-history portion of the
+        // prompt the LLM will receive: system prompt (with tool-use
+        // enforcement already appended), tool schemas, output reserve,
+        // and a buffer for skill catalog + runtime context + wiki
+        // injections that are added downstream. Underestimating here only
+        // delays the trigger slightly — invariants (anchor, pair integrity)
+        // still hold once budget fires.
+        int systemTokens = TokenEstimator.estimateTokens(systemPrompt);
+        int toolsTokens = TokenEstimator.estimateToolsTokens(toolCallbacks);
+        int loopReservedPrefixTokens = systemTokens + toolsTokens
+                + maxOutputTokens + LOOP_PREFIX_AUXILIARY_RESERVE_TOKENS;
+        LoopBudgetConfig loopCfg = LoopBudgetConfig.forContext(loopContextWindowTokens())
+                .withReservedPrefixTokens(loopReservedPrefixTokens);
+        LoopMessageBudgeter.Result budgeted = LOOP_BUDGETER.budget(messages, loopCfg);
+        // Only log when the budget actually modified the list — a triggered-
+        // but-no-op pass is normal (history fits comfortably under the tail
+        // budget) and would otherwise spam logs every iteration.
+        if (budgeted.trace().modified()) {
+            LoopMessageBudgeter.BudgetTrace t = budgeted.trace();
+            log.warn("[ReasoningNode] Loop budget trim: {} -> {} msgs (history {} -> {} tokens, "
+                    + "prefix~{}), head={}, tail={}, droppedMiddle={}, orphans={}, "
+                    + "anchorEnforced={}, anchorStitched={}, targetMaxTripped={}, "
+                    + "capExceededForPairIntegrity={}, minTailFloorApplied={}, conv={}",
+                    t.originalCount(), t.finalCount(), t.originalTokens(), t.finalTokens(),
+                    t.reservedPrefixTokens(),
+                    t.headKept(), t.tailKept(), t.droppedMiddle(), t.orphansRemoved(),
+                    t.anchorEnforced(), t.anchorStitched(), t.targetMaxTripped(),
+                    t.capExceededForPairIntegrity(), t.minTailFloorApplied(), conversationId);
         }
+        messages = budgeted.messages();
 
         String workspaceBasePath = state.value(vip.mate.agent.graph.state.MateClawStateKeys.WORKSPACE_BASE_PATH, "");
         String agentIdStr = state.value(MateClawStateKeys.AGENT_ID, "");

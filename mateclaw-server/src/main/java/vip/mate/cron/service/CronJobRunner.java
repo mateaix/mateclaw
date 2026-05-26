@@ -138,10 +138,12 @@ public class CronJobRunner {
 
         // No-tx segment — long LLM call. RFC §5.2 hard rule: must not hold
         // any DB connection during this call.
+        AgentService.ChatResult chatResult;
         AssistantMessage result;
         try {
             ChatOrigin origin = originFactory.from(job, conversationId);
-            result = runAgent(job, userMessage, origin, conversationId);
+            chatResult = runAgent(job, userMessage, origin, conversationId);
+            result = new AssistantMessage(chatResult.content());
         } catch (Exception e) {
             log.error("[CronRunner] runAgent failed for job {}: {}", job.getId(), e.getMessage(), e);
             try {
@@ -156,12 +158,12 @@ public class CronJobRunner {
 
         // Explicit no-op: the agent answered with the silent sentinel,
         // meaning there is nothing to deliver or report for this run.
-        boolean silent = result != null && result.getText() != null
+        boolean silent = result.getText() != null
                 && CRON_SILENT_MARKER.equals(result.getText().trim());
 
         // T2 — short tx
         try {
-            lifecycle.finishRunAndPublish(job, run, userMessage, result, conversationId, silent);
+            lifecycle.finishRunAndPublish(job, run, userMessage, result, conversationId, silent, chatResult);
         } catch (Exception e) {
             log.error("[CronRunner] T2 finishRunAndPublish failed for job {}: {}", job.getId(), e.getMessage(), e);
             try {
@@ -261,13 +263,14 @@ public class CronJobRunner {
      * Runs the agent with the scheduled-job {@link ChatOrigin} and the
      * execution-context prompt assembled by {@link #buildCronPrompt}.
      */
-    private AssistantMessage runAgent(CronJobEntity job, String userMessage, ChatOrigin origin,
-                                      String conversationId) {
+    private AgentService.ChatResult runAgent(CronJobEntity job, String userMessage, ChatOrigin origin,
+                                              String conversationId) {
         String prompt = buildCronPrompt(userMessage, origin);
-        String text = "agent".equals(job.getTaskType())
-                ? agentService.execute(job.getAgentId(), prompt, conversationId, origin)
-                : agentService.chat(job.getAgentId(), prompt, conversationId, origin);
-        return new AssistantMessage(text != null ? text : "");
+        // execute() and chat() both ultimately route through the agent's
+        // StateGraph; chatWithUsage captures token + runtime model attribution
+        // for either path. Plan-Execute agents stream via the same
+        // chatStructuredStream the helper consumes.
+        return agentService.chatWithUsage(job.getAgentId(), prompt, conversationId, origin);
     }
 
     /**

@@ -3,14 +3,15 @@ package vip.mate.tool.builtin;
 import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
+import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Component;
 
 import java.io.*;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -69,14 +70,28 @@ public class DocumentExtractTool {
         """)
     public String extract_document_text(
             @ToolParam(description = "文件的绝对路径或相对路径") String filePath,
-            @ToolParam(description = "可选参数 JSON，如 {\"pages\": \"1-5\", \"method\": \"tika\"}", required = false) String options) {
+            @ToolParam(description = "可选参数 JSON，如 {\"pages\": \"1-5\", \"method\": \"tika\"}", required = false) String options,
+            // RFC-063r §2.5: hidden from LLM by JsonSchemaGenerator. Carries the
+            // ChatOrigin so the workspace boundary check honors per-agent basePath.
+            @Nullable ToolContext ctx) {
 
         JSONObject result = new JSONObject();
         result.set("filePath", filePath);
         List<String> attempts = new ArrayList<>();
 
         try {
-            Path path = Paths.get(filePath).toAbsolutePath().normalize();
+            Path path;
+            try {
+                path = vip.mate.tool.guard.WorkspacePathGuard.validatePath(filePath, ctx);
+            } catch (IllegalArgumentException e) {
+                // Sandbox rejected the literal path. Try chat-upload basename
+                // resolution before surfacing the boundary error.
+                Path attachment = ChatUploadResolver.resolve(filePath);
+                if (attachment == null) {
+                    return errorResult(filePath, e.getMessage(), attempts);
+                }
+                path = attachment;
+            }
 
             if (!Files.exists(path)) {
                 // The user-uploaded chat attachment is rendered to the LLM as
@@ -185,10 +200,11 @@ public class DocumentExtractTool {
         """)
     public String extract_pdf_text(
             @ToolParam(description = "PDF 文件的绝对路径或相对路径") String filePath,
-            @ToolParam(description = "页码范围，如 \"1-5\" 或 \"1,3,5\"", required = false) String pages) {
+            @ToolParam(description = "页码范围，如 \"1-5\" 或 \"1,3,5\"", required = false) String pages,
+            @Nullable ToolContext ctx) {
 
         String options = pages != null ? "{\"pages\": \"" + pages + "\"}" : null;
-        return extract_document_text(filePath, options);
+        return extract_document_text(filePath, options, ctx);
     }
 
     @Tool(description = """
@@ -201,8 +217,9 @@ public class DocumentExtractTool {
         支持 .docx 和 .doc 格式
         """)
     public String extract_docx_text(
-            @ToolParam(description = "Word 文档的绝对路径或相对路径") String filePath) {
-        return extract_document_text(filePath, null);
+            @ToolParam(description = "Word 文档的绝对路径或相对路径") String filePath,
+            @Nullable ToolContext ctx) {
+        return extract_document_text(filePath, null, ctx);
     }
 
     // ==================== PDF 提取链 ====================

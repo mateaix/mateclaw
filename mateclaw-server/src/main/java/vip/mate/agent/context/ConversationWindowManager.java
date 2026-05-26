@@ -170,6 +170,15 @@ public class ConversationWindowManager {
      *  conversation in a compaction storm. */
     private final ConcurrentHashMap<String, Long> ptlForceCompactAt = new ConcurrentHashMap<>();
 
+    /**
+     * Default max input tokens for the configured model window. Surfaced for
+     * the per-loop budgeter so the L1 (multi-turn compaction) and L2
+     * (per-iteration trim) layers stay calibrated to the same number.
+     */
+    public int getDefaultMaxInputTokens() {
+        return properties != null ? properties.getDefaultMaxInputTokens() : 0;
+    }
+
     /** Cooldown window after a structured PTL compaction during which a
      *  follow-up PTL is downgraded to tail-only. Picked so a single ReAct
      *  loop that retries within seconds can't burn another summary LLM

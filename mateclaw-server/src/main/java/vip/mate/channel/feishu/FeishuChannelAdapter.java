@@ -614,8 +614,15 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
     }
 
     /**
-     * 关闭 WebSocket 连接
-     * SDK 的 start() 在线程中阻塞运行，通过中断线程来触发停止
+     * 关闭 WebSocket 连接。
+     * <p>
+     * 必须主动关闭底层 WebSocket 连接并触发 SDK 的内部清理（停止 pingLoop、
+     * 释放 ExecutorService）。仅置空引用会导致旧连接的 pingLoop 和线程池
+     * 持续运行，造成文件描述符和线程泄漏，最终使新连接无法建立。
+     * <p>
+     * SDK 2.7.0 起暴露了 public {@code close()} 入口，内部调用 protected
+     * {@code disconnect()} 完成 {@code conn.close(1000) → executor.shutdown() →
+     * 字段清零} 的全套清理。直接调用即可，无需反射。
      */
     private void stopWebSocket() {
         cancelSilentDisconnectWatchdog();
@@ -623,6 +630,13 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
         if (wsThread != null) {
             wsThread.interrupt();
             wsThread = null;
+        }
+        if (wsClient != null) {
+            try {
+                wsClient.close();
+            } catch (Exception e) {
+                log.warn("[feishu] WebSocket close failed: {}", e.getMessage());
+            }
         }
         wsClient = null;
     }
