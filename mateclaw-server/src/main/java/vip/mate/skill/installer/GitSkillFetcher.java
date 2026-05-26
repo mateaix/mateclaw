@@ -1,7 +1,6 @@
 package vip.mate.skill.installer;
 
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import vip.mate.skill.installer.model.SkillBundle;
 import vip.mate.skill.runtime.SkillFrontmatterParser;
@@ -28,8 +27,8 @@ public class GitSkillFetcher {
 
     private final SkillFrontmatterParser frontmatterParser;
 
-    @Value("${GITHUB_TOKEN:}")
-    private String githubToken;
+    private final String githubToken = System.getenv("GITHUB_TOKEN") != null
+            ? System.getenv("GITHUB_TOKEN") : "";
 
     public GitSkillFetcher(SkillFrontmatterParser frontmatterParser) {
         this.frontmatterParser = frontmatterParser;
