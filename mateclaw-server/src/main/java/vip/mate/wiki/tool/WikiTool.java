@@ -31,7 +31,14 @@ import java.util.stream.Collectors;
 /**
  * Wiki knowledge base tools for agent conversations.
  * <p>
- * All tools auto-resolve kbId from agentId; LLM never needs to pass it directly.
+ * Every tool resolves its target KB through a small precedence ladder:
+ * an explicit {@code kbId} from {@code wiki_list_kbs} wins outright, then
+ * an explicit {@code kbName} (with fail-closed "ambiguous"/"not visible"
+ * errors when needed), and only when both are absent does the tool fall
+ * back to the agent's primary KB. The {@code kbId} surface is public so
+ * the LLM can disambiguate duplicate-named KBs — see
+ * {@link #wiki_list_kbs} and {@code WikiKnowledgeBaseService.findVisibleById}
+ * for the visibility gate.
  *
  * @author MateClaw Team
  */
@@ -83,6 +90,59 @@ public class WikiTool {
         this.objectMapper = objectMapper;
     }
 
+    // ==================== Knowledge-base discovery ====================
+
+    @Tool(description = """
+            List every knowledge base visible to this agent — both KBs explicitly
+            bound to the agent and shared workspace-level KBs.
+
+            Every other wiki tool (read / list / search / semantic search / …)
+            accepts two OPTIONAL routing arguments. Use them in this order:
+              1. `kbName` — readable name from the output below. Easiest.
+              2. `kbId`   — numeric id from the output below. Use this when
+                            two KBs share the same name and `kbName` returns
+                            an "Ambiguous kbName" error.
+            Omit both and the tool falls back to the agent's primary KB,
+            which is fine when the agent only reaches one KB.
+
+            Output fields per KB:
+              - kbId         — string-encoded numeric id (use as `kbId` param)
+              - name         — copy verbatim into `kbName` param
+              - description  — operator-supplied summary
+              - pageCount    — number of pages currently in the KB
+              - isPrimary    — true for the KB used when both routing
+                               arguments are omitted
+              - boundToAgent — true if the KB is explicitly bound to this agent
+            """)
+    public String wiki_list_kbs(
+            @ToolParam(description = "Agent ID") Long agentId) {
+        List<WikiKnowledgeBaseEntity> kbs = kbService.listByAgentId(agentId);
+        WikiKnowledgeBaseEntity primary = kbService.resolvePrimaryKb(agentId);
+        Long primaryId = primary == null ? null : primary.getId();
+
+        JSONArray arr = new JSONArray();
+        for (WikiKnowledgeBaseEntity kb : kbs) {
+            // kbId is rendered as a STRING per the workspace-wide Snowflake-
+            // precision rule: a 19-digit id round-tripped through a JSON
+            // number loses its last 2-3 digits whenever it touches a JS
+            // runtime. The LLM hands the value back to us through a Java
+            // Long @ToolParam, which is precision-safe, so the lossy hop
+            // is purely defensive.
+            arr.add(JSONUtil.createObj()
+                    .set("kbId", String.valueOf(kb.getId()))
+                    .set("name", kb.getName())
+                    .set("description", kb.getDescription())
+                    .set("pageCount", kb.getPageCount() == null ? 0 : kb.getPageCount())
+                    .set("isPrimary", kb.getId().equals(primaryId))
+                    .set("boundToAgent", kb.getAgentId() != null));
+        }
+        return JSONUtil.createObj()
+                .set("kbCount", kbs.size())
+                .set("primary", primary == null ? null : primary.getName())
+                .set("kbs", arr)
+                .toString();
+    }
+
     // ==================== RFC-032: Enhanced wiki_read_page ====================
 
     @Tool(description = """
@@ -95,16 +155,17 @@ public class WikiTool {
             @ToolParam(description = "Agent ID") Long agentId,
             @ToolParam(description = "Page slug") String slug,
             @ToolParam(description = "Max characters to return (null = full page)", required = false) Integer maxChars,
-            @ToolParam(description = "Section heading to extract (null = all sections)", required = false) String sectionHeading) {
+            @ToolParam(description = "Section heading to extract (null = all sections)", required = false) String sectionHeading,
+            @ToolParam(description = "Target knowledge base name (from wiki_list_kbs). Omit to use the agent's primary KB; switch to `kbId` when two KBs share the name.", required = false) String kbName,
+            @ToolParam(description = "Numeric KB id from wiki_list_kbs. Use when `kbName` returns an ambiguous-name error.", required = false) Long kbId) {
 
         if (slug == null || slug.isBlank()) {
             return error("slug is required");
         }
 
-        Long kbId = resolveKbId(agentId);
-        if (kbId == null) {
-            return error("No wiki knowledge base found for this agent");
-        }
+        KbResolution kbRes = resolveKb(agentId, kbName, kbId);
+        if (kbRes.hasError()) return kbRes.errorJson();
+        kbId = kbRes.kbId();
 
         WikiPageEntity page = pageService.getBySlug(kbId, slug);
         if (page == null) {
@@ -140,12 +201,13 @@ public class WikiTool {
             """)
     public String wiki_list_pages(
             @ToolParam(description = "Agent ID") Long agentId,
-            @ToolParam(description = "Title keyword filter (optional)", required = false) String query) {
+            @ToolParam(description = "Title keyword filter (optional)", required = false) String query,
+            @ToolParam(description = "Target knowledge base name (from wiki_list_kbs). Omit to use the agent's primary KB; switch to `kbId` when two KBs share the name.", required = false) String kbName,
+            @ToolParam(description = "Numeric KB id from wiki_list_kbs. Use when `kbName` returns an ambiguous-name error.", required = false) Long kbId) {
 
-        Long kbId = resolveKbId(agentId);
-        if (kbId == null) {
-            return error("No wiki knowledge base found for this agent");
-        }
+        KbResolution kbRes = resolveKb(agentId, kbName, kbId);
+        if (kbRes.hasError()) return kbRes.errorJson();
+        kbId = kbRes.kbId();
 
         List<WikiPageLite> pages;
         if (query != null && !query.isBlank()) {
@@ -197,16 +259,17 @@ public class WikiTool {
             @ToolParam(description = "Agent ID") Long agentId,
             @ToolParam(description = "Search query") String query,
             @ToolParam(description = "Mode: keyword|semantic|hybrid (default: hybrid)", required = false) String mode,
-            @ToolParam(description = "Max results (default 5, max 20)", required = false) Integer topK) {
+            @ToolParam(description = "Max results (default 5, max 20)", required = false) Integer topK,
+            @ToolParam(description = "Target knowledge base name (from wiki_list_kbs). Omit to use the agent's primary KB; switch to `kbId` when two KBs share the name.", required = false) String kbName,
+            @ToolParam(description = "Numeric KB id from wiki_list_kbs. Use when `kbName` returns an ambiguous-name error.", required = false) Long kbId) {
 
         if (query == null || query.isBlank()) {
             return error("query is required");
         }
 
-        Long kbId = resolveKbId(agentId);
-        if (kbId == null) {
-            return error("No wiki knowledge base found for this agent");
-        }
+        KbResolution kbRes = resolveKb(agentId, kbName, kbId);
+        if (kbRes.hasError()) return kbRes.errorJson();
+        kbId = kbRes.kbId();
 
         int k = (topK != null && topK > 0) ? Math.min(topK, 20) : 5;
         List<PageSearchResult> results = hybridRetriever.search(kbId, query, mode, k);
@@ -246,16 +309,17 @@ public class WikiTool {
     public String wiki_semantic_search(
             @ToolParam(description = "Agent ID") Long agentId,
             @ToolParam(description = "Natural language query") String query,
-            @ToolParam(description = "Max results (default 5)", required = false) Integer topK) {
+            @ToolParam(description = "Max results (default 5)", required = false) Integer topK,
+            @ToolParam(description = "Target knowledge base name (from wiki_list_kbs). Omit to use the agent's primary KB; switch to `kbId` when two KBs share the name.", required = false) String kbName,
+            @ToolParam(description = "Numeric KB id from wiki_list_kbs. Use when `kbName` returns an ambiguous-name error.", required = false) Long kbId) {
 
         if (query == null || query.isBlank()) {
             return error("query is required");
         }
 
-        Long kbId = resolveKbId(agentId);
-        if (kbId == null) {
-            return error("No wiki knowledge base found for this agent");
-        }
+        KbResolution kbRes = resolveKb(agentId, kbName, kbId);
+        if (kbRes.hasError()) return kbRes.errorJson();
+        kbId = kbRes.kbId();
 
         int k = (topK != null && topK > 0) ? Math.min(topK, 20) : 5;
         List<HybridRetriever.ChunkHit> hits = hybridRetriever.searchChunks(kbId, query, k);
@@ -309,16 +373,17 @@ public class WikiTool {
             """)
     public String wiki_trace_source(
             @ToolParam(description = "Agent ID") Long agentId,
-            @ToolParam(description = "Page slug") String slug) {
+            @ToolParam(description = "Page slug") String slug,
+            @ToolParam(description = "Target knowledge base name (from wiki_list_kbs). Omit to use the agent's primary KB; switch to `kbId` when two KBs share the name.", required = false) String kbName,
+            @ToolParam(description = "Numeric KB id from wiki_list_kbs. Use when `kbName` returns an ambiguous-name error.", required = false) Long kbId) {
 
         if (slug == null || slug.isBlank()) {
             return error("slug is required");
         }
 
-        Long kbId = resolveKbId(agentId);
-        if (kbId == null) {
-            return error("No wiki knowledge base found for this agent");
-        }
+        KbResolution kbRes = resolveKb(agentId, kbName, kbId);
+        if (kbRes.hasError()) return kbRes.errorJson();
+        kbId = kbRes.kbId();
 
         WikiPageEntity page = pageService.getBySlug(kbId, slug);
         if (page == null) {
@@ -339,7 +404,9 @@ public class WikiTool {
     public String wiki_create_page(
             @ToolParam(description = "Agent ID") Long agentId,
             @ToolParam(description = "Page title") String title,
-            @ToolParam(description = "Page content (Markdown)") String content) {
+            @ToolParam(description = "Page content (Markdown)") String content,
+            @ToolParam(description = "Target knowledge base name (from wiki_list_kbs). Omit to use the agent's primary KB; switch to `kbId` when two KBs share the name.", required = false) String kbName,
+            @ToolParam(description = "Numeric KB id from wiki_list_kbs. Use when `kbName` returns an ambiguous-name error.", required = false) Long kbId) {
 
         if (title == null || title.isBlank()) {
             return error("title is required");
@@ -348,10 +415,9 @@ public class WikiTool {
             return error("content is required");
         }
 
-        Long kbId = resolveKbId(agentId);
-        if (kbId == null) {
-            return error("No wiki knowledge base found for this agent. Create one first.");
-        }
+        KbResolution kbRes = resolveKb(agentId, kbName, kbId);
+        if (kbRes.hasError()) return kbRes.errorJson();
+        kbId = kbRes.kbId();
 
         String slug = title.toLowerCase()
                 .replaceAll("[^a-z0-9\\u4e00-\\u9fff]+", "-")
@@ -392,13 +458,16 @@ public class WikiTool {
             @ToolParam(description = "Agent ID") Long agentId,
             @ToolParam(description = "Topic to compile a page about (natural language)") String topic,
             @ToolParam(description = "Optional explicit slug for the page", required = false) String slug,
-            @ToolParam(description = "Max evidence chunks (default 8, max 20)", required = false) Integer maxEvidenceChunks) {
+            @ToolParam(description = "Max evidence chunks (default 8, max 20)", required = false) Integer maxEvidenceChunks,
+            @ToolParam(description = "Target knowledge base name (from wiki_list_kbs). Omit to use the agent's primary KB; switch to `kbId` when two KBs share the name.", required = false) String kbName,
+            @ToolParam(description = "Numeric KB id from wiki_list_kbs. Use when `kbName` returns an ambiguous-name error.", required = false) Long kbId) {
 
         if (topic == null || topic.isBlank()) {
             return error("topic is required");
         }
-        Long kbId = resolveKbId(agentId);
-        if (kbId == null) return error("No wiki knowledge base found for this agent");
+        KbResolution kbRes = resolveKb(agentId, kbName, kbId);
+        if (kbRes.hasError()) return kbRes.errorJson();
+        kbId = kbRes.kbId();
         if (compileService == null) return error("Compile service not available");
 
         try {
@@ -439,11 +508,14 @@ public class WikiTool {
     public String wiki_read_many(
             @ToolParam(description = "Agent ID") Long agentId,
             @ToolParam(description = "Comma-separated slugs (max 10)") String slugs,
-            @ToolParam(description = "Max chars returned per page (default 2000, max 8000)", required = false) Integer maxCharsPerPage) {
+            @ToolParam(description = "Max chars returned per page (default 2000, max 8000)", required = false) Integer maxCharsPerPage,
+            @ToolParam(description = "Target knowledge base name (from wiki_list_kbs). Omit to use the agent's primary KB; switch to `kbId` when two KBs share the name.", required = false) String kbName,
+            @ToolParam(description = "Numeric KB id from wiki_list_kbs. Use when `kbName` returns an ambiguous-name error.", required = false) Long kbId) {
 
         if (slugs == null || slugs.isBlank()) return error("slugs is required");
-        Long kbId = resolveKbId(agentId);
-        if (kbId == null) return error("No wiki knowledge base found for this agent");
+        KbResolution kbRes = resolveKb(agentId, kbName, kbId);
+        if (kbRes.hasError()) return kbRes.errorJson();
+        kbId = kbRes.kbId();
 
         int cap = (maxCharsPerPage == null || maxCharsPerPage <= 0) ? 2000 : Math.min(8000, maxCharsPerPage);
         List<String> slugList = Arrays.stream(slugs.split(","))
@@ -484,8 +556,10 @@ public class WikiTool {
             """)
     public String wiki_archive_page(
             @ToolParam(description = "Agent ID") Long agentId,
-            @ToolParam(description = "Page slug to archive") String slug) {
-        return setArchivedTool(agentId, slug, true, "archived");
+            @ToolParam(description = "Page slug to archive") String slug,
+            @ToolParam(description = "Target knowledge base name (from wiki_list_kbs). Omit to use the agent's primary KB; switch to `kbId` when two KBs share the name.", required = false) String kbName,
+            @ToolParam(description = "Numeric KB id from wiki_list_kbs. Use when `kbName` returns an ambiguous-name error.", required = false) Long kbId) {
+        return setArchivedTool(agentId, slug, true, "archived", kbName, kbId);
     }
 
     @Tool(description = """
@@ -494,14 +568,17 @@ public class WikiTool {
             """)
     public String wiki_unarchive_page(
             @ToolParam(description = "Agent ID") Long agentId,
-            @ToolParam(description = "Page slug to unarchive") String slug) {
-        return setArchivedTool(agentId, slug, false, "unarchived");
+            @ToolParam(description = "Page slug to unarchive") String slug,
+            @ToolParam(description = "Target knowledge base name (from wiki_list_kbs). Omit to use the agent's primary KB; switch to `kbId` when two KBs share the name.", required = false) String kbName,
+            @ToolParam(description = "Numeric KB id from wiki_list_kbs. Use when `kbName` returns an ambiguous-name error.", required = false) Long kbId) {
+        return setArchivedTool(agentId, slug, false, "unarchived", kbName, kbId);
     }
 
-    private String setArchivedTool(Long agentId, String slug, boolean archive, String verb) {
+    private String setArchivedTool(Long agentId, String slug, boolean archive, String verb, String kbName, Long kbId) {
         if (slug == null || slug.isBlank()) return error("slug is required");
-        Long kbId = resolveKbId(agentId);
-        if (kbId == null) return error("No wiki knowledge base found for this agent");
+        KbResolution kbRes = resolveKb(agentId, kbName, kbId);
+        if (kbRes.hasError()) return kbRes.errorJson();
+        kbId = kbRes.kbId();
         boolean changed;
         try {
             changed = pageService.setArchived(kbId, slug, archive);
@@ -521,16 +598,17 @@ public class WikiTool {
             """)
     public String wiki_delete_page(
             @ToolParam(description = "Agent ID") Long agentId,
-            @ToolParam(description = "Page slug to delete") String slug) {
+            @ToolParam(description = "Page slug to delete") String slug,
+            @ToolParam(description = "Target knowledge base name (from wiki_list_kbs). Omit to use the agent's primary KB; switch to `kbId` when two KBs share the name.", required = false) String kbName,
+            @ToolParam(description = "Numeric KB id from wiki_list_kbs. Use when `kbName` returns an ambiguous-name error.", required = false) Long kbId) {
 
         if (slug == null || slug.isBlank()) {
             return error("slug is required");
         }
 
-        Long kbId = resolveKbId(agentId);
-        if (kbId == null) {
-            return error("No wiki knowledge base found for this agent");
-        }
+        KbResolution kbRes = resolveKb(agentId, kbName, kbId);
+        if (kbRes.hasError()) return kbRes.errorJson();
+        kbId = kbRes.kbId();
 
         WikiPageEntity page = pageService.getBySlug(kbId, slug);
         if (page == null) {
@@ -568,10 +646,13 @@ public class WikiTool {
     public String wiki_related_pages(
             @ToolParam(description = "Agent ID") Long agentId,
             @ToolParam(description = "Page slug") String slug,
-            @ToolParam(description = "Max results (default 5, max 10)", required = false) Integer topK) {
+            @ToolParam(description = "Max results (default 5, max 10)", required = false) Integer topK,
+            @ToolParam(description = "Target knowledge base name (from wiki_list_kbs). Omit to use the agent's primary KB; switch to `kbId` when two KBs share the name.", required = false) String kbName,
+            @ToolParam(description = "Numeric KB id from wiki_list_kbs. Use when `kbName` returns an ambiguous-name error.", required = false) Long kbId) {
 
-        Long kbId = resolveKbId(agentId);
-        if (kbId == null) return error("No wiki knowledge base found for this agent");
+        KbResolution kbRes = resolveKb(agentId, kbName, kbId);
+        if (kbRes.hasError()) return kbRes.errorJson();
+        kbId = kbRes.kbId();
         if (relationService == null) return error("Relation service not available");
 
         int k = (topK != null && topK > 0) ? Math.min(topK, 10) : 5;
@@ -599,10 +680,13 @@ public class WikiTool {
     public String wiki_explain_relation(
             @ToolParam(description = "Agent ID") Long agentId,
             @ToolParam(description = "First page slug") String slugA,
-            @ToolParam(description = "Second page slug") String slugB) {
+            @ToolParam(description = "Second page slug") String slugB,
+            @ToolParam(description = "Target knowledge base name (from wiki_list_kbs). Omit to use the agent's primary KB; switch to `kbId` when two KBs share the name.", required = false) String kbName,
+            @ToolParam(description = "Numeric KB id from wiki_list_kbs. Use when `kbName` returns an ambiguous-name error.", required = false) Long kbId) {
 
-        Long kbId = resolveKbId(agentId);
-        if (kbId == null) return error("No wiki knowledge base found for this agent");
+        KbResolution kbRes = resolveKb(agentId, kbName, kbId);
+        if (kbRes.hasError()) return kbRes.errorJson();
+        kbId = kbRes.kbId();
         if (relationService == null) return error("Relation service not available");
 
         RelationExplanation ex = relationService.explain(kbId, slugA, slugB);
@@ -623,10 +707,13 @@ public class WikiTool {
             """)
     public String wiki_enrich_page(
             @ToolParam(description = "Agent ID") Long agentId,
-            @ToolParam(description = "Page slug") String slug) {
+            @ToolParam(description = "Page slug") String slug,
+            @ToolParam(description = "Target knowledge base name (from wiki_list_kbs). Omit to use the agent's primary KB; switch to `kbId` when two KBs share the name.", required = false) String kbName,
+            @ToolParam(description = "Numeric KB id from wiki_list_kbs. Use when `kbName` returns an ambiguous-name error.", required = false) Long kbId) {
 
-        Long kbId = resolveKbId(agentId);
-        if (kbId == null) return error("No wiki knowledge base found for this agent");
+        KbResolution kbRes = resolveKb(agentId, kbName, kbId);
+        if (kbRes.hasError()) return kbRes.errorJson();
+        kbId = kbRes.kbId();
         if (jobService == null || eventPublisher == null) return error("Job service not available");
 
         WikiPageEntity page = pageService.getBySlug(kbId, slug);
@@ -653,9 +740,12 @@ public class WikiTool {
             human title, and a description of what the prompt produces.
             """)
     public String wiki_list_transformations(
-            @ToolParam(description = "Agent ID") Long agentId) {
-        Long kbId = resolveKbId(agentId);
-        if (kbId == null) return error("No wiki knowledge base found for this agent");
+            @ToolParam(description = "Agent ID") Long agentId,
+            @ToolParam(description = "Target knowledge base name (from wiki_list_kbs). Omit to use the agent's primary KB; switch to `kbId` when two KBs share the name.", required = false) String kbName,
+            @ToolParam(description = "Numeric KB id from wiki_list_kbs. Use when `kbName` returns an ambiguous-name error.", required = false) Long kbId) {
+        KbResolution kbRes = resolveKb(agentId, kbName, kbId);
+        if (kbRes.hasError()) return kbRes.errorJson();
+        kbId = kbRes.kbId();
         if (transformationService == null) return error("Transformations not available");
 
         WikiKnowledgeBaseEntity kb = kbService.getById(kbId);
@@ -682,11 +772,14 @@ public class WikiTool {
     public String wiki_apply_transformation(
             @ToolParam(description = "Agent ID") Long agentId,
             @ToolParam(description = "Transformation name (from wiki_list_transformations)") String name,
-            @ToolParam(description = "Raw material ID to run the transformation against") Long rawId) {
+            @ToolParam(description = "Raw material ID to run the transformation against") Long rawId,
+            @ToolParam(description = "Target knowledge base name (from wiki_list_kbs). Omit to use the agent's primary KB; switch to `kbId` when two KBs share the name.", required = false) String kbName,
+            @ToolParam(description = "Numeric KB id from wiki_list_kbs. Use when `kbName` returns an ambiguous-name error.", required = false) Long kbId) {
         if (name == null || name.isBlank()) return error("name is required");
         if (rawId == null) return error("rawId is required");
-        Long kbId = resolveKbId(agentId);
-        if (kbId == null) return error("No wiki knowledge base found for this agent");
+        KbResolution kbRes = resolveKb(agentId, kbName, kbId);
+        if (kbRes.hasError()) return kbRes.errorJson();
+        kbId = kbRes.kbId();
         if (transformationService == null || transformationExecutor == null) {
             return error("Transformations not available");
         }
@@ -727,11 +820,14 @@ public class WikiTool {
     public String wiki_apply_transformation_to_page(
             @ToolParam(description = "Agent ID") Long agentId,
             @ToolParam(description = "Transformation name (from wiki_list_transformations)") String name,
-            @ToolParam(description = "Source wiki page slug to run the transformation against") String slug) {
+            @ToolParam(description = "Source wiki page slug to run the transformation against") String slug,
+            @ToolParam(description = "Target knowledge base name (from wiki_list_kbs). Omit to use the agent's primary KB; switch to `kbId` when two KBs share the name.", required = false) String kbName,
+            @ToolParam(description = "Numeric KB id from wiki_list_kbs. Use when `kbName` returns an ambiguous-name error.", required = false) Long kbId) {
         if (name == null || name.isBlank()) return error("name is required");
         if (slug == null || slug.isBlank()) return error("slug is required");
-        Long kbId = resolveKbId(agentId);
-        if (kbId == null) return error("No wiki knowledge base found for this agent");
+        KbResolution kbRes = resolveKb(agentId, kbName, kbId);
+        if (kbRes.hasError()) return kbRes.errorJson();
+        kbId = kbRes.kbId();
         if (transformationService == null || transformationExecutor == null) {
             return error("Transformations not available");
         }
@@ -776,10 +872,13 @@ public class WikiTool {
             """)
     public String wiki_aggregate_transformation(
             @ToolParam(description = "Agent ID") Long agentId,
-            @ToolParam(description = "Transformation name (from wiki_list_transformations)") String name) {
+            @ToolParam(description = "Transformation name (from wiki_list_transformations)") String name,
+            @ToolParam(description = "Target knowledge base name (from wiki_list_kbs). Omit to use the agent's primary KB; switch to `kbId` when two KBs share the name.", required = false) String kbName,
+            @ToolParam(description = "Numeric KB id from wiki_list_kbs. Use when `kbName` returns an ambiguous-name error.", required = false) Long kbId) {
         if (name == null || name.isBlank()) return error("name is required");
-        Long kbId = resolveKbId(agentId);
-        if (kbId == null) return error("No wiki knowledge base found for this agent");
+        KbResolution kbRes = resolveKb(agentId, kbName, kbId);
+        if (kbRes.hasError()) return kbRes.errorJson();
+        kbId = kbRes.kbId();
         if (transformationService == null || transformationAggregator == null) {
             return error("Transformations not available");
         }
@@ -818,8 +917,131 @@ public class WikiTool {
     // ==================== Helpers ====================
 
     private Long resolveKbId(Long agentId) {
-        WikiKnowledgeBaseEntity kb = kbService.resolvePrimaryKb(agentId);
-        return kb == null ? null : kb.getId();
+        return resolveKbId(agentId, null, null);
+    }
+
+    /**
+     * Outcome of resolving a KB for a tool call. Exactly one of
+     * {@code kbId} / {@code errorJson} is non-null:
+     * <ul>
+     *   <li>{@code kbId} present → caller proceeds with that KB.</li>
+     *   <li>{@code errorJson} present → caller returns it as-is so the LLM
+     *       sees an unambiguous error pointing at the next action
+     *       (call {@code wiki_list_kbs} / pick a different name / pass
+     *       {@code kbId}).</li>
+     * </ul>
+     */
+    private record KbResolution(Long kbId, String errorJson) {
+        static KbResolution ok(Long id) { return new KbResolution(id, null); }
+        static KbResolution err(String json) { return new KbResolution(null, json); }
+        boolean hasError() { return errorJson != null; }
+    }
+
+    /**
+     * Single helper every wiki tool uses. Caller passes the agent id and at
+     * most one of {@code kbId} / {@code kbName}; the helper decides which
+     * KB the operation runs against and emits a uniform error when no
+     * unambiguous target can be picked.
+     *
+     * <p>Resolution rules (in order):
+     * <ol>
+     *   <li>{@code kbId} non-null → resolve only via
+     *       {@link WikiKnowledgeBaseService#findVisibleById}. Out-of-visibility
+     *       ids fail closed — no silent fallback to the primary or to a
+     *       same-name shared KB.</li>
+     *   <li>{@code kbName} non-blank → look up every visible KB with that
+     *       name. Single match → use it. Zero match → fail closed pointing
+     *       at {@code wiki_list_kbs}. Multiple matches → fail closed with
+     *       the list of candidate {@code kbId}s, telling the LLM to retry
+     *       with {@code kbId}.</li>
+     *   <li>Both blank → fall back to
+     *       {@link WikiKnowledgeBaseService#resolvePrimaryKb} so single-KB
+     *       agents keep their old zero-config behaviour.</li>
+     * </ol>
+     */
+    private KbResolution resolveKb(Long agentId, String kbName, Long kbId) {
+        // Treat kbId<=0 as "not supplied". Spring AI's @Tool JSON-schema
+        // generator doesn't carry the "optional, may be absent" semantic
+        // through to the LLM in the way Java would expect a nullable Long,
+        // so the model frequently fills unused numeric optionals with 0
+        // ("openai-chatgpt" was observed doing this on every wiki call).
+        // Real Snowflake ids are always 19-digit positive longs, so
+        // {0, negative} can be safely treated as the empty case.
+        if (kbId != null && kbId > 0L) {
+            WikiKnowledgeBaseEntity byId = kbService.findVisibleById(agentId, kbId);
+            if (byId == null) {
+                return KbResolution.err(error(
+                        "Knowledge base id=" + kbId + " not visible to this agent. "
+                        + "Use wiki_list_kbs to see available KBs."));
+            }
+            return KbResolution.ok(byId.getId());
+        }
+        if (kbName != null && !kbName.isBlank()) {
+            List<WikiKnowledgeBaseEntity> matches = kbService.findAllByName(agentId, kbName);
+            if (matches.isEmpty()) {
+                return KbResolution.err(error(
+                        "Knowledge base '" + kbName + "' not visible to this agent. "
+                        + "Use wiki_list_kbs to see available KBs."));
+            }
+            if (matches.size() > 1) {
+                // Duplicate names exist (no DB unique constraint). The LLM
+                // cannot disambiguate from kbName alone — surface every
+                // candidate's id (as String per the Snowflake-precision
+                // contract) and demand a kbId retry.
+                JSONArray candidates = new JSONArray();
+                for (WikiKnowledgeBaseEntity kb : matches) {
+                    candidates.add(JSONUtil.createObj()
+                            .set("kbId", String.valueOf(kb.getId()))
+                            .set("name", kb.getName())
+                            .set("description", kb.getDescription())
+                            .set("boundToAgent", kb.getAgentId() != null));
+                }
+                JSONObject obj = JSONUtil.createObj()
+                        .set("error", "Ambiguous kbName '" + kbName + "' — "
+                                + matches.size() + " visible KBs share this name. "
+                                + "Retry with `kbId` from the candidates list below.")
+                        .set("candidates", candidates);
+                return KbResolution.err(obj.toString());
+            }
+            return KbResolution.ok(matches.get(0).getId());
+        }
+        WikiKnowledgeBaseEntity primary = kbService.resolvePrimaryKb(agentId);
+        if (primary == null) {
+            return KbResolution.err(error("No wiki knowledge base found for this agent"));
+        }
+        return KbResolution.ok(primary.getId());
+    }
+
+    /**
+     * Legacy 2-arg routing kept for the tool methods that haven't been
+     * widened to accept {@code kbId} yet. Always returns null when the
+     * resolution would have surfaced an error — callers turn that into a
+     * {@link #noKbError(String)} message.
+     */
+    private Long resolveKbId(Long agentId, String kbName) {
+        return resolveKbId(agentId, kbName, null);
+    }
+
+    private Long resolveKbId(Long agentId, String kbName, Long kbId) {
+        KbResolution res = resolveKb(agentId, kbName, kbId);
+        return res.hasError() ? null : res.kbId();
+    }
+
+    /**
+     * Standardised "couldn't resolve KB" error. When the caller passed a
+     * non-blank {@code kbName} that didn't match, the message points them at
+     * {@code wiki_list_kbs} so the LLM has a clear next step.
+     *
+     * <p>NOTE: ambiguous-kbName errors are emitted directly by
+     * {@link #resolveKb} so the LLM also gets the candidate list, not just
+     * a flat string. This helper handles the simpler "not visible" case.
+     */
+    private String noKbError(String kbName) {
+        if (kbName != null && !kbName.isBlank()) {
+            return error("Knowledge base '" + kbName
+                    + "' not visible to this agent. Use wiki_list_kbs to see available KBs.");
+        }
+        return error("No wiki knowledge base found for this agent");
     }
 
     private JSONArray resolveSourceFiles(String sourceRawIdsJson) {

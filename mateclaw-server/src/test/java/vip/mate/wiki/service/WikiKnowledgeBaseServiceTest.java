@@ -28,9 +28,14 @@ class WikiKnowledgeBaseServiceTest {
             kbMapper, null, null, null, null, null);
 
     private static WikiKnowledgeBaseEntity kb(long id, Long agentId) {
+        return kb(id, agentId, null);
+    }
+
+    private static WikiKnowledgeBaseEntity kb(long id, Long agentId, String name) {
         WikiKnowledgeBaseEntity entity = new WikiKnowledgeBaseEntity();
         entity.setId(id);
         entity.setAgentId(agentId);
+        entity.setName(name);
         return entity;
     }
 
@@ -63,5 +68,116 @@ class WikiKnowledgeBaseServiceTest {
         when(kbMapper.selectList(any())).thenReturn(List.of());
 
         assertThat(service.resolvePrimaryKb(7L)).isNull();
+    }
+
+    // ==================== findByName ====================
+    //
+    // The wiki tools added a kbName parameter so the LLM can target a
+    // non-primary KB. findByName is the resolution layer behind that
+    // parameter — it must restrict the match to KBs visible to the agent
+    // and refuse to silently fall through to the primary on a miss, so a
+    // bad pick surfaces as a clear "use wiki_list_kbs" hint instead of
+    // routing to the wrong KB.
+
+    @Test
+    @DisplayName("findByName matches by exact name within the agent's visible set")
+    void findByNameMatchesVisibleKb() {
+        when(kbMapper.selectList(any())).thenReturn(List.of(
+                kb(900L, null, "Shared Docs"),
+                kb(100L, 7L, "Agent Personal KB")));
+
+        WikiKnowledgeBaseEntity hit = service.findByName(7L, "Agent Personal KB");
+        assertThat(hit).isNotNull();
+        assertThat(hit.getId()).isEqualTo(100L);
+
+        WikiKnowledgeBaseEntity sharedHit = service.findByName(7L, "Shared Docs");
+        assertThat(sharedHit).isNotNull();
+        assertThat(sharedHit.getId()).isEqualTo(900L);
+    }
+
+    @Test
+    @DisplayName("findByName returns null when name does not match any visible KB")
+    void findByNameMissReturnsNull() {
+        when(kbMapper.selectList(any())).thenReturn(List.of(
+                kb(900L, null, "Shared Docs"),
+                kb(100L, 7L, "Agent Personal KB")));
+
+        assertThat(service.findByName(7L, "Nonexistent KB")).isNull();
+    }
+
+    @Test
+    @DisplayName("findByName is case-sensitive — LLM must copy the name verbatim")
+    void findByNameIsCaseSensitive() {
+        when(kbMapper.selectList(any())).thenReturn(List.of(
+                kb(100L, 7L, "Agent Personal KB")));
+
+        assertThat(service.findByName(7L, "agent personal kb")).isNull();
+        assertThat(service.findByName(7L, "Agent Personal KB")).isNotNull();
+    }
+
+    @Test
+    @DisplayName("findByName returns null for blank / null kbName")
+    void findByNameBlankReturnsNull() {
+        assertThat(service.findByName(7L, null)).isNull();
+        assertThat(service.findByName(7L, "")).isNull();
+        assertThat(service.findByName(7L, "   ")).isNull();
+    }
+
+    // ==================== findByName ambiguity + findAllByName + findVisibleById ====================
+    //
+    // mate_wiki_knowledge_base has no unique constraint on name (one DB row
+    // per workspace + (name nullable + duplicates allowed) by design), so
+    // a non-blank kbName can match more than one visible KB. The single-
+    // result findByName must not silently pick "the first one" in that
+    // case — callers route through findAllByName + an ambiguous-error
+    // surface so the LLM is forced to disambiguate by kbId.
+
+    @Test
+    @DisplayName("findByName returns null when more than one visible KB shares the name")
+    void findByNameAmbiguousReturnsNull() {
+        when(kbMapper.selectList(any())).thenReturn(List.of(
+                kb(100L, 7L, "Docs"),
+                kb(900L, null, "Docs")));
+
+        assertThat(service.findByName(7L, "Docs"))
+                .as("ambiguous matches collapse to null — caller must use findAllByName")
+                .isNull();
+    }
+
+    @Test
+    @DisplayName("findAllByName returns every visible KB sharing the name")
+    void findAllByNameReturnsAllMatches() {
+        when(kbMapper.selectList(any())).thenReturn(List.of(
+                kb(100L, 7L, "Docs"),
+                kb(900L, null, "Docs"),
+                kb(800L, null, "Other")));
+
+        List<WikiKnowledgeBaseEntity> hits = service.findAllByName(7L, "Docs");
+        assertThat(hits).hasSize(2);
+        assertThat(hits).extracting(WikiKnowledgeBaseEntity::getId).containsExactly(100L, 900L);
+    }
+
+    @Test
+    @DisplayName("findAllByName returns empty for blank kbName")
+    void findAllByNameBlankReturnsEmpty() {
+        assertThat(service.findAllByName(7L, null)).isEmpty();
+        assertThat(service.findAllByName(7L, "  ")).isEmpty();
+    }
+
+    @Test
+    @DisplayName("findVisibleById returns the KB only when it is in the agent's visibility set")
+    void findVisibleByIdGate() {
+        when(kbMapper.selectList(any())).thenReturn(List.of(
+                kb(100L, 7L, "Bound KB"),
+                kb(900L, null, "Shared KB")));
+
+        // Visible: returned.
+        assertThat(service.findVisibleById(7L, 100L)).isNotNull();
+        assertThat(service.findVisibleById(7L, 900L)).isNotNull();
+
+        // Not in visibility set: deliberate fail-closed gate so an LLM
+        // can't pivot to an arbitrary KB by guessing an id.
+        assertThat(service.findVisibleById(7L, 99999L)).isNull();
+        assertThat(service.findVisibleById(7L, null)).isNull();
     }
 }

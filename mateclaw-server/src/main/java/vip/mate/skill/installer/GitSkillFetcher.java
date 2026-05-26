@@ -1,6 +1,7 @@
 package vip.mate.skill.installer;
 
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import vip.mate.skill.installer.model.SkillBundle;
 import vip.mate.skill.runtime.SkillFrontmatterParser;
@@ -27,11 +28,23 @@ public class GitSkillFetcher {
 
     private final SkillFrontmatterParser frontmatterParser;
 
-    private final String githubToken = System.getenv("GITHUB_TOKEN") != null
-            ? System.getenv("GITHUB_TOKEN") : "";
+    /**
+     * GitHub access token used when cloning private repositories.
+     * Resolution order: {@code mateclaw.skill.github-token} property → {@code GITHUB_TOKEN}
+     * environment variable → empty (public repos only). Kept as a plain field so the value
+     * is never logged or embedded in URLs — it is passed to the git subprocess through
+     * dedicated environment variables (see {@link #cloneRepo}).
+     */
+    private final String githubToken;
 
-    public GitSkillFetcher(SkillFrontmatterParser frontmatterParser) {
+    public GitSkillFetcher(
+            SkillFrontmatterParser frontmatterParser,
+            @Value("${mateclaw.skill.github-token:}") String configuredGithubToken) {
         this.frontmatterParser = frontmatterParser;
+        String token = (configuredGithubToken != null && !configuredGithubToken.isBlank())
+                ? configuredGithubToken
+                : System.getenv("GITHUB_TOKEN");
+        this.githubToken = (token == null) ? "" : token.trim();
     }
 
     /**
@@ -101,7 +114,13 @@ public class GitSkillFetcher {
     }
 
     /**
-     * git clone --depth 1 到临时目录
+     * git clone --depth 1 to a temporary directory.
+     * <p>
+     * When a GitHub token is configured and the repository is hosted on github.com,
+     * the credential is forwarded to the git subprocess through {@code GIT_CONFIG_*}
+     * environment variables — equivalent to {@code git -c http.extraHeader=...} but
+     * without ever placing the token in the process command line (visible to {@code ps})
+     * or the repository URL (visible in logs and error messages). Requires git 2.31+.
      */
     private void cloneRepo(String repoUrl, String ref, Path targetDir) throws IOException, InterruptedException {
         // 如果配置了 GITHUB_TOKEN 且是 GitHub 地址，注入 token 以支持私有仓库
@@ -124,6 +143,19 @@ public class GitSkillFetcher {
 
         ProcessBuilder pb = new ProcessBuilder(command);
         pb.redirectErrorStream(true);
+
+        // Inject credentials for private GitHub repos via the git subprocess environment.
+        // Keeping the token out of argv and out of the URL ensures it cannot leak through
+        // process listings, the INFO log below, or the IOException message on clone failure.
+        if (!githubToken.isEmpty() && isGithubHost(repoUrl)) {
+            var env = pb.environment();
+            env.put("GIT_CONFIG_COUNT", "1");
+            env.put("GIT_CONFIG_KEY_0", "http.extraHeader");
+            env.put("GIT_CONFIG_VALUE_0", "Authorization: Bearer " + githubToken);
+            // Fail fast on auth errors instead of blocking on an interactive password prompt.
+            env.put("GIT_TERMINAL_PROMPT", "0");
+        }
+
         Process process = pb.start();
 
         boolean finished = process.waitFor(CLONE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
@@ -139,6 +171,17 @@ public class GitSkillFetcher {
         }
 
         log.info("Cloned {} (ref={}) to {}", repoUrl, ref, targetDir);
+    }
+
+    /**
+     * Match GitHub host conservatively (scheme + host boundary) so a malicious URL like
+     * {@code https://evil.com/?u=github.com/...} cannot smuggle the token to a third party.
+     */
+    private static boolean isGithubHost(String repoUrl) {
+        return repoUrl != null
+                && (repoUrl.startsWith("https://github.com/")
+                        || repoUrl.startsWith("http://github.com/")
+                        || repoUrl.startsWith("git@github.com:"));
     }
 
     /**

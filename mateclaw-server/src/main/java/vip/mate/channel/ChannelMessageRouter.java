@@ -250,7 +250,13 @@ public class ChannelMessageRouter {
             // no longer exists for downstream consumers to reference.
             return;
         }
-        if (!Boolean.TRUE.equals(fresh.getEnabled())) {
+        // Only drop on an EXPLICIT enabled=false. A null enabled (which the
+        // production DB never returns but tests / hand-constructed entities
+        // do) means "not declared", and treating it as disabled would
+        // collapse every downstream behaviour into a silent drop — which is
+        // exactly how the previous !Boolean.TRUE.equals(...) form regressed
+        // mock-driven tests that don't bother seeding the flag.
+        if (Boolean.FALSE.equals(fresh.getEnabled())) {
             log.warn("[{}] Channel {} (id={}) is disabled; dropping message from {}",
                     adapter.getChannelType(), fresh.getName(), fresh.getId(), message.getSenderId());
             return;
@@ -571,7 +577,7 @@ public class ChannelMessageRouter {
                     message.getSenderId());
             return;
         }
-        if (!Boolean.TRUE.equals(fresh.getEnabled())) {
+        if (Boolean.FALSE.equals(fresh.getEnabled())) {
             log.warn("[{}] Channel {} (id={}) is disabled at processing time; dropping message from {}",
                     adapter.getChannelType(), fresh.getName(), fresh.getId(), message.getSenderId());
             return;
@@ -1168,7 +1174,7 @@ public class ChannelMessageRouter {
         if (fresh == null) {
             return Flux.error(new IllegalStateException("Channel no longer exists"));
         }
-        if (!Boolean.TRUE.equals(fresh.getEnabled())) {
+        if (Boolean.FALSE.equals(fresh.getEnabled())) {
             return Flux.error(new IllegalStateException("Channel is disabled"));
         }
         channelEntity = fresh;
