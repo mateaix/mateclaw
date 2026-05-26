@@ -183,6 +183,7 @@ export default {
     startNewChat: 'Start a new chat above',
     messages: '{count} messages',
     configModel: 'Configure Model',
+    modelSaveFailed: 'Model switch was not saved — the next message may still use the previous model',
     openSessions: 'Session Admin',
     clearMessages: 'Clear Messages',
     goToModelSettings: 'Go to Model Settings',

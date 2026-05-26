@@ -353,6 +353,12 @@ const selectedAgentId = ref<string | number>('')
 const currentConversationId = ref<string>('')
 const inputText = ref('')
 const modelSaving = ref(false)
+// Monotonic counter for in-flight setModel PUTs. The finally handler
+// only clears modelSaving when its captured seq is still the latest, so a
+// stale-finishing earlier PUT can't unlock the selector while a newer one
+// is still in flight, and (crucially) switching conversations mid-PUT
+// can't permanently lock the selector by leaving modelSaving stuck true.
+let modelSaveSeq = 0
 // Issue #81 v2 R2: split the single showModelPrompt boolean into two flags so
 // the chat surface can either hard-block (blockingPrompt) or warn but let the
 // backend fallback chain take over (recoverablePrompt). Driven by
@@ -418,14 +424,70 @@ function selectModel(value: string) {
   const [providerId, model] = value.split('::')
   if (!providerId || !model) return
   // Per-conversation model: switching here only affects THIS conversation.
-  // The backend pins it onto the conversation row when the next message is
-  // sent (see sendChatMessage payload); we also patch the local list entry so
-  // re-opening the conversation restores the choice without a round-trip.
-  activeModels.value = { activeLlm: { providerId, model } }
+  // We update the selector + the local list entry immediately so the UI is
+  // responsive, then persist the pin to the server right away IF the
+  // conversation already exists. Without the eager persist, IM channels
+  // (Feishu / DingTalk / WeCom …) keep using whatever the conversation row
+  // last had — they don't see the /chat/stream payload that the web path
+  // pins on send — so the user "switches model in the chat box" but the
+  // next IM inbound message still picks the old / default model.
+  //
+  // Snapshot the previous selection BEFORE the optimistic update so a
+  // failed PUT can roll the UI back instead of stranding the user with a
+  // model the backend isn't using.
+  const prevLlm = activeModels.value?.activeLlm
+  const prevActive: ActiveModelsInfo | null = prevLlm?.providerId && prevLlm?.model
+    ? { activeLlm: { providerId: prevLlm.providerId, model: prevLlm.model } }
+    : null
   const conv = conversations.value.find(c => c.conversationId === currentConversationId.value)
+  const prevConvProvider = conv?.modelProvider
+  const prevConvModel = conv?.modelName
+
+  activeModels.value = { activeLlm: { providerId, model } }
   if (conv) {
     conv.modelProvider = providerId
     conv.modelName = model
+  }
+  // Only persist when the conversation is already in the server-side list.
+  // A brand-new chat (newConversation() generated a local id that hasn't
+  // been sent through /chat/stream yet) has no row to PUT against; that
+  // case still relies on the first /chat/stream call writing the pin.
+  if (conv && currentConversationId.value) {
+    const cid = currentConversationId.value
+    const mySeq = ++modelSaveSeq
+    modelSaving.value = true
+    conversationApi.setModel(cid, providerId, model)
+      .catch((e: any) => {
+        console.warn('[ChatConsole] Failed to persist model pin:', e)
+        mcToast.warning(t('chat.modelSaveFailed'))
+        // Roll back the visible selector + the cached conv pin so the UI
+        // doesn't keep claiming a model the backend isn't using. Only do
+        // it when the user is still on the same conversation AND hasn't
+        // picked yet another model — otherwise we'd corrupt the more
+        // recent state with this PUT's snapshot.
+        const liveConv = conversations.value.find(c => c.conversationId === cid)
+        if (liveConv && liveConv.modelProvider === providerId && liveConv.modelName === model) {
+          liveConv.modelProvider = prevConvProvider
+          liveConv.modelName = prevConvModel
+        }
+        if (currentConversationId.value !== cid) return
+        const stillShowingFailedPick =
+            activeModels.value?.activeLlm?.providerId === providerId
+            && activeModels.value?.activeLlm?.model === model
+        if (!stillShowingFailedPick) return
+        activeModels.value = prevActive
+      })
+      .finally(() => {
+        // Only the LATEST in-flight PUT clears the saving flag. An earlier
+        // PUT finishing late must not flip saving to false while a newer
+        // one is still pending (the selector would unlock during a live
+        // request); and a conversation switch mid-PUT must not strand the
+        // flag at true forever (which would lock the selector across
+        // every conversation — the original bug this seq counter fixes).
+        if (mySeq === modelSaveSeq) {
+          modelSaving.value = false
+        }
+      })
   }
 }
 
@@ -438,6 +500,44 @@ function applyConversationModel(conv?: Conversation | null) {
     activeModels.value = { activeLlm: { providerId: conv.modelProvider, model: conv.modelName } }
   } else if (globalDefaultModel.value) {
     activeModels.value = { activeLlm: { ...globalDefaultModel.value } }
+  }
+}
+
+/**
+ * After a poll refreshes the conversation list, the currently-open
+ * conversation may have drifted server-side: an admin may have rebound the
+ * channel to a different agent, or pinned a different model via another
+ * tab / API call. Pull the new server-side state into the local selector +
+ * agent header so the chat surface doesn't keep claiming the old binding.
+ *
+ * Skipped while a turn is generating — yanking the model / agent mid-stream
+ * would orphan the active SSE subscription.
+ */
+function reconcileCurrentConversation() {
+  if (!currentConversationId.value) return
+  if (isGenerating.value) return
+  // Don't fight an in-flight setModel write — the poll cycle may run BEFORE
+  // the PUT lands, in which case the server still reports the old pin and
+  // we'd flicker the UI back. Wait for the next tick.
+  if (modelSaving.value) return
+  const fresh = conversations.value.find(c => c.conversationId === currentConversationId.value)
+  if (!fresh) return
+  if (fresh.agentId != null && String(fresh.agentId) !== String(selectedAgentId.value)) {
+    selectedAgentId.value = fresh.agentId
+  }
+  const pickedProvider = activeModels.value?.activeLlm?.providerId
+  const pickedModel = activeModels.value?.activeLlm?.model
+  const serverHasPin = !!(fresh.modelProvider && fresh.modelName)
+  if (serverHasPin) {
+    if (fresh.modelProvider !== pickedProvider || fresh.modelName !== pickedModel) {
+      activeModels.value = { activeLlm: { providerId: fresh.modelProvider!, model: fresh.modelName! } }
+    }
+  } else if (pickedProvider || pickedModel) {
+    // Server-side pin was cleared (admin reset, model deleted, …) but the
+    // local selector still shows the old pick. Drop back to whatever the
+    // global default resolves to — applyConversationModel does the right
+    // thing when conv has no pin.
+    applyConversationModel(fresh)
   }
 }
 
@@ -949,6 +1049,7 @@ async function pollActivity() {
   try {
     try {
       await loadConversations()
+      reconcileCurrentConversation()
     } catch {
       // 静默失败，下一轮再试
     }

@@ -169,6 +169,23 @@ public class AgentGraphBuilder {
     }
 
     /**
+     * True iff the caller passed a complete (provider, model) pin AND that
+     * pair resolves to an enabled model row. Used by {@link #build} to decide
+     * whether the explicit pick should bypass capability-driven routing.
+     */
+    private boolean pinResolvesToEnabledModel(String modelProvider, String modelName) {
+        if (modelProvider == null || modelProvider.isBlank()
+                || modelName == null || modelName.isBlank()) {
+            return false;
+        }
+        try {
+            return modelConfigService.findEnabledModel(modelProvider, modelName) != null;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /**
      * 根据 AgentEntity 构建完整的 Agent 实例。
      *
      * <p>{@code modelProvider} / {@code modelName} carry an optional
@@ -201,22 +218,34 @@ public class AgentGraphBuilder {
         // looks up enabled-only models and silently degrades an unmatched pin /
         // override to the global default, preserving the legacy behaviour for
         // Agents and conversations without an explicit choice.
-        // providerRouter.selectPrimary below may still swap this for a model
-        // that satisfies a bound skill's requires-model constraint.
         ModelConfigEntity globalDefault;
+        boolean explicitPinHonoured;
         try {
+            explicitPinHonoured = pinResolvesToEnabledModel(modelProvider, modelName);
             globalDefault = resolveRuntimeBaseModel(modelProvider, modelName, entity.getModelName());
         } catch (Exception e) {
             throw new MateClawException("err.agent.no_default_model", "无法构建 Agent：请先在「设置 → 模型」中配置并启用默认模型");
         }
         ModelConfigEntity runtimeModel;
-        try {
-            runtimeModel = providerRouter.selectPrimary(entity.getId(), globalDefault);
-            if (runtimeModel == null) runtimeModel = globalDefault;
-        } catch (Exception e) {
-            log.debug("[ProviderRouter] primary selection failed, falling back to global default: {}",
-                    e.getMessage());
+        if (explicitPinHonoured) {
+            // The caller (admin UI / chat console) handed us a concrete
+            // (provider, model) pin and it points to an enabled row. Honour
+            // it verbatim — running providerRouter.selectPrimary here would
+            // silently swap to a different model whenever a bound skill
+            // advertised a capability gap, which is exactly the "I switched
+            // model but the agent kept using the old one" surface. The
+            // diagnostic below still surfaces capability gaps in the logs
+            // so operators can see if the pinned model misses a need.
             runtimeModel = globalDefault;
+        } else {
+            try {
+                runtimeModel = providerRouter.selectPrimary(entity.getId(), globalDefault);
+                if (runtimeModel == null) runtimeModel = globalDefault;
+            } catch (Exception e) {
+                log.debug("[ProviderRouter] primary selection failed, falling back to global default: {}",
+                        e.getMessage());
+                runtimeModel = globalDefault;
+            }
         }
         // Even after the upgrade, log a WARN when the chosen primary
         // still doesn't satisfy needs (e.g. no preferred provider was
