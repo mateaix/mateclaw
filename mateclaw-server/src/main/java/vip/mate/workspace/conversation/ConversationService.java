@@ -366,7 +366,24 @@ public class ConversationService {
             conv.setUsername(SYSTEM_USER);
             changed = true;
         }
-        if (conv.getAgentId() == null && agentId != null) {
+        // Shared conversations (IM channel sessions, cron job-specific rows)
+        // take their agent from the caller's current authoritative binding —
+        // the channel's bound agent for IM, the job's bound agent for cron.
+        // Sync so the admin sidebar / dashboard / context resolution all see
+        // the same agent the runtime is dispatching to; otherwise an admin
+        // who rebinds a channel from A to B leaves every existing
+        // conversation pointing at the old A.
+        //
+        // Exception: Web-origin cron uses {@code tasks_<workspaceId>} as a
+        // single aggregate conversation for ALL of the workspace's web cron
+        // runs (see CronConversationResolver). Many jobs with different
+        // bound agents land in that same row; overwriting agentId per run
+        // would make the header / avatar / model selector flicker to
+        // whichever cron fired last. The aggregate has no single "owner
+        // agent" — leave its agentId alone (the original first-runner value
+        // is fine; UI treats this conversation specially anyway).
+        boolean isCronAggregate = conversationId != null && conversationId.startsWith("tasks_");
+        if (!isCronAggregate && agentId != null && !agentId.equals(conv.getAgentId())) {
             conv.setAgentId(agentId);
             changed = true;
         }
