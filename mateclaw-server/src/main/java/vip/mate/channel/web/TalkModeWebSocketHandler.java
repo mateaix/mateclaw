@@ -145,13 +145,17 @@ public class TalkModeWebSocketHandler extends AbstractWebSocketHandler {
             conversationService.saveMessage(talkSession.conversationId, "user", transcript, List.of());
 
             // 5. Agent 对话（同步）
-            String reply = agentService.chat(talkSession.agentId, transcript, talkSession.conversationId);
+            AgentService.ChatResult chatResult = agentService.chatWithUsage(
+                    talkSession.agentId, transcript, talkSession.conversationId);
+            String reply = chatResult.content();
             if (reply == null || reply.isBlank()) {
                 reply = "Sorry, I couldn't generate a response.";
             }
 
-            // 6. 保存助手回复
-            conversationService.saveMessage(talkSession.conversationId, "assistant", reply, List.of());
+            // 6. 保存助手回复（携带 token usage + runtime model 归属）
+            conversationService.saveMessage(talkSession.conversationId, "assistant", reply, List.of(),
+                    "completed", chatResult.promptTokens(), chatResult.completionTokens(),
+                    chatResult.runtimeModel(), chatResult.runtimeProvider());
 
             // Publish conversation-completed event so memory extraction runs for voice turns too.
             completionPublisher.publish(talkSession.agentId, talkSession.conversationId,

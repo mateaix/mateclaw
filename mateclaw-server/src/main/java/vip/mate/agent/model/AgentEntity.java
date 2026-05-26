@@ -78,7 +78,11 @@ public class AgentEntity {
     /** 默认思考深度：off / low / medium / high / max，null 表示跟随模型默认 */
     private String defaultThinkingLevel;
 
-    /** Agent 级别的工作目录覆盖，为 null 时继承工作区 basePath */
+    /**
+     * Agent-level working directory override. When non-blank, takes priority
+     * over the workspace's basePath; relative values are resolved under the
+     * workspace basePath. Null/blank means inherit the workspace value.
+     */
     @TableField(value = "workspace_base_path", updateStrategy = FieldStrategy.ALWAYS)
     private String workspaceBasePath;
 

@@ -56,6 +56,8 @@ import vip.mate.channel.web.ChatStreamTracker;
 import vip.mate.wiki.service.WikiContextService;
 
 import java.lang.reflect.Field;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -167,6 +169,23 @@ public class AgentGraphBuilder {
     }
 
     /**
+     * True iff the caller passed a complete (provider, model) pin AND that
+     * pair resolves to an enabled model row. Used by {@link #build} to decide
+     * whether the explicit pick should bypass capability-driven routing.
+     */
+    private boolean pinResolvesToEnabledModel(String modelProvider, String modelName) {
+        if (modelProvider == null || modelProvider.isBlank()
+                || modelName == null || modelName.isBlank()) {
+            return false;
+        }
+        try {
+            return modelConfigService.findEnabledModel(modelProvider, modelName) != null;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /**
      * 根据 AgentEntity 构建完整的 Agent 实例。
      *
      * <p>{@code modelProvider} / {@code modelName} carry an optional
@@ -199,22 +218,34 @@ public class AgentGraphBuilder {
         // looks up enabled-only models and silently degrades an unmatched pin /
         // override to the global default, preserving the legacy behaviour for
         // Agents and conversations without an explicit choice.
-        // providerRouter.selectPrimary below may still swap this for a model
-        // that satisfies a bound skill's requires-model constraint.
         ModelConfigEntity globalDefault;
+        boolean explicitPinHonoured;
         try {
+            explicitPinHonoured = pinResolvesToEnabledModel(modelProvider, modelName);
             globalDefault = resolveRuntimeBaseModel(modelProvider, modelName, entity.getModelName());
         } catch (Exception e) {
             throw new MateClawException("err.agent.no_default_model", "无法构建 Agent：请先在「设置 → 模型」中配置并启用默认模型");
         }
         ModelConfigEntity runtimeModel;
-        try {
-            runtimeModel = providerRouter.selectPrimary(entity.getId(), globalDefault);
-            if (runtimeModel == null) runtimeModel = globalDefault;
-        } catch (Exception e) {
-            log.debug("[ProviderRouter] primary selection failed, falling back to global default: {}",
-                    e.getMessage());
+        if (explicitPinHonoured) {
+            // The caller (admin UI / chat console) handed us a concrete
+            // (provider, model) pin and it points to an enabled row. Honour
+            // it verbatim — running providerRouter.selectPrimary here would
+            // silently swap to a different model whenever a bound skill
+            // advertised a capability gap, which is exactly the "I switched
+            // model but the agent kept using the old one" surface. The
+            // diagnostic below still surfaces capability gaps in the logs
+            // so operators can see if the pinned model misses a need.
             runtimeModel = globalDefault;
+        } else {
+            try {
+                runtimeModel = providerRouter.selectPrimary(entity.getId(), globalDefault);
+                if (runtimeModel == null) runtimeModel = globalDefault;
+            } catch (Exception e) {
+                log.debug("[ProviderRouter] primary selection failed, falling back to global default: {}",
+                        e.getMessage());
+                runtimeModel = globalDefault;
+            }
         }
         // Even after the upgrade, log a WARN when the chosen primary
         // still doesn't satisfy needs (e.g. no preferred provider was
@@ -358,20 +389,40 @@ public class AgentGraphBuilder {
         agent.topP = runtimeModel.getTopP();
         agent.toolCallingEnabled = toolCallingEnabled;
 
-        // Agent 级别覆盖优先，否则继承工作区
-        if (entity.getWorkspaceBasePath() != null && !entity.getWorkspaceBasePath().isBlank()) {
-            agent.workspaceBasePath = entity.getWorkspaceBasePath();
-            log.info("Agent {} using agent-level basePath: {}", entity.getName(), agent.workspaceBasePath);
-        } else if (entity.getWorkspaceId() != null) {
+        // Agent-level override takes priority; a relative override is resolved
+        // under the workspace basePath so admins can express agent directories
+        // relative to the workspace root (matching the UI hint).
+        String workspaceBase = null;
+        if (entity.getWorkspaceId() != null) {
             try {
                 var workspace = workspaceService.getById(entity.getWorkspaceId());
-                if (workspace != null && workspace.getBasePath() != null && !workspace.getBasePath().isBlank()) {
-                    agent.workspaceBasePath = workspace.getBasePath();
-                    log.info("Agent {} inherited workspace basePath: {}", entity.getName(), agent.workspaceBasePath);
+                if (workspace != null) {
+                    workspaceBase = workspace.getBasePath();
                 }
             } catch (Exception e) {
-                log.warn("Failed to lookup workspace basePath for agent {}: {}", entity.getName(), e.getMessage());
+                log.warn("Failed to lookup workspace basePath for agent {}: {}",
+                        entity.getName(), e.getMessage());
             }
+        }
+        String resolvedBase;
+        try {
+            resolvedBase = resolveAgentBasePath(entity.getWorkspaceBasePath(), workspaceBase);
+        } catch (IllegalArgumentException e) {
+            // Override violates the workspace-scoping rule (e.g. admin tried to
+            // set an absolute path outside the workspace root). Fall back to
+            // inheriting the workspace basePath so chat stays available, but
+            // surface the violation in logs so the admin can fix it.
+            log.warn("Agent {} workspaceBasePath override rejected, falling back to workspace: {}",
+                    entity.getName(), e.getMessage());
+            resolvedBase = workspaceBase;
+        }
+        if (resolvedBase != null && !resolvedBase.isBlank()) {
+            agent.workspaceBasePath = resolvedBase;
+            boolean fromOverride = entity.getWorkspaceBasePath() != null
+                    && !entity.getWorkspaceBasePath().isBlank()
+                    && resolvedBase.equals(entity.getWorkspaceBasePath());
+            log.info("Agent {} basePath = {} (source: {})",
+                    entity.getName(), resolvedBase, fromOverride ? "agent-override" : "workspace");
         }
 
         log.info("Built agent instance: {} (type={}, protocol={}, tools={}, toolCallingEnabled={})",
@@ -1148,6 +1199,54 @@ public class AgentGraphBuilder {
             }
         }
         return reordered;
+    }
+
+    /**
+     * Resolve the effective working directory for an agent.
+     * <p>Precedence:
+     * <ol>
+     *   <li>When the agent-level override is set, it wins.</li>
+     *   <li>An absolute override is used verbatim, but only when it sits
+     *       inside the workspace basePath (or when the workspace has no
+     *       basePath of its own). An absolute path that points outside a
+     *       configured workspace root is rejected — otherwise a less-trusted
+     *       user with agent-edit access could set
+     *       {@code workspaceBasePath="/"} and bypass workspace scoping.</li>
+     *   <li>A relative override is resolved <em>under</em> the workspace basePath
+     *       when the workspace has one, matching the UI hint that agent paths
+     *       are relative to the workspace root.</li>
+     *   <li>A relative override with no workspace basePath is used as-is
+     *       (resolves against the JVM working directory at file-tool time).</li>
+     *   <li>With no override, the workspace basePath is inherited verbatim;
+     *       returns {@code null} when neither side has a value.</li>
+     * </ol>
+     *
+     * @throws IllegalArgumentException when an absolute override escapes the
+     *         workspace root
+     */
+    static String resolveAgentBasePath(String agentOverride, String workspaceBase) {
+        boolean hasOverride = agentOverride != null && !agentOverride.isBlank();
+        boolean hasWorkspace = workspaceBase != null && !workspaceBase.isBlank();
+        if (!hasOverride) {
+            return hasWorkspace ? workspaceBase : null;
+        }
+        Path overridePath = Paths.get(agentOverride);
+        if (overridePath.isAbsolute()) {
+            if (hasWorkspace) {
+                Path wsRoot = Paths.get(workspaceBase).toAbsolutePath().normalize();
+                Path absOverride = overridePath.toAbsolutePath().normalize();
+                if (!absOverride.startsWith(wsRoot)) {
+                    throw new IllegalArgumentException(
+                            "Agent workspaceBasePath override must be inside the workspace root: "
+                                    + absOverride + " is not under " + wsRoot);
+                }
+            }
+            return agentOverride;
+        }
+        if (hasWorkspace) {
+            return Paths.get(workspaceBase).resolve(agentOverride).toString();
+        }
+        return agentOverride;
     }
 
     /**
