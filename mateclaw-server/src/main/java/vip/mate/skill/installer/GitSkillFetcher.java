@@ -23,9 +23,13 @@ import java.util.concurrent.TimeUnit;
 @Component
 public class GitSkillFetcher {
 
-    private static final long CLONE_TIMEOUT_SECONDS = 60;
+    private static final long CLONE_TIMEOUT_SECONDS = 120;
 
     private final SkillFrontmatterParser frontmatterParser;
+
+    /** 读取环境变量 GITHUB_TOKEN，用于访问私有仓库（公有仓库不受影响） */
+    private final String githubToken = System.getenv("GITHUB_TOKEN") != null
+            ? System.getenv("GITHUB_TOKEN") : "";
 
     public GitSkillFetcher(SkillFrontmatterParser frontmatterParser) {
         this.frontmatterParser = frontmatterParser;
@@ -101,6 +105,12 @@ public class GitSkillFetcher {
      * git clone --depth 1 到临时目录
      */
     private void cloneRepo(String repoUrl, String ref, Path targetDir) throws IOException, InterruptedException {
+        // 如果配置了 GITHUB_TOKEN 且是 GitHub 地址，注入 token 以支持私有仓库
+        // 公有仓库带 token 访问同样正常，不受影响
+        if (!githubToken.isBlank() && repoUrl.contains("github.com")) {
+            repoUrl = repoUrl.replaceFirst("https://", "https://" + githubToken + "@");
+        }
+
         var command = new java.util.ArrayList<String>();
         command.add("git");
         command.add("clone");
