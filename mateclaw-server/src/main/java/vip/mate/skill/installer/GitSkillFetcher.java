@@ -105,6 +105,7 @@ public class GitSkillFetcher {
      */
     private void cloneRepo(String repoUrl, String ref, Path targetDir) throws IOException, InterruptedException {
         // 如果配置了 GITHUB_TOKEN 且是 GitHub 地址，注入 token 以支持私有仓库
+        log.info("GITHUB_TOKEN status: {}", (githubToken == null || githubToken.isBlank()) ? "NO TOKEN" : "HAS TOKEN");
         if (githubToken != null && !githubToken.isBlank() && repoUrl.contains("github.com")) {
             repoUrl = repoUrl.replaceFirst("https://", "https://" + githubToken + "@");
         }
