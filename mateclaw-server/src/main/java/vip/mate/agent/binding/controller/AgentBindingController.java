@@ -52,8 +52,12 @@ public class AgentBindingController {
         verifyAgentWorkspace(agentId, workspaceId);
         bindingService.setSkillBindings(agentId, skillIds);
         agentService.invalidateAgentCache(agentId);
+        // The Vue client always sends an array, but a non-Vue caller (curl /
+        // SDK) can POST a body of just `null`, which Spring binds to a null
+        // list. The service tolerates that — guard the audit message too.
+        int count = skillIds == null ? 0 : skillIds.size();
         auditEventService.record("UPDATE", "AGENT_SKILL", String.valueOf(agentId),
-                "skills=" + skillIds.size(), null);
+                "skills=" + count, null);
         return R.ok();
     }
 
@@ -98,8 +102,10 @@ public class AgentBindingController {
         verifyAgentWorkspace(agentId, workspaceId);
         bindingService.setToolBindings(agentId, toolNames);
         agentService.invalidateAgentCache(agentId);
+        // Same null-safety rationale as setSkills above.
+        int count = toolNames == null ? 0 : toolNames.size();
         auditEventService.record("UPDATE", "AGENT_TOOL", String.valueOf(agentId),
-                "tools=" + toolNames.size(), null);
+                "tools=" + count, null);
         return R.ok();
     }
 

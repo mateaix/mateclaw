@@ -44,6 +44,19 @@ export interface Agent {
   icon?: string
   tags?: string
   workspaceBasePath?: string
+  /**
+   * Explicit opt-out: drop every SKILL.md catalog entry from the system
+   * prompt and exclude skill-expanded tools. Independent of binding rows
+   * (when `true`, the agent is treated as "no skills" regardless of any
+   * leftover `mate_agent_skill` rows). Defaults to `false`.
+   */
+  skillsDisabled?: boolean
+  /**
+   * Explicit opt-out: exclude every non-system-level tool from the agent's
+   * effective set and suppress MCP auto-include. System-level memory and
+   * delegation primitives still pass through. Defaults to `false`.
+   */
+  toolsDisabled?: boolean
   createTime?: string
   updateTime?: string
 }

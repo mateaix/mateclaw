@@ -206,6 +206,17 @@ public class AgentGraphBuilder {
         Set<String> boundTools = agentBindingService.getEffectiveToolNames(entity.getId());
         toolSet = toolSet.withAllowedToolsOnly(boundTools); // null = 全局默认
 
+        // Issue #184 follow-up: an agent that opted out of skills must not be
+        // able to circle back and discover/load them via the meta tools. Strip
+        // the skill-discovery surface (listAvailableSkills / load_skill /
+        // readSkillFile / runSkillScript / listSkillFiles) here. This runs as a
+        // separate deny layer so the allowlist matrix in getEffectiveToolNames
+        // stays untouched — in particular, the (skillsDisabled, !toolsDisabled,
+        // no tool bindings) cell still returns null so non-skill global tools
+        // continue to flow through.
+        toolSet = toolSet.withDeniedToolsFiltered(
+                agentBindingService.getSkillDiscoveryDeniedTools(entity.getId()));
+
         // Escape hatch: drop the load_skill meta tool entirely when disabled, so
         // it isn't advertised regardless of binding (the catalog guidance falls
         // back to readSkillFile — see SkillRuntimeService).
