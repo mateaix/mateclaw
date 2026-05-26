@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import vip.mate.exception.MateClawException;
 import vip.mate.workflow.compiler.PublishContext;
 import vip.mate.workflow.compiler.WorkflowAclPort;
 import vip.mate.workflow.compiler.WorkflowCompiler;
@@ -112,6 +113,10 @@ public class WorkflowService {
     @Transactional
     public WorkflowEntity create(WorkflowEntity workflow) {
         if (workflow.getEnabled() == null) workflow.setEnabled(true);
+        // Pre-check name uniqueness so the duplicate path surfaces as a friendly
+        // 409 instead of an opaque 500 from the uk_workflow_workspace_name
+        // unique index hitting the catch-all handler.
+        requireUniqueName(workflow.getWorkspaceId(), workflow.getName(), null);
         workflowMapper.insert(workflow);
         return workflow;
     }
@@ -128,7 +133,10 @@ public class WorkflowService {
     public WorkflowEntity updateMetadata(long id, long workspaceId, String name,
                                          String description, Boolean enabled) {
         WorkflowEntity existing = getOrThrow(id, workspaceId);
-        if (name != null) existing.setName(name);
+        if (name != null && !name.equals(existing.getName())) {
+            requireUniqueName(workspaceId, name, id);
+            existing.setName(name);
+        }
         if (description != null) existing.setDescription(description);
         if (enabled != null) existing.setEnabled(enabled);
         // draftJson / latest_revision_id / workspace_id are intentionally
@@ -214,6 +222,35 @@ public class WorkflowService {
         workflow.setDraftUpdatedAt(null);
         workflowMapper.updateById(workflow);
         return new PublishOutcome(workflow, revision);
+    }
+
+    /**
+     * Reject a create / rename whose name already exists in the workspace. The
+     * underlying table carries a unique index on (workspace_id, name, deleted),
+     * so without this pre-check the duplicate insert would bubble up as a
+     * generic 500 with a database-level "duplicate entry" message. Pass a
+     * non-null {@code excludeId} on rename so the row doesn't see itself as a
+     * conflict.
+     */
+    private void requireUniqueName(Long workspaceId, String name, Long excludeId) {
+        if (name == null || name.isBlank()) {
+            throw new MateClawException("err.workflow.name_required", 400,
+                    "工作流名称不能为空");
+        }
+        if (workspaceId == null) {
+            return;
+        }
+        LambdaQueryWrapper<WorkflowEntity> q = new LambdaQueryWrapper<WorkflowEntity>()
+                .eq(WorkflowEntity::getWorkspaceId, workspaceId)
+                .eq(WorkflowEntity::getName, name);
+        if (excludeId != null) {
+            q.ne(WorkflowEntity::getId, excludeId);
+        }
+        Long count = workflowMapper.selectCount(q);
+        if (count != null && count > 0) {
+            throw new MateClawException("err.workflow.duplicate_name", 409,
+                    "工作区内已存在同名工作流: " + name);
+        }
     }
 
     private int nextRevisionNumber(long workflowId) {

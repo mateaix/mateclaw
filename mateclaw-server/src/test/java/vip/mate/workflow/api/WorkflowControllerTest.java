@@ -13,12 +13,14 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.test.context.TestPropertySource;
 import vip.mate.MateClawApplication;
 import vip.mate.common.result.R;
+import vip.mate.exception.MateClawException;
 import vip.mate.workflow.compiler.WorkflowAclPort;
 import vip.mate.workflow.model.WorkflowEntity;
 import vip.mate.workflow.repository.WorkflowMapper;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -95,6 +97,21 @@ class WorkflowControllerTest {
         @SuppressWarnings("unchecked")
         R<CompileErrorResponse> body = (R<CompileErrorResponse>) response.getBody();
         assertInstanceOf(CompileErrorResponse.class, body.getData());
+    }
+
+    @Test
+    @DisplayName("create() rejects a second workflow with the same name as a 409 instead of a 500 from the unique index.")
+    void createRejectsDuplicateNameAs409() {
+        WorkflowEntity first = new WorkflowEntity();
+        first.setName("dup");
+        controller.create(first, 99L);
+
+        WorkflowEntity second = new WorkflowEntity();
+        second.setName("dup");
+        MateClawException ex = assertThrows(MateClawException.class,
+                () -> controller.create(second, 99L));
+        assertEquals(409, ex.getCode());
+        assertEquals("err.workflow.duplicate_name", ex.getMsgKey());
     }
 
     private Long createWorkflow(String name) {
