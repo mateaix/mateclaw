@@ -1,6 +1,7 @@
 package vip.mate.skill.installer;
 
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import vip.mate.skill.installer.model.SkillBundle;
 import vip.mate.skill.runtime.SkillFrontmatterParser;
@@ -23,9 +24,12 @@ import java.util.concurrent.TimeUnit;
 @Component
 public class GitSkillFetcher {
 
-    private static final long CLONE_TIMEOUT_SECONDS = 60;
+    private static final long CLONE_TIMEOUT_SECONDS = 120;
 
     private final SkillFrontmatterParser frontmatterParser;
+
+    @Value("${GITHUB_TOKEN:}")
+    private String githubToken;
 
     public GitSkillFetcher(SkillFrontmatterParser frontmatterParser) {
         this.frontmatterParser = frontmatterParser;
@@ -101,6 +105,11 @@ public class GitSkillFetcher {
      * git clone --depth 1 到临时目录
      */
     private void cloneRepo(String repoUrl, String ref, Path targetDir) throws IOException, InterruptedException {
+        // 如果配置了 GITHUB_TOKEN 且是 GitHub 地址，注入 token 以支持私有仓库
+        if (githubToken != null && !githubToken.isBlank() && repoUrl.contains("github.com")) {
+            repoUrl = repoUrl.replaceFirst("https://", "https://" + githubToken + "@");
+        }
+
         var command = new java.util.ArrayList<String>();
         command.add("git");
         command.add("clone");
