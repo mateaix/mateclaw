@@ -141,7 +141,12 @@ public class ApprovalGrantController {
     public R<Map<String, Object>> activeSummary(
             @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
         Long ws = workspaceId != null ? workspaceId : DEFAULT_WORKSPACE_ID;
-        long count = grantService.countActiveInWorkspace(ws);
+        // Cast to int: this is a per-workspace grant count, never bigger than a
+        // few hundred. Returning Long here would be serialized as a JSON string
+        // by the global Long→String serializer (CLAUDE.md precision convention
+        // for snowflake ids), but count is not a snowflake — the frontend wants
+        // a real number for the chip badge and `count > 0` checks.
+        int count = (int) Math.min(grantService.countActiveInWorkspace(ws), Integer.MAX_VALUE);
         // hasWorkspaceWide: workspace + tool_name IS NULL — the dangerous one.
         Long workspaceWide = grantMapper.selectCount(
                 Wrappers.<ApprovalGrant>lambdaQuery()

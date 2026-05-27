@@ -53,7 +53,7 @@
                 @click="confirmRevoke(g)">
                 {{ t('approval.grant.revokeBtn') }}
               </button>
-              <span v-else class="muted">{{ t('common.revoked') || 'revoked' }}</span>
+              <span v-else class="muted">{{ t('common.revoked') }}</span>
             </td>
           </tr>
         </tbody>
@@ -244,7 +244,7 @@ async function submitCreate() {
       payload.password = form.password
     }
     await approvalApi.createGrant(payload)
-    ElMessage.success(t('common.success') || 'Created')
+    ElMessage.success(t('common.success'))
     dialogOpen.value = false
     await loadGrants()
   } catch (e: any) {
@@ -266,7 +266,7 @@ async function confirmRevoke(g: ApprovalGrant) {
   }
   try {
     await approvalApi.revokeGrant(g.id)
-    ElMessage.success(t('common.success') || 'Revoked')
+    ElMessage.success(t('common.success'))
     await loadGrants()
   } catch (e: any) {
     ElMessage.error(e?.message || 'Failed to revoke')
