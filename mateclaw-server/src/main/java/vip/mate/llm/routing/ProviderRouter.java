@@ -176,12 +176,13 @@ public class ProviderRouter {
     }
 
     /**
-     * 选择主模型：两轮筛选。
+     * Pick a primary model using a two-pass strategy.
      *
-     * <p>第 1 轮（capability 满足优先）：偏好提供商 → 全局默认。
-     * <p>第 2 轮（不限 capability，兜底）：偏好提供商 → 全局默认。
+     * <p>Pass 1 (capability-gated): preferred providers → global default.
+     * <p>Pass 2 (unconstrained fallback): preferred providers → global default.
      *
-     * <p>无偏好提供商时跳过偏好部分，直接走全局默认路径（行为不变）。
+     * <p>When no preferred providers are configured the preferred branches
+     * are skipped, preserving the legacy behaviour.
      */
     public ModelConfigEntity selectPrimary(Long agentId, ModelConfigEntity globalDefault) {
         if (agentId == null) return globalDefault;
@@ -189,38 +190,38 @@ public class ProviderRouter {
         List<String> preferred = bindingService.getPreferredProviderIds(agentId);
         Set<Modality> requiredModalities = resolveRequiredModalities(agentId);
 
-        // 第 1 轮：满足 capability 的提供商（偏好优先，全局兜底）
+        // Pass 1: capability-satisfying providers (preferred first, global fallback)
         if (requiredModalities != null) {
-            // 1a. 偏好提供商中满足 capability 的
+            // 1a. preferred providers satisfying capabilities
             for (String providerId : preferred) {
                 ModelConfigEntity candidate = pickProviderDefault(providerId);
                 if (candidate == null) continue;
                 if (satisfies(candidate, requiredModalities)) {
-                    log.info("[ProviderRouter] agent={} 主模型={}/{}（偏好，满足 {}）",
+                    log.info("[ProviderRouter] agent={} primary={}/{} (preferred, satisfies {})",
                             agentId, candidate.getProvider(), candidate.getModelName(), requiredModalities);
                     return candidate;
                 }
             }
-            // 1b. 全局默认满足 capability 的
+            // 1b. global default satisfying capabilities
             if (globalDefault != null && satisfies(globalDefault, requiredModalities)) {
-                log.info("[ProviderRouter] agent={} 主模型={}/{}（全局，满足 {}）",
+                log.info("[ProviderRouter] agent={} primary={}/{} (global, satisfies {})",
                         agentId, globalDefault.getProvider(), globalDefault.getModelName(), requiredModalities);
                 return globalDefault;
             }
         }
 
-        // 第 2 轮：不限 capability（兜底，偏好优先，全局最后）
-        // 2a. 任意可用的偏好提供商
+        // Pass 2: unconstrained (capability ignored — last resort)
+        // 2a. any available preferred provider
         for (String providerId : preferred) {
             ModelConfigEntity candidate = pickProviderDefault(providerId);
             if (candidate == null) continue;
-            log.info("[ProviderRouter] agent={} 主模型={}/{}（偏好，不限能力）",
+            log.info("[ProviderRouter] agent={} primary={}/{} (preferred, unconstrained)",
                     agentId, candidate.getProvider(), candidate.getModelName());
             return candidate;
         }
-        // 2b. 全局默认（最终兜底）
+        // 2b. global default (ultimate fallback)
         if (globalDefault != null) {
-            log.info("[ProviderRouter] agent={} 主模型={}/{}（全局默认）",
+            log.info("[ProviderRouter] agent={} primary={}/{} (global default)",
                     agentId, globalDefault.getProvider(), globalDefault.getModelName());
             return globalDefault;
         }
@@ -228,7 +229,7 @@ public class ProviderRouter {
         return null;
     }
 
-    /** 无 capability 需求时返回 null，跳过第 1 轮。 */
+    /** Returns null when no capabilities are required (skips Pass 1). */
     private Set<Modality> resolveRequiredModalities(Long agentId) {
         Set<String> needs = aggregateModelNeeds(agentId);
         if (needs == null || needs.isEmpty()) return null;
