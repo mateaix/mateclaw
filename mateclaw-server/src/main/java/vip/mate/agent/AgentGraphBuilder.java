@@ -186,6 +186,17 @@ public class AgentGraphBuilder {
     }
 
     /**
+     * True when the Agent declared its own modelName and that name resolved to
+     * a real enabled row (rather than silently falling back to the system default).
+     */
+    private boolean agentModelOverrideResolved(AgentEntity entity, ModelConfigEntity resolved) {
+        if (entity == null || resolved == null) return false;
+        String agentModelName = entity.getModelName();
+        if (agentModelName == null || agentModelName.isBlank()) return false;
+        return agentModelName.equalsIgnoreCase(resolved.getModelName());
+    }
+
+    /**
      * 根据 AgentEntity 构建完整的 Agent 实例。
      *
      * <p>{@code modelProvider} / {@code modelName} carry an optional
@@ -231,14 +242,17 @@ public class AgentGraphBuilder {
         // Agents and conversations without an explicit choice.
         ModelConfigEntity globalDefault;
         boolean explicitPinHonoured;
+        boolean agentOverrideHonoured;
         try {
             explicitPinHonoured = pinResolvesToEnabledModel(modelProvider, modelName);
             globalDefault = resolveRuntimeBaseModel(modelProvider, modelName, entity.getModelName());
+            agentOverrideHonoured = !explicitPinHonoured
+                    && agentModelOverrideResolved(entity, globalDefault);
         } catch (Exception e) {
             throw new MateClawException("err.agent.no_default_model", "无法构建 Agent：请先在「设置 → 模型」中配置并启用默认模型");
         }
         ModelConfigEntity runtimeModel;
-        if (explicitPinHonoured) {
+        if (explicitPinHonoured || agentOverrideHonoured) {
             // The caller (admin UI / chat console) handed us a concrete
             // (provider, model) pin and it points to an enabled row. Honour
             // it verbatim — running providerRouter.selectPrimary here would
