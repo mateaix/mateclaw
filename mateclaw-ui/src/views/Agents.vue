@@ -225,6 +225,10 @@
               {{ t('agents.tabs.providers', 'Providers') }}
               <span v-if="selectedProviderIds.length" class="tab-badge">{{ selectedProviderIds.length }}</span>
             </button>
+            <button v-if="editingAgent" class="modal-tab" :class="{ active: modalTab === 'wiki' }" @click="modalTab = 'wiki'">
+              {{ t('agents.tabs.wiki', 'Wiki') }}
+              <span v-if="selectedKBId" class="tab-badge">1</span>
+            </button>
           </div>
 
           <!-- Basic Tab -->
@@ -552,6 +556,42 @@
               >+ {{ p.name }}</button>
             </div>
           </div>
+
+          <!-- Wiki / Knowledge Base Tab -->
+          <div v-if="modalTab === 'wiki'" class="binding-tab">
+            <div class="binding-intro">
+              <span class="binding-intro__kicker">{{ t('agents.binding.wikiKicker') }}</span>
+              <p class="binding-intro__tagline">{{ t('agents.binding.wikiTagline') }}</p>
+            </div>
+            <p class="binding-hint">{{ t('agents.binding.wikiHint') }}</p>
+            <div v-if="availableKBs.length === 0" class="binding-empty">{{ t('agents.binding.noKBs') }}</div>
+            <div v-else class="binding-list">
+              <label
+                class="binding-item"
+                :class="{ selected: selectedKBId === null }"
+              >
+                <input type="radio" name="kb-select" :checked="selectedKBId === null" class="binding-checkbox" @change="selectedKBId = null" />
+                <span class="binding-icon">🚫</span>
+                <div class="binding-info">
+                  <span class="binding-name">{{ t('agents.binding.noKB') }}</span>
+                </div>
+              </label>
+              <label
+                v-for="kb in availableKBs"
+                :key="kb.id"
+                class="binding-item"
+                :class="{ selected: selectedKBId === kb.id }"
+              >
+                <input type="radio" name="kb-select" :checked="selectedKBId === kb.id" class="binding-checkbox" @change="selectedKBId = kb.id" />
+                <span class="binding-icon">📚</span>
+                <div class="binding-info">
+                  <span class="binding-name">{{ kb.name }}</span>
+                  <span v-if="kb.description" class="binding-desc">{{ kb.description?.slice(0, 80) }}</span>
+                </div>
+                <span v-if="kb.pageCount != null" class="binding-version">{{ t('agents.binding.wikiPages', { count: kb.pageCount }, `${kb.pageCount} pages`) }}</span>
+              </label>
+            </div>
+          </div>
         </div>
         <div class="modal-footer">
           <button class="btn-secondary" @click="closeModal">{{ t('common.cancel') }}</button>
@@ -570,7 +610,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { mcToast } from '@/composables/useMcToast'
 import { mcConfirm } from '@/components/common/useConfirm'
-import { agentApi, agentBindingApi, modelApi, skillApi, toolApi, templateApi, liveApi } from '@/api/index'
+import { agentApi, agentBindingApi, modelApi, skillApi, toolApi, templateApi, liveApi, wikiApi } from '@/api/index'
 import type { Agent } from '@/types/index'
 import SkillIcon from '@/components/common/SkillIcon.vue'
 import SkillIconPicker from '@/components/common/SkillIconPicker.vue'
@@ -597,7 +637,7 @@ const searchText = ref('')
 const activeFilter = ref('all')
 const showModal = ref(false)
 const editingAgent = ref<Agent | null>(null)
-const modalTab = ref<'basic' | 'skills' | 'tools' | 'providers'>('basic')
+const modalTab = ref<'basic' | 'skills' | 'tools' | 'providers' | 'wiki'>('basic')
 /** RFC-090 §9.2 调整 B — Tool picker is an Advanced bypass; collapsed by
  *  default but stays open as soon as the agent has any direct tool
  *  bindings, so existing users don't lose visibility on their picks. */
@@ -752,6 +792,10 @@ function onSkillToggle(skillId: number | string, event: Event) {
 }
 const selectedSkillIds = ref<number[]>([])
 const selectedToolNames = ref<string[]>([])
+// Wiki knowledge base binding (one-to-one)
+const availableKBs = ref<any[]>([])
+const selectedKBId = ref<number | null>(null)
+const originalKBId = ref<number | null>(null)
 // RFC-009 PR-3: per-agent provider preference order
 const availableProviders = ref<{ id: string; name: string }[]>([])
 const selectedProviderIds = ref<string[]>([])
@@ -912,6 +956,9 @@ function openBlankCreateModal() {
   selectedSkillIds.value = []
   selectedToolNames.value = []
   selectedProviderIds.value = []
+  availableKBs.value = []
+  selectedKBId.value = null
+  originalKBId.value = null
   showModal.value = true
 }
 
@@ -990,7 +1037,7 @@ async function openEditModal(agent: Agent) {
 
   // Load available skills/tools/providers and current bindings in parallel
   try {
-    const [skillsRes, toolsRes, providersRes, boundSkillsRes, boundToolsRes, providerPrefsRes] = await Promise.all([
+    const [skillsRes, toolsRes, providersRes, boundSkillsRes, boundToolsRes, providerPrefsRes, kbsRes, boundKBsRes] = await Promise.all([
       // RFC-042: /skills is now paginated; binding dropdown only needs enabled skills,
       // so listEnabled() is both semantically correct and shape-stable (returns array).
       skillApi.listEnabled(),
@@ -1002,6 +1049,9 @@ async function openEditModal(agent: Agent) {
       agentBindingApi.listSkills(agent.id),
       agentBindingApi.listTools(agent.id),
       agentBindingApi.listProviderPreferences(agent.id),
+      // Wiki knowledge base: list all KBs + agent's bound KB
+      wikiApi.listKBs(),
+      wikiApi.listKBsByAgent(agent.id),
     ])
     availableSkills.value = (skillsRes as any).data || []
     availableTools.value = (toolsRes as any).data || []
@@ -1019,6 +1069,11 @@ async function openEditModal(agent: Agent) {
     selectedProviderIds.value = ((providerPrefsRes as any).data || [])
       .filter((b: any) => b.enabled)
       .map((b: any) => b.providerId)
+    // Wiki KB binding: populate available list and resolve current binding
+    availableKBs.value = (kbsRes as any).data || []
+    const boundKBs = ((boundKBsRes as any).data || []) as any[]
+    selectedKBId.value = boundKBs.length > 0 ? boundKBs[0].id : null
+    originalKBId.value = selectedKBId.value
   } catch {
     // Non-blocking: binding data load failure doesn't prevent editing basic info
   }
@@ -1029,6 +1084,9 @@ function closeModal() {
   editingAgent.value = null
   skillBindingSearch.value = ''
   toolBindingSearch.value = ''
+  availableKBs.value = []
+  selectedKBId.value = null
+  originalKBId.value = null
 }
 
 async function saveAgent() {
@@ -1072,6 +1130,16 @@ async function saveAgent() {
         await agentBindingApi.setSkills(agentId, skillIdsToSave)
         await agentBindingApi.setTools(agentId, toolNamesToSave)
         await agentBindingApi.setProviderPreferences(agentId, selectedProviderIds.value)
+
+        // Wiki KB binding (one-to-one): clear old KB if changed, then bind new KB
+        if (selectedKBId.value !== originalKBId.value) {
+          if (originalKBId.value != null) {
+            await wikiApi.updateKB(originalKBId.value, { agentId: null })
+          }
+          if (selectedKBId.value != null) {
+            await wikiApi.updateKB(selectedKBId.value, { agentId: agentId as number })
+          }
+        }
       } catch (bindingError: any) {
         mcToast.error(bindingError?.message || t('agents.messages.saveFailed'))
         // Pull the authoritative server state back into the editing form so
