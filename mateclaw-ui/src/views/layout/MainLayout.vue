@@ -141,7 +141,7 @@
             @click="goAutoApproveSettings"
             :title="t('approval.grant.title')"
           >
-            🔓
+            <el-icon :size="14"><Unlock /></el-icon>
             <span>{{ t('approval.grant.chipLabel', { count: autoApproveSummary.count }) }}</span>
           </button>
 
@@ -219,7 +219,7 @@ import McTooltip from '@/components/common/McTooltip.vue'
 import { useNotificationCenter } from '@/composables/useNotificationCenter'
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore'
 import { applyLocale, currentLocale, type AppLocale } from '@/i18n'
-import { SwitchButton, Lock } from '@element-plus/icons-vue'
+import { SwitchButton, Lock, Unlock } from '@element-plus/icons-vue'
 import ChangePasswordDialog from '@/components/ChangePasswordDialog.vue'
 
 const router = useRouter()

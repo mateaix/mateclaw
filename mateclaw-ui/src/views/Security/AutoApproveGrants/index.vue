@@ -1,20 +1,56 @@
 <template>
   <div class="settings-section">
+    <!--
+      Header layout follows the McpServers / ToolGuard style: section-header
+      container with btn-secondary / btn-primary native buttons on the right.
+      Icons come from @element-plus/icons-vue per the user's directive, even
+      though the rest of the page uses native CSS buttons — el-icon renders
+      inline cleanly inside a regular button.
+
+      The three actions deliberately sit at different visual weights:
+        - btn-primary "新增策略"  → the daily action, dominant.
+        - btn-secondary "刷新"   → utility, equal-but-second.
+        - 危险路径 "创建全工具白名单" 折到 "更多 ⋯" 下拉，红色文字 — 不会再
+          以与日常操作并排同等地位的姿态出现。
+    -->
     <div class="section-header">
-      <div>
+      <div class="section-header__title">
         <h2 class="section-title">{{ t('approval.grant.title') }}</h2>
+        <el-tag
+          v-if="total > 0"
+          type="warning"
+          size="small"
+          effect="light"
+          round
+          disable-transitions
+          class="active-summary"
+        >
+          {{ t('approval.grant.chipLabel', { count: total }) }}
+        </el-tag>
         <p class="section-desc">{{ t('approval.grant.desc') }}</p>
       </div>
-      <div class="header-actions">
-        <el-button :icon="Refresh" plain @click="loadGrants" :loading="loading">
+      <div class="section-header__actions">
+        <button class="btn-secondary" @click="loadGrants" :disabled="loading">
+          <el-icon :size="14" :class="{ spin: loading }"><Refresh /></el-icon>
           {{ t('common.refresh') }}
-        </el-button>
-        <el-button :icon="Plus" type="primary" plain @click="openCreateDialog(false)">
+        </button>
+        <button class="btn-primary" @click="openCreateDialog(false)">
+          <el-icon :size="14"><Plus /></el-icon>
           {{ t('approval.grant.createBtn') }}
-        </el-button>
-        <el-button :icon="Unlock" type="danger" plain @click="openCreateDialog(true)">
-          {{ t('approval.grant.createWorkspaceBtn') }}
-        </el-button>
+        </button>
+        <el-dropdown trigger="click" placement="bottom-end" @command="onMoreCommand">
+          <button class="btn-secondary btn-more" :title="t('common.more')">
+            <el-icon :size="16"><MoreFilled /></el-icon>
+          </button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item command="workspaceWide" class="danger-item">
+                <el-icon><Unlock /></el-icon>
+                {{ t('approval.grant.createWorkspaceBtn') }}
+              </el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
       </div>
     </div>
 
@@ -228,6 +264,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   Delete,
   Lock,
+  MoreFilled,
   Plus,
   Refresh,
   Unlock,
@@ -304,6 +341,12 @@ async function loadGrants() {
     total.value = 0
   } finally {
     loading.value = false
+  }
+}
+
+function onMoreCommand(cmd: string | number | object) {
+  if (cmd === 'workspaceWide') {
+    openCreateDialog(true)
   }
 }
 
@@ -424,10 +467,62 @@ onMounted(loadGrants)
 <style scoped>
 @import '@/views/Security/shared.css';
 
-.header-actions {
+/* Title row: title + small summary tag on one line, description below. The
+   tag sits next to the title so the daily-glance question — "is auto-approve
+   active in this workspace right now?" — gets answered without scrolling. */
+.section-header__title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 12px;
+}
+.section-header__title .section-title { margin: 0; }
+.section-header__title .section-desc {
+  flex-basis: 100%;
+  margin: 4px 0 0;
+}
+.active-summary {
+  font-weight: 600;
+}
+
+/* Header actions: matches McpServers / ToolGuard layout (.section-header__actions
+   + native .btn-primary / .btn-secondary). Visual hierarchy intentionally
+   primary > secondary > "more …" so the daily action dominates and the
+   workspace-wide rule lives one click deeper. */
+.section-header__actions {
   display: flex;
   gap: 8px;
   align-items: center;
+  flex-shrink: 0; /* keep buttons from being squeezed by the title block */
+}
+.section-header__actions .btn-primary,
+.section-header__actions .btn-secondary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap; /* prevent labels from wrapping into vertical text */
+}
+.btn-more {
+  padding-left: 8px;
+  padding-right: 8px;
+}
+.spin {
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* Danger items inside the More dropdown — visually distinct red text so the
+   workspace-wide path always feels like a dangerous action even when collapsed
+   into the overflow menu. */
+:global(.el-dropdown-menu__item.danger-item) {
+  color: var(--mc-danger, #b91c1c);
+}
+:global(.el-dropdown-menu__item.danger-item:hover) {
+  background: #fef2f2;
+  color: #991b1b;
 }
 
 .scope-id {
