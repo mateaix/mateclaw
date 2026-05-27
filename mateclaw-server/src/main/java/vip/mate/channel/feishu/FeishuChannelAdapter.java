@@ -1123,8 +1123,12 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
         boolean isGroup = "group".equals(chatType);
         boolean isFileMessage = "file".equals(messageType) || "image".equals(messageType)
                 || "audio".equals(messageType) || "media".equals(messageType);
-        if (isFileMessage && chatId != null) {
-            cacheRecentFile(messageId, messageType, contentStr, chatId, senderOpenId, isGroup);
+        // Compute conversationId once — used as cache key for both write (cacheRecentFile)
+        // and read (injectRecentFiles), and as the directory name under data/chat-uploads/.
+        String conversationId = buildConversationId(chatId, senderOpenId, isGroup);
+
+        if (isFileMessage) {
+            cacheRecentFile(messageId, messageType, contentStr, conversationId);
         }
 
         // allowed_chat_ids 过滤：同一 bot 多个渠道时，按 chatId 分流。
@@ -1214,11 +1218,11 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
         // Auto-associate recent files: inject file/image parts from the
         // per-chat cache so the agent can see files sent earlier in the
         // same conversation (user sends file → asks about it in text).
-        if (!isFileMessage && chatId != null) {
-            textContent = injectRecentFiles(chatId, contentParts, textContent);
+        if (!isFileMessage && conversationId != null) {
+            textContent = injectRecentFiles(conversationId, contentParts, textContent);
         }
 
-        // 生成会话标识后缀（群聊=fullChatId, 私聊=fullOpenId）
+        // 生成短会话后缀
         String shortSuffix = generateShortSessionSuffix(chatId, senderOpenId, isGroup);
 
         log.info("[feishu] Building ChannelMessage: shortSuffix={}, chatId={}, senderOpenId={}, isGroup={}, contentParts={}",
@@ -1644,8 +1648,10 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
      * files to the matching {@code data/chat-uploads/} directory.
      */
     private String buildConversationId(String chatId, String senderOpenId, boolean isGroup) {
-        String suffix = generateShortSessionSuffix(chatId, senderOpenId, isGroup);
-        return suffix != null ? CHANNEL_TYPE + ":" + suffix : null;
+        // Mirror ChannelMessageRouter#buildConversationId:
+        //   groups → feishu:{chatId},  DMs → feishu:{full senderOpenId}
+        String identifier = chatId != null ? chatId : senderOpenId;
+        return identifier != null ? CHANNEL_TYPE + ":" + identifier : null;
     }
 
     // ==================== Per-chat recent file cache ====================
@@ -1659,7 +1665,7 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
      * conversation is deleted.
      */
     private void cacheRecentFile(String messageId, String messageType, String contentStr,
-                                  String chatId, String senderOpenId, boolean isGroup) {
+                                  String conversationId) {
         try {
             Map<String, Object> contentObj = objectMapper.readValue(contentStr, Map.class);
 
@@ -1692,9 +1698,6 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
             }
 
             if (fileKey == null) return;
-
-            // Compute conversationId to save file in the right chat-uploads dir
-            String conversationId = buildConversationId(chatId, senderOpenId, isGroup);
             if (conversationId == null) return;
 
             // Download file bytes
@@ -1706,8 +1709,11 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
             // Save to data/chat-uploads/{conversationId}/
             Path uploadDir = Path.of("data", "chat-uploads", conversationId);
             Files.createDirectories(uploadDir);
-            String safeName = (dl.fileName() != null && !dl.fileName().isBlank())
-                    ? dl.fileName() : fileKey.replaceAll("[^a-zA-Z0-9._-]", "_");
+            String rawName = (dl.fileName() != null && !dl.fileName().isBlank())
+                    ? dl.fileName() : fileKey;
+            String safeName = Path.of(rawName).getFileName().toString()
+                    .replaceAll("[^a-zA-Z0-9._-]", "_");
+            if (safeName.isBlank()) safeName = "file";
             String storedName = System.currentTimeMillis() + "_" + safeName;
             Path dest = uploadDir.resolve(storedName);
             Files.copy(Path.of(dl.path()), dest, StandardCopyOption.REPLACE_EXISTING);
@@ -1716,18 +1722,18 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
             RecentFileEntry entry = new RecentFileEntry(safeName, dest.toAbsolutePath().toString(),
                     dl.fileUrl(), contentType);
 
-            // Append to per-chat cache (cap at RECENT_FILE_MAX_PER_CHAT)
-            recentFileCache.get(chatId, k -> new ArrayList<>());
-            List<RecentFileEntry> list = new ArrayList<>(
-                    recentFileCache.getIfPresent(chatId));
-            list.add(entry);
-            if (list.size() > RECENT_FILE_MAX_PER_CHAT) {
-                list = list.subList(list.size() - RECENT_FILE_MAX_PER_CHAT, list.size());
-            }
-            recentFileCache.put(chatId, list);
+            // Append to per-conversation cache (cap at RECENT_FILE_MAX_PER_CHAT)
+            recentFileCache.asMap().compute(conversationId, (k, existing) -> {
+                List<RecentFileEntry> list = existing != null ? new ArrayList<>(existing) : new ArrayList<>();
+                list.add(entry);
+                if (list.size() > RECENT_FILE_MAX_PER_CHAT) {
+                    list = list.subList(list.size() - RECENT_FILE_MAX_PER_CHAT, list.size());
+                }
+                return list;
+            });
 
-            log.info("[feishu] Cached recent file for chat={}: {} ({} bytes, {})",
-                    chatId, entry.fileName(), Files.size(dest), contentType);
+            log.info("[feishu] Cached recent file for conversation={}: {} ({} bytes, {})",
+                    conversationId, entry.fileName(), Files.size(dest), contentType);
 
         } catch (Exception e) {
             log.debug("[feishu] Failed to cache recent file: {}", e.getMessage());
@@ -1741,8 +1747,8 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
      *
      * @return updated textContent with file descriptions appended
      */
-    private String injectRecentFiles(String chatId, List<MessageContentPart> parts, String textContent) {
-        List<RecentFileEntry> recent = recentFileCache.getIfPresent(chatId);
+    private String injectRecentFiles(String conversationId, List<MessageContentPart> parts, String textContent) {
+        List<RecentFileEntry> recent = recentFileCache.getIfPresent(conversationId);
         if (recent == null || recent.isEmpty()) return textContent;
 
         // Collect paths already in parts to avoid duplicates
