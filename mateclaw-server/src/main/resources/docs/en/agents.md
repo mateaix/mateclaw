@@ -215,6 +215,41 @@ UI: `Agents → pick employee → Tools`.
 
 Implementation details: see [MCP](./mcp#per-agent-tool-binding).
 
+### Knowledge base binding (per-agent primary KB)
+
+::: tip New in 1.5.0
+The employee editor has a new "Knowledge Base" tab where you can pick a **primary KB** for each employee. Knowledge bases stay workspace-shared — binding only declares "this is the one I default to," it doesn't restrict other employees' access.
+:::
+
+**Short version: each employee can pick one knowledge base as their "primary KB" — the default they query. Or pick none.**
+
+The model (worth reading once so it doesn't surprise you later):
+
+- **Knowledge bases are workspace-shared.** A KB belongs to the workspace it was created in; every employee in that workspace can see it. Binding a KB to an employee does **not** make it exclusive — other employees can still use it
+- **The "primary KB" is just a default.** It tells the wiki tools (`wiki_search` / `wiki_read` / `wiki_backlinks` / ...): "when the caller doesn't specify `kbName` / `kbId`, use this one"
+- **Multiple employees can pick the same KB as primary.** They don't interfere — each one's binding is its own, the KB itself isn't mutated
+- **Not binding is fine.** With no primary set, the runtime falls back to the most-recently-updated KB in the workspace
+
+UI: `Employees → pick employee → Edit → Knowledge Base`.
+
+| Option | Behavior |
+|--------|----------|
+| **🚫 No primary KB** | Clear the binding; the next time the employee's wiki tools omit `kbName`, the runtime falls back to the workspace's most-recently-active KB |
+| **📚 &lt;KB name&gt;** | Set this KB as primary; wiki tools default to it. The row also shows the KB's page count |
+
+Each row shows: icon, name, description, page count. The list is the **full set** of KBs in the current workspace — including ones already picked as primary by other employees.
+
+#### How the runtime decides "which KB to read"
+
+When an employee invokes a wiki tool, the resolution order is:
+
+1. The tool call explicitly carried `kbName` / `kbId` — use that
+2. No explicit target → check the employee's `primaryKbId`; if it points to a workspace-visible KB, use that
+3. No `primaryKbId` either → pick the most-recently-updated KB from the workspace's visible set
+4. The workspace has zero KBs → tool returns empty, the LLM decides what to do next
+
+Migration note: early versions persisted the binding on `mate_wiki_knowledge_base.agent_id` (one-to-one, exclusive semantics). Starting with the V130 migration, every legacy `kb.agent_id` is backfilled into the corresponding `agent.primary_kb_id`; the old column stays around as a read-only fallback, but new writes only touch `agent.primary_kb_id`. If you relied on `kb.agent_id` to isolate a KB to a specific agent, revisit those bindings in the editor — KBs are now visible to every employee in the workspace.
+
 ### System prompt best practices
 
 The system prompt is the employee's voice, priorities, and constraints. **Role / Goal / Backstory**, skill instructions, and workspace memory all get automatically appended to the final prompt — you don't write those yourself.
