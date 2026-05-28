@@ -725,7 +725,16 @@ public class WikiPageService {
             throw new IllegalStateException("page is protected (system or locked), refusing to rename");
         }
         WikiPageEntity collision = getBySlug(kbId, newSlug);
-        if (collision != null) {
+        // The collision-check has to ignore "renaming yourself" — on
+        // case-insensitive DB collations (e.g. MySQL's default
+        // utf8mb4_unicode_ci), getBySlug returns the SAME row when
+        // newSlug differs from oldSlug only in case. Treating that as a
+        // collision would forbid case-only renames on MySQL while H2
+        // (case-sensitive) silently allowed them, producing an
+        // environment-dependent error. Comparing ids makes the rule
+        // identical on both backends: only a row owned by a different
+        // page is a true collision.
+        if (collision != null && !existing.getId().equals(collision.getId())) {
             throw new IllegalArgumentException("a page with slug '" + newSlug + "' already exists in this KB");
         }
 
