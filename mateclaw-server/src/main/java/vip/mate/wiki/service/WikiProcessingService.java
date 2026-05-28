@@ -1172,10 +1172,20 @@ public class WikiProcessingService {
                     if (wasCreated) {
                         created.incrementAndGet();
                         totalCreated++;
-                        // Append to liveIndex so next sub-batch can link to this page
+                        // Append to liveIndex so the NEXT sub-batch can link to this freshly
+                        // created page. Mirrors the slug-first row format produced by
+                        // {@link #buildExistingPagesIndex}: `[[slug]] — title — summary`.
+                        // Keeps the LLM's view of the index uniformly slug-first across
+                        // pre-existing rows and just-created rows.
                         String briefSummary = pageSummary.length() > 100
                                 ? pageSummary.substring(0, 100) : pageSummary;
-                        liveIndex.append("\n- ").append(slug).append(": ").append(briefSummary);
+                        liveIndex.append("\n- [[").append(slug).append("]]");
+                        if (title != null && !title.isBlank()) {
+                            liveIndex.append(" — ").append(title);
+                        }
+                        if (briefSummary != null && !briefSummary.isBlank()) {
+                            liveIndex.append(" — ").append(briefSummary);
+                        }
                     }
                     ok = true;
                 } catch (RuntimeException e) {
@@ -1612,7 +1622,23 @@ public class WikiProcessingService {
     }
 
     /**
-     * 构建已有 Wiki 页面索引（供 LLM 参考）
+     * Build the "existing pages" index that the LLM consults when picking
+     * cross-references during page generation / merge / compile.
+     * <p>
+     * Slug-first format — each line begins with {@code [[slug]]} so the
+     * model has exactly one syntactically-valid target shape to copy. Title
+     * and summary follow as semantic context, separated by em-dashes, so the
+     * model can pick a relevant target without being confused about whether
+     * to write the title or the slug. The earlier "**[[Title]]** (slug: `x`)"
+     * format exposed two candidate target strings on every row, which let
+     * the model write {@code [[Title]]} freely and produced the lint noise
+     * this RFC exists to close.
+     * <p>
+     * Manual-edit and archived markers stay as plain-text trailing tags so
+     * they don't drift into the link form. The lint downstream treats a
+     * title-only match as a soft warning in v1; the long-term direction is
+     * to delete the title-fallback once content has been regenerated under
+     * the slug-first prompt.
      */
     private String buildExistingPagesIndex(Long kbId) {
         List<WikiPageEntity> summaries = pageService.listSummaries(kbId);
@@ -1622,12 +1648,17 @@ public class WikiProcessingService {
 
         StringBuilder sb = new StringBuilder();
         for (WikiPageEntity page : summaries) {
-            sb.append("- **[[").append(page.getTitle()).append("]]** (slug: `").append(page.getSlug()).append("`");
-            if ("manual".equals(page.getLastUpdatedBy())) {
-                sb.append(", 手动编辑");
+            sb.append("- [[").append(page.getSlug()).append("]]");
+            if (page.getTitle() != null && !page.getTitle().isBlank()) {
+                sb.append(" — ").append(page.getTitle());
             }
-            sb.append("): ");
-            sb.append(page.getSummary() != null ? page.getSummary() : "无摘要");
+            if ("manual".equals(page.getLastUpdatedBy())) {
+                sb.append(" (手动编辑)");
+            }
+            String summary = page.getSummary();
+            if (summary != null && !summary.isBlank()) {
+                sb.append(" — ").append(summary);
+            }
             sb.append("\n");
         }
         return sb.toString().trim();
