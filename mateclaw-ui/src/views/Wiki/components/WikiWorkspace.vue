@@ -90,6 +90,14 @@ const canManageWiki = computed(() => workspace.can('manage:wiki'))
 const activeTab = ref('raw')
 const brokenPanelOpen = ref(false)
 
+// When a page becomes the currentPage (e.g. via the global wikilink click
+// handler that lands on /wiki?kbId=X&slug=Y), switch the tab to 'pages' so
+// the viewer is the thing the user sees. Without this, the workspace stays
+// on the default 'raw' tab and the page silently loads off-screen.
+watch(() => store.currentPage, (page) => {
+  if (page) activeTab.value = 'pages'
+})
+
 const tabs = computed(() => {
   const list = [
     { key: 'raw', label: t('wiki.rawMaterials') },

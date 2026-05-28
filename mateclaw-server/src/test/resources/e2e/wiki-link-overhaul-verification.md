@@ -883,6 +883,135 @@ to-end recovery flow proven on live server.
 
 ---
 
+## 14. Browser-driven chat e2e — 12 conversation rounds (2026-05-28)
+
+Drove the full UI through the `gstack browse` headless Chromium, logged
+in as admin, exercised the wiki feature exclusively through chat
+conversations against the default "研究分析师" plan-execute agent (id
+`2056270363980120065`). 12 rounds. Two real bugs caught and fixed mid-run.
+
+### 14.1 Conversation transcript (compressed)
+
+| # | Prompt | Result |
+|---|---|---|
+| R1 | "列出当前所有知识库 KB" | ✅ Agent listed 3 KBs (E2E-LookupDemo 4p, E2E-RFC55-PostFix 7p, dev 3p) via injected `<wiki-context>` block; honest "wiki_list_kbs tool not enabled" note |
+| R2 | "详细介绍 E2E-LookupDemo KB 里的 react 页面" | ✅ Rich Markdown intro of the page (reasoning / action / observation / StateGraph relation / use cases). Used wiki_read_page tool |
+| R3 | "请直接调用 wiki_read_page... 把原文 markdown 完整返回" | ✅ Full raw markdown returned, including `[[stategraph]]` wikilinks rendered into `<a class="wiki-link">`. **🔴 Bug A discovered**: rendered link had `data-wiki-title="stategraph\|StateGraph"` (pipe alias bled into attribute) |
+| R4 | (click `[[StateGraph]]` in the chat bubble) | ✅ Global click delegator fired, lookup returned 1 hit, `router.push` navigated to `/wiki?kbId=2059795489877315586&slug=stategraph` |
+| R5 | (verify wiki view auto-opened the page) | **🔴 Bug B discovered**: URL changed but `.page-content` did not render — KB list still showing. Tracing: `Number("2059795489877315586")` truncated the Snowflake from §13's consumeQueryNavigation, then API returned 404 "Knowledge base not found" |
+| → fix mid-run | Two fixes applied + rebuild + restart | Bug A: legacy renderer regex now captures `slug` + `alias` separately; Bug B: `kbIdRaw` stays a string end-to-end; WikiWorkspace switches to 'pages' tab on currentPage assign |
+| R5 (retest) | Same flow on the fixed bundle | ✅ `.page-content` renders the StateGraph wiki content. URL is cleaned to `/wiki` after `router.replace`. KB selected, page open, tab switched |
+| R6 | "列出 E2E-LookupDemo 里的所有页面" | ✅ Agent returned `react — ReAct 模式` + `stategraph — StateGraph` (system pages correctly excluded) |
+| R7 | "读取 react 页面，告诉我里面有多少处 wikilink、各指向哪个 slug" | ✅ Agent identified 2 wikilinks, both pointing at `stategraph` |
+| R8 | "扫描 E2E-LookupDemo 这个 KB 现在有多少死链？" | ✅ Agent: 0 broken links across both content pages; 3 total wikilinks, all resolve |
+| R9 | "ReAct 和 StateGraph 有什么关系？" | ✅ Substantive synthesis grounded in the actual page content (3-stage reasoning/action/observation mapping to graph node types) |
+| R10 | "查最近的 wiki audit 事件" | ✅ Agent inspected the `log` wiki page and produced a 3-event table; honestly flagged that the wiki log page is *not* the audit-event table and pointed at the proper API |
+| R11 | "在 E2E-LookupDemo 创建新页 langgraph 引用 `[[stategraph]]`" | ✅ Agent created the page via wiki write tool. Post-API check: `langgraph` exists, `content_len=198`, `outgoing=["stategraph"]`, `broken=[]` |
+| R12 | "三个 KB 的死链总数" | ✅ Agent reports 0 / 0 / 0; summarises wikilink count and verifies all resolve |
+
+### 14.2 Bug A — legacy renderer pipe handling
+
+**Symptom**: The chat-side renderer is supposed to turn
+`[[stategraph|StateGraph]]` into a link whose `data-wiki-title` is the
+slug `stategraph` and whose visible text is the alias `StateGraph`.
+Instead it produced
+`<a data-wiki-title="stategraph|StateGraph">stategraph|StateGraph</a>`
+— the regex `\[\[([^\]]+)\]\]` captured the entire bracket interior
+including the `|` separator, and the replacement template copied it
+verbatim into both the attribute and the label.
+
+**Impact**: when the global wikilink click delegator forwarded
+`data-wiki-title="stategraph|StateGraph"` to the cross-KB lookup, the
+backend matched against neither a slug `stategraph|StateGraph` nor a
+title with that literal — every aliased wikilink in chat resulted in a
+"未找到匹配的 wiki 页面" toast instead of navigating.
+
+**Fix** (`useMarkdownRenderer.ts`):
+
+```ts
+// before
+.replace(/\[\[([^\]]+)\]\]/g, '<a data-wiki-title="$1">$1</a>')
+
+// after — alias-aware
+.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_, slug, alias) => {
+  const target = slug.trim()
+  const visible = alias?.trim() || slug.trim()
+  return `<a data-wiki-title="${target}">${visible}</a>`
+})
+```
+
+The fix also HTML-escapes the captured strings (`"` → `&quot;`,
+`'` → `\'`) before they enter the attribute and the inline onclick to
+plug the same XSS risk the page-viewer postprocess covers.
+
+### 14.3 Bug B — Snowflake precision in consumeQueryNavigation
+
+**Symptom**: Round 5 found the URL navigated correctly to
+`/wiki?kbId=2059795489877315586&slug=stategraph` but the KB never
+selected. Console showed `Error: Knowledge base not found` (HTTP 404).
+
+**Root cause**: my §13 `consumeQueryNavigation` did
+`Number(route.query.kbId)` to satisfy `store.selectKB(id: number)`.
+But `2059795489877315586` exceeds `Number.MAX_SAFE_INTEGER` (2⁵³−1 =
+`9007199254740992`), so the coercion silently truncated the last few
+digits — exactly the bug class CLAUDE.md warns about in the "ID
+Handling — Snowflake Precision Convention" section. The backend
+correctly returned 404 because the truncated number doesn't match any
+real KB.
+
+**Fix** (`Wiki/index.vue`): keep `kbId` as a string throughout. The
+store / api layer never reconstructs it as a number — it's interpolated
+straight into `/wiki/knowledge-bases/${id}`, so a string works fine at
+runtime. The TypeScript type signature `selectKB(id: number)` is
+satisfied with a localised `as unknown as number` cast plus a
+`// snowflake-precision-ok` comment so the lint script (`pnpm
+lint:precision`) doesn't flag it. The `Number()` call is gone.
+
+### 14.4 Bug C — WikiWorkspace default tab hides the auto-opened page
+
+**Symptom**: After the Snowflake fix, the KB selected correctly but
+`.page-content` still didn't render — the workspace defaults to the
+'raw' (raw materials) tab, and the WikiPageViewer only mounts inside
+the 'pages' tab.
+
+**Fix** (`WikiWorkspace.vue`): watch `store.currentPage` and switch
+`activeTab` to `'pages'` whenever a page becomes current. Manual
+sidebar clicks already work because the user is on the pages tab
+when they click; the query-param auto-open bypassed that state, so the
+explicit watcher closes the gap.
+
+### 14.5 Live verification after all fixes
+
+After the three fixes landed + frontend rebuild + server restart, R5
+was rerun on the fresh bundle:
+
+- URL after click: `http://localhost:18088/wiki?kbId=...&slug=stategraph` → router.replace cleans to `/wiki`
+- `.workspace-title` = `E2E-LookupDemo`
+- `.page-content` text starts with the StateGraph page's first paragraph: "驱动的节点类型 StateGraph 在标准 Agent 架构 中驱动以下三类核心节点循环执行：推理节点（Reasoning Node）..."
+- Console errors are historical only (from the broken bundle pre-fix); no new errors after the restart
+
+### 14.6 What the agent could and couldn't do
+
+| Capability | Result |
+|---|---|
+| Read wiki pages via `wiki_read_page` | ✅ works, returns full content |
+| Search across KBs (via `<wiki-context>` injection) | ✅ works, lists all 3 KBs accurately |
+| Create new pages (via `wiki_write_page` or similar) | ✅ works — R11 created `langgraph` with correct `[[stategraph]]` reference, content + outgoing_links + broken_links all populated |
+| Scan / report broken links across KBs | ✅ works — R8, R12 both accurate (0 broken refs) |
+| Detect and reason about wikilink target consistency | ✅ works — R7 listed exact occurrence count + targets |
+| Synthesize across multiple wiki pages | ✅ works — R9 connected ReAct's three stages to StateGraph node types |
+| Read structured audit events | ⚠️ agent confused "wiki log page" with "audit log table" in R10 — honest enough to flag the limitation. Not a bug of the wikilink overhaul; agent prompt could be tuned to know which "log" to use |
+
+### 14.7 Bottom line for §14
+
+12 rounds of real chat interaction. Two genuine bugs caught (legacy
+renderer pipe handling, Snowflake precision in consumeQueryNavigation)
+plus one UX gap (workspace default tab). All three fixed mid-run.
+After fixes: chat click → cross-KB lookup → wiki view auto-open with
+page content rendered, full flow proven from the user's perspective.
+
+---
+
 ## 14. Seventh pass — post-restart full sweep (2026-05-28 09:09)
 
 Server killed (`lsof -ti:18088 | kill -9`) and restarted via

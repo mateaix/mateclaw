@@ -117,17 +117,27 @@ async function consumeQueryNavigation() {
   // ?kbId=X&slug=Y on click. Honour both: enter the KB then surface
   // the page directly. Strips the query immediately so a manual reload
   // doesn't keep re-opening the same page.
+  //
+  // **Snowflake precision** (per CLAUDE.md): the kbId is a 19-digit
+  // Snowflake that exceeds Number.MAX_SAFE_INTEGER. NEVER coerce via
+  // Number()/parseInt() — that truncates the last 2-3 digits and turns
+  // a real lookup into a silent "KB not found". Keep the string and
+  // pass it through to the store; the store / api layer treats kbId as
+  // an opaque token interpolated into the request URL.
   const kbIdRaw = route.query.kbId
   const slugRaw = route.query.slug
-  if (typeof kbIdRaw !== 'string' || typeof slugRaw !== 'string') return
-  // Snowflake stays as a string end-to-end — store.selectKB accepts number,
-  // so we coerce only at the call site (safe because Pinia stores routes
-  // through to the backend as a string in the URL path).
-  const kbIdNum = Number(kbIdRaw)
-  if (!Number.isFinite(kbIdNum)) return
-  await store.selectKB(kbIdNum)
+  if (typeof kbIdRaw !== 'string' || !kbIdRaw) return
+  if (typeof slugRaw !== 'string' || !slugRaw) return
+  // Cast to number ONLY to satisfy the store's type signature — the
+  // runtime value stays a string under the hood. TypeScript can't
+  // express "number-or-Snowflake-string" without widening every signature,
+  // so the cast is the localised, documented escape hatch.
+  // snowflake-precision-ok: kbIdRaw is the URL-encoded string from the
+  // global click delegator; never passed through Number()/parseInt().
+  const kbId = kbIdRaw as unknown as number
+  await store.selectKB(kbId)
   try {
-    await store.loadPage(kbIdNum, slugRaw)
+    await store.loadPage(kbId, slugRaw)
   } catch (e) {
     console.warn('[Wiki] auto-open page failed', e)
   }

@@ -395,9 +395,25 @@ export function useMarkdownRenderer() {
     const withWikiLinks =
       wikilink === 'none'
         ? withLatex
-        : withLatex.replace(
-            /\[\[([^\]]+)\]\]/g,
-            '<a class="wiki-link" href="#" data-wiki-title="$1" onclick="window.dispatchEvent(new CustomEvent(\'wiki-link-click\',{detail:{title:\'$1\'}}));return false">$1</a>'
+        : // Split `[[slug|display]]` into slug + display halves so the
+          // `data-wiki-title` attribute carries the slug ALONE (the cross-KB
+          // lookup keys off that) and the visible label is the display text
+          // (the alias an author chose). The earlier single-capture regex
+          // copied the whole bracket interior — including the literal `|` —
+          // into both, producing `data-wiki-title="slug|display"` lookups
+          // that the backend would never resolve.
+          withLatex.replace(
+            /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g,
+            (_match, slug: string, alias?: string) => {
+              const target = slug.trim().replace(/"/g, '&quot;')
+              const visible = (alias?.trim() || slug.trim()).replace(/"/g, '&quot;')
+              return (
+                '<a class="wiki-link" href="#" data-wiki-title="' + target +
+                '" onclick="window.dispatchEvent(new CustomEvent(\'wiki-link-click\',{detail:{title:\'' +
+                target.replace(/'/g, "\\'") +
+                '\'}}));return false">' + visible + '</a>'
+              )
+            },
           )
     // 3. Marked → 4. DOMPurify.
     const rawHtml = markedInstance.parse(withWikiLinks) as string
