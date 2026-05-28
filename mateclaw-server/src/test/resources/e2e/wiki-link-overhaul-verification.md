@@ -820,3 +820,64 @@ Closes the "wikilinks in chat are dead" gap the RFC implicitly left
 open. Net change: 1 backend endpoint, 1 new frontend composable,
 3-line edits in `App.vue` / `api/index.ts` / `Wiki/index.vue`.
 
+### 13.6 User-facing recovery: `[[ReAct]]` toast → rename target page
+
+The §13 lookup toast tells the user when a chat-side wikilink fails
+to resolve. The next step in the recovery loop is for the user to
+either edit the source page to use the real slug, or rename the
+target page so the existing token matches. We exercised the rename
+path end-to-end as a live integration check:
+
+**State before rename** (`E2E-LookupDemo` KB):
+
+| Page | Title | Outgoing |
+|---|---|---|
+| `react-mode` | "ReAct 模式" | `[stategraph, agent-jiagou]` |
+| `stategraph` | "StateGraph" | `[react-mode, agent-jiagou]` (links to react-mode via `[[react-mode\|ReAct 模式]]` alias) |
+| `agent-jiagou` | "Agent架构" | — |
+| chat `[[ReAct]]` lookup | — | 0 hits → toast |
+
+**Action**: `POST /pages/react-mode/rename` with `{newSlug:"react"}`.
+
+**State after rename**:
+
+| Verification | Result |
+|---|---|
+| `GET /pages/react-mode` | HTTP 404 |
+| `GET /pages/react` | HTTP 200, title still "ReAct 模式" |
+| `stategraph.content` `[[react-mode\|ReAct 模式]]` | rewritten to `[[react\|ReAct 模式]]` — alias byte-identical |
+| `stategraph.outgoing_links` | now contains `react`, no `react-mode` |
+| Cross-KB lookup `?title=ReAct` | 1 hit (`slug=react`) |
+| Cross-KB lookup `?title=REACT` (uppercase) | 1 hit — case-insensitive |
+| Cross-KB lookup `?title=react-mode` | 0 hits — old slug really gone |
+| KB-wide scan broken refs | 0 across all 5 pages |
+| Audit event | `wiki.page.rename → ReAct 模式; affectedPageIds=[stategraph_id]` |
+
+What the user sees in the chat afterwards:
+
+- Click `[[ReAct]]` again → previously toast "未找到", now navigates
+  to wiki view with the `react` page open.
+- Click `[[StateGraph]]` → still navigates to the StateGraph page,
+  unaffected.
+- The recovery loop closes without the user having to leave the chat
+  surface to manually grep page slugs — the toast guided them to
+  the rename action, the rename auto-rewrote the referrer, the next
+  click resolves.
+
+This is the intended end-to-end flow:
+
+```
+ chat clicks [[ReAct]]
+      → lookup → 0 hits → toast "未找到匹配的 wiki 页面: ReAct"
+              user notices: the target page exists but under
+              a different slug
+      → user renames target page: react-mode → react
+              backend cascade rewrites stategraph's wikilink
+              backend audit logs the rename + affected pages
+      → user clicks [[ReAct]] again
+              lookup → 1 hit → router.push → wiki view opens react
+```
+
+No data loss, no manual content edit, no stranded references. End-
+to-end recovery flow proven on live server.
+
