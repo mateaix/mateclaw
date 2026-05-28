@@ -577,17 +577,46 @@ public class WikiController {
         long effectiveProcessing = kbIdle ? 0 : processing;
         long inferredCompleted = kbIdle ? (completed + (realPageCount > 0 ? processing : 0)) : completed;
 
-        return R.ok(Map.of(
-                "status", kb.getStatus(),
-                "pending", pending,
-                "processing", effectiveProcessing,
-                "completed", inferredCompleted,
-                "partial", partial,
-                "failed", failed,
-                "cancelled", cancelled,
-                "totalRaw", rawList.size(),
-                "totalPages", realPageCount
-        ));
+        // Per-raw progress snapshot — lets callers distinguish "LLM still
+        // working through phase-b 4 of 10 pages" from "thread is wedged".
+        // Without this the polling client sees `processing: 1` for the entire
+        // multi-minute pipeline and can't tell whether to wait or alert.
+        // `staleSeconds` is the gap since the raw's last bookkeeping update;
+        // a freshly-progressing pipeline updates progressDone every minute or
+        // two, so a gap > 600s suggests a real stall worth investigating.
+        long nowMs = System.currentTimeMillis();
+        java.util.List<Map<String, Object>> rawProgress = new java.util.ArrayList<>(rawList.size());
+        for (WikiRawMaterialEntity r : rawList) {
+            long staleSeconds = -1;
+            if (r.getUpdateTime() != null) {
+                long updatedMs = r.getUpdateTime()
+                        .atZone(java.time.ZoneId.systemDefault())
+                        .toInstant().toEpochMilli();
+                staleSeconds = (nowMs - updatedMs) / 1000L;
+            }
+            Map<String, Object> row = new java.util.LinkedHashMap<>();
+            row.put("rawId", r.getId());
+            row.put("title", r.getTitle());
+            row.put("status", r.getProcessingStatus());
+            row.put("phase", r.getProgressPhase());
+            row.put("done", r.getProgressDone() == null ? 0 : r.getProgressDone());
+            row.put("total", r.getProgressTotal() == null ? 0 : r.getProgressTotal());
+            row.put("staleSeconds", staleSeconds);
+            rawProgress.add(row);
+        }
+
+        Map<String, Object> body = new java.util.LinkedHashMap<>();
+        body.put("status", kb.getStatus());
+        body.put("pending", pending);
+        body.put("processing", effectiveProcessing);
+        body.put("completed", inferredCompleted);
+        body.put("partial", partial);
+        body.put("failed", failed);
+        body.put("cancelled", cancelled);
+        body.put("totalRaw", rawList.size());
+        body.put("totalPages", realPageCount);
+        body.put("rawProgress", rawProgress);
+        return R.ok(body);
     }
 
     /**
