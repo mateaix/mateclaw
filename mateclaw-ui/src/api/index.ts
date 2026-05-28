@@ -745,11 +745,12 @@ export const cronJobApi = {
 export const wikiApi = {
   // Knowledge Base
   listKBs: () => http.get('/wiki/knowledge-bases'),
-  getKB: (id: number) => http.get(`/wiki/knowledge-bases/${id}`),
-  listKBsByAgent: (agentId: number) => http.get(`/wiki/knowledge-bases/agent/${agentId}`),
-  createKB: (data: { name: string; description?: string; agentId?: number }) =>
+  getKB: (id: string | number) => http.get(`/wiki/knowledge-bases/${id}`),
+  listKBsByAgent: (agentId: string | number) => http.get(`/wiki/knowledge-bases/agent/${agentId}`),
+  listBindableKBs: () => http.get('/wiki/knowledge-bases/bindable'),
+  createKB: (data: { name: string; description?: string; agentId?: string | number }) =>
     http.post('/wiki/knowledge-bases', data),
-  updateKB: (id: number, data: { name?: string; description?: string; agentId?: number; embeddingModelId?: string | number | null }) =>
+  updateKB: (id: string | number, data: { name?: string; description?: string; embeddingModelId?: string | number | null }) =>
     http.put(`/wiki/knowledge-bases/${id}`, data),
   deleteKB: (id: number) => http.delete(`/wiki/knowledge-bases/${id}`),
   getConfig: (id: number) => http.get(`/wiki/knowledge-bases/${id}/config`),

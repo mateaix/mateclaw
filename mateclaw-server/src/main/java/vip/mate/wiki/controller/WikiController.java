@@ -66,6 +66,15 @@ public class WikiController {
     }
 
     @RequireWorkspaceRole("viewer")
+    @Operation(summary = "列出可绑定到指定 Agent 的知识库")
+    @GetMapping("/knowledge-bases/bindable")
+    public R<List<WikiKnowledgeBaseEntity>> listBindableKBs(
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        long wsId = workspaceId != null ? workspaceId : 1L;
+        return R.ok(withLivePageCount(kbService.listByWorkspace(wsId)));
+    }
+
+    @RequireWorkspaceRole("viewer")
     @Operation(summary = "获取知识库详情")
     @GetMapping("/knowledge-bases/{id}")
     public R<WikiKnowledgeBaseEntity> getKB(@PathVariable Long id,
@@ -129,8 +138,7 @@ public class WikiController {
         verifyKBWorkspace(id, workspaceId);
         String name = (String) body.get("name");
         String description = (String) body.get("description");
-        Long agentId = body.get("agentId") != null ? Long.valueOf(body.get("agentId").toString()) : null;
-        kbService.update(id, name, description, agentId);
+        kbService.update(id, name, description);
         // RFC Embedding UI: 允许通过此接口绑定 / 解绑 embedding 模型
         if (body.containsKey("embeddingModelId")) {
             Object v = body.get("embeddingModelId");

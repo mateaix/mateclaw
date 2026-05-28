@@ -87,6 +87,15 @@ public class AgentEntity {
     private String workspaceBasePath;
 
     /**
+     * Agent's primary wiki knowledge base. This is a per-agent default target
+     * for wiki tools; it does not affect KB visibility or ownership.
+     * Null means no explicit primary KB, so wiki resolution falls back to the
+     * workspace's most recently updated KB.
+     */
+    @TableField(value = "primary_kb_id", updateStrategy = FieldStrategy.ALWAYS)
+    private Long primaryKbId;
+
+    /**
      * Explicit opt-out from every skill. When {@code true}, the binding service
      * returns {@link java.util.Collections#emptySet()} from
      * {@code getBoundSkillIds}, which (a) suppresses every {@code SKILL.md}

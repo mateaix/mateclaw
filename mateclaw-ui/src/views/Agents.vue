@@ -580,14 +580,15 @@
                 v-for="kb in availableKBs"
                 :key="kb.id"
                 class="binding-item"
-                :class="{ selected: selectedKBId === kb.id }"
+                :class="{ selected: selectedKBId === String(kb.id) }"
               >
-                <input type="radio" name="kb-select" :checked="selectedKBId === kb.id" class="binding-checkbox" @change="selectedKBId = kb.id" />
+                <input type="radio" name="kb-select" :checked="selectedKBId === String(kb.id)" class="binding-checkbox" @change="selectedKBId = String(kb.id)" />
                 <span class="binding-icon">📚</span>
                 <div class="binding-info">
                   <span class="binding-name">{{ kb.name }}</span>
                   <span v-if="kb.description" class="binding-desc">{{ kb.description?.slice(0, 80) }}</span>
                 </div>
+                <!-- binding-version class reused for pageCount badge (same positioning as skill version) -->
                 <span v-if="kb.pageCount != null" class="binding-version">{{ t('agents.binding.wikiPages', { count: kb.pageCount }, `${kb.pageCount} pages`) }}</span>
               </label>
             </div>
@@ -792,10 +793,9 @@ function onSkillToggle(skillId: number | string, event: Event) {
 }
 const selectedSkillIds = ref<number[]>([])
 const selectedToolNames = ref<string[]>([])
-// Wiki knowledge base binding (one-to-one)
+// Agent-level primary wiki KB. KB visibility remains workspace-wide.
 const availableKBs = ref<any[]>([])
-const selectedKBId = ref<number | null>(null)
-const originalKBId = ref<number | null>(null)
+const selectedKBId = ref<string | null>(null)
 // RFC-009 PR-3: per-agent provider preference order
 const availableProviders = ref<{ id: string; name: string }[]>([])
 const selectedProviderIds = ref<string[]>([])
@@ -831,6 +831,7 @@ const defaultForm = (): Partial<Agent> & { name: string; defaultThinkingLevel: s
   enabled: true,
   defaultThinkingLevel: null,
   workspaceBasePath: null,
+  primaryKbId: null,
   // Issue #184 — explicit opt-out flags. Default false matches the legacy
   // "zero rows = inherit global default" contract for newly-created agents.
   skillsDisabled: false,
@@ -958,7 +959,6 @@ function openBlankCreateModal() {
   selectedProviderIds.value = []
   availableKBs.value = []
   selectedKBId.value = null
-  originalKBId.value = null
   showModal.value = true
 }
 
@@ -1026,6 +1026,7 @@ async function openEditModal(agent: Agent) {
     enabled: agent.enabled,
     defaultThinkingLevel: (agent as any).defaultThinkingLevel || null,
     workspaceBasePath: agent.workspaceBasePath || null,
+    primaryKbId: agent.primaryKbId != null ? String(agent.primaryKbId) : null,
     skillsDisabled: agent.skillsDisabled === true,
     toolsDisabled: agent.toolsDisabled === true,
   }
@@ -1037,7 +1038,7 @@ async function openEditModal(agent: Agent) {
 
   // Load available skills/tools/providers and current bindings in parallel
   try {
-    const [skillsRes, toolsRes, providersRes, boundSkillsRes, boundToolsRes, providerPrefsRes, kbsRes, boundKBsRes] = await Promise.all([
+    const [skillsRes, toolsRes, providersRes, boundSkillsRes, boundToolsRes, providerPrefsRes] = await Promise.all([
       // RFC-042: /skills is now paginated; binding dropdown only needs enabled skills,
       // so listEnabled() is both semantically correct and shape-stable (returns array).
       skillApi.listEnabled(),
@@ -1049,9 +1050,6 @@ async function openEditModal(agent: Agent) {
       agentBindingApi.listSkills(agent.id),
       agentBindingApi.listTools(agent.id),
       agentBindingApi.listProviderPreferences(agent.id),
-      // Wiki knowledge base: list all KBs + agent's bound KB
-      wikiApi.listKBs(),
-      wikiApi.listKBsByAgent(agent.id),
     ])
     availableSkills.value = (skillsRes as any).data || []
     availableTools.value = (toolsRes as any).data || []
@@ -1069,13 +1067,21 @@ async function openEditModal(agent: Agent) {
     selectedProviderIds.value = ((providerPrefsRes as any).data || [])
       .filter((b: any) => b.enabled)
       .map((b: any) => b.providerId)
-    // Wiki KB binding: populate available list and resolve current binding
-    availableKBs.value = (kbsRes as any).data || []
-    const boundKBs = ((boundKBsRes as any).data || []) as any[]
-    selectedKBId.value = boundKBs.length > 0 ? boundKBs[0].id : null
-    originalKBId.value = selectedKBId.value
   } catch {
-    // Non-blocking: binding data load failure doesn't prevent editing basic info
+    mcToast.error(t('agents.messages.loadFailed'))
+  }
+
+  // KB request is caught separately so its error message is accurate.
+  try {
+    const kbsRes: any = await wikiApi.listBindableKBs()
+    const bindableKBs = (kbsRes.data || []) as any[]
+    availableKBs.value = bindableKBs
+    const primaryKbId = agent.primaryKbId != null ? String(agent.primaryKbId) : null
+    selectedKBId.value = primaryKbId && bindableKBs.some((kb: any) => String(kb.id) === primaryKbId)
+      ? primaryKbId
+      : null
+  } catch {
+    mcToast.error(t('agents.binding.wikiLoadFailed'))
   }
 }
 
@@ -1086,7 +1092,6 @@ function closeModal() {
   toolBindingSearch.value = ''
   availableKBs.value = []
   selectedKBId.value = null
-  originalKBId.value = null
 }
 
 async function saveAgent() {
@@ -1095,7 +1100,7 @@ async function saveAgent() {
     // sending to the backend — the schema is unchanged, only the editor
     // exposes the H2 sections to the user.
     const serialized = serializePrompt(profileForm.value)
-    const payload = { ...form.value, systemPrompt: serialized }
+    const payload = { ...form.value, systemPrompt: serialized, primaryKbId: selectedKBId.value }
 
     let agentId: string | number
     if (editingAgent.value) {
@@ -1130,16 +1135,6 @@ async function saveAgent() {
         await agentBindingApi.setSkills(agentId, skillIdsToSave)
         await agentBindingApi.setTools(agentId, toolNamesToSave)
         await agentBindingApi.setProviderPreferences(agentId, selectedProviderIds.value)
-
-        // Wiki KB binding (one-to-one): clear old KB if changed, then bind new KB
-        if (selectedKBId.value !== originalKBId.value) {
-          if (originalKBId.value != null) {
-            await wikiApi.updateKB(originalKBId.value, { agentId: null })
-          }
-          if (selectedKBId.value != null) {
-            await wikiApi.updateKB(selectedKBId.value, { agentId: agentId as number })
-          }
-        }
       } catch (bindingError: any) {
         mcToast.error(bindingError?.message || t('agents.messages.saveFailed'))
         // Pull the authoritative server state back into the editing form so
@@ -1594,6 +1589,7 @@ html.dark .seg-count.warn {
 .binding-info { flex: 1; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .binding-name { font-size: 14px; font-weight: 500; color: var(--mc-text-primary); }
 .binding-desc { font-size: 12px; color: var(--mc-text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* reused for KB pageCount badge in wiki tab */
 .binding-version { font-size: 11px; color: var(--mc-text-tertiary); flex-shrink: 0; }
 .binding-type-badge {
   font-size: 10px; padding: 2px 6px; border-radius: 4px; flex-shrink: 0;

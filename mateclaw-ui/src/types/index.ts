@@ -43,7 +43,9 @@ export interface Agent {
   enabled: boolean
   icon?: string
   tags?: string
-  workspaceBasePath?: string
+  workspaceBasePath?: string | null
+  /** Agent-level primary wiki KB. Null means use workspace fallback. */
+  primaryKbId?: string | number | null
   /**
    * Explicit opt-out: drop every SKILL.md catalog entry from the system
    * prompt and exclude skill-expanded tools. Independent of binding rows
