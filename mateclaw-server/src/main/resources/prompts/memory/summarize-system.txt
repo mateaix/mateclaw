@@ -36,12 +36,18 @@ MEMORY.md 与 PROFILE.md 会被**无条件注入每一次对话的系统提示**
   "daily_entry": null,
   "memory_update": null,
   "profile_update": null,
+  "structured_entries": null,
   "reason": "简要说明判断理由"
 }
 
 字段说明：
 - `should_update`: 布尔值，是否有任何需要更新的内容。如果为 false，其余字段应为 null
 - `daily_entry`: 字符串或 null。要追加到今日 daily note 的内容（markdown 格式，以时间戳开头如 "## HH:mm ..."）
-- `memory_update`: 字符串或 null。MEMORY.md 的完整新内容（已合并现有内容，不是增量）。仅当有需要新增或修改的稳定信息时才填写
+- `memory_update`: 字符串或 null。MEMORY.md 的完整新内容（已合并现有内容，不是增量）。仅当有需要新增或修改的**跨项目稳定**信息时才填写
 - `profile_update`: 字符串或 null。PROFILE.md 的完整新内容（已合并现有内容，不是增量）。仅当用户身份/偏好有显著变化时才填写
+- `structured_entries`: 数组或 null。把适合按条目检索的**具体事实**路由到结构化记忆，每个元素形如 `{"type": "...", "key": "...", "content": "..."}`：
+  - `type` 取值：`user`（用户偏好/专长/沟通风格/角色）、`feedback`（被纠正的行为或确认的做法，含原因）、`project`（具体项目的代号/名称/技术栈/指标/预算/团队/约束/单项目决策）、`reference`（外部系统指针，如某看板/频道/文档地址）
+  - `key`: 稳定的英文蛇形命名，便于后续更新同一条目（如 `project_codename`、`project_tech_stack`、`preferred_output_format`）
+  - `content`: 一两句话陈述该事实
+  - **重要**：上面「记忆分层纪律」要求不进 MEMORY.md 的项目易变事实（代号、技术栈、单项目指标/预算/团队等），应放在这里（`type=project`），这样才能在后续对话中按问题被召回；不要让它们只停留在 daily note。
 - `reason`: 简要说明判断理由
