@@ -9,7 +9,7 @@ Strict output contract — return ONLY this JSON object, nothing else:
 
 Rules:
 - Do not invent facts beyond the supplied evidence. If something is not in the evidence, do not assert it.
-- Use [[wikilinks]] when an evidence breadcrumb names a related concept; alias form [[slug|display]] is fine.
+- Wikilink contract: use [[slug]] or [[slug|display text]]. The slug MUST come from the existing-pages index supplied in the user prompt. Never invent a slug that is not in that index. If the evidence names a concept that has no existing page, write it as plain text — do not guess a slug.
 - Keep summary concise (single paragraph, <= 300 characters).
 - content must be Markdown with at least one ## header.
 - Do not include any prose outside the JSON object.

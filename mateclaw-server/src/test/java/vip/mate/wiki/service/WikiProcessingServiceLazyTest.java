@@ -61,9 +61,11 @@ class WikiProcessingServiceLazyTest {
         progressBus = mock(WikiProgressBus.class);
         citationService = mock(WikiCitationService.class);
 
+        ObjectMapper om = new ObjectMapper();
         service = new WikiProcessingService(
                 kbService, rawService, pageService, chunkService, embeddingService,
-                properties, modelConfigService, agentGraphBuilder, new ObjectMapper(),
+                new WikiLinkService(om),
+                properties, modelConfigService, agentGraphBuilder, om,
                 progressBus, citationService,
                 mock(org.springframework.context.ApplicationEventPublisher.class));
     }

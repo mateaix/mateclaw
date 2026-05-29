@@ -80,11 +80,34 @@
       <!-- 底部 -->
       <div class="sidebar-footer">
         <template v-if="!sidebarCollapsed || isMobile">
-          <!-- Doctor 健康指示器 -->
-          <button class="health-indicator" :class="healthStatus" @click="showDoctor = true" :title="t('doctor.title')">
-            <span class="health-dot"></span>
-            <span class="health-label">{{ t('doctor.title') }}</span>
-          </button>
+          <!--
+            Status row: two side-by-side status cards. Doctor health on the left
+            stays always visible; the auto-approve chip on the right only renders
+            when at least one grant is active. When the chip is hidden, flex
+            naturally lets the doctor card expand to full width again — so the
+            row never wastes vertical space the way a stacked banner did.
+          -->
+          <div class="footer-status-row">
+            <button
+              class="health-indicator"
+              :class="[healthStatus, { 'is-half': autoApproveSummary && autoApproveSummary.count > 0 }]"
+              @click="showDoctor = true"
+              :title="t('doctor.title')"
+            >
+              <span class="health-dot"></span>
+              <span class="health-label">{{ t('doctor.title') }}</span>
+            </button>
+            <button
+              v-if="autoApproveSummary && autoApproveSummary.count > 0"
+              class="auto-approve-chip"
+              @click="goAutoApproveSettings"
+              :title="t('approval.grant.title')"
+            >
+              <span class="auto-approve-chip__dot"></span>
+              <el-icon :size="13"><Unlock /></el-icon>
+              <span class="auto-approve-chip__label">{{ t('approval.grant.chipShort', { count: autoApproveSummary.count }) }}</span>
+            </button>
+          </div>
 
           <div class="sidebar-utility-card">
             <div class="compact-utility-row">
@@ -197,7 +220,8 @@ import { useI18n } from 'vue-i18n'
 import { useThemeStore } from '@/stores/useThemeStore'
 import { version as appVersion } from '../../../package.json'
 import type { ThemeMode } from '@/stores/useThemeStore'
-import { http, settingsApi, setupApi } from '@/api/index'
+import { http, settingsApi, setupApi, approvalApi } from '@/api/index'
+import type { ActiveGrantsSummary } from '@/types'
 import OnboardingWizard from '@/views/Onboarding/OnboardingWizard.vue'
 import DoctorDrawer from '@/views/Doctor/DoctorDrawer.vue'
 import WorkspaceSwitcher from '@/components/workspace/WorkspaceSwitcher.vue'
@@ -206,7 +230,7 @@ import McTooltip from '@/components/common/McTooltip.vue'
 import { useNotificationCenter } from '@/composables/useNotificationCenter'
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore'
 import { applyLocale, currentLocale, type AppLocale } from '@/i18n'
-import { SwitchButton, Lock } from '@element-plus/icons-vue'
+import { SwitchButton, Lock, Unlock } from '@element-plus/icons-vue'
 import ChangePasswordDialog from '@/components/ChangePasswordDialog.vue'
 
 const router = useRouter()
@@ -235,6 +259,22 @@ async function fetchHealthStatus() {
   } catch {
     healthStatus.value = 'unknown'
   }
+}
+
+// Active auto-approve grants summary — drives the red "auto-approve active (N)"
+// chip in the sidebar footer. Red (not green) is intentional: this is a
+// security-reducing setting and the UI should keep reminding the user it's on.
+const autoApproveSummary = ref<ActiveGrantsSummary | null>(null)
+async function fetchAutoApproveSummary() {
+  try {
+    const res: any = await approvalApi.activeSummary()
+    autoApproveSummary.value = res?.data || res
+  } catch {
+    autoApproveSummary.value = null
+  }
+}
+function goAutoApproveSettings() {
+  router.push('/security/auto-approve')
 }
 
 // Sidebar attention signals — admin-only. Both `/agents` (stuck agents in the
@@ -323,6 +363,10 @@ onMounted(async () => {
 
   // Fetch initial health status for sidebar indicator
   fetchHealthStatus()
+  // Auto-approve chip count. Cheap query (single SELECT COUNT) so we just
+  // fetch on mount and on workspace switch (handled by router-view key change
+  // which re-mounts the route subtree).
+  fetchAutoApproveSummary()
   // Sidebar attention counts (live / security) are driven by
   // useNotificationCenter — it polls when admins are mounted.
 })
@@ -772,8 +816,93 @@ watch(() => workspaceStore.currentWorkspaceId, () => {
   backdrop-filter: blur(14px);
   position: relative;
 }
-.health-indicator { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 10px; border: 1px solid var(--mc-border-light); background: var(--mc-bg-muted); border-radius: 12px; cursor: pointer; color: var(--mc-text-secondary); font-size: 12px; margin-bottom: 8px; }
+/* Status row: doctor health + (optional) auto-approve chip side by side, so
+   the footer never gives up a whole banner-row for a single state badge. When
+   the chip is hidden, .health-indicator naturally expands back to full width. */
+.footer-status-row {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+  margin-bottom: 8px;
+}
+.health-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--mc-border-light);
+  background: var(--mc-bg-muted);
+  border-radius: 12px;
+  cursor: pointer;
+  color: var(--mc-text-secondary);
+  font-size: 12px;
+}
 .health-indicator:hover { background: var(--mc-bg-sunken); }
+.health-indicator .health-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* When the chip is showing, the health card yields half of the row so the
+   two states stay visually balanced. */
+.health-indicator.is-half { flex: 1 1 50%; }
+
+/*
+  Auto-approve chip — persistent indicator that this workspace currently has
+  at least one active auto-approve rule. Designed to be informative, not
+  alarming: a soft danger-tinted pill with a steady pulse on the dot, sized
+  to fit beside the doctor indicator on one row. Colors come from the
+  mateclaw token system (`var(--mc-danger-*)`), so dark mode picks up the
+  appropriate dim variants automatically.
+*/
+.auto-approve-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 50%;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--mc-danger-border, rgba(192, 57, 43, 0.4));
+  background: var(--mc-danger-bg, rgba(192, 57, 43, 0.12));
+  color: var(--mc-danger, #C0392B);
+  border-radius: 12px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.2;
+  transition: background-color 0.15s, border-color 0.15s;
+}
+.auto-approve-chip:hover {
+  background: var(--mc-danger-bg, rgba(192, 57, 43, 0.18));
+  border-color: var(--mc-danger, #C0392B);
+}
+.auto-approve-chip__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Small live-status dot that gently pulses to suggest "this is active right
+   now" without being aggressive about it. The animation pauses when the user
+   prefers reduced motion. */
+.auto-approve-chip__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--mc-danger, #C0392B);
+  box-shadow: 0 0 0 0 var(--mc-danger, #C0392B);
+  animation: auto-approve-pulse 2.4s ease-in-out infinite;
+  flex-shrink: 0;
+}
+@keyframes auto-approve-pulse {
+  0%   { box-shadow: 0 0 0 0 var(--mc-danger, #C0392B); opacity: 1; }
+  60%  { box-shadow: 0 0 0 6px transparent; opacity: 0.6; }
+  100% { box-shadow: 0 0 0 0 transparent; opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .auto-approve-chip__dot { animation: none; }
+}
 .health-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 .health-indicator.healthy .health-dot { background: var(--mc-success); }
 .health-indicator.warning .health-dot { background: var(--mc-primary); }

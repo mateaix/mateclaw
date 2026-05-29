@@ -14,10 +14,16 @@ import en from 'element-plus/es/locale/lang/en'
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
 import { currentLocale } from '@/i18n'
 import { useThemeStore } from '@/stores/useThemeStore'
+import { useGlobalWikilinkClick } from '@/composables/useGlobalWikilinkClick'
 import McConfirmHost from '@/components/common/McConfirmHost.vue'
 
 // Initialize theme — applies .dark class to <html> immediately
 useThemeStore()
+
+// Global click delegator for [[wikilinks]] rendered into chat / docs /
+// memory surfaces. WikiPageViewer's own postprocess handles in-wiki
+// clicks (those carry data-slug); this catches everything else.
+useGlobalWikilinkClick()
 
 const { t } = useI18n()
 

@@ -53,6 +53,35 @@ public interface WikiPageMapper extends BaseMapper<WikiPageEntity> {
     @Select("SELECT content FROM mate_wiki_page WHERE id = #{id} AND deleted = 0")
     String selectContentById(@Param("id") Long id);
 
+    /**
+     * Candidate-set query for the cascade-delete / cascade-rename pipeline.
+     * Find every page in {@code kbId} whose {@code outgoing_links} JSON array
+     * might mention {@code slug}, using a LIKE pre-filter (works on both H2
+     * and MySQL without a JSON_CONTAINS shim). The {@code slugPattern} should
+     * be {@code %"<slug-lowercased>"%} so the surrounding quotes pin the
+     * match to a full JSON string element rather than a substring; the
+     * caller still re-verifies each row by parsing the content with
+     * {@code WikiLinkService} because the actual rewrite must skip code
+     * blocks and ignore false-positive substring matches inside other JSON
+     * strings.
+     * <p>
+     * SQL guard order: {@code kb_id} + {@code deleted} + {@code archived} +
+     * {@code id != excludeId} are all ANDed before the LIKE. The explicit
+     * prefix prevents a multi-tenant leak where a future OR-clause might
+     * accidentally cross KB boundaries.
+     */
+    @Select("SELECT id, kb_id, slug, title, content, outgoing_links " +
+            "FROM mate_wiki_page " +
+            "WHERE kb_id = #{kbId} " +
+            "  AND deleted = 0 " +
+            "  AND archived = 0 " +
+            "  AND id != #{excludeId} " +
+            "  AND outgoing_links LIKE #{slugPattern}")
+    List<WikiPageEntity> findReferrersByOutgoingLink(
+            @Param("kbId") Long kbId,
+            @Param("excludeId") Long excludeId,
+            @Param("slugPattern") String slugPattern);
+
     // ==================== RFC-032: Two-phase keyword search ====================
 
     /**

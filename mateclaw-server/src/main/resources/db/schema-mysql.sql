@@ -28,9 +28,11 @@ CREATE TABLE IF NOT EXISTS mate_agent (
     icon           VARCHAR(256),
     tags           VARCHAR(256),
     workspace_id   BIGINT       NOT NULL DEFAULT 1,
+    primary_kb_id  BIGINT       DEFAULT NULL,
     create_time    DATETIME     NOT NULL,
     update_time    DATETIME     NOT NULL,
-    deleted        INT          NOT NULL DEFAULT 0
+    deleted        INT          NOT NULL DEFAULT 0,
+    INDEX idx_agent_primary_kb (primary_kb_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- 模型配置表

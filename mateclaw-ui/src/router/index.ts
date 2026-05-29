@@ -265,6 +265,12 @@ const router = createRouter({
               component: () => import('@/views/Security/AuditLogs/index.vue'),
               meta: { title: 'Security - Audit Logs', requiredCapability: 'manage:security' },
             },
+            {
+              path: 'auto-approve',
+              name: 'SecurityAutoApprove',
+              component: () => import('@/views/Security/AutoApproveGrants/index.vue'),
+              meta: { title: 'Security - Auto Approve', requiredCapability: 'manage:security' },
+            },
           ],
         },
         // ==================== Forbidden ====================

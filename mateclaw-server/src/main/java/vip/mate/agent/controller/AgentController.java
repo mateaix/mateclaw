@@ -1,5 +1,6 @@
 package vip.mate.agent.controller;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
@@ -27,6 +28,7 @@ import vip.mate.workspace.core.service.WorkspaceService;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -49,6 +51,7 @@ public class AgentController {
     private final ModelConfigService modelConfigService;
     private final ModelCapabilityService modelCapabilityService;
     private final SystemSettingService systemSettingService;
+    private final ObjectMapper objectMapper;
     private final ExecutorService sseExecutor = Executors.newCachedThreadPool();
 
     @Operation(summary = "获取Agent列表")
@@ -144,10 +147,14 @@ public class AgentController {
     @Operation(summary = "更新Agent")
     @PutMapping("/{id}")
     @RequireWorkspaceRole("member")
-    public R<AgentEntity> update(@PathVariable Long id, @RequestBody AgentEntity agent,
+    public R<AgentEntity> update(@PathVariable Long id, @RequestBody Map<String, Object> body,
                                  @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
         AgentEntity existing = agentService.getAgent(id);
         verifyResourceWorkspace(existing.getWorkspaceId(), workspaceId);
+        AgentEntity agent = objectMapper.convertValue(body, AgentEntity.class);
+        if (!body.containsKey("primaryKbId")) {
+            agent.setPrimaryKbId(existing.getPrimaryKbId());
+        }
         agent.setId(id);
         agent.setWorkspaceId(existing.getWorkspaceId()); // 不允许跨 workspace 迁移
         AgentEntity updated = agentService.updateAgent(agent);

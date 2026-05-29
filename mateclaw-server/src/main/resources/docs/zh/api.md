@@ -119,6 +119,40 @@ GET    /api/v1/agents/templates        # 列出模板
 POST   /api/v1/agents/templates/{id}   # 从模板创建
 ```
 
+### 字段：`primaryKbId`（1.5.0+）
+
+每个员工可以指定一个**主知识库**作为 wiki 工具的默认目标。字段类型 `string | null`（雪花 ID，前端始终按字符串处理）。
+
+`PUT /api/v1/agents/{id}` 的语义是**三态**的：
+
+| 请求体里 | 行为 |
+|---------|------|
+| 不带 `primaryKbId` 这个字段 | 保留原值，不动 |
+| `"primaryKbId": "<kbId>"` | 设为指定 KB |
+| `"primaryKbId": null` | 清空（之后 wiki 工具按 workspace 默认 KB 回退） |
+
+服务端用 `body.containsKey("primaryKbId")` 区分"字段缺失"和"显式 null"，entity 上配 `@TableField(updateStrategy = FieldStrategy.ALWAYS)` 保证 null 真的写到数据库（不会被 MyBatis-Plus 默认 `NOT_NULL` 策略静默跳过）。
+
+设计语义：**KB 是工作空间共享的，`primaryKbId` 只决定该员工 wiki 工具的默认目标，不改变 KB 的归属或可见性。** 多个员工可以选同一个 KB 作主库，互不影响。
+
+请求示例：
+
+```bash
+# 设为某个 KB
+curl -X PUT http://localhost:18088/api/v1/agents/2055639185675730946 \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Workspace-Id: 1" \
+  -H "Content-Type: application/json" \
+  -d '{"primaryKbId": "2054907618529591298", ...其余字段}'
+
+# 清空绑定
+curl -X PUT http://localhost:18088/api/v1/agents/2055639185675730946 \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Workspace-Id: 1" \
+  -H "Content-Type: application/json" \
+  -d '{"primaryKbId": null, ...其余字段}'
+```
+
 ---
 
 ## 工具
@@ -192,6 +226,28 @@ GET    /api/v1/wiki/pages/{id}/backlinks                 # 反向链接
 ```
 
 Agent 可调的 wiki 工具（`wiki_search`、`wiki_read`、`wiki_backlinks`）自动解析 `kbId`。
+
+### 员工绑定主知识库（1.5.0+）
+
+PR #237 / V130 迁移引入了员工的"主知识库"机制。新的端点：
+
+```
+GET /api/v1/wiki/knowledge-bases/bindable      # 列当前 workspace 可绑定为主库的 KB
+```
+
+返回的是当前 workspace 的**全部** KB（包含已被其他员工选作主库的），因为绑定语义是"我默认查哪一个"——不是独占。返回 shape 跟 `GET /api/v1/wiki/knowledge-bases`（按 workspace 列出）一致，单独命名只是为了在 UI 语义上更清晰。
+
+绑定动作本身**不走** wiki 接口，而是写在员工实体上：
+
+```
+PUT /api/v1/agents/{id}    # body 里带 primaryKbId 字段
+```
+
+字段语义、三态行为见上面 [Agent 段的 `primaryKbId` 说明](#字段-primarykbid150)。
+
+::: warning 旧字段 `kb.agentId` 的去留
+1.5.0 之前的版本曾把绑定关系写在 `mate_wiki_knowledge_base.agent_id` 上（一对一独占）。V130 迁移把旧值回填到了 `agent.primary_kb_id`，老字段保留作 fallback 读取——**`PUT /api/v1/wiki/knowledge-bases/{id}` 不再处理 `agentId` 字段**，传上去会被忽略。新代码请只通过 `agent.primaryKbId` 控制绑定。
+:::
 
 ---
 

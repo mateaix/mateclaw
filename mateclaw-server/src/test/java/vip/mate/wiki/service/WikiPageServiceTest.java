@@ -31,7 +31,9 @@ class WikiPageServiceTest {
         when(mapper.selectOne(any())).thenReturn(page);
         when(mapper.updateById(any(WikiPageEntity.class))).thenReturn(1);
 
-        new WikiPageService(mapper, new ObjectMapper())
+        ObjectMapper om = new ObjectMapper();
+        WikiLinkService link = new WikiLinkService(om);
+        new WikiPageService(mapper, om, link)
                 .updatePageManually(7L, "page", "new body", null);
 
         assertTrue(page.getUpdateTime().isAfter(oldUpdateTime));

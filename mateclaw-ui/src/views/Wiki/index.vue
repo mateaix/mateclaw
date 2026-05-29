@@ -41,12 +41,16 @@
 <script setup lang="ts">
 import { ref, reactive, watch, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useRoute, useRouter } from 'vue-router'
 import { useWikiStore, type WikiKB } from '@/stores/useWikiStore'
 import { wikiApi } from '@/api/index'
 import { mcConfirm } from '@/components/common/useConfirm'
 import { mcToast } from '@/composables/useMcToast'
 import WikiLibrary from './components/WikiLibrary.vue'
 import WikiWorkspace from './components/WikiWorkspace.vue'
+
+const route = useRoute()
+const router = useRouter()
 
 const { t } = useI18n()
 const store = useWikiStore()
@@ -108,9 +112,47 @@ async function handleDeleteKB(kb: WikiKB) {
   }
 }
 
-onMounted(() => {
-  store.fetchKnowledgeBases()
+async function consumeQueryNavigation() {
+  // Global wikilink click delegator (see App.vue) pushes us with
+  // ?kbId=X&slug=Y on click. Honour both: enter the KB then surface
+  // the page directly. Strips the query immediately so a manual reload
+  // doesn't keep re-opening the same page.
+  //
+  // **Snowflake precision** (per CLAUDE.md): the kbId is a 19-digit
+  // Snowflake that exceeds Number.MAX_SAFE_INTEGER. NEVER coerce via
+  // Number()/parseInt() — that truncates the last 2-3 digits and turns
+  // a real lookup into a silent "KB not found". Keep the string and
+  // pass it through to the store; the store / api layer treats kbId as
+  // an opaque token interpolated into the request URL.
+  const kbIdRaw = route.query.kbId
+  const slugRaw = route.query.slug
+  if (typeof kbIdRaw !== 'string' || !kbIdRaw) return
+  if (typeof slugRaw !== 'string' || !slugRaw) return
+  // Cast to number ONLY to satisfy the store's type signature — the
+  // runtime value stays a string under the hood. TypeScript can't
+  // express "number-or-Snowflake-string" without widening every signature,
+  // so the cast is the localised, documented escape hatch.
+  // snowflake-precision-ok: kbIdRaw is the URL-encoded string from the
+  // global click delegator; never passed through Number()/parseInt().
+  const kbId = kbIdRaw as unknown as number
+  await store.selectKB(kbId)
+  try {
+    await store.loadPage(kbId, slugRaw)
+  } catch (e) {
+    console.warn('[Wiki] auto-open page failed', e)
+  }
+  // Drop the query so back-button + reload behave sanely.
+  router.replace({ name: 'Wiki' })
+}
+
+onMounted(async () => {
+  await store.fetchKnowledgeBases()
+  await consumeQueryNavigation()
 })
+
+// Re-consume the query when a click delegator navigates while we're
+// already on /wiki (route.path unchanged, query changed).
+watch(() => route.query, () => { consumeQueryNavigation() })
 </script>
 
 <style scoped>

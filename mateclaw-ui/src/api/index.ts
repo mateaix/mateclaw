@@ -1,5 +1,13 @@
 import axios from 'axios'
 import { handleAuthFailure, updateTokenFromHeader } from '@/utils/auth'
+import type {
+  ApprovalGrant,
+  ApprovalGrantPage,
+  ActiveGrantsSummary,
+  CreateGrantPayload,
+  ResolutionLog,
+  GrantScope,
+} from '@/types'
 
 // Axios 实例
 export const http = axios.create({
@@ -737,11 +745,12 @@ export const cronJobApi = {
 export const wikiApi = {
   // Knowledge Base
   listKBs: () => http.get('/wiki/knowledge-bases'),
-  getKB: (id: number) => http.get(`/wiki/knowledge-bases/${id}`),
-  listKBsByAgent: (agentId: number) => http.get(`/wiki/knowledge-bases/agent/${agentId}`),
-  createKB: (data: { name: string; description?: string; agentId?: number }) =>
+  getKB: (id: string | number) => http.get(`/wiki/knowledge-bases/${id}`),
+  listKBsByAgent: (agentId: string | number) => http.get(`/wiki/knowledge-bases/agent/${agentId}`),
+  listBindableKBs: () => http.get('/wiki/knowledge-bases/bindable'),
+  createKB: (data: { name: string; description?: string; agentId?: string | number }) =>
     http.post('/wiki/knowledge-bases', data),
-  updateKB: (id: number, data: { name?: string; description?: string; agentId?: number; embeddingModelId?: string | number | null }) =>
+  updateKB: (id: string | number, data: { name?: string; description?: string; embeddingModelId?: string | number | null }) =>
     http.put(`/wiki/knowledge-bases/${id}`, data),
   deleteKB: (id: number) => http.delete(`/wiki/knowledge-bases/${id}`),
   getConfig: (id: number) => http.get(`/wiki/knowledge-bases/${id}/config`),
@@ -778,6 +787,20 @@ export const wikiApi = {
   // Wiki Pages
   listPages: (kbId: number, rawId?: number) =>
     http.get(`/wiki/knowledge-bases/${kbId}/pages`, rawId != null ? { params: { rawId } } : undefined),
+  // Lightweight {slug, title, archived} list for wikilink resolution. Never
+  // paginated and not scoped by the current raw-material filter — this is the
+  // authoritative resolution index used by the viewer's wikilink postprocess.
+  listPageRefs: (kbId: number, includeArchived = false) =>
+    http.get(`/wiki/knowledge-bases/${kbId}/pages/refs`, { params: { includeArchived } }),
+
+  // Broken-link lint (job-based async). POST starts/returns the running job,
+  // GET reads the most recent completed scan aggregated across the KB.
+  startBrokenLinksScan: (kbId: number) =>
+    http.post(`/wiki/knowledge-bases/${kbId}/lint/broken-links`),
+  getBrokenLinksReport: (kbId: number) =>
+    http.get(`/wiki/knowledge-bases/${kbId}/lint/broken-links`),
+  getBrokenLinksJob: (kbId: number, jobId: string) =>
+    http.get(`/wiki/knowledge-bases/${kbId}/lint/broken-links/jobs/${jobId}`),
   getPage: (kbId: number, slug: string) =>
     http.get(`/wiki/knowledge-bases/${kbId}/pages/${encodeURIComponent(slug)}`),
   updatePage: (kbId: number, slug: string, content: string) =>
@@ -788,6 +811,12 @@ export const wikiApi = {
     http.delete(`/wiki/knowledge-bases/${kbId}/pages/batch`, { data: slugs }),
   getBacklinks: (kbId: number, slug: string) =>
     http.get(`/wiki/knowledge-bases/${kbId}/pages/${encodeURIComponent(slug)}/backlinks`),
+
+  // Cross-KB lookup used by the global wikilink click handler — chat
+  // messages render [[Title]] without knowing which KB the agent read
+  // from, so the handler resolves the title across every visible KB.
+  lookupPage: (params: { title?: string; slug?: string }) =>
+    http.get(`/wiki/pages/lookup`, { params }),
 
   // Archived pages
   listArchivedPages: (kbId: number) =>
@@ -1274,4 +1303,48 @@ export const goalApi = {
   abandon: (id: string) => http.post<Goal>(`/goals/${id}/abandon`),
   addCriterion: (id: string, criterion: string) =>
     http.post<Goal>(`/goals/${id}/criteria`, { criterion }),
+}
+
+// ==================== Approval Auto-Grant ====================
+
+/**
+ * Client for the /api/v1/approval/* surface. The backend serializes all
+ * snowflake ids as strings (CLAUDE.md precision convention); callers should
+ * keep them as strings end-to-end and never run them through Number().
+ */
+export const approvalApi = {
+  /**
+   * List grants visible in the current workspace, paged. mine=true skips the
+   * admin gate. Page is 1-based; size is bounded server-side to [1, 200].
+   */
+  listGrants: (params?: {
+    scopeType?: GrantScope
+    toolName?: string
+    revoked?: 0 | 1
+    mine?: boolean
+    page?: number
+    size?: number
+  }) => http.get<ApprovalGrantPage>('/approval/grants', { params }),
+
+  /** Active-grant summary used by the global chip + ChatInput pill counters. */
+  activeSummary: () =>
+    http.get<ActiveGrantsSummary>('/approval/grants/active'),
+
+  /** Create a grant. Returns the persisted row. */
+  createGrant: (payload: CreateGrantPayload) =>
+    http.post<ApprovalGrant>('/approval/grants', payload),
+
+  /** Soft-revoke a grant. Caller must be the grant owner OR a workspace admin. */
+  revokeGrant: (id: string) =>
+    http.delete<void>(`/approval/grants/${id}`),
+
+  /**
+   * Read approval-layer final decisions. {@code grantId} queries require admin;
+   * {@code conversationId} queries are visible to any workspace member.
+   */
+  listResolutions: (params: {
+    grantId?: string
+    conversationId?: string
+    limit?: number
+  }) => http.get<ResolutionLog[]>('/approval/resolutions', { params }),
 }

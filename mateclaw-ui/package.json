@@ -9,7 +9,9 @@
     "build": "bash ../scripts/check-snowflake-precision.sh && node --max-old-space-size=6144 ./node_modules/vue-tsc/bin/vue-tsc.js --noEmit && node --max-old-space-size=6144 ./node_modules/vite/bin/vite.js build",
     "preview": "vite preview",
     "lint": "eslint src --ext .ts,.vue --fix && bash ../scripts/check-snowflake-precision.sh",
-    "lint:precision": "bash ../scripts/check-snowflake-precision.sh"
+    "lint:precision": "bash ../scripts/check-snowflake-precision.sh",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",
@@ -49,10 +51,12 @@
     "autoprefixer": "^10.4.20",
     "eslint": "^9.18.0",
     "eslint-plugin-vue": "^9.32.0",
+    "happy-dom": "^20.9.0",
     "rollup-plugin-visualizer": "^7.0.1",
     "tailwindcss": "^4.0.6",
     "typescript": "~5.7.2",
     "vite": "^7.3.1",
+    "vitest": "^4.1.7",
     "vue-tsc": "^3.2.6"
   },
   "pnpm": {
