@@ -20,6 +20,9 @@ import vip.mate.channel.media.MediaUploadResult;
 import vip.mate.channel.model.ChannelEntity;
 import vip.mate.workspace.conversation.model.MessageContentPart;
 
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
+
 import java.io.InputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -29,6 +32,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -169,6 +173,25 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
      * but not broken).
      */
     private final vip.mate.stt.SttService sttService;
+
+    // ==================== Per-chat recent file cache ====================
+
+    /**
+     * Per-chat cache of recently downloaded file messages. When a file is
+     * sent in a Feishu chat (even without @mention), it is downloaded and
+     * cached here. When a follow-up text message arrives in the same chat,
+     * the cached files are injected as content parts so the agent can see
+     * and process them.
+     */
+    private static final long RECENT_FILE_TTL_MINUTES = 60;
+    private static final int RECENT_FILE_MAX_PER_CHAT = 5;
+
+    record RecentFileEntry(String fileName, String path, String fileUrl, String contentType) {}
+
+    private final Cache<String, List<RecentFileEntry>> recentFileCache = Caffeine.newBuilder()
+            .expireAfterWrite(RECENT_FILE_TTL_MINUTES, TimeUnit.MINUTES)
+            .maximumSize(200)
+            .build();
 
     public FeishuChannelAdapter(ChannelEntity channelEntity,
                                 ChannelMessageRouter messageRouter,
@@ -903,10 +926,23 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
     private void handleFeishuMessage(String messageId, String messageType, String contentStr,
                                       String chatId, String chatType, String senderOpenId,
                                       String parentId, boolean isBotMentioned, Object rawPayload) {
+        // Per-chat recent file cache: always download file messages (even
+        // without @mention) so they can be auto-associated with follow-up
+        // text messages in the same chat.
+        boolean isGroup = "group".equals(chatType);
+        boolean isFileMessage = "file".equals(messageType) || "image".equals(messageType)
+                || "audio".equals(messageType) || "media".equals(messageType);
+        // Compute conversationId once — used as cache key for both write (cacheRecentFile)
+        // and read (injectRecentFiles), and as the directory name under data/chat-uploads/.
+        String conversationId = buildConversationId(chatId, senderOpenId, isGroup);
+
+        if (isFileMessage) {
+            cacheRecentFile(messageId, messageType, contentStr, conversationId);
+        }
+
         // require_mention 群聊过滤：群聊中必须 @机器人才响应。
         // 当 botOpenId 为 null 时（API 抖动 / 尚未拉取成功），失败回退到放行 —
         // 避免飞书 /open-apis/bot/v3/info 短暂不可用时整个群机器人变哑巴。
-        boolean isGroup = "group".equals(chatType);
         boolean requireMention = getConfigBoolean("require_mention", false);
         if (isGroupNonMentionDrop(isGroup, requireMention, isBotMentioned, botOpenId)) {
             log.debug("[feishu] require_mention=true but bot not mentioned, dropping messageId={}", messageId);
@@ -954,6 +990,13 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
                 // 同步加一个 text part 到最前面，让多模态消息也能看到引用上下文
                 contentParts.add(0, MessageContentPart.text(prefix));
             }
+        }
+
+        // Auto-associate recent files: inject file/image parts from the
+        // per-chat cache so the agent can see files sent earlier in the
+        // same conversation (user sends file → asks about it in text).
+        if (!isFileMessage && conversationId != null) {
+            textContent = injectRecentFiles(conversationId, contentParts, textContent);
         }
 
         // 生成短会话后缀
@@ -1353,6 +1396,142 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
             return chatId.length() >= 12 ? chatId.substring(chatId.length() - 12) : chatId;
         }
         return null;
+    }
+
+    /**
+     * Compute the conversationId that {@link ChannelMessageRouter} would
+     * derive from the same chat/sender fields, so we can save inbound
+     * files to the matching {@code data/chat-uploads/} directory.
+     */
+    private String buildConversationId(String chatId, String senderOpenId, boolean isGroup) {
+        // Mirror ChannelMessageRouter#buildConversationId:
+        //   groups → feishu:{chatId},  DMs → feishu:{full senderOpenId}
+        String identifier = chatId != null ? chatId : senderOpenId;
+        return identifier != null ? CHANNEL_TYPE + ":" + identifier : null;
+    }
+
+    // ==================== Per-chat recent file cache ====================
+
+    /**
+     * Download an inbound file message and cache its metadata in the
+     * per-chat recent-file cache. The file is saved to
+     * {@code data/chat-uploads/{conversationId}/} so existing tools
+     * ({@code ReadFileTool}, {@code DocumentExtractTool}) can find it
+     * via {@code ChatUploadResolver}, and it gets cleaned up when the
+     * conversation is deleted.
+     */
+    private void cacheRecentFile(String messageId, String messageType, String contentStr,
+                                  String conversationId) {
+        try {
+            Map<String, Object> contentObj = objectMapper.readValue(contentStr, Map.class);
+
+            String fileKey = null;
+            String fileName = null;
+            String type; // SDK type: "image" or "file"
+
+            switch (messageType) {
+                case "image" -> {
+                    fileKey = (String) contentObj.get("image_key");
+                    type = "image";
+                }
+                case "file" -> {
+                    fileKey = (String) contentObj.get("file_key");
+                    fileName = (String) contentObj.get("file_name");
+                    type = "file";
+                }
+                case "audio" -> {
+                    fileKey = (String) contentObj.get("file_key");
+                    type = "file";
+                }
+                case "media" -> {
+                    fileKey = (String) contentObj.get("file_key");
+                    fileName = (String) contentObj.get("file_name");
+                    type = "file";
+                }
+                default -> {
+                    return;
+                }
+            }
+
+            if (fileKey == null) return;
+
+            // Download file bytes
+            DownloadedResource dl = "image".equals(messageType)
+                    ? maybeDownloadImage(messageId, fileKey)
+                    : maybeDownloadResource(messageId, fileKey, type, fileName);
+            if (dl == null) return;
+
+            // Save to data/chat-uploads/{conversationId}/
+            Path uploadDir = Path.of("data", "chat-uploads", conversationId);
+            Files.createDirectories(uploadDir);
+            String rawName = (dl.fileName() != null && !dl.fileName().isBlank())
+                    ? dl.fileName() : fileKey;
+            String safeName = Path.of(rawName).getFileName().toString()
+                    .replaceAll("[^a-zA-Z0-9._-]", "_");
+            if (safeName.isBlank()) safeName = "file";
+            String storedName = System.currentTimeMillis() + "_" + safeName;
+            Path dest = uploadDir.resolve(storedName);
+            Files.copy(Path.of(dl.path()), dest, StandardCopyOption.REPLACE_EXISTING);
+
+            String contentType = dl.contentType() != null ? dl.contentType() : "application/octet-stream";
+            RecentFileEntry entry = new RecentFileEntry(safeName, dest.toAbsolutePath().toString(),
+                    dl.fileUrl(), contentType);
+
+            // Append to per-conversation cache (cap at RECENT_FILE_MAX_PER_CHAT)
+            recentFileCache.asMap().compute(conversationId, (k, existing) -> {
+                List<RecentFileEntry> list = existing != null ? new ArrayList<>(existing) : new ArrayList<>();
+                list.add(entry);
+                if (list.size() > RECENT_FILE_MAX_PER_CHAT) {
+                    list = list.subList(list.size() - RECENT_FILE_MAX_PER_CHAT, list.size());
+                }
+                return list;
+            });
+
+            log.info("[feishu] Cached recent file for conversation={}: {} ({} bytes, {})",
+                    conversationId, entry.fileName(), Files.size(dest), contentType);
+
+        } catch (Exception e) {
+            log.debug("[feishu] Failed to cache recent file: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Inject recent files from the per-chat cache into the current
+     * message's content parts, so the agent can see files that were
+     * sent earlier in the same conversation.
+     *
+     * @return updated textContent with file descriptions appended
+     */
+    private String injectRecentFiles(String conversationId, List<MessageContentPart> parts, String textContent) {
+        List<RecentFileEntry> recent = recentFileCache.getIfPresent(conversationId);
+        if (recent == null || recent.isEmpty()) return textContent;
+
+        // Collect paths already in parts to avoid duplicates
+        Set<String> existingPaths = new java.util.HashSet<>();
+        for (MessageContentPart p : parts) {
+            if (p != null && p.getPath() != null) existingPaths.add(p.getPath());
+        }
+
+        StringBuilder text = new StringBuilder(textContent != null ? textContent : "");
+        for (RecentFileEntry entry : recent) {
+            if (existingPaths.contains(entry.path())) continue;
+
+            MessageContentPart part = new MessageContentPart();
+            if (entry.contentType() != null && entry.contentType().startsWith("image/")) {
+                part.setType("image");
+            } else {
+                part.setType("file");
+            }
+            part.setFileName(entry.fileName());
+            part.setPath(entry.path());
+            if (entry.fileUrl() != null) part.setFileUrl(entry.fileUrl());
+            part.setContentType(entry.contentType());
+            parts.add(part);
+
+            if (!text.isEmpty()) text.append('\n');
+            text.append("[用户发送了文件: ").append(entry.fileName()).append("]");
+        }
+        return text.toString();
     }
 
     // ==================== 消息内容解析 ====================
