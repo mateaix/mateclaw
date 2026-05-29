@@ -6,6 +6,7 @@ import vip.mate.channel.AbstractChannelAdapter;
 import vip.mate.channel.ChannelMessage;
 import vip.mate.channel.ChannelMessageRouter;
 import vip.mate.channel.ExponentialBackoff;
+import vip.mate.channel.media.InboundMediaDownloader;
 import vip.mate.channel.model.ChannelEntity;
 import vip.mate.channel.weixin.error.TokenExpiredException;
 import vip.mate.common.security.SecretEquals;
@@ -18,7 +19,6 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.security.MessageDigest;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -406,7 +406,13 @@ public class WeixinChannelAdapter extends AbstractChannelAdapter {
 
         List<Map<String, Object>> itemList = (List<Map<String, Object>>) msg.getOrDefault("item_list", List.of());
         boolean mediaDownloadEnabled = getConfigBoolean("media_download_enabled", true);
-        String mediaDir = getConfigString("media_dir", "data/media");
+        // Inbound conversation id (see class doc): private "weixin:{user}",
+        // group "weixin:group:{group}". Downloaded media is stored under
+        // data/chat-uploads/{convId} so the /api/v1/chat/files endpoint can
+        // serve it back to the chat bubble / Web mirror.
+        String inboundConvId = !groupId.isBlank()
+                ? "weixin:group:" + groupId
+                : "weixin:" + fromUserId;
 
         for (Map<String, Object> item : itemList) {
             int itemType = item.get("type") instanceof Number n ? n.intValue() : 0;
@@ -423,12 +429,21 @@ public class WeixinChannelAdapter extends AbstractChannelAdapter {
                 case 2 -> {
                     // Image
                     if (mediaDownloadEnabled) {
-                        String path = downloadMediaItem(item, "image_item", "image.jpg", mediaDir);
-                        if (path != null) {
+                        InboundMediaDownloader.DownloadedMedia dl =
+                                downloadMediaItem(item, "image_item", null, inboundConvId);
+                        if (dl != null) {
                             MessageContentPart part = new MessageContentPart();
                             part.setType("image");
-                            part.setPath(path);
-                            part.setContentType("image/*");
+                            part.setPath(dl.localPath().toString());
+                            part.setStoredName(dl.storedName());
+                            part.setFileUrl(dl.fileUrl());
+                            part.setMediaId(dl.localPath().toString());
+                            part.setFileName(dl.fileName());
+                            // Use the sniffed MIME (image/png, image/webp, image/heic, …)
+                            // so vision gateways get an accurate Content-Type. Fall back
+                            // to a concrete jpeg only when sniffing was inconclusive.
+                            part.setContentType(dl.isImage() ? dl.contentType() : "image/jpeg");
+                            part.setFileSize(dl.fileSize());
                             contentParts.add(part);
                         } else {
                             // 下载失败，尝试构建 CDN URL
@@ -484,15 +499,21 @@ public class WeixinChannelAdapter extends AbstractChannelAdapter {
                         // ASR 为空：可能是语音过短、噪音、或 iLink API 字段变更
                         // 尝试下载语音文件保存到本地（供后续调试 / 自有 STT 使用）
                         if (mediaDownloadEnabled) {
-                            String voicePath = downloadMediaItem(item, "voice_item", "voice.amr", mediaDir);
-                            if (voicePath != null) {
-                                // 保存为 audio content part，即使无 ASR 文本
+                            InboundMediaDownloader.DownloadedMedia dl =
+                                    downloadMediaItem(item, "voice_item", null, inboundConvId);
+                            if (dl != null) {
+                                // Persist as an audio content part even without ASR text
                                 MessageContentPart audioPart = new MessageContentPart();
                                 audioPart.setType("audio");
-                                audioPart.setPath(voicePath);
-                                audioPart.setFileName("voice.amr");
+                                audioPart.setPath(dl.localPath().toString());
+                                audioPart.setStoredName(dl.storedName());
+                                audioPart.setFileUrl(dl.fileUrl());
+                                audioPart.setMediaId(dl.localPath().toString());
+                                audioPart.setFileName(dl.fileName());
+                                audioPart.setContentType(dl.contentType());
+                                audioPart.setFileSize(dl.fileSize());
                                 contentParts.add(audioPart);
-                                log.info("[weixin] Voice audio downloaded (no ASR): {}", voicePath);
+                                log.info("[weixin] Voice audio downloaded (no ASR): {}", dl.localPath());
                             }
                         }
                         textParts.add("[语音消息]");
@@ -506,12 +527,18 @@ public class WeixinChannelAdapter extends AbstractChannelAdapter {
                     String fileName = getStr(fileItemMap, "file_name");
                     if (fileName.isBlank()) fileName = "file.bin";
                     if (mediaDownloadEnabled) {
-                        String path = downloadMediaItem(item, "file_item", fileName, mediaDir);
-                        if (path != null) {
+                        InboundMediaDownloader.DownloadedMedia dl =
+                                downloadMediaItem(item, "file_item", fileName, inboundConvId);
+                        if (dl != null) {
                             MessageContentPart part = new MessageContentPart();
                             part.setType("file");
-                            part.setPath(path);
-                            part.setFileName(fileName);
+                            part.setPath(dl.localPath().toString());
+                            part.setStoredName(dl.storedName());
+                            part.setFileUrl(dl.fileUrl());
+                            part.setMediaId(dl.localPath().toString());
+                            part.setFileName(dl.fileName());
+                            part.setContentType(dl.contentType());
+                            part.setFileSize(dl.fileSize());
                             contentParts.add(part);
                         } else {
                             textParts.add("[文件: " + fileName + " 下载失败]");
@@ -523,12 +550,18 @@ public class WeixinChannelAdapter extends AbstractChannelAdapter {
                 case 5 -> {
                     // Video
                     if (mediaDownloadEnabled) {
-                        String path = downloadMediaItem(item, "video_item", "video.mp4", mediaDir);
-                        if (path != null) {
+                        InboundMediaDownloader.DownloadedMedia dl =
+                                downloadMediaItem(item, "video_item", null, inboundConvId);
+                        if (dl != null) {
                             MessageContentPart part = new MessageContentPart();
                             part.setType("video");
-                            part.setPath(path);
-                            part.setContentType("video/*");
+                            part.setPath(dl.localPath().toString());
+                            part.setStoredName(dl.storedName());
+                            part.setFileUrl(dl.fileUrl());
+                            part.setMediaId(dl.localPath().toString());
+                            part.setFileName(dl.fileName());
+                            part.setContentType(dl.isVideo() ? dl.contentType() : "video/mp4");
+                            part.setFileSize(dl.fileSize());
                             contentParts.add(part);
                         } else {
                             // 尝试构建 CDN URL
@@ -604,42 +637,44 @@ public class WeixinChannelAdapter extends AbstractChannelAdapter {
 
     // ==================== 媒体下载 ====================
 
+    /**
+     * Download an inbound media item via the shared media pipeline (retry +
+     * backoff, magic-byte type detection, dedup-named persistence). The iLink
+     * AES key extraction stays here because it is protocol-specific; the
+     * decrypted bytes are handed to {@link InboundMediaDownloader}.
+     *
+     * @return the stored, type-detected file, or {@code null} on failure
+     */
     @SuppressWarnings("unchecked")
-    private String downloadMediaItem(Map<String, Object> item, String itemKey, String filenameHint, String mediaDir) {
-        try {
-            Map<String, Object> mediaItem = (Map<String, Object>) item.getOrDefault(itemKey, Map.of());
-            Map<String, Object> media = (Map<String, Object>) mediaItem.getOrDefault("media", Map.of());
-            String encryptQueryParam = getStr(media, "encrypt_query_param");
-            String aesKey;
+    private InboundMediaDownloader.DownloadedMedia downloadMediaItem(
+            Map<String, Object> item, String itemKey, String filenameHint, String conversationId) {
+        Map<String, Object> mediaItem = (Map<String, Object>) item.getOrDefault(itemKey, Map.of());
+        Map<String, Object> media = (Map<String, Object>) mediaItem.getOrDefault("media", Map.of());
+        String encryptQueryParam = getStr(media, "encrypt_query_param");
 
-            // image_item 有顶级 aeskey (hex)
-            String aeskeyHex = getStr(mediaItem, "aeskey");
-            if (!aeskeyHex.isBlank()) {
-                aesKey = Base64.getEncoder().encodeToString(hexToBytes(aeskeyHex));
-            } else {
-                aesKey = getStr(media, "aes_key");
-            }
+        // image_item carries a top-level hex aeskey; other items use media.aes_key
+        final String aesKey;
+        String aeskeyHex = getStr(mediaItem, "aeskey");
+        if (!aeskeyHex.isBlank()) {
+            aesKey = Base64.getEncoder().encodeToString(hexToBytes(aeskeyHex));
+        } else {
+            aesKey = getStr(media, "aes_key");
+        }
 
-            if (encryptQueryParam.isBlank()) {
-                log.warn("[weixin] No encrypt_query_param for media download");
-                return null;
-            }
-
-            byte[] data = client.downloadMedia("", aesKey, encryptQueryParam);
-
-            // 保存到本地
-            Path dir = Path.of(mediaDir);
-            Files.createDirectories(dir);
-            String safeFilename = filenameHint.replaceAll("[^a-zA-Z0-9._-]", "");
-            if (safeFilename.isBlank()) safeFilename = "media";
-            String urlHash = md5Short(encryptQueryParam);
-            Path filePath = dir.resolve("weixin_" + urlHash + "_" + safeFilename);
-            Files.write(filePath, data);
-            return filePath.toString();
-        } catch (Exception e) {
-            log.error("[weixin] Media download failed: {}", e.getMessage(), e);
+        if (encryptQueryParam.isBlank()) {
+            log.warn("[weixin] No encrypt_query_param for media download");
             return null;
         }
+
+        Path uploadDir = Path.of("data", "chat-uploads", conversationId);
+        return InboundMediaDownloader.download(
+                        () -> client.downloadMedia("", aesKey, encryptQueryParam),
+                        filenameHint,
+                        uploadDir,
+                        "weixin",
+                        encryptQueryParam,
+                        storedName -> "/api/v1/chat/files/" + conversationId + "/" + storedName)
+                .orElse(null);
     }
 
     // ==================== 发送消息 ====================
@@ -999,20 +1034,6 @@ public class WeixinChannelAdapter extends AbstractChannelAdapter {
     private static String getStr(Map<String, Object> map, String key) {
         Object val = map.get(key);
         return val != null ? val.toString() : "";
-    }
-
-    private static String md5Short(String input) {
-        try {
-            MessageDigest md = MessageDigest.getInstance("MD5");
-            byte[] digest = md.digest(input.getBytes());
-            StringBuilder sb = new StringBuilder();
-            for (int i = 0; i < 4; i++) {
-                sb.append(String.format("%02x", digest[i]));
-            }
-            return sb.toString();
-        } catch (Exception e) {
-            return String.valueOf(input.hashCode());
-        }
     }
 
     private static byte[] hexToBytes(String hex) {

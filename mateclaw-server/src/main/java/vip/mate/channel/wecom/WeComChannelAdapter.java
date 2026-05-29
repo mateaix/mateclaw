@@ -6,13 +6,13 @@ import vip.mate.channel.AbstractChannelAdapter;
 import vip.mate.channel.ChannelMessage;
 import vip.mate.channel.ChannelMessageRouter;
 import vip.mate.channel.ExponentialBackoff;
+import vip.mate.channel.media.InboundMediaDownloader;
 import vip.mate.channel.model.ChannelEntity;
 import vip.mate.workspace.conversation.model.MessageContentPart;
 
 import javax.crypto.Cipher;
 import javax.crypto.spec.IvParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
-import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -27,8 +27,6 @@ import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.*;
 import java.util.concurrent.*;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipInputStream;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -2847,13 +2845,15 @@ public class WeComChannelAdapter extends AbstractChannelAdapter {
     private MessageContentPart buildInboundImagePart(String url, String aesKey, String msgId,
                                                       String fileNameHint, String conversationId) {
         if (getConfigBoolean("media_download_enabled", true)) {
-            InboundMediaResult r = downloadInboundMedia(url, aesKey, msgId, fileNameHint, conversationId);
+            InboundMediaDownloader.DownloadedMedia r =
+                    downloadInboundMedia(url, aesKey, msgId, fileNameHint, conversationId);
             if (r != null) {
+                String localPath = r.localPath().toString();
                 MessageContentPart part = new MessageContentPart();
                 part.setType("image");
                 part.setFileName(r.fileName());
                 part.setStoredName(r.storedName());
-                part.setPath(r.localPath());
+                part.setPath(localPath);
                 part.setFileUrl(r.fileUrl());
                 part.setFileSize(r.fileSize());
                 // Prefer the sniffed contentType (could be image/png) over a
@@ -2863,7 +2863,7 @@ public class WeComChannelAdapter extends AbstractChannelAdapter {
                 part.setContentType((ct != null && ct.startsWith("image/")) ? ct : "image/jpeg");
                 // mediaId mirrors path so callers that prefer it still resolve
                 // to the same on-disk file (matches Web upload's behaviour).
-                part.setMediaId(r.localPath());
+                part.setMediaId(localPath);
                 return part;
             }
         }
@@ -2891,17 +2891,19 @@ public class WeComChannelAdapter extends AbstractChannelAdapter {
     private MessageContentPart buildInboundFilePart(String url, String aesKey, String msgId,
                                                      String fileNameHint, String conversationId) {
         if (getConfigBoolean("media_download_enabled", true)) {
-            InboundMediaResult r = downloadInboundMedia(url, aesKey, msgId, fileNameHint, conversationId);
+            InboundMediaDownloader.DownloadedMedia r =
+                    downloadInboundMedia(url, aesKey, msgId, fileNameHint, conversationId);
             if (r != null) {
+                String localPath = r.localPath().toString();
                 MessageContentPart part = new MessageContentPart();
                 part.setType("file");
                 part.setFileName(r.fileName());
                 part.setStoredName(r.storedName());
-                part.setPath(r.localPath());
+                part.setPath(localPath);
                 part.setFileUrl(r.fileUrl());
                 part.setFileSize(r.fileSize());
                 part.setContentType(r.contentType());
-                part.setMediaId(r.localPath());
+                part.setMediaId(localPath);
                 return part;
             }
         }
@@ -2916,285 +2918,43 @@ public class WeComChannelAdapter extends AbstractChannelAdapter {
     }
 
     /**
-     * Inbound-media download result. Carries every field the bubble renderer
-     * and the multimodal sidecar need so callers don't have to re-derive
-     * storedName / fileUrl from scratch.
-     *
-     * @param localPath   absolute filesystem path of the saved file
-     * @param storedName  the on-disk filename (matches the last segment of localPath)
-     * @param fileUrl     browser-servable URL: {@code /api/v1/chat/files/{convId}/{storedName}}
-     * @param fileSize    byte length after decryption
-     * @param fileName    human-readable display name (extension corrected by magic-byte sniff)
-     * @param contentType MIME type derived from magic bytes (or {@code application/octet-stream})
+     * Download + decrypt an inbound media attachment via the shared media
+     * pipeline, stored under {@code data/chat-uploads/{conversationId}/} so the
+     * existing {@code /api/v1/chat/files/...} endpoint can serve it back to the
+     * chat bubble. Returns the persisted, type-detected file, or {@code null}
+     * on download/decrypt failure (callers fall back to URL-only).
      */
-    record InboundMediaResult(String localPath, String storedName,
-                              String fileUrl, long fileSize, String fileName,
-                              String contentType) {}
-
-    /** Magic-byte sniff result. */
-    private record MagicSniff(String extension, String contentType) {
-        static final MagicSniff UNKNOWN = new MagicSniff(".bin", "application/octet-stream");
-    }
-
-    /**
-     * Best-effort MIME sniff from the first 12 bytes of a file. Covers the
-     * formats users routinely forward to bots (PDF, Office, archives, common
-     * image / audio / video). When nothing matches, returns
-     * {@link MagicSniff#UNKNOWN} so the caller falls back to {@code .bin}.
-     * <p>
-     * This exists because WeCom's {@code aibot_msg_callback} {@code file}
-     * body sometimes omits {@code filename} entirely (forwarded files in
-     * particular), and shipping the agent a part labelled {@code file.bin}
-     * makes downstream tools mis-route the content. Sniffing recovers a
-     * useful extension so PDF tools fire on PDFs.
-     */
-    private static MagicSniff sniffMagic(byte[] head) {
-        if (head == null || head.length < 4) return MagicSniff.UNKNOWN;
-        // PDF: %PDF
-        if (head[0] == 0x25 && head[1] == 0x50 && head[2] == 0x44 && head[3] == 0x46) {
-            return new MagicSniff(".pdf", "application/pdf");
-        }
-        // PNG: 89 50 4E 47
-        if (head[0] == (byte) 0x89 && head[1] == 0x50 && head[2] == 0x4E && head[3] == 0x47) {
-            return new MagicSniff(".png", "image/png");
-        }
-        // JPEG: FF D8 FF
-        if (head[0] == (byte) 0xFF && head[1] == (byte) 0xD8 && head[2] == (byte) 0xFF) {
-            return new MagicSniff(".jpg", "image/jpeg");
-        }
-        // GIF: "GIF8"
-        if (head[0] == 0x47 && head[1] == 0x49 && head[2] == 0x46 && head[3] == 0x38) {
-            return new MagicSniff(".gif", "image/gif");
-        }
-        // ZIP-based container: PK\x03\x04. Could be a plain ZIP, a JAR,
-        // an OOXML document (DOCX/XLSX/PPTX), an ODF document (ODT/ODS/ODP),
-        // or an EPUB. Magic-byte alone can't tell them apart — caller is
-        // expected to follow up with refineZipKind(fullBytes) to pick a
-        // specific type.
-        if (head[0] == 0x50 && head[1] == 0x4B && head[2] == 0x03 && head[3] == 0x04) {
-            return new MagicSniff(".zip", "application/zip");
-        }
-        // Legacy Office (DOC/XLS/PPT): D0 CF 11 E0 A1 B1 1A E1
-        if (head.length >= 8
-                && head[0] == (byte) 0xD0 && head[1] == (byte) 0xCF
-                && head[2] == 0x11 && head[3] == (byte) 0xE0
-                && head[4] == (byte) 0xA1 && head[5] == (byte) 0xB1
-                && head[6] == 0x1A && head[7] == (byte) 0xE1) {
-            return new MagicSniff(".doc", "application/msword");
-        }
-        // RTF: "{\rtf"
-        if (head.length >= 5
-                && head[0] == 0x7B && head[1] == 0x5C
-                && head[2] == 0x72 && head[3] == 0x74 && head[4] == 0x66) {
-            return new MagicSniff(".rtf", "application/rtf");
-        }
-        // 7z: 37 7A BC AF 27 1C
-        if (head.length >= 6
-                && head[0] == 0x37 && head[1] == 0x7A && head[2] == (byte) 0xBC
-                && head[3] == (byte) 0xAF && head[4] == 0x27 && head[5] == 0x1C) {
-            return new MagicSniff(".7z", "application/x-7z-compressed");
-        }
-        // RAR: "Rar!\x1A\x07"
-        if (head.length >= 6
-                && head[0] == 0x52 && head[1] == 0x61 && head[2] == 0x72
-                && head[3] == 0x21 && head[4] == 0x1A && head[5] == 0x07) {
-            return new MagicSniff(".rar", "application/x-rar-compressed");
-        }
-        // MP3: ID3v2 ("ID3") or MPEG sync 0xFFFB / 0xFFF3 / 0xFFF2
-        if (head[0] == 0x49 && head[1] == 0x44 && head[2] == 0x33) {
-            return new MagicSniff(".mp3", "audio/mpeg");
-        }
-        // MP4: "....ftyp" — bytes 4..7 == "ftyp"
-        if (head.length >= 8
-                && head[4] == 0x66 && head[5] == 0x74 && head[6] == 0x79 && head[7] == 0x70) {
-            return new MagicSniff(".mp4", "video/mp4");
-        }
-        // OGG: "OggS"
-        if (head[0] == 0x4F && head[1] == 0x67 && head[2] == 0x67 && head[3] == 0x53) {
-            return new MagicSniff(".ogg", "audio/ogg");
-        }
-        return MagicSniff.UNKNOWN;
-    }
-
-    /**
-     * Peek inside a ZIP container to distinguish OOXML (DOCX/XLSX/PPTX),
-     * ODF (ODT/ODS/ODP), JAR, and EPUB from a plain ZIP. Reads the local
-     * file headers in order via {@link ZipInputStream}; the discriminator
-     * entry is almost always within the first few entries (OOXML places
-     * {@code [Content_Types].xml} first, ODF places {@code mimetype} first),
-     * so we cap iteration at 16 entries to bound CPU.
-     * <p>
-     * Returns the original {@code zipDefault} sniff (plain
-     * {@code application/zip}) when no specific kind is detected — that's
-     * the right answer for actual ZIPs and unknown archive formats.
-     */
-    private static MagicSniff refineZipKind(byte[] fileData, MagicSniff zipDefault) {
-        if (fileData == null || fileData.length < 30) return zipDefault;
-        String mimetypeContent = null;
-        try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(fileData))) {
-            ZipEntry entry;
-            int seen = 0;
-            while ((entry = zis.getNextEntry()) != null && seen < 16) {
-                String name = entry.getName();
-                // OOXML — Office Open XML (Word/Excel/PowerPoint). Each format
-                // has a distinct top-level directory; we match on prefix
-                // because the entry order isn't guaranteed.
-                if (name.startsWith("word/")) {
-                    return new MagicSniff(".docx",
-                            "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
-                }
-                if (name.startsWith("xl/")) {
-                    return new MagicSniff(".xlsx",
-                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-                }
-                if (name.startsWith("ppt/")) {
-                    return new MagicSniff(".pptx",
-                            "application/vnd.openxmlformats-officedocument.presentationml.presentation");
-                }
-                // Visio (rare but worth catching)
-                if (name.startsWith("visio/")) {
-                    return new MagicSniff(".vsdx",
-                            "application/vnd.ms-visio.drawing");
-                }
-                // ODF marker: a {@code mimetype} entry that contains the full
-                // application/vnd.oasis.opendocument.* string — read its body
-                // and decide once we have it.
-                if ("mimetype".equals(name)) {
-                    byte[] buf = zis.readAllBytes();
-                    mimetypeContent = new String(buf, java.nio.charset.StandardCharsets.UTF_8).trim();
-                }
-                // JAR
-                if ("META-INF/MANIFEST.MF".equals(name)) {
-                    return new MagicSniff(".jar", "application/java-archive");
-                }
-                // EPUB always has META-INF/container.xml
-                if ("META-INF/container.xml".equals(name)) {
-                    return new MagicSniff(".epub", "application/epub+zip");
-                }
-                seen++;
-            }
-        } catch (Exception e) {
-            log.debug("[wecom] refineZipKind failed (treating as plain zip): {}", e.getMessage());
-            return zipDefault;
-        }
-        if (mimetypeContent != null) {
-            if (mimetypeContent.contains("opendocument.text")) {
-                return new MagicSniff(".odt", "application/vnd.oasis.opendocument.text");
-            }
-            if (mimetypeContent.contains("opendocument.spreadsheet")) {
-                return new MagicSniff(".ods", "application/vnd.oasis.opendocument.spreadsheet");
-            }
-            if (mimetypeContent.contains("opendocument.presentation")) {
-                return new MagicSniff(".odp", "application/vnd.oasis.opendocument.presentation");
-            }
-            if (mimetypeContent.contains("epub")) {
-                return new MagicSniff(".epub", "application/epub+zip");
-            }
-        }
-        return zipDefault;
-    }
-
-    /**
-     * Strip a trailing extension from a filename. {@code "image.jpg" → "image"};
-     * {@code "no_ext" → "no_ext"}; {@code "" → ""}.
-     */
-    private static String stripExtension(String name) {
-        if (name == null || name.isBlank()) return "";
-        int dot = name.lastIndexOf('.');
-        if (dot <= 0) return name;
-        return name.substring(0, dot);
-    }
-
-    /**
-     * Download + decrypt an inbound media attachment and stash it under
-     * {@code data/chat-uploads/{conversationId}/} so the existing
-     * {@code /api/v1/chat/files/...} endpoint can serve it back to the chat
-     * bubble. Returns a fully-populated {@link InboundMediaResult} on success
-     * or null on download/decrypt failure (callers fall back to URL-only).
-     * <p>
-     * Storing under chat-uploads rather than {@code data/media} means
-     * {@link MessageContentPart#getPath()} resolves to a real file for the
-     * vision sidecar AND {@code fileUrl} renders as a thumbnail in the Web
-     * mirror — instead of the WeCom-signed CDN URL whose 5-minute query-string
-     * signature expires before the browser can fetch it.
-     */
-    private InboundMediaResult downloadInboundMedia(String url, String aesKey, String msgId,
+    private InboundMediaDownloader.DownloadedMedia downloadInboundMedia(String url, String aesKey, String msgId,
                                                     String fileNameHint, String conversationId) {
-        try {
-            // Mirror ChatController.uploadRoot ("data/chat-uploads") so the
-            // serve endpoint at /api/v1/chat/files/{convId}/{storedName} works
-            // without any extra wiring. The conversationId may contain ':'
-            // (e.g. "wecom:XuZhanFu" or "wecom:group:abc"); Path resolution
-            // tolerates this on macOS/Linux but Windows would reject the
-            // colon — for now we keep parity with the existing chat-uploads
-            // layout and revisit if Windows support comes up.
-            Path uploadDir = Path.of("data", "chat-uploads", conversationId);
-            Files.createDirectories(uploadDir);
-
-            // 1. HTTP GET 下载文件
-            HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(url))
-                    .timeout(Duration.ofSeconds(30))
-                    .GET()
-                    .build();
-
-            HttpResponse<InputStream> response = httpClient.send(request, HttpResponse.BodyHandlers.ofInputStream());
-            byte[] encryptedData = response.body().readAllBytes();
-
-            byte[] fileData;
-            // 2. AES 解密（如果提供了 aesKey）
-            if (aesKey != null && !aesKey.isBlank()) {
-                fileData = decryptAes256Cbc(encryptedData, aesKey);
-            } else {
-                fileData = encryptedData;
-            }
-
-            // 3. Magic-byte sniff to recover a real extension when WeCom
-            //    didn't include filename in the body (forwarded files often
-            //    arrive nameless — saving them as "file.bin" misroutes the
-            //    agent because every PDF tool keys off the .pdf extension).
-            byte[] head = new byte[Math.min(12, fileData.length)];
-            System.arraycopy(fileData, 0, head, 0, head.length);
-            MagicSniff sniff = sniffMagic(head);
-            // ZIP container needs a deeper look — DOCX/XLSX/PPTX/ODF/EPUB/JAR
-            // all share the PK\x03\x04 magic. Peek inside the first few
-            // entries to pick the specific kind.
-            if (".zip".equals(sniff.extension())) {
-                sniff = refineZipKind(fileData, sniff);
-            }
-
-            // 4. Compose a URL-safe storedName. If the hint is generic
-            //    (e.g. "file.bin"), prefer the sniffed extension.
-            String urlHash = md5Hex(url).substring(0, 8);
-            String hintRaw = (fileNameHint == null ? "media" : fileNameHint).trim();
-            String safeName = hintRaw.replaceAll("[^a-zA-Z0-9._-]", "_");
-            if (safeName.isBlank()) safeName = "media";
-            // "file.bin" is the WeCom-no-filename sentinel; if magic gave us
-            // something better, replace the extension. Same when hint had no
-            // extension at all.
-            boolean hintIsGeneric = safeName.equals("file.bin") || safeName.equals("media")
-                    || !safeName.contains(".");
-            if (hintIsGeneric && !".bin".equals(sniff.extension())) {
-                safeName = stripExtension(safeName) + sniff.extension();
-            }
-            String storedName = "wecom_" + urlHash + "_" + safeName;
-            Path filePath = uploadDir.resolve(storedName);
-            Files.write(filePath, fileData);
-
-            String fileUrl = "/api/v1/chat/files/" + conversationId + "/" + storedName;
-            log.info("[wecom] Inbound media saved: {} ({} bytes, sniffed={}), serve URL={}",
-                    filePath, fileData.length, sniff.contentType(), fileUrl);
-            return new InboundMediaResult(
-                    filePath.toAbsolutePath().toString(),
-                    storedName,
-                    fileUrl,
-                    fileData.length,
-                    safeName,
-                    sniff.contentType());
-        } catch (Exception e) {
-            log.error("[wecom] Failed to download inbound media: {}", e.getMessage(), e);
-            return null;
-        }
+        // Store under data/chat-uploads/{conversationId} so the existing
+        // /api/v1/chat/files/{convId}/{storedName} endpoint serves the file
+        // back to the chat bubble — the WeCom CDN URL carries a short-lived
+        // signature that expires before a browser can fetch it. The shared
+        // pipeline owns retry/backoff, magic-byte type detection, and the
+        // dedup-named write; the WeCom-specific AES-256-CBC decrypt stays here
+        // inside the byte source so a fetch + decrypt is retried as one unit.
+        Path uploadDir = Path.of("data", "chat-uploads", conversationId);
+        String hint = (fileNameHint == null || fileNameHint.isBlank()) ? null : fileNameHint;
+        return InboundMediaDownloader.download(
+                () -> {
+                    HttpRequest request = HttpRequest.newBuilder()
+                            .uri(URI.create(url))
+                            .timeout(Duration.ofSeconds(30))
+                            .GET()
+                            .build();
+                    HttpResponse<InputStream> response =
+                            httpClient.send(request, HttpResponse.BodyHandlers.ofInputStream());
+                    byte[] encrypted = response.body().readAllBytes();
+                    return (aesKey != null && !aesKey.isBlank())
+                            ? decryptAes256Cbc(encrypted, aesKey)
+                            : encrypted;
+                },
+                hint,
+                uploadDir,
+                "wecom",
+                url,
+                storedName -> "/api/v1/chat/files/" + conversationId + "/" + storedName)
+                .orElse(null);
     }
 
     /**
