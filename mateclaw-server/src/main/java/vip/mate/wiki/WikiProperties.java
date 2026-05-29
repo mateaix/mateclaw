@@ -270,4 +270,17 @@ public class WikiProperties {
      * top-3 RRF hit but doesn't dominate it.
      */
     private double relationBoostLambda = 0.05;
+
+    /**
+     * Feature flag for the cascade-delete / cascade-rename pipeline: when a
+     * page is deleted (or renamed), find every other page that linked to it
+     * via {@code [[slug]]} and rewrite those references so they don't dangle.
+     * <p>
+     * Defaults to {@code true} — the legacy row-only delete left dangling
+     * {@code [[slug]]} markers behind, which is exactly the bug class this
+     * RFC closes. Set to {@code false} only as a temporary kill-switch if a
+     * cascade pass starts mangling referrer content (which would be a real
+     * bug to chase down, not a steady state).
+     */
+    private boolean cascadeDeleteEnabled = true;
 }

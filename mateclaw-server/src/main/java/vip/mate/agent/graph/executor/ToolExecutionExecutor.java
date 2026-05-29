@@ -14,6 +14,9 @@ import vip.mate.agent.context.StructuredTruncator;
 import vip.mate.agent.graph.state.DirectToolOutput;
 import vip.mate.agent.graph.state.SourceEvidenceLedger;
 import vip.mate.approval.ApprovalWorkflowService;
+import vip.mate.approval.grant.AutoApproveResult;
+import vip.mate.approval.grant.WorkspaceLookupCache;
+import vip.mate.approval.grant.service.ApprovalGrantResolver;
 import vip.mate.channel.web.ChatStreamTracker;
 import vip.mate.tool.guard.ToolExecutionGuardHelper;
 import vip.mate.tool.guard.ToolGuard;
@@ -224,6 +227,38 @@ public class ToolExecutionExecutor {
 
     public void setAuditEventService(vip.mate.audit.service.AuditEventService s) {
         this.auditEventService = s;
+    }
+
+    /**
+     * Auto-grant lookup cache. Optional — legacy constructors leave it
+     * {@code null} and {@code evaluateGuard()} falls back to the original
+     * human-approval path. Both this and {@link #approvalGrantResolver} must be
+     * non-null for auto-grant to engage; either being null disables the resolver
+     * branch entirely (see {@code autoGrantWired} in {@code evaluateGuard}).
+     * Not {@code final} so existing constructors that don't take these
+     * dependencies stay source-compatible without restructuring.
+     */
+    private WorkspaceLookupCache workspaceLookupCache;
+
+    /** Auto-grant resolver. Optional; see {@link #workspaceLookupCache} note. */
+    private ApprovalGrantResolver approvalGrantResolver;
+
+    /**
+     * Constructor used by {@code AgentGraphBuilder} after PR-1: takes the auto-grant
+     * dependencies on top of the standard 7 params. Legacy constructors continue
+     * to work unchanged (they simply leave the two new fields {@code null}).
+     */
+    public ToolExecutionExecutor(AgentToolSet toolSet, ToolGuardService toolGuardService,
+                                  ApprovalWorkflowService approvalService, ChatStreamTracker streamTracker,
+                                  vip.mate.config.ToolTimeoutProperties toolTimeoutProperties,
+                                  ToolResultStorage resultStorage,
+                                  vip.mate.tool.ToolConcurrencyRegistry concurrencyRegistry,
+                                  WorkspaceLookupCache workspaceLookupCache,
+                                  ApprovalGrantResolver approvalGrantResolver) {
+        this(toolSet, toolGuardService, null, approvalService, streamTracker,
+                toolTimeoutProperties, resultStorage, concurrencyRegistry);
+        this.workspaceLookupCache = workspaceLookupCache;
+        this.approvalGrantResolver = approvalGrantResolver;
     }
 
     /**
@@ -899,7 +934,18 @@ public class ToolExecutionExecutor {
                                          String conversationId, String agentId,
                                          List<AssistantMessage.ToolCall> allToolCalls, int currentIndex,
                                          List<GraphEventPublisher.GraphEvent> events, String requesterId) {
-        ToolInvocationContext guardCtx = ToolInvocationContext.of(toolName, arguments, conversationId, agentId);
+        // Auto-grant requires BOTH the lookup cache and the resolver to be wired.
+        // Legacy constructors leave them null; in that case we skip workspace
+        // resolution and skip the resolver block, falling back to the original
+        // human-approval path.
+        boolean autoGrantWired = approvalGrantResolver != null && workspaceLookupCache != null;
+        Long workspaceId = autoGrantWired
+                ? workspaceLookupCache.resolveByConversation(conversationId)
+                : null;
+        ToolInvocationContext guardCtx = ToolInvocationContext.of(
+                toolName, java.util.Map.of(), arguments,
+                conversationId, agentId,
+                /*channelType*/ null, requesterId, workspaceId);
 
         if (toolGuardService != null) {
             GuardEvaluation evaluation = toolGuardService.evaluate(guardCtx);
@@ -912,6 +958,27 @@ public class ToolExecutionExecutor {
             }
 
             if (evaluation.shouldRequireApproval()) {
+                // Auto-grant decision layer: only engages when both deps are wired.
+                // HARD_BLOCK short-circuits to a blocked decision (no approval banner).
+                // APPROVED skips createPending() and lets the tool run as normal.
+                // REQUIRES_HUMAN falls through to the existing manual approval path.
+                if (autoGrantWired) {
+                    AutoApproveResult auto = approvalGrantResolver.tryAutoApprove(guardCtx, evaluation);
+                    if (auto.isHardBlocked()) {
+                        String msg = "[安全拦截] safety floor matched: " + auto.reason()
+                                + " — this command cannot be executed even with approval. "
+                                + "Please use a safer alternative.";
+                        log.warn("[ToolExecutor] Auto-grant HARD_BLOCK: tool={}, reason={}", toolName, auto.reason());
+                        events.add(GraphEventPublisher.toolComplete(toolCall.id(), toolName, msg, false));
+                        return GuardDecision.blocked(msg);
+                    }
+                    if (auto.isApproved()) {
+                        log.info("[ToolExecutor] Auto-grant APPROVED: tool={}, grantId={}", toolName, auto.grantId());
+                        return GuardDecision.allowed();
+                    }
+                    // requiresHuman → fall through to legacy human-approval path below.
+                }
+
                 List<AssistantMessage.ToolCall> remaining = allToolCalls.subList(currentIndex + 1, allToolCalls.size());
                 String approvalResponse = ToolExecutionGuardHelper.handleToolApproval(
                         toolCall, toolName, arguments, evaluation,

@@ -2,6 +2,8 @@ package vip.mate.wiki.service;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import vip.mate.agent.model.AgentEntity;
+import vip.mate.agent.repository.AgentMapper;
 import vip.mate.wiki.model.WikiKnowledgeBaseEntity;
 import vip.mate.wiki.repository.WikiKnowledgeBaseMapper;
 
@@ -10,6 +12,7 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -24,8 +27,9 @@ import static org.mockito.Mockito.when;
 class WikiKnowledgeBaseServiceTest {
 
     private final WikiKnowledgeBaseMapper kbMapper = mock(WikiKnowledgeBaseMapper.class);
+    private final AgentMapper agentMapper = mock(AgentMapper.class);
     private final WikiKnowledgeBaseService service = new WikiKnowledgeBaseService(
-            kbMapper, null, null, null, null, null);
+            kbMapper, null, null, null, null, null, agentMapper);
 
     private static WikiKnowledgeBaseEntity kb(long id, Long agentId) {
         return kb(id, agentId, null);
@@ -39,14 +43,29 @@ class WikiKnowledgeBaseServiceTest {
         return entity;
     }
 
+    private static WikiKnowledgeBaseEntity kb(long id, Long agentId, Long workspaceId, String name) {
+        WikiKnowledgeBaseEntity entity = kb(id, agentId, name);
+        entity.setWorkspaceId(workspaceId);
+        return entity;
+    }
+
+    private static AgentEntity agent(long id, Long workspaceId, Long primaryKbId) {
+        AgentEntity entity = new AgentEntity();
+        entity.setId(id);
+        entity.setWorkspaceId(workspaceId);
+        entity.setPrimaryKbId(primaryKbId);
+        return entity;
+    }
+
     @Test
     @DisplayName("prefers the agent's bound KB even when a shared KB was updated more recently")
     void prefersBoundKbOverNewerSharedKb() {
+        when(agentMapper.selectById(7L)).thenReturn(agent(7L, 1L, 100L));
         // listByAgentId order is update_time DESC: two shared KBs precede the bound one.
         when(kbMapper.selectList(any())).thenReturn(List.of(
-                kb(900L, null),
-                kb(800L, null),
-                kb(100L, 7L)));
+                kb(900L, null, 1L, "Shared"),
+                kb(800L, 8L, 1L, "Legacy Other"),
+                kb(100L, null, 1L, "Primary")));
 
         assertThat(service.resolvePrimaryKb(7L)).isNotNull();
         assertThat(service.resolvePrimaryKb(7L).getId()).isEqualTo(100L);
@@ -55,9 +74,34 @@ class WikiKnowledgeBaseServiceTest {
     @Test
     @DisplayName("falls back to the most recent shared KB when the agent has no bound KB")
     void fallsBackToSharedKbWhenNoneBound() {
+        when(agentMapper.selectById(7L)).thenReturn(agent(7L, 1L, null));
         when(kbMapper.selectList(any())).thenReturn(List.of(
-                kb(900L, null),
-                kb(800L, null)));
+                kb(900L, 8L, 1L, "Most Recent"),
+                kb(800L, null, 1L, "Older")));
+
+        assertThat(service.resolvePrimaryKb(7L).getId()).isEqualTo(900L);
+    }
+
+    @Test
+    @DisplayName("two agents can share the same primary KB")
+    void twoAgentsCanSharePrimaryKb() {
+        when(agentMapper.selectById(7L)).thenReturn(agent(7L, 1L, 100L));
+        when(agentMapper.selectById(8L)).thenReturn(agent(8L, 1L, 100L));
+        when(kbMapper.selectList(any())).thenReturn(List.of(
+                kb(100L, null, 1L, "Shared Primary"),
+                kb(900L, null, 1L, "Fallback")));
+
+        assertThat(service.resolvePrimaryKb(7L).getId()).isEqualTo(100L);
+        assertThat(service.resolvePrimaryKb(8L).getId()).isEqualTo(100L);
+    }
+
+    @Test
+    @DisplayName("primary KB pointing outside the agent workspace falls back")
+    void primaryKbOutsideWorkspaceFallsBack() {
+        when(agentMapper.selectById(7L)).thenReturn(agent(7L, 1L, 200L));
+        when(kbMapper.selectList(any())).thenReturn(List.of(
+                kb(900L, null, 1L, "Workspace Fallback"),
+                kb(200L, null, 2L, "Wrong Workspace")));
 
         assertThat(service.resolvePrimaryKb(7L).getId()).isEqualTo(900L);
     }
@@ -167,13 +211,16 @@ class WikiKnowledgeBaseServiceTest {
     @Test
     @DisplayName("findVisibleById returns the KB only when it is in the agent's visibility set")
     void findVisibleByIdGate() {
+        when(agentMapper.selectById(7L)).thenReturn(agent(7L, 1L, null));
         when(kbMapper.selectList(any())).thenReturn(List.of(
                 kb(100L, 7L, "Bound KB"),
-                kb(900L, null, "Shared KB")));
+                kb(900L, null, "Shared KB"),
+                kb(800L, 8L, "Other Agent Primary KB")));
 
         // Visible: returned.
         assertThat(service.findVisibleById(7L, 100L)).isNotNull();
         assertThat(service.findVisibleById(7L, 900L)).isNotNull();
+        assertThat(service.findVisibleById(7L, 800L)).isNotNull();
 
         // Not in visibility set: deliberate fail-closed gate so an LLM
         // can't pivot to an arbitrary KB by guessing an id.

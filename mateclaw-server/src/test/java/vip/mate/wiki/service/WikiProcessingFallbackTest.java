@@ -54,16 +54,18 @@ class WikiProcessingFallbackTest {
         modelProviderService = mock(ModelProviderService.class);
         healthTracker = mock(ProviderHealthTracker.class);
 
+        ObjectMapper om = new ObjectMapper();
         service = new WikiProcessingService(
                 mock(WikiKnowledgeBaseService.class),
                 mock(WikiRawMaterialService.class),
                 mock(WikiPageService.class),
                 mock(WikiChunkService.class),
                 mock(WikiEmbeddingService.class),
+                new WikiLinkService(om),
                 new WikiProperties(),
                 modelConfigService,
                 agentGraphBuilder,
-                new ObjectMapper(),
+                om,
                 mock(WikiProgressBus.class),
                 mock(WikiCitationService.class),
                 mock(ApplicationEventPublisher.class));

@@ -339,7 +339,15 @@ MERGE INTO mate_model_config (id, name, provider, model_name, description, tempe
 (1000000273, 'Claude Sonnet 4.6', 'openrouter', 'anthropic/claude-sonnet-4-6', 'Claude Sonnet 4.6 via OpenRouter', NULL, 4096, NULL, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
 -- RFC-062: Claude 4.7 via Claude Code OAuth subscription (Pro/Max plan).
 (1000000280, 'Claude Opus 4.7', 'anthropic-claude-code', 'claude-opus-4-7', 'Claude Opus 4.7 via Claude Code Pro/Max subscription', NULL, 4096, NULL, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000281, 'Claude Sonnet 4.6', 'anthropic-claude-code', 'claude-sonnet-4-6', 'Claude Sonnet 4.6 via Claude Code Pro/Max subscription', NULL, 4096, NULL, TRUE, TRUE, FALSE, NOW(), NOW(), 0);
+(1000000281, 'Claude Sonnet 4.6', 'anthropic-claude-code', 'claude-sonnet-4-6', 'Claude Sonnet 4.6 via Claude Code Pro/Max subscription', NULL, 4096, NULL, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+-- Claude 4.8 series (direct Anthropic + OpenRouter, including the -fast variant).
+-- Shares 4.7's strict sampling contract (temperature/top_p/top_k must be NULL)
+-- and the new xhigh thinking tier — handled in AnthropicChatModelBuilder.
+(1000000290, 'Claude Opus 4.8', 'anthropic', 'claude-opus-4-8', 'Anthropic Claude Opus 4.8 (xhigh adaptive thinking)', NULL, 4096, NULL, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000291, 'Claude Opus 4.8 Fast', 'anthropic', 'claude-opus-4-8-fast', 'Claude Opus 4.8 fast variant (higher output speed, 2x pricing)', NULL, 4096, NULL, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000292, 'Claude Opus 4.8', 'openrouter', 'anthropic/claude-opus-4-8', 'Claude Opus 4.8 via OpenRouter', NULL, 4096, NULL, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000293, 'Claude Opus 4.8 Fast', 'openrouter', 'anthropic/claude-opus-4-8-fast', 'Claude Opus 4.8 fast variant via OpenRouter', NULL, 4096, NULL, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000294, 'Claude Opus 4.8', 'anthropic-claude-code', 'claude-opus-4-8', 'Claude Opus 4.8 via Claude Code Pro/Max subscription', NULL, 4096, NULL, TRUE, TRUE, FALSE, NOW(), NOW(), 0);
 
 -- Default system settings
 MERGE INTO mate_system_setting (id, setting_key, setting_value, description, create_time, update_time)

@@ -128,6 +128,18 @@ public class AgentGraphBuilder {
     private final vip.mate.goal.config.GoalProperties goalProperties;
 
     /**
+     * Auto-grant resolver wired into the executor so an active
+     * {@code mate_approval_grant} row can skip {@code createPending()} for matching
+     * tool calls. Together with {@link #workspaceLookupCache}, these two deps form
+     * the auto-grant entry point; the executor's null-guard turns the feature off
+     * cleanly if either is missing.
+     */
+    private final vip.mate.approval.grant.service.ApprovalGrantResolver approvalGrantResolver;
+
+    /** Conversation→workspaceId lookup cache; see {@link #approvalGrantResolver}. */
+    private final vip.mate.approval.grant.WorkspaceLookupCache workspaceLookupCache;
+
+    /**
      * Optional audit pipeline. Setter injection (rather than a constructor
      * parameter) keeps existing constructor-based wiring + tests intact.
      * When present, the executor receives it so child-agent denied-tool
@@ -510,7 +522,10 @@ public class AgentGraphBuilder {
                     streamTracker, fallbackChain, llmCacheMetricsAggregator, providerHealthTracker,
                     primaryModelConfig != null ? primaryModelConfig.getProvider() : null,
                     providerPool);
-            ToolExecutionExecutor executor = new ToolExecutionExecutor(toolSet, toolGuardService, approvalService, streamTracker, toolTimeoutProperties, toolResultStorage, toolConcurrencyRegistry);
+            ToolExecutionExecutor executor = new ToolExecutionExecutor(
+                    toolSet, toolGuardService, approvalService, streamTracker,
+                    toolTimeoutProperties, toolResultStorage, toolConcurrencyRegistry,
+                    workspaceLookupCache, approvalGrantResolver);
             // Issue #46: enable skill-aware "Tool not found" hint so when the
             // LLM mis-calls a skill name as a tool, the response tells it
             // the right invocation pattern instead of a dead-end error.
@@ -752,7 +767,10 @@ public class AgentGraphBuilder {
                     streamTracker, fallbackChain, llmCacheMetricsAggregator, providerHealthTracker,
                     primaryModelConfig != null ? primaryModelConfig.getProvider() : null,
                     providerPool);
-            ToolExecutionExecutor executor = new ToolExecutionExecutor(toolSet, toolGuardService, approvalService, streamTracker, toolTimeoutProperties, toolResultStorage, toolConcurrencyRegistry);
+            ToolExecutionExecutor executor = new ToolExecutionExecutor(
+                    toolSet, toolGuardService, approvalService, streamTracker,
+                    toolTimeoutProperties, toolResultStorage, toolConcurrencyRegistry,
+                    workspaceLookupCache, approvalGrantResolver);
             // Issue #46: enable skill-aware "Tool not found" hint so when the
             // LLM mis-calls a skill name as a tool, the response tells it
             // the right invocation pattern instead of a dead-end error.

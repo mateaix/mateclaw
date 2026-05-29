@@ -2,6 +2,10 @@
 
 {raw_title}
 
+## 已有 Wiki 页面索引（用于挑选 related_pages 白名单；每行格式 `[[slug]] — 标题 — 摘要`）
+
+{existing_pages}
+
 ## 文档内容（节选，用于全局结构分析）
 
 {text_sample}
@@ -9,3 +13,5 @@
 ---
 
 请分析以上文档，输出概念地图 JSON。只输出 JSON，不要 markdown 代码块。
+- `related_pages` 中的每个 slug 必须 100% 来自上文「已有 Wiki 页面索引」
+- 没有相关已有页面时 `related_pages` 返回 `[]`

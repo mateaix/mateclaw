@@ -225,6 +225,10 @@
               {{ t('agents.tabs.providers', 'Providers') }}
               <span v-if="selectedProviderIds.length" class="tab-badge">{{ selectedProviderIds.length }}</span>
             </button>
+            <button v-if="editingAgent" class="modal-tab" :class="{ active: modalTab === 'wiki' }" @click="modalTab = 'wiki'">
+              {{ t('agents.tabs.wiki', 'Wiki') }}
+              <span v-if="selectedKBId" class="tab-badge">1</span>
+            </button>
           </div>
 
           <!-- Basic Tab -->
@@ -552,6 +556,43 @@
               >+ {{ p.name }}</button>
             </div>
           </div>
+
+          <!-- Wiki / Knowledge Base Tab -->
+          <div v-if="modalTab === 'wiki'" class="binding-tab">
+            <div class="binding-intro">
+              <span class="binding-intro__kicker">{{ t('agents.binding.wikiKicker') }}</span>
+              <p class="binding-intro__tagline">{{ t('agents.binding.wikiTagline') }}</p>
+            </div>
+            <p class="binding-hint">{{ t('agents.binding.wikiHint') }}</p>
+            <div v-if="availableKBs.length === 0" class="binding-empty">{{ t('agents.binding.noKBs') }}</div>
+            <div v-else class="binding-list">
+              <label
+                class="binding-item"
+                :class="{ selected: selectedKBId === null }"
+              >
+                <input type="radio" name="kb-select" :checked="selectedKBId === null" class="binding-checkbox" @change="selectedKBId = null" />
+                <span class="binding-icon">🚫</span>
+                <div class="binding-info">
+                  <span class="binding-name">{{ t('agents.binding.noKB') }}</span>
+                </div>
+              </label>
+              <label
+                v-for="kb in availableKBs"
+                :key="kb.id"
+                class="binding-item"
+                :class="{ selected: selectedKBId === String(kb.id) }"
+              >
+                <input type="radio" name="kb-select" :checked="selectedKBId === String(kb.id)" class="binding-checkbox" @change="selectedKBId = String(kb.id)" />
+                <span class="binding-icon">📚</span>
+                <div class="binding-info">
+                  <span class="binding-name">{{ kb.name }}</span>
+                  <span v-if="kb.description" class="binding-desc">{{ kb.description?.slice(0, 80) }}</span>
+                </div>
+                <!-- binding-version class reused for pageCount badge (same positioning as skill version) -->
+                <span v-if="kb.pageCount != null" class="binding-version">{{ t('agents.binding.wikiPages', { count: kb.pageCount }, `${kb.pageCount} pages`) }}</span>
+              </label>
+            </div>
+          </div>
         </div>
         <div class="modal-footer">
           <button class="btn-secondary" @click="closeModal">{{ t('common.cancel') }}</button>
@@ -570,7 +611,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { mcToast } from '@/composables/useMcToast'
 import { mcConfirm } from '@/components/common/useConfirm'
-import { agentApi, agentBindingApi, modelApi, skillApi, toolApi, templateApi, liveApi } from '@/api/index'
+import { agentApi, agentBindingApi, modelApi, skillApi, toolApi, templateApi, liveApi, wikiApi } from '@/api/index'
 import type { Agent } from '@/types/index'
 import SkillIcon from '@/components/common/SkillIcon.vue'
 import SkillIconPicker from '@/components/common/SkillIconPicker.vue'
@@ -597,7 +638,7 @@ const searchText = ref('')
 const activeFilter = ref('all')
 const showModal = ref(false)
 const editingAgent = ref<Agent | null>(null)
-const modalTab = ref<'basic' | 'skills' | 'tools' | 'providers'>('basic')
+const modalTab = ref<'basic' | 'skills' | 'tools' | 'providers' | 'wiki'>('basic')
 /** RFC-090 §9.2 调整 B — Tool picker is an Advanced bypass; collapsed by
  *  default but stays open as soon as the agent has any direct tool
  *  bindings, so existing users don't lose visibility on their picks. */
@@ -752,6 +793,9 @@ function onSkillToggle(skillId: number | string, event: Event) {
 }
 const selectedSkillIds = ref<number[]>([])
 const selectedToolNames = ref<string[]>([])
+// Agent-level primary wiki KB. KB visibility remains workspace-wide.
+const availableKBs = ref<any[]>([])
+const selectedKBId = ref<string | null>(null)
 // RFC-009 PR-3: per-agent provider preference order
 const availableProviders = ref<{ id: string; name: string }[]>([])
 const selectedProviderIds = ref<string[]>([])
@@ -786,7 +830,10 @@ const defaultForm = (): Partial<Agent> & { name: string; defaultThinkingLevel: s
   tags: '',
   enabled: true,
   defaultThinkingLevel: null,
-  workspaceBasePath: null,
+  // Agent type declares this as `string | undefined`; using `undefined` keeps
+  // the Partial<Agent> shape happy without widening the type to allow null.
+  workspaceBasePath: undefined,
+  primaryKbId: null,
   // Issue #184 — explicit opt-out flags. Default false matches the legacy
   // "zero rows = inherit global default" contract for newly-created agents.
   skillsDisabled: false,
@@ -912,6 +959,8 @@ function openBlankCreateModal() {
   selectedSkillIds.value = []
   selectedToolNames.value = []
   selectedProviderIds.value = []
+  availableKBs.value = []
+  selectedKBId.value = null
   showModal.value = true
 }
 
@@ -978,7 +1027,8 @@ async function openEditModal(agent: Agent) {
     tags: agent.tags || '',
     enabled: agent.enabled,
     defaultThinkingLevel: (agent as any).defaultThinkingLevel || null,
-    workspaceBasePath: agent.workspaceBasePath || null,
+    workspaceBasePath: agent.workspaceBasePath || undefined,
+    primaryKbId: agent.primaryKbId != null ? String(agent.primaryKbId) : null,
     skillsDisabled: agent.skillsDisabled === true,
     toolsDisabled: agent.toolsDisabled === true,
   }
@@ -1020,7 +1070,20 @@ async function openEditModal(agent: Agent) {
       .filter((b: any) => b.enabled)
       .map((b: any) => b.providerId)
   } catch {
-    // Non-blocking: binding data load failure doesn't prevent editing basic info
+    mcToast.error(t('agents.messages.loadFailed'))
+  }
+
+  // KB request is caught separately so its error message is accurate.
+  try {
+    const kbsRes: any = await wikiApi.listBindableKBs()
+    const bindableKBs = (kbsRes.data || []) as any[]
+    availableKBs.value = bindableKBs
+    const primaryKbId = agent.primaryKbId != null ? String(agent.primaryKbId) : null
+    selectedKBId.value = primaryKbId && bindableKBs.some((kb: any) => String(kb.id) === primaryKbId)
+      ? primaryKbId
+      : null
+  } catch {
+    mcToast.error(t('agents.binding.wikiLoadFailed'))
   }
 }
 
@@ -1029,6 +1092,8 @@ function closeModal() {
   editingAgent.value = null
   skillBindingSearch.value = ''
   toolBindingSearch.value = ''
+  availableKBs.value = []
+  selectedKBId.value = null
 }
 
 async function saveAgent() {
@@ -1037,7 +1102,7 @@ async function saveAgent() {
     // sending to the backend — the schema is unchanged, only the editor
     // exposes the H2 sections to the user.
     const serialized = serializePrompt(profileForm.value)
-    const payload = { ...form.value, systemPrompt: serialized }
+    const payload = { ...form.value, systemPrompt: serialized, primaryKbId: selectedKBId.value }
 
     let agentId: string | number
     if (editingAgent.value) {
@@ -1526,6 +1591,7 @@ html.dark .seg-count.warn {
 .binding-info { flex: 1; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .binding-name { font-size: 14px; font-weight: 500; color: var(--mc-text-primary); }
 .binding-desc { font-size: 12px; color: var(--mc-text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* reused for KB pageCount badge in wiki tab */
 .binding-version { font-size: 11px; color: var(--mc-text-tertiary); flex-shrink: 0; }
 .binding-type-badge {
   font-size: 10px; padding: 2px 6px; border-radius: 4px; flex-shrink: 0;

@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="vip.mate.approval.grant.repository.ApprovalGrantMapper">
+
+    <!--
+        Returns the best-matching active grant for a tool invocation, or no row if none applies.
+
+        Severity ordering is expressed inline with a CASE expression rather than a database
+        function (no FIELD() on H2, no severity_rank() in either dialect), so the same SQL
+        runs on H2 and MySQL 8 unchanged.
+
+        WORKSPACE-scope matches against {workspaceScopeId} — pre-converted to a string on the
+        Java side (`String.valueOf(workspaceId)`), so the SQL itself avoids CAST(... AS VARCHAR/CHAR).
+    -->
+    <select id="findFirstMatching"
+            resultType="vip.mate.approval.grant.entity.ApprovalGrant">
+        SELECT *
+          FROM mate_approval_grant
+         WHERE workspace_id = #{workspaceId}
+           AND revoked = 0
+           AND deleted = 0
+           AND (expire_at IS NULL OR expire_at &gt; CURRENT_TIMESTAMP)
+           AND
+               CASE max_severity
+                   WHEN 'HIGH'   THEN 3
+                   WHEN 'MEDIUM' THEN 2
+                   WHEN 'LOW'    THEN 1
+                   ELSE 0
+               END
+           &gt;=
+               CASE #{evalSeverity}
+                   WHEN 'HIGH'   THEN 3
+                   WHEN 'MEDIUM' THEN 2
+                   WHEN 'LOW'    THEN 1
+                   ELSE 0
+               END
+           AND (tool_name IS NULL OR tool_name = #{toolName})
+           AND (
+                 rule_id IS NULL
+                 <if test="candidateRuleIds != null and !candidateRuleIds.isEmpty()">
+                     OR rule_id IN
+                     <foreach collection="candidateRuleIds" item="rid" open="(" close=")" separator=",">
+                         #{rid}
+                     </foreach>
+                 </if>
+               )
+           AND (
+                    (scope_type = 'CONVERSATION' AND scope_id = #{conversationId})
+                 OR (scope_type = 'AGENT'        AND scope_id = #{agentId})
+                 OR (scope_type = 'USER'         AND scope_id = #{userId})
+                 OR (scope_type = 'WORKSPACE'    AND scope_id = #{workspaceScopeId})
+               )
+         ORDER BY
+                CASE scope_type
+                    WHEN 'CONVERSATION' THEN 1
+                    WHEN 'AGENT'        THEN 2
+                    WHEN 'USER'         THEN 3
+                    WHEN 'WORKSPACE'    THEN 4
+                END,
+                CASE WHEN rule_id   IS NOT NULL THEN 0 ELSE 1 END,
+                CASE WHEN tool_name IS NOT NULL THEN 0 ELSE 1 END
+         LIMIT 1
+    </select>
+
+    <!--
+        Soft-revokes every active UNTIL_CONVERSATION_END grant attached to the conversation.
+        Called from ConversationLifecycleListener on ConversationDeletedEvent.
+    -->
+    <update id="revokeUntilConversationEnd">
+        UPDATE mate_approval_grant
+           SET revoked = 1,
+               revoked_at = CURRENT_TIMESTAMP,
+               update_time = CURRENT_TIMESTAMP,
+               note = CASE
+                          WHEN note IS NULL OR note = '' THEN '(auto-revoked on conversation delete)'
+                          ELSE CONCAT(note, ' (auto-revoked on conversation delete)')
+                      END
+         WHERE deleted = 0
+           AND revoked = 0
+           AND grant_kind = 'UNTIL_CONVERSATION_END'
+           AND scope_type = 'CONVERSATION'
+           AND scope_id = #{conversationId}
+    </update>
+
+</mapper>
