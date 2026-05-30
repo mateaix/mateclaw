@@ -1429,7 +1429,7 @@ public class WikiProcessingService {
             String actualSlug = existingByCanonical.getSlug();
             pageService.updatePageByAi(kbId, actualSlug, content, pageSummary, rawId);
             pageService.mergeSourceLineage(existingByCanonical.getId(), rawId, raw.getTitle());
-            afterPagePersisted(existingByCanonical.getId(), kbId, pageType, metadataNode, dependsOnNode);
+            afterPagePersisted(existingByCanonical.getId(), kbId, pageType, metadataNode, dependsOnNode, true);
             log.info("[Wiki] Phase B create slug='{}' canonical-matches existing '{}', updated",
                     slug, actualSlug);
             return false;
@@ -1446,7 +1446,7 @@ public class WikiProcessingService {
                 if (winner != null) {
                     pageService.updatePageByAi(kbId, winnerSlug, content, pageSummary, rawId);
                     pageService.mergeSourceLineage(winner.getId(), rawId, raw.getTitle());
-                    afterPagePersisted(winner.getId(), kbId, pageType, metadataNode, dependsOnNode);
+                    afterPagePersisted(winner.getId(), kbId, pageType, metadataNode, dependsOnNode, true);
                     log.info("[Wiki] Phase B create slug='{}' lost slug-claim race to '{}', updated",
                             slug, winnerSlug);
                     return false;
@@ -1462,7 +1462,7 @@ public class WikiProcessingService {
         if (existing != null) {
             pageService.updatePageByAi(kbId, slug, content, pageSummary, rawId);
             pageService.mergeSourceLineage(existing.getId(), rawId, raw.getTitle());
-            afterPagePersisted(existing.getId(), kbId, pageType, metadataNode, dependsOnNode);
+            afterPagePersisted(existing.getId(), kbId, pageType, metadataNode, dependsOnNode, true);
             log.info("[Wiki] Phase B create page slug='{}' done (updated existing)", slug);
             return false;
         }
@@ -1471,7 +1471,7 @@ public class WikiProcessingService {
         try {
             WikiPageEntity created = pageService.createPage(kbId, slug, title, content, pageSummary, sourceRawIds, pageType);
             pageService.mergeSourceLineage(created.getId(), rawId, raw.getTitle());
-            afterPagePersisted(created.getId(), kbId, pageType, metadataNode, dependsOnNode);
+            afterPagePersisted(created.getId(), kbId, pageType, metadataNode, dependsOnNode, false);
             log.info("[Wiki] Phase B create page slug='{}' done (created)", slug);
             citationService.buildCitationsAsync(created.getId(), kbId);
             return true;
@@ -1480,7 +1480,7 @@ public class WikiProcessingService {
             pageService.updatePageByAi(kbId, slug, content, pageSummary, rawId);
             WikiPageEntity raced = pageService.getBySlug(kbId, slug);
             if (raced != null) {
-                afterPagePersisted(raced.getId(), kbId, pageType, metadataNode, dependsOnNode);
+                afterPagePersisted(raced.getId(), kbId, pageType, metadataNode, dependsOnNode, true);
             }
             log.info("[Wiki] Phase B create page slug='{}' lost INSERT race -> updated existing", slug);
             return false;
@@ -1500,7 +1500,7 @@ public class WikiProcessingService {
      * the same metadata and trigger handling as a clean create.
      */
     private void afterPagePersisted(Long pageId, Long kbId, String pageType,
-                                    JsonNode metadataNode, JsonNode dependsOnNode) {
+                                    JsonNode metadataNode, JsonNode dependsOnNode, boolean isUpdate) {
         applyValidatedMetadata(pageId, kbId, pageType, metadataNode);
         deriveKnowledgeLayer(pageId, kbId, pageType);
         applyDependencies(pageId, kbId, pageType, dependsOnNode);
@@ -1509,6 +1509,13 @@ public class WikiProcessingService {
         // downstream, so firing on update paths is safe.
         if (eventPublisher != null && pageType != null && !pageType.isBlank()) {
             eventPublisher.publishEvent(new vip.mate.wiki.event.WikiPageCreatedEvent(kbId, pageType));
+        }
+        // When an existing fact page is updated, propagate staleness to the
+        // experience pages depending on it (async, off the ingest thread).
+        if (isUpdate && eventPublisher != null && dependencyService != null
+                && pageTypeProfileService != null && !pageTypeProfileService.isExperience(kbId, pageType)) {
+            eventPublisher.publishEvent(new vip.mate.wiki.event.WikiFactPageUpdatedEvent(
+                    kbId, pageId, "fact page updated during ingest"));
         }
     }
 
