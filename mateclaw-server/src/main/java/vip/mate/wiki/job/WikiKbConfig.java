@@ -47,4 +47,14 @@ public class WikiKbConfig {
      * {@link vip.mate.wiki.WikiProperties#isUseStructuredRoute()}.
      */
     private Boolean useStructuredRoute;
+
+    /**
+     * KB-level default read policy applied when an agent has no
+     * {@code mate_wiki_agent_page_type_permission} rows for this KB.
+     * {@code "allow_all"} (the default when {@code null}) keeps existing
+     * behaviour — every agent reads every pageType. {@code "deny_all"} flips
+     * the default closed so a professional KB can require each readable
+     * pageType to be granted explicitly per agent.
+     */
+    private String defaultReadPolicy;
 }

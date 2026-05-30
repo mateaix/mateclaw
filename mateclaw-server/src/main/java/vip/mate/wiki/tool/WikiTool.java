@@ -78,6 +78,13 @@ public class WikiTool {
     @Autowired(required = false)
     private WikiTransformationAggregator transformationAggregator;
 
+    /**
+     * Per-agent pageType permission gate. When absent (e.g. in isolated unit
+     * tests), every page is readable — preserving pre-permission behaviour.
+     */
+    @Autowired(required = false)
+    private WikiPageTypePermissionService pageTypePermissionService;
+
     public WikiTool(WikiPageService pageService,
                      WikiKnowledgeBaseService kbService,
                      WikiRawMaterialService rawService,
@@ -171,6 +178,10 @@ public class WikiTool {
         if (page == null) {
             return error("Page not found: " + slug);
         }
+        if (!canRead(pageTypeAccess(agentId, kbId), page)) {
+            // Page type not readable by this agent — do not leak its existence.
+            return error("Page not found: " + slug);
+        }
 
         pageService.trackReference(kbId, slug);
 
@@ -209,16 +220,19 @@ public class WikiTool {
         if (kbRes.hasError()) return kbRes.errorJson();
         kbId = kbRes.kbId();
 
+        WikiPageTypePermissionService.Access access = pageTypeAccess(agentId, kbId);
         List<WikiPageLite> pages;
         if (query != null && !query.isBlank()) {
             List<Long> ids = pageService.searchPages(kbId, query).stream()
                     .filter(p -> !"system".equals(p.getPageType()))
+                    .filter(p -> canRead(access, p))
                     .map(WikiPageEntity::getId).limit(30).toList();
             if (ids.isEmpty()) {
                 pages = List.of();
             } else {
                 pages = pageService.listSummaries(kbId).stream()
                         .filter(p -> !"system".equals(p.getPageType()))
+                        .filter(p -> canRead(access, p))
                         .filter(p -> ids.stream().anyMatch(id -> Objects.equals(id, p.getId())))
                         .map(p -> new WikiPageLite(p.getId(), p.getSlug(), p.getTitle(), p.getSummary(), p.getPageType()))
                         .toList();
@@ -228,6 +242,7 @@ public class WikiTool {
             // Agents can still wiki_read_page("overview") explicitly.
             pages = pageService.listSummaries(kbId).stream()
                     .filter(p -> !"system".equals(p.getPageType()))
+                    .filter(p -> canRead(access, p))
                     .map(p -> new WikiPageLite(p.getId(), p.getSlug(), p.getTitle(), p.getSummary(), p.getPageType()))
                     .toList();
         }
@@ -273,6 +288,19 @@ public class WikiTool {
 
         int k = (topK != null && topK > 0) ? Math.min(topK, 20) : 5;
         List<PageSearchResult> results = hybridRetriever.search(kbId, query, mode, k);
+
+        // Drop hits whose page type this agent may not read, so search cannot
+        // surface pages a direct read would refuse.
+        WikiPageTypePermissionService.Access access = pageTypeAccess(agentId, kbId);
+        if (access != null) {
+            final Long resolvedKbId = kbId;
+            results = results.stream()
+                    .filter(r -> {
+                        WikiPageEntity p = pageService.getBySlug(resolvedKbId, r.slug());
+                        return canRead(access, p);
+                    })
+                    .toList();
+        }
 
         for (PageSearchResult r : results) {
             pageService.trackReference(kbId, r.slug());
@@ -387,6 +415,9 @@ public class WikiTool {
 
         WikiPageEntity page = pageService.getBySlug(kbId, slug);
         if (page == null) {
+            return error("Page not found: " + slug);
+        }
+        if (!canRead(pageTypeAccess(agentId, kbId), page)) {
             return error("Page not found: " + slug);
         }
 
@@ -522,10 +553,13 @@ public class WikiTool {
                 .map(String::trim).filter(s -> !s.isEmpty()).limit(10).toList();
         if (slugList.isEmpty()) return error("No valid slugs supplied");
 
+        WikiPageTypePermissionService.Access access = pageTypeAccess(agentId, kbId);
         JSONArray arr = new JSONArray();
         for (String s : slugList) {
             WikiPageEntity page = pageService.getBySlug(kbId, s);
-            if (page == null) {
+            if (page == null || !canRead(access, page)) {
+                // Unreadable pageType is reported as not-found, same as a missing
+                // slug, so the agent cannot probe for hidden pages by slug.
                 arr.add(JSONUtil.createObj().set("slug", s).set("found", false));
                 continue;
             }
@@ -658,8 +692,12 @@ public class WikiTool {
         int k = (topK != null && topK > 0) ? Math.min(topK, 10) : 5;
         List<RelatedPageResult> results = relationService.relatedPages(kbId, slug, k);
 
+        WikiPageTypePermissionService.Access access = pageTypeAccess(agentId, kbId);
         JSONArray arr = new JSONArray();
         for (RelatedPageResult r : results) {
+            if (access != null && !canRead(access, pageService.getBySlug(kbId, r.slug()))) {
+                continue;
+            }
             arr.add(JSONUtil.createObj()
                     .set("slug", r.slug())
                     .set("title", r.title())
@@ -669,7 +707,7 @@ public class WikiTool {
 
         return JSONUtil.createObj()
                 .set("slug", slug)
-                .set("relatedCount", results.size())
+                .set("relatedCount", arr.size())
                 .set("pages", arr)
                 .toString();
     }
@@ -688,6 +726,13 @@ public class WikiTool {
         if (kbRes.hasError()) return kbRes.errorJson();
         kbId = kbRes.kbId();
         if (relationService == null) return error("Relation service not available");
+
+        WikiPageTypePermissionService.Access relAccess = pageTypeAccess(agentId, kbId);
+        if (relAccess != null
+                && (!canRead(relAccess, pageService.getBySlug(kbId, slugA))
+                    || !canRead(relAccess, pageService.getBySlug(kbId, slugB)))) {
+            return slugA + " and " + slugB + " have no detected relation.";
+        }
 
         RelationExplanation ex = relationService.explain(kbId, slugA, slugB);
         if (ex.breakdown().isEmpty()) return slugA + " and " + slugB + " have no detected relation.";
@@ -935,6 +980,26 @@ public class WikiTool {
         static KbResolution ok(Long id) { return new KbResolution(id, null); }
         static KbResolution err(String json) { return new KbResolution(null, json); }
         boolean hasError() { return errorJson != null; }
+    }
+
+    /**
+     * Resolve the agent's pageType read/write permission view for a KB once,
+     * so a tool call can filter a whole result set without re-querying. Returns
+     * {@code null} when the permission service is absent (isolated unit tests),
+     * in which case all reads are allowed.
+     */
+    private WikiPageTypePermissionService.Access pageTypeAccess(Long agentId, Long kbId) {
+        return pageTypePermissionService == null ? null : pageTypePermissionService.resolve(agentId, kbId);
+    }
+
+    /** Whether the resolved access permits reading {@code page}. Null-safe. */
+    private boolean canRead(WikiPageTypePermissionService.Access access, WikiPageEntity page) {
+        return access == null || page == null || access.canRead(page.getPageType());
+    }
+
+    /** Whether the resolved access permits reading a page of {@code pageType}. Null-safe. */
+    private boolean canRead(WikiPageTypePermissionService.Access access, String pageType) {
+        return access == null || access.canRead(pageType);
     }
 
     /**
