@@ -26,15 +26,20 @@ import vip.mate.wiki.model.WikiKnowledgeBaseEntity;
 public class WikiSourceWatcherService {
 
     private final WikiKnowledgeBaseService kbService;
-    private final WikiDirectoryScanService scanService;
     private final WikiProperties properties;
+    private final java.util.List<vip.mate.wiki.source.WikiIngestSourceProvider> sourceProviders;
 
     public WikiSourceWatcherService(WikiKnowledgeBaseService kbService,
-                                    WikiDirectoryScanService scanService,
-                                    WikiProperties properties) {
+                                    WikiProperties properties,
+                                    java.util.List<vip.mate.wiki.source.WikiIngestSourceProvider> sourceProviders) {
         this.kbService = kbService;
-        this.scanService = scanService;
         this.properties = properties;
+        this.sourceProviders = sourceProviders;
+    }
+
+    /** The registered source-provider types (filesystem ships; api/mq pluggable later). */
+    public java.util.List<String> availableSourceTypes() {
+        return sourceProviders.stream().map(vip.mate.wiki.source.WikiIngestSourceProvider::sourceType).toList();
     }
 
     /** Scheduled entry point — gated by config, serialized across instances. */
@@ -58,20 +63,32 @@ public class WikiSourceWatcherService {
     public int runScanCycle() {
         int totalAdded = 0;
         for (WikiKnowledgeBaseEntity kb : kbService.listAll()) {
-            String dir = kb.getSourceDirectory();
-            if (dir == null || dir.isBlank()) {
+            vip.mate.wiki.source.WikiIngestSourceProvider provider = providerFor(kb);
+            if (provider == null) {
                 continue;
             }
             try {
-                WikiDirectoryScanService.ScanResult result = scanService.scanDirectory(kb.getId(), dir);
+                WikiDirectoryScanService.ScanResult result = provider.sync(kb);
                 totalAdded += result.added();
                 if (!result.errors().isEmpty()) {
-                    log.warn("[WikiWatcher] KB {} scan reported issues: {}", kb.getId(), result.errors());
+                    log.warn("[WikiWatcher] KB {} ({}) sync reported issues: {}",
+                            kb.getId(), provider.sourceType(), result.errors());
                 }
             } catch (Exception e) {
-                log.warn("[WikiWatcher] scan failed for KB {}: {}", kb.getId(), e.getMessage());
+                log.warn("[WikiWatcher] sync failed for KB {} ({}): {}",
+                        kb.getId(), provider.sourceType(), e.getMessage());
             }
         }
         return totalAdded;
+    }
+
+    /** The first registered provider that supports the KB, or null. */
+    public vip.mate.wiki.source.WikiIngestSourceProvider providerFor(WikiKnowledgeBaseEntity kb) {
+        for (vip.mate.wiki.source.WikiIngestSourceProvider p : sourceProviders) {
+            if (p.supports(kb)) {
+                return p;
+            }
+        }
+        return null;
     }
 }

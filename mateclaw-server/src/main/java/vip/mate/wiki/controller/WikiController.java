@@ -61,6 +61,7 @@ public class WikiController {
     private final AuditEventService auditEventService;
     private final WikiPageTypeProfileService pageTypeProfileService;
     private final WikiSourcePathValidator pathValidator;
+    private final vip.mate.wiki.service.WikiSourceWatcherService sourceWatcherService;
     private final ObjectMapper objectMapper;
 
     // ==================== Knowledge Base ====================
@@ -300,6 +301,47 @@ public class WikiController {
         response.put("skipped", result.skipped());
         response.put("errors", result.errors());
         return R.ok(response);
+    }
+
+    // ==================== Source Watcher ====================
+
+    @RequireWorkspaceRole("viewer")
+    @Operation(summary = "查看知识库源监听状态")
+    @GetMapping("/knowledge-bases/{id}/source-watcher")
+    public R<Map<String, Object>> getSourceWatcher(@PathVariable Long id,
+                                                   @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        verifyKBWorkspace(id, workspaceId);
+        WikiKnowledgeBaseEntity kb = kbService.getById(id);
+        if (kb == null) return R.fail(404, "Knowledge base not found");
+        vip.mate.wiki.source.WikiIngestSourceProvider provider = sourceWatcherService.providerFor(kb);
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("watcherEnabled", properties.isWatcherEnabled());
+        out.put("intervalMs", properties.getWatcherIntervalMs());
+        out.put("sourceDirectory", kb.getSourceDirectory());
+        out.put("sourceType", provider != null ? provider.sourceType() : null);
+        out.put("availableSourceTypes", sourceWatcherService.availableSourceTypes());
+        out.put("active", provider != null);
+        return R.ok(out);
+    }
+
+    @RequireWorkspaceRole("member")
+    @Operation(summary = "手动触发一次源监听扫描")
+    @PostMapping("/knowledge-bases/{id}/source-watcher/scan")
+    public R<Map<String, Object>> triggerSourceWatcher(@PathVariable Long id,
+                                                       @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        verifyKBWorkspace(id, workspaceId);
+        WikiKnowledgeBaseEntity kb = kbService.getById(id);
+        if (kb == null) return R.fail(404, "Knowledge base not found");
+        vip.mate.wiki.source.WikiIngestSourceProvider provider = sourceWatcherService.providerFor(kb);
+        if (provider == null) return R.fail(400, "No source configured for this knowledge base");
+        WikiDirectoryScanService.ScanResult result = provider.sync(kb);
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("sourceType", provider.sourceType());
+        out.put("scanned", result.scanned());
+        out.put("added", result.added());
+        out.put("skipped", result.skipped());
+        out.put("errors", result.errors());
+        return R.ok(out);
     }
 
     // ==================== Raw Materials ====================
