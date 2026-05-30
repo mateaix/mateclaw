@@ -275,6 +275,7 @@ public class WikiTool {
             @ToolParam(description = "Search query") String query,
             @ToolParam(description = "Mode: keyword|semantic|hybrid (default: hybrid)", required = false) String mode,
             @ToolParam(description = "Max results (default 5, max 20)", required = false) Integer topK,
+            @ToolParam(description = "Knowledge layer filter: fact | experience | all (default all). 'fact' = factual pages (and unlayered pages); 'experience' = synthesis/analysis pages.", required = false) String layer,
             @ToolParam(description = "Target knowledge base name (from wiki_list_kbs). Omit to use the agent's primary KB; switch to `kbId` when two KBs share the name.", required = false) String kbName,
             @ToolParam(description = "Numeric KB id from wiki_list_kbs. Use when `kbName` returns an ambiguous-name error.", required = false) Long kbId) {
 
@@ -289,15 +290,17 @@ public class WikiTool {
         int k = (topK != null && topK > 0) ? Math.min(topK, 20) : 5;
         List<PageSearchResult> results = hybridRetriever.search(kbId, query, mode, k);
 
-        // Drop hits whose page type this agent may not read, so search cannot
-        // surface pages a direct read would refuse.
+        // Drop hits this agent may not read (by page type) or that fall outside
+        // the requested knowledge layer. Both need the page, so fetch it once.
         WikiPageTypePermissionService.Access access = pageTypeAccess(agentId, kbId);
-        if (access != null) {
+        boolean layerFilter = layer != null && !layer.isBlank() && !"all".equalsIgnoreCase(layer.trim());
+        if (access != null || layerFilter) {
             final Long resolvedKbId = kbId;
+            final String layerWanted = layer;
             results = results.stream()
                     .filter(r -> {
                         WikiPageEntity p = pageService.getBySlug(resolvedKbId, r.slug());
-                        return canRead(access, p);
+                        return canRead(access, p) && matchesLayer(p == null ? null : p.getKnowledgeLayer(), layerWanted);
                     })
                     .toList();
         }
@@ -1067,6 +1070,20 @@ public class WikiTool {
     /** Whether the resolved access permits reading a page of {@code pageType}. Null-safe. */
     private boolean canRead(WikiPageTypePermissionService.Access access, String pageType) {
         return access == null || access.canRead(pageType);
+    }
+
+    /**
+     * Whether a page's knowledge layer matches a retrieval filter. A null/blank
+     * or {@code all} filter matches everything; an unlayered page counts as
+     * {@code fact} (the RFC default), so {@code layer=fact} includes legacy
+     * pages while {@code layer=experience} returns only experience pages.
+     */
+    static boolean matchesLayer(String pageLayer, String filter) {
+        if (filter == null || filter.isBlank() || "all".equalsIgnoreCase(filter.trim())) {
+            return true;
+        }
+        String effective = (pageLayer == null || pageLayer.isBlank()) ? "fact" : pageLayer.trim().toLowerCase();
+        return effective.equals(filter.trim().toLowerCase());
     }
 
     /**
