@@ -1508,7 +1508,7 @@ public class WikiProcessingService {
         // transactions), so the count is accurate. Idempotent + dedup-guarded
         // downstream, so firing on update paths is safe.
         if (eventPublisher != null && pageType != null && !pageType.isBlank()) {
-            eventPublisher.publishEvent(new vip.mate.wiki.event.WikiPageCreatedEvent(kbId, pageType));
+            eventPublisher.publishEvent(new vip.mate.wiki.event.WikiPageCreatedEvent(kbId, pageType, pageId));
         }
         // When an existing fact page is updated, propagate staleness to the
         // experience pages depending on it (async, off the ingest thread).

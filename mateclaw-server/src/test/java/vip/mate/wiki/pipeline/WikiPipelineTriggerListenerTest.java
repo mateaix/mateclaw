@@ -20,7 +20,7 @@ class WikiPipelineTriggerListenerTest {
         WikiPipelineTriggerService trigger = mock(WikiPipelineTriggerService.class);
         when(trigger.onPageTypeCount(7L, "episode")).thenReturn(1);
 
-        new WikiPipelineTriggerListener(trigger).onPageCreated(new WikiPageCreatedEvent(7L, "episode"));
+        new WikiPipelineTriggerListener(trigger).onPageCreated(new WikiPageCreatedEvent(7L, "episode", 100L));
 
         verify(trigger).onPageTypeCount(7L, "episode");
     }
@@ -31,6 +31,6 @@ class WikiPipelineTriggerListenerTest {
         doThrow(new RuntimeException("boom")).when(trigger).onPageTypeCount(7L, "episode");
 
         // Must not throw — ingest must be unaffected by a pipeline failure.
-        new WikiPipelineTriggerListener(trigger).onPageCreated(new WikiPageCreatedEvent(7L, "episode"));
+        new WikiPipelineTriggerListener(trigger).onPageCreated(new WikiPageCreatedEvent(7L, "episode", 100L));
     }
 }

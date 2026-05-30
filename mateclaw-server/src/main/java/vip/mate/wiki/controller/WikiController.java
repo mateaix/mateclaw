@@ -62,6 +62,9 @@ public class WikiController {
     private final WikiPageTypeProfileService pageTypeProfileService;
     private final WikiSourcePathValidator pathValidator;
     private final vip.mate.wiki.service.WikiSourceWatcherService sourceWatcherService;
+    private final vip.mate.wiki.pipeline.WikiPipelineDefinitionService pipelineDefinitionService;
+    private final vip.mate.wiki.repository.WikiPipelineRunMapper pipelineRunMapper;
+    private final vip.mate.wiki.repository.WikiPipelineStepRunMapper pipelineStepRunMapper;
     private final ObjectMapper objectMapper;
 
     // ==================== Knowledge Base ====================
@@ -341,6 +344,86 @@ public class WikiController {
         out.put("added", result.added());
         out.put("skipped", result.skipped());
         out.put("errors", result.errors());
+        return R.ok(out);
+    }
+
+    // ==================== Pipeline ====================
+
+    @RequireWorkspaceRole("viewer")
+    @Operation(summary = "列出知识库的 pipeline 定义")
+    @GetMapping("/knowledge-bases/{kbId}/pipelines")
+    public R<List<vip.mate.wiki.model.WikiPipelineDefinitionEntity>> listPipelines(
+            @PathVariable Long kbId, @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        verifyKBWorkspace(kbId, workspaceId);
+        return R.ok(pipelineDefinitionService.list(kbId));
+    }
+
+    @RequireWorkspaceRole("admin")
+    @Operation(summary = "保存(创建/更新)pipeline 定义(YAML/JSON)")
+    @PostMapping("/knowledge-bases/{kbId}/pipelines")
+    public R<vip.mate.wiki.model.WikiPipelineDefinitionEntity> savePipeline(
+            @PathVariable Long kbId, @RequestBody Map<String, String> body,
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        verifyKBWorkspace(kbId, workspaceId);
+        boolean yaml = !"json".equalsIgnoreCase(body.getOrDefault("format", "yaml"));
+        try {
+            return R.ok(pipelineDefinitionService.saveFromConfig(kbId, body.get("config"), yaml));
+        } catch (IllegalArgumentException e) {
+            return R.fail(400, e.getMessage());
+        }
+    }
+
+    @RequireWorkspaceRole("member")
+    @Operation(summary = "校验 pipeline 配置(不保存)")
+    @PostMapping("/knowledge-bases/{kbId}/pipelines/validate")
+    public R<Map<String, Object>> validatePipeline(
+            @PathVariable Long kbId, @RequestBody Map<String, String> body,
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        verifyKBWorkspace(kbId, workspaceId);
+        boolean yaml = !"json".equalsIgnoreCase(body.getOrDefault("format", "yaml"));
+        List<String> issues = pipelineDefinitionService.validateConfig(body.getOrDefault("config", ""), yaml);
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("valid", issues.isEmpty());
+        out.put("issues", issues);
+        return R.ok(out);
+    }
+
+    @RequireWorkspaceRole("admin")
+    @Operation(summary = "删除 pipeline 定义")
+    @DeleteMapping("/knowledge-bases/{kbId}/pipelines/{id}")
+    public R<Void> deletePipeline(@PathVariable Long kbId, @PathVariable Long id,
+                                  @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        verifyKBWorkspace(kbId, workspaceId);
+        pipelineDefinitionService.delete(id);
+        return R.ok();
+    }
+
+    @RequireWorkspaceRole("viewer")
+    @Operation(summary = "查询 pipeline 运行记录")
+    @GetMapping("/knowledge-bases/{kbId}/pipelines/{id}/runs")
+    public R<List<vip.mate.wiki.model.WikiPipelineRunEntity>> listPipelineRuns(
+            @PathVariable Long kbId, @PathVariable Long id,
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        verifyKBWorkspace(kbId, workspaceId);
+        return R.ok(pipelineRunMapper.selectList(
+                com.baomidou.mybatisplus.core.toolkit.Wrappers.<vip.mate.wiki.model.WikiPipelineRunEntity>lambdaQuery()
+                        .eq(vip.mate.wiki.model.WikiPipelineRunEntity::getDefinitionId, id)
+                        .orderByDesc(vip.mate.wiki.model.WikiPipelineRunEntity::getCreateTime)));
+    }
+
+    @RequireWorkspaceRole("viewer")
+    @Operation(summary = "查询单次 run 的步骤明细")
+    @GetMapping("/knowledge-bases/{kbId}/pipeline-runs/{runId}")
+    public R<Map<String, Object>> getPipelineRun(
+            @PathVariable Long kbId, @PathVariable Long runId,
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        verifyKBWorkspace(kbId, workspaceId);
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("run", pipelineRunMapper.selectById(runId));
+        out.put("steps", pipelineStepRunMapper.selectList(
+                com.baomidou.mybatisplus.core.toolkit.Wrappers.<vip.mate.wiki.model.WikiPipelineStepRunEntity>lambdaQuery()
+                        .eq(vip.mate.wiki.model.WikiPipelineStepRunEntity::getRunId, runId)
+                        .orderByAsc(vip.mate.wiki.model.WikiPipelineStepRunEntity::getCreateTime)));
         return R.ok(out);
     }
 

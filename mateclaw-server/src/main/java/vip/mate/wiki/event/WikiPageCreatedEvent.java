@@ -7,5 +7,5 @@ package vip.mate.wiki.event;
  *
  * @author MateClaw Team
  */
-public record WikiPageCreatedEvent(Long kbId, String pageType) {
+public record WikiPageCreatedEvent(Long kbId, String pageType, Long pageId) {
 }

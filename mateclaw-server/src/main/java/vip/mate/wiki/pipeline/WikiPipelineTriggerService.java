@@ -49,6 +49,36 @@ public class WikiPipelineTriggerService {
      * number of runs actually started (0 when no threshold bucket was newly
      * crossed). Safe to call after every page create.
      */
+    /**
+     * Fire {@code page_created} definitions once per matching page creation
+     * (deduped by page id). Optional {@code page_type} in the trigger config
+     * narrows which page types fire. Returns the number of runs started.
+     */
+    public int onPageCreated(Long kbId, String pageType, Long pageId) {
+        if (kbId == null || pageType == null || pageId == null) {
+            return 0;
+        }
+        List<WikiPipelineDefinitionEntity> defs = definitionMapper.selectList(
+                new LambdaQueryWrapper<WikiPipelineDefinitionEntity>()
+                        .eq(WikiPipelineDefinitionEntity::getKbId, kbId)
+                        .eq(WikiPipelineDefinitionEntity::getTriggerType, "page_created")
+                        .eq(WikiPipelineDefinitionEntity::getEnabled, 1));
+        int started = 0;
+        for (WikiPipelineDefinitionEntity def : defs) {
+            TriggerConfig cfg = parseConfig(def.getTriggerConfigJson());
+            if (cfg != null && cfg.pageType != null && !pageType.equalsIgnoreCase(cfg.pageType)) {
+                continue; // type filter set and doesn't match
+            }
+            String input = "{\"pageType\":\"" + pageType + "\",\"pageId\":\"" + pageId + "\"}";
+            WikiPipelineService.RunOutcome outcome =
+                    pipelineService.execute(def, pageType, "page:" + pageId, input);
+            if (!outcome.duplicate() && outcome.run() != null) {
+                started++;
+            }
+        }
+        return started;
+    }
+
     public int onPageTypeCount(Long kbId, String pageType) {
         if (kbId == null || pageType == null || pageType.isBlank()) {
             return 0;

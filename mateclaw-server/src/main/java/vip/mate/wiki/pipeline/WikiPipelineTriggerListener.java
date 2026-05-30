@@ -30,6 +30,7 @@ public class WikiPipelineTriggerListener {
     public void onPageCreated(WikiPageCreatedEvent event) {
         try {
             triggerService.onPageTypeCount(event.kbId(), event.pageType());
+            triggerService.onPageCreated(event.kbId(), event.pageType(), event.pageId());
         } catch (Exception e) {
             log.warn("[WikiPipeline] trigger evaluation failed for kb={} pageType={}: {}",
                     event.kbId(), event.pageType(), e.getMessage());
