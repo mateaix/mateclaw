@@ -23,6 +23,13 @@ public class WikiPageTypeDef {
     /** Short description of what this page type represents. */
     private String description;
 
+    /**
+     * Knowledge layer this page type belongs to: {@code fact} ("what is") or
+     * {@code experience} ("what it means"). Extensible — MVP recognises these
+     * two; {@code null} means unspecified (treated as fact for retrieval).
+     */
+    private String layer;
+
     /** Field name → schema. Insertion order preserved for prompt rendering. */
     private Map<String, WikiFieldSchema> schema = new LinkedHashMap<>();
 

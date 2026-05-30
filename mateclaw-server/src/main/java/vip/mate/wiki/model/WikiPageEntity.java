@@ -71,6 +71,20 @@ public class WikiPageEntity {
     /** Profile version in effect when the page was generated or last validated. */
     private Integer profileVersion;
 
+    /** Knowledge layer derived from the pageType profile: {@code fact} / {@code experience}. */
+    private String knowledgeLayer;
+
+    /** Fact page ids this (experience) page depends on, as a JSON array. Source of truth is the dependency table. */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private String dependsOnJson;
+
+    /** {@code 1} when an upstream fact page changed and this page may be out of date. */
+    private Integer stale;
+
+    /** Why the page is stale (fact page id, time, reason) as JSON. */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private String staleReasonJson;
+
     /** Purpose hint for LLM ingest routing */
     private String purposeHint;
 
