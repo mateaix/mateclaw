@@ -33,6 +33,8 @@ class WikiSourceWatcherServiceE2ETest {
     private WikiSourceWatcherService watcherService;
     @Autowired
     private WikiKnowledgeBaseService kbService;
+    @Autowired
+    private WikiDirectoryScanService scanService;
 
     private static final java.util.concurrent.atomic.AtomicLong SEQ =
             new java.util.concurrent.atomic.AtomicLong(System.nanoTime());
@@ -62,6 +64,27 @@ class WikiSourceWatcherServiceE2ETest {
         Files.writeString(sourceDir.resolve("note-a.md"), "# Note A\n\nEDITED content a");
         int afterEdit = watcherService.runScanCycle();
         assertEquals(1, afterEdit, "a modified file must be re-ingested");
+    }
+
+    @Test
+    void symlinkFileEscapingScanRoot_isNotIngested(@TempDir Path sourceDir, @TempDir Path outside)
+            throws java.io.IOException {
+        Files.writeString(sourceDir.resolve("real.md"), "# Real\n\nlocal content");
+        Path secret = Files.writeString(outside.resolve("secret.md"), "TOP SECRET OUTSIDE");
+        Path link = sourceDir.resolve("leak.md");
+        try {
+            Files.createSymbolicLink(link, secret);
+        } catch (UnsupportedOperationException | java.io.IOException e) {
+            return; // filesystem without symlink support — skip
+        }
+
+        long kb = SEQ.incrementAndGet();
+        WikiDirectoryScanService.ScanResult result = scanService.scanDirectory(kb, sourceDir.toString());
+
+        // Only the real file is ingested; the symlink escaping the root is skipped.
+        assertEquals(1, result.added(), "symlinked file pointing outside the root must not be ingested");
+        assertTrue(result.skipped() >= 1 || !result.errors().isEmpty(),
+                "the escaping symlink should be reported as skipped");
     }
 
     @Test

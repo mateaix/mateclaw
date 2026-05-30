@@ -106,7 +106,10 @@ public class WikiRawMaterialService {
         // addText dedups internally by hash, so this reuses sameContent when
         // unchanged and inserts + triggers processing when the content differs.
         WikiRawMaterialEntity raw = addText(kbId, fileName, content);
-        if (raw != null) {
+        // Only stamp the path on a genuinely new raw. When the content matched
+        // an existing raw (possibly a different file with identical content),
+        // overwriting its sourcePath would corrupt that raw's provenance.
+        if (raw != null && sameContent == null) {
             updateSourcePath(raw.getId(), absolutePath);
         }
         return sameContent == null;

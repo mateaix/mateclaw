@@ -133,6 +133,21 @@ public class WikiDirectoryScanService {
 
         for (Path file : files) {
             try {
+                // Per-file symlink guard: a symlinked file inside an allowed
+                // directory could point outside it (e.g. secret.md ->
+                // /etc/passwd). Resolve the real path and require it to stay
+                // within the validated scan root; skip escapes.
+                Path realFile;
+                try {
+                    realFile = file.toRealPath();
+                } catch (IOException e) {
+                    realFile = file.toAbsolutePath().normalize();
+                }
+                if (!realFile.startsWith(dir)) {
+                    errors.add("Skipped symlink escaping the scan root: " + file.getFileName());
+                    skipped++;
+                    continue;
+                }
                 String absolutePath = file.toAbsolutePath().normalize().toString();
                 String fileName = file.getFileName().toString();
                 String ext = getExtension(fileName);
