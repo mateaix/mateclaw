@@ -1412,6 +1412,7 @@ public class WikiProcessingService {
             String actualSlug = existingByCanonical.getSlug();
             pageService.updatePageByAi(kbId, actualSlug, content, pageSummary, rawId);
             pageService.mergeSourceLineage(existingByCanonical.getId(), rawId, raw.getTitle());
+            afterPagePersisted(existingByCanonical.getId(), kbId, pageType, metadataNode);
             log.info("[Wiki] Phase B create slug='{}' canonical-matches existing '{}', updated",
                     slug, actualSlug);
             return false;
@@ -1428,6 +1429,7 @@ public class WikiProcessingService {
                 if (winner != null) {
                     pageService.updatePageByAi(kbId, winnerSlug, content, pageSummary, rawId);
                     pageService.mergeSourceLineage(winner.getId(), rawId, raw.getTitle());
+                    afterPagePersisted(winner.getId(), kbId, pageType, metadataNode);
                     log.info("[Wiki] Phase B create slug='{}' lost slug-claim race to '{}', updated",
                             slug, winnerSlug);
                     return false;
@@ -1443,6 +1445,7 @@ public class WikiProcessingService {
         if (existing != null) {
             pageService.updatePageByAi(kbId, slug, content, pageSummary, rawId);
             pageService.mergeSourceLineage(existing.getId(), rawId, raw.getTitle());
+            afterPagePersisted(existing.getId(), kbId, pageType, metadataNode);
             log.info("[Wiki] Phase B create page slug='{}' done (updated existing)", slug);
             return false;
         }
@@ -1450,19 +1453,18 @@ public class WikiProcessingService {
         String sourceRawIds = "[" + rawId + "]";
         try {
             WikiPageEntity created = pageService.createPage(kbId, slug, title, content, pageSummary, sourceRawIds, pageType);
-            applyValidatedMetadata(created, kbId, pageType, metadataNode);
             pageService.mergeSourceLineage(created.getId(), rawId, raw.getTitle());
+            afterPagePersisted(created.getId(), kbId, pageType, metadataNode);
             log.info("[Wiki] Phase B create page slug='{}' done (created)", slug);
             citationService.buildCitationsAsync(created.getId(), kbId);
-            // Evaluate count-threshold pipeline triggers off-thread (page is now
-            // committed, so the count is accurate); no-op when no pipelines match.
-            if (eventPublisher != null && pageType != null && !pageType.isBlank()) {
-                eventPublisher.publishEvent(new vip.mate.wiki.event.WikiPageCreatedEvent(kbId, pageType));
-            }
             return true;
         } catch (org.springframework.dao.DuplicateKeyException e) {
             // Fallback 2: concurrent INSERT race — degrade to update
             pageService.updatePageByAi(kbId, slug, content, pageSummary, rawId);
+            WikiPageEntity raced = pageService.getBySlug(kbId, slug);
+            if (raced != null) {
+                afterPagePersisted(raced.getId(), kbId, pageType, metadataNode);
+            }
             log.info("[Wiki] Phase B create page slug='{}' lost INSERT race -> updated existing", slug);
             return false;
         }
@@ -1474,9 +1476,25 @@ public class WikiProcessingService {
      * validation outcome. No-op when the profile/validator beans are absent or
      * no metadata was supplied — so default-profile KBs are unaffected.
      */
-    private void applyValidatedMetadata(WikiPageEntity created, Long kbId, String pageType,
+    /**
+     * Common post-save outlet for every page create/update branch: validate &
+     * persist structured metadata and fire the pipeline trigger event. Sharing
+     * one outlet means the existing-page-update and race-arbitration paths get
+     * the same metadata and trigger handling as a clean create.
+     */
+    private void afterPagePersisted(Long pageId, Long kbId, String pageType, JsonNode metadataNode) {
+        applyValidatedMetadata(pageId, kbId, pageType, metadataNode);
+        // The page is committed (createPage / updatePageByAi are their own
+        // transactions), so the count is accurate. Idempotent + dedup-guarded
+        // downstream, so firing on update paths is safe.
+        if (eventPublisher != null && pageType != null && !pageType.isBlank()) {
+            eventPublisher.publishEvent(new vip.mate.wiki.event.WikiPageCreatedEvent(kbId, pageType));
+        }
+    }
+
+    private void applyValidatedMetadata(Long pageId, Long kbId, String pageType,
                                         JsonNode metadataNode) {
-        if (created == null || pageTypeProfileService == null || metadataValidator == null) {
+        if (pageId == null || pageTypeProfileService == null || metadataValidator == null) {
             return;
         }
         if (metadataNode == null || metadataNode.isMissingNode() || metadataNode.isNull()
@@ -1493,10 +1511,10 @@ public class WikiProcessingService {
             String metadataJson = objectMapper.writeValueAsString(result.getCleaned());
             String validationJson = result.getWarnings().isEmpty()
                     ? null : objectMapper.writeValueAsString(result.getWarnings());
-            pageService.applyMetadata(created.getId(), metadataJson, result.getStatus(),
+            pageService.applyMetadata(pageId, metadataJson, result.getStatus(),
                     validationJson, profile.getVersion());
         } catch (Exception e) {
-            log.warn("[Wiki] metadata validation failed for page {}: {}", created.getId(), e.getMessage());
+            log.warn("[Wiki] metadata validation failed for page {}: {}", pageId, e.getMessage());
         }
     }
 
