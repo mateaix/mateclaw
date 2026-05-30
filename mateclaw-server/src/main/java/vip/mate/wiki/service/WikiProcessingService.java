@@ -70,6 +70,10 @@ public class WikiProcessingService {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private vip.mate.wiki.profile.WikiPageTypeProfileService pageTypeProfileService;
 
+    /** Optional metadata validator, paired with {@link #pageTypeProfileService}. */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private vip.mate.wiki.profile.WikiMetadataValidator metadataValidator;
+
     /**
      * Read-the-failover-chain handle. Optional so the existing constructors and
      * lazy-mode tests don't have to thread a new dependency. When null, the
@@ -1156,6 +1160,12 @@ public class WikiProcessingService {
                 String content = pageJson.path("content").asText("");
                 String pageSummary = pageJson.path("summary").asText("");
                 String pageType = pageJson.path("page_type").asText("");
+                // Downgrade an unrecognised type to the profile fallback so the
+                // stored page_type always belongs to the KB's profile.
+                if (pageTypeProfileService != null && !pageType.isBlank()) {
+                    pageType = pageTypeProfileService.normalizePageType(kbId, pageType);
+                }
+                JsonNode metadataNode = pageJson.path("metadata");
                 if (content.isBlank()) {
                     log.info("[Wiki] BatchCreate: blank content for slug='{}', retrying individually", slug);
                     final String blankSlug = slug;
@@ -1184,7 +1194,7 @@ public class WikiProcessingService {
                 boolean wasCreated = false;
                 boolean ok = false;
                 try {
-                    wasCreated = savePageContent(kb, raw, slug, title, content, pageSummary, pageType);
+                    wasCreated = savePageContent(kb, raw, slug, title, content, pageSummary, pageType, metadataNode);
                     if (wasCreated) {
                         created.incrementAndGet();
                         totalCreated++;
@@ -1376,12 +1386,18 @@ public class WikiProcessingService {
      */
     private boolean savePageContent(WikiKnowledgeBaseEntity kb, WikiRawMaterialEntity raw,
                                      String slug, String title, String content, String pageSummary) {
-        return savePageContent(kb, raw, slug, title, content, pageSummary, null);
+        return savePageContent(kb, raw, slug, title, content, pageSummary, null, null);
     }
 
     private boolean savePageContent(WikiKnowledgeBaseEntity kb, WikiRawMaterialEntity raw,
                                      String slug, String title, String content, String pageSummary,
                                      String pageType) {
+        return savePageContent(kb, raw, slug, title, content, pageSummary, pageType, null);
+    }
+
+    private boolean savePageContent(WikiKnowledgeBaseEntity kb, WikiRawMaterialEntity raw,
+                                     String slug, String title, String content, String pageSummary,
+                                     String pageType, JsonNode metadataNode) {
         Long kbId = kb.getId();
         Long rawId = raw.getId();
 
@@ -1434,6 +1450,7 @@ public class WikiProcessingService {
         String sourceRawIds = "[" + rawId + "]";
         try {
             WikiPageEntity created = pageService.createPage(kbId, slug, title, content, pageSummary, sourceRawIds, pageType);
+            applyValidatedMetadata(created, kbId, pageType, metadataNode);
             pageService.mergeSourceLineage(created.getId(), rawId, raw.getTitle());
             log.info("[Wiki] Phase B create page slug='{}' done (created)", slug);
             citationService.buildCitationsAsync(created.getId(), kbId);
@@ -1443,6 +1460,38 @@ public class WikiProcessingService {
             pageService.updatePageByAi(kbId, slug, content, pageSummary, rawId);
             log.info("[Wiki] Phase B create page slug='{}' lost INSERT race -> updated existing", slug);
             return false;
+        }
+    }
+
+    /**
+     * Validate the LLM-supplied metadata for a freshly created page against the
+     * KB profile's pageType schema and persist the cleaned result plus its
+     * validation outcome. No-op when the profile/validator beans are absent or
+     * no metadata was supplied — so default-profile KBs are unaffected.
+     */
+    private void applyValidatedMetadata(WikiPageEntity created, Long kbId, String pageType,
+                                        JsonNode metadataNode) {
+        if (created == null || pageTypeProfileService == null || metadataValidator == null) {
+            return;
+        }
+        if (metadataNode == null || metadataNode.isMissingNode() || metadataNode.isNull()
+                || !metadataNode.isObject() || metadataNode.isEmpty()) {
+            return;
+        }
+        try {
+            vip.mate.wiki.profile.WikiPageTypeProfile profile = pageTypeProfileService.resolveProfile(kbId);
+            vip.mate.wiki.profile.WikiPageTypeDef def = profile.get(pageType);
+            @SuppressWarnings("unchecked")
+            java.util.Map<String, Object> raw = objectMapper.convertValue(metadataNode, java.util.Map.class);
+            vip.mate.wiki.profile.WikiMetadataValidator.ValidationResult result =
+                    metadataValidator.validate(def, raw, profile.isAllowAdditionalFields(), "create");
+            String metadataJson = objectMapper.writeValueAsString(result.getCleaned());
+            String validationJson = result.getWarnings().isEmpty()
+                    ? null : objectMapper.writeValueAsString(result.getWarnings());
+            pageService.applyMetadata(created.getId(), metadataJson, result.getStatus(),
+                    validationJson, profile.getVersion());
+        } catch (Exception e) {
+            log.warn("[Wiki] metadata validation failed for page {}: {}", created.getId(), e.getMessage());
         }
     }
 

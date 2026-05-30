@@ -350,6 +350,25 @@ public class WikiPageService {
     }
 
     /**
+     * Apply schema-validated structured metadata to an existing page via a
+     * partial column update — only the metadata columns are written, so this
+     * never disturbs content / summary / links set by the ingest pipeline.
+     * Null arguments are written as-is (e.g. clearing a prior validation set).
+     */
+    public void applyMetadata(Long pageId, String metadataJson, String validationStatus,
+                              String validationJson, Integer profileVersion) {
+        if (pageId == null) {
+            return;
+        }
+        pageMapper.update(null, new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<WikiPageEntity>()
+                .eq(WikiPageEntity::getId, pageId)
+                .set(WikiPageEntity::getMetadataJson, metadataJson)
+                .set(WikiPageEntity::getMetadataValidationStatus, validationStatus)
+                .set(WikiPageEntity::getMetadataValidationJson, validationJson)
+                .set(WikiPageEntity::getProfileVersion, profileVersion));
+    }
+
+    /**
      * List pages derived from a specific raw material (for UI sidebar filtering).
      * Uses a LIKE search on sourceRawIds JSON field — cheap and dialect-agnostic.
      */
