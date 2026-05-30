@@ -87,6 +87,68 @@ public class WikiPageTypePermissionService {
         return resolve(agentId, kbId).resolveWrite(pageType, op);
     }
 
+    // ==================== Config CRUD (admin surface) ====================
+
+    /** All permission rows for an agent within a KB, ordered with the wildcard last. */
+    public List<WikiAgentPageTypePermissionEntity> listRows(Long agentId, Long kbId) {
+        if (agentId == null || kbId == null) {
+            return List.of();
+        }
+        return permissionMapper.selectList(
+                new LambdaQueryWrapper<WikiAgentPageTypePermissionEntity>()
+                        .eq(WikiAgentPageTypePermissionEntity::getAgentId, agentId)
+                        .eq(WikiAgentPageTypePermissionEntity::getKbId, kbId)
+                        .orderByAsc(WikiAgentPageTypePermissionEntity::getPageType));
+    }
+
+    /**
+     * Upsert a permission row by the {@code (agent_id, kb_id, page_type)} natural
+     * key: an existing row for the same triple is updated in place, otherwise a
+     * new row is inserted. The pageType is normalized to lowercase (the wildcard
+     * {@code *} is preserved as-is). Returns the persisted row.
+     */
+    public WikiAgentPageTypePermissionEntity saveRow(WikiAgentPageTypePermissionEntity row) {
+        if (row == null || row.getAgentId() == null || row.getKbId() == null) {
+            throw new IllegalArgumentException("agentId and kbId are required");
+        }
+        String type = row.getPageType() == null || row.getPageType().isBlank()
+                ? WILDCARD
+                : (WILDCARD.equals(row.getPageType().trim())
+                        ? WILDCARD
+                        : row.getPageType().trim().toLowerCase(Locale.ROOT));
+        row.setPageType(type);
+        // Normalize the write policy so resolution never sees an unexpected token.
+        if (row.getWritePolicy() != null) {
+            String wp = row.getWritePolicy().trim().toLowerCase(Locale.ROOT);
+            row.setWritePolicy(switch (wp) {
+                case "allow", "deny", "approval_required" -> wp;
+                default -> "approval_required";
+            });
+        }
+        WikiAgentPageTypePermissionEntity existing = permissionMapper.selectOne(
+                new LambdaQueryWrapper<WikiAgentPageTypePermissionEntity>()
+                        .eq(WikiAgentPageTypePermissionEntity::getAgentId, row.getAgentId())
+                        .eq(WikiAgentPageTypePermissionEntity::getKbId, row.getKbId())
+                        .eq(WikiAgentPageTypePermissionEntity::getPageType, type)
+                        .last("LIMIT 1"));
+        if (existing != null) {
+            row.setId(existing.getId());
+            permissionMapper.updateById(row);
+        } else {
+            row.setId(null);
+            permissionMapper.insert(row);
+        }
+        return row;
+    }
+
+    /** Logically delete a permission row by id. Returns true when a row was removed. */
+    public boolean deleteRow(Long id) {
+        if (id == null) {
+            return false;
+        }
+        return permissionMapper.deleteById(id) > 0;
+    }
+
     private boolean isDenyAll(Long kbId) {
         WikiKnowledgeBaseEntity kb = kbService.getById(kbId);
         if (kb == null || kb.getConfigContent() == null) {

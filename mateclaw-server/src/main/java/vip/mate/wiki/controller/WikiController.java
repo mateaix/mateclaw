@@ -17,6 +17,7 @@ import vip.mate.workspace.core.annotation.RequireWorkspaceRole;
 import vip.mate.wiki.WikiProperties;
 import vip.mate.wiki.model.WikiKnowledgeBaseEntity;
 import vip.mate.wiki.model.WikiPageEntity;
+import vip.mate.wiki.model.WikiAgentPageTypePermissionEntity;
 import vip.mate.wiki.model.WikiPageTypeProfileEntity;
 import vip.mate.wiki.model.WikiRawMaterialEntity;
 import vip.mate.wiki.profile.WikiPageTypeProfileService;
@@ -25,6 +26,7 @@ import vip.mate.wiki.service.WikiSourcePathValidator;
 import vip.mate.wiki.service.WikiKnowledgeBaseService;
 import vip.mate.wiki.service.WikiLintJobService;
 import vip.mate.wiki.service.WikiPageService;
+import vip.mate.wiki.service.WikiPageTypePermissionService;
 import vip.mate.wiki.service.WikiProcessingService;
 import vip.mate.wiki.service.WikiRawMaterialService;
 import vip.mate.wiki.sse.WikiProgressBus;
@@ -60,6 +62,7 @@ public class WikiController {
     private final WikiProgressBus progressBus;
     private final AuditEventService auditEventService;
     private final WikiPageTypeProfileService pageTypeProfileService;
+    private final WikiPageTypePermissionService pageTypePermissionService;
     private final WikiSourcePathValidator pathValidator;
     private final vip.mate.wiki.service.WikiSourceWatcherService sourceWatcherService;
     private final vip.mate.wiki.pipeline.WikiPipelineDefinitionService pipelineDefinitionService;
@@ -425,6 +428,41 @@ public class WikiController {
                         .eq(vip.mate.wiki.model.WikiPipelineStepRunEntity::getRunId, runId)
                         .orderByAsc(vip.mate.wiki.model.WikiPipelineStepRunEntity::getCreateTime)));
         return R.ok(out);
+    }
+
+    // ==================== Agent PageType Permissions ====================
+
+    @RequireWorkspaceRole("viewer")
+    @Operation(summary = "列出某 Agent 在知识库下的 pageType 权限规则")
+    @GetMapping("/knowledge-bases/{kbId}/agents/{agentId}/page-type-permissions")
+    public R<List<WikiAgentPageTypePermissionEntity>> listPageTypePermissions(
+            @PathVariable Long kbId, @PathVariable Long agentId,
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        verifyKBWorkspace(kbId, workspaceId);
+        return R.ok(pageTypePermissionService.listRows(agentId, kbId));
+    }
+
+    @RequireWorkspaceRole("admin")
+    @Operation(summary = "新增或更新 Agent 的 pageType 权限规则（按 agent+kb+pageType 去重）")
+    @PostMapping("/knowledge-bases/{kbId}/agents/{agentId}/page-type-permissions")
+    public R<WikiAgentPageTypePermissionEntity> savePageTypePermission(
+            @PathVariable Long kbId, @PathVariable Long agentId,
+            @RequestBody WikiAgentPageTypePermissionEntity body,
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        verifyKBWorkspace(kbId, workspaceId);
+        body.setKbId(kbId);
+        body.setAgentId(agentId);
+        return R.ok(pageTypePermissionService.saveRow(body));
+    }
+
+    @RequireWorkspaceRole("admin")
+    @Operation(summary = "删除一条 Agent pageType 权限规则")
+    @DeleteMapping("/knowledge-bases/{kbId}/agents/{agentId}/page-type-permissions/{id}")
+    public R<Boolean> deletePageTypePermission(
+            @PathVariable Long kbId, @PathVariable Long agentId, @PathVariable Long id,
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        verifyKBWorkspace(kbId, workspaceId);
+        return R.ok(pageTypePermissionService.deleteRow(id));
     }
 
     // ==================== Raw Materials ====================

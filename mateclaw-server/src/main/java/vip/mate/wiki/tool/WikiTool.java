@@ -11,6 +11,9 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.stereotype.Component;
+import vip.mate.agent.context.ChatOrigin;
+import vip.mate.agent.context.ChatOriginHolder;
+import vip.mate.approval.ApprovalWorkflowService;
 import vip.mate.wiki.dto.*;
 import vip.mate.wiki.job.WikiProcessingJobService;
 import vip.mate.wiki.job.event.WikiJobCreatedEvent;
@@ -77,6 +80,16 @@ public class WikiTool {
 
     @Autowired(required = false)
     private WikiTransformationAggregator transformationAggregator;
+
+    /**
+     * Optional approval workflow. When present, an {@code APPROVAL_REQUIRED}
+     * write records a real pending approval in the operator inbox (keyed to the
+     * current conversation via {@link ChatOriginHolder}), so the operation is
+     * visible and auditable rather than silently blocked. Absent in lightweight
+     * contexts (tests, headless tools) — the write still fails closed.
+     */
+    @Autowired(required = false)
+    private ApprovalWorkflowService approvalWorkflowService;
 
     /**
      * Per-agent pageType permission gate. Mandatory: this is a security control,
@@ -1094,11 +1107,11 @@ public class WikiTool {
      * {@code null} when it may proceed. Null-safe: when the permission service
      * is absent, every write is allowed (pre-permission behaviour).
      *
-     * <p>{@code APPROVAL_REQUIRED} currently fails closed with an explanatory
-     * message rather than opening a pending approval — the deferred
-     * approve-then-execute flow needs a conversation context the wiki tools do
-     * not yet receive. The permission row still records the intent so the
-     * deferred flow can be wired later without a schema change.
+     * <p>{@code APPROVAL_REQUIRED} records a pending approval in the operator
+     * inbox (when {@link #approvalWorkflowService} is wired) so the request is
+     * visible and auditable, then fails closed for this turn — the write is not
+     * performed inline. The approve-then-replay path is driven from the inbox,
+     * not from inside the tool body, which cannot pause and resume itself.
      */
     private String checkWrite(Long agentId, Long kbId, String pageType,
                               WikiPageTypePermissionService.WriteOp op) {
@@ -1114,13 +1127,59 @@ public class WikiTool {
                         + " '" + typeLabel + "' pages in this knowledge base.");
             }
             case APPROVAL_REQUIRED -> {
-                log.info("[WikiTool] write requires approval (blocked): agent={} kb={} type={} op={}",
-                        agentId, kbId, pageType, op);
+                boolean recorded = recordPendingApproval(agentId, kbId, pageType, op);
+                log.info("[WikiTool] write requires approval: agent={} kb={} type={} op={} recorded={}",
+                        agentId, kbId, pageType, op, recorded);
                 yield error("Approval required: " + op.name().toLowerCase() + " of '" + typeLabel
                         + "' pages in this knowledge base needs administrator approval. "
+                        + (recorded
+                                ? "A pending approval was created for an administrator to review. "
+                                : "")
                         + "The operation was NOT performed.");
             }
         };
+    }
+
+    /**
+     * Record a pending approval for an {@code APPROVAL_REQUIRED} wiki write,
+     * keyed to the current conversation via {@link ChatOriginHolder}. Best-effort:
+     * returns false (and never throws) when the workflow bean is absent or there
+     * is no conversation context, so the caller can still fail closed cleanly.
+     */
+    private boolean recordPendingApproval(Long agentId, Long kbId, String pageType,
+                                          WikiPageTypePermissionService.WriteOp op) {
+        if (approvalWorkflowService == null) {
+            return false;
+        }
+        ChatOrigin origin = ChatOriginHolder.get();
+        String conversationId = origin == null ? null : origin.conversationId();
+        if (conversationId == null || conversationId.isBlank()) {
+            return false; // no conversation to attach the approval to
+        }
+        try {
+            String typeLabel = (pageType == null || pageType.isBlank()) ? "(default)" : pageType;
+            String args = objectMapper.createObjectNode()
+                    .put("kbId", String.valueOf(kbId))
+                    .put("pageType", typeLabel)
+                    .put("op", op.name())
+                    .toString();
+            String reason = "Wiki " + op.name().toLowerCase() + " of '" + typeLabel
+                    + "' pages requires administrator approval.";
+            String userId = origin.requesterId();
+            approvalWorkflowService.createPending(
+                    conversationId,
+                    (userId == null || userId.isBlank()) ? null : userId,
+                    "wiki_" + op.name().toLowerCase() + "_page",
+                    args,
+                    reason,
+                    /* toolCallPayload */ null,
+                    /* siblingToolCalls */ null,
+                    agentId == null ? null : String.valueOf(agentId));
+            return true;
+        } catch (Exception e) {
+            log.warn("[WikiTool] failed to record pending approval: {}", e.getMessage());
+            return false;
+        }
     }
 
     /**

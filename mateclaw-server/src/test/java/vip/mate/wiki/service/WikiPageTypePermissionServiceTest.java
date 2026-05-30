@@ -10,9 +10,12 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -127,5 +130,63 @@ class WikiPageTypePermissionServiceTest {
     void nullAgent_isAllowAll() {
         WikiPageTypePermissionService s = service(List.of(), "{\"defaultReadPolicy\":\"deny_all\"}");
         assertTrue(s.canRead(null, KB, "concept"));
+    }
+
+    // ==================== CRUD ====================
+
+    @Test
+    void saveRow_insertsWhenAbsent_normalizesTypeAndPolicy() {
+        WikiAgentPageTypePermissionMapper mapper = mock(WikiAgentPageTypePermissionMapper.class);
+        when(mapper.selectOne(any())).thenReturn(null); // no existing row
+        WikiPageTypePermissionService s = new WikiPageTypePermissionService(
+                mapper, mock(WikiKnowledgeBaseService.class), new ObjectMapper());
+
+        WikiAgentPageTypePermissionEntity in = row("Episode", 1, 1, 0, 0, "BOGUS");
+        in.setId(999L); // must be cleared on insert
+        WikiAgentPageTypePermissionEntity saved = s.saveRow(in);
+
+        assertEquals("episode", saved.getPageType());           // lowercased
+        assertEquals("approval_required", saved.getWritePolicy()); // unknown → safe default
+        assertNull(saved.getId());                               // id cleared for insert
+        verify(mapper).insert((WikiAgentPageTypePermissionEntity) saved);
+        verify(mapper, never()).updateById((WikiAgentPageTypePermissionEntity) any());
+    }
+
+    @Test
+    void saveRow_updatesInPlaceWhenExisting() {
+        WikiAgentPageTypePermissionMapper mapper = mock(WikiAgentPageTypePermissionMapper.class);
+        WikiAgentPageTypePermissionEntity existing = row("episode", 0, 0, 0, 0, "deny");
+        existing.setId(42L);
+        when(mapper.selectOne(any())).thenReturn(existing);
+        WikiPageTypePermissionService s = new WikiPageTypePermissionService(
+                mapper, mock(WikiKnowledgeBaseService.class), new ObjectMapper());
+
+        WikiAgentPageTypePermissionEntity in = row("episode", 1, 1, 1, 1, "allow");
+        WikiAgentPageTypePermissionEntity saved = s.saveRow(in);
+
+        assertEquals(42L, saved.getId());        // adopts existing id
+        verify(mapper).updateById((WikiAgentPageTypePermissionEntity) saved);
+        verify(mapper, never()).insert((WikiAgentPageTypePermissionEntity) any());
+    }
+
+    @Test
+    void saveRow_blankPageTypeBecomesWildcard() {
+        WikiAgentPageTypePermissionMapper mapper = mock(WikiAgentPageTypePermissionMapper.class);
+        when(mapper.selectOne(any())).thenReturn(null);
+        WikiPageTypePermissionService s = new WikiPageTypePermissionService(
+                mapper, mock(WikiKnowledgeBaseService.class), new ObjectMapper());
+
+        WikiAgentPageTypePermissionEntity in = row("  ", 1, 0, 0, 0, "allow");
+        assertEquals(WikiPageTypePermissionService.WILDCARD, s.saveRow(in).getPageType());
+    }
+
+    @Test
+    void deleteRow_returnsTrueWhenRowRemoved() {
+        WikiAgentPageTypePermissionMapper mapper = mock(WikiAgentPageTypePermissionMapper.class);
+        when(mapper.deleteById(5L)).thenReturn(1);
+        WikiPageTypePermissionService s = new WikiPageTypePermissionService(
+                mapper, mock(WikiKnowledgeBaseService.class), new ObjectMapper());
+        assertTrue(s.deleteRow(5L));
+        assertFalse(s.deleteRow(null));
     }
 }
