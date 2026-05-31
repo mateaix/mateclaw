@@ -61,8 +61,14 @@ class WikiToolSpringBindingTest {
     private final HybridRetriever hybridRetriever = mock(HybridRetriever.class);
     private final ObjectMapper objectMapper = new ObjectMapper();
 
+    // Allow-all permission service (no rows configured) — this test exercises
+    // tool binding, not permissions.
+    private final vip.mate.wiki.service.WikiPageTypePermissionService permissionService =
+            new vip.mate.wiki.service.WikiPageTypePermissionService(
+                    mock(vip.mate.wiki.repository.WikiAgentPageTypePermissionMapper.class), kbService, objectMapper);
+
     private final WikiTool tool = new WikiTool(pageService, kbService, rawService,
-            hybridRetriever, objectMapper);
+            hybridRetriever, objectMapper, permissionService);
 
     private ToolCallback callbackFor(String functionName) {
         return Arrays.stream(ToolCallbacks.from(tool))

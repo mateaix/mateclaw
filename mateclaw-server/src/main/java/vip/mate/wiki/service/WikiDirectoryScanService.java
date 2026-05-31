@@ -29,6 +29,7 @@ public class WikiDirectoryScanService {
     private final WikiKnowledgeBaseService kbService;
     private final WikiRawMaterialService rawService;
     private final WikiProperties properties;
+    private final WikiSourcePathValidator pathValidator;
 
     private static final Set<String> SUPPORTED_EXTENSIONS = Set.of(
             "txt", "md", "csv", "pdf", "docx", "doc",
@@ -61,7 +62,14 @@ public class WikiDirectoryScanService {
      * 扫描指定目录，为每个支持的文件创建原始材料
      */
     public ScanResult scanDirectory(Long kbId, String directoryPath) {
-        Path dir = Paths.get(directoryPath).toAbsolutePath().normalize();
+        Path dir;
+        try {
+            // Canonicalize (resolving symlinks) and enforce allowed-roots so a
+            // scan cannot read outside the authorized area.
+            dir = pathValidator.validateDirectory(directoryPath);
+        } catch (IllegalArgumentException e) {
+            return new ScanResult(0, 0, 0, List.of(e.getMessage()));
+        }
 
         if (!Files.exists(dir)) {
             return new ScanResult(0, 0, 0, List.of("Directory does not exist: " + dir));
@@ -125,34 +133,77 @@ public class WikiDirectoryScanService {
 
         for (Path file : files) {
             try {
-                String absolutePath = file.toAbsolutePath().normalize().toString();
-                String fileName = file.getFileName().toString();
-                String ext = getExtension(fileName);
-
-                // 基于 sourcePath 去重
-                WikiRawMaterialEntity existing = rawService.findBySourcePath(kbId, absolutePath);
-                if (existing != null) {
+                // Per-file symlink guard: a symlinked file inside an allowed
+                // directory could point outside it (e.g. secret.md ->
+                // /etc/passwd). Resolve the real path and require it to stay
+                // within the validated scan root; skip escapes.
+                Path realFile;
+                try {
+                    realFile = file.toRealPath();
+                } catch (IOException e) {
+                    realFile = file.toAbsolutePath().normalize();
+                }
+                if (!realFile.startsWith(dir)) {
+                    errors.add("Skipped symlink escaping the scan root: " + file.getFileName());
                     skipped++;
                     continue;
                 }
+                // From here on operate ONLY on the resolved real path, never the
+                // original entry. Reading `realFile` (a concrete, fully-resolved
+                // path) closes the TOCTOU window: swapping the symlink after
+                // resolution cannot redirect the read. The file name for the
+                // title still comes from the directory entry the user sees.
+                // Re-check the size on the resolved target — walkFileTree does
+                // not follow links, so a symlink's attribute size (the link
+                // length) can slip an oversized target past the visitFile gate.
+                long realSize;
+                try {
+                    realSize = Files.size(realFile);
+                } catch (IOException e) {
+                    errors.add("Failed to stat: " + file.getFileName() + " (" + e.getMessage() + ")");
+                    skipped++;
+                    continue;
+                }
+                if (realSize > properties.getMaxScanFileSize()) {
+                    errors.add("Skipped oversized file: " + file.getFileName() + " (" + realSize + " bytes)");
+                    skipped++;
+                    continue;
+                }
+                String absolutePath = realFile.toString();
+                String fileName = file.getFileName().toString();
+                String ext = getExtension(fileName);
 
                 if (TEXT_EXTENSIONS.contains(ext)) {
-                    // 文本文件：读取内容
-                    String content = Files.readString(file, StandardCharsets.UTF_8);
-                    rawService.addText(kbId, fileName, content);
-                } else {
-                    // 二进制文件：直接引用原始路径，不复制
-                    String sourceType = switch (ext) {
-                        case "pdf" -> "pdf";
-                        case "docx", "doc" -> "docx";
-                        case "pptx", "ppt" -> "pptx";
-                        case "xlsx", "xls" -> "xlsx";
-                        case "html", "htm" -> "html";
-                        default -> "text";
-                    };
-                    rawService.addFile(kbId, fileName, sourceType, absolutePath, Files.size(file));
+                    // Text files: dedup by content hash, so an unchanged file is
+                    // skipped while a modified file (new hash) is re-ingested.
+                    String content = Files.readString(realFile, StandardCharsets.UTF_8);
+                    boolean fresh = rawService.ingestTextFileFromScan(kbId, fileName, absolutePath, content);
+                    if (fresh) {
+                        added++;
+                    } else {
+                        skipped++;
+                    }
+                    continue;
                 }
-                added++;
+
+                // Binary files: dedup by content hash too, so a modified file is
+                // re-ingested. The unchanged case reads the file once to hash it;
+                // only a new/changed file is read again to import.
+                String sourceType = switch (ext) {
+                    case "pdf" -> "pdf";
+                    case "docx", "doc" -> "docx";
+                    case "pptx", "ppt" -> "pptx";
+                    case "xlsx", "xls" -> "xlsx";
+                    case "html", "htm" -> "html";
+                    default -> "text";
+                };
+                boolean freshBinary = rawService.ingestBinaryFileFromScan(
+                        kbId, fileName, sourceType, absolutePath, realSize);
+                if (freshBinary) {
+                    added++;
+                } else {
+                    skipped++;
+                }
 
             } catch (Exception e) {
                 errors.add("Failed to import: " + file.getFileName() + " (" + e.getMessage() + ")");

@@ -87,10 +87,38 @@ public final class RuntimeContextInjector {
                 sb.append("\n[system-context] Working directory: ").append(workspaceBasePath);
                 sb.append("\nYou can only read/write files and execute commands within this directory and its subdirectories.");
             }
+            appendSkillRootHintIfPresent(sb, workspaceBasePath, i18n);
         }
 
         appendSenderBlockIfPresent(sb, origin);
         return sb.toString();
+    }
+
+    /**
+     * Tell the model that the shared skill repository is reachable in addition
+     * to the workspace. Without this, a model that strictly honors the
+     * "working directory only" hint refuses to read or run skill files that
+     * live outside the workspace — even though the path sandbox now allows
+     * them. Skipped when the skill root is unknown or already sits inside the
+     * workspace (no separate boundary to explain).
+     */
+    private static void appendSkillRootHintIfPresent(StringBuilder sb, String workspaceBasePath,
+                                                      vip.mate.i18n.I18nService i18n) {
+        java.nio.file.Path skillRoot = vip.mate.tool.guard.WorkspacePathGuard.getSkillRoot();
+        if (skillRoot == null) {
+            return;
+        }
+        java.nio.file.Path wsRoot = java.nio.file.Paths.get(workspaceBasePath).toAbsolutePath().normalize();
+        if (skillRoot.startsWith(wsRoot)) {
+            return;
+        }
+        String skillRootStr = skillRoot.toString();
+        if (i18n != null) {
+            sb.append("\n").append(i18n.msg("context.skill_dir_hint", skillRootStr));
+        } else {
+            sb.append("\nShared skills live under ").append(skillRootStr)
+              .append("; you may also read and run files there, even though it is outside the working directory.");
+        }
     }
 
     /**

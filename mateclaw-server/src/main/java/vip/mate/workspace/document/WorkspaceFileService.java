@@ -3,8 +3,10 @@ package vip.mate.workspace.document;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import vip.mate.workspace.document.event.WorkspaceFileChangedEvent;
 import vip.mate.workspace.document.model.WorkspaceFileEntity;
 import vip.mate.workspace.document.repository.WorkspaceFileMapper;
 
@@ -31,6 +33,7 @@ import java.util.stream.Collectors;
 public class WorkspaceFileService {
 
     private final WorkspaceFileMapper fileMapper;
+    private final ApplicationEventPublisher eventPublisher;
 
     /**
      * 列出 Agent 的所有工作区文件（按排序 + 文件名排列）
@@ -68,6 +71,7 @@ public class WorkspaceFileService {
             existing.setContent(content);
             existing.setFileSize(size);
             fileMapper.updateById(existing);
+            eventPublisher.publishEvent(new WorkspaceFileChangedEvent(agentId, filename));
             return existing;
         } else {
             WorkspaceFileEntity entity = new WorkspaceFileEntity();
@@ -78,6 +82,7 @@ public class WorkspaceFileService {
             entity.setEnabled(false);
             entity.setSortOrder(0);
             fileMapper.insert(entity);
+            eventPublisher.publishEvent(new WorkspaceFileChangedEvent(agentId, filename));
             return entity;
         }
     }
@@ -91,6 +96,7 @@ public class WorkspaceFileService {
                 new LambdaQueryWrapper<WorkspaceFileEntity>()
                         .eq(WorkspaceFileEntity::getAgentId, agentId)
                         .eq(WorkspaceFileEntity::getFilename, filename));
+        eventPublisher.publishEvent(new WorkspaceFileChangedEvent(agentId, filename));
     }
 
     /**

@@ -971,7 +971,17 @@ public class ReasoningNode implements NodeAction {
         List<Message> prefix = new ArrayList<>();
         prefix.add(new SystemMessage(systemPrompt));
         prefix.add(new UserMessage(RuntimeContextInjector.buildContextMessage(workspaceBasePath, null, chatOrigin)));
-        if (wikiContextService != null && agentIdStr != null && !agentIdStr.isEmpty()) {
+        // When this turn already recalled the user's own current project from
+        // structured memory, skip auto-injecting knowledge-base reference context.
+        // Otherwise the KB pages (reference material, possibly about unrelated
+        // projects) compete with — and tend to override — the user's actual
+        // project identity. The agent can still query the wiki on demand.
+        boolean projectRecalled = userMsg != null
+                && userMsg.contains(vip.mate.memory.service.StructuredMemoryService.PROJECT_RECALLED_MARKER);
+        if (projectRecalled) {
+            log.debug("[ReasoningNode] Skipping wiki-relevant injection: user's project was recalled from memory this turn");
+        }
+        if (!projectRecalled && wikiContextService != null && agentIdStr != null && !agentIdStr.isEmpty()) {
             try {
                 Long parsedAgentId = Long.parseLong(agentIdStr);
                 String wikiRelevant = wikiContextService.buildRelevantContext(parsedAgentId, userMsg);

@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "fallbackType": "concept",
+  "allowAdditionalFields": true,
+  "pageTypes": {
+    "concept": { "label": "Concept", "description": "An abstract idea, theory, method or definition." },
+    "person": { "label": "Person", "description": "An individual." },
+    "place": { "label": "Place", "description": "A geographic location." },
+    "event": { "label": "Event", "description": "A dated occurrence." },
+    "technology": { "label": "Technology", "description": "A tool, system, framework or technique." },
+    "organization": { "label": "Organization", "description": "A company, institution or group." },
+    "product": { "label": "Product", "description": "A named product or offering." },
+    "term": { "label": "Term", "description": "A glossary term or piece of terminology." },
+    "process": { "label": "Process", "description": "A procedure, workflow or sequence of steps." },
+    "other": { "label": "Other", "description": "Anything that does not fit the other types." }
+  }
+}

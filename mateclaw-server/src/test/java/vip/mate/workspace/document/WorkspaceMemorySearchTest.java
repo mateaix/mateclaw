@@ -38,6 +38,7 @@ import static org.mockito.Mockito.when;
 class WorkspaceMemorySearchTest {
 
     @Mock private WorkspaceFileMapper fileMapper;
+    @Mock private org.springframework.context.ApplicationEventPublisher eventPublisher;
     private WorkspaceFileService service;
 
     @BeforeAll
@@ -51,7 +52,21 @@ class WorkspaceMemorySearchTest {
 
     @BeforeEach
     void setUp() {
-        service = new WorkspaceFileService(fileMapper);
+        service = new WorkspaceFileService(fileMapper, eventPublisher);
+    }
+
+    @Test
+    @DisplayName("saveFile publishes a change event so the cached agent instance is invalidated")
+    void saveFilePublishesChangeEvent() {
+        when(fileMapper.selectOne(any())).thenReturn(null); // new file path
+
+        service.saveFile(1000000001L, "MEMORY.md", "## 稳定事实\n- 用户语言：简体中文");
+
+        ArgumentCaptor<vip.mate.workspace.document.event.WorkspaceFileChangedEvent> captor =
+                ArgumentCaptor.forClass(vip.mate.workspace.document.event.WorkspaceFileChangedEvent.class);
+        org.mockito.Mockito.verify(eventPublisher).publishEvent(captor.capture());
+        assertThat(captor.getValue().agentId()).isEqualTo(1000000001L);
+        assertThat(captor.getValue().filename()).isEqualTo("MEMORY.md");
     }
 
     // ---------- tokenize ----------

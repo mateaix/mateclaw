@@ -55,3 +55,6 @@
 - `title`：通常与 metadata 一致；如有更精确的描述可微调
 - `content`：完整 markdown，开头一段摘要，后面分章节
 - `summary`：一段话简短摘要（可与 metadata.summary 一致或精炼）
+
+## 内容指引(本知识库 / 该页类型)
+{page_type_instructions}

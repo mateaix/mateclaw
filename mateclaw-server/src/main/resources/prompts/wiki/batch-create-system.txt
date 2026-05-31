@@ -50,4 +50,12 @@
 - `title`：与 metadata 保持一致；如有更精确的描述可微调
 - `content`：完整 markdown 正文
 - `summary`：一段话简短摘要
-- `page_type`：页面类型，从以下值中选一个：concept / person / place / event / technology / organization / product / term / process / other
+- `page_type`：页面类型，从下面"允许的页面类型"列表中选一个；都不合适时选 concept。
+- `metadata`（可选）：与所选 page_type 对应的结构化字段对象，只输出该类型声明的字段（带"required metadata"标注的字段应尽量补全）。
+- `depends_on`（可选，仅经验层页面需要）：本页所依赖的**事实层页面 slug 数组**。经验层(如 analysis/pattern/regime)必须列出其结论所基于的事实页 slug;事实层页面留空或不输出。
+
+允许的页面类型：
+{allowed_page_types}
+
+各类型内容模板(若某页的 page_type 有对应骨架,请按骨架组织正文;无则自由组织)：
+{page_type_templates}

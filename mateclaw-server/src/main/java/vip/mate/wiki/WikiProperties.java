@@ -72,6 +72,36 @@ public class WikiProperties {
     private long maxScanFileSize = 50 * 1024 * 1024;
 
     /**
+     * Allowed root directories for KB source directories. When non-empty, a
+     * configured source directory must resolve (after symlink resolution) to a
+     * path inside one of these roots, blocking arbitrary directory reads. Empty
+     * (the default) disables the containment check — suitable for desktop /
+     * single-tenant; server operators should set this.
+     */
+    private java.util.List<String> allowedSourceRoots = new java.util.ArrayList<>();
+
+    /**
+     * Fail-closed switch for source-path validation. When {@code true} and
+     * {@link #allowedSourceRoots} is empty, every source directory is rejected
+     * (no path is allowed until a root is configured) — recommended for
+     * multi-tenant servers so a missing allow-list cannot silently re-open
+     * full-filesystem reads. Default {@code false} keeps the opt-in behaviour
+     * for desktop / single-tenant where no roots are configured.
+     */
+    private boolean requireAllowedRoots = false;
+
+    /**
+     * When {@code true}, a scheduled job (single-owner via ShedLock) scans each
+     * KB's configured source directory and auto-ingests new files. Off by
+     * default — operators opt in. Existing dedup by source path keeps re-scans
+     * idempotent; deletes are never propagated.
+     */
+    private boolean watcherEnabled = false;
+
+    /** Interval between watcher scan cycles, milliseconds. Default 5 minutes. */
+    private long watcherIntervalMs = 300_000;
+
+    /**
      * Wiki LLM 重试最大尝试次数（含首次）。
      * <p>
      * RFC-012 M1：旧实现无最大次数，遇到 nginx 504 这种"反复瞬时"错误会永远重试。

@@ -46,6 +46,11 @@ public class MemorySummarizationService {
     private final AgentGraphBuilder agentGraphBuilder;
     private final MemoryProperties properties;
     private final ObjectMapper objectMapper;
+    private final StructuredMemoryService structuredMemoryService;
+
+    /** Typed-memory categories the summarizer may route entries into. */
+    private static final java.util.Set<String> STRUCTURED_TYPES =
+            java.util.Set.of("user", "feedback", "project", "reference");
 
     /** Per-agent 锁，防止并发写入 */
     private final ConcurrentHashMap<Long, ReentrantLock> agentLocks = new ConcurrentHashMap<>();
@@ -191,6 +196,40 @@ public class MemorySummarizationService {
                 workspaceFileService.saveFile(agentId, "PROFILE.md", content);
                 log.info("[Memory] Updated PROFILE.md for agent={}", agentId);
             }
+        }
+
+        // Structured entries: route typed facts (especially volatile project /
+        // reference facts kept out of the always-on MEMORY.md) into structured
+        // memory so they become query-conditioned recallable, instead of being
+        // stranded in daily notes that only the agent's tools can reach.
+        applyStructuredEntries(agentId, root.path("structured_entries"));
+    }
+
+    private void applyStructuredEntries(Long agentId, JsonNode entriesNode) {
+        if (entriesNode == null || !entriesNode.isArray() || entriesNode.isEmpty()) {
+            return;
+        }
+        int written = 0;
+        for (JsonNode entry : entriesNode) {
+            String type = entry.path("type").asText("").trim().toLowerCase();
+            String key = entry.path("key").asText("").trim();
+            String content = entry.path("content").asText("").trim();
+            if (!STRUCTURED_TYPES.contains(type) || key.isEmpty() || content.isEmpty()) {
+                log.debug("[Memory] Skipping invalid structured entry (type={}, key={}) for agent={}",
+                        type, key, agentId);
+                continue;
+            }
+            try {
+                structuredMemoryService.remember(agentId, type, key, content, "auto-summary");
+                written++;
+            } catch (Exception e) {
+                log.warn("[Memory] Failed to write structured entry '{}' (type={}) for agent={}: {}",
+                        key, type, agentId, e.getMessage());
+            }
+        }
+        if (written > 0) {
+            log.info("[Memory] Routed {} structured entr{} for agent={}",
+                    written, written == 1 ? "y" : "ies", agentId);
         }
     }
 

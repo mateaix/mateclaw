@@ -63,6 +63,22 @@ public class WikiProcessingService {
     private final org.springframework.context.ApplicationEventPublisher eventPublisher;
 
     /**
+     * Optional KB pageType profile. Field-injected (not a constructor arg) so
+     * existing instantiations are unaffected; when absent the batch-create
+     * prompt falls back to the legacy hardcoded pageType enum.
+     */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private vip.mate.wiki.profile.WikiPageTypeProfileService pageTypeProfileService;
+
+    /** Optional metadata validator, paired with {@link #pageTypeProfileService}. */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private vip.mate.wiki.profile.WikiMetadataValidator metadataValidator;
+
+    /** Optional dependency/stale engine for layered-knowledge wiring. */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private vip.mate.wiki.service.WikiDependencyService dependencyService;
+
+    /**
      * Read-the-failover-chain handle. Optional so the existing constructors and
      * lazy-mode tests don't have to thread a new dependency. When null, the
      * fallback hop iterates {@code listEnabledModels} in DB order — same
@@ -801,7 +817,8 @@ public class WikiProcessingService {
         // this picks up changes from sequential chunks without an extra DB hit when nothing changed.
         String freshIndex = buildExistingPagesIndex(kbId);
 
-        String routeSystem = PromptLoader.loadPrompt("wiki/route-system");
+        String routeSystem = PromptLoader.loadPrompt("wiki/route-system")
+                .replace("{allowed_page_types}", allowedTypesFragment(kbId));
         String routeUserTemplate = PromptLoader.loadPrompt("wiki/route-user");
         String documentMapSection = buildDocumentMapSection(documentMap);
         String routeUser = routeUserTemplate
@@ -1065,6 +1082,19 @@ public class WikiProcessingService {
             metasJson.append("]");
 
             String batchSystem = PromptLoader.loadPrompt("wiki/batch-create-system");
+            if (pageTypeProfileService != null) {
+                // Inject the KB's allowed page types so the LLM only emits types
+                // the profile recognises. Default-profile KBs get the same list
+                // as the previous hardcoded enum, so behaviour is unchanged.
+                batchSystem = batchSystem.replace("{allowed_page_types}",
+                        pageTypeProfileService.describeForPrompt(kbId))
+                        .replace("{page_type_templates}",
+                                emptyOr(pageTypeProfileService.describeTemplatesForPrompt(kbId)));
+            } else {
+                batchSystem = batchSystem.replace("{allowed_page_types}",
+                        "concept / person / place / event / technology / organization / product / term / process / other")
+                        .replace("{page_type_templates}", "(无)");
+            }
             String batchUserTemplate = PromptLoader.loadPrompt("wiki/batch-create-user");
             String docMapSection = buildDocumentMapSection(documentMap);
             String batchUser = batchUserTemplate
@@ -1138,6 +1168,13 @@ public class WikiProcessingService {
                 String content = pageJson.path("content").asText("");
                 String pageSummary = pageJson.path("summary").asText("");
                 String pageType = pageJson.path("page_type").asText("");
+                // Downgrade an unrecognised type to the profile fallback so the
+                // stored page_type always belongs to the KB's profile.
+                if (pageTypeProfileService != null && !pageType.isBlank()) {
+                    pageType = pageTypeProfileService.normalizePageType(kbId, pageType);
+                }
+                JsonNode metadataNode = pageJson.path("metadata");
+                JsonNode dependsOnNode = pageJson.path("depends_on");
                 if (content.isBlank()) {
                     log.info("[Wiki] BatchCreate: blank content for slug='{}', retrying individually", slug);
                     final String blankSlug = slug;
@@ -1166,7 +1203,7 @@ public class WikiProcessingService {
                 boolean wasCreated = false;
                 boolean ok = false;
                 try {
-                    wasCreated = savePageContent(kb, raw, slug, title, content, pageSummary, pageType);
+                    wasCreated = savePageContent(kb, raw, slug, title, content, pageSummary, pageType, metadataNode, dependsOnNode);
                     if (wasCreated) {
                         created.incrementAndGet();
                         totalCreated++;
@@ -1236,7 +1273,9 @@ public class WikiProcessingService {
         String title = pageMeta.path("title").asText("");
         String summary = pageMeta.path("summary").asText("");
         String configContent = kb.getConfigContent() != null ? kb.getConfigContent() : "";
-        String createSystem = PromptLoader.loadPrompt("wiki/create-page-system");
+        String createSystem = PromptLoader.loadPrompt("wiki/create-page-system")
+                .replace("{page_type_instructions}",
+                        typeGuidance(kb.getId(), pageMeta.path("page_type").asText(""), "create"));
         String createUserTemplate = PromptLoader.loadPrompt("wiki/create-page-user");
         String createUser = createUserTemplate
                 .replace("{config}", configContent)
@@ -1358,12 +1397,24 @@ public class WikiProcessingService {
      */
     private boolean savePageContent(WikiKnowledgeBaseEntity kb, WikiRawMaterialEntity raw,
                                      String slug, String title, String content, String pageSummary) {
-        return savePageContent(kb, raw, slug, title, content, pageSummary, null);
+        return savePageContent(kb, raw, slug, title, content, pageSummary, null, null, null);
     }
 
     private boolean savePageContent(WikiKnowledgeBaseEntity kb, WikiRawMaterialEntity raw,
                                      String slug, String title, String content, String pageSummary,
                                      String pageType) {
+        return savePageContent(kb, raw, slug, title, content, pageSummary, pageType, null, null);
+    }
+
+    private boolean savePageContent(WikiKnowledgeBaseEntity kb, WikiRawMaterialEntity raw,
+                                     String slug, String title, String content, String pageSummary,
+                                     String pageType, JsonNode metadataNode) {
+        return savePageContent(kb, raw, slug, title, content, pageSummary, pageType, metadataNode, null);
+    }
+
+    private boolean savePageContent(WikiKnowledgeBaseEntity kb, WikiRawMaterialEntity raw,
+                                     String slug, String title, String content, String pageSummary,
+                                     String pageType, JsonNode metadataNode, JsonNode dependsOnNode) {
         Long kbId = kb.getId();
         Long rawId = raw.getId();
 
@@ -1378,6 +1429,7 @@ public class WikiProcessingService {
             String actualSlug = existingByCanonical.getSlug();
             pageService.updatePageByAi(kbId, actualSlug, content, pageSummary, rawId);
             pageService.mergeSourceLineage(existingByCanonical.getId(), rawId, raw.getTitle());
+            afterPagePersisted(existingByCanonical.getId(), kbId, pageType, metadataNode, dependsOnNode, true);
             log.info("[Wiki] Phase B create slug='{}' canonical-matches existing '{}', updated",
                     slug, actualSlug);
             return false;
@@ -1394,6 +1446,7 @@ public class WikiProcessingService {
                 if (winner != null) {
                     pageService.updatePageByAi(kbId, winnerSlug, content, pageSummary, rawId);
                     pageService.mergeSourceLineage(winner.getId(), rawId, raw.getTitle());
+                    afterPagePersisted(winner.getId(), kbId, pageType, metadataNode, dependsOnNode, true);
                     log.info("[Wiki] Phase B create slug='{}' lost slug-claim race to '{}', updated",
                             slug, winnerSlug);
                     return false;
@@ -1409,6 +1462,7 @@ public class WikiProcessingService {
         if (existing != null) {
             pageService.updatePageByAi(kbId, slug, content, pageSummary, rawId);
             pageService.mergeSourceLineage(existing.getId(), rawId, raw.getTitle());
+            afterPagePersisted(existing.getId(), kbId, pageType, metadataNode, dependsOnNode, true);
             log.info("[Wiki] Phase B create page slug='{}' done (updated existing)", slug);
             return false;
         }
@@ -1417,14 +1471,153 @@ public class WikiProcessingService {
         try {
             WikiPageEntity created = pageService.createPage(kbId, slug, title, content, pageSummary, sourceRawIds, pageType);
             pageService.mergeSourceLineage(created.getId(), rawId, raw.getTitle());
+            afterPagePersisted(created.getId(), kbId, pageType, metadataNode, dependsOnNode, false);
             log.info("[Wiki] Phase B create page slug='{}' done (created)", slug);
             citationService.buildCitationsAsync(created.getId(), kbId);
             return true;
         } catch (org.springframework.dao.DuplicateKeyException e) {
             // Fallback 2: concurrent INSERT race — degrade to update
             pageService.updatePageByAi(kbId, slug, content, pageSummary, rawId);
+            WikiPageEntity raced = pageService.getBySlug(kbId, slug);
+            if (raced != null) {
+                afterPagePersisted(raced.getId(), kbId, pageType, metadataNode, dependsOnNode, true);
+            }
             log.info("[Wiki] Phase B create page slug='{}' lost INSERT race -> updated existing", slug);
             return false;
+        }
+    }
+
+    /**
+     * Validate the LLM-supplied metadata for a freshly created page against the
+     * KB profile's pageType schema and persist the cleaned result plus its
+     * validation outcome. No-op when the profile/validator beans are absent or
+     * no metadata was supplied — so default-profile KBs are unaffected.
+     */
+    /**
+     * Common post-save outlet for every page create/update branch: validate &
+     * persist structured metadata and fire the pipeline trigger event. Sharing
+     * one outlet means the existing-page-update and race-arbitration paths get
+     * the same metadata and trigger handling as a clean create.
+     */
+    private void afterPagePersisted(Long pageId, Long kbId, String pageType,
+                                    JsonNode metadataNode, JsonNode dependsOnNode, boolean isUpdate) {
+        applyValidatedMetadata(pageId, kbId, pageType, metadataNode);
+        deriveKnowledgeLayer(pageId, kbId, pageType);
+        applyDependencies(pageId, kbId, pageType, dependsOnNode);
+        // The page is committed (createPage / updatePageByAi are their own
+        // transactions), so the count is accurate. Idempotent + dedup-guarded
+        // downstream, so firing on update paths is safe.
+        if (eventPublisher != null && pageType != null && !pageType.isBlank()) {
+            eventPublisher.publishEvent(new vip.mate.wiki.event.WikiPageCreatedEvent(kbId, pageType, pageId));
+        }
+        // When an existing fact page is updated, propagate staleness to the
+        // experience pages depending on it (async, off the ingest thread).
+        if (isUpdate && eventPublisher != null && dependencyService != null
+                && pageTypeProfileService != null && !pageTypeProfileService.isExperience(kbId, pageType)) {
+            eventPublisher.publishEvent(new vip.mate.wiki.event.WikiFactPageUpdatedEvent(
+                    kbId, pageId, "fact page updated during ingest"));
+        }
+    }
+
+    /** Stamp the page's knowledge layer (fact/experience) derived from its pageType profile. */
+    private void deriveKnowledgeLayer(Long pageId, Long kbId, String pageType) {
+        if (pageTypeProfileService == null || pageType == null || pageType.isBlank()) {
+            return;
+        }
+        String layer = pageTypeProfileService.resolveLayer(kbId, pageType);
+        if (layer != null) {
+            pageService.setKnowledgeLayer(pageId, layer);
+        }
+    }
+
+    /**
+     * Persist an experience page's fact dependencies declared by the LLM
+     * ({@code depends_on}: slugs). Resolves slugs to ids and delegates to the
+     * dependency engine, which rejects cross-KB / non-fact / missing targets;
+     * rejections are logged as a warning (non-blocking, MVP).
+     */
+    private void applyDependencies(Long pageId, Long kbId, String pageType, JsonNode dependsOnNode) {
+        if (dependencyService == null || pageTypeProfileService == null
+                || dependsOnNode == null || !dependsOnNode.isArray() || dependsOnNode.isEmpty()) {
+            return;
+        }
+        if (!pageTypeProfileService.isExperience(kbId, pageType)) {
+            return; // only experience pages declare fact dependencies
+        }
+        java.util.List<Long> depIds = new java.util.ArrayList<>();
+        for (JsonNode n : dependsOnNode) {
+            String slug = n.asText("");
+            if (slug.isBlank()) continue;
+            WikiPageEntity dep = pageService.getBySlug(kbId, slug);
+            if (dep != null) {
+                depIds.add(dep.getId());
+            }
+        }
+        try {
+            java.util.List<String> rejected = dependencyService.setDependencies(kbId, pageId, depIds);
+            if (!rejected.isEmpty()) {
+                log.warn("[Wiki] page {} dependency warnings: {}", pageId, rejected);
+            }
+        } catch (Exception e) {
+            log.warn("[Wiki] dependency persistence failed for page {}: {}", pageId, e.getMessage());
+        }
+    }
+
+    private String emptyOr(String s) {
+        return (s == null || s.isBlank()) ? "(无)" : s;
+    }
+
+    /** Allowed page types fragment for prompt injection (profile-driven; legacy fallback). */
+    private String allowedTypesFragment(Long kbId) {
+        return pageTypeProfileService != null
+                ? pageTypeProfileService.describeForPrompt(kbId)
+                : "concept / person / place / event / technology / organization / product / term / process / other";
+    }
+
+    /**
+     * Per-type guidance for the create / merge prompts: the stage instruction
+     * plus, for the create stage, the Markdown template skeleton. Empty-safe.
+     */
+    private String typeGuidance(Long kbId, String pageType, String stage) {
+        if (pageTypeProfileService == null || pageType == null || pageType.isBlank()) {
+            return "(无特定指引)";
+        }
+        String instr = pageTypeProfileService.stageInstruction(kbId, pageType, stage);
+        String tpl = "create".equals(stage) ? pageTypeProfileService.templateMarkdown(kbId, pageType) : "";
+        StringBuilder sb = new StringBuilder();
+        if (instr != null && !instr.isBlank()) {
+            sb.append(instr);
+        }
+        if (tpl != null && !tpl.isBlank()) {
+            if (sb.length() > 0) sb.append("\n\n");
+            sb.append("请按以下 Markdown 骨架组织正文:\n").append(tpl);
+        }
+        return sb.length() == 0 ? "(无特定指引)" : sb.toString();
+    }
+
+    private void applyValidatedMetadata(Long pageId, Long kbId, String pageType,
+                                        JsonNode metadataNode) {
+        if (pageId == null || pageTypeProfileService == null || metadataValidator == null) {
+            return;
+        }
+        if (metadataNode == null || metadataNode.isMissingNode() || metadataNode.isNull()
+                || !metadataNode.isObject() || metadataNode.isEmpty()) {
+            return;
+        }
+        try {
+            vip.mate.wiki.profile.WikiPageTypeProfile profile = pageTypeProfileService.resolveProfile(kbId);
+            vip.mate.wiki.profile.WikiPageTypeDef def = profile.get(pageType);
+            @SuppressWarnings("unchecked")
+            java.util.Map<String, Object> raw = objectMapper.convertValue(metadataNode, java.util.Map.class);
+            vip.mate.wiki.profile.WikiMetadataValidator.ValidationResult result =
+                    metadataValidator.validate(def, raw, profile.isAllowAdditionalFields(), "create");
+            String metadataJson = objectMapper.writeValueAsString(result.getCleaned());
+            String validationJson = result.getWarnings().isEmpty()
+                    ? null : objectMapper.writeValueAsString(result.getWarnings());
+            pageService.applyMetadata(pageId, metadataJson, result.getStatus(),
+                    validationJson, profile.getVersion());
+        } catch (Exception e) {
+            log.warn("[Wiki] metadata validation failed for page {}: {}", pageId, e.getMessage());
         }
     }
 
@@ -1456,7 +1649,9 @@ public class WikiProcessingService {
         }
 
         String configContent = kb.getConfigContent() != null ? kb.getConfigContent() : "";
-        String mergeSystem = PromptLoader.loadPrompt("wiki/merge-page-system");
+        String mergeSystem = PromptLoader.loadPrompt("wiki/merge-page-system")
+                .replace("{page_type_merge_instruction}",
+                        typeGuidance(kbId, existing.getPageType(), "merge"));
         // Trim existing content to prevent context overflow on small models (qwen-turbo: 4096 tokens).
         // Merging a 3000-char page + 30K chunk blows past the limit → truncated JSON → parse failure.
         // 1800 chars ≈ ~600 tokens, leaving ample room for the chunk and response.
@@ -2258,7 +2453,9 @@ public class WikiProcessingService {
         // Use existing two-phase single-page create logic
         String existingPagesIndex = buildExistingPagesIndex(kb.getId());
         String configContent = kb.getConfigContent() != null ? kb.getConfigContent() : "";
-        String createSystem = PromptLoader.loadPrompt("wiki/create-page-system");
+        String createSystem = PromptLoader.loadPrompt("wiki/create-page-system")
+                .replace("{page_type_instructions}",
+                        typeGuidance(kb.getId(), page.getPageType(), "create"));
         String createUserTemplate = PromptLoader.loadPrompt("wiki/create-page-user");
         String createUser = createUserTemplate
                 .replace("{config}", configContent)

@@ -47,3 +47,6 @@
 - `title`：通常保持不变；只有当新材料明确改变了页面主题时才改
 - `content`：完整 markdown，包含原内容中仍然有效的部分 + 来自新材料的新增信息
 - `summary`：更新后的一段话摘要
+
+## 该类型的合并策略(本知识库)
+{page_type_merge_instruction}
