@@ -79,10 +79,13 @@
       </header>
       <div class="perm-agent-row">
         <label>{{ t('wiki.adv.perm.agent') }}</label>
-        <select v-model="perm.agentId" class="form-input compact" @change="loadPermissions">
-          <option value="">{{ t('wiki.adv.perm.selectAgent') }}</option>
-          <option v-for="a in agents" :key="a.id" :value="String(a.id)">{{ a.name }}</option>
-        </select>
+        <AgentPickerDialog
+          v-model="perm.agentId"
+          :agents="agents"
+          :placeholder="t('wiki.adv.perm.selectAgent')"
+          clearable
+          @change="loadPermissions"
+        />
       </div>
       <template v-if="perm.agentId">
         <table class="adv-table">
@@ -225,6 +228,7 @@ import { useAgentStore } from '@/stores/useAgentStore'
 import { wikiApi } from '@/api/index'
 import { mcToast } from '@/composables/useMcToast'
 import { mcConfirm } from '@/components/common/useConfirm'
+import AgentPickerDialog from '@/components/common/AgentPickerDialog.vue'
 
 const { t } = useI18n()
 const store = useWikiStore()
