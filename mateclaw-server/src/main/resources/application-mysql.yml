@@ -25,3 +25,13 @@ spring:
   h2:
     console:
       enabled: false
+
+# Production (multi-tenant server) hardening: fail closed on source-path
+# validation. With no allowed-source-roots configured, every KB source
+# directory is rejected rather than allowing full-filesystem reads — so a
+# missing allow-list cannot silently re-open arbitrary directory scanning.
+# Operators set mate.wiki.allowed-source-roots to permit specific roots.
+# The default profile (H2 / desktop / single-tenant) leaves this off.
+mate:
+  wiki:
+    require-allowed-roots: true

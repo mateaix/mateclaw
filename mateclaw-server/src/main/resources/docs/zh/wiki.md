@@ -342,6 +342,88 @@ AI 写错了就改。你的修改在下一次入库时会被保留——`locked`
 
 ---
 
+## Wikilink 与死链治理
+
+页面之间用 `[[slug]]` 写跨页引用，是 Wiki 这种长寿命知识资产的核心粘合剂。RFC 55 把这一层从 "[[Title]] 写起来好像也行、点了 404 才发现" 改成 **写入即校验、删除自动清理、死链显式可见**。
+
+### Wikilink 语法
+
+只承认一种契约：
+
+- `[[slug]]` —— 显示文本默认用目标页的 title
+- `[[slug|显示文本]]` —— 自定义显示文本，slug 仍是跳转目标
+
+slug 必须是真实存在页面的 slug。LLM 生成内容时索引里给的就是 slug-first 列表（`- [[slug]] — Title — Summary`），prompt 显式禁止发明索引外的 slug，并明示 `[[页面标题]]` / `[[Title]]` 这种早期写法会被识别为死链。
+
+跨大小写命中：`[[STATEGRAPH]]` 和 `[[stategraph]]` 一视同仁，都按 lowercased exact match 匹配 slug。
+
+### 同事务校验：`outgoing_links` + `broken_links`
+
+每次页面保存（手工编辑、AI 生成、合并、级联重写）的**同一个事务**内：
+
+1. 从正文里抽出所有 `[[...]]`（跳过 fenced 代码块、inline 代码）
+2. 写 `mate_wiki_page.outgoing_links`（去重、lowercased 字符串数组）
+3. 拿当前 KB 的活跃 slug 集合（不含 archived）做差集 → 写 `broken_links`
+4. 写 `broken_links_scanned_at` 时间戳
+
+效果：写完页面**立刻**就知道哪些 `[[...]]` 是死链，不需要等扫描。代码块和反引号里的 `[[...]]` 是讲解 wiki 语法的示例，被严格保留为字面，不进入 outgoing。
+
+### KB 级死链 lint
+
+进入任一 KB，顶部 banner 会显示当前死链状态。按"扫描死链"启动一次全 KB job：
+
+| Method | Path | 说明 |
+|---|---|---|
+| `POST /api/v1/wiki/knowledge-bases/{kbId}/lint/broken-links` | 启动 job（job-based 异步），返回 `{jobId, status, startedAt}`；同 KB 已有 running job 时幂等返回 |
+| `GET .../lint/broken-links` | 拉最近一次 completed 扫描的聚合结果 |
+| `GET .../lint/broken-links/jobs/{jobId}` | 查单次 job 状态 |
+
+聚合结果按页列出，每条带 `pageId / slug / title / brokenRefs`。前端 banner 把"已扫描 X 页，无死链"和"发现 N 条死链分布在 M 页"区分显示，点"查看"打开详情面板，可一键跳到出错的源页面去手工修。
+
+job 执行时间：100 页 KB 通常 1 秒以内；POST 入队 < 200ms。
+
+### 删除 / 重命名的级联清理
+
+**删页面**时，所有引用方的 `[[deleted-slug]]` 会在同一事务里被改写成纯文本，保留快照标题作为可读文字。带别名的 `[[deleted-slug|alias]]` 直接降级为 `alias`。引用方的 `outgoing_links` / `broken_links` 跟着重算。
+
+**重命名页面**：`POST /api/v1/wiki/knowledge-bases/{kbId}/pages/{slug}/rename` body `{"newSlug":"new"}`。同一事务里：
+
+- 自身 slug 更新为新值
+- 所有引用方的 `[[oldSlug]]` 改写成 `[[newSlug]]`，`[[oldSlug|alias]]` 改写成 `[[newSlug|alias]]`（alias 字节一致保留）
+- 引用方的 `outgoing_links` 同步更新
+
+不接受空 slug、不接受和自身相同的 slug、不接受和**别的**页面冲突的 slug；保护页（system / locked）拒改。case-only rename（`foo → FOO`）允许，跨 H2 与 MySQL 行为一致。
+
+每次 delete / rename 写一条 `mate_audit_event`（action `wiki.page.delete` / `wiki.page.rename`），`detailJson` 里带 `affectedPageIds` 列表，方便事后追溯影响面。
+
+紧急 kill-switch：`mate.wiki.cascade-delete-enabled=false` 关闭级联，回到只删自身行的旧行为；正常状态下不需要开启。
+
+### Chat 里点 wikilink 直接跳
+
+Chat 渲染 agent 回复时，content 里的 `[[slug]]` / `[[slug|alias]]` 会渲染成带 `data-wiki-title` 的 `<a class="wiki-link">`。点一下：
+
+1. App 级全局 click 委托抓到 click
+2. 调 `GET /api/v1/wiki/pages/lookup?title=X&slug=X` —— 在用户可见的所有 KB 里搜（slug 命中优先，title fallback）
+3. 1 hit → `router.push` 进 wiki 视图、自动选 KB、自动打开页面
+4. 0 hit → toast "未找到匹配的 wiki 页面：X"
+5. 多 hit → picker 让用户挑
+
+不再需要先去 wiki 视图、再找 KB、再找页面——chat 里看到的引用直接跳。lookup 严格 case-insensitive exact，不做 canonical 模糊，所以 LLM 写错 slug 会通过 toast 让你看到，而不是悄悄跳到一个"看起来像的"页面。
+
+### Phase 路线图（每个 phase 都已 land）
+
+| Phase | 主要变更 |
+|---|---|
+| 1 | 前端渲染层 slug-first DOM postprocess + 危险字符 guard + 全量 `pages/refs` |
+| 2 | V129 迁移 `broken_links` / `broken_links_scanned_at`，save 同事务写，KB 级 lint job + UI banner |
+| 3 | 9 份 wiki prompt 统一 `[[slug]]` 契约，索引格式 slug-first，batch-create existing/planned 二分 |
+| 4 | 删除 / 重命名级联清理，audit log，feature flag |
+| 5 | analyze 阶段输出 slug 白名单 `related_pages`（服务端二次校验），enrich applier 跳代码块 + slug 白名单 gate |
+
+完整设计 + 实测见 `rfcs/202605/55-wiki-link-resolution-overhaul.md` + `mateclaw-server/src/test/resources/e2e/wiki-link-overhaul-verification.md`（6 个 e2e pass section、50+ 条 live 断言、3 个测试中发现并修复的 bug 完整记录）。
+
+---
+
 ## 搜索、来源追溯、语义检索
 
 - **语义搜索**——问"我们关于 auth 决定了什么？"，直接返回那个决策，不是一堆包含"auth"的页面。chunk 级嵌入 + cosine 检索，**理解你问的是什么意思**。命中现在自带 `pageNumber` 和 `section`，agent 可以引用 "page 12, Setup / Linux" 而不是粘一段没头没尾的片段。

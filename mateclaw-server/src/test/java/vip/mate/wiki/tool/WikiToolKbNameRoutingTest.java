@@ -62,8 +62,14 @@ class WikiToolKbNameRoutingTest {
     private final HybridRetriever hybridRetriever = mock(HybridRetriever.class);
     private final ObjectMapper objectMapper = new ObjectMapper();
 
+    // Allow-all permission service (no rows configured) — this test exercises
+    // KB-name routing, not permissions.
+    private final vip.mate.wiki.service.WikiPageTypePermissionService permissionService =
+            new vip.mate.wiki.service.WikiPageTypePermissionService(
+                    mock(vip.mate.wiki.repository.WikiAgentPageTypePermissionMapper.class), kbService, objectMapper);
+
     private final WikiTool tool = new WikiTool(pageService, kbService, rawService,
-            hybridRetriever, objectMapper);
+            hybridRetriever, objectMapper, permissionService);
 
     private static WikiKnowledgeBaseEntity kb(long id, String name, Long agentId) {
         WikiKnowledgeBaseEntity entity = new WikiKnowledgeBaseEntity();

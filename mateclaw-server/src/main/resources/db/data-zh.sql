@@ -1310,15 +1310,15 @@ VALUES (1000100002, '每周工作总结', '0 18 * * 5', 'Asia/Shanghai', 1000000
 -- 每天凌晨 2:00 整合 daily notes → MEMORY.md
 MERGE INTO mate_cron_job (id, name, cron_expression, timezone, agent_id, task_type, trigger_message, request_body, enabled, create_time, update_time, deleted)
 KEY (id)
-VALUES (1000100010, '记忆整合', '0 2 * * *', 'Asia/Shanghai', 1000000001, 'text', '请回顾你最近的 memory/ 日记文件，将反复出现的重要信息（用户偏好、稳定事实、经验教训、工作流）提炼整合到 MEMORY.md 中。保留日记原文不动，只更新 MEMORY.md。完成后简要说明做了哪些整合。', NULL, TRUE, NOW(), NOW(), 0);
+VALUES (1000100010, '记忆整合', '0 2 * * *', 'Asia/Shanghai', 1000000001, 'text', '请回顾你最近的 memory/ 日记文件，将反复出现的重要信息（用户偏好、稳定事实、经验教训、工作流）提炼整合到 MEMORY.md 中。注意：MEMORY.md 会被注入每一次对话，只整合跨项目长期稳定的信息；具体项目的代号、名称、技术栈、仓库、单项目的指标/预算/团队/上线日期或只对某个项目成立的决策等易变事实，不要写入 MEMORY.md（会随项目切换互相冲突、导致张冠李戴），应留在 daily note 或通过结构化 project 记忆维护。判定口诀：换一个项目后仍成立才进 MEMORY.md。保留日记原文不动，只更新 MEMORY.md。完成后简要说明做了哪些整合。', NULL, TRUE, NOW(), NOW(), 0);
 
 MERGE INTO mate_cron_job (id, name, cron_expression, timezone, agent_id, task_type, trigger_message, request_body, enabled, create_time, update_time, deleted)
 KEY (id)
-VALUES (1000100011, '记忆整合', '0 2 * * *', 'Asia/Shanghai', 1000000002, 'text', '请回顾你最近的 memory/ 日记文件，将反复出现的重要信息（用户偏好、稳定事实、经验教训、工作流）提炼整合到 MEMORY.md 中。保留日记原文不动，只更新 MEMORY.md。完成后简要说明做了哪些整合。', NULL, TRUE, NOW(), NOW(), 0);
+VALUES (1000100011, '记忆整合', '0 2 * * *', 'Asia/Shanghai', 1000000002, 'text', '请回顾你最近的 memory/ 日记文件，将反复出现的重要信息（用户偏好、稳定事实、经验教训、工作流）提炼整合到 MEMORY.md 中。注意：MEMORY.md 会被注入每一次对话，只整合跨项目长期稳定的信息；具体项目的代号、名称、技术栈、仓库、单项目的指标/预算/团队/上线日期或只对某个项目成立的决策等易变事实，不要写入 MEMORY.md（会随项目切换互相冲突、导致张冠李戴），应留在 daily note 或通过结构化 project 记忆维护。判定口诀：换一个项目后仍成立才进 MEMORY.md。保留日记原文不动，只更新 MEMORY.md。完成后简要说明做了哪些整合。', NULL, TRUE, NOW(), NOW(), 0);
 
 MERGE INTO mate_cron_job (id, name, cron_expression, timezone, agent_id, task_type, trigger_message, request_body, enabled, create_time, update_time, deleted)
 KEY (id)
-VALUES (1000100012, '记忆整合', '0 2 * * *', 'Asia/Shanghai', 1000000003, 'text', '请回顾你最近的 memory/ 日记文件，将反复出现的重要信息（用户偏好、稳定事实、经验教训、工作流）提炼整合到 MEMORY.md 中。保留日记原文不动，只更新 MEMORY.md。完成后简要说明做了哪些整合。', NULL, TRUE, NOW(), NOW(), 0);
+VALUES (1000100012, '记忆整合', '0 2 * * *', 'Asia/Shanghai', 1000000003, 'text', '请回顾你最近的 memory/ 日记文件，将反复出现的重要信息（用户偏好、稳定事实、经验教训、工作流）提炼整合到 MEMORY.md 中。注意：MEMORY.md 会被注入每一次对话，只整合跨项目长期稳定的信息；具体项目的代号、名称、技术栈、仓库、单项目的指标/预算/团队/上线日期或只对某个项目成立的决策等易变事实，不要写入 MEMORY.md（会随项目切换互相冲突、导致张冠李戴），应留在 daily note 或通过结构化 project 记忆维护。判定口诀：换一个项目后仍成立才进 MEMORY.md。保留日记原文不动，只更新 MEMORY.md。完成后简要说明做了哪些整合。', NULL, TRUE, NOW(), NOW(), 0);
 
 -- ==================== 工作区文件种子数据（参考 MateClaw md_files/zh） ====================
 -- 每个 Agent 拥有独立的工作区文档集合：AGENTS.md / SOUL.md / PROFILE.md / MEMORY.md

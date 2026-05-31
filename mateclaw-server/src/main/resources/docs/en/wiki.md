@@ -342,6 +342,135 @@ Edit when the AI got it wrong. Your edits survive the next ingest — `locked` t
 
 ---
 
+## Wikilinks and broken-link care
+
+Cross-page references via `[[slug]]` are the connective tissue of a
+long-lived knowledge asset. RFC 55 turns this layer from "writing
+`[[Title]]` looked fine until you clicked and got a 404" into **lint on
+write, cascade on delete, broken links visible everywhere**.
+
+### Wikilink syntax
+
+Exactly one contract is honoured:
+
+- `[[slug]]` — visible label defaults to the target page's title
+- `[[slug|display text]]` — explicit label, the slug is still the
+  navigation target
+
+The slug must reference an existing page. The LLM page-generation
+prompts give the model a slug-first index (`- [[slug]] — Title — Summary`),
+forbid inventing slugs that aren't in the index, and explicitly warn
+that older `[[Page Title]]` form will be flagged as a dead link by the
+lint.
+
+Case-insensitive: `[[STATEGRAPH]]` and `[[stategraph]]` both resolve
+via lowercased exact match against `page.slug`.
+
+### In-transaction lint: `outgoing_links` + `broken_links`
+
+Every page save (manual edit, AI generation, merge, cascade rewrite)
+runs in one transaction:
+
+1. Extract every `[[...]]` from the body (skipping fenced and inline
+   code blocks)
+2. Write `mate_wiki_page.outgoing_links` (deduped, lowercased string
+   array)
+3. Diff against the KB's active slug set (archived pages excluded)
+   to produce `broken_links`
+4. Stamp `broken_links_scanned_at`
+
+You see which `[[...]]` are dead the moment the page saves — no
+batch scan required. Code blocks and inline `` `[[...]]` `` snippets
+are preserved verbatim and never enter `outgoing_links` (so a page
+that teaches wikilink syntax doesn't accidentally lint itself).
+
+### KB-wide broken-link scan
+
+Each KB shows a banner at the top of the workspace. Click "Scan dead
+links" to start a job:
+
+| Method | Path | What it does |
+|---|---|---|
+| `POST /api/v1/wiki/knowledge-bases/{kbId}/lint/broken-links` | Starts a job (async, job-based). Returns `{jobId, status, startedAt}`. Idempotent — repeat POSTs while a job is in flight return the same id |
+| `GET .../lint/broken-links` | Returns the latest completed scan as a per-page aggregate |
+| `GET .../lint/broken-links/jobs/{jobId}` | Status check for a specific job |
+
+The aggregate carries `pageId / slug / title / brokenRefs` for each
+affected page. The banner distinguishes "scanned X pages, no broken
+links" from "found N broken links in M pages". Clicking "view" opens
+a panel listing each broken ref with a jump-to-source-page action.
+
+Performance: 100-page KB scans in well under a second; POST submit
+latency under 200ms.
+
+### Cascade delete and rename
+
+**Delete a page**: every other page that linked to it gets its
+`[[deleted-slug]]` rewritten to plain text (using the snapshot title
+as the visible word). Aliased `[[deleted-slug|some alias]]` collapses
+to just the alias. Referrers' `outgoing_links` and `broken_links` are
+recomputed in the same transaction.
+
+**Rename a page**: `POST /api/v1/wiki/knowledge-bases/{kbId}/pages/{slug}/rename`
+with `{"newSlug":"new"}`. In one transaction:
+
+- The page's own slug is updated
+- Every referrer's `[[oldSlug]]` becomes `[[newSlug]]`, and
+  `[[oldSlug|alias]]` becomes `[[newSlug|alias]]` (alias preserved
+  byte-for-byte)
+- Referrers' `outgoing_links` is updated
+
+Rejected: empty slug, slug equal to the current slug, slug already
+owned by another page in the same KB, target page is protected
+(system / locked). Case-only renames (`foo → FOO`) are allowed and
+behave the same on H2 and MySQL.
+
+Each delete / rename writes an audit row to `mate_audit_event` with
+`action=wiki.page.delete` or `wiki.page.rename`. `detailJson` carries
+an `affectedPageIds` list so the cascade impact is queryable after
+the fact.
+
+Emergency kill-switch: set `mate.wiki.cascade-delete-enabled=false`
+to revert to the legacy row-only delete (the rewrite is bypassed,
+referrer wikilinks dangle). Default-on is the intended steady state.
+
+### Click-through from chat
+
+When the chat renders an agent reply, `[[slug]]` and `[[slug|alias]]`
+tokens in the content become `<a class="wiki-link" data-wiki-title=...>`
+anchors. Clicking one:
+
+1. The app-level global click delegator catches the click
+2. Calls `GET /api/v1/wiki/pages/lookup?title=X&slug=X` — searches
+   every KB visible to the user (slug match first, title fallback)
+3. 1 hit → `router.push` into the wiki view, auto-selects the KB,
+   auto-opens the page
+4. 0 hits → toast "未找到匹配的 wiki 页面：X"
+5. >1 hits → picker offering to open the first match
+
+No more navigating to the wiki view, finding the KB, finding the
+page — clicking a `[[link]]` in chat gets you there directly. The
+lookup is strict case-insensitive exact (no canonical fuzzing), so
+if the LLM wrote a slug that doesn't exist you see the toast rather
+than getting silently redirected to a similarly-named page.
+
+### Phase roadmap (all phases landed)
+
+| Phase | Key changes |
+|---|---|
+| 1 | Frontend slug-first DOM postprocess; dangerous-char guard; full `pages/refs` index decoupled from raw-material filter |
+| 2 | V129 migration adds `broken_links` and `broken_links_scanned_at`; save-path writes them in the same transaction; KB-wide async lint job + banner |
+| 3 | All 9 wiki prompt templates unified on `[[slug]]` contract; existing-pages index reformatted slug-first; batch-create splits existing pages from same-batch planned pages |
+| 4 | Cascade delete and rename rewrite referrers in-transaction; audit log; feature flag |
+| 5 | Analyze stage emits a `related_pages` slug whitelist (validated server-side); enrich applier skips code blocks and gates on the whitelist |
+
+Full design + live verification: `rfcs/202605/55-wiki-link-resolution-overhaul.md`
+and `mateclaw-server/src/test/resources/e2e/wiki-link-overhaul-verification.md`
+(6 e2e passes, 50+ live assertions, 3 bugs caught and fixed during the
+test).
+
+---
+
 ## Search, source tracing, and semantic retrieval
 
 - **Semantic search** — ask "what did we decide about auth?" and get the decision, not pages containing "auth". Chunk-level embeddings with cosine retrieval — it understands what you mean. Hits now include `pageNumber` and `section`, so the agent can quote "page 12, Setup / Linux" instead of a free-floating snippet.

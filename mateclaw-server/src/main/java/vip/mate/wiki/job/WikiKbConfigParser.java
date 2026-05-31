@@ -45,6 +45,8 @@ public final class WikiKbConfigParser {
 
             if ("ingestMode".equals(key)) {
                 config.setIngestMode(value);
+            } else if ("defaultReadPolicy".equals(key)) {
+                config.setDefaultReadPolicy(value);
             } else if ("useStructuredRoute".equals(key)) {
                 config.setUseStructuredRoute(Boolean.valueOf(value));
             } else if ("wikiDefaultModelId".equals(key)) {

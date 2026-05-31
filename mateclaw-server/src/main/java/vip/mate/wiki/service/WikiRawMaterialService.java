@@ -86,6 +86,81 @@ public class WikiRawMaterialService {
                         .eq(WikiRawMaterialEntity::getSourcePath, sourcePath));
     }
 
+    /**
+     * Import a text file discovered by a directory scan, detecting content
+     * changes by hash: unchanged content (a raw with the same hash already
+     * exists) is a no-op, while changed content creates a new raw and triggers
+     * processing — so a modified file is re-ingested rather than silently
+     * skipped. The originating path is recorded for diagnostics.
+     *
+     * @return {@code true} when the file was newly ingested (new or changed
+     *         content), {@code false} when skipped as unchanged
+     */
+    public boolean ingestTextFileFromScan(Long kbId, String fileName, String absolutePath, String content) {
+        String hash = computeHash(content);
+        WikiRawMaterialEntity sameContent = rawMapper.selectOne(
+                new LambdaQueryWrapper<WikiRawMaterialEntity>()
+                        .eq(WikiRawMaterialEntity::getKbId, kbId)
+                        .eq(WikiRawMaterialEntity::getContentHash, hash)
+                        .last("LIMIT 1"));
+        // addText dedups internally by hash, so this reuses sameContent when
+        // unchanged and inserts + triggers processing when the content differs.
+        WikiRawMaterialEntity raw = addText(kbId, fileName, content);
+        // Only stamp the path on a genuinely new raw. When the content matched
+        // an existing raw (possibly a different file with identical content),
+        // overwriting its sourcePath would corrupt that raw's provenance.
+        if (raw != null && sameContent == null) {
+            updateSourcePath(raw.getId(), absolutePath);
+        }
+        return sameContent == null;
+    }
+
+    /**
+     * Import a binary file discovered by a directory scan, detecting content
+     * changes by hashing the bytes: unchanged content (a raw with the same hash
+     * exists) is skipped, while changed content is re-ingested via
+     * {@link #addFile}. The unchanged case reads the file once; only a
+     * new/changed file is read again by addFile.
+     *
+     * @return {@code true} when newly ingested, {@code false} when unchanged
+     */
+    public boolean ingestBinaryFileFromScan(Long kbId, String title, String sourceType,
+                                            String absolutePath, long fileSize) {
+        String hash = null;
+        try {
+            hash = computeHashOfBytes(java.nio.file.Files.readAllBytes(java.nio.file.Paths.get(absolutePath)));
+        } catch (Exception e) {
+            log.warn("[Wiki] Could not hash file for change detection: {}", e.getMessage());
+        }
+        if (hash != null) {
+            WikiRawMaterialEntity sameContent = rawMapper.selectOne(
+                    new LambdaQueryWrapper<WikiRawMaterialEntity>()
+                            .eq(WikiRawMaterialEntity::getKbId, kbId)
+                            .eq(WikiRawMaterialEntity::getContentHash, hash)
+                            .last("LIMIT 1"));
+            if (sameContent != null) {
+                return false; // unchanged — addFile not called, avoids a second read
+            }
+        }
+        // Pass the hash we already computed so addFile does not re-read the file.
+        addFile(kbId, title, sourceType, null, absolutePath, fileSize, hash);
+        return true;
+    }
+
+    /**
+     * Record the originating file path on a raw material via a partial update,
+     * so a later directory re-scan can dedup it by source path. Used for
+     * text-file imports, which otherwise carry no path.
+     */
+    public void updateSourcePath(Long rawId, String sourcePath) {
+        if (rawId == null) {
+            return;
+        }
+        rawMapper.update(null, new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<WikiRawMaterialEntity>()
+                .eq(WikiRawMaterialEntity::getId, rawId)
+                .set(WikiRawMaterialEntity::getSourcePath, sourcePath));
+    }
+
     public List<WikiRawMaterialEntity> listPending(Long kbId) {
         return rawMapper.selectList(
                 new LambdaQueryWrapper<WikiRawMaterialEntity>()
@@ -153,6 +228,19 @@ public class WikiRawMaterialService {
     @Transactional
     public WikiRawMaterialEntity addFile(Long kbId, String title, String sourceType,
                                           String mimeType, String sourcePath, long fileSize) {
+        return addFile(kbId, title, sourceType, mimeType, sourcePath, fileSize, null);
+    }
+
+    /**
+     * As {@link #addFile(Long, String, String, String, String, long)}, but with
+     * an optional precomputed content hash so a caller that already read the
+     * file (e.g. the directory scan's change detection) does not pay a second
+     * full-file read to dedup.
+     */
+    @Transactional
+    public WikiRawMaterialEntity addFile(Long kbId, String title, String sourceType,
+                                          String mimeType, String sourcePath, long fileSize,
+                                          String precomputedHash) {
         WikiRawMaterialEntity entity = new WikiRawMaterialEntity();
         entity.setKbId(kbId);
         entity.setTitle(title);
@@ -166,11 +254,15 @@ public class WikiRawMaterialService {
         // directly — the previous `new String(bytes, UTF_8)` round-trip produced unstable
         // hashes for binary files (PDF/Office) because invalid UTF-8 sequences become
         // replacement characters, collapsing distinct files into the same hash.
-        try {
-            byte[] bytes = java.nio.file.Files.readAllBytes(java.nio.file.Paths.get(sourcePath));
-            entity.setContentHash(computeHashOfBytes(bytes));
-        } catch (Exception e) {
-            log.warn("[Wiki] Could not compute file hash for dedup: {}", e.getMessage());
+        if (precomputedHash != null) {
+            entity.setContentHash(precomputedHash);
+        } else {
+            try {
+                byte[] bytes = java.nio.file.Files.readAllBytes(java.nio.file.Paths.get(sourcePath));
+                entity.setContentHash(computeHashOfBytes(bytes));
+            } catch (Exception e) {
+                log.warn("[Wiki] Could not compute file hash for dedup: {}", e.getMessage());
+            }
         }
 
         // Dedup: reuse any existing row with the same hash in this KB (any status)

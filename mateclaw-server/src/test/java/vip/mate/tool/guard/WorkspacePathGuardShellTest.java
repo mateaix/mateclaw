@@ -24,6 +24,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 class WorkspacePathGuardShellTest {
 
     private static final String WORKSPACE = "/tmp/ws-guard-shell-test";
+    private static final String SKILL_ROOT = "/tmp/ws-guard-skill-root";
 
     @BeforeEach
     void setup() {
@@ -33,6 +34,7 @@ class WorkspacePathGuardShellTest {
     @AfterEach
     void teardown() {
         ToolExecutionContext.clear();
+        WorkspacePathGuard.setSkillRoot(null);
     }
 
     // ==================== No-op when sandbox absent ====================
@@ -260,6 +262,42 @@ class WorkspacePathGuardShellTest {
         // These appear in version strings, env var values, etc.
         assertDoesNotThrow(() ->
                 WorkspacePathGuard.validateShellCommand("echo version=1.2..3"));
+    }
+
+    // ==================== Shared skill root allowance ====================
+
+    @Test
+    @DisplayName("Skill root is trusted in addition to the workspace")
+    void skillRoot_pass() {
+        WorkspacePathGuard.setSkillRoot(SKILL_ROOT);
+        // Reading and running a shared skill's files from a workspace elsewhere.
+        assertDoesNotThrow(() -> WorkspacePathGuard.validateShellCommand(
+                "cat " + SKILL_ROOT + "/zclt-toolkit/SKILL.md"));
+        assertDoesNotThrow(() -> WorkspacePathGuard.validateShellCommand(
+                "bash " + SKILL_ROOT + "/zclt-toolkit/scripts/run.sh"));
+        assertDoesNotThrow(() -> WorkspacePathGuard.validateShellCommand(
+                "cd " + SKILL_ROOT + "/zclt-toolkit && ls"));
+        // The workspace itself still passes.
+        assertDoesNotThrow(() -> WorkspacePathGuard.validateShellCommand(
+                "cat " + WORKSPACE + "/foo.txt"));
+    }
+
+    @Test
+    @DisplayName("Without a skill root, the same skill path is still blocked")
+    void skillRoot_unset_blocked() {
+        // No skill root registered → skill path is just another outside path.
+        assertThrows(IllegalArgumentException.class, () ->
+                WorkspacePathGuard.validateShellCommand("cat " + SKILL_ROOT + "/zclt-toolkit/SKILL.md"));
+    }
+
+    @Test
+    @DisplayName("A skill root does not widen the boundary to unrelated outside paths")
+    void skillRoot_doesNotWidenOtherPaths() {
+        WorkspacePathGuard.setSkillRoot(SKILL_ROOT);
+        assertThrows(IllegalArgumentException.class, () ->
+                WorkspacePathGuard.validateShellCommand("cat /etc/passwd"));
+        assertThrows(IllegalArgumentException.class, () ->
+                WorkspacePathGuard.validateShellCommand("echo evil > /tmp/leak.txt"));
     }
 
     // ==================== Device-node negative cases ====================

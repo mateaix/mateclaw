@@ -54,6 +54,10 @@
           <div v-if="activeTab === 'transformations'" class="tab-content">
             <TransformationsPanel />
           </div>
+
+          <div v-if="activeTab === 'advanced'" class="tab-content">
+            <WikiAdvancedPanel />
+          </div>
         </div>
       </div>
     </div>
@@ -71,6 +75,7 @@ import WikiConfig from './WikiConfig.vue'
 import WikiGraphView from './WikiGraphView.vue'
 import HotCachePanel from './HotCachePanel.vue'
 import TransformationsPanel from './TransformationsPanel.vue'
+import WikiAdvancedPanel from './WikiAdvancedPanel.vue'
 import WikiWorkspaceHeader from './WikiWorkspaceHeader.vue'
 import WikiPageSidebar from './WikiPageSidebar.vue'
 import WikiBrokenLinksBanner from './WikiBrokenLinksBanner.vue'
@@ -106,6 +111,7 @@ const tabs = computed(() => {
   if (canManageWiki.value) {
     list.push({ key: 'config', label: t('wiki.config') })
     list.push({ key: 'transformations', label: t('wiki.transformations.tab') })
+    list.push({ key: 'advanced', label: t('wiki.adv.tab') })
   }
   list.push({ key: 'hotCache', label: t('wiki.hotCache.tab') })
   return list

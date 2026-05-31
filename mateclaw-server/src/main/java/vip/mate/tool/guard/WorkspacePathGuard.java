@@ -29,6 +29,58 @@ public final class WorkspacePathGuard {
     private WorkspacePathGuard() {}
 
     /**
+     * Shared skill repository root, trusted in addition to the per-conversation
+     * workspace boundary. System-level skills live under this root (one
+     * subdirectory per skill) and are shared across every workspace, so the
+     * agent must be able to read and run their files even when the active
+     * workspace points elsewhere. Registered once at startup from the
+     * {@code mateclaw.skill.workspace.root} setting. {@code null} until set
+     * (then no extra root is trusted — pure workspace-only behaviour).
+     */
+    private static volatile Path skillRoot;
+
+    /**
+     * Register the shared skill repository root. A {@code null} or blank path
+     * clears it, restoring workspace-only enforcement.
+     */
+    public static void setSkillRoot(@Nullable String path) {
+        skillRoot = (path == null || path.isBlank())
+                ? null
+                : Paths.get(path).toAbsolutePath().normalize();
+        log.info("[WorkspacePathGuard] Trusted skill root: {}", skillRoot);
+    }
+
+    /** The registered shared skill repository root, or {@code null} if none is set. */
+    @Nullable
+    public static Path getSkillRoot() {
+        return skillRoot;
+    }
+
+    /** True when {@code normalized} lives under the shared skill root (if one is set). */
+    private static boolean isUnderSkillRoot(Path normalized) {
+        Path sr = skillRoot;
+        return sr != null && normalized.startsWith(sr);
+    }
+
+    /**
+     * Symlink-resolved variant of {@link #isUnderSkillRoot}. Resolves the skill
+     * root's real path so a path whose real location lands inside the skill
+     * repository is accepted even when reached through a symlink.
+     */
+    private static boolean isUnderSkillRootReal(Path realPath) {
+        Path sr = skillRoot;
+        if (sr == null) {
+            return false;
+        }
+        try {
+            Path realSkillRoot = sr.toFile().exists() ? sr.toRealPath() : sr;
+            return realPath.startsWith(realSkillRoot);
+        } catch (IOException e) {
+            return realPath.startsWith(sr);
+        }
+    }
+
+    /**
      * 校验文件路径是否在当前工作区活动目录范围内。
      * <p>
      * 从 {@link ToolExecutionContext#workspaceBasePath()} 读取当前活动目录。
@@ -59,7 +111,7 @@ public final class WorkspacePathGuard {
         Path root = Paths.get(basePath).toAbsolutePath().normalize();
 
         // 先用 normalize 检查，再尝试 toRealPath 防符号链接逃逸
-        if (!normalized.startsWith(root)) {
+        if (!normalized.startsWith(root) && !isUnderSkillRoot(normalized)) {
             throw new IllegalArgumentException(
                     "Path is outside workspace boundary: " + normalized + ", allowed root: " + root);
         }
@@ -69,7 +121,7 @@ public final class WorkspacePathGuard {
             if (normalized.toFile().exists()) {
                 Path realPath = normalized.toRealPath();
                 Path realRoot = root.toFile().exists() ? root.toRealPath() : root;
-                if (!realPath.startsWith(realRoot)) {
+                if (!realPath.startsWith(realRoot) && !isUnderSkillRootReal(realPath)) {
                     throw new IllegalArgumentException(
                             "Path escapes workspace via symlink: " + realPath + ", allowed root: " + realRoot);
                 }
@@ -192,7 +244,7 @@ public final class WorkspacePathGuard {
                 // idioms (`2>/dev/null`, `cmd <(cat file)`) keep working.
                 continue;
             }
-            if (!normalized.startsWith(root)) {
+            if (!normalized.startsWith(root) && !isUnderSkillRoot(normalized)) {
                 throw new IllegalArgumentException(
                         "Shell command references path outside workspace boundary: "
                                 + normalized + ", allowed root: " + root);
@@ -213,7 +265,7 @@ public final class WorkspacePathGuard {
                 continue;
             }
             if (isAllowedDeviceNode(resolved)) continue;
-            if (!resolved.startsWith(root)) {
+            if (!resolved.startsWith(root) && !isUnderSkillRoot(resolved)) {
                 throw new IllegalArgumentException(
                         "Shell command uses parent-directory traversal that escapes the workspace: '"
                                 + candidate + "' would resolve to " + resolved

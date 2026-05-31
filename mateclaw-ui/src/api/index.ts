@@ -758,7 +758,7 @@ export const wikiApi = {
     http.put(`/wiki/knowledge-bases/${id}/config`, { content }),
 
   // Directory Scan
-  setSourceDirectory: (id: number, path: string) =>
+  setSourceDirectory: (id: string | number, path: string) =>
     http.put(`/wiki/knowledge-bases/${id}/source-directory`, { path }),
   scanDirectory: (id: number) => http.post(`/wiki/knowledge-bases/${id}/scan`),
 
@@ -903,6 +903,51 @@ export const wikiApi = {
     http.post(`/wiki/transformations/runs/${runId}/save-as-page`),
   cancelTransformationRun: (runId: number) =>
     http.post(`/wiki/transformations/runs/${runId}/cancel`),
+
+  // ---- PageType Profile (REQ-1) ----
+  getPageTypeProfile: (kbId: string | number) =>
+    http.get(`/wiki/knowledge-bases/${kbId}/page-type-profile`),
+  savePageTypeProfile: (kbId: string | number, config: string, name?: string) =>
+    http.put(`/wiki/knowledge-bases/${kbId}/page-type-profile`, { config, name }),
+  validatePageTypeProfile: (kbId: string | number, config: string) =>
+    http.post(`/wiki/knowledge-bases/${kbId}/page-type-profile/validate`, { config }),
+  resetPageTypeProfile: (kbId: string | number) =>
+    http.post(`/wiki/knowledge-bases/${kbId}/page-type-profile/reset-default`),
+
+  // ---- Agent pageType permissions (REQ-3) ----
+  listPageTypePermissions: (kbId: string | number, agentId: string | number) =>
+    http.get(`/wiki/knowledge-bases/${kbId}/agents/${agentId}/page-type-permissions`),
+  savePageTypePermission: (kbId: string | number, agentId: string | number, row: {
+    pageType: string
+    canRead?: number
+    canCreate?: number
+    canUpdate?: number
+    canDelete?: number
+    writePolicy?: 'allow' | 'deny' | 'approval_required'
+  }) =>
+    http.post(`/wiki/knowledge-bases/${kbId}/agents/${agentId}/page-type-permissions`, row),
+  deletePageTypePermission: (kbId: string | number, agentId: string | number, id: string | number) =>
+    http.delete(`/wiki/knowledge-bases/${kbId}/agents/${agentId}/page-type-permissions/${id}`),
+
+  // ---- Source watcher (REQ-4) ----
+  getSourceWatcher: (kbId: string | number) =>
+    http.get(`/wiki/knowledge-bases/${kbId}/source-watcher`),
+  triggerSourceWatcher: (kbId: string | number) =>
+    http.post(`/wiki/knowledge-bases/${kbId}/source-watcher/scan`),
+
+  // ---- Pipelines (REQ-5) ----
+  listPipelines: (kbId: string | number) =>
+    http.get(`/wiki/knowledge-bases/${kbId}/pipelines`),
+  savePipeline: (kbId: string | number, config: string, format: 'yaml' | 'json' = 'yaml') =>
+    http.post(`/wiki/knowledge-bases/${kbId}/pipelines`, { config, format }),
+  validatePipeline: (kbId: string | number, config: string, format: 'yaml' | 'json' = 'yaml') =>
+    http.post(`/wiki/knowledge-bases/${kbId}/pipelines/validate`, { config, format }),
+  deletePipeline: (kbId: string | number, id: string | number) =>
+    http.delete(`/wiki/knowledge-bases/${kbId}/pipelines/${id}`),
+  listPipelineRuns: (kbId: string | number, id: string | number) =>
+    http.get(`/wiki/knowledge-bases/${kbId}/pipelines/${id}/runs`),
+  getPipelineRun: (kbId: string | number, runId: string | number) =>
+    http.get(`/wiki/knowledge-bases/${kbId}/pipeline-runs/${runId}`),
 }
 
 // ==================== Workspace (Team) ====================

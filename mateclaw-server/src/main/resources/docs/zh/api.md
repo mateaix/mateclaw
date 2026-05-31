@@ -55,26 +55,36 @@ curl -X POST http://localhost:18088/api/v1/auth/login \
 ## 聊天
 
 ```
-POST /api/v1/chat/{agentId}/message              # 发送消息
-GET  /api/v1/chat/{agentId}/stream?conversationId=  # SSE 流式
-POST /api/v1/chat/{conversationId}/stop          # 停止进行中的流
-GET  /api/v1/chat/{conversationId}/pending-approvals  # 列出等待的审批
+POST /api/v1/chat?agentId={id}                  # 发送消息（同步，agentId 是 query 参数）
+POST /api/v1/chat/stream                        # SSE 流式（POST，agentId 在 body 里）
+POST /api/v1/chat/{conversationId}/stop         # 停止进行中的流
+POST /api/v1/chat/{conversationId}/interrupt   # 中断 Agent 循环
+POST /api/v1/chat/upload                        # 上传聊天附件（multipart/form-data）
+GET  /api/v1/chat/files/{conversationId}/{storedName}  # 读取已上传附件
+GET  /api/v1/chat/{conversationId}/pending-approvals   # 列出等待的审批
 ```
 
 **发送消息：**
 
 ```bash
-curl -X POST http://localhost:18088/api/v1/chat/1/message \
+curl -X POST 'http://localhost:18088/api/v1/chat?agentId=1' \
   -H "Authorization: Bearer YOUR_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"content":"你好，你能做什么？", "conversationId":"conv-abc123"}'
+  -d '{"message":"你好，你能做什么？", "conversationId":"conv-abc123"}'
 ```
+
+请求体字段：`message`（必填）、`conversationId`（可选，省略则用 `default`）、`contentParts`（可选，结构化内容片段，附件场景使用）。
 
 **SSE 流式示例：**
 
+SSE 端点是 **POST + 请求体**，浏览器原生 `EventSource` 不支持 POST，集成时请用 `fetch()` 读流（参考前端 `composables/chat/useChat.ts`）。
+
 ```bash
-curl -N http://localhost:18088/api/v1/chat/1/stream?conversationId=conv-abc123 \
-  -H "Authorization: Bearer YOUR_TOKEN"
+curl -N -X POST 'http://localhost:18088/api/v1/chat/stream' \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Accept: text/event-stream" \
+  -d '{"agentId":1, "message":"你好", "conversationId":"conv-abc123"}'
 ```
 
 事件类型和 schema 在 [聊天与消息](./chat) 里。

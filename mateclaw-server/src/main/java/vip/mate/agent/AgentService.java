@@ -215,6 +215,20 @@ public class AgentService {
         agentInstances.remove(agentId);
     }
 
+    /**
+     * Invalidate the cached agent instance whenever one of its workspace files
+     * changes. The system prompt (which embeds MEMORY.md / PROFILE.md / structured
+     * memory) is baked into the cached instance at build time, so memory edits made
+     * via tools, consolidation, or cleanup would otherwise stay invisible until an
+     * agent config change or restart. Rebuilding on the next turn picks them up.
+     */
+    @org.springframework.context.event.EventListener
+    public void onWorkspaceFileChanged(vip.mate.workspace.document.event.WorkspaceFileChangedEvent event) {
+        if (event.agentId() != null) {
+            agentInstances.remove(event.agentId());
+        }
+    }
+
     // ==================== 运行时入口 ====================
 
     public String chat(Long agentId, String message, String conversationId) {

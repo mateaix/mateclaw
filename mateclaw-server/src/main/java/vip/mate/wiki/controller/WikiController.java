@@ -1,5 +1,6 @@
 package vip.mate.wiki.controller;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
@@ -16,11 +17,16 @@ import vip.mate.workspace.core.annotation.RequireWorkspaceRole;
 import vip.mate.wiki.WikiProperties;
 import vip.mate.wiki.model.WikiKnowledgeBaseEntity;
 import vip.mate.wiki.model.WikiPageEntity;
+import vip.mate.wiki.model.WikiAgentPageTypePermissionEntity;
+import vip.mate.wiki.model.WikiPageTypeProfileEntity;
 import vip.mate.wiki.model.WikiRawMaterialEntity;
+import vip.mate.wiki.profile.WikiPageTypeProfileService;
 import vip.mate.wiki.service.WikiDirectoryScanService;
+import vip.mate.wiki.service.WikiSourcePathValidator;
 import vip.mate.wiki.service.WikiKnowledgeBaseService;
 import vip.mate.wiki.service.WikiLintJobService;
 import vip.mate.wiki.service.WikiPageService;
+import vip.mate.wiki.service.WikiPageTypePermissionService;
 import vip.mate.wiki.service.WikiProcessingService;
 import vip.mate.wiki.service.WikiRawMaterialService;
 import vip.mate.wiki.sse.WikiProgressBus;
@@ -55,6 +61,14 @@ public class WikiController {
     private final WikiProperties properties;
     private final WikiProgressBus progressBus;
     private final AuditEventService auditEventService;
+    private final WikiPageTypeProfileService pageTypeProfileService;
+    private final WikiPageTypePermissionService pageTypePermissionService;
+    private final WikiSourcePathValidator pathValidator;
+    private final vip.mate.wiki.service.WikiSourceWatcherService sourceWatcherService;
+    private final vip.mate.wiki.pipeline.WikiPipelineDefinitionService pipelineDefinitionService;
+    private final vip.mate.wiki.repository.WikiPipelineRunMapper pipelineRunMapper;
+    private final vip.mate.wiki.repository.WikiPipelineStepRunMapper pipelineStepRunMapper;
+    private final ObjectMapper objectMapper;
 
     // ==================== Knowledge Base ====================
 
@@ -189,6 +203,77 @@ public class WikiController {
         return R.ok();
     }
 
+    // ==================== PageType Profile ====================
+
+    @RequireWorkspaceRole("viewer")
+    @Operation(summary = "获取知识库 pageType profile（未配置则返回内置默认）")
+    @GetMapping("/knowledge-bases/{id}/page-type-profile")
+    public R<Map<String, Object>> getPageTypeProfile(@PathVariable Long id,
+                                                     @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        verifyKBWorkspace(id, workspaceId);
+        WikiPageTypeProfileEntity row = pageTypeProfileService.findEnabledRow(id);
+        Map<String, Object> out = new LinkedHashMap<>();
+        if (row != null) {
+            out.put("name", row.getName());
+            out.put("version", row.getVersion());
+            out.put("config", row.getConfigJson());
+            out.put("builtinDefault", false);
+        } else {
+            String json;
+            try {
+                json = objectMapper.writeValueAsString(pageTypeProfileService.getDefaultProfile());
+            } catch (Exception e) {
+                json = "{}";
+            }
+            out.put("name", "default");
+            out.put("version", 0);
+            out.put("config", json);
+            out.put("builtinDefault", true);
+        }
+        return R.ok(out);
+    }
+
+    @RequireWorkspaceRole("admin")
+    @Operation(summary = "保存知识库 pageType profile")
+    @PutMapping("/knowledge-bases/{id}/page-type-profile")
+    public R<Void> savePageTypeProfile(@PathVariable Long id, @RequestBody Map<String, String> body,
+                                       @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        verifyKBWorkspace(id, workspaceId);
+        String config = body.get("config");
+        if (config == null || config.isBlank()) {
+            return R.fail(400, "config is required");
+        }
+        try {
+            pageTypeProfileService.saveProfile(id, body.get("name"), config);
+        } catch (IllegalArgumentException e) {
+            return R.fail(400, e.getMessage());
+        }
+        return R.ok();
+    }
+
+    @RequireWorkspaceRole("member")
+    @Operation(summary = "校验 pageType profile JSON（不保存）")
+    @PostMapping("/knowledge-bases/{id}/page-type-profile/validate")
+    public R<Map<String, Object>> validatePageTypeProfile(@PathVariable Long id, @RequestBody Map<String, String> body,
+                                                          @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        verifyKBWorkspace(id, workspaceId);
+        List<String> issues = pageTypeProfileService.validateProfileJson(body.getOrDefault("config", ""));
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("valid", issues.isEmpty());
+        out.put("issues", issues);
+        return R.ok(out);
+    }
+
+    @RequireWorkspaceRole("admin")
+    @Operation(summary = "重置 pageType profile 为内置默认")
+    @PostMapping("/knowledge-bases/{id}/page-type-profile/reset-default")
+    public R<Void> resetPageTypeProfile(@PathVariable Long id,
+                                        @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        verifyKBWorkspace(id, workspaceId);
+        pageTypeProfileService.resetToDefault(id);
+        return R.ok();
+    }
+
     // ==================== Directory Scan ====================
 
     @RequireWorkspaceRole("member")
@@ -198,6 +283,13 @@ public class WikiController {
                                        @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
         verifyKBWorkspace(id, workspaceId);
         String path = body.get("path");
+        if (path != null && !path.isBlank()) {
+            try {
+                pathValidator.validateDirectory(path);
+            } catch (IllegalArgumentException e) {
+                return R.fail(400, e.getMessage());
+            }
+        }
         kbService.updateSourceDirectory(id, path);
         return R.ok();
     }
@@ -215,6 +307,162 @@ public class WikiController {
         response.put("skipped", result.skipped());
         response.put("errors", result.errors());
         return R.ok(response);
+    }
+
+    // ==================== Source Watcher ====================
+
+    @RequireWorkspaceRole("viewer")
+    @Operation(summary = "查看知识库源监听状态")
+    @GetMapping("/knowledge-bases/{id}/source-watcher")
+    public R<Map<String, Object>> getSourceWatcher(@PathVariable Long id,
+                                                   @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        verifyKBWorkspace(id, workspaceId);
+        WikiKnowledgeBaseEntity kb = kbService.getById(id);
+        if (kb == null) return R.fail(404, "Knowledge base not found");
+        vip.mate.wiki.source.WikiIngestSourceProvider provider = sourceWatcherService.providerFor(kb);
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("watcherEnabled", properties.isWatcherEnabled());
+        out.put("intervalMs", properties.getWatcherIntervalMs());
+        out.put("sourceDirectory", kb.getSourceDirectory());
+        out.put("sourceType", provider != null ? provider.sourceType() : null);
+        out.put("availableSourceTypes", sourceWatcherService.availableSourceTypes());
+        out.put("active", provider != null);
+        return R.ok(out);
+    }
+
+    @RequireWorkspaceRole("member")
+    @Operation(summary = "手动触发一次源监听扫描")
+    @PostMapping("/knowledge-bases/{id}/source-watcher/scan")
+    public R<Map<String, Object>> triggerSourceWatcher(@PathVariable Long id,
+                                                       @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        verifyKBWorkspace(id, workspaceId);
+        WikiKnowledgeBaseEntity kb = kbService.getById(id);
+        if (kb == null) return R.fail(404, "Knowledge base not found");
+        vip.mate.wiki.source.WikiIngestSourceProvider provider = sourceWatcherService.providerFor(kb);
+        if (provider == null) return R.fail(400, "No source configured for this knowledge base");
+        WikiDirectoryScanService.ScanResult result = provider.sync(kb);
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("sourceType", provider.sourceType());
+        out.put("scanned", result.scanned());
+        out.put("added", result.added());
+        out.put("skipped", result.skipped());
+        out.put("errors", result.errors());
+        return R.ok(out);
+    }
+
+    // ==================== Pipeline ====================
+
+    @RequireWorkspaceRole("viewer")
+    @Operation(summary = "列出知识库的 pipeline 定义")
+    @GetMapping("/knowledge-bases/{kbId}/pipelines")
+    public R<List<vip.mate.wiki.model.WikiPipelineDefinitionEntity>> listPipelines(
+            @PathVariable Long kbId, @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        verifyKBWorkspace(kbId, workspaceId);
+        return R.ok(pipelineDefinitionService.list(kbId));
+    }
+
+    @RequireWorkspaceRole("admin")
+    @Operation(summary = "保存(创建/更新)pipeline 定义(YAML/JSON)")
+    @PostMapping("/knowledge-bases/{kbId}/pipelines")
+    public R<vip.mate.wiki.model.WikiPipelineDefinitionEntity> savePipeline(
+            @PathVariable Long kbId, @RequestBody Map<String, String> body,
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        verifyKBWorkspace(kbId, workspaceId);
+        boolean yaml = !"json".equalsIgnoreCase(body.getOrDefault("format", "yaml"));
+        try {
+            return R.ok(pipelineDefinitionService.saveFromConfig(kbId, body.get("config"), yaml));
+        } catch (IllegalArgumentException e) {
+            return R.fail(400, e.getMessage());
+        }
+    }
+
+    @RequireWorkspaceRole("member")
+    @Operation(summary = "校验 pipeline 配置(不保存)")
+    @PostMapping("/knowledge-bases/{kbId}/pipelines/validate")
+    public R<Map<String, Object>> validatePipeline(
+            @PathVariable Long kbId, @RequestBody Map<String, String> body,
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        verifyKBWorkspace(kbId, workspaceId);
+        boolean yaml = !"json".equalsIgnoreCase(body.getOrDefault("format", "yaml"));
+        List<String> issues = pipelineDefinitionService.validateConfig(body.getOrDefault("config", ""), yaml);
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("valid", issues.isEmpty());
+        out.put("issues", issues);
+        return R.ok(out);
+    }
+
+    @RequireWorkspaceRole("admin")
+    @Operation(summary = "删除 pipeline 定义")
+    @DeleteMapping("/knowledge-bases/{kbId}/pipelines/{id}")
+    public R<Void> deletePipeline(@PathVariable Long kbId, @PathVariable Long id,
+                                  @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        verifyKBWorkspace(kbId, workspaceId);
+        pipelineDefinitionService.delete(id);
+        return R.ok();
+    }
+
+    @RequireWorkspaceRole("viewer")
+    @Operation(summary = "查询 pipeline 运行记录")
+    @GetMapping("/knowledge-bases/{kbId}/pipelines/{id}/runs")
+    public R<List<vip.mate.wiki.model.WikiPipelineRunEntity>> listPipelineRuns(
+            @PathVariable Long kbId, @PathVariable Long id,
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        verifyKBWorkspace(kbId, workspaceId);
+        return R.ok(pipelineRunMapper.selectList(
+                com.baomidou.mybatisplus.core.toolkit.Wrappers.<vip.mate.wiki.model.WikiPipelineRunEntity>lambdaQuery()
+                        .eq(vip.mate.wiki.model.WikiPipelineRunEntity::getDefinitionId, id)
+                        .orderByDesc(vip.mate.wiki.model.WikiPipelineRunEntity::getCreateTime)));
+    }
+
+    @RequireWorkspaceRole("viewer")
+    @Operation(summary = "查询单次 run 的步骤明细")
+    @GetMapping("/knowledge-bases/{kbId}/pipeline-runs/{runId}")
+    public R<Map<String, Object>> getPipelineRun(
+            @PathVariable Long kbId, @PathVariable Long runId,
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        verifyKBWorkspace(kbId, workspaceId);
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("run", pipelineRunMapper.selectById(runId));
+        out.put("steps", pipelineStepRunMapper.selectList(
+                com.baomidou.mybatisplus.core.toolkit.Wrappers.<vip.mate.wiki.model.WikiPipelineStepRunEntity>lambdaQuery()
+                        .eq(vip.mate.wiki.model.WikiPipelineStepRunEntity::getRunId, runId)
+                        .orderByAsc(vip.mate.wiki.model.WikiPipelineStepRunEntity::getCreateTime)));
+        return R.ok(out);
+    }
+
+    // ==================== Agent PageType Permissions ====================
+
+    @RequireWorkspaceRole("viewer")
+    @Operation(summary = "列出某 Agent 在知识库下的 pageType 权限规则")
+    @GetMapping("/knowledge-bases/{kbId}/agents/{agentId}/page-type-permissions")
+    public R<List<WikiAgentPageTypePermissionEntity>> listPageTypePermissions(
+            @PathVariable Long kbId, @PathVariable Long agentId,
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        verifyKBWorkspace(kbId, workspaceId);
+        return R.ok(pageTypePermissionService.listRows(agentId, kbId));
+    }
+
+    @RequireWorkspaceRole("admin")
+    @Operation(summary = "新增或更新 Agent 的 pageType 权限规则（按 agent+kb+pageType 去重）")
+    @PostMapping("/knowledge-bases/{kbId}/agents/{agentId}/page-type-permissions")
+    public R<WikiAgentPageTypePermissionEntity> savePageTypePermission(
+            @PathVariable Long kbId, @PathVariable Long agentId,
+            @RequestBody WikiAgentPageTypePermissionEntity body,
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        verifyKBWorkspace(kbId, workspaceId);
+        body.setKbId(kbId);
+        body.setAgentId(agentId);
+        return R.ok(pageTypePermissionService.saveRow(body));
+    }
+
+    @RequireWorkspaceRole("admin")
+    @Operation(summary = "删除一条 Agent pageType 权限规则")
+    @DeleteMapping("/knowledge-bases/{kbId}/agents/{agentId}/page-type-permissions/{id}")
+    public R<Boolean> deletePageTypePermission(
+            @PathVariable Long kbId, @PathVariable Long agentId, @PathVariable Long id,
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        verifyKBWorkspace(kbId, workspaceId);
+        return R.ok(pageTypePermissionService.deleteRow(id));
     }
 
     // ==================== Raw Materials ====================

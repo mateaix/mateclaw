@@ -179,7 +179,7 @@ The graph (both ReAct and Plan-Execute) now runs a `GoalEvaluationNode` after `F
 ## Data flow — a single turn
 
 ```
-1. POST /api/v1/chat/{agentId}/message
+1. POST /api/v1/chat?agentId={id}   (or POST /api/v1/chat/stream with agentId in the body)
         ↓
 2. ChatController.sendMessage()
         ↓
@@ -301,7 +301,7 @@ Why: Spring MVC + SSE is sufficient for streaming LLM responses to the frontend.
 
 Streaming flow:
 
-1. Client opens `GET /api/v1/chat/{agentId}/stream` with `Accept: text/event-stream`
+1. Client `POST /api/v1/chat/stream` with `agentId` / `message` / `conversationId` in the JSON body and `Accept: text/event-stream` in the headers
 2. Controller returns `SseEmitter`
 3. Agent graph runs on a worker thread; node execution emits events to `GraphEventPublisher`
 4. Events serialize into SSE format and write to the emitter

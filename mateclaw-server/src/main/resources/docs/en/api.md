@@ -55,26 +55,36 @@ Response:
 ## Chat
 
 ```
-POST /api/v1/chat/{agentId}/message              # Send a message
-GET  /api/v1/chat/{agentId}/stream?conversationId=  # SSE streaming
-POST /api/v1/chat/{conversationId}/stop          # Stop an in-flight stream
-GET  /api/v1/chat/{conversationId}/pending-approvals  # List waiting approvals
+POST /api/v1/chat?agentId={id}                  # Send a message (sync; agentId is a query param)
+POST /api/v1/chat/stream                        # SSE streaming (POST; agentId in the JSON body)
+POST /api/v1/chat/{conversationId}/stop         # Stop an in-flight stream
+POST /api/v1/chat/{conversationId}/interrupt   # Interrupt the agent loop
+POST /api/v1/chat/upload                        # Upload a chat attachment (multipart/form-data)
+GET  /api/v1/chat/files/{conversationId}/{storedName}  # Read an uploaded attachment
+GET  /api/v1/chat/{conversationId}/pending-approvals   # List waiting approvals
 ```
 
 **Send message:**
 
 ```bash
-curl -X POST http://localhost:18088/api/v1/chat/1/message \
+curl -X POST 'http://localhost:18088/api/v1/chat?agentId=1' \
   -H "Authorization: Bearer YOUR_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"content":"Hello, what can you do?", "conversationId":"conv-abc123"}'
+  -d '{"message":"Hello, what can you do?", "conversationId":"conv-abc123"}'
 ```
+
+Request body fields: `message` (required), `conversationId` (optional, defaults to `default`), `contentParts` (optional structured content parts for attachments).
 
 **SSE stream example:**
 
+The SSE endpoint is **POST with a JSON body** — browser-native `EventSource` only supports GET, so integrators should use `fetch()` and read the response stream (see the frontend's `composables/chat/useChat.ts`).
+
 ```bash
-curl -N http://localhost:18088/api/v1/chat/1/stream?conversationId=conv-abc123 \
-  -H "Authorization: Bearer YOUR_TOKEN"
+curl -N -X POST 'http://localhost:18088/api/v1/chat/stream' \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Accept: text/event-stream" \
+  -d '{"agentId":1, "message":"Hello", "conversationId":"conv-abc123"}'
 ```
 
 Event types and schema are documented in [Chat & Messaging](./chat).

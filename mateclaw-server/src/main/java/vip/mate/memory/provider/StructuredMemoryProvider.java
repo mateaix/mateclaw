@@ -35,8 +35,8 @@ public class StructuredMemoryProvider implements MemoryProvider {
     }
 
     /**
-     * Returns typed memory entries formatted as a Markdown block
-     * for system prompt injection.
+     * Returns the stable, low-volume typed entries (user profile, feedback)
+     * for unconditional system prompt injection.
      */
     @Override
     public String systemPromptBlock(Long agentId) {
@@ -44,6 +44,24 @@ public class StructuredMemoryProvider implements MemoryProvider {
             return structuredMemoryService.buildMemoryBlock(agentId);
         } catch (Exception e) {
             log.warn("[StructuredMemory] Failed to build memory block for agent={}: {}",
+                    agentId, e.getMessage());
+            return "";
+        }
+    }
+
+    /**
+     * Returns growing/specific typed entries (project facts, reference notes)
+     * relevant to the current question. Surfacing these per-turn rather than
+     * always-on keeps them salient when asked about and avoids the model
+     * confusing a stored fact with similarly-shaped background knowledge.
+     * The returned block is fenced centrally by the memory manager.
+     */
+    @Override
+    public String prefetch(Long agentId, String userQuery) {
+        try {
+            return structuredMemoryService.buildPrefetchBlock(agentId, userQuery);
+        } catch (Exception e) {
+            log.warn("[StructuredMemory] Failed to build prefetch block for agent={}: {}",
                     agentId, e.getMessage());
             return "";
         }

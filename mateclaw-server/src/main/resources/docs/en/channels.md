@@ -103,7 +103,11 @@ All credentials encrypted at rest. One agent can have many channels; different c
 Built in. No setup, no credentials. Uses Server-Sent Events for real-time streaming.
 
 ```
-GET /api/v1/chat/{agentId}/stream
+POST /api/v1/chat/stream
+Content-Type: application/json
+Accept: text/event-stream
+
+{"agentId": 1, "message": "...", "conversationId": "..."}
 ```
 
 Event format documented in [Chat & Messaging](./chat).

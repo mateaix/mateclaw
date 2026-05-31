@@ -1376,6 +1376,18 @@ public class AgentGraphBuilder {
                 Use workspace memory tools (MEMORY.md, daily notes) for long-form narrative notes.
                 Use structured memory tools for key-value facts the system can query efficiently.
 
+                ## Memory vs Knowledge Base Precedence
+                When a question is about the user themselves — who they are, their current
+                project, its name/codename, tech stack, goals, metrics, budget, team, or what
+                they are working on — your recalled memory (the <memory-context> block plus
+                structured/workspace memory) is the authoritative source. Knowledge-base / wiki
+                pages are reference material that may describe unrelated, example, or upstream
+                projects; do NOT treat a KB page's subject as the user's own project. Only read
+                the knowledge base for explicit reference lookups, never to decide what the
+                user's project is. If memory and a KB page disagree about the user's project,
+                trust memory. If memory has no answer, say you do not have it rather than
+                adopting a KB article as the user's project.
+
                 ## Session Search
                 - `session_search(agentId, currentConversationId, mode, query, limit)` — search conversation history
                 - mode="recent": list recent conversations (titles, times, message counts)

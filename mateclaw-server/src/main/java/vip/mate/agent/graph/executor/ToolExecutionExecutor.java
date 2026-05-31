@@ -493,7 +493,7 @@ public class ToolExecutionExecutor {
             // 2. ToolGuard 安全检查（replay 模式跳过）
             if (!isReplay) {
                 GuardDecision decision = evaluateGuard(toolCall, toolName, arguments,
-                        conversationId, agentId, toolCalls, i, events, requesterId);
+                        conversationId, agentId, toolCalls, i, events, requesterId, safeOrigin);
 
                 if (decision.blocked) {
                     allResponses.add(new ToolResponseMessage.ToolResponse(
@@ -933,7 +933,8 @@ public class ToolExecutionExecutor {
     private GuardDecision evaluateGuard(AssistantMessage.ToolCall toolCall, String toolName, String arguments,
                                          String conversationId, String agentId,
                                          List<AssistantMessage.ToolCall> allToolCalls, int currentIndex,
-                                         List<GraphEventPublisher.GraphEvent> events, String requesterId) {
+                                         List<GraphEventPublisher.GraphEvent> events, String requesterId,
+                                         ChatOrigin origin) {
         // Auto-grant requires BOTH the lookup cache and the resolver to be wired.
         // Legacy constructors leave them null; in that case we skip workspace
         // resolution and skip the resolver block, falling back to the original
@@ -979,6 +980,13 @@ public class ToolExecutionExecutor {
                     // requiresHuman → fall through to legacy human-approval path below.
                 }
 
+                // No human can resolve an approval in a non-interactive (scheduled-job)
+                // run, so a pending request would hang the turn until it times out with
+                // no answer. Deny immediately with an actionable message instead.
+                if (origin != null && origin.cronOrigin()) {
+                    return denyNonInteractiveApproval(toolCall, toolName, events);
+                }
+
                 List<AssistantMessage.ToolCall> remaining = allToolCalls.subList(currentIndex + 1, allToolCalls.size());
                 String approvalResponse = ToolExecutionGuardHelper.handleToolApproval(
                         toolCall, toolName, arguments, evaluation,
@@ -998,6 +1006,9 @@ public class ToolExecutionExecutor {
             }
 
             if (guardResult.needsApproval()) {
+                if (origin != null && origin.cronOrigin()) {
+                    return denyNonInteractiveApproval(toolCall, toolName, events);
+                }
                 List<AssistantMessage.ToolCall> remaining = allToolCalls.subList(currentIndex + 1, allToolCalls.size());
                 String approvalResponse = ToolExecutionGuardHelper.handleToolApprovalLegacy(
                         toolCall, toolName, arguments, guardResult,
@@ -1008,6 +1019,22 @@ public class ToolExecutionExecutor {
         }
 
         return GuardDecision.allowed();
+    }
+
+    /**
+     * Deny an approval-required tool when the run is non-interactive (no human can
+     * approve), returning an actionable message so the agent falls back to a
+     * non-gated built-in tool instead of stalling on a pending nobody resolves.
+     */
+    private GuardDecision denyNonInteractiveApproval(AssistantMessage.ToolCall toolCall, String toolName,
+                                                     List<GraphEventPublisher.GraphEvent> events) {
+        String msg = "[审批不可用] 该工具需要人工审批，但当前为非交互（定时任务）运行，无人可批准，"
+                + "因此无法执行。请改用无需审批的内置工具完成本步骤（例如 PDF / XLSX / 文档技能、文件读写工具），"
+                + "或跳过该步骤并说明原因，不要反复重试同一命令。";
+        log.info("[ToolExecutor] NON_INTERACTIVE_DENY: tool={} needs approval but origin is non-interactive (cron); "
+                + "denying to avoid an unresolvable pending", toolName);
+        events.add(GraphEventPublisher.toolComplete(toolCall.id(), toolName, msg, false));
+        return GuardDecision.blocked(msg);
     }
 
     // ==================== 辅助方法 ====================

@@ -381,8 +381,11 @@ mvn spring-boot:run -Dspring-boot.run.arguments="--logging.level.vip.mate=DEBUG"
 Browser DevTools → Network → filter `EventStream`. Or:
 
 ```bash
-curl -N -H "Authorization: Bearer <token>" \
-  "http://localhost:18088/api/v1/chat/1/stream?conversationId=1"
+curl -N -X POST 'http://localhost:18088/api/v1/chat/stream' \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -H "Accept: text/event-stream" \
+  -d '{"agentId":1, "message":"test", "conversationId":"1"}'
 ```
 
 ---
