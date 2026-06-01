@@ -158,6 +158,9 @@ export default {
     },
     copy: '复制',
     copied: '已复制',
+    downloadStarted: '开始下载：{name}',
+    downloadExpired: '文件已失效或过期，请重新让助手生成后再下载',
+    downloadFailed: '下载失败：{reason}',
     regenerate: '重新生成',
     replyModel: '本条回复模型: {model}',
     routing: {
