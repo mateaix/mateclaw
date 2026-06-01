@@ -158,6 +158,9 @@ export default {
     },
     copy: 'Copy',
     copied: 'Copied',
+    downloadStarted: 'Downloading: {name}',
+    downloadExpired: 'This file has expired or is no longer available. Ask the assistant to generate it again, then download.',
+    downloadFailed: 'Download failed: {reason}',
     regenerate: 'Regenerate',
     replyModel: 'Reply model: {model}',
     routing: {

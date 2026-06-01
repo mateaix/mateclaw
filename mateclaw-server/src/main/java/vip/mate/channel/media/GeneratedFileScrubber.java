@@ -23,8 +23,9 @@ import java.util.regex.Matcher;
  *       a render tool. {@link GeneratedFileCache#put} logs every real
  *       put, so its absence here is proof the file was never generated
  *       this turn.</li>
- *   <li>The 10-min cache entry expired before the IM client got around
- *       to clicking, or was wiped on JVM restart.</li>
+ *   <li>The persisted entry was swept after its retention window
+ *       ({@link GeneratedFileCache#TTL}) elapsed before the IM client
+ *       got around to clicking.</li>
  * </ol>
  * Without this rewrite, IM clients tap a markdown link that returns
  * 404, save the HTML 404 body as the requested file extension, then
