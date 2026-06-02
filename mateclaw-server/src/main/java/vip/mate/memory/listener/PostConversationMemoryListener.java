@@ -52,7 +52,7 @@ public class PostConversationMemoryListener {
         try {
             log.debug("[Memory] Triggering post-conversation memory analysis: agent={}, conv={}",
                     event.agentId(), event.conversationId());
-            summarizationService.analyzeAndUpdateMemory(event.agentId(), event.conversationId());
+            summarizationService.analyzeAndUpdateMemory(event.agentId(), event.conversationId(), event.ownerKey());
         } catch (Exception e) {
             log.warn("[Memory] Post-conversation summarization failed: agent={}, conv={}, error={}",
                     event.agentId(), event.conversationId(), e.getMessage());
@@ -60,7 +60,7 @@ public class PostConversationMemoryListener {
 
         // Memory Nudge: extract structured entries every N turns
         try {
-            nudgeService.maybeNudge(event.agentId(), event.conversationId(), event.messageCount());
+            nudgeService.maybeNudge(event.agentId(), event.conversationId(), event.messageCount(), event.ownerKey());
         } catch (Exception e) {
             log.debug("[Memory] Nudge trigger failed (non-fatal): {}", e.getMessage());
         }

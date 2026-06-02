@@ -49,6 +49,7 @@ public class AgentService {
     private final MemoryRecallTracker memoryRecallTracker;
     private final MemoryLifecycleMediator lifecycleMediator;
     private final MemoryProperties memoryProperties;
+    private final vip.mate.memory.identity.MemoryOwnerResolver memoryOwnerResolver;
     /** Read-only lookup of a conversation's pinned model. Mapper (not service)
      *  to keep this a leaf dependency with no risk of a bean cycle. */
     private final ConversationMapper conversationMapper;
@@ -518,7 +519,8 @@ public class AgentService {
         if (!memoryProperties.isLifecycleMediatorEnabled()) {
             return invoke.apply(message, conversationId);
         }
-        TurnContext ctx = new TurnContext(agentId, conversationId, conversationId, 0, message);
+        String ownerKey = memoryOwnerResolver.resolve(ChatOriginHolder.get());
+        TurnContext ctx = new TurnContext(agentId, conversationId, conversationId, 0, message, ownerKey);
         String memoryContext = lifecycleMediator.beforeLlmCall(ctx);
         // Inject memory context into the user message (RFC-037 §3.3)
         String enrichedMessage = injectMemoryContext(message, memoryContext);
@@ -540,7 +542,8 @@ public class AgentService {
         if (!memoryProperties.isLifecycleMediatorEnabled()) {
             return invoke.apply(message, conversationId);
         }
-        TurnContext ctx = new TurnContext(agentId, conversationId, conversationId, 0, message);
+        String ownerKey = memoryOwnerResolver.resolve(ChatOriginHolder.get());
+        TurnContext ctx = new TurnContext(agentId, conversationId, conversationId, 0, message, ownerKey);
         String memoryContext = lifecycleMediator.beforeLlmCall(ctx);
         String enrichedMessage = injectMemoryContext(message, memoryContext);
         StringBuilder reply = new StringBuilder();

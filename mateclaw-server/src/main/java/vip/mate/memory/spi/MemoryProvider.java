@@ -65,6 +65,21 @@ public interface MemoryProvider {
     }
 
     /**
+     * Owner-scoped pre-turn recall. Providers that isolate memory per end-user
+     * override this to recall only the given {@code ownerKey}'s personal memory
+     * plus shared memory. Default delegates to {@link #prefetch(Long, String)}
+     * for providers that are not owner-aware.
+     *
+     * @param agentId   the agent ID
+     * @param userQuery the current user message
+     * @param ownerKey  resolved memory owner key (e.g. "user:42"); may be null
+     * @return context text to inject, wrapped in a memory-context fence by MemoryManager
+     */
+    default String prefetch(Long agentId, String userQuery, String ownerKey) {
+        return prefetch(agentId, userQuery);
+    }
+
+    /**
      * Post-turn sync. Called after LLM response is available.
      * Should be non-blocking (async).
      */

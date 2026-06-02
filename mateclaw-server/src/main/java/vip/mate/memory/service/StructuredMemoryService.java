@@ -114,13 +114,18 @@ public class StructuredMemoryService {
      * Uses per-file locking to handle concurrent tool calls writing to the same file.
      */
     public void remember(Long agentId, String type, String key, String content, String source) {
+        remember(agentId, type, key, content, source, null);
+    }
+
+    /** Owner-scoped variant of {@link #remember}. */
+    public void remember(Long agentId, String type, String key, String content, String source, String ownerKey) {
         validateType(type);
         String filename = toFilename(type);
-        String lockKey = agentId + ":" + filename;
+        String lockKey = agentId + ":" + (ownerKey == null ? "" : ownerKey) + ":" + filename;
         ReentrantLock lock = fileLocks.computeIfAbsent(lockKey, k -> new ReentrantLock());
         lock.lock();
         try {
-            String fileContent = readFileSafe(agentId, filename);
+            String fileContent = readFileSafe(agentId, filename, ownerKey);
 
             String metadata = "> Source: " + (source != null ? source : "agent")
                     + " | Updated: " + LocalDate.now();
@@ -136,7 +141,7 @@ public class StructuredMemoryService {
                 updated = fileContent.isBlank() ? newSection : fileContent.trim() + "\n\n" + newSection;
             }
 
-            workspaceFileService.saveFile(agentId, filename, updated);
+            saveStructured(agentId, filename, updated, ownerKey);
             log.info("[StructuredMemory] {} entry '{}' for agent={} (source={})",
                     existingSection != null ? "Updated" : "Added", key, agentId, source);
             // Publish event for SOUL auto-evolution (Phase 2)
@@ -150,6 +155,11 @@ public class StructuredMemoryService {
      * Search entries by type and optional keyword.
      */
     public List<Map<String, String>> recall(Long agentId, String type, String keyword) {
+        return recall(agentId, type, keyword, null);
+    }
+
+    /** Owner-scoped variant of {@link #recall(Long, String, String)}. */
+    public List<Map<String, String>> recall(Long agentId, String type, String keyword, String ownerKey) {
         if (type != null) {
             validateType(type);
         }
@@ -158,7 +168,7 @@ public class StructuredMemoryService {
         List<Map<String, String>> results = new ArrayList<>();
 
         for (String t : types) {
-            String fileContent = readFileSafe(agentId, toFilename(t));
+            String fileContent = readFileSafe(agentId, toFilename(t), ownerKey);
             if (fileContent.isBlank()) continue;
 
             Map<String, String> sections = parseSections(fileContent);
@@ -181,13 +191,18 @@ public class StructuredMemoryService {
      * Remove a memory entry by type and key.
      */
     public boolean forget(Long agentId, String type, String key) {
+        return forget(agentId, type, key, null);
+    }
+
+    /** Owner-scoped variant of {@link #forget(Long, String, String)}. */
+    public boolean forget(Long agentId, String type, String key, String ownerKey) {
         validateType(type);
         String filename = toFilename(type);
-        String lockKey = agentId + ":" + filename;
+        String lockKey = agentId + ":" + (ownerKey == null ? "" : ownerKey) + ":" + filename;
         ReentrantLock lock = fileLocks.computeIfAbsent(lockKey, k -> new ReentrantLock());
         lock.lock();
         try {
-            String fileContent = readFileSafe(agentId, filename);
+            String fileContent = readFileSafe(agentId, filename, ownerKey);
             if (fileContent.isBlank()) return false;
 
             String section = findSection(fileContent, key);
@@ -196,7 +211,7 @@ public class StructuredMemoryService {
             String updated = fileContent.replace(section, "").trim();
             // Clean up double blank lines
             updated = updated.replaceAll("\n{3,}", "\n\n");
-            workspaceFileService.saveFile(agentId, filename, updated);
+            saveStructured(agentId, filename, updated, ownerKey);
             log.info("[StructuredMemory] Removed entry '{}' (type={}) for agent={}", key, type, agentId);
             return true;
         } finally {
@@ -211,17 +226,27 @@ public class StructuredMemoryService {
         return recall(agentId, type, null);
     }
 
+    /** Owner-scoped variant of {@link #listEntries(Long, String)}. */
+    public List<Map<String, String>> listEntries(Long agentId, String type, String ownerKey) {
+        return recall(agentId, type, null, ownerKey);
+    }
+
     /**
      * Build a formatted memory block for system prompt injection.
      * Includes only the stable, low-volume entry types ({@link #SYSTEM_PROMPT_TYPES});
      * growing/specific types are surfaced per-turn via {@link #buildPrefetchBlock}.
      */
     public String buildMemoryBlock(Long agentId) {
+        return buildMemoryBlock(agentId, null);
+    }
+
+    /** Owner-scoped variant of {@link #buildMemoryBlock(Long)}. */
+    public String buildMemoryBlock(Long agentId, String ownerKey) {
         StringBuilder sb = new StringBuilder();
         boolean hasContent = false;
 
         for (String type : SYSTEM_PROMPT_TYPES) {
-            String fileContent = readFileSafe(agentId, toFilename(type));
+            String fileContent = readFileSafe(agentId, toFilename(type), ownerKey);
             if (fileContent.isBlank()) continue;
 
             Map<String, String> sections = parseSections(fileContent);
@@ -253,9 +278,14 @@ public class StructuredMemoryService {
      * instead of the specific stored fact.
      */
     public String buildPrefetchBlock(Long agentId, String userQuery) {
+        return buildPrefetchBlock(agentId, userQuery, null);
+    }
+
+    /** Owner-scoped variant of {@link #buildPrefetchBlock(Long, String)}. */
+    public String buildPrefetchBlock(Long agentId, String userQuery, String ownerKey) {
         if (userQuery == null || userQuery.isBlank()) return "";
 
-        List<ScoredEntry> scored = recallRelevant(agentId, userQuery, PREFETCH_TYPES, MAX_PREFETCH_ENTRIES);
+        List<ScoredEntry> scored = recallRelevant(agentId, userQuery, PREFETCH_TYPES, MAX_PREFETCH_ENTRIES, ownerKey);
         if (scored.isEmpty()) return "";
 
         boolean hasProject = scored.stream().anyMatch(e -> "project".equals(e.type()));
@@ -282,12 +312,16 @@ public class StructuredMemoryService {
      * highest-scoring matches (score &gt; 0), best first, capped at {@code limit}.
      */
     private List<ScoredEntry> recallRelevant(Long agentId, String userQuery, List<String> types, int limit) {
+        return recallRelevant(agentId, userQuery, types, limit, null);
+    }
+
+    private List<ScoredEntry> recallRelevant(Long agentId, String userQuery, List<String> types, int limit, String ownerKey) {
         String q = userQuery.toLowerCase();
         Set<String> queryShingles = shingles(q);
 
         List<ScoredEntry> matches = new ArrayList<>();
         for (String t : types) {
-            String fileContent = readFileSafe(agentId, toFilename(t));
+            String fileContent = readFileSafe(agentId, toFilename(t), ownerKey);
             if (fileContent.isBlank()) continue;
 
             for (Map.Entry<String, String> entry : parseSections(fileContent).entrySet()) {
@@ -374,12 +408,33 @@ public class StructuredMemoryService {
     }
 
     private String readFileSafe(Long agentId, String filename) {
+        return readFileSafe(agentId, filename, null);
+    }
+
+    private String readFileSafe(Long agentId, String filename, String ownerKey) {
         try {
-            WorkspaceFileEntity file = workspaceFileService.getFile(agentId, filename);
+            WorkspaceFileEntity file = isPersonal(ownerKey)
+                    ? workspaceFileService.getMemoryFile(agentId, filename, ownerKey)
+                    : workspaceFileService.getFile(agentId, filename);
             return file != null && file.getContent() != null ? file.getContent() : "";
         } catch (Exception e) {
             return "";
         }
+    }
+
+    /** Persist structured memory to the owner's PERSONAL bucket, or shared when no real owner. */
+    private void saveStructured(Long agentId, String filename, String content, String ownerKey) {
+        if (isPersonal(ownerKey)) {
+            workspaceFileService.saveMemoryFile(agentId, filename, content, ownerKey);
+        } else {
+            workspaceFileService.saveFile(agentId, filename, content);
+        }
+    }
+
+    /** A real, isolatable owner — not null/blank and not the system bucket. */
+    private boolean isPersonal(String ownerKey) {
+        return ownerKey != null && !ownerKey.isBlank()
+                && !vip.mate.memory.identity.MemoryOwnerResolver.SYSTEM_OWNER.equals(ownerKey);
     }
 
     /**

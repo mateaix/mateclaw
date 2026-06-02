@@ -38,31 +38,61 @@ public class StructuredMemoryProvider implements MemoryProvider {
      * Returns the stable, low-volume typed entries (user profile, feedback)
      * for unconditional system prompt injection.
      */
+    /**
+     * Build-time injection is limited to SHARED (TEAM / GLOBAL) structured
+     * memory — agent-creator presets and team-wide facts. Conversation-derived
+     * PERSONAL structured memory is owner-specific and the agent instance is
+     * cached across users, so it is injected per-turn in
+     * {@link #prefetch(Long, String, String)} for the current owner only.
+     */
     @Override
     public String systemPromptBlock(Long agentId) {
         try {
-            return structuredMemoryService.buildMemoryBlock(agentId);
+            // ownerKey=null → buildMemoryBlock reads shared (TEAM/GLOBAL) rows only.
+            return structuredMemoryService.buildMemoryBlock(agentId, null);
         } catch (Exception e) {
-            log.warn("[StructuredMemory] Failed to build memory block for agent={}: {}",
+            log.warn("[StructuredMemory] Failed to build shared memory block for agent={}: {}",
                     agentId, e.getMessage());
             return "";
         }
     }
 
-    /**
-     * Returns growing/specific typed entries (project facts, reference notes)
-     * relevant to the current question. Surfacing these per-turn rather than
-     * always-on keeps them salient when asked about and avoids the model
-     * confusing a stored fact with similarly-shaped background knowledge.
-     * The returned block is fenced centrally by the memory manager.
-     */
     @Override
     public String prefetch(Long agentId, String userQuery) {
+        return prefetch(agentId, userQuery, null);
+    }
+
+    /**
+     * Owner-scoped per-turn injection: the stable user/feedback entries plus the
+     * query-relevant project/reference entries — all restricted to the current
+     * owner's structured memory. Returns empty when there is no isolatable owner
+     * so a shared agent never injects another user's structured memory. The
+     * returned block is fenced centrally by the memory manager.
+     */
+    @Override
+    public String prefetch(Long agentId, String userQuery, String ownerKey) {
         try {
-            return structuredMemoryService.buildPrefetchBlock(agentId, userQuery);
+            String stable = structuredMemoryService.buildMemoryBlock(agentId, ownerKey);
+            String relevant = structuredMemoryService.buildPrefetchBlock(agentId, userQuery, ownerKey);
+            boolean hasStable = stable != null && !stable.isBlank();
+            boolean hasRelevant = relevant != null && !relevant.isBlank();
+            if (!hasStable && !hasRelevant) {
+                return "";
+            }
+            StringBuilder sb = new StringBuilder();
+            if (hasStable) {
+                sb.append(stable);
+            }
+            if (hasRelevant) {
+                if (sb.length() > 0) {
+                    sb.append("\n\n");
+                }
+                sb.append(relevant);
+            }
+            return sb.toString();
         } catch (Exception e) {
-            log.warn("[StructuredMemory] Failed to build prefetch block for agent={}: {}",
-                    agentId, e.getMessage());
+            log.warn("[StructuredMemory] Failed to build prefetch block for agent={}, owner={}: {}",
+                    agentId, ownerKey, e.getMessage());
             return "";
         }
     }

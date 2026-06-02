@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ref, reactive, computed } from 'vue'
-import { Loading, Select, ArrowDown } from '@element-plus/icons-vue'
+import { Loading, Select, ArrowDown, View } from '@element-plus/icons-vue'
 import type { PlanMeta } from '@/types'
+import ExecutionDetailDialog from './ExecutionDetailDialog.vue'
 
 const props = defineProps<{
   plan: PlanMeta
@@ -45,6 +46,27 @@ function truncateResult(text: string, max: number): string {
   if (!text || text.length <= max) return text
   return text.slice(0, max) + '...'
 }
+
+// Full step-result viewer — the inline preview is capped at 500 chars; this opens
+// the complete result so plan execution stays fully auditable.
+const detailVisible = ref(false)
+const detailIndex = ref(-1)
+const detailResponse = computed(() => props.plan.stepResults?.[detailIndex.value]?.result || '')
+const detailTitle = computed(() => {
+  const i = detailIndex.value
+  return i >= 0 ? `${i + 1}. ${props.plan.steps[i] || ''}` : ''
+})
+const detailStatus = computed<'completed' | 'error' | 'running'>(() => {
+  const st = props.plan.stepResults?.[detailIndex.value]?.status
+  if (st === 'failed' || st === 'error') return 'error'
+  if (st === 'completed') return 'completed'
+  return 'running'
+})
+
+function openDetail(index: number) {
+  detailIndex.value = index
+  detailVisible.value = true
+}
 </script>
 
 <template>
@@ -55,10 +77,8 @@ function truncateResult(text: string, max: number): string {
         <el-icon v-if="isGenerating && !allDone" class="is-loading" :size="14"><Loading /></el-icon>
         <el-icon v-else :size="14"><Select /></el-icon>
       </span>
-      <span class="plan-panel__title">
-        Plan
-      </span>
-      <span class="plan-panel__progress">{{ completedCount }}/{{ plan.steps.length }}</span>
+      <span class="plan-panel__title">{{ $t('chat.executionPlan') }}</span>
+      <span class="plan-panel__progress">({{ completedCount }}/{{ plan.steps.length }} {{ $t('chat.planDone') }})</span>
       <el-icon
         class="plan-panel__arrow"
         :class="{ 'is-open': !collapsed }"
@@ -90,13 +110,20 @@ function truncateResult(text: string, max: number): string {
             <span class="plan-step__text">{{ step }}</span>
             <el-icon
               v-if="plan.stepResults?.[i]?.result"
+              class="plan-step__detail"
+              :title="$t('chat.detail.viewDetail')"
+              :size="12"
+              @click.stop="openDetail(i)"
+            ><View /></el-icon>
+            <el-icon
+              v-if="plan.stepResults?.[i]?.result"
               class="plan-step__arrow"
               :class="{ 'is-open': expandedSteps.has(i) }"
               :size="11"
             ><ArrowDown /></el-icon>
           </div>
 
-          <!-- 步骤结果（可展开） -->
+          <!-- 步骤结果（可展开预览，完整内容见详情弹层） -->
           <Transition name="plan-slide">
             <div v-if="expandedSteps.has(i) && plan.stepResults?.[i]?.result" class="plan-step__result">
               <pre>{{ truncateResult(plan.stepResults[i].result, 500) }}</pre>
@@ -105,6 +132,13 @@ function truncateResult(text: string, max: number): string {
         </div>
       </div>
     </Transition>
+
+    <ExecutionDetailDialog
+      v-model="detailVisible"
+      :title="detailTitle"
+      :status="detailStatus"
+      :response="detailResponse"
+    />
   </div>
 </template>
 
@@ -226,11 +260,21 @@ function truncateResult(text: string, max: number): string {
   color: var(--mc-text-tertiary);
 }
 
+.plan-step__detail {
+  flex-shrink: 0;
+  margin-left: auto;
+  color: var(--mc-text-quaternary);
+  cursor: pointer;
+  transition: color 0.15s;
+}
+.plan-step__detail:hover {
+  color: var(--mc-primary);
+}
+
 .plan-step__arrow {
   flex-shrink: 0;
   color: var(--mc-text-quaternary);
   transition: transform 0.2s;
-  margin-left: auto;
 }
 .plan-step__arrow.is-open {
   transform: rotate(180deg);

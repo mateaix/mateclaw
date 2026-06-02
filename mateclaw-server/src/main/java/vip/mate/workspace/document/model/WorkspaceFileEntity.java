@@ -36,6 +36,20 @@ public class WorkspaceFileEntity {
     /** 排序顺序（越小越靠前） */
     private Integer sortOrder;
 
+    /**
+     * Memory subject this row belongs to, as a prefixed string
+     * ("user:42", "feishu:ou_xxx", "api:&lt;endUserId&gt;"). Null for shared
+     * config rows (AGENTS.md / SOUL.md / PROFILE.md) and legacy data.
+     */
+    private String ownerKey;
+
+    /**
+     * Visibility scope: PERSONAL (only the matching {@link #ownerKey} sees it),
+     * TEAM (everyone using the agent), or GLOBAL (always visible). Defaults to
+     * TEAM at the DB level so config files and legacy rows stay shared.
+     */
+    private String scope;
+
     @TableField(fill = FieldFill.INSERT)
     private LocalDateTime createTime;
 

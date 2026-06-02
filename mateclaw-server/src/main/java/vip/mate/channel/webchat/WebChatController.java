@@ -50,6 +50,7 @@ public class WebChatController {
     private final ChatStreamTracker streamTracker;
     private final ObjectMapper objectMapper;
     private final ConversationCompletionPublisher completionPublisher;
+    private final vip.mate.memory.identity.MemoryOwnerResolver memoryOwnerResolver;
 
     private final ExecutorService sseExecutor = Executors.newCachedThreadPool();
 
@@ -122,7 +123,16 @@ public class WebChatController {
                 final int[] usage = {0, 0}; // [promptTokens, completionTokens]
                 final String[] modelInfo = {null, null}; // [runtimeModel, runtimeProvider]
 
-                agentService.chatStructuredStream(agentId, message, conversationId, visitorId)
+                // Attribute memory to this external visitor so each end-user
+                // behind the shared webchat account is isolated. The same origin
+                // resolves the owner key for both the read (recall) and write
+                // (publish) paths below.
+                vip.mate.agent.context.ChatOrigin webchatOrigin =
+                        vip.mate.agent.context.ChatOrigin.web(conversationId, visitorId, webWsId, null)
+                                .withSender(null, "api", null);
+                String webchatOwnerKey = memoryOwnerResolver.resolve(webchatOrigin);
+
+                agentService.chatStructuredStream(agentId, message, conversationId, visitorId, null, webchatOrigin)
                         .doOnNext(delta -> {
                             if (delta.isEvent() && "_usage_final".equals(delta.eventType())) {
                                 Map<String, Object> data = delta.eventData();
@@ -155,7 +165,7 @@ public class WebChatController {
                                             "completed", usage[0], usage[1], modelInfo[0], modelInfo[1]);
                                 }
                                 completionPublisher.publish(
-                                        agentId, conversationId, message, reply, "webchat");
+                                        agentId, conversationId, message, reply, "webchat", webchatOwnerKey);
                             } catch (Exception persistErr) {
                                 log.warn("[WebChat] Failed to persist assistant reply / publish event: {}",
                                         persistErr.getMessage());
