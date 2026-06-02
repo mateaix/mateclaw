@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
-import { Loading, Select, CloseBold, ArrowDown, Document, Setting, Connection, WarningFilled, Clock } from '@element-plus/icons-vue'
+import { Loading, Select, CloseBold, ArrowDown, Document, Setting, Connection, WarningFilled, Clock, View } from '@element-plus/icons-vue'
 import { useToolLabel } from '@/composables/useToolLabel'
 import type { MessageSegment } from '@/types'
 import DelegationNodeView from './DelegationNodeView.vue'
+import ExecutionDetailDialog from './ExecutionDetailDialog.vue'
 
 const props = defineProps<{
   segment: MessageSegment
@@ -97,6 +98,19 @@ const childProgress = computed(() => {
   const n = childTools.value.length
   return n ? `${n} ${n === 1 ? 'tool' : 'tools'}` : ''
 })
+
+// Full request/response detail viewer. Available for regular tool calls (not
+// delegation timelines) that carry arguments or a result — lets users audit the
+// complete payload that the inline card truncates.
+const detailVisible = ref(false)
+const canViewDetail = computed(() =>
+  !isDelegation.value && (!!props.segment.toolArgs || !!props.segment.toolResult)
+)
+const detailStatus = computed<'running' | 'completed' | 'error'>(() => {
+  if (isError.value) return 'error'
+  if (isRunning.value) return 'running'
+  return 'completed'
+})
 </script>
 
 <template>
@@ -117,12 +131,21 @@ const childProgress = computed(() => {
       <span v-if="isDelegation && childProgress" class="seg-tool__badge">{{ childProgress }}</span>
       <el-icon v-if="isStalled" class="seg-tool__stale" :title="$t('chat.subagentStalled')" :size="12"><WarningFilled /></el-icon>
       <span v-if="truncatedArgs" class="seg-tool__args">{{ truncatedArgs }}</span>
-      <el-icon
-        v-if="hasBody"
-        class="seg-tool__arrow"
-        :class="{ 'is-open': expanded }"
-        :size="11"
-      ><ArrowDown /></el-icon>
+      <span class="seg-tool__actions">
+        <el-icon
+          v-if="canViewDetail"
+          class="seg-tool__detail"
+          :title="$t('chat.detail.viewDetail')"
+          :size="13"
+          @click.stop="detailVisible = true"
+        ><View /></el-icon>
+        <el-icon
+          v-if="hasBody"
+          class="seg-tool__arrow"
+          :class="{ 'is-open': expanded }"
+          :size="11"
+        ><ArrowDown /></el-icon>
+      </span>
     </div>
     <Transition name="seg-slide">
       <div v-if="expanded && hasBody" class="seg-tool__body">
@@ -164,6 +187,15 @@ const childProgress = computed(() => {
         <pre v-if="segment.toolResult">{{ resultPreview }}</pre>
       </div>
     </Transition>
+
+    <ExecutionDetailDialog
+      v-if="canViewDetail"
+      v-model="detailVisible"
+      :title="displayName"
+      :status="detailStatus"
+      :request="segment.toolArgs"
+      :response="segment.toolResult"
+    />
   </div>
 </template>
 
@@ -245,11 +277,30 @@ const childProgress = computed(() => {
   border-radius: 3px;
 }
 
+/* Trailing controls pinned to the right edge as a single group, so the
+   detail icon and chevron stay together regardless of whether args render. */
+.seg-tool__actions {
+  flex-shrink: 0;
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.seg-tool__detail {
+  flex-shrink: 0;
+  color: var(--mc-text-tertiary);
+  cursor: pointer;
+  transition: color 0.15s;
+}
+.seg-tool__detail:hover {
+  color: var(--mc-primary);
+}
+
 .seg-tool__arrow {
   flex-shrink: 0;
   color: var(--mc-text-tertiary);
   transition: transform 0.2s;
-  margin-left: auto;
 }
 .seg-tool__arrow.is-open {
   transform: rotate(180deg);
