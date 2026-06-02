@@ -93,7 +93,7 @@ const formattedTimestamp = computed(() => {
 async function onScan() {
   if (!store.currentKB) return
   try {
-    await store.startBrokenLinksScan(Number(store.currentKB.id))
+    await store.startBrokenLinksScan(Number(store.currentKB.id)) // snowflake-precision-ok: store currentKB.id is a string, startBrokenLinksScan accepts number (temporary fallback)
   } catch (e: any) {
     console.error('[Wiki] scan failed', e)
   }

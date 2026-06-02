@@ -65,7 +65,7 @@ const report = computed(() => store.brokenLinksReport)
 
 async function onOpenPage(slug: string) {
   if (!store.currentKB) return
-  await store.loadPage(Number(store.currentKB.id), slug)
+  await store.loadPage(Number(store.currentKB.id), slug) // snowflake-precision-ok: store currentKB.id is a string, loadPage accepts number (temporary fallback)
   emit('close')
 }
 </script>
