@@ -42,7 +42,7 @@ public class MemoryLifecycleMediator {
      */
     public String beforeLlmCall(TurnContext ctx) {
         try {
-            String context = memoryManager.prefetchAll(ctx.agentId(), ctx.userQuery());
+            String context = memoryManager.prefetchAll(ctx.agentId(), ctx.userQuery(), ctx.ownerKey());
             events.publishEvent(new TurnStartedEvent(ctx));
             log.debug("[Memory] beforeLlmCall: agent={}, contextLen={}", ctx.agentId(),
                     context != null ? context.length() : 0);

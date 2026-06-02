@@ -56,6 +56,12 @@ public class MemoryRecallEntity {
     /** Last time this candidate was reviewed during a dream run */
     private LocalDateTime lastReviewedAt;
 
+    /** Memory subject this recall belongs to (e.g. "user:42"); null for shared/legacy rows. */
+    private String ownerKey;
+
+    /** Visibility scope: PERSONAL / TEAM / GLOBAL. Defaults to TEAM at the DB level. */
+    private String scope;
+
     @TableField(fill = FieldFill.INSERT)
     private LocalDateTime createTime;
 

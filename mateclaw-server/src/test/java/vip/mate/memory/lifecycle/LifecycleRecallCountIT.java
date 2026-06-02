@@ -52,7 +52,8 @@ class LifecycleRecallCountIT {
         props = new MemoryProperties();
         MemoryLifecycleMediator mediator = new MemoryLifecycleMediator(memoryManager, eventPublisher);
         agentService = new AgentService(agentMapper, agentGraphBuilder,
-                memoryRecallTracker, mediator, props, conversationMapper);
+                memoryRecallTracker, mediator, props,
+                new vip.mate.memory.identity.MemoryOwnerResolver(), conversationMapper);
 
         // Stub agent resolution (lenient for structural-only tests)
         AgentEntity entity = new AgentEntity();
@@ -76,7 +77,7 @@ class LifecycleRecallCountIT {
         verify(memoryRecallTracker, times(10)).trackRecalls(eq(1L), any());
 
         // Mediator is not invoked when flag is off
-        verify(memoryManager, never()).prefetchAll(any(), any());
+        verify(memoryManager, never()).prefetchAll(any(), any(), any());
         verify(memoryManager, never()).syncAll(any(), any(), any(), any());
     }
 
@@ -84,7 +85,7 @@ class LifecycleRecallCountIT {
     @DisplayName("F4 regression: flag ON — trackRecalls still called exactly once per chat (not doubled)")
     void flagOn_trackRecallsStillOncePerChat() {
         props.setLifecycleMediatorEnabled(true);
-        when(memoryManager.prefetchAll(any(), any())).thenReturn("");
+        when(memoryManager.prefetchAll(any(), any(), any())).thenReturn("");
 
         for (int i = 0; i < 10; i++) {
             agentService.chat(1L, "msg-" + i, "conv-1");
@@ -94,7 +95,7 @@ class LifecycleRecallCountIT {
         verify(memoryRecallTracker, times(10)).trackRecalls(eq(1L), any());
 
         // Mediator IS invoked
-        verify(memoryManager, times(10)).prefetchAll(eq(1L), any());
+        verify(memoryManager, times(10)).prefetchAll(eq(1L), any(), any());
         verify(memoryManager, times(10)).syncAll(eq(1L), eq("conv-1"), any(), any());
     }
 
@@ -109,7 +110,7 @@ class LifecycleRecallCountIT {
 
         // 5 rounds with flag ON
         props.setLifecycleMediatorEnabled(true);
-        when(memoryManager.prefetchAll(any(), any())).thenReturn("");
+        when(memoryManager.prefetchAll(any(), any(), any())).thenReturn("");
         for (int i = 0; i < 5; i++) {
             agentService.chat(1L, "on-" + i, "conv-1");
         }
@@ -118,7 +119,7 @@ class LifecycleRecallCountIT {
         verify(memoryRecallTracker, times(10)).trackRecalls(eq(1L), any());
 
         // Mediator only called for the ON rounds
-        verify(memoryManager, times(5)).prefetchAll(eq(1L), any());
+        verify(memoryManager, times(5)).prefetchAll(eq(1L), any(), any());
     }
 
     @Test

@@ -40,9 +40,14 @@ public class MetricsMemoryProvider extends MemoryProviderDecorator {
 
     @Override
     public String prefetch(Long agentId, String userQuery) {
+        return prefetch(agentId, userQuery, null);
+    }
+
+    @Override
+    public String prefetch(Long agentId, String userQuery, String ownerKey) {
         return prefetchTimer.record(() -> {
             try {
-                return delegate.prefetch(agentId, userQuery);
+                return delegate.prefetch(agentId, userQuery, ownerKey);
             } catch (Exception e) {
                 meterRegistry.counter("memory.prefetch.failures",
                         "provider", delegate.id()).increment();

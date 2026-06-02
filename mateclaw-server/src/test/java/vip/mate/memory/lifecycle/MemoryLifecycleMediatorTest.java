@@ -41,14 +41,14 @@ class MemoryLifecycleMediatorTest {
     @Test
     @DisplayName("beforeLlmCall returns prefetchAll result and publishes TurnStartedEvent")
     void beforeLlmCall_normalPath() {
-        when(memoryManager.prefetchAll(eq(1L), eq("hello")))
+        when(memoryManager.prefetchAll(eq(1L), eq("hello"), any()))
                 .thenReturn("<memory-context>some context</memory-context>");
 
         TurnContext ctx = new TurnContext(1L, "c1", "s1", 1, "hello");
         String result = mediator.beforeLlmCall(ctx);
 
         assertEquals("<memory-context>some context</memory-context>", result);
-        verify(memoryManager).prefetchAll(1L, "hello");
+        verify(memoryManager).prefetchAll(eq(1L), eq("hello"), any());
 
         ArgumentCaptor<Object> eventCaptor = ArgumentCaptor.forClass(Object.class);
         verify(eventPublisher).publishEvent(eventCaptor.capture());
@@ -59,7 +59,7 @@ class MemoryLifecycleMediatorTest {
     @Test
     @DisplayName("beforeLlmCall returns empty string when prefetchAll returns empty")
     void beforeLlmCall_emptyPrefetch() {
-        when(memoryManager.prefetchAll(any(), any())).thenReturn("");
+        when(memoryManager.prefetchAll(any(), any(), any())).thenReturn("");
 
         String result = mediator.beforeLlmCall(new TurnContext(1L, "c1", "s1", 1, "q"));
 
@@ -95,7 +95,7 @@ class MemoryLifecycleMediatorTest {
     @Test
     @DisplayName("beforeLlmCall degrades to empty string when prefetchAll throws")
     void beforeLlmCall_exceptionDegrades() {
-        when(memoryManager.prefetchAll(any(), any()))
+        when(memoryManager.prefetchAll(any(), any(), any()))
                 .thenThrow(new RuntimeException("provider down"));
 
         String result = mediator.beforeLlmCall(new TurnContext(1L, "c1", "s1", 1, "q"));
@@ -141,7 +141,7 @@ class MemoryLifecycleMediatorTest {
     @Test
     @DisplayName("Multiple sequential turns do not interfere (Mediator is stateless)")
     void multipleTurns_noInterference() {
-        when(memoryManager.prefetchAll(any(), any())).thenReturn("");
+        when(memoryManager.prefetchAll(any(), any(), any())).thenReturn("");
 
         for (int i = 0; i < 5; i++) {
             TurnContext ctx = new TurnContext(1L, "c1", "s1", i, "msg-" + i);
@@ -149,7 +149,7 @@ class MemoryLifecycleMediatorTest {
             mediator.afterLlmCall(ctx, "reply-" + i);
         }
 
-        verify(memoryManager, times(5)).prefetchAll(eq(1L), any());
+        verify(memoryManager, times(5)).prefetchAll(eq(1L), any(), any());
         verify(memoryManager, times(5)).syncAll(eq(1L), eq("c1"), any(), any());
     }
 }

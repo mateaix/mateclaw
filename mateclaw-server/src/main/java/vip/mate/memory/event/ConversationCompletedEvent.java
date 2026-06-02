@@ -11,6 +11,9 @@ package vip.mate.memory.event;
  * @param assistantReply   Agent 最终回答
  * @param messageCount     当前会话消息总数
  * @param triggerSource    触发来源："web" / "channel" / "cron"
+ * @param ownerKey         memory owner this turn is attributed to (e.g.
+ *                         "user:42"); null / "system" means not owner-scoped,
+ *                         in which case extracted memory is written as shared.
  * @author MateClaw Team
  */
 public record ConversationCompletedEvent(
@@ -19,5 +22,12 @@ public record ConversationCompletedEvent(
         String userMessage,
         String assistantReply,
         int messageCount,
-        String triggerSource
-) {}
+        String triggerSource,
+        String ownerKey
+) {
+    /** Backwards-compatible constructor without an owner key (resolves to null). */
+    public ConversationCompletedEvent(Long agentId, String conversationId, String userMessage,
+                                      String assistantReply, int messageCount, String triggerSource) {
+        this(agentId, conversationId, userMessage, assistantReply, messageCount, triggerSource, null);
+    }
+}

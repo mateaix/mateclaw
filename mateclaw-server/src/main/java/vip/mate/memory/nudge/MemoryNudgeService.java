@@ -46,16 +46,28 @@ public class MemoryNudgeService {
     private final ObjectMapper objectMapper;
 
     /** Per-agent cooldown tracking */
-    private final ConcurrentHashMap<Long, Instant> lastNudgeTimes = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Instant> lastNudgeTimes = new ConcurrentHashMap<>();
 
     /**
      * Check if a nudge should be triggered and execute if so.
      * Called from PostConversationMemoryListener or directly.
      */
+    /** Backwards-compatible entry without an owner key (writes shared memory). */
     @Async
     public void maybeNudge(Long agentId, String conversationId, int messageCount) {
+        maybeNudge(agentId, conversationId, messageCount, null);
+    }
+
+    @Async
+    public void maybeNudge(Long agentId, String conversationId, int messageCount, String ownerKey) {
         if (!properties.isNudgeEnabled()) {
             return;
+        }
+        // Gate per-owner isolation on the lifecycle prefetch path (the only
+        // auto-injector of PERSONAL structured memory); otherwise write shared
+        // so nudged entries are not stranded in an unread PERSONAL bucket.
+        if (!properties.isLifecycleMediatorEnabled()) {
+            ownerKey = null;
         }
 
         // Check turn interval
@@ -64,22 +76,23 @@ public class MemoryNudgeService {
             return;
         }
 
-        // Cooldown check
-        if (isInCooldown(agentId)) {
-            log.debug("[Nudge] Agent {} is in cooldown, skipping", agentId);
+        // Cooldown keyed per (agent, owner) so one owner can't starve another.
+        String cooldownKey = agentId + ":" + (ownerKey == null ? "" : ownerKey);
+        if (isInCooldown(cooldownKey)) {
+            log.debug("[Nudge] Agent {} (owner {}) is in cooldown, skipping", agentId, ownerKey);
             return;
         }
 
         try {
-            doNudge(agentId, conversationId);
-            lastNudgeTimes.put(agentId, Instant.now());
+            doNudge(agentId, conversationId, ownerKey);
+            lastNudgeTimes.put(cooldownKey, Instant.now());
         } catch (Exception e) {
             log.warn("[Nudge] Failed for agent={}, conv={}: {}",
                     agentId, conversationId, e.getMessage());
         }
     }
 
-    private void doNudge(Long agentId, String conversationId) {
+    private void doNudge(Long agentId, String conversationId, String ownerKey) {
         // 1. Load recent messages
         List<MessageEntity> messages = conversationService.listMessages(conversationId);
         int maxReview = properties.getNudgeMaxMessages();
@@ -96,8 +109,8 @@ public class MemoryNudgeService {
         String transcript = buildTranscript(recent);
         if (transcript.isBlank()) return;
 
-        // 3. Load existing structured memories for dedup
-        String existingMemories = structuredMemoryService.buildMemoryBlock(agentId);
+        // 3. Load existing structured memories for dedup (owner-scoped)
+        String existingMemories = structuredMemoryService.buildMemoryBlock(agentId, ownerKey);
 
         // 4. Build prompt
         String systemPrompt = PromptLoader.loadPrompt("memory/nudge-system");
@@ -140,7 +153,7 @@ public class MemoryNudgeService {
                 if (type.isBlank() || key.isBlank() || content.isBlank()) continue;
 
                 try {
-                    structuredMemoryService.remember(agentId, type, key, content, "nudge");
+                    structuredMemoryService.remember(agentId, type, key, content, "nudge", ownerKey);
                     saved++;
                 } catch (Exception e) {
                     log.debug("[Nudge] Failed to save entry {}/{}: {}", type, key, e.getMessage());
@@ -226,8 +239,8 @@ public class MemoryNudgeService {
                 || msg.contains("速率限制") || msg.contains("Too Many Requests"));
     }
 
-    private boolean isInCooldown(Long agentId) {
-        Instant lastRun = lastNudgeTimes.get(agentId);
+    private boolean isInCooldown(String cooldownKey) {
+        Instant lastRun = lastNudgeTimes.get(cooldownKey);
         if (lastRun == null) return false;
         long cooldownSeconds = properties.getNudgeCooldownMinutes() * 60L;
         return Instant.now().isBefore(lastRun.plusSeconds(cooldownSeconds));

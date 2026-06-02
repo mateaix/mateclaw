@@ -104,10 +104,19 @@ public class MemoryManager {
      * context as new user discourse.
      */
     public String prefetchAll(Long agentId, String userQuery) {
+        return prefetchAll(agentId, userQuery, null);
+    }
+
+    /**
+     * Owner-scoped prefetch. Passes the resolved memory {@code ownerKey} so
+     * providers recall only the current requester's personal memory plus
+     * shared (TEAM / GLOBAL) memory (per-owner isolation).
+     */
+    public String prefetchAll(Long agentId, String userQuery, String ownerKey) {
         List<String> parts = new ArrayList<>();
         for (MemoryProvider provider : providers) {
             try {
-                String result = provider.prefetch(agentId, userQuery);
+                String result = provider.prefetch(agentId, userQuery, ownerKey);
                 if (result != null && !result.isBlank()) {
                     parts.add(sanitizeContext(result));
                 }

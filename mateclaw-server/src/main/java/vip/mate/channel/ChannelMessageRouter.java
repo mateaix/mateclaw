@@ -836,7 +836,7 @@ public class ChannelMessageRouter {
                                 usage[0], usage[1], modelInfo[0], modelInfo[1]);
                         savedAssistantId = saved != null ? saved.getId() : null;
                         if (!isError) {
-                            publishConversationCompletedEvent(agentId, conversationId, message.getContent(), reply);
+                            publishConversationCompletedEvent(agentId, conversationId, message.getContent(), reply, chatOrigin);
                         }
                         adapter.renderAndSend(replyTarget, reply);
                         log.info("[{}] Reply sent to {}: {}chars",
@@ -984,7 +984,7 @@ public class ChannelMessageRouter {
                         conversationId, "assistant", finalContent, null, status,
                         usage[0], usage[1], modelInfo[0], modelInfo[1]);
                 if (!isError) {
-                    publishConversationCompletedEvent(agentId, conversationId, promptText, finalContent);
+                    publishConversationCompletedEvent(agentId, conversationId, promptText, finalContent, chatOrigin);
                 }
                 log.info("[{}] Streaming completed: contentLen={}, isError={}",
                         channelType, finalContent.length(), isError);
@@ -1160,8 +1160,13 @@ public class ChannelMessageRouter {
      * messageCount lookup no longer live here.
      */
     private void publishConversationCompletedEvent(Long agentId, String conversationId,
-                                                    String userMessage, String assistantReply) {
-        completionPublisher.publish(agentId, conversationId, userMessage, assistantReply, "channel");
+                                                    String userMessage, String assistantReply,
+                                                    ChatOrigin origin) {
+        // Attribute the memory write to the same external sender the read path
+        // recalled for, so per-sender IM memory is both written and recalled
+        // under the same owner key.
+        completionPublisher.publishForOrigin(agentId, conversationId, userMessage, assistantReply,
+                "channel", origin);
     }
 
     // ==================== 流式处理（Web 渠道专用，不走队列） ====================

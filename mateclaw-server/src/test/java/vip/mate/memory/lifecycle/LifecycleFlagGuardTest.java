@@ -56,7 +56,7 @@ class LifecycleFlagGuardTest {
                     new ConversationCompletedEvent(1L, "conv-" + i, "hello", "reply", 5, "web"));
         }
 
-        verify(memoryManager, never()).prefetchAll(any(), any());
+        verify(memoryManager, never()).prefetchAll(any(), any(), any());
         verify(memoryManager, never()).syncAll(any(), any(), any(), any());
         verify(memoryManager, never()).onSessionEnd(any(), any());
     }
@@ -68,11 +68,11 @@ class LifecycleFlagGuardTest {
         // But MemoryLifecycleEventListener guards onSessionEnd.
         props.setLifecycleMediatorEnabled(false);
 
-        when(memoryManager.prefetchAll(eq(1L), eq("q"))).thenReturn("");
+        when(memoryManager.prefetchAll(eq(1L), eq("q"), any())).thenReturn("");
 
         // Direct mediator call works (AgentService would not call this when flag is off)
         mediator.beforeLlmCall(new TurnContext(1L, "c1", "s1", 1, "q"));
-        verify(memoryManager, times(1)).prefetchAll(1L, "q");
+        verify(memoryManager, times(1)).prefetchAll(eq(1L), eq("q"), any());
     }
 
     // ==================== Flag ON ====================
@@ -81,13 +81,13 @@ class LifecycleFlagGuardTest {
     @DisplayName("Flag ON: beforeLlmCall invokes prefetchAll")
     void flagOn_prefetchAll() {
         props.setLifecycleMediatorEnabled(true);
-        when(memoryManager.prefetchAll(eq(1L), eq("hello"))).thenReturn("");
+        when(memoryManager.prefetchAll(eq(1L), eq("hello"), any())).thenReturn("");
 
         for (int i = 0; i < 10; i++) {
             mediator.beforeLlmCall(new TurnContext(1L, "c1", "s1", i, "hello"));
         }
 
-        verify(memoryManager, times(10)).prefetchAll(1L, "hello");
+        verify(memoryManager, times(10)).prefetchAll(eq(1L), eq("hello"), any());
     }
 
     @Test
@@ -131,7 +131,7 @@ class LifecycleFlagGuardTest {
     @Test
     @DisplayName("Provider exception in prefetchAll degrades gracefully (returns empty)")
     void prefetchException_graceful() {
-        when(memoryManager.prefetchAll(any(), any())).thenThrow(new RuntimeException("boom"));
+        when(memoryManager.prefetchAll(any(), any(), any())).thenThrow(new RuntimeException("boom"));
 
         String result = mediator.beforeLlmCall(new TurnContext(1L, "c1", "s1", 1, "q"));
 

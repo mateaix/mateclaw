@@ -42,7 +42,9 @@ public class WorkspaceFileController {
     @RequireWorkspaceRole("viewer")
     @GetMapping("/files")
     public R<List<WorkspaceFileEntity>> listFiles(@PathVariable Long agentId) {
-        return R.ok(workspaceFileService.listFiles(agentId));
+        // Config-editor surface: shared (TEAM/GLOBAL) files only. Per-owner
+        // PERSONAL memory rows are never exposed or managed through this REST API.
+        return R.ok(workspaceFileService.listVisibleFiles(agentId, null));
     }
 
     /**

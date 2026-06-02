@@ -61,6 +61,7 @@ public class ChatController {
     private final ChatStreamTracker streamTracker;
     private final ObjectMapper objectMapper;
     private final ConversationCompletionPublisher completionPublisher;
+    private final vip.mate.memory.identity.MemoryOwnerResolver memoryOwnerResolver;
     private final Path uploadRoot = Paths.get("data", "chat-uploads");
 
     // 使用虚拟线程池处理 SSE（Java 17+ 兼容，Java 21 可用 Executors.newVirtualThreadPerTaskExecutor()）
@@ -543,7 +544,7 @@ public class ChatController {
                 // tools that need a workspace path read it from the agent (origin
                 // is enriched with workspaceBasePath in StateGraph buildInitialState).
                 vip.mate.agent.context.ChatOrigin webOrigin =
-                        vip.mate.agent.context.ChatOrigin.web(conversationId, username, workspaceId, null);
+                        memoryOrigin(conversationId, username, workspaceId, request.getEndUserId());
                 Disposable disposable = agentService.chatStructuredStream(agentId, promptText, conversationId, username, request.getThinkingLevel(), webOrigin)
                         .doOnNext(delta -> {
                             if (emitterDone.get()) return;
@@ -630,7 +631,12 @@ public class ChatController {
                                 // garbage like "[错误] Bad request..." as the assistant reply,
                                 // which would pollute the memory extraction pipeline if propagated.
                                 if (!wasStopped && !isError) {
-                                    completionPublisher.publish(agentId, conversationId, message, assistantText, "web");
+                                    // Attribute the memory write to the same owner the read
+                                    // path recalled this turn — the publish runs in a reactive
+                                    // completion callback after the origin holder is cleared,
+                                    // so resolve from the captured webOrigin explicitly.
+                                    completionPublisher.publish(agentId, conversationId, message, assistantText, "web",
+                                            memoryOwnerResolver.resolve(webOrigin));
                                 }
 
                                 if (isInterruptFollowup) {
@@ -1035,12 +1041,17 @@ public class ChatController {
         conversationService.saveMessage(request.getConversationId(), "user", request.getMessage(), request.getContentParts());
 
         String promptText = buildPromptText(request.getMessage(), request.getContentParts());
-        AgentService.ChatResult result = agentService.chatWithUsage(agentId, promptText, request.getConversationId());
+        // Carry the web origin so per-owner memory recall (read) and the
+        // post-conversation memory write below agree on the same owner key.
+        vip.mate.agent.context.ChatOrigin webOrigin =
+                memoryOrigin(request.getConversationId(), username, workspaceId, request.getEndUserId());
+        AgentService.ChatResult result = agentService.chatWithUsage(agentId, promptText, request.getConversationId(), webOrigin);
         String response = result.content();
         conversationService.saveMessage(request.getConversationId(), "assistant", response, null, "completed",
                 result.promptTokens(), result.completionTokens(),
                 result.runtimeModel(), result.runtimeProvider());
-        completionPublisher.publish(agentId, request.getConversationId(), request.getMessage(), response, "web");
+        completionPublisher.publish(agentId, request.getConversationId(), request.getMessage(), response, "web",
+                memoryOwnerResolver.resolve(webOrigin));
         return R.ok(response);
     }
 
@@ -1123,11 +1134,36 @@ public class ChatController {
                 .body(resource);
     }
 
+    /**
+     * Build the {@link vip.mate.agent.context.ChatOrigin} that drives per-owner
+     * memory isolation for a web request. When {@code endUserId} is supplied
+     * (third-party single-account integration) the origin is attributed to that
+     * external end-user ({@code api:<endUserId>}); otherwise to the logged-in
+     * MateClaw user ({@code user:<username>}).
+     */
+    private vip.mate.agent.context.ChatOrigin memoryOrigin(String conversationId, String username,
+                                                           Long workspaceId, String endUserId) {
+        if (endUserId != null && !endUserId.isBlank()) {
+            return vip.mate.agent.context.ChatOrigin
+                    .web(conversationId, endUserId.trim(), workspaceId, null)
+                    .withSender(null, "api", null);
+        }
+        return vip.mate.agent.context.ChatOrigin.web(conversationId, username, workspaceId, null);
+    }
+
     @lombok.Data
     public static class ChatRequest {
         private String message;
         private String conversationId = "default";
         private List<MessageContentPart> contentParts;
+        /**
+         * Optional third-party end-user identifier. When a single MateClaw
+         * account (e.g. one PAT) fronts many of an external system's users,
+         * pass that system's user id here so memory and recall are isolated
+         * per end-user. Kept as a string (never coerced to a number) to
+         * preserve precision of large external ids.
+         */
+        private String endUserId;
     }
 
     @lombok.Data
@@ -1167,6 +1203,12 @@ public class ChatController {
         private String modelProvider;
         /** Model id the user picked for this conversation. See {@link #modelProvider}. */
         private String modelName;
+        /**
+         * Optional third-party end-user identifier — see
+         * {@link ChatRequest#getEndUserId()}. Isolates memory per external
+         * end-user when one MateClaw account fronts many of them.
+         */
+        private String endUserId;
     }
 
     /**

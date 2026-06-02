@@ -4,9 +4,13 @@ import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.stereotype.Component;
+import vip.mate.agent.context.ChatOrigin;
+import vip.mate.memory.MemoryProperties;
+import vip.mate.memory.identity.MemoryOwnerResolver;
 import vip.mate.memory.service.StructuredMemoryService;
 
 import java.util.List;
@@ -28,6 +32,22 @@ import java.util.Map;
 public class StructuredMemoryTool {
 
     private final StructuredMemoryService structuredMemoryService;
+    private final MemoryOwnerResolver memoryOwnerResolver;
+    private final MemoryProperties memoryProperties;
+
+    /** Owner key for reads: the resolved requester (visibility = shared + own personal). */
+    private String readOwner(ToolContext ctx) {
+        return memoryOwnerResolver.resolve(ChatOrigin.from(ctx));
+    }
+
+    /**
+     * Owner key for writes/deletes: the resolved requester only when per-owner
+     * isolation is active; otherwise null so the entry lands in the shared
+     * bucket rather than an un-read PERSONAL row.
+     */
+    private String writeOwner(ToolContext ctx) {
+        return memoryProperties.isLifecycleMediatorEnabled() ? readOwner(ctx) : null;
+    }
 
     @Tool(description = """
             记住一条结构化信息到 Agent 的长期记忆。
@@ -43,7 +63,8 @@ public class StructuredMemoryTool {
             @ToolParam(description = "当前 Agent 的 ID") Long agentId,
             @ToolParam(description = "记忆类型：user / feedback / project / reference") String type,
             @ToolParam(description = "条目标识符（snake_case），例如 preferred_language") String key,
-            @ToolParam(description = "条目内容") String content) {
+            @ToolParam(description = "条目内容") String content,
+            ToolContext toolContext) {
 
         if (agentId == null || type == null || key == null || content == null) {
             return error("agentId, type, key, content 均不能为空");
@@ -51,7 +72,7 @@ public class StructuredMemoryTool {
 
         try {
             structuredMemoryService.remember(agentId, type.trim().toLowerCase(),
-                    key.trim(), content.trim(), "agent");
+                    key.trim(), content.trim(), "agent", writeOwner(toolContext));
 
             JSONObject result = new JSONObject();
             result.set("success", true);
@@ -75,7 +96,8 @@ public class StructuredMemoryTool {
     public String recall_structured(
             @ToolParam(description = "当前 Agent 的 ID") Long agentId,
             @ToolParam(description = "记忆类型过滤（可选）：user / feedback / project / reference", required = false) String type,
-            @ToolParam(description = "搜索关键词（可选），匹配 key 和内容", required = false) String keyword) {
+            @ToolParam(description = "搜索关键词（可选），匹配 key 和内容", required = false) String keyword,
+            ToolContext toolContext) {
 
         if (agentId == null) {
             return error("agentId 不能为空");
@@ -85,7 +107,8 @@ public class StructuredMemoryTool {
             List<Map<String, String>> results = structuredMemoryService.recall(
                     agentId,
                     type != null && !type.isBlank() ? type.trim().toLowerCase() : null,
-                    keyword);
+                    keyword,
+                    readOwner(toolContext));
 
             JSONObject result = new JSONObject();
             result.set("agentId", agentId);
@@ -107,7 +130,8 @@ public class StructuredMemoryTool {
     public String forget_structured(
             @ToolParam(description = "当前 Agent 的 ID") Long agentId,
             @ToolParam(description = "记忆类型：user / feedback / project / reference") String type,
-            @ToolParam(description = "要删除的条目标识符") String key) {
+            @ToolParam(description = "要删除的条目标识符") String key,
+            ToolContext toolContext) {
 
         if (agentId == null || type == null || key == null) {
             return error("agentId, type, key 均不能为空");
@@ -115,7 +139,7 @@ public class StructuredMemoryTool {
 
         try {
             boolean removed = structuredMemoryService.forget(agentId,
-                    type.trim().toLowerCase(), key.trim());
+                    type.trim().toLowerCase(), key.trim(), writeOwner(toolContext));
 
             JSONObject result = new JSONObject();
             result.set("success", removed);

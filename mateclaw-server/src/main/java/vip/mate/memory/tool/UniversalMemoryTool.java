@@ -4,11 +4,15 @@ import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Component;
+import vip.mate.agent.context.ChatOrigin;
+import vip.mate.memory.MemoryProperties;
 import vip.mate.memory.event.MemoryWriteEvent;
+import vip.mate.memory.identity.MemoryOwnerResolver;
 import vip.mate.workspace.document.model.WorkspaceFileEntity;
 import vip.mate.workspace.document.WorkspaceFileService;
 
@@ -41,6 +45,8 @@ public class UniversalMemoryTool {
 
     private final WorkspaceFileService workspaceFileService;
     private final ApplicationEventPublisher eventPublisher;
+    private final MemoryOwnerResolver memoryOwnerResolver;
+    private final MemoryProperties memoryProperties;
 
     @Tool(description = """
             将一条自由形式的经验或洞察追加到 Agent 的长期记忆 (MEMORY.md)。
@@ -51,17 +57,24 @@ public class UniversalMemoryTool {
     public String remember(
             @ToolParam(description = "当前 Agent 的 ID") Long agentId,
             @ToolParam(description = "要记住的内容（自由形式）") String content,
-            @ToolParam(description = "可选：来源上下文（skill 名 / conversation id）", required = false) String source) {
+            @ToolParam(description = "可选：来源上下文（skill 名 / conversation id）", required = false) String source,
+            ToolContext toolContext) {
 
         if (agentId == null) return error("agentId 不能为空");
         if (content == null || content.isBlank()) return error("content 不能为空");
 
         try {
-            WorkspaceFileEntity existing = workspaceFileService.getFile(agentId, MEMORY_FILENAME);
+            // Write to the requester's PERSONAL MEMORY.md when per-owner isolation
+            // is active; otherwise the shared file (so the note is not stranded
+            // in an un-read PERSONAL row).
+            String ownerKey = memoryProperties.isLifecycleMediatorEnabled()
+                    ? memoryOwnerResolver.resolve(ChatOrigin.from(toolContext))
+                    : null;
+            WorkspaceFileEntity existing = workspaceFileService.getVisibleFile(agentId, MEMORY_FILENAME, ownerKey);
             String existingContent = existing != null && existing.getContent() != null
                     ? existing.getContent() : "";
             String updated = appendLesson(existingContent, content, source);
-            workspaceFileService.saveFile(agentId, MEMORY_FILENAME, updated);
+            workspaceFileService.saveVisibleFile(agentId, MEMORY_FILENAME, updated, ownerKey);
 
             // RFC-090 §14.3 — universal remember() targets MEMORY.md (the
             // canonical file), so this IS a MemoryWriteEvent. Skill-local

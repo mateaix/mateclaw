@@ -56,6 +56,16 @@ public class FactQueryService {
      * Recall relevant facts for a query (used by FactMemoryProvider.prefetch).
      */
     public List<FactEntity> recallRelevant(Long agentId, String query) {
+        return recallRelevant(agentId, query, null);
+    }
+
+    /**
+     * Owner-scoped recall: returns facts visible to {@code ownerKey} — shared
+     * (TEAM / GLOBAL) facts plus this owner's PERSONAL facts. A null ownerKey
+     * means shared-only. Keeps one user's recalled facts out of another user's
+     * prompt when a single agent is shared across end-users.
+     */
+    public List<FactEntity> recallRelevant(Long agentId, String query, String ownerKey) {
         return factMapper.selectList(
                 new LambdaQueryWrapper<FactEntity>()
                         .eq(FactEntity::getAgentId, agentId)
@@ -63,6 +73,18 @@ public class FactQueryService {
                         .and(w -> w.like(FactEntity::getSubject, query)
                                 .or().like(FactEntity::getObjectValue, query)
                                 .or().like(FactEntity::getPredicate, query))
+                        .and(s -> {
+                            if (ownerKey == null || ownerKey.isBlank()) {
+                                s.in(FactEntity::getScope, vip.mate.memory.identity.MemoryScope.TEAM,
+                                        vip.mate.memory.identity.MemoryScope.GLOBAL);
+                            } else {
+                                s.in(FactEntity::getScope, vip.mate.memory.identity.MemoryScope.TEAM,
+                                                vip.mate.memory.identity.MemoryScope.GLOBAL)
+                                        .or(p -> p.eq(FactEntity::getScope,
+                                                        vip.mate.memory.identity.MemoryScope.PERSONAL)
+                                                .eq(FactEntity::getOwnerKey, ownerKey));
+                            }
+                        })
                         .orderByDesc(FactEntity::getTrust)
                         .last("LIMIT 10"));
     }

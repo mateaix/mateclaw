@@ -47,8 +47,13 @@ public class FactMemoryProvider implements MemoryProvider {
 
     @Override
     public String prefetch(Long agentId, String userQuery) {
+        return prefetch(agentId, userQuery, null);
+    }
+
+    @Override
+    public String prefetch(Long agentId, String userQuery, String ownerKey) {
         if (!properties.getFact().isProjectionEnabled()) return "";
-        List<FactEntity> facts = queryService.recallRelevant(agentId, userQuery);
+        List<FactEntity> facts = queryService.recallRelevant(agentId, userQuery, ownerKey);
         if (facts.isEmpty()) return "";
 
         // Bump usage
