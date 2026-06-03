@@ -185,7 +185,9 @@ public class GoalEvaluationNode implements NodeAction {
         // failure on completion) does not propagate into the chat graph
         // and abort the streamed answer the user already sees.
         try {
-            if (result.completed() || result.score() >= 0.95) {
+            // Completion is the deterministic "all criteria passed" signal the
+            // evaluator already folded into result.completed() — no score gate.
+            if (result.completed()) {
                 GoalEntity completed = goalService.markCompleted(refreshed.getId(), result);
                 return MateClawStateAccessor.output()
                         .goalEvaluationResult(result.toMap())

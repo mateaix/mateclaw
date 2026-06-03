@@ -7,10 +7,9 @@ import org.springframework.stereotype.Component;
 /**
  * Configuration knobs for the persistent-goal subsystem.
  *
- * <p>{@link #enabled} is the master gate: when {@code false} (PR1-4 default)
- * the StateGraph wiring stays inactive and {@code findActiveByConversation}
- * still works for tests, but no graph node touches the table. PR5 flips it
- * to {@code true}.
+ * <p>{@link #enabled} is the master gate: when {@code false} the StateGraph
+ * wiring stays inactive (no graph node touches the table), while
+ * {@code findActiveByConversation} still works for tests.
  */
 @Data
 @Component
@@ -20,11 +19,25 @@ public class GoalProperties {
     /**
      * Master switch — when off, the graph never invokes GoalEvaluationNode
      * (the conditional edge sees no active goal, so the node is unreachable).
-     * Defaults to true now that the full PR1-5 chain is in place; operators
-     * who want to disable goal evaluation can override via
+     * Operators who want to disable goal evaluation entirely can override via
      * {@code mateclaw.goal.enabled=false} in application.yml.
      */
     private boolean enabled = true;
+
+    /**
+     * Create-time default for a goal's {@code autoFollowupEnabled} when the
+     * caller leaves it unspecified (null). Explicit true/false in the request
+     * is never overridden by this.
+     */
+    private boolean defaultAutoFollowup = true;
+
+    /**
+     * Runtime hard gate for auto-followup. When false, no goal injects a
+     * follow-up regardless of its per-goal {@code autoFollowupEnabled} flag —
+     * the operator's kill switch for the self-continuation loop that takes
+     * effect immediately, even for goals created with the flag on.
+     */
+    private boolean allowAutoFollowup = true;
 
     /** Default turn budget when the user doesn't override. */
     private int defaultTurnBudget = 20;

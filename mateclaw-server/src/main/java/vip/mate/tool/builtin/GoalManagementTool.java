@@ -58,7 +58,8 @@ public class GoalManagementTool {
                     required = false) String exitCriteria,
             @ToolParam(description = "Max evaluation turns before exhaustion. Default 20.",
                     required = false) Integer turnBudget,
-            @ToolParam(description = "If true, the agent may auto-followup when progress is incomplete. Default false.",
+            @ToolParam(description = "If true, the agent may auto-followup when progress is incomplete. "
+                    + "Omit to use the system default.",
                     required = false) Boolean autoFollowup,
             @ToolParam(description = "Optional initial checklist: a list of short, individually verifiable "
                     + "acceptance criteria. Omit to let the system derive the checklist on first evaluation.",
@@ -168,7 +169,8 @@ public class GoalManagementTool {
             if (streamTracker != null && completed.getConversationId() != null) {
                 streamTracker.broadcastObject(completed.getConversationId(), "goal_completed", Map.of(
                         "goalId", String.valueOf(completed.getId()),
-                        "score", synthetic.score()));
+                        "score", synthetic.score(),
+                        "goal", goalService.toResponse(completed)));
             }
             return successJson(Map.of(
                     "goalId", String.valueOf(completed.getId()),

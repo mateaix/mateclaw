@@ -115,7 +115,11 @@ public class GoalServiceImpl implements GoalService {
                 ? req.getLlmCallBudget() : properties.getDefaultLlmCallBudget());
         entity.setAgentLlmCallsUsed(0);
         entity.setEvalLlmCallsUsed(0);
-        entity.setAutoFollowupEnabled(Boolean.TRUE.equals(req.getAutoFollowupEnabled()));
+        // Three-state default: explicit true/false is honored; null falls
+        // back to the configured create-time default.
+        entity.setAutoFollowupEnabled(req.getAutoFollowupEnabled() != null
+                ? req.getAutoFollowupEnabled()
+                : properties.isDefaultAutoFollowup());
         entity.setFollowupCooldownSeconds(req.getFollowupCooldownSeconds() != null
                 ? req.getFollowupCooldownSeconds() : properties.getAutoFollowupCooldownSeconds());
         // Normalize any caller-supplied checklist: assign C1..Cn, force
@@ -467,19 +471,32 @@ public class GoalServiceImpl implements GoalService {
             throw new MateClawException("err.goal.criterion_empty", 400, "Criterion must not be empty");
         }
         String trimmed = criterion.trim();
-        // Merge against the freshly refetched criteria so a concurrent
-        // addCriterion never silently overwrites a sibling's append.
+        // Double-write: append a structured criterion (authoritative) and
+        // mirror the text into exit_criteria for backward compatibility /
+        // human readability. New id is the current max ordinal + 1. Merge
+        // against the freshly refetched row so concurrent appends don't clobber.
         GoalEntity g = retryOptimistic(id, "appendCriterion", fresh -> {
             ensureNotTerminal(fresh, "appendCriterion");
+
+            List<GoalCriterion> list = GoalCriteriaCodec.parse(fresh.getCriteria(), objectMapper);
+            list.add(new GoalCriterion("C" + (list.size() + 1), trimmed, false, ""));
+            String criteriaJson = GoalCriteriaCodec.serialize(GoalCriteriaCodec.reindex(list), objectMapper);
+
             String existing = fresh.getExitCriteria() != null ? fresh.getExitCriteria() : "";
-            String merged = existing.isEmpty() ? trimmed : existing + "\n+ " + trimmed;
+            String mergedText = existing.isEmpty() ? trimmed : existing + "\n+ " + trimmed;
+
             LambdaUpdateWrapper<GoalEntity> w = baseLockedUpdate(fresh)
-                    .set(GoalEntity::getExitCriteria, merged);
+                    .set(GoalEntity::getCriteria, criteriaJson)
+                    .set(GoalEntity::getExitCriteria, mergedText);
             bumpVersionAndTime(w);
             return w;
         });
+        List<GoalCriterion> full = GoalCriteriaCodec.parse(g.getCriteria(), objectMapper);
+        String criterionId = full.isEmpty() ? "" : full.get(full.size() - 1).id();
         writeEvent(id, GoalEventType.CRITERION_ADDED, null, Map.of(
                 "criterion", trimmed,
+                "criterionId", criterionId,
+                "criteria", full,
                 "by", username));
         return g;
     }

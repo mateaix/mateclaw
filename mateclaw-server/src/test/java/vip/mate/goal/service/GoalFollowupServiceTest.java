@@ -1,6 +1,8 @@
 package vip.mate.goal.service;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
+import vip.mate.goal.config.GoalProperties;
 import vip.mate.goal.model.GoalEntity;
 import vip.mate.goal.model.GoalEvaluationResult;
 import vip.mate.goal.model.GoalStatus;
@@ -8,16 +10,16 @@ import vip.mate.goal.model.GoalStatus;
 import java.time.LocalDateTime;
 import java.util.Optional;
 
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Covers the five follow-up gating conditions from RFC 48 §3.10. Every
- * negative case must independently block the follow-up.
+ * Covers the follow-up gating conditions. Every negative case must
+ * independently block the follow-up.
  */
 class GoalFollowupServiceTest {
 
-    private final GoalFollowupService svc = new GoalFollowupService();
+    private final GoalProperties properties = new GoalProperties();
+    private final GoalFollowupService svc = new GoalFollowupService(properties, new ObjectMapper());
 
     private GoalEntity goal(boolean autoEnabled) {
         GoalEntity g = new GoalEntity();
@@ -48,6 +50,20 @@ class GoalFollowupServiceTest {
                 goal(false),
                 res(0.6, GoalEvaluationResult.DECISION_CONTINUE));
         assertTrue(out.isEmpty());
+    }
+
+    @Test
+    void allowAutoFollowupGate_overridesPerGoalFlag() {
+        properties.setAllowAutoFollowup(false);
+        try {
+            // per-goal flag on + budget healthy, yet the runtime hard gate wins.
+            Optional<String> out = svc.maybeBuildFollowup(
+                    goal(true),
+                    res(0.6, GoalEvaluationResult.DECISION_CONTINUE));
+            assertTrue(out.isEmpty());
+        } finally {
+            properties.setAllowAutoFollowup(true);
+        }
     }
 
     @Test
