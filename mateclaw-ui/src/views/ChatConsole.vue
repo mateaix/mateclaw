@@ -1188,11 +1188,28 @@ const goalSystemLineDetail = computed(() => {
   return '预算耗尽。'
 })
 
+// True when the current conversation's message stream already contains a
+// setGoal tool call — authoritative even before the goal_created SSE event
+// updates the goal store.
+const goalSetInStream = computed(() => {
+  return messages.value.some((m) => {
+    if (m.role !== 'assistant') return false
+    const tcs: any = (m as any).metadata?.toolCalls
+    return Array.isArray(tcs) && tcs.some((tc: any) => tc?.name === 'setGoal')
+  })
+})
+
 const showGoalSetPrompt = computed(() => {
   if (!currentConversationId.value || !selectedAgentId.value) return false
   if (isGenerating.value) return false
   // Active goal? The ring covers that — no need for a prompt.
   if (goalStore.activeGoal(currentConversationId.value)) return false
+  // A goal was already set this conversation via the setGoal tool — even if
+  // the goal_created/goal_evaluated SSE event hasn't updated the store yet
+  // (the turn can end a render frame before that event lands). Reading the
+  // stream directly closes that flash window: never offer to set a goal when
+  // the agent already set one here.
+  if (goalSetInStream.value) return false
   // Recent terminal still showing? Let the user dismiss that first.
   if (goalTerminalForCurrent.value) return false
   if (goalStore.isPromptDismissed(currentConversationId.value)) return false
