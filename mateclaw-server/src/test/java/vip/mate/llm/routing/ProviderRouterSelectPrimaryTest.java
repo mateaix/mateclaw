@@ -10,14 +10,17 @@ import vip.mate.llm.model.ModelConfigEntity;
 import vip.mate.llm.service.ModelCapabilityService;
 import vip.mate.llm.service.ModelCapabilityService.Modality;
 import vip.mate.llm.service.ModelConfigService;
+import vip.mate.skill.manifest.SkillManifest;
 import vip.mate.skill.runtime.SkillRuntimeService;
+import vip.mate.skill.runtime.model.ResolvedSkill;
 
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
@@ -45,11 +48,19 @@ class ProviderRouterSelectPrimaryTest {
         when(bindingService.getBoundSkillIds(AGENT_ID)).thenReturn(Set.of());
     }
 
-    private void stubCapabilities(String... needs) {
-        // aggregateModelNeeds reads bound skills → return empty so
-        // resolveRequiredModalities returns null (no capability gate).
-        // For tests that need capabilities, we stub a bound skill.
-        when(skillRuntimeService.resolveAllSkillsStatus()).thenReturn(List.of());
+    /**
+     * Bind a single skill that declares the given {@code requires-model}
+     * tokens, so {@code aggregateModelNeeds} resolves a non-empty capability
+     * set and the capability-gated Pass 1 of {@code selectPrimary} runs.
+     */
+    private void bindSkillRequiring(String... needs) {
+        when(bindingService.getBoundSkillIds(AGENT_ID)).thenReturn(Set.of(1L));
+        SkillManifest manifest = mock(SkillManifest.class);
+        when(manifest.getRequiresModel()).thenReturn(List.of(needs));
+        ResolvedSkill skill = mock(ResolvedSkill.class);
+        when(skill.getId()).thenReturn(1L);
+        when(skill.getManifest()).thenReturn(manifest);
+        when(skillRuntimeService.resolveAllSkillsStatus()).thenReturn(List.of(skill));
     }
 
     // ---- tests ----
@@ -71,20 +82,21 @@ class ProviderRouterSelectPrimaryTest {
     }
 
     @Test
-    @DisplayName("2. Preferred provider satisfying capability wins in pass 1")
+    @DisplayName("2. Preferred provider satisfying the required capability wins in pass 1")
     void preferredSatisfyingCapabilityWins() {
-        when(bindingService.getBoundSkillIds(AGENT_ID)).thenReturn(Set.of(1L));
-        // No resolved skills → aggregateModelNeeds returns empty → no capability gate
-        when(skillRuntimeService.resolveAllSkillsStatus()).thenReturn(List.of());
+        bindSkillRequiring("vision");
         when(bindingService.getPreferredProviderIds(AGENT_ID)).thenReturn(List.of("deepseek"));
         when(modelConfigService.getDefaultModelByProvider("deepseek"))
-                .thenReturn(model("deepseek", "deepseek-chat"));
+                .thenReturn(model("deepseek", "deepseek-vl"));
+        when(capabilityService.resolve(eq("deepseek-vl"), any()))
+                .thenReturn(EnumSet.of(Modality.VISION));
 
         ModelConfigEntity global = model("openai", "gpt-4o");
         ModelConfigEntity result = router.selectPrimary(AGENT_ID, global);
 
         assertNotNull(result);
         assertEquals("deepseek", result.getProvider());
+        assertEquals("deepseek-vl", result.getModelName());
     }
 
     @Test
@@ -148,5 +160,26 @@ class ProviderRouterSelectPrimaryTest {
 
         ModelConfigEntity result = router.selectPrimary(AGENT_ID, null);
         assertNull(result);
+    }
+
+    @Test
+    @DisplayName("8. Preferred misses required capability but global satisfies → global wins in pass 1")
+    void preferredMissesCapabilityGlobalSatisfies() {
+        bindSkillRequiring("vision");
+        when(bindingService.getPreferredProviderIds(AGENT_ID)).thenReturn(List.of("deepseek"));
+        when(modelConfigService.getDefaultModelByProvider("deepseek"))
+                .thenReturn(model("deepseek", "deepseek-chat"));
+        when(capabilityService.resolve(eq("deepseek-chat"), any()))
+                .thenReturn(EnumSet.noneOf(Modality.class));
+
+        ModelConfigEntity global = model("openai", "gpt-4o");
+        when(capabilityService.resolve(eq("gpt-4o"), any()))
+                .thenReturn(EnumSet.of(Modality.VISION));
+
+        ModelConfigEntity result = router.selectPrimary(AGENT_ID, global);
+
+        assertNotNull(result);
+        assertEquals("openai", result.getProvider());
+        assertEquals("gpt-4o", result.getModelName());
     }
 }
