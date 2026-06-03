@@ -67,6 +67,14 @@ class GoalEvaluationServiceTest {
         return g;
     }
 
+    /** Goal that already has a 2-item checklist — drives verdict mode. */
+    private GoalEntity goalWithCriteria() {
+        GoalEntity g = goal();
+        g.setCriteria("[{\"id\":\"C1\",\"text\":\"DNS configured\",\"passed\":false,\"evidence\":\"\"},"
+                + "{\"id\":\"C2\",\"text\":\"TLS enabled\",\"passed\":false,\"evidence\":\"\"}]");
+        return g;
+    }
+
     private ModelConfigEntity model(String name) {
         ModelConfigEntity m = new ModelConfigEntity();
         m.setProvider("dashscope");
@@ -111,65 +119,69 @@ class GoalEvaluationServiceTest {
         verify(chatModelFactory, never()).buildFor(any(), any());
     }
 
-    // ==================== Happy paths ====================
+    // ==================== Bootstrap mode (no criteria yet) ====================
 
     @Test
-    void continueDecision_whenScoreBelowOne() {
-        stubChatResponse("{\"score\": 0.6, \"gap\": \"DNS not configured yet\", \"completed\": false}");
+    void bootstrap_createsChecklist_fromDraftJson() {
+        stubChatResponse("{\"criteria\":["
+                + "{\"text\":\"DNS configured\"},"
+                + "{\"text\":\"TLS enabled\"}]}");
         GoalEvaluationResult r = svc.evaluate(goal(),
-                List.of(new UserMessage("status?")),
-                "DNS configured, still need TLS");
+                List.of(new UserMessage("status?")), "working on it");
         assertEquals(GoalEvaluationResult.DECISION_CONTINUE, r.decision());
-        assertFalse(r.completed());
-        assertEquals(0.6, r.score(), 1e-9);
-        assertEquals("DNS not configured yet", r.gap());
+        assertFalse(r.completed(), "bootstrap round never completes");
+        assertNotNull(r.bootstrapCriteria());
+        assertEquals(2, r.bootstrapCriteria().size());
+        assertEquals("C1", r.bootstrapCriteria().get(0).id());
+        assertFalse(r.bootstrapCriteria().get(0).passed());
         assertEquals(1, r.llmCallsConsumed());
         assertEquals("qwen-turbo", r.evaluatorModel());
     }
 
     @Test
-    void completedDecision_whenJsonSaysCompleted() {
-        stubChatResponse("{\"score\": 0.95, \"gap\": \"\", \"completed\": true}");
-        GoalEvaluationResult r = svc.evaluate(goal(), List.of(), "all green");
+    void bootstrap_parsesMarkdownFences() {
+        stubChatResponse("```json\n{\"criteria\":[{\"text\":\"only one\"}]}\n```");
+        GoalEvaluationResult r = svc.evaluate(goal(), List.of(), "x");
+        assertNotNull(r.bootstrapCriteria());
+        assertEquals(1, r.bootstrapCriteria().size());
+        assertEquals("only one", r.bootstrapCriteria().get(0).text());
+    }
+
+    @Test
+    void bootstrap_emptyDraft_returnsFallback() {
+        stubChatResponse("{\"criteria\":[]}");
+        GoalEvaluationResult r = svc.evaluate(goal(), List.of(), "x");
+        assertEquals(GoalEvaluationResult.DECISION_FALLBACK, r.decision());
+    }
+
+    // ==================== Verdict mode (criteria exist) ====================
+
+    @Test
+    void verdict_partial_continues() {
+        stubChatResponse("{\"criterionVerdicts\":["
+                + "{\"id\":\"C1\",\"passed\":true,\"evidence\":\"page returns 200\"}],"
+                + "\"summary\":\"1 of 2\"}");
+        GoalEvaluationResult r = svc.evaluate(goalWithCriteria(), List.of(), "DNS done");
+        assertEquals(GoalEvaluationResult.DECISION_CONTINUE, r.decision());
+        assertFalse(r.completed());
+        assertEquals(0.5, r.score(), 1e-9);          // 1 of 2 merged criteria passed
+        assertEquals(1, r.criterionVerdicts().size());
+        assertEquals(1, r.llmCallsConsumed());
+    }
+
+    @Test
+    void verdict_allPassed_completes() {
+        stubChatResponse("{\"criterionVerdicts\":["
+                + "{\"id\":\"C1\",\"passed\":true,\"evidence\":\"200\"},"
+                + "{\"id\":\"C2\",\"passed\":true,\"evidence\":\"tls ok\"}],"
+                + "\"summary\":\"done\"}");
+        GoalEvaluationResult r = svc.evaluate(goalWithCriteria(), List.of(), "all green");
         assertEquals(GoalEvaluationResult.DECISION_COMPLETED, r.decision());
         assertTrue(r.completed());
-    }
-
-    @Test
-    void scoreOfOne_implicitlyCompletes_evenWhenJsonSaysFalse() {
-        stubChatResponse("{\"score\": 1.0, \"gap\": \"\", \"completed\": false}");
-        GoalEvaluationResult r = svc.evaluate(goal(), List.of(), "perfect answer");
-        assertTrue(r.completed(), "score=1.0 must imply completed regardless of the bool field");
-        assertEquals(GoalEvaluationResult.DECISION_COMPLETED, r.decision());
-    }
-
-    @Test
-    void score_clampedTo01_whenModelReturnsOutOfRange() {
-        stubChatResponse("{\"score\": 1.7, \"gap\": \"\", \"completed\": true}");
-        GoalEvaluationResult r = svc.evaluate(goal(), List.of(), "answer");
         assertEquals(1.0, r.score(), 1e-9);
     }
 
-    @Test
-    void negativeScore_clampedToZero() {
-        stubChatResponse("{\"score\": -0.2, \"gap\": \"x\", \"completed\": false}");
-        GoalEvaluationResult r = svc.evaluate(goal(), List.of(), "answer");
-        assertEquals(0.0, r.score(), 1e-9);
-    }
-
     // ==================== Parser tolerance ====================
-
-    @Test
-    void parsesEvenWhenWrappedInMarkdownFences() {
-        // Lenient stub: parser tolerance shouldn't depend on a specific code path.
-        stubChatResponse("```json\n"
-                + "{\"score\": 0.4, \"gap\": \"still need TLS\", \"completed\": false}\n"
-                + "```");
-        GoalEvaluationResult r = svc.evaluate(goal(), List.of(), "DNS set up");
-        assertEquals(GoalEvaluationResult.DECISION_CONTINUE, r.decision());
-        assertEquals(0.4, r.score(), 1e-9);
-        assertEquals("still need TLS", r.gap());
-    }
 
     @Test
     void parseFails_whenNoJsonObjectInOutput() {
@@ -180,19 +192,8 @@ class GoalEvaluationServiceTest {
     }
 
     @Test
-    void parseFails_whenScoreFieldMissing() {
-        stubChatResponse("{\"gap\": \"missing\", \"completed\": false}");
-        GoalEvaluationResult r = svc.evaluate(goal(), List.of(), "x");
-        assertEquals(GoalEvaluationResult.DECISION_FALLBACK, r.decision());
-        assertTrue(r.gap().contains("parse_missing_score"));
-    }
-
-    @Test
     void parseFails_whenJsonMalformed() {
-        // Closing brace present but interior is invalid — exercises the
-        // ObjectMapper.readTree exception path rather than the cheaper
-        // "no object found" pre-check.
-        stubChatResponse("{\"score\": 0.5, \"gap\": }");
+        stubChatResponse("{\"criteria\": }");
         GoalEvaluationResult r = svc.evaluate(goal(), List.of(), "x");
         assertEquals(GoalEvaluationResult.DECISION_FALLBACK, r.decision());
         assertTrue(r.gap().contains("parse_failed"));
@@ -229,7 +230,7 @@ class GoalEvaluationServiceTest {
         when(chatModelFactory.buildFor(eq(named), any())).thenReturn(chatModel);
         ChatResponse response = new ChatResponse(List.of(
                 new Generation(new AssistantMessage(
-                        "{\"score\":0.5,\"gap\":\"\",\"completed\":false}"))));
+                        "{\"criteria\":[{\"text\":\"works\"}]}"))));
         when(chatModel.call(any(Prompt.class))).thenReturn(response);
         // Default lookup is never consulted when an override is configured.
         lenient().when(modelConfigService.getDefaultModel()).thenReturn(null);
