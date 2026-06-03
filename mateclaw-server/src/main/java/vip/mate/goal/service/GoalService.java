@@ -4,13 +4,14 @@ import vip.mate.goal.model.GoalCreateRequest;
 import vip.mate.goal.model.GoalEntity;
 import vip.mate.goal.model.GoalEvaluationResult;
 import vip.mate.goal.model.GoalEventEntity;
+import vip.mate.goal.model.GoalResponse;
 import vip.mate.goal.model.GoalUpdateRequest;
 
 import java.util.List;
 
 /**
  * Persistent goal service — CRUD, status transitions, and bookkeeping
- * called from {@code GoalEvaluationNode} (PR2).
+ * called from {@code GoalEvaluationNode}.
  *
  * <p>Concurrency model: writes use a per-row {@code WHERE version=?}
  * compare-and-set. On conflict the service retries up to 3 times before
@@ -78,4 +79,17 @@ public interface GoalService {
 
     /** Append a sub-criterion without restarting the goal. */
     GoalEntity appendCriterion(Long id, String criterion, String username);
+
+    // ==================== Response mapping ====================
+
+    /**
+     * Map an entity to its outward-facing form: {@code criteria} becomes a
+     * parsed {@code List<GoalCriterion>} array (empty when null/unparseable),
+     * never the raw JSON String. Use at every REST return point and SSE
+     * payload so clients never see the string form.
+     */
+    GoalResponse toResponse(GoalEntity entity);
+
+    /** Convenience: {@link #toResponse} over a list. */
+    List<GoalResponse> toResponseList(List<GoalEntity> entities);
 }

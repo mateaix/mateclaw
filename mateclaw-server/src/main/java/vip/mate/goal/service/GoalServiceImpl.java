@@ -14,8 +14,10 @@ import vip.mate.audit.service.AuditEventService;
 import vip.mate.exception.MateClawException;
 import vip.mate.goal.config.GoalProperties;
 import vip.mate.goal.model.GoalCreateRequest;
+import vip.mate.goal.model.GoalCriteriaCodec;
 import vip.mate.goal.model.GoalCriterion;
 import vip.mate.goal.model.GoalEntity;
+import vip.mate.goal.model.GoalResponse;
 import vip.mate.goal.model.GoalEvaluationResult;
 import vip.mate.goal.model.GoalEventEntity;
 import vip.mate.goal.model.GoalEventType;
@@ -283,6 +285,18 @@ public class GoalServiceImpl implements GoalService {
                 w.set(GoalEntity::getCompletionScore, result.score())
                  .set(GoalEntity::getProgressSummary, result.gap());
             }
+            // Snapshot the checklist as fully satisfied. Idempotent for the
+            // auto path (recordEvaluation already merged all-passed); required
+            // for manual completion, which has no preceding verdict.
+            List<GoalCriterion> existing = GoalCriteriaCodec.parse(fresh.getCriteria(), objectMapper);
+            if (!existing.isEmpty()) {
+                List<GoalCriterion> allPassed = existing.stream()
+                        .map(c -> c.passed() ? c : new GoalCriterion(c.id(), c.text(), true,
+                                c.evidence() == null || c.evidence().isBlank()
+                                        ? "marked complete" : c.evidence()))
+                        .toList();
+                w.set(GoalEntity::getCriteria, GoalCriteriaCodec.serialize(allPassed, objectMapper));
+            }
             bumpVersionAndTime(w);
             return w;
         });
@@ -290,6 +304,7 @@ public class GoalServiceImpl implements GoalService {
         detail.put("finalScore", result != null ? result.score() : null);
         detail.put("agentLlmCallsUsed", g.getAgentLlmCallsUsed());
         detail.put("evalLlmCallsUsed", g.getEvalLlmCallsUsed());
+        detail.put("criteria", GoalCriteriaCodec.parse(g.getCriteria(), objectMapper));
         writeEvent(id, GoalEventType.COMPLETED, null, detail);
         recordAudit("goal.completed", g, detail);
 
@@ -349,7 +364,7 @@ public class GoalServiceImpl implements GoalService {
         int agentDelta = Math.max(0, agentLlmCallsDelta);
         int evalDelta = Math.max(0, evalLlmCallsDelta);
 
-        retryOptimistic(id, "recordEvaluation", fresh -> {
+        GoalEntity g = retryOptimistic(id, "recordEvaluation", fresh -> {
             if (fresh.getStatus().isTerminal()) return null; // ignore late evaluations
             LambdaUpdateWrapper<GoalEntity> w = baseLockedUpdate(fresh)
                     .setSql("turns_used = turns_used + 1")
@@ -359,6 +374,13 @@ public class GoalServiceImpl implements GoalService {
             if (result != null) {
                 w.set(GoalEntity::getCompletionScore, result.score())
                  .set(GoalEntity::getProgressSummary, result.gap());
+                // Persist the checklist by carrier: bootstrap writes the fresh
+                // draft; verdict merges the per-criterion delta into the
+                // current list (re-read on the locked `fresh` to avoid races).
+                String criteriaJson = nextCriteriaJson(fresh, result);
+                if (criteriaJson != null) {
+                    w.set(GoalEntity::getCriteria, criteriaJson);
+                }
             }
             bumpVersionAndTime(w);
             return w;
@@ -374,7 +396,31 @@ public class GoalServiceImpl implements GoalService {
         }
         detail.put("agentLlmCallsDelta", agentDelta);
         detail.put("evalLlmCallsDelta", evalDelta);
+        // Full checklist (array) so the timeline / SSE consumer never sees the
+        // raw String column or has to reconstruct from the per-round delta.
+        detail.put("criteria", GoalCriteriaCodec.parse(g.getCriteria(), objectMapper));
         writeEvent(id, GoalEventType.EVALUATED, null, detail);
+    }
+
+    /**
+     * Compute the next criteria JSON for a record-evaluation write, or
+     * {@code null} when the result carries no checklist change. Bootstrap
+     * results replace the list with the freshly derived draft; verdict
+     * results merge their per-criterion delta into the locked-row list.
+     */
+    private String nextCriteriaJson(GoalEntity fresh, GoalEvaluationResult result) {
+        if (result.bootstrapCriteria() != null && !result.bootstrapCriteria().isEmpty()) {
+            return GoalCriteriaCodec.serialize(result.bootstrapCriteria(), objectMapper);
+        }
+        if (result.criterionVerdicts() != null && !result.criterionVerdicts().isEmpty()) {
+            List<GoalCriterion> existing = GoalCriteriaCodec.parse(fresh.getCriteria(), objectMapper);
+            if (existing.isEmpty()) {
+                return null;
+            }
+            return GoalCriteriaCodec.serialize(
+                    GoalCriteriaCodec.merge(existing, result.criterionVerdicts()), objectMapper);
+        }
+        return null;
     }
 
     @Override
@@ -451,31 +497,62 @@ public class GoalServiceImpl implements GoalService {
         if (raw == null || raw.isEmpty()) {
             return null;
         }
-        List<GoalCriterion> out = new java.util.ArrayList<>(raw.size());
-        int n = 1;
+        List<GoalCriterion> kept = new java.util.ArrayList<>(raw.size());
         for (GoalCriterion c : raw) {
-            if (c == null || c.text() == null || c.text().isBlank()) {
-                continue;
+            if (c != null && c.text() != null && !c.text().isBlank()) {
+                kept.add(new GoalCriterion("", c.text().trim(), false, ""));
             }
-            out.add(new GoalCriterion("C" + n, c.text().trim(), false, ""));
-            n++;
         }
-        return out.isEmpty() ? null : out;
+        return kept.isEmpty() ? null : GoalCriteriaCodec.reindex(kept);
     }
 
     /** Serialize a checklist to JSON text, or {@code null} for a null list. */
     private String serializeCriteria(List<GoalCriterion> criteria) {
-        if (criteria == null) {
+        return GoalCriteriaCodec.serialize(criteria, objectMapper);
+    }
+
+    @Override
+    public GoalResponse toResponse(GoalEntity e) {
+        if (e == null) {
             return null;
         }
-        try {
-            return objectMapper.writeValueAsString(criteria);
-        } catch (JsonProcessingException e) {
-            // Should never happen for a plain record list; fail soft to NULL
-            // (bootstrap path) rather than aborting goal creation.
-            log.warn("[Goal] failed to serialize criteria, storing null: {}", e.getMessage());
-            return null;
+        GoalResponse r = new GoalResponse();
+        r.setId(e.getId());
+        r.setConversationId(e.getConversationId());
+        r.setAgentId(e.getAgentId());
+        r.setWorkspaceId(e.getWorkspaceId());
+        r.setCreatedBy(e.getCreatedBy());
+        r.setTitle(e.getTitle());
+        r.setDescription(e.getDescription());
+        r.setExitCriteria(e.getExitCriteria());
+        r.setSuccessCheckPrompt(e.getSuccessCheckPrompt());
+        r.setStatus(e.getStatus());
+        r.setTurnBudget(e.getTurnBudget());
+        r.setTurnsUsed(e.getTurnsUsed());
+        r.setLlmCallBudget(e.getLlmCallBudget());
+        r.setAgentLlmCallsUsed(e.getAgentLlmCallsUsed());
+        r.setEvalLlmCallsUsed(e.getEvalLlmCallsUsed());
+        r.setTotalLlmCallsUsed(e.totalLlmCallsUsed());
+        r.setProgressSummary(e.getProgressSummary());
+        r.setCompletionScore(e.getCompletionScore());
+        r.setLastEvaluationAt(e.getLastEvaluationAt());
+        r.setAutoFollowupEnabled(e.getAutoFollowupEnabled());
+        r.setFollowupCooldownSeconds(e.getFollowupCooldownSeconds());
+        r.setLastFollowupAt(e.getLastFollowupAt());
+        r.setVersion(e.getVersion());
+        r.setCreateTime(e.getCreateTime());
+        r.setUpdateTime(e.getUpdateTime());
+        // Always an array; empty when the column is null/unparseable.
+        r.setCriteria(GoalCriteriaCodec.parse(e.getCriteria(), objectMapper));
+        return r;
+    }
+
+    @Override
+    public List<GoalResponse> toResponseList(List<GoalEntity> entities) {
+        if (entities == null) {
+            return List.of();
         }
+        return entities.stream().map(this::toResponse).toList();
     }
 
     private void validateCreate(GoalCreateRequest req) {

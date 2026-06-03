@@ -246,7 +246,7 @@ public class GoalManagementTool {
             streamTracker.broadcastObject(conversationId, eventName, Map.of(
                     "goalId", String.valueOf(goal.getId()),
                     "conversationId", conversationId,
-                    "goal", goal));
+                    "goal", goalService.toResponse(goal)));
         } catch (Exception e) {
             log.debug("[GoalManagementTool] broadcast {} failed: {}", eventName, e.getMessage());
         }

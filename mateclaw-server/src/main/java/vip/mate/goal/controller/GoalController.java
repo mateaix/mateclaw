@@ -18,6 +18,7 @@ import vip.mate.exception.MateClawException;
 import vip.mate.goal.model.GoalCreateRequest;
 import vip.mate.goal.model.GoalEntity;
 import vip.mate.goal.model.GoalEventEntity;
+import vip.mate.goal.model.GoalResponse;
 import vip.mate.goal.model.GoalUpdateRequest;
 import vip.mate.goal.service.GoalService;
 import vip.mate.workspace.conversation.ConversationService;
@@ -51,7 +52,7 @@ public class GoalController {
 
     @Operation(summary = "Create a persistent goal for a conversation")
     @PostMapping
-    public R<GoalEntity> create(@RequestBody GoalCreateRequest req, Authentication auth) {
+    public R<GoalResponse> create(@RequestBody GoalCreateRequest req, Authentication auth) {
         String username = currentUsername(auth);
         requireOwner(req.getConversationId(), username);
         // Derive agentId/workspaceId from the conversation itself so the
@@ -71,22 +72,22 @@ public class GoalController {
         req.setAgentId(conv.getAgentId());
         req.setWorkspaceId(conv.getWorkspaceId() != null ? conv.getWorkspaceId() : 1L);
         GoalEntity g = goalService.create(req, username);
-        return R.ok(g);
+        return R.ok(goalService.toResponse(g));
     }
 
     @Operation(summary = "Get the active goal bound to a conversation (or null)")
     @GetMapping("/by-conversation/{conversationId}")
-    public R<GoalEntity> findActive(@PathVariable String conversationId, Authentication auth) {
+    public R<GoalResponse> findActive(@PathVariable String conversationId, Authentication auth) {
         requireOwner(conversationId, currentUsername(auth));
-        return R.ok(goalService.findActiveByConversation(conversationId));
+        return R.ok(goalService.toResponse(goalService.findActiveByConversation(conversationId)));
     }
 
     @Operation(summary = "Get goal detail by id")
     @GetMapping("/{id}")
-    public R<GoalEntity> get(@PathVariable Long id, Authentication auth) {
+    public R<GoalResponse> get(@PathVariable Long id, Authentication auth) {
         GoalEntity g = goalService.getById(id);
         requireOwner(g.getConversationId(), currentUsername(auth));
-        return R.ok(g);
+        return R.ok(goalService.toResponse(g));
     }
 
     @Operation(summary = "Get the event timeline for a goal")
@@ -101,61 +102,61 @@ public class GoalController {
 
     @Operation(summary = "List goals (optionally filtered by status)")
     @GetMapping
-    public R<List<GoalEntity>> list(@RequestParam(required = false) String status,
+    public R<List<GoalResponse>> list(@RequestParam(required = false) String status,
                                      @RequestParam(defaultValue = "50") int limit,
                                      Authentication auth) {
         // List is owner-scoped — only your own goals are visible.
-        return R.ok(goalService.list(status, currentUsername(auth), limit));
+        return R.ok(goalService.toResponseList(goalService.list(status, currentUsername(auth), limit)));
     }
 
     @Operation(summary = "Sparse update of a non-terminal goal")
     @PatchMapping("/{id}")
-    public R<GoalEntity> update(@PathVariable Long id,
+    public R<GoalResponse> update(@PathVariable Long id,
                                  @RequestBody GoalUpdateRequest req,
                                  Authentication auth) {
         GoalEntity g = goalService.getById(id);
         String username = currentUsername(auth);
         requireOwner(g.getConversationId(), username);
-        return R.ok(goalService.update(id, req, username));
+        return R.ok(goalService.toResponse(goalService.update(id, req, username)));
     }
 
     @Operation(summary = "Pause an active goal")
     @PostMapping("/{id}/pause")
-    public R<GoalEntity> pause(@PathVariable Long id, Authentication auth) {
+    public R<GoalResponse> pause(@PathVariable Long id, Authentication auth) {
         GoalEntity g = goalService.getById(id);
         String username = currentUsername(auth);
         requireOwner(g.getConversationId(), username);
-        return R.ok(goalService.pause(id, username));
+        return R.ok(goalService.toResponse(goalService.pause(id, username)));
     }
 
     @Operation(summary = "Resume a paused goal")
     @PostMapping("/{id}/resume")
-    public R<GoalEntity> resume(@PathVariable Long id, Authentication auth) {
+    public R<GoalResponse> resume(@PathVariable Long id, Authentication auth) {
         GoalEntity g = goalService.getById(id);
         String username = currentUsername(auth);
         requireOwner(g.getConversationId(), username);
-        return R.ok(goalService.resume(id, username));
+        return R.ok(goalService.toResponse(goalService.resume(id, username)));
     }
 
     @Operation(summary = "Abandon a goal (terminal)")
     @PostMapping("/{id}/abandon")
-    public R<GoalEntity> abandon(@PathVariable Long id, Authentication auth) {
+    public R<GoalResponse> abandon(@PathVariable Long id, Authentication auth) {
         GoalEntity g = goalService.getById(id);
         String username = currentUsername(auth);
         requireOwner(g.getConversationId(), username);
-        return R.ok(goalService.abandon(id, username));
+        return R.ok(goalService.toResponse(goalService.abandon(id, username)));
     }
 
     @Operation(summary = "Append a sub-criterion to an active goal")
     @PostMapping("/{id}/criteria")
-    public R<GoalEntity> addCriterion(@PathVariable Long id,
+    public R<GoalResponse> addCriterion(@PathVariable Long id,
                                        @RequestBody Map<String, String> body,
                                        Authentication auth) {
         GoalEntity g = goalService.getById(id);
         String username = currentUsername(auth);
         requireOwner(g.getConversationId(), username);
         String criterion = body != null ? body.get("criterion") : null;
-        return R.ok(goalService.appendCriterion(id, criterion, username));
+        return R.ok(goalService.toResponse(goalService.appendCriterion(id, criterion, username)));
     }
 
     // ==================== Helpers ====================
