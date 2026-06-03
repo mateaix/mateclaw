@@ -145,7 +145,8 @@ public class GoalManagementTool {
         // Synthesize a completion-style evaluation result for the audit trail.
         GoalEvaluationResult synthetic = new GoalEvaluationResult(
                 1.0, "completed by agent", GoalEvaluationResult.DECISION_COMPLETED,
-                true, "manual", 0, 0L);
+                true, "manual", 0, 0L,
+                java.util.List.of(), null);
         try {
             GoalEntity completed = goalService.markCompleted(goal.getId(), synthetic);
             // Broadcast a goal_completed event with the same shape as the

@@ -38,7 +38,8 @@ class GoalFollowupServiceTest {
         return new GoalEvaluationResult(
                 score, "missing X",
                 decision, false,
-                "stub", 0, 0L);
+                "stub", 0, 0L,
+                java.util.List.of(), null);
     }
 
     @Test

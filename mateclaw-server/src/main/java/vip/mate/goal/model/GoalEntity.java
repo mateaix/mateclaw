@@ -90,6 +90,17 @@ public class GoalEntity {
     @TableField(value = "completion_score", updateStrategy = FieldStrategy.ALWAYS)
     private Double completionScore;
 
+    /**
+     * Checkable exit checklist as a JSON array of {@link GoalCriterion}.
+     * Completion is derived from "all criteria passed". Nullable: a missing
+     * list bootstraps on first evaluation. ALWAYS strategy so clearing /
+     * empty-list writes are persisted. Serialized as text; the service layer
+     * maps to/from {@code List<GoalCriterion>} and exposes the parsed array
+     * to clients via {@code GoalResponse.criteria}.
+     */
+    @TableField(value = "criteria", updateStrategy = FieldStrategy.ALWAYS)
+    private String criteria;
+
     @TableField(value = "last_evaluation_at", updateStrategy = FieldStrategy.ALWAYS)
     private LocalDateTime lastEvaluationAt;
 

@@ -14,6 +14,7 @@ import vip.mate.audit.service.AuditEventService;
 import vip.mate.exception.MateClawException;
 import vip.mate.goal.config.GoalProperties;
 import vip.mate.goal.model.GoalCreateRequest;
+import vip.mate.goal.model.GoalCriterion;
 import vip.mate.goal.model.GoalEntity;
 import vip.mate.goal.model.GoalEvaluationResult;
 import vip.mate.goal.model.GoalEventEntity;
@@ -115,6 +116,10 @@ public class GoalServiceImpl implements GoalService {
         entity.setAutoFollowupEnabled(Boolean.TRUE.equals(req.getAutoFollowupEnabled()));
         entity.setFollowupCooldownSeconds(req.getFollowupCooldownSeconds() != null
                 ? req.getFollowupCooldownSeconds() : properties.getAutoFollowupCooldownSeconds());
+        // Normalize any caller-supplied checklist: assign C1..Cn, force
+        // passed=false, clear evidence. Empty/omitted -> null column so the
+        // first evaluation bootstraps the list.
+        entity.setCriteria(serializeCriteria(normalizeInitialCriteria(req.getCriteria())));
         entity.setVersion(0);
         entity.setDeleted(0);
         LocalDateTime now = LocalDateTime.now();
@@ -434,6 +439,44 @@ public class GoalServiceImpl implements GoalService {
     }
 
     // ==================== Internals ====================
+
+    /**
+     * Normalize a caller-supplied initial checklist: keep only non-blank
+     * {@code text}, assign stable ids {@code C1..Cn} (ignore any caller ids),
+     * force {@code passed=false} and clear evidence. Returns {@code null} for
+     * an empty/null result so the column stays NULL and the first evaluation
+     * bootstraps the list.
+     */
+    private List<GoalCriterion> normalizeInitialCriteria(List<GoalCriterion> raw) {
+        if (raw == null || raw.isEmpty()) {
+            return null;
+        }
+        List<GoalCriterion> out = new java.util.ArrayList<>(raw.size());
+        int n = 1;
+        for (GoalCriterion c : raw) {
+            if (c == null || c.text() == null || c.text().isBlank()) {
+                continue;
+            }
+            out.add(new GoalCriterion("C" + n, c.text().trim(), false, ""));
+            n++;
+        }
+        return out.isEmpty() ? null : out;
+    }
+
+    /** Serialize a checklist to JSON text, or {@code null} for a null list. */
+    private String serializeCriteria(List<GoalCriterion> criteria) {
+        if (criteria == null) {
+            return null;
+        }
+        try {
+            return objectMapper.writeValueAsString(criteria);
+        } catch (JsonProcessingException e) {
+            // Should never happen for a plain record list; fail soft to NULL
+            // (bootstrap path) rather than aborting goal creation.
+            log.warn("[Goal] failed to serialize criteria, storing null: {}", e.getMessage());
+            return null;
+        }
+    }
 
     private void validateCreate(GoalCreateRequest req) {
         if (req == null) {

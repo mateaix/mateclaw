@@ -271,7 +271,8 @@ public class GoalEvaluationService {
                     : GoalEvaluationResult.DECISION_CONTINUE;
             return new GoalEvaluationResult(
                     score, gap, decision, completed,
-                    modelName != null ? modelName : "", 1, latencyMs);
+                    modelName != null ? modelName : "", 1, latencyMs,
+                    List.of(), null);
         } catch (Exception e) {
             log.warn("[GoalEvaluation] JSON parse failed: {} — body={}",
                     e.getMessage(),

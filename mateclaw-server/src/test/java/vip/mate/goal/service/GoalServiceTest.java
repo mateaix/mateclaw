@@ -241,7 +241,8 @@ class GoalServiceTest {
 
         GoalEvaluationResult r = new GoalEvaluationResult(
                 0.62, "DNS still missing", "continue", false,
-                "qwen-turbo", 1, 800L);
+                "qwen-turbo", 1, 800L,
+                java.util.List.of(), null);
         service.recordEvaluation(1L, r, 3, 1);
 
         ArgumentCaptor<GoalEventEntity> evCaptor = ArgumentCaptor.forClass(GoalEventEntity.class);
