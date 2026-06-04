@@ -125,8 +125,10 @@ services:
       - "1455:1455"
     volumes:
       - server_data:/app/data
+      - skills_data:/root/.mateclaw/skills
 
 volumes:
   mysql_data:
   postgres_data:
   server_data:
+  skills_data:
