@@ -47,10 +47,33 @@ public class SkillWorkspaceManager {
     }
 
     /**
-     * 按约定解析 skill 工作区路径：{root}/{skillName}/
+     * 按约定解析 skill 工作区路径：{root}/{sanitizedName}-{hash}/
+     * 路径完全由 skillName 决定，不依赖文件系统状态，保证确定性：
+     * 同一 skillName 始终返回同一路径，不同 skillName 不会碰撞。
      */
     public Path resolveConventionPath(String skillName) {
-        return getWorkspaceRoot().resolve(sanitizeName(skillName));
+        String base = sanitizeNameForFs(skillName);
+        String hash = Integer.toHexString(skillName.hashCode());
+        return getWorkspaceRoot().resolve(base + "-" + hash);
+    }
+
+    /**
+     * 清理文件系统路径不安全字符，保留 Unicode 字母及数字的可读性，
+     * 仅移除真正有问题的字符（路径分隔符、控制字符等）。
+     */
+    private String sanitizeNameForFs(String name) {
+        if (name == null || name.isBlank()) {
+            return "unnamed";
+        }
+        // 第一步：移除路径分隔符和控制字符
+        String cleaned = name.replaceAll("[/\\\\:*?\"<>|\\x00-\\x1F]", "-");
+        // 第二步：保留 Unicode 字母和数字，其他替换为下划线
+        cleaned = cleaned.replaceAll("[^\\p{L}\\p{N}_\\-.\\s]", "_");
+        // 第三步：折叠连续分隔符
+        cleaned = cleaned.replaceAll("[_\\s]+", "_").replaceAll("[-_]+", "_");
+        // 第四步：去掉首尾分隔符
+        cleaned = cleaned.replaceAll("^-|-$", "");
+        return cleaned.isEmpty() ? "unnamed" : cleaned;
     }
 
     /**
@@ -116,11 +139,18 @@ public class SkillWorkspaceManager {
             Files.createDirectories(workspaceDir.resolve("scripts"));
 
             Path skillMd = workspaceDir.resolve("SKILL.md");
-            if (overwrite || !Files.exists(skillMd)) {
-                String content = (initialContent != null && !initialContent.isBlank())
-                        ? initialContent
-                        : buildDefaultSkillMd(skillName);
+            String content = (initialContent != null && !initialContent.isBlank())
+                    ? initialContent
+                    : buildDefaultSkillMd(skillName);
+            if (overwrite) {
                 Files.writeString(skillMd, content);
+            } else {
+                // 原子创建，避免并发上传时的 TOCTOU 竞态
+                try {
+                    Files.writeString(skillMd, content, StandardOpenOption.CREATE_NEW);
+                } catch (FileAlreadyExistsException e) {
+                    // 另一线程已创建，跳过写入
+                }
             }
 
             log.info("Initialized skill workspace: {} (overwrite={})", workspaceDir, overwrite);
