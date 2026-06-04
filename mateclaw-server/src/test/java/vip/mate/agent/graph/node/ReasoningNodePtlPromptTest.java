@@ -48,7 +48,7 @@ class ReasoningNodePtlPromptTest {
                 "/workspace/active",
                 "42",
                 "investigate the bug in module X",
-                vip.mate.agent.context.ChatOrigin.EMPTY);
+                vip.mate.agent.context.ChatOrigin.EMPTY, "", "");
 
         // Three layers: System, runtime-context UserMessage, wiki UserMessage.
         assertThat(prefix).hasSize(3);
@@ -74,10 +74,10 @@ class ReasoningNodePtlPromptTest {
 
         List<Message> a = node.buildNonHistoryPrefix(
                 "sys", "/workspace", "42", "goal",
-                vip.mate.agent.context.ChatOrigin.EMPTY);
+                vip.mate.agent.context.ChatOrigin.EMPTY, "", "");
         List<Message> b = node.buildNonHistoryPrefix(
                 "sys", "/workspace", "42", "goal",
-                vip.mate.agent.context.ChatOrigin.EMPTY);
+                vip.mate.agent.context.ChatOrigin.EMPTY, "", "");
 
         assertThat(a).hasSameSizeAs(b);
         for (int i = 0; i < a.size(); i++) {
@@ -98,7 +98,7 @@ class ReasoningNodePtlPromptTest {
                 "/workspace/active",
                 "42",
                 "investigate the bug in module X",
-                vip.mate.agent.context.ChatOrigin.EMPTY);
+                vip.mate.agent.context.ChatOrigin.EMPTY, "", "");
 
         assertThat(prefix).hasSize(2);
         assertThat(prefix.get(0)).isInstanceOf(SystemMessage.class);
@@ -112,7 +112,7 @@ class ReasoningNodePtlPromptTest {
 
         List<Message> prefix = node.buildNonHistoryPrefix(
                 "sys", "/workspace", "not-a-number", "goal",
-                vip.mate.agent.context.ChatOrigin.EMPTY);
+                vip.mate.agent.context.ChatOrigin.EMPTY, "", "");
 
         // Non-numeric agentId is the contract carried over from the
         // pre-refactor codebase — skip wiki injection rather than throwing.
@@ -132,7 +132,7 @@ class ReasoningNodePtlPromptTest {
 
         List<Message> prefix = node.buildNonHistoryPrefix(
                 "sys", "/workspace", "42", "goal",
-                vip.mate.agent.context.ChatOrigin.EMPTY);
+                vip.mate.agent.context.ChatOrigin.EMPTY, "", "");
 
         assertThat(prefix).hasSize(2);
     }
