@@ -169,8 +169,11 @@ public class PlanGenerationNode implements NodeAction {
             vip.mate.agent.context.ChatOrigin chatOrigin =
                     state.<vip.mate.agent.context.ChatOrigin>value(MateClawStateKeys.CHAT_ORIGIN)
                             .orElse(vip.mate.agent.context.ChatOrigin.EMPTY);
+            String runtimeModelName = state.value(MateClawStateKeys.RUNTIME_MODEL_NAME, "");
+            String runtimeProviderId = state.value(MateClawStateKeys.RUNTIME_PROVIDER_ID, "");
             promptMessages.add(new UserMessage(
-                    RuntimeContextInjector.buildContextMessage(workspaceBasePath, null, chatOrigin)));
+                    RuntimeContextInjector.buildContextMessage(
+                            workspaceBasePath, null, chatOrigin, runtimeModelName, runtimeProviderId)));
 
             // Advertise available tools so the LLM can recognize when an action is possible,
             // but do NOT force "any tool usage implies multi-step" — single-hop tool use

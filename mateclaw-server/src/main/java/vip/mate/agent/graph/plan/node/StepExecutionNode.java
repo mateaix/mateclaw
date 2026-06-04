@@ -166,6 +166,8 @@ public class StepExecutionNode implements NodeAction {
         vip.mate.agent.context.ChatOrigin chatOrigin =
                 state.<vip.mate.agent.context.ChatOrigin>value(MateClawStateKeys.CHAT_ORIGIN)
                         .orElse(vip.mate.agent.context.ChatOrigin.EMPTY);
+        String runtimeModelName = state.value(MateClawStateKeys.RUNTIME_MODEL_NAME, "");
+        String runtimeProviderId = state.value(MateClawStateKeys.RUNTIME_PROVIDER_ID, "");
 
         if (stepIndex >= steps.size()) {
             log.warn("[StepExecution] stepIndex {} >= steps.size() {}, skipping", stepIndex, steps.size());
@@ -195,7 +197,8 @@ public class StepExecutionNode implements NodeAction {
         planningService.updateSubPlanStatus(planId, stepIndex, "running");
 
         // 构建消息列表
-        List<Message> messages = buildStepMessages(accessor, step, systemPrompt, workspaceBasePath);
+        List<Message> messages = buildStepMessages(accessor, step, systemPrompt, workspaceBasePath,
+                runtimeModelName, runtimeProviderId);
 
         // 显式工具执行循环
         String finalResult = null;
@@ -509,7 +512,8 @@ public class StepExecutionNode implements NodeAction {
         return sb.toString();
     }
 
-    private List<Message> buildStepMessages(PlanStateAccessor accessor, String step, String systemPrompt, String workspaceBasePath) {
+    private List<Message> buildStepMessages(PlanStateAccessor accessor, String step, String systemPrompt,
+                                            String workspaceBasePath, String runtimeModelName, String runtimeProviderId) {
         List<Message> messages = new ArrayList<>();
 
         // Layer 1: System prompt（增强指令）
@@ -537,9 +541,10 @@ public class StepExecutionNode implements NodeAction {
                 messages.add(new SystemMessage(skillCatalog));
             }
         }
-        // 注入运行时上下文（当前时间 + 工作目录 + 发起者上下文）
+        // 注入运行时上下文（当前时间 + 工作目录 + 发起者上下文 + 模型身份）
         messages.add(new UserMessage(
-                RuntimeContextInjector.buildContextMessage(workspaceBasePath, null, accessor.chatOrigin())));
+                RuntimeContextInjector.buildContextMessage(
+                        workspaceBasePath, null, accessor.chatOrigin(), runtimeModelName, runtimeProviderId)));
 
         // Layer 2: Working context（对话历史 + 步骤结果的受控长度摘要）
         String workingContext = accessor.workingContext();
