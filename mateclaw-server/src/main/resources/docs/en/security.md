@@ -88,8 +88,8 @@ mateclaw:
 
 | Code | Meaning | Response |
 |------|---------|----------|
-| 401 | Token missing, expired, or invalid | `{"code": 401, "message": "Unauthorized"}` |
-| 403 | Valid token but insufficient permissions | `{"code": 403, "message": "Forbidden"}` |
+| 401 | Token missing, expired, or invalid | `{"code":401,"msg":"Token expired or invalid","data":null}` |
+| 403 | Valid token but insufficient permissions | `{"code":403,"msg":"Forbidden","data":null}` |
 
 Frontend handles both uniformly — redirect to login, clear stored tokens.
 
@@ -100,8 +100,8 @@ MateClaw ships with `admin` / `admin123`. **Change this immediately in any deplo
 ### Spring Security config
 
 - **Stateless sessions** — no server-side session; all state in the JWT
-- **Public endpoints** — `/api/v1/auth/login`, `/h2-console/**`, `/swagger-ui/**`
-- **Protected endpoints** — everything else under `/api/v1/**`
+- **Public API endpoints** — `GET /api/v1/settings/language`, `/api/v1/auth/login`, `/api/v1/chat/stream`, `/api/v1/chat/*/stop`, `/api/v1/agents/*/chat/stream`, `/api/v1/setup/**`, `/api/v1/channels/webhook/**`, `/api/v1/channels/webchat/**`, `/api/v1/talk/ws`, `/api/v1/files/generated/**`
+- **Protected endpoints** — everything else under `/api/**`
 - **CSRF disabled** — not needed for stateless JWT
 
 ---
@@ -247,13 +247,15 @@ Frontend shows approval card
 User clicks Approve or Reject
      │
      ▼
-POST /api/v1/approvals/{id}/resolve
+POST /api/v1/chat/stream with /approve or /deny
      │
      ├─ Approved → reload agent, replay tool call, continue reasoning
      └─ Rejected → send rejection as observation, continue reasoning
 ```
 
 The "replay" mechanism is important. When the agent resumes, it **doesn't re-reason from scratch** — it skips straight to the approved tool call, executes it, and continues from the observation. No duplicate LLM calls, no wasted tokens.
+
+The current web path has no write-style `POST /api/v1/approvals/{id}/resolve` endpoint. Approval and denial use the same SSE channel as normal chat so replay, persistence, and cancellation all stay on one lifecycle.
 
 ### The `mate_tool_approval` table
 
@@ -283,24 +285,28 @@ Pending approvals expire after a configurable timeout (default: 10 minutes). Exp
 
 MateClaw can notify through `channel/notification/` adapters — email, in-app alert, DingTalk/Feishu push. Configure in `Settings → Security & Approval → Notifications`.
 
-### Resolving via API
+### Current API surface
 
 ```bash
-# List pending
-curl http://localhost:18088/api/v1/approvals?status=pending \
+# Hydrate pending approvals after a page refresh
+curl http://localhost:18088/api/v1/chat/{conversationId}/pending-approvals \
   -H "Authorization: Bearer <token>"
 
-# Approve
-curl -X POST http://localhost:18088/api/v1/approvals/123/resolve \
+# Approve in the waiting conversation
+curl -N -X POST http://localhost:18088/api/v1/chat/stream \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
-  -d '{"decision": "approved"}'
+  -d '{"agentId":"1","conversationId":"conv-abc123","message":"/approve"}'
 
-# Reject with reason
-curl -X POST http://localhost:18088/api/v1/approvals/123/resolve \
+# Reject in the waiting conversation
+curl -N -X POST http://localhost:18088/api/v1/chat/stream \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
-  -d '{"decision": "rejected", "notes": "Not appropriate for this workspace"}'
+  -d '{"agentId":"1","conversationId":"conv-abc123","message":"/deny"}'
+
+# Manage auto-approval grants
+curl http://localhost:18088/api/v1/approval/grants \
+  -H "Authorization: Bearer <token>"
 ```
 
 ---

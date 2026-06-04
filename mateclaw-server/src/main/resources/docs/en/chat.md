@@ -50,6 +50,8 @@ One of the questions MateClaw tries to answer with its chat UI is: **should you 
 
 Trust is earned by showing the work. MateClaw shows the work.
 
+**Execution-plan & tool-call detail viewer (1.5.0).** Every plan step and every tool-call row gets a "view details" icon on the right. Click it for a frosted-glass dialog showing the **full request arguments and response output** — the parts the inline preview truncates — with copy buttons for request and response, and a status badge (in progress / completed / failed / pending). The data lives in message metadata, so plan steps and tool calls stay readable after a page reload.
+
 ---
 
 ## Multi-channel realtime sync
@@ -85,6 +87,10 @@ Upload limits, default:
 | Allowed types | All |
 
 Images handed to a vision-capable model get attached for visual understanding. PDFs and DOCX files go through text extraction (with OCR fallback for scanned material). Everything the agent reads lands in its context for that turn.
+
+::: tip Tool-generated files: download links survive restarts (1.5.0, #243)
+Files a worker generates via tools (documents / images / audio…) are now **persisted to disk** under `data/generated-files/`, with a 7-day retention window + a 6-hour cleanup sweep and an in-memory LRU on top — download links keep working after a restart and are no longer bounded by the old 10-minute in-memory window. The frontend intercepts `/api/v1/files/generated/{id}` downloads via a global click delegator: success goes through an authenticated fetch → blob download; failure (404/410/expired) just shows a toast, **so a dead link no longer wedges the whole page**.
+:::
 
 ### Primary model can't see images? "Multimodal sidecar" routing
 

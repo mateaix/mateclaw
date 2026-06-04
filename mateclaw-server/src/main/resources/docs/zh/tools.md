@@ -319,14 +319,14 @@ curl -X PUT http://localhost:18088/api/v1/tools/1 \
   -H "Authorization: Bearer YOUR_JWT_TOKEN" \
   -d '{"enabled": false}'
 
-# 直接测试一个工具
-curl -X POST http://localhost:18088/api/v1/tools/WebSearchTool/test \
+# 设置内置或渠道工具的披露分级
+curl -X PUT http://localhost:18088/api/v1/tools/1/disclosure-tier \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer YOUR_JWT_TOKEN" \
-  -d '{"query": "Spring AI"}'
+  -d '{"tier": "core"}'
 ```
 
-每个依赖 provider 的工具在 Tools 页面都有测试按钮。
+当前 REST API 管理工具行、启用状态和披露分级。内置工具的直接执行走 Agent runtime，不存在 `/tools/{name}/test` 端点。
 
 ---
 
