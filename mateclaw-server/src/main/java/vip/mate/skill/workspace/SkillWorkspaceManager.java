@@ -47,39 +47,31 @@ public class SkillWorkspaceManager {
     }
 
     /**
-     * 按约定解析 skill 工作区路径：{root}/{sanitizedName}/
-     * 当 sanitized name 产生冲突时，通过追加最短唯一 hash 后缀来区分，
-     * 避免不同 skill（尤其是非拉丁字符名称）互相覆盖。
+     * 按约定解析 skill 工作区路径：{root}/{sanitizedName}-{hash}/
+     * 路径完全由 skillName 决定，不依赖文件系统状态，保证确定性：
+     * 同一 skillName 始终返回同一路径，不同 skillName 不会碰撞。
      */
     public Path resolveConventionPath(String skillName) {
         String base = sanitizeNameForFs(skillName);
-        Path candidate = getWorkspaceRoot().resolve(base);
-        if (!Files.exists(candidate)) {
-            return candidate;
-        }
-        // 冲突：追加 hash 后缀直到目录不存在
-        String hash = Integer.toHexString(skillName.hashCode() & 0xFFFF);
-        for (int len = 2; len <= 8; len++) {
-            String suffix = hash.substring(0, Math.min(len, hash.length()));
-            Path next = getWorkspaceRoot().resolve(base + "-" + suffix);
-            if (!Files.exists(next)) {
-                return next;
-            }
-        }
-        // 兜底：用 UUID 的前 8 位
-        return getWorkspaceRoot().resolve(base + "-" + UUID.randomUUID().toString().substring(0, 8));
+        String hash = Integer.toHexString(skillName.hashCode());
+        return getWorkspaceRoot().resolve(base + "-" + hash);
     }
 
     /**
-     * 清理文件系统路径不安全字符，但保留原始名称的可读性。
+     * 清理文件系统路径不安全字符，保留 Unicode 字母及数字的可读性，
+     * 仅移除真正有问题的字符（路径分隔符、控制字符等）。
      */
     private String sanitizeNameForFs(String name) {
         if (name == null || name.isBlank()) {
             return "unnamed";
         }
+        // 第一步：移除路径分隔符和控制字符
         String cleaned = name.replaceAll("[/\\\\:*?\"<>|\\x00-\\x1F]", "-");
-        cleaned = cleaned.replaceAll("[^a-zA-Z0-9_\\-.\\s]", "_");
+        // 第二步：保留 Unicode 字母和数字，其他替换为下划线
+        cleaned = cleaned.replaceAll("[^\\p{L}\\p{N}_\\-.\\s]", "_");
+        // 第三步：折叠连续分隔符
         cleaned = cleaned.replaceAll("[_\\s]+", "_").replaceAll("[-_]+", "_");
+        // 第四步：去掉首尾分隔符
         cleaned = cleaned.replaceAll("^-|-$", "");
         return cleaned.isEmpty() ? "unnamed" : cleaned;
     }
@@ -147,11 +139,18 @@ public class SkillWorkspaceManager {
             Files.createDirectories(workspaceDir.resolve("scripts"));
 
             Path skillMd = workspaceDir.resolve("SKILL.md");
-            if (overwrite || !Files.exists(skillMd)) {
-                String content = (initialContent != null && !initialContent.isBlank())
-                        ? initialContent
-                        : buildDefaultSkillMd(skillName);
+            String content = (initialContent != null && !initialContent.isBlank())
+                    ? initialContent
+                    : buildDefaultSkillMd(skillName);
+            if (overwrite) {
                 Files.writeString(skillMd, content);
+            } else {
+                // 原子创建，避免并发上传时的 TOCTOU 竞态
+                try {
+                    Files.writeString(skillMd, content, StandardOpenOption.CREATE_NEW);
+                } catch (FileAlreadyExistsException e) {
+                    // 另一线程已创建，跳过写入
+                }
             }
 
             log.info("Initialized skill workspace: {} (overwrite={})", workspaceDir, overwrite);
