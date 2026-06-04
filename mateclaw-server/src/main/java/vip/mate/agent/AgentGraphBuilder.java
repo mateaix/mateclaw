@@ -1320,6 +1320,23 @@ public class AgentGraphBuilder {
 
     // ==================== Prompt 构建 ====================
 
+    /**
+     * Cache-stable platform identity, appended to every agent's system
+     * prompt. Answers "who are you / what are you based on". The volatile
+     * "which model right now" fact is injected per-turn by
+     * {@link vip.mate.agent.context.RuntimeContextInjector} instead, to
+     * keep this prefix's prompt-cache hash stable.
+     */
+    static final String ABOUT_YOU_BLOCK = """
+
+            ## About You
+            You are powered by MateClaw — a multi-user AI Agent platform built on
+            Spring Boot 3.5 and Spring AI Alibaba Graph. You are reachable through
+            WebChat and 8+ IM channels (DingTalk, Feishu, WeCom, WeChat, Telegram,
+            Discord, QQ, Slack). If asked who you are or what you are based on,
+            answer with MateClaw and the technology stack above.
+            """;
+
     private String buildEnhancedPrompt(AgentEntity entity, boolean builtinSearchEnabled) {
         // The agent's own systemPrompt encodes its identity (role / goal /
         // backstory). The memory block from workspace files (AGENTS.md, SOUL.md,
@@ -1475,7 +1492,7 @@ public class AgentGraphBuilder {
         // Wiki 知识库上下文注入
         String wikiContext = wikiContextService.buildWikiContext(entity.getId());
 
-        return basePrompt + toolGuidance + searchGuidance + wikiContext;
+        return basePrompt + ABOUT_YOU_BLOCK + toolGuidance + searchGuidance + wikiContext;
     }
 
     /**
