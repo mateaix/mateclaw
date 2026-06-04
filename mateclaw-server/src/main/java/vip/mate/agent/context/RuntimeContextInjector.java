@@ -67,6 +67,24 @@ public final class RuntimeContextInjector {
     public static String buildContextMessage(String workspaceBasePath,
                                               vip.mate.i18n.I18nService i18n,
                                               ChatOrigin origin) {
+        return buildContextMessage(workspaceBasePath, i18n, origin, null, null);
+    }
+
+    /**
+     * Full overload that also renders the agent's runtime model identity.
+     * The model line is emitted for EVERY origin (web / cron / IM / null)
+     * because it describes the agent, not the caller — only the sender
+     * block stays IM-only. {@code modelName}/{@code providerId} come from
+     * graph state ({@code RUNTIME_MODEL_NAME}/{@code RUNTIME_PROVIDER_ID}),
+     * i.e. the model selected at run start (mid-run failover is not
+     * reflected — accepted trade-off). Stays well under the 1024-char
+     * spring-ai user-cache threshold.
+     */
+    public static String buildContextMessage(String workspaceBasePath,
+                                              vip.mate.i18n.I18nService i18n,
+                                              ChatOrigin origin,
+                                              String modelName,
+                                              String providerId) {
         LocalDateTime now = LocalDateTime.now(ZONE);
         String dateStr = now.format(DATE_FMT);
         String timeStr = now.format(TIME_FMT);
@@ -91,6 +109,7 @@ public final class RuntimeContextInjector {
         }
 
         appendSenderBlockIfPresent(sb, origin);
+        appendModelLineIfPresent(sb, modelName, providerId, i18n);
         return sb.toString();
     }
 
@@ -118,6 +137,33 @@ public final class RuntimeContextInjector {
         } else {
             sb.append("\nShared skills live under ").append(skillRootStr)
               .append("; you may also read and run files there, even though it is outside the working directory.");
+        }
+    }
+
+    /**
+     * Append the agent's runtime model identity. Emitted for all origins
+     * (it's an agent fact, not a sender fact). Skipped when modelName is
+     * blank. Provider parenthetical is omitted when providerId is blank.
+     */
+    private static void appendModelLineIfPresent(StringBuilder sb, String modelName,
+                                                 String providerId,
+                                                 vip.mate.i18n.I18nService i18n) {
+        if (modelName == null || modelName.isBlank()) return;
+        String model = modelName.trim();
+        sb.append("\n");
+        if (i18n != null) {
+            sb.append(i18n.msg("context.model_identity", model));
+        } else {
+            sb.append("[system-context] Model: ").append(model);
+        }
+        if (providerId != null && !providerId.isBlank()) {
+            sb.append(" (provider: ").append(providerId.trim()).append(')');
+        }
+        sb.append("\n");
+        if (i18n != null) {
+            sb.append(i18n.msg("context.model_identity_hint"));
+        } else {
+            sb.append("If asked which model you are using, answer with this value for the current run.");
         }
     }
 
