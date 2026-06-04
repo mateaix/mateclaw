@@ -437,19 +437,23 @@ POST   /api/v1/cron-jobs/{id}/run                       # 立即执行
 GET    /api/v1/workflows                                # 列表
 GET    /api/v1/workflows/{id}                           # 获取（含已发布 revision + 草稿）
 POST   /api/v1/workflows                                # 新建
-PUT    /api/v1/workflows/{id}/draft                     # 保存草稿（graph_json）
+PUT    /api/v1/workflows/{id}                           # 更新元数据（name / description / enabled）
+PUT    /api/v1/workflows/{id}/draft                     # 保存草稿（graph_json，不编译）
 POST   /api/v1/workflows/{id}/publish                   # 发布草稿为新 revision
 DELETE /api/v1/workflows/{id}                           # 删除
 
+POST   /api/v1/workflows/{id}/compile                   # 编译已存草稿 + 诊断，不发布
 POST   /api/v1/workflows/draft/generate                 # 自然语言生成 graph_json 草稿
-POST   /api/v1/workflows/{id}/preview-compile           # 静态检查 + Pebble 校验，不发布
+POST   /api/v1/workflows/draft/preview-compile          # 编译任意草稿 JSON（不入库，模板/生成器预览）
+GET    /api/v1/workflows/draft/templates                # 生成器可直接套用的模板列表
 
-POST   /api/v1/workflows/{id}/runs                      # 起一个 run（异步）
-GET    /api/v1/workflows/{id}/runs                      # run 列表
+GET    /api/v1/workflows/{id}/runs                      # run 列表（limit，默认 50）
+GET    /api/v1/workflows/runs/paused                    # 当前 workspace 所有 paused run（运维入口）
 GET    /api/v1/workflows/runs/{runId}                   # run 详情 + 每步 input/output/token/duration
-POST   /api/v1/workflows/runs/{runId}/resume            # await_approval 后恢复
-POST   /api/v1/workflows/runs/{runId}/cancel            # 取消运行中
+POST   /api/v1/workflows/runs/{runId}/resume            # await_approval 暂停后恢复
 ```
+
+> v0 没有「手动起 run / 取消 run」的端点——工作流的实际启动只能经[触发器](./triggers)或 `await_approval` 恢复（`/runs/{runId}/resume`）；想试跑用 `/draft/preview-compile`（只编译、不入库、不真跑）。手动启动 run 已在规划中，后续版本提供。
 
 ---
 
@@ -461,13 +465,11 @@ POST   /api/v1/workflows/runs/{runId}/cancel            # 取消运行中
 GET    /api/v1/triggers                                 # 列表
 GET    /api/v1/triggers/{id}                            # 获取
 POST   /api/v1/triggers                                 # 新建
-PUT    /api/v1/triggers/{id}                            # 更新
+PUT    /api/v1/triggers/{id}                            # 更新（含 enabled 开关；改 cron 表达式会 bump pattern_version）
 DELETE /api/v1/triggers/{id}                            # 删除
-PUT    /api/v1/triggers/{id}/toggle?enabled={bool}      # 开关
 
-POST   /api/v1/triggers/events                          # 通用事件入口（webhook / 桥接外部系统）
-                                                         # 立即 ACK 200，异步派发
-GET    /api/v1/triggers/{id}/events                     # 该 trigger 的事件历史
+POST   /api/v1/triggers/events                          # 通用事件入口（webhook / 桥接外部系统）；按 X-Workspace-Id 投递
+                                                        # → 经去重 / 限流 / bot-self 后同步派发，返回每条 trigger 的 fire/drop 结果
 ```
 
 ---

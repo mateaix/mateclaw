@@ -42,7 +42,7 @@ public enum GoalStatus {
      * the DB stores via {@link EnumValue}. Without this, Jackson defaults to
      * {@link #name()} (uppercase) and the frontend's
      * {@code status: 'active' | 'paused' | ...} TS literal types reject
-     * every payload — UI bug observed during PR4 manual QA.
+     * every payload.
      */
     @JsonValue
     public String getValue() {

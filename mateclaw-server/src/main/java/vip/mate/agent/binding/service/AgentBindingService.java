@@ -718,7 +718,7 @@ public class AgentBindingService implements AgentBindingResolver {
             // refuses ("Tool not found: search"). Observed 2026-05-01 on the
             // Code Reviewer agent — the model called search → got
             // not-found → gave up before ever reaching renderDocx.
-            "search",
+            "web_search",
             "browser_use",
             "read_file",
             "send_file",

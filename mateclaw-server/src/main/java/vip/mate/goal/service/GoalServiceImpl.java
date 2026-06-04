@@ -14,7 +14,10 @@ import vip.mate.audit.service.AuditEventService;
 import vip.mate.exception.MateClawException;
 import vip.mate.goal.config.GoalProperties;
 import vip.mate.goal.model.GoalCreateRequest;
+import vip.mate.goal.model.GoalCriteriaCodec;
+import vip.mate.goal.model.GoalCriterion;
 import vip.mate.goal.model.GoalEntity;
+import vip.mate.goal.model.GoalResponse;
 import vip.mate.goal.model.GoalEvaluationResult;
 import vip.mate.goal.model.GoalEventEntity;
 import vip.mate.goal.model.GoalEventType;
@@ -112,9 +115,17 @@ public class GoalServiceImpl implements GoalService {
                 ? req.getLlmCallBudget() : properties.getDefaultLlmCallBudget());
         entity.setAgentLlmCallsUsed(0);
         entity.setEvalLlmCallsUsed(0);
-        entity.setAutoFollowupEnabled(Boolean.TRUE.equals(req.getAutoFollowupEnabled()));
+        // Three-state default: explicit true/false is honored; null falls
+        // back to the configured create-time default.
+        entity.setAutoFollowupEnabled(req.getAutoFollowupEnabled() != null
+                ? req.getAutoFollowupEnabled()
+                : properties.isDefaultAutoFollowup());
         entity.setFollowupCooldownSeconds(req.getFollowupCooldownSeconds() != null
                 ? req.getFollowupCooldownSeconds() : properties.getAutoFollowupCooldownSeconds());
+        // Normalize any caller-supplied checklist: assign C1..Cn, force
+        // passed=false, clear evidence. Empty/omitted -> null column so the
+        // first evaluation bootstraps the list.
+        entity.setCriteria(serializeCriteria(normalizeInitialCriteria(req.getCriteria())));
         entity.setVersion(0);
         entity.setDeleted(0);
         LocalDateTime now = LocalDateTime.now();
@@ -278,6 +289,18 @@ public class GoalServiceImpl implements GoalService {
                 w.set(GoalEntity::getCompletionScore, result.score())
                  .set(GoalEntity::getProgressSummary, result.gap());
             }
+            // Snapshot the checklist as fully satisfied. Idempotent for the
+            // auto path (recordEvaluation already merged all-passed); required
+            // for manual completion, which has no preceding verdict.
+            List<GoalCriterion> existing = GoalCriteriaCodec.parse(fresh.getCriteria(), objectMapper);
+            if (!existing.isEmpty()) {
+                List<GoalCriterion> allPassed = existing.stream()
+                        .map(c -> c.passed() ? c : new GoalCriterion(c.id(), c.text(), true,
+                                c.evidence() == null || c.evidence().isBlank()
+                                        ? "marked complete" : c.evidence()))
+                        .toList();
+                w.set(GoalEntity::getCriteria, GoalCriteriaCodec.serialize(allPassed, objectMapper));
+            }
             bumpVersionAndTime(w);
             return w;
         });
@@ -285,6 +308,7 @@ public class GoalServiceImpl implements GoalService {
         detail.put("finalScore", result != null ? result.score() : null);
         detail.put("agentLlmCallsUsed", g.getAgentLlmCallsUsed());
         detail.put("evalLlmCallsUsed", g.getEvalLlmCallsUsed());
+        detail.put("criteria", GoalCriteriaCodec.parse(g.getCriteria(), objectMapper));
         writeEvent(id, GoalEventType.COMPLETED, null, detail);
         recordAudit("goal.completed", g, detail);
 
@@ -344,7 +368,7 @@ public class GoalServiceImpl implements GoalService {
         int agentDelta = Math.max(0, agentLlmCallsDelta);
         int evalDelta = Math.max(0, evalLlmCallsDelta);
 
-        retryOptimistic(id, "recordEvaluation", fresh -> {
+        GoalEntity g = retryOptimistic(id, "recordEvaluation", fresh -> {
             if (fresh.getStatus().isTerminal()) return null; // ignore late evaluations
             LambdaUpdateWrapper<GoalEntity> w = baseLockedUpdate(fresh)
                     .setSql("turns_used = turns_used + 1")
@@ -354,6 +378,13 @@ public class GoalServiceImpl implements GoalService {
             if (result != null) {
                 w.set(GoalEntity::getCompletionScore, result.score())
                  .set(GoalEntity::getProgressSummary, result.gap());
+                // Persist the checklist by carrier: bootstrap writes the fresh
+                // draft; verdict merges the per-criterion delta into the
+                // current list (re-read on the locked `fresh` to avoid races).
+                String criteriaJson = nextCriteriaJson(fresh, result);
+                if (criteriaJson != null) {
+                    w.set(GoalEntity::getCriteria, criteriaJson);
+                }
             }
             bumpVersionAndTime(w);
             return w;
@@ -369,7 +400,31 @@ public class GoalServiceImpl implements GoalService {
         }
         detail.put("agentLlmCallsDelta", agentDelta);
         detail.put("evalLlmCallsDelta", evalDelta);
+        // Full checklist (array) so the timeline / SSE consumer never sees the
+        // raw String column or has to reconstruct from the per-round delta.
+        detail.put("criteria", GoalCriteriaCodec.parse(g.getCriteria(), objectMapper));
         writeEvent(id, GoalEventType.EVALUATED, null, detail);
+    }
+
+    /**
+     * Compute the next criteria JSON for a record-evaluation write, or
+     * {@code null} when the result carries no checklist change. Bootstrap
+     * results replace the list with the freshly derived draft; verdict
+     * results merge their per-criterion delta into the locked-row list.
+     */
+    private String nextCriteriaJson(GoalEntity fresh, GoalEvaluationResult result) {
+        if (result.bootstrapCriteria() != null && !result.bootstrapCriteria().isEmpty()) {
+            return GoalCriteriaCodec.serialize(result.bootstrapCriteria(), objectMapper);
+        }
+        if (result.criterionVerdicts() != null && !result.criterionVerdicts().isEmpty()) {
+            List<GoalCriterion> existing = GoalCriteriaCodec.parse(fresh.getCriteria(), objectMapper);
+            if (existing.isEmpty()) {
+                return null;
+            }
+            return GoalCriteriaCodec.serialize(
+                    GoalCriteriaCodec.merge(existing, result.criterionVerdicts()), objectMapper);
+        }
+        return null;
     }
 
     @Override
@@ -416,24 +471,106 @@ public class GoalServiceImpl implements GoalService {
             throw new MateClawException("err.goal.criterion_empty", 400, "Criterion must not be empty");
         }
         String trimmed = criterion.trim();
-        // Merge against the freshly refetched criteria so a concurrent
-        // addCriterion never silently overwrites a sibling's append.
+        // Double-write: append a structured criterion (authoritative) and
+        // mirror the text into exit_criteria for backward compatibility /
+        // human readability. New id is the current max ordinal + 1. Merge
+        // against the freshly refetched row so concurrent appends don't clobber.
         GoalEntity g = retryOptimistic(id, "appendCriterion", fresh -> {
             ensureNotTerminal(fresh, "appendCriterion");
+
+            List<GoalCriterion> list = GoalCriteriaCodec.parse(fresh.getCriteria(), objectMapper);
+            list.add(new GoalCriterion("C" + (list.size() + 1), trimmed, false, ""));
+            String criteriaJson = GoalCriteriaCodec.serialize(GoalCriteriaCodec.reindex(list), objectMapper);
+
             String existing = fresh.getExitCriteria() != null ? fresh.getExitCriteria() : "";
-            String merged = existing.isEmpty() ? trimmed : existing + "\n+ " + trimmed;
+            String mergedText = existing.isEmpty() ? trimmed : existing + "\n+ " + trimmed;
+
             LambdaUpdateWrapper<GoalEntity> w = baseLockedUpdate(fresh)
-                    .set(GoalEntity::getExitCriteria, merged);
+                    .set(GoalEntity::getCriteria, criteriaJson)
+                    .set(GoalEntity::getExitCriteria, mergedText);
             bumpVersionAndTime(w);
             return w;
         });
+        List<GoalCriterion> full = GoalCriteriaCodec.parse(g.getCriteria(), objectMapper);
+        String criterionId = full.isEmpty() ? "" : full.get(full.size() - 1).id();
         writeEvent(id, GoalEventType.CRITERION_ADDED, null, Map.of(
                 "criterion", trimmed,
+                "criterionId", criterionId,
+                "criteria", full,
                 "by", username));
         return g;
     }
 
     // ==================== Internals ====================
+
+    /**
+     * Normalize a caller-supplied initial checklist: keep only non-blank
+     * {@code text}, assign stable ids {@code C1..Cn} (ignore any caller ids),
+     * force {@code passed=false} and clear evidence. Returns {@code null} for
+     * an empty/null result so the column stays NULL and the first evaluation
+     * bootstraps the list.
+     */
+    private List<GoalCriterion> normalizeInitialCriteria(List<GoalCriterion> raw) {
+        if (raw == null || raw.isEmpty()) {
+            return null;
+        }
+        List<GoalCriterion> kept = new java.util.ArrayList<>(raw.size());
+        for (GoalCriterion c : raw) {
+            if (c != null && c.text() != null && !c.text().isBlank()) {
+                kept.add(new GoalCriterion("", c.text().trim(), false, ""));
+            }
+        }
+        return kept.isEmpty() ? null : GoalCriteriaCodec.reindex(kept);
+    }
+
+    /** Serialize a checklist to JSON text, or {@code null} for a null list. */
+    private String serializeCriteria(List<GoalCriterion> criteria) {
+        return GoalCriteriaCodec.serialize(criteria, objectMapper);
+    }
+
+    @Override
+    public GoalResponse toResponse(GoalEntity e) {
+        if (e == null) {
+            return null;
+        }
+        GoalResponse r = new GoalResponse();
+        r.setId(e.getId());
+        r.setConversationId(e.getConversationId());
+        r.setAgentId(e.getAgentId());
+        r.setWorkspaceId(e.getWorkspaceId());
+        r.setCreatedBy(e.getCreatedBy());
+        r.setTitle(e.getTitle());
+        r.setDescription(e.getDescription());
+        r.setExitCriteria(e.getExitCriteria());
+        r.setSuccessCheckPrompt(e.getSuccessCheckPrompt());
+        r.setStatus(e.getStatus());
+        r.setTurnBudget(e.getTurnBudget());
+        r.setTurnsUsed(e.getTurnsUsed());
+        r.setLlmCallBudget(e.getLlmCallBudget());
+        r.setAgentLlmCallsUsed(e.getAgentLlmCallsUsed());
+        r.setEvalLlmCallsUsed(e.getEvalLlmCallsUsed());
+        r.setTotalLlmCallsUsed(e.totalLlmCallsUsed());
+        r.setProgressSummary(e.getProgressSummary());
+        r.setCompletionScore(e.getCompletionScore());
+        r.setLastEvaluationAt(e.getLastEvaluationAt());
+        r.setAutoFollowupEnabled(e.getAutoFollowupEnabled());
+        r.setFollowupCooldownSeconds(e.getFollowupCooldownSeconds());
+        r.setLastFollowupAt(e.getLastFollowupAt());
+        r.setVersion(e.getVersion());
+        r.setCreateTime(e.getCreateTime());
+        r.setUpdateTime(e.getUpdateTime());
+        // Always an array; empty when the column is null/unparseable.
+        r.setCriteria(GoalCriteriaCodec.parse(e.getCriteria(), objectMapper));
+        return r;
+    }
+
+    @Override
+    public List<GoalResponse> toResponseList(List<GoalEntity> entities) {
+        if (entities == null) {
+            return List.of();
+        }
+        return entities.stream().map(this::toResponse).toList();
+    }
 
     private void validateCreate(GoalCreateRequest req) {
         if (req == null) {

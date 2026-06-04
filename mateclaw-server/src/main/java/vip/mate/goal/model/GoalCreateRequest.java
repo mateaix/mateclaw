@@ -2,6 +2,8 @@ package vip.mate.goal.model;
 
 import lombok.Data;
 
+import java.util.List;
+
 /**
  * Request body for {@code POST /api/v1/goals}.
  *
@@ -30,4 +32,12 @@ public class GoalCreateRequest {
     private Integer llmCallBudget;
     private Boolean autoFollowupEnabled;
     private Integer followupCooldownSeconds;
+
+    /**
+     * Optional initial checklist. Callers supply only {@code text} per item;
+     * the service normalizes ids ({@code C1..Cn}), forces {@code passed=false}
+     * and clears {@code evidence} on create. An empty/omitted list defers to
+     * first-evaluation bootstrap.
+     */
+    private List<GoalCriterion> criteria;
 }

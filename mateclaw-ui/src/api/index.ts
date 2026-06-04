@@ -1277,12 +1277,21 @@ export const triggerApi = {
   }) => http.post('/triggers/events', envelope),
 }
 
-// ==================== Persistent goals (RFC 48) ====================
+// ==================== Persistent goals ====================
 //
 // Snowflake IDs are sent as strings end-to-end — the backend's
 // ToStringSerializer makes responses strings, and request payloads keep
 // them as strings to dodge JS Number precision loss. See CLAUDE.md
 // "ID Handling — Snowflake Precision Convention".
+
+/** One checkable item of a goal's exit checklist. */
+export interface GoalCriterion {
+  id: string
+  text: string
+  passed: boolean
+  evidence?: string
+}
+
 export interface Goal {
   id: string
   conversationId: string
@@ -1298,6 +1307,7 @@ export interface Goal {
   llmCallBudget: number
   agentLlmCallsUsed: number
   evalLlmCallsUsed: number
+  totalLlmCallsUsed?: number
   progressSummary?: string | null
   completionScore?: number | null
   lastEvaluationAt?: string | null
@@ -1306,6 +1316,8 @@ export interface Goal {
   lastFollowupAt?: string | null
   createTime: string
   updateTime: string
+  /** Parsed checklist; the backend always sends an array (empty when none). */
+  criteria: GoalCriterion[]
 }
 
 export interface GoalEvent {
@@ -1329,6 +1341,7 @@ export const goalApi = {
     llmCallBudget?: number
     autoFollowupEnabled?: boolean
     followupCooldownSeconds?: number
+    criteria?: { text: string }[]
   }) => http.post<Goal>('/goals', data),
 
   findActive: (conversationId: string) =>

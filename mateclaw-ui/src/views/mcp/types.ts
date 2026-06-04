@@ -63,7 +63,7 @@ export function emptyMcpForm(): McpServerForm {
     envJson: '',
     cwd: '',
     connectTimeoutSeconds: 30,
-    readTimeoutSeconds: 30,
+    readTimeoutSeconds: 60,
     enabled: true,
   }
 }

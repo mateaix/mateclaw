@@ -58,8 +58,12 @@ public class GoalManagementTool {
                     required = false) String exitCriteria,
             @ToolParam(description = "Max evaluation turns before exhaustion. Default 20.",
                     required = false) Integer turnBudget,
-            @ToolParam(description = "If true, the agent may auto-followup when progress is incomplete. Default false.",
+            @ToolParam(description = "If true, the agent may auto-followup when progress is incomplete. "
+                    + "Omit to use the system default.",
                     required = false) Boolean autoFollowup,
+            @ToolParam(description = "Optional initial checklist: a list of short, individually verifiable "
+                    + "acceptance criteria. Omit to let the system derive the checklist on first evaluation.",
+                    required = false) java.util.List<String> criteria,
             @Nullable ToolContext ctx) {
 
         if (!properties.isEnabled()) {
@@ -86,6 +90,16 @@ public class GoalManagementTool {
         req.setExitCriteria(exitCriteria);
         if (turnBudget != null) req.setTurnBudget(turnBudget);
         if (autoFollowup != null) req.setAutoFollowupEnabled(autoFollowup);
+        if (criteria != null && !criteria.isEmpty()) {
+            java.util.List<vip.mate.goal.model.GoalCriterion> items = new java.util.ArrayList<>();
+            for (String text : criteria) {
+                if (text != null && !text.isBlank()) {
+                    // Only text matters; create() assigns ids, forces passed=false, clears evidence.
+                    items.add(new vip.mate.goal.model.GoalCriterion("", text.trim(), false, ""));
+                }
+            }
+            if (!items.isEmpty()) req.setCriteria(items);
+        }
 
         String username = origin.requesterId() != null && !origin.requesterId().isBlank()
                 ? origin.requesterId() : "system";
@@ -132,10 +146,14 @@ public class GoalManagementTool {
     }
 
     @Tool(description = """
-            Explicitly mark the active goal as completed. Use ONLY when all \
-            exit criteria are satisfied (e.g. tests passed, feature deployed, \
-            user confirmed). The runtime evaluator will also mark goals \
-            completed automatically when score >= 0.95 — prefer that path.""")
+            Explicitly mark the active goal as completed. Use ONLY when EVERY \
+            checklist criterion is genuinely satisfied with concrete evidence \
+            in the conversation (e.g. tests actually passed, feature actually \
+            deployed, user confirmed). Do NOT call this to close out work that \
+            is unfinished, blocked, or impossible. In normal operation you do \
+            not need this tool at all: the runtime evaluator marks the goal \
+            completed automatically once all checklist criteria pass — prefer \
+            that path and just keep working.""")
     public String completeGoal(@Nullable ToolContext ctx) {
         if (!properties.isEnabled()) return errorJson("Goal subsystem is disabled");
         GoalEntity goal = resolveActive(ctx);
@@ -145,7 +163,8 @@ public class GoalManagementTool {
         // Synthesize a completion-style evaluation result for the audit trail.
         GoalEvaluationResult synthetic = new GoalEvaluationResult(
                 1.0, "completed by agent", GoalEvaluationResult.DECISION_COMPLETED,
-                true, "manual", 0, 0L);
+                true, "manual", 0, 0L,
+                java.util.List.of(), null);
         try {
             GoalEntity completed = goalService.markCompleted(goal.getId(), synthetic);
             // Broadcast a goal_completed event with the same shape as the
@@ -154,7 +173,8 @@ public class GoalManagementTool {
             if (streamTracker != null && completed.getConversationId() != null) {
                 streamTracker.broadcastObject(completed.getConversationId(), "goal_completed", Map.of(
                         "goalId", String.valueOf(completed.getId()),
-                        "score", synthetic.score()));
+                        "score", synthetic.score(),
+                        "goal", goalService.toResponse(completed)));
             }
             return successJson(Map.of(
                     "goalId", String.valueOf(completed.getId()),
@@ -232,7 +252,7 @@ public class GoalManagementTool {
             streamTracker.broadcastObject(conversationId, eventName, Map.of(
                     "goalId", String.valueOf(goal.getId()),
                     "conversationId", conversationId,
-                    "goal", goal));
+                    "goal", goalService.toResponse(goal)));
         } catch (Exception e) {
             log.debug("[GoalManagementTool] broadcast {} failed: {}", eventName, e.getMessage());
         }

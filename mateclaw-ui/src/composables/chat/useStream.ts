@@ -50,7 +50,7 @@ export type SSEEventType =
   | 'delegation_async_spawned'
   // Heartbeat watchdog flagged a sub-agent as making no observable progress
   | 'subagent_stale'
-  // Persistent goal events (RFC 48) — emitted by GoalEvaluationNode
+  // Persistent goal events — emitted by GoalEvaluationNode
   | 'goal_evaluated'
   | 'goal_followup'
   | 'goal_completed'

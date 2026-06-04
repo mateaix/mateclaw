@@ -10,6 +10,7 @@ import vip.mate.common.result.R;
 import vip.mate.exception.MateClawException;
 import vip.mate.goal.model.GoalCreateRequest;
 import vip.mate.goal.model.GoalEntity;
+import vip.mate.goal.model.GoalResponse;
 import vip.mate.goal.model.GoalStatus;
 import vip.mate.goal.model.GoalUpdateRequest;
 import vip.mate.goal.service.GoalService;
@@ -64,6 +65,13 @@ class GoalControllerTest {
         return g;
     }
 
+    private GoalResponse resp(Long id, GoalStatus status) {
+        GoalResponse r = new GoalResponse();
+        r.setId(id);
+        r.setStatus(status);
+        return r;
+    }
+
     private GoalCreateRequest req(String convId) {
         GoalCreateRequest r = new GoalCreateRequest();
         r.setConversationId(convId);
@@ -90,7 +98,8 @@ class GoalControllerTest {
         when(conversationService.findByConversationId("conv-1")).thenReturn(conv("conv-1", 10L, 1L));
         when(goalService.create(any(), eq("alice")))
                 .thenReturn(goal(1L, "conv-1", GoalStatus.ACTIVE));
-        R<GoalEntity> result = controller.create(req("conv-1"), auth);
+        when(goalService.toResponse(any())).thenReturn(resp(1L, GoalStatus.ACTIVE));
+        R<GoalResponse> result = controller.create(req("conv-1"), auth);
         assertNotNull(result.getData());
         assertEquals(1L, result.getData().getId());
     }
@@ -177,8 +186,9 @@ class GoalControllerTest {
         when(goalService.getById(1L)).thenReturn(g);
         when(conversationService.isConversationOwner("conv-1", "alice")).thenReturn(true);
         when(goalService.pause(1L, "alice")).thenReturn(goal(1L, "conv-1", GoalStatus.PAUSED));
+        when(goalService.toResponse(any())).thenReturn(resp(1L, GoalStatus.PAUSED));
 
-        R<GoalEntity> result = controller.pause(1L, auth);
+        R<GoalResponse> result = controller.pause(1L, auth);
         assertEquals(GoalStatus.PAUSED, result.getData().getStatus());
     }
 

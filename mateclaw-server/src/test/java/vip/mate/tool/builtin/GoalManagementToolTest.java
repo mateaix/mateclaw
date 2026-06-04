@@ -75,7 +75,7 @@ class GoalManagementToolTest {
     @Test
     void setGoal_disabledFlag_returnsError() {
         properties.setEnabled(false);
-        String result = tool.setGoal("title", null, null, null, null,
+        String result = tool.setGoal("title", null, null, null, null, null,
                 ctxWith("conv-1", 10L, "alice"));
         assertTrue(result.contains("disabled"));
         verify(goalService, never()).create(any(), anyString());
@@ -83,7 +83,7 @@ class GoalManagementToolTest {
 
     @Test
     void setGoal_blankTitle_returnsError() {
-        String result = tool.setGoal("  ", null, null, null, null,
+        String result = tool.setGoal("  ", null, null, null, null, null,
                 ctxWith("conv-1", 10L, "alice"));
         assertTrue(result.contains("title is required"));
     }
@@ -95,7 +95,7 @@ class GoalManagementToolTest {
         String result = tool.setGoal("ship the blog",
                 "deploy to fly.io",
                 "tests pass + deployed",
-                15, true,
+                15, true, null,
                 ctxWith("conv-1", 10L, "alice"));
         assertTrue(result.contains("\"goalId\":\"123\""));
         assertTrue(result.contains("\"status\":\"active\""));
@@ -103,7 +103,7 @@ class GoalManagementToolTest {
 
     @Test
     void setGoal_missingConversationContext_returnsError() {
-        String result = tool.setGoal("title", null, null, null, null, null);
+        String result = tool.setGoal("title", null, null, null, null, null, null);
         assertTrue(result.contains("requires a bound conversation"));
     }
 
@@ -151,6 +151,7 @@ class GoalManagementToolTest {
         GoalEntity completed = goal(GoalStatus.COMPLETED);
         when(goalService.markCompleted(eq(123L), any(GoalEvaluationResult.class)))
                 .thenReturn(completed);
+        when(goalService.toResponse(any())).thenReturn(new vip.mate.goal.model.GoalResponse());
         String result = tool.completeGoal(ctxWith("conv-1", 10L, "alice"));
         assertTrue(result.contains("\"status\":\"completed\""));
     }

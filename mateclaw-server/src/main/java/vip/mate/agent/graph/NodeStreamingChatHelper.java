@@ -412,18 +412,22 @@ public class NodeStreamingChatHelper {
             return ErrorType.BILLING;
         }
         // RFC-009 P3.2: MODEL_NOT_FOUND — provider rejects the requested model id.
-        // Includes DashScope's "[InvalidParameter] url error, please check url"
-        // (https://help.aliyun.com/zh/model-studio/error-code#error-url) which despite
-        // the wording is the provider rejecting an unknown/unsupported model id on
-        // the native protocol. Splitting this out from CLIENT_ERROR lets us hand off
-        // to the fallback chain instead of terminating — a different provider may
-        // recognize the model name (or have an equivalent default).
+        // DashScope signals an unknown/unsupported model id specifically as
+        // "[InvalidParameter] url error, please check url"
+        // (https://help.aliyun.com/zh/model-studio/error-code#error-url). Splitting this
+        // out from CLIENT_ERROR lets us hand off to the fallback chain instead of
+        // terminating — a different provider may recognize the model name (or have an
+        // equivalent default).
+        //
+        // Note: we match on the specific "url error" wording rather than a bare
+        // "InvalidParameter", because DashScope reuses the InvalidParameter code for
+        // request-shape problems that have nothing to do with the model id (an illegal
+        // tool name, or an unsupported parameter) — those are handled as CLIENT_ERROR
+        // below so a healthy model is not evicted from the failover pool.
         if (msg.contains("Model not exist")
                 || msg.contains("model_not_found")
                 || msg.contains("Model not found")
                 || msg.contains("does not exist")
-                || msg.contains("[InvalidParameter]")
-                || msg.contains("InvalidParameter")
                 || msg.contains("url error")
                 // Volcano Ark: model exists but the user's account hasn't opened it,
                 // or the id isn't valid for this region. Both are hard failures —
@@ -432,9 +436,16 @@ public class NodeStreamingChatHelper {
                 || msg.contains("InvalidEndpointOrModel")) {
             return ErrorType.MODEL_NOT_FOUND;
         }
-        // Client errors (400 Bad Request — unsupported format, invalid params, etc.) — NOT retryable
+        // Client errors (400 Bad Request — unsupported format, invalid params, etc.) — NOT retryable.
+        // DashScope's remaining "InvalidParameter" responses are request-shape bugs, e.g. a reserved
+        // or illegal tool name ("Tool names are not allowed to be [search]") or an unsupported
+        // parameter. These fail identically on every provider, so classifying them as CLIENT_ERROR
+        // (rather than MODEL_NOT_FOUND) keeps the model in the failover pool and surfaces the real
+        // cause instead of a misleading "model not available" message.
         if (msg.contains("400") || msg.contains("Bad Request")
-                || msg.contains("invalid_request_error") || msg.contains("unsupported")) {
+                || msg.contains("invalid_request_error") || msg.contains("unsupported")
+                || msg.contains("Tool names are not allowed")
+                || msg.contains("InvalidParameter")) {
             return ErrorType.CLIENT_ERROR;
         }
         // Server errors and transient TLS / socket-level network hiccups.

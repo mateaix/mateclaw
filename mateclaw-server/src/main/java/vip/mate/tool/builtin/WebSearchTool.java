@@ -21,7 +21,12 @@ public class WebSearchTool {
 
     private final WebSearchService webSearchService;
 
-    @Tool(description = "Search the internet for latest information. Use when querying real-time news, latest data, or uncertain facts. "
+    // Tool name is pinned to "web_search" rather than the method-derived "search":
+    // DashScope's native protocol reserves the function name "search" and rejects the
+    // whole request with "InvalidParameter: Tool names are not allowed to be [search]",
+    // which breaks tool use for every qwen/DashScope-native model that has this tool bound.
+    @Tool(name = "web_search",
+            description = "Search the internet for latest information. Use when querying real-time news, latest data, or uncertain facts. "
             + "Supports optional freshness, language, count parameters.")
     public String search(
             @ToolParam(description = "Search keywords") String query,

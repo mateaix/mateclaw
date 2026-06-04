@@ -3934,6 +3934,7 @@ export default {
     inlinePromptAccept: '好',
     inlinePromptDecline: '不用',
     autoFollowup: '自动延续',
+    sidebarActive: '此对话有正在进行的目标',
     completedTitle: '目标达成',
     completedDetail: '已存入长期记忆，下次问起能找回来',
     exhaustedTitle: '这次的预算用完了',

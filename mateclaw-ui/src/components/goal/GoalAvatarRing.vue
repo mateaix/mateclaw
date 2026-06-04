@@ -69,6 +69,14 @@ const tooltip = computed(() => {
   }
   return parts.join(' · ')
 })
+
+// Checklist for the richer hover card. Empty until a checklist exists.
+const criteria = computed(() => goal.value?.criteria ?? [])
+const progressLabel = computed(() => {
+  if (!props.conversationId) return ''
+  const p = goalStore.criteriaProgress(props.conversationId)
+  return p ? `${p.passed}/${p.total}` : ''
+})
 </script>
 
 <template>
@@ -107,7 +115,20 @@ const tooltip = computed(() => {
       />
     </svg>
     <span v-if="showFollowupMark" class="followup-mark" :title="$t('goal.autoFollowup')">↻</span>
-    <span v-if="goal && tooltip" class="goal-tip">{{ tooltip }}</span>
+    <!-- Checklist card when the goal has criteria; plain one-liner otherwise. -->
+    <div v-if="goal && criteria.length" class="goal-card">
+      <div class="goal-card-head">
+        <span class="goal-card-title">{{ goal.title }}</span>
+        <span v-if="progressLabel" class="goal-card-count">{{ progressLabel }}</span>
+      </div>
+      <ul class="goal-card-list">
+        <li v-for="c in criteria" :key="c.id" :class="{ done: c.passed }">
+          <span class="goal-card-mark">{{ c.passed ? '✓' : '○' }}</span>
+          <span class="goal-card-text">{{ c.text }}</span>
+        </li>
+      </ul>
+    </div>
+    <span v-else-if="goal && tooltip" class="goal-tip">{{ tooltip }}</span>
   </div>
 </template>
 
@@ -245,5 +266,79 @@ const tooltip = computed(() => {
   visibility: visible;
   opacity: 1;
   transform: translateY(-50%) translateX(2px);
+}
+
+/* Checklist hover card — same reveal mechanics as the tooltip, but a
+ * multi-line block listing each criterion with a done marker. */
+.goal-card {
+  visibility: hidden;
+  opacity: 0;
+  position: absolute;
+  left: calc(100% + 14px);
+  top: 50%;
+  transform: translateY(-50%);
+  width: 280px;
+  background: var(--mc-text-primary, #1d1612);
+  color: var(--mc-bg-elevated, #ffffff);
+  padding: 10px 12px;
+  border-radius: 10px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.22);
+  transition: opacity 150ms ease, transform 150ms ease;
+  z-index: 10;
+  pointer-events: none;
+}
+.avatar-with-ring:hover .goal-card {
+  visibility: visible;
+  opacity: 1;
+  transform: translateY(-50%) translateX(2px);
+}
+.goal-card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+.goal-card-title {
+  font-size: 12px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.goal-card-count {
+  font-size: 11px;
+  color: #b6905b;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+.goal-card-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.goal-card-list li {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  font-size: 12px;
+  line-height: 1.35;
+  color: rgba(255, 255, 255, 0.82);
+}
+.goal-card-list li.done .goal-card-text {
+  color: rgba(255, 255, 255, 0.5);
+  text-decoration: line-through;
+}
+.goal-card-mark {
+  flex-shrink: 0;
+  width: 12px;
+  text-align: center;
+  color: #9b7d6c;
+}
+.goal-card-list li.done .goal-card-mark {
+  color: #2f8a6d;
 }
 </style>
