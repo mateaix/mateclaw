@@ -34,6 +34,9 @@ async function accept() {
       props.agentId,
       props.workspaceId,
       props.suggestedTitle,
+      // Default to autonomous continuation when the user opts in from here —
+      // the whole point of accepting is "keep working toward this".
+      { autoFollowup: true },
     )
   } finally {
     busy.value = false

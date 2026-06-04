@@ -189,7 +189,7 @@ function hydrateFromServer(s: McpServer) {
     envJson: s.envJson || '',
     cwd: s.cwd || '',
     connectTimeoutSeconds: s.connectTimeoutSeconds || 30,
-    readTimeoutSeconds: s.readTimeoutSeconds || 30,
+    readTimeoutSeconds: s.readTimeoutSeconds || 60,
     enabled: s.enabled,
   })
 }

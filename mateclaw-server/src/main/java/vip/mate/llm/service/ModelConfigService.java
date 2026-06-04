@@ -183,6 +183,32 @@ public class ModelConfigService {
                 .last("LIMIT 1"));
     }
 
+    /**
+     * Resolve a provider's primary chat model for routing.
+     *
+     * <p>Prefers the row carrying the system default flag when it happens to
+     * belong to this provider; otherwise falls back to the provider's
+     * earliest-configured enabled chat model. The {@code is_default} flag is a
+     * single system-wide marker (see {@link #clearDefaultFlag}), so a provider
+     * that does not own it has no row matching {@link #getDefaultModelByProvider}.
+     * Without this fallback a preferred provider could never contribute a
+     * primary model unless it already held the global default.
+     *
+     * @return the provider's primary chat model, or {@code null} when the
+     *         provider has no enabled chat model configured
+     */
+    public ModelConfigEntity getPrimaryChatModelByProvider(String providerId) {
+        if (providerId == null || providerId.isBlank()) return null;
+        ModelConfigEntity def = getDefaultModelByProvider(providerId);
+        if (def != null) return def;
+        return modelConfigMapper.selectOne(new LambdaQueryWrapper<ModelConfigEntity>()
+                .eq(ModelConfigEntity::getProvider, providerId)
+                .eq(ModelConfigEntity::getEnabled, true)
+                .eq(ModelConfigEntity::getModelType, "chat")
+                .orderByAsc(ModelConfigEntity::getId)
+                .last("LIMIT 1"));
+    }
+
     public ModelConfigEntity createModel(ModelConfigEntity entity) {
         validateModel(entity, null);
         if (Boolean.TRUE.equals(entity.getIsDefault())) {

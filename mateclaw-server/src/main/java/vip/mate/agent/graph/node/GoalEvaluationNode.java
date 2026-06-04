@@ -25,9 +25,8 @@ import java.util.Optional;
 /**
  * Sits between FinalAnswerNode (or PlanSummaryNode) and the graph END.
  *
- * <p>Per RFC 48 v3 §3.3, evaluation runs on a settled terminal answer so
- * upstream finishReason / evidence checks are already authoritative. The
- * node:
+ * <p>Evaluation runs on a settled terminal answer so upstream finishReason /
+ * evidence checks are already authoritative. The node:
  * <ol>
  *   <li>Bails out for the "this turn shouldn't count" finishReasons
  *       (evidence_insufficient, stopped, error_fallback, return_direct,
@@ -50,8 +49,8 @@ public class GoalEvaluationNode implements NodeAction {
     private final GoalFollowupService followupService;
     private final GoalService goalService;
     private final GoalProperties properties;
-    private final ConversationWindowManager windowManager; // unused PR2, kept for PR5
-    private final ConversationService conversationService; // unused PR2, kept for PR5
+    private final ConversationWindowManager windowManager; // reserved for evaluator context windowing
+    private final ConversationService conversationService; // reserved for evaluator context lookups
     private final GraphFlavor flavor;
 
     public GoalEvaluationNode(GoalEvaluationService evaluationService,
@@ -72,7 +71,7 @@ public class GoalEvaluationNode implements NodeAction {
 
     @Override
     public Map<String, Object> apply(OverAllState state) throws Exception {
-        // Master kill switch — node stays inert until PR5 flips this.
+        // Master kill switch — when disabled the node stays inert.
         if (!properties.isEnabled()) {
             return Map.of();
         }
@@ -186,30 +185,34 @@ public class GoalEvaluationNode implements NodeAction {
         // failure on completion) does not propagate into the chat graph
         // and abort the streamed answer the user already sees.
         try {
-            if (result.completed() || result.score() >= 0.95) {
-                goalService.markCompleted(refreshed.getId(), result);
+            // Completion is the deterministic "all criteria passed" signal the
+            // evaluator already folded into result.completed() — no score gate.
+            if (result.completed()) {
+                GoalEntity completed = goalService.markCompleted(refreshed.getId(), result);
                 return MateClawStateAccessor.output()
                         .goalEvaluationResult(result.toMap())
                         .goalEvaluatedThisRun(true)
                         .events(List.of(goalEvent("goal_completed", Map.of(
-                                "goalId", String.valueOf(refreshed.getId()),
-                                "score", result.score()))))
+                                "goalId", String.valueOf(completed.getId()),
+                                "score", result.score(),
+                                "goal", goalService.toResponse(completed)))))
                         .build();
             }
 
             if (goalService.isBudgetExhausted(refreshed)) {
                 String reason = goalService.exhaustionReason(refreshed);
-                goalService.markExhausted(refreshed.getId(), reason);
+                GoalEntity exhausted = goalService.markExhausted(refreshed.getId(), reason);
                 return MateClawStateAccessor.output()
                         .goalEvaluationResult(result.toMap())
                         .goalEvaluatedThisRun(true)
                         .events(List.of(goalEvent("goal_exhausted", Map.of(
-                                "goalId", String.valueOf(refreshed.getId()),
-                                "turnsUsed", refreshed.getTurnsUsed(),
-                                "agentLlmCallsUsed", refreshed.getAgentLlmCallsUsed(),
-                                "evalLlmCallsUsed", refreshed.getEvalLlmCallsUsed(),
-                                "totalLlmCallsUsed", refreshed.totalLlmCallsUsed(),
-                                "reason", reason))))
+                                "goalId", String.valueOf(exhausted.getId()),
+                                "turnsUsed", exhausted.getTurnsUsed(),
+                                "agentLlmCallsUsed", exhausted.getAgentLlmCallsUsed(),
+                                "evalLlmCallsUsed", exhausted.getEvalLlmCallsUsed(),
+                                "totalLlmCallsUsed", exhausted.totalLlmCallsUsed(),
+                                "reason", reason,
+                                "goal", goalService.toResponse(exhausted)))))
                         .build();
             }
         } catch (Throwable t) {
@@ -270,7 +273,8 @@ public class GoalEvaluationNode implements NodeAction {
                     .needsToolCall(false)
                     .events(List.of(goalEvent("goal_followup", Map.of(
                             "goalId", String.valueOf(refreshed.getId()),
-                            "prompt", followup.get()))));
+                            "prompt", followup.get(),
+                            "goal", goalService.toResponse(refreshed)))));
 
             if (flavor == GraphFlavor.REACT) {
                 // ReAct: append the followup as a fresh user message via the
@@ -309,7 +313,8 @@ public class GoalEvaluationNode implements NodeAction {
                 .events(List.of(goalEvent("goal_evaluated", Map.of(
                         "goalId", String.valueOf(refreshed.getId()),
                         "score", result.score(),
-                        "gap", result.gap() == null ? "" : result.gap()))))
+                        "gap", result.gap() == null ? "" : result.gap(),
+                        "goal", goalService.toResponse(refreshed)))))
                 .build();
     }
 

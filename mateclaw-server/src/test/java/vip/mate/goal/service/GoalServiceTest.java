@@ -241,7 +241,8 @@ class GoalServiceTest {
 
         GoalEvaluationResult r = new GoalEvaluationResult(
                 0.62, "DNS still missing", "continue", false,
-                "qwen-turbo", 1, 800L);
+                "qwen-turbo", 1, 800L,
+                java.util.List.of(), null);
         service.recordEvaluation(1L, r, 3, 1);
 
         ArgumentCaptor<GoalEventEntity> evCaptor = ArgumentCaptor.forClass(GoalEventEntity.class);
@@ -311,6 +312,70 @@ class GoalServiceTest {
                 () -> service.appendCriterion(1L, "   ", "alice"));
         assertEquals(400, ex.getCode());
         verify(goalMapper, never()).selectById(any());
+    }
+
+    // ==================== criteria checklist ====================
+
+    @Test
+    void create_normalizesInitialCriteria_assignsIdsForcesUnpassed() {
+        when(goalMapper.selectOne(any())).thenReturn(null);
+        when(goalMapper.insert(any(GoalEntity.class))).thenReturn(1);
+
+        GoalCreateRequest r = validReq();
+        r.setCriteria(java.util.List.of(
+                new vip.mate.goal.model.GoalCriterion("ignored", "tests pass", true, "x"),
+                new vip.mate.goal.model.GoalCriterion("", "  ", false, ""), // blank dropped
+                new vip.mate.goal.model.GoalCriterion("", "deployed", false, "")));
+
+        ArgumentCaptor<GoalEntity> captor = ArgumentCaptor.forClass(GoalEntity.class);
+        service.create(r, "alice");
+        verify(goalMapper).insert(captor.capture());
+
+        java.util.List<vip.mate.goal.model.GoalCriterion> parsed =
+                vip.mate.goal.model.GoalCriteriaCodec.parse(captor.getValue().getCriteria(), new ObjectMapper());
+        assertEquals(2, parsed.size());
+        assertEquals("C1", parsed.get(0).id());
+        assertEquals("tests pass", parsed.get(0).text());
+        assertFalse(parsed.get(0).passed());        // forced false even though caller said true
+        assertEquals("C2", parsed.get(1).id());
+        assertEquals("deployed", parsed.get(1).text());
+    }
+
+    @Test
+    void create_emptyCriteria_leavesColumnNull_forBootstrap() {
+        when(goalMapper.selectOne(any())).thenReturn(null);
+        when(goalMapper.insert(any(GoalEntity.class))).thenReturn(1);
+        ArgumentCaptor<GoalEntity> captor = ArgumentCaptor.forClass(GoalEntity.class);
+        service.create(validReq(), "alice");
+        verify(goalMapper).insert(captor.capture());
+        assertNull(captor.getValue().getCriteria());
+    }
+
+    @Test
+    void create_autoFollowup_threeState() {
+        when(goalMapper.selectOne(any())).thenReturn(null);
+        when(goalMapper.insert(any(GoalEntity.class))).thenReturn(1);
+
+        // null -> config default (true by default)
+        assertTrue(service.create(validReq(), "alice").getAutoFollowupEnabled());
+
+        // explicit false is honored
+        GoalCreateRequest off = validReq();
+        off.setAutoFollowupEnabled(false);
+        assertFalse(service.create(off, "alice").getAutoFollowupEnabled());
+    }
+
+    @Test
+    void toResponse_parsesCriteriaArray_nullBecomesEmpty() {
+        GoalEntity g = persisted(1L, GoalStatus.ACTIVE);
+        g.setCriteria("[{\"id\":\"C1\",\"text\":\"a\",\"passed\":true,\"evidence\":\"ok\"}]");
+        var resp = service.toResponse(g);
+        assertEquals(1, resp.getCriteria().size());
+        assertTrue(resp.getCriteria().get(0).passed());
+
+        GoalEntity bare = persisted(2L, GoalStatus.ACTIVE); // criteria == null
+        assertNotNull(service.toResponse(bare).getCriteria());
+        assertTrue(service.toResponse(bare).getCriteria().isEmpty());
     }
 
     // ==================== optimistic lock retry ====================

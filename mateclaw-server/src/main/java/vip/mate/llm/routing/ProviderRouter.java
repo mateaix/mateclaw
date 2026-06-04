@@ -7,6 +7,7 @@ import vip.mate.llm.model.ModelConfigEntity;
 import vip.mate.llm.service.ModelCapabilityService;
 import vip.mate.llm.service.ModelCapabilityService.Modality;
 import vip.mate.llm.service.ModelConfigService;
+import vip.mate.llm.service.ModelProviderService;
 import vip.mate.skill.manifest.SkillManifest;
 import vip.mate.skill.runtime.SkillRuntimeService;
 import vip.mate.llm.model.ModelProviderEntity;
@@ -45,6 +46,7 @@ public class ProviderRouter {
     private final AgentBindingResolver bindingService;
     private final ModelCapabilityService capabilityService;
     private final ModelConfigService modelConfigService;
+    private final ModelProviderService modelProviderService;
 
     /**
      * Compute the union of capability requirements declared by the
@@ -249,9 +251,15 @@ public class ProviderRouter {
     private ModelConfigEntity pickProviderDefault(String providerId) {
         if (providerId == null || providerId.isBlank()) return null;
         try {
-            return modelConfigService.getDefaultModelByProvider(providerId);
+            // A provider without usable credentials can't serve as the primary
+            // model: selecting it would only be rejected downstream and fall
+            // back to the global default, silently skipping the remaining
+            // preferred providers. Skip it here so preference resolution
+            // continues to the next entry instead.
+            if (!modelProviderService.isProviderConfigured(providerId)) return null;
+            return modelConfigService.getPrimaryChatModelByProvider(providerId);
         } catch (Exception e) {
-            // getDefaultModelByProvider can return null or throw when
+            // getPrimaryChatModelByProvider can return null or throw when
             // the provider has no enabled chat model; treat both as
             // "no candidate from this provider".
             return null;

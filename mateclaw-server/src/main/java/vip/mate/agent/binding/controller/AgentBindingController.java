@@ -109,7 +109,7 @@ public class AgentBindingController {
         return R.ok();
     }
 
-    // ==================== Provider Preferences (RFC-009 PR-3) ====================
+    // ==================== Provider Preferences ====================
 
     @Operation(summary = "获取 Agent 的偏好 Provider 顺序")
     @GetMapping("/provider-preferences")

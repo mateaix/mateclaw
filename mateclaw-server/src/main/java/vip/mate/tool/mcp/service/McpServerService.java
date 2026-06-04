@@ -68,7 +68,7 @@ public class McpServerService {
             entity.setConnectTimeoutSeconds(30);
         }
         if (entity.getReadTimeoutSeconds() == null) {
-            entity.setReadTimeoutSeconds(30);
+            entity.setReadTimeoutSeconds(60);
         }
         entity.setLastStatus("disconnected");
         entity.setToolCount(0);

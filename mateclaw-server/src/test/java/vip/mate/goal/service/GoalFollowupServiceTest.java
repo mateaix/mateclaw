@@ -1,6 +1,8 @@
 package vip.mate.goal.service;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
+import vip.mate.goal.config.GoalProperties;
 import vip.mate.goal.model.GoalEntity;
 import vip.mate.goal.model.GoalEvaluationResult;
 import vip.mate.goal.model.GoalStatus;
@@ -8,16 +10,16 @@ import vip.mate.goal.model.GoalStatus;
 import java.time.LocalDateTime;
 import java.util.Optional;
 
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Covers the five follow-up gating conditions from RFC 48 §3.10. Every
- * negative case must independently block the follow-up.
+ * Covers the follow-up gating conditions. Every negative case must
+ * independently block the follow-up.
  */
 class GoalFollowupServiceTest {
 
-    private final GoalFollowupService svc = new GoalFollowupService();
+    private final GoalProperties properties = new GoalProperties();
+    private final GoalFollowupService svc = new GoalFollowupService(properties, new ObjectMapper());
 
     private GoalEntity goal(boolean autoEnabled) {
         GoalEntity g = new GoalEntity();
@@ -38,7 +40,8 @@ class GoalFollowupServiceTest {
         return new GoalEvaluationResult(
                 score, "missing X",
                 decision, false,
-                "stub", 0, 0L);
+                "stub", 0, 0L,
+                java.util.List.of(), null);
     }
 
     @Test
@@ -50,6 +53,20 @@ class GoalFollowupServiceTest {
     }
 
     @Test
+    void allowAutoFollowupGate_overridesPerGoalFlag() {
+        properties.setAllowAutoFollowup(false);
+        try {
+            // per-goal flag on + budget healthy, yet the runtime hard gate wins.
+            Optional<String> out = svc.maybeBuildFollowup(
+                    goal(true),
+                    res(0.6, GoalEvaluationResult.DECISION_CONTINUE));
+            assertTrue(out.isEmpty());
+        } finally {
+            properties.setAllowAutoFollowup(true);
+        }
+    }
+
+    @Test
     void completedDecision_returnsEmpty() {
         Optional<String> out = svc.maybeBuildFollowup(
                 goal(true),
@@ -58,11 +75,14 @@ class GoalFollowupServiceTest {
     }
 
     @Test
-    void highScore_returnsEmpty() {
+    void highScoreButStillContinue_followsUp() {
+        // No score gate: completion is decided by decision==completed, not a
+        // numeric threshold. A 20/21 goal (score ~0.95) that is still "continue"
+        // has remaining criteria and MUST follow up.
         Optional<String> out = svc.maybeBuildFollowup(
                 goal(true),
                 res(0.96, GoalEvaluationResult.DECISION_CONTINUE));
-        assertTrue(out.isEmpty());
+        assertTrue(out.isPresent());
     }
 
     @Test

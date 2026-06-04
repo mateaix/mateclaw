@@ -3842,6 +3842,7 @@ export default {
     inlinePromptAccept: 'Yes',
     inlinePromptDecline: 'No thanks',
     autoFollowup: 'Auto continuation',
+    sidebarActive: 'This conversation has an active goal',
     completedTitle: 'Goal completed',
     completedDetail: 'Stored in long-term memory; askable later',
     exhaustedTitle: 'Budget exhausted',

@@ -82,8 +82,12 @@ public class GeneratedFileCache {
      */
     private final Map<String, Entry> entries = Collections.synchronizedMap(
             new LinkedHashMap<>(16, 0.75f, true) {
+                // Fully qualify the value type: inside a LinkedHashMap subclass the
+                // inherited java.util.HashMap.Entry node type shadows the outer
+                // GeneratedFileCache.Entry record, so a bare `Entry` here resolves to
+                // the raw Map.Entry and the override silently fails to match.
                 @Override
-                protected boolean removeEldestEntry(Map.Entry<String, Entry> eldest) {
+                protected boolean removeEldestEntry(Map.Entry<String, GeneratedFileCache.Entry> eldest) {
                     return size() > MAX_MEMORY_ENTRIES;
                 }
             });

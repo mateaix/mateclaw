@@ -94,7 +94,7 @@ export const useGoalStore = defineStore('goal', () => {
     agentId: string,
     workspaceId: string,
     title: string,
-    opts: { description?: string; exitCriteria?: string; autoFollowup?: boolean } = {},
+    opts: { description?: string; exitCriteria?: string; autoFollowup?: boolean; criteria?: string[] } = {},
   ): Promise<Goal | null> {
     try {
       const res: any = await goalApi.create({
@@ -105,6 +105,7 @@ export const useGoalStore = defineStore('goal', () => {
         description: opts.description,
         exitCriteria: opts.exitCriteria,
         autoFollowupEnabled: opts.autoFollowup,
+        criteria: opts.criteria?.map((text) => ({ text })),
       })
       const goal: Goal = res?.data
       activeGoalByConv.value[conversationId] = goal
@@ -170,11 +171,14 @@ export const useGoalStore = defineStore('goal', () => {
       case 'goal_evaluated': {
         evaluatingByConv.value[conversationId] = false
         lastTerminalEventAtByConv.value[conversationId] = Date.now()
-        if (goal && data?.score != null) {
-          goal.completionScore = Number(data.score)
-        }
-        if (goal && typeof data?.gap === 'string') {
-          goal.progressSummary = data.gap
+        // Prefer the full goal snapshot (carries the criteria array + score);
+        // fall back to patching the cached goal for older payload shapes.
+        const fresh = data?.goal as Goal | undefined
+        if (fresh && typeof fresh.id === 'string') {
+          activeGoalByConv.value[conversationId] = fresh
+        } else if (goal) {
+          if (data?.score != null) goal.completionScore = Number(data.score)
+          if (typeof data?.gap === 'string') goal.progressSummary = data.gap
         }
         break
       }
@@ -185,6 +189,11 @@ export const useGoalStore = defineStore('goal', () => {
         // its evaluating state until message_complete fires for that
         // followup turn — so the user sees breathe → still → breathe.
         pendingFollowupByConv.value[conversationId] = true
+        // The followup payload carries the latest criteria progress.
+        const fresh = data?.goal as Goal | undefined
+        if (fresh && typeof fresh.id === 'string') {
+          activeGoalByConv.value[conversationId] = fresh
+        }
         break
       }
       case 'goal_completed': {
@@ -269,8 +278,22 @@ export const useGoalStore = defineStore('goal', () => {
 
   function progressFraction(conversationId: string): number | null {
     const g = activeGoal(conversationId)
-    if (!g || g.completionScore == null) return null
+    if (!g) return null
+    // Prefer the deterministic checklist (passed / total) when present;
+    // fall back to the evaluator's completion score otherwise.
+    if (g.criteria && g.criteria.length > 0) {
+      const passed = g.criteria.filter((c) => c.passed).length
+      return passed / g.criteria.length
+    }
+    if (g.completionScore == null) return null
     return Math.max(0, Math.min(1, g.completionScore))
+  }
+
+  /** Checklist progress as { passed, total } when a checklist exists. */
+  function criteriaProgress(conversationId: string): { passed: number; total: number } | null {
+    const g = activeGoal(conversationId)
+    if (!g || !g.criteria || g.criteria.length === 0) return null
+    return { passed: g.criteria.filter((c) => c.passed).length, total: g.criteria.length }
   }
 
   // ==================== Inline prompt + system line helpers ====================
@@ -349,6 +372,7 @@ export const useGoalStore = defineStore('goal', () => {
     isEvaluating,
     activeGoal,
     progressFraction,
+    criteriaProgress,
     isPromptDismissed,
     dismissPrompt,
     clearDismissedPrompt,

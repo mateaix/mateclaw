@@ -437,19 +437,23 @@ Full field reference, step modes, and Pebble syntax in [Workflow](./workflow).
 GET    /api/v1/workflows                                # List
 GET    /api/v1/workflows/{id}                           # Fetch (published revision + draft)
 POST   /api/v1/workflows                                # Create
-PUT    /api/v1/workflows/{id}/draft                     # Save draft (graph_json)
+PUT    /api/v1/workflows/{id}                           # Update metadata (name / description / enabled)
+PUT    /api/v1/workflows/{id}/draft                     # Save draft (graph_json, no compile)
 POST   /api/v1/workflows/{id}/publish                   # Publish draft as a new revision
 DELETE /api/v1/workflows/{id}                           # Delete
 
+POST   /api/v1/workflows/{id}/compile                   # Compile saved draft + diagnostics, no publish
 POST   /api/v1/workflows/draft/generate                 # Natural-language → graph_json draft
-POST   /api/v1/workflows/{id}/preview-compile           # Static checks + Pebble validation, no publish
+POST   /api/v1/workflows/draft/preview-compile          # Compile arbitrary draft JSON (no persist; template/generator preview)
+GET    /api/v1/workflows/draft/templates                # Templates the generator can apply directly
 
-POST   /api/v1/workflows/{id}/runs                      # Start a run (async)
-GET    /api/v1/workflows/{id}/runs                      # Run list
+GET    /api/v1/workflows/{id}/runs                      # Run list (limit, default 50)
+GET    /api/v1/workflows/runs/paused                    # All paused runs in the workspace (operator entry)
 GET    /api/v1/workflows/runs/{runId}                   # Run detail + per-step input/output/tokens/duration
 POST   /api/v1/workflows/runs/{runId}/resume            # Resume after await_approval
-POST   /api/v1/workflows/runs/{runId}/cancel            # Cancel in-flight
 ```
+
+> v0 has no manual "start run / cancel run" endpoint — a workflow actually starts only via a [Trigger](./triggers) or an `await_approval` resume (`/runs/{runId}/resume`). For a dry run use `/draft/preview-compile` (compile only, no persist, no execution). A manual run endpoint is planned for a later release.
 
 ---
 
@@ -461,13 +465,11 @@ Six pattern types, event governance, cross-instance consistency in [Triggers](./
 GET    /api/v1/triggers                                 # List
 GET    /api/v1/triggers/{id}                            # Fetch
 POST   /api/v1/triggers                                 # Create
-PUT    /api/v1/triggers/{id}                            # Update
+PUT    /api/v1/triggers/{id}                            # Update (includes enabled toggle; changing the cron expr bumps pattern_version)
 DELETE /api/v1/triggers/{id}                            # Delete
-PUT    /api/v1/triggers/{id}/toggle?enabled={bool}      # Toggle
 
-POST   /api/v1/triggers/events                          # Generic event ingress (webhook / external bridge)
-                                                         # ACKs 200 immediately, dispatches asynchronously
-GET    /api/v1/triggers/{id}/events                     # Event history for this trigger
+POST   /api/v1/triggers/events                          # Generic event ingress (webhook / external bridge); scoped by X-Workspace-Id
+                                                        # → dedup / rate-limit / bot-self, then dispatches synchronously and returns each trigger's fire/drop result
 ```
 
 ---
