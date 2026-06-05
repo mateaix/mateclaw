@@ -115,7 +115,9 @@ RUN mkdir -p /root/.ssh && ssh-keyscan -H github.com >> /root/.ssh/known_hosts
 # BrowserLauncher's BUNDLED strategy will then succeed without extra config.
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
     TZ=Asia/Shanghai \
-    JAVA_TOOL_OPTIONS="-Duser.timezone=Asia/Shanghai" \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    JAVA_TOOL_OPTIONS="-Duser.timezone=Asia/Shanghai -Dsun.jnu.encoding=UTF-8" \
     PIP_INDEX_URL=https://pypi.org/simple \
     PIP_TRUSTED_HOST=pypi.org
 COPY --from=builder /build/mateclaw-server/target/*.jar app.jar
