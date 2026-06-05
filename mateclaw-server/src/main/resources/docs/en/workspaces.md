@@ -261,7 +261,7 @@ curl -X POST http://localhost:18088/api/v1/workspaces/1/members \
 curl -X DELETE http://localhost:18088/api/v1/workspaces/1/members/42 \
   -H "Authorization: Bearer <token>"
 
-curl -X PUT http://localhost:18088/api/v1/workspaces/1/members/42/role \
+curl -X PUT http://localhost:18088/api/v1/workspaces/1/members/42 \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
   -d '{"role": "admin"}'

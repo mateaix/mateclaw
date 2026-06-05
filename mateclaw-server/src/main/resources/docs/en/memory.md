@@ -65,6 +65,55 @@ Each layer operates at a different timescale. Short-term is *this turn*. Extract
 
 ---
 
+## Memory knows who's who: per-owner isolation (1.5.0)
+
+Before, an employee's memory was **shared**: whether it was you logged into the web, a colleague in a Feishu group, or an end user coming in through a third-party API, the memory piled into the same `MEMORY.md`. One employee serving multiple people would cross wires.
+
+1.5.0 gives every memory an **owner** and a **visibility scope**.
+
+### A unified owner_key
+
+Whatever the identity source, it normalizes to one prefixed string:
+
+| Source | owner_key |
+|---|---|
+| Web console | `user:<user id>` |
+| IM channel (Feishu / DingTalk / WeCom…) | `<channel>:<sender id>` |
+| Third-party API (with endUserId) | `api:<endUserId>` |
+| System / cron | `system` |
+
+### Three visibility scopes
+
+| scope | Who reads it | Typical content |
+|---|---|---|
+| **PERSONAL** | Only the matching owner | Memory extracted from conversations defaults here |
+| **TEAM** | Everyone using this employee | Agent config files (AGENTS.md / SOUL.md / PROFILE.md), backfilled legacy data |
+| **GLOBAL** | Always visible across employees / workspaces | Preset facts, system reference material |
+
+### Recall prefers personal memory
+
+The system prompt bakes in only the shared TEAM/GLOBAL memory (cacheable); each turn then **prefetches** that owner's personal memory by owner_key. So when someone asks "what stack does my project use," the employee recalls *that person's* private memory files first, not generic KB material.
+
+> On the structured "fact" layer: the **fact recall query itself supports owner-visibility filtering** (PERSONAL is owner-only, TEAM/GLOBAL shared). But the current **automatic fact projection** is built mainly from shared memory files and doesn't set `ownerKey/scope` on insert — so personalization shows up more in the personal-memory-file prefetch; per-owner facts are still being filled in.
+
+### Third-party APIs pass through an end-user identity
+
+`/api/v1/chat` and `/api/v1/chat/stream` request bodies gain an optional **`endUserId`** field (a string, to preserve large-integer precision). One PAT-authenticated integration represents one MateClaw user but can pass a distinct `endUserId` per end user, and memory isolates per end user automatically.
+
+### It's a feature flag
+
+The master switch is `mate.memory.lifecycle-mediator-enabled`.
+
+::: warning Mind the default
+The Java property's bare default is `false`, but the `application.yml` **shipped with the release sets it to `true`** — so per-owner isolation is **on by default in a default install**. To go back to the old shared behavior (all writes to TEAM), set it to `false` explicitly in your config.
+:::
+
+When on: conversation extraction writes to the owner's PERSONAL memory and recall filters by owner_key; when off, all writes fall back to shared TEAM. Multi-tenant instances stay on; single-user deployments can turn it off.
+
+Under the hood: migration `V137` adds `owner_key` + `scope` columns to `mate_workspace_file` / `mate_memory_recall` / `mate_fact`, backfilling legacy rows as `TEAM` (so no memory gets hidden on upgrade). Memory tools like `remember` resolve owner_key from the current request context — when the flag is on they write to that owner's PERSONAL memory, when off they fall back to shared writes.
+
+---
+
 ## Multi-layer memory with pluggable providers
 
 The memory layer is not one hard-coded implementation. It's an **interface** — the multi-layer architecture lets you stack providers:
@@ -415,6 +464,12 @@ mate:
     # --- Consolidation / dreaming ---
     emergence-enabled: true
     emergence-day-range: 7
+
+    # --- per-owner memory isolation (1.5.0) ---
+    # The value shipped with the release is true (on): conversation extraction writes to the owner's
+    # PERSONAL memory and recall filters by owner_key. Set false for the old shared behavior (all writes
+    # to TEAM). The bare Java-property default is false.
+    lifecycle-mediator-enabled: true
 ```
 
 Prefix: `mate.memory`.

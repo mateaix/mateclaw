@@ -151,7 +151,7 @@ This is the most important thing to know if you're contributing to the backend.
 
 ### Goal-evaluation node (1.4.0+)
 
-The graph (both ReAct and Plan-Execute) now runs a `GoalEvaluationNode` after `FinalAnswerNode` has streamed the final answer: it scores how completely the goal was met and can optionally inject an auto-followup message to keep pushing any unmet goals forward.
+The graph (both ReAct and Plan-Execute) now runs a `GoalEvaluationNode` after `FinalAnswerNode` has streamed the final answer: since 1.5.0 it judges the goal's checklist criterion by criterion (bootstrap / verdict modes), treats the goal as complete **only when every criterion passes**, and can optionally inject an auto-followup message targeting the remaining criteria to keep pushing any unmet goal forward.
 
 ### Other 1.4.0 runtime changes
 

@@ -35,6 +35,11 @@ v1.4.0 makes Feishu a first-class channel — interactive cards, streaming cards
 Feishu specifics are spelled out in the [Feishu](#feishu-lark) section below.
 :::
 
+::: tip 1.5.0 channel improvements
+- **Shared inbound media pipeline** — **WeChat and WeCom** are currently wired onto a shared inbound-media downloader + magic-byte type detection + exponential-backoff retry (other IM channels to follow). File types are decided from content bytes (no more hardcoded `image/*`); HEIC / WEBP / DOCX / XLSX and friends are detected correctly, with automatic retry on download failure.
+- **Feishu: follow-up text auto-carries recent files (#201)** — send a file in a Feishu chat first (even without @-mentioning the employee), then a text message, and the cached files are auto-attached as content parts for the employee — 5 files per chat, 60-minute TTL.
+:::
+
 ---
 
 ## The nine channels

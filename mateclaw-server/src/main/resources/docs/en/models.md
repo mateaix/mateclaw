@@ -17,8 +17,8 @@ MateClaw doesn't care which LLM you use. It talks to every mainstream provider t
 | **Bailian Token Plan** | Bailian token-bundle plan | dashscope | 7 seeded models; long tokens supported |
 | **OpenAI** | GPT-4o, GPT-4o-mini, GPT-5.5, o1, o3, o4-mini | openai | Standard OpenAI API |
 | **OpenAI OAuth (ChatGPT Plus/Pro)** | GPT-4o, o3, o4-mini via subscription | openai | Browser-based OAuth — no API key |
-| **Anthropic** | Claude 4.7, Claude 4.6 Sonnet, Claude 4.5 Haiku | anthropic | Native Messages API |
-| **Anthropic Claude Code OAuth** | Claude 4.7 / 4.6 via Claude Pro/Max/Team subscription | anthropic | Browser OAuth + manual-paste flow — no API key |
+| **Anthropic** | **Claude Opus 4.8 / 4.8 Fast** (1.5.0+), Claude 4.7, Claude 4.6 Sonnet, Claude 4.5 Haiku | anthropic | Native Messages API; both 4.8 variants support the `xhigh` thinking tier |
+| **Anthropic Claude Code OAuth** | Claude Opus 4.8 / 4.7 / 4.6 via Claude Pro/Max/Team subscription | anthropic | Browser OAuth + manual-paste flow — no API key |
 | **Google Gemini** _(native)_ | gemini-2.5-flash, gemini-3-pro-image-preview, gemini-2.5-flash-image | gemini | Native `generateContent` API (not OpenAI-compatible) — see "Native Gemini" below |
 | **xAI / Grok** | Grok 3, Grok 4 | openai | OpenAI-compatible (base URL + API key); xAI brand icon in the UI |
 | **DeepSeek** | deepseek-chat, deepseek-coder, **DeepSeek V4 flash + pro** (thinking-mode) | openai | OpenAI-compatible |
@@ -161,13 +161,13 @@ Enter the user code in your browser, authorize, and the dialog closes itself the
 
 If `local` mode can't bind a loopback port (port in use, sandbox refused), it falls through to `manual_paste` automatically.
 
-**Backend endpoints** (`/api/v1/oauth/openai/device`):
+**Backend endpoints:**
 
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/start` | Begin a session — returns `deviceAuthId`, `userCode`, `verificationUrl`, `intervalSeconds`, `expiresInSeconds` |
-| `POST` | `/poll` | Poll one session by `deviceAuthId` — returns `PENDING` / `COMPLETED` / `EXPIRED` |
-| `POST` | `/cancel` | Drop the session (e.g. user closed the dialog) |
+| `POST` | `/api/v1/oauth/openai/device/start` | Begin a session — returns `deviceAuthId`, `userCode`, `verificationUrl`, `intervalSeconds`, `expiresInSeconds` |
+| `POST` | `/api/v1/oauth/openai/device/poll` | Poll one session by `deviceAuthId` — returns `PENDING` / `COMPLETED` / `EXPIRED` |
+| `POST` | `/api/v1/oauth/openai/device/cancel` | Drop the session (e.g. user closed the dialog) |
 
 The frontend respects the `intervalSeconds` OpenAI returns (typically 5 s); the server enforces a min poll interval (default 3 s) to keep load bounded. Expired sessions are swept every 5 minutes.
 
@@ -391,6 +391,17 @@ Every provider you add joins an `AvailableProviderPool` that's probed at startup
 - **Manual reprobe + auto-reprobe on config change** — no restart after rotating a key
 - **Egress sanitizer** — provider-specific options (e.g., `reasoning_effort` for OpenAI reasoning models) are stripped at egress when failing over to a provider that doesn't support them, so leaked options can't 400 the fallback
 - **UI distinguishes 401 from session expiry** — provider auth errors and user session expiry now show different messages with different remediation
+
+### Preferred provider drives the primary model (1.5.0)
+
+Before 1.5.0, "per-agent priority" only affected the **failover order** — the primary model was still the global default. 1.5.0 makes that preference **actually decide primary-model selection**. The full precedence is:
+
+1. **A conversation-pinned model wins** — the chat-header ModelSelector bound a model to this conversation, so it's used (see [per-conversation model selection](./chat#per-conversation-model-selection))
+2. **then the per-agent model override (`modelName`)** — the employee has a model pinned on it
+3. **then the global default model**
+4. **only when none of those are set does preferred-provider routing kick in** — picking the preferred provider's primary model
+
+Preferred-provider routing has a **capability gate**: if the employee's bound skills declare a need like `requires-model: vision`, routing first picks a provider that can satisfy those modalities; only if none can does it fall back unconstrained. Preferences are stored in `mate_agent_provider_preference` (ascending `sortOrder` = higher priority).
 
 ---
 

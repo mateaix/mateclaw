@@ -111,7 +111,7 @@ Features:
 - `POST /api/v1/chat/stream` — SSE streaming (native fetch)
 - `POST /api/v1/chat/upload`
 - `POST /api/v1/chat/{conversationId}/stop`
-- `POST /api/v1/approvals/{id}/resolve`
+- approval resolution is sent as `/approve` or `/deny` through `POST /api/v1/chat/stream`
 - `GET /api/v1/chat/{conversationId}/pending-approvals`
 - `GET /api/v1/conversations` — list
 - `GET /api/v1/conversations/{id}/messages`
