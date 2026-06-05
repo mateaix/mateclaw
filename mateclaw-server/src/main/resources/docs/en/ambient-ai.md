@@ -153,11 +153,15 @@ curl http://localhost:18088/api/v1/cron-jobs \
   -H "Authorization: Bearer <token>"
 
 # Run once now (doesn't affect the next scheduled run)
-curl -X POST http://localhost:18088/api/v1/cron-jobs/{id}/run-now \
+curl -X POST http://localhost:18088/api/v1/cron-jobs/{id}/run \
   -H "Authorization: Bearer <token>"
 
-# View execution history
-curl http://localhost:18088/api/v1/cron-jobs/{id}/runs \
+# View execution history for one cron job
+curl http://localhost:18088/api/v1/dashboard/cron-runs/{id} \
+  -H "Authorization: Bearer <token>"
+
+# View recent execution history in the current workspace
+curl http://localhost:18088/api/v1/dashboard/cron-runs \
   -H "Authorization: Bearer <token>"
 ```
 

@@ -111,7 +111,7 @@
 - `POST /api/v1/chat/stream`——SSE 流式（原生 fetch）
 - `POST /api/v1/chat/upload`
 - `POST /api/v1/chat/{conversationId}/stop`
-- `POST /api/v1/approvals/{id}/resolve`
+- 审批结果通过 `POST /api/v1/chat/stream` 发送 `/approve` 或 `/deny`
 - `GET /api/v1/chat/{conversationId}/pending-approvals`
 - `GET /api/v1/conversations`——列表
 - `GET /api/v1/conversations/{id}/messages`

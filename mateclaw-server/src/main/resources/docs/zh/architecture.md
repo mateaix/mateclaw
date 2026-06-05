@@ -151,7 +151,7 @@ mateclaw/
 
 ### 目标评估节点（1.4.0+）
 
-图（ReAct 和 Plan-Execute 都有）现在在 `FinalAnswerNode` 把最终答案流式输出之后再跑一个 `GoalEvaluationNode`：它给目标完成度打分，并可选地注入一条自动跟进消息，把没达成的目标继续推进。
+图（ReAct 和 Plan-Execute 都有）现在在 `FinalAnswerNode` 把最终答案流式输出之后再跑一个 `GoalEvaluationNode`：1.5.0 起它逐条裁决目标的 checklist 准则（bootstrap / verdict 两模式），**全部准则通过才算完成**，并可选地注入一条针对剩余准则的自动跟进消息，把没达成的目标继续推进。
 
 ### 其他 1.4.0 运行时变化
 

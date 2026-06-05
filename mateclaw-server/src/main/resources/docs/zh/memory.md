@@ -64,6 +64,55 @@ MateClaw 里其他所有东西，在你配置完之后就静止了。Agent、工
 
 ---
 
+## 记忆认人：per-owner 隔离（1.5.0）
+
+以前一个员工的记忆是**共享**的：不管是网页登录的你、还是飞书群里的同事、还是第三方 API 接进来的终端用户，聊出来的记忆都堆进同一个 `MEMORY.md`。一个员工服务多个人时，记忆会串台。
+
+1.5.0 给每条记忆加了**主人（owner）**和**可见范围（scope）**。
+
+### 统一的 owner_key
+
+不管身份从哪来，都归一成一个带前缀的字符串：
+
+| 来源 | owner_key |
+|---|---|
+| 网页控制台 | `user:<用户id>` |
+| IM 渠道（飞书 / 钉钉 / 企微…） | `<渠道>:<发送者id>` |
+| 第三方 API（带 endUserId） | `api:<endUserId>` |
+| 系统 / cron | `system` |
+
+### 三档可见性
+
+| scope | 谁能读 | 典型内容 |
+|---|---|---|
+| **PERSONAL（个人）** | 只有匹配的 owner | 对话里抽取出来的记忆默认进这档 |
+| **TEAM（团队）** | 用这个员工的人都能读 | 员工配置文件（AGENTS.md / SOUL.md / PROFILE.md）、历史回填的数据 |
+| **GLOBAL（全局）** | 跨员工 / 工作空间始终可见 | 预置事实、系统参考资料 |
+
+### 召回偏好个人记忆
+
+system prompt 里只烤进 TEAM/GLOBAL 的共享记忆（可缓存）；每轮再按当前 owner_key **预取**他个人的记忆注入。所以问"我的项目用什么栈"时，员工优先回忆**这个人**的私人记忆文件，而不是知识库里的泛泛资料。
+
+> 关于结构化"事实"层：**事实召回查询本身支持 owner 可见性过滤**（PERSONAL 仅 owner 可见，TEAM/GLOBAL 共享）。但当前的**自动事实投影**主要从共享记忆文件构建、插入时不写 `ownerKey/scope`——也就是说个人化更多体现在个人记忆文件的预取上，事实层的 per-owner 化还在补齐中。
+
+### 第三方 API 透传终端用户身份
+
+`/api/v1/chat` 和 `/api/v1/chat/stream` 的请求体新增可选字段 **`endUserId`**（字符串，保大整数精度）。一个 PAT 认证的接入方代表一个 MateClaw 用户，但可以为每个终端用户传不同的 `endUserId`，记忆按终端用户自动隔离。
+
+### 这是一个可开关的特性
+
+总开关是 `mate.memory.lifecycle-mediator-enabled`。
+
+::: warning 默认值要看清楚
+Java 属性的裸默认值是 `false`，但**随发行版打包的 `application.yml` 把它设成了 `true`**——也就是说**默认安装下 per-owner 隔离是开着的**。要回到旧的共享行为（所有写入走 TEAM），在你的配置里显式设为 `false`。
+:::
+
+打开后：对话抽取写入 owner 的 PERSONAL 记忆，召回按 owner_key 过滤；关闭后所有写入回退到共享 TEAM。多租户实例保持开启，单人部署可以关掉。
+
+底层：迁移 `V137` 给 `mate_workspace_file` / `mate_memory_recall` / `mate_fact` 三张表加了 `owner_key` + `scope` 列，历史行回填为 `TEAM`（保证升级后没有记忆被藏起来）。`remember` 等记忆工具会按当前请求上下文解析 owner_key，开关打开时写进该 owner 的 PERSONAL 记忆，关闭时回退共享写入。
+
+---
+
 ## 多层记忆 + 可插拔 Provider
 
 记忆这一层不是一个硬编码的实现。它是一个**接口**——多层架构允许你**堆叠 provider**：
@@ -414,6 +463,11 @@ mate:
     # --- 整合 / dreaming ---
     emergence-enabled: true
     emergence-day-range: 7
+
+    # --- per-owner 记忆隔离（1.5.0）---
+    # 随发行版打包的默认值是 true（开）：对话抽取写入 owner 的 PERSONAL 记忆，召回按 owner_key 过滤。
+    # 设为 false 回到旧的共享行为（所有写入走 TEAM）。Java 属性裸默认值为 false。
+    lifecycle-mediator-enabled: true
 ```
 
 配置前缀：`mate.memory`。

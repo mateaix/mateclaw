@@ -65,8 +65,6 @@ For automation and external scripts, the endpoint is direct:
 POST /api/v1/goals
 {
   "conversationId": "conv-xxx",
-  "agentId": "1000000001",
-  "workspaceId": 1,
   "title": "Deploy blog to fly.io",
   "description": "...",
   "exitCriteria": "DNS + SSL + healthcheck + tests pass",
@@ -76,7 +74,7 @@ POST /api/v1/goals
 }
 ```
 
-Full surface in the [API reference](./api).
+> `agentId` / `workspaceId` are derived server-side from `conversationId` — **don't send them** (they're ignored if you do). Full surface in the [API reference](./api).
 
 ---
 
@@ -114,10 +112,56 @@ After every turn, a backend evaluator node runs:
 When `autoFollowupEnabled=true` and this turn's evaluator decision is "continue", the backend:
 
 1. Writes a `followup_injected` event to the timeline
-2. APPENDs a user message to the conversation: *"Continue working on the goal. Still missing: {gap}. Take the next concrete step."*
+2. APPENDs a user message to the conversation. **Since 1.5.0, if the goal has a checklist, that message explicitly lists the criteria still open** — *"5/8 done, remaining: ① … ② …, take the next step on these"*; with no checklist it falls back to the generic *"Continue working on the goal. Still missing: {gap}."*
 3. Re-enters the reasoning loop — the next assistant reply lands right after the first
 
 Feels like: the worker answers a segment → pauses a beat → **keeps going** — like a person who finished one step, thought for a second, and continued.
+
+---
+
+## A goal is a checklist (1.5.0+)
+
+In 1.4.0 the evaluator gave a completion score (0–1) and a one-line "what's missing" each turn. The problem: **what does 0.8 mean** — which boxes are done, which aren't? You couldn't see it.
+
+1.5.0 replaces that with a **checklist**: a goal = a set of **independently verifiable** criteria.
+
+**The evaluator has two modes:**
+
+| Mode | When | What it does |
+|---|---|---|
+| **bootstrap** | No criteria yet | Decomposes the goal into a checklist; each starts "not passed" |
+| **verdict** | Criteria exist | Judges each one: satisfied? with evidence |
+
+Both modes use **structured output** — the evaluator returns a typed object (criterion `id` + `passed` + `evidence`), not free text we have to parse.
+
+**Completion is deterministic.** Only when **every criterion passes** is the goal done. 19 of 20 passed (a 0.95 score) is still "continue" — miss one and one is missing, no fuzzy threshold.
+
+**Three ways to add a checklist:**
+
+- **At creation** — pass `criteria: ["DNS resolves", "SSL valid", "tests green"]` to the `setGoal` tool, or `criteria` to `POST /api/v1/goals`. Skips the bootstrap round.
+- **Let the evaluator decompose** — pass no criteria and the first evaluation bootstraps the checklist.
+- **Append at runtime** — the `addGoalCriterion` tool or `POST /api/v1/goals/{id}/criteria` adds one to a live goal without restarting.
+
+**What a criterion looks like:**
+
+```json
+{ "id": "C1", "text": "DNS resolves to fly.io", "passed": false, "evidence": "" }
+```
+
+`id` is server-assigned (C1, C2…), `text` is a sentence a human reads and an LLM judges, `passed` is the evaluator's verdict, `evidence` is the justification it gives. The checklist lives in the `mate_agent_goal.criteria` column (JSON) and is delivered parsed as `GoalResponse.criteria`, never as a raw JSON string.
+
+### The ring, on hover, is a checklist card
+
+- **No checklist** — a one-line tooltip: title + the gap text the evaluator wrote.
+- **With a checklist** — a card: title + `X/Y` progress, then each criterion prefixed by `○` (open) or `✓` (green, done, struck through).
+
+While evaluating, a sand-gold breathing halo surrounds the avatar; on completion a green ring shows briefly then disappears; on budget exhaustion the ring turns rust.
+
+### Evaluator SPI
+
+The evaluation logic implements Spring AI's `Evaluator` interface: it does goal-specific checklist verdicts (bootstrap / verdict) and can be reused as a generic evaluator (wrapping a single objective as one criterion in verdict mode). Failed evaluator calls **still count against the LLM budget**, so the accounting stays honest.
+
+> The 1.4.0 goal was "the worker remembers what it's doing." The 1.5.0 goal is "the worker knows **exactly which boxes are still open**." From a score to a checklist you can tick.
 
 ---
 
@@ -132,7 +176,7 @@ These four ship as agent-wide system tools — no binding setup needed:
 | **completeGoal** | Explicitly mark done | "All items done — call completeGoal" |
 | **getGoalStatus** | Inspect current state | "How are we doing?" |
 
-On completion (`completeGoal` or evaluator score ≥ 0.95), the worker forwards a summary to its [long-term memory](./memory) so future conversations can recall it.
+On completion (`completeGoal`, or the evaluator judging **every criterion passed**), the worker forwards a summary to its [long-term memory](./memory) so future conversations can recall it.
 
 ---
 
@@ -168,7 +212,7 @@ Your options:
    ↓   ↑
  paused
 
- active ──evaluator score≥0.95 / completeGoal──→ completed (terminal)
+ active ──all criteria passed / completeGoal──→ completed (terminal)
    ↓
  active ──turns_used / llm_calls exhausted ────→ exhausted (terminal)
    ↓
@@ -188,7 +232,7 @@ A few deliberate non-features:
 - **No nested goals / goal trees** — one goal per conversation, no OKR stack
 - **No "goal templates"** — every goal is hand-written
 - **No cross-conversation goal migration** — use a [workflow](./workflow) for that
-- **No completion score in the UI** — `completionScore` is an internal engineering protocol, not user vocabulary. The UI speaks via a ring; hover reveals the natural-language gap the evaluator wrote. The numeric score stays in logs and the API for debugging
+- **No completion score in the UI** — `completionScore` is an internal engineering protocol, not user vocabulary. The UI speaks via a ring; on hover it shows the box-by-box checklist card when there's a checklist, or the natural-language gap text the evaluator wrote when there isn't. The numeric score stays in logs and the API for debugging
 
 ---
 
@@ -219,12 +263,18 @@ mateclaw:
   goal:
     # Master switch; when off, the graph node passes through for every call.
     enabled: true
+    # Create-time default for autoFollowupEnabled when the caller leaves it unset.
+    default-auto-followup: true
+    # Runtime master switch; when off, no goal injects a followup regardless of its per-goal flag.
+    allow-auto-followup: true
     # Default turn budget when the user doesn't override.
     default-turn-budget: 20
     # Default combined (agent + evaluator) LLM call budget.
     default-llm-call-budget: 200
     # Minimum seconds between two consecutive auto-followups.
     auto-followup-cooldown-seconds: 0
+    # Hard cap on auto-followups within a single graph run (per-message safety net; overall budget is turnBudget).
+    max-followups-per-run: 8
     # Model used by the evaluator. Empty = same model as the chat agent.
     # Recommended: a cheap model like qwen-turbo / glm-4-flash.
     evaluator-model: ""
