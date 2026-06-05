@@ -2250,6 +2250,7 @@ export default {
     scan: '扫描',
     scanning: '扫描中...',
     scanResult: '已扫描 {scanned} 个文件，新增 {added} 个，跳过 {skipped} 个',
+    scanFailed: '扫描失败',
     saving: '保存中...',
     status: {
       active: '启用',
