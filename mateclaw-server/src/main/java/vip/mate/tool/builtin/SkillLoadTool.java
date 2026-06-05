@@ -5,10 +5,16 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Component;
+import vip.mate.agent.context.ChatOrigin;
+import vip.mate.llm.routing.AgentBindingResolver;
 import vip.mate.skill.runtime.SkillRuntimeService;
 import vip.mate.skill.runtime.model.ResolvedSkill;
+
+import java.util.Set;
 
 /**
  * Explicit skill-load entry point.
@@ -31,6 +37,10 @@ public class SkillLoadTool {
 
     private final SkillRuntimeService runtimeService;
     private final SkillFileTool skillFileTool;
+
+    @Lazy
+    @Autowired
+    private AgentBindingResolver agentBindingResolver;
 
     @Tool(name = "load_skill", description = """
         Load a skill package's SKILL.md into the conversation.
@@ -64,6 +74,14 @@ public class SkillLoadTool {
             log.info("load_skill: skill '{}' not found or not enabled", skillName);
             return "Error: Skill '" + skillName + "' not found or not enabled. "
                     + "Call listAvailableSkills(keyword=\"" + skillName + "\") to find the correct name.";
+        }
+        Long agentId = ChatOrigin.from(ctx).agentId();
+        if (agentId != null) {
+            Set<Long> boundSkillIds = agentBindingResolver.getBoundSkillIds(agentId);
+            if (boundSkillIds != null && (skill.getId() == null || !boundSkillIds.contains(skill.getId()))) {
+                log.info("load_skill: agent {} is not allowed to load skill '{}'", agentId, skillName);
+                return "Error: Skill '" + skillName + "' is not available for this agent.";
+            }
         }
         String path = (filePath == null || filePath.isBlank()) ? "SKILL.md" : filePath;
         log.info("load_skill: loading skill='{}', path='{}'", skillName, path);
