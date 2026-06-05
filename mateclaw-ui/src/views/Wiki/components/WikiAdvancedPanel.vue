@@ -140,8 +140,13 @@
         <div class="kv"><span>{{ t('wiki.adv.watcher.sourceType') }}</span><b>{{ watcher.data.sourceType || '—' }}</b></div>
       </div>
       <label class="field-label">{{ t('wiki.adv.watcher.directory') }}</label>
-      <div class="dir-row">
-        <input v-model.trim="watcher.dir" class="form-input" :placeholder="t('wiki.adv.watcher.dirHint')" />
+      <textarea
+        v-model="watcher.dir"
+        class="code-editor dir-editor"
+        spellcheck="false"
+        :placeholder="t('wiki.adv.watcher.dirHint')"
+      ></textarea>
+      <div class="adv-actions">
         <button class="btn-ghost" @click="saveDirectory" :disabled="watcher.busy">{{ t('common.save') }}</button>
       </div>
       <p v-if="watcher.data.availableSourceTypes?.length" class="adv-desc">
@@ -505,6 +510,7 @@ onMounted(() => { loaded.profile = true; loadProfile() })
 .kv b { font-size: 14px; color: var(--mc-text-primary); }
 .dir-row { display: flex; gap: 8px; }
 .dir-row .form-input { flex: 1; }
+.dir-editor { min-height: 100px; font-size: 12.5px; }
 
 .runs-box { border: 1px solid var(--mc-border-light); border-radius: 12px; padding: 12px; background: var(--mc-bg-muted); }
 .runs-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
