@@ -532,6 +532,18 @@ When disabled, the catalog guidance points at `readSkillFile` instead and `load_
 
 ---
 
+## The `/skill` slash menu in chat (new in 1.5.0)
+
+Don't want to prompt the employee in natural language about which skill to use? Type `/` in the chat composer to open a **searchable skill picker**:
+
+- ↑↓ to move, Enter/Tab to select, Esc to close; typing filters the enabled skills live (up to 8 shown).
+- The list comes from `GET /api/v1/skills/enabled` — real skills plus MCP/ACP-derived virtual skills (a real skill shadows a same-named virtual one). Cached per workspace for 30 seconds so reopening doesn't re-fetch.
+- Selecting a skill inserts a directive into the box: `Use the "skill name" skill: `, cursor at the end, ready for you to add context and send. The employee sees the directive in message history and runs `load_skill` to pull it.
+
+The menu shows whenever **an employee is selected and that employee hasn't disabled skills** (the frontend checks `currentAgent && !skillsDisabled`) — it is unrelated to the global progressive-disclosure switch. Setting `mateclaw.skill.disclosure.load-skill-tool.enabled` to `false` globally only stops the backend from registering the `load_skill` tool; the menu still opens (the employee just falls back to pulling skills via `readSkillFile` and similar).
+
+---
+
 ## Skill lifecycle curator (new in v1.4)
 
 Agents that synthesize skills accumulate cruft — a one-off skill from three weeks ago is still in the catalog, eating a slot. The **curator** is a daily sweep that ages idle, **agent-created** skills through `active → stale → archived` and gets them out of the way without deleting anything.

@@ -101,7 +101,7 @@ Earlier HTTP transport using SSE for server-to-client push. Legacy compatibility
 - **URL** (streamable_http/sse) — server endpoint
 - **HTTP Headers** (streamable_http/sse) — JSON object (e.g., `{"Authorization": "Bearer token"}`)
 - **Connect timeout** — default 30s
-- **Read timeout** — default 30s
+- **Read timeout** — default **60s** (raised from 30s in 1.5.0, #247; a single callTool round-trip that legitimately runs longer no longer gets cut off. Each server is tunable 5–300s)
 
 Save. If enabled, MateClaw auto-attempts to connect and discover tools.
 
@@ -361,7 +361,7 @@ After each connection operation, results persist:
 | `cwd` | VARCHAR(512) | NULL | Working directory |
 | `enabled` | BOOLEAN | TRUE | On/off |
 | `connect_timeout_seconds` | INT | 30 | HTTP connect timeout |
-| `read_timeout_seconds` | INT | 30 | Request response timeout |
+| `read_timeout_seconds` | INT | 60 | Request response timeout (default 60 since 1.5.0, was 30) |
 | `last_status` | VARCHAR(32) | `disconnected` | Last connection status |
 | `last_error` | TEXT | NULL | Last error message |
 | `last_connected_time` | DATETIME | NULL | Last successful connection |

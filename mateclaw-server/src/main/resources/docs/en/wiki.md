@@ -258,6 +258,8 @@ Bind an agent to a knowledge base from `Agents → [your agent] → Knowledge`. 
 | `wiki_related_pages` | Related-page discovery across four signals (shared chunks, shared raws, direct links, semantic neighbors). |
 | `wiki_explain_relation` | Score breakdown for the relationship between two pages. |
 | `wiki_create_page` / `wiki_delete_page` | Direct page management; deletion respects `locked` / `system`. |
+| `wiki_update_page` | **1.5.0**: in-place edit of a page (keeps the slug), gated by the pageType "update" permission. |
+| `wiki_stale_pages` | **1.5.0**: list every page currently flagged for review (`stale`). |
 | `wiki_archive_page` / `wiki_unarchive_page` | Soft-archive: hide a page from default list/search/related results without destroying it. Citations and source lineage survive; recoverable. System pages can't be archived. |
 | `wiki_list_transformations` | List the transformation templates available to this KB (name, intent, whether apply-default is on). |
 | `wiki_apply_transformation` | Run a template against one **raw material**; returns the output, run id, and saved-page info. |
@@ -299,13 +301,11 @@ The injection is gated by the `wiki.hot_cache.enabled` feature flag (off → emp
 
 #### Operator endpoints
 
-Base path `/api/v1/wiki/hot-cache`:
-
 | Method | Path | What it does |
 |---|---|---|
-| `GET` | `/{kbId}` | Current snapshot + meta |
-| `POST` | `/{kbId}/regenerate` | Manual rebuild (async, ignores debounce) |
-| `DELETE` | `/{kbId}` | Soft-delete; rebuilds on next event |
+| `GET` | `/api/v1/wiki/hot-cache/{kbId}` | Current snapshot + meta |
+| `POST` | `/api/v1/wiki/hot-cache/{kbId}/regenerate` | Manual rebuild (async, ignores debounce) |
+| `DELETE` | `/api/v1/wiki/hot-cache/{kbId}` | Soft-delete; rebuilds on next event |
 
 The hot cache lives in `mate_wiki_hot_cache` — see the **Data model** section below for the exact columns.
 
@@ -464,10 +464,86 @@ than getting silently redirected to a similarly-named page.
 | 4 | Cascade delete and rename rewrite referrers in-transaction; audit log; feature flag |
 | 5 | Analyze stage emits a `related_pages` slug whitelist (validated server-side); enrich applier skips code blocks and gates on the whitelist |
 
-Full design + live verification: `rfcs/202605/55-wiki-link-resolution-overhaul.md`
-and `mateclaw-server/src/test/resources/e2e/wiki-link-overhaul-verification.md`
-(6 e2e passes, 50+ live assertions, 3 bugs caught and fixed during the
-test).
+Full design and live verification live in the matching design doc and
+end-to-end verification record in the repository.
+
+---
+
+## The knowledge base maintains itself (1.5.0)
+
+1.5.0 pushes the Wiki from "a searchable knowledge base" into "a knowledge engine that maintains its own consistency, layers itself, runs its own pipelines, and can mount a local directory." The management surface for all of this is the **Wiki advanced panel** in the admin console (five sub-pages: page-type profile / layers & staleness / permissions / source watcher / pipelines).
+
+### Knowledge layers: fact vs experience
+
+Each page can carry a **knowledge layer**:
+
+- **`fact`** — "what is": foundational fact pages. Unlabeled defaults to fact.
+- **`experience`** — "what it means": synthesis, analysis, insight, which **depends on** a set of fact pages.
+
+**Staleness propagates.** An experience page declares which fact pages it depends on (edges stored by page **id**, so renames don't break them). When a fact page is updated during ingest, every experience page depending on it is auto-marked `stale` (needs review) + a reason. The `wiki_stale_pages` tool lists everything currently flagged; search can **filter by knowledge layer** (facts only / experience only / all).
+
+Under the hood: `mate_wiki_page` gains `knowledge_layer` / `depends_on_json` / `stale` / `stale_reason_json` columns (migration V135), with dependency edges in `mate_wiki_page_dependency` and a reverse index dedicated to stale propagation.
+
+### Page-type profiles (pageType profile)
+
+Define which **page types** a KB has (e.g. "concept / tutorial / decision record"), each carrying:
+
+- A structured-field **schema** — page metadata is validated against it on save, with the validation status recorded (valid / invalid + details)
+- **route / create / merge**-stage prompts — injected into the corresponding LLM call
+- A **Markdown template** — the skeleton used when generating the page
+
+At most one **enabled** profile per KB; unconfigured KBs use a **built-in default**. Profiles are written in YAML or JSON, with "validate (no save)" and "reset to default" actions. Stored in `mate_wiki_page_type_profile` (migration V134); the page metadata columns (`metadata_json` / `metadata_validation_status` / `template_key` / `profile_version`) are added to `mate_wiki_page` in the same migration.
+
+### Page-type permissions (per-agent)
+
+For "**this agent + this KB + this page type**" you can set read / create / update / delete flags plus a **write policy**:
+
+| Write policy | Meaning |
+|---|---|
+| `allow` | Write immediately |
+| `approval_required` | Write is held pending [approval](./security) |
+| `deny` | Blocked |
+
+`page_type='*'` is the KB-wide default; **exact matches beat the wildcard**.
+
+**Read and write fall back differently** — keep them distinct:
+
+- **Read** — when no rule matches, read falls back to the **KB-level default read policy** `defaultReadPolicy` (`allow_all` unless the KB sets `deny_all`). So existing KBs stay fully readable after upgrade. Read gating filters lists and search results; an unreadable type is treated as nonexistent (no existence leak).
+- **Write** — write is opt-in tightened. An agent with **no rules** for a KB writes `allow` (old behavior); add **any** rule and that KB enters "locked down" mode — page types with no matching rule resolve to `deny` (fail-safe).
+
+Stored in `mate_wiki_agent_page_type_permission` (migration V133).
+
+### Processing pipelines (Wiki Pipeline)
+
+Define a processing flow for a KB, fired automatically by **page events**:
+
+- **Triggers**: `page_type_count` (a page-type count crosses a threshold), `page_created` (a page of a given type is created), `stale_marked` (pages get flagged stale)
+- **Step executors**:
+  - `llm` — run input through the model; the output becomes the step result
+  - `skill` — run a skill from a **restricted set**, as the owner agent
+
+Definitions are written in YAML or JSON, with CRUD + validate endpoints. Every run and every step is persisted and queryable, deduplicated by `(definition, trigger, subject, bucket)` for idempotency. Tables: `mate_wiki_pipeline_definition` / `mate_wiki_pipeline_run` / `mate_wiki_pipeline_step_run` (migration V136).
+
+### Mount a local directory as a knowledge source — pluggable + scheduled incremental
+
+Knowledge sources are a **pluggable SPI** (`WikiIngestSourceProvider`) with a built-in filesystem provider: give a KB a `source_directory` and files in it get ingested.
+
+- **Scheduled incremental sync** — a background scheduler (with a distributed lock so only one node runs per cycle) scans periodically, detects changes **by content hash**, and re-ingests only new/modified files (text and binary).
+- **Fail-closed security** — paths are normalized then symlink-resolved (closing TOCTOU) and validated against an allowed-roots allowlist; under the production profile an empty allowlist rejects everything. Set the `mate.wiki.allowed-source-roots` allowlist.
+- **Status + manual trigger** — `GET .../source-watcher` shows status, `POST .../source-watcher/scan` runs a scan immediately.
+
+Relevant config (`application.yml`):
+
+```yaml
+mate:
+  wiki:
+    watcher-enabled: false          # master switch for the source watcher
+    watcher-interval-ms: 300000     # scan interval (default 5 min)
+    allowed-source-roots: []        # allowed source-directory roots (allowlist)
+    require-allowed-roots: false    # production: set true so an empty allowlist rejects everything
+```
+
+All new REST endpoints are in the [API Reference](./api#llm-wiki).
 
 ---
 

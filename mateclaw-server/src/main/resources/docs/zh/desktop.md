@@ -147,7 +147,8 @@ cd ../mateclaw-server
 mvn clean package -DskipTests
 
 # 3. 把 JAR 拷到桌面项目
-cp target/mateclaw-server.jar ../mateclaw-desktop/resources/app.jar
+JAR_FILE=$(ls -1 target/mateclaw-server-*.jar | grep -v sources | head -n 1)
+cp "$JAR_FILE" ../mateclaw-desktop/resources/app.jar
 
 # 4. 下载平台特定的 JRE
 cd ../mateclaw-desktop
