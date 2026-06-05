@@ -196,10 +196,13 @@ public class CronJobLifecycleService {
         String convId = conversationId != null ? conversationId : run.getConversationId();
         String text = result != null && result.getText() != null ? result.getText() : "";
 
+        int totalTokens = chatResult != null
+                ? chatResult.promptTokens() + chatResult.completionTokens() : 0;
         runMapper.update(null, new LambdaUpdateWrapper<CronJobRunEntity>()
                 .eq(CronJobRunEntity::getId, run.getId())
                 .set(CronJobRunEntity::getStatus, "succeeded")
-                .set(CronJobRunEntity::getFinishedAt, LocalDateTime.now()));
+                .set(CronJobRunEntity::getFinishedAt, LocalDateTime.now())
+                .set(totalTokens > 0, CronJobRunEntity::getTokenUsage, totalTokens));
 
         if (silent) {
             // No-op run: persist a short marker so the tasks_<wsId>
