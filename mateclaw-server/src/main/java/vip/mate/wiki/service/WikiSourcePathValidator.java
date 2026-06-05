@@ -46,18 +46,20 @@ public class WikiSourcePathValidator {
         }
         Path resolved = canonicalize(Paths.get(rawPath));
         List<String> roots = properties.getAllowedSourceRoots();
-        if (roots == null || roots.isEmpty()) {
+        // Filter blank entries so MATE_WIKI_ALLOWED_SOURCE_ROOTS="" (unset env var)
+        // behaves identically to an empty list rather than a list with one blank entry.
+        List<String> nonBlankRoots = (roots == null) ? List.of()
+                : roots.stream().filter(r -> r != null && !r.isBlank()).toList();
+        if (nonBlankRoots.isEmpty()) {
             if (properties.isRequireAllowedRoots()) {
                 throw new IllegalArgumentException(
                         "No allowed source roots are configured; refusing the path (fail-closed). "
-                        + "Set mate.wiki.allowed-source-roots to permit directories.");
+                        + "Set MATE_WIKI_ALLOWED_SOURCE_ROOTS (env var) or "
+                        + "mate.wiki.allowed-source-roots to permit directories.");
             }
             return resolved;
         }
-        for (String root : roots) {
-            if (root == null || root.isBlank()) {
-                continue;
-            }
+        for (String root : nonBlankRoots) {
             Path rootPath = canonicalize(Paths.get(root));
             if (resolved.startsWith(rootPath)) {
                 return resolved;
