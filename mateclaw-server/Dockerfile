@@ -105,7 +105,9 @@ RUN apt-get update \
 # BrowserLauncher's BUNDLED strategy will then succeed without extra config.
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
     TZ=Asia/Shanghai \
-    JAVA_TOOL_OPTIONS="-Duser.timezone=Asia/Shanghai"
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    JAVA_TOOL_OPTIONS="-Duser.timezone=Asia/Shanghai -Dsun.jnu.encoding=UTF-8"
 
 COPY --from=builder /build/mateclaw-server/target/*.jar app.jar
 EXPOSE 18088

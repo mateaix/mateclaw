@@ -67,6 +67,9 @@
     </div>
     <div v-if="scanResult" class="scan-result">
       {{ t('wiki.scanResult', { scanned: scanResult.scanned, added: scanResult.added, skipped: scanResult.skipped }) }}
+      <div v-if="scanResult.errors?.length" class="scan-errors">
+        <span v-for="err in scanResult.errors" :key="err" class="scan-error-item">{{ err }}</span>
+      </div>
     </div>
 
     <!-- Raw materials list -->
@@ -680,7 +683,8 @@ async function handleScanDir() {
     const result = await store.scanDirectory(store.currentKB.id)
     scanResult.value = result
   } catch (e: any) {
-    console.error('Scan failed', e)
+    const msg = e?.response?.data?.message || e?.message || t('wiki.scanFailed')
+    mcToast.error(msg)
   } finally {
     scanning.value = false
   }
@@ -708,6 +712,8 @@ async function handleScanDir() {
 .dir-input { flex: 1; border: none; background: transparent; font-size: 13px; color: var(--mc-text-primary); outline: none; }
 .dir-input::placeholder { color: var(--mc-text-tertiary); }
 .scan-result { font-size: 12px; color: var(--mc-text-secondary); padding: 8px 10px; background: rgba(90,138,90,0.1); border-radius: 10px; }
+.scan-errors { margin-top: 6px; display: flex; flex-direction: column; gap: 2px; }
+.scan-error-item { color: var(--mc-danger); font-size: 11px; }
 
 /* Upload row: zone + add text side by side */
 .upload-row { display: flex; gap: 12px; align-items: stretch; }
