@@ -285,7 +285,7 @@ public class WikiController {
         String path = body.get("path");
         if (path != null && !path.isBlank()) {
             try {
-                pathValidator.validateDirectory(path);
+                pathValidator.validateSourcePatterns(path);
             } catch (IllegalArgumentException e) {
                 return R.fail(400, e.getMessage());
             }

@@ -1,0 +1,13 @@
+spring:
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:mateclaw}
+    driver-class-name: org.postgresql.Driver
+    username: ${DB_USERNAME:postgres}
+    password: ${DB_PASSWORD:mateclaw123}
+
+  flyway:
+    enabled: false
+
+  h2:
+    console:
+      enabled: false

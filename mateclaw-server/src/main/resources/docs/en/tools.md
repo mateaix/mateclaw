@@ -324,14 +324,14 @@ curl -X PUT http://localhost:18088/api/v1/tools/1 \
   -H "Authorization: Bearer YOUR_JWT_TOKEN" \
   -d '{"enabled": false}'
 
-# Test a tool directly
-curl -X POST http://localhost:18088/api/v1/tools/WebSearchTool/test \
+# Set disclosure tier for a builtin or channel tool
+curl -X PUT http://localhost:18088/api/v1/tools/1/disclosure-tier \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer YOUR_JWT_TOKEN" \
-  -d '{"query": "Spring AI"}'
+  -d '{"tier": "core"}'
 ```
 
-Every provider-backed tool has a test button in the Tools page so you can verify API keys before shipping.
+The current REST API manages tool rows, enabled state, and disclosure tier. Direct execution of builtin tools happens through the agent runtime, not through a `/tools/{name}/test` endpoint.
 
 ---
 

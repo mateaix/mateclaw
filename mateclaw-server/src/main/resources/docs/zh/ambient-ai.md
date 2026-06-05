@@ -153,11 +153,15 @@ curl http://localhost:18088/api/v1/cron-jobs \
   -H "Authorization: Bearer <token>"
 
 # 立刻试跑一次（不影响下次定时触发）
-curl -X POST http://localhost:18088/api/v1/cron-jobs/{id}/run-now \
+curl -X POST http://localhost:18088/api/v1/cron-jobs/{id}/run \
   -H "Authorization: Bearer <token>"
 
-# 看历史执行
-curl http://localhost:18088/api/v1/cron-jobs/{id}/runs \
+# 查看单个定时任务的执行历史
+curl http://localhost:18088/api/v1/dashboard/cron-runs/{id} \
+  -H "Authorization: Bearer <token>"
+
+# 查看当前工作区最近执行历史
+curl http://localhost:18088/api/v1/dashboard/cron-runs \
   -H "Authorization: Bearer <token>"
 ```
 

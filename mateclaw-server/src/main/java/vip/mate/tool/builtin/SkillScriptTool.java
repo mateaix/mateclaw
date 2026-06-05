@@ -7,8 +7,14 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.annotation.Tool;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
+import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Component;
+import vip.mate.agent.context.ChatOrigin;
+import vip.mate.llm.routing.AgentBindingResolver;
 import vip.mate.skill.runtime.SkillFileAccessPolicy;
 import vip.mate.skill.runtime.SkillRuntimeService;
 import vip.mate.skill.runtime.SkillScriptExecutionService;
@@ -20,6 +26,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 技能脚本执行工具
@@ -35,6 +42,10 @@ public class SkillScriptTool {
     private final SkillScriptExecutionService executionService;
     private final SkillSecretService skillSecretService;
     private final ObjectMapper objectMapper;
+
+    @Lazy
+    @Autowired
+    private AgentBindingResolver agentBindingResolver;
 
     @vip.mate.tool.ConcurrencyUnsafe("script execution can have arbitrary side effects on the host process and filesystem")
     @Tool(description = """
@@ -67,7 +78,9 @@ public class SkillScriptTool {
 
         @JsonProperty(required = false)
         @JsonPropertyDescription("Optional script arguments as ONE JSON-encoded string: a JSON array for multiple positional args, a JSON object for a single JSON payload, or plain text for one literal argument.")
-        String args
+        String args,
+
+        @Nullable ToolContext ctx
     ) {
         log.info("Executing skill script: skill={}, script={}, args={}", skillName, scriptPath, args);
 
@@ -75,6 +88,13 @@ public class SkillScriptTool {
         ResolvedSkill skill = runtimeService.findActiveSkill(skillName);
         if (skill == null) {
             return formatError("Skill '" + skillName + "' not found or not enabled");
+        }
+        Long agentId = ChatOrigin.from(ctx).agentId();
+        if (agentId != null) {
+            Set<Long> boundSkillIds = agentBindingResolver.getBoundSkillIds(agentId);
+            if (boundSkillIds != null && (skill.getId() == null || !boundSkillIds.contains(skill.getId()))) {
+                return formatError("Skill '" + skillName + "' is not available for this agent.");
+            }
         }
 
         // Must be a directory-backed skill.

@@ -99,7 +99,7 @@ MateClaw  ── HTTP POST ──►  远程 MCP 服务
 - **URL**（streamable_http / sse）——服务端点
 - **HTTP Headers**（streamable_http / sse）——JSON 对象
 - **连接超时**——默认 30 秒
-- **读取超时**——默认 30 秒
+- **读取超时**——默认 **60 秒**（1.5.0 起从 30s 提到 60s，#247；单次 callTool 往返合法地跑久一点的工具不再被掐断。每台服务可单独调 5–300s）
 
 保存。启用状态时 MateClaw 自动尝试连接并发现工具。
 
@@ -357,7 +357,7 @@ stdio 服务：禁用/删除、配置替换、应用关闭（`@PreDestroy`）、
 | `cwd` | VARCHAR(512) | NULL | 工作目录 |
 | `enabled` | BOOLEAN | TRUE | 开关 |
 | `connect_timeout_seconds` | INT | 30 | HTTP 连接超时 |
-| `read_timeout_seconds` | INT | 30 | 请求响应超时 |
+| `read_timeout_seconds` | INT | 60 | 请求响应超时（1.5.0 起默认 60，旧为 30） |
 | `last_status` | VARCHAR(32) | `disconnected` | 上次连接状态 |
 | `last_error` | TEXT | NULL | 上次错误消息 |
 | `last_connected_time` | DATETIME | NULL | 上次成功连接时间 |
