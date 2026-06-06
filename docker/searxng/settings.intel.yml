@@ -1,0 +1,138 @@
+# SearXNG config for MateClaw's bundled search sidecar.
+#
+# Two things differ from the upstream default:
+#   1. JSON output format is enabled — mateclaw's SearXNGSearchProvider
+#      queries /search?format=json and fails silently without this.
+#   2. The anti-bot Limiter plugin is disabled — it otherwise rejects
+#      server-side HTTP calls (no JS, no cookies) with HTTP 429.
+#
+# This file is baked into the custom image via docker/searxng/Dockerfile —
+# do NOT bind-mount it from the host (prior host bind-mount broke deploys
+# where the host directory did not exist and Docker auto-created an empty
+# dir over the path).
+#
+# See https://docs.searxng.org/admin/settings/ for all knobs.
+
+use_default_settings: true
+
+general:
+  # Cosmetic only; shown in the UI title.
+  instance_name: "MateClaw Search"
+  # Keep this private — no outbound metrics.
+  donation_url: false
+  contact_url: false
+  enable_metrics: false
+
+search:
+  default_lang: "zh-CN"
+  safe_search: 0
+  ban_time_on_fail: 5
+  max_ban_time_on_fail: 120
+  formats:
+    - html
+    - json    # REQUIRED for mateclaw integration
+
+server:
+  # Override the default dev secret; docker-compose passes SEARXNG_SECRET in.
+  secret_key: "${SEARXNG_SECRET:-please-change-me-to-a-random-32-char-string}"
+  # Trust Docker's internal network — the reverse-proxy / rate-limit plugin
+  # uses this to know the caller's real IP.
+  limiter: false
+  image_proxy: false
+  # Bind address matches the container default.
+  bind_address: "0.0.0.0"
+  port: 8080
+
+# ===== UI =====
+ui:
+  static_use_hash: true
+
+# ===== 引擎 =====
+engines:
+  # ----- 通用网页 -----
+  - name: google
+    engine: google
+    shortcut: g
+    region: zh-CN
+    disabled: false
+    weight: 2
+  - name: bing
+    engine: bing
+    shortcut: b
+    region: zh-CN
+    disabled: false
+    weight: 1
+  - name: baidu
+    engine: baidu
+    shortcut: bd
+    disabled: false
+    weight: 1
+  - name: duckduckgo
+    engine: duckduckgo
+    shortcut: d
+    disabled: false
+    weight: 1
+  - name: sogou
+    engine: sogou
+    shortcut: sg
+    disabled: false
+    weight: 1
+  # ----- 新闻 -----
+  - name: google news
+    engine: google_news
+    shortcut: gn
+    region: zh-CN
+    disabled: false
+    categories: news
+  - name: bing news
+    engine: bing_news
+    shortcut: bn
+    region: zh-CN
+    disabled: false
+    categories: news
+  # ----- 学术/论文 -----
+  - name: google scholar
+    engine: google_scholar
+    shortcut: gs
+    disabled: false
+    categories: science
+  - name: semantic scholar
+    engine: semantic_scholar
+    shortcut: ss
+    disabled: false
+    categories: science
+  - name: arxiv
+    engine: arxiv
+    shortcut: ax
+    disabled: false
+    categories: science
+  # ----- 百科 -----
+  - name: wikipedia
+    engine: wikipedia
+    shortcut: wp
+    disabled: false
+  # ----- 禁用 -----
+  - name: yahoo
+    engine: yahoo
+    shortcut: y
+    disabled: true
+  - name: startpage
+    engine: startpage
+    shortcut: sp
+    disabled: true
+  - name: qwant
+    engine: qwant
+    shortcut: qw
+    disabled: true
+  - name: wikidata
+    engine: wikidata
+    shortcut: wd
+    disabled: true
+  - name: ahmia
+    engine: ahmia
+    shortcut: ah
+    disabled: true
+  - name: torch
+    engine: torch
+    shortcut: tch
+    disabled: true

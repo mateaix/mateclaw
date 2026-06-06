@@ -51,7 +51,6 @@
           <div v-if="activeTab === 'hotCache'" class="tab-content tab-content--hot-cache">
             <HotCachePanel />
           </div>
-
           <div v-if="activeTab === 'transformations'" class="tab-content">
             <TransformationsPanel />
           </div>

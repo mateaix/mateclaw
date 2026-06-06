@@ -1,0 +1,29 @@
+port: 10808         # HTTP 代理端口
+socks-port: 10809   # SOCKS5 端口
+allow-lan: true
+mode: rule
+log-level: warning
+
+geo-auto-update: false
+geodata-mode: true
+geodata-loader: memconservative
+
+proxies:
+  - name: "ss-node"
+    type: ss
+    server: "${SS_SERVER:-your-server-address}"
+    port: ${SS_PORT:-22388}
+    cipher: chacha20-ietf-poly1305
+    password: "${SS_PASSWORD:-your-password}"
+
+proxy-groups:
+  - name: "Proxy"
+    type: select
+    proxies:
+      - ss-node
+
+rules:
+  - GEOIP,LAN,DIRECT
+  - GEOSITE,CN,DIRECT
+  - GEOIP,CN,DIRECT
+  - MATCH,Proxy
