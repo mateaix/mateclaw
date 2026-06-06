@@ -30,7 +30,7 @@ class SkillFileToolTest {
                 skill("ckjia-shopping", "mcp", false),
                 skill("claude-code", "acp", false)));
 
-        String result = tool.listAvailableSkills("code", "acp", "ready", 1);
+        String result = tool.listAvailableSkills("code", "acp", "ready", 1, null);
 
         assertTrue(result.contains("claude-code"));
         assertFalse(result.contains("ckjia-shopping"));
