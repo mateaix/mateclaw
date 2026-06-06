@@ -1,12 +1,12 @@
 ---
 name: guidance
-version: "1.2.0"
+version: "1.2.1"
 description: "回答用户关于 MateClaw 安装与配置的问题。优先定位并阅读本地文档，再提炼答案；文档不足时访问官网。"
 dependencies:
   tools:
     - readMateClawDoc
     - read_file
-    - search
+    - web_search
 ---
 
 # MateClaw 安装与配置问答
@@ -44,7 +44,7 @@ readMateClawDoc(action="read", path="zh/quickstart.md")
 
 如本地文档信息不足：
 ```
-search(query="MateClaw 安装配置 <关键词>", language="zh-CN", count=5)
+web_search(query="MateClaw 安装配置 <关键词>", language="zh-CN", count=5)
 ```
 
 参考搜索结果补充回答，并注明信息来自官网搜索。

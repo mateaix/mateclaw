@@ -80,6 +80,39 @@ class FeishuInboundResourceTest {
     }
 
     // ------------------------------------------------------------------
+    // sniffExtension — recover real type from magic bytes when the
+    // content-type / filename gave us nothing (Feishu image downloads)
+    // ------------------------------------------------------------------
+
+    @Test
+    @DisplayName("sniffExtension: image / document magic bytes map to the real extension")
+    void sniffExtensionKnown() {
+        assertEquals("png", FeishuChannelAdapter.sniffExtension(
+                new byte[]{(byte) 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}));
+        assertEquals("jpg", FeishuChannelAdapter.sniffExtension(
+                new byte[]{(byte) 0xFF, (byte) 0xD8, (byte) 0xFF, (byte) 0xE0}));
+        assertEquals("gif", FeishuChannelAdapter.sniffExtension(
+                new byte[]{'G', 'I', 'F', '8', '9', 'a'}));
+        assertEquals("pdf", FeishuChannelAdapter.sniffExtension(
+                new byte[]{'%', 'P', 'D', 'F', '-', '1', '.', '4'}));
+        assertEquals("bmp", FeishuChannelAdapter.sniffExtension(
+                new byte[]{'B', 'M', 0x00, 0x00}));
+        assertEquals("webp", FeishuChannelAdapter.sniffExtension(
+                new byte[]{'R', 'I', 'F', 'F', 0x00, 0x00, 0x00, 0x00, 'W', 'E', 'B', 'P'}));
+    }
+
+    @Test
+    @DisplayName("sniffExtension: too-short or unrecognised bytes return null (keep 'bin')")
+    void sniffExtensionUnknown() {
+        assertNull(FeishuChannelAdapter.sniffExtension(null));
+        assertNull(FeishuChannelAdapter.sniffExtension(new byte[]{0x01, 0x02}));
+        assertNull(FeishuChannelAdapter.sniffExtension(new byte[]{0x00, 0x11, 0x22, 0x33, 0x44}));
+        // RIFF container that is not WEBP (e.g. WAV) must not be mistaken for an image
+        assertNull(FeishuChannelAdapter.sniffExtension(
+                new byte[]{'R', 'I', 'F', 'F', 0x00, 0x00, 0x00, 0x00, 'W', 'A', 'V', 'E'}));
+    }
+
+    // ------------------------------------------------------------------
     // inferMimeFromName — round-trip from filename to MIME
     // ------------------------------------------------------------------
 
