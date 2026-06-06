@@ -48,6 +48,36 @@ class MarkdownNormalizerTest {
     }
 
     @Test
+    @DisplayName("--- 粘连在行内容之后（mid-line）且后接标题时拆行")
+    void thematicBreakGluedMidLine() {
+        assertEquals(
+                "*来源：雪球 · 2026-06-01*\n\n---\n\n### 二、供应链与产能",
+                MarkdownNormalizer.normalize("*来源：雪球 · 2026-06-01*---### 二、供应链与产能"));
+    }
+
+    @Test
+    @DisplayName("行内容 + --- + 标题 + 表格四重粘连全部拆开")
+    void midLineHrHeadingTableChain() {
+        String input = "- 数据中心收入逾 **90%**---### 综合判断🔍| 维度 |信号 | 评级|\n"
+                + "|------|------|\n"
+                + "| 产品 | 强 |";
+        String out = MarkdownNormalizer.normalize(input);
+        assertTrue(out.contains("- 数据中心收入逾 **90%**"), "前缀正文应保留");
+        assertTrue(out.contains("\n---\n"), "--- 应独占一行");
+        assertTrue(out.contains("### 综合判断🔍"), "标题应从表格拆出");
+        assertTrue(out.contains("| 维度 | 信号 | 评级 |"), "表头应对齐");
+        assertFalse(out.contains("**90%**---"), "--- 不应再粘连前缀");
+        assertFalse(out.contains("🔍| 维度"), "标题不应再粘连表格");
+    }
+
+    @Test
+    @DisplayName("散文中的 em-dash 风格 --- 不被误拆（无后接标题）")
+    void midLineHrWithoutHeadingUntouched() {
+        String input = "他停顿了一下---然后继续说。";
+        assertEquals(input, MarkdownNormalizer.normalize(input));
+    }
+
+    @Test
     @DisplayName("表格单元格与分隔行对齐")
     void tableCellAndSeparator() {
         String input = "|指数 |涨跌| 解读 |\n"
