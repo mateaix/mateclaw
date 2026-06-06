@@ -18,8 +18,8 @@ import java.util.regex.Pattern;
  *   <li><b>保守</b>：只在能高置信判断为畸形时才改写，散文中的散落管道符、行内 {@code #} 不动。</li>
  * </ul>
  *
- * <p>覆盖的修复：ATX 标题补空格、{@code ---} 与后续内容粘连时拆行、表格块单元格与分隔行对齐、
- * 标题与表格粘连时拆行、标题/表格块边界补空行。</p>
+ * <p>覆盖的修复：ATX 标题补空格、{@code ---} 与后续内容粘连时拆行（含行首与 mid-line 后接标题两种）、
+ * 表格块单元格与分隔行对齐、标题与表格粘连时拆行、标题/表格块边界补空行。</p>
  *
  * <p>不在范围内（属语义判断，正则无法安全自动化，保留在提示词约束）：Emoji 位置、代码块语言标注补全。</p>
  */
@@ -35,6 +35,14 @@ public final class MarkdownNormalizer {
 
     /** 主题分隔线与后续内容粘连：行首 3+ 短横，后面紧跟非短横的可见内容。 */
     private static final Pattern HR_GLUED = Pattern.compile("^(-{3,})([^-\\s].*)$");
+
+    /**
+     * 主题分隔线粘连在「行内容之后」（mid-line），且后面紧跟一个 ATX 标题。
+     * 形如 {@code *来源…2026-06-01*---### 二、…} 或 {@code **90%**---### 综合判断}。
+     * 仅在 {@code ---} 后紧跟 {@code #} 标题时才拆，避免误伤散文里 em-dash 风格的 {@code ---}。
+     */
+    private static final Pattern HR_MID_HEADING =
+            Pattern.compile("^(.*?\\S)\\s*(-{3,})\\s*(#{1,6}.*)$");
 
     /** 标题行尾粘连了表格：#{1,6} 标题文字（不含管道符）+ 管道符起始的尾部。 */
     private static final Pattern HEADING_TABLE = Pattern.compile("^(#{1,6}[^|\\n]*?)\\s*(\\|.+)$");
@@ -104,6 +112,16 @@ public final class MarkdownNormalizer {
 
     private static List<String> expandLine(String line) {
         List<String> result = new ArrayList<>();
+
+        Matcher hrMid = HR_MID_HEADING.matcher(line);
+        if (hrMid.matches()) {
+            result.addAll(expandLine(hrMid.group(1)));
+            result.add("");
+            result.add("---");
+            result.add("");
+            result.addAll(expandLine(hrMid.group(3)));
+            return result;
+        }
 
         Matcher hr = HR_GLUED.matcher(line);
         if (hr.matches()) {
