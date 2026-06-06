@@ -2289,6 +2289,22 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
         if (safeKey.isEmpty()) safeKey = "file";
 
         String ext = extensionFor(contentType, fileNameHint);
+        // Feishu image downloads carry neither a filename nor a Content-Type
+        // (the SDK exposes no MIME accessor), so extensionFor falls through to
+        // "bin" and contentType stays application/octet-stream. A .bin file is
+        // later flagged "format unknown" by vision / file tools. Recover the
+        // real type by sniffing the bytes we already hold, and upgrade the
+        // generic content-type to match so downstream consumers agree.
+        if ("bin".equals(ext)) {
+            String sniffed = sniffExtension(bytes);
+            if (sniffed != null) {
+                ext = sniffed;
+                if (contentType == null || contentType.isBlank()
+                        || "application/octet-stream".equals(contentType)) {
+                    contentType = inferMimeFromName("x." + sniffed);
+                }
+            }
+        }
         String resolvedFileName = (fileNameHint != null && !fileNameHint.isBlank())
                 ? fileNameHint
                 : (safeKey + "." + ext);
@@ -2337,6 +2353,32 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
             if (!hint.isBlank()) return hint;
         }
         return "bin";
+    }
+
+    /**
+     * Sniff a file extension from leading magic bytes. Last-resort recovery for
+     * Feishu image downloads that arrive with no filename and no Content-Type,
+     * where {@link #extensionFor} can only return {@code "bin"}. Returns
+     * {@code null} when no signature matches, leaving the {@code "bin"} default
+     * in place.
+     */
+    // Package-private for unit tests.
+    static String sniffExtension(byte[] b) {
+        if (b == null || b.length < 4) return null;
+        // PNG: 89 50 4E 47
+        if ((b[0] & 0xFF) == 0x89 && b[1] == 0x50 && b[2] == 0x4E && b[3] == 0x47) return "png";
+        // JPEG: FF D8
+        if ((b[0] & 0xFF) == 0xFF && (b[1] & 0xFF) == 0xD8) return "jpg";
+        // GIF: "GIF"
+        if (b[0] == 'G' && b[1] == 'I' && b[2] == 'F') return "gif";
+        // PDF: "%PDF"
+        if (b[0] == '%' && b[1] == 'P' && b[2] == 'D' && b[3] == 'F') return "pdf";
+        // BMP: "BM"
+        if (b[0] == 'B' && b[1] == 'M') return "bmp";
+        // WEBP: "RIFF"...."WEBP"
+        if (b.length >= 12 && b[0] == 'R' && b[1] == 'I' && b[2] == 'F' && b[3] == 'F'
+                && b[8] == 'W' && b[9] == 'E' && b[10] == 'B' && b[11] == 'P') return "webp";
+        return null;
     }
 
     /**
