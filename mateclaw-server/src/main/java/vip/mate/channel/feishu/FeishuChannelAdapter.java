@@ -942,8 +942,9 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
         String shortSuffix = generateShortSessionSuffix(chatId, senderOpenId, isGroup);
         String conversationId = buildConversationId(shortSuffix, senderOpenId, isGroup);
 
+        String stagedUploadPath = null;
         if (isFileMessage) {
-            cacheRecentFile(messageId, messageType, contentStr, conversationId);
+            stagedUploadPath = cacheRecentFile(messageId, messageType, contentStr, conversationId);
         }
 
         // require_mention 群聊过滤：群聊中必须 @机器人才响应。
@@ -979,7 +980,7 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
 
         // 解析消息内容
         List<MessageContentPart> contentParts = new ArrayList<>();
-        String textContent = extractContentParts(messageId, messageType, contentStr, contentParts);
+        String textContent = extractContentParts(messageId, messageType, contentStr, contentParts, stagedUploadPath);
 
         if (contentParts.isEmpty() && (textContent == null || textContent.isBlank())) {
             log.debug("[feishu] Empty message content, ignoring");
@@ -1431,8 +1432,14 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
      * ({@code ReadFileTool}, {@code DocumentExtractTool}) can find it
      * via {@code ChatUploadResolver}, and it gets cleaned up when the
      * conversation is deleted.
+     *
+     * @return absolute path of the staged {@code data/chat-uploads/} copy, or
+     *         {@code null} when nothing was cached (unsupported type, missing
+     *         file key, download failure). Callers stamp this path onto the
+     *         current-message content part so the path surfaced to the LLM is
+     *         resolver-reachable instead of the sandbox-external media path.
      */
-    private void cacheRecentFile(String messageId, String messageType, String contentStr,
+    private String cacheRecentFile(String messageId, String messageType, String contentStr,
                                   String conversationId) {
         try {
             Map<String, Object> contentObj = objectMapper.readValue(contentStr, Map.class);
@@ -1461,17 +1468,17 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
                     type = "file";
                 }
                 default -> {
-                    return;
+                    return null;
                 }
             }
 
-            if (fileKey == null) return;
+            if (fileKey == null) return null;
 
             // Download file bytes
             DownloadedResource dl = "image".equals(messageType)
                     ? maybeDownloadImage(messageId, fileKey)
                     : maybeDownloadResource(messageId, fileKey, type, fileName);
-            if (dl == null) return;
+            if (dl == null) return null;
 
             // Save to data/chat-uploads/{conversationId}/
             Path uploadDir = Path.of("data", "chat-uploads", conversationId);
@@ -1502,8 +1509,10 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
             log.info("[feishu] Cached recent file for conversation={}: {} ({} bytes, {})",
                     conversationId, entry.fileName(), Files.size(dest), contentType);
 
+            return dest.toAbsolutePath().toString();
         } catch (Exception e) {
             log.debug("[feishu] Failed to cache recent file: {}", e.getMessage());
+            return null;
         }
     }
 
@@ -1551,15 +1560,19 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
     /**
      * 解析飞书消息内容为 contentParts
      *
-     * @param messageId   消息 ID（用于媒体下载）
-     * @param messageType 消息类型
-     * @param contentStr  消息内容 JSON 字符串
-     * @param parts       输出的 content parts
+     * @param messageId        消息 ID（用于媒体下载）
+     * @param messageType      消息类型
+     * @param contentStr       消息内容 JSON 字符串
+     * @param parts            输出的 content parts
+     * @param stagedUploadPath {@code cacheRecentFile} 复制到 {@code data/chat-uploads/}
+     *                         的绝对路径（可空）。非空时覆盖各附件 part 的 path，使其指向
+     *                         沙箱可达（经 {@code ChatUploadResolver}）的那一份，而不是
+     *                         沙箱外的 {@code ~/.mateclaw/media/} 路径。
      * @return 纯文本摘要
      */
     @SuppressWarnings("unchecked")
     private String extractContentParts(String messageId, String messageType, String contentStr,
-                                        List<MessageContentPart> parts) {
+                                        List<MessageContentPart> parts, String stagedUploadPath) {
         if (contentStr == null) return null;
 
         try {
@@ -1588,6 +1601,7 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
                         DownloadedResource dl = maybeDownloadImage(messageId, imageKey);
                         MessageContentPart part = MessageContentPart.image(imageKey, null);
                         applyDownload(part, dl);
+                        if (stagedUploadPath != null) part.setPath(stagedUploadPath);
                         parts.add(part);
                     }
                     yield "[图片]";
@@ -1599,6 +1613,7 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
                         DownloadedResource dl = maybeDownloadResource(messageId, fileKey, "file", fileName);
                         MessageContentPart part = MessageContentPart.file(fileKey, fileName, null);
                         applyDownload(part, dl);
+                        if (stagedUploadPath != null) part.setPath(stagedUploadPath);
                         parts.add(part);
                     }
                     yield "[文件: " + (fileName != null ? fileName : "") + "]";
@@ -1612,6 +1627,7 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
                         DownloadedResource dl = maybeDownloadResource(messageId, fileKey, "file", "voice.opus");
                         MessageContentPart part = MessageContentPart.audio(fileKey, null);
                         applyDownload(part, dl);
+                        if (stagedUploadPath != null) part.setPath(stagedUploadPath);
                         // STT hop: inject the transcript as a sibling text part BEFORE
                         // the audio part so ChannelMessageRouter.buildPromptFromParts
                         // sees real content instead of just "[音频]". WeCom / DingTalk
@@ -1632,6 +1648,7 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
                         DownloadedResource dl = maybeDownloadResource(messageId, fileKey, "file", fileName);
                         MessageContentPart part = MessageContentPart.video(fileKey, fileName);
                         applyDownload(part, dl);
+                        if (stagedUploadPath != null) part.setPath(stagedUploadPath);
                         parts.add(part);
                     }
                     yield "[视频]";
