@@ -116,6 +116,10 @@ services:
       # 本机 Docker 若要强制使用 localhost:1455 回调，可在 .env 显式设为 local。
       MATECLAW_OAUTH_OPENAI_DEPLOYMENT_MODE: ${MATECLAW_OAUTH_OPENAI_DEPLOYMENT_MODE:-}
       MATECLAW_OAUTH_OPENAI_CALLBACK_BIND_HOST: ${MATECLAW_OAUTH_OPENAI_CALLBACK_BIND_HOST:-0.0.0.0}
+      # Wiki 知识库目录扫描白名单（逗号分隔，留空则禁止所有目录扫描）。
+      # 示例：MATE_WIKI_ALLOWED_SOURCE_ROOTS=/data/wiki,/opt/docs
+      # 记得同步在 volumes 里把宿主机路径挂进容器。
+      MATE_WIKI_ALLOWED_SOURCE_ROOTS: ${MATE_WIKI_ALLOWED_SOURCE_ROOTS:-}
     # Chromium needs a real /dev/shm. Docker defaults to 64MB which causes
     # SIGBUS / "Target page closed" errors under load. 2GB is the usual
     # recommendation for Playwright / headless chrome.
