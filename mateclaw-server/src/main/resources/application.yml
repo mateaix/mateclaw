@@ -282,7 +282,8 @@ mate:
   # Dream v2 feature flags — production defaults after GA validation
   memory:
     # Phase 1: lifecycle mediator wiring
-    lifecycle-mediator-enabled: true
+    # false = 全共享记忆模式（Phase 0）：禁用按人隔离的 PERSONAL 记忆，所有写入落共享 TEAM 桶
+    lifecycle-mediator-enabled: false
     dream:
       focused-enabled: true
       archive-enabled: true
