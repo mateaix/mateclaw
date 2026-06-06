@@ -8,6 +8,7 @@ import vip.mate.agent.graph.state.DirectToolOutput;
 import vip.mate.agent.graph.state.FinishReason;
 import vip.mate.agent.graph.state.MateClawStateAccessor;
 import vip.mate.agent.graph.state.SourceEvidenceLedger;
+import vip.mate.common.text.MarkdownNormalizer;
 import vip.mate.tool.document.GeneratedFileCache;
 
 import java.util.List;
@@ -169,6 +170,14 @@ public class FinalAnswerNode implements NodeAction {
             log.warn("[FinalAnswerNode] Evidence insufficient for final answer, unsupportedReferences={}",
                     validation.unsupportedReferences());
         }
+
+        // Deterministic Markdown cleanup on the model-generated answer body. LLMs
+        // routinely emit malformed Markdown (missing heading spaces, glued `---`,
+        // unaligned table pipes) that prompt rules fail to prevent; this fixes the
+        // mechanical defects before the answer is persisted / sent to channels.
+        // Verbatim tool output (RETURN_DIRECT) and approval-wait paths return early
+        // above and are intentionally left untouched.
+        finalAnswer = MarkdownNormalizer.normalize(finalAnswer);
 
         // Build the event list. Always carries the finish_reason event so
         // downstream consumers (memory gate, channel accumulator, message
