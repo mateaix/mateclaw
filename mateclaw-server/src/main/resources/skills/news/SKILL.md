@@ -1,10 +1,10 @@
 ---
 name: news
-version: "2.0.0"
+version: "2.0.1"
 description: "从互联网查询最新新闻。支持政治、财经、社会、国际、科技、体育、娱乐等分类，自动适配搜索工具与浏览器工具。"
 dependencies:
   tools:
-    - search
+    - web_search
     - browser_use
 ---
 
@@ -17,7 +17,7 @@ dependencies:
 ### 方式一：搜索工具（推荐，速度快）
 
 ```
-search(
+web_search(
   query="今日财经新闻",
   freshness="day",
   language="zh-CN",
