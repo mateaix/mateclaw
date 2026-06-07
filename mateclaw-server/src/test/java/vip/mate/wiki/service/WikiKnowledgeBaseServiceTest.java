@@ -2,6 +2,9 @@ package vip.mate.wiki.service;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.test.util.ReflectionTestUtils;
+import vip.mate.agent.binding.model.AgentWikiKbBinding;
+import vip.mate.agent.binding.repository.AgentWikiKbBindingMapper;
 import vip.mate.agent.model.AgentEntity;
 import vip.mate.agent.repository.AgentMapper;
 import vip.mate.wiki.model.WikiKnowledgeBaseEntity;
@@ -226,5 +229,83 @@ class WikiKnowledgeBaseServiceTest {
         // can't pivot to an arbitrary KB by guessing an id.
         assertThat(service.findVisibleById(7L, 99999L)).isNull();
         assertThat(service.findVisibleById(7L, null)).isNull();
+    }
+
+    // ==================== Agent ↔ KB access scope (issue #261) ====================
+    //
+    // When an agent has scope rows in mate_agent_wiki_kb, listByAgentId — the
+    // single choke point every wiki tool reads through — must narrow the
+    // workspace-wide KB set to the bound subset. No rows = unrestricted, so
+    // every pre-scoping agent keeps its old workspace-wide visibility.
+
+    private AgentWikiKbBindingMapper bindScope(long... kbIds) {
+        AgentWikiKbBindingMapper mapper = mock(AgentWikiKbBindingMapper.class);
+        java.util.List<AgentWikiKbBinding> rows = new java.util.ArrayList<>();
+        for (long kbId : kbIds) {
+            AgentWikiKbBinding row = new AgentWikiKbBinding();
+            row.setKbId(kbId);
+            row.setEnabled(true);
+            rows.add(row);
+        }
+        when(mapper.selectList(any())).thenReturn(rows);
+        ReflectionTestUtils.setField(service, "kbBindingMapper", mapper);
+        return mapper;
+    }
+
+    @Test
+    @DisplayName("scope narrows listByAgentId to the bound KBs only")
+    void scopeRestrictsVisibleKbs() {
+        bindScope(100L, 300L);
+        when(agentMapper.selectById(7L)).thenReturn(agent(7L, 1L, 100L));
+        when(kbMapper.selectList(any())).thenReturn(List.of(
+                kb(100L, null, 1L, "Business KB"),
+                kb(200L, null, 1L, "Unrelated KB"),
+                kb(300L, null, 1L, "Other Business KB")));
+
+        List<WikiKnowledgeBaseEntity> visible = service.listByAgentId(7L);
+        assertThat(visible).extracting(WikiKnowledgeBaseEntity::getId)
+                .containsExactlyInAnyOrder(100L, 300L);
+        // The out-of-scope KB is invisible even when targeted by id directly.
+        assertThat(service.findVisibleById(7L, 200L)).isNull();
+        assertThat(service.findVisibleById(7L, 300L)).isNotNull();
+    }
+
+    @Test
+    @DisplayName("no scope rows leaves the agent unrestricted (workspace-wide)")
+    void noScopeMeansUnrestricted() {
+        bindScope(); // empty → mapper returns no rows
+        when(agentMapper.selectById(7L)).thenReturn(agent(7L, 1L, null));
+        when(kbMapper.selectList(any())).thenReturn(List.of(
+                kb(100L, null, 1L, "KB A"),
+                kb(200L, null, 1L, "KB B")));
+
+        assertThat(service.listByAgentId(7L)).extracting(WikiKnowledgeBaseEntity::getId)
+                .containsExactlyInAnyOrder(100L, 200L);
+    }
+
+    @Test
+    @DisplayName("a stale scope row for a removed/moved KB simply drops out")
+    void staleScopeRowIsIntersectedAway() {
+        bindScope(100L, 999L); // 999 no longer in the workspace
+        when(agentMapper.selectById(7L)).thenReturn(agent(7L, 1L, 100L));
+        when(kbMapper.selectList(any())).thenReturn(List.of(
+                kb(100L, null, 1L, "Live KB"),
+                kb(200L, null, 1L, "Unrelated KB")));
+
+        assertThat(service.listByAgentId(7L)).extracting(WikiKnowledgeBaseEntity::getId)
+                .containsExactly(100L);
+    }
+
+    @Test
+    @DisplayName("primary KB resolution respects the scope")
+    void primaryKbRespectsScope() {
+        bindScope(300L);
+        // primary points at an out-of-scope KB → falls back to a scoped one.
+        when(agentMapper.selectById(7L)).thenReturn(agent(7L, 1L, 100L));
+        when(kbMapper.selectList(any())).thenReturn(List.of(
+                kb(100L, null, 1L, "Out Of Scope Primary"),
+                kb(300L, null, 1L, "Scoped KB")));
+
+        assertThat(service.resolvePrimaryKb(7L).getId()).isEqualTo(300L);
     }
 }

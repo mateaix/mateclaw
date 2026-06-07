@@ -4,6 +4,8 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
+import org.springframework.ai.chat.model.ToolContext;
+import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Component;
 import vip.mate.tool.document.FilenameSanitizer;
 import vip.mate.tool.document.GeneratedFileCache;
@@ -74,7 +76,8 @@ public class PptxRenderTool {
             @ToolParam(description = "Output filename without extension, e.g. 'pitch-deck'")
             String filename,
             @ToolParam(description = "Aspect ratio: '16:9' (default, widescreen) or '4:3' (legacy)", required = false)
-            String aspectRatio) {
+            String aspectRatio,
+            @Nullable ToolContext ctx) {
 
         if (markdown == null || markdown.isBlank()) {
             return "错误：markdown 参数为空，无法生成演示文稿。";
@@ -88,7 +91,7 @@ public class PptxRenderTool {
             byte[] bytes = renderer.render(markdown, ratio);
             log.info("[PptxRender] generated {} ({} bytes, {}ms)",
                     displayName, bytes.length, System.currentTimeMillis() - t0);
-            return GeneratedFileLink.resultZh(bytes, displayName, PPTX_MIME, cache, "演示文稿");
+            return GeneratedFileLink.resultZh(bytes, displayName, PPTX_MIME, cache, "演示文稿", ctx);
         } catch (Exception e) {
             log.error("[PptxRender] render failed for {}: {}", displayName, e.getMessage(), e);
             return "渲染失败：" + e.getMessage();
@@ -117,7 +120,8 @@ public class PptxRenderTool {
             @ToolParam(description = "Output filename without extension, e.g. 'pitch-deck'")
             String filename,
             @ToolParam(description = "Aspect ratio: '16:9' (default) or '4:3'", required = false)
-            String aspectRatio) {
+            String aspectRatio,
+            @Nullable ToolContext ctx) {
 
         Resolved input;
         try {
@@ -135,7 +139,7 @@ public class PptxRenderTool {
             log.info("[PptxRender] generated {} ({} bytes from {} bytes md, {}ms)",
                     displayName, bytes.length, input.totalBytes(),
                     System.currentTimeMillis() - t0);
-            return GeneratedFileLink.resultEn(bytes, displayName, PPTX_MIME, cache, "Presentation", 1);
+            return GeneratedFileLink.resultEn(bytes, displayName, PPTX_MIME, cache, "Presentation", 1, ctx);
         } catch (Exception e) {
             log.error("[PptxRender] render failed for {} (source: {}): {}",
                     displayName, input.sources().get(0), e.getMessage(), e);

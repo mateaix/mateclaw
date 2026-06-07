@@ -41,7 +41,7 @@ class ChatOriginSenderFieldsTest {
     void withSenderPreservesOtherFields() {
         ChatOrigin original = new ChatOrigin(
                 7L, "conv-1", "u123", 5L, "/ws", 9L, null, false,
-                null, null, null);
+                null, null, null, null);
         ChatOrigin enriched = original.withSender("Alice", "wecom", "g-1");
 
         // All non-sender fields unchanged
@@ -80,7 +80,7 @@ class ChatOriginSenderFieldsTest {
         ChatOrigin origin = new ChatOrigin(
                 7L, "feishu:oc_42", "ou_xyz", 5L, "/data/ws/5",
                 9L, null, false,
-                "Alice", "feishu", "oc_42");
+                "Alice", "feishu", "oc_42", null);
 
         String json = om.writeValueAsString(origin);
         ChatOrigin restored = om.readValue(json, ChatOrigin.class);

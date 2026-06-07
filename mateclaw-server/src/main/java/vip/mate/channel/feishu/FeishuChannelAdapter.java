@@ -1715,6 +1715,7 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
             }
 
             if (fileKey == null) return null;
+
             // Download file bytes
             DownloadedResource dl = "image".equals(messageType)
                     ? maybeDownloadImage(messageId, fileKey)

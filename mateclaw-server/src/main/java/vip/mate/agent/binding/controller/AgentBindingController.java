@@ -8,6 +8,7 @@ import vip.mate.agent.AgentService;
 import vip.mate.agent.binding.model.AgentProviderPreference;
 import vip.mate.agent.binding.model.AgentSkillBinding;
 import vip.mate.agent.binding.model.AgentToolBinding;
+import vip.mate.agent.binding.model.AgentWikiKbBinding;
 import vip.mate.agent.binding.service.AgentBindingService;
 import vip.mate.agent.model.AgentEntity;
 import vip.mate.audit.service.AuditEventService;
@@ -133,6 +134,32 @@ public class AgentBindingController {
         agentService.invalidateAgentCache(agentId);
         auditEventService.record("UPDATE", "AGENT_PROVIDER_PREF", String.valueOf(agentId),
                 "providers=" + providerIds.size(), null);
+        return R.ok();
+    }
+
+    // ==================== Knowledge Base Access Scope ====================
+
+    @Operation(summary = "获取 Agent 的知识库访问范围")
+    @GetMapping("/kbs")
+    @RequireWorkspaceRole("viewer")
+    public R<List<AgentWikiKbBinding>> listKbs(@PathVariable Long agentId,
+                                               @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        verifyAgentWorkspace(agentId, workspaceId);
+        return R.ok(bindingService.listKbBindings(agentId));
+    }
+
+    @Operation(summary = "批量设置 Agent 的知识库访问范围（替换模式，空表示不限制）")
+    @PutMapping("/kbs")
+    @RequireWorkspaceRole("member")
+    public R<Void> setKbs(@PathVariable Long agentId, @RequestBody List<Long> kbIds,
+                          @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        verifyAgentWorkspace(agentId, workspaceId);
+        bindingService.setKbBindings(agentId, kbIds);
+        agentService.invalidateAgentCache(agentId);
+        // A non-Vue caller can POST a bare `null`; the service tolerates it.
+        int count = kbIds == null ? 0 : kbIds.size();
+        auditEventService.record("UPDATE", "AGENT_WIKI_KB", String.valueOf(agentId),
+                "kbs=" + count, null);
         return R.ok();
     }
 

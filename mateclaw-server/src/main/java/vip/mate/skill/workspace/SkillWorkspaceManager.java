@@ -47,32 +47,35 @@ public class SkillWorkspaceManager {
     }
 
     /**
-     * 按约定解析 skill 工作区路径：{root}/{sanitizedName}-{hash}/
-     * 路径完全由 skillName 决定，不依赖文件系统状态，保证确定性：
-     * 同一 skillName 始终返回同一路径，不同 skillName 不会碰撞。
+     * Resolve the conventional skill workspace path: {@code {root}/{sanitizedName}}.
+     * <p>
+     * Deterministic in {@code skillName} alone (no filesystem-state dependency). The
+     * non-ASCII collision fixed in #254 comes from {@link #sanitizeNameForFs} preserving
+     * Unicode letters/digits, so distinct names already map to distinct directories. No
+     * {@code -hash} suffix is appended: skill names are charset-constrained, so two names
+     * sanitizing to the same string is not a real case, and keeping the bare name avoids
+     * changing the path scheme for every existing skill (which would orphan already-created
+     * workspaces with no migration).
      */
     public Path resolveConventionPath(String skillName) {
-        String base = sanitizeNameForFs(skillName);
-        String hash = Integer.toHexString(skillName.hashCode());
-        return getWorkspaceRoot().resolve(base + "-" + hash);
+        return getWorkspaceRoot().resolve(sanitizeNameForFs(skillName));
     }
 
     /**
-     * 清理文件系统路径不安全字符，保留 Unicode 字母及数字的可读性，
-     * 仅移除真正有问题的字符（路径分隔符、控制字符等）。
+     * Sanitize a skill name into a filesystem-safe directory segment.
+     * <p>
+     * Keeps the same charset as the legacy {@code [a-zA-Z0-9_.-]} rule but additionally
+     * preserves Unicode letters/digits ({@code \p{L}\p{N}}), so non-ASCII names no longer
+     * collapse to underscores and collide (#254). Everything else — path separators,
+     * control characters, whitespace — becomes {@code _}. Hyphens are kept (not folded to
+     * {@code _}) so existing kebab-case skill paths (e.g. {@code browser-cdp}) are unchanged
+     * across upgrades; only the Unicode handling differs from the legacy behavior.
      */
     private String sanitizeNameForFs(String name) {
         if (name == null || name.isBlank()) {
             return "unnamed";
         }
-        // 第一步：移除路径分隔符和控制字符
-        String cleaned = name.replaceAll("[/\\\\:*?\"<>|\\x00-\\x1F]", "-");
-        // 第二步：保留 Unicode 字母和数字，其他替换为下划线
-        cleaned = cleaned.replaceAll("[^\\p{L}\\p{N}_\\-.\\s]", "_");
-        // 第三步：折叠连续分隔符
-        cleaned = cleaned.replaceAll("[_\\s]+", "_").replaceAll("[-_]+", "_");
-        // 第四步：去掉首尾分隔符
-        cleaned = cleaned.replaceAll("^-|-$", "");
+        String cleaned = name.strip().replaceAll("[^\\p{L}\\p{N}_.\\-]", "_");
         return cleaned.isEmpty() ? "unnamed" : cleaned;
     }
 

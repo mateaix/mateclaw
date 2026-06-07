@@ -136,8 +136,12 @@ public class WikiRawMaterialService {
      * Update an existing text raw in-place when a directory-scanned file has changed content.
      * Resets processing state and triggers re-processing so new pages are generated from the
      * updated content without leaving a stale duplicate row alongside the new one.
+     *
+     * <p>No {@code @Transactional}: this runs a single atomic {@code updateById} and is only
+     * reached via self-invocation from {@code ingestTextFileFromScan}, where the annotation
+     * would be bypassed by the proxy anyway. The re-processing event is published after the
+     * row is persisted so the async listener reads committed state.
      */
-    @Transactional
     public void updateTextContentFromScan(Long rawId, String title, String content, String sourcePath) {
         WikiRawMaterialEntity entity = rawMapper.selectById(rawId);
         if (entity == null) return;
@@ -211,8 +215,11 @@ public class WikiRawMaterialService {
 
     /**
      * Update an existing binary raw in-place when a directory-scanned file has changed content.
+     *
+     * <p>No {@code @Transactional}: single atomic {@code updateById} reached only via
+     * self-invocation from {@code ingestBinaryFileFromScan} (proxy bypassed); the re-processing
+     * event is published after the row is persisted.
      */
-    @Transactional
     public void updateBinaryFileFromScan(Long rawId, String sourcePath, long fileSize, String hash) {
         WikiRawMaterialEntity entity = rawMapper.selectById(rawId);
         if (entity == null) return;

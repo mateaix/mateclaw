@@ -250,7 +250,7 @@
             </button>
             <button v-if="editingAgent" class="modal-tab" :class="{ active: modalTab === 'wiki' }" @click="modalTab = 'wiki'">
               {{ t('agents.tabs.wiki', 'Wiki') }}
-              <span v-if="selectedKBId" class="tab-badge">1</span>
+              <span v-if="selectedKbIds.length" class="tab-badge">{{ selectedKbIds.length }}</span>
             </button>
           </div>
 
@@ -610,33 +610,41 @@
             </div>
             <p class="binding-hint">{{ t('agents.binding.wikiHint') }}</p>
             <div v-if="availableKBs.length === 0" class="binding-empty">{{ t('agents.binding.noKBs') }}</div>
-            <div v-else class="binding-list">
-              <label
-                class="binding-item"
-                :class="{ selected: selectedKBId === null }"
-              >
-                <input type="radio" name="kb-select" :checked="selectedKBId === null" class="binding-checkbox" @change="selectedKBId = null" />
-                <span class="binding-icon">🚫</span>
-                <div class="binding-info">
-                  <span class="binding-name">{{ t('agents.binding.noKB') }}</span>
-                </div>
-              </label>
-              <label
-                v-for="kb in availableKBs"
-                :key="kb.id"
-                class="binding-item"
-                :class="{ selected: selectedKBId === String(kb.id) }"
-              >
-                <input type="radio" name="kb-select" :checked="selectedKBId === String(kb.id)" class="binding-checkbox" @change="selectedKBId = String(kb.id)" />
-                <span class="binding-icon">📚</span>
-                <div class="binding-info">
-                  <span class="binding-name">{{ kb.name }}</span>
-                  <span v-if="kb.description" class="binding-desc">{{ kb.description?.slice(0, 80) }}</span>
-                </div>
-                <!-- binding-version class reused for pageCount badge (same positioning as skill version) -->
-                <span v-if="kb.pageCount != null" class="binding-version">{{ t('agents.binding.wikiPages', { count: kb.pageCount }, `${kb.pageCount} pages`) }}</span>
-              </label>
-            </div>
+            <template v-else>
+              <p class="binding-hint" :class="{ 'binding-hint--warn': selectedKbIds.length > 0 }">
+                {{ selectedKbIds.length === 0 ? t('agents.binding.wikiScopeAll') : t('agents.binding.wikiScopeLimited', { count: selectedKbIds.length }) }}
+              </p>
+              <div class="binding-list">
+                <label
+                  v-for="kb in availableKBs"
+                  :key="kb.id"
+                  class="binding-item"
+                  :class="{ selected: isKbInScope(kb.id) }"
+                >
+                  <input
+                    type="checkbox"
+                    class="binding-checkbox"
+                    :checked="isKbInScope(kb.id)"
+                    @change="toggleKbScope(kb.id)"
+                  />
+                  <span class="binding-icon">📚</span>
+                  <div class="binding-info">
+                    <span class="binding-name">{{ kb.name }}</span>
+                    <span v-if="kb.description" class="binding-desc">{{ kb.description?.slice(0, 80) }}</span>
+                  </div>
+                  <!-- Primary toggle: only meaningful for in-scope KBs. -->
+                  <button
+                    type="button"
+                    class="kb-primary-toggle"
+                    :class="{ 'kb-primary-toggle--active': selectedKBId === String(kb.id) }"
+                    :title="t('agents.binding.wikiSetPrimary')"
+                    @click.prevent.stop="setPrimaryKb(kb.id)"
+                  >{{ selectedKBId === String(kb.id) ? t('agents.binding.wikiPrimary') : t('agents.binding.wikiSetPrimary') }}</button>
+                  <!-- binding-version class reused for pageCount badge (same positioning as skill version) -->
+                  <span v-if="kb.pageCount != null" class="binding-version">{{ t('agents.binding.wikiPages', { count: kb.pageCount }, `${kb.pageCount} pages`) }}</span>
+                </label>
+              </div>
+            </template>
           </div>
         </div>
         <div class="modal-footer">
@@ -841,9 +849,45 @@ function onSkillToggle(skillId: number | string, event: Event) {
 }
 const selectedSkillIds = ref<number[]>([])
 const selectedToolNames = ref<string[]>([])
-// Agent-level primary wiki KB. KB visibility remains workspace-wide.
+// Agent wiki KB binding. `selectedKbIds` is the access scope: when non-empty
+// the agent can only reach those KBs; empty = unrestricted (every KB in the
+// workspace). `selectedKBId` is the default/primary KB among the scope, used
+// by wiki tools when no kbId/kbName is given. IDs are strings (Snowflake).
 const availableKBs = ref<any[]>([])
 const selectedKBId = ref<string | null>(null)
+const selectedKbIds = ref<string[]>([])
+
+function isKbInScope(id: string | number): boolean {
+  return selectedKbIds.value.includes(String(id))
+}
+
+/** Toggle a KB in/out of the access scope, keeping the primary consistent. */
+function toggleKbScope(id: string | number) {
+  const sid = String(id)
+  const idx = selectedKbIds.value.indexOf(sid)
+  if (idx >= 0) {
+    selectedKbIds.value.splice(idx, 1)
+    // Dropping the primary out of scope: fall back to another scoped KB.
+    if (selectedKBId.value === sid) {
+      selectedKBId.value = selectedKbIds.value[0] ?? null
+    }
+  } else {
+    selectedKbIds.value.push(sid)
+    // First KB added becomes the default primary automatically.
+    if (selectedKBId.value === null) {
+      selectedKBId.value = sid
+    }
+  }
+}
+
+/** Mark a KB as the default/primary; auto-adds it to the scope if needed. */
+function setPrimaryKb(id: string | number) {
+  const sid = String(id)
+  if (!selectedKbIds.value.includes(sid)) {
+    selectedKbIds.value.push(sid)
+  }
+  selectedKBId.value = sid
+}
 // RFC-009 PR-3: per-agent provider preference order
 const availableProviders = ref<{ id: string; name: string }[]>([])
 const selectedProviderIds = ref<string[]>([])
@@ -1126,6 +1170,7 @@ function openBlankCreateModal() {
   selectedProviderIds.value = []
   availableKBs.value = []
   selectedKBId.value = null
+  selectedKbIds.value = []
   showModal.value = true
 }
 
@@ -1242,11 +1287,20 @@ async function openEditModal(agent: Agent) {
 
   // KB request is caught separately so its error message is accurate.
   try {
-    const kbsRes: any = await wikiApi.listBindableKBs()
+    const [kbsRes, kbBindRes]: any = await Promise.all([
+      wikiApi.listBindableKBs(),
+      agentBindingApi.listKbs(agent.id),
+    ])
     const bindableKBs = (kbsRes.data || []) as any[]
     availableKBs.value = bindableKBs
+    const bindableIds = new Set(bindableKBs.map((kb: any) => String(kb.id)))
+    // Access scope: keep only enabled rows that still resolve to a visible KB.
+    selectedKbIds.value = ((kbBindRes.data || []) as any[])
+      .filter((b: any) => b.enabled)
+      .map((b: any) => String(b.kbId))
+      .filter((id: string) => bindableIds.has(id))
     const primaryKbId = agent.primaryKbId != null ? String(agent.primaryKbId) : null
-    selectedKBId.value = primaryKbId && bindableKBs.some((kb: any) => String(kb.id) === primaryKbId)
+    selectedKBId.value = primaryKbId && bindableIds.has(primaryKbId)
       ? primaryKbId
       : null
   } catch {
@@ -1261,6 +1315,7 @@ function closeModal() {
   toolBindingSearch.value = ''
   availableKBs.value = []
   selectedKBId.value = null
+  selectedKbIds.value = []
 }
 
 async function saveAgent() {
@@ -1304,6 +1359,9 @@ async function saveAgent() {
         await agentBindingApi.setSkills(agentId, skillIdsToSave)
         await agentBindingApi.setTools(agentId, toolNamesToSave)
         await agentBindingApi.setProviderPreferences(agentId, selectedProviderIds.value)
+        // KB access scope. Empty = unrestricted (workspace-wide). Sent as
+        // strings per the Snowflake-precision contract.
+        await agentBindingApi.setKbs(agentId, selectedKbIds.value)
       } catch (bindingError: any) {
         mcToast.error(bindingError?.message || t('agents.messages.saveFailed'))
         // Pull the authoritative server state back into the editing form so
@@ -1775,6 +1833,26 @@ html.dark .seg-count.warn {
 .binding-desc { font-size: 12px; color: var(--mc-text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* reused for KB pageCount badge in wiki tab */
 .binding-version { font-size: 11px; color: var(--mc-text-tertiary); flex-shrink: 0; }
+/* Highlighted scope hint when the agent is restricted to a KB subset */
+.binding-hint--warn { color: var(--mc-warning, #b8860b); }
+/* "Set default" / "Default" toggle for the primary KB in the wiki tab */
+.kb-primary-toggle {
+  flex-shrink: 0;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--mc-border);
+  background: transparent;
+  color: var(--mc-text-tertiary);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.kb-primary-toggle:hover { border-color: var(--mc-primary); color: var(--mc-primary); }
+.kb-primary-toggle--active {
+  background: var(--mc-primary);
+  border-color: var(--mc-primary);
+  color: #fff;
+}
 .binding-type-badge {
   font-size: 10px; padding: 2px 6px; border-radius: 4px; flex-shrink: 0;
   background: var(--mc-bg-sunken); color: var(--mc-text-tertiary); text-transform: uppercase;

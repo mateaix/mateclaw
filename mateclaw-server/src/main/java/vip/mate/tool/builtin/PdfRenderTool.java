@@ -4,6 +4,8 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
+import org.springframework.ai.chat.model.ToolContext;
+import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Component;
 import vip.mate.tool.document.FilenameSanitizer;
 import vip.mate.tool.document.GeneratedFileCache;
@@ -83,7 +85,8 @@ public class PdfRenderTool {
             @ToolParam(description = "Page size: A4 or LETTER (default: A4)", required = false)
             String pageSize,
             @ToolParam(description = "Engine: 'auto' (default), 'html' (force in-process), or 'libreoffice' (force soffice)", required = false)
-            String engine) {
+            String engine,
+            @Nullable ToolContext ctx) {
 
         if (markdown == null || markdown.isBlank()) {
             return "错误：markdown 参数为空，无法生成 PDF。";
@@ -97,7 +100,7 @@ public class PdfRenderTool {
             MarkdownPdfRenderer.Result result = renderer.render(markdown, size, eng);
             log.info("[PdfRender] generated {} ({} bytes via {})",
                     displayName, result.bytes().length, result.backend());
-            return GeneratedFileLink.resultZh(result.bytes(), displayName, PDF_MIME, cache, "PDF");
+            return GeneratedFileLink.resultZh(result.bytes(), displayName, PDF_MIME, cache, "PDF", ctx);
         } catch (Exception e) {
             log.error("[PdfRender] render failed for {}: {}", displayName, e.getMessage(), e);
             return "渲染失败：" + e.getMessage();
@@ -132,7 +135,8 @@ public class PdfRenderTool {
             @ToolParam(description = "Page size: A4 or LETTER (default: A4)", required = false)
             String pageSize,
             @ToolParam(description = "Engine: 'auto' (default), 'html', or 'libreoffice'", required = false)
-            String engine) {
+            String engine,
+            @Nullable ToolContext ctx) {
 
         Resolved input;
         try {
@@ -149,7 +153,7 @@ public class PdfRenderTool {
             MarkdownPdfRenderer.Result result = renderer.render(input.markdown(), size, eng);
             log.info("[PdfRender] generated {} ({} bytes via {} from {} bytes md)",
                     displayName, result.bytes().length, result.backend(), input.totalBytes());
-            return GeneratedFileLink.resultEn(result.bytes(), displayName, PDF_MIME, cache, "Document", 1);
+            return GeneratedFileLink.resultEn(result.bytes(), displayName, PDF_MIME, cache, "Document", 1, ctx);
         } catch (Exception e) {
             log.error("[PdfRender] render failed for {} (source: {}): {}",
                     displayName, input.sources().get(0), e.getMessage(), e);
