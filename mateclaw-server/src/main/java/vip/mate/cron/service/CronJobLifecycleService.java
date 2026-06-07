@@ -211,7 +211,17 @@ public class CronJobLifecycleService {
             // real content to deliver or to learn from.
             String marker = i18n != null ? i18n.msg("cron.run.silent")
                     : "（本次定时任务无新内容，已跳过）";
-            conversationService.saveMessage(convId, "assistant", marker);
+            // A silent run still made a full LLM call, so carry its token usage
+            // onto the marker message — otherwise the settings-page total (which
+            // aggregates MessageEntity token columns) under-counts cron spend.
+            if (chatResult != null
+                    && (chatResult.promptTokens() > 0 || chatResult.completionTokens() > 0)) {
+                conversationService.saveMessage(convId, "assistant", marker, null, "completed",
+                        chatResult.promptTokens(), chatResult.completionTokens(),
+                        chatResult.runtimeModel(), chatResult.runtimeProvider());
+            } else {
+                conversationService.saveMessage(convId, "assistant", marker);
+            }
             return;
         }
 
