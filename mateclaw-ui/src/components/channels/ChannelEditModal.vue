@@ -667,7 +667,7 @@ const feishuRequiredPermissions = computed(() => {
     perms.push({ scope: 'contact:user.base:readonly', desc: t('channels.feishu.perm.contact'), reason: t('channels.feishu.perm.contactReason') })
   }
   if (channelConfig.value?.media_download_enabled) {
-    perms.push({ scope: 'im:message.resource', desc: t('channels.feishu.perm.media'), reason: t('channels.feishu.perm.mediaReason') })
+    perms.push({ scope: 'im:message:readonly', desc: t('channels.feishu.perm.media'), reason: t('channels.feishu.perm.mediaReason') })
   }
   return perms
 })
