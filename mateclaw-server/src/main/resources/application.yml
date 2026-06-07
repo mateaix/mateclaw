@@ -148,7 +148,11 @@ mateclaw:
       mode: ${MATECLAW_TOOLS_DISCLOSURE_MODE:progressive}
   skill:
     workspace:
-      root: ${user.home}/.mateclaw/skills
+      # Skill workspace root. Override with MATECLAW_SKILL_WORKSPACE_ROOT to
+      # relocate it onto a persistent volume — in Docker this is pointed at
+      # /app/data/skills so the existing server_data volume persists installed
+      # skills, accumulated LESSONS.md, and skill runtime files across restarts.
+      root: ${MATECLAW_SKILL_WORKSPACE_ROOT:${user.home}/.mateclaw/skills}
       auto-init: true
       delete-policy: archive
     disclosure:

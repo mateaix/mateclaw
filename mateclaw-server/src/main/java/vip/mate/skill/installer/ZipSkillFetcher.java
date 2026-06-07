@@ -29,6 +29,8 @@ import java.util.zip.ZipInputStream;
  *   <li>Zip Slip path traversal</li>
  *   <li>Per-file ≤1MB, total ≤50MB</li>
  *   <li>Only SKILL.md / references/ / scripts/ entries are kept</li>
+ *   <li>Binary entries are skipped with a WARN — bundle storage is text-only,
+ *       so decoding them as text would persist corrupted content</li>
  * </ul>
  *
  * <p>Extraction is two-pass: the entire archive is buffered in memory first
@@ -229,6 +231,23 @@ public class ZipSkillFetcher {
                     throw new IOException("Total extracted size exceeds 50MB limit");
                 }
 
+                // Skill bundles persist file contents as text (mate_skill_file
+                // is a TEXT column; SkillBundle carries Map<String,String>).
+                // Decoding a binary entry (.png/.woff/.zip/compiled helper, …)
+                // as text replaces every invalid byte with U+FFFD, so the file
+                // would be stored permanently corrupted and "restored" broken
+                // on every sync. Binary resources are not supported in a bundle
+                // today, so skip them with a clear WARN instead of silently
+                // mangling them — matches how unknown root-level files are
+                // already handled below. (Root-level binaries were already
+                // dropped; this also covers binaries nested in scripts/ and
+                // references/, which previously slipped through corrupted.)
+                if (isLikelyBinary(bytes)) {
+                    log.warn("[ZipSkillFetcher] Skipping binary entry (not supported in skill bundles): {}", entryName);
+                    zis.closeEntry();
+                    continue;
+                }
+
                 String content = new String(bytes, charset);
                 String normalizedName = entryPath.toString().replace('\\', '/');
                 String fileName = entryPath.getFileName().toString();
@@ -287,6 +306,27 @@ public class ZipSkillFetcher {
         }
 
         return new ExtractedSkill(skillMdContent, references, scripts);
+    }
+
+    /**
+     * Heuristic binary detector: an entry is treated as binary if a NUL byte
+     * (0x00) appears within the inspected prefix. UTF-8 and GBK text never
+     * contain a NUL, while virtually every binary format (PNG/WOFF/ZIP/class/
+     * native executable) carries one near the start — this is the same cheap,
+     * reliable test git uses to decide "is this a text file". Inspecting only a
+     * prefix keeps it O(1) for large entries.
+     */
+    private static boolean isLikelyBinary(byte[] bytes) {
+        if (bytes == null || bytes.length == 0) {
+            return false;
+        }
+        int limit = Math.min(bytes.length, 8000);
+        for (int i = 0; i < limit; i++) {
+            if (bytes[i] == 0x00) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
