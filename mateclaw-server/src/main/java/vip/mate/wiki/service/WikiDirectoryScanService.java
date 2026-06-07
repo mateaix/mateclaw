@@ -226,8 +226,17 @@ public class WikiDirectoryScanService {
                 errors.add("Base directory does not exist: " + scanRoot);
                 return;
             }
+            // validateDirectory canonicalizes via toRealPath, so scanRoot is the
+            // symlink-resolved real path and walkFileTree yields real-path-prefixed
+            // files. The matcher must use that resolved base, not the literal pattern
+            // prefix — otherwise a symlinked base never matches. Rebuild the pattern
+            // by swapping the literal base for the resolved scanRoot, keeping the
+            // wildcard tail; escape glob metacharacters in the base so a real
+            // directory name containing */?/{}/[] is treated literally.
+            String wildcardTail = pattern.substring(basePath.length());
+            String effectivePattern = globEscape(scanRoot.toString()) + wildcardTail;
             try {
-                matcher = FileSystems.getDefault().getPathMatcher("glob:" + pattern);
+                matcher = FileSystems.getDefault().getPathMatcher("glob:" + effectivePattern);
             } catch (IllegalArgumentException e) {
                 errors.add("Invalid glob pattern '" + pattern + "': " + e.getMessage());
                 return;
@@ -300,6 +309,19 @@ public class WikiDirectoryScanService {
 
     private static boolean containsWildcard(String s) {
         return s.contains("*") || s.contains("?") || s.contains("{") || s.contains("[");
+    }
+
+    /** Escape glob metacharacters so a literal path segment is matched verbatim. */
+    private static String globEscape(String s) {
+        StringBuilder b = new StringBuilder(s.length());
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if ("\\*?{}[]".indexOf(c) >= 0) {
+                b.append('\\');
+            }
+            b.append(c);
+        }
+        return b.toString();
     }
 
     private static String getExtension(String fileName) {
