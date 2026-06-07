@@ -1168,6 +1168,12 @@ export default {
       toggleFailed: '切换状态失败',
       toggleSuccess: '状态已更新',
     },
+    tagFilter: {
+      label: '标签',
+      clear: '清除',
+      search: '搜索标签',
+      noMatch: '无匹配标签',
+    },
     binding: {
       skillsKicker: '受过培训的工作流程',
       skillsTagline: '技能 = 一段流程，一份工作手册。LLM 按手册执行一系列连贯动作。',

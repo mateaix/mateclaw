@@ -57,6 +57,23 @@
               </button>
             </div>
           </div>
+          <!-- Tag filter (#146): orthogonal to the type/status tabs; click to
+               toggle, multi-select narrows by intersection (AND). -->
+          <div v-if="availableTags.length" class="tag-filter-bar">
+            <span class="tag-filter-bar__label">{{ t('agents.tagFilter.label') }}</span>
+            <button v-for="tag in visibleTags" :key="tag" class="tag-filter-chip"
+              :class="{ active: activeTags.includes(tag) }" @click="toggleTag(tag)">
+              {{ tag }}
+            </button>
+            <input v-if="hasMoreTags" v-model="tagSearch" class="tag-filter-search"
+              :placeholder="t('agents.tagFilter.search')" />
+            <span v-if="tagSearch && !visibleTags.length" class="tag-filter-bar__empty">
+              {{ t('agents.tagFilter.noMatch') }}
+            </span>
+            <button v-if="activeTags.length" class="tag-filter-clear" @click="clearTagFilter">
+              {{ t('agents.tagFilter.clear') }}
+            </button>
+          </div>
         </div>
 
         <!-- Agent card grid -->
@@ -86,6 +103,12 @@
                 <p class="agent-card__tagline">
                   {{ agentTagline(agent) || t('agents.messages.noTagline') }}
                 </p>
+                <div v-if="agentTags(agent).length" class="agent-card__tags">
+                  <span v-for="tag in agentTags(agent)" :key="tag" class="agent-card__tag"
+                    :class="{ active: activeTags.includes(tag) }" @click="toggleTag(tag)">
+                    {{ tag }}
+                  </span>
+                </div>
               </div>
             </div>
 
@@ -644,6 +667,9 @@ const { resolveSkillName } = useSkillName()
 const agents = ref<Agent[]>([])
 const searchText = ref('')
 const activeFilter = ref('all')
+// Tag filter (#146) — orthogonal to activeFilter; multi-select with AND
+// (intersection) semantics. Empty array = no tag constraint.
+const activeTags = ref<string[]>([])
 const showModal = ref(false)
 const editingAgent = ref<Agent | null>(null)
 const modalTab = ref<'basic' | 'skills' | 'tools' | 'providers' | 'wiki'>('basic')
@@ -904,6 +930,48 @@ function agentTagline(agent: Agent): string {
   return deriveTagline(profile, agent.description)
 }
 
+/** Parse an agent's comma-separated tags into a trimmed, non-empty, de-duped array. */
+function agentTags(agent: Agent): string[] {
+  const parsed = (agent.tags || '').split(',').map(t => t.trim()).filter(Boolean)
+  return [...new Set(parsed)]
+}
+
+// Distinct tags across all agents, ordered by frequency (most-used first) so
+// the filter bar surfaces the common categories. Hidden entirely when empty.
+const availableTags = computed(() => {
+  const freq = new Map<string, number>()
+  for (const a of agents.value) {
+    for (const tag of agentTags(a)) freq.set(tag, (freq.get(tag) ?? 0) + 1)
+  }
+  return [...freq.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(e => e[0])
+})
+
+// Cap the inline chips so a workspace with dozens of tags doesn't bury the
+// roster under a wall of chips. Beyond the cap, a search box appears.
+const TAG_FILTER_LIMIT = 12
+const tagSearch = ref('')
+const hasMoreTags = computed(() => availableTags.value.length > TAG_FILTER_LIMIT)
+
+// Chips actually rendered. When searching, show every name match (no cap).
+// Otherwise show the top-N frequent tags, but always append any selected tags
+// that fell outside the cap so they stay deselectable.
+const visibleTags = computed(() => {
+  const q = tagSearch.value.trim().toLowerCase()
+  if (q) return availableTags.value.filter(t => t.toLowerCase().includes(q))
+  const top = availableTags.value.slice(0, TAG_FILTER_LIMIT)
+  const extraActive = activeTags.value.filter(t => !top.includes(t) && availableTags.value.includes(t))
+  return [...top, ...extraActive]
+})
+
+function toggleTag(tag: string) {
+  const i = activeTags.value.indexOf(tag)
+  if (i >= 0) activeTags.value.splice(i, 1)
+  else activeTags.value.push(tag)
+}
+function clearTagFilter() {
+  activeTags.value = []
+}
+
 const filteredAgents = computed(() => {
   let list = agents.value
   if (searchText.value) {
@@ -918,6 +986,13 @@ const filteredAgents = computed(() => {
   else if (activeFilter.value === 'plan_execute') list = list.filter(a => a.agentType === 'plan_execute')
   else if (activeFilter.value === 'enabled') list = list.filter(a => a.enabled)
   else if (activeFilter.value === 'disabled') list = list.filter(a => !a.enabled)
+  // Tag filter: intersection — an agent must carry every selected tag.
+  if (activeTags.value.length) {
+    list = list.filter(a => {
+      const tags = agentTags(a)
+      return activeTags.value.every(t => tags.includes(t))
+    })
+  }
   return list
 })
 
@@ -1356,6 +1431,16 @@ html.dark .seg-count.warn {
 .filter-tab { padding: 8px 14px; border: 1px solid var(--mc-border); background: var(--mc-bg-muted); border-radius: 999px; font-size: 13px; color: var(--mc-text-secondary); cursor: pointer; transition: all 0.15s; font-weight: 600; }
 .filter-tab:hover { background: var(--mc-bg-sunken); }
 .filter-tab.active { background: var(--mc-primary-bg); border-color: var(--mc-primary); color: var(--mc-primary); font-weight: 500; }
+.tag-filter-bar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--mc-border); }
+.tag-filter-bar__label { font-size: 12px; color: var(--mc-text-tertiary); font-weight: 600; margin-right: 2px; }
+.tag-filter-chip { padding: 4px 12px; border: 1px solid var(--mc-border); background: var(--mc-bg-muted); border-radius: 999px; font-size: 12px; color: var(--mc-text-secondary); cursor: pointer; transition: all 0.15s; }
+.tag-filter-chip:hover { background: var(--mc-bg-sunken); }
+.tag-filter-chip.active { background: var(--mc-primary-bg); border-color: var(--mc-primary); color: var(--mc-primary); font-weight: 600; }
+.tag-filter-search { padding: 4px 10px; border: 1px solid var(--mc-border); background: var(--mc-bg-muted); border-radius: 999px; font-size: 12px; color: var(--mc-text-primary); width: 120px; outline: none; }
+.tag-filter-search:focus { border-color: var(--mc-primary); }
+.tag-filter-bar__empty { font-size: 12px; color: var(--mc-text-tertiary); }
+.tag-filter-clear { padding: 4px 10px; border: none; background: transparent; font-size: 12px; color: var(--mc-text-tertiary); cursor: pointer; text-decoration: underline; }
+.tag-filter-clear:hover { color: var(--mc-text-secondary); }
 
 /* Agent Card Grid */
 .agent-grid {
@@ -1439,6 +1524,11 @@ html.dark .seg-count.warn {
   text-overflow: ellipsis;
   letter-spacing: -0.005em;
 }
+
+.agent-card__tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.agent-card__tag { font-size: 11px; padding: 2px 8px; background: var(--mc-bg-sunken); color: var(--mc-text-tertiary); border-radius: 999px; white-space: nowrap; cursor: pointer; transition: all 0.15s; }
+.agent-card__tag:hover { color: var(--mc-text-secondary); }
+.agent-card__tag.active { background: var(--mc-primary-bg); color: var(--mc-primary); font-weight: 600; }
 
 .agent-card__action-row {
   display: flex;

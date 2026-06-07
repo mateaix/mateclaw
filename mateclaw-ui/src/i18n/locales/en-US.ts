@@ -1276,6 +1276,12 @@ export default {
       toggleFailed: 'Failed to toggle status',
       toggleSuccess: 'Status updated',
     },
+    tagFilter: {
+      label: 'Tags',
+      clear: 'Clear',
+      search: 'Search tags',
+      noMatch: 'No matching tags',
+    },
     binding: {
       skillsKicker: 'Trained workflows',
       skillsTagline: 'A skill is a workflow — a step-by-step playbook the LLM follows for a coherent multi-step task.',
