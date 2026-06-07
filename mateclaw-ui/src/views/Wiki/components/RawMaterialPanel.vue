@@ -68,7 +68,7 @@
     <div v-if="scanResult" class="scan-result">
       {{ t('wiki.scanResult', { scanned: scanResult.scanned, added: scanResult.added, skipped: scanResult.skipped }) }}
       <div v-if="scanResult.errors?.length" class="scan-errors">
-        <span v-for="err in scanResult.errors" :key="err" class="scan-error-item">{{ err }}</span>
+        <span v-for="(err, i) in scanResult.errors" :key="i" class="scan-error-item">{{ err }}</span>
       </div>
     </div>
 
