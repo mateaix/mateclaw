@@ -2264,6 +2264,7 @@ export default {
     scan: 'Scan',
     scanning: 'Scanning...',
     scanResult: 'Scanned {scanned} files, added {added}, skipped {skipped}',
+    scanFailed: 'Scan failed',
     saving: 'Saving...',
     status: {
       active: 'ACTIVE',
