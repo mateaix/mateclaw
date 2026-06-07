@@ -83,28 +83,45 @@ public class WikiRawMaterialService {
         return rawMapper.selectOne(
                 new LambdaQueryWrapper<WikiRawMaterialEntity>()
                         .eq(WikiRawMaterialEntity::getKbId, kbId)
-                        .eq(WikiRawMaterialEntity::getSourcePath, sourcePath));
+                        .eq(WikiRawMaterialEntity::getSourcePath, sourcePath)
+                        .last("LIMIT 1"));
     }
 
     /**
-     * Import a text file discovered by a directory scan, detecting content
-     * changes by hash: unchanged content (a raw with the same hash already
-     * exists) is a no-op, while changed content creates a new raw and triggers
-     * processing — so a modified file is re-ingested rather than silently
-     * skipped. The originating path is recorded for diagnostics.
+     * Import a text file discovered by a directory scan.
      *
-     * @return {@code true} when the file was newly ingested (new or changed
+     * <p>Dedup strategy (in priority order):
+     * <ol>
+     *   <li><b>Source path</b>: if a raw for {@code (kbId, absolutePath)} already exists,
+     *       compare hashes. Unchanged → skip; changed → update in-place so the same raw
+     *       row is reused rather than creating a duplicate row for the same file path.</li>
+     *   <li><b>Content hash</b>: if a different file with identical content already exists
+     *       in the KB, the existing raw is reused (copy/duplicate scenario).</li>
+     * </ol>
+     *
+     * @return {@code true} when the file was newly ingested or updated (new or changed
      *         content), {@code false} when skipped as unchanged
      */
     public boolean ingestTextFileFromScan(Long kbId, String fileName, String absolutePath, String content) {
         String hash = computeHash(content);
+
+        // Primary dedup: same source path already in this KB
+        WikiRawMaterialEntity byPath = findBySourcePath(kbId, absolutePath);
+        if (byPath != null) {
+            if (hash != null && hash.equals(byPath.getContentHash())) {
+                return false; // unchanged
+            }
+            // File changed: update existing raw in-place to avoid a duplicate row
+            updateTextContentFromScan(byPath.getId(), fileName, content, absolutePath);
+            return true;
+        }
+
+        // Secondary dedup: different path but identical content (copy of an existing file)
         WikiRawMaterialEntity sameContent = rawMapper.selectOne(
                 new LambdaQueryWrapper<WikiRawMaterialEntity>()
                         .eq(WikiRawMaterialEntity::getKbId, kbId)
                         .eq(WikiRawMaterialEntity::getContentHash, hash)
                         .last("LIMIT 1"));
-        // addText dedups internally by hash, so this reuses sameContent when
-        // unchanged and inserts + triggers processing when the content differs.
         WikiRawMaterialEntity raw = addText(kbId, fileName, content);
         // Only stamp the path on a genuinely new raw. When the content matched
         // an existing raw (possibly a different file with identical content),
@@ -116,13 +133,45 @@ public class WikiRawMaterialService {
     }
 
     /**
-     * Import a binary file discovered by a directory scan, detecting content
-     * changes by hashing the bytes: unchanged content (a raw with the same hash
-     * exists) is skipped, while changed content is re-ingested via
-     * {@link #addFile}. The unchanged case reads the file once; only a
-     * new/changed file is read again by addFile.
+     * Update an existing text raw in-place when a directory-scanned file has changed content.
+     * Resets processing state and triggers re-processing so new pages are generated from the
+     * updated content without leaving a stale duplicate row alongside the new one.
+     */
+    @Transactional
+    public void updateTextContentFromScan(Long rawId, String title, String content, String sourcePath) {
+        WikiRawMaterialEntity entity = rawMapper.selectById(rawId);
+        if (entity == null) return;
+        String hash = computeHash(content);
+        entity.setTitle(title);
+        entity.setOriginalContent(content);
+        entity.setContentHash(hash);
+        entity.setFileSize((long) content.getBytes(StandardCharsets.UTF_8).length);
+        entity.setSourcePath(sourcePath);
+        entity.setProcessingStatus("pending");
+        entity.setErrorMessage(null);
+        entity.setExtractedText(null);
+        entity.setProgressPhase(null);
+        entity.setProgressDone(0);
+        entity.setProgressTotal(0);
+        rawMapper.updateById(entity);
+        log.info("[Wiki] Text raw updated in-place from scan: id={}, kbId={}, newHash={}", rawId, entity.getKbId(), hash);
+        if (properties.isAutoProcessOnUpload()) {
+            eventPublisher.publishEvent(new WikiProcessingEvent(this, rawId, entity.getKbId()));
+        }
+    }
+
+    /**
+     * Import a binary file discovered by a directory scan.
      *
-     * @return {@code true} when newly ingested, {@code false} when unchanged
+     * <p>Dedup strategy (in priority order):
+     * <ol>
+     *   <li><b>Source path</b>: if a raw for {@code (kbId, absolutePath)} already exists,
+     *       compare hashes. Unchanged → skip; changed → update in-place.</li>
+     *   <li><b>Content hash</b>: if a different file with identical bytes already exists,
+     *       the existing raw is reused.</li>
+     * </ol>
+     *
+     * @return {@code true} when newly ingested or updated, {@code false} when unchanged
      */
     public boolean ingestBinaryFileFromScan(Long kbId, String title, String sourceType,
                                             String absolutePath, long fileSize) {
@@ -132,6 +181,19 @@ public class WikiRawMaterialService {
         } catch (Exception e) {
             log.warn("[Wiki] Could not hash file for change detection: {}", e.getMessage());
         }
+
+        // Primary dedup: same source path already in this KB
+        WikiRawMaterialEntity byPath = findBySourcePath(kbId, absolutePath);
+        if (byPath != null) {
+            if (hash != null && hash.equals(byPath.getContentHash())) {
+                return false; // unchanged
+            }
+            // File changed: update existing raw in-place
+            updateBinaryFileFromScan(byPath.getId(), absolutePath, fileSize, hash);
+            return true;
+        }
+
+        // Secondary dedup: same content hash → copy at a different path
         if (hash != null) {
             WikiRawMaterialEntity sameContent = rawMapper.selectOne(
                     new LambdaQueryWrapper<WikiRawMaterialEntity>()
@@ -145,6 +207,29 @@ public class WikiRawMaterialService {
         // Pass the hash we already computed so addFile does not re-read the file.
         addFile(kbId, title, sourceType, null, absolutePath, fileSize, hash);
         return true;
+    }
+
+    /**
+     * Update an existing binary raw in-place when a directory-scanned file has changed content.
+     */
+    @Transactional
+    public void updateBinaryFileFromScan(Long rawId, String sourcePath, long fileSize, String hash) {
+        WikiRawMaterialEntity entity = rawMapper.selectById(rawId);
+        if (entity == null) return;
+        entity.setContentHash(hash);
+        entity.setFileSize(fileSize);
+        entity.setSourcePath(sourcePath);
+        entity.setProcessingStatus("pending");
+        entity.setErrorMessage(null);
+        entity.setExtractedText(null);
+        entity.setProgressPhase(null);
+        entity.setProgressDone(0);
+        entity.setProgressTotal(0);
+        rawMapper.updateById(entity);
+        log.info("[Wiki] Binary raw updated in-place from scan: id={}, kbId={}, newHash={}", rawId, entity.getKbId(), hash);
+        if (properties.isAutoProcessOnUpload()) {
+            eventPublisher.publishEvent(new WikiProcessingEvent(this, rawId, entity.getKbId()));
+        }
     }
 
     /**
