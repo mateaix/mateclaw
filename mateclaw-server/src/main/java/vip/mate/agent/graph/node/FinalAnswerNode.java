@@ -40,12 +40,25 @@ public class FinalAnswerNode implements NodeAction {
      */
     private final GeneratedFileCache generatedFileCache;
 
+    /**
+     * Kill-switch for the deterministic Markdown cleanup applied to the answer
+     * body. {@code true} (default) runs {@link MarkdownNormalizer}; set to
+     * {@code false} to surface model output verbatim if a normalization edge
+     * case ever mangles a legitimate answer in production.
+     */
+    private final boolean markdownNormalizeEnabled;
+
     public FinalAnswerNode() {
-        this(null);
+        this(null, true);
     }
 
     public FinalAnswerNode(GeneratedFileCache generatedFileCache) {
+        this(generatedFileCache, true);
+    }
+
+    public FinalAnswerNode(GeneratedFileCache generatedFileCache, boolean markdownNormalizeEnabled) {
         this.generatedFileCache = generatedFileCache;
+        this.markdownNormalizeEnabled = markdownNormalizeEnabled;
     }
 
     @Override
@@ -176,8 +189,11 @@ public class FinalAnswerNode implements NodeAction {
         // unaligned table pipes) that prompt rules fail to prevent; this fixes the
         // mechanical defects before the answer is persisted / sent to channels.
         // Verbatim tool output (RETURN_DIRECT) and approval-wait paths return early
-        // above and are intentionally left untouched.
-        finalAnswer = MarkdownNormalizer.normalize(finalAnswer);
+        // above and are intentionally left untouched. Gated so operators can turn
+        // the rewrite off (mate.agent.markdown-normalize-enabled=false).
+        if (markdownNormalizeEnabled) {
+            finalAnswer = MarkdownNormalizer.normalize(finalAnswer);
+        }
 
         // Build the event list. Always carries the finish_reason event so
         // downstream consumers (memory gate, channel accumulator, message

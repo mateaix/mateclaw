@@ -222,6 +222,10 @@ mateclaw:
 # MateClaw Agent 配置
 mate:
   agent:
+    # Deterministic Markdown cleanup of the final answer (heading spaces, glued
+    # ---, table pipe alignment) before persistence / channel delivery. Set to
+    # false to pass model output through verbatim.
+    markdown-normalize-enabled: true
     graph:
       observation:
         # 与 GraphObservationProperties.java 默认值对齐，参考 openclaw token-budget 设计
