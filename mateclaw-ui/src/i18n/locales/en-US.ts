@@ -1231,6 +1231,8 @@ export default {
       modelGlobalDefault: 'Use global default',
       modelHint: 'Override the global default model for this employee. Leave blank to follow Settings → Models.',
       tags: 'Tags',
+      tagsHint: 'Press Enter, space, or comma to add; click the × on a chip to remove.',
+      tagUndo: 'Undo',
       enabled: 'Enabled',
     },
     thinkingLevels: {
@@ -1261,7 +1263,7 @@ export default {
       goal: 'e.g. Turn data into actionable insights',
       backstory: 'e.g. Spent 10 years in data — believes in asking the right question before writing SQL...',
       extraInstructions: 'Optional: output format, process checklist, or boundary rules...',
-      tags: 'tag1,tag2',
+      tags: 'Enter, space, or comma to add',
       workspaceBasePath: 'e.g. projects/code-review',
     },
     messages: {
@@ -1272,6 +1274,7 @@ export default {
       saveFailed: 'Failed to save employee',
       saveSuccess: 'Employee saved',
       deleteFailed: 'Failed to delete employee',
+      tagRemoved: 'Removed tag "{tag}"',
       deleteSuccess: 'Employee let go',
       toggleFailed: 'Failed to toggle status',
       toggleSuccess: 'Status updated',

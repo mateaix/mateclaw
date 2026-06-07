@@ -326,7 +326,29 @@
             </div>
             <div class="form-group">
               <label class="form-label">{{ t('agents.fields.tags') }}</label>
-              <input v-model="form.tags" class="form-input" :placeholder="t('agents.placeholders.tags')" />
+              <div class="tags-editor" @click="($refs.tagInputEl as HTMLInputElement)?.focus()">
+                <span v-for="tag in tagList" :key="tag" class="tag-chip tag-chip--editable">
+                  {{ tag }}
+                  <button type="button" class="tag-chip__remove" @click.stop="removeTag(tag)">×</button>
+                </span>
+                <input
+                  ref="tagInputEl"
+                  v-model="tagInput"
+                  class="tags-editor__input"
+                  :placeholder="tagList.length ? '' : t('agents.placeholders.tags')"
+                  @keydown="onTagInputKeydown"
+                  @compositionstart="tagComposing = true"
+                  @compositionend="tagComposing = false; flushTagSeparators()"
+                  @blur="commitTagInput"
+                />
+              </div>
+              <p class="form-hint tags-hint">
+                <template v-if="recentlyRemovedTag">
+                  {{ t('agents.messages.tagRemoved', { tag: recentlyRemovedTag }) }}
+                  <button type="button" class="tags-undo" @click="undoRemoveTag">{{ t('agents.fields.tagUndo') }}</button>
+                </template>
+                <template v-else>{{ t('agents.fields.tagsHint') }}</template>
+              </p>
             </div>
             <div class="form-group">
               <label class="form-label">{{ t('agents.fields.enabled') }}</label>
@@ -614,7 +636,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { mcToast } from '@/composables/useMcToast'
@@ -887,6 +909,72 @@ const defaultForm = (): Partial<Agent> & { name: string; defaultThinkingLevel: s
 const form = ref(defaultForm())
 const iconPickerVisible = ref(false)
 
+// Chip-style tag editor (#145). `form.tags` stays the comma-separated string
+// source of truth for the API; the chips render a derived array. The input
+// supports Enter / space / ASCII or full-width comma as separators, is
+// IME-safe (won't commit a half-composed Chinese token on the candidate-
+// confirming Enter), and offers a transient inline undo after removal.
+const tagInput = ref('')
+const tagComposing = ref(false)
+const recentlyRemovedTag = ref<string | null>(null)
+let undoTimer: ReturnType<typeof setTimeout> | null = null
+
+// Stored value is comma-joined, so split on comma only — a stored tag may
+// legitimately contain spaces, which the input tokenizer (below) would split.
+const tagList = computed(() => (form.value.tags || '').split(',').map(s => s.trim()).filter(Boolean))
+
+function setTags(list: string[]) {
+  form.value.tags = list.join(',')
+}
+function addTags(tokens: string[]) {
+  const merged = [...tagList.value]
+  for (const raw of tokens) {
+    const tag = raw.trim()
+    if (tag && !merged.includes(tag)) merged.push(tag)
+  }
+  setTags(merged)
+}
+// Enter / blur: commit everything left in the box.
+function commitTagInput() {
+  addTags(tagInput.value.split(/[,，\s]+/))
+  tagInput.value = ''
+}
+// Live typing: once a separator (comma / full-width comma / whitespace) lands,
+// flush the completed tokens and keep any trailing partial in the box. v-model
+// already suppresses updates mid-IME-composition, so this only runs on settled
+// text; the guard is belt-and-suspenders.
+function flushTagSeparators() {
+  if (tagComposing.value || !/[,，\s]/.test(tagInput.value)) return
+  const tokens = tagInput.value.split(/[,，\s]+/)
+  const partial = /[,，\s]$/.test(tagInput.value) ? '' : (tokens.pop() ?? '')
+  addTags(tokens)
+  tagInput.value = partial
+}
+watch(tagInput, flushTagSeparators)
+
+function onTagInputKeydown(e: KeyboardEvent) {
+  if (e.isComposing || e.keyCode === 229) return
+  if (e.key === 'Enter') {
+    e.preventDefault()
+    commitTagInput()
+  } else if (e.key === 'Backspace' && !tagInput.value && tagList.value.length) {
+    e.preventDefault()
+    removeTag(tagList.value[tagList.value.length - 1])
+  }
+}
+function removeTag(tag: string) {
+  setTags(tagList.value.filter(t => t !== tag))
+  recentlyRemovedTag.value = tag
+  if (undoTimer) clearTimeout(undoTimer)
+  undoTimer = setTimeout(() => { recentlyRemovedTag.value = null }, 5000)
+}
+function undoRemoveTag() {
+  if (!recentlyRemovedTag.value) return
+  addTags([recentlyRemovedTag.value])
+  recentlyRemovedTag.value = null
+  if (undoTimer) clearTimeout(undoTimer)
+}
+
 // Identity-triad fields displayed in the basic tab. Kept separate from
 // `form.systemPrompt` so the textarea state stays predictable while the
 // user types — we only flatten back to a single prompt at save time.
@@ -996,6 +1084,8 @@ function openBlankCreateModal() {
   showTemplateSelector.value = false
   editingAgent.value = null
   form.value = defaultForm()
+  tagInput.value = ''
+  recentlyRemovedTag.value = null
   profileForm.value = emptyProfile()
   modalTab.value = 'basic'
   skillBindingSearch.value = ''
@@ -1077,6 +1167,8 @@ async function openEditModal(agent: Agent) {
     skillsDisabled: agent.skillsDisabled === true,
     toolsDisabled: agent.toolsDisabled === true,
   }
+  tagInput.value = ''
+  recentlyRemovedTag.value = null
   profileForm.value = parsePrompt(agent.systemPrompt)
   modalTab.value = 'basic'
   skillBindingSearch.value = ''
@@ -1809,6 +1901,15 @@ html.dark .seg-count.warn {
 
 .template-tags { display: flex; flex-wrap: wrap; gap: 4px; align-self: flex-start; margin-top: 2px; }
 .tag-chip { font-size: 11px; padding: 2px 8px; background: var(--mc-bg-sunken); color: var(--mc-text-tertiary); border-radius: 999px; white-space: nowrap; }
+
+.tags-editor { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-height: 38px; padding: 6px 10px; border: 1px solid var(--mc-border); border-radius: 8px; background: var(--mc-bg-sunken); cursor: text; transition: border-color 0.15s; }
+.tags-editor:focus-within { border-color: var(--mc-primary); box-shadow: 0 0 0 2px rgba(217,119,87,0.1); }
+.tag-chip--editable { display: inline-flex; align-items: center; gap: 2px; font-size: 12px; padding: 3px 4px 3px 10px; background: var(--mc-bg); color: var(--mc-text-secondary); border: 1px solid var(--mc-border); }
+.tag-chip__remove { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; padding: 0; border: none; border-radius: 999px; background: var(--mc-bg-sunken); color: var(--mc-text-secondary); font-size: 15px; line-height: 1; cursor: pointer; transition: background 0.15s, color 0.15s; }
+.tag-chip__remove:hover { background: var(--mc-danger, #e05656); color: #fff; }
+.tags-editor__input { flex: 1; min-width: 80px; border: none; outline: none; background: transparent; font-size: 14px; color: var(--mc-text-primary); padding: 2px 0; }
+.tags-hint { margin-top: 6px; }
+.tags-undo { border: none; background: transparent; padding: 0 2px; color: var(--mc-primary); font-size: inherit; cursor: pointer; text-decoration: underline; }
 
 /* RFC-090 §9.2 调整 B — Advanced Tools picker (collapsed by default) */
 .advanced-tools { border: 1px dashed var(--mc-border); border-radius: 12px; padding: 0; }

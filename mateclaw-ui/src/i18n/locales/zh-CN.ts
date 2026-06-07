@@ -1123,6 +1123,8 @@ export default {
       modelGlobalDefault: '使用全局默认模型',
       modelHint: '为该员工单独指定模型，留空则跟随「设置 → 模型」中的全局默认。',
       tags: '标签',
+      tagsHint: '输入后按回车、空格或逗号添加；点芯片上的 × 删除。',
+      tagUndo: '撤销',
       enabled: '启用',
     },
     thinkingLevels: {
@@ -1153,7 +1155,7 @@ export default {
       goal: '例：把数据变成可执行洞察',
       backstory: '例：在数据里待了十年，相信先问对问题再写 SQL...',
       extraInstructions: '可选：补充输出格式、流程清单或边界规则...',
-      tags: 'tag1,tag2',
+      tags: '回车、空格或逗号添加',
       workspaceBasePath: '例如：projects/code-review',
     },
     messages: {
@@ -1164,6 +1166,7 @@ export default {
       saveFailed: '保存员工失败',
       saveSuccess: '员工已保存',
       deleteFailed: '删除员工失败',
+      tagRemoved: '已移除标签「{tag}」',
       deleteSuccess: '员工已离职',
       toggleFailed: '切换状态失败',
       toggleSuccess: '状态已更新',
