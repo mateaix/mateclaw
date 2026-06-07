@@ -644,6 +644,14 @@ export const settingsApi = {
     http.put('/settings/sidecar', data),
 }
 
+// ==================== Global outbound proxy ====================
+export const proxyApi = {
+  get: () => http.get('/settings/proxy'),
+  update: (data: { enabled: boolean; url: string; nonProxyHosts?: string }) =>
+    http.put('/settings/proxy', data),
+  test: (url: string) => http.post('/settings/proxy/test', { url }),
+}
+
 // ==================== Workspace ====================
 const encodeFilePath = (filename: string) =>
   filename.split('/').map(encodeURIComponent).join('/')
@@ -980,6 +988,12 @@ export const agentBindingApi = {
     http.get(`/agents/${agentId}/provider-preferences`),
   setProviderPreferences: (agentId: string | number, providerIds: string[]) =>
     http.put(`/agents/${agentId}/provider-preferences`, providerIds),
+  // Per-agent knowledge base access scope. Empty array = unrestricted
+  // (agent can reach every KB in its workspace). IDs are kept as strings
+  // for the Snowflake-precision contract.
+  listKbs: (agentId: string | number) => http.get(`/agents/${agentId}/kbs`),
+  setKbs: (agentId: string | number, kbIds: (string | number)[]) =>
+    http.put(`/agents/${agentId}/kbs`, kbIds),
 }
 
 // ==================== Dashboard ====================

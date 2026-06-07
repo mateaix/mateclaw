@@ -10,6 +10,8 @@ import com.microsoft.playwright.options.WaitUntilState;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
+import org.springframework.ai.chat.model.ToolContext;
+import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Component;
 import vip.mate.tool.browser.BrowserLauncher;
 import vip.mate.tool.document.FilenameSanitizer;
@@ -87,7 +89,8 @@ public class HtmlImageRenderTool {
             @ToolParam(description = "Viewport height in px (default 900, max 4096). Ignored when fullPage=true except as initial layout hint.", required = false)
             Integer height,
             @ToolParam(description = "Capture full scrollable page (default true). Set false to only capture the viewport.", required = false)
-            Boolean fullPage) {
+            Boolean fullPage,
+            @Nullable ToolContext ctx) {
 
         String source;
         try {
@@ -117,7 +120,7 @@ public class HtmlImageRenderTool {
 
         log.info("[HtmlImageRender] rendered {} ({} bytes, viewport={}x{}, fullPage={})",
                 displayName, pngBytes.length, vw, vh, full);
-        return GeneratedFileLink.resultZh(pngBytes, displayName, PNG_MIME, cache, "图片");
+        return GeneratedFileLink.resultZh(pngBytes, displayName, PNG_MIME, cache, "图片", ctx);
     }
 
     private String resolveHtml(String filePath, String inlineHtml) throws Exception {

@@ -27,7 +27,8 @@ class RuntimeContextInjectorSenderTest {
                 9L, null, false,
                 /* senderName */ "Alice",
                 /* channelType */ "feishu",
-                /* chatId */ "oc_abc");
+                /* chatId */ "oc_abc",
+                /* baseUrl */ null);
 
         String ctx = RuntimeContextInjector.buildContextMessage("/data/ws/5", null, origin);
 
@@ -44,7 +45,7 @@ class RuntimeContextInjectorSenderTest {
         ChatOrigin origin = new ChatOrigin(
                 7L, "feishu:ou_xyz", "ou_xyz", 5L, "/data/ws/5",
                 9L, null, false,
-                "Alice", "feishu", null);
+                "Alice", "feishu", null, null);
 
         String ctx = RuntimeContextInjector.buildContextMessage("/data/ws/5", null, origin);
 
@@ -101,7 +102,7 @@ class RuntimeContextInjectorSenderTest {
     void blankSenderName() {
         ChatOrigin origin = new ChatOrigin(
                 7L, null, "ou_xyz", null, null, null, null, false,
-                /* senderName */ "  ", "feishu", null);
+                /* senderName */ "  ", "feishu", null, null);
 
         String ctx = RuntimeContextInjector.buildContextMessage(null, null, origin);
 

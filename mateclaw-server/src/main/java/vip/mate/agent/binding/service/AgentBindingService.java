@@ -9,9 +9,11 @@ import org.springframework.stereotype.Service;
 import vip.mate.agent.binding.model.AgentProviderPreference;
 import vip.mate.agent.binding.model.AgentSkillBinding;
 import vip.mate.agent.binding.model.AgentToolBinding;
+import vip.mate.agent.binding.model.AgentWikiKbBinding;
 import vip.mate.agent.binding.repository.AgentProviderPreferenceMapper;
 import vip.mate.agent.binding.repository.AgentSkillBindingMapper;
 import vip.mate.agent.binding.repository.AgentToolBindingMapper;
+import vip.mate.agent.binding.repository.AgentWikiKbBindingMapper;
 import vip.mate.agent.model.AgentEntity;
 import vip.mate.agent.repository.AgentMapper;
 import vip.mate.exception.MateClawException;
@@ -26,6 +28,8 @@ import vip.mate.skill.runtime.SkillRuntimeService;
 import vip.mate.skill.runtime.model.ResolvedSkill;
 import vip.mate.tool.model.AvailableToolDTO;
 import vip.mate.tool.service.AvailableToolService;
+import vip.mate.wiki.model.WikiKnowledgeBaseEntity;
+import vip.mate.wiki.repository.WikiKnowledgeBaseMapper;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
@@ -55,6 +59,17 @@ public class AgentBindingService implements AgentBindingResolver {
     private final AgentSkillBindingMapper skillBindingMapper;
     private final AgentToolBindingMapper toolBindingMapper;
     private final AgentProviderPreferenceMapper providerPreferenceMapper;
+    /**
+     * Agent ↔ KB access-scope rows. Plain mapper (no transitive deps), so it
+     * is safe to wire directly here without risking a boot-time cycle.
+     */
+    private final AgentWikiKbBindingMapper kbBindingMapper;
+    /**
+     * Used only to verify a KB lives in the agent's workspace before pinning
+     * it. Like {@link #agentMapper}, a bare mapper avoids pulling the wiki
+     * service layer (and its dependency on agent binding) into this bean.
+     */
+    private final WikiKnowledgeBaseMapper kbMapper;
     /**
      * {@code @Lazy} — SkillRuntimeService and AgentBindingService both sit
      * near the agent boot path; the lazy proxy avoids a circular bean
@@ -93,6 +108,8 @@ public class AgentBindingService implements AgentBindingResolver {
     public AgentBindingService(AgentSkillBindingMapper skillBindingMapper,
                                AgentToolBindingMapper toolBindingMapper,
                                AgentProviderPreferenceMapper providerPreferenceMapper,
+                               AgentWikiKbBindingMapper kbBindingMapper,
+                               WikiKnowledgeBaseMapper kbMapper,
                                @Lazy SkillRuntimeService skillRuntimeService,
                                AvailableToolService availableToolService,
                                AgentMapper agentMapper,
@@ -101,6 +118,8 @@ public class AgentBindingService implements AgentBindingResolver {
         this.skillBindingMapper = skillBindingMapper;
         this.toolBindingMapper = toolBindingMapper;
         this.providerPreferenceMapper = providerPreferenceMapper;
+        this.kbBindingMapper = kbBindingMapper;
+        this.kbMapper = kbMapper;
         this.skillRuntimeService = skillRuntimeService;
         this.availableToolService = availableToolService;
         this.agentMapper = agentMapper;
@@ -938,6 +957,81 @@ public class AgentBindingService implements AgentBindingResolver {
             row.setSortOrder(order++);
             row.setEnabled(true);
             providerPreferenceMapper.insert(row);
+        }
+    }
+
+    // ==================== Knowledge base access scope ====================
+
+    /** Raw scope rows for the agent edit form, oldest first. */
+    public List<AgentWikiKbBinding> listKbBindings(Long agentId) {
+        return kbBindingMapper.selectList(
+                new LambdaQueryWrapper<AgentWikiKbBinding>()
+                        .eq(AgentWikiKbBinding::getAgentId, agentId)
+                        .orderByAsc(AgentWikiKbBinding::getCreateTime));
+    }
+
+    /**
+     * Replace the agent's KB access scope. An empty / null list clears the
+     * scope, returning the agent to workspace-wide (unrestricted) access.
+     * Every incoming KB must live in the agent's workspace — pinning a KB
+     * from another tenancy is refused (403).
+     */
+    public void setKbBindings(Long agentId, List<Long> kbIds) {
+        // De-dup defensively: the unique index is (agent_id, kb_id, deleted),
+        // so two identical ids in the incoming list would collide on insert.
+        Set<Long> distinct = new LinkedHashSet<>();
+        if (kbIds != null) {
+            for (Long kbId : kbIds) {
+                if (kbId != null) {
+                    distinct.add(kbId);
+                }
+            }
+        }
+        // Validate the whole set BEFORE deleting anything, so a rejected id
+        // can't leave the agent half-scoped.
+        for (Long kbId : distinct) {
+            requireKbInAgentWorkspace(agentId, kbId);
+        }
+        kbBindingMapper.delete(
+                new LambdaQueryWrapper<AgentWikiKbBinding>()
+                        .eq(AgentWikiKbBinding::getAgentId, agentId));
+        for (Long kbId : distinct) {
+            AgentWikiKbBinding row = new AgentWikiKbBinding();
+            row.setAgentId(agentId);
+            row.setKbId(kbId);
+            row.setEnabled(true);
+            kbBindingMapper.insert(row);
+        }
+    }
+
+    /**
+     * Refuse to scope an agent to a KB outside its workspace. KBs are
+     * workspace-shared artifacts ({@code mate_wiki_knowledge_base.workspace_id});
+     * letting workspace A's agent pin workspace B's KB would cross the
+     * tenancy boundary the same way a cross-workspace skill binding would.
+     * A {@code null} workspace on either side is normalized to the default
+     * workspace (1) to match the rest of the codebase.
+     */
+    private void requireKbInAgentWorkspace(Long agentId, Long kbId) {
+        if (agentId == null) {
+            throw new MateClawException("err.agent.not_found", 404, "Agent ID is required");
+        }
+        AgentEntity agent = agentMapper.selectById(agentId);
+        if (agent == null) {
+            throw new MateClawException("err.agent.not_found", 404, "Agent 不存在: " + agentId);
+        }
+        WikiKnowledgeBaseEntity kb = kbMapper.selectById(kbId);
+        if (kb == null) {
+            throw new MateClawException("err.wiki.kb_not_found", 404,
+                    "Knowledge base 不存在: " + kbId);
+        }
+        long agentWs = agent.getWorkspaceId() == null ? 1L : agent.getWorkspaceId();
+        long kbWs = kb.getWorkspaceId() == null ? 1L : kb.getWorkspaceId();
+        if (agentWs != kbWs) {
+            throw new MateClawException("err.wiki.cross_workspace_kb_binding", 403,
+                    "Knowledge base " + kbId + " (workspace=" + kbWs
+                            + ") cannot be scoped to Agent " + agentId
+                            + " (workspace=" + agentWs + ")");
         }
     }
 

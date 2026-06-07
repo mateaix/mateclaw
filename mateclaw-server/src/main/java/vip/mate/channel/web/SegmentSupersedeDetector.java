@@ -14,7 +14,7 @@ final class SegmentSupersedeDetector {
     static final String REASON_TOOL_RESULT_REPLACED_MODEL_CLAIM = "tool_result_replaced_model_claim";
 
     private static final Pattern GENERATED_FILE_URL =
-            Pattern.compile("/api/v1/files/generated/[A-Za-z0-9-]+");
+            Pattern.compile("(?:https?://[^/\\s)\\]]+)?/api/v1/files/generated/[A-Za-z0-9-]+");
     private static final Pattern BYTE_COUNT =
             Pattern.compile("\\d+\\s*字节");
     private static final Pattern REPLACEMENT_COUNT =

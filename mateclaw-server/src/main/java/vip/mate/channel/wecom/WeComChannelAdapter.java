@@ -1502,7 +1502,7 @@ public class WeComChannelAdapter extends AbstractChannelAdapter {
      * each adapter rewrites the URL to a channel-native attachment.
      */
     private static final java.util.regex.Pattern GENERATED_URL_PATTERN =
-            java.util.regex.Pattern.compile("/api/v1/files/generated/([a-zA-Z0-9-]+)");
+            java.util.regex.Pattern.compile("(?:https?://[^/\\s)\\]]+)?/api/v1/files/generated/([a-zA-Z0-9-]+)");
 
     /**
      * Scan the agent's text for {@code /api/v1/files/generated/{id}} URLs;
