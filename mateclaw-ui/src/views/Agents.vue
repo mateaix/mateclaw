@@ -318,10 +318,16 @@
             <div class="form-group full-width">
               <details class="advanced-prompt">
                 <summary class="advanced-prompt__summary">
-                  {{ t('agents.fields.extraInstructions') }}
+                  {{ t('agents.fields.advanced') }}
                 </summary>
+                <label class="form-label">{{ t('agents.fields.extraInstructions') }}</label>
                 <textarea v-model="profileForm.extra" class="form-textarea" rows="4" :placeholder="t('agents.placeholders.extraInstructions')"></textarea>
                 <p class="form-hint">{{ t('agents.fields.extraInstructionsHint') }}</p>
+                <div v-if="editingAgent" class="advanced-guide">
+                  <label class="form-label">{{ t('agents.guide.summary') }}</label>
+                  <p class="form-hint">{{ t('agents.guide.desc') }}</p>
+                  <AgentGuideEditor :agent-id="editingAgent.id" />
+                </div>
               </details>
             </div>
             <div class="form-group">
@@ -624,6 +630,7 @@ import type { Agent } from '@/types/index'
 import SkillIcon from '@/components/common/SkillIcon.vue'
 import SkillIconPicker from '@/components/common/SkillIconPicker.vue'
 import LivePanel from '@/components/live/LivePanel.vue'
+import AgentGuideEditor from './Agents/components/AgentGuideEditor.vue'
 import {
   emptyProfile,
   parsePrompt,
@@ -1775,6 +1782,8 @@ html.dark .seg-count.warn {
 }
 .advanced-prompt[open] > .advanced-prompt__summary { padding: 0 0 8px; border-bottom: 1px solid var(--mc-border-light); margin-bottom: 8px; }
 .advanced-prompt[open] > .advanced-prompt__summary::before { transform: rotate(90deg); }
+.advanced-prompt .form-textarea { width: 100%; box-sizing: border-box; }
+.advanced-guide { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--mc-border-light); }
 .modal-footer { display: flex; justify-content: flex-end; gap: 10px; padding: 16px 24px; border-top: 1px solid var(--mc-border-light); }
 
 @media (max-width: 900px) {
