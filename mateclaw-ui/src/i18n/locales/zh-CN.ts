@@ -2212,6 +2212,13 @@ export default {
         reset: '重置为默认',
         resetConfirm: '确认重置为内置默认 profile？当前自定义配置会被清除。',
       },
+      reclassify: {
+        desc: '按当前 profile 重新分类已有页面：仅更新页面分类（pageType），不改动正文。改了 profile（新增/删除类型）后用它把旧页面迁移到新分类。',
+        button: '重新分类已有页面',
+        confirmTitle: '重新分类已有页面',
+        confirmMsg: '将对本知识库每个非系统页面逐一调用大模型重新判定分类，可能耗时并产生费用。系统页面不受影响。确认继续？',
+        started: '已开始重新分类，完成后页面分类会更新。',
+      },
       layers: {
         tab: '分层 & 失效',
         title: '知识分层与失效状态',
