@@ -17,7 +17,9 @@ import vip.mate.channel.web.ChatStreamTracker;
 import vip.mate.common.result.R;
 import vip.mate.memory.event.ConversationCompletionPublisher;
 import vip.mate.workspace.conversation.ConversationService;
+import vip.mate.workspace.conversation.model.ConversationEntity;
 import vip.mate.workspace.conversation.model.MessageContentPart;
+import vip.mate.workspace.conversation.vo.MessageVO;
 
 import java.io.IOException;
 import java.time.LocalDateTime;
@@ -26,6 +28,8 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 /**
  * WebChat 嵌入式对话接口
@@ -101,18 +105,14 @@ public class WebChatController {
         // Optional sessionId lets one visitor hold multiple isolated threads. It is only ever
         // composed into the server-derived conversationId (kept under the key+visitor namespace),
         // never accepted as a raw conversationId — so a caller can't reach another tenant's history.
-        String sessionId = request.getSessionId() != null ? request.getSessionId().trim() : null;
-        if (sessionId != null && !sessionId.isEmpty() && !sessionId.matches("[A-Za-z0-9_-]{1,64}")) {
-            sendErrorAndComplete(emitter, "Invalid sessionId (allowed: letters, digits, '-', '_', length 1-64)");
+        final String effectiveSessionId;
+        try {
+            effectiveSessionId = normalizeSessionId(request.getSessionId());
+        } catch (IllegalArgumentException ex) {
+            sendErrorAndComplete(emitter, ex.getMessage());
             return emitter;
         }
-        if (sessionId != null && sessionId.isEmpty()) {
-            sessionId = null;
-        }
-
-        final String effectiveSessionId = sessionId;
-        String conversationId = "webchat:" + apiKey.substring(0, Math.min(8, apiKey.length())) + ":" + visitorId
-                + (effectiveSessionId != null ? ":" + effectiveSessionId : "");
+        String conversationId = deriveConversationId(apiKey, visitorId, effectiveSessionId);
         String message = request.getMessage() != null ? request.getMessage() : "";
 
         if (message.isBlank()) {
@@ -255,7 +255,126 @@ public class WebChatController {
         ));
     }
 
+    /**
+     * 列出某访客的会话线程
+     * <p>
+     * 仅返回属于本 Key + visitorId 的会话（按 conversationId 前缀过滤），
+     * 不暴露裸 conversationId，调用方按 sessionId 寻址。
+     */
+    @Operation(summary = "列出访客会话线程")
+    @GetMapping("/sessions")
+    public R<List<WebChatSessionView>> listSessions(
+            @RequestHeader("X-MC-Key") String apiKey,
+            @RequestParam String visitorId) {
+        ChannelEntity channel = resolveChannel(apiKey);
+        if (channel == null) {
+            return R.fail(401, "Invalid API Key");
+        }
+        String base = deriveConversationId(apiKey, visitorId, null);
+        String prefix = base + ":";
+        List<WebChatSessionView> sessions = conversationService.listConversations("webchat:" + visitorId).stream()
+                .filter(c -> c.getConversationId() != null
+                        && (c.getConversationId().equals(base) || c.getConversationId().startsWith(prefix)))
+                .map(c -> {
+                    String cid = c.getConversationId();
+                    String sid = cid.equals(base) ? null : cid.substring(prefix.length());
+                    return new WebChatSessionView(sid, c.getTitle(), c.getLastActiveTime(), c.getMessageCount());
+                })
+                .collect(Collectors.toList());
+        return R.ok(sessions);
+    }
+
+    /**
+     * 获取某会话线程的消息列表
+     */
+    @Operation(summary = "获取会话消息")
+    @GetMapping("/sessions/messages")
+    public R<List<MessageVO>> sessionMessages(
+            @RequestHeader("X-MC-Key") String apiKey,
+            @RequestParam String visitorId,
+            @RequestParam(required = false) String sessionId) {
+        ChannelEntity channel = resolveChannel(apiKey);
+        if (channel == null) {
+            return R.fail(401, "Invalid API Key");
+        }
+        String sid;
+        try {
+            sid = normalizeSessionId(sessionId);
+        } catch (IllegalArgumentException ex) {
+            return R.fail(400, ex.getMessage());
+        }
+        String conversationId = deriveConversationId(apiKey, visitorId, sid);
+        if (!ownsConversation(conversationId, visitorId)) {
+            return R.fail(404, "Session not found");
+        }
+        return R.ok(conversationService.listMessageViews(conversationId));
+    }
+
+    /**
+     * 删除某会话线程
+     */
+    @Operation(summary = "删除会话线程")
+    @DeleteMapping("/sessions")
+    public R<Void> deleteSession(
+            @RequestHeader("X-MC-Key") String apiKey,
+            @RequestParam String visitorId,
+            @RequestParam(required = false) String sessionId) {
+        ChannelEntity channel = resolveChannel(apiKey);
+        if (channel == null) {
+            return R.fail(401, "Invalid API Key");
+        }
+        String sid;
+        try {
+            sid = normalizeSessionId(sessionId);
+        } catch (IllegalArgumentException ex) {
+            return R.fail(400, ex.getMessage());
+        }
+        String conversationId = deriveConversationId(apiKey, visitorId, sid);
+        if (!ownsConversation(conversationId, visitorId)) {
+            return R.fail(404, "Session not found");
+        }
+        conversationService.deleteConversation(conversationId);
+        return R.ok();
+    }
+
     // ==================== 内部方法 ====================
+
+    private static final Pattern SESSION_ID_PATTERN = Pattern.compile("[A-Za-z0-9_-]{1,64}");
+
+    /**
+     * 归一化调用方传入的 sessionId：空白 → null；非空必须满足白名单字符集，否则抛出。
+     */
+    private String normalizeSessionId(String raw) {
+        if (raw == null) {
+            return null;
+        }
+        String s = raw.trim();
+        if (s.isEmpty()) {
+            return null;
+        }
+        if (!SESSION_ID_PATTERN.matcher(s).matches()) {
+            throw new IllegalArgumentException(
+                    "Invalid sessionId (allowed: letters, digits, '-', '_', length 1-64)");
+        }
+        return s;
+    }
+
+    /**
+     * 由服务端拼装 conversationId，始终钳在 key + visitor 命名空间内。
+     * 绝不接受调用方传入的裸 conversationId。
+     */
+    private String deriveConversationId(String apiKey, String visitorId, String sessionId) {
+        String base = "webchat:" + apiKey.substring(0, Math.min(8, apiKey.length())) + ":" + visitorId;
+        return sessionId != null ? base + ":" + sessionId : base;
+    }
+
+    /**
+     * 校验该会话确属本 visitor（严格相等，不放行 system 会话）。
+     */
+    private boolean ownsConversation(String conversationId, String visitorId) {
+        ConversationEntity conv = conversationService.findByConversationId(conversationId);
+        return conv != null && ("webchat:" + visitorId).equals(conv.getUsername());
+    }
 
     /**
      * 通过 API Key 查找 WebChat 渠道
@@ -333,5 +452,16 @@ public class WebChatController {
         /** Optional: open a distinct conversation thread for the same visitor.
          *  Composed into the server-derived conversationId; never used as a raw conversationId. */
         private String sessionId;
+    }
+
+    /** Compact view of one of a visitor's conversation threads. */
+    @lombok.Data
+    @lombok.AllArgsConstructor
+    public static class WebChatSessionView {
+        /** null for the visitor's default (no-session) thread. */
+        private String sessionId;
+        private String title;
+        private LocalDateTime lastActiveTime;
+        private Integer messageCount;
     }
 }
