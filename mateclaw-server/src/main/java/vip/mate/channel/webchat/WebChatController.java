@@ -73,14 +73,46 @@ public class WebChatController {
             return emitter;
         }
 
+        // Resolve the target agent: an explicit request agentId overrides the channel's
+        // bound agent, but must belong to the channel's workspace (anti privilege-escalation:
+        // a shared channel Key must not be able to drive arbitrary agents in other workspaces).
         Long agentId = channel.getAgentId();
+        if (request.getAgentId() != null) {
+            var requested = agentService.getAgent(request.getAgentId());
+            if (requested == null) {
+                sendErrorAndComplete(emitter, "Requested agent not found");
+                return emitter;
+            }
+            if (channel.getWorkspaceId() != null && requested.getWorkspaceId() != null
+                    && !channel.getWorkspaceId().equals(requested.getWorkspaceId())) {
+                sendErrorAndComplete(emitter, "Requested agent does not belong to this channel's workspace");
+                return emitter;
+            }
+            agentId = request.getAgentId();
+        }
         if (agentId == null) {
             sendErrorAndComplete(emitter, "No agent configured for this WebChat channel");
             return emitter;
         }
+        final Long resolvedAgentId = agentId;
 
         String visitorId = request.getVisitorId() != null ? request.getVisitorId() : UUID.randomUUID().toString();
-        String conversationId = "webchat:" + apiKey.substring(0, Math.min(8, apiKey.length())) + ":" + visitorId;
+
+        // Optional sessionId lets one visitor hold multiple isolated threads. It is only ever
+        // composed into the server-derived conversationId (kept under the key+visitor namespace),
+        // never accepted as a raw conversationId — so a caller can't reach another tenant's history.
+        String sessionId = request.getSessionId() != null ? request.getSessionId().trim() : null;
+        if (sessionId != null && !sessionId.isEmpty() && !sessionId.matches("[A-Za-z0-9_-]{1,64}")) {
+            sendErrorAndComplete(emitter, "Invalid sessionId (allowed: letters, digits, '-', '_', length 1-64)");
+            return emitter;
+        }
+        if (sessionId != null && sessionId.isEmpty()) {
+            sessionId = null;
+        }
+
+        final String effectiveSessionId = sessionId;
+        String conversationId = "webchat:" + apiKey.substring(0, Math.min(8, apiKey.length())) + ":" + visitorId
+                + (effectiveSessionId != null ? ":" + effectiveSessionId : "");
         String message = request.getMessage() != null ? request.getMessage() : "";
 
         if (message.isBlank()) {
@@ -104,9 +136,9 @@ public class WebChatController {
         sseExecutor.execute(() -> {
             try {
                 // 创建或获取会话（workspace 从 agent 获取）
-                var webAgent = agentService.getAgent(agentId);
+                var webAgent = agentService.getAgent(resolvedAgentId);
                 Long webWsId = webAgent != null ? webAgent.getWorkspaceId() : 1L;
-                var conv = conversationService.getOrCreateConversation(conversationId, agentId, "webchat:" + visitorId, webWsId);
+                var conv = conversationService.getOrCreateConversation(conversationId, resolvedAgentId, "webchat:" + visitorId, webWsId);
 
                 // 保存用户消息
                 conversationService.saveMessage(conversationId, "user", message, List.of());
@@ -114,6 +146,12 @@ public class WebChatController {
                 // 初始化 SSE 流跟踪
                 streamTracker.register(conversationId);
                 streamTracker.attach(conversationId, emitter);
+
+                // Echo the effective session so the caller can persist it (especially when
+                // sessionId was omitted) and address the same thread on subsequent calls.
+                streamTracker.broadcast(conversationId, "meta",
+                        "{\"sessionId\":" + escapeJson(effectiveSessionId)
+                                + ",\"conversationId\":" + escapeJson(conversationId) + "}");
 
                 // Accumulate the assistant reply so it can be persisted on stream completion.
                 // Pattern mirrors ChatController: always accumulate, only broadcast when the
@@ -132,7 +170,7 @@ public class WebChatController {
                                 .withSender(null, "api", null);
                 String webchatOwnerKey = memoryOwnerResolver.resolve(webchatOrigin);
 
-                agentService.chatStructuredStream(agentId, message, conversationId, visitorId, null, webchatOrigin)
+                agentService.chatStructuredStream(resolvedAgentId, message, conversationId, visitorId, null, webchatOrigin)
                         .doOnNext(delta -> {
                             if (delta.isEvent() && "_usage_final".equals(delta.eventType())) {
                                 Map<String, Object> data = delta.eventData();
@@ -165,7 +203,7 @@ public class WebChatController {
                                             "completed", usage[0], usage[1], modelInfo[0], modelInfo[1]);
                                 }
                                 completionPublisher.publish(
-                                        agentId, conversationId, message, reply, "webchat", webchatOwnerKey);
+                                        resolvedAgentId, conversationId, message, reply, "webchat", webchatOwnerKey);
                             } catch (Exception persistErr) {
                                 log.warn("[WebChat] Failed to persist assistant reply / publish event: {}",
                                         persistErr.getMessage());
@@ -289,5 +327,11 @@ public class WebChatController {
     public static class WebChatRequest {
         private String message;
         private String visitorId;
+        /** Optional: route this call to a specific agent instead of the channel's bound agent.
+         *  Must belong to the channel's workspace. */
+        private Long agentId;
+        /** Optional: open a distinct conversation thread for the same visitor.
+         *  Composed into the server-derived conversationId; never used as a raw conversationId. */
+        private String sessionId;
     }
 }
