@@ -186,16 +186,21 @@
 import { ref, reactive, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useWikiStore, isProtectedPage, type WikiPage } from '@/stores/useWikiStore'
+import { useWikiPageType } from '@/composables/useWikiPageType'
 import { wikiApi } from '@/api/index'
 
 const emit = defineEmits<{ (e: 'open-page', slug: string): void }>()
 
 const { t } = useI18n()
 const store = useWikiStore()
+const { formatPageTypeLabel } = useWikiPageType()
 const pageListEl = ref<HTMLElement | null>(null)
 
 const PAGE_STEP = 20
-const TYPE_ORDER = ['concept', 'technology', 'process', 'person', 'organization', 'product', 'place', 'event', 'term', 'other']
+
+// Group ordering follows the KB profile's declared pageType order; types not in
+// the profile (synthesis/system or stale types from a prior profile) sort after.
+const typeOrder = computed(() => store.pageTypeProfile?.order ?? [])
 
 const pageSearch = ref('')
 const searchPageLimit = ref(PAGE_STEP)
@@ -226,11 +231,14 @@ const groupedPages = computed(() => {
     if (!map.has(type)) map.set(type, [])
     map.get(type)!.push(page)
   }
+  const order = typeOrder.value
   return [...map.entries()]
     .sort(([a], [b]) => {
-      const ia = TYPE_ORDER.indexOf(a) >= 0 ? TYPE_ORDER.indexOf(a) : 99
-      const ib = TYPE_ORDER.indexOf(b) >= 0 ? TYPE_ORDER.indexOf(b) : 99
-      return ia - ib
+      const ia = order.indexOf(a) >= 0 ? order.indexOf(a) : 99
+      const ib = order.indexOf(b) >= 0 ? order.indexOf(b) : 99
+      if (ia !== ib) return ia - ib
+      // Stable, deterministic tail ordering for types outside the profile.
+      return a.localeCompare(b)
     })
     .map(([type, pages]) => ({ type, pages }))
 })
@@ -267,9 +275,7 @@ function paginatedGroupPages(group: { type: string; pages: any[] }) {
 
 function formatGroupLabel(type: string): string {
   if (!type) return t('wiki.pageTypes.other')
-  const key = `wiki.pageTypes.${type.toLowerCase()}`
-  const translated = t(key)
-  return translated === key ? (type.charAt(0).toUpperCase() + type.slice(1)) : translated
+  return formatPageTypeLabel(type)
 }
 
 function toggleSelect(slug: string) {

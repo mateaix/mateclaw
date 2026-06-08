@@ -57,6 +57,12 @@ public class WikiTransformationAggregator {
     @Autowired(required = false)
     private WikiEmbeddingService embeddingService;
 
+    /** Optional. When wired, the aggregate page is classified against the KB's
+     *  pageType profile (template target type, else the profile fallback)
+     *  instead of a hard-coded type that sits outside every profile. */
+    @Autowired(required = false)
+    private vip.mate.wiki.profile.WikiPageTypeProfileService pageTypeProfileService;
+
     private final com.fasterxml.jackson.databind.ObjectMapper objectMapper =
             new com.fasterxml.jackson.databind.ObjectMapper();
 
@@ -152,12 +158,16 @@ public class WikiTransformationAggregator {
                 + (triggeredBy == null ? "manual" : triggeredBy);
         String sourceRawIdsJson = toJsonArray(new ArrayList<>(sourceRawIds));
 
+        String pageType = pageTypeProfileService == null
+                ? "synthesis"
+                : pageTypeProfileService.normalizePageType(kbId, template.getTargetPageType());
+
         WikiPageEntity existing = pageService.getBySlug(kbId, slug);
         WikiPageEntity persisted;
         boolean created;
         if (existing == null) {
             persisted = pageService.createPage(kbId, slug, title, mergedOutput, summary,
-                    sourceRawIdsJson, "synthesis");
+                    sourceRawIdsJson, pageType);
             created = true;
         } else {
             persisted = pageService.updatePageByAi(kbId, slug, mergedOutput, summary,
