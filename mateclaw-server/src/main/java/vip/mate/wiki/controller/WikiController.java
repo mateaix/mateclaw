@@ -274,6 +274,23 @@ public class WikiController {
         return R.ok();
     }
 
+    @RequireWorkspaceRole("admin")
+    @Operation(summary = "按当前 pageType profile 重新分类已有页面（异步，不改内容）")
+    @PostMapping("/knowledge-bases/{id}/reclassify")
+    public R<Map<String, Object>> reclassifyKB(@PathVariable Long id,
+                                               @RequestBody(required = false) Map<String, Object> body,
+                                               @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        verifyKBWorkspace(id, workspaceId);
+        Long modelId = null;
+        if (body != null && body.get("modelId") != null) {
+            modelId = Long.valueOf(String.valueOf(body.get("modelId")));
+        }
+        int queued = processingService.reclassifyKB(id, modelId);
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("queued", queued);
+        return R.ok(out);
+    }
+
     // ==================== Directory Scan ====================
 
     @RequireWorkspaceRole("member")

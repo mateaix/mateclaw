@@ -560,6 +560,98 @@ public class WikiProcessingService {
     }
 
     /**
+     * Re-classify every non-system page in a KB against its current pageType
+     * profile, without touching page content. Used after a profile edit so
+     * existing pages migrate into newly-added types instead of staying frozen
+     * on whatever type the original ingest assigned. Per page this runs one
+     * lightweight classify-only LLM call (title + summary in, a single
+     * page_type out), normalises the answer through the profile, and writes
+     * pageType + knowledge layer via a partial update.
+     *
+     * <p>Runs asynchronously on {@link #WIKI_EXECUTOR}; returns the number of
+     * pages queued. Progress + completion are broadcast on {@link WikiProgressBus}
+     * so the UI can surface it the same way it does ingest progress.
+     *
+     * @param kbId    target KB
+     * @param modelId optional explicit model; {@code null} uses the KB's routed
+     *                CREATE_PAGE model (falling back to the system default)
+     * @return number of pages queued for reclassification
+     */
+    public int reclassifyKB(Long kbId, Long modelId) {
+        if (kbId == null) {
+            throw new IllegalArgumentException("kbId is required");
+        }
+        if (pageTypeProfileService == null) {
+            throw new IllegalStateException("pageType profile service unavailable");
+        }
+        List<WikiPageEntity> pages = pageService.listByKbId(kbId).stream()
+                .filter(p -> !"system".equalsIgnoreCase(String.valueOf(p.getPageType())))
+                .toList();
+        if (pages.isEmpty()) {
+            return 0;
+        }
+
+        // Resolve the classifying model once up front. An explicit modelId wins;
+        // otherwise route as a CREATE_PAGE step, falling back to the default.
+        final ChatModel chatModel;
+        if (modelId != null && modelRoutingService != null) {
+            chatModel = modelRoutingService.buildChatModel(modelId);
+        } else {
+            chatModel = resolveChatModel(kbId, vip.mate.wiki.job.WikiJobStep.CREATE_PAGE).chatModel;
+        }
+
+        final String systemPrompt = PromptLoader.loadPrompt("wiki/classify-page-system")
+                .replace("{allowed_page_types}", pageTypeProfileService.describeForPrompt(kbId));
+        final String userTemplate = PromptLoader.loadPrompt("wiki/classify-page-user");
+        final int total = pages.size();
+
+        WIKI_EXECUTOR.submit(() -> {
+            int done = 0;
+            int changed = 0;
+            for (WikiPageEntity page : pages) {
+                done++;
+                try {
+                    String summary = page.getSummary() == null ? "" : page.getSummary();
+                    String userPrompt = userTemplate
+                            .replace("{title}", page.getTitle() == null ? "" : page.getTitle())
+                            .replace("{summary}", summary);
+                    ChatResponse resp = chatModel.call(new Prompt(List.of(
+                            new SystemMessage(systemPrompt), new UserMessage(userPrompt))));
+                    String text = (resp == null || resp.getResult() == null
+                            || resp.getResult().getOutput() == null)
+                            ? null : resp.getResult().getOutput().getText();
+                    String proposed = null;
+                    JsonNode json = parseJsonResponse(text);
+                    if (json != null) {
+                        proposed = json.path("page_type").asText("");
+                    }
+                    // Normalise through the profile: an unknown / blank answer
+                    // downgrades to the profile fallback, never null.
+                    String newType = pageTypeProfileService.normalizePageType(kbId, proposed);
+                    if (newType != null && !newType.isBlank()
+                            && !newType.equalsIgnoreCase(String.valueOf(page.getPageType()))) {
+                        String layer = pageTypeProfileService.resolveLayer(kbId, newType);
+                        pageService.updatePageType(page.getId(), newType, layer);
+                        changed++;
+                    }
+                } catch (Exception e) {
+                    log.warn("[Wiki] reclassify failed pageId={} kbId={}: {}",
+                            page.getId(), kbId, e.getMessage());
+                } finally {
+                    progressBus.broadcast(kbId, WikiProgressBus.EVENT_CHUNK_DONE,
+                            java.util.Map.of("kind", "reclassify", "done", done, "total", total));
+                }
+            }
+            log.info("[Wiki] reclassifyKB done kbId={} pages={} changed={}", kbId, total, changed);
+            progressBus.broadcast(kbId, WikiProgressBus.EVENT_RAW_COMPLETED,
+                    java.util.Map.of("kind", "reclassify", "done", total, "total", total, "changed", changed));
+        });
+
+        log.info("[Wiki] reclassifyKB queued {} page(s) for kbId={} (modelId={})", total, kbId, modelId);
+        return total;
+    }
+
+    /**
      * 处理知识库中所有待处理的原始材料
      * <p>
      * RFC-012 Change 1：材料级并行，受 {@link WikiProperties#getMaxParallelRawMaterials()} 约束。

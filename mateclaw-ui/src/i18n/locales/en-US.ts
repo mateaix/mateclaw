@@ -2176,6 +2176,13 @@ export default {
         reset: 'Reset to default',
         resetConfirm: 'Reset to the built-in default profile? Your custom config will be cleared.',
       },
+      reclassify: {
+        desc: 'Re-classify existing pages against the current profile: only the page type is updated, the body is untouched. Use it after editing the profile (adding/removing types) to migrate old pages to the new categories.',
+        button: 'Re-classify existing pages',
+        confirmTitle: 'Re-classify existing pages',
+        confirmMsg: 'Each non-system page in this knowledge base will be sent to the LLM one by one to re-determine its category. This may take time and incur costs. System pages are unaffected. Continue?',
+        started: 'Re-classification started; page categories will update once it finishes.',
+      },
       layers: {
         tab: 'Layers & Stale',
         title: 'Knowledge Layers & Stale State',
