@@ -285,7 +285,14 @@ public class WikiController {
         if (body != null && body.get("modelId") != null) {
             modelId = Long.valueOf(String.valueOf(body.get("modelId")));
         }
-        int queued = processingService.reclassifyKB(id, modelId);
+        int queued;
+        try {
+            queued = processingService.reclassifyKB(id, modelId);
+        } catch (IllegalStateException e) {
+            // A reclassification is already running for this KB — surface a
+            // friendly message rather than a generic 500.
+            return R.fail(e.getMessage());
+        }
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("queued", queued);
         return R.ok(out);

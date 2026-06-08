@@ -923,7 +923,7 @@ export const wikiApi = {
     http.post(`/wiki/knowledge-bases/${kbId}/page-type-profile/validate`, { config }),
   resetPageTypeProfile: (kbId: string | number) =>
     http.post(`/wiki/knowledge-bases/${kbId}/page-type-profile/reset-default`),
-  reclassifyKB: (kbId: string | number, modelId?: number | null) =>
+  reclassifyKB: (kbId: string | number, modelId?: string | number | null) =>
     http.post(`/wiki/knowledge-bases/${kbId}/reclassify`, modelId != null ? { modelId } : {}),
 
   // ---- Agent pageType permissions (REQ-3) ----
