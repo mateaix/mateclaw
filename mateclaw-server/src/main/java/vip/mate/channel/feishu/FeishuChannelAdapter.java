@@ -794,6 +794,7 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(apiBase + "/open-apis/auth/v3/tenant_access_token/internal"))
                     .header("Content-Type", "application/json; charset=utf-8")
+                    .timeout(Duration.ofSeconds(10))
                     .POST(HttpRequest.BodyPublishers.ofString(jsonBody))
                     .build();
 
