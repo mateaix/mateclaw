@@ -1128,6 +1128,7 @@ export default {
     },
     guide: {
       summary: '行为指南（AGENTS.md）',
+      open: '管理行为指南',
       desc: '这里是该员工的行为手册（AGENTS.md）：规定何时写记忆、各文件放什么、可用的记忆工具。上方的岗位／目标／背景是员工的出厂身份；PROFILE／MEMORY 等可演化的记忆在「记忆」菜单管理。',
       empty: '该员工还没有行为指南（AGENTS.md）。',
       create: '创建行为指南',
@@ -3863,6 +3864,8 @@ export default {
       editPlaceholder: '修改记忆内容...',
       confirmed: '已确认',
       saved: '已保存',
+      moveUp: '上移',
+      moveDown: '下移',
     },
     facts: {
       searchPlaceholder: '搜索事实…',

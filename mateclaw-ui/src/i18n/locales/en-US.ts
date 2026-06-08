@@ -1236,6 +1236,7 @@ export default {
     },
     guide: {
       summary: 'Behavior Guide (AGENTS.md)',
+      open: 'Manage Behavior Guide',
       desc: "This is the employee's behavior handbook (AGENTS.md): when to write memories, what goes in each file, and which memory tools are available. The Role/Goal/Backstory above are the employee's factory identity; evolving memories like PROFILE/MEMORY live in the Memory menu.",
       empty: 'This employee has no behavior guide (AGENTS.md) yet.',
       create: 'Create Behavior Guide',
@@ -3771,6 +3772,8 @@ export default {
       editPlaceholder: 'Edit memory content...',
       confirmed: 'Confirmed',
       saved: 'Saved',
+      moveUp: 'Move up',
+      moveDown: 'Move down',
     },
     facts: {
       searchPlaceholder: 'Search facts…',

@@ -324,8 +324,10 @@
                 <textarea v-model="profileForm.extra" class="form-textarea" rows="4" :placeholder="t('agents.placeholders.extraInstructions')"></textarea>
                 <p class="form-hint">{{ t('agents.fields.extraInstructionsHint') }}</p>
                 <div v-if="editingAgent" class="advanced-guide">
-                  <label class="form-label">{{ t('agents.guide.summary') }}</label>
-                  <p class="form-hint">{{ t('agents.guide.desc') }}</p>
+                  <div class="advanced-guide__info">
+                    <span class="advanced-guide__title">{{ t('agents.guide.summary') }}</span>
+                    <p class="advanced-guide__desc">{{ t('agents.guide.desc') }}</p>
+                  </div>
                   <AgentGuideEditor :agent-id="editingAgent.id" />
                 </div>
               </details>
@@ -1783,7 +1785,14 @@ html.dark .seg-count.warn {
 .advanced-prompt[open] > .advanced-prompt__summary { padding: 0 0 8px; border-bottom: 1px solid var(--mc-border-light); margin-bottom: 8px; }
 .advanced-prompt[open] > .advanced-prompt__summary::before { transform: rotate(90deg); }
 .advanced-prompt .form-textarea { width: 100%; box-sizing: border-box; }
-.advanced-guide { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--mc-border-light); }
+.advanced-guide {
+  margin-top: 16px; display: flex; align-items: center; gap: 14px;
+  padding: 12px 14px; border-radius: 10px; background: var(--mc-bg-sunken);
+  border: 1px solid var(--mc-border-light);
+}
+.advanced-guide__info { flex: 1; min-width: 0; }
+.advanced-guide__title { display: block; font-size: 13px; font-weight: 600; color: var(--mc-text-primary); }
+.advanced-guide__desc { margin: 4px 0 0; font-size: 12px; line-height: 1.5; color: var(--mc-text-tertiary); }
 .modal-footer { display: flex; justify-content: flex-end; gap: 10px; padding: 16px 24px; border-top: 1px solid var(--mc-border-light); }
 
 @media (max-width: 900px) {
