@@ -1142,6 +1142,11 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
         // prompt only exposes the file name (not its path) to the model — so if this id does
         // not match, ReadFileTool / DocumentExtractTool cannot find the cached file.
         String shortSuffix = generateShortSessionSuffix(chatId, senderOpenId, isGroup);
+        // 群会话改用完整 chatId，但存量旧会话仍在 legacy 后缀下：读时别名回退，
+        // 让升级前已存在的群沿用旧 conversationId 延续，不重写存量行。
+        if (isGroup && chatId != null) {
+            shortSuffix = resolveGroupSessionSuffix(chatId);
+        }
         String conversationId = buildConversationId(shortSuffix, senderOpenId, isGroup);
 
         String stagedUploadPath = null;
@@ -1638,9 +1643,14 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
 
     /**
      * 生成会话标识后缀。
-     * - 群聊：直接使用完整 chat_id（全局唯一，不含 app_id，避免同一群在多 bot 场景下
-     *   因 app_id 不同而分裂成多条会话，导致前端时而可见时而不可见）
-     * - 私聊：使用完整 sender open_id
+     * <ul>
+     *   <li>群聊：直接使用完整 {@code chatId}（全局唯一）。旧实现用 {@code {appId后4}_{chatId后8}}
+     *       截断后缀，不同群的 {@code chatId} 后 8 位可能相同 → 会话串台。改用完整 chatId 消除碰撞。
+     *       存量旧会话不重写，由 {@link #resolveGroupSessionSuffix} 做读时别名回退。</li>
+     *   <li>私聊：保持原状（取 {@code openId} 后 12 位）。注意私聊路径下该后缀实际不参与
+     *       conversationId——{@link #buildConversationId} 对 DM 直接用完整 {@code senderOpenId}，
+     *       故私聊会话 ID 不受本次改动影响。</li>
+     * </ul>
      */
     private String generateShortSessionSuffix(String chatId, String openId, boolean isGroup) {
         if (isGroup && chatId != null) {
@@ -1653,6 +1663,49 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
             return chatId;
         }
         return null;
+    }
+
+    /**
+     * 旧群会话后缀算法：{@code {appId后4}_{chatId后8}}。仅用于读时别名回退——
+     * 在不重写存量行的前提下，让升级前已存在的群会话沿用旧 conversationId 无缝延续。
+     */
+    // Package-private for testing.
+    String legacyGroupSuffix(String chatId) {
+        if (chatId == null) return null;
+        String appId = getConfigString("app_id", "");
+        String appSuffix = appId.length() >= 4 ? appId.substring(appId.length() - 4) : appId;
+        String chatSuffix = chatId.length() >= 8 ? chatId.substring(chatId.length() - 8) : chatId;
+        return appSuffix + "_" + chatSuffix;
+    }
+
+    /**
+     * 群会话后缀的读时别名回退（不重写存量）：
+     * <ul>
+     *   <li>新群（两个 key 都无会话）→ 用完整 chatId 的 canonical key；</li>
+     *   <li>已迁移群（canonical key 已有会话）→ 用 canonical；</li>
+     *   <li>存量群（canonical 无、legacy 有）→ 沿用 legacy key，历史无缝延续。</li>
+     * </ul>
+     */
+    // Package-private for testing.
+    String resolveGroupSessionSuffix(String chatId) {
+        String canonical = chatId;
+        String legacy = legacyGroupSuffix(chatId);
+        if (legacy == null || legacy.equals(canonical)) return canonical;
+        boolean canonicalExists = messageRouter.conversationExists(CHANNEL_TYPE + ":" + canonical);
+        boolean legacyExists = !canonicalExists
+                && messageRouter.conversationExists(CHANNEL_TYPE + ":" + legacy);
+        String picked = pickGroupSessionSuffix(canonical, legacy, canonicalExists, legacyExists);
+        if (picked.equals(legacy)) {
+            log.info("[feishu] Reusing legacy group session id for chat={} (read-time alias, no migration write)", chatId);
+        }
+        return picked;
+    }
+
+    /** Package-private for testing: 纯选择逻辑——存量 legacy 会话存在且尚未迁移时沿用 legacy，否则用 canonical。 */
+    static String pickGroupSessionSuffix(String canonical, String legacy,
+                                         boolean canonicalExists, boolean legacyExists) {
+        if (!canonicalExists && legacyExists) return legacy;
+        return canonical;
     }
 
     /**

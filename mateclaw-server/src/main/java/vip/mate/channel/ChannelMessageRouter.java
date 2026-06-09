@@ -1311,6 +1311,15 @@ public class ChannelMessageRouter {
     }
 
     /**
+     * Read-only existence check for a conversation by its logical id. Used by
+     * adapters that need to alias a legacy conversationId scheme to a new one
+     * without rewriting stored rows (e.g. Feishu group session-id migration).
+     */
+    public boolean conversationExists(String conversationId) {
+        return conversationService.findByConversationId(conversationId) != null;
+    }
+
+    /**
      * Build a sender-attribution tag for group messages. Returns
      * {@code [@senderName]} when the message is from a multi-user channel
      * context (chatId is set), else {@code null} for 1:1 chats.
