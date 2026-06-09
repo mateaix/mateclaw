@@ -126,6 +126,11 @@ export interface WikiLintJob {
 export const useWikiStore = defineStore('wiki', () => {
   const knowledgeBases = ref<WikiKB[]>([])
   const currentKB = ref<WikiKB | null>(null)
+  // Which face of an opened KB to show: 'browse' = reading surfaces (pages +
+  // graph), 'manage' = build/config surfaces (raw materials, config,
+  // transformations, advanced, hot cache). Both views share the data loaded by
+  // selectKB, so switching between them is a flag flip with no refetch.
+  const workspaceMode = ref<'browse' | 'manage'>('browse')
   const rawMaterials = ref<WikiRawMaterial[]>([])
   const pages = ref<WikiPage[]>([])
   const currentPage = ref<WikiPage | null>(null)
@@ -172,7 +177,8 @@ export const useWikiStore = defineStore('wiki', () => {
     }
   }
 
-  async function selectKB(id: number) {
+  async function selectKB(id: number, mode: 'browse' | 'manage' = 'browse') {
+    workspaceMode.value = mode
     const res: any = await wikiApi.getKB(id)
     currentKB.value = res.data || res
     // pageRefs refresh in parallel with materials + pages — the viewer needs
@@ -239,9 +245,16 @@ export const useWikiStore = defineStore('wiki', () => {
     }
   }
 
+  // Switch between reading/management faces of an already-open KB without
+  // refetching — both share the data selectKB already loaded.
+  function setWorkspaceMode(mode: 'browse' | 'manage') {
+    workspaceMode.value = mode
+  }
+
   function backToLibrary() {
     currentKB.value = null
     currentPage.value = null
+    workspaceMode.value = 'browse'
     rawMaterials.value = []
     pages.value = []
     pageRefs.value = []
@@ -440,6 +453,7 @@ export const useWikiStore = defineStore('wiki', () => {
   return {
     knowledgeBases,
     currentKB,
+    workspaceMode,
     rawMaterials,
     pages,
     currentPage,
@@ -456,6 +470,7 @@ export const useWikiStore = defineStore('wiki', () => {
     selectKB,
     createKB,
     deleteKB,
+    setWorkspaceMode,
     backToLibrary,
     fetchRawMaterials,
     fetchPages,

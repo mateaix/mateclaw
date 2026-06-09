@@ -8,6 +8,7 @@
           :kb-stats="kbStats"
           :loading="store.loading"
           @open="enterKB"
+          @manage="enterKBManage"
           @create="showCreateKB = true"
           @delete="handleDeleteKB"
         />
@@ -82,7 +83,11 @@ const newKBName = ref('')
 const newKBDesc = ref('')
 
 async function enterKB(id: number) {
-  await store.selectKB(id)
+  await store.selectKB(id, 'browse')
+}
+
+async function enterKBManage(id: number) {
+  await store.selectKB(id, 'manage')
 }
 
 async function handleCreateKB() {
