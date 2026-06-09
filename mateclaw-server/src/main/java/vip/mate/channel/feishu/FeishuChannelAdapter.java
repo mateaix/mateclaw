@@ -86,6 +86,32 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
     /** 消息去重：最近处理过的 message_id */
     private final Set<String> processedMessageIds = ConcurrentHashMap.newKeySet();
 
+    /**
+     * 群内 bot 别名缓存：chatId → 学到的别名集合（openId / unionId / userId / name）。
+     * <p>飞书 SDK 投递的 mention 里，bot 的标识可能是群内自定义别名（{@code ou_357e...} / 自定义名称），
+     * 而不是 {@code /bot/v3/info} 返回的全局 openId / app_name。我们在双投递场景下
+     * 机会性地学习这些别名，后续单事件投递的消息就能命中缓存。
+     */
+    private final ConcurrentHashMap<String, Set<String>> chatBotAliases = new ConcurrentHashMap<>();
+
+    /**
+     * Per-messageId mention tracker（带 TTL）。
+     * <p>飞书 SDK 经常对同一条消息双投递：一份 mentions 含 bot 的<em>全局身份</em>（来自 /bot/v3/info），
+     * 另一份含 bot 的<em>群内别名</em>。我们累积同一 messageId 下所有投递看到的 mention 标识，
+     * 一旦其中任何一份被识别为 @bot，就把累积的全部标识写入 {@link #chatBotAliases}。
+     */
+    private final ConcurrentHashMap<String, MentionTrack> mentionTracker = new ConcurrentHashMap<>();
+
+    /** mention tracker 条目 TTL（60s 远大于双投递的真实间隔，几个 ms 级别）。 */
+    private static final long MENTION_TRACK_TTL_MS = 60_000L;
+
+    /** Package-private for testing. */
+    static final class MentionTrack {
+        final Set<String> seenIds = ConcurrentHashMap.newKeySet();
+        final long createdAtMs = System.currentTimeMillis();
+        volatile boolean matched = false;
+    }
+
     /** 昵称缓存：open_id → 显示名称 */
     private final ConcurrentHashMap<String, String> nicknameCache = new ConcurrentHashMap<>();
     private static final int NICKNAME_CACHE_MAX = 500;
@@ -113,6 +139,9 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
 
     /** Bot's own open_id, fetched once from /open-apis/bot/v3/info and cached. */
     private volatile String botOpenId;
+
+    /** Bot's display name (app_name), fetched alongside open_id. Used for name-based mention matching. */
+    private volatile String botName;
 
     /** Serializes lazy bot-open-id fetches so concurrent group messages share one API roundtrip. */
     private final Object botOpenIdLock = new Object();
@@ -331,9 +360,12 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
         // a torn write that could re-cache a stale id.
         synchronized (botOpenIdLock) {
             this.botOpenId = null;
+            this.botName = null;
             this.botOpenIdLastFailureMs = 0L;
         }
         this.processedMessageIds.clear();
+        this.chatBotAliases.clear();
+        this.mentionTracker.clear();
         this.nicknameCache.clear();
         this.quotedMessageCache.clear();
         log.info("[feishu] Feishu channel stopped");
@@ -643,14 +675,102 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
             senderOpenId = sender.getSenderId().getOpenId();
         }
 
-        boolean isBotMentioned = isBotMentionedInEvent(message.getMentions());
+        com.lark.oapi.service.im.v1.model.MentionEvent[] mentions = message.getMentions();
+        boolean isBotMentioned = detectBotMentionWithLearning(mentions, chatId, messageId);
         handleFeishuMessage(messageId, messageType, contentStr, chatId, chatType, senderOpenId, parentId, isBotMentioned, event);
     }
 
     // ==================== @提及检测 ====================
 
-    private boolean isBotMentionedInEvent(com.lark.oapi.service.im.v1.model.MentionEvent[] mentions) {
-        return eventMentionsContainBot(mentions, getBotOpenId());
+    /**
+     * 判断本次事件是否 @ 了 bot，并机会性地学习"群内 bot 别名"。
+     *
+     * <p>飞书 SDK 在群内对同一条 @bot 的消息会双投递两个事件，两次的 mentions 数据形态不同：
+     * <ul>
+     *   <li>一份带 bot 的<em>全局身份</em>（与 {@code /open-apis/bot/v3/info} 返回的 openId / app_name 一致）；</li>
+     *   <li>一份带 bot 的<em>群内别名</em>（用户给 bot 起的 chat-scope 名，openId 也是另一套）。</li>
+     * </ul>
+     * 重启后第一条消息能命中"全局身份"那一份直接匹配；后续消息往往只来一份"群内别名"。
+     * 本方法在双投递可见时把两份的所有标识聚合到 {@link #chatBotAliases}，后续单事件投递就能命中缓存放行。
+     *
+     * <p>识别顺序：
+     * <ol>
+     *   <li>直接匹配 {@code /bot/v3/info} 拿到的 botOpenId / botName；</li>
+     *   <li>查 {@link #chatBotAliases} 缓存里学到的群内别名；</li>
+     *   <li>双投递推断：同一 messageId 之前的事件已被识别 → 本事件的 mentions 也是 bot 的别名。</li>
+     * </ol>
+     */
+    private boolean detectBotMentionWithLearning(com.lark.oapi.service.im.v1.model.MentionEvent[] mentions,
+                                                 String chatId, String messageId) {
+        return detectBotMentionWithLearning(mentions, chatId, messageId, getBotOpenId(), botName);
+    }
+
+    /** Package-private for testing: 纯有状态核心，bot 身份由调用方显式传入（避免触发 /bot/v3/info HTTP）。 */
+    boolean detectBotMentionWithLearning(com.lark.oapi.service.im.v1.model.MentionEvent[] mentions,
+                                         String chatId, String messageId,
+                                         String botOpenId, String botName) {
+        if (mentions == null || mentions.length == 0) {
+            return false;
+        }
+
+        cleanupMentionTracker();
+
+        // 把本次事件看到的所有标识累积到 per-messageId tracker —— 即使本次匹配不上，
+        // 后到的事件如果匹配成功，learnFromTrack 会把它们一起 cache。
+        MentionTrack track = null;
+        if (messageId != null) {
+            track = mentionTracker.computeIfAbsent(messageId, k -> new MentionTrack());
+            collectMentionIdentifiers(mentions, track.seenIds);
+        }
+
+        // 1. 直接匹配 bot 的全局身份
+        if (eventMentionsContainBot(mentions, botOpenId, botName)) {
+            learnFromTrack(chatId, track);
+            if (track != null) track.matched = true;
+            return true;
+        }
+
+        // 2. 群内已学习别名命中
+        if (chatId != null) {
+            Set<String> learned = chatBotAliases.get(chatId);
+            if (learned != null && mentionMatchesAnyAlias(mentions, learned)) {
+                log.info("[feishu] @bot matched via learned chat alias: chatId={}, messageId={}", chatId, messageId);
+                learnFromTrack(chatId, track);
+                if (track != null) track.matched = true;
+                return true;
+            }
+        }
+
+        // 3. 双投递学习：同 messageId 的另一次投递已被识别 → 本事件 mentions 是 bot 别名
+        if (track != null && track.matched) {
+            log.info("[feishu] @bot inferred via dual-delivery learning: chatId={}, messageId={}", chatId, messageId);
+            learnFromTrack(chatId, track);
+            return true;
+        }
+
+        return false;
+    }
+
+    private void learnFromTrack(String chatId, MentionTrack track) {
+        if (chatId == null || track == null || track.seenIds.isEmpty()) return;
+        Set<String> aliases = chatBotAliases.computeIfAbsent(chatId, k -> ConcurrentHashMap.newKeySet());
+        int before = aliases.size();
+        aliases.addAll(track.seenIds);
+        int added = aliases.size() - before;
+        if (added > 0) {
+            log.info("[feishu] Learned {} new bot alias(es) for chat={} (cache size={})",
+                    added, chatId, aliases.size());
+        }
+    }
+
+    private void cleanupMentionTracker() {
+        evictStaleTracks(mentionTracker, System.currentTimeMillis(), MENTION_TRACK_TTL_MS);
+    }
+
+    /** Package-private for testing: 按 TTL 淘汰 mention tracker 中的过期项（{@code nowMs} 显式传入便于测试）。 */
+    static void evictStaleTracks(Map<String, MentionTrack> tracker, long nowMs, long ttlMs) {
+        long cutoff = nowMs - ttlMs;
+        tracker.entrySet().removeIf(e -> e.getValue().createdAtMs < cutoff);
     }
 
     private boolean isBotMentionedInWebhookMessage(Map<String, Object> message) {
@@ -659,12 +779,51 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
         return webhookMentionsContainBot(list, getBotOpenId());
     }
 
-    /** Package-private for testing: 判断 SDK mentions 数组中是否包含指定 open_id */
+    /** Package-private for testing: 判断 SDK mentions 数组中是否包含指定 bot（按 openId / unionId / userId / name 命中） */
     static boolean eventMentionsContainBot(com.lark.oapi.service.im.v1.model.MentionEvent[] mentions,
-                                           String botOpenId) {
-        if (mentions == null || mentions.length == 0 || botOpenId == null) return false;
+                                           String botOpenId, String botName) {
+        if (mentions == null || mentions.length == 0) return false;
         for (var mention : mentions) {
-            if (mention.getId() != null && botOpenId.equals(mention.getId().getOpenId())) return true;
+            var id = mention.getId();
+            // 匹配 openId、unionId、userId 中的任意一个
+            if (id != null && botOpenId != null) {
+                if (botOpenId.equals(id.getOpenId())) return true;
+                if (botOpenId.equals(id.getUnionId())) return true;
+                if (botOpenId.equals(id.getUserId())) return true;
+            }
+            // 飞书 SDK 对 bot mention 可能使用不同 ID 体系，fallback 到 name 匹配
+            if (botName != null && botName.equals(mention.getName())) return true;
+        }
+        return false;
+    }
+
+    /** Package-private for testing: 把 mentions 中每个非空 openId / unionId / userId / name 灌入 sink。 */
+    static void collectMentionIdentifiers(com.lark.oapi.service.im.v1.model.MentionEvent[] mentions,
+                                          Set<String> sink) {
+        if (mentions == null || sink == null) return;
+        for (var mention : mentions) {
+            var id = mention.getId();
+            if (id != null) {
+                if (id.getOpenId() != null) sink.add(id.getOpenId());
+                if (id.getUnionId() != null) sink.add(id.getUnionId());
+                if (id.getUserId() != null) sink.add(id.getUserId());
+            }
+            if (mention.getName() != null) sink.add(mention.getName());
+        }
+    }
+
+    /** Package-private for testing: mentions 中是否有任意 openId / unionId / userId / name 命中 aliases 集合。 */
+    static boolean mentionMatchesAnyAlias(com.lark.oapi.service.im.v1.model.MentionEvent[] mentions,
+                                          Set<String> aliases) {
+        if (mentions == null || mentions.length == 0 || aliases == null || aliases.isEmpty()) return false;
+        for (var mention : mentions) {
+            var id = mention.getId();
+            if (id != null) {
+                if (id.getOpenId() != null && aliases.contains(id.getOpenId())) return true;
+                if (id.getUnionId() != null && aliases.contains(id.getUnionId())) return true;
+                if (id.getUserId() != null && aliases.contains(id.getUserId())) return true;
+            }
+            if (mention.getName() != null && aliases.contains(mention.getName())) return true;
         }
         return false;
     }
@@ -734,7 +893,10 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
                 Map<?, ?> bot = (Map<?, ?>) body.get("bot");
                 if (bot != null && bot.get("open_id") instanceof String openId && !openId.isBlank()) {
                     botOpenId = openId;
-                    log.info("[feishu] Bot open_id fetched and cached: {}", openId);
+                    if (bot.get("app_name") instanceof String name && !name.isBlank()) {
+                        botName = name;
+                    }
+                    log.info("[feishu] Bot info fetched: open_id={}, name={}", openId, botName);
                     return openId;
                 }
                 // 2xx with no bot.open_id field → treat as transient failure.
