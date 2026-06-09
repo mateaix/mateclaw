@@ -234,7 +234,10 @@ public class WikiDirectoryScanService {
             // wildcard tail; escape glob metacharacters in the base so a real
             // directory name containing */?/{}/[] is treated literally.
             String wildcardTail = pattern.substring(basePath.length());
-            String effectivePattern = globEscape(scanRoot.toString()) + wildcardTail;
+            // Normalise the resolved base to forward slashes: glob uses '/' as its
+            // separator, and on Windows scanRoot.toString() yields backslashes that
+            // globEscape would escape, producing a pattern that never matches.
+            String effectivePattern = globEscape(scanRoot.toString().replace('\\', '/')) + wildcardTail;
             try {
                 matcher = FileSystems.getDefault().getPathMatcher("glob:" + effectivePattern);
             } catch (IllegalArgumentException e) {

@@ -24,7 +24,11 @@ import java.util.regex.Pattern;
 public class ShellCommandGuardian implements ToolGuardGuardian {
 
     private static final Set<String> SHELL_TOOL_NAMES = Set.of(
-            "execute_shell_command", "shell_execute", "run_command"
+            "execute_shell_command", "shell_execute", "run_command",
+            // Inline code execution runs LLM-authored source through an
+            // interpreter, so it is screened against the same dangerous-command
+            // ruleset as direct shell execution.
+            "execute_code"
     );
 
     private static final Map<String, Pattern> COMPILED_CACHE = new ConcurrentHashMap<>();

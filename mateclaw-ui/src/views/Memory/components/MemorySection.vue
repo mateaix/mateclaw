@@ -3,6 +3,8 @@
     <div class="section-header">
       <h4 class="section-title">{{ section.heading }}</h4>
       <div class="section-actions">
+        <button v-if="!editing && canMoveUp" class="section-btn section-btn--move" :title="t('memory.hil.moveUp')" @click="emit('moveUp')">↑</button>
+        <button v-if="!editing && canMoveDown" class="section-btn section-btn--move" :title="t('memory.hil.moveDown')" @click="emit('moveDown')">↓</button>
         <button v-if="!editing" class="section-btn" :title="t('memory.hil.edit')" @click="startEdit">
           <MemoryIcon name="edit" :size="12" />
         </button>
@@ -41,7 +43,13 @@ const props = defineProps<{
   section: MemorySectionData
   /** Persists the edited body — resolves on success, rejects on failure. */
   saveHandler: (body: string) => Promise<void>
+  /** Show a ↑ button; emits `moveUp`. Off by default (MemoryBrowser doesn't reorder). */
+  canMoveUp?: boolean
+  /** Show a ↓ button; emits `moveDown`. */
+  canMoveDown?: boolean
 }>()
+
+const emit = defineEmits<{ moveUp: []; moveDown: [] }>()
 
 const { t } = useI18n()
 const editing = ref(false)
@@ -110,6 +118,7 @@ function renderMarkdown(body: string): string {
   cursor: pointer; transition: all 0.12s;
 }
 .section-btn:hover { background: var(--mc-bg-elevated); color: var(--mc-primary); }
+.section-btn--move { font-size: 14px; line-height: 1; }
 
 .section-body {
   margin-top: 8px; font-size: 13px; color: var(--mc-text-secondary); line-height: 1.6;

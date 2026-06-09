@@ -527,6 +527,11 @@ MERGE INTO mate_tool (id, name, display_name, description, tool_type, bean_name,
 KEY (id)
 VALUES (1000000022, 'PdfRenderTool', 'PDF Render', 'Render Markdown into a final-form .pdf and return a one-time download link. Two backends (LibreOffice subprocess preferred, OpenPDF + Flying Saucer fallback); supports YAML frontmatter for cover / page header / page footer.', 'builtin', 'pdfRenderTool', '📄', TRUE, TRUE, NOW(), NOW(), 0);
 
+-- Built-in tool: Code Execute (inline python/bash/node the agent writes on the fly)
+MERGE INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
+KEY (id)
+VALUES (1000000023, 'CodeExecuteTool', 'Code Execute', 'Execute a snippet of code (python, bash, or node) that the agent writes on the fly. Lets a documentation-only skill be acted on by running the code its instructions describe. Dangerous operations trigger approval.', 'builtin', 'codeExecuteTool', '🧑‍💻', TRUE, TRUE, NOW(), NOW(), 0);
+
 -- Example MCP Server: Filesystem (see MateClaw docs mcpServers.filesystem)
 MERGE INTO mate_mcp_server (
     id, name, description, transport, url, headers_json, command, args_json, env_json, cwd,
@@ -1860,7 +1865,7 @@ SELECT
     1000000001,
     TRUE,
     'all',
-    '["execute_shell_command"]',
+    '["execute_shell_command","execute_code"]',
     '[]',
     TRUE,
     '["/etc","/usr","/bin","/sbin","/boot","/sys","/proc","/dev"]',

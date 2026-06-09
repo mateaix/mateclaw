@@ -59,7 +59,7 @@
           </div>
           <!-- Tag filter (#146): orthogonal to the type/status tabs; click to
                toggle, multi-select narrows by intersection (AND). -->
-          <div v-if="availableTags.length" class="tag-filter-bar">
+          <div v-if="availableTags.length || activeTags.length" class="tag-filter-bar">
             <span class="tag-filter-bar__label">{{ t('agents.tagFilter.label') }}</span>
             <button v-for="tag in visibleTags" :key="tag" class="tag-filter-chip"
               :class="{ active: activeTags.includes(tag) }" @click="toggleTag(tag)">
@@ -341,10 +341,18 @@
             <div class="form-group full-width">
               <details class="advanced-prompt">
                 <summary class="advanced-prompt__summary">
-                  {{ t('agents.fields.extraInstructions') }}
+                  {{ t('agents.fields.advanced') }}
                 </summary>
+                <label class="form-label">{{ t('agents.fields.extraInstructions') }}</label>
                 <textarea v-model="profileForm.extra" class="form-textarea" rows="4" :placeholder="t('agents.placeholders.extraInstructions')"></textarea>
                 <p class="form-hint">{{ t('agents.fields.extraInstructionsHint') }}</p>
+                <div v-if="editingAgent" class="advanced-guide">
+                  <div class="advanced-guide__info">
+                    <span class="advanced-guide__title">{{ t('agents.guide.summary') }}</span>
+                    <p class="advanced-guide__desc">{{ t('agents.guide.desc') }}</p>
+                  </div>
+                  <AgentGuideEditor :agent-id="editingAgent.id" />
+                </div>
               </details>
             </div>
             <div class="form-group">
@@ -669,6 +677,7 @@ import type { Agent } from '@/types/index'
 import SkillIcon from '@/components/common/SkillIcon.vue'
 import SkillIconPicker from '@/components/common/SkillIconPicker.vue'
 import LivePanel from '@/components/live/LivePanel.vue'
+import AgentGuideEditor from './Agents/components/AgentGuideEditor.vue'
 import {
   emptyProfile,
   parsePrompt,
@@ -1047,7 +1056,10 @@ const visibleTags = computed(() => {
   const q = tagSearch.value.trim().toLowerCase()
   if (q) return availableTags.value.filter(t => t.toLowerCase().includes(q))
   const top = availableTags.value.slice(0, TAG_FILTER_LIMIT)
-  const extraActive = activeTags.value.filter(t => !top.includes(t) && availableTags.value.includes(t))
+  // Always surface selected tags outside the top-N — including ones that no
+  // longer exist on any agent (edited/deleted) — so they stay deselectable
+  // instead of silently filtering the roster with no chip to clear them.
+  const extraActive = activeTags.value.filter(t => !top.includes(t))
   return [...top, ...extraActive]
 })
 
@@ -1957,6 +1969,15 @@ html.dark .seg-count.warn {
 }
 .advanced-prompt[open] > .advanced-prompt__summary { padding: 0 0 8px; border-bottom: 1px solid var(--mc-border-light); margin-bottom: 8px; }
 .advanced-prompt[open] > .advanced-prompt__summary::before { transform: rotate(90deg); }
+.advanced-prompt .form-textarea { width: 100%; box-sizing: border-box; }
+.advanced-guide {
+  margin-top: 16px; display: flex; align-items: center; gap: 14px;
+  padding: 12px 14px; border-radius: 10px; background: var(--mc-bg-sunken);
+  border: 1px solid var(--mc-border-light);
+}
+.advanced-guide__info { flex: 1; min-width: 0; }
+.advanced-guide__title { display: block; font-size: 13px; font-weight: 600; color: var(--mc-text-primary); }
+.advanced-guide__desc { margin: 4px 0 0; font-size: 12px; line-height: 1.5; color: var(--mc-text-tertiary); }
 .modal-footer { display: flex; justify-content: flex-end; gap: 10px; padding: 16px 24px; border-top: 1px solid var(--mc-border-light); }
 
 @media (max-width: 900px) {

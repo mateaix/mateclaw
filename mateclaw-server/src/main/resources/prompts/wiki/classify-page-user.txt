@@ -1,0 +1,8 @@
+Classify the following wiki page.
+
+Title: {title}
+
+Summary:
+{summary}
+
+Return only: {"page_type": "<type key>"}

@@ -36,6 +36,28 @@ public class WikiPageTypeProfile {
      */
     private boolean allowAdditionalFields = false;
 
+    /**
+     * Normalise keys to lowercase on set so a user-authored profile with an
+     * uppercase pageType key (e.g. {@code "Concept"}) still matches the
+     * case-insensitive {@link #hasPageType}/{@link #get} lookups. Replaces the
+     * Lombok-generated setter (so Jackson deserialization goes through here too).
+     */
+    public void setPageTypes(Map<String, WikiPageTypeDef> pageTypes) {
+        Map<String, WikiPageTypeDef> normalized = new LinkedHashMap<>();
+        if (pageTypes != null) {
+            for (Map.Entry<String, WikiPageTypeDef> e : pageTypes.entrySet()) {
+                if (e.getKey() == null) {
+                    continue;
+                }
+                String key = e.getKey().trim().toLowerCase();
+                if (!key.isEmpty()) {
+                    normalized.put(key, e.getValue());
+                }
+            }
+        }
+        this.pageTypes = normalized;
+    }
+
     /** Whether this profile declares the given pageType (case-insensitive). */
     public boolean hasPageType(String pageType) {
         if (pageType == null) {

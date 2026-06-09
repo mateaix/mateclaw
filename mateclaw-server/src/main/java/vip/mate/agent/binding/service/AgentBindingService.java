@@ -744,6 +744,11 @@ public class AgentBindingService implements AgentBindingResolver {
             "write_file",
             "edit_file",
             "execute_shell_command",
+            // Inline code execution — an agent-wide capability alongside shell.
+            // Lets any agent act on a documentation-only skill (a SKILL.md with
+            // no scripts) by writing and running the code its instructions
+            // describe. Dangerous code is screened by the same tool guard.
+            "execute_code",
             "detect_file_type",
             "extract_document_text",
             "extract_pdf_text",

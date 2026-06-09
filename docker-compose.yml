@@ -31,26 +31,6 @@ services:
       timeout: 5s
       retries: 5
 
-  # PostgreSQL 数据库
-  postgres:
-    image: postgres:16
-    container_name: mateclaw-postgres
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: ${PGSQL_DB_NAME:-mateclaw}
-      POSTGRES_USER: ${PGSQL_DB_USERNAME:-postgres}
-      POSTGRES_PASSWORD: ${PGSQL_DB_PASSWORD:?PGSQL_DB_PASSWORD is required in .env}
-      TZ: Asia/Shanghai
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${PGSQL_DB_USERNAME:-postgres}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
   # SearXNG 搜索引擎（keyless 搜索 provider）
   #
   # The custom image at docker/searxng/ bakes in settings.yml so the sidecar
@@ -68,7 +48,7 @@ services:
       - UWSGI_WORKERS=2
       - UWSGI_THREADS=4
     ports:
-      - "18233:8080"
+      - "8088:8080"
     healthcheck:
       # Healthz needs json format, so this also doubles as an integration check.
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/healthz"]
@@ -136,10 +116,7 @@ services:
       # workspace (MATECLAW_SKILL_WORKSPACE_ROOT=/app/data/skills above), so a
       # single volume persists everything. No separate skills volume needed.
       - server_data:/app/data
-      - skills_data:/root/.mateclaw/skills
 
 volumes:
   mysql_data:
-  postgres_data:
   server_data:
-  skills_data:

@@ -32,6 +32,13 @@
         <button class="btn-ghost danger" @click="resetProfile" :disabled="profile.busy">{{ t('wiki.adv.profile.reset') }}</button>
         <button class="btn-primary" @click="saveProfile" :disabled="profile.busy">{{ t('common.save') }}</button>
       </div>
+
+      <div class="reclassify-box">
+        <p class="adv-desc">{{ t('wiki.adv.reclassify.desc') }}</p>
+        <button class="btn-ghost" @click="reclassify" :disabled="profile.busy">
+          {{ t('wiki.adv.reclassify.button') }}
+        </button>
+      </div>
     </section>
 
     <!-- ===================== REQ-2: Layers & Stale ===================== -->
@@ -302,6 +309,19 @@ async function resetProfile() {
     mcToast.success(t('common.saved'))
     await loadProfile()
   } catch (e: any) { mcToast.error(errMsg(e, 'Reset failed')) } finally { profile.busy = false }
+}
+async function reclassify() {
+  if (!kbId.value) return
+  if (!(await mcConfirm({
+    title: t('wiki.adv.reclassify.confirmTitle'),
+    message: t('wiki.adv.reclassify.confirmMsg'),
+    tone: 'danger',
+  }))) return
+  profile.busy = true
+  try {
+    await wikiApi.reclassifyKB(kbId.value)
+    mcToast.success(t('wiki.adv.reclassify.started'))
+  } catch (e: any) { mcToast.error(errMsg(e, 'Reclassify failed')) } finally { profile.busy = false }
 }
 
 // ---- REQ-2 Layers & Stale ----

@@ -879,6 +879,7 @@ export const wikiApi = {
     outputTarget?: 'none' | 'page'
     outputFormat?: 'markdown' | 'json'
     outputSchema?: string | null
+    targetPageType?: string | null
   }) =>
     http.post('/wiki/transformations', data),
   updateTransformation: (id: number, data: {
@@ -891,6 +892,7 @@ export const wikiApi = {
     outputTarget?: 'none' | 'page'
     outputFormat?: 'markdown' | 'json'
     outputSchema?: string | null
+    targetPageType?: string | null
   }) =>
     http.put(`/wiki/transformations/${id}`, data),
   deleteTransformation: (id: number) =>
@@ -921,6 +923,8 @@ export const wikiApi = {
     http.post(`/wiki/knowledge-bases/${kbId}/page-type-profile/validate`, { config }),
   resetPageTypeProfile: (kbId: string | number) =>
     http.post(`/wiki/knowledge-bases/${kbId}/page-type-profile/reset-default`),
+  reclassifyKB: (kbId: string | number, modelId?: string | number | null) =>
+    http.post(`/wiki/knowledge-bases/${kbId}/reclassify`, modelId != null ? { modelId } : {}),
 
   // ---- Agent pageType permissions (REQ-3) ----
   listPageTypePermissions: (kbId: string | number, agentId: string | number) =>
