@@ -6,9 +6,17 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
+import java.nio.charset.StandardCharsets;
+import java.security.GeneralSecurityException;
+import java.security.MessageDigest;
+import java.util.Base64;
 import vip.mate.channel.web.Utf8SseEmitter;
 import vip.mate.agent.AgentService;
 import vip.mate.channel.model.ChannelEntity;
@@ -55,6 +63,13 @@ public class WebChatController {
     private final ObjectMapper objectMapper;
     private final ConversationCompletionPublisher completionPublisher;
     private final vip.mate.memory.identity.MemoryOwnerResolver memoryOwnerResolver;
+
+    /**
+     * Server-only secret used to sign per-visitor tokens. Reuses the JWT secret so no extra
+     * config/migration is needed; it is never sent to the client (unlike the public channel API key).
+     */
+    @Value("${mateclaw.jwt.secret:MateClaw-JWT-Secret-Key-2024-Please-Change-In-Production}")
+    private String visitorTokenSecret;
 
     private final ExecutorService sseExecutor = Executors.newCachedThreadPool();
 
@@ -113,6 +128,9 @@ public class WebChatController {
             return emitter;
         }
         String conversationId = deriveConversationId(apiKey, visitorId, effectiveSessionId);
+        // Server-issued, unforgeable proof that this caller owns this visitorId. Returned in the
+        // meta event below; the session-management endpoints require it back (see verifyVisitorToken).
+        final String visitorToken = computeVisitorToken(visitorTokenSecret, channel.getId(), visitorId);
         String message = request.getMessage() != null ? request.getMessage() : "";
 
         if (message.isBlank()) {
@@ -148,10 +166,12 @@ public class WebChatController {
                 streamTracker.attach(conversationId, emitter);
 
                 // Echo the effective session so the caller can persist it (especially when
-                // sessionId was omitted) and address the same thread on subsequent calls.
+                // sessionId was omitted) and address the same thread on subsequent calls. The
+                // visitorToken must be stored by the caller and sent back on list/messages/delete.
                 streamTracker.broadcast(conversationId, "meta",
                         "{\"sessionId\":" + escapeJson(effectiveSessionId)
-                                + ",\"conversationId\":" + escapeJson(conversationId) + "}");
+                                + ",\"conversationId\":" + escapeJson(conversationId)
+                                + ",\"visitorToken\":" + escapeJson(visitorToken) + "}");
 
                 // Accumulate the assistant reply so it can be persisted on stream completion.
                 // Pattern mirrors ChatController: always accumulate, only broadcast when the
@@ -265,10 +285,14 @@ public class WebChatController {
     @GetMapping("/sessions")
     public R<List<WebChatSessionView>> listSessions(
             @RequestHeader("X-MC-Key") String apiKey,
+            @RequestHeader(value = "X-MC-Visitor-Token", required = false) String visitorToken,
             @RequestParam String visitorId) {
         ChannelEntity channel = resolveChannel(apiKey);
         if (channel == null) {
             return R.fail(401, "Invalid API Key");
+        }
+        if (!verifyVisitorToken(visitorTokenSecret, channel.getId(), visitorId, visitorToken)) {
+            return R.fail(401, "Invalid or missing visitor token");
         }
         String base = deriveConversationId(apiKey, visitorId, null);
         String prefix = base + ":";
@@ -291,11 +315,15 @@ public class WebChatController {
     @GetMapping("/sessions/messages")
     public R<List<MessageVO>> sessionMessages(
             @RequestHeader("X-MC-Key") String apiKey,
+            @RequestHeader(value = "X-MC-Visitor-Token", required = false) String visitorToken,
             @RequestParam String visitorId,
             @RequestParam(required = false) String sessionId) {
         ChannelEntity channel = resolveChannel(apiKey);
         if (channel == null) {
             return R.fail(401, "Invalid API Key");
+        }
+        if (!verifyVisitorToken(visitorTokenSecret, channel.getId(), visitorId, visitorToken)) {
+            return R.fail(401, "Invalid or missing visitor token");
         }
         String sid;
         try {
@@ -317,11 +345,15 @@ public class WebChatController {
     @DeleteMapping("/sessions")
     public R<Void> deleteSession(
             @RequestHeader("X-MC-Key") String apiKey,
+            @RequestHeader(value = "X-MC-Visitor-Token", required = false) String visitorToken,
             @RequestParam String visitorId,
             @RequestParam(required = false) String sessionId) {
         ChannelEntity channel = resolveChannel(apiKey);
         if (channel == null) {
             return R.fail(401, "Invalid API Key");
+        }
+        if (!verifyVisitorToken(visitorTokenSecret, channel.getId(), visitorId, visitorToken)) {
+            return R.fail(401, "Invalid or missing visitor token");
         }
         String sid;
         try {
@@ -369,11 +401,40 @@ public class WebChatController {
     }
 
     /**
-     * 校验该会话确属本 visitor（严格相等，不放行 system 会话）。
+     * 存在性守卫：会话存在且属于本 visitor 命名空间时返回 true，否则 404。
+     * <p>注意：这<b>不是</b>鉴权边界——conversationId 由调用方自报的 visitorId 派生，
+     * 等式两边同源，单凭它无法防越权。真正的鉴权由 {@link #verifyVisitorToken} 完成。
      */
     private boolean ownsConversation(String conversationId, String visitorId) {
         ConversationEntity conv = conversationService.findByConversationId(conversationId);
         return conv != null && ("webchat:" + visitorId).equals(conv.getUsername());
+    }
+
+    /**
+     * 用服务端密钥对 (channelId, visitorId) 做 HMAC-SHA256，签发不可伪造的 visitor token。
+     * 载荷含 channelId，使 token 不能跨渠道复用。
+     */
+    static String computeVisitorToken(String secret, Long channelId, String visitorId) {
+        try {
+            Mac mac = Mac.getInstance("HmacSHA256");
+            mac.init(new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
+            byte[] sig = mac.doFinal((channelId + ":" + visitorId).getBytes(StandardCharsets.UTF_8));
+            return Base64.getUrlEncoder().withoutPadding().encodeToString(sig);
+        } catch (GeneralSecurityException e) {
+            throw new IllegalStateException("HMAC-SHA256 unavailable", e);
+        }
+    }
+
+    /**
+     * 常量时间校验调用方回传的 token：缺失/不匹配均返回 false。
+     */
+    static boolean verifyVisitorToken(String secret, Long channelId, String visitorId, String presented) {
+        if (presented == null || presented.isEmpty() || visitorId == null || channelId == null) {
+            return false;
+        }
+        byte[] expected = computeVisitorToken(secret, channelId, visitorId).getBytes(StandardCharsets.UTF_8);
+        byte[] actual = presented.getBytes(StandardCharsets.UTF_8);
+        return MessageDigest.isEqual(expected, actual);
     }
 
     /**
