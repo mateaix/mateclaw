@@ -87,4 +87,29 @@ class WebChatVisitorTokenTest {
         assertFalse(WebChatController.verifyVisitorToken(SECRET, null, VISITOR, token));
         assertFalse(WebChatController.verifyVisitorToken(SECRET, CHANNEL, null, token));
     }
+
+    // ============ conversationId / username 边界（避免溢出 VARCHAR(64) → /stream 500）============
+
+    @Test
+    void deriveConversationId_staysWithin64_forLongInputs() {
+        String id = WebChatController.deriveConversationId("apikey1234567890", "v".repeat(120), "s".repeat(64));
+        assertTrue(id.length() <= 64, "conversationId must fit VARCHAR(64), got " + id.length());
+        // a legitimate 64-char sessionId alone already overflows the old scheme
+        String id2 = WebChatController.deriveConversationId("apikey1234567890", "alice", "s".repeat(64));
+        assertTrue(id2.length() <= 64, "conversationId must fit VARCHAR(64), got " + id2.length());
+    }
+
+    @Test
+    void deriveConversationId_unchanged_forShortInputs() {
+        assertEquals("webchat:apikey12:alice:s1",
+                WebChatController.deriveConversationId("apikey1234567890", "alice", "s1"));
+        assertEquals("webchat:apikey12:alice",
+                WebChatController.deriveConversationId("apikey1234567890", "alice", null));
+    }
+
+    @Test
+    void webchatUsername_staysWithin64_forLongVisitor() {
+        assertTrue(WebChatController.webchatUsername("v".repeat(120)).length() <= 64);
+        assertEquals("webchat:alice", WebChatController.webchatUsername("alice"));
+    }
 }
