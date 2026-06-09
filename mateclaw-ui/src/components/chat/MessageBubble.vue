@@ -46,33 +46,38 @@
                 <el-icon><WarningFilled /></el-icon>
                 <span>{{ $t('chat.iterationEmpty', { index: iter.index + 1 }) }}</span>
               </div>
+              <!-- Render each iteration's segments in their original emission
+                   order (thinking / tool_call / content interleaved exactly as
+                   the model produced them) so tool boxes never reorder. -->
               <template v-else>
-                <ThinkingSegment v-for="t in iter.thinkings" :key="t.id" :segment="t" />
-                <ToolCallSegment v-for="tool in iter.tools" :key="tool.id" :segment="tool" />
-                <template v-for="c in iter.contents" :key="c.id">
+                <template v-for="seg in iter.items" :key="seg.id">
+                <ThinkingSegment v-if="seg.type === 'thinking' && debugMode" :segment="seg" />
+                <ToolCallSegment v-else-if="seg.type === 'tool_call'" :segment="seg" />
+                <template v-else-if="seg.type === 'content'">
                   <button
-                    v-if="c.superseded"
+                    v-if="seg.superseded"
                     class="superseded-toggle"
                     type="button"
-                    @click="toggleSupersededSegment(c.id)"
+                    @click="toggleSupersededSegment(seg.id)"
                   >
                     <el-icon><InfoFilled /></el-icon>
                     <span>{{ $t('chat.supersededPreviewCollapsed') }}</span>
                     <span class="superseded-toggle__action">
-                      {{ isSupersededExpanded(c.id) ? $t('chat.collapse') : $t('chat.expand') }}
+                      {{ isSupersededExpanded(seg.id) ? $t('chat.collapse') : $t('chat.expand') }}
                     </span>
                   </button>
-                  <div v-if="c.repetitionWarning && (!c.superseded || isSupersededExpanded(c.id))" class="repetition-warning">
+                  <div v-if="seg.repetitionWarning && (!seg.superseded || isSupersededExpanded(seg.id))" class="repetition-warning">
                     <el-icon><WarningFilled /></el-icon>
                     <span class="repetition-warning__text">{{ $t('chat.contentRepetitionWarning') }}</span>
-                    <span v-if="c.truncatedChars" class="repetition-warning__meta">({{ c.truncatedChars }} chars)</span>
+                    <span v-if="seg.truncatedChars" class="repetition-warning__meta">({{ seg.truncatedChars }} chars)</span>
                   </div>
                   <ContentSegment
-                    v-if="!c.superseded || isSupersededExpanded(c.id)"
-                    :segment="c"
-                    :show-cursor="showCursor && c.status === 'running'"
-                    :class="{ 'content-segment--superseded': c.superseded }"
+                    v-if="!seg.superseded || isSupersededExpanded(seg.id)"
+                    :segment="seg"
+                    :show-cursor="showCursor && seg.status === 'running'"
+                    :class="{ 'content-segment--superseded': seg.superseded }"
                   />
+                </template>
                 </template>
               </template>
             </template>
@@ -447,6 +452,8 @@ import ThinkingSegment from './ThinkingSegment.vue'
 import ContentSegment from './ContentSegment.vue'
 import GoalAvatarRing from '@/components/goal/GoalAvatarRing.vue'
 import { useGoalStore } from '@/stores/useGoalStore'
+import { useSystemSettingsStore } from '@/stores/useSystemSettingsStore'
+import { storeToRefs } from 'pinia'
 import PlanStepsPanel from './PlanStepsPanel.vue'
 import UserMessageContent from './UserMessageContent.vue'
 import type { BrowserAction } from './BrowserTimeline.vue'
@@ -562,7 +569,13 @@ const hasContent = computed(() => {
   return !!(textPart?.text || props.message.content)
 })
 
-const showThinkingPanel = computed(() => !!thinkingContent.value)
+// Debug mode gates whether the model's reasoning ("thinking") is surfaced.
+// Off (default) keeps the transcript focused on tool activity + the answer,
+// directly addressing the "thinking piles up" complaint. Tool-call boxes stay
+// visible (they auto-collapse) so the user still sees what the agent did.
+const { debugMode } = storeToRefs(useSystemSettingsStore())
+
+const showThinkingPanel = computed(() => debugMode.value && !!thinkingContent.value)
 
 // 思考耗时（生成结束后显示）
 const thinkingDuration = computed(() => {
@@ -997,32 +1010,29 @@ const useSegmentedView = computed(() =>
 const groupedIterations = computed(() => {
   const segs = segments.value || []
   const anyTagged = segs.some(s => typeof s.iterationIndex === 'number')
+  // Untagged (legacy / persisted-without-iterationIndex) messages render as a
+  // single bucket — but still in their ORIGINAL emission order, never split by
+  // type. Splitting into thinking/tool/content arrays was what made a tool box
+  // jump above or below its surrounding text depending on the message.
   if (!anyTagged) {
-    return [{
-      key: 'all',
-      index: 0,
-      empty: false,
-      thinkings: segs.filter(s => s.type === 'thinking'),
-      tools: segs.filter(s => s.type === 'tool_call'),
-      contents: segs.filter(s => s.type === 'content'),
-    }]
+    return [{ key: 'all', index: 0, empty: segs.length === 0, items: segs }]
   }
-  const buckets = new Map<number, { thinkings: MessageSegment[]; tools: MessageSegment[]; contents: MessageSegment[] }>()
+  // Group by iteration for visual separation, but keep each bucket's segments
+  // in their original array order (segments[] is already in emission order, so
+  // a tool call stays exactly where the model emitted it relative to content).
+  const buckets = new Map<number, MessageSegment[]>()
   for (const s of segs) {
     const idx = s.iterationIndex ?? 0
-    if (!buckets.has(idx)) buckets.set(idx, { thinkings: [], tools: [], contents: [] })
-    const b = buckets.get(idx)!
-    if (s.type === 'thinking') b.thinkings.push(s)
-    else if (s.type === 'tool_call') b.tools.push(s)
-    else if (s.type === 'content') b.contents.push(s)
+    if (!buckets.has(idx)) buckets.set(idx, [])
+    buckets.get(idx)!.push(s)
   }
   return [...buckets.entries()]
     .sort(([a], [b]) => a - b)
-    .map(([index, b]) => ({
+    .map(([index, items]) => ({
       key: `iter-${index}`,
       index,
-      empty: b.thinkings.length === 0 && b.tools.length === 0 && b.contents.length === 0,
-      ...b,
+      empty: items.length === 0,
+      items,
     }))
 })
 

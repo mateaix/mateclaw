@@ -11,7 +11,22 @@
     <button
       v-if="canManageWiki"
       type="button"
-      class="kb-card-delete"
+      class="kb-card-action kb-card-manage"
+      :title="t('wiki.library.manageKB')"
+      :aria-label="t('wiki.library.manageKB')"
+      @click.stop="$emit('manage', kb.id)"
+      @keydown.enter.stop
+      @keydown.space.stop
+    >
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="12" cy="12" r="3"/>
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+      </svg>
+    </button>
+    <button
+      v-if="canManageWiki"
+      type="button"
+      class="kb-card-action kb-card-delete"
       :title="t('wiki.library.deleteKB')"
       :aria-label="t('wiki.library.deleteKB')"
       @click.stop="$emit('delete', kb)"
@@ -72,6 +87,7 @@ const props = defineProps<{
 
 defineEmits<{
   (e: 'open', id: number): void
+  (e: 'manage', id: number): void
   (e: 'delete', kb: WikiKB): void
 }>()
 
@@ -111,10 +127,9 @@ const relative = computed(() => relativeTime(props.kb.updateTime, locale.value.s
 }
 .kb-card:focus-visible { outline: 2px solid var(--mc-primary); outline-offset: 2px; }
 
-.kb-card-delete {
+.kb-card-action {
   position: absolute;
   top: 10px;
-  right: 10px;
   width: 28px;
   height: 28px;
   display: inline-flex;
@@ -131,11 +146,27 @@ const relative = computed(() => relativeTime(props.kb.updateTime, locale.value.s
   padding: 0;
   z-index: 1;
 }
-.kb-card:hover .kb-card-delete,
-.kb-card:focus-within .kb-card-delete {
+.kb-card-delete { right: 10px; }
+.kb-card-manage { right: 44px; }
+
+.kb-card:hover .kb-card-action,
+.kb-card:focus-within .kb-card-action {
   opacity: 1;
   transform: translateY(0);
 }
+
+.kb-card-manage:hover {
+  color: var(--mc-primary);
+  border-color: var(--mc-primary);
+  background: var(--mc-primary-bg);
+}
+.kb-card-manage:focus-visible {
+  outline: 2px solid var(--mc-primary);
+  outline-offset: 2px;
+  opacity: 1;
+  transform: translateY(0);
+}
+
 .kb-card-delete:hover {
   color: var(--mc-danger);
   border-color: rgba(245, 108, 108, 0.45);

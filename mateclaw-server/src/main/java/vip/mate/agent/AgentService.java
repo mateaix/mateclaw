@@ -505,6 +505,19 @@ public class AgentService {
         log.info("Agent caches refreshed after tool guard config change (denied tools may have changed)");
     }
 
+    /**
+     * Issue #289: an MCP server connecting / disconnecting / reconnecting
+     * changes the live tool set, but cached agents snapshot their tools at
+     * build time. Clear the cache so the next turn rebuilds against the
+     * current MCP tools instead of replying "from memory" with a stale,
+     * tool-less graph.
+     */
+    @EventListener
+    public void onMcpServerChanged(vip.mate.tool.mcp.event.McpServerChangedEvent event) {
+        refreshAllAgents();
+        log.info("Agent caches refreshed after MCP server change: {}", event.reason());
+    }
+
     // ==================== Lifecycle helpers ====================
 
     /**

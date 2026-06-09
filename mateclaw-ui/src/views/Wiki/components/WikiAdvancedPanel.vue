@@ -10,39 +10,15 @@
     </div>
 
     <!-- ===================== REQ-1: PageType Profile ===================== -->
-    <section v-if="section === 'profile'" class="adv-section">
-      <header class="adv-head">
-        <div>
-          <h3>{{ t('wiki.adv.profile.title') }}</h3>
-          <p class="adv-desc">{{ t('wiki.adv.profile.desc') }}</p>
-        </div>
-        <span v-if="profile.builtinDefault" class="badge badge-muted">{{ t('wiki.adv.profile.builtin') }}</span>
-        <span v-else class="badge badge-ok">v{{ profile.version }}</span>
-      </header>
-      <textarea
-        v-model="profile.config"
-        class="code-editor" spellcheck="false"
-        :placeholder="t('wiki.adv.profile.placeholder')"
-      ></textarea>
-      <div v-if="profile.issues.length" class="issue-box">
-        <div v-for="(iss, i) in profile.issues" :key="i" class="issue-line">⚠ {{ iss }}</div>
-      </div>
-      <div class="adv-actions">
-        <button class="btn-ghost" @click="validateProfile" :disabled="profile.busy">{{ t('wiki.adv.validate') }}</button>
-        <button class="btn-ghost danger" @click="resetProfile" :disabled="profile.busy">{{ t('wiki.adv.profile.reset') }}</button>
-        <button class="btn-primary" @click="saveProfile" :disabled="profile.busy">{{ t('common.save') }}</button>
-      </div>
-
-      <div class="reclassify-box">
-        <p class="adv-desc">{{ t('wiki.adv.reclassify.desc') }}</p>
-        <button class="btn-ghost" @click="reclassify" :disabled="profile.busy">
-          {{ t('wiki.adv.reclassify.button') }}
-        </button>
-      </div>
-    </section>
+    <!--
+      Kept mounted via v-show (not v-if) so the guided form editor preserves
+      in-progress edits when the user bounces to another advanced sub-tab and
+      back. The editor loads/validates/saves the profile itself.
+    -->
+    <WikiPageTypeProfileEditor v-show="section === 'profile'" class="adv-section" />
 
     <!-- ===================== REQ-2: Layers & Stale ===================== -->
-    <section v-else-if="section === 'layers'" class="adv-section">
+    <section v-if="section === 'layers'" class="adv-section">
       <header class="adv-head">
         <div>
           <h3>{{ t('wiki.adv.layers.title') }}</h3>
@@ -241,6 +217,7 @@ import { wikiApi } from '@/api/index'
 import { mcToast } from '@/composables/useMcToast'
 import { mcConfirm } from '@/components/common/useConfirm'
 import AgentPickerDialog from '@/components/common/AgentPickerDialog.vue'
+import WikiPageTypeProfileEditor from './WikiPageTypeProfileEditor.vue'
 
 const { t } = useI18n()
 const store = useWikiStore()
@@ -273,56 +250,7 @@ function switchSection(key: typeof section.value) {
 function unwrap(res: any) { return res?.data ?? res }
 function errMsg(e: any, fallback: string) { return e?.response?.data?.message || fallback }
 
-// ---- REQ-1 Profile ----
-const profile = reactive({ config: '', version: 0, builtinDefault: true, issues: [] as string[], busy: false })
-async function loadProfile() {
-  if (!kbId.value) return
-  try {
-    const d = unwrap(await wikiApi.getPageTypeProfile(kbId.value))
-    profile.config = typeof d.config === 'string' ? d.config : JSON.stringify(d.config, null, 2)
-    profile.version = d.version
-    profile.builtinDefault = d.builtinDefault
-  } catch (e: any) { mcToast.error(errMsg(e, 'Load profile failed')) }
-}
-async function validateProfile() {
-  profile.busy = true
-  try {
-    const d = unwrap(await wikiApi.validatePageTypeProfile(kbId.value, profile.config))
-    profile.issues = d.issues || []
-    if (d.valid) mcToast.success(t('wiki.adv.validOk'))
-  } catch (e: any) { mcToast.error(errMsg(e, 'Validate failed')) } finally { profile.busy = false }
-}
-async function saveProfile() {
-  profile.busy = true
-  try {
-    await wikiApi.savePageTypeProfile(kbId.value, profile.config)
-    mcToast.success(t('common.saved'))
-    profile.issues = []
-    await loadProfile()
-  } catch (e: any) { mcToast.error(errMsg(e, 'Save failed')) } finally { profile.busy = false }
-}
-async function resetProfile() {
-  if (!(await mcConfirm({ title: t('wiki.adv.profile.reset'), message: t('wiki.adv.profile.resetConfirm'), tone: 'danger' }))) return
-  profile.busy = true
-  try {
-    await wikiApi.resetPageTypeProfile(kbId.value)
-    mcToast.success(t('common.saved'))
-    await loadProfile()
-  } catch (e: any) { mcToast.error(errMsg(e, 'Reset failed')) } finally { profile.busy = false }
-}
-async function reclassify() {
-  if (!kbId.value) return
-  if (!(await mcConfirm({
-    title: t('wiki.adv.reclassify.confirmTitle'),
-    message: t('wiki.adv.reclassify.confirmMsg'),
-    tone: 'danger',
-  }))) return
-  profile.busy = true
-  try {
-    await wikiApi.reclassifyKB(kbId.value)
-    mcToast.success(t('wiki.adv.reclassify.started'))
-  } catch (e: any) { mcToast.error(errMsg(e, 'Reclassify failed')) } finally { profile.busy = false }
-}
+// ---- REQ-1 Profile lives in WikiPageTypeProfileEditor (guided form + JSON) ----
 
 // ---- REQ-2 Layers & Stale ----
 const layers = reactive({ pages: [] as any[], busy: false })
@@ -459,7 +387,7 @@ function runClass(s?: string) {
   return 'badge-muted'
 }
 
-onMounted(() => { loaded.profile = true; loadProfile() })
+onMounted(() => { loaded.profile = true })
 </script>
 
 <style scoped>
