@@ -447,7 +447,10 @@ public class WebChatController {
         private String message;
         private String visitorId;
         /** Optional: route this call to a specific agent instead of the channel's bound agent.
-         *  Must belong to the channel's workspace. */
+         *  Must belong to the channel's workspace.
+         *  <p>Only applied when the (visitorId + sessionId) conversation is first created. Once that
+         *  conversation exists, its agent is fixed: a different agentId on later requests is silently
+         *  ignored. To talk to another agent, use a new sessionId (or a new visitorId). */
         private Long agentId;
         /** Optional: open a distinct conversation thread for the same visitor.
          *  Composed into the server-derived conversationId; never used as a raw conversationId. */
