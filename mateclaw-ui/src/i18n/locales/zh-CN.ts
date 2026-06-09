@@ -1680,6 +1680,7 @@ export default {
       connected: '已连接',
       disconnected: '未连接',
       error: '连接失败',
+      connecting: '连接中…',
     },
     transport: {
       stdio: 'Stdio',
@@ -1732,6 +1733,7 @@ export default {
       deleteConfirm: '确认删除 MCP 连接 "{name}" 吗？',
       toggleSuccess: '状态已更新',
       refreshSuccess: '全量刷新完成',
+      connecting: '正在后台连接，状态会自动更新',
       saveFailed: '保存失败',
       tierFailed: '调整披露分级失败',
       empty: '暂无 MCP 连接',

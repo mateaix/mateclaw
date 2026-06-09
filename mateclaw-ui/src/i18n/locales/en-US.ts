@@ -1788,6 +1788,7 @@ export default {
       connected: 'Connected',
       disconnected: 'Disconnected',
       error: 'Error',
+      connecting: 'Connecting…',
     },
     transport: {
       stdio: 'Stdio',
@@ -1840,6 +1841,7 @@ export default {
       deleteConfirm: 'Delete MCP connection "{name}"?',
       toggleSuccess: 'Status updated',
       refreshSuccess: 'All connections refreshed',
+      connecting: 'Connecting in the background — status updates automatically',
       saveFailed: 'Failed to save',
       tierFailed: 'Failed to change disclosure tier',
       empty: 'No MCP connections',

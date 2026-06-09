@@ -14,6 +14,8 @@ import { useMessages } from './useMessages'
 import { useStream } from './useStream'
 import { useMessageQueue } from './useMessageQueue'
 import { useGoalStore } from '@/stores/useGoalStore'
+import { useSystemSettingsStore } from '@/stores/useSystemSettingsStore'
+import { storeToRefs } from 'pinia'
 import type { Message, MessageContentPart, MessageSegment, StreamPhase, HeartbeatData, QueuedMessage, PhaseEventData, DelegationNode, DelegationToolEntry, PlanMeta } from '@/types'
 import { classifyBackendError, type ChatErrorInfo } from '@/types/chatError'
 import { http } from '@/api'
@@ -216,15 +218,30 @@ export function useChat(options: UseChatOptions): UseChatReturn {
   /** Unique ID for the current turn — prevents flushSegmentsToMessage from writing stale segments to a new message */
   let activeTurnId = ''
 
+  // When the user disables "stream response", the turn is still consumed over
+  // SSE (so tools / approval / events all work) but the on-screen message is
+  // held back and revealed once on completion instead of token-by-token. These
+  // buffers hold the text/thinking deltas until the reveal at stream end.
+  const { streamEnabled } = storeToRefs(useSystemSettingsStore())
+  let bufferedText = ''
+  let bufferedThinking = ''
+
   /** Reset streaming state for the current turn — must be called before creating a new assistant placeholder */
   function resetCurrentTurnState() {
     currentSegments.value = []
     segIdCounter.value = 0
+    bufferedText = ''
+    bufferedThinking = ''
     activeTurnId = `turn-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
   }
 
-  /** Sync current segments into the assistant message metadata (used for real-time rendering) */
-  const flushSegmentsToMessage = () => {
+  /**
+   * Sync current segments into the assistant message metadata (used for
+   * real-time rendering). When streaming is disabled we skip the live writes
+   * and only flush once at stream end (force=true) so nothing renders mid-turn.
+   */
+  const flushSegmentsToMessage = (force = false) => {
+    if (!force && !streamEnabled.value) return
     if (!currentAssistantId.value || currentSegments.value.length === 0) return
     const msg = getMessage(currentAssistantId.value)
     if (!msg) return
@@ -235,6 +252,23 @@ export function useChat(options: UseChatOptions): UseChatReturn {
       ...msg,
       metadata: { ...metadata, segments: [...currentSegments.value] }
     } as any)
+  }
+
+  /**
+   * Reveal a buffered (non-streamed) turn: commit the accumulated text/thinking
+   * to the message and flush segments. Safe to call on done / stopped / error.
+   */
+  const revealBufferedTurn = () => {
+    if (!currentAssistantId.value) return
+    if (bufferedThinking) {
+      appendMessageContent(currentAssistantId.value, bufferedThinking, 'thinking')
+      bufferedThinking = ''
+    }
+    if (bufferedText) {
+      appendMessageContent(currentAssistantId.value, bufferedText, 'text')
+      bufferedText = ''
+    }
+    flushSegmentsToMessage(true)
   }
   const heartbeat = ref<HeartbeatData | null>(null)
   /** Track which conversation the current stream belongs to */
@@ -388,7 +422,11 @@ export function useChat(options: UseChatOptions): UseChatReturn {
   stream.on('content_delta', (data) => {
     if (isStaleEvent(data)) return
     if (currentAssistantId.value) {
-      appendMessageContent(currentAssistantId.value, data.delta || '', 'text')
+      if (streamEnabled.value) {
+        appendMessageContent(currentAssistantId.value, data.delta || '', 'text')
+      } else {
+        bufferedText += data.delta || ''
+      }
       if (['thinking', 'reasoning', 'drafting_answer', 'preparing_context'].includes(streamPhase.value)) {
         streamPhase.value = 'streaming'
       }
@@ -418,7 +456,11 @@ export function useChat(options: UseChatOptions): UseChatReturn {
     // Suppress thinking display when thinkingLevel=off
     if (options.thinkingLevel?.value === 'off') return
     if (currentAssistantId.value) {
-      appendMessageContent(currentAssistantId.value, data.delta || '', 'thinking')
+      if (streamEnabled.value) {
+        appendMessageContent(currentAssistantId.value, data.delta || '', 'thinking')
+      } else {
+        bufferedThinking += data.delta || ''
+      }
       if (streamPhase.value !== 'summarizing_observations') {
         streamPhase.value = options.thinkingLevel?.value === 'off' ? 'streaming' : 'thinking'
       }
@@ -567,6 +609,10 @@ export function useChat(options: UseChatOptions): UseChatReturn {
   stream.on('done', (data) => {
     if (isStaleEvent(data)) return
 
+    // Non-streamed turn: reveal the buffered content/segments now, before the
+    // server-annotation merge below reads metadata.segments.
+    if (!streamEnabled.value) revealBufferedTurn()
+
     if (currentAssistantId.value) {
       const existingMsg = getMessage(currentAssistantId.value)
       if (existingMsg?.status !== 'failed') {
@@ -702,6 +748,9 @@ export function useChat(options: UseChatOptions): UseChatReturn {
   let errorFired = false
   stream.on('error', (data) => {
     if (isStaleEvent(data)) return
+    // Surface whatever was buffered before the failure so a non-streamed turn
+    // doesn't vanish entirely on error.
+    if (!streamEnabled.value) revealBufferedTurn()
     // Always carry data.message as rawMessage, so the inline error card can
     // surface the actual reason ("无权操作该会话" etc.) instead of the generic
     // unknown.description template. classifyBackendError already does this

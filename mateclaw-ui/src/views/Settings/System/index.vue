@@ -205,9 +205,11 @@ import { onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { settingsApi } from '@/api'
 import { applyLocale } from '@/i18n'
+import { useSystemSettingsStore } from '@/stores/useSystemSettingsStore'
 import type { SystemSettings } from '@/types'
 
 const { t } = useI18n()
+const systemSettingsStore = useSystemSettingsStore()
 const savedTip = ref('')
 
 // API Key 独立管理，不回显明文
@@ -234,6 +236,8 @@ onMounted(async () => {
 async function loadSettings() {
   const res: any = await settingsApi.get()
   Object.assign(settings, res.data || {})
+  // Keep the runtime store in sync so chat honors the latest toggles.
+  systemSettingsStore.apply(settings)
   // 清空 API Key 输入框（不回显明文）
   serperApiKeyInput.value = ''
   tavilyApiKeyInput.value = ''
