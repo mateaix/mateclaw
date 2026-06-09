@@ -195,7 +195,7 @@ class DelegateAsyncTaskOutputAttributionTest {
 
     private ToolContext makeCtx(String requester, String conversationId) {
         ChatOrigin origin = new ChatOrigin(
-                1L, conversationId, requester, null, null, null, null, false, null, null, null);
+                1L, conversationId, requester, null, null, null, null, false, null, null, null, null);
         Map<String, Object> map = new HashMap<>();
         map.put(ChatOrigin.CTX_KEY, origin);
         return new ToolContext(map);

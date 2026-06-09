@@ -121,7 +121,7 @@ public class SendFileTool {
             String displayName = (fileName != null && !fileName.isBlank()) ? fileName : path.getFileName().toString();
             String mimeType = resolveMimeType(displayName);
 
-            String url = stash(bytes, displayName, mimeType);
+            String url = stash(bytes, displayName, mimeType, ctx);
 
             log.info("[SendFile] Sending {} ({}, {} bytes) via generated file cache",
                     displayName, mimeType, fileSize);
@@ -138,9 +138,9 @@ public class SendFileTool {
         }
     }
 
-    private String stash(byte[] bytes, String displayName, String mimeType) {
+    private String stash(byte[] bytes, String displayName, String mimeType, @Nullable ToolContext ctx) {
         String id = cache.put(bytes, displayName, mimeType);
-        return "/api/v1/files/generated/" + id;
+        return cache.downloadUrl(id, ctx);
     }
 
     private String resolveMimeType(String fileName) {

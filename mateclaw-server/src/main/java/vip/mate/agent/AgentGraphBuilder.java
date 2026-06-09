@@ -88,6 +88,11 @@ public class AgentGraphBuilder {
     @org.springframework.beans.factory.annotation.Value(
             "${mateclaw.skill.disclosure.load-skill-tool.enabled:true}")
     private boolean loadSkillToolEnabled;
+
+    /** Escape hatch: when false, the final answer is sent verbatim without Markdown normalization. */
+    @org.springframework.beans.factory.annotation.Value(
+            "${mate.agent.markdown-normalize-enabled:true}")
+    private boolean markdownNormalizeEnabled;
     private final ConversationService conversationService;
     private final ModelConfigService modelConfigService;
     private final ModelProviderService modelProviderService;
@@ -809,7 +814,7 @@ public class AgentGraphBuilder {
             SummarizingNode summarizingNode = new SummarizingNode(chatModel, streamingHelper, streamTracker);
             LimitExceededNode limitExceededNode = new LimitExceededNode(
                     chatModel, observationProcessor, streamingHelper, i18nService, progressLedgerService);
-            FinalAnswerNode finalAnswerNode = new FinalAnswerNode(generatedFileCache);
+            FinalAnswerNode finalAnswerNode = new FinalAnswerNode(generatedFileCache, markdownNormalizeEnabled);
 
             KeyStrategyFactory keyStrategyFactory = KeyStrategy.builder()
                     // 输入字段

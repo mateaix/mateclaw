@@ -2,7 +2,7 @@
   <div class="node-panel">
     <div class="node-panel-header">
       <span class="node-type-badge" :style="{ background: typeColor(page.pageType) }">
-        {{ t(`wiki.pageTypes.${page.pageType || 'other'}`, page.pageType || 'other') }}
+        {{ formatPageTypeLabel(page.pageType || 'other') }}
       </span>
       <button class="node-panel-close" @click="emit('close')">✕</button>
     </div>
@@ -29,8 +29,10 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
 import type { WikiPage } from '@/stores/useWikiStore'
+import { useWikiPageType } from '@/composables/useWikiPageType'
 
 const { t } = useI18n()
+const { typeColor, formatPageTypeLabel } = useWikiPageType()
 
 defineProps<{
   page: WikiPage
@@ -42,22 +44,6 @@ const emit = defineEmits<{
   (e: 'open-page', slug: string): void
 }>()
 
-const TYPE_COLORS: Record<string, string> = {
-  concept: '#D96E46',
-  person: '#5B8DEF',
-  place: '#4CAF82',
-  event: '#F59E0B',
-  technology: '#8B5CF6',
-  organization: '#EC4899',
-  product: '#14B8A6',
-  term: '#6B7280',
-  process: '#F97316',
-  other: '#9CA3AF',
-}
-
-function typeColor(type: string | null | undefined): string {
-  return TYPE_COLORS[(type || 'other').toLowerCase()] || TYPE_COLORS.other
-}
 </script>
 
 <style scoped>

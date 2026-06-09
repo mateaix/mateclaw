@@ -214,6 +214,12 @@ const router = createRouter({
               component: () => import('@/views/Tools.vue'),
               meta: { title: 'Settings - Tools Catalog', requiredCapability: 'manage:settings' },
             },
+            {
+              path: 'proxy',
+              name: 'SettingsProxy',
+              component: () => import('@/views/Settings/Proxy/index.vue'),
+              meta: { title: 'Settings - Proxy', requiredCapability: 'manage:settings' },
+            },
             // RFC-090 Phase 7: ACP endpoints (External coding agents)
             {
               path: 'acp',

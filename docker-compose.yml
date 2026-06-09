@@ -31,26 +31,6 @@ services:
       timeout: 5s
       retries: 5
 
-  # PostgreSQL 数据库
-  postgres:
-    image: postgres:16
-    container_name: mateclaw-postgres
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: ${PGSQL_DB_NAME:-mateclaw}
-      POSTGRES_USER: ${PGSQL_DB_USERNAME:-postgres}
-      POSTGRES_PASSWORD: ${PGSQL_DB_PASSWORD:?PGSQL_DB_PASSWORD is required in .env}
-      TZ: Asia/Shanghai
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${PGSQL_DB_USERNAME:-postgres}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
   # SearXNG 搜索引擎（keyless 搜索 provider）
   #
   # The custom image at docker/searxng/ bakes in settings.yml so the sidecar
@@ -68,7 +48,7 @@ services:
       - UWSGI_WORKERS=2
       - UWSGI_THREADS=4
     ports:
-      - "18233:8080"
+      - "8088:8080"
     healthcheck:
       # Healthz needs json format, so this also doubles as an integration check.
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/healthz"]
@@ -120,6 +100,10 @@ services:
       # 示例：MATE_WIKI_ALLOWED_SOURCE_ROOTS=/data/wiki,/opt/docs
       # 记得同步在 volumes 里把宿主机路径挂进容器。
       MATE_WIKI_ALLOWED_SOURCE_ROOTS: ${MATE_WIKI_ALLOWED_SOURCE_ROOTS:-}
+      # Skill 工作区根目录。放在 /app/data 下，让现有的 server_data 卷一并持久化
+      # 已安装的 skill、运行时积累的 LESSONS.md 以及 skill 运行产物，容器重启不丢。
+      # 内置 skill 仍由 JAR classpath 每次启动现场释放，空卷不会丢内置文件。
+      MATECLAW_SKILL_WORKSPACE_ROOT: ${MATECLAW_SKILL_WORKSPACE_ROOT:-/app/data/skills}
     # Chromium needs a real /dev/shm. Docker defaults to 64MB which causes
     # SIGBUS / "Target page closed" errors under load. 2GB is the usual
     # recommendation for Playwright / headless chrome.
@@ -128,11 +112,11 @@ services:
       - "18080:18088"   # host:container — app listens on 18088 inside the container
       - "1455:1455"
     volumes:
+      # server_data covers /app/data — H2 DB, wiki-uploads, AND the skill
+      # workspace (MATECLAW_SKILL_WORKSPACE_ROOT=/app/data/skills above), so a
+      # single volume persists everything. No separate skills volume needed.
       - server_data:/app/data
-      - skills_data:/root/.mateclaw/skills
 
 volumes:
   mysql_data:
-  postgres_data:
   server_data:
-  skills_data:

@@ -262,6 +262,17 @@
             </label>
           </fieldset>
 
+          <label v-if="form.outputTarget === 'page'" class="field">
+            <span class="field-label">{{ t('wiki.transformations.targetPageType') }}</span>
+            <select v-model="form.targetPageType" class="field-input">
+              <option value="">{{ t('wiki.transformations.targetPageTypeAuto') }}</option>
+              <option v-for="opt in pageTypeOptions" :key="opt.value" :value="opt.value">
+                {{ opt.label }}
+              </option>
+            </select>
+            <span class="field-hint">{{ t('wiki.transformations.targetPageTypeHelp') }}</span>
+          </label>
+
           <fieldset class="field field--group">
             <legend class="field-label">{{ t('wiki.transformations.outputFormatLabel') }}</legend>
             <label class="radio-row">
@@ -353,6 +364,7 @@ interface WikiTransformation {
   outputTarget: 'none' | 'page' | null
   outputFormat: 'markdown' | 'json' | null
   outputSchema: string | null
+  targetPageType: string | null
 }
 
 interface WikiTransformationRun {
@@ -411,6 +423,7 @@ const form = reactive<{
   outputTarget: 'none' | 'page'
   outputFormat: 'markdown' | 'json'
   outputSchema: string
+  targetPageType: string
   modelId: number | null
 }>({
   name: '',
@@ -422,7 +435,18 @@ const form = reactive<{
   outputTarget: 'none',
   outputFormat: 'markdown',
   outputSchema: '',
+  targetPageType: '',
   modelId: null,
+})
+
+// Target-type dropdown options come from the active KB's pageType profile.
+const pageTypeOptions = computed(() => {
+  const profile = store.pageTypeProfile
+  if (!profile) return [] as { value: string; label: string }[]
+  return profile.order.map((type) => ({
+    value: type,
+    label: profile.labels[type] || type,
+  }))
 })
 
 const completedRaws = computed<WikiRawMaterial[]>(() =>
@@ -517,6 +541,7 @@ function openCreate() {
   form.outputTarget = 'none'
   form.outputFormat = 'markdown'
   form.outputSchema = ''
+  form.targetPageType = ''
   form.modelId = null
   editorOpen.value = true
   ensureModelsLoaded()
@@ -533,6 +558,7 @@ function openEdit(tpl: WikiTransformation) {
   form.outputTarget = tpl.outputTarget === 'page' ? 'page' : 'none'
   form.outputFormat = tpl.outputFormat === 'json' ? 'json' : 'markdown'
   form.outputSchema = tpl.outputSchema || ''
+  form.targetPageType = tpl.targetPageType || ''
   form.modelId = tpl.modelId ?? null
   editorOpen.value = true
   ensureModelsLoaded()
@@ -554,6 +580,9 @@ async function onSave() {
     // Schema is only persisted when format=json; otherwise we always send
     // an empty string so the backend can clear a previously-stored value.
     const schemaPayload = form.outputFormat === 'json' ? form.outputSchema.trim() : ''
+    // Target pageType only applies when output lands as a page; otherwise send
+    // an empty string so the backend clears any previously-stored value.
+    const targetPageTypePayload = form.outputTarget === 'page' ? form.targetPageType : ''
     if (editing.value) {
       // Update path: backend treats `-1` as "clear modelId"; null is skipped.
       const updateModelId = form.modelId == null ? -1 : form.modelId
@@ -566,6 +595,7 @@ async function onSave() {
         outputTarget: form.outputTarget,
         outputFormat: form.outputFormat,
         outputSchema: schemaPayload,
+        targetPageType: targetPageTypePayload,
         modelId: updateModelId,
       })
     } else {
@@ -580,6 +610,7 @@ async function onSave() {
         outputTarget: form.outputTarget,
         outputFormat: form.outputFormat,
         outputSchema: schemaPayload || null,
+        targetPageType: targetPageTypePayload || null,
         modelId: form.modelId,
       })
     }

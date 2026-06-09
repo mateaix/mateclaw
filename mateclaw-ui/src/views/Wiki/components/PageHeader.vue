@@ -3,7 +3,7 @@
     <div class="page-header-left">
       <!-- Page type badge -->
       <span v-if="page.pageType" class="page-type-badge" :class="page.pageType">
-        {{ t(`wiki.page.type.${page.pageType}`) || page.pageType }}
+        {{ formatPageTypeLabel(page.pageType) }}
       </span>
 
       <h2 class="page-title">{{ page.title }}</h2>
@@ -42,8 +42,10 @@ import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Link } from '@element-plus/icons-vue'
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore'
+import { useWikiPageType } from '@/composables/useWikiPageType'
 
 const { t } = useI18n()
+const { formatPageTypeLabel } = useWikiPageType()
 const workspace = useWorkspaceStore()
 
 // Enriching a page (adding cross-links) is a write action — viewers only read.

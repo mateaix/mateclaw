@@ -495,7 +495,10 @@ public class SkillRuntimeService {
         sb.append("To read a skill's reference or script files, use ");
         sb.append("`readSkillFile(skillName=<name>, filePath=\"references/...\")`. ");
         sb.append("Skills with a `scripts/` directory expose `runSkillScript`; ");
-        sb.append("SKILL.md will name the script when needed.\n\n");
+        sb.append("SKILL.md will name the script when needed. ");
+        sb.append("If a skill describes steps but ships no runnable script, write the code ");
+        sb.append("its instructions describe and run it with ");
+        sb.append("`execute_code(language=<python|bash|node>, code=..., skillName=<name>)`.\n\n");
         sb.append("| Skill | Status | Description |\n");
         sb.append("|-------|--------|-------------|\n");
         for (ResolvedSkill skill : selected) {

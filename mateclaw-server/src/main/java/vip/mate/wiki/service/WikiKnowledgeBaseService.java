@@ -5,6 +5,8 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import vip.mate.agent.binding.model.AgentWikiKbBinding;
+import vip.mate.agent.binding.repository.AgentWikiKbBindingMapper;
 import vip.mate.agent.model.AgentEntity;
 import vip.mate.agent.repository.AgentMapper;
 import vip.mate.wiki.job.model.WikiProcessingJobEntity;
@@ -21,6 +23,8 @@ import vip.mate.wiki.repository.WikiProcessingJobMapper;
 import vip.mate.wiki.repository.WikiRawMaterialMapper;
 
 import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * Wiki 知识库服务
@@ -49,6 +53,15 @@ public class WikiKnowledgeBaseService {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     @org.springframework.context.annotation.Lazy
     private WikiScaffoldService scaffoldService;
+
+    /**
+     * Per-agent KB access scope. Optional ({@code required=false}) so the
+     * older tests that hand-wire this service via {@code @RequiredArgsConstructor}
+     * still compile and run — a {@code null} mapper means "no scoping known",
+     * which falls through to the legacy workspace-wide visibility.
+     */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private AgentWikiKbBindingMapper kbBindingMapper;
 
     /**
      * Summary returned from cascade delete — used by callers (e.g. the
@@ -107,15 +120,54 @@ public class WikiKnowledgeBaseService {
     /**
      * 获取 Agent 可访问的知识库。
      * <p>
-     * Knowledge bases are workspace-shared. The agent's primary KB is stored
-     * on mate_agent.primary_kb_id and does not affect visibility.
+     * Knowledge bases are workspace-shared, so the baseline visible set is
+     * every KB in the agent's workspace. When the agent has been pinned to a
+     * subset via {@code mate_agent_wiki_kb}, the set is narrowed to those KBs
+     * (intersected with the workspace, so a stale binding to a moved/deleted
+     * KB just drops out). An agent with no scope rows stays workspace-wide,
+     * preserving the pre-scoping behavior for every existing agent.
+     * <p>
+     * This is the single choke point for KB access: {@code wiki_list_kbs},
+     * {@link #findVisibleById}, {@link #findAllByName} and
+     * {@link #resolvePrimaryKb} all read through here, so narrowing it scopes
+     * every wiki tool at once.
      */
     public List<WikiKnowledgeBaseEntity> listByAgentId(Long agentId) {
         AgentEntity agent = getAgentOrNull(agentId);
-        if (agent == null || agent.getWorkspaceId() == null) {
-            return listAll();
+        List<WikiKnowledgeBaseEntity> workspaceKbs = (agent == null || agent.getWorkspaceId() == null)
+                ? listAll()
+                : listByWorkspace(agent.getWorkspaceId());
+        Set<Long> scope = scopedKbIds(agentId);
+        if (scope == null) {
+            return workspaceKbs; // unrestricted
         }
-        return listByWorkspace(agent.getWorkspaceId());
+        return workspaceKbs.stream()
+                .filter(kb -> scope.contains(kb.getId()))
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * Enabled KB ids this agent is pinned to, or {@code null} when the agent
+     * is unrestricted (no scope rows, or the binding mapper isn't wired — see
+     * {@link #kbBindingMapper}). Returning {@code null} rather than an empty
+     * set is deliberate: an empty set would mean "no KB visible", but a fresh
+     * agent must default to its whole workspace.
+     */
+    private Set<Long> scopedKbIds(Long agentId) {
+        if (agentId == null || kbBindingMapper == null) {
+            return null;
+        }
+        List<AgentWikiKbBinding> rows = kbBindingMapper.selectList(
+                new LambdaQueryWrapper<AgentWikiKbBinding>()
+                        .eq(AgentWikiKbBinding::getAgentId, agentId)
+                        .eq(AgentWikiKbBinding::getEnabled, true));
+        if (rows.isEmpty()) {
+            return null;
+        }
+        return rows.stream()
+                .map(AgentWikiKbBinding::getKbId)
+                .filter(java.util.Objects::nonNull)
+                .collect(Collectors.toSet());
     }
 
     /**

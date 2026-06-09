@@ -39,6 +39,7 @@
             :models="visionModels"
             :placeholder="t('settings.models.sidecar.notConfigured')"
             :empty-text="t('settings.models.sidecar.vision.empty')"
+            :badge-text="t('settings.models.sidecar.capable')"
             :disabled="visionModels.length === 0"
           />
         </div>
@@ -75,6 +76,7 @@
             :models="videoModels"
             :placeholder="t('settings.models.sidecar.notConfigured')"
             :empty-text="t('settings.models.sidecar.video.empty')"
+            :badge-text="t('settings.models.sidecar.capable')"
             :disabled="videoModels.length === 0"
           />
         </div>
@@ -102,6 +104,8 @@ interface ModelOption {
   name: string
   provider: string
   modelName: string
+  /** Backend flag: declared/heuristic capabilities already cover this modality. */
+  modalityCapable?: boolean
 }
 
 const { t } = useI18n()

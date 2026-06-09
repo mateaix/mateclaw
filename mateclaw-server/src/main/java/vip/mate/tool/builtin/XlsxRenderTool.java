@@ -4,6 +4,8 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
+import org.springframework.ai.chat.model.ToolContext;
+import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Component;
 import vip.mate.tool.document.FilenameSanitizer;
 import vip.mate.tool.document.GeneratedFileCache;
@@ -66,7 +68,8 @@ public class XlsxRenderTool {
             @ToolParam(description = "Workbook content in Markdown format (sheets as `# Heading`, tables as `| ... |`)")
             String markdown,
             @ToolParam(description = "Output filename without extension, e.g. 'q1-sales'")
-            String filename) {
+            String filename,
+            @Nullable ToolContext ctx) {
 
         if (markdown == null || markdown.isBlank()) {
             return "错误：markdown 参数为空，无法生成工作簿。";
@@ -79,7 +82,7 @@ public class XlsxRenderTool {
             byte[] bytes = renderer.render(markdown);
             log.info("[XlsxRender] generated {} ({} bytes, {}ms)",
                     displayName, bytes.length, System.currentTimeMillis() - t0);
-            return GeneratedFileLink.resultZh(bytes, displayName, XLSX_MIME, cache, "工作簿");
+            return GeneratedFileLink.resultZh(bytes, displayName, XLSX_MIME, cache, "工作簿", ctx);
         } catch (Exception e) {
             log.error("[XlsxRender] render failed for {}: {}", displayName, e.getMessage(), e);
             return "渲染失败：" + e.getMessage();
@@ -106,7 +109,8 @@ public class XlsxRenderTool {
             @ToolParam(description = "Absolute or workspace-relative path to a markdown file")
             String filePath,
             @ToolParam(description = "Output filename without extension, e.g. 'quarterly-report'")
-            String filename) {
+            String filename,
+            @Nullable ToolContext ctx) {
 
         Resolved input;
         try {
@@ -123,7 +127,7 @@ public class XlsxRenderTool {
             log.info("[XlsxRender] generated {} ({} bytes from {} bytes md, {}ms)",
                     displayName, bytes.length, input.totalBytes(),
                     System.currentTimeMillis() - t0);
-            return GeneratedFileLink.resultEn(bytes, displayName, XLSX_MIME, cache, "Workbook", 1);
+            return GeneratedFileLink.resultEn(bytes, displayName, XLSX_MIME, cache, "Workbook", 1, ctx);
         } catch (Exception e) {
             log.error("[XlsxRender] render failed for {} (source: {}): {}",
                     displayName, input.sources().get(0), e.getMessage(), e);

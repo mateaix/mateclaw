@@ -574,6 +574,11 @@ INSERT INTO mate_tool (id, name, display_name, description, tool_type, bean_name
 VALUES (1000000022, 'PdfRenderTool', 'PDF 渲染', '将 Markdown 渲染为最终交付形态的 .pdf 并返回一次性下载链接。双 backend 自动切换（优先 LibreOffice，不可用时回落到进程内 OpenPDF + Flying Saucer）；通过 YAML frontmatter 控制封面、页眉、页脚。', 'builtin', 'pdfRenderTool', '📄', TRUE, TRUE, NOW(), NOW(), 0)
 ON DUPLICATE KEY UPDATE name=VALUES(name), display_name=VALUES(display_name), description=VALUES(description), tool_type=VALUES(tool_type), bean_name=VALUES(bean_name), icon=VALUES(icon), enabled=VALUES(enabled), builtin=VALUES(builtin), update_time=VALUES(update_time), deleted=VALUES(deleted);
 
+-- 内置工具：代码执行（运行 Agent 临场编写的 python/bash/node 代码）
+INSERT INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
+VALUES (1000000023, 'CodeExecuteTool', '代码执行', '运行 Agent 临场编写的代码片段（python / bash / node）。让只有 SKILL.md 描述、无脚本的技能也能被执行——Agent 按说明生成并运行代码。危险操作会触发审批确认。', 'builtin', 'codeExecuteTool', '🧑‍💻', TRUE, TRUE, NOW(), NOW(), 0)
+ON DUPLICATE KEY UPDATE name=VALUES(name), display_name=VALUES(display_name), description=VALUES(description), tool_type=VALUES(tool_type), bean_name=VALUES(bean_name), icon=VALUES(icon), enabled=VALUES(enabled), builtin=VALUES(builtin), update_time=VALUES(update_time), deleted=VALUES(deleted);
+
 -- 示例 MCP Server：Filesystem（参考 MateClaw 文档中的 mcpServers.filesystem）
 INSERT INTO mate_mcp_server (
     id, name, description, transport, url, headers_json, command, args_json, env_json, cwd,
@@ -1901,7 +1906,7 @@ VALUES (
     1000000001,
     TRUE,
     'all',
-    '["execute_shell_command"]',
+    '["execute_shell_command","execute_code"]',
     '[]',
     TRUE,
     '["/etc","/usr","/bin","/sbin","/boot","/sys","/proc","/dev"]',

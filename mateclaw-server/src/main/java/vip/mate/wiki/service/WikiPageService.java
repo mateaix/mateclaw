@@ -368,6 +368,27 @@ public class WikiPageService {
                 .set(WikiPageEntity::getProfileVersion, profileVersion));
     }
 
+    /**
+     * Reclassify a page in place: set only its pageType (and, when supplied,
+     * its knowledge layer) via a partial update. Content / summary / links are
+     * never touched, so this is safe to run as a bulk backfill after a KB's
+     * pageType profile changes. {@code pageType} is stored lowercase; a null /
+     * blank pageType is ignored. A null layer is left untouched.
+     */
+    public void updatePageType(Long pageId, String pageType, String knowledgeLayer) {
+        if (pageId == null || pageType == null || pageType.isBlank()) {
+            return;
+        }
+        com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<WikiPageEntity> w =
+                new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<WikiPageEntity>()
+                        .eq(WikiPageEntity::getId, pageId)
+                        .set(WikiPageEntity::getPageType, pageType.toLowerCase());
+        if (knowledgeLayer != null && !knowledgeLayer.isBlank()) {
+            w.set(WikiPageEntity::getKnowledgeLayer, knowledgeLayer);
+        }
+        pageMapper.update(null, w);
+    }
+
     /** Set only a page's knowledge layer via a partial update (leaves depends_on untouched). */
     public void setKnowledgeLayer(Long pageId, String knowledgeLayer) {
         if (pageId == null || knowledgeLayer == null) {

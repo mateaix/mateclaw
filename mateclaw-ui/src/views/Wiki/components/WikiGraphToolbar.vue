@@ -29,7 +29,7 @@
       <select :value="typeFilter" class="type-select" @change="emit('update:typeFilter', ($event.target as HTMLSelectElement).value)">
         <option value="">{{ t('wiki.graph.allTypes') }}</option>
         <option v-for="type in availableTypes" :key="type" :value="type">
-          {{ t(`wiki.pageTypes.${type}`, type) }}
+          {{ formatPageTypeLabel(type) }}
         </option>
       </select>
       <button class="btn-icon-sm" :title="t('wiki.graph.resetView')" @click="emit('reset')">
@@ -60,8 +60,10 @@
 
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
+import { useWikiPageType } from '@/composables/useWikiPageType'
 
 const { t } = useI18n()
+const { formatPageTypeLabel } = useWikiPageType()
 
 defineProps<{
   nodeCount: number
