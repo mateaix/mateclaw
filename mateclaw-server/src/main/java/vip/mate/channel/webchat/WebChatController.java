@@ -115,13 +115,13 @@ public class WebChatController {
         }
         final Long resolvedAgentId = agentId;
 
-        String visitorId = request.getVisitorId() != null ? request.getVisitorId() : UUID.randomUUID().toString();
-
         // Optional sessionId lets one visitor hold multiple isolated threads. It is only ever
         // composed into the server-derived conversationId (kept under the key+visitor namespace),
         // never accepted as a raw conversationId — so a caller can't reach another tenant's history.
+        final String visitorId;
         final String effectiveSessionId;
         try {
+            visitorId = normalizeVisitorId(request.getVisitorId());
             effectiveSessionId = normalizeSessionId(request.getSessionId());
         } catch (IllegalArgumentException ex) {
             sendErrorAndComplete(emitter, ex.getMessage());
@@ -156,7 +156,7 @@ public class WebChatController {
                 // 创建或获取会话（workspace 从 agent 获取）
                 var webAgent = agentService.getAgent(resolvedAgentId);
                 Long webWsId = webAgent != null ? webAgent.getWorkspaceId() : 1L;
-                var conv = conversationService.getOrCreateConversation(conversationId, resolvedAgentId, "webchat:" + visitorId, webWsId);
+                var conv = conversationService.getOrCreateConversation(conversationId, resolvedAgentId, webchatUsername(visitorId), webWsId);
 
                 // 保存用户消息
                 conversationService.saveMessage(conversationId, "user", message, List.of());
@@ -296,8 +296,10 @@ public class WebChatController {
         }
         String base = deriveConversationId(apiKey, visitorId, null);
         String prefix = base + ":";
-        List<WebChatSessionView> sessions = conversationService.listConversations("webchat:" + visitorId).stream()
+        String owner = webchatUsername(visitorId);
+        List<WebChatSessionView> sessions = conversationService.listConversations(owner).stream()
                 .filter(c -> c.getConversationId() != null
+                        && owner.equals(c.getUsername())
                         && (c.getConversationId().equals(base) || c.getConversationId().startsWith(prefix)))
                 .map(c -> {
                     String cid = c.getConversationId();
@@ -391,13 +393,61 @@ public class WebChatController {
         return s;
     }
 
+    private static final Pattern VISITOR_ID_PATTERN = Pattern.compile("[A-Za-z0-9_.:\\-]{1,128}");
+
+    /**
+     * 归一化调用方传入的 visitorId：空白 → 新 UUID；非空必须满足白名单字符集，否则抛出。
+     * 限制字符集既防注入/控制字符，也为派生的 conversationId / username 提供可预期的边界。
+     */
+    private String normalizeVisitorId(String raw) {
+        if (raw == null || raw.trim().isEmpty()) {
+            return UUID.randomUUID().toString();
+        }
+        String s = raw.trim();
+        if (!VISITOR_ID_PATTERN.matcher(s).matches()) {
+            throw new IllegalArgumentException(
+                    "Invalid visitorId (allowed: letters, digits, '-', '_', '.', ':', length 1-128)");
+        }
+        return s;
+    }
+
     /**
      * 由服务端拼装 conversationId，始终钳在 key + visitor 命名空间内。
      * 绝不接受调用方传入的裸 conversationId。
+     * <p>conversation_id 列为 VARCHAR(64)；当 visitorId + sessionId 过长导致超出列宽时，
+     * 把可变部分折叠为稳定哈希，保证 id 唯一且有界（否则 INSERT 会在 /stream 处 500）。
      */
-    private String deriveConversationId(String apiKey, String visitorId, String sessionId) {
-        String base = "webchat:" + apiKey.substring(0, Math.min(8, apiKey.length())) + ":" + visitorId;
-        return sessionId != null ? base + ":" + sessionId : base;
+    static String deriveConversationId(String apiKey, String visitorId, String sessionId) {
+        String key8 = apiKey.substring(0, Math.min(8, apiKey.length()));
+        String full = "webchat:" + key8 + ":" + visitorId + (sessionId != null ? ":" + sessionId : "");
+        if (full.length() <= 64) {
+            return full;
+        }
+        return "webchat:" + key8 + ":#"
+                + sha256Hex(visitorId + " " + (sessionId == null ? "" : sessionId)).substring(0, 40);
+    }
+
+    /**
+     * 由 visitorId 派生 username（mate_conversation.username，VARCHAR(64)）。
+     * 同样在超长时折叠为哈希，避免 username 溢出列宽。
+     */
+    static String webchatUsername(String visitorId) {
+        String u = "webchat:" + visitorId;
+        return u.length() <= 64 ? u : "webchat:#" + sha256Hex(visitorId).substring(0, 40);
+    }
+
+    private static String sha256Hex(String s) {
+        try {
+            byte[] d = java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(s.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder(d.length * 2);
+            for (byte b : d) {
+                sb.append(Character.forDigit((b >> 4) & 0xF, 16)).append(Character.forDigit(b & 0xF, 16));
+            }
+            return sb.toString();
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 unavailable", e);
+        }
     }
 
     /**
@@ -407,7 +457,7 @@ public class WebChatController {
      */
     private boolean ownsConversation(String conversationId, String visitorId) {
         ConversationEntity conv = conversationService.findByConversationId(conversationId);
-        return conv != null && ("webchat:" + visitorId).equals(conv.getUsername());
+        return conv != null && webchatUsername(visitorId).equals(conv.getUsername());
     }
 
     /**
