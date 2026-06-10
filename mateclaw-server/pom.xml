@@ -100,7 +100,7 @@
             <scope>runtime</scope>
         </dependency>
 
-<!-- ===== PostgreSQL 驱动（生产环境） ===== -->
+        <!-- ===== PostgreSQL driver (production) ===== -->
         <dependency>
             <groupId>org.postgresql</groupId>
             <artifactId>postgresql</artifactId>

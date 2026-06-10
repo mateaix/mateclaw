@@ -20,7 +20,7 @@ builder-inspect:
 # Docker build targets
 # Convention: -sg suffix = SGCCR (singapore), -gz suffix = CCR (guangzhou)
 
-METACLAW_SERVER_IMAGE_TAG := 1.5.5-SNAPSHOT
+METACLAW_SERVER_IMAGE_TAG := 1.5.6-SNAPSHOT
 MATECLAW_SERVER_SG_IMAGE := sgccr.ccs.tencentyun.com/connor-ai-lab/mateclaw-server:$(METACLAW_SERVER_IMAGE_TAG)
 MATECLAW_SERVER_GZ_IMAGE := ccr.ccs.tencentyun.com/connor-ai-lab/mateclaw-server:$(METACLAW_SERVER_IMAGE_TAG)
 # MATECLAW_SERVER_IMAGE := connor-mateclaw-registry.zeabur.app/mateclaw/mateclaw-server:$(IMAGE_TAG)
