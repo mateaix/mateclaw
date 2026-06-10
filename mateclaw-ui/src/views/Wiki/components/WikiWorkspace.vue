@@ -4,7 +4,7 @@
       :kb="kb"
       :mode="store.workspaceMode"
       :can-manage="canManageWiki"
-      :reading-tab="activeTab === 'graph' ? 'graph' : 'pages'"
+      :reading-tab="readingTab"
       @back="store.backToLibrary()"
       @switch-mode="store.setWorkspaceMode($event)"
       @switch-reading="activeTab = $event"
@@ -113,8 +113,23 @@ const workspace = useWorkspaceStore()
 // the processing-config and transformations tabs are management surfaces.
 const canManageWiki = computed(() => workspace.can('manage:wiki'))
 
-const activeTab = ref('pages')
+// Reading-view surfaces (driven by the header toggle) vs management-only surfaces
+// (driven by the manage-view tab strip). 'raw' and 'hotCache' appear in both: in
+// the reading toggle for read-only viewers, and in the management tab strip for
+// managers — so the union spans every key activeTab can take.
+type ReadingTab = 'pages' | 'graph' | 'raw' | 'hotCache'
+type WikiTab = ReadingTab | 'config' | 'transformations' | 'advanced'
+
+const activeTab = ref<WikiTab>('pages')
 const brokenPanelOpen = ref(false)
+
+// Narrow activeTab to the reading subset for the header toggle's highlight. In
+// browse mode activeTab is always a reading key; the management-only keys map to
+// 'pages' as a harmless default (the toggle isn't rendered in manage mode).
+const readingTab = computed<ReadingTab>(() => {
+  const t = activeTab.value
+  return t === 'graph' || t === 'raw' || t === 'hotCache' ? t : 'pages'
+})
 
 // When a page becomes the currentPage (e.g. via the global wikilink click
 // handler that lands on /wiki?kbId=X&slug=Y), switch the tab to 'pages' so
@@ -128,7 +143,7 @@ watch(() => store.currentPage, (page) => {
 // header's segmented control instead, so it has no tabs here. Entry into manage
 // mode is gated by manage:wiki, but guard here too so a read-only viewer never
 // sees management tabs even if the mode is somehow forced.
-const tabs = computed(() => {
+const tabs = computed<{ key: WikiTab; label: string }[]>(() => {
   if (!canManageWiki.value) return []
   return [
     { key: 'raw', label: t('wiki.sources.tab') },
