@@ -86,6 +86,7 @@ public class ModelCapabilityService {
 
         // ===== Anthropic Claude =====
         // Vision yes (image), native video no — Anthropic's API only accepts images.
+        m.put("claude-fable",  EnumSet.of(Modality.VISION));
         m.put("claude-4.7",    EnumSet.of(Modality.VISION));
         m.put("claude-4.5",    EnumSet.of(Modality.VISION));
         m.put("claude-4",      EnumSet.of(Modality.VISION));
