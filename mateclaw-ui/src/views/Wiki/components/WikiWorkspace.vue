@@ -132,7 +132,7 @@ watch(() => store.currentPage, (page) => {
 const tabs = computed(() => {
   if (!canManageWiki.value) return []
   return [
-    { key: 'raw', label: t('wiki.rawMaterials') },
+    { key: 'raw', label: t('wiki.sources.tab') },
     { key: 'config', label: t('wiki.config') },
     { key: 'transformations', label: t('wiki.transformations.tab') },
     { key: 'advanced', label: t('wiki.adv.tab') },
