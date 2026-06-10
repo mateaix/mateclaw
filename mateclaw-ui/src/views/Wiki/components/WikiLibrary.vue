@@ -66,6 +66,7 @@
           :kb="kb"
           :failed-job-count="kbStats[kb.id]?.failedJobCount || 0"
           @open="$emit('open', $event)"
+          @manage="$emit('manage', $event)"
           @delete="$emit('delete', $event)"
         />
       </div>
@@ -104,6 +105,7 @@ const props = defineProps<{
 
 defineEmits<{
   (e: 'open', id: number): void
+  (e: 'manage', id: number): void
   (e: 'create'): void
   (e: 'delete', kb: WikiKB): void
 }>()

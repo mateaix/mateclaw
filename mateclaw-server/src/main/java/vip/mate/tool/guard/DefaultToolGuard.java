@@ -27,7 +27,8 @@ public class DefaultToolGuard implements ToolGuard {
     private static final Set<String> SHELL_TOOL_NAMES = Set.of(
             "execute_shell_command",
             "shell_execute",
-            "run_command"
+            "run_command",
+            "execute_code"
     );
 
     /** 文件写入类工具 —— 默认需要用户审批 */

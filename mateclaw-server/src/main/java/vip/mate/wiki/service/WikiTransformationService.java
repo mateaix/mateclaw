@@ -112,6 +112,7 @@ public class WikiTransformationService {
         entity.setOutputTarget(normalizeOutputTarget(input.getOutputTarget()));
         entity.setOutputFormat(normalizeOutputFormat(input.getOutputFormat()));
         entity.setOutputSchema(sanitizeOutputSchema(input.getOutputSchema()));
+        entity.setTargetPageType(normalizeTargetPageType(input.getTargetPageType()));
         transformationMapper.insert(entity);
         log.info("[WikiTransformation] created id={} name={} kbId={}",
                 entity.getId(), entity.getName(), entity.getKbId());
@@ -144,6 +145,10 @@ public class WikiTransformationService {
             // Empty string clears the schema; non-blank gets stored after a parse check.
             entity.setOutputSchema(sanitizeOutputSchema(patch.getOutputSchema()));
         }
+        if (patch.getTargetPageType() != null) {
+            // Empty string clears (back to profile fallback); non-blank is stored lowercase.
+            entity.setTargetPageType(normalizeTargetPageType(patch.getTargetPageType()));
+        }
         transformationMapper.updateById(entity);
         return entity;
     }
@@ -156,6 +161,19 @@ public class WikiTransformationService {
             case "page" -> "page";
             default -> "none";
         };
+    }
+
+    /**
+     * Normalise the optional target pageType. Blank / null means "auto" —
+     * stored as {@code null} so the executor falls back to the profile's
+     * {@code fallbackType} at save time. Membership against the KB profile is
+     * NOT validated here: that is deferred to {@code normalizePageType} at
+     * page-save time, so editing a profile never breaks an existing template.
+     */
+    private static String normalizeTargetPageType(String raw) {
+        if (raw == null) return null;
+        String trimmed = raw.trim();
+        return trimmed.isEmpty() ? null : trimmed.toLowerCase();
     }
 
     /** Whitelist incoming outputFormat; unknown / null = "markdown". */

@@ -68,6 +68,7 @@
               >
                 <span class="model-picker__item-name">{{ m.modelName }}</span>
                 <span v-if="m.name && m.name !== m.modelName" class="model-picker__item-alias">{{ m.name }}</span>
+                <span v-if="badgeText && m.modalityCapable" class="model-picker__item-badge">{{ badgeText }}</span>
                 <svg
                   v-if="String(m.id) === String(modelValue)"
                   class="model-picker__check"
@@ -97,6 +98,8 @@ interface ModelOption {
   name?: string
   provider: string
   modelName: string
+  /** When true and `badgeText` is set, the item renders a small capability badge. */
+  modalityCapable?: boolean
 }
 
 const props = withDefaults(defineProps<{
@@ -116,6 +119,8 @@ const props = withDefaults(defineProps<{
   clearable?: boolean
   /** Render trigger in disabled state (no popover, no clear). */
   disabled?: boolean
+  /** When set, items whose `modalityCapable` is true show this short badge label. */
+  badgeText?: string
 }>(), {
   searchable: true,
   clearable: true,
@@ -386,6 +391,17 @@ onBeforeUnmount(() => {
   font-size: 11px;
   color: var(--mc-text-tertiary);
   font-family: inherit;
+}
+.model-picker__item-badge {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-family: inherit;
+  letter-spacing: 0.02em;
+  background: color-mix(in srgb, var(--mc-primary) 12%, transparent);
+  color: var(--mc-primary);
 }
 .model-picker__check {
   flex-shrink: 0;

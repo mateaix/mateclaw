@@ -46,6 +46,10 @@ class AgentBindingServiceCuratorTest {
     @Mock
     private AgentProviderPreferenceMapper providerPreferenceMapper;
     @Mock
+    private vip.mate.agent.binding.repository.AgentWikiKbBindingMapper kbBindingMapper;
+    @Mock
+    private vip.mate.wiki.repository.WikiKnowledgeBaseMapper kbMapper;
+    @Mock
     private SkillRuntimeService skillRuntimeService;
     @Mock
     private AvailableToolService availableToolService;
@@ -73,6 +77,7 @@ class AgentBindingServiceCuratorTest {
     @BeforeEach
     void setUp() {
         service = new AgentBindingService(skillBindingMapper, toolBindingMapper, providerPreferenceMapper,
+                kbBindingMapper, kbMapper,
                 skillRuntimeService, availableToolService, agentMapper, skillMapper, acpSkillBridge);
     }
 

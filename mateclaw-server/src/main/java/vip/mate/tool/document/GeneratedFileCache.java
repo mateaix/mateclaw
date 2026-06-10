@@ -1,8 +1,15 @@
 package vip.mate.tool.document;
 
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.ai.chat.model.ToolContext;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.lang.Nullable;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
+import org.springframework.web.context.request.RequestAttributes;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
+import vip.mate.agent.context.ChatOrigin;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -41,6 +48,19 @@ public class GeneratedFileCache {
     /** Default on-disk location for persisted generated files. */
     public static final Path DEFAULT_STORAGE_DIR = Paths.get("data", "generated-files");
 
+    /** Path prefix under which {@link GeneratedFileController} serves files. */
+    public static final String DOWNLOAD_PATH_PREFIX = "/api/v1/files/generated/";
+
+    /**
+     * Operator-configured public base URL (e.g. {@code https://mateclaw.example.com}).
+     * When set, download links are absolute so they remain usable outside the web
+     * UI — IM messages, copied links, external downloads. Empty by default; the
+     * resolver then falls back to the current request host, and finally to a
+     * relative path.
+     */
+    @Value("${mateclaw.server.public-base-url:}")
+    private String publicBaseUrl;
+
     /** How often the expired-file sweep runs (6 hours). Must be a compile-time
      *  constant for use in {@link Scheduled#fixedDelay()}. */
     private static final long CLEANUP_INTERVAL_MS = 6L * 60 * 60 * 1000;
@@ -61,9 +81,15 @@ public class GeneratedFileCache {
     /**
      * URL pattern for generated files served by {@code GeneratedFileController}.
      * Public so channel adapters and graph nodes share a single source of truth.
+     *
+     * <p>The leading {@code scheme://host} is optional so the pattern matches
+     * both the relative {@code /api/v1/files/generated/{id}} form and the
+     * absolute form minted when {@code mateclaw.server.public-base-url} (or a
+     * resolvable request host) is in play. Matching the whole absolute URL lets
+     * scrubbers replace it cleanly instead of leaving a dangling host fragment.
      */
     public static final Pattern GENERATED_URL_PATTERN =
-            Pattern.compile("/api/v1/files/generated/([a-zA-Z0-9-]+)");
+            Pattern.compile("(?:https?://[^/\\s)\\]]+)?/api/v1/files/generated/([a-zA-Z0-9-]+)");
 
     /**
      * User-visible warning swapped in for a cache-miss URL. Identical
@@ -126,6 +152,61 @@ public class GeneratedFileCache {
         log.debug("Cached generated file id={} filename={} bytes={}", id, filename,
                 bytes != null ? bytes.length : 0);
         return id;
+    }
+
+    /**
+     * Build the download URL for a stored id. Prefers the configured
+     * {@code mateclaw.server.public-base-url}; otherwise derives the host from
+     * the current HTTP request if one is bound to this thread; otherwise returns
+     * a relative path (which the web UI resolves against its own origin).
+     *
+     * <p>Absolute links are what make a download survive leaving the web UI —
+     * a model that echoes the URL as plain text, a user copying the link, or an
+     * IM channel without a dedicated attachment rewriter.
+     */
+    public String downloadUrl(String id) {
+        return downloadUrl(id, null);
+    }
+
+    /**
+     * Build the download URL for a stored id, using the tool-call context to
+     * recover the request host when the call runs on an async/streaming thread.
+     */
+    public String downloadUrl(String id, @Nullable ToolContext ctx) {
+        return resolveBase(ctx) + DOWNLOAD_PATH_PREFIX + id;
+    }
+
+    /** Resolve the base URL prefix (no trailing slash), or "" for a relative link. */
+    private String resolveBase(@Nullable ToolContext ctx) {
+        // 1. Operator-configured public URL wins — it's the canonical external
+        //    host (correct behind a reverse proxy / for IM channels).
+        if (publicBaseUrl != null && !publicBaseUrl.isBlank()) {
+            return stripTrailingSlash(publicBaseUrl.trim());
+        }
+        // 2. Request host captured on the controller thread and carried in the
+        //    ChatOrigin — survives the hop to async/streaming tool threads.
+        if (ctx != null) {
+            String originBase = ChatOrigin.from(ctx).baseUrl();
+            if (originBase != null && !originBase.isBlank()) {
+                return stripTrailingSlash(originBase.trim());
+            }
+        }
+        // 3. Synchronous HTTP fallback: a request may still be bound to this thread.
+        try {
+            RequestAttributes attrs = RequestContextHolder.getRequestAttributes();
+            if (attrs != null) {
+                // Honours X-Forwarded-* when ForwardedHeaderFilter is enabled.
+                return ServletUriComponentsBuilder.fromCurrentContextPath().build().toUriString();
+            }
+        } catch (Exception e) {
+            log.debug("Could not derive request host for download URL: {}", e.toString());
+        }
+        // 4. No host available (cron / IM without config) → relative path.
+        return "";
+    }
+
+    private static String stripTrailingSlash(String s) {
+        return s.endsWith("/") ? s.substring(0, s.length() - 1) : s;
     }
 
     /**

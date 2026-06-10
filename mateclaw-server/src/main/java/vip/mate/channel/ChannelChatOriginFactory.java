@@ -43,7 +43,8 @@ public class ChannelChatOriginFactory {
                 /* channelType       */ message.getChannelType() != null
                                             ? message.getChannelType()
                                             : channel.getChannelType(),
-                /* chatId            */ message.getChatId());
+                /* chatId            */ message.getChatId(),
+                /* baseUrl           */ null);   // IM origins have no request host; rely on public-base-url config
     }
 
     /**

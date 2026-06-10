@@ -137,11 +137,27 @@ public class AnthropicChatModelBuilder implements ChatModelBuilder {
     }
 
     /**
-     * True for any Claude 4.7+ model — the family that drops temperature /
-     * top_p / top_k and exposes the "xhigh" thinking tier between high and max.
+     * Detect the Claude Fable model line (e.g. {@code claude-fable-5}).
+     * Fable is a reasoning-first family that follows the same strict API
+     * contract as Claude 4.7+: temperature / top_p / top_k must be unset
+     * (any non-default value returns HTTP 400) and the "xhigh" adaptive
+     * thinking tier is available. Matching on the {@code claude-fable} token
+     * covers the direct-API id, the OpenRouter-prefixed form
+     * ({@code anthropic/claude-fable-5}), and future {@code claude-fable-N}
+     * revisions without a per-version code change.
+     */
+    static boolean isClaudeFable(String modelName) {
+        if (modelName == null) return false;
+        return modelName.toLowerCase().contains("claude-fable");
+    }
+
+    /**
+     * True for any modern Claude model that drops temperature / top_p / top_k
+     * and exposes the "xhigh" thinking tier between high and max — the Claude
+     * 4.7 / 4.8 generations and the Fable reasoning line.
      */
     static boolean isClaude47OrLater(String modelName) {
-        return isClaude47(modelName) || isClaude48(modelName);
+        return isClaude47(modelName) || isClaude48(modelName) || isClaudeFable(modelName);
     }
 
     AnthropicChatOptions buildAnthropicOptions(ModelConfigEntity runtimeModel) {

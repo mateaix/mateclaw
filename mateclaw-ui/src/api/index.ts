@@ -644,6 +644,14 @@ export const settingsApi = {
     http.put('/settings/sidecar', data),
 }
 
+// ==================== Global outbound proxy ====================
+export const proxyApi = {
+  get: () => http.get('/settings/proxy'),
+  update: (data: { enabled: boolean; url: string; nonProxyHosts?: string }) =>
+    http.put('/settings/proxy', data),
+  test: (url: string) => http.post('/settings/proxy/test', { url }),
+}
+
 // ==================== Workspace ====================
 const encodeFilePath = (filename: string) =>
   filename.split('/').map(encodeURIComponent).join('/')
@@ -871,6 +879,7 @@ export const wikiApi = {
     outputTarget?: 'none' | 'page'
     outputFormat?: 'markdown' | 'json'
     outputSchema?: string | null
+    targetPageType?: string | null
   }) =>
     http.post('/wiki/transformations', data),
   updateTransformation: (id: number, data: {
@@ -883,6 +892,7 @@ export const wikiApi = {
     outputTarget?: 'none' | 'page'
     outputFormat?: 'markdown' | 'json'
     outputSchema?: string | null
+    targetPageType?: string | null
   }) =>
     http.put(`/wiki/transformations/${id}`, data),
   deleteTransformation: (id: number) =>
@@ -913,6 +923,8 @@ export const wikiApi = {
     http.post(`/wiki/knowledge-bases/${kbId}/page-type-profile/validate`, { config }),
   resetPageTypeProfile: (kbId: string | number) =>
     http.post(`/wiki/knowledge-bases/${kbId}/page-type-profile/reset-default`),
+  reclassifyKB: (kbId: string | number, modelId?: string | number | null) =>
+    http.post(`/wiki/knowledge-bases/${kbId}/reclassify`, modelId != null ? { modelId } : {}),
 
   // ---- Agent pageType permissions (REQ-3) ----
   listPageTypePermissions: (kbId: string | number, agentId: string | number) =>
@@ -980,6 +992,12 @@ export const agentBindingApi = {
     http.get(`/agents/${agentId}/provider-preferences`),
   setProviderPreferences: (agentId: string | number, providerIds: string[]) =>
     http.put(`/agents/${agentId}/provider-preferences`, providerIds),
+  // Per-agent knowledge base access scope. Empty array = unrestricted
+  // (agent can reach every KB in its workspace). IDs are kept as strings
+  // for the Snowflake-precision contract.
+  listKbs: (agentId: string | number) => http.get(`/agents/${agentId}/kbs`),
+  setKbs: (agentId: string | number, kbIds: (string | number)[]) =>
+    http.put(`/agents/${agentId}/kbs`, kbIds),
 }
 
 // ==================== Dashboard ====================

@@ -21,7 +21,7 @@
 
     <properties>
         <!-- MateClaw release version shared by all Maven modules. -->
-        <revision>1.5.0</revision>
+        <revision>1.6.0-SNAPSHOT</revision>
 
         <!-- Java -->
         <java.version>21</java.version>

@@ -183,6 +183,7 @@ const statusClass = computed(() => {
   const s = props.server?.lastStatus
   if (s === 'connected') return 'mcp-status-dot--ok'
   if (s === 'error') return 'mcp-status-dot--err'
+  if (s === 'connecting') return 'mcp-status-dot--connecting'
   return 'mcp-status-dot--off'
 })
 
@@ -190,8 +191,13 @@ const hasError = computed(
   () => !isCatalog.value && props.server!.lastStatus === 'error' && !!props.server!.lastError,
 )
 
+const isConnecting = computed(
+  () => !isCatalog.value && props.server!.lastStatus === 'connecting',
+)
+
 const descriptionText = computed(() => {
   if (isCatalog.value) return props.catalogEntry!.description
+  if (isConnecting.value) return t('mcp.status.connecting')
   if (hasError.value) {
     const err = props.server!.lastError
     return err.length > 60 ? err.slice(0, 60) + '…' : err
@@ -299,6 +305,15 @@ function onPrimaryAction() {
   box-shadow: 0 0 4px rgba(239, 68, 68, 0.4);
 }
 .mcp-status-dot--off { background: var(--mc-text-tertiary); opacity: 0.4; }
+.mcp-status-dot--connecting {
+  background: #f59e0b;
+  box-shadow: 0 0 4px rgba(245, 158, 11, 0.5);
+  animation: mcp-dot-pulse 1s ease-in-out infinite;
+}
+@keyframes mcp-dot-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.78); }
+}
 
 .mcp-transport-pill {
   display: inline-flex;

@@ -181,6 +181,10 @@ public class WikiProcessingService {
 
     private final ConcurrentHashMap<Long, ProgressCounter> progressCounters = new ConcurrentHashMap<>();
 
+    /** KBs with a reclassify pass currently running, used to reject concurrent
+     *  re-triggers (which would double LLM spend and race page-type writes). */
+    private final java.util.Set<Long> reclassifyInFlight = ConcurrentHashMap.newKeySet();
+
     /**
      * Process one raw material.
      */
@@ -557,6 +561,119 @@ public class WikiProcessingService {
         }
         log.info("[Wiki] processKB queued {} pending raw material(s) for kbId={}", pending.size(), kbId);
         return pending.size();
+    }
+
+    /**
+     * Re-classify every non-system page in a KB against its current pageType
+     * profile, without touching page content. Used after a profile edit so
+     * existing pages migrate into newly-added types instead of staying frozen
+     * on whatever type the original ingest assigned. Per page this runs one
+     * lightweight classify-only LLM call (title + summary in, a single
+     * page_type out), normalises the answer through the profile, and writes
+     * pageType + knowledge layer via a partial update.
+     *
+     * <p>Runs asynchronously on {@link #WIKI_EXECUTOR}; returns the number of
+     * pages queued. Progress + completion are broadcast on {@link WikiProgressBus}
+     * so the UI can surface it the same way it does ingest progress.
+     *
+     * @param kbId    target KB
+     * @param modelId optional explicit model; {@code null} uses the KB's routed
+     *                CREATE_PAGE model (falling back to the system default)
+     * @return number of pages queued for reclassification
+     */
+    public int reclassifyKB(Long kbId, Long modelId) {
+        if (kbId == null) {
+            throw new IllegalArgumentException("kbId is required");
+        }
+        if (pageTypeProfileService == null) {
+            throw new IllegalStateException("pageType profile service unavailable");
+        }
+        List<WikiPageEntity> pages = pageService.listByKbId(kbId).stream()
+                .filter(p -> !"system".equalsIgnoreCase(String.valueOf(p.getPageType())))
+                .toList();
+        if (pages.isEmpty()) {
+            return 0;
+        }
+
+        // Reject a concurrent re-trigger on the same KB: two parallel passes would
+        // double the LLM spend and race each other's updatePageType writes.
+        if (!reclassifyInFlight.add(kbId)) {
+            throw new IllegalStateException("A reclassification is already running for this knowledge base");
+        }
+
+        final ChatModel chatModel;
+        final String systemPrompt;
+        final String userTemplate;
+        try {
+            // Resolve the classifying model once up front. An explicit modelId wins;
+            // otherwise route as a CREATE_PAGE step, falling back to the default.
+            if (modelId != null && modelRoutingService != null) {
+                chatModel = modelRoutingService.buildChatModel(modelId);
+            } else {
+                chatModel = resolveChatModel(kbId, vip.mate.wiki.job.WikiJobStep.CREATE_PAGE).chatModel;
+            }
+            systemPrompt = PromptLoader.loadPrompt("wiki/classify-page-system")
+                    .replace("{allowed_page_types}", pageTypeProfileService.describeForPrompt(kbId));
+            userTemplate = PromptLoader.loadPrompt("wiki/classify-page-user");
+        } catch (RuntimeException e) {
+            // Setup failed before any async work was queued — release the guard.
+            reclassifyInFlight.remove(kbId);
+            throw e;
+        }
+        final int total = pages.size();
+
+        WIKI_EXECUTOR.submit(() -> {
+            int done = 0;
+            int changed = 0;
+            int failed = 0;
+            try {
+            for (WikiPageEntity page : pages) {
+                done++;
+                try {
+                    String summary = page.getSummary() == null ? "" : page.getSummary();
+                    String userPrompt = userTemplate
+                            .replace("{title}", page.getTitle() == null ? "" : page.getTitle())
+                            .replace("{summary}", summary);
+                    ChatResponse resp = chatModel.call(new Prompt(List.of(
+                            new SystemMessage(systemPrompt), new UserMessage(userPrompt))));
+                    String text = (resp == null || resp.getResult() == null
+                            || resp.getResult().getOutput() == null)
+                            ? null : resp.getResult().getOutput().getText();
+                    String proposed = null;
+                    JsonNode json = parseJsonResponse(text);
+                    if (json != null) {
+                        proposed = json.path("page_type").asText("");
+                    }
+                    // Normalise through the profile: an unknown / blank answer
+                    // downgrades to the profile fallback, never null.
+                    String newType = pageTypeProfileService.normalizePageType(kbId, proposed);
+                    if (newType != null && !newType.isBlank()
+                            && !newType.equalsIgnoreCase(String.valueOf(page.getPageType()))) {
+                        String layer = pageTypeProfileService.resolveLayer(kbId, newType);
+                        pageService.updatePageType(page.getId(), newType, layer);
+                        changed++;
+                    }
+                } catch (Exception e) {
+                    failed++;
+                    log.warn("[Wiki] reclassify failed pageId={} kbId={}: {}",
+                            page.getId(), kbId, e.getMessage());
+                } finally {
+                    progressBus.broadcast(kbId, WikiProgressBus.EVENT_CHUNK_DONE,
+                            java.util.Map.of("kind", "reclassify", "done", done, "total", total));
+                }
+            }
+            log.info("[Wiki] reclassifyKB done kbId={} pages={} changed={} failed={}",
+                    kbId, total, changed, failed);
+            progressBus.broadcast(kbId, WikiProgressBus.EVENT_RAW_COMPLETED,
+                    java.util.Map.of("kind", "reclassify", "done", total, "total", total,
+                            "changed", changed, "failed", failed));
+            } finally {
+                reclassifyInFlight.remove(kbId);
+            }
+        });
+
+        log.info("[Wiki] reclassifyKB queued {} page(s) for kbId={} (modelId={})", total, kbId, modelId);
+        return total;
     }
 
     /**

@@ -344,6 +344,49 @@ public class ToolGuardRuleSeedService implements ApplicationRunner {
                 GuardSeverity.HIGH, GuardCategory.CREDENTIAL_EXPOSURE, "NEEDS_APPROVAL",
                 null, gf("CRED_GITHUB_TOKEN"), 140));
 
+        // === Inline code execution (execute_code) ===
+        // DbRuleGuardian only matches rules whose toolName equals the invoked
+        // tool (or is global). The destructive shell rules above are scoped to
+        // execute_shell_command, so they would never screen code run through
+        // execute_code. Mirror the key patterns for execute_code here, reusing
+        // the shell rules' i18n strings (gn/gf keyed by the SHELL_* ids).
+        rules.add(rule("CODE_RM_RF_ROOT", gn("SHELL_RM_RF_ROOT"), "rm\\s+-(rf|fr)\\s+/\\s*$",
+                GuardSeverity.CRITICAL, GuardCategory.COMMAND_INJECTION, "BLOCK",
+                "execute_code", gf("SHELL_RM_RF_ROOT"), 200));
+        rules.add(rule("CODE_MKFS", gn("SHELL_MKFS"), "mkfs\\b",
+                GuardSeverity.CRITICAL, GuardCategory.COMMAND_INJECTION, "BLOCK",
+                "execute_code", gf("SHELL_MKFS"), 200));
+        rules.add(rule("CODE_DD_DEV", gn("SHELL_DD_DEV"), "dd\\s+if=.+of=/dev/",
+                GuardSeverity.CRITICAL, GuardCategory.COMMAND_INJECTION, "BLOCK",
+                "execute_code", gf("SHELL_DD_DEV"), 200));
+        rules.add(rule("CODE_FORK_BOMB", gn("SHELL_FORK_BOMB"), ":\\(\\)\\s*\\{\\s*:\\|:\\s*&\\s*\\}\\s*;\\s*:",
+                GuardSeverity.CRITICAL, GuardCategory.RESOURCE_ABUSE, "BLOCK",
+                "execute_code", gf("SHELL_FORK_BOMB"), 200));
+        rules.add(rule("CODE_REVERSE_SHELL", gn("SHELL_REVERSE_SHELL"), "(/dev/tcp|\\bnc\\s+-e\\b|\\bncat\\s+-e\\b|\\bsocat\\s+EXEC:)",
+                GuardSeverity.CRITICAL, GuardCategory.NETWORK_ABUSE, "BLOCK",
+                "execute_code", gf("SHELL_REVERSE_SHELL"), 200));
+        rules.add(rule("CODE_CURL_PIPE_SH", gn("SHELL_CURL_PIPE_SH"), "curl.*\\|\\s*(sh|bash|zsh)",
+                GuardSeverity.CRITICAL, GuardCategory.CODE_EXECUTION, "BLOCK",
+                "execute_code", gf("SHELL_CURL_PIPE_SH"), 200));
+        rules.add(rule("CODE_WGET_PIPE_SH", gn("SHELL_WGET_PIPE_SH"), "wget.*\\|\\s*(sh|bash|zsh)",
+                GuardSeverity.CRITICAL, GuardCategory.CODE_EXECUTION, "BLOCK",
+                "execute_code", gf("SHELL_WGET_PIPE_SH"), 200));
+        rules.add(rule("CODE_KILL_INIT", gn("SHELL_KILL_INIT"), "\\bkill\\s+-9\\s+1\\b",
+                GuardSeverity.CRITICAL, GuardCategory.RESOURCE_ABUSE, "BLOCK",
+                "execute_code", gf("SHELL_KILL_INIT"), 200));
+        rules.add(rule("CODE_RM", gn("SHELL_RM"), "(^|[;&|]|\\s)rm\\s",
+                GuardSeverity.HIGH, GuardCategory.COMMAND_INJECTION, "NEEDS_APPROVAL",
+                "execute_code", gf("SHELL_RM"), 150));
+        rules.add(rule("CODE_RM_RF", gn("SHELL_RM_RF"), "rm\\s+-(rf|fr)",
+                GuardSeverity.HIGH, GuardCategory.COMMAND_INJECTION, "NEEDS_APPROVAL",
+                "execute_code", gf("SHELL_RM_RF"), 150));
+        rules.add(rule("CODE_CHMOD_777", gn("SHELL_CHMOD_777"), "chmod\\s+777",
+                GuardSeverity.HIGH, GuardCategory.PRIVILEGE_ESCALATION, "NEEDS_APPROVAL",
+                "execute_code", gf("SHELL_CHMOD_777"), 150));
+        rules.add(rule("CODE_OBFUSCATED_EXEC", gn("SHELL_OBFUSCATED_EXEC"), "base64\\s+-d.*\\|\\s*(bash|sh)",
+                GuardSeverity.HIGH, GuardCategory.CODE_EXECUTION, "NEEDS_APPROVAL",
+                "execute_code", gf("SHELL_OBFUSCATED_EXEC"), 150));
+
         return rules;
     }
 

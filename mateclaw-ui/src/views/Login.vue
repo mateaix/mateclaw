@@ -62,10 +62,12 @@ import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { authApi } from '@/api/index'
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore'
+import { useSystemSettingsStore } from '@/stores/useSystemSettingsStore'
 
 const router = useRouter()
 const { t } = useI18n()
 const workspaceStore = useWorkspaceStore()
+const systemSettingsStore = useSystemSettingsStore()
 const loading = ref(false)
 const showPassword = ref(false)
 const errorMsg = ref('')
@@ -82,6 +84,11 @@ async function handleLogin() {
     localStorage.setItem('userId', String(data.id || '1'))
     localStorage.setItem('username', data.username || form.username)
     localStorage.setItem('role', data.role || 'user')
+    // Now authenticated — load runtime settings (streamEnabled / debugMode) so
+    // the saved preferences take effect on the first turn. The app-boot load()
+    // runs before login and 401s, so without this the chat would fall back to
+    // defaults until the user opened the Settings page.
+    systemSettingsStore.load()
     // Resolve capabilities before deciding the landing route so a viewer
     // lands on /chat (their only capability) and member+ on /dashboard.
     try {

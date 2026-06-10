@@ -13,11 +13,14 @@ import java.io.BufferedReader;
 import java.io.File;
 import java.io.InputStreamReader;
 import java.lang.reflect.Field;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 
 /**
@@ -36,18 +39,28 @@ public class CwdAwareStdioClientTransport extends StdioClientTransport {
 
     private final String cwd;
 
+    /** The child process started by this override's {@link #connect}, retained so
+     *  {@link #closeGracefully()} can terminate it — the parent's private
+     *  {@code process} field is never set by our override and so the parent's
+     *  shutdown would otherwise orphan the child. */
+    private volatile Process startedProcess;
+
+    /** Cooperative-shutdown flag checked by the reader loops, mirroring the
+     *  parent's own {@code isClosing} signal (which our override bypasses). */
+    private volatile boolean closing = false;
+
+    /** I/O threads spawned by {@link #connect}, interrupted on shutdown. */
+    private final List<Thread> ioThreads = new CopyOnWriteArrayList<>();
+
     /** Common Node.js installation paths across platforms */
     private static final String[] NODE_PATH_CANDIDATES = {
         // macOS Homebrew
         "/usr/local/bin",
         "/opt/homebrew/bin",
-        // macOS nvm
+        // nvm (current symlink)
         System.getProperty("user.home") + "/.nvm/current/bin",
         // Linux common
         "/usr/bin",
-        "/usr/local/bin",
-        // Linux nvm
-        System.getProperty("user.home") + "/.nvm/current/bin",
         // Windows common
         System.getenv("APPDATA") != null ? System.getenv("APPDATA") + "\\npm" : "",
         "C:\\Program Files\\nodejs",
@@ -86,18 +99,16 @@ public class CwdAwareStdioClientTransport extends StdioClientTransport {
             log.info("MCP server starting (resilient mode).");
 
             // Wire up the parent's inbound + error sinks so downstream
-            // McpSyncClient message dispatch works unchanged.
-            Sinks.Many<McpSchema.JSONRPCMessage> inboundSink = getPrivateField("inboundSink");
-            Sinks.Many<String> errorSink = getPrivateField("errorSink");
+            // McpSyncClient message dispatch works unchanged. These are required:
+            // if the SDK ever renames them, fail loudly here rather than connecting
+            // a transport whose every call silently times out at 30 s.
+            Sinks.Many<McpSchema.JSONRPCMessage> inboundSink = getRequiredPrivateField("inboundSink");
+            Sinks.Many<String> errorSink = getRequiredPrivateField("errorSink");
 
-            if (inboundSink != null) {
-                inboundSink.asFlux()
-                        .flatMap(msg -> Mono.just(msg).transform(handler))
-                        .subscribe();
-            }
-            if (errorSink != null) {
-                errorSink.asFlux().subscribe(line -> log.info("MCP stdio stderr: {}", line));
-            }
+            inboundSink.asFlux()
+                    .flatMap(msg -> Mono.just(msg).transform(handler))
+                    .subscribe();
+            errorSink.asFlux().subscribe(line -> log.info("MCP stdio stderr: {}", line));
 
             // Build and start the server process (reuses parent's ProcessBuilder hook)
             List<String> fullCommand = new ArrayList<>();
@@ -119,13 +130,15 @@ public class CwdAwareStdioClientTransport extends StdioClientTransport {
                 process.destroy();
                 throw new RuntimeException("MCP process input or output stream is null");
             }
+            // Retain the child so closeGracefully() can terminate it.
+            this.startedProcess = process;
 
             // --- Resilient inbound reader (the key fix) ---
             Thread inboundThread = new Thread(() -> {
                 try (BufferedReader reader = new BufferedReader(
-                        new InputStreamReader(process.getInputStream()))) {
+                        new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
                     String line;
-                    while ((line = reader.readLine()) != null) {
+                    while (!closing && (line = reader.readLine()) != null) {
                         try {
                             McpSchema.JSONRPCMessage message =
                                     McpSchema.deserializeJsonRpcMessage(jsonMapper(), line);
@@ -146,6 +159,7 @@ public class CwdAwareStdioClientTransport extends StdioClientTransport {
                 }
             }, "mcp-inbound-resilient");
             inboundThread.setDaemon(true);
+            ioThreads.add(inboundThread);
             inboundThread.start();
 
             // Outbound writer — delegate to parent infrastructure
@@ -154,9 +168,9 @@ public class CwdAwareStdioClientTransport extends StdioClientTransport {
             // Stderr reader
             Thread errThread = new Thread(() -> {
                 try (BufferedReader errReader = new BufferedReader(
-                        new InputStreamReader(process.getErrorStream()))) {
+                        new InputStreamReader(process.getErrorStream(), StandardCharsets.UTF_8))) {
                     String line;
-                    while ((line = errReader.readLine()) != null) {
+                    while (!closing && (line = errReader.readLine()) != null) {
                         if (errorSink != null) errorSink.tryEmitNext(line);
                     }
                 } catch (Exception e) {
@@ -164,22 +178,35 @@ public class CwdAwareStdioClientTransport extends StdioClientTransport {
                 }
             }, "mcp-stderr");
             errThread.setDaemon(true);
+            ioThreads.add(errThread);
             errThread.start();
 
             log.info("MCP server started (resilient mode).");
         }).subscribeOn(Schedulers.boundedElastic());
     }
 
-    /** Read a private field from the parent {@link StdioClientTransport}. */
+    /**
+     * Read a required private field from the parent {@link StdioClientTransport},
+     * failing loudly if it is missing or null. These fields are load-bearing for
+     * the resilient override; a silent null would yield a transport that connects
+     * but times out on every call, which is undebuggable at default log level.
+     */
     @SuppressWarnings("unchecked")
-    private <T> T getPrivateField(String name) {
+    private <T> T getRequiredPrivateField(String name) {
         try {
             Field field = StdioClientTransport.class.getDeclaredField(name);
             field.setAccessible(true);
-            return (T) field.get(this);
-        } catch (Exception e) {
-            log.debug("Cannot access parent field {}: {}", name, e.getMessage());
-            return null;
+            T value = (T) field.get(this);
+            if (value == null) {
+                throw new IllegalStateException("MCP SDK incompatible: field '" + name
+                        + "' on StdioClientTransport is null; CwdAwareStdioClientTransport"
+                        + " needs updating for this SDK version");
+            }
+            return value;
+        } catch (NoSuchFieldException | IllegalAccessException e) {
+            throw new IllegalStateException("MCP SDK incompatible: cannot access field '" + name
+                    + "' on StdioClientTransport; CwdAwareStdioClientTransport needs"
+                    + " updating for this SDK version", e);
         }
     }
 
@@ -220,7 +247,7 @@ public class CwdAwareStdioClientTransport extends StdioClientTransport {
 
             Thread outThread = new Thread(() -> {
                 try (var writer = new java.io.BufferedWriter(
-                        new java.io.OutputStreamWriter(process.getOutputStream()))) {
+                        new java.io.OutputStreamWriter(process.getOutputStream(), StandardCharsets.UTF_8))) {
                     outboundSink.asFlux().subscribe(message -> {
                         try {
                             String json = jsonMapper().writeValueAsString(message);
@@ -239,10 +266,45 @@ public class CwdAwareStdioClientTransport extends StdioClientTransport {
                 }
             }, "mcp-outbound-resilient");
             outThread.setDaemon(true);
+            ioThreads.add(outThread);
             outThread.start();
         } catch (Exception e) {
             log.warn("Cannot wire outbound sink: {}", e.getMessage());
         }
+    }
+
+    /**
+     * Terminate the child process and the I/O threads this override spawned.
+     *
+     * <p>The parent's {@code closeGracefully()} only acts on its private
+     * {@code process} field, which our {@link #connect} never assigns — so the
+     * parent alone would log "Process not started" and leave the child running,
+     * its readers blocked on {@code readLine()} and the outbound thread parked on
+     * {@code waitFor()}. Here we destroy the process we actually started, then
+     * delegate to the parent for any remaining sink/scheduler cleanup.
+     */
+    @Override
+    public Mono<Void> closeGracefully() {
+        closing = true;
+        return Mono.<Void>fromRunnable(() -> {
+            Process p = this.startedProcess;
+            if (p != null && p.isAlive()) {
+                p.destroy();
+                try {
+                    if (!p.waitFor(2, TimeUnit.SECONDS)) {
+                        p.destroyForcibly();
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    p.destroyForcibly();
+                }
+            }
+            for (Thread t : ioThreads) {
+                t.interrupt();
+            }
+            ioThreads.clear();
+        }).subscribeOn(Schedulers.boundedElastic())
+          .then(Mono.defer(super::closeGracefully));
     }
 
     @Override
