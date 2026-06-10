@@ -1,22 +1,44 @@
 <template>
   <div class="wiki-workspace">
-    <WikiWorkspaceHeader :kb="kb" @back="store.backToLibrary()" />
+    <WikiWorkspaceHeader
+      :kb="kb"
+      :mode="store.workspaceMode"
+      :can-manage="canManageWiki"
+      :reading-tab="activeTab === 'graph' ? 'graph' : 'pages'"
+      @back="store.backToLibrary()"
+      @switch-mode="store.setWorkspaceMode($event)"
+      @switch-reading="activeTab = $event"
+    />
 
     <!--
-      Broken-link banner — surfaces lint state across every tab so the user
-      can trigger a scan or view results from any browsing context. Pinned
-      between the header and the tab layout so it's the first thing they see
-      after entering the KB.
+      Broken-link banner — surfaces lint state so the user can trigger a scan
+      or view results. Only shown in the reading (browse) view; the management
+      view is config/raw surfaces where page-lint state isn't relevant.
     -->
-    <WikiBrokenLinksBanner @view="brokenPanelOpen = true" />
-    <WikiBrokenLinksPanel :open="brokenPanelOpen" @close="brokenPanelOpen = false" />
+    <template v-if="store.workspaceMode === 'browse'">
+      <WikiBrokenLinksBanner @view="brokenPanelOpen = true" />
+      <WikiBrokenLinksPanel :open="brokenPanelOpen" @close="brokenPanelOpen = false" />
+    </template>
 
     <div class="wiki-layout">
-      <WikiPageSidebar @open-page="onOpenPage" />
+      <!--
+        Page directory tree — reading-view navigation for the page viewer only.
+        Hidden on the graph (the graph is its own navigation) and in manage
+        mode, so the content area spans full width in both.
+      -->
+      <WikiPageSidebar
+        v-if="store.workspaceMode === 'browse' && activeTab === 'pages'"
+        @open-page="onOpenPage"
+      />
 
       <div class="wiki-content mc-surface-card">
         <div class="wiki-content-body">
-          <div class="content-tabs">
+          <!--
+            Tab strip is the management-view navigation only. In the reading
+            view the page/graph switch lives in the header (segmented control),
+            so no tab strip here.
+          -->
+          <div v-if="store.workspaceMode === 'manage'" class="content-tabs">
             <button
               v-for="tab in tabs" :key="tab.key"
               class="tab-btn" :class="{ active: activeTab === tab.key }"
@@ -92,35 +114,39 @@ const workspace = useWorkspaceStore()
 // the processing-config and transformations tabs are management surfaces.
 const canManageWiki = computed(() => workspace.can('manage:wiki'))
 
-const activeTab = ref('raw')
+const activeTab = ref('pages')
 const brokenPanelOpen = ref(false)
 
 // When a page becomes the currentPage (e.g. via the global wikilink click
 // handler that lands on /wiki?kbId=X&slug=Y), switch the tab to 'pages' so
-// the viewer is the thing the user sees. Without this, the workspace stays
-// on the default 'raw' tab and the page silently loads off-screen.
+// the viewer is the thing the user sees. Only meaningful in the reading view —
+// the management view has no 'pages' tab.
 watch(() => store.currentPage, (page) => {
-  if (page) activeTab.value = 'pages'
+  if (page && store.workspaceMode === 'browse') activeTab.value = 'pages'
 })
 
+// Management-view tab strip. The reading view (page + graph) is driven by the
+// header's segmented control instead, so it has no tabs here. Entry into manage
+// mode is gated by manage:wiki, but guard here too so a read-only viewer never
+// sees management tabs even if the mode is somehow forced.
 const tabs = computed(() => {
-  const list = [
+  if (!canManageWiki.value) return []
+  return [
     { key: 'raw', label: t('wiki.rawMaterials') },
-    { key: 'pages', label: t('wiki.pages') },
-    { key: 'graph', label: t('wiki.graph.tab') },
+    { key: 'config', label: t('wiki.config') },
+    { key: 'transformations', label: t('wiki.transformations.tab') },
+    { key: 'advanced', label: t('wiki.adv.tab') },
+    { key: 'hotCache', label: t('wiki.hotCache.tab') },
   ]
-  if (canManageWiki.value) {
-    list.push({ key: 'config', label: t('wiki.config') })
-    list.push({ key: 'transformations', label: t('wiki.transformations.tab') })
-    list.push({ key: 'advanced', label: t('wiki.adv.tab') })
-  }
-  list.push({ key: 'hotCache', label: t('wiki.hotCache.tab') })
-  return list
 })
 
-// When the user picks a different KB from the library, snap back to the
-// raw-materials tab so they don't land on stale state from the previous KB.
-watch(() => store.currentKB?.id, () => { activeTab.value = 'raw' })
+// Snap to each view's default tab whenever the KB or the view mode changes, so
+// the user never lands on a stale tab (or one that doesn't exist in this mode).
+watch(
+  () => [store.currentKB?.id, store.workspaceMode],
+  () => { activeTab.value = store.workspaceMode === 'manage' ? 'raw' : 'pages' },
+  { immediate: true },
+)
 
 async function onOpenPage(slug: string) {
   if (!store.currentKB) return
