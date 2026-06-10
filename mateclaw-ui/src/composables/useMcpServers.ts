@@ -64,6 +64,35 @@ export function useMcpServers() {
     return list.slice(start, start + size)
   }
 
+  // Connecting to an MCP server now runs asynchronously on the backend: the
+  // create/toggle/update call returns immediately with status "connecting".
+  // Poll a few times so the card updates to connected/error without the user
+  // hitting "refresh" manually. Stops early once nothing is still connecting.
+  // Poll long enough to outlast a slow/failing connect: the SSE/HTTP connect
+  // can take up to connectTimeout + readTimeout (default 30s+30s) before it
+  // resolves to error, so a short window would leave the card stuck on
+  // "connecting" until a manual refresh. ~40s with a gentle 2s cadence covers
+  // the common case; it also early-exits as soon as nothing is connecting.
+  let pollTimer: ReturnType<typeof setTimeout> | null = null
+  function pollConnectingStatus(rounds = 20, intervalMs = 2000) {
+    if (pollTimer) {
+      clearTimeout(pollTimer)
+      pollTimer = null
+    }
+    let n = 0
+    const tick = async () => {
+      n += 1
+      await reload()
+      const stillConnecting = installed.value.some(s => s.lastStatus === 'connecting')
+      if (stillConnecting && n < rounds) {
+        pollTimer = setTimeout(tick, intervalMs)
+      } else {
+        pollTimer = null
+      }
+    }
+    pollTimer = setTimeout(tick, intervalMs)
+  }
+
   const pagedInstalled = computed(() =>
     paginate(filteredInstalled.value, installedPage.value, pageSize.value),
   )
@@ -110,6 +139,12 @@ export function useMcpServers() {
         mcToast.success(t('mcp.messages.createSuccess'))
       }
       await reload()
+      // Enabled servers connect in the background — tell the user and poll for
+      // the result instead of leaving the card stuck on "connecting".
+      if (form.enabled) {
+        mcToast.info(t('mcp.messages.connecting'))
+        pollConnectingStatus()
+      }
       return true
     } catch (e: any) {
       mcToast.error(e?.message || t('mcp.messages.saveFailed'))
@@ -130,10 +165,16 @@ export function useMcpServers() {
   }
 
   async function toggleServer(server: McpServer) {
+    const enabling = !server.enabled
     try {
-      await mcpApi.toggle(server.id, !server.enabled)
+      await mcpApi.toggle(server.id, enabling)
       mcToast.success(t('mcp.messages.toggleSuccess'))
       await reload()
+      // Enabling connects in the background — poll until it settles.
+      if (enabling) {
+        mcToast.info(t('mcp.messages.connecting'))
+        pollConnectingStatus()
+      }
     } catch (e: any) {
       mcToast.error(e?.message || t('mcp.messages.saveFailed'))
     }

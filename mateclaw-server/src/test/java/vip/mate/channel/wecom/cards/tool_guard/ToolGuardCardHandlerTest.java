@@ -130,8 +130,8 @@ class ToolGuardCardHandlerTest {
     }
 
     @Test
-    @DisplayName("system-owned pending allows ANY clicker (no original requester)")
-    void systemPendingAcceptsAnyClicker() {
+    @DisplayName("system-owned pending rejects a group clicker (fail-closed → admin console)")
+    void systemPendingRejectsGroupClicker() {
         PendingApproval pending = pendingFor("pid_sys", "system", "shell_exec");
         when(approvalService.getPending("pid_sys")).thenReturn(Optional.of(pending));
 
@@ -139,7 +139,11 @@ class ToolGuardCardHandlerTest {
                 ToolGuardButtonKey.Action.APPROVE, "pid_sys", "shell_exec", "MEDIUM"));
         handler.handle(adapter, frame, tce(frame), fromBlock("anyone"));
 
-        verify(adapter).injectSyntheticMessage(any(ChannelMessage.class));
+        // A "system"/cron-owned approval has no human requester to match the
+        // clicker against, so a group button click is rejected (fail-closed) and
+        // never injected for execution — these resolve through the admin console.
+        verify(adapter, never()).injectSyntheticMessage(any(ChannelMessage.class));
+        verify(adapter).updateTemplateCard(eq("evt_req_5"), any());
     }
 
     @Test

@@ -125,11 +125,19 @@ public class MultimodalRouter {
     }
 
     /**
-     * Resolve the configured sidecar model for a modality. Returns null when:
+     * Resolve the configured sidecar model for a modality. Returns null only when:
      *   - the setting is empty / blank;
-     *   - the referenced row no longer exists or has been disabled;
-     *   - the row's resolved capability set does not actually contain the modality.
+     *   - the referenced row no longer exists or has been disabled.
      * The caller treats null as "ask the user to configure one."
+     * <p>
+     * An explicit sidecar selection is treated as the user's own capability
+     * declaration: a provider-compatible model can be vision-capable in practice
+     * even when the built-in heuristics don't recognize its name and it carries no
+     * declared {@code modalities}. Rejecting such a model here made it impossible to
+     * use a perfectly good compatible-mode vision model as the sidecar. We therefore
+     * honour the explicit choice and only emit a diagnostic when the heuristics
+     * can't confirm it — a wrong pick degrades gracefully (the caption call fails and
+     * the attachment is reported as un-processed) rather than being silently ignored.
      */
     private ModelConfigEntity resolveSidecar(Modality modality) {
         SystemSettingsDTO settings = systemSettingService.getSettings();
@@ -148,9 +156,9 @@ public class MultimodalRouter {
         }
         if (model == null || !Boolean.TRUE.equals(model.getEnabled())) return null;
         if (!capabilityService.supports(model.getModelName(), model.getModalities(), modality)) {
-            log.warn("Configured sidecar model {}/{} does not actually support {} — ignoring",
-                    model.getProvider(), model.getModelName(), modality);
-            return null;
+            log.info("Configured sidecar model {}/{} is not recognized as {}-capable by the "
+                            + "built-in heuristics; honouring the explicit selection anyway",
+                    model.getProvider(), model.getModelName(), modality.name().toLowerCase());
         }
         return model;
     }

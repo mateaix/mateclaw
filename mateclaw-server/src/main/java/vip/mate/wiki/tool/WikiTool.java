@@ -91,6 +91,12 @@ public class WikiTool {
     @Autowired(required = false)
     private ApprovalWorkflowService approvalWorkflowService;
 
+    /** Optional. Classifies an agent-authored page against the KB's pageType
+     *  profile fallback so it lands inside the KB classification rather than
+     *  as an untyped page. Absent in lightweight contexts — page stays untyped. */
+    @Autowired(required = false)
+    private vip.mate.wiki.profile.WikiPageTypeProfileService pageTypeProfileService;
+
     /**
      * Per-agent pageType permission gate. Mandatory: this is a security control,
      * so it is a required constructor dependency rather than an optional bean —
@@ -489,8 +495,13 @@ public class WikiTool {
         }
 
         String summary = content.length() > 200 ? content.substring(0, 200) + "..." : content;
-        WikiPageEntity page = pageService.createPage(kbId, slug, title, content, summary, null);
-        log.info("[WikiTool] Created page: {} (slug={}, kbId={})", title, slug, kbId);
+        // Classify into the KB profile's fallbackType so an agent-authored page
+        // joins the KB classification instead of being stored untyped.
+        String pageType = pageTypeProfileService == null
+                ? null
+                : pageTypeProfileService.normalizePageType(kbId, null);
+        WikiPageEntity page = pageService.createPage(kbId, slug, title, content, summary, null, pageType);
+        log.info("[WikiTool] Created page: {} (slug={}, kbId={}, type={})", title, slug, kbId, pageType);
 
         return JSONUtil.createObj()
                 .set("ok", true)

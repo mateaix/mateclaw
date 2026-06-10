@@ -96,6 +96,74 @@ public class PlanGenerationNode implements NodeAction {
             - 多部分、多阶段、需要逐步推进的目标走(C)；真正单一原子动作走(B)；只有简单一问一答才用(A)。
             """;
 
+    /**
+     * Evidence gate — action signals in the USER GOAL. When triage returns
+     * direct_answer (A) but the goal contains any of these, the model almost
+     * certainly mis-routed a tool-requiring task; accepting the direct answer
+     * would end the turn without ever executing a tool ("复杂任务不执行就停止").
+     * <p>
+     * The gate is deliberately biased toward executing: a false positive only
+     * costs one extra executor pass (which still produces the answer, with or
+     * without tools), whereas a false negative silently drops the whole task.
+     * Intentionally excludes very common bare temporal words (现在/当前/最新)
+     * to avoid downgrading genuine knowledge Q&A on every occurrence.
+     */
+    private static final java.util.regex.Pattern GOAL_REQUIRES_EXECUTION = java.util.regex.Pattern.compile(
+            "读取|读一下|读一份|打开文件|查一下|检索|搜索|联网|下载|上传|抓取"
+            + "|记住|记一下|录入|保存|写入|存储|更新|删除|新建|创建|生成|画一[张幅]|画个"
+            + "|运行|执行|调用|跑一下|发送|发给|安排|提醒|预约"
+            + "|我的(记忆|文件|知识库|偏好|笔记|日程|目标)"
+            + "|你(现在|目前)?(挂载|加载|有哪些|支持哪些)|挂载了哪些|你的(技能|工具|MCP|插件)"
+            + "|帮我(做|改|查|建|写|发|跑|算|订|定|生成|整理|安排)"
+            + "|\\.(java|py|ts|js|vue|md|json|ya?ml|sql|csv|xml|txt|sh)\\b",
+            java.util.regex.Pattern.CASE_INSENSITIVE);
+
+    /**
+     * Evidence gate — execution-promise phrasing in the direct answer itself.
+     * The model says it WILL act ("我先去读取…", "接下来调用…") rather than
+     * actually answering, which means the "direct answer" is really a plan
+     * preamble that would terminate before the action runs. Scoped to a verb
+     * whitelist so a normal narrative opener like "我来介绍一下杭州" is NOT caught.
+     */
+    private static final java.util.regex.Pattern ANSWER_PROMISES_ACTION = java.util.regex.Pattern.compile(
+            "(我(先|这就|马上|稍后|接下来|现在)?(去|来)?|让我(先|来)?|接下来(我)?(会|要|将|需要)?|正在)"
+            + "(读取|读一下|查一下|查询|检索|搜索|联网|调用|执行|运行|获取|访问|查看一下"
+            + "|保存|记住|记录|写入|录入|创建|新建|生成|下载|上传|发送)");
+
+    /**
+     * Returns true when a triage {@code direct_answer} (A) should be overridden
+     * and routed through the executor as a single-step plan instead. Package-
+     * private and side-effect free so the gate's regex behavior is unit-testable
+     * without mocking the whole node.
+     *
+     * @param goal         the user goal
+     * @param directAnswer the answer the triage model produced (may be null)
+     */
+    static boolean shouldOverrideDirectAnswer(String goal, String directAnswer) {
+        String userAsk = stripInjectedContext(goal);
+        boolean goalNeedsExecution = userAsk != null && GOAL_REQUIRES_EXECUTION.matcher(userAsk).find();
+        boolean answerPromisesAction = directAnswer != null && ANSWER_PROMISES_ACTION.matcher(directAnswer).find();
+        return goalNeedsExecution || answerPromisesAction;
+    }
+
+    /**
+     * Strips the injected {@code <memory-context>…</memory-context>} wrapper that
+     * RuntimeContextInjector prepends to every goal, returning just the user's
+     * actual ask. Without this the gate matches on the injected memory/profile
+     * text (which contains filenames like {@code user.md} and memory keywords),
+     * firing on essentially every task and defeating the direct-answer fast path.
+     */
+    static String stripInjectedContext(String goal) {
+        if (goal == null) {
+            return null;
+        }
+        int end = goal.lastIndexOf("</memory-context>");
+        if (end >= 0) {
+            return goal.substring(end + "</memory-context>".length()).trim();
+        }
+        return goal;
+    }
+
     public PlanGenerationNode(ChatModel chatModel, PlanningService planningService,
                               NodeStreamingChatHelper streamingHelper,
                               ConversationWindowManager conversationWindowManager,
@@ -250,6 +318,31 @@ public class PlanGenerationNode implements NodeAction {
                 // Category (A): direct answer — push to client and terminate via DirectAnswerNode.
                 String directAnswer = triage != null && triage.directAnswer() != null
                         ? triage.directAnswer() : llmResponse;
+
+                // Evidence gate: catch a mis-routed A that actually needs tools.
+                // Downgrading to a single-step plan keeps tool access; the cost of
+                // a false positive is one extra executor pass, while a missed
+                // misroute drops the whole task silently.
+                if (shouldOverrideDirectAnswer(goal, directAnswer)) {
+                    log.warn("[PlanGeneration] Evidence gate overrode direct-answer route; "
+                            + "downgrading to single-step plan so tools can execute (goal: {})",
+                            goal.length() > 60 ? goal.substring(0, 60) + "..." : goal);
+                    List<String> gatedSteps = List.of(goal);
+                    var gatedPlan = planningService.createPlan(agentId, goal, gatedSteps);
+                    events.add(GraphEventPublisher.planCreated(gatedPlan.getId(), gatedSteps));
+                    return PlanStateAccessor.output()
+                            .needsPlanning(true)
+                            .planId(gatedPlan.getId())
+                            .planSteps(gatedSteps)
+                            .planValid(true)
+                            .currentStepIndex(0)
+                            .currentPhase("plan_generated")
+                            .thinkingStreamed(!result.thinking().isEmpty())
+                            .mergeUsage(state, result)
+                            .events(events)
+                            .build();
+                }
+
                 log.info("[PlanGeneration] Direct-answer route taken (no tools, no planning)");
 
                 streamingHelper.broadcastContent(conversationId, directAnswer);

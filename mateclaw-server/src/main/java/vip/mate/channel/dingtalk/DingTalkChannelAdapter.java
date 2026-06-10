@@ -707,7 +707,7 @@ public class DingTalkChannelAdapter extends AbstractChannelAdapter implements St
     }
 
     private static final java.util.regex.Pattern GENERATED_URL_PATTERN =
-            java.util.regex.Pattern.compile("/api/v1/files/generated/([a-zA-Z0-9-]+)");
+            java.util.regex.Pattern.compile("(?:https?://[^/\\s)\\]]+)?/api/v1/files/generated/([a-zA-Z0-9-]+)");
 
     private static boolean isImageMime(String mimeType) {
         return mimeType != null && mimeType.toLowerCase().startsWith("image/");

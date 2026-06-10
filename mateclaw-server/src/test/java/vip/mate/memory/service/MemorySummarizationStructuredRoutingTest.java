@@ -36,12 +36,13 @@ class MemorySummarizationStructuredRoutingTest {
                 structured);
     }
 
-    private void invokeApply(MemorySummarizationService svc, long agentId, String entriesJson) throws Exception {
+    private void invokeApply(MemorySummarizationService svc, long agentId, String ownerKey, String entriesJson)
+            throws Exception {
         JsonNode node = mapper.readTree(entriesJson);
         Method m = MemorySummarizationService.class
-                .getDeclaredMethod("applyStructuredEntries", Long.class, JsonNode.class);
+                .getDeclaredMethod("applyStructuredEntries", Long.class, JsonNode.class, String.class);
         m.setAccessible(true);
-        m.invoke(svc, agentId, node);
+        m.invoke(svc, agentId, node, ownerKey);
     }
 
     @Test
@@ -50,15 +51,15 @@ class MemorySummarizationStructuredRoutingTest {
         StructuredMemoryService structured = mock(StructuredMemoryService.class);
         MemorySummarizationService svc = newService(structured);
 
-        invokeApply(svc, 1000000001L, """
+        invokeApply(svc, 1000000001L, "owner-1", """
                 [
                   {"type": "project", "key": "project_codename", "content": "项目代号：云梯计划"},
                   {"type": "user", "key": "preferred_output_format", "content": "偏好表格输出"}
                 ]
                 """);
 
-        verify(structured).remember(1000000001L, "project", "project_codename", "项目代号：云梯计划", "auto-summary");
-        verify(structured).remember(1000000001L, "user", "preferred_output_format", "偏好表格输出", "auto-summary");
+        verify(structured).remember(1000000001L, "project", "project_codename", "项目代号：云梯计划", "auto-summary", "owner-1");
+        verify(structured).remember(1000000001L, "user", "preferred_output_format", "偏好表格输出", "auto-summary", "owner-1");
         verifyNoMoreInteractions(structured);
     }
 
@@ -68,7 +69,7 @@ class MemorySummarizationStructuredRoutingTest {
         StructuredMemoryService structured = mock(StructuredMemoryService.class);
         MemorySummarizationService svc = newService(structured);
 
-        invokeApply(svc, 1000000001L, """
+        invokeApply(svc, 1000000001L, "owner-1", """
                 [
                   {"type": "secret", "key": "k", "content": "bad type"},
                   {"type": "project", "key": "", "content": "missing key"},
@@ -78,7 +79,7 @@ class MemorySummarizationStructuredRoutingTest {
                 """);
 
         // Only the last, fully-valid entry is written.
-        verify(structured).remember(1000000001L, "project", "good", "kept", "auto-summary");
+        verify(structured).remember(1000000001L, "project", "good", "kept", "auto-summary", "owner-1");
         verifyNoMoreInteractions(structured);
     }
 
@@ -88,9 +89,9 @@ class MemorySummarizationStructuredRoutingTest {
         StructuredMemoryService structured = mock(StructuredMemoryService.class);
         MemorySummarizationService svc = newService(structured);
 
-        invokeApply(svc, 1000000001L, "null");
-        invokeApply(svc, 1000000001L, "\"not-an-array\"");
-        invokeApply(svc, 1000000001L, "[]");
+        invokeApply(svc, 1000000001L, "owner-1", "null");
+        invokeApply(svc, 1000000001L, "owner-1", "\"not-an-array\"");
+        invokeApply(svc, 1000000001L, "owner-1", "[]");
 
         verifyNoInteractions(structured);
     }

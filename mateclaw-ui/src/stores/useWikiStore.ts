@@ -76,6 +76,20 @@ export interface WikiPageRef {
   archived: boolean
 }
 
+/**
+ * Parsed view of a KB's pageType profile, derived from the GET
+ * page-type-profile endpoint's `config` JSON. `order` preserves the profile's
+ * declared pageType ordering (the JSON object key order); `labels` maps each
+ * pageType to its display label. Consumed by the sidebar grouping, graph
+ * colouring and the transformation editor's target-type dropdown so all of
+ * them follow the KB's own classification instead of a hard-coded list.
+ */
+export interface WikiPageTypeProfile {
+  fallbackType: string
+  order: string[]
+  labels: Record<string, string>
+}
+
 /** Per-page row in a broken-links report. */
 export interface WikiBrokenLinkPage {
   // Snowflake — stay as string end-to-end.
@@ -112,6 +126,11 @@ export interface WikiLintJob {
 export const useWikiStore = defineStore('wiki', () => {
   const knowledgeBases = ref<WikiKB[]>([])
   const currentKB = ref<WikiKB | null>(null)
+  // Which face of an opened KB to show: 'browse' = reading surfaces (pages +
+  // graph), 'manage' = build/config surfaces (raw materials, config,
+  // transformations, advanced, hot cache). Both views share the data loaded by
+  // selectKB, so switching between them is a flag flip with no refetch.
+  const workspaceMode = ref<'browse' | 'manage'>('browse')
   const rawMaterials = ref<WikiRawMaterial[]>([])
   const pages = ref<WikiPage[]>([])
   const currentPage = ref<WikiPage | null>(null)
@@ -120,6 +139,11 @@ export const useWikiStore = defineStore('wiki', () => {
   // Raw material filter state
   const selectedRawId = ref<number | null>(null)
   const totalPageCount = ref(0)
+
+  // Active KB's pageType profile (parsed). Loaded alongside the KB so sidebar
+  // grouping, graph colouring and the transformation editor can render the
+  // KB's own classification. Null until a KB is selected / its profile loads.
+  const pageTypeProfile = ref<WikiPageTypeProfile | null>(null)
 
   // Wikilink resolution index — kept separate from `pages` because (a) it must
   // survive the raw-material filter, and (b) the viewer's postprocess needs an
@@ -153,7 +177,8 @@ export const useWikiStore = defineStore('wiki', () => {
     }
   }
 
-  async function selectKB(id: number) {
+  async function selectKB(id: number, mode: 'browse' | 'manage' = 'browse') {
+    workspaceMode.value = mode
     const res: any = await wikiApi.getKB(id)
     currentKB.value = res.data || res
     // pageRefs refresh in parallel with materials + pages — the viewer needs
@@ -169,7 +194,38 @@ export const useWikiStore = defineStore('wiki', () => {
       fetchPages(id),
       fetchPageRefs(id),
       loadBrokenLinksReport(id),
+      loadPageTypeProfile(id),
     ])
+  }
+
+  /**
+   * Load + parse the KB's pageType profile into {@link pageTypeProfile}. The
+   * endpoint returns `config` as a JSON string (built-in default when the KB
+   * has no custom profile); we extract the declared type order, labels and
+   * fallbackType. Failures degrade to a null profile — consumers then fall
+   * back to i18n labels / hash colouring rather than breaking the view.
+   */
+  async function loadPageTypeProfile(kbId: number) {
+    try {
+      const res: any = await wikiApi.getPageTypeProfile(kbId)
+      const payload = res.data ?? res
+      const cfg = JSON.parse(payload.config || '{}')
+      const types = cfg.pageTypes && typeof cfg.pageTypes === 'object' ? cfg.pageTypes : {}
+      const order = Object.keys(types)
+      const labels: Record<string, string> = {}
+      for (const key of order) {
+        const def = types[key]
+        labels[key] = (def && typeof def.label === 'string' && def.label) || key
+      }
+      pageTypeProfile.value = {
+        fallbackType: typeof cfg.fallbackType === 'string' ? cfg.fallbackType : 'concept',
+        order,
+        labels,
+      }
+    } catch (e) {
+      console.error('[Wiki] Failed to load pageType profile', e)
+      pageTypeProfile.value = null
+    }
   }
 
   async function createKB(data: { name: string; description?: string; agentId?: number }) {
@@ -189,9 +245,16 @@ export const useWikiStore = defineStore('wiki', () => {
     }
   }
 
+  // Switch between reading/management faces of an already-open KB without
+  // refetching — both share the data selectKB already loaded.
+  function setWorkspaceMode(mode: 'browse' | 'manage') {
+    workspaceMode.value = mode
+  }
+
   function backToLibrary() {
     currentKB.value = null
     currentPage.value = null
+    workspaceMode.value = 'browse'
     rawMaterials.value = []
     pages.value = []
     pageRefs.value = []
@@ -201,6 +264,7 @@ export const useWikiStore = defineStore('wiki', () => {
     if (brokenLinksPollTimer) { clearInterval(brokenLinksPollTimer); brokenLinksPollTimer = null }
     brokenLinksLoading.value = false
     selectedRawId.value = null
+    pageTypeProfile.value = null
   }
 
   async function fetchRawMaterials(kbId: number) {
@@ -326,6 +390,7 @@ export const useWikiStore = defineStore('wiki', () => {
       // Keep refs in lockstep with the rest of the KB state so a freshly
       // created page is immediately resolvable by the viewer.
       fetchPageRefs(kbId),
+      loadPageTypeProfile(kbId),
     ])
     const nextKB = (kbRes as any).data || kbRes
     currentKB.value = nextKB
@@ -388,12 +453,14 @@ export const useWikiStore = defineStore('wiki', () => {
   return {
     knowledgeBases,
     currentKB,
+    workspaceMode,
     rawMaterials,
     pages,
     currentPage,
     loading,
     selectedRawId,
     totalPageCount,
+    pageTypeProfile,
     pageRefs,
     archivedPageRefs,
     brokenLinksReport,
@@ -403,6 +470,7 @@ export const useWikiStore = defineStore('wiki', () => {
     selectKB,
     createKB,
     deleteKB,
+    setWorkspaceMode,
     backToLibrary,
     fetchRawMaterials,
     fetchPages,
@@ -410,6 +478,7 @@ export const useWikiStore = defineStore('wiki', () => {
     fetchArchivedPageRefs,
     loadBrokenLinksReport,
     startBrokenLinksScan,
+    loadPageTypeProfile,
     refreshCurrentKB,
     filterPagesByRaw,
     clearRawFilter,

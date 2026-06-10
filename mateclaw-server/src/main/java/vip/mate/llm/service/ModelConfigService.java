@@ -11,6 +11,7 @@ import vip.mate.llm.event.ModelConfigChangedEvent;
 import vip.mate.llm.model.ModelConfigEntity;
 import vip.mate.llm.repository.ModelConfigMapper;
 
+import java.util.Comparator;
 import java.util.List;
 import org.springframework.context.ApplicationEventPublisher;
 
@@ -73,9 +74,18 @@ public class ModelConfigService {
 
     /**
      * Optional modality filter (case-insensitive: {@code "vision" / "video" / "audio"}).
-     * When non-null, only enabled rows whose resolved capability set contains the
-     * requested modality survive — used by the multimodal sidecar settings UI to
-     * populate "default vision model" / "default video model" dropdowns.
+     * Used by the multimodal sidecar settings UI to populate "default vision model" /
+     * "default video model" dropdowns.
+     * <p>
+     * The filter does <b>not</b> hide models the built-in heuristics fail to recognize:
+     * a provider-compatible model (e.g. a DashScope OpenAI-compatible vision model with
+     * a custom name) is vision-capable in practice even though its name matches no
+     * built-in prefix and it carries no declared {@code modalities}. Hard-filtering
+     * those out left them un-selectable as a sidecar. Instead every <em>enabled</em>
+     * chat model is returned; each row's transient {@link ModelConfigEntity#getModalityCapable()}
+     * flag records whether its declared / heuristic capabilities already cover the
+     * requested modality, and known-capable rows are sorted to the top so the UI can
+     * highlight them while still letting the user pick any model.
      */
     public List<ModelConfigEntity> listByType(String modelType, String modality) {
         List<ModelConfigEntity> rows;
@@ -100,7 +110,12 @@ public class ModelConfigService {
         }
         return rows.stream()
                 .filter(m -> Boolean.TRUE.equals(m.getEnabled()))
-                .filter(m -> modelCapabilityService.supports(m.getModelName(), m.getModalities(), required))
+                .peek(m -> m.setModalityCapable(
+                        modelCapabilityService.supports(m.getModelName(), m.getModalities(), required)))
+                // Known-capable models first; preserve the existing default-then-name
+                // order within each group.
+                .sorted(Comparator.comparing(
+                        (ModelConfigEntity m) -> Boolean.TRUE.equals(m.getModalityCapable())).reversed())
                 .toList();
     }
 

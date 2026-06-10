@@ -58,6 +58,12 @@ public class WikiTransformationExecutor {
     @Autowired(required = false)
     private WikiPageService pageService;
 
+    /** Optional. When wired, a run saved as a page is classified against the
+     *  KB's pageType profile (template target type, else the profile fallback)
+     *  instead of a hard-coded type that sits outside every profile. */
+    @Autowired(required = false)
+    private vip.mate.wiki.profile.WikiPageTypeProfileService pageTypeProfileService;
+
     /** Optional. When wired, every persisted synthesis page is embedded so
      *  the semantic retriever can surface it on terms that exist only in the
      *  transformation output (not in any source raw's chunks). */
@@ -628,12 +634,13 @@ public class WikiTransformationExecutor {
         String title = template.getTitle() + " · " + safeTitle(raw);
         String summary = deriveSummary(output);
         String sourceRawIdsJson = toJsonArray(raw.getId());
+        String pageType = resolvePageType(kbId, template);
 
         WikiPageEntity existing = pageService.getBySlug(kbId, slug);
         WikiPageEntity persisted;
         if (existing == null) {
             persisted = pageService.createPage(kbId, slug, title, output, summary,
-                    sourceRawIdsJson, "synthesis");
+                    sourceRawIdsJson, pageType);
             log.info("[WikiTransformation] saved run={} as new page slug={} pageId={}",
                     run.getId(), slug, persisted.getId());
         } else {
@@ -685,6 +692,19 @@ public class WikiTransformationExecutor {
             java.util.regex.Pattern.compile(
                     "\\.(pdf|docx?|pptx?|xlsx?|csv|tsv|txt|md|markdown|rtf|odt|epub|html?|json|xml|yaml|yml|jpe?g|png|gif|bmp|tiff?|webp|svg|mp3|wav|mp4|mov|webm)$",
                     java.util.regex.Pattern.CASE_INSENSITIVE);
+
+    /**
+     * Classify the saved page against the KB's pageType profile: use the
+     * template's declared target type, normalised (an unknown / blank type is
+     * downgraded to the profile's fallbackType). Falls back to the legacy
+     * {@code "synthesis"} only when the profile service is not wired.
+     */
+    private String resolvePageType(Long kbId, WikiTransformationEntity template) {
+        if (pageTypeProfileService == null) {
+            return "synthesis";
+        }
+        return pageTypeProfileService.normalizePageType(kbId, template.getTargetPageType());
+    }
 
     private static String buildSlug(WikiTransformationEntity template, WikiRawMaterialEntity raw) {
         String trimmedTitle = stripFileExtension(raw.getTitle());

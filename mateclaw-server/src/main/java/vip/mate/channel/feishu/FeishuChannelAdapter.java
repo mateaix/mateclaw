@@ -88,18 +88,6 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
     private final Set<String> processedMessageIds = ConcurrentHashMap.newKeySet();
 
     /**
-     * 跨 adapter 全局去重：同一 app_id 的多个渠道实例共享此映射。
-     * <p>飞书 WS 长连接会把消息广播给同一 app 的所有活跃连接，当多个 adapter 使用相同
-     * app_id（例如同一个 bot 配置了多个渠道）时，每个 adapter 都会收到同一条消息。
-     * 全局去重确保一条消息只被一个 adapter 处理。
-     * <p>Key: app_id；Value: 已处理的 message_id 集合（大小超过 {@link #GLOBAL_DEDUP_MAX} 时半数淘汰）。
-     */
-    private static final ConcurrentHashMap<String, Set<String>> GLOBAL_PROCESSED_IDS_BY_APP =
-            new ConcurrentHashMap<>();
-
-    private static final int GLOBAL_DEDUP_MAX = 10_000;
-
-    /**
      * 群内 bot 别名缓存：chatId → 学到的别名集合（openId / unionId / userId / name）。
      * <p>飞书 SDK 投递的 mention 里，bot 的标识可能是群内自定义别名（{@code ou_357e...} / 自定义名称），
      * 而不是 {@code /bot/v3/info} 返回的全局 openId / app_name。我们在双投递场景下
@@ -107,18 +95,25 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
      */
     private final ConcurrentHashMap<String, Set<String>> chatBotAliases = new ConcurrentHashMap<>();
 
+    /** Max learned aliases retained per chat, to bound memory on busy groups. */
+    private static final int CHAT_ALIAS_MAX = 64;
+
     /**
      * Per-messageId mention tracker（带 TTL）。
      * <p>飞书 SDK 经常对同一条消息双投递：一份 mentions 含 bot 的<em>全局身份</em>（来自 /bot/v3/info），
-     * 另一份含 bot 的<em>群内别名</em>。我们累积同一 messageId 下所有投递看到的 mention 标识，
-     * 一旦其中任何一份被识别为 @bot，就把累积的全部标识写入 {@link #chatBotAliases}。
+     * 另一份含 bot 的<em>群内别名</em>。我们累积同一 messageId 下<em>单 mention</em>投递看到的标识，
+     * 一旦其中任何一份被识别为 @bot，就把累积的标识写入 {@link #chatBotAliases}。
+     * <p>只累积单 mention 投递是有意为之：多 mention 投递（如 {@code @bot @某人}）会把 bot 与
+     * 被同时 @ 的人混在一起，无法区分，若整体学习会把人误学成 bot 别名，导致之后 @ 该人的消息
+     * 被误判为 @bot。而飞书双投递里 bot 别名那一份本身就是单 mention，所以这样既安全又不丢功能。
      */
     private final ConcurrentHashMap<String, MentionTrack> mentionTracker = new ConcurrentHashMap<>();
 
     /** mention tracker 条目 TTL（60s 远大于双投递的真实间隔，几个 ms 级别）。 */
     private static final long MENTION_TRACK_TTL_MS = 60_000L;
 
-    private static final class MentionTrack {
+    /** Package-private for testing. */
+    static final class MentionTrack {
         final Set<String> seenIds = ConcurrentHashMap.newKeySet();
         final long createdAtMs = System.currentTimeMillis();
         volatile boolean matched = false;
@@ -721,22 +716,15 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
      */
     private boolean detectBotMentionWithLearning(com.lark.oapi.service.im.v1.model.MentionEvent[] mentions,
                                                  String chatId, String messageId) {
+        return detectBotMentionWithLearning(mentions, chatId, messageId, getBotOpenId(), botName);
+    }
+
+    /** Package-private for testing: 纯有状态核心，bot 身份由调用方显式传入（避免触发 /bot/v3/info HTTP）。 */
+    boolean detectBotMentionWithLearning(com.lark.oapi.service.im.v1.model.MentionEvent[] mentions,
+                                         String chatId, String messageId,
+                                         String botOpenId, String botName) {
         if (mentions == null || mentions.length == 0) {
             return false;
-        }
-        if (log.isDebugEnabled()) {
-            StringBuilder sb = new StringBuilder("[");
-            for (int i = 0; i < mentions.length; i++) {
-                var m = mentions[i];
-                if (i > 0) sb.append(", ");
-                var mid = m.getId();
-                sb.append("{name=").append(m.getName())
-                  .append(", openId=").append(mid != null ? mid.getOpenId() : "null")
-                  .append(", key=").append(m.getKey()).append("}");
-            }
-            sb.append("]");
-            log.debug("[feishu] mention detection: messageId={}, botOpenId={}, botName={}, mentions={}",
-                    messageId, getBotOpenId(), botName, sb);
         }
 
         cleanupMentionTracker();
@@ -746,13 +734,17 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
         MentionTrack track = null;
         if (messageId != null) {
             track = mentionTracker.computeIfAbsent(messageId, k -> new MentionTrack());
-            collectMentionIdentifiers(mentions, track.seenIds);
+            // Only single-mention deliveries are unambiguous bot identities. A
+            // multi-mention delivery (e.g. @bot @alice) mixes the bot with
+            // co-mentioned humans that must NOT be learned as aliases; Feishu's
+            // dual-delivery alias form is itself a single mention, so this is safe.
+            if (mentions.length == 1) {
+                collectMentionIdentifiers(mentions, track.seenIds);
+            }
         }
 
-        String botOid = getBotOpenId();
-
         // 1. 直接匹配 bot 的全局身份
-        if (eventMentionsContainBot(mentions, botOid, botName)) {
+        if (eventMentionsContainBot(mentions, botOpenId, botName)) {
             learnFromTrack(chatId, track);
             if (track != null) track.matched = true;
             return true;
@@ -782,6 +774,7 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
     private void learnFromTrack(String chatId, MentionTrack track) {
         if (chatId == null || track == null || track.seenIds.isEmpty()) return;
         Set<String> aliases = chatBotAliases.computeIfAbsent(chatId, k -> ConcurrentHashMap.newKeySet());
+        if (aliases.size() >= CHAT_ALIAS_MAX) return;
         int before = aliases.size();
         aliases.addAll(track.seenIds);
         int added = aliases.size() - before;
@@ -792,8 +785,13 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
     }
 
     private void cleanupMentionTracker() {
-        long cutoff = System.currentTimeMillis() - MENTION_TRACK_TTL_MS;
-        mentionTracker.entrySet().removeIf(e -> e.getValue().createdAtMs < cutoff);
+        evictStaleTracks(mentionTracker, System.currentTimeMillis(), MENTION_TRACK_TTL_MS);
+    }
+
+    /** Package-private for testing: 按 TTL 淘汰 mention tracker 中的过期项（{@code nowMs} 显式传入便于测试）。 */
+    static void evictStaleTracks(Map<String, MentionTrack> tracker, long nowMs, long ttlMs) {
+        long cutoff = nowMs - ttlMs;
+        tracker.entrySet().removeIf(e -> e.getValue().createdAtMs < cutoff);
     }
 
     private boolean isBotMentionedInWebhookMessage(Map<String, Object> message) {
@@ -802,7 +800,7 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
         return webhookMentionsContainBot(list, getBotOpenId());
     }
 
-    /** Package-private for testing: 判断 SDK mentions 数组中是否包含指定 bot */
+    /** Package-private for testing: 判断 SDK mentions 数组中是否包含指定 bot（按 openId / unionId / userId / name 命中） */
     static boolean eventMentionsContainBot(com.lark.oapi.service.im.v1.model.MentionEvent[] mentions,
                                            String botOpenId, String botName) {
         if (mentions == null || mentions.length == 0) return false;
@@ -1132,45 +1130,16 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
         // prompt only exposes the file name (not its path) to the model — so if this id does
         // not match, ReadFileTool / DocumentExtractTool cannot find the cached file.
         String shortSuffix = generateShortSessionSuffix(chatId, senderOpenId, isGroup);
+        // 群会话改用完整 chatId，但存量旧会话仍在 legacy 后缀下：读时别名回退，
+        // 让升级前已存在的群沿用旧 conversationId 延续，不重写存量行。
+        if (isGroup && chatId != null) {
+            shortSuffix = resolveGroupSessionSuffix(chatId);
+        }
         String conversationId = buildConversationId(shortSuffix, senderOpenId, isGroup);
 
         String stagedUploadPath = null;
         if (isFileMessage) {
             stagedUploadPath = cacheRecentFile(messageId, messageType, contentStr, conversationId);
-        }
-
-        // allowed_chat_ids 过滤：同一 bot 多个渠道时，按 chatId 分流。
-        // 过滤在 dedup 之前，保证被过滤掉的消息不会占用 dedup 槽位，
-        // 让负责该 chat 的其他 adapter 仍能正常处理。
-        // p2p 消息（chatId=null）始终通过，不受 allowed_chat_ids 约束。
-        String allowedChatIdsConf = getConfigString("allowed_chat_ids", null);
-        if (allowedChatIdsConf != null && !allowedChatIdsConf.isBlank() && chatId != null) {
-            boolean allowed = java.util.Arrays.stream(allowedChatIdsConf.split(","))
-                    .map(String::trim).anyMatch(chatId::equals);
-            if (!allowed) {
-                log.debug("[feishu] Chat {} not in allowed_chat_ids, skipping messageId={}", chatId, messageId);
-                return;
-            }
-        }
-
-        // 实例级消息去重（处理 SDK 双投递和重连回放）
-        if (messageId != null && !processedMessageIds.add(messageId)) {
-            log.info("[feishu] Duplicate message_id (instance dedup): {}, skipping", messageId);
-            return;
-        }
-        cleanupProcessedIds();
-
-        // 跨 adapter 全局去重：同一 app_id 的多个渠道实例共享，防止同一条消息被多个 adapter 重复处理。
-        // 在实例级 dedup 之后，确保通过实例级 dedup 的事件只有一个 adapter 继续处理。
-        String appId = getConfigString("app_id", "");
-        if (messageId != null && !appId.isEmpty()) {
-            Set<String> globalIds = GLOBAL_PROCESSED_IDS_BY_APP.computeIfAbsent(
-                    appId, k -> ConcurrentHashMap.newKeySet());
-            if (!globalIds.add(messageId)) {
-                log.info("[feishu] Duplicate message_id (cross-adapter dedup): {}, skipping", messageId);
-                return;
-            }
-            cleanupGlobalProcessedIds(appId, globalIds);
         }
 
         // require_mention 群聊过滤：群聊中必须 @机器人才响应。
@@ -1628,9 +1597,14 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
 
     /**
      * 生成会话标识后缀。
-     * - 群聊：直接使用完整 chat_id（全局唯一，不含 app_id，避免同一群在多 bot 场景下
-     *   因 app_id 不同而分裂成多条会话，导致前端时而可见时而不可见）
-     * - 私聊：使用完整 sender open_id
+     * <ul>
+     *   <li>群聊：直接使用完整 {@code chatId}（全局唯一）。旧实现用 {@code {appId后4}_{chatId后8}}
+     *       截断后缀，不同群的 {@code chatId} 后 8 位可能相同 → 会话串台。改用完整 chatId 消除碰撞。
+     *       存量旧会话不重写，由 {@link #resolveGroupSessionSuffix} 做读时别名回退。</li>
+     *   <li>私聊：保持原状（取 {@code openId} 后 12 位）。注意私聊路径下该后缀实际不参与
+     *       conversationId——{@link #buildConversationId} 对 DM 直接用完整 {@code senderOpenId}，
+     *       故私聊会话 ID 不受本次改动影响。</li>
+     * </ul>
      */
     private String generateShortSessionSuffix(String chatId, String openId, boolean isGroup) {
         if (isGroup && chatId != null) {
@@ -1643,6 +1617,49 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
             return chatId;
         }
         return null;
+    }
+
+    /**
+     * 旧群会话后缀算法：{@code {appId后4}_{chatId后8}}。仅用于读时别名回退——
+     * 在不重写存量行的前提下，让升级前已存在的群会话沿用旧 conversationId 无缝延续。
+     */
+    // Package-private for testing.
+    String legacyGroupSuffix(String chatId) {
+        if (chatId == null) return null;
+        String appId = getConfigString("app_id", "");
+        String appSuffix = appId.length() >= 4 ? appId.substring(appId.length() - 4) : appId;
+        String chatSuffix = chatId.length() >= 8 ? chatId.substring(chatId.length() - 8) : chatId;
+        return appSuffix + "_" + chatSuffix;
+    }
+
+    /**
+     * 群会话后缀的读时别名回退（不重写存量）：
+     * <ul>
+     *   <li>新群（两个 key 都无会话）→ 用完整 chatId 的 canonical key；</li>
+     *   <li>已迁移群（canonical key 已有会话）→ 用 canonical；</li>
+     *   <li>存量群（canonical 无、legacy 有）→ 沿用 legacy key，历史无缝延续。</li>
+     * </ul>
+     */
+    // Package-private for testing.
+    String resolveGroupSessionSuffix(String chatId) {
+        String canonical = chatId;
+        String legacy = legacyGroupSuffix(chatId);
+        if (legacy == null || legacy.equals(canonical)) return canonical;
+        boolean canonicalExists = messageRouter.conversationExists(CHANNEL_TYPE + ":" + canonical);
+        boolean legacyExists = !canonicalExists
+                && messageRouter.conversationExists(CHANNEL_TYPE + ":" + legacy);
+        String picked = pickGroupSessionSuffix(canonical, legacy, canonicalExists, legacyExists);
+        if (picked.equals(legacy)) {
+            log.info("[feishu] Reusing legacy group session id for chat={} (read-time alias, no migration write)", chatId);
+        }
+        return picked;
+    }
+
+    /** Package-private for testing: 纯选择逻辑——存量 legacy 会话存在且尚未迁移时沿用 legacy，否则用 canonical。 */
+    static String pickGroupSessionSuffix(String canonical, String legacy,
+                                         boolean canonicalExists, boolean legacyExists) {
+        if (!canonicalExists && legacyExists) return legacy;
+        return canonical;
     }
 
     /**
@@ -1715,6 +1732,7 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
             }
 
             if (fileKey == null) return null;
+
             // Download file bytes
             DownloadedResource dl = "image".equals(messageType)
                     ? maybeDownloadImage(messageId, fileKey)

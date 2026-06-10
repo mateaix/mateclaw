@@ -4,6 +4,8 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
+import org.springframework.ai.chat.model.ToolContext;
+import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Component;
 import vip.mate.tool.document.FilenameSanitizer;
 import vip.mate.tool.document.GeneratedFileCache;
@@ -70,7 +72,8 @@ public class DocxRenderTool {
             @ToolParam(description = "Output filename without extension, e.g. 'monthly-report'")
             String filename,
             @ToolParam(description = "Page size: A4 or LETTER (default: A4)", required = false)
-            String pageSize) {
+            String pageSize,
+            @Nullable ToolContext ctx) {
 
         if (markdown == null || markdown.isBlank()) {
             return "错误：markdown 参数为空，无法生成文档。";
@@ -84,7 +87,7 @@ public class DocxRenderTool {
             byte[] bytes = renderer.render(markdown, size);
             log.info("[DocxRender] generated {} ({} bytes, {}ms)",
                     displayName, bytes.length, System.currentTimeMillis() - t0);
-            return GeneratedFileLink.resultZh(bytes, displayName, DOCX_MIME, cache, "文档");
+            return GeneratedFileLink.resultZh(bytes, displayName, DOCX_MIME, cache, "文档", ctx);
         } catch (Exception e) {
             log.error("[DocxRender] render failed for {}: {}", displayName, e.getMessage(), e);
             return "渲染失败：" + e.getMessage();
@@ -132,7 +135,8 @@ public class DocxRenderTool {
             @ToolParam(description = "Output filename without extension, e.g. 'monthly-report'")
             String filename,
             @ToolParam(description = "Page size: A4 or LETTER (default: A4)", required = false)
-            String pageSize) {
+            String pageSize,
+            @Nullable ToolContext ctx) {
 
         Resolved input;
         try {
@@ -149,7 +153,7 @@ public class DocxRenderTool {
             byte[] bytes = renderer.render(input.markdown(), size);
             log.info("[DocxRender] generated {} ({} bytes from {} bytes md, {}ms)",
                     displayName, bytes.length, input.totalBytes(), System.currentTimeMillis() - t0);
-            return GeneratedFileLink.resultEn(bytes, displayName, DOCX_MIME, cache, "Document", 1);
+            return GeneratedFileLink.resultEn(bytes, displayName, DOCX_MIME, cache, "Document", 1, ctx);
         } catch (Exception e) {
             log.error("[DocxRender] render failed for {} (source: {}): {}",
                     displayName, input.sources().get(0), e.getMessage(), e);
@@ -191,7 +195,8 @@ public class DocxRenderTool {
             @ToolParam(description = "Output filename without extension, e.g. 'quarterly-report'")
             String filename,
             @ToolParam(description = "Page size: A4 or LETTER (default: A4)", required = false)
-            String pageSize) {
+            String pageSize,
+            @Nullable ToolContext ctx) {
 
         Resolved input;
         try {
@@ -210,7 +215,7 @@ public class DocxRenderTool {
                     displayName, bytes.length, input.fileCount(), input.totalBytes(),
                     System.currentTimeMillis() - t0);
             return GeneratedFileLink.resultEn(bytes, displayName, DOCX_MIME, cache,
-                    "Document", input.fileCount());
+                    "Document", input.fileCount(), ctx);
         } catch (Exception e) {
             log.error("[DocxRender] render failed for {} (sources: {}): {}",
                     displayName, input.sources(), e.getMessage(), e);

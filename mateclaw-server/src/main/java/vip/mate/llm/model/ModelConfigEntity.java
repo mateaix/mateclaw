@@ -77,6 +77,16 @@ public class ModelConfigEntity {
      */
     private String modalities;
 
+    /**
+     * Transient, request-scoped flag set by {@link vip.mate.llm.service.ModelConfigService#listByType}
+     * when a modality filter is supplied: {@code true} when this row's declared or
+     * heuristically-resolved capabilities cover the requested modality. Lets the
+     * sidecar selector list every enabled chat model while still highlighting the
+     * ones already known to support the modality. Never persisted.
+     */
+    @TableField(exist = false)
+    private Boolean modalityCapable;
+
     @TableField(fill = FieldFill.INSERT)
     private LocalDateTime createTime;
 
