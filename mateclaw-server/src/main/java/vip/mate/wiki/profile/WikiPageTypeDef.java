@@ -1,5 +1,6 @@
 package vip.mate.wiki.profile;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import lombok.Data;
 
@@ -47,6 +48,14 @@ public class WikiPageTypeDef {
         private String instructions;
         /** Optional template key referenced by the create stage. */
         private String template;
+
+        /** Allows plain-string shorthand: {@code "create": "text"} in addition to the object form. */
+        @JsonCreator
+        public static StageInstructions of(String instructions) {
+            StageInstructions s = new StageInstructions();
+            s.instructions = instructions;
+            return s;
+        }
     }
 
     @Data
