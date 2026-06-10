@@ -383,6 +383,17 @@ public class WikiKnowledgeBaseService {
         kbMapper.updateById(entity);
     }
 
+    /** Toggle per-KB auto-sync (the periodic source-watcher scan). */
+    @Transactional
+    public void updateWatcherEnabled(Long id, boolean enabled) {
+        WikiKnowledgeBaseEntity entity = kbMapper.selectById(id);
+        if (entity == null) {
+            throw new IllegalArgumentException("Knowledge base not found: " + id);
+        }
+        entity.setWatcherEnabled(enabled ? 1 : 0);
+        kbMapper.updateById(entity);
+    }
+
     @Transactional
     public void decrementRawCount(Long kbId) {
         WikiKnowledgeBaseEntity entity = kbMapper.selectById(kbId);

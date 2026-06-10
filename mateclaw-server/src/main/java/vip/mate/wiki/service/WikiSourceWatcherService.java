@@ -63,6 +63,12 @@ public class WikiSourceWatcherService {
     public int runScanCycle() {
         int totalAdded = 0;
         for (WikiKnowledgeBaseEntity kb : kbService.listAll()) {
+            // Per-KB opt-in: the global master switch (checked in scheduledScan)
+            // gates the scheduler at all; this flag gates each KB. AND semantics —
+            // a KB is auto-scanned only when both are on. Manual scans bypass this.
+            if (kb.getWatcherEnabled() == null || kb.getWatcherEnabled() != 1) {
+                continue;
+            }
             vip.mate.wiki.source.WikiIngestSourceProvider provider = providerFor(kb);
             if (provider == null) {
                 continue;
