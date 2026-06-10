@@ -111,6 +111,23 @@ class WikiPageTypeProfileServiceTest {
     }
 
     @Test
+    void stageInstruction_plainStringFormat_isAccepted() {
+        WikiPageTypeProfileEntity row = new WikiPageTypeProfileEntity();
+        row.setKbId(1L);
+        row.setEnabled(1);
+        // create / merge / route supplied as plain strings (legacy shorthand)
+        row.setConfigJson("{\"pageTypes\":{\"concept\":{"
+                + "\"create\":\"正文必须包含以下部分：概述\","
+                + "\"merge\":\"合并同名主体\","
+                + "\"route\":\"仅当明确是概念时路由\"}}}");
+        when(mapper.selectOne(any())).thenReturn(row);
+
+        assertTrue(service.stageInstruction(1L, "concept", "create").contains("概述"));
+        assertTrue(service.stageInstruction(1L, "concept", "merge").contains("合并"));
+        assertTrue(service.stageInstruction(1L, "concept", "route").contains("概念"));
+    }
+
+    @Test
     void stageInstructionAndTemplate_areResolvedPerType() {
         WikiPageTypeProfileEntity row = new WikiPageTypeProfileEntity();
         row.setKbId(1L);
