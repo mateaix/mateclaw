@@ -4,6 +4,9 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Component;
+import vip.mate.agent.context.ChatOrigin;
+import vip.mate.agent.context.ChatOriginHolder;
+import vip.mate.memory.identity.MemoryOwnerResolver;
 import vip.mate.workspace.conversation.ConversationService;
 
 /**
@@ -32,6 +35,7 @@ public class ConversationCompletionPublisher {
 
     private final ApplicationEventPublisher eventPublisher;
     private final ConversationService conversationService;
+    private final MemoryOwnerResolver memoryOwnerResolver;
 
     /**
      * Publish a {@link ConversationCompletedEvent} for the given turn.
@@ -51,6 +55,43 @@ public class ConversationCompletionPublisher {
                         String userMessage,
                         String assistantReply,
                         String source) {
+        // Best-effort owner resolution from the request-scoped origin holder.
+        // Reliable for callers that publish on the same thread the origin was
+        // captured on (IM router, talk mode, cron). Web entry points publish
+        // from a reactive completion callback after the holder is cleared, so
+        // they MUST use the explicit overload below to stay consistent with the
+        // read path's owner key.
+        publish(agentId, conversationId, userMessage, assistantReply, source,
+                memoryOwnerResolver.resolve(ChatOriginHolder.get()));
+    }
+
+    /**
+     * Publish, attributing the memory write to the owner resolved from an
+     * explicit {@link ChatOrigin}. Use from entry points (IM channels, talk
+     * mode) that publish after the request-scoped origin holder is cleared, so
+     * the write owner matches the read path's owner for the same turn.
+     */
+    public void publishForOrigin(Long agentId,
+                                 String conversationId,
+                                 String userMessage,
+                                 String assistantReply,
+                                 String source,
+                                 ChatOrigin origin) {
+        publish(agentId, conversationId, userMessage, assistantReply, source,
+                memoryOwnerResolver.resolve(origin));
+    }
+
+    /**
+     * Publish with an explicit {@code ownerKey}. Use this from entry points
+     * where the request-scoped origin is no longer on the current thread, so
+     * the memory write is attributed to the same owner the read path recalls.
+     */
+    public void publish(Long agentId,
+                        String conversationId,
+                        String userMessage,
+                        String assistantReply,
+                        String source,
+                        String ownerKey) {
         if (agentId == null || conversationId == null || conversationId.isBlank()) {
             return;
         }
@@ -62,7 +103,8 @@ public class ConversationCompletionPublisher {
                     userMessage != null ? userMessage : "",
                     assistantReply != null ? assistantReply : "",
                     messageCount,
-                    source != null ? source : "unknown"));
+                    source != null ? source : "unknown",
+                    ownerKey));
         } catch (Exception e) {
             log.debug("[Memory] Failed to publish ConversationCompletedEvent (source={}, conv={}): {}",
                     source, conversationId, e.getMessage());

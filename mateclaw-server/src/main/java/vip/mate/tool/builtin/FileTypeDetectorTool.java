@@ -3,8 +3,10 @@ package vip.mate.tool.builtin;
 import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
+import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Component;
 
 import java.io.BufferedReader;
@@ -12,7 +14,6 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -41,13 +42,28 @@ public class FileTypeDetectorTool {
         注意：对于 .docx/.pdf 等文档，不会返回 read_file，而是 extract_document_text
         """)
     public String detect_file_type(
-            @ToolParam(description = "文件的绝对路径或相对路径") String filePath) {
+            @ToolParam(description = "文件的绝对路径或相对路径") String filePath,
+            // RFC-063r §2.5: hidden from LLM by JsonSchemaGenerator. Carries the
+            // ChatOrigin so the workspace boundary check honors per-agent basePath.
+            @Nullable ToolContext ctx) {
 
         JSONObject result = new JSONObject();
         result.set("filePath", filePath);
 
         try {
-            Path path = Paths.get(filePath).toAbsolutePath().normalize();
+            Path path;
+            try {
+                path = vip.mate.tool.guard.WorkspacePathGuard.validatePath(filePath, ctx);
+            } catch (IllegalArgumentException e) {
+                // Sandbox rejected the literal path. Fall back to chat-upload
+                // basename matching before surfacing the boundary error — the
+                // LLM may have hallucinated a system path for a real attachment.
+                Path attachment = ChatUploadResolver.resolve(filePath);
+                if (attachment == null) {
+                    return errorResult(filePath, e.getMessage());
+                }
+                path = attachment;
+            }
 
             if (!Files.exists(path)) {
                 // Fall back to chat-upload basename matching for filenames that were

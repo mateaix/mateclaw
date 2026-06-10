@@ -17,9 +17,10 @@ MateClaw doesn't care which LLM you use. It talks to every mainstream provider t
 | **Bailian Token Plan** | Bailian token-bundle plan | dashscope | 7 seeded models; long tokens supported |
 | **OpenAI** | GPT-4o, GPT-4o-mini, GPT-5.5, o1, o3, o4-mini | openai | Standard OpenAI API |
 | **OpenAI OAuth (ChatGPT Plus/Pro)** | GPT-4o, o3, o4-mini via subscription | openai | Browser-based OAuth — no API key |
-| **Anthropic** | Claude 4.7, Claude 4.6 Sonnet, Claude 4.5 Haiku | anthropic | Native Messages API |
-| **Anthropic Claude Code OAuth** | Claude 4.7 / 4.6 via Claude Pro/Max/Team subscription | anthropic | Browser OAuth + manual-paste flow — no API key |
-| **Google Gemini** | Gemini 2 Pro, Gemini 2 Flash | gemini | Google Generative AI API |
+| **Anthropic** | **Claude Opus 4.8 / 4.8 Fast** (1.5.0+), Claude 4.7, Claude 4.6 Sonnet, Claude 4.5 Haiku | anthropic | Native Messages API; both 4.8 variants support the `xhigh` thinking tier |
+| **Anthropic Claude Code OAuth** | Claude Opus 4.8 / 4.7 / 4.6 via Claude Pro/Max/Team subscription | anthropic | Browser OAuth + manual-paste flow — no API key |
+| **Google Gemini** _(native)_ | gemini-2.5-flash, gemini-3-pro-image-preview, gemini-2.5-flash-image | gemini | Native `generateContent` API (not OpenAI-compatible) — see "Native Gemini" below |
+| **xAI / Grok** | Grok 3, Grok 4 | openai | OpenAI-compatible (base URL + API key); xAI brand icon in the UI |
 | **DeepSeek** | deepseek-chat, deepseek-coder, **DeepSeek V4 flash + pro** (thinking-mode) | openai | OpenAI-compatible |
 | **Kimi (Moonshot)** | moonshot-v1-8k/32k/128k | openai | OpenAI-compatible |
 | **Zhipu AI** | GLM-5-Turbo, GLM-5V-Turbo, GLM-5, GLM-5.1 | openai | OpenAI-compatible |
@@ -71,6 +72,23 @@ Same `sk-` API key, **two endpoints** that ship different model families:
 - Want Qwen-Max / Plus / Turbo + built-in search / DeepSeek-V3.2 → **DashScope**
 - Want Qwen3.5-Plus / Qwen3.6-Plus / Qwen3 vision-language → **DashScope (OpenAI-compatible)**
 - **Enable both** if you want — same key, models just appear under different cards
+
+---
+
+## Native Gemini
+
+::: tip New in 1.4.0
+Gemini no longer rides on an OpenAI-compatibility shim — MateClaw talks to Google's **native `generateContent` API** directly.
+:::
+
+Plenty of products bolt Gemini on as "just another OpenAI-compatible endpoint" and then hit walls around system instructions, function calling, and inline images. MateClaw speaks Gemini's own protocol instead:
+
+- **Native chat builder** — maps `systemInstruction`, `functionCall` / `functionResponse` (tool-call turns), and inline image parts (multimodal input) correctly
+- **Streaming SSE parsing** — parses Gemini's streaming response format chunk by chunk
+- **JSON Schema sanitizing** — automatically strips JSON Schema keywords Gemini rejects, so tool definitions aren't refused
+- **Startup liveness probe** — sends a lightweight request at startup to confirm the credentials and model are reachable
+
+Configure it under `Settings → Models → Add Provider`, pick the **Gemini** provider, paste your API key. Example models: `gemini-2.5-flash`, `gemini-3-pro-image-preview`, `gemini-2.5-flash-image`. Image generation runs through the same native path — see [Multimodal → Image generation](./multimodal#image-generation-six-providers).
 
 ---
 
@@ -143,13 +161,13 @@ Enter the user code in your browser, authorize, and the dialog closes itself the
 
 If `local` mode can't bind a loopback port (port in use, sandbox refused), it falls through to `manual_paste` automatically.
 
-**Backend endpoints** (`/api/v1/oauth/openai/device`):
+**Backend endpoints:**
 
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/start` | Begin a session — returns `deviceAuthId`, `userCode`, `verificationUrl`, `intervalSeconds`, `expiresInSeconds` |
-| `POST` | `/poll` | Poll one session by `deviceAuthId` — returns `PENDING` / `COMPLETED` / `EXPIRED` |
-| `POST` | `/cancel` | Drop the session (e.g. user closed the dialog) |
+| `POST` | `/api/v1/oauth/openai/device/start` | Begin a session — returns `deviceAuthId`, `userCode`, `verificationUrl`, `intervalSeconds`, `expiresInSeconds` |
+| `POST` | `/api/v1/oauth/openai/device/poll` | Poll one session by `deviceAuthId` — returns `PENDING` / `COMPLETED` / `EXPIRED` |
+| `POST` | `/api/v1/oauth/openai/device/cancel` | Drop the session (e.g. user closed the dialog) |
 
 The frontend respects the `intervalSeconds` OpenAI returns (typically 5 s); the server enforces a min poll interval (default 3 s) to keep load bounded. Expired sessions are swept every 5 minutes.
 
@@ -254,6 +272,10 @@ Restart MateClaw. Auto-discovered, added, enabled.
 
 No `EMBEDDING_API_KEY` env vars. Embedding models are regular rows in `mate_model_config` with `model_type='embedding'`. They show up alongside chat models in `Settings → Models`. Knowledge bases pick their embedding model from a dropdown.
 
+::: tip New in 1.4.0 ([issue #79](https://github.com/matevip/mateclaw/issues/79))
+**Embedding models from any provider.** In the embedding section of `Settings → Models`, configure an embedding model from any provider — it **reuses that provider's API key**, so there's no separate `EMBEDDING_API_KEY`. Each knowledge base picks its embedding model from a dropdown. Keyless local proxies use a no-op placeholder key; the protocol is resolved from the provider's chat-model / protocol setting, so you never hand-enter it.
+:::
+
 ### Anthropic prompt caching
 
 System prompts, agent personas, tool definitions — automatically marked with `cache_control: ephemeral` on Anthropic-compatible endpoints. First request warms the cache, every follow-up gets a cache hit. The Dashboard tracks `cache_read_tokens` / `cache_write_tokens` daily.
@@ -275,7 +297,9 @@ System prompts, agent personas, tool definitions — automatically marked with `
 
 **Kimi K2.5 thinking**: the model activates thinking natively; don't set `reasoning_effort`.
 
-**Multi-round tool calls + thinking**: thinking-capable models (DeepSeek-Reasoner / GPT-5 / Kimi K2.5) correctly round-trip historical `reasoning_content` during ReAct multi-round tool calls. Cross-user-turn history is cleared at the boundary, in-turn history is preserved — matching DeepSeek's "pass back within a turn, reset across turns" contract.
+**Multi-round tool calls + thinking**: thinking-capable models (DeepSeek-Reasoner / GPT-5 / Kimi K2.5 / Xiaomi MiMo) correctly round-trip historical `reasoning_content` during ReAct multi-round tool calls. Cross-user-turn history is cleared at the boundary, in-turn history is preserved — matching DeepSeek's "pass back within a turn, reset across turns" contract.
+
+**Xiaomi MiMo thinking-mode multi-turn fix** ([issue #189](https://github.com/matevip/mateclaw/issues/189)): MiMo's `reasoning_content` is now kept correctly across turns in thinking mode, instead of being lost on subsequent turns.
 
 ---
 
@@ -297,6 +321,11 @@ MateClaw uses a single **active model** as the global default. Agents that don't
 Takes effect **immediately** — no restart. Next message uses the new model. In-flight conversations unaffected.
 
 Per-agent override supported: bind a specific agent to a specific model config.
+
+::: tip New in 1.4.0
+- **Per-conversation model selection** ([issue #150](https://github.com/matevip/mateclaw/issues/150)): in the chat UI you can switch the model for **just the current conversation**, without touching the global active model or any other conversation. See [Chat & Messaging](./chat).
+- **A single bad model id no longer evicts the whole provider**: when discovery / probing hits one invalid model identifier, only that model is skipped — the rest of the provider's models stay available.
+:::
 
 ---
 
@@ -362,6 +391,17 @@ Every provider you add joins an `AvailableProviderPool` that's probed at startup
 - **Manual reprobe + auto-reprobe on config change** — no restart after rotating a key
 - **Egress sanitizer** — provider-specific options (e.g., `reasoning_effort` for OpenAI reasoning models) are stripped at egress when failing over to a provider that doesn't support them, so leaked options can't 400 the fallback
 - **UI distinguishes 401 from session expiry** — provider auth errors and user session expiry now show different messages with different remediation
+
+### Preferred provider drives the primary model (1.5.0)
+
+Before 1.5.0, "per-agent priority" only affected the **failover order** — the primary model was still the global default. 1.5.0 makes that preference **actually decide primary-model selection**. The full precedence is:
+
+1. **A conversation-pinned model wins** — the chat-header ModelSelector bound a model to this conversation, so it's used (see [per-conversation model selection](./chat#per-conversation-model-selection))
+2. **then the per-agent model override (`modelName`)** — the employee has a model pinned on it
+3. **then the global default model**
+4. **only when none of those are set does preferred-provider routing kick in** — picking the preferred provider's primary model
+
+Preferred-provider routing has a **capability gate**: if the employee's bound skills declare a need like `requires-model: vision`, routing first picks a provider that can satisfy those modalities; only if none can does it fall back unconstrained. Preferences are stored in `mate_agent_provider_preference` (ascending `sortOrder` = higher priority).
 
 ---
 

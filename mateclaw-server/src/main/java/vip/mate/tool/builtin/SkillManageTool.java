@@ -21,8 +21,8 @@ import java.util.regex.Pattern;
 /**
  * RFC-023: Agent 自治 Skill 管理工具
  * <p>
- * 对标 hermes-agent 的 skill_manager_tool.py，让 Agent 在对话中自主创建、编辑、
- * 修补和删除 Skill。每次写入前强制安全扫描，失败则拒绝并返回原因。
+ * 让 Agent 在对话中自主创建、编辑、修补和删除 Skill。
+ * 每次写入前强制安全扫描，失败则拒绝并返回原因。
  * <p>
  * 系统 prompt 引导 Agent 使用此工具：
  * <blockquote>

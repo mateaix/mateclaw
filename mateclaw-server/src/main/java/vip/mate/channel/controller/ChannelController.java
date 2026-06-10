@@ -97,9 +97,51 @@ public class ChannelController {
         channel.setId(id);
         channel.setWorkspaceId(existing.getWorkspaceId());
         ChannelEntity updated = channelService.updateChannel(channel);
-        channelManager.restartChannel(id);
+        // Restart only when a field the adapter consumes BEFORE the router
+        // takes over has changed — channel type, enabled toggle, configJson
+        // (app credentials, connection_mode, domain, …), and botPrefix
+        // (consumed by AbstractChannelAdapter.shouldProcess / cleanBotPrefix
+        // before enqueue, so a per-message DB refresh in the router can't
+        // catch it). Pure router-visible metadata (bound agent, display
+        // name, description, identityJson) is re-read on every message via
+        // ChannelMessageRouter.freshChannelEntity, so it doesn't justify
+        // dropping the live connection — for Feishu WS that would mean a
+        // multi-second blackout where inbound messages never reach the bot.
+        if (transportConfigChanged(existing, updated)) {
+            channelManager.restartChannel(id);
+        }
         auditEventService.record("UPDATE", "CHANNEL", String.valueOf(id), updated.getName(), null);
         return R.ok(updated);
+    }
+
+    /**
+     * True iff a field the adapter consumes BEFORE the router takes over (or
+     * that gates the adapter lifecycle entirely) has changed.
+     *
+     * <p>{@code agentId}, {@code name}, {@code description}, {@code identityJson}
+     * stay excluded — those are routing metadata read on every message via
+     * {@code ChannelMessageRouter.freshChannelEntity()}.
+     *
+     * <p>{@code botPrefix} IS included even though it's "just routing metadata"
+     * conceptually: {@code AbstractChannelAdapter.shouldProcess()} and
+     * {@code cleanBotPrefix()} run inside the adapter before the message
+     * reaches the router, and they read from the adapter's cached
+     * {@code channelEntity}. A prefix edit without restart would still filter
+     * and strip with the old prefix until the adapter is recreated.
+     */
+    private boolean transportConfigChanged(ChannelEntity oldRow, ChannelEntity newRow) {
+        if (!java.util.Objects.equals(oldRow.getChannelType(), newRow.getChannelType())) {
+            return true;
+        }
+        if (!java.util.Objects.equals(oldRow.getEnabled(), newRow.getEnabled())) {
+            return true;
+        }
+        if (!java.util.Objects.equals(oldRow.getBotPrefix(), newRow.getBotPrefix())) {
+            return true;
+        }
+        String oldCfg = oldRow.getConfigJson() == null ? "" : oldRow.getConfigJson();
+        String newCfg = newRow.getConfigJson() == null ? "" : newRow.getConfigJson();
+        return !oldCfg.equals(newCfg);
     }
 
     @RequireWorkspaceRole("admin")
@@ -236,7 +278,7 @@ public class ChannelController {
     private void verifyResourceWorkspace(Long resourceWorkspaceId, Long headerWorkspaceId) {
         long requestedWs = headerWorkspaceId != null ? headerWorkspaceId : 1L;
         if (resourceWorkspaceId != null && !resourceWorkspaceId.equals(requestedWs)) {
-            throw new MateClawException("err.common.wrong_workspace", "资源不属于当前工作区");
+            throw new MateClawException("err.common.wrong_workspace", 403, "资源不属于当前工作区");
         }
     }
 }

@@ -39,7 +39,7 @@ public class ModelConfigEntity {
      * RFC-03 Lane B1 — per-model HTTP read timeout (seconds).
      *
      * <p>Null / zero / negative → fall back to the global default of 180s
-     * (existing behavior, see {@code AgentAnthropicChatModelBuilder.applyHttpTimeouts}
+     * (existing behavior, see {@code AnthropicChatModelBuilder.applyHttpTimeouts}
      * and the corresponding helper in {@code AgentGraphBuilder}). A positive
      * value overrides for this specific model.
      *
@@ -76,6 +76,16 @@ public class ModelConfigEntity {
      * {@link vip.mate.llm.service.ModelCapabilityService} built-in heuristics.
      */
     private String modalities;
+
+    /**
+     * Transient, request-scoped flag set by {@link vip.mate.llm.service.ModelConfigService#listByType}
+     * when a modality filter is supplied: {@code true} when this row's declared or
+     * heuristically-resolved capabilities cover the requested modality. Lets the
+     * sidecar selector list every enabled chat model while still highlighting the
+     * ones already known to support the modality. Never persisted.
+     */
+    @TableField(exist = false)
+    private Boolean modalityCapable;
 
     @TableField(fill = FieldFill.INSERT)
     private LocalDateTime createTime;

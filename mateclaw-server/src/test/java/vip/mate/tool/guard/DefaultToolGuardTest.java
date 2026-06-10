@@ -118,6 +118,33 @@ class DefaultToolGuardTest {
         assertTrue(result.isBlocked());
     }
 
+    // ===== 代码执行器 execute_code =====
+
+    @Test
+    @DisplayName("execute_code 命中极端破坏性模式时直接拦截")
+    void shouldBlockDangerousCodeExecution() {
+        ToolGuardResult result = toolGuard.check("execute_code",
+                "{\"language\":\"bash\",\"code\":\"mkfs.ext4 /dev/sda1\"}");
+        assertTrue(result.isBlocked());
+    }
+
+    @Test
+    @DisplayName("execute_code 中的高风险删除命令需要审批")
+    void shouldGateDeleteInCode() {
+        ToolGuardResult result = toolGuard.check("execute_code",
+                "{\"language\":\"bash\",\"code\":\"rm -rf /tmp/data\"}");
+        assertTrue(result.needsApproval());
+    }
+
+    @Test
+    @DisplayName("execute_code 即使无破坏性模式也需要审批")
+    void shouldRequireApprovalForBenignCode() {
+        ToolGuardResult result = toolGuard.check("execute_code",
+                "{\"language\":\"python\",\"code\":\"print(1)\"}");
+        assertFalse(result.isBlocked());
+        assertTrue(result.needsApproval());
+    }
+
     // ===== 安全操作（不应被拦截） =====
 
     @Test

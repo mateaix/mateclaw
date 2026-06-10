@@ -114,6 +114,10 @@ VALUES ('gemini', 'Google Gemini', '', 'GeminiChatModel', '', 'https://generativ
 ON DUPLICATE KEY UPDATE name=VALUES(name), api_key_prefix=VALUES(api_key_prefix), chat_model=VALUES(chat_model), api_key=VALUES(api_key), base_url=VALUES(base_url), generate_kwargs=VALUES(generate_kwargs), is_custom=VALUES(is_custom), is_local=VALUES(is_local), support_model_discovery=VALUES(support_model_discovery), support_connection_check=VALUES(support_connection_check), freeze_url=VALUES(freeze_url), require_api_key=VALUES(require_api_key), update_time=VALUES(update_time);
 
 INSERT INTO mate_model_provider (provider_id, name, api_key_prefix, chat_model, api_key, base_url, generate_kwargs, is_custom, is_local, support_model_discovery, support_connection_check, freeze_url, require_api_key, create_time, update_time)
+VALUES ('xai', 'xAI (Grok)', 'xai-', 'OpenAIChatModel', '', 'https://api.x.ai/v1', '{}', FALSE, FALSE, TRUE, TRUE, TRUE, TRUE, NOW(), NOW())
+ON DUPLICATE KEY UPDATE name=VALUES(name), api_key_prefix=VALUES(api_key_prefix), chat_model=VALUES(chat_model), api_key=VALUES(api_key), base_url=VALUES(base_url), generate_kwargs=VALUES(generate_kwargs), is_custom=VALUES(is_custom), is_local=VALUES(is_local), support_model_discovery=VALUES(support_model_discovery), support_connection_check=VALUES(support_connection_check), freeze_url=VALUES(freeze_url), require_api_key=VALUES(require_api_key), update_time=VALUES(update_time);
+
+INSERT INTO mate_model_provider (provider_id, name, api_key_prefix, chat_model, api_key, base_url, generate_kwargs, is_custom, is_local, support_model_discovery, support_connection_check, freeze_url, require_api_key, create_time, update_time)
 VALUES ('openrouter', 'OpenRouter', 'sk-or-', 'OpenAIChatModel', '', 'https://openrouter.ai/api/v1', '{}', FALSE, FALSE, TRUE, TRUE, TRUE, TRUE, NOW(), NOW())
 ON DUPLICATE KEY UPDATE name=VALUES(name), api_key_prefix=VALUES(api_key_prefix), chat_model=VALUES(chat_model), api_key=VALUES(api_key), base_url=VALUES(base_url), generate_kwargs=VALUES(generate_kwargs), is_custom=VALUES(is_custom), is_local=VALUES(is_local), support_model_discovery=VALUES(support_model_discovery), support_connection_check=VALUES(support_connection_check), freeze_url=VALUES(freeze_url), require_api_key=VALUES(require_api_key), update_time=VALUES(update_time);
 
@@ -305,6 +309,10 @@ VALUES
 (1000000159, 'Gemini 2.5 Flash', 'gemini', 'gemini-2.5-flash', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
 (1000000160, 'Gemini 2.5 Flash Lite', 'gemini', 'gemini-2.5-flash-lite', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
 (1000000161, 'Gemini 2.0 Flash', 'gemini', 'gemini-2.0-flash', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000340, 'Grok 4', 'xai', 'grok-4', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000341, 'Grok 4 Fast', 'xai', 'grok-4-fast', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000342, 'Grok 3', 'xai', 'grok-3', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000343, 'Grok 3 Mini', 'xai', 'grok-3-mini', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
 (1000000200, 'GPT-5', 'openrouter', 'openai/gpt-5', 'OpenRouter 代理 GPT-5', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
 (1000000201, 'Claude Opus 4.6', 'openrouter', 'anthropic/claude-opus-4-6', 'OpenRouter 代理 Claude Opus 4.6', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
 (1000000202, 'Claude Sonnet 4.6', 'openrouter', 'anthropic/claude-sonnet-4-6', 'OpenRouter 代理 Claude Sonnet 4.6', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
@@ -376,7 +384,14 @@ VALUES
 (1000000273, 'Claude Sonnet 4.6', 'openrouter', 'anthropic/claude-sonnet-4-6', 'OpenRouter 代理 Claude Sonnet 4.6', NULL, 4096, NULL, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
 -- RFC-062：通过 Claude Code Pro/Max 订阅调用 Claude 4.7
 (1000000280, 'Claude Opus 4.7', 'anthropic-claude-code', 'claude-opus-4-7', '通过 Claude Code Pro/Max 订阅调用 Claude Opus 4.7', NULL, 4096, NULL, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000281, 'Claude Sonnet 4.6', 'anthropic-claude-code', 'claude-sonnet-4-6', '通过 Claude Code Pro/Max 订阅调用 Claude Sonnet 4.6', NULL, 4096, NULL, TRUE, TRUE, FALSE, NOW(), NOW(), 0)
+(1000000281, 'Claude Sonnet 4.6', 'anthropic-claude-code', 'claude-sonnet-4-6', '通过 Claude Code Pro/Max 订阅调用 Claude Sonnet 4.6', NULL, 4096, NULL, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+-- Claude 4.8 系列（直连 Anthropic + OpenRouter，包含 -fast 高速变体）
+-- 与 4.7 共享严格采样契约：temperature / top_p / top_k 必须为空，新增 xhigh 思考档位
+(1000000290, 'Claude Opus 4.8', 'anthropic', 'claude-opus-4-8', 'Anthropic Claude Opus 4.8（xhigh 自适应思考）', NULL, 4096, NULL, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000291, 'Claude Opus 4.8 Fast', 'anthropic', 'claude-opus-4-8-fast', 'Claude Opus 4.8 高速变体（输出更快、单价 2x）', NULL, 4096, NULL, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000292, 'Claude Opus 4.8', 'openrouter', 'anthropic/claude-opus-4-8', 'OpenRouter 代理 Claude Opus 4.8', NULL, 4096, NULL, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000293, 'Claude Opus 4.8 Fast', 'openrouter', 'anthropic/claude-opus-4-8-fast', 'OpenRouter 代理 Claude Opus 4.8 高速变体', NULL, 4096, NULL, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000294, 'Claude Opus 4.8', 'anthropic-claude-code', 'claude-opus-4-8', '通过 Claude Code Pro/Max 订阅调用 Claude Opus 4.8', NULL, 4096, NULL, TRUE, TRUE, FALSE, NOW(), NOW(), 0)
 ON DUPLICATE KEY UPDATE name=VALUES(name), provider=VALUES(provider), model_name=VALUES(model_name), description=VALUES(description), temperature=VALUES(temperature), max_tokens=VALUES(max_tokens), top_p=VALUES(top_p), builtin=VALUES(builtin), enabled=VALUES(enabled), is_default=VALUES(is_default), update_time=VALUES(update_time), deleted=VALUES(deleted);
 
 -- 默认系统设置
@@ -559,6 +574,11 @@ INSERT INTO mate_tool (id, name, display_name, description, tool_type, bean_name
 VALUES (1000000022, 'PdfRenderTool', 'PDF 渲染', '将 Markdown 渲染为最终交付形态的 .pdf 并返回一次性下载链接。双 backend 自动切换（优先 LibreOffice，不可用时回落到进程内 OpenPDF + Flying Saucer）；通过 YAML frontmatter 控制封面、页眉、页脚。', 'builtin', 'pdfRenderTool', '📄', TRUE, TRUE, NOW(), NOW(), 0)
 ON DUPLICATE KEY UPDATE name=VALUES(name), display_name=VALUES(display_name), description=VALUES(description), tool_type=VALUES(tool_type), bean_name=VALUES(bean_name), icon=VALUES(icon), enabled=VALUES(enabled), builtin=VALUES(builtin), update_time=VALUES(update_time), deleted=VALUES(deleted);
 
+-- 内置工具：代码执行（运行 Agent 临场编写的 python/bash/node 代码）
+INSERT INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
+VALUES (1000000023, 'CodeExecuteTool', '代码执行', '运行 Agent 临场编写的代码片段（python / bash / node）。让只有 SKILL.md 描述、无脚本的技能也能被执行——Agent 按说明生成并运行代码。危险操作会触发审批确认。', 'builtin', 'codeExecuteTool', '🧑‍💻', TRUE, TRUE, NOW(), NOW(), 0)
+ON DUPLICATE KEY UPDATE name=VALUES(name), display_name=VALUES(display_name), description=VALUES(description), tool_type=VALUES(tool_type), bean_name=VALUES(bean_name), icon=VALUES(icon), enabled=VALUES(enabled), builtin=VALUES(builtin), update_time=VALUES(update_time), deleted=VALUES(deleted);
+
 -- 示例 MCP Server：Filesystem（参考 MateClaw 文档中的 mcpServers.filesystem）
 INSERT INTO mate_mcp_server (
     id, name, description, transport, url, headers_json, command, args_json, env_json, cwd,
@@ -578,7 +598,7 @@ VALUES (
     NULL,
     FALSE,
     30,
-    30,
+    60,
     'disconnected',
     NULL,
     NULL,
@@ -609,7 +629,7 @@ VALUES (
     NULL,
     FALSE,
     30,
-    30,
+    60,
     'disconnected',
     NULL,
     NULL,
@@ -1335,15 +1355,15 @@ ON DUPLICATE KEY UPDATE name=VALUES(name), cron_expression=VALUES(cron_expressio
 -- ==================== 记忆整合定时任务 ====================
 -- 每天凌晨 2:00 整合 daily notes → MEMORY.md
 INSERT INTO mate_cron_job (id, name, cron_expression, timezone, agent_id, task_type, trigger_message, request_body, enabled, create_time, update_time, deleted)
-VALUES (1000100010, '记忆整合', '0 2 * * *', 'Asia/Shanghai', 1000000001, 'text', '请回顾你最近的 memory/ 日记文件，将反复出现的重要信息（用户偏好、稳定事实、经验教训、工作流）提炼整合到 MEMORY.md 中。保留日记原文不动，只更新 MEMORY.md。完成后简要说明做了哪些整合。', NULL, TRUE, NOW(), NOW(), 0)
+VALUES (1000100010, '记忆整合', '0 2 * * *', 'Asia/Shanghai', 1000000001, 'text', '请回顾你最近的 memory/ 日记文件，将反复出现的重要信息（用户偏好、稳定事实、经验教训、工作流）提炼整合到 MEMORY.md 中。注意：MEMORY.md 会被注入每一次对话，只整合跨项目长期稳定的信息；具体项目的代号、名称、技术栈、仓库、单项目的指标/预算/团队/上线日期或只对某个项目成立的决策等易变事实，不要写入 MEMORY.md（会随项目切换互相冲突、导致张冠李戴），应留在 daily note 或通过结构化 project 记忆维护。判定口诀：换一个项目后仍成立才进 MEMORY.md。保留日记原文不动，只更新 MEMORY.md。完成后简要说明做了哪些整合。', NULL, TRUE, NOW(), NOW(), 0)
 ON DUPLICATE KEY UPDATE name=VALUES(name), cron_expression=VALUES(cron_expression), timezone=VALUES(timezone), agent_id=VALUES(agent_id), task_type=VALUES(task_type), trigger_message=VALUES(trigger_message), request_body=VALUES(request_body), enabled=VALUES(enabled), update_time=VALUES(update_time), deleted=VALUES(deleted);
 
 INSERT INTO mate_cron_job (id, name, cron_expression, timezone, agent_id, task_type, trigger_message, request_body, enabled, create_time, update_time, deleted)
-VALUES (1000100011, '记忆整合', '0 2 * * *', 'Asia/Shanghai', 1000000002, 'text', '请回顾你最近的 memory/ 日记文件，将反复出现的重要信息（用户偏好、稳定事实、经验教训、工作流）提炼整合到 MEMORY.md 中。保留日记原文不动，只更新 MEMORY.md。完成后简要说明做了哪些整合。', NULL, TRUE, NOW(), NOW(), 0)
+VALUES (1000100011, '记忆整合', '0 2 * * *', 'Asia/Shanghai', 1000000002, 'text', '请回顾你最近的 memory/ 日记文件，将反复出现的重要信息（用户偏好、稳定事实、经验教训、工作流）提炼整合到 MEMORY.md 中。注意：MEMORY.md 会被注入每一次对话，只整合跨项目长期稳定的信息；具体项目的代号、名称、技术栈、仓库、单项目的指标/预算/团队/上线日期或只对某个项目成立的决策等易变事实，不要写入 MEMORY.md（会随项目切换互相冲突、导致张冠李戴），应留在 daily note 或通过结构化 project 记忆维护。判定口诀：换一个项目后仍成立才进 MEMORY.md。保留日记原文不动，只更新 MEMORY.md。完成后简要说明做了哪些整合。', NULL, TRUE, NOW(), NOW(), 0)
 ON DUPLICATE KEY UPDATE name=VALUES(name), cron_expression=VALUES(cron_expression), timezone=VALUES(timezone), agent_id=VALUES(agent_id), task_type=VALUES(task_type), trigger_message=VALUES(trigger_message), request_body=VALUES(request_body), enabled=VALUES(enabled), update_time=VALUES(update_time), deleted=VALUES(deleted);
 
 INSERT INTO mate_cron_job (id, name, cron_expression, timezone, agent_id, task_type, trigger_message, request_body, enabled, create_time, update_time, deleted)
-VALUES (1000100012, '记忆整合', '0 2 * * *', 'Asia/Shanghai', 1000000003, 'text', '请回顾你最近的 memory/ 日记文件，将反复出现的重要信息（用户偏好、稳定事实、经验教训、工作流）提炼整合到 MEMORY.md 中。保留日记原文不动，只更新 MEMORY.md。完成后简要说明做了哪些整合。', NULL, TRUE, NOW(), NOW(), 0)
+VALUES (1000100012, '记忆整合', '0 2 * * *', 'Asia/Shanghai', 1000000003, 'text', '请回顾你最近的 memory/ 日记文件，将反复出现的重要信息（用户偏好、稳定事实、经验教训、工作流）提炼整合到 MEMORY.md 中。注意：MEMORY.md 会被注入每一次对话，只整合跨项目长期稳定的信息；具体项目的代号、名称、技术栈、仓库、单项目的指标/预算/团队/上线日期或只对某个项目成立的决策等易变事实，不要写入 MEMORY.md（会随项目切换互相冲突、导致张冠李戴），应留在 daily note 或通过结构化 project 记忆维护。判定口诀：换一个项目后仍成立才进 MEMORY.md。保留日记原文不动，只更新 MEMORY.md。完成后简要说明做了哪些整合。', NULL, TRUE, NOW(), NOW(), 0)
 ON DUPLICATE KEY UPDATE name=VALUES(name), cron_expression=VALUES(cron_expression), timezone=VALUES(timezone), agent_id=VALUES(agent_id), task_type=VALUES(task_type), trigger_message=VALUES(trigger_message), request_body=VALUES(request_body), enabled=VALUES(enabled), update_time=VALUES(update_time), deleted=VALUES(deleted);
 
 -- ==================== 工作区文件种子数据（参考 MateClaw md_files/zh） ====================
@@ -1886,7 +1906,7 @@ VALUES (
     1000000001,
     TRUE,
     'all',
-    '["execute_shell_command"]',
+    '["execute_shell_command","execute_code"]',
     '[]',
     TRUE,
     '["/etc","/usr","/bin","/sbin","/boot","/sys","/proc","/dev"]',

@@ -3,8 +3,11 @@ package vip.mate.workspace.document;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import vip.mate.memory.identity.MemoryScope;
+import vip.mate.workspace.document.event.WorkspaceFileChangedEvent;
 import vip.mate.workspace.document.model.WorkspaceFileEntity;
 import vip.mate.workspace.document.repository.WorkspaceFileMapper;
 
@@ -31,6 +34,7 @@ import java.util.stream.Collectors;
 public class WorkspaceFileService {
 
     private final WorkspaceFileMapper fileMapper;
+    private final ApplicationEventPublisher eventPublisher;
 
     /**
      * 列出 Agent 的所有工作区文件（按排序 + 文件名排列）
@@ -47,19 +51,39 @@ public class WorkspaceFileService {
     }
 
     /**
-     * 读取单个文件（含内容）
+     * Read a single shared (config / persona) file by name.
+     * <p>
+     * Restricted to TEAM / GLOBAL scope so it never matches — or accidentally
+     * mutates — an owner's PERSONAL row that happens to share the same filename
+     * (e.g. MEMORY.md). Owner-scoped reads must use
+     * {@link #getMemoryFile(Long, String, String)}. Uses the non-throwing
+     * {@code selectOne(wrapper, false)} so duplicate rows can never surface a
+     * {@code TooManyResultsException}.
      */
     public WorkspaceFileEntity getFile(Long agentId, String filename) {
         return fileMapper.selectOne(
                 new LambdaQueryWrapper<WorkspaceFileEntity>()
                         .eq(WorkspaceFileEntity::getAgentId, agentId)
-                        .eq(WorkspaceFileEntity::getFilename, filename));
+                        .eq(WorkspaceFileEntity::getFilename, filename)
+                        .in(WorkspaceFileEntity::getScope, MemoryScope.TEAM, MemoryScope.GLOBAL)
+                        .orderByAsc(WorkspaceFileEntity::getId),
+                false);
     }
 
     /**
-     * 创建或更新文件
+     * 创建或更新文件（共享 / 配置文件路径）
+     * <p>
+     * Used by the agent-config surface (AGENTS.md, SOUL.md, PROFILE.md …).
+     * Rows written here are TEAM-scoped and shared by everyone using the agent.
+     * Conversation-derived memory must go through
+     * {@link #saveMemoryFile(Long, String, String, String)} instead so it is
+     * attributed to a single owner.
      */
-    @Transactional
+    // NOTE: intentionally NOT @Transactional. These are single-row upserts and
+    // the dup-key fallback below reselects+updates after a failed insert — under
+    // a transaction the failed insert would mark it rollback-only and poison the
+    // recovery update. WorkspaceFileChangedEvent uses a plain @EventListener
+    // (not @TransactionalEventListener), so event timing is unaffected.
     public WorkspaceFileEntity saveFile(Long agentId, String filename, String content) {
         WorkspaceFileEntity existing = getFile(agentId, filename);
         long size = content != null ? content.getBytes(StandardCharsets.UTF_8).length : 0;
@@ -68,29 +92,203 @@ public class WorkspaceFileService {
             existing.setContent(content);
             existing.setFileSize(size);
             fileMapper.updateById(existing);
+            eventPublisher.publishEvent(new WorkspaceFileChangedEvent(agentId, filename));
             return existing;
-        } else {
-            WorkspaceFileEntity entity = new WorkspaceFileEntity();
-            entity.setAgentId(agentId);
-            entity.setFilename(filename);
-            entity.setContent(content);
-            entity.setFileSize(size);
-            entity.setEnabled(false);
-            entity.setSortOrder(0);
-            fileMapper.insert(entity);
-            return entity;
         }
+        WorkspaceFileEntity entity = new WorkspaceFileEntity();
+        entity.setAgentId(agentId);
+        entity.setFilename(filename);
+        entity.setContent(content);
+        entity.setFileSize(size);
+        entity.setEnabled(false);
+        entity.setSortOrder(0);
+        entity.setScope(MemoryScope.TEAM);
+        // Shared rows use the empty-string sentinel (not NULL) so the
+        // (agent_id, filename, owner_key) unique index treats one shared
+        // row per filename as a single slot — NULLs are considered distinct
+        // by both H2 and MySQL unique indexes and would not be deduped.
+        entity.setOwnerKey(SHARED_OWNER_KEY);
+        WorkspaceFileEntity saved = insertOrUpdateOnConflict(
+                entity, () -> getFile(agentId, filename), content, size);
+        eventPublisher.publishEvent(new WorkspaceFileChangedEvent(agentId, filename));
+        return saved;
     }
 
     /**
-     * 删除文件
+     * Insert {@code entity}; if a concurrent writer already created the row
+     * (unique-index violation), reselect via {@code reselect} and update its
+     * content instead of throwing. Makes the check-then-insert in
+     * saveFile / saveMemoryFile safe under concurrent / multi-node first writes.
+     */
+    private WorkspaceFileEntity insertOrUpdateOnConflict(WorkspaceFileEntity entity,
+                                                         java.util.function.Supplier<WorkspaceFileEntity> reselect,
+                                                         String content, long size) {
+        try {
+            fileMapper.insert(entity);
+            return entity;
+        } catch (org.springframework.dao.DuplicateKeyException dup) {
+            // Only recover the specific concurrent first-write race on the
+            // owner-scope unique index. Any other duplicate (e.g. a primary-key
+            // collision, or a future unique constraint) must surface — silently
+            // reselecting+updating would mask a real bug. The driver message
+            // names the violated index on both MySQL and H2.
+            String msg = dup.getMessage();
+            if (msg == null || !msg.toLowerCase().contains(UK_OWNER_INDEX)) {
+                throw dup;
+            }
+            WorkspaceFileEntity raced = reselect.get();
+            if (raced != null) {
+                raced.setContent(content);
+                raced.setFileSize(size);
+                fileMapper.updateById(raced);
+                return raced;
+            }
+            throw dup;
+        }
+    }
+
+    /** Name of the (agent_id, filename, owner_key) unique index — see V137 migration. */
+    private static final String UK_OWNER_INDEX = "uk_workspace_file_owner";
+
+    /** Sentinel owner key for shared (TEAM / GLOBAL) rows — keeps the unique index effective. */
+    static final String SHARED_OWNER_KEY = "";
+
+    /** A real, isolatable owner — not null/blank and not the system bucket. */
+    private boolean isPersonalOwner(String ownerKey) {
+        return ownerKey != null && !ownerKey.isBlank()
+                && !vip.mate.memory.identity.MemoryOwnerResolver.SYSTEM_OWNER.equals(ownerKey);
+    }
+
+    /**
+     * List files visible to {@code ownerKey}: shared (TEAM / GLOBAL) rows plus
+     * this owner's PERSONAL rows. A null/blank/system ownerKey lists shared
+     * only. Content is stripped (metadata listing).
+     */
+    public List<WorkspaceFileEntity> listVisibleFiles(Long agentId, String ownerKey) {
+        LambdaQueryWrapper<WorkspaceFileEntity> wrapper = new LambdaQueryWrapper<WorkspaceFileEntity>()
+                .eq(WorkspaceFileEntity::getAgentId, agentId);
+        applyScopeVisibility(wrapper, isPersonalOwner(ownerKey) ? ownerKey : null);
+        wrapper.orderByAsc(WorkspaceFileEntity::getSortOrder)
+                .orderByAsc(WorkspaceFileEntity::getFilename);
+        List<WorkspaceFileEntity> files = fileMapper.selectList(wrapper);
+        files.forEach(f -> f.setContent(null));
+        return files;
+    }
+
+    /**
+     * Read a file visible to {@code ownerKey}: the owner's PERSONAL row when it
+     * exists, otherwise the shared row. Null when neither exists.
+     */
+    public WorkspaceFileEntity getVisibleFile(Long agentId, String filename, String ownerKey) {
+        if (isPersonalOwner(ownerKey)) {
+            WorkspaceFileEntity personal = getMemoryFile(agentId, filename, ownerKey);
+            if (personal != null) {
+                return personal;
+            }
+        }
+        return getFile(agentId, filename);
+    }
+
+    /**
+     * Save a file to the owner's PERSONAL bucket when {@code ownerKey} denotes a
+     * real owner, otherwise to the shared (TEAM) file. The single entry point
+     * tools should use so per-owner isolation and the shared fallback stay
+     * consistent.
+     */
+    public WorkspaceFileEntity saveVisibleFile(Long agentId, String filename, String content, String ownerKey) {
+        return isPersonalOwner(ownerKey)
+                ? saveMemoryFile(agentId, filename, content, ownerKey)
+                : saveFile(agentId, filename, content);
+    }
+
+    /**
+     * Read a memory file scoped to a single owner.
+     * <p>
+     * Daily ledgers and consolidated memory share a filename across owners
+     * (e.g. {@code memory/2026-06-02.md}), so the lookup key is
+     * {@code (agentId, filename, ownerKey)} — otherwise two end-users sharing
+     * one agent would clobber each other's row.
+     */
+    public WorkspaceFileEntity getMemoryFile(Long agentId, String filename, String ownerKey) {
+        return fileMapper.selectOne(
+                new LambdaQueryWrapper<WorkspaceFileEntity>()
+                        .eq(WorkspaceFileEntity::getAgentId, agentId)
+                        .eq(WorkspaceFileEntity::getFilename, filename)
+                        .eq(WorkspaceFileEntity::getScope, MemoryScope.PERSONAL)
+                        .eq(WorkspaceFileEntity::getOwnerKey, ownerKey)
+                        .orderByAsc(WorkspaceFileEntity::getId),
+                false);
+    }
+
+    /**
+     * Create or update a PERSONAL, owner-scoped memory file.
+     * <p>
+     * Rows written here carry {@code scope=PERSONAL} + {@code ownerKey} and are
+     * enabled so the per-turn memory injection ({@code prefetch}) picks them up
+     * for that owner only.
+     */
+    // NOTE: intentionally NOT @Transactional — see saveFile for the dup-key
+    // recovery rationale.
+    public WorkspaceFileEntity saveMemoryFile(Long agentId, String filename, String content, String ownerKey) {
+        WorkspaceFileEntity existing = getMemoryFile(agentId, filename, ownerKey);
+        long size = content != null ? content.getBytes(StandardCharsets.UTF_8).length : 0;
+
+        if (existing != null) {
+            existing.setContent(content);
+            existing.setFileSize(size);
+            fileMapper.updateById(existing);
+            eventPublisher.publishEvent(new WorkspaceFileChangedEvent(agentId, filename));
+            return existing;
+        }
+        WorkspaceFileEntity entity = new WorkspaceFileEntity();
+        entity.setAgentId(agentId);
+        entity.setFilename(filename);
+        entity.setContent(content);
+        entity.setFileSize(size);
+        entity.setEnabled(true);
+        entity.setSortOrder(0);
+        entity.setOwnerKey(ownerKey);
+        entity.setScope(MemoryScope.PERSONAL);
+        WorkspaceFileEntity saved = insertOrUpdateOnConflict(
+                entity, () -> getMemoryFile(agentId, filename, ownerKey), content, size);
+        eventPublisher.publishEvent(new WorkspaceFileChangedEvent(agentId, filename));
+        return saved;
+    }
+
+    /**
+     * Delete a shared (config / persona) file by name.
+     * <p>
+     * Scoped to TEAM / GLOBAL so the config-editor surface can never wipe every
+     * owner's same-named PERSONAL row (e.g. all users' {@code MEMORY.md}).
+     * Owner-scoped deletion goes through
+     * {@link #deleteMemoryFile(Long, String, String)}.
      */
     @Transactional
     public void deleteFile(Long agentId, String filename) {
         fileMapper.delete(
                 new LambdaQueryWrapper<WorkspaceFileEntity>()
                         .eq(WorkspaceFileEntity::getAgentId, agentId)
-                        .eq(WorkspaceFileEntity::getFilename, filename));
+                        .eq(WorkspaceFileEntity::getFilename, filename)
+                        .in(WorkspaceFileEntity::getScope, MemoryScope.TEAM, MemoryScope.GLOBAL));
+        eventPublisher.publishEvent(new WorkspaceFileChangedEvent(agentId, filename));
+    }
+
+    /**
+     * Delete a single owner's PERSONAL file by name. Only ever removes the row
+     * belonging to {@code ownerKey}, never another owner's or the shared row.
+     */
+    @Transactional
+    public void deleteMemoryFile(Long agentId, String filename, String ownerKey) {
+        if (!isPersonalOwner(ownerKey)) {
+            return;
+        }
+        fileMapper.delete(
+                new LambdaQueryWrapper<WorkspaceFileEntity>()
+                        .eq(WorkspaceFileEntity::getAgentId, agentId)
+                        .eq(WorkspaceFileEntity::getFilename, filename)
+                        .eq(WorkspaceFileEntity::getScope, MemoryScope.PERSONAL)
+                        .eq(WorkspaceFileEntity::getOwnerKey, ownerKey));
+        eventPublisher.publishEvent(new WorkspaceFileChangedEvent(agentId, filename));
     }
 
     /**
@@ -101,6 +299,10 @@ public class WorkspaceFileService {
                 new LambdaQueryWrapper<WorkspaceFileEntity>()
                         .eq(WorkspaceFileEntity::getAgentId, agentId)
                         .eq(WorkspaceFileEntity::getEnabled, true)
+                        // System-prompt file management operates on shared config
+                        // files only; PERSONAL memory rows (enabled by default)
+                        // must never appear in or be toggled by this surface.
+                        .in(WorkspaceFileEntity::getScope, MemoryScope.TEAM, MemoryScope.GLOBAL)
                         .orderByAsc(WorkspaceFileEntity::getSortOrder))
                 .stream()
                 .map(WorkspaceFileEntity::getFilename)
@@ -115,9 +317,14 @@ public class WorkspaceFileService {
      */
     @Transactional
     public void setPromptFiles(Long agentId, List<String> filenames) {
+        // Only shared config files participate in system-prompt enable/disable.
+        // PERSONAL memory rows are enabled per-owner by saveMemoryFile and must
+        // not be batch-toggled by filename here (that would flip every owner's
+        // row sharing that filename).
         List<WorkspaceFileEntity> allFiles = fileMapper.selectList(
                 new LambdaQueryWrapper<WorkspaceFileEntity>()
-                        .eq(WorkspaceFileEntity::getAgentId, agentId));
+                        .eq(WorkspaceFileEntity::getAgentId, agentId)
+                        .in(WorkspaceFileEntity::getScope, MemoryScope.TEAM, MemoryScope.GLOBAL));
 
         for (WorkspaceFileEntity file : allFiles) {
             int index = filenames.indexOf(file.getFilename());
@@ -202,6 +409,20 @@ public class WorkspaceFileService {
      */
     public List<MemorySearchHit> searchSnippets(Long agentId, String query,
                                                 Set<String> filenamePrefixes, int limit) {
+        return searchSnippets(agentId, query, filenamePrefixes, limit, null);
+    }
+
+    /**
+     * Owner-scoped overload of {@link #searchSnippets(Long, String, Set, int)}.
+     * <p>
+     * Restricts candidates to memory the given {@code ownerKey} may see:
+     * shared rows (TEAM / GLOBAL) plus this owner's own PERSONAL rows. A null
+     * {@code ownerKey} means "shared only" — used by legacy call sites that
+     * have no requester identity in scope.
+     */
+    public List<MemorySearchHit> searchSnippets(Long agentId, String query,
+                                                Set<String> filenamePrefixes, int limit,
+                                                String ownerKey) {
         if (agentId == null || limit <= 0) {
             return List.of();
         }
@@ -215,6 +436,7 @@ public class WorkspaceFileService {
 
         LambdaQueryWrapper<WorkspaceFileEntity> wrapper = new LambdaQueryWrapper<>();
         wrapper.eq(WorkspaceFileEntity::getAgentId, agentId);
+        applyScopeVisibility(wrapper, ownerKey);
 
         if (filenamePrefixes != null && !filenamePrefixes.isEmpty()) {
             // Group prefix conditions inside a single AND-bracketed OR chain
@@ -427,24 +649,71 @@ public class WorkspaceFileService {
     }
 
     /**
-     * 将启用的工作区文件拼接为系统提示词
+     * Restrict a query to memory visible to {@code ownerKey}: shared rows
+     * (TEAM / GLOBAL) always, plus this owner's own PERSONAL rows. When
+     * {@code ownerKey} is null/blank only shared rows are returned.
+     */
+    private void applyScopeVisibility(LambdaQueryWrapper<WorkspaceFileEntity> wrapper, String ownerKey) {
+        if (ownerKey == null || ownerKey.isBlank()) {
+            wrapper.in(WorkspaceFileEntity::getScope, MemoryScope.TEAM, MemoryScope.GLOBAL);
+            return;
+        }
+        wrapper.and(w -> w
+                .in(WorkspaceFileEntity::getScope, MemoryScope.TEAM, MemoryScope.GLOBAL)
+                .or(p -> p.eq(WorkspaceFileEntity::getScope, MemoryScope.PERSONAL)
+                        .eq(WorkspaceFileEntity::getOwnerKey, ownerKey)));
+    }
+
+    /**
+     * 将启用的、共享（TEAM / GLOBAL）工作区文件拼接为系统提示词
      * <p>
      * 每个文件以 "--- {filename} ---\n{content}\n" 的格式拼接。
      * 如果没有启用的文件，返回 null。
+     * <p>
+     * Baked once at agent build time and shared by every requester, so this
+     * deliberately excludes PERSONAL rows — per-owner memory is injected
+     * per-turn via {@link #buildOwnerMemoryBlock(Long, String)} instead.
      */
     public String buildSystemPrompt(Long agentId) {
         List<WorkspaceFileEntity> enabledFiles = fileMapper.selectList(
                 new LambdaQueryWrapper<WorkspaceFileEntity>()
                         .eq(WorkspaceFileEntity::getAgentId, agentId)
                         .eq(WorkspaceFileEntity::getEnabled, true)
+                        .in(WorkspaceFileEntity::getScope, MemoryScope.TEAM, MemoryScope.GLOBAL)
                         .orderByAsc(WorkspaceFileEntity::getSortOrder));
 
-        if (enabledFiles.isEmpty()) {
+        return concatFiles(enabledFiles);
+    }
+
+    /**
+     * Assemble the per-owner memory block injected before each LLM call.
+     * <p>
+     * Returns the enabled PERSONAL files belonging to {@code ownerKey} (the
+     * owner's consolidated MEMORY.md / PROFILE.md and any enabled daily notes),
+     * concatenated in the same format as {@link #buildSystemPrompt(Long)}.
+     * Null when the owner has no personal memory yet.
+     */
+    public String buildOwnerMemoryBlock(Long agentId, String ownerKey) {
+        if (agentId == null || ownerKey == null || ownerKey.isBlank()) {
             return null;
         }
+        List<WorkspaceFileEntity> files = fileMapper.selectList(
+                new LambdaQueryWrapper<WorkspaceFileEntity>()
+                        .eq(WorkspaceFileEntity::getAgentId, agentId)
+                        .eq(WorkspaceFileEntity::getEnabled, true)
+                        .eq(WorkspaceFileEntity::getScope, MemoryScope.PERSONAL)
+                        .eq(WorkspaceFileEntity::getOwnerKey, ownerKey)
+                        .orderByAsc(WorkspaceFileEntity::getSortOrder));
+        return concatFiles(files);
+    }
 
+    /** Concatenate file bodies in the "--- {filename} ---\n{content}" format. */
+    private String concatFiles(List<WorkspaceFileEntity> files) {
+        if (files == null || files.isEmpty()) {
+            return null;
+        }
         StringBuilder sb = new StringBuilder();
-        for (WorkspaceFileEntity file : enabledFiles) {
+        for (WorkspaceFileEntity file : files) {
             if (file.getContent() != null && !file.getContent().isBlank()) {
                 if (!sb.isEmpty()) {
                     sb.append("\n\n");

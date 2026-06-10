@@ -22,6 +22,8 @@ export interface McpServer {
   lastConnectedTime: string
   toolCount: number
   builtin: boolean
+  /** Whole-server disclosure tier: 'core' | 'extension'. Null/absent = core. */
+  disclosureTier?: string
 }
 
 /** Result of POST /api/v1/mcp/servers/{id}/test. */
@@ -61,7 +63,7 @@ export function emptyMcpForm(): McpServerForm {
     envJson: '',
     cwd: '',
     connectTimeoutSeconds: 30,
-    readTimeoutSeconds: 30,
+    readTimeoutSeconds: 60,
     enabled: true,
   }
 }

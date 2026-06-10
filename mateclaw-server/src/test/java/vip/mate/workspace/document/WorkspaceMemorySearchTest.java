@@ -38,6 +38,7 @@ import static org.mockito.Mockito.when;
 class WorkspaceMemorySearchTest {
 
     @Mock private WorkspaceFileMapper fileMapper;
+    @Mock private org.springframework.context.ApplicationEventPublisher eventPublisher;
     private WorkspaceFileService service;
 
     @BeforeAll
@@ -51,7 +52,22 @@ class WorkspaceMemorySearchTest {
 
     @BeforeEach
     void setUp() {
-        service = new WorkspaceFileService(fileMapper);
+        service = new WorkspaceFileService(fileMapper, eventPublisher);
+    }
+
+    @Test
+    @DisplayName("saveFile publishes a change event so the cached agent instance is invalidated")
+    void saveFilePublishesChangeEvent() {
+        // getFile() now uses the non-throwing selectOne(wrapper, false) overload.
+        when(fileMapper.selectOne(any(), org.mockito.ArgumentMatchers.anyBoolean())).thenReturn(null); // new file path
+
+        service.saveFile(1000000001L, "MEMORY.md", "## 稳定事实\n- 用户语言：简体中文");
+
+        ArgumentCaptor<vip.mate.workspace.document.event.WorkspaceFileChangedEvent> captor =
+                ArgumentCaptor.forClass(vip.mate.workspace.document.event.WorkspaceFileChangedEvent.class);
+        org.mockito.Mockito.verify(eventPublisher).publishEvent(captor.capture());
+        assertThat(captor.getValue().agentId()).isEqualTo(1000000001L);
+        assertThat(captor.getValue().filename()).isEqualTo("MEMORY.md");
     }
 
     // ---------- tokenize ----------
@@ -256,16 +272,75 @@ class WorkspaceMemorySearchTest {
         assertThat(sql).contains("LIKE ? OR")
                 .contains("AND content")
                 .contains("LIMIT 50");
+        // With a null ownerKey the scope-visibility clause restricts to shared
+        // rows via an IN (?, ?) on (TEAM, GLOBAL), adding two bind params.
         assertThat(sql.chars().filter(ch -> ch == '?').count())
-                .as("one agentId + two prefix LIKEs + three content LIKEs = 6 bind params")
-                .isEqualTo(6);
+                .as("agentId + two scope params + two prefix LIKEs + three content LIKEs = 8 bind params")
+                .isEqualTo(8);
 
         List<Object> values = new ArrayList<>(wrapper.getParamNameValuePairs().values());
         assertThat(values).contains(42L);
+        // Shared-scope visibility filter binds the TEAM / GLOBAL literals.
+        assertThat(values).contains("TEAM", "GLOBAL");
         // Each content-LIKE term gets %term% by MyBatis-Plus's like().
         assertThat(values).contains("%running%", "%shoes%", "%跑步%");
         // likeRight produces "prefix%" — confirms both prefixes were bound.
         assertThat(values).contains("memory/%", "MEMORY.md%");
+    }
+
+    @Test
+    @DisplayName("Owner-scoped search binds shared (TEAM/GLOBAL) + this owner's PERSONAL rows only")
+    void ownerScopedSearchBindsPersonalBranch() {
+        when(fileMapper.selectList(any())).thenReturn(List.of());
+        service.searchSnippets(42L, "running", null, 10, "user:7");
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<LambdaQueryWrapper<WorkspaceFileEntity>> captor =
+                ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        org.mockito.Mockito.verify(fileMapper).selectList(captor.capture());
+        LambdaQueryWrapper<WorkspaceFileEntity> wrapper = captor.getValue();
+        wrapper.getTargetSql();
+
+        List<Object> values = new ArrayList<>(wrapper.getParamNameValuePairs().values());
+        // Visibility clause: (scope IN (TEAM, GLOBAL)) OR (scope = PERSONAL AND owner_key = ?)
+        assertThat(values).contains("TEAM", "GLOBAL", "PERSONAL", "user:7");
+        // A different owner's key must NOT be bound — that is the isolation guarantee.
+        assertThat(values).doesNotContain("user:99");
+    }
+
+    @Test
+    @DisplayName("saveFile recovers from a concurrent first-write unique conflict by reselect+update")
+    void saveFileRecoversFromConcurrentInsert() {
+        WorkspaceFileEntity raced = file("MEMORY.md", "racer content");
+        // First selectOne (existence check) → null (we think it's new); after the
+        // insert loses the unique-index race, the reselect → the racer's row.
+        when(fileMapper.selectOne(any(), org.mockito.ArgumentMatchers.anyBoolean()))
+                .thenReturn(null, raced);
+        when(fileMapper.insert(any(WorkspaceFileEntity.class)))
+                .thenThrow(new org.springframework.dao.DuplicateKeyException("uk_workspace_file_owner"));
+
+        service.saveFile(1000000001L, "MEMORY.md", "## new");
+
+        // Must fall back to updating the existing row, not propagate the exception.
+        org.mockito.Mockito.verify(fileMapper).updateById(raced);
+        assertThat(raced.getContent()).isEqualTo("## new");
+    }
+
+    @Test
+    @DisplayName("saveFile rethrows a duplicate-key error unrelated to the owner-scope index (no false recovery)")
+    void saveFileRethrowsUnrelatedDuplicateKey() {
+        when(fileMapper.selectOne(any(), org.mockito.ArgumentMatchers.anyBoolean())).thenReturn(null);
+        // A PRIMARY-key collision (not the uk_workspace_file_owner index) must
+        // NOT be swallowed as a concurrent first-write.
+        when(fileMapper.insert(any(WorkspaceFileEntity.class)))
+                .thenThrow(new org.springframework.dao.DuplicateKeyException(
+                        "Duplicate entry '42' for key 'PRIMARY'"));
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(
+                        () -> service.saveFile(1000000001L, "MEMORY.md", "## new"))
+                .isInstanceOf(org.springframework.dao.DuplicateKeyException.class);
+        org.mockito.Mockito.verify(fileMapper, org.mockito.Mockito.never())
+                .updateById(any(WorkspaceFileEntity.class));
     }
 
     // ---------- helpers ----------

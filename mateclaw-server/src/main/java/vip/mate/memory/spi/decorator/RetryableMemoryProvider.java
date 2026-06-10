@@ -20,10 +20,15 @@ public class RetryableMemoryProvider extends MemoryProviderDecorator {
 
     @Override
     public String prefetch(Long agentId, String userQuery) {
+        return prefetch(agentId, userQuery, null);
+    }
+
+    @Override
+    public String prefetch(Long agentId, String userQuery, String ownerKey) {
         Exception lastException = null;
         for (int attempt = 1; attempt <= maxAttempts; attempt++) {
             try {
-                return delegate.prefetch(agentId, userQuery);
+                return delegate.prefetch(agentId, userQuery, ownerKey);
             } catch (Exception e) {
                 lastException = e;
                 if (attempt < maxAttempts) {

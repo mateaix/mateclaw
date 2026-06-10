@@ -31,7 +31,7 @@
               >
                 <div class="list-row-name">
                   {{ wf.name || t('workflows.unnamed') }}
-                  <span v-if="wf.latestRevisionId" class="badge published">{{ t('workflows.publishedBadge', { rev: wf.latestRevisionId }) }}</span>
+                  <span v-if="wf.latestRevisionId" class="badge published">{{ t('workflows.publishedBadge', { rev: wf.latestRevisionNumber ?? '?' }) }}</span>
                   <span v-else class="badge draft">{{ t('workflows.draftBadge') }}</span>
                 </div>
                 <div class="list-row-desc">{{ wf.description || '-' }}</div>
@@ -46,6 +46,11 @@
               <input v-model="selected.name" class="editor-name" :placeholder="t('workflows.namePlaceholder')" />
               <input v-model="selected.description" class="editor-desc" :placeholder="t('workflows.descPlaceholder')" />
               <div class="editor-actions">
+                <span class="badge editor-state" :class="selected.latestRevisionId ? 'published' : 'draft'">
+                  {{ selected.latestRevisionId
+                      ? t('workflows.publishedBadge', { rev: selected.latestRevisionNumber ?? '?' })
+                      : t('workflows.draftBadge') }}
+                </span>
                 <button class="btn-ghost" :disabled="busy" @click="saveMeta">{{ t('workflows.actions.saveMeta') }}</button>
                 <button class="btn-ghost" :disabled="busy" @click="saveDraft">{{ t('workflows.actions.saveDraft') }}</button>
                 <button class="btn-ghost" :disabled="busy" @click="compile">{{ t('workflows.actions.compile') }}</button>
@@ -566,7 +571,10 @@ async function select(id: number) {
   try {
     const res = await workflowApi.get(id)
     selected.value = res.data as unknown as WorkflowSummary
-    draftJson.value = selected.value?.draftJson ?? ''
+    // Fall back to the latest published graph when the inline draft is empty —
+    // publishing clears draftJson on the backend, so without this the canvas
+    // and JSON editor would render empty for an already-published workflow.
+    draftJson.value = selected.value?.draftJson || selected.value?.publishedGraphJson || ''
     compileErrors.value = []
     lastStatus.value = ''
     await reloadRuns()
@@ -766,8 +774,13 @@ async function onPublishSubmit(payload: { note: string }) {
     await workflowApi.saveDraft(selected.value.id, draftJson.value)
     await workflowApi.publish(selected.value.id, payload.note || undefined)
     publishDialogOpen.value = false
-    setStatus(t('workflows.status.published'), 'ok')
     await reload()
+    // Re-fetch the just-published workflow so the canvas rebinds to the
+    // published graph — publish cleared draftJson, and select() now falls
+    // back to publishedGraphJson. setStatus runs last because select()
+    // resets lastStatus.
+    await select(selected.value.id)
+    setStatus(t('workflows.status.published'), 'ok')
   } catch (e) {
     handleCompileError(e)
     // Close the publish dialog on failure so the operator sees the
@@ -992,6 +1005,11 @@ watch(workspaceId, async () => {
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
+}
+/* Persistent published/draft state — sits at the row's left, actions to its right. */
+.editor-state {
+  align-self: center;
+  margin-right: auto;
 }
 .editor-toolbar {
   display: flex;

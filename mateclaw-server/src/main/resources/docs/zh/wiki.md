@@ -37,7 +37,7 @@ MateClaw 的 LLM Wiki **是同一个想法长成的产品**：
 
 一个知识库是三层结构叠起来的：
 
-1. **原始材料层**——你扔进去的文件。PDF、DOCX、纯文本、Markdown，或者桌面端扫描整个本地目录。系统保留原文不动；Wiki 里的任何一句话都能回溯到它出自哪段原文。
+1. **原始材料层**——你扔进去的文件。PDF、Word、Excel、PowerPoint、HTML、Markdown、纯文本（含 CSV），或者桌面端扫描整个本地目录。系统保留原文不动；Wiki 里的任何一句话都能回溯到它出自哪段原文。
 2. **Wiki 页面层**——AI 从原始材料里写出的结构化文章。每一页有标题、摘要、正文、指向相关页面的双向链接（`[[像这样]]`，也支持 `[[target|展示文字]]` alias 形式）、以及通往原文的来源指针。
 3. **Agent 表层**——Agent 调用 wiki 工具时，系统会把相关页面的摘要自动注入 prompt，正文按需读取。Agent **不读原文**，它读这本书。
 
@@ -51,7 +51,7 @@ MateClaw 的 LLM Wiki **是同一个想法长成的产品**：
 
 建好之后加材料：
 
-- **上传文件**——把 PDF、DOCX、Markdown、纯文本拖进上传区。每个文件成为一条 raw material。
+- **上传文件**——把 PDF、Word、Excel、PowerPoint、HTML、Markdown、纯文本（含 CSV）拖进上传区。每个文件成为一条 raw material。
 - **扫描本地目录**——桌面端专属。指一个文件夹，MateClaw 递归走完整个树，尊重 `.gitignore`，把能读出文本的全都导入。
 - **粘贴文本**——适合短片段或对话记录。
 
@@ -258,6 +258,8 @@ UI 上能做：
 | `wiki_related_pages` | 关联页面（共享 chunk / 共享原文 / 双向链 / 语义近邻） |
 | `wiki_explain_relation` | 详细拆解两页之间的关联强度和原因 |
 | `wiki_create_page` / `wiki_delete_page` | 直接维护页面（删除受 locked / system 保护） |
+| `wiki_update_page` | **1.5.0**：就地编辑一页（保留 slug），受 pageType "改" 权限门禁 |
+| `wiki_stale_pages` | **1.5.0**：列出当前所有被标记"待复核（stale）"的页 |
 | `wiki_archive_page` / `wiki_unarchive_page` | 软归档：从默认 list/search/related 隐藏，但保留页面与引文，可恢复。系统页不能归档。 |
 | `wiki_list_transformations` | 列出当前 KB 可用的加工器模板（名称、用途、是否默认运行）|
 | `wiki_apply_transformation` | 对一份**原始材料**运行一个模板，返回输出（runId / output / 落页信息）|
@@ -299,13 +301,11 @@ UI 上能做：
 
 #### 运维端点
 
-基础路径 `/api/v1/wiki/hot-cache`：
-
 | Method | Path | 作用 |
 |---|---|---|
-| `GET` | `/{kbId}` | 拿当前快照 + 元数据 |
-| `POST` | `/{kbId}/regenerate` | 手动重建（异步，跳过去抖） |
-| `DELETE` | `/{kbId}` | 软删除；下次事件触发重建 |
+| `GET` | `/api/v1/wiki/hot-cache/{kbId}` | 拿当前快照 + 元数据 |
+| `POST` | `/api/v1/wiki/hot-cache/{kbId}/regenerate` | 手动重建（异步，跳过去抖） |
+| `DELETE` | `/api/v1/wiki/hot-cache/{kbId}` | 软删除；下次事件触发重建 |
 
 热缓存数据落在 `mate_wiki_hot_cache`——具体列见下面的 **底层数据** 一节。
 
@@ -339,6 +339,166 @@ Agent: wiki_read_page("500-retry-policy")
 - system / locked 页面的删除按钮是禁用状态
 
 AI 写错了就改。你的修改在下一次入库时会被保留——`locked` 标记告诉 digester 别碰这段人写的内容。要让 AI 重新起草就显式解锁。
+
+---
+
+## Wikilink 与死链治理
+
+页面之间用 `[[slug]]` 写跨页引用，是 Wiki 这种长寿命知识资产的核心粘合剂。RFC 55 把这一层从 "[[Title]] 写起来好像也行、点了 404 才发现" 改成 **写入即校验、删除自动清理、死链显式可见**。
+
+### Wikilink 语法
+
+只承认一种契约：
+
+- `[[slug]]` —— 显示文本默认用目标页的 title
+- `[[slug|显示文本]]` —— 自定义显示文本，slug 仍是跳转目标
+
+slug 必须是真实存在页面的 slug。LLM 生成内容时索引里给的就是 slug-first 列表（`- [[slug]] — Title — Summary`），prompt 显式禁止发明索引外的 slug，并明示 `[[页面标题]]` / `[[Title]]` 这种早期写法会被识别为死链。
+
+跨大小写命中：`[[STATEGRAPH]]` 和 `[[stategraph]]` 一视同仁，都按 lowercased exact match 匹配 slug。
+
+### 同事务校验：`outgoing_links` + `broken_links`
+
+每次页面保存（手工编辑、AI 生成、合并、级联重写）的**同一个事务**内：
+
+1. 从正文里抽出所有 `[[...]]`（跳过 fenced 代码块、inline 代码）
+2. 写 `mate_wiki_page.outgoing_links`（去重、lowercased 字符串数组）
+3. 拿当前 KB 的活跃 slug 集合（不含 archived）做差集 → 写 `broken_links`
+4. 写 `broken_links_scanned_at` 时间戳
+
+效果：写完页面**立刻**就知道哪些 `[[...]]` 是死链，不需要等扫描。代码块和反引号里的 `[[...]]` 是讲解 wiki 语法的示例，被严格保留为字面，不进入 outgoing。
+
+### KB 级死链 lint
+
+进入任一 KB，顶部 banner 会显示当前死链状态。按"扫描死链"启动一次全 KB job：
+
+| Method | Path | 说明 |
+|---|---|---|
+| `POST /api/v1/wiki/knowledge-bases/{kbId}/lint/broken-links` | 启动 job（job-based 异步），返回 `{jobId, status, startedAt}`；同 KB 已有 running job 时幂等返回 |
+| `GET .../lint/broken-links` | 拉最近一次 completed 扫描的聚合结果 |
+| `GET .../lint/broken-links/jobs/{jobId}` | 查单次 job 状态 |
+
+聚合结果按页列出，每条带 `pageId / slug / title / brokenRefs`。前端 banner 把"已扫描 X 页，无死链"和"发现 N 条死链分布在 M 页"区分显示，点"查看"打开详情面板，可一键跳到出错的源页面去手工修。
+
+job 执行时间：100 页 KB 通常 1 秒以内；POST 入队 < 200ms。
+
+### 删除 / 重命名的级联清理
+
+**删页面**时，所有引用方的 `[[deleted-slug]]` 会在同一事务里被改写成纯文本，保留快照标题作为可读文字。带别名的 `[[deleted-slug|alias]]` 直接降级为 `alias`。引用方的 `outgoing_links` / `broken_links` 跟着重算。
+
+**重命名页面**：`POST /api/v1/wiki/knowledge-bases/{kbId}/pages/{slug}/rename` body `{"newSlug":"new"}`。同一事务里：
+
+- 自身 slug 更新为新值
+- 所有引用方的 `[[oldSlug]]` 改写成 `[[newSlug]]`，`[[oldSlug|alias]]` 改写成 `[[newSlug|alias]]`（alias 字节一致保留）
+- 引用方的 `outgoing_links` 同步更新
+
+不接受空 slug、不接受和自身相同的 slug、不接受和**别的**页面冲突的 slug；保护页（system / locked）拒改。case-only rename（`foo → FOO`）允许，跨 H2 与 MySQL 行为一致。
+
+每次 delete / rename 写一条 `mate_audit_event`（action `wiki.page.delete` / `wiki.page.rename`），`detailJson` 里带 `affectedPageIds` 列表，方便事后追溯影响面。
+
+紧急 kill-switch：`mate.wiki.cascade-delete-enabled=false` 关闭级联，回到只删自身行的旧行为；正常状态下不需要开启。
+
+### Chat 里点 wikilink 直接跳
+
+Chat 渲染 agent 回复时，content 里的 `[[slug]]` / `[[slug|alias]]` 会渲染成带 `data-wiki-title` 的 `<a class="wiki-link">`。点一下：
+
+1. App 级全局 click 委托抓到 click
+2. 调 `GET /api/v1/wiki/pages/lookup?title=X&slug=X` —— 在用户可见的所有 KB 里搜（slug 命中优先，title fallback）
+3. 1 hit → `router.push` 进 wiki 视图、自动选 KB、自动打开页面
+4. 0 hit → toast "未找到匹配的 wiki 页面：X"
+5. 多 hit → picker 让用户挑
+
+不再需要先去 wiki 视图、再找 KB、再找页面——chat 里看到的引用直接跳。lookup 严格 case-insensitive exact，不做 canonical 模糊，所以 LLM 写错 slug 会通过 toast 让你看到，而不是悄悄跳到一个"看起来像的"页面。
+
+### Phase 路线图（每个 phase 都已 land）
+
+| Phase | 主要变更 |
+|---|---|
+| 1 | 前端渲染层 slug-first DOM postprocess + 危险字符 guard + 全量 `pages/refs` |
+| 2 | V129 迁移 `broken_links` / `broken_links_scanned_at`，save 同事务写，KB 级 lint job + UI banner |
+| 3 | 9 份 wiki prompt 统一 `[[slug]]` 契约，索引格式 slug-first，batch-create existing/planned 二分 |
+| 4 | 删除 / 重命名级联清理，audit log，feature flag |
+| 5 | analyze 阶段输出 slug 白名单 `related_pages`（服务端二次校验），enrich applier 跳代码块 + slug 白名单 gate |
+
+完整设计与实测见仓库内对应的设计文档与端到端验证记录。
+
+---
+
+## 知识库会自维护（1.5.0）
+
+1.5.0 把 Wiki 从"一个能搜的知识库"推进成"一个会自己维护一致性、自己分层、自己跑流水线、能挂本地目录的知识引擎"。这一整块的管理入口在后台的 **Wiki 高级管理面板**（五个子页：页面类型档案 / 分层与失效 / 权限 / 知识源 watcher / 流水线）。
+
+### 知识分层：事实 vs 经验
+
+每页可以标一个**知识层**：
+
+- **`fact`（事实层）**——"是什么"：基础事实页。不标的默认按事实处理。
+- **`experience`（经验层）**——"意味着什么"：综合、分析、个人洞见，**依赖**一组事实页。
+
+**失效会传播。** 经验页声明它依赖哪些事实页（按页面 **id** 存边，所以改名不断链）。当某个事实页在 ingest 时被更新，所有依赖它的经验页自动被标记 `stale`（待复核）+ 一段失效原因。`wiki_stale_pages` 工具列出当前所有待复核的页；搜索可以**按知识层过滤**（只搜事实 / 只搜经验 / 全部）。
+
+底层：`mate_wiki_page` 加了 `knowledge_layer` / `depends_on_json` / `stale` / `stale_reason_json` 列（迁移 V135），依赖边存在 `mate_wiki_page_dependency` 表，带一个反向索引专门给失效传播用。
+
+### 页面类型档案（pageType profile）
+
+为一个知识库定义有哪些**页面类型**（如"概念 / 教程 / 决策记录"），每种类型可以带：
+
+- 结构化字段 **schema**——新页落库时按它校验元数据，并记下校验状态（valid / invalid + 详情）
+- **路由 / 创建 / 合并** 阶段的提示词——注入到对应阶段的 LLM 调用里
+- **Markdown 模板**——生成页面时的骨架
+
+每个 KB 至多一个**启用的** profile；没配的 KB 用**内建默认档案**。profile 用 YAML 或 JSON 写，有"校验（不落库）"和"重置为默认"两个动作。存在 `mate_wiki_page_type_profile` 表（迁移 V134），页面元数据列也在同一迁移里加到 `mate_wiki_page`（`metadata_json` / `metadata_validation_status` / `template_key` / `profile_version`）。
+
+### 页面类型权限（per-agent）
+
+可以为"**某个员工 + 某个 KB + 某种页面类型**"配读 / 增 / 改 / 删四个开关，外加**写策略**：
+
+| 写策略 | 含义 |
+|---|---|
+| `allow` | 立即写 |
+| `approval_required` | 写入挂起，走[审批](./security)流程 |
+| `deny` | 禁止 |
+
+`page_type='*'` 是 KB 级默认，**精确匹配优先于通配**。
+
+**读和写的默认回退不一样**，这点要分清：
+
+- **读**——没匹配到规则时，回退到 **KB 级默认读策略** `defaultReadPolicy`（默认 `allow_all`，除非 KB 配成 `deny_all`）。所以升级后已有 KB 仍然全可读。读门禁过滤列表和搜索结果，不可读的类型直接当不存在（不泄露存在性）。
+- **写**——是 opt-in 收紧的。一个员工对某 KB **没配任何规则**时，写默认 `allow`（旧行为不变）；一旦配了**任意一条**规则，这个 KB 就进入"锁定"模式——没匹配到规则的页面类型按 `deny` 处理（fail-safe）。
+
+存在 `mate_wiki_agent_page_type_permission` 表（迁移 V133）。
+
+### 处理流水线（Wiki Pipeline）
+
+给知识库定义一段处理流程，由**页面事件自动触发**：
+
+- **触发器**：`page_type_count`（某类页面数量达到阈值）、`page_created`（新建某类页面）、`stale_marked`（页面被标记失效）
+- **步骤执行器**：
+  - `llm`——把输入过一遍模型，模型输出作为本步结果
+  - `skill`——在**受限技能集**内跑一个技能，以 owner agent 身份执行
+
+定义用 YAML 或 JSON 写，有 CRUD + 校验接口。每次运行（run）和每一步（step run）都有持久化记录可查，按 `(definition, trigger, subject, bucket)` 去重保证幂等。表：`mate_wiki_pipeline_definition` / `mate_wiki_pipeline_run` / `mate_wiki_pipeline_step_run`（迁移 V136）。
+
+### 本地目录挂成知识源——可插拔 + 定时增量
+
+知识源做成了**可插拔 SPI**（`WikiIngestSourceProvider`），内建一个文件系统实现：给 KB 配一个 `source_directory`，目录里的文件就被吸进知识库。
+
+- **定时增量同步**——后台调度器（用分布式锁保证多节点只跑一份）周期扫描，**按内容哈希**检测变更，只重新吸入新增 / 改动的文件（文本和二进制都覆盖）。
+- **安全 fail-closed**——路径先规范化再解析软链（堵 TOCTOU），按允许根目录白名单校验；生产 profile 下空白名单默认拒绝一切。配 `mate.wiki.allowed-source-roots` 白名单。
+- **状态可查 + 手动触发**——`GET .../source-watcher` 看状态，`POST .../source-watcher/scan` 立即扫一次。
+
+相关配置（`application.yml`）：
+
+```yaml
+mate:
+  wiki:
+    watcher-enabled: false          # 知识源 watcher 总开关
+    watcher-interval-ms: 300000     # 扫描间隔（默认 5 分钟）
+    allowed-source-roots: []        # 允许的源目录根（白名单）
+    require-allowed-roots: false    # 生产建议设 true：空白名单则拒绝一切
+```
+
+全部新增 REST 端点见 [API 参考](./api#llm-wiki)。
 
 ---
 

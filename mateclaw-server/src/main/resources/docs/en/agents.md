@@ -116,6 +116,55 @@ An agent doesn't work alone. One agent can delegate to another — or to **three
 
 Example: coding agent takes the Jira ticket, research agent pulls competitor data, writing agent drafts the Slack reply. Three in parallel, results flow back to the orchestrator.
 
+### Multi-level subagent delegation tree
+
+::: tip New in 1.4.0
+Delegation is no longer flat. A parent employee can delegate to children, and those children can delegate further — **recursively, up to 3 levels deep**. A temporary team can grow its own hierarchy for a specific task.
+:::
+
+Three delegation tools, one per cadence:
+
+- **`delegateToAgent`** — synchronous. Hand a sub-task to a specific employee, wait for it to finish, and return only after the child's final result. Optional `inheritParentContext` carries the parent conversation's recent context to the child, so you don't have to re-explain the background.
+- **`delegateParallel`** — fan out. Delegate to several children at once; each runs in its own isolated session and the results are collected together.
+- **`delegateAsync`** — background. Returns a `task_id` immediately while the child runs in the background; fetch the result later with **`taskOutput`**. `taskOutput` has an **attribution gate** — only the **same conversation + the same user** that spawned the task can read its result, preventing cross-conversation / cross-user leakage.
+
+Children deny a default set of tools so the tree can't run away:
+
+- `delegateToAgent` / `delegateParallel` (recursion guard — children can't launch their own synchronous/parallel delegations, avoiding a delegation storm)
+- the `setGoal` family + the `remember` family (goal and memory ownership stays with the parent)
+- `create_employee` (children can't conjure new employees)
+
+This default deny list is tunable via `mateclaw.delegation.child-denied-tools`.
+
+Delegation pairs with the [Goals](./goals) system — the parent sets goals, breaks the work down, and delegates sub-tasks; children focus on execution.
+
+### UI — nested subagent timeline + always-on plan panel
+
+The ChatConsole draws the whole delegation tree, not a flat log:
+
+- **Delegation start** is marked clearly
+- Each child shows its **name / depth / task excerpt**
+- **Completion badges**: success / timeout / error, plus duration and content length
+- Every subagent has a stable **id + parentId + depth**, so the nesting is legible in the timeline — you can see exactly who delegated to whom
+- **The plan panel is always on** — no longer Plan-and-Execute only; delegation-tree progress folds into the same panel
+
+---
+
+## Build a team from one sentence: the digital-employee builder skill
+
+::: tip New in 1.4.0
+Don't want to create employees one at a time? Give it a sentence and let the "digital-employee builder" skill assemble the whole team for you.
+:::
+
+The skill starts from your one sentence and runs the full chain:
+
+1. **Clarify the requirement** — it pins down the vague sentence first, confirming the problem you're actually trying to solve
+2. **Design the roles** — breaks it into **2 to 6** complementary roles
+3. **Create each one** — calls `create_employee` per role to produce real, usable employees
+4. **Chain them into a workflow draft** — links the employees into a [workflow](./workflow) draft you can tweak right away
+
+The companion tool **`list_capability_catalog`** lets the skill survey which tools / skills / knowledge bases the deployment has available before assigning capabilities to roles. Created employees are **enabled on creation** — no extra toggle to flip.
+
 ---
 
 ## Deep thinking
@@ -165,6 +214,41 @@ Open the digital-employee editor's Tools tab and you get:
 UI: `Agents → pick employee → Tools`.
 
 Implementation details: see [MCP](./mcp#per-agent-tool-binding).
+
+### Knowledge base binding (per-agent primary KB)
+
+::: tip New in 1.5.0
+The employee editor has a new "Knowledge Base" tab where you can pick a **primary KB** for each employee. Knowledge bases stay workspace-shared — binding only declares "this is the one I default to," it doesn't restrict other employees' access.
+:::
+
+**Short version: each employee can pick one knowledge base as their "primary KB" — the default they query. Or pick none.**
+
+The model (worth reading once so it doesn't surprise you later):
+
+- **Knowledge bases are workspace-shared.** A KB belongs to the workspace it was created in; every employee in that workspace can see it. Binding a KB to an employee does **not** make it exclusive — other employees can still use it
+- **The "primary KB" is just a default.** It tells the wiki tools (`wiki_search` / `wiki_read` / `wiki_backlinks` / ...): "when the caller doesn't specify `kbName` / `kbId`, use this one"
+- **Multiple employees can pick the same KB as primary.** They don't interfere — each one's binding is its own, the KB itself isn't mutated
+- **Not binding is fine.** With no primary set, the runtime falls back to the most-recently-updated KB in the workspace
+
+UI: `Employees → pick employee → Edit → Knowledge Base`.
+
+| Option | Behavior |
+|--------|----------|
+| **🚫 No primary KB** | Clear the binding; the next time the employee's wiki tools omit `kbName`, the runtime falls back to the workspace's most-recently-active KB |
+| **📚 &lt;KB name&gt;** | Set this KB as primary; wiki tools default to it. The row also shows the KB's page count |
+
+Each row shows: icon, name, description, page count. The list is the **full set** of KBs in the current workspace — including ones already picked as primary by other employees.
+
+#### How the runtime decides "which KB to read"
+
+When an employee invokes a wiki tool, the resolution order is:
+
+1. The tool call explicitly carried `kbName` / `kbId` — use that
+2. No explicit target → check the employee's `primaryKbId`; if it points to a workspace-visible KB, use that
+3. No `primaryKbId` either → pick the most-recently-updated KB from the workspace's visible set
+4. The workspace has zero KBs → tool returns empty, the LLM decides what to do next
+
+Migration note: early versions persisted the binding on `mate_wiki_knowledge_base.agent_id` (one-to-one, exclusive semantics). Starting with the V130 migration, every legacy `kb.agent_id` is backfilled into the corresponding `agent.primary_kb_id`; the old column stays around as a read-only fallback, but new writes only touch `agent.primary_kb_id`. If you relied on `kb.agent_id` to isolate a KB to a specific agent, revisit those bindings in the editor — KBs are now visible to every employee in the workspace.
 
 ### System prompt best practices
 
@@ -233,6 +317,7 @@ Why the turn ended:
 These are things the runtime does so agents don't fail in ways you'd have to debug:
 
 - **Context pruning** — when the context window gets too full, earlier turns get summarized by the LLM and the summary replaces them. Cached for 30 minutes. Injected as a user message, not a system message, to prevent prompt injection from historical content.
+- **Structured compaction (on prompt-too-long)** — when the model returns "prompt too long," the runtime walks a four-stage escalation: **soft trim → hard clear → pre-prune → LLM structured summary**. At every stage it **always preserves the prefix** — the system prompt + the goal anchor stay intact — and injects the final summary as a UserMessage. Delegation tool results are **never compacted** (they're a child's hard-won output; lose them and they're gone). After a failed summary there's a **10-minute cooldown**, so the runtime won't keep hammering the LLM inside the same over-budget turn.
 - **Thinking recovery** — if a stream breaks mid-response, the partial thinking and content persist and show up when the conversation reloads.
 - **Iteration limit handler** — instead of crashing when `max_iterations` is hit, the runtime forces a best-effort summary answer.
 - **Stale stream cleanup** — every open SSE stream is tracked, abandoned ones are reaped automatically.

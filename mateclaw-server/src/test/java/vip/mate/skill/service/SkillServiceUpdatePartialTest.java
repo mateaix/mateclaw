@@ -3,6 +3,7 @@ package vip.mate.skill.service;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import vip.mate.skill.lifecycle.SkillLifecycleService;
 import vip.mate.skill.model.SkillEntity;
 import vip.mate.skill.repository.SkillMapper;
 import vip.mate.skill.runtime.SkillRuntimeService;
@@ -60,7 +61,8 @@ class SkillServiceUpdatePartialTest {
         SkillService service = new SkillService(
                 mapper, mock(vip.mate.skill.repository.SkillFileMapper.class),
                 workspaceManager, workspaceProps, secretService,
-                mock(org.springframework.context.ApplicationEventPublisher.class));
+                mock(org.springframework.context.ApplicationEventPublisher.class),
+                mock(SkillLifecycleService.class));
         service.setRuntimeService(runtimeService);
 
         SkillEntity existing = new SkillEntity();
@@ -139,7 +141,8 @@ class SkillServiceUpdatePartialTest {
         SkillService service = new SkillService(
                 mapper, mock(vip.mate.skill.repository.SkillFileMapper.class),
                 workspaceManager, workspaceProps, secretService,
-                mock(org.springframework.context.ApplicationEventPublisher.class));
+                mock(org.springframework.context.ApplicationEventPublisher.class),
+                mock(SkillLifecycleService.class));
         service.setRuntimeService(runtimeService);
 
         SkillEntity existing = new SkillEntity();

@@ -43,6 +43,22 @@ export interface Agent {
   enabled: boolean
   icon?: string
   tags?: string
+  workspaceBasePath?: string | null
+  /** Agent-level primary wiki KB. Null means use workspace fallback. */
+  primaryKbId?: string | number | null
+  /**
+   * Explicit opt-out: drop every SKILL.md catalog entry from the system
+   * prompt and exclude skill-expanded tools. Independent of binding rows
+   * (when `true`, the agent is treated as "no skills" regardless of any
+   * leftover `mate_agent_skill` rows). Defaults to `false`.
+   */
+  skillsDisabled?: boolean
+  /**
+   * Explicit opt-out: exclude every non-system-level tool from the agent's
+   * effective set and suppress MCP auto-include. System-level memory and
+   * delegation primitives still pass through. Defaults to `false`.
+   */
+  toolsDisabled?: boolean
   createTime?: string
   updateTime?: string
 }
@@ -66,6 +82,10 @@ export interface Conversation {
   streamStatus?: 'idle' | 'running'
   source?: string
   pinned?: number
+  /** Provider id of the model this conversation is pinned to (per-conversation model). */
+  modelProvider?: string
+  /** Model id this conversation is pinned to. Paired with modelProvider. */
+  modelName?: string
   lastActiveTime?: string
   updateTime?: string
   createTime?: string
@@ -123,6 +143,34 @@ export interface PlanMeta {
   stepResults?: { result: string; status: string }[]
 }
 
+/** One tool the subagent called, shown in the nested delegation timeline. */
+export interface DelegationToolEntry {
+  name: string
+  status: 'running' | 'completed' | 'error'
+}
+
+/**
+ * A subagent at depth >= 2 in the delegation tree (a grandchild and deeper).
+ * Built on the frontend from the flat delegation_* event stream, keyed by
+ * subagentId and nested by parentSubagentId.
+ */
+export interface DelegationNode {
+  subagentId: string
+  agentName: string
+  status: 'running' | 'completed' | 'error'
+  depth: number
+  task?: string
+  plan?: PlanMeta
+  tools?: DelegationToolEntry[]
+  result?: string
+  durationMs?: number
+  /** Heartbeat watchdog flagged this subagent as making no observable progress. */
+  stale?: boolean
+  /** Spawned via fire-and-forget delegation: runs detached, result via task_output. */
+  async?: boolean
+  children: DelegationNode[]
+}
+
 export interface PendingApprovalMeta {
   pendingId: string
   toolName: string
@@ -164,6 +212,22 @@ export interface MessageSegment {
   approval?: PendingApprovalMeta
   /** type=plan */
   plan?: PlanMeta
+  /**
+   * For delegation segments (toolName starts with "→"): the subagent's own
+   * activity, relayed from the child conversation. Renders as a nested timeline
+   * (its plan checklist + the tools it called + any grandchildren it delegated)
+   * instead of jammed text in toolArgs. The depth-1 child is the segment itself;
+   * `children` holds depth-2+ subagents as a recursive tree.
+   */
+  childTimeline?: {
+    plan?: PlanMeta
+    tools?: DelegationToolEntry[]
+    children?: DelegationNode[]
+  }
+  /** For a delegation segment: heartbeat flagged the subagent as stalled (no progress). */
+  delegationStale?: boolean
+  /** For a delegation segment: spawned fire-and-forget, runs detached (result via task_output). */
+  delegationAsync?: boolean
   /** 时间戳 */
   timestamp?: number
   /**
@@ -281,6 +345,14 @@ export interface Skill {
   securityScanResult?: string
   /** RFC-042 §2.3 — wall-clock time of the last scan */
   securityScanTime?: string
+  /** Lifecycle curator state: 'active' / 'stale' / 'archived' */
+  lifecycleState?: string
+  /** User-pinned skill — exempt from automatic archival */
+  pinned?: boolean
+  /** Last activity timestamp — drives the curator's idle window */
+  lastActivityAt?: string
+  /** When the curator moved this skill to archived state */
+  archivedAt?: string
 }
 
 /** 运行时解析状态（来自 /runtime/status） */
@@ -447,11 +519,16 @@ export interface Tool {
   description?: string
   beanName?: string
   toolType: string
+  /** Runtime @Tool function names shown to the model, when resolvable. */
+  runtimeNames?: string[]
   icon?: string
   mcpEndpoint?: string
   paramsSchema?: string
   enabled: boolean
   builtin?: boolean
+  /** Progressive-disclosure tier: 'core' | 'extension'. Null/absent = core. */
+  disclosureTier?: string
+  channelId?: string | number
   createTime: string
 }
 
@@ -943,4 +1020,93 @@ export interface CronJob {
   deliveryConfig?: { targetId?: string | null; threadId?: string | null; accountId?: string | null } | null
   lastDeliveryStatus?: 'NONE' | 'PENDING' | 'DELIVERED' | 'NOT_DELIVERED'
   lastDeliveryError?: string | null
+}
+
+// ==================== Approval Auto-Grant ====================
+
+export type GrantScope = 'USER' | 'AGENT' | 'CONVERSATION' | 'WORKSPACE'
+export type GrantKind = 'ALWAYS' | 'UNTIL_TIMESTAMP' | 'UNTIL_CONVERSATION_END'
+export type GrantSeverity = 'LOW' | 'MEDIUM' | 'HIGH'
+export type ResolutionDecisionSource = 'USER_MANUAL' | 'AUTO_GRANT' | 'HARD_BLOCK' | 'TIMEOUT'
+
+/**
+ * A user-authorized rule that lets ApprovalGrantResolver skip the manual
+ * approval step for matching tool calls. All snowflake-typed fields are
+ * strings end-to-end per CLAUDE.md precision convention.
+ */
+export interface ApprovalGrant {
+  id: string
+  workspaceId: string
+  scopeType: GrantScope
+  scopeId: string
+  toolName: string | null
+  ruleId: string | null
+  maxSeverity: GrantSeverity
+  grantKind: GrantKind
+  expireAt: string | null
+  grantedBy: string
+  /** Display name (nickname → username) of the granter; null if the user was deleted. */
+  grantedByName?: string | null
+  grantedAt: string
+  revoked: number
+  revokedBy: string | null
+  revokedAt: string | null
+  note: string | null
+}
+
+/** Active-grant summary for the global chip + ChatInput pill counters. */
+export interface ActiveGrantsSummary {
+  count: number
+  hasWorkspaceWide: boolean
+}
+
+/**
+ * Paged response shape from /approval/grants. Mirrors the MyBatis Plus
+ * {@code IPage} JSON layout already used by skills and other paged endpoints in
+ * mateclaw. {@code total/size/current/pages} arrive as JSON strings because the
+ * global Long→String serializer catches them; the consumer coerces via
+ * {@code Number(...)} at the use site so the el-pagination component gets numbers.
+ */
+export interface ApprovalGrantPage {
+  records: ApprovalGrant[]
+  total: number | string
+  size: number | string
+  current: number | string
+  pages: number | string
+}
+
+/**
+ * Approval-layer final decision row. workspaceId can be null for HARD_BLOCK
+ * events that fired before workspace resolution.
+ */
+export interface ResolutionLog {
+  id: string
+  workspaceId: string | null
+  conversationId: string | null
+  agentId: string | null
+  userId: string | null
+  toolCallId: string | null
+  toolName: string
+  maxSeverity: GrantSeverity | null
+  ruleIds: string | null
+  decisionSource: ResolutionDecisionSource
+  grantId: string | null
+  pendingId: string | null
+  argsPreview: string | null
+  note: string | null
+  createTime: string
+}
+
+/** Payload for POST /approval/grants. */
+export interface CreateGrantPayload {
+  scopeType: GrantScope
+  scopeId: string
+  toolName?: string | null
+  ruleId?: string | null
+  maxSeverity: GrantSeverity
+  grantKind: GrantKind
+  expireAt?: string | null
+  note?: string | null
+  /** Required when scope+toolName combination is admin+password (see §2.4.5). */
+  password?: string
 }

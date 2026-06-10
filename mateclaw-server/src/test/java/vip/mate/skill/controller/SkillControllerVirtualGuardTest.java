@@ -25,7 +25,8 @@ import static org.mockito.Mockito.when;
 class SkillControllerVirtualGuardTest {
 
     private final SkillController controller = new SkillController(
-            null, null, null, null, null, null, null, null, null, null, null, null, null);
+            null, null, null, null, null, null, null, null, null, null, null, null, null,
+            null, null, null);
 
     @Test
     @DisplayName("update on a virtual MCP skill id is rejected before hitting the service")
@@ -64,7 +65,7 @@ class SkillControllerVirtualGuardTest {
         McpSkillBridge bridge = mock(McpSkillBridge.class);
         SkillController c = new SkillController(
                 null, null, null, null, null, null, null, null, null, null, null,
-                bridge, null);
+                bridge, null, null, null, null);
         long virtualMcpId = McpSkillBridge.VIRTUAL_ID_BASE + 42L;
         SkillEntity toggled = new SkillEntity();
         toggled.setName("github");
@@ -96,7 +97,8 @@ class SkillControllerVirtualGuardTest {
         // not the guard.
         SkillController real = new SkillController(
                 mock(vip.mate.skill.service.SkillService.class),
-                null, null, null, null, null, null, null, null, null, null, null, null);
+                null, null, null, null, null, null, null, null, null, null, null, null,
+                null, null, null);
         long snowflakeId = 1_900_000_001_000_000_902L;
         // updateSkill on a mocked SkillService returns null without throwing,
         // which is fine — we just need to confirm the guard didn't fire.

@@ -5,9 +5,13 @@ import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.stereotype.Component;
+import vip.mate.agent.context.ChatOrigin;
+import vip.mate.memory.MemoryProperties;
+import vip.mate.memory.identity.MemoryOwnerResolver;
 import vip.mate.memory.service.MemoryRecallTracker;
 import vip.mate.workspace.document.MemorySearchHit;
 import vip.mate.workspace.document.WorkspaceFileService;
@@ -32,6 +36,22 @@ public class WorkspaceMemoryTool {
 
     private final WorkspaceFileService workspaceFileService;
     private final MemoryRecallTracker memoryRecallTracker;
+    private final MemoryOwnerResolver memoryOwnerResolver;
+    private final MemoryProperties memoryProperties;
+
+    /** Owner key for reads: always the resolved requester (visibility = shared + own personal). */
+    private String readOwner(ToolContext ctx) {
+        return memoryOwnerResolver.resolve(ChatOrigin.from(ctx));
+    }
+
+    /**
+     * Owner key for writes: the resolved requester only when per-owner isolation
+     * is active (lifecycle prefetch on); otherwise null so the write lands in
+     * the shared bucket and is not stranded in an un-read PERSONAL row.
+     */
+    private String writeOwner(ToolContext ctx) {
+        return memoryProperties.isLifecycleMediatorEnabled() ? readOwner(ctx) : null;
+    }
 
     @Tool(description = """
             列出指定 Agent 的数据库工作区记忆文件。
@@ -40,13 +60,14 @@ public class WorkspaceMemoryTool {
             """)
     public String list_workspace_memory_files(
             @ToolParam(description = "当前 Agent 的 ID") Long agentId,
-            @ToolParam(description = "可选：按文件名前缀过滤，例如 memory/ 或 MEM", required = false) String filenamePrefix) {
+            @ToolParam(description = "可选：按文件名前缀过滤，例如 memory/ 或 MEM", required = false) String filenamePrefix,
+            ToolContext toolContext) {
 
         if (agentId == null) {
             return error("agentId 不能为空");
         }
 
-        List<WorkspaceFileEntity> files = workspaceFileService.listFiles(agentId).stream()
+        List<WorkspaceFileEntity> files = workspaceFileService.listVisibleFiles(agentId, readOwner(toolContext)).stream()
                 .filter(file -> filenamePrefix == null || filenamePrefix.isBlank()
                         || (file.getFilename() != null && file.getFilename().startsWith(filenamePrefix)))
                 .sorted(Comparator
@@ -78,14 +99,15 @@ public class WorkspaceMemoryTool {
             """)
     public String read_workspace_memory_file(
             @ToolParam(description = "当前 Agent 的 ID") Long agentId,
-            @ToolParam(description = "工作区文件名，例如 MEMORY.md、PROFILE.md、memory/2026-03-31.md") String filename) {
+            @ToolParam(description = "工作区文件名，例如 MEMORY.md、PROFILE.md、memory/2026-03-31.md") String filename,
+            ToolContext toolContext) {
 
         String validation = validate(agentId, filename);
         if (validation != null) {
             return error(validation);
         }
 
-        WorkspaceFileEntity file = workspaceFileService.getFile(agentId, filename);
+        WorkspaceFileEntity file = workspaceFileService.getVisibleFile(agentId, filename, readOwner(toolContext));
         if (file == null) {
             return error("工作区文件不存在: " + filename);
         }
@@ -116,15 +138,17 @@ public class WorkspaceMemoryTool {
     public String write_workspace_memory_file(
             @ToolParam(description = "当前 Agent 的 ID") Long agentId,
             @ToolParam(description = "工作区文件名，例如 MEMORY.md、PROFILE.md、memory/2026-03-31.md") String filename,
-            @ToolParam(description = "要写入的完整 Markdown 内容") String content) {
+            @ToolParam(description = "要写入的完整 Markdown 内容") String content,
+            ToolContext toolContext) {
 
         String validation = validate(agentId, filename);
         if (validation != null) {
             return error(validation);
         }
 
-        WorkspaceFileEntity before = workspaceFileService.getFile(agentId, filename);
-        WorkspaceFileEntity saved = workspaceFileService.saveFile(agentId, filename, content != null ? content : "");
+        String ownerKey = writeOwner(toolContext);
+        WorkspaceFileEntity before = workspaceFileService.getVisibleFile(agentId, filename, ownerKey);
+        WorkspaceFileEntity saved = workspaceFileService.saveVisibleFile(agentId, filename, content != null ? content : "", ownerKey);
 
         JSONObject result = new JSONObject();
         result.set("agentId", agentId);
@@ -149,7 +173,8 @@ public class WorkspaceMemoryTool {
             @ToolParam(description = "工作区文件名，例如 MEMORY.md、PROFILE.md、memory/2026-03-31.md") String filename,
             @ToolParam(description = "要查找的原始文本，要求精确匹配") String oldText,
             @ToolParam(description = "替换后的新文本") String newText,
-            @ToolParam(description = "是否替换全部匹配项，默认 false", required = false) Boolean replaceAll) {
+            @ToolParam(description = "是否替换全部匹配项，默认 false", required = false) Boolean replaceAll,
+            ToolContext toolContext) {
 
         String validation = validate(agentId, filename);
         if (validation != null) {
@@ -165,7 +190,8 @@ public class WorkspaceMemoryTool {
             return error("oldText 和 newText 相同，无需替换");
         }
 
-        WorkspaceFileEntity existing = workspaceFileService.getFile(agentId, filename);
+        String ownerKey = writeOwner(toolContext);
+        WorkspaceFileEntity existing = workspaceFileService.getVisibleFile(agentId, filename, ownerKey);
         if (existing == null) {
             return error("工作区文件不存在: " + filename);
         }
@@ -187,7 +213,7 @@ public class WorkspaceMemoryTool {
             replacements = 1;
         }
 
-        workspaceFileService.saveFile(agentId, filename, updated);
+        workspaceFileService.saveVisibleFile(agentId, filename, updated, ownerKey);
 
         JSONObject result = new JSONObject();
         result.set("agentId", agentId);
@@ -211,7 +237,8 @@ public class WorkspaceMemoryTool {
             @ToolParam(description = "关键词或短语，2-64 字符") String query,
             @ToolParam(description = "搜索范围：all（全部）/ memory（MEMORY.md 与 memory/）/ profile / persona，默认 all",
                     required = false) String scope,
-            @ToolParam(description = "返回的最大命中数，默认 10，上限 30", required = false) Integer limit) {
+            @ToolParam(description = "返回的最大命中数，默认 10，上限 30", required = false) Integer limit,
+            ToolContext toolContext) {
 
         if (agentId == null) {
             return error("agentId 不能为空");
@@ -230,8 +257,11 @@ public class WorkspaceMemoryTool {
         int effectiveLimit = limit == null ? 10 : Math.min(Math.max(limit, 1), 30);
         Set<String> prefixes = resolveScope(scope);
 
+        // Restrict hits to memory the current requester may see: shared memory
+        // plus this owner's PERSONAL memory only.
+        String ownerKey = readOwner(toolContext);
         List<MemorySearchHit> hits = workspaceFileService.searchSnippets(
-                agentId, trimmed, prefixes, effectiveLimit);
+                agentId, trimmed, prefixes, effectiveLimit, ownerKey);
 
         // Treat each unique file in the results as an active retrieval signal —
         // boosts that file's weight in the dream-consolidation ranker the same
@@ -239,7 +269,9 @@ public class WorkspaceMemoryTool {
         Set<String> retrieved = new HashSet<>();
         for (MemorySearchHit hit : hits) {
             if (retrieved.add(hit.filename())) {
-                WorkspaceFileEntity file = workspaceFileService.getFile(agentId, hit.filename());
+                // Read the same visible row the hit came from (the owner's
+                // PERSONAL row when present) so PERSONAL hits track correctly.
+                WorkspaceFileEntity file = workspaceFileService.getVisibleFile(agentId, hit.filename(), ownerKey);
                 if (file != null && file.getContent() != null) {
                     memoryRecallTracker.trackActiveRetrieval(agentId, hit.filename(), file.getContent());
                 }

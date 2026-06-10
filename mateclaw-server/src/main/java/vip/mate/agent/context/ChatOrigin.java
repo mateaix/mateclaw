@@ -38,7 +38,35 @@ public record ChatOrigin(
         // runner. An explicit discriminator (rather than inferring from
         // requesterId/channelId) so the runtime can branch on "is this a cron
         // run" without coupling to factory internals.
-        boolean cronOrigin
+        boolean cronOrigin,
+        /**
+         * Display name of the user that sent the inbound IM message. Used by
+         * the prompt-context injector so the agent's system prompt can
+         * personalise replies ("You are talking to {{senderName}}"). Null
+         * for non-IM origins (web, cron). {@code requesterId} carries the
+         * stable identifier; this one is purely the human-readable surface.
+         */
+        @Nullable String senderName,
+        /**
+         * Source channel type ("feishu" / "wecom" / "dingtalk" / ...).
+         * Lets the agent know which platform it's responding on, e.g. to
+         * tailor formatting or hint at supported features.
+         */
+        @Nullable String channelType,
+        /**
+         * Group / chat identifier for IM channels — distinguishes private
+         * vs. group conversations. Null for 1:1 chats. Distinct from
+         * {@link #channelTarget()} (which targets cron / proactive sends).
+         */
+        @Nullable String chatId,
+        /**
+         * Public base URL ({@code scheme://host[:port][/contextPath]}) resolved
+         * from the inbound HTTP request on the request thread. Carried here so
+         * tools running on async/streaming threads — where no request is bound —
+         * can still mint absolute download links. Null for IM/cron origins, which
+         * have no request host; those rely on {@code mateclaw.server.public-base-url}.
+         */
+        @Nullable String baseUrl
 ) {
 
     /** Key used when this origin is wrapped into a Spring AI {@link ToolContext}. */
@@ -46,7 +74,7 @@ public record ChatOrigin(
 
     /** Sentinel used by AgentService default overloads where no origin is supplied. */
     public static final ChatOrigin EMPTY =
-            new ChatOrigin(null, null, "", null, null, null, null, false);
+            new ChatOrigin(null, null, "", null, null, null, null, false, null, null, null, null);
 
     // ---------------- Factories per entry point ----------------
 
@@ -54,9 +82,17 @@ public record ChatOrigin(
                                  @Nullable String requesterId,
                                  @Nullable Long workspaceId,
                                  @Nullable String workspaceBasePath) {
+        return web(conversationId, requesterId, workspaceId, workspaceBasePath, null);
+    }
+
+    public static ChatOrigin web(@Nullable String conversationId,
+                                 @Nullable String requesterId,
+                                 @Nullable Long workspaceId,
+                                 @Nullable String workspaceBasePath,
+                                 @Nullable String baseUrl) {
         return new ChatOrigin(null, conversationId,
                 requesterId != null ? requesterId : "",
-                workspaceId, workspaceBasePath, null, null, false);
+                workspaceId, workspaceBasePath, null, null, false, null, "web", null, baseUrl);
     }
 
     public static ChatOrigin cron(@Nullable String conversationId,
@@ -65,25 +101,49 @@ public record ChatOrigin(
                                   @Nullable Long channelId,
                                   @Nullable ChannelTarget target) {
         return new ChatOrigin(null, conversationId, "system",
-                workspaceId, workspaceBasePath, channelId, target, true);
+                workspaceId, workspaceBasePath, channelId, target, true, null, null, null, null);
     }
 
     // ---------------- Wither-style updates ----------------
 
     public ChatOrigin withAgent(@Nullable Long newAgentId) {
         return new ChatOrigin(newAgentId, conversationId, requesterId,
-                workspaceId, workspaceBasePath, channelId, channelTarget, cronOrigin);
+                workspaceId, workspaceBasePath, channelId, channelTarget, cronOrigin,
+                senderName, channelType, chatId, baseUrl);
     }
 
     public ChatOrigin withWorkspace(@Nullable Long newWorkspaceId,
                                     @Nullable String newWorkspaceBasePath) {
         return new ChatOrigin(agentId, conversationId, requesterId,
-                newWorkspaceId, newWorkspaceBasePath, channelId, channelTarget, cronOrigin);
+                newWorkspaceId, newWorkspaceBasePath, channelId, channelTarget, cronOrigin,
+                senderName, channelType, chatId, baseUrl);
     }
 
     public ChatOrigin withConversationId(@Nullable String newConversationId) {
         return new ChatOrigin(agentId, newConversationId, requesterId,
-                workspaceId, workspaceBasePath, channelId, channelTarget, cronOrigin);
+                workspaceId, workspaceBasePath, channelId, channelTarget, cronOrigin,
+                senderName, channelType, chatId, baseUrl);
+    }
+
+    /** Carry a request-derived public base URL (see {@link #baseUrl()}). */
+    public ChatOrigin withBaseUrl(@Nullable String newBaseUrl) {
+        return new ChatOrigin(agentId, conversationId, requesterId,
+                workspaceId, workspaceBasePath, channelId, channelTarget, cronOrigin,
+                senderName, channelType, chatId, newBaseUrl);
+    }
+
+    /**
+     * Carry the inbound message's sender display name, source channel
+     * type, and chat (group) id. Called by the channel-side origin
+     * factory so prompt-context injection can show the agent "who"
+     * is talking and "where".
+     */
+    public ChatOrigin withSender(@Nullable String newSenderName,
+                                  @Nullable String newChannelType,
+                                  @Nullable String newChatId) {
+        return new ChatOrigin(agentId, conversationId, requesterId,
+                workspaceId, workspaceBasePath, channelId, channelTarget, cronOrigin,
+                newSenderName, newChannelType, newChatId, baseUrl);
     }
 
     // ---------------- Spring AI ToolContext interop ----------------

@@ -7,7 +7,7 @@ import java.nio.file.Path;
 
 /**
  * 技能文件访问策略
- * 确保只能访问 skillDir 内的 references/ 和 scripts/ 文件
+ * 确保只能访问 skillDir 内的 references/、scripts/ 和 templates/ 文件
  */
 @Slf4j
 @Component
@@ -17,7 +17,7 @@ public class SkillFileAccessPolicy {
      * 验证文件路径是否安全
      *
      * @param skillDir 技能根目录
-     * @param relativePath 相对路径（必须以 references/ 或 scripts/ 开头）
+     * @param relativePath 相对路径（必须以 references/、scripts/ 或 templates/ 开头）
      * @return 归一化后的绝对路径，如果不安全则返回 null
      */
     public Path validateAndResolve(Path skillDir, String relativePath) {
@@ -28,8 +28,10 @@ public class SkillFileAccessPolicy {
         // 归一化路径分隔符
         String normalized = relativePath.replace("\\", "/");
 
-        // 必须以 references/ 或 scripts/ 开头
-        if (!normalized.startsWith("references/") && !normalized.startsWith("scripts/")) {
+        // 必须以 references/、scripts/ 或 templates/ 开头
+        if (!normalized.startsWith("references/")
+                && !normalized.startsWith("scripts/")
+                && !normalized.startsWith("templates/")) {
             log.warn("Invalid path prefix: {}", relativePath);
             return null;
         }

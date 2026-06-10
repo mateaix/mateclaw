@@ -34,60 +34,61 @@ tags:
 
 当用户询问"X 多少钱 / 哪里便宜 / 帮我推荐 X / 这个值不值买 / 拍照认一下这是什么"时使用本技能。
 
+## 优先级（最高优先级规则）
+
+只要用户的意图属于**购物 / 比价 / 选购 / 报价**（关键词：买、多少钱、价格、参考价、推荐、性价比、哪款好、值不值、京东/淘宝/天猫/拼多多……），**必须先调用 `ckjia_shopping_recommend` 拿到结构化商品数据**，再组织回答。
+
+- ✅ 先 `ckjia_shopping_recommend` → 拿到带图片和价格的真实商品
+- ❌ 不要直接用网页搜索 / 凭记忆报价 / 编造型号和价格来回答购物类问题
+- 仅当 `ckjia_shopping_recommend` 多次超时或返回为空时，才退回到网页搜索，并明确告诉用户"参考价数据暂不可用，以下为网络估算"
+
 ## 决策树
 
-1. **"推荐 / 帮我挑 / 性价比 / 想买 X"** → `ckjia_shopping_recommend(query, top_n=5)`
+1. **"推荐 / 帮我挑 / 性价比 / 想买 X / X 多少钱"** → `ckjia_shopping_recommend(query, top_n=5)`
    - 想要 ckjia 顺便给出意图理解（用于澄清后续问句）→ `include_intent=true`
 2. **附带图片 / 拍照识物** → `ckjia_image_recognize(image_url)` → 拿到 `suggested_query` 后再 `ckjia_shopping_recommend(suggested_query)`
 3. **transport 健康自检** → `ckjia_ping("hello")`，验证 MCP 链路通
 
 ## 输出格式（强制规则，零容忍）
 
-每个 `ProductCard` 已经预渲染了两个开箱即用字段，**直接复制粘贴这两个字符串到回复**，不要自己拼装：
-
-- `markdownLink` —— 已经是 `[商品名](购买URL)` 格式，照抄即可
-- `priceTag` —— 已经是 `¥4099 ~~¥4499~~ (9% off)` 格式，照抄即可
+聊天界面能把商品渲染成**带图片和价格的可点击卡片**。要触发卡片，必须把推荐结果放进一个语言标记为 `product-cards` 的代码围栏里，围栏内是一个 JSON 数组，**每个对象的字段值直接从工具返回的 ProductCard 原样复制**（尤其 `url` / `imageUrl` 必须照抄，不能改写、不能编造）。
 
 ### 必须遵守的输出模板
 
-```markdown
-1. {{markdownLink}}
-   - 💰 {{priceTag}}
-   - 🛒 {{platformLabel}} · {{shopName}}
-   - 📊 评分 {{rating}} · 销量 {{salesCount}}
-   - 💡 历史最低 ¥{{lowestPrice}}
-   - {{purchaseAdvice}}
+先用一两句话给出整体结论（预算区间、推荐方向），然后紧跟卡片围栏，最后补充选购提醒：
+
+````markdown
+🎯 你的预算内我挑了这几款，优先看 1.5 匹 / 新一级能效：
+
+```product-cards
+[
+  {
+    "name": "格力空调 云佳pro 1.5匹 新一级能效",
+    "url": "https://union-click.jd.com/jdc?e=...",
+    "imageUrl": "https://img14.360buyimg.com/.../xxx.jpg",
+    "price": 3057,
+    "originalPrice": 3299,
+    "lowestPrice": 2999,
+    "platformLabel": "京东",
+    "shopName": "格力京东自营官方旗舰店",
+    "purchaseAdvice": "卧室够用，关注是否含基础安装"
+  }
+]
 ```
 
-把双花括号 `{{xxx}}` 替换成 ProductCard 对应字段的值。**`markdownLink` 一定要原样输出**，不要把它拆开后用其它方式重组。
+提醒：空调到手价会受安装费 / 高空费 / 国补影响，下单前确认基础安装是否免费。
+````
 
-### 真实示例
-
-工具返回：
-```json
-{
-  "name": "格力空调 云佳pro 1.5匹...",
-  "url": "https://union-click.jd.com/jdc?e=...",
-  "markdownLink": "[格力空调 云佳pro 1.5匹...](https://union-click.jd.com/jdc?e=...)",
-  "priceTag": "¥3057",
-  "platformLabel": "京东",
-  ...
-}
-```
-
-正确输出：
-```markdown
-1. [格力空调 云佳pro 1.5匹...](https://union-click.jd.com/jdc?e=...)
-   - 💰 ¥3057
-   - 🛒 京东
-```
+每个对象建议带的字段（缺失就省略，不要填占位符）：`name`、`url`、`imageUrl`、`price`、`originalPrice`、`lowestPrice`、`platformLabel`、`shopName`、`purchaseAdvice`。
 
 ### 严禁的错误（出现任何一条都算回复失败）
 
-- ❌ 不输出 `markdownLink` —— 用户没法点击购买
-- ❌ 把 markdownLink 拆开只取商品名 —— 等于丢弃链接
-- ❌ 编造任何不在 ProductCard 字段里的 URL
-- ❌ 输出 `[商品名](url)` 但中间填占位符或省略号
+- ❌ 不输出 `product-cards` 围栏 —— 用户看不到卡片，也点不进购买页
+- ❌ 改写或编造 `url` / `imageUrl` —— 卡片会点开错误页面或图片裂开
+- ❌ 在围栏里填占位符、省略号或不完整 JSON —— 卡片会渲染失败
+- ❌ 把价格写进字符串而丢掉数字 —— 卡片无法对齐展示价格
+
+> 兼容性：纯文本渠道（部分 IM）无法渲染卡片围栏，会退化成代码块。若当前对话明显是这类渠道，再退回到 `1. [商品名](url) — 价格` 的普通列表，并照抄 `markdownLink`。Web 聊天页一律用 `product-cards` 围栏。
 
 ## 其它字段处理
 

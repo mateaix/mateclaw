@@ -114,6 +114,9 @@
     <logger name="com.zaxxer.hikari" level="INFO"/>
     <logger name="io.netty" level="WARN"/>
 
+    <!-- 飞书 SDK：确保事件处理异常不被过滤（SDK 内部 HandlerNotFoundException 等） -->
+    <logger name="com.lark.oapi" level="WARN"/>
+
     <!-- ======================== Root ======================== -->
     <root level="INFO">
         <appender-ref ref="CONSOLE"/>

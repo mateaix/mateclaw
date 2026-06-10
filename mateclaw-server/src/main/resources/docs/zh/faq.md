@@ -215,9 +215,10 @@ UI 里用 `工具 → MCP 服务`。三种传输模式：stdio、streamable_http
 ### 我批准了一个工具调用但 Agent 没恢复
 
 1. `AWAITING_APPROVAL` 还是 true 吗？（`GET /api/v1/agents/{id}`）
-2. 审批真的持久化了吗？（`GET /api/v1/approvals/{id}`）
+2. 等待中的会话还有 pending 审批吗？（`GET /api/v1/chat/{conversationId}/pending-approvals`）
 3. Agent 日志里 replay 尝试附近有错误吗？
-4. Replay 失败的话，Agent 应该在聊天里暴露一个错误
+4. 批准/拒绝消息是否通过同一个会话的 `POST /api/v1/chat/stream` 发送？
+5. Replay 失败的话，Agent 应该在聊天里暴露一个错误
 
 ### 我想批量批准这个 Agent 未来的工具调用
 
@@ -381,8 +382,11 @@ mvn spring-boot:run -Dspring-boot.run.arguments="--logging.level.vip.mate=DEBUG"
 浏览器 DevTools → Network → 筛选 `EventStream`。或：
 
 ```bash
-curl -N -H "Authorization: Bearer <token>" \
-  "http://localhost:18088/api/v1/chat/1/stream?conversationId=1"
+curl -N -X POST 'http://localhost:18088/api/v1/chat/stream' \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -H "Accept: text/event-stream" \
+  -d '{"agentId":1, "message":"测试", "conversationId":"1"}'
 ```
 
 ---

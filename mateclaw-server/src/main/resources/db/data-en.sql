@@ -111,6 +111,10 @@ VALUES ('gemini', 'Google Gemini', '', 'GeminiChatModel', '', 'https://generativ
 
 MERGE INTO mate_model_provider (provider_id, name, api_key_prefix, chat_model, api_key, base_url, generate_kwargs, is_custom, is_local, support_model_discovery, support_connection_check, freeze_url, require_api_key, create_time, update_time)
 KEY (provider_id)
+VALUES ('xai', 'xAI (Grok)', 'xai-', 'OpenAIChatModel', '', 'https://api.x.ai/v1', '{}', FALSE, FALSE, TRUE, TRUE, TRUE, TRUE, NOW(), NOW());
+
+MERGE INTO mate_model_provider (provider_id, name, api_key_prefix, chat_model, api_key, base_url, generate_kwargs, is_custom, is_local, support_model_discovery, support_connection_check, freeze_url, require_api_key, create_time, update_time)
+KEY (provider_id)
 VALUES ('openrouter', 'OpenRouter', 'sk-or-', 'OpenAIChatModel', '', 'https://openrouter.ai/api/v1', '{}', FALSE, FALSE, TRUE, TRUE, TRUE, TRUE, NOW(), NOW());
 
 MERGE INTO mate_model_provider (provider_id, name, api_key_prefix, chat_model, api_key, base_url, generate_kwargs, is_custom, is_local, support_model_discovery, support_connection_check, freeze_url, require_api_key, create_time, update_time)
@@ -275,6 +279,10 @@ MERGE INTO mate_model_config (id, name, provider, model_name, description, tempe
 (1000000159, 'Gemini 2.5 Flash', 'gemini', 'gemini-2.5-flash', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
 (1000000160, 'Gemini 2.5 Flash Lite', 'gemini', 'gemini-2.5-flash-lite', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
 (1000000161, 'Gemini 2.0 Flash', 'gemini', 'gemini-2.0-flash', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000340, 'Grok 4', 'xai', 'grok-4', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000341, 'Grok 4 Fast', 'xai', 'grok-4-fast', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000342, 'Grok 3', 'xai', 'grok-3', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000343, 'Grok 3 Mini', 'xai', 'grok-3-mini', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
 (1000000200, 'GPT-5', 'openrouter', 'openai/gpt-5', 'GPT-5 via OpenRouter', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
 (1000000201, 'Claude Opus 4.6', 'openrouter', 'anthropic/claude-opus-4-6', 'Claude Opus 4.6 via OpenRouter', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
 (1000000202, 'Claude Sonnet 4.6', 'openrouter', 'anthropic/claude-sonnet-4-6', 'Claude Sonnet 4.6 via OpenRouter', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
@@ -331,7 +339,15 @@ MERGE INTO mate_model_config (id, name, provider, model_name, description, tempe
 (1000000273, 'Claude Sonnet 4.6', 'openrouter', 'anthropic/claude-sonnet-4-6', 'Claude Sonnet 4.6 via OpenRouter', NULL, 4096, NULL, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
 -- RFC-062: Claude 4.7 via Claude Code OAuth subscription (Pro/Max plan).
 (1000000280, 'Claude Opus 4.7', 'anthropic-claude-code', 'claude-opus-4-7', 'Claude Opus 4.7 via Claude Code Pro/Max subscription', NULL, 4096, NULL, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000281, 'Claude Sonnet 4.6', 'anthropic-claude-code', 'claude-sonnet-4-6', 'Claude Sonnet 4.6 via Claude Code Pro/Max subscription', NULL, 4096, NULL, TRUE, TRUE, FALSE, NOW(), NOW(), 0);
+(1000000281, 'Claude Sonnet 4.6', 'anthropic-claude-code', 'claude-sonnet-4-6', 'Claude Sonnet 4.6 via Claude Code Pro/Max subscription', NULL, 4096, NULL, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+-- Claude 4.8 series (direct Anthropic + OpenRouter, including the -fast variant).
+-- Shares 4.7's strict sampling contract (temperature/top_p/top_k must be NULL)
+-- and the new xhigh thinking tier — handled in AnthropicChatModelBuilder.
+(1000000290, 'Claude Opus 4.8', 'anthropic', 'claude-opus-4-8', 'Anthropic Claude Opus 4.8 (xhigh adaptive thinking)', NULL, 4096, NULL, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000291, 'Claude Opus 4.8 Fast', 'anthropic', 'claude-opus-4-8-fast', 'Claude Opus 4.8 fast variant (higher output speed, 2x pricing)', NULL, 4096, NULL, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000292, 'Claude Opus 4.8', 'openrouter', 'anthropic/claude-opus-4-8', 'Claude Opus 4.8 via OpenRouter', NULL, 4096, NULL, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000293, 'Claude Opus 4.8 Fast', 'openrouter', 'anthropic/claude-opus-4-8-fast', 'Claude Opus 4.8 fast variant via OpenRouter', NULL, 4096, NULL, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000294, 'Claude Opus 4.8', 'anthropic-claude-code', 'claude-opus-4-8', 'Claude Opus 4.8 via Claude Code Pro/Max subscription', NULL, 4096, NULL, TRUE, TRUE, FALSE, NOW(), NOW(), 0);
 
 -- Default system settings
 MERGE INTO mate_system_setting (id, setting_key, setting_value, description, create_time, update_time)
@@ -511,6 +527,11 @@ MERGE INTO mate_tool (id, name, display_name, description, tool_type, bean_name,
 KEY (id)
 VALUES (1000000022, 'PdfRenderTool', 'PDF Render', 'Render Markdown into a final-form .pdf and return a one-time download link. Two backends (LibreOffice subprocess preferred, OpenPDF + Flying Saucer fallback); supports YAML frontmatter for cover / page header / page footer.', 'builtin', 'pdfRenderTool', '📄', TRUE, TRUE, NOW(), NOW(), 0);
 
+-- Built-in tool: Code Execute (inline python/bash/node the agent writes on the fly)
+MERGE INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
+KEY (id)
+VALUES (1000000023, 'CodeExecuteTool', 'Code Execute', 'Execute a snippet of code (python, bash, or node) that the agent writes on the fly. Lets a documentation-only skill be acted on by running the code its instructions describe. Dangerous operations trigger approval.', 'builtin', 'codeExecuteTool', '🧑‍💻', TRUE, TRUE, NOW(), NOW(), 0);
+
 -- Example MCP Server: Filesystem (see MateClaw docs mcpServers.filesystem)
 MERGE INTO mate_mcp_server (
     id, name, description, transport, url, headers_json, command, args_json, env_json, cwd,
@@ -531,7 +552,7 @@ VALUES (
     NULL,
     FALSE,
     30,
-    30,
+    60,
     'disconnected',
     NULL,
     NULL,
@@ -562,7 +583,7 @@ VALUES (
     NULL,
     FALSE,
     30,
-    30,
+    60,
     'disconnected',
     NULL,
     NULL,
@@ -1293,15 +1314,15 @@ VALUES (1000100002, 'Weekly Work Summary', '0 18 * * 5', 'Asia/Shanghai', 100000
 -- Daily 2:00 AM: consolidate daily notes → MEMORY.md
 MERGE INTO mate_cron_job (id, name, cron_expression, timezone, agent_id, task_type, trigger_message, request_body, enabled, create_time, update_time, deleted)
 KEY (id)
-VALUES (1000100010, 'Memory Consolidation', '0 2 * * *', 'Asia/Shanghai', 1000000001, 'text', 'Review your recent memory/ daily note files and consolidate recurring important information (user preferences, stable facts, lessons learned, workflows) into MEMORY.md. Keep the original daily notes intact, only update MEMORY.md. Briefly describe what consolidations were made.', NULL, TRUE, NOW(), NOW(), 0);
+VALUES (1000100010, 'Memory Consolidation', '0 2 * * *', 'Asia/Shanghai', 1000000001, 'text', 'Review your recent memory/ daily note files and consolidate recurring important information (user preferences, stable facts, lessons learned, workflows) into MEMORY.md. Note: MEMORY.md is injected into every conversation, so only consolidate cross-project, long-term stable information; do NOT write project-specific volatile facts into MEMORY.md (project codenames, names, tech stacks, repos, a single project''s metrics/budget/team/launch date, or decisions that hold only for one project) — they conflict across projects and cause mix-ups. Keep those in the daily note or maintain them via structured project memory. Rule of thumb: only facts that still hold after switching projects belong in MEMORY.md. Keep the original daily notes intact, only update MEMORY.md. Briefly describe what consolidations were made.', NULL, TRUE, NOW(), NOW(), 0);
 
 MERGE INTO mate_cron_job (id, name, cron_expression, timezone, agent_id, task_type, trigger_message, request_body, enabled, create_time, update_time, deleted)
 KEY (id)
-VALUES (1000100011, 'Memory Consolidation', '0 2 * * *', 'Asia/Shanghai', 1000000002, 'text', 'Review your recent memory/ daily note files and consolidate recurring important information (user preferences, stable facts, lessons learned, workflows) into MEMORY.md. Keep the original daily notes intact, only update MEMORY.md. Briefly describe what consolidations were made.', NULL, TRUE, NOW(), NOW(), 0);
+VALUES (1000100011, 'Memory Consolidation', '0 2 * * *', 'Asia/Shanghai', 1000000002, 'text', 'Review your recent memory/ daily note files and consolidate recurring important information (user preferences, stable facts, lessons learned, workflows) into MEMORY.md. Note: MEMORY.md is injected into every conversation, so only consolidate cross-project, long-term stable information; do NOT write project-specific volatile facts into MEMORY.md (project codenames, names, tech stacks, repos, a single project''s metrics/budget/team/launch date, or decisions that hold only for one project) — they conflict across projects and cause mix-ups. Keep those in the daily note or maintain them via structured project memory. Rule of thumb: only facts that still hold after switching projects belong in MEMORY.md. Keep the original daily notes intact, only update MEMORY.md. Briefly describe what consolidations were made.', NULL, TRUE, NOW(), NOW(), 0);
 
 MERGE INTO mate_cron_job (id, name, cron_expression, timezone, agent_id, task_type, trigger_message, request_body, enabled, create_time, update_time, deleted)
 KEY (id)
-VALUES (1000100012, 'Memory Consolidation', '0 2 * * *', 'Asia/Shanghai', 1000000003, 'text', 'Review your recent memory/ daily note files and consolidate recurring important information (user preferences, stable facts, lessons learned, workflows) into MEMORY.md. Keep the original daily notes intact, only update MEMORY.md. Briefly describe what consolidations were made.', NULL, TRUE, NOW(), NOW(), 0);
+VALUES (1000100012, 'Memory Consolidation', '0 2 * * *', 'Asia/Shanghai', 1000000003, 'text', 'Review your recent memory/ daily note files and consolidate recurring important information (user preferences, stable facts, lessons learned, workflows) into MEMORY.md. Note: MEMORY.md is injected into every conversation, so only consolidate cross-project, long-term stable information; do NOT write project-specific volatile facts into MEMORY.md (project codenames, names, tech stacks, repos, a single project''s metrics/budget/team/launch date, or decisions that hold only for one project) — they conflict across projects and cause mix-ups. Keep those in the daily note or maintain them via structured project memory. Rule of thumb: only facts that still hold after switching projects belong in MEMORY.md. Keep the original daily notes intact, only update MEMORY.md. Briefly describe what consolidations were made.', NULL, TRUE, NOW(), NOW(), 0);
 
 -- ==================== Workspace File Seed Data ====================
 -- Each Agent has its own workspace document collection: AGENTS.md / SOUL.md / PROFILE.md / MEMORY.md
@@ -1844,7 +1865,7 @@ SELECT
     1000000001,
     TRUE,
     'all',
-    '["execute_shell_command"]',
+    '["execute_shell_command","execute_code"]',
     '[]',
     TRUE,
     '["/etc","/usr","/bin","/sbin","/boot","/sys","/proc","/dev"]',

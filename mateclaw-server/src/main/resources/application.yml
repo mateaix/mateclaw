@@ -124,6 +124,13 @@ springdoc:
 
 # MateClaw 自定义配置
 mateclaw:
+  server:
+    # Public base URL used to build absolute download links for tool-generated
+    # files (e.g. https://mateclaw.example.com). Leave empty to fall back to the
+    # current request's host, and to a relative path when no request is bound.
+    # Set this when agents deliver download links to channels/clients that cannot
+    # resolve a relative URL (IM messages, copied links, external downloads).
+    public-base-url: ${MATECLAW_PUBLIC_BASE_URL:}
   jwt:
     secret: ${JWT_SECRET:MateClaw-JWT-Secret-Key-2024-Please-Change-In-Production}
     expiration: 86400000
@@ -131,11 +138,38 @@ mateclaw:
   # MCP server 配置已迁移至数据库（mate_mcp_server 表），通过 UI 管理
   mcp:
     enabled: true
+  tools:
+    disclosure:
+      # progressive: extension-tier tools are hidden behind the extension-tools
+      #   catalog until the model calls enable_tool. By default that's the heavy
+      #   generative / browser tools; MCP servers default to core (visible) and
+      #   an admin can move a noisy one to extension per server.
+      # legacy: advertise every bound tool up front (pre-disclosure behavior).
+      mode: ${MATECLAW_TOOLS_DISCLOSURE_MODE:progressive}
   skill:
     workspace:
-      root: ${user.home}/.mateclaw/skills
+      # Skill workspace root. Override with MATECLAW_SKILL_WORKSPACE_ROOT to
+      # relocate it onto a persistent volume — in Docker this is pointed at
+      # /app/data/skills so the existing server_data volume persists installed
+      # skills, accumulated LESSONS.md, and skill runtime files across restarts.
+      root: ${MATECLAW_SKILL_WORKSPACE_ROOT:${user.home}/.mateclaw/skills}
       auto-init: true
       delete-policy: archive
+    disclosure:
+      load-skill-tool:
+        # When false, the load_skill meta tool is not advertised to agents and
+        # the skill catalog guidance falls back to readSkillFile. Escape hatch
+        # for operators who don't want the explicit skill-load entry point.
+        enabled: ${MATECLAW_SKILL_LOAD_SKILL_TOOL_ENABLED:true}
+    curator:
+      enabled: true
+      cron: "0 0 2 * * *"         # daily 02:00 — staggered away from wiki / backup jobs
+      stale-after-days: 30
+      archive-after-days: 90
+      scope: AGENT_CREATED         # AGENT_CREATED | ALL_DYNAMIC | OFF
+      protect-prefixes:
+        - "sys-"
+        - "ops-"
     hub:
       base-url: https://clawhub.ai
       search-path: /api/v1/search
@@ -192,6 +226,10 @@ mateclaw:
 # MateClaw Agent 配置
 mate:
   agent:
+    # Deterministic Markdown cleanup of the final answer (heading spaces, glued
+    # ---, table pipe alignment) before persistence / channel delivery. Set to
+    # false to pass model output through verbatim.
+    markdown-normalize-enabled: true
     graph:
       observation:
         # 与 GraphObservationProperties.java 默认值对齐，参考 openclaw token-budget 设计
@@ -200,7 +238,7 @@ mate:
         large-result-threshold: 32000
         min-rounds-for-summarize: 25
         head-ratio: 0.4
-        truncation-marker: "\n\n... [内容已截断，共 %d 字符，保留前后关键片段] ...\n\n"
+        truncation-marker: "\n\n...[TRUNCATED: %d chars total, middle omitted. Do NOT infer or fabricate omitted content; retrieve the full data (e.g. read_file) or tell the user the result is incomplete.]...\n\n"
     tool:
       timeout:
         default-timeout-seconds: 300

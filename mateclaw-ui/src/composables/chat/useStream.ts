@@ -44,6 +44,22 @@ export type SSEEventType =
   | 'delegation_progress'
   | 'delegation_end'
   | 'delegation_child_complete'
+  // Fire-and-forget delegation: a subagent spawned to run detached. Its result
+  // is retrieved later via task_output, so it enters the timeline as a node
+  // marked "running in background" rather than one that resolves this turn.
+  | 'delegation_async_spawned'
+  // Heartbeat watchdog flagged a sub-agent as making no observable progress
+  | 'subagent_stale'
+  // Persistent goal events — emitted by GoalEvaluationNode
+  | 'goal_evaluated'
+  | 'goal_followup'
+  | 'goal_completed'
+  | 'goal_exhausted'
+  // Tool-side goal mutations (GoalManagementTool) — emitted when the
+  // agent invokes setGoal / addGoalCriterion so the store can refresh
+  // without a full page reload.
+  | 'goal_created'
+  | 'goal_updated'
   // Stream lifecycle + per-iteration boundaries (single-turn UX overhaul).
   // The parser handles arbitrary `event:` lines via parseEvent — these names
   // exist in the union purely so TypeScript callers can register handlers
@@ -57,7 +73,6 @@ export type SSEEventType =
   | 'iteration_end'
   | 'content_truncated'
   | 'tool_result_chunk'
-  | 'delegation_batch'
   // Recovery affordance for non-transient errors (ERROR_FALLBACK turns)
   | 'feedback_event'
   // Context compaction lifecycle. Fired by ConversationWindowManager

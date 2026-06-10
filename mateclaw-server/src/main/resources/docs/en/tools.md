@@ -54,9 +54,30 @@ None of this shows up in the agent's prompt. The agent just asks for a tool. The
 
 **2. MCP servers.** External processes speaking the Model Context Protocol expose tools dynamically. MateClaw discovers them via `tools/list` and they appear in the registry alongside built-in ones. See [MCP](./mcp).
 
+> **Per-agent MCP tool scoping (1.4.0+, #117)**: when an agent has **ticked no specific MCP tool rows**, enabled MCP tools **auto-join** its tool set; once it ticks specific MCP tools, it's **restricted to that set**. Agents bound to skills / built-in tools only keep full access to all MCP tools.
+
 **3. Skill scripts.** Skill packages can ship executable scripts that get wrapped as tools at runtime. See [Skills](./skills).
 
 Tool discovery is **blacklist-style** — every discoverable tool is registered by default. Exclude specific tools explicitly. Newly added tools don't get silently missed.
+
+---
+
+## Progressive tool disclosure (1.4.0+)
+
+As the tool count grows, the system prompt balloons with dozens of full tool schemas — even when a task needs only one or two of them. **Progressive disclosure** splits tools into two tiers so the prompt scales with the **task**, not with the **total tool count**.
+
+| Tier | How it appears in the system prompt | Callable out of the box? |
+|------|-------------------------------------|--------------------------|
+| **CORE** | Always advertised in full, with the complete schema | Yes |
+| **EXTENSION** | Only a compressed directory — name + source + one-line description; the full schema stays hidden | No — activate with `enable_tool` first |
+
+**Default tiering**: the generative tools (`image_generate`, `music_generate`, `video_generate`, `model3d_generate`) and `browser_use` default to **EXTENSION**; everything else is **CORE**.
+
+- **Page control** — the Tools page has Core and Extension sections with a per-row tier toggle for built-in and channel tools; MCP / ACP tools are locked.
+- **Persistence** — the tier is stored in `mate_tool.disclosure_tier` and `mate_mcp_server.disclosure_tier`.
+- **Config** — `mateclaw.tools.disclosure.mode`, default `progressive`; set it to `legacy` to restore the old "advertise everything" behavior.
+
+**Why** — to stop context bloat. The system prompt should scale with what the current task needs, not with how many tools you've installed.
 
 ---
 
@@ -88,6 +109,9 @@ Tool discovery is **blacklist-style** — every discoverable tool is registered 
 | `CronJobTool` | Create and manage scheduled tasks | ⚠️ |
 | `DatasourceTool` | Manage external datasource connections | ⚠️ |
 | `SqlQueryTool` | Execute SQL queries on connected datasources | ⚠️ |
+| `send_file` | **1.4.0+** Deliver an existing server file as a native IM attachment (#199) | — |
+| `enable_tool` | **1.4.0+** Activate an extension-tier tool for this conversation | — |
+| `load_skill` | **1.4.0+** Load a skill's `SKILL.md` on demand | — |
 
 Plus the `MusicGenerateTool` from [Multimodal](./multimodal). And the 14 Wiki tools from [LLM Wiki](./wiki): `wiki_read_page`, `wiki_read_many`, `wiki_list_pages`, `wiki_search_pages`, `wiki_semantic_search`, `wiki_compile_page`, `wiki_trace_source`, `wiki_create_page`, `wiki_delete_page`, `wiki_archive_page`, `wiki_unarchive_page`, `wiki_related_pages`, `wiki_explain_relation`, `wiki_enrich_page`.
 
@@ -196,6 +220,41 @@ Safety:
 
 Reads the built-in MateClaw project documentation. Lets an agent answer "how does X work in MateClaw" questions by consulting actual docs rather than guessing.
 
+### enable_tool — activate an extension-tier tool (1.4.0+)
+
+`enable_tool(toolName)` activates an **EXTENSION**-tier tool so it becomes fully callable for the **rest of the conversation**.
+
+- **Validated** — only tools in the agent's effective set can be activated.
+- **Takes effect next turn** — activation lands on the **next reasoning turn** of the same ReAct loop (the agent sees the full schema, then emits the real call).
+- **Conversation-scoped, not persisted** — activation lasts only for the current conversation; nothing is written to the database, and a new conversation reverts to the default tiering.
+
+### load_skill — load a skill on demand (1.4.0+)
+
+`load_skill(skillName, filePath?)` pulls a skill's `SKILL.md` in only when it's needed — omit `filePath` for the main file, or pass one to read a sub-file inside the skill package.
+
+- **Injected via message history** — the loaded content goes into **message history**, not the system prompt, so the **prompt cache stays stable** (the system prompt is unchanged, so the cache isn't invalidated).
+- **Pinned in later turns** — a loaded skill stays **pinned** for the rest of the conversation, so it doesn't have to be reloaded.
+- **Config** — `mateclaw.skill.disclosure.load-skill-tool.enabled`, default true.
+
+See [Skills](./skills).
+
+### send_file — deliver an existing file as a native attachment (1.4.0+, #199)
+
+`send_file(filePath, fileName?)` reads an **existing file** on the server and delivers it as a **native IM attachment** — not a text download link.
+
+- **Stored in the generated-file cache** — the file is placed in the generated-file cache, and channel adapters (Feishu / DingTalk / Telegram) **auto-detect and deliver** it.
+- **Any common file type**, up to a **20 MB** limit.
+- **Contrast with `ReadFileTool`** — `ReadFileTool` **extracts text** from a file to feed the agent's reasoning; `send_file` ships the file **as-is** to the user.
+
+### ReadFileTool — oversized-line paging (1.4.0+, #190)
+
+For files with a very long single line, `ReadFileTool` adds an optional `startColumn` (a 1-based character offset within `startLine`) to **resume the tail** of that line from where you left off.
+
+- On truncation it **always returns** `nextStartLine`;
+- it **additionally returns** `nextStartColumn` when more of that line remains.
+
+Feed both back into the next call to page through a giant single-line file in segments.
+
 ---
 
 ## Tool Guard — the permission layer
@@ -265,14 +324,14 @@ curl -X PUT http://localhost:18088/api/v1/tools/1 \
   -H "Authorization: Bearer YOUR_JWT_TOKEN" \
   -d '{"enabled": false}'
 
-# Test a tool directly
-curl -X POST http://localhost:18088/api/v1/tools/WebSearchTool/test \
+# Set disclosure tier for a builtin or channel tool
+curl -X PUT http://localhost:18088/api/v1/tools/1/disclosure-tier \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer YOUR_JWT_TOKEN" \
-  -d '{"query": "Spring AI"}'
+  -d '{"tier": "core"}'
 ```
 
-Every provider-backed tool has a test button in the Tools page so you can verify API keys before shipping.
+The current REST API manages tool rows, enabled state, and disclosure tier. Direct execution of builtin tools happens through the agent runtime, not through a `/tools/{name}/test` endpoint.
 
 ---
 

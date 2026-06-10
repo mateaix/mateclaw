@@ -26,6 +26,7 @@ const providerIconMap: Record<string, string> = {
   'llamacpp': '/icons/providers/llamacpp.svg',
   'mlx': '/icons/providers/mlx.svg',
   'openrouter': '/icons/providers/openrouter.svg',
+  'xai': '/icons/providers/grok.svg',
   'zhipu-cn': '/icons/providers/zhipu.svg',
   'zhipu-intl': '/icons/providers/zhipu.svg',
   // Coding Plan subscription endpoints — same brand, reuse mark.

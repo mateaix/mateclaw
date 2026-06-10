@@ -169,19 +169,18 @@ public class ToolGuardRuleSeedService implements ApplicationRunner {
                         log.debug("[RuleSeed] Rule {} insert failed: {}", rule.getRuleId(), e.getMessage());
                     }
                 } else if (needsUpdate(existing, rule)) {
-                    // 已存在但内容有变化 → 更新
+                    // 已存在但内容字段有变化 → 同步代码侧拥有的字段（content fields）。
+                    // 严格保留用户侧拥有的策略字段（severity / decision / priority / enabled
+                    // / excludePattern）—— 这些一旦用户在 UI 上调整，重启后不应被覆盖。
                     ruleMapper.update(null,
                             new LambdaUpdateWrapper<ToolGuardRuleEntity>()
                                     .eq(ToolGuardRuleEntity::getRuleId, rule.getRuleId())
                                     .set(ToolGuardRuleEntity::getName, rule.getName())
                                     .set(ToolGuardRuleEntity::getDescription, rule.getDescription())
                                     .set(ToolGuardRuleEntity::getPattern, rule.getPattern())
-                                    .set(ToolGuardRuleEntity::getSeverity, rule.getSeverity())
                                     .set(ToolGuardRuleEntity::getCategory, rule.getCategory())
-                                    .set(ToolGuardRuleEntity::getDecision, rule.getDecision())
                                     .set(ToolGuardRuleEntity::getToolName, rule.getToolName())
-                                    .set(ToolGuardRuleEntity::getRemediation, rule.getRemediation())
-                                    .set(ToolGuardRuleEntity::getPriority, rule.getPriority()));
+                                    .set(ToolGuardRuleEntity::getRemediation, rule.getRemediation()));
                     updated++;
                 } else {
                     unchanged++;
@@ -195,16 +194,21 @@ public class ToolGuardRuleSeedService implements ApplicationRunner {
     }
 
     /**
-     * 判断已有 builtin 规则是否需要更新（任一核心字段有变化即需要）
+     * 判断已有 builtin 规则是否需要更新。
+     * <p>
+     * 只比较"内容字段"（代码侧拥有，应当随版本升级同步）：
+     * name / description / pattern / category / toolName / remediation。
+     * <p>
+     * 故意不比较"策略字段"（用户侧拥有，UI 可调）：severity / decision / priority / enabled / excludePattern。
+     * 这样用户把某条 builtin 规则的 decision 从 NEEDS_APPROVAL 改成 BLOCK、或者关闭某条规则，
+     * 重启不会把改动覆盖回种子初值。
      */
     private boolean needsUpdate(ToolGuardRuleEntity existing, ToolGuardRuleEntity expected) {
-        return !Objects.equals(existing.getPattern(), expected.getPattern())
-                || !Objects.equals(existing.getSeverity(), expected.getSeverity())
+        return !Objects.equals(existing.getName(), expected.getName())
+                || !Objects.equals(existing.getDescription(), expected.getDescription())
+                || !Objects.equals(existing.getPattern(), expected.getPattern())
                 || !Objects.equals(existing.getCategory(), expected.getCategory())
-                || !Objects.equals(existing.getDecision(), expected.getDecision())
                 || !Objects.equals(existing.getToolName(), expected.getToolName())
-                || !Objects.equals(existing.getPriority(), expected.getPriority())
-                || !Objects.equals(existing.getName(), expected.getName())
                 || !Objects.equals(existing.getRemediation(), expected.getRemediation());
     }
 
@@ -329,6 +333,59 @@ public class ToolGuardRuleSeedService implements ApplicationRunner {
         rules.add(rule("CRED_PRIVATE_KEY", gn("CRED_PRIVATE_KEY"), "-----BEGIN\\s+(RSA\\s+)?PRIVATE\\s+KEY-----",
                 GuardSeverity.HIGH, GuardCategory.CREDENTIAL_EXPOSURE, "BLOCK",
                 null, gf("CRED_PRIVATE_KEY"), 140));
+
+        rules.add(rule("CRED_JWT_TOKEN", gn("CRED_JWT_TOKEN"),
+                "eyJ[A-Za-z0-9_-]{10,}\\.eyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]+",
+                GuardSeverity.HIGH, GuardCategory.CREDENTIAL_EXPOSURE, "NEEDS_APPROVAL",
+                null, gf("CRED_JWT_TOKEN"), 140));
+
+        rules.add(rule("CRED_GITHUB_TOKEN", gn("CRED_GITHUB_TOKEN"),
+                "gh[pousr]_[A-Za-z0-9_]{36,}",
+                GuardSeverity.HIGH, GuardCategory.CREDENTIAL_EXPOSURE, "NEEDS_APPROVAL",
+                null, gf("CRED_GITHUB_TOKEN"), 140));
+
+        // === Inline code execution (execute_code) ===
+        // DbRuleGuardian only matches rules whose toolName equals the invoked
+        // tool (or is global). The destructive shell rules above are scoped to
+        // execute_shell_command, so they would never screen code run through
+        // execute_code. Mirror the key patterns for execute_code here, reusing
+        // the shell rules' i18n strings (gn/gf keyed by the SHELL_* ids).
+        rules.add(rule("CODE_RM_RF_ROOT", gn("SHELL_RM_RF_ROOT"), "rm\\s+-(rf|fr)\\s+/\\s*$",
+                GuardSeverity.CRITICAL, GuardCategory.COMMAND_INJECTION, "BLOCK",
+                "execute_code", gf("SHELL_RM_RF_ROOT"), 200));
+        rules.add(rule("CODE_MKFS", gn("SHELL_MKFS"), "mkfs\\b",
+                GuardSeverity.CRITICAL, GuardCategory.COMMAND_INJECTION, "BLOCK",
+                "execute_code", gf("SHELL_MKFS"), 200));
+        rules.add(rule("CODE_DD_DEV", gn("SHELL_DD_DEV"), "dd\\s+if=.+of=/dev/",
+                GuardSeverity.CRITICAL, GuardCategory.COMMAND_INJECTION, "BLOCK",
+                "execute_code", gf("SHELL_DD_DEV"), 200));
+        rules.add(rule("CODE_FORK_BOMB", gn("SHELL_FORK_BOMB"), ":\\(\\)\\s*\\{\\s*:\\|:\\s*&\\s*\\}\\s*;\\s*:",
+                GuardSeverity.CRITICAL, GuardCategory.RESOURCE_ABUSE, "BLOCK",
+                "execute_code", gf("SHELL_FORK_BOMB"), 200));
+        rules.add(rule("CODE_REVERSE_SHELL", gn("SHELL_REVERSE_SHELL"), "(/dev/tcp|\\bnc\\s+-e\\b|\\bncat\\s+-e\\b|\\bsocat\\s+EXEC:)",
+                GuardSeverity.CRITICAL, GuardCategory.NETWORK_ABUSE, "BLOCK",
+                "execute_code", gf("SHELL_REVERSE_SHELL"), 200));
+        rules.add(rule("CODE_CURL_PIPE_SH", gn("SHELL_CURL_PIPE_SH"), "curl.*\\|\\s*(sh|bash|zsh)",
+                GuardSeverity.CRITICAL, GuardCategory.CODE_EXECUTION, "BLOCK",
+                "execute_code", gf("SHELL_CURL_PIPE_SH"), 200));
+        rules.add(rule("CODE_WGET_PIPE_SH", gn("SHELL_WGET_PIPE_SH"), "wget.*\\|\\s*(sh|bash|zsh)",
+                GuardSeverity.CRITICAL, GuardCategory.CODE_EXECUTION, "BLOCK",
+                "execute_code", gf("SHELL_WGET_PIPE_SH"), 200));
+        rules.add(rule("CODE_KILL_INIT", gn("SHELL_KILL_INIT"), "\\bkill\\s+-9\\s+1\\b",
+                GuardSeverity.CRITICAL, GuardCategory.RESOURCE_ABUSE, "BLOCK",
+                "execute_code", gf("SHELL_KILL_INIT"), 200));
+        rules.add(rule("CODE_RM", gn("SHELL_RM"), "(^|[;&|]|\\s)rm\\s",
+                GuardSeverity.HIGH, GuardCategory.COMMAND_INJECTION, "NEEDS_APPROVAL",
+                "execute_code", gf("SHELL_RM"), 150));
+        rules.add(rule("CODE_RM_RF", gn("SHELL_RM_RF"), "rm\\s+-(rf|fr)",
+                GuardSeverity.HIGH, GuardCategory.COMMAND_INJECTION, "NEEDS_APPROVAL",
+                "execute_code", gf("SHELL_RM_RF"), 150));
+        rules.add(rule("CODE_CHMOD_777", gn("SHELL_CHMOD_777"), "chmod\\s+777",
+                GuardSeverity.HIGH, GuardCategory.PRIVILEGE_ESCALATION, "NEEDS_APPROVAL",
+                "execute_code", gf("SHELL_CHMOD_777"), 150));
+        rules.add(rule("CODE_OBFUSCATED_EXEC", gn("SHELL_OBFUSCATED_EXEC"), "base64\\s+-d.*\\|\\s*(bash|sh)",
+                GuardSeverity.HIGH, GuardCategory.CODE_EXECUTION, "NEEDS_APPROVAL",
+                "execute_code", gf("SHELL_OBFUSCATED_EXEC"), 150));
 
         return rules;
     }

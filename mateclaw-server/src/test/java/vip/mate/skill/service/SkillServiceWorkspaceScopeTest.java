@@ -81,7 +81,7 @@ class SkillServiceWorkspaceScopeTest {
         seedSkill(ws2Name, 2L, false);
 
         IPage<SkillEntity> ws2Page = skillService.pageSkills(
-                1, 200, null, null, null, null, null, null, null, Set.of(), 2L);
+                1, 200, null, null, null, null, null, null, null, Set.of(), 2L, null);
         Set<String> names = ws2Page.getRecords().stream()
                 .map(SkillEntity::getName)
                 .collect(java.util.stream.Collectors.toSet());

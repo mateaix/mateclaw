@@ -194,6 +194,43 @@
               </div>
             </div>
 
+            <!-- QQ 扫码绑定（QQ 开放平台 Lite portal） -->
+            <div v-if="form.channelType === 'qq'" class="qq-register-card">
+              <div class="qq-register-header">
+                <strong>{{ t('channels.qqRegister.title') }}</strong>
+              </div>
+              <p class="qq-register-hint">{{ t('channels.qqRegister.hint') }}</p>
+              <button
+                type="button"
+                class="qq-register-btn"
+                @click="qqRegister.start()"
+                :disabled="qqRegister.loading.value || qqRegister.status.value === 'waiting'"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/>
+                  <rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="3" height="3"/>
+                  <line x1="21" y1="14" x2="21" y2="17"/><line x1="14" y1="21" x2="17" y2="21"/>
+                  <line x1="21" y1="21" x2="21" y2="21"/>
+                </svg>
+                {{ qqRegister.loading.value
+                  ? t('channels.qqRegister.buttonLoading')
+                  : t('channels.qqRegister.button') }}
+              </button>
+              <div v-if="qqRegister.loading.value && !qqRegister.qrcodeUrl.value" class="qq-register-qrcode qq-register-qrcode--loading">
+                <div class="qq-register-qrcode-spinner"></div>
+                <p class="qq-register-status">{{ t('channels.qqRegister.qrcodeLoading') }}…</p>
+              </div>
+              <div v-else-if="qqRegister.qrcodeUrl.value" class="qq-register-qrcode">
+                <img :src="qqRegister.qrcodeUrl.value" :alt="t('channels.qqRegister.button')" class="qq-register-qrcode-img" />
+                <p class="qq-register-status" :class="qqRegister.status.value">
+                  <template v-if="qqRegister.status.value === 'confirmed'">{{ t('channels.qqRegister.confirmed') }}</template>
+                  <template v-else-if="qqRegister.status.value === 'expired'">{{ t('channels.qqRegister.expired') }}</template>
+                  <template v-else-if="qqRegister.status.value === 'denied'">{{ t('channels.qqRegister.denied') }}</template>
+                  <template v-else>{{ t('channels.qqRegister.scanHint') }}</template>
+                </p>
+              </div>
+            </div>
+
             <!-- 企业微信扫码授权 -->
             <div v-if="form.channelType === 'wecom'" class="wecom-auth-card">
               <p class="wecom-auth-hint">{{ t('channels.wecom.authHint') }}</p>
@@ -442,6 +479,7 @@ import { useWeixinQrcodePoll } from '@/composables/channels/useWeixinQrcodePoll'
 import { useWecomBotAuth } from '@/composables/channels/useWecomBotAuth'
 import { useFeishuAppRegister } from '@/composables/channels/useFeishuAppRegister'
 import { useDingTalkAppRegister } from '@/composables/channels/useDingTalkAppRegister'
+import { useQqAppRegister } from '@/composables/channels/useQqAppRegister'
 import AgentPickerDialog from '@/components/common/AgentPickerDialog.vue'
 
 interface Props {
@@ -530,6 +568,15 @@ const feishuRegister = useFeishuAppRegister(({ appId, appSecret }) => {
 // feishu's flow, returns client_id/client_secret instead.
 const dingtalkRegister = useDingTalkAppRegister(({ clientId, clientSecret }) => {
   channelConfig.value.client_id = clientId
+  channelConfig.value.client_secret = clientSecret
+  form.value.enabled = true
+})
+
+// QQ Bot scan-to-bind via the Lite portal — fills app_id/client_secret.
+// The user must have created the bot on q.qq.com beforehand; this flow only
+// skips the manual copy-paste of credentials.
+const qqRegister = useQqAppRegister(({ appId, clientSecret }) => {
+  channelConfig.value.app_id = appId
   channelConfig.value.client_secret = clientSecret
   form.value.enabled = true
 })
@@ -868,6 +915,24 @@ function save() {
 .dingtalk-register-status.confirmed { color: #10b981; font-weight: 500; }
 .dingtalk-register-status.expired { color: #f56c6c; }
 .dingtalk-register-status.denied { color: #f56c6c; }
+
+/* QQ scan-to-bind (QQ Open Platform Lite portal) */
+.qq-register-card { background: linear-gradient(135deg, rgba(20,134,255,0.05), rgba(96,165,250,0.05)); border: 1px solid rgba(20,134,255,0.2); border-radius: 10px; padding: 14px 16px; margin-bottom: 16px; }
+.qq-register-header { font-size: 13px; color: var(--mc-text-primary); margin-bottom: 6px; }
+.qq-register-hint { font-size: 12px; color: var(--mc-text-secondary); margin: 0 0 10px 0; line-height: 1.6; }
+.qq-register-btn { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; padding: 10px 16px; background: #1486ff; color: #fff; border: none; border-radius: 8px; font-size: 14px; font-weight: 500; cursor: pointer; transition: all 0.2s; }
+.qq-register-btn:hover:not(:disabled) { background: #0d6fd9; transform: translateY(-1px); box-shadow: 0 2px 8px rgba(20,134,255,0.3); }
+.qq-register-btn:active:not(:disabled) { transform: translateY(0); }
+.qq-register-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+.qq-register-qrcode { display: flex; flex-direction: column; align-items: center; margin-top: 16px; padding: 16px; background: #fff; border-radius: 8px; border: 1px solid var(--mc-border); }
+.qq-register-qrcode-img { width: 200px; height: 200px; border-radius: 4px; }
+.qq-register-qrcode--loading { min-height: 240px; justify-content: center; }
+.qq-register-qrcode-spinner { width: 40px; height: 40px; border: 3px solid rgba(20,134,255,0.2); border-top-color: #1486ff; border-radius: 50%; animation: qq-register-spin 0.8s linear infinite; }
+@keyframes qq-register-spin { to { transform: rotate(360deg); } }
+.qq-register-status { font-size: 13px; color: var(--mc-text-secondary); margin-top: 10px; transition: color 0.2s; text-align: center; }
+.qq-register-status.confirmed { color: #10b981; font-weight: 500; }
+.qq-register-status.expired { color: #f56c6c; }
+.qq-register-status.denied { color: #f56c6c; }
 
 /* Feishu one-click register */
 .feishu-register-card { background: linear-gradient(135deg, rgba(0,128,255,0.05), rgba(99,102,241,0.05)); border: 1px solid rgba(99,102,241,0.2); border-radius: 10px; padding: 14px 16px; margin-bottom: 16px; }

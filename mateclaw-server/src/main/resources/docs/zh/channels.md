@@ -20,6 +20,26 @@ v1.3.0 在渠道层做了一批长跑稳定性 + 群协作的工作：
 企业微信的细节调优全部在 [企业微信深度优化](./wecom-tuning) 里。
 :::
 
+::: tip 1.4.0 渠道层增强
+v1.4.0 把飞书做成了"一等公民"渠道——交互卡片、流式卡片、审批卡片、原生工具、媒体收发，外加 QQ 扫码绑定：
+
+- **飞书交互卡片（Schema 2.0）**：结构化回复自动渲染成飞书交互卡片，短文本仍走纯文本
+- **飞书审批卡片**：工具守卫的审批流以"同意 / 拒绝"按钮卡片送达，点一下就把工具跑完
+- **飞书流式卡片（CardKit）**：回复逐字刷新进同一张卡片
+- **飞书入站语音转写**：语音消息走 STT 转成文字喂给 Agent
+- **飞书入站文件 / 音视频下载**：不再只下图片；`media_download_enabled` **默认在 1.4.0 改为 true**
+- **飞书渠道原生工具**：日历查询、文档读 / 写，无需配置 MCP 服务器
+- **QQ 扫码绑定**：QQ 也有了和钉钉 / 飞书一致的扫码绑定引导
+- **全 IM 渠道按会话选模型**：IM 会话与 Web 一样按会话记住模型
+
+飞书的细节全部在下面[飞书](#飞书)一节里展开。
+:::
+
+::: tip 1.5.0 渠道改进
+- **统一的入站媒体管线**：目前**微信和企业微信**已接入这层共用的入站媒体下载器 + 魔数（magic-byte）类型识别 + 指数退避重试（其它 IM 渠道后续接入）。文件类型从内容字节判定（不再硬编码 `image/*`），HEIC / WEBP / DOCX / XLSX 等都能正确识别，下载失败自动重试。
+- **飞书：跟进文本自动带上最近的文件（#201）**：飞书群里先发一个文件（哪怕没 @ 员工），再发一句文字，缓存的文件会自动作为内容片段塞给员工——每群 5 个文件、60 分钟 TTL。
+:::
+
 ---
 
 ## 九个渠道
@@ -88,7 +108,11 @@ v1.3.0 在渠道层做了一批长跑稳定性 + 群协作的工作：
 内置。没有外部配置，没有凭证。用 Server-Sent Events 做实时流式。
 
 ```
-GET /api/v1/chat/{agentId}/stream
+POST /api/v1/chat/stream
+Content-Type: application/json
+Accept: text/event-stream
+
+{"agentId": 1, "message": "...", "conversationId": "..."}
 ```
 
 事件格式在 [聊天与消息](./chat) 里。
@@ -247,6 +271,97 @@ curl -X POST http://localhost:18088/api/v1/channels \
 
 Webhook URL：`https://your-domain/api/v1/channels/webhook/feishu`
 
+### 飞书 1.4.0 增强
+
+v1.4.0 把飞书从"能收发文本"升级成了完整的富交互渠道。下面这些大多数零配置就能用，列出来是为了让你知道开关在哪、默认值是什么。
+
+#### 交互卡片（Schema 2.0）
+
+结构化回复——JSON、带表头 / 表格 / 列表的 Markdown、长文本——会自动渲染成飞书**交互卡片**；短的纯文本仍然以普通文本消息发出。
+
+| 配置项 | 默认 | 说明 |
+|--------|------|------|
+| `card_format` | `auto` | `auto` 按内容自动判断；`always` 强制走卡片（调试用）；`never` 强制纯文本 |
+| `card_header` | `AI 助手` | 卡片标题文案，设为空串可隐藏 header |
+
+JSON 卡片 payload 上限约 32 KB，超出后自动降级为纯文本。
+
+#### 审批卡片
+
+工具守卫（tool-guard）的审批流以一张带**同意 / 拒绝**按钮的卡片送达。点**同意**会注入一条合成的 `/approve`、点**拒绝**注入 `/deny`，Agent 随即把获批的工具完整跑完——审批和执行在同一个会话里闭环，不用切回 Web 控制台。
+
+#### 流式卡片（CardKit）
+
+回复逐字刷新进**同一张卡片**，而不是等整段生成完再发。
+
+- `card_streaming_enabled`（默认 `true`）
+- 首 token 立即出现，之后按 500ms 节流刷新
+- CardKit 调用失败时自动回退到"先攒齐再一次性发出"
+
+#### 入站语音转写
+
+飞书语音消息走语音识别（STT）转成文字后喂给 Agent——Agent 收到的是真正的文字，而不是一个 `[audio]` 占位。**配置好 STT 后自动启用**，无需额外开关。
+
+#### 入站文件 / 音视频下载
+
+1.4.0 之前只下载图片；现在文件、音频、视频也会被下载、本地缓存，并通过 `/api/v1/files/generated/{id}` 提供给 Agent。
+
+::: warning 默认值变化
+`media_download_enabled` 在 1.4.0 **默认改为 `true`**。如果你在意磁盘占用或隐私，可以显式设为 `false` 退出。
+:::
+
+大小与格式约束：图片上限 10 MB（超出自动压缩），文件 / 音频 / 视频上限 30 MB；音频仅支持 opus、视频仅支持 mp4，其余格式降级为普通文件处理。
+
+#### 出站生成文件 → 原生附件
+
+Agent 生成的文件 URL 会被还原成飞书**原生附件**直接发出。若缓存已失效（cache miss），回复里会附带一句重试提示，而不是甩一个失效链接。
+
+#### 渠道原生工具（无需 MCP 服务器）
+
+绑定飞书渠道后，Agent 直接获得三个飞书原生工具，**不需要单独配 MCP 服务器**：
+
+| 工具 | 类型 | 默认 |
+|------|------|------|
+| `feishu_calendar_list_events` | 读 | 开 |
+| `feishu_doc_read` | 读 | 开 |
+| `feishu_doc_create` | 写 | 关，审批门控 |
+
+数据库内置的守卫规则会给写类工具（如 `feishu_doc_create`）自动套上 `NEEDS_APPROVAL`，触发上面的审批卡片流程。
+
+#### 发送者上下文注入
+
+群聊里 Agent 需要知道"谁在说话"。飞书消息进来时，Agent 的 prompt 会自动带上 Channel / Sender /（群聊时）Chat 几行上下文。**零配置。**
+
+#### DONE 反应
+
+成功回复后，机器人会在那条入站消息上贴一个 ✅ 表情，作为"已处理"的轻量回执。`enable_done_reaction`（默认 `true`）。
+
+#### @机器人 过滤
+
+群聊里默认有人发言机器人就响应。把 `require_mention` 设为 `true`（默认 `false`）后，只有 @机器人 才触发——判定走飞书 SDK 的 mentions 字段。机器人自身的 open_id 在启动时预取，并带 60 秒负缓存（取不到时门"放行"，不会因为一次失败把整个群锁死）。
+
+```bash
+curl -X POST http://localhost:18088/api/v1/channels \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <token>" \
+  -d '{
+    "name": "飞书机器人",
+    "type": "feishu",
+    "agentId": 1,
+    "config": {
+      "appId": "cli_your_app_id",
+      "appSecret": "your-app-secret",
+      "card_format": "auto",
+      "card_header": "AI 助手",
+      "card_streaming_enabled": true,
+      "media_download_enabled": true,
+      "enable_done_reaction": true,
+      "require_mention": false
+    },
+    "enabled": true
+  }'
+```
+
 ---
 
 ## 企业微信
@@ -376,6 +491,25 @@ curl -X POST http://localhost:18088/api/v1/channels \
 ---
 
 ## QQ
+
+WebSocket / 回调两种模式，官方机器人平台。
+
+### 一键扫码绑定（推荐，v1.4.0+）
+
+和钉钉 / 飞书一样，QQ 也支持扫码绑定——不用手动去开放平台抄 AppID / AppSecret。
+
+1. `渠道 → 新建 → 类型选 QQ`
+2. 表单里点**扫码绑定 QQ 应用**——展开一张 QR 码
+3. 用 QQ 扫码并**确认授权**
+4. 回到表单，**AppID 和 AppSecret 已自动回填**
+
+::: tip 它在做什么
+背后走 QQ 开放平台的精简版（Lite）授权门户：MateClaw 生成一个临时会话，凭证通过 AES-256-GCM 加密交换落地到表单。会话 12 分钟内有效，过期自动失效。**整个过程没有手抄凭证这一步。**
+:::
+
+### 手动配置应用（备选）
+
+如果扫码在你的网络下走不通：
 
 1. [QQ 开放平台](https://q.qq.com/) → 创建机器人应用
    ![QQ 开放平台](/images/channels/qq/01-open-platform.png) ![创建机器人](/images/channels/qq/02-create-bot.png)
@@ -507,6 +641,12 @@ curl http://localhost:18088/api/v1/channels/health \
 ## 全渠道语音支持
 
 IM 渠道（企业微信、微信、钉钉）都支持语音输入。语音识别走 DashScope 或 OpenAI Whisper，微信加密 CDN 的语音有三路回退。语音回复走文字转语音合成后以音频消息发回。
+
+---
+
+## 按会话选模型（全 IM 渠道）
+
+从 1.4.0 起，IM 渠道的会话和 Web 一样会**按会话记住模型**——每个 IM 会话在创建时 seed 一个会话级模型，之后的回复都尊重这个选择，而不是永远用 Agent 的默认模型。Web 侧的切换细节见 [聊天与消息](./chat)。
 
 ---
 

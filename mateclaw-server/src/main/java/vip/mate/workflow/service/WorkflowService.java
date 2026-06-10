@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import vip.mate.exception.MateClawException;
 import vip.mate.workflow.compiler.PublishContext;
 import vip.mate.workflow.compiler.WorkflowAclPort;
 import vip.mate.workflow.compiler.WorkflowCompiler;
@@ -14,6 +15,9 @@ import vip.mate.workflow.repository.WorkflowRevisionMapper;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.stream.Collectors;
 
 /**
  * Workflow CRUD + draft / publish lifecycle. Drafts live inline on the
@@ -32,9 +36,34 @@ public class WorkflowService {
     private final WorkflowAclPort aclPort;
 
     public List<WorkflowEntity> listByWorkspace(long workspaceId) {
-        return workflowMapper.selectList(new LambdaQueryWrapper<WorkflowEntity>()
+        List<WorkflowEntity> rows = workflowMapper.selectList(new LambdaQueryWrapper<WorkflowEntity>()
                 .eq(WorkflowEntity::getWorkspaceId, workspaceId)
                 .orderByDesc(WorkflowEntity::getUpdateTime));
+        attachRevisionNumbers(rows);
+        return rows;
+    }
+
+    /**
+     * Batch-populate {@link WorkflowEntity#getLatestRevisionNumber()} so the
+     * workflow list shows a human version ("v3") instead of the latestRevisionId
+     * snowflake. One query for the whole page; no-op when nothing is published.
+     */
+    private void attachRevisionNumbers(List<WorkflowEntity> workflows) {
+        List<Long> ids = workflows.stream()
+                .map(WorkflowEntity::getLatestRevisionId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+        if (ids.isEmpty()) {
+            return;
+        }
+        Map<Long, Integer> numberById = revisionMapper.selectBatchIds(ids).stream()
+                .collect(Collectors.toMap(WorkflowRevisionEntity::getId, WorkflowRevisionEntity::getRevision));
+        for (WorkflowEntity wf : workflows) {
+            if (wf.getLatestRevisionId() != null) {
+                wf.setLatestRevisionNumber(numberById.get(wf.getLatestRevisionId()));
+            }
+        }
     }
 
     /**
@@ -52,6 +81,24 @@ public class WorkflowService {
     }
 
     /**
+     * Populate {@link WorkflowEntity#getPublishedGraphJson()} from the latest
+     * revision. The editor needs this because {@link #publish} clears the inline
+     * draft on publish — without the published graph the canvas would render
+     * empty for any published workflow. No-op when the workflow was never
+     * published or the revision row is missing.
+     */
+    public void attachPublishedGraph(WorkflowEntity workflow) {
+        if (workflow == null || workflow.getLatestRevisionId() == null) {
+            return;
+        }
+        WorkflowRevisionEntity revision = revisionMapper.selectById(workflow.getLatestRevisionId());
+        if (revision != null) {
+            workflow.setPublishedGraphJson(revision.getGraphJson());
+            workflow.setLatestRevisionNumber(revision.getRevision());
+        }
+    }
+
+    /**
      * Same as {@link #get(long, long)} but throws when the row is missing.
      * Used by mutation paths that can fail loudly instead of returning null.
      */
@@ -66,6 +113,10 @@ public class WorkflowService {
     @Transactional
     public WorkflowEntity create(WorkflowEntity workflow) {
         if (workflow.getEnabled() == null) workflow.setEnabled(true);
+        // Pre-check name uniqueness so the duplicate path surfaces as a friendly
+        // 409 instead of an opaque 500 from the uk_workflow_workspace_name
+        // unique index hitting the catch-all handler.
+        requireUniqueName(workflow.getWorkspaceId(), workflow.getName(), null);
         workflowMapper.insert(workflow);
         return workflow;
     }
@@ -82,7 +133,10 @@ public class WorkflowService {
     public WorkflowEntity updateMetadata(long id, long workspaceId, String name,
                                          String description, Boolean enabled) {
         WorkflowEntity existing = getOrThrow(id, workspaceId);
-        if (name != null) existing.setName(name);
+        if (name != null && !name.equals(existing.getName())) {
+            requireUniqueName(workspaceId, name, id);
+            existing.setName(name);
+        }
         if (description != null) existing.setDescription(description);
         if (enabled != null) existing.setEnabled(enabled);
         // draftJson / latest_revision_id / workspace_id are intentionally
@@ -168,6 +222,35 @@ public class WorkflowService {
         workflow.setDraftUpdatedAt(null);
         workflowMapper.updateById(workflow);
         return new PublishOutcome(workflow, revision);
+    }
+
+    /**
+     * Reject a create / rename whose name already exists in the workspace. The
+     * underlying table carries a unique index on (workspace_id, name, deleted),
+     * so without this pre-check the duplicate insert would bubble up as a
+     * generic 500 with a database-level "duplicate entry" message. Pass a
+     * non-null {@code excludeId} on rename so the row doesn't see itself as a
+     * conflict.
+     */
+    private void requireUniqueName(Long workspaceId, String name, Long excludeId) {
+        if (name == null || name.isBlank()) {
+            throw new MateClawException("err.workflow.name_required", 400,
+                    "工作流名称不能为空");
+        }
+        if (workspaceId == null) {
+            return;
+        }
+        LambdaQueryWrapper<WorkflowEntity> q = new LambdaQueryWrapper<WorkflowEntity>()
+                .eq(WorkflowEntity::getWorkspaceId, workspaceId)
+                .eq(WorkflowEntity::getName, name);
+        if (excludeId != null) {
+            q.ne(WorkflowEntity::getId, excludeId);
+        }
+        Long count = workflowMapper.selectCount(q);
+        if (count != null && count > 0) {
+            throw new MateClawException("err.workflow.duplicate_name", 409,
+                    "工作区内已存在同名工作流: " + name);
+        }
     }
 
     private int nextRevisionNumber(long workflowId) {

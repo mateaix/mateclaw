@@ -417,7 +417,10 @@ public abstract class AbstractChannelAdapter implements ChannelAdapter {
      * - dm_policy / group_policy：控制私聊/群聊是否开放
      * - allow_from：用户白名单
      * - deny_message：拒绝时的提示消息
-     * - require_mention：群聊中是否需要 @机器人
+     * <p>
+     * Note: {@code require_mention} is honored by individual channel adapters
+     * (Feishu reads the SDK's mentions field, etc.) rather than at this layer,
+     * because reliable mention detection is platform-specific.
      */
     protected boolean checkAccess(ChannelMessage message) {
         boolean isDM = isDirectMessage(message);
@@ -433,18 +436,7 @@ public abstract class AbstractChannelAdapter implements ChannelAdapter {
             return false;
         }
 
-        // 2. 群聊中检查 require_mention（需要 @机器人才响应）
-        // 注：如果已设置 botPrefix，shouldProcess() 已处理；此处处理 configJson 中的 require_mention
-        if (!isDM && getConfigBoolean("require_mention", false)) {
-            String botPrefix = channelEntity.getBotPrefix();
-            if (botPrefix == null || botPrefix.isBlank()) {
-                // 设置了 require_mention 但没有 botPrefix，无法判断 mention，放行
-                log.debug("[{}] require_mention=true but no botPrefix configured, allowing", getChannelType());
-            }
-            // 如果有 botPrefix，shouldProcess() 已经过滤过非 mention 消息，此处放行
-        }
-
-        // 3. 检查 allow_from 白名单
+        // 2. 检查 allow_from 白名单
         List<String> allowFrom = getConfigList("allow_from");
         if (!allowFrom.isEmpty()) {
             if (!allowFrom.contains(message.getSenderId())) {

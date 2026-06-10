@@ -4,15 +4,12 @@
     <template v-if="patternType === 'cron'">
       <div class="pf-field">
         <span class="pf-label">{{ t('triggers.pattern.cronExpression') }}</span>
-        <input
-          v-model.trim="form.cron"
-          class="pf-input mono"
-          :placeholder="t('triggers.pattern.cronExpressionPlaceholder')"
-          spellcheck="false"
-          @input="emitFromForm"
+        <CronExpressionField
+          :model-value="form.cron || ''"
+          with-seconds
+          @update:model-value="onCronChange"
         />
         <small v-if="errors.cron" class="pf-err">{{ errors.cron }}</small>
-        <small v-else class="pf-hint">{{ t('triggers.pattern.cronExpressionHint') }}</small>
       </div>
       <div class="pf-field">
         <span class="pf-label">{{ t('triggers.pattern.cronTimezone') }}</span>
@@ -167,6 +164,7 @@
 import { reactive, ref, watch, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { WorkflowSummary } from '@/api'
+import CronExpressionField from '@/components/common/CronExpressionField.vue'
 
 interface Props {
   /** Pattern type (cron / channel_message / …) drives which form is shown. */
@@ -311,6 +309,13 @@ function emitFromForm() {
   Object.assign(errors, validate())
   emit('update:modelValue', buildJsonFromForm())
   emit('validation', { ...errors })
+}
+
+// Cron is edited through the shared CronExpressionField; mirror its value
+// into the form and re-run the standard emit + validation pipeline.
+function onCronChange(value: string) {
+  form.cron = value
+  emitFromForm()
 }
 
 function onRawInput(e: Event) {

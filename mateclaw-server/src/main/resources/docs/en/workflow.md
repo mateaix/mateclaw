@@ -203,6 +203,10 @@ Every run persists as `mate_workflow_run` + `mate_workflow_run_step`. Detail vie
 
 A workflow run can only start through [Triggers](./triggers.md) or via `await_approval` resume — v0 has no "fire one now" endpoint. See API reference above for details.
 
+::: tip 1.4.0: triggers now live in the Scheduler
+As of v1.4.0, **Scheduled Jobs** and **Triggers** are merged into a single **Scheduler** page (`Settings → Scheduler`, route `/settings/scheduler`) with three tabs: **Scheduled Jobs / Event Triggers / Run History**. To attach a trigger to a workflow, create a `target_type=workflow` rule on the Scheduler's **Event Triggers** tab. See [Triggers](./triggers.md).
+:::
+
 ---
 
 ## API reference

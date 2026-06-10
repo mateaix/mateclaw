@@ -9,8 +9,9 @@ import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
-import vip.mate.agent.AssistantThinkingRelay;
 import vip.mate.channel.web.ChatStreamTracker;
+import vip.mate.llm.chatmodel.AssistantThinkingRelay;
+import vip.mate.llm.chatmodel.ReasoningContentCache;
 
 import reactor.core.Disposable;
 
@@ -179,20 +180,40 @@ public class NodeStreamingChatHelper {
     }
 
     /**
-     * RFC-009 Phase 4 — map an {@link ErrorType} to the matching pool
+     * Map an {@link ErrorType} to the matching pool
      * {@link vip.mate.llm.failover.AvailableProviderPool.RemovalSource} for
-     * HARD failures (AUTH / BILLING / MODEL_NOT_FOUND). Returns {@code null}
-     * for SOFT errors and benign types — those keep the provider in-pool and
-     * are handled by {@link vip.mate.llm.failover.ProviderHealthTracker}'s
-     * cooldown instead.
+     * provider-wide HARD failures (AUTH / BILLING). Returns {@code null} for
+     * SOFT errors, benign types, and model-scoped errors — those keep the
+     * provider in-pool.
+     *
+     * <p>{@code MODEL_NOT_FOUND} is deliberately excluded: it means the
+     * provider rejected one specific model id, not that the provider is
+     * unusable. Evicting the whole provider would needlessly take its other
+     * models offline. SOFT errors are absorbed by
+     * {@link vip.mate.llm.failover.ProviderHealthTracker}'s cooldown instead.</p>
      */
     private static vip.mate.llm.failover.AvailableProviderPool.RemovalSource hardRemovalSource(ErrorType type) {
         if (type == null) return null;
         return switch (type) {
             case AUTH_ERROR -> vip.mate.llm.failover.AvailableProviderPool.RemovalSource.AUTH_ERROR;
             case BILLING -> vip.mate.llm.failover.AvailableProviderPool.RemovalSource.BILLING;
-            case MODEL_NOT_FOUND -> vip.mate.llm.failover.AvailableProviderPool.RemovalSource.MODEL_NOT_FOUND;
             default -> null;
+        };
+    }
+
+    /**
+     * True when {@code type} reflects the <i>provider's own health</i> (auth,
+     * billing, rate limit, server error, empty response) rather than something
+     * specific to the requested model or prompt. Only provider-level failures
+     * should feed pool eviction and the consecutive-failure cooldown tracker —
+     * a {@code MODEL_NOT_FOUND} / {@code CLIENT_ERROR} / {@code PROMPT_TOO_LONG}
+     * says nothing about whether the provider's other models still work.
+     */
+    private static boolean isProviderLevelFailure(ErrorType type) {
+        if (type == null) return false;
+        return switch (type) {
+            case NONE, PROMPT_TOO_LONG, CLIENT_ERROR, THINKING_BLOCK_ERROR, MODEL_NOT_FOUND -> false;
+            default -> true;
         };
     }
 
@@ -313,11 +334,22 @@ public class NodeStreamingChatHelper {
      */
     private static final int CONTENT_REPEAT_CHECK_INTERVAL = 200;
 
-    private static final int MAX_RETRIES = 5;
+    /**
+     * Maximum retry attempts for SERVER_ERROR / transient network failures.
+     * Total LLM calls per turn = MAX_RETRIES + 1 (attempt 0 is the initial,
+     * attempts 1..MAX_RETRIES are the retries). Bumped from 5 to 10 in
+     * commit 1dd99b68 so sustained wiki batch load can ride out provider
+     * flaps without surfacing the error.
+     *
+     * <p>Package-private so {@code LaneDPerformanceFixesTest} can stay in
+     * sync without a magic number — when this value changes again, the
+     * test follows automatically.
+     */
+    static final int MAX_RETRIES = 10;
     // RATE_LIMIT: fail fast to failover chain — staying on the same
     // provider during a rate-limit window wastes time without recovery.
     // SERVER_ERROR keeps MAX_RETRIES (upstream flaps often self-heal).
-    private static final int MAX_RETRIES_RATE_LIMIT = 2;
+    static final int MAX_RETRIES_RATE_LIMIT = 2;
     private static final long BACKOFF_BASE_MS = 3000;
     private static final long BACKOFF_CAP_MS = 60_000;
 
@@ -380,18 +412,22 @@ public class NodeStreamingChatHelper {
             return ErrorType.BILLING;
         }
         // RFC-009 P3.2: MODEL_NOT_FOUND — provider rejects the requested model id.
-        // Includes DashScope's "[InvalidParameter] url error, please check url"
-        // (https://help.aliyun.com/zh/model-studio/error-code#error-url) which despite
-        // the wording is the provider rejecting an unknown/unsupported model id on
-        // the native protocol. Splitting this out from CLIENT_ERROR lets us hand off
-        // to the fallback chain instead of terminating — a different provider may
-        // recognize the model name (or have an equivalent default).
+        // DashScope signals an unknown/unsupported model id specifically as
+        // "[InvalidParameter] url error, please check url"
+        // (https://help.aliyun.com/zh/model-studio/error-code#error-url). Splitting this
+        // out from CLIENT_ERROR lets us hand off to the fallback chain instead of
+        // terminating — a different provider may recognize the model name (or have an
+        // equivalent default).
+        //
+        // Note: we match on the specific "url error" wording rather than a bare
+        // "InvalidParameter", because DashScope reuses the InvalidParameter code for
+        // request-shape problems that have nothing to do with the model id (an illegal
+        // tool name, or an unsupported parameter) — those are handled as CLIENT_ERROR
+        // below so a healthy model is not evicted from the failover pool.
         if (msg.contains("Model not exist")
                 || msg.contains("model_not_found")
                 || msg.contains("Model not found")
                 || msg.contains("does not exist")
-                || msg.contains("[InvalidParameter]")
-                || msg.contains("InvalidParameter")
                 || msg.contains("url error")
                 // Volcano Ark: model exists but the user's account hasn't opened it,
                 // or the id isn't valid for this region. Both are hard failures —
@@ -400,9 +436,16 @@ public class NodeStreamingChatHelper {
                 || msg.contains("InvalidEndpointOrModel")) {
             return ErrorType.MODEL_NOT_FOUND;
         }
-        // Client errors (400 Bad Request — unsupported format, invalid params, etc.) — NOT retryable
+        // Client errors (400 Bad Request — unsupported format, invalid params, etc.) — NOT retryable.
+        // DashScope's remaining "InvalidParameter" responses are request-shape bugs, e.g. a reserved
+        // or illegal tool name ("Tool names are not allowed to be [search]") or an unsupported
+        // parameter. These fail identically on every provider, so classifying them as CLIENT_ERROR
+        // (rather than MODEL_NOT_FOUND) keeps the model in the failover pool and surfaces the real
+        // cause instead of a misleading "model not available" message.
         if (msg.contains("400") || msg.contains("Bad Request")
-                || msg.contains("invalid_request_error") || msg.contains("unsupported")) {
+                || msg.contains("invalid_request_error") || msg.contains("unsupported")
+                || msg.contains("Tool names are not allowed")
+                || msg.contains("InvalidParameter")) {
             return ErrorType.CLIENT_ERROR;
         }
         // Server errors and transient TLS / socket-level network hiccups.
@@ -429,7 +472,12 @@ public class NodeStreamingChatHelper {
                 // Reactor Netty wraps the raw socket cause in WebClientRequestException;
                 // surface that wrapper too so retries fire even when the cause chain
                 // string is "WebClientRequestException ...; nested ... SSLException".
-                || msg.contains("WebClientRequestException")) {
+                || msg.contains("WebClientRequestException")
+                // SiliconFlow and some other providers return "network connection error"
+                // in the response body when their backend is under high load or the
+                // upstream connection to the model server is disrupted. This is a
+                // transient server-side failure — classify as retryable.
+                || msg.contains("network connection error")) {
             return ErrorType.SERVER_ERROR;
         }
         return ErrorType.UNKNOWN;
@@ -521,15 +569,23 @@ public class NodeStreamingChatHelper {
                     removeFromPool(primaryProviderId, ErrorType.AUTH_ERROR, lastResult.errorMessage());
                     break;
                 }
-                // RFC-009 P3.2: BILLING / MODEL_NOT_FOUND — provider-side hard failures
-                // that won't change on retry. Skip to fallback chain (a different
-                // provider may have credits, or the model name may be valid there).
-                if (lastResult.errorType() == ErrorType.BILLING
-                        || lastResult.errorType() == ErrorType.MODEL_NOT_FOUND) {
-                    log.warn("[{}] Primary error={} — skipping same-model retries, handing off to fallback chain",
-                            phase, lastResult.errorType());
+                // BILLING — provider-side hard failure (out of credit). Won't change
+                // on retry and affects every model on the provider, so evict it and
+                // hand off to the fallback chain (a different provider may have credits).
+                if (lastResult.errorType() == ErrorType.BILLING) {
+                    log.warn("[{}] Primary billing failure — skipping same-model retries, handing off to fallback chain", phase);
                     recordPrimary(false);
-                    removeFromPool(primaryProviderId, lastResult.errorType(), lastResult.errorMessage());
+                    removeFromPool(primaryProviderId, ErrorType.BILLING, lastResult.errorMessage());
+                    break;
+                }
+                // MODEL_NOT_FOUND — the provider rejected this specific model id. The
+                // provider itself is healthy, so do NOT evict it from the pool or
+                // record a provider-level failure: that would take its sibling models
+                // down too. Just skip same-model retries and hand off to the fallback
+                // chain — a different provider may recognize the model name.
+                if (lastResult.errorType() == ErrorType.MODEL_NOT_FOUND) {
+                    log.warn("[{}] Primary model not found — handing off to fallback chain "
+                            + "(provider kept available for its other models)", phase);
                     break;
                 }
                 // CLIENT_ERROR (400 Bad Request): 不重试（参数/格式错误重试也不会变）
@@ -560,18 +616,32 @@ public class NodeStreamingChatHelper {
                     logPerfSummary(phase, conversationId, callStartMs, llmCallCount, retryCount, failoverCount);
                     return lastResult;
                 }
-                // Any other non-null errored result with a classified type that doStreamCall
-                // chose NOT to retry (i.e. UNKNOWN, or RATE_LIMIT/SERVER_ERROR past MAX_RETRIES)
-                // must exit — otherwise we silently spin through attempts and waste seconds
-                // per turn on unrecoverable errors like DashScope's "url error" / unknown model.
+                // RATE_LIMIT / SERVER_ERROR past their retry budget are provider-level
+                // failures: the same model will not recover within this turn, but a
+                // different provider can. Break to the fallback chain instead of
+                // returning — recordPrimary(false) runs once at the post-loop provider
+                // health check below, and if every fallback also fails the chain
+                // walker re-surfaces this same error to the caller.
+                if (lastResult.errorType() == ErrorType.RATE_LIMIT
+                        || lastResult.errorType() == ErrorType.SERVER_ERROR) {
+                    log.warn("[{}] Primary exhausted retries (type={}) — handing off to fallback chain",
+                            phase, lastResult.errorType());
+                    break;
+                }
+                // Any other non-null errored result (e.g. UNKNOWN) that doStreamCall
+                // chose NOT to retry must exit — otherwise we silently spin through
+                // attempts and waste seconds per turn on unrecoverable errors like
+                // DashScope's "url error" / unknown model.
                 recordPrimary(false);
                 logPerfSummary(phase, conversationId, callStartMs, llmCallCount, retryCount, failoverCount);
                 return lastResult;
             }
             // lastResult == null 表示需要重试
         }
-        // If we exhausted the retry loop without a verdict, primary effectively failed.
-        if (!primarySkipped && lastResult != null && lastResult.errorType() != ErrorType.NONE) {
+        // If we exhausted the retry loop without a verdict, primary effectively
+        // failed. Only count it against provider health for provider-level errors —
+        // a MODEL_NOT_FOUND break above must not nudge the provider toward cooldown.
+        if (!primarySkipped && lastResult != null && isProviderLevelFailure(lastResult.errorType())) {
             recordPrimary(false);
         }
 
@@ -621,11 +691,17 @@ public class NodeStreamingChatHelper {
                 logPerfSummary(phase, conversationId, callStartMs, llmCallCount, retryCount, failoverCount);
                 return fallbackResult;
             }
-            if (healthTracker != null) healthTracker.recordFailure(entry.providerId());
+            // Only provider-level failures count toward the cooldown tracker. A
+            // null result is a retryable soft failure; a MODEL_NOT_FOUND result is
+            // model-scoped and must not penalise an otherwise-healthy provider.
+            if (healthTracker != null
+                    && (fallbackResult == null || isProviderLevelFailure(fallbackResult.errorType()))) {
+                healthTracker.recordFailure(entry.providerId());
+            }
             if (fallbackResult != null) {
-                // RFC-009 Phase 4: HARD errors evict from the pool so later
-                // walks skip this provider outright. SOFT errors keep it
-                // in-pool and let the tracker's cooldown absorb the blip.
+                // HARD errors (auth / billing) evict the provider from the pool so
+                // later walks skip it outright. SOFT and model-scoped errors keep it
+                // in-pool — absorbed by the tracker's cooldown or simply retried.
                 removeFromPool(entry.providerId(), fallbackResult.errorType(), fallbackResult.errorMessage());
                 lastResult = fallbackResult; // remember most recent to report if the whole chain fails
             }
@@ -651,11 +727,25 @@ public class NodeStreamingChatHelper {
     private StreamResult doStreamCall(ChatModel chatModel, Prompt prompt,
                                        String conversationId, String phase,
                                        boolean broadcast, int attempt) {
+        // Collapse every SystemMessage in the prompt into a single SystemMessage
+        // at index 0. Some OpenAI-compatible providers (LM Studio's built-in
+        // server, certain strict vLLM / SGLang deployments) reject 400
+        // "System message must be at the beginning" when SystemMessages appear
+        // after user / assistant / tool messages — the runtime composes the
+        // non-history prefix from several SystemMessage segments (main prompt,
+        // skill catalog, progress-ledger snapshot) and some of them land mid-
+        // list. Permissive providers see an equivalent token sequence either
+        // way; non-OpenAI protocols (Anthropic, Vertex) extract the merged
+        // system into their top-level system field exactly as before.
+        // Preserves the input's options reference so downstream relay logic
+        // (options.user = relay token) keeps working.
+        Prompt outbound = MessageNormalizer.normalize(prompt);
+
         // PR-2 L4 (RFC-049 §2.4.2): normalize as a pre-egress step (not only on retry).
         // Strip reasoning_content from prior-turn AssistantMessages (i <= lastUserIdx),
         // preserving in-turn thinking (i > lastUserIdx) so DeepSeek's contract holds.
         // The returned Prompt shares `options` by reference with the input prompt.
-        Prompt outbound = stripThinkingFromPrompt(prompt);
+        outbound = stripThinkingFromPrompt(outbound);
 
         // RFC-049 follow-up (2026-04-27): trim trailing AssistantMessage from the
         // outbound prompt. Triggered in practice by the summarizing→reasoning
@@ -724,7 +814,7 @@ public class NodeStreamingChatHelper {
                                             boolean broadcast, int attempt) {
         if (attempt > 0) {
             long delay = Math.min(BACKOFF_BASE_MS * (1L << (attempt - 1)), BACKOFF_CAP_MS);
-            // 加入 jitter 防止雷群效应（Hermes 风格）
+            // 加入 jitter 防止雷群效应
             delay += ThreadLocalRandom.current().nextLong(0, Math.max(1, delay / 2));
             delay = Math.min(delay, BACKOFF_CAP_MS);
             log.warn("[{}] Retry attempt {}/{} after {}ms for conversation {}",
@@ -765,7 +855,7 @@ public class NodeStreamingChatHelper {
         AtomicInteger cacheWriteTokens = new AtomicInteger(0);
 
         // thinking-only soft cap 触发后设为 true，外层轮询线程据此 dispose 订阅。
-        // 注意：内容流的字符级 / 句子级重复检测已整体移除（参考 Hermes 思路：
+        // 注意：内容流的字符级 / 句子级重复检测已整体移除（设计取舍：
         // agent 不替模型审核输出退化，靠 max_tokens + max_iterations 兜底）；
         // 仅保留 thinking-only 这条体积兜底，处理 volcengine-plan 等 provider
         // 在 thinking 通道堆字符不出 content 的死循环（生产 trace c1eefa45）。
@@ -873,7 +963,7 @@ public class NodeStreamingChatHelper {
                         thinkingAccum.append(thinkingDelta);
                         // thinkingLevel=off 时不广播 thinking（模型仍可能产生，但前端不展示）
                         boolean suppressThinking = "off".equalsIgnoreCase(
-                                vip.mate.agent.ThinkingLevelHolder.get());
+                                vip.mate.llm.chatmodel.ThinkingLevelHolder.get());
                         if (broadcast && !suppressThinking) {
                             broadcastDelta(conversationId, "thinking_delta", thinkingDelta);
                         }
@@ -1142,6 +1232,10 @@ public class NodeStreamingChatHelper {
 
         AssistantMessage assembledMessage = buildAssistantMessageWithThinking(fullContent, fullThinking, finalToolCalls);
 
+        // Cache reasoning_content for MiMo-style providers that require it on
+        // subsequent turns.
+        cacheReasoningContent(fullThinking, finalToolCalls);
+
         recordCacheMetrics(phase, promptTok, completionTok, cacheReadTok, cacheWriteTok);
         return new StreamResult(fullContent, fullThinking, assembledMessage,
                 finalToolCalls, !finalToolCalls.isEmpty(), promptTok, completionTok,
@@ -1170,6 +1264,10 @@ public class NodeStreamingChatHelper {
         }
 
         AssistantMessage assembledMessage = buildAssistantMessageWithThinking(fullContent, fullThinking, finalToolCalls);
+
+        // Cache reasoning_content for MiMo-style providers that require it on
+        // subsequent turns. The cache replays real values instead of empty strings.
+        cacheReasoningContent(fullThinking, finalToolCalls);
 
         recordCacheMetrics(phase, promptTok, completionTok, cacheReadTok, cacheWriteTok);
         return new StreamResult(fullContent, fullThinking, assembledMessage,
@@ -1202,6 +1300,24 @@ public class NodeStreamingChatHelper {
             builder.properties(Map.of("reasoningContent", fullThinking));
         }
         return builder.build();
+    }
+
+    /**
+     * Store reasoning content in the cache for cross-turn replay.
+     * Only caches when there are tool calls (MiMo requires reasoning_content
+     * specifically on assistant messages with tool_calls).
+     */
+    private static void cacheReasoningContent(String fullThinking,
+                                               List<AssistantMessage.ToolCall> toolCalls) {
+        if (fullThinking == null || fullThinking.isBlank()) return;
+        if (toolCalls == null || toolCalls.isEmpty()) return;
+        List<String> ids = toolCalls.stream()
+                .map(AssistantMessage.ToolCall::id)
+                .filter(id -> id != null && !id.isEmpty())
+                .toList();
+        if (!ids.isEmpty()) {
+            ReasoningContentCache.store(ids, fullThinking);
+        }
     }
 
     /**
@@ -1454,6 +1570,11 @@ public class NodeStreamingChatHelper {
         if (msg.contains("rate_limit") || msg.contains("429")) return "Rate limit exceeded, please retry later";
         if (msg.contains("timeout") || msg.contains("Timeout")) return "Request timeout, please retry";
         if (msg.contains("502") || msg.contains("503") || msg.contains("504")) return "Model service temporarily unavailable";
+        // SiliconFlow and similar providers surface "network connection error" when their
+        // backend is under high load or the upstream model connection is disrupted.
+        // Treat this as a transient failure so the user gets a retry-oriented message.
+        if (combined.contains("network connection error"))
+            return "Model service network error, please retry in a moment";
         // 截断过长的原始消息
         return msg.length() > 100 ? msg.substring(0, 100) + "..." : msg;
     }

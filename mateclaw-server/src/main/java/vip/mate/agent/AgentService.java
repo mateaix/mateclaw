@@ -15,13 +15,17 @@ import vip.mate.agent.event.AgentLifecycleEvent;
 import vip.mate.agent.model.AgentEntity;
 import vip.mate.agent.repository.AgentMapper;
 import vip.mate.exception.MateClawException;
+import vip.mate.llm.chatmodel.ThinkingLevelHolder;
 import vip.mate.llm.event.ModelConfigChangedEvent;
 import vip.mate.memory.MemoryProperties;
 import vip.mate.memory.lifecycle.MemoryLifecycleMediator;
 import vip.mate.memory.lifecycle.TurnContext;
 import vip.mate.memory.service.MemoryRecallTracker;
+import vip.mate.workspace.conversation.model.ConversationEntity;
+import vip.mate.workspace.conversation.repository.ConversationMapper;
 
 import java.util.List;
+import java.time.Duration;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
@@ -45,14 +49,23 @@ public class AgentService {
     private final MemoryRecallTracker memoryRecallTracker;
     private final MemoryLifecycleMediator lifecycleMediator;
     private final MemoryProperties memoryProperties;
+    private final vip.mate.memory.identity.MemoryOwnerResolver memoryOwnerResolver;
+    /** Read-only lookup of a conversation's pinned model. Mapper (not service)
+     *  to keep this a leaf dependency with no risk of a bean cycle. */
+    private final ConversationMapper conversationMapper;
 
     /** Field-injected publisher for agent_lifecycle trigger events; the
      *  trigger module's bridge listens and forwards into ingest. */
     @Autowired(required = false)
     private ApplicationEventPublisher events;
 
-    /** 运行时 Agent 实例缓存（agentId -> BaseAgent） */
-    private final Map<Long, BaseAgent> agentInstances = new ConcurrentHashMap<>();
+    /**
+     * Runtime Agent instance cache. Keyed first by agentId, then by a model
+     * key, so a conversation that pins a non-default model gets its own graph
+     * variant instead of mutating the one every other conversation shares.
+     * The model key is {@code ""} for the Agent / global-default model.
+     */
+    private final Map<Long, Map<String, BaseAgent>> agentInstances = new ConcurrentHashMap<>();
 
     // ==================== CRUD ====================
 
@@ -203,6 +216,20 @@ public class AgentService {
         agentInstances.remove(agentId);
     }
 
+    /**
+     * Invalidate the cached agent instance whenever one of its workspace files
+     * changes. The system prompt (which embeds MEMORY.md / PROFILE.md / structured
+     * memory) is baked into the cached instance at build time, so memory edits made
+     * via tools, consolidation, or cleanup would otherwise stay invisible until an
+     * agent config change or restart. Rebuilding on the next turn picks them up.
+     */
+    @org.springframework.context.event.EventListener
+    public void onWorkspaceFileChanged(vip.mate.workspace.document.event.WorkspaceFileChangedEvent event) {
+        if (event.agentId() != null) {
+            agentInstances.remove(event.agentId());
+        }
+    }
+
     // ==================== 运行时入口 ====================
 
     public String chat(Long agentId, String message, String conversationId) {
@@ -216,7 +243,7 @@ public class AgentService {
      */
     public String chat(Long agentId, String message, String conversationId, ChatOrigin origin) {
         memoryRecallTracker.trackRecalls(agentId, message);
-        BaseAgent agent = getOrBuildAgent(agentId);
+        BaseAgent agent = getOrBuildAgentForConversation(agentId, conversationId);
         ChatOriginHolder.set(origin != null ? origin : ChatOrigin.EMPTY);
         try {
             return withLifecycleSync(agentId, message, conversationId,
@@ -226,13 +253,33 @@ public class AgentService {
         }
     }
 
+    /**
+     * Sync chat that also captures token usage and runtime model attribution
+     * from the agent graph's {@code _usage_final} event. Equivalent to
+     * subscribing to {@link #chatStructuredStream} and joining all content
+     * deltas — produces the same assistant text as {@link #chat} but exposes
+     * the usage figures so callers can persist them on the assistant message.
+     *
+     * <p>Prefer this entry over {@link #chat} for any path that writes the
+     * reply to {@code mate_message} (sync HTTP endpoint, voice WebSocket,
+     * cron task, post-approval replay); the plain {@link #chat} stays as the
+     * thin wrapper for fire-and-forget invocations where usage is not needed.
+     */
+    public ChatResult chatWithUsage(Long agentId, String message, String conversationId) {
+        return chatWithUsage(agentId, message, conversationId, ChatOrigin.EMPTY);
+    }
+
+    public ChatResult chatWithUsage(Long agentId, String message, String conversationId, ChatOrigin origin) {
+        return collectChatResult(chatStructuredStream(agentId, message, conversationId, "", null, origin));
+    }
+
     public Flux<String> chatStream(Long agentId, String message, String conversationId) {
         return chatStream(agentId, message, conversationId, ChatOrigin.EMPTY);
     }
 
     public Flux<String> chatStream(Long agentId, String message, String conversationId, ChatOrigin origin) {
         memoryRecallTracker.trackRecalls(agentId, message);
-        BaseAgent agent = getOrBuildAgent(agentId);
+        BaseAgent agent = getOrBuildAgentForConversation(agentId, conversationId);
         // Capture the origin into a request-scoped holder; cleared on Flux
         // termination so the next reactive subscriber doesn't inherit stale state.
         ChatOrigin captured = origin != null ? origin : ChatOrigin.EMPTY;
@@ -268,7 +315,7 @@ public class AgentService {
                                                    String requesterId, String thinkingLevel,
                                                    ChatOrigin origin) {
         memoryRecallTracker.trackRecalls(agentId, message);
-        BaseAgent agent = getOrBuildAgent(agentId);
+        BaseAgent agent = getOrBuildAgentForConversation(agentId, conversationId);
 
         // 设置请求级思考深度（通过 ThreadLocal 传递到 StateGraph 执行）
         if (thinkingLevel != null && !thinkingLevel.isBlank()) {
@@ -314,7 +361,7 @@ public class AgentService {
 
     public String execute(Long agentId, String goal, String conversationId, ChatOrigin origin) {
         memoryRecallTracker.trackRecalls(agentId, goal);
-        BaseAgent agent = getOrBuildAgent(agentId);
+        BaseAgent agent = getOrBuildAgentForConversation(agentId, conversationId);
         ChatOriginHolder.set(origin != null ? origin : ChatOrigin.EMPTY);
         try {
             return withLifecycleSync(agentId, goal, conversationId,
@@ -341,7 +388,7 @@ public class AgentService {
     public String chatWithReplay(Long agentId, String userMessage, String conversationId,
                                   String toolCallPayload, ChatOrigin origin) {
         memoryRecallTracker.trackRecalls(agentId, userMessage);
-        BaseAgent agent = getOrBuildAgent(agentId);
+        BaseAgent agent = getOrBuildAgentForConversation(agentId, conversationId);
         ChatOriginHolder.set(origin != null ? origin : ChatOrigin.EMPTY);
         try {
             return withLifecycleSync(agentId, userMessage, conversationId,
@@ -349,6 +396,42 @@ public class AgentService {
         } finally {
             ChatOriginHolder.clear();
         }
+    }
+
+    /**
+     * Replay-after-approval that also captures token usage and runtime model
+     * attribution. Mirrors {@link #chatWithUsage} for the
+     * approval-resumption path used by {@code ChannelMessageRouter}.
+     */
+    public ChatResult chatWithReplayWithUsage(Long agentId, String userMessage, String conversationId,
+                                               String toolCallPayload, ChatOrigin origin) {
+        return collectChatResult(chatWithReplayStream(agentId, userMessage, conversationId,
+                toolCallPayload, "", origin != null ? origin : ChatOrigin.EMPTY));
+    }
+
+    /**
+     * Subscribe to a structured stream and collapse it into a single
+     * {@link ChatResult}: append all content deltas, capture the trailing
+     * {@code _usage_final} event for token and model attribution.
+     */
+    private ChatResult collectChatResult(Flux<StreamDelta> stream) {
+        StringBuilder content = new StringBuilder();
+        final int[] usage = {0, 0};
+        final String[] modelInfo = {null, null};
+        stream.doOnNext(delta -> {
+            if (delta.isEvent() && "_usage_final".equals(delta.eventType())) {
+                Map<String, Object> data = delta.eventData();
+                usage[0] = ((Number) data.getOrDefault("promptTokens", 0)).intValue();
+                usage[1] = ((Number) data.getOrDefault("completionTokens", 0)).intValue();
+                Object model = data.get("runtimeModelName");
+                Object provider = data.get("runtimeProviderId");
+                if (model != null) modelInfo[0] = model.toString();
+                if (provider != null) modelInfo[1] = provider.toString();
+            } else if (delta.content() != null) {
+                content.append(delta.content());
+            }
+        }).blockLast(Duration.ofMinutes(10));
+        return new ChatResult(content.toString(), usage[0], usage[1], modelInfo[0], modelInfo[1]);
     }
 
     /**
@@ -369,7 +452,7 @@ public class AgentService {
                                                    String toolCallPayload, String requesterId,
                                                    ChatOrigin origin) {
         memoryRecallTracker.trackRecalls(agentId, userMessage);
-        BaseAgent agent = getOrBuildAgent(agentId);
+        BaseAgent agent = getOrBuildAgentForConversation(agentId, conversationId);
         ChatOrigin captured = origin != null ? origin : ChatOrigin.EMPTY;
         return Flux.defer(() -> {
                     ChatOriginHolder.set(captured);
@@ -382,8 +465,20 @@ public class AgentService {
     }
 
     public AgentState getAgentState(Long agentId) {
-        BaseAgent agent = agentInstances.get(agentId);
-        return agent != null ? agent.getState() : AgentState.IDLE;
+        Map<String, BaseAgent> variants = agentInstances.get(agentId);
+        if (variants == null || variants.isEmpty()) {
+            return AgentState.IDLE;
+        }
+        // An Agent may have several cached graph variants (one per pinned
+        // model). Report the first non-IDLE state so a turn running on any
+        // variant stays visible.
+        for (BaseAgent agent : variants.values()) {
+            AgentState state = agent.getState();
+            if (state != AgentState.IDLE) {
+                return state;
+            }
+        }
+        return AgentState.IDLE;
     }
 
     // ==================== 缓存管理 ====================
@@ -410,6 +505,19 @@ public class AgentService {
         log.info("Agent caches refreshed after tool guard config change (denied tools may have changed)");
     }
 
+    /**
+     * Issue #289: an MCP server connecting / disconnecting / reconnecting
+     * changes the live tool set, but cached agents snapshot their tools at
+     * build time. Clear the cache so the next turn rebuilds against the
+     * current MCP tools instead of replying "from memory" with a stale,
+     * tool-less graph.
+     */
+    @EventListener
+    public void onMcpServerChanged(vip.mate.tool.mcp.event.McpServerChangedEvent event) {
+        refreshAllAgents();
+        log.info("Agent caches refreshed after MCP server change: {}", event.reason());
+    }
+
     // ==================== Lifecycle helpers ====================
 
     /**
@@ -424,7 +532,8 @@ public class AgentService {
         if (!memoryProperties.isLifecycleMediatorEnabled()) {
             return invoke.apply(message, conversationId);
         }
-        TurnContext ctx = new TurnContext(agentId, conversationId, conversationId, 0, message);
+        String ownerKey = memoryOwnerResolver.resolve(ChatOriginHolder.get());
+        TurnContext ctx = new TurnContext(agentId, conversationId, conversationId, 0, message, ownerKey);
         String memoryContext = lifecycleMediator.beforeLlmCall(ctx);
         // Inject memory context into the user message (RFC-037 §3.3)
         String enrichedMessage = injectMemoryContext(message, memoryContext);
@@ -446,7 +555,8 @@ public class AgentService {
         if (!memoryProperties.isLifecycleMediatorEnabled()) {
             return invoke.apply(message, conversationId);
         }
-        TurnContext ctx = new TurnContext(agentId, conversationId, conversationId, 0, message);
+        String ownerKey = memoryOwnerResolver.resolve(ChatOriginHolder.get());
+        TurnContext ctx = new TurnContext(agentId, conversationId, conversationId, 0, message, ownerKey);
         String memoryContext = lifecycleMediator.beforeLlmCall(ctx);
         String enrichedMessage = injectMemoryContext(message, memoryContext);
         StringBuilder reply = new StringBuilder();
@@ -472,14 +582,63 @@ public class AgentService {
 
     // ==================== 内部方法 ====================
 
-    private BaseAgent getOrBuildAgent(Long agentId) {
-        return agentInstances.computeIfAbsent(agentId, id -> {
-            AgentEntity entity = getAgent(id);
-            if (!Boolean.TRUE.equals(entity.getEnabled())) {
-                throw new MateClawException("err.agent.disabled", "Agent 已禁用: " + entity.getName());
+    /**
+     * Resolve (and cache) the Agent graph for a conversation, honouring the
+     * conversation's pinned model. Conversations with no pin — IM channels
+     * before issue #183 fix, cron, sub-tasks, or rows not yet created —
+     * resolve to the shared Agent / global-default graph.
+     *
+     * <p>Defensive normalisation: a half-populated pair (provider but no
+     * model, or vice versa) is treated as unpinned. Without this guard, a
+     * partially-cleared admin UI write could end up cached as a key like
+     * {@code "volcano::"} which {@link #getOrBuildAgent} would then try to
+     * build, only to fail at provider-resolution time on every turn.
+     */
+    private BaseAgent getOrBuildAgentForConversation(Long agentId, String conversationId) {
+        String provider = null;
+        String modelName = null;
+        if (conversationId != null && !conversationId.isBlank()) {
+            ConversationEntity conv = conversationMapper.selectOne(
+                    new LambdaQueryWrapper<ConversationEntity>()
+                            .eq(ConversationEntity::getConversationId, conversationId));
+            if (conv != null) {
+                provider = blankToNull(conv.getModelProvider());
+                modelName = blankToNull(conv.getModelName());
+                // Half-populated pair → treat as unpinned. Pinning requires
+                // a complete (provider, model) tuple — see #183 follow-up
+                // hardening so a stale row written by an earlier broken
+                // admin UI release doesn't loop the cache on an invalid key.
+                if (provider == null || modelName == null) {
+                    provider = null;
+                    modelName = null;
+                }
             }
-            return agentGraphBuilder.build(entity);
-        });
+        }
+        return getOrBuildAgent(agentId, provider, modelName);
+    }
+
+    /** Map empty / whitespace strings to null so the pinned-check is one branch. */
+    private static String blankToNull(String s) {
+        return (s == null || s.isBlank()) ? null : s;
+    }
+
+    private BaseAgent getOrBuildAgent(Long agentId) {
+        return getOrBuildAgent(agentId, null, null);
+    }
+
+    private BaseAgent getOrBuildAgent(Long agentId, String modelProvider, String modelName) {
+        boolean pinned = modelProvider != null && !modelProvider.isBlank()
+                && modelName != null && !modelName.isBlank();
+        String modelKey = pinned ? modelProvider + "::" + modelName : "";
+        return agentInstances
+                .computeIfAbsent(agentId, id -> new ConcurrentHashMap<>())
+                .computeIfAbsent(modelKey, key -> {
+                    AgentEntity entity = getAgent(agentId);
+                    if (!Boolean.TRUE.equals(entity.getEnabled())) {
+                        throw new MateClawException("err.agent.disabled", "Agent 已禁用: " + entity.getName());
+                    }
+                    return agentGraphBuilder.build(entity, modelProvider, modelName);
+                });
     }
 
     // ==================== StreamDelta ====================
@@ -549,6 +708,25 @@ public class AgentService {
 
         public int thinkingLength() {
             return thinking != null ? thinking.length() : 0;
+        }
+    }
+
+    // ==================== ChatResult ====================
+
+    /**
+     * Sync chat result carrying the assistant reply alongside the usage
+     * attribution that the streaming path exposes via the {@code _usage_final}
+     * event. Use this when callers need to persist {@code promptTokens} /
+     * {@code completionTokens} / {@code runtimeModel} / {@code runtimeProvider}
+     * on the assistant message row but cannot subscribe to the structured
+     * stream directly (cron tasks, sync HTTP endpoints, voice WebSocket,
+     * post-approval replays).
+     */
+    public record ChatResult(String content, int promptTokens, int completionTokens,
+                              String runtimeModel, String runtimeProvider) {
+
+        public static ChatResult contentOnly(String content) {
+            return new ChatResult(content != null ? content : "", 0, 0, null, null);
         }
     }
 }

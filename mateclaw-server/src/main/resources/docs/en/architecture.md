@@ -134,7 +134,7 @@ This is the most important thing to know if you're contributing to the backend.
 
 - `agent/graph/StateGraphReActAgent.java` — assembles the ReAct loop
 - `agent/graph/plan/StateGraphPlanExecuteAgent.java` — assembles the Plan-and-Execute graph
-- `agent/graph/node/` — `ReasoningNode`, `ActionNode`, `ObservationNode`, `FinalAnswerNode`, `SummarizingNode`, `LimitExceededNode`
+- `agent/graph/node/` — `ReasoningNode`, `ActionNode`, `ObservationNode`, `FinalAnswerNode`, `SummarizingNode`, `LimitExceededNode`, `GoalEvaluationNode`
 - `agent/graph/plan/node/` — `PlanGenerationNode`, `StepExecutionNode`, `PlanSummaryNode`, `DirectAnswerNode`
 - `agent/graph/edge/` + `plan/edge/` — dispatcher functions that decide the next node based on state
 - `agent/graph/state/MateClawStateKeys.java` — the keys for the shared state object
@@ -148,6 +148,17 @@ This is the most important thing to know if you're contributing to the backend.
 **Adding agent behavior** — create a new node in `agent/graph/node/` or a new edge dispatcher in `agent/graph/edge/`. Wire it into `AgentGraphBuilder`. Read and write state through `MateClawStateAccessor`.
 
 **Don't** create a new `XxxAgent` class. You'll be reimplementing what the graph already does.
+
+### Goal-evaluation node (1.4.0+)
+
+The graph (both ReAct and Plan-Execute) now runs a `GoalEvaluationNode` after `FinalAnswerNode` has streamed the final answer: since 1.5.0 it judges the goal's checklist criterion by criterion (bootstrap / verdict modes), treats the goal as complete **only when every criterion passes**, and can optionally inject an auto-followup message targeting the remaining criteria to keep pushing any unmet goal forward.
+
+### Other 1.4.0 runtime changes
+
+- **Progressive tool/skill disclosure** — a tool-disclosure layer splits tools into core and extension tiers; `enable_tool` / `load_skill` let an employee activate extension tools / load skills on demand, keeping the system prompt small.
+- **Multi-level subagent delegation** — parent-to-child delegation is recursive and depth-capped, forming a tree; child-graph events are relayed back to the root conversation in real time.
+- **ChannelToolProvider SPI** — channels (e.g. Feishu) can expose platform capabilities directly as agent tools without a separate MCP server.
+- **Workspace RBAC** — capabilities are resolved from a backend role→capability mapping that gates both REST endpoints and frontend routes/menus.
 
 ### Shared state keys
 
@@ -168,7 +179,7 @@ This is the most important thing to know if you're contributing to the backend.
 ## Data flow — a single turn
 
 ```
-1. POST /api/v1/chat/{agentId}/message
+1. POST /api/v1/chat?agentId={id}   (or POST /api/v1/chat/stream with agentId in the body)
         ↓
 2. ChatController.sendMessage()
         ↓
@@ -290,7 +301,7 @@ Why: Spring MVC + SSE is sufficient for streaming LLM responses to the frontend.
 
 Streaming flow:
 
-1. Client opens `GET /api/v1/chat/{agentId}/stream` with `Accept: text/event-stream`
+1. Client `POST /api/v1/chat/stream` with `agentId` / `message` / `conversationId` in the JSON body and `Accept: text/event-stream` in the headers
 2. Controller returns `SseEmitter`
 3. Agent graph runs on a worker thread; node execution emits events to `GraphEventPublisher`
 4. Events serialize into SSE format and write to the emitter

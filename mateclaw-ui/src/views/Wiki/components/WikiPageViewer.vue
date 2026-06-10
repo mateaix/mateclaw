@@ -13,8 +13,8 @@
       <p class="summary-text">{{ store.currentPage.summary }}</p>
     </div>
 
-    <!-- Actions bar -->
-    <div class="page-actions-bar">
+    <!-- Actions bar — write actions, hidden for read-only viewers -->
+    <div v-if="canManageWiki" class="page-actions-bar">
       <button class="btn-secondary btn-sm" @click="editing = !editing">
         {{ editing ? t('common.cancel') : t('common.edit') }}
       </button>
@@ -99,8 +99,10 @@
 import { ref, computed, watch, onMounted, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useWikiStore, isProtectedPage, type WikiPage } from '@/stores/useWikiStore'
+import { useWorkspaceStore } from '@/stores/useWorkspaceStore'
 import { wikiApi } from '@/api/index'
 import { useMarkdownRenderer } from '@/composables/useMarkdownRenderer'
+import { postprocessWikilinks, resolveWikilink, type WikilinkRef } from '@/composables/wikilink'
 import { Link, SetUp } from '@element-plus/icons-vue'
 import PageHeader from './PageHeader.vue'
 import RelatedPagesPanel from './RelatedPagesPanel.vue'
@@ -109,7 +111,12 @@ import ImageLightbox from './ImageLightbox.vue'
 
 const { t } = useI18n()
 const store = useWikiStore()
+const workspace = useWorkspaceStore()
 const { renderMarkdown } = useMarkdownRenderer()
+
+// Editing, enriching, repairing and deleting pages all require manage:wiki.
+// Read-only viewers get the rendered page without the action bar.
+const canManageWiki = computed(() => workspace.can('manage:wiki'))
 
 const editing = ref(false)
 const editContent = ref('')
@@ -126,31 +133,54 @@ const isSystem = computed(() => store.currentPage?.pageType === 'system')
 const isProtected = computed(() => isProtectedPage(store.currentPage))
 const isLockedNotSystem = computed(() => isProtected.value && !isSystem.value)
 
+// Render the markdown WITHOUT the renderer's built-in wikilink substitution.
+// `wikilink: 'none'` keeps the raw `[[...]]` tokens intact so the DOM
+// postprocess below can resolve them against the authoritative pageRefs
+// index rather than against `store.pages` (which is filtered by rawId and
+// would silently break cross-material links). See RFC 55 §1.3 / Phase 1.
 const renderedContent = computed(() => {
   if (!store.currentPage?.content) return ''
-  // Build a lookup map: title (normalized) → slug, for resolving [[Title]] links
-  const titleToSlug = new Map<string, string>()
-  for (const p of store.pages) {
-    if (p.title && p.slug) {
-      titleToSlug.set(p.title.trim().toLowerCase(), p.slug)
-    }
-  }
-  const content = store.currentPage.content.replace(/\[\[([^\]]+)\]\]/g, (_match, raw) => {
-    const title = raw.trim()
-    // Prefer exact title match; fall back to slug-style guess
-    const slug = titleToSlug.get(title.toLowerCase()) ?? title.toLowerCase().replace(/\s+/g, '-')
-    return `<a class="wiki-link" data-slug="${slug}">${title}</a>`
-  })
-  return renderMarkdown(content)
+  return renderMarkdown(store.currentPage.content, { wikilink: 'none' })
 })
+
+// Project the store's pageRefs into the resolver's lightweight shape. Pulling
+// `archived: false` explicitly (the store's WikiPageRef already carries it,
+// but the active list is guaranteed non-archived by the backend filter) keeps
+// the resolver's TypeScript types simple.
+const activeRefs = computed<WikilinkRef[]>(() =>
+  store.pageRefs.map((p) => ({ slug: p.slug, title: p.title, archived: false })),
+)
+const archivedRefs = computed<WikilinkRef[]>(() =>
+  store.archivedPageRefs.map((p) => ({ slug: p.slug, title: p.title, archived: true })),
+)
+
+// Postprocess wikilinks after v-html settles. Runs on every content swap and
+// also whenever the resolution index changes (e.g. user navigated away, a
+// page was created in the background, archived refs finally loaded), so links
+// that started life as `wiki-link-broken` upgrade to active hits on a re-walk.
+async function runWikilinkPostprocess() {
+  await nextTick()
+  const root = articleRef.value
+  if (!root) return
+  const refs = activeRefs.value
+  const archived = archivedRefs.value
+  postprocessWikilinks(root, (raw) => resolveWikilink(raw, refs, archived))
+}
 
 // Bind the image lightbox to the rendered article on every content swap.
 // Awaits a microtask so v-html has a chance to repopulate the DOM, then
 // asks the lightbox to walk <img> tags and attach click handlers. Already-
 // bound elements are skipped by the lightbox itself.
 watch(renderedContent, async () => {
-  await nextTick()
+  await runWikilinkPostprocess()
   lightboxRef.value?.attach(articleRef.value)
+})
+
+// Re-run wikilink resolution when the refs index changes — a sibling page
+// created or restored from archive should upgrade existing broken spans on
+// the open page to active links without forcing the user to re-navigate.
+watch([activeRefs, archivedRefs], async () => {
+  await runWikilinkPostprocess()
 })
 
 watch(() => store.currentPage, async (page) => {
@@ -175,12 +205,30 @@ async function saveEdit() {
 
 async function handleDelete() {
   if (!store.currentKB || !store.currentPage) return
-  const confirmed = confirm(t('wiki.confirmDelete', { title: store.currentPage.title }))
+  // Surface the referrer count before deletion so the user knows how many
+  // pages will be unlinked in cascade. backlinks already loads on page
+  // open (see the currentPage watcher), so this read is local — no extra
+  // round-trip. The cascade runs on the backend regardless of UI prompt
+  // wording; this is purely advisory.
+  const refCount = backlinks.value.length
+  const baseMessage = t('wiki.confirmDelete', { title: store.currentPage.title })
+  const withRefs = refCount > 0
+    ? `${baseMessage}\n\n${t('wiki.confirmDeleteRefs', { count: refCount })}`
+    : baseMessage
+  const confirmed = confirm(withRefs)
   if (!confirmed) return
   try {
     await wikiApi.deletePage(store.currentKB.id, store.currentPage.slug)
     store.currentPage = null
-    await store.fetchPages(store.currentKB.id)
+    // Keep the active raw-material filter so the list doesn't jump to all pages.
+    // Refresh pageRefs + broken-link report too — both can change after a
+    // delete because cascade-rewrite may upgrade or downgrade other pages'
+    // resolution states.
+    await Promise.all([
+      store.fetchPages(store.currentKB.id, store.selectedRawId),
+      store.fetchPageRefs(store.currentKB.id),
+      store.loadBrokenLinksReport(store.currentKB.id),
+    ])
   } catch (e: any) {
     alert(e?.message || 'Delete failed')
   }
@@ -219,6 +267,15 @@ async function openPage(slug: string) {
 }
 
 onMounted(() => {
+  // Lazily load archived refs once per KB so the postprocess can label any
+  // existing links to archived targets as such instead of treating them as
+  // broken. The store dedupes repeated calls, so this is cheap on revisits.
+  if (store.currentKB) {
+    store.fetchArchivedPageRefs(store.currentKB.id)
+  }
+  // Global click delegation — both `wiki-link` and `wiki-link wiki-link-archived`
+  // share the same data-slug contract and the same routing through openPage.
+  // `wiki-link-broken` lacks the class entirely so its clicks are no-ops.
   document.addEventListener('click', (e) => {
     const target = e.target as HTMLElement
     if (target.classList.contains('wiki-link')) {
@@ -293,6 +350,24 @@ onMounted(() => {
 .page-content :deep(img) { max-width: 100%; border-radius: 10px; }
 .page-content :deep(.wiki-link) { color: var(--mc-primary); text-decoration: none; cursor: pointer; border-bottom: 1px dashed var(--mc-primary); }
 .page-content :deep(.wiki-link:hover) { text-decoration: underline; }
+/* Archived target — still clickable to view/restore, but visually de-emphasised
+   to match the archived state semantics from elsewhere in the wiki UI. */
+.page-content :deep(.wiki-link.wiki-link-archived) {
+  color: var(--mc-text-tertiary);
+  border-bottom-color: var(--mc-text-tertiary);
+  border-bottom-style: dotted;
+  font-style: italic;
+}
+.page-content :deep(.wiki-link.wiki-link-archived:hover) { color: var(--mc-text-secondary); }
+/* Broken target — no click, no href, no request. Dashed underline + muted tone
+   tells the reader the wikilink couldn't be resolved without committing to
+   navigation that would 404. Tooltip shows the rejection reason. */
+.page-content :deep(.wiki-link-broken) {
+  color: var(--mc-text-tertiary);
+  text-decoration: underline dashed var(--mc-text-tertiary);
+  text-underline-offset: 3px;
+  cursor: help;
+}
 
 /* Editor */
 .page-editor { width: 100%; min-height: 60vh; padding: 16px; border: 1px solid var(--mc-border); border-radius: 14px; font-family: 'JetBrains Mono', monospace; font-size: 14px; line-height: 1.65; resize: vertical; background: var(--mc-bg-elevated); color: var(--mc-text-primary); outline: none; }

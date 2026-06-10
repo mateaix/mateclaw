@@ -10,9 +10,13 @@ import vip.mate.tool.builtin.ToolExecutionContext;
 import vip.mate.agent.AgentToolSet;
 import vip.mate.agent.GraphEventPublisher;
 import vip.mate.agent.context.ChatOrigin;
+import vip.mate.agent.context.StructuredTruncator;
 import vip.mate.agent.graph.state.DirectToolOutput;
 import vip.mate.agent.graph.state.SourceEvidenceLedger;
 import vip.mate.approval.ApprovalWorkflowService;
+import vip.mate.approval.grant.AutoApproveResult;
+import vip.mate.approval.grant.WorkspaceLookupCache;
+import vip.mate.approval.grant.service.ApprovalGrantResolver;
 import vip.mate.channel.web.ChatStreamTracker;
 import vip.mate.tool.guard.ToolExecutionGuardHelper;
 import vip.mate.tool.guard.ToolGuard;
@@ -163,21 +167,59 @@ public class ToolExecutionExecutor {
     static String truncateToolResult(String result, int maxChars) {
         if (result == null || result.length() <= maxChars) return result;
         int rawLen = result.length();
-        // 检测尾部 2000 字符是否含错误模式
+        // Detect an error pattern in the trailing 2000 chars and bias toward the tail when present.
         String tailRegion = result.substring(Math.max(0, rawLen - 2000));
         boolean errorDetected = ERROR_TAIL_PATTERN.matcher(tailRegion).find();
         double headRatio = errorDetected ? 0.2 : 0.4;
         if (errorDetected) {
             log.info("[ToolExecutor] Error pattern detected in tail, preserving 80% tail (headRatio=0.2)");
         }
+        String marker = "\n\n...[TRUNCATED: original " + rawLen + " chars, middle omitted. "
+                + StructuredTruncator.FIDELITY_NOTE + "]...\n\n";
         int headLen = (int) (maxChars * headRatio);
-        int tailLen = maxChars - headLen - 80;
+        int tailLen = maxChars - headLen - marker.length();
         if (tailLen <= 0) tailLen = maxChars / 2;
         log.info("[ToolExecutor] Truncated tool result from {} to {} chars (headRatio={})",
                 rawLen, maxChars, headRatio);
-        return result.substring(0, headLen)
-                + "\n\n... [结果已截断，原始 " + rawLen + " 字符，保留首尾关键片段] ...\n\n"
-                + result.substring(rawLen - tailLen);
+        return StructuredTruncator.truncate(result, headLen, tailLen, marker);
+    }
+
+    /**
+     * Appended to the cross-platform shopping recommendation tool's result so the
+     * model reliably renders products as chat cards instead of a markdown table.
+     * The tool's MCP schema is globally callable, so a model can invoke it without
+     * ever loading the skill's instructions — this puts the rendering contract
+     * where the model always sees it: in the tool result itself.
+     */
+    private static final String PRODUCT_CARD_RENDER_DIRECTIVE =
+            "\n\n[Rendering directive] Render these recommendations for the user as a"
+            + " fenced code block whose language tag is exactly `product-cards`, containing a"
+            + " JSON array. Each element: {name, url, imageUrl, price, originalPrice, lowestPrice,"
+            + " platformLabel, shopName, purchaseAdvice}. Copy `url` and `imageUrl` verbatim from"
+            + " the result above (never invent or alter them). The chat UI turns this block into"
+            + " clickable product cards with a buy button. Do NOT use a markdown table or inline"
+            + " image markdown for these products. You may add a short intro sentence and purchase"
+            + " tips around the block.";
+
+    /**
+     * Returns {@code true} when the tool is the cross-platform shopping
+     * recommendation tool and its result actually carries product records
+     * (so timeouts / empty results fall through to the model's own fallback).
+     */
+    static boolean shouldAppendProductCardDirective(String toolName, String result) {
+        if (toolName == null || result == null) return false;
+        if (!toolName.contains("ckjia_shopping_recom")) return false;
+        return result.contains("recommendations")
+                || result.contains("imageUrl")
+                || result.contains("priceTag")
+                || result.contains("markdownLink");
+    }
+
+    /** Appends {@link #PRODUCT_CARD_RENDER_DIRECTIVE} when applicable, else returns the result unchanged. */
+    static String withProductCardDirective(String toolName, String result) {
+        return shouldAppendProductCardDirective(toolName, result)
+                ? result + PRODUCT_CARD_RENDER_DIRECTIVE
+                : result;
     }
 
     private final Map<String, ToolCallback> toolCallbackMap;
@@ -223,6 +265,38 @@ public class ToolExecutionExecutor {
 
     public void setAuditEventService(vip.mate.audit.service.AuditEventService s) {
         this.auditEventService = s;
+    }
+
+    /**
+     * Auto-grant lookup cache. Optional — legacy constructors leave it
+     * {@code null} and {@code evaluateGuard()} falls back to the original
+     * human-approval path. Both this and {@link #approvalGrantResolver} must be
+     * non-null for auto-grant to engage; either being null disables the resolver
+     * branch entirely (see {@code autoGrantWired} in {@code evaluateGuard}).
+     * Not {@code final} so existing constructors that don't take these
+     * dependencies stay source-compatible without restructuring.
+     */
+    private WorkspaceLookupCache workspaceLookupCache;
+
+    /** Auto-grant resolver. Optional; see {@link #workspaceLookupCache} note. */
+    private ApprovalGrantResolver approvalGrantResolver;
+
+    /**
+     * Constructor used by {@code AgentGraphBuilder} after PR-1: takes the auto-grant
+     * dependencies on top of the standard 7 params. Legacy constructors continue
+     * to work unchanged (they simply leave the two new fields {@code null}).
+     */
+    public ToolExecutionExecutor(AgentToolSet toolSet, ToolGuardService toolGuardService,
+                                  ApprovalWorkflowService approvalService, ChatStreamTracker streamTracker,
+                                  vip.mate.config.ToolTimeoutProperties toolTimeoutProperties,
+                                  ToolResultStorage resultStorage,
+                                  vip.mate.tool.ToolConcurrencyRegistry concurrencyRegistry,
+                                  WorkspaceLookupCache workspaceLookupCache,
+                                  ApprovalGrantResolver approvalGrantResolver) {
+        this(toolSet, toolGuardService, null, approvalService, streamTracker,
+                toolTimeoutProperties, resultStorage, concurrencyRegistry);
+        this.workspaceLookupCache = workspaceLookupCache;
+        this.approvalGrantResolver = approvalGrantResolver;
     }
 
     /**
@@ -457,7 +531,7 @@ public class ToolExecutionExecutor {
             // 2. ToolGuard 安全检查（replay 模式跳过）
             if (!isReplay) {
                 GuardDecision decision = evaluateGuard(toolCall, toolName, arguments,
-                        conversationId, agentId, toolCalls, i, events, requesterId);
+                        conversationId, agentId, toolCalls, i, events, requesterId, safeOrigin);
 
                 if (decision.blocked) {
                     allResponses.add(new ToolResponseMessage.ToolResponse(
@@ -639,8 +713,10 @@ public class ToolExecutionExecutor {
             log.info("[ToolExecutor] Pre-approved tool {} returned {} chars{}", toolName, rawLen,
                     result != null && result.length() < rawLen ? " (now " + result.length() + " after spill/truncate)" : "");
             events.add(GraphEventPublisher.toolComplete(toolCall.id(), toolName, result, true));
+            // Append the card-rendering directive to the LLM-facing response only,
+            // leaving the broadcast tool-result panel unchanged.
             return new ToolResponseMessage.ToolResponse(
-                    toolCall.id(), toolName, result != null ? result : "");
+                    toolCall.id(), toolName, withProductCardDirective(toolName, result != null ? result : ""));
         } catch (Exception e) {
             log.error("[ToolExecutor] Pre-approved tool {} failed: {}", toolName, e.getMessage());
             String safeError = isReturnDirect(callback)
@@ -869,8 +945,10 @@ public class ToolExecutionExecutor {
                         GraphEventPublisher.toolComplete(pc.toolCall.id(), toolName, result, true).data());
                 streamTracker.updateRunningTool(pc.conversationId, null);
             }
+            // Append the card-rendering directive to the LLM-facing response only,
+            // leaving the broadcast tool-result panel unchanged.
             return new ToolResponseMessage.ToolResponse(
-                    pc.toolCall.id(), toolName, result != null ? result : "");
+                    pc.toolCall.id(), toolName, withProductCardDirective(toolName, result != null ? result : ""));
         } catch (Exception e) {
             log.error("[ToolExecutor] Tool {} execution failed: {}", toolName, e.getMessage(), e);
             // RFC-052: for returnDirect tools, even the error message is
@@ -897,8 +975,20 @@ public class ToolExecutionExecutor {
     private GuardDecision evaluateGuard(AssistantMessage.ToolCall toolCall, String toolName, String arguments,
                                          String conversationId, String agentId,
                                          List<AssistantMessage.ToolCall> allToolCalls, int currentIndex,
-                                         List<GraphEventPublisher.GraphEvent> events, String requesterId) {
-        ToolInvocationContext guardCtx = ToolInvocationContext.of(toolName, arguments, conversationId, agentId);
+                                         List<GraphEventPublisher.GraphEvent> events, String requesterId,
+                                         ChatOrigin origin) {
+        // Auto-grant requires BOTH the lookup cache and the resolver to be wired.
+        // Legacy constructors leave them null; in that case we skip workspace
+        // resolution and skip the resolver block, falling back to the original
+        // human-approval path.
+        boolean autoGrantWired = approvalGrantResolver != null && workspaceLookupCache != null;
+        Long workspaceId = autoGrantWired
+                ? workspaceLookupCache.resolveByConversation(conversationId)
+                : null;
+        ToolInvocationContext guardCtx = ToolInvocationContext.of(
+                toolName, java.util.Map.of(), arguments,
+                conversationId, agentId,
+                /*channelType*/ null, requesterId, workspaceId);
 
         if (toolGuardService != null) {
             GuardEvaluation evaluation = toolGuardService.evaluate(guardCtx);
@@ -911,6 +1001,34 @@ public class ToolExecutionExecutor {
             }
 
             if (evaluation.shouldRequireApproval()) {
+                // Auto-grant decision layer: only engages when both deps are wired.
+                // HARD_BLOCK short-circuits to a blocked decision (no approval banner).
+                // APPROVED skips createPending() and lets the tool run as normal.
+                // REQUIRES_HUMAN falls through to the existing manual approval path.
+                if (autoGrantWired) {
+                    AutoApproveResult auto = approvalGrantResolver.tryAutoApprove(guardCtx, evaluation);
+                    if (auto.isHardBlocked()) {
+                        String msg = "[安全拦截] safety floor matched: " + auto.reason()
+                                + " — this command cannot be executed even with approval. "
+                                + "Please use a safer alternative.";
+                        log.warn("[ToolExecutor] Auto-grant HARD_BLOCK: tool={}, reason={}", toolName, auto.reason());
+                        events.add(GraphEventPublisher.toolComplete(toolCall.id(), toolName, msg, false));
+                        return GuardDecision.blocked(msg);
+                    }
+                    if (auto.isApproved()) {
+                        log.info("[ToolExecutor] Auto-grant APPROVED: tool={}, grantId={}", toolName, auto.grantId());
+                        return GuardDecision.allowed();
+                    }
+                    // requiresHuman → fall through to legacy human-approval path below.
+                }
+
+                // No human can resolve an approval in a non-interactive (scheduled-job)
+                // run, so a pending request would hang the turn until it times out with
+                // no answer. Deny immediately with an actionable message instead.
+                if (origin != null && origin.cronOrigin()) {
+                    return denyNonInteractiveApproval(toolCall, toolName, events);
+                }
+
                 List<AssistantMessage.ToolCall> remaining = allToolCalls.subList(currentIndex + 1, allToolCalls.size());
                 String approvalResponse = ToolExecutionGuardHelper.handleToolApproval(
                         toolCall, toolName, arguments, evaluation,
@@ -930,6 +1048,9 @@ public class ToolExecutionExecutor {
             }
 
             if (guardResult.needsApproval()) {
+                if (origin != null && origin.cronOrigin()) {
+                    return denyNonInteractiveApproval(toolCall, toolName, events);
+                }
                 List<AssistantMessage.ToolCall> remaining = allToolCalls.subList(currentIndex + 1, allToolCalls.size());
                 String approvalResponse = ToolExecutionGuardHelper.handleToolApprovalLegacy(
                         toolCall, toolName, arguments, guardResult,
@@ -940,6 +1061,22 @@ public class ToolExecutionExecutor {
         }
 
         return GuardDecision.allowed();
+    }
+
+    /**
+     * Deny an approval-required tool when the run is non-interactive (no human can
+     * approve), returning an actionable message so the agent falls back to a
+     * non-gated built-in tool instead of stalling on a pending nobody resolves.
+     */
+    private GuardDecision denyNonInteractiveApproval(AssistantMessage.ToolCall toolCall, String toolName,
+                                                     List<GraphEventPublisher.GraphEvent> events) {
+        String msg = "[审批不可用] 该工具需要人工审批，但当前为非交互（定时任务）运行，无人可批准，"
+                + "因此无法执行。请改用无需审批的内置工具完成本步骤（例如 PDF / XLSX / 文档技能、文件读写工具），"
+                + "或跳过该步骤并说明原因，不要反复重试同一命令。";
+        log.info("[ToolExecutor] NON_INTERACTIVE_DENY: tool={} needs approval but origin is non-interactive (cron); "
+                + "denying to avoid an unresolvable pending", toolName);
+        events.add(GraphEventPublisher.toolComplete(toolCall.id(), toolName, msg, false));
+        return GuardDecision.blocked(msg);
     }
 
     // ==================== 辅助方法 ====================

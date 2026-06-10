@@ -13,7 +13,10 @@ import { ref, computed } from 'vue'
 import { useMessages } from './useMessages'
 import { useStream } from './useStream'
 import { useMessageQueue } from './useMessageQueue'
-import type { Message, MessageContentPart, MessageSegment, StreamPhase, HeartbeatData, QueuedMessage, PhaseEventData } from '@/types'
+import { useGoalStore } from '@/stores/useGoalStore'
+import { useSystemSettingsStore } from '@/stores/useSystemSettingsStore'
+import { storeToRefs } from 'pinia'
+import type { Message, MessageContentPart, MessageSegment, StreamPhase, HeartbeatData, QueuedMessage, PhaseEventData, DelegationNode, DelegationToolEntry, PlanMeta } from '@/types'
 import { classifyBackendError, type ChatErrorInfo } from '@/types/chatError'
 import { http } from '@/api'
 
@@ -147,6 +150,10 @@ export interface SendMessageOptions {
   contentParts?: MessageContentPart[]
   /** Thinking depth: off / low / medium / high / max */
   thinkingLevel?: string
+  /** Provider id of the model picked for this conversation. */
+  modelProvider?: string
+  /** Model id picked for this conversation. Paired with modelProvider. */
+  modelName?: string
 }
 
 export function useChat(options: UseChatOptions): UseChatReturn {
@@ -211,15 +218,30 @@ export function useChat(options: UseChatOptions): UseChatReturn {
   /** Unique ID for the current turn — prevents flushSegmentsToMessage from writing stale segments to a new message */
   let activeTurnId = ''
 
+  // When the user disables "stream response", the turn is still consumed over
+  // SSE (so tools / approval / events all work) but the on-screen message is
+  // held back and revealed once on completion instead of token-by-token. These
+  // buffers hold the text/thinking deltas until the reveal at stream end.
+  const { streamEnabled } = storeToRefs(useSystemSettingsStore())
+  let bufferedText = ''
+  let bufferedThinking = ''
+
   /** Reset streaming state for the current turn — must be called before creating a new assistant placeholder */
   function resetCurrentTurnState() {
     currentSegments.value = []
     segIdCounter.value = 0
+    bufferedText = ''
+    bufferedThinking = ''
     activeTurnId = `turn-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
   }
 
-  /** Sync current segments into the assistant message metadata (used for real-time rendering) */
-  const flushSegmentsToMessage = () => {
+  /**
+   * Sync current segments into the assistant message metadata (used for
+   * real-time rendering). When streaming is disabled we skip the live writes
+   * and only flush once at stream end (force=true) so nothing renders mid-turn.
+   */
+  const flushSegmentsToMessage = (force = false) => {
+    if (!force && !streamEnabled.value) return
     if (!currentAssistantId.value || currentSegments.value.length === 0) return
     const msg = getMessage(currentAssistantId.value)
     if (!msg) return
@@ -230,6 +252,23 @@ export function useChat(options: UseChatOptions): UseChatReturn {
       ...msg,
       metadata: { ...metadata, segments: [...currentSegments.value] }
     } as any)
+  }
+
+  /**
+   * Reveal a buffered (non-streamed) turn: commit the accumulated text/thinking
+   * to the message and flush segments. Safe to call on done / stopped / error.
+   */
+  const revealBufferedTurn = () => {
+    if (!currentAssistantId.value) return
+    if (bufferedThinking) {
+      appendMessageContent(currentAssistantId.value, bufferedThinking, 'thinking')
+      bufferedThinking = ''
+    }
+    if (bufferedText) {
+      appendMessageContent(currentAssistantId.value, bufferedText, 'text')
+      bufferedText = ''
+    }
+    flushSegmentsToMessage(true)
   }
   const heartbeat = ref<HeartbeatData | null>(null)
   /** Track which conversation the current stream belongs to */
@@ -340,6 +379,12 @@ export function useChat(options: UseChatOptions): UseChatReturn {
     headers: streamHeaders,
   })
 
+  // Goal store is referenced from several stream handlers (message_start
+  // for followup attribution, message_complete for the evaluating halo,
+  // plus the dedicated goal_* events below). Resolve once up front so
+  // the handlers don't each pull their own copy.
+  const goalStore = useGoalStore()
+
   // ===== Async-task lifecycle bridge =====
   // Generative tools (music / video / image) return a taskId synchronously and
   // finish asynchronously via `async_task_completed`. If the upstream provider
@@ -377,7 +422,11 @@ export function useChat(options: UseChatOptions): UseChatReturn {
   stream.on('content_delta', (data) => {
     if (isStaleEvent(data)) return
     if (currentAssistantId.value) {
-      appendMessageContent(currentAssistantId.value, data.delta || '', 'text')
+      if (streamEnabled.value) {
+        appendMessageContent(currentAssistantId.value, data.delta || '', 'text')
+      } else {
+        bufferedText += data.delta || ''
+      }
       if (['thinking', 'reasoning', 'drafting_answer', 'preparing_context'].includes(streamPhase.value)) {
         streamPhase.value = 'streaming'
       }
@@ -407,7 +456,11 @@ export function useChat(options: UseChatOptions): UseChatReturn {
     // Suppress thinking display when thinkingLevel=off
     if (options.thinkingLevel?.value === 'off') return
     if (currentAssistantId.value) {
-      appendMessageContent(currentAssistantId.value, data.delta || '', 'thinking')
+      if (streamEnabled.value) {
+        appendMessageContent(currentAssistantId.value, data.delta || '', 'thinking')
+      } else {
+        bufferedThinking += data.delta || ''
+      }
       if (streamPhase.value !== 'summarizing_observations') {
         streamPhase.value = options.thinkingLevel?.value === 'off' ? 'streaming' : 'thinking'
       }
@@ -451,6 +504,13 @@ export function useChat(options: UseChatOptions): UseChatReturn {
     const assistantMessage = createAssistantMessage('', streamConversationId)
     ;(assistantMessage as any)._turnId = activeTurnId
     currentAssistantId.value = assistantMessage.id as string
+
+    // Auto-followup attribution: if the goal evaluator just decided to
+    // inject a followup, the message that just opened belongs to that
+    // turn. Stamp it so MessageBubble can render the small ↻ glyph.
+    if (streamConversationId && goalStore.consumePendingFollowup(streamConversationId)) {
+      goalStore.markFollowupMessage(streamConversationId, String(assistantMessage.id))
+    }
   })
 
   stream.on('warning', (data) => {
@@ -524,10 +584,34 @@ export function useChat(options: UseChatOptions): UseChatReturn {
         triggerAutoTts(streamConversationId, msg.content)
       }
     }
+
+    // Goal-evaluator breathing halo: when an assistant message finishes
+    // and this conversation has an active goal, the backend's evaluation
+    // node runs next. Flip the per-conv flag so GoalAvatarRing paints the
+    // breathing halo until `goal_evaluated` resets it.
+    //
+    // Skip when:
+    //   - the conversation has no active goal (ordinary turn, no halo)
+    //   - the evaluator already fired in this turn (SSE order under the
+    //     structured stream is goal_evaluated → done → message_complete,
+    //     so re-arming here would leave the halo stuck on after the
+    //     evaluator already cleared it)
+    if (
+      data.status === 'completed'
+      && streamConversationId
+      && goalStore.activeGoal(streamConversationId)
+      && !goalStore.recentlyEvaluated(streamConversationId)
+    ) {
+      goalStore.markEvaluating(streamConversationId, true)
+    }
   })
 
   stream.on('done', (data) => {
     if (isStaleEvent(data)) return
+
+    // Non-streamed turn: reveal the buffered content/segments now, before the
+    // server-annotation merge below reads metadata.segments.
+    if (!streamEnabled.value) revealBufferedTurn()
 
     if (currentAssistantId.value) {
       const existingMsg = getMessage(currentAssistantId.value)
@@ -664,6 +748,9 @@ export function useChat(options: UseChatOptions): UseChatReturn {
   let errorFired = false
   stream.on('error', (data) => {
     if (isStaleEvent(data)) return
+    // Surface whatever was buffered before the failure so a non-streamed turn
+    // doesn't vanish entirely on error.
+    if (!streamEnabled.value) revealBufferedTurn()
     // Always carry data.message as rawMessage, so the inline error card can
     // surface the actual reason ("无权操作该会话" etc.) instead of the generic
     // unknown.description template. classifyBackendError already does this
@@ -708,8 +795,8 @@ export function useChat(options: UseChatOptions): UseChatReturn {
 
   // ===== Agent event handlers =====
 
-  // Body of tool_call_started — extracted so delegation_batch can replay the
-  // same behavior for buffered child events without duplicating logic.
+  // Body of tool_call_started. Used directly and reused once (split out as a
+  // function ⟶ no logic duplication).
   function handleToolCallStarted(data: any) {
     if (isStaleEvent(data)) return
     streamPhase.value = 'executing_tool'
@@ -902,43 +989,159 @@ export function useChat(options: UseChatOptions): UseChatReturn {
   })
 
   // ===== Agent delegation events =====
+  // Delegations form a tree: a depth-1 child is a top-level tool_call segment
+  // (keyed by its subagentId); depth-2+ subagents are DelegationNode entries
+  // nested under an ancestor via parentSubagentId. Every delegation_* event
+  // carries subagentId/parentSubagentId/depth so the flat event stream can be
+  // reassembled into that tree on the frontend (see DelegationNodeView.vue).
+
+  type DelegContainer = { plan?: PlanMeta; tools?: DelegationToolEntry[]; children?: DelegationNode[] }
+
+  /** A depth-1 delegation segment, looked up by its subagentId (or childConversationId). */
+  function findDelegSegment(segs: MessageSegment[], subagentId?: string, childConvId?: string): MessageSegment | undefined {
+    if (subagentId) {
+      const byId = segs.find(s => s.type === 'tool_call' && s.id === subagentId)
+      if (byId) return byId
+    }
+    if (childConvId) return segs.find(s => s.type === 'tool_call' && s.id === childConvId)
+    return undefined
+  }
+
+  /** Recursively find a DelegationNode by subagentId. */
+  function findNode(nodes: DelegationNode[] | undefined, subagentId: string): DelegationNode | undefined {
+    if (!nodes) return undefined
+    for (const n of nodes) {
+      if (n.subagentId === subagentId) return n
+      const deep = findNode(n.children, subagentId)
+      if (deep) return deep
+    }
+    return undefined
+  }
+
+  function ensureTimeline(seg: MessageSegment): DelegContainer {
+    const t = (seg.childTimeline ||= {})
+    if (!t.tools) t.tools = []
+    if (!t.children) t.children = []
+    return t
+  }
+
+  function ensureNodeContainer(node: DelegationNode): DelegContainer {
+    if (!node.tools) node.tools = []
+    if (!node.children) node.children = []
+    return node
+  }
+
+  /** Resolve the progress container (plan/tools/children) for a subagent at any depth. */
+  function resolveContainer(segs: MessageSegment[], subagentId?: string, childConvId?: string): DelegContainer | undefined {
+    const seg = findDelegSegment(segs, subagentId, childConvId)
+    if (seg) return ensureTimeline(seg)
+    if (subagentId) {
+      for (const s of segs) {
+        const node = findNode(s.childTimeline?.children, subagentId)
+        if (node) return ensureNodeContainer(node)
+      }
+    }
+    return undefined
+  }
+
+  /** Mark a subagent (segment or nested node) complete by subagentId. */
+  function markDelegComplete(segs: MessageSegment[], subagentId: string | undefined, childConvId: string | undefined,
+                             success: boolean, resultPreview?: string, durationMs?: number): boolean {
+    const seg = findDelegSegment(segs, subagentId, childConvId)
+    if (seg) {
+      seg.status = success ? 'completed' : 'error'
+      seg.toolSuccess = success
+      if (resultPreview) seg.toolResult = resultPreview
+      if (durationMs) seg.toolArgs = (seg.toolArgs || '').trimEnd() + ` (${Math.round(durationMs / 1000)}s)`
+      return true
+    }
+    if (subagentId) {
+      for (const s of segs) {
+        const node = findNode(s.childTimeline?.children, subagentId)
+        if (node) {
+          node.status = success ? 'completed' : 'error'
+          if (resultPreview) node.result = resultPreview
+          if (durationMs) node.durationMs = durationMs
+          return true
+        }
+      }
+    }
+    return false
+  }
+
+  /** Create a depth-1 segment (top of tree) or a nested DelegationNode (deeper). */
+  function addDelegation(segs: MessageSegment[], info: any, opts: { async?: boolean } = {}) {
+    const subagentId: string | undefined = info.subagentId
+    const parentSubagentId: string | undefined = info.parentSubagentId
+    const agentName: string = info.childAgentName || 'Agent'
+    const depth: number = info.depth || 1
+    const task: string = info.task || ''
+
+    if (parentSubagentId) {
+      // depth-2+: attach under the parent subagent's container.
+      const parent = resolveContainer(segs, parentSubagentId)
+      if (!parent) return
+      if (!findNode(parent.children, subagentId || '')) {
+        parent.children!.push({
+          subagentId: subagentId || genSegId(),
+          agentName, status: 'running', depth, task,
+          tools: [], children: [],
+          ...(opts.async ? { async: true } : {})
+        })
+      }
+      return
+    }
+    // depth-1: a top-level segment, keyed by subagentId for stable lookup.
+    // Dedup against SSE replay / a duplicated start re-creating the same segment.
+    const segId = subagentId || info.childConversationId || genSegId()
+    if (segs.some(s => s.type === 'tool_call' && s.id === segId)) return
+    segs.push({
+      id: segId,
+      type: 'tool_call',
+      status: 'running',
+      toolName: `→ ${agentName}`,
+      toolArgs: task,
+      childTimeline: { tools: [], children: [] },
+      timestamp: Date.now(),
+      ...(opts.async ? { delegationAsync: true } : {})
+    })
+  }
+
   stream.on('delegation_start', (data) => {
     if (isStaleEvent(data)) return
     streamPhase.value = 'executing_tool'
-    if (currentAssistantId.value) {
-      const segs = currentSegments.value
-      // Close any running thinking/content segment
-      const runningSeg = segs.findLast((s: MessageSegment) => s.status === 'running')
-      if (runningSeg) runningSeg.status = 'completed'
+    if (!currentAssistantId.value) return
+    const segs = currentSegments.value
 
-      if (data.parallel && Array.isArray(data.children)) {
-        // Parallel mode: one segment per child. Use childConversationId as the segment ID
-        // so downstream events (delegation_child_complete, delegation_progress) can look up
-        // the correct row by stable ID instead of agent name — which is not unique when
-        // two concurrent tasks go to the same agent.
-        for (const child of data.children) {
-          segs.push({
-            id: child.childConversationId || genSegId(),
-            type: 'tool_call',
-            status: 'running',
-            toolName: `→ ${child.childAgentName || 'Agent'}`,
-            toolArgs: child.task || '',
-            timestamp: Date.now()
-          })
-        }
-      } else {
-        // Single-task mode: same stable ID approach
-        segs.push({
-          id: data.childConversationId || genSegId(),
-          type: 'tool_call',
-          status: 'running',
-          toolName: `→ ${data.childAgentName || 'Agent'}`,
-          toolArgs: data.task || '',
-          timestamp: Date.now()
-        })
+    if (data.parallel && Array.isArray(data.children)) {
+      // Only close a running root-level content/thinking segment when these are
+      // top-level (depth-1) delegations; nested ones don't touch the root timeline.
+      const topLevel = data.children.some((c: any) => !c.parentSubagentId)
+      if (topLevel) {
+        const running = segs.findLast((s: MessageSegment) => s.status === 'running' && (s.type === 'thinking' || s.type === 'content'))
+        if (running) running.status = 'completed'
       }
-      flushSegmentsToMessage()
+      for (const child of data.children) addDelegation(segs, child)
+    } else {
+      if (!data.parentSubagentId) {
+        const running = segs.findLast((s: MessageSegment) => s.status === 'running' && (s.type === 'thinking' || s.type === 'content'))
+        if (running) running.status = 'completed'
+      }
+      addDelegation(segs, data)
     }
+    flushSegmentsToMessage()
+  })
+
+  // Fire-and-forget delegation. The parent agent keeps running after spawning,
+  // so unlike delegation_start we do NOT close the parent's running content/thinking
+  // segment. The child runs detached and its result is fetched later via task_output,
+  // so it is marked async and rendered as "running in background" rather than a
+  // spinner that never resolves on this turn.
+  stream.on('delegation_async_spawned', (data) => {
+    if (isStaleEvent(data)) return
+    if (!currentAssistantId.value) return
+    addDelegation(currentSegments.value, data, { async: true })
+    flushSegmentsToMessage()
   })
 
   stream.on('delegation_progress', (data) => {
@@ -946,135 +1149,113 @@ export function useChat(options: UseChatOptions): UseChatReturn {
     if (!currentAssistantId.value) return
     const segs = currentSegments.value
 
-    // Primary lookup: by stable childConversationId (set as the segment ID at creation time).
-    // Fallback: any running delegation segment (for older backends that don't send the field).
-    const delegSeg = (data.childConversationId
-      ? segs.find((s: MessageSegment) => s.id === data.childConversationId)
-      : undefined)
-      || segs.findLast((s: MessageSegment) =>
-          s.type === 'tool_call' && s.status === 'running' && s.toolName?.startsWith('→'))
+    const container = resolveContainer(segs, data.subagentId, data.childConversationId)
+    if (!container) return
+    if (!container.tools) container.tools = []
 
-    if (!delegSeg) return
-
-    // Normalize data.data: the backend relays the child event's JSON payload.
-    // After the P2 fix it arrives as an object; be defensive for older backends.
+    // Normalize data.data: the backend relays the child event's JSON payload as
+    // an object; be defensive for older backends that sent a JSON string.
     const rawPayload = data.data
     const childData: Record<string, any> = rawPayload && typeof rawPayload === 'object'
       ? rawPayload
       : (() => { try { return JSON.parse(String(rawPayload || '{}')) } catch { return {} } })()
 
-    if (data.originalEvent === 'tool_call_started') {
-      const toolName = childData?.toolName || ''
-      if (toolName) {
-        delegSeg.toolArgs = (delegSeg.toolArgs || '') + `\n  → ${toolName}`
+    switch (data.originalEvent) {
+      case 'tool_call_started': {
+        const name = childData?.toolName || ''
+        if (name) container.tools.push({ name, status: 'running' })
+        break
       }
-    } else if (data.originalEvent === 'tool_call_completed') {
-      const toolName = childData?.toolName || ''
-      const success = childData?.success !== false
-      if (toolName) {
-        // Replace the matching "→ toolName" hint with "✓/✗ toolName"
-        delegSeg.toolArgs = (delegSeg.toolArgs || '').replace(
-          new RegExp(`\\n  → ${toolName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`),
-          `\n  ${success ? '✓' : '✗'} ${toolName}`)
+      case 'tool_call_completed': {
+        const name = childData?.toolName || ''
+        const ok = childData?.success !== false
+        const entry = [...container.tools].reverse()
+          .find(t => t.name === name && t.status === 'running')
+        if (entry) entry.status = ok ? 'completed' : 'error'
+        break
       }
-    } else if (data.originalEvent === 'phase') {
-      const phase = childData?.phase || String(rawPayload || '')
-      const phaseHints: Record<string, string> = {
-        reasoning: '…',
-        executing_tool: '→',
-        planning: '📋',
-        summarizing: '✍',
+      case 'plan_created': {
+        const steps = childData?.steps
+        if (Array.isArray(steps)) {
+          container.plan = { planId: childData?.planId ?? '', steps, currentStep: 0, stepResults: [] }
+        }
+        break
       }
-      const hint = phaseHints[phase]
-      if (hint && !delegSeg.toolArgs?.endsWith(hint)) {
-        delegSeg.toolArgs = (delegSeg.toolArgs || '').trimEnd() + ' ' + hint
+      case 'plan_step_started': {
+        if (container.plan && typeof childData?.index === 'number') {
+          container.plan.currentStep = childData.index
+        }
+        break
+      }
+      case 'plan_step_completed': {
+        if (container.plan && typeof childData?.index === 'number') {
+          const results = [...(container.plan.stepResults || [])]
+          results[childData.index] = { result: childData.result ?? '', status: 'completed' }
+          container.plan.stepResults = results
+        }
+        break
       }
     }
     flushSegmentsToMessage()
   })
 
   // Per-child completion: fires as soon as each individual child agent finishes,
-  // before the overall delegation_end. Marks that child's segment done immediately
-  // so the user sees incremental progress rather than a bulk update at the end.
+  // before the overall delegation_end, so the user sees incremental progress.
   stream.on('delegation_child_complete', (data) => {
     if (isStaleEvent(data)) return
     if (!currentAssistantId.value) return
-    const segs = currentSegments.value
-    // Prefer childConversationId (stable) over agent name (non-unique)
-    const delegSeg = (data.childConversationId
-      ? segs.find((s: MessageSegment) => s.id === data.childConversationId)
-      : undefined)
-      || segs.findLast((s: MessageSegment) =>
-          s.type === 'tool_call' && s.status === 'running' && s.toolName?.startsWith('→'))
-    if (delegSeg) {
-      delegSeg.status = data.success ? 'completed' : 'error'
-      delegSeg.toolSuccess = data.success
-      if (data.durationMs) {
-        const durSec = Math.round(data.durationMs / 1000)
-        delegSeg.toolArgs = (delegSeg.toolArgs || '').trimEnd() + ` (${durSec}s)`
-      }
-      // Write resultPreview for both success and failure so ToolCallSegment can show
-      // an expand arrow with the child agent's actual output, not just a green/red dot.
-      if (data.resultPreview) {
-        delegSeg.toolResult = data.resultPreview
-      }
-    }
+    markDelegComplete(currentSegments.value, data.subagentId, data.childConversationId,
+      !!data.success, data.resultPreview, data.durationMs)
     flushSegmentsToMessage()
   })
 
   stream.on('delegation_end', (data) => {
     if (isStaleEvent(data)) return
-    if (currentAssistantId.value) {
-      const segs = currentSegments.value
-      if (data.parallel) {
-        // Parallel mode: use per-child results if available (new backend),
-        // fall back to aggregate success flag for older backends.
-        if (Array.isArray(data.childResults) && data.childResults.length > 0) {
-          for (const cr of data.childResults) {
-            // Primary: stable childConversationId lookup. Fallback: agent name substring.
-            const seg = (cr.childConversationId
-              ? segs.find((s: MessageSegment) => s.id === cr.childConversationId)
-              : undefined)
-              || segs.findLast((s: MessageSegment) =>
-                  s.type === 'tool_call' && s.toolName?.includes(cr.agentName || ''))
-            if (seg && seg.status === 'running') {
-              // Segment not yet closed by delegation_child_complete (e.g. timed-out child).
-              // Write whatever result info is available so ToolCallSegment can show content.
-              seg.status = cr.success ? 'completed' : 'error'
-              seg.toolSuccess = cr.success
-              if (cr.durationMs) {
-                const durSec = Math.round(cr.durationMs / 1000)
-                seg.toolArgs = (seg.toolArgs || '').trimEnd() + ` (${durSec}s)`
-              }
-              // Show error reason for failures; for successes leave toolResult empty here
-              // (delegation_child_complete already wrote the preview before we get to delegation_end).
-              if (cr.error) {
-                seg.toolResult = cr.error
-              }
-            }
+    if (!currentAssistantId.value) return
+    const segs = currentSegments.value
+    if (data.parallel) {
+      if (Array.isArray(data.childResults) && data.childResults.length > 0) {
+        for (const cr of data.childResults) {
+          // delegation_child_complete usually closed each child already; only
+          // patch those still running (e.g. a timed-out child).
+          const seg = findDelegSegment(segs, cr.subagentId, cr.childConversationId)
+          const stillRunning = seg ? seg.status === 'running'
+            : !!(cr.subagentId && findNode(segs.flatMap(s => s.childTimeline?.children || []), cr.subagentId)?.status === 'running')
+          if (stillRunning) {
+            markDelegComplete(segs, cr.subagentId, cr.childConversationId, !!cr.success,
+              cr.error || undefined, cr.durationMs)
           }
-        } else {
-          // Legacy fallback: mark all remaining running delegation segments with overall status
-          segs.filter((s: MessageSegment) =>
-            s.type === 'tool_call' && s.status === 'running' && s.toolName?.startsWith('→'))
-            .forEach((s: MessageSegment) => {
-              s.status = data.success ? 'completed' : 'error'
-            })
         }
       } else {
-        // Single-task mode
-        const delegSeg = segs.findLast((s: MessageSegment) =>
+        // Legacy fallback: mark all remaining running top-level delegations.
+        segs.filter((s: MessageSegment) =>
           s.type === 'tool_call' && s.status === 'running' && s.toolName?.startsWith('→'))
-        if (delegSeg) {
-          delegSeg.status = data.success ? 'completed' : 'error'
-          delegSeg.toolSuccess = data.success
-          if (data.durationMs) {
-            delegSeg.toolArgs = (delegSeg.toolArgs || '').trimEnd() + ` (${Math.round(data.durationMs / 1000)}s)`
-          }
-        }
+          .forEach((s: MessageSegment) => { s.status = data.success ? 'completed' : 'error' })
       }
-      flushSegmentsToMessage()
+    } else {
+      markDelegComplete(segs, data.subagentId, data.childConversationId,
+        !!data.success, data.resultPreview, data.durationMs)
     }
+    flushSegmentsToMessage()
+  })
+
+  // Heartbeat watchdog flagged a subagent as making no observable progress.
+  // Mark the matching segment/node stale so the timeline can surface it; the
+  // subagent stays "running" (stale ≠ finished — it may still recover).
+  stream.on('subagent_stale', (data) => {
+    if (isStaleEvent(data)) return
+    if (!currentAssistantId.value || !data.subagentId) return
+    const segs = currentSegments.value
+    const seg = findDelegSegment(segs, data.subagentId)
+    if (seg) {
+      seg.delegationStale = true
+    } else {
+      for (const s of segs) {
+        const node = findNode(s.childTimeline?.children, data.subagentId)
+        if (node) { node.stale = true; break }
+      }
+    }
+    flushSegmentsToMessage()
   })
 
   // ===== Stream lifecycle (pre-token) events =====
@@ -1173,26 +1354,9 @@ export function useChat(options: UseChatOptions): UseChatReturn {
     flushSegmentsToMessage()
   })
 
-  stream.on('delegation_batch', (data) => {
-    if (isStaleEvent(data)) return
-    // Buffered child events from a delegated subagent. Replay them in order
-    // through the same handlers as live events so segment state stays
-    // consistent with the rest of the timeline.
-    const events = Array.isArray(data?.events) ? data.events : []
-    for (const ev of events) {
-      const evData = ev?.data ?? {}
-      switch (ev?.event) {
-        case 'tool_call_started':
-          handleToolCallStarted(evData)
-          break
-        case 'tool_call_completed':
-          handleToolCallCompleted(evData)
-          break
-        // Other event kinds (phase / thinking_delta / content_delta / etc.)
-        // are not currently produced inside batches; extend here when added.
-      }
-    }
-  })
+  // Delegation batch envelopes are unpacked server-side into individual
+  // delegation_progress events (see DelegateAgentTool.relayBatchEnvelope),
+  // so the frontend only handles delegation_progress — no batch handler needed.
 
   stream.on('plan_created', (data) => {
     if (isStaleEvent(data)) return
@@ -1585,6 +1749,47 @@ export function useChat(options: UseChatOptions): UseChatReturn {
     }
   })
 
+  // ===== Goal events =====
+  // Forward goal evaluator emissions to the goal store. The store owns
+  // the active-goal cache + the per-conv "evaluating" flag that drives
+  // the avatar ring's breathing halo.
+
+  stream.on('goal_evaluated', (data) => {
+    if (isStaleEvent(data)) return
+    const cid = data?.conversationId || streamConversationId
+    if (cid) goalStore.handleSseEvent(cid, 'goal_evaluated', data)
+  })
+
+  stream.on('goal_followup', (data) => {
+    if (isStaleEvent(data)) return
+    const cid = data?.conversationId || streamConversationId
+    if (cid) goalStore.handleSseEvent(cid, 'goal_followup', data)
+  })
+
+  stream.on('goal_completed', (data) => {
+    if (isStaleEvent(data)) return
+    const cid = data?.conversationId || streamConversationId
+    if (cid) goalStore.handleSseEvent(cid, 'goal_completed', data)
+  })
+
+  stream.on('goal_exhausted', (data) => {
+    if (isStaleEvent(data)) return
+    const cid = data?.conversationId || streamConversationId
+    if (cid) goalStore.handleSseEvent(cid, 'goal_exhausted', data)
+  })
+
+  stream.on('goal_created', (data) => {
+    if (isStaleEvent(data)) return
+    const cid = data?.conversationId || streamConversationId
+    if (cid) goalStore.handleSseEvent(cid, 'goal_created', data)
+  })
+
+  stream.on('goal_updated', (data) => {
+    if (isStaleEvent(data)) return
+    const cid = data?.conversationId || streamConversationId
+    if (cid) goalStore.handleSseEvent(cid, 'goal_updated', data)
+  })
+
   // ===== Send message (supports sending while generating) =====
 
   const sendMessage = async (content: string, options: SendMessageOptions) => {
@@ -1643,6 +1848,12 @@ export function useChat(options: UseChatOptions): UseChatReturn {
       }
       if (options.thinkingLevel) {
         body.thinkingLevel = options.thinkingLevel
+      }
+      // Per-conversation model: the backend pins it onto the conversation row
+      // so switching the model here never leaks into other conversations.
+      if (options.modelProvider && options.modelName) {
+        body.modelProvider = options.modelProvider
+        body.modelName = options.modelName
       }
       await stream.connect(body)
     } catch (e) {

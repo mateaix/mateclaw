@@ -11,8 +11,6 @@ import java.util.List;
  *
  * <p>OAuth requests get extra beta headers + a User-Agent that masquerades as
  * Claude Code. Without these, Anthropic's infrastructure intermittently 500s.
- * Reference: hermes-agent {@code anthropic_adapter} lines 226-238 + the
- * dispatch in {@code build_anthropic_client} (line 423-433).
  *
  * <h2>Header reference</h2>
  *
@@ -48,8 +46,7 @@ public class ClaudeCodeApiHeaders {
 
     /**
      * Comma-joined beta header list to send in {@code anthropic-beta}.
-     * <p>Order matches hermes-agent {@code anthropic_adapter} line 427:
-     * {@code common_betas + _OAUTH_ONLY_BETAS} — common betas first, OAuth betas appended.
+     * <p>Order is common betas first, OAuth-only betas appended.
      */
     public String allBetas() {
         return String.join(",",
@@ -61,14 +58,12 @@ public class ClaudeCodeApiHeaders {
      * Format: {@code claude-cli/<version>} — bare, no suffix.
      *
      * <p><b>History note:</b> we previously appended {@code (external, cli)}
-     * after hermes-agent's pattern. That turned out to be wrong: Anthropic's
-     * anti-abuse gate uses the suffix to fingerprint third-party clients
-     * (hermes / OpenCode / Cline) and rate-limits them harder. Real Claude
-     * Code (Electron + Node + official Anthropic JS SDK) emits the bare
-     * {@code claude-cli/<v>} form, which is what openclaw
-     * ({@code anthropic-transport-stream.ts:30,572}) also uses. Verified by
-     * reproducing 429 with the suffix and {@code anthropic-ratelimit-*}
-     * headers absent — the diagnostic signature of the anti-abuse path.
+     * to the User-Agent. That turned out to be wrong: Anthropic's anti-abuse
+     * gate uses the suffix to fingerprint third-party clients and rate-limits
+     * them harder. Real Claude Code (Electron + Node + official Anthropic JS
+     * SDK) emits the bare {@code claude-cli/<v>} form. Verified by reproducing
+     * 429 with the suffix and {@code anthropic-ratelimit-*} headers absent —
+     * the diagnostic signature of the anti-abuse path.
      */
     public String userAgent() {
         return "claude-cli/" + versionDetector.get();

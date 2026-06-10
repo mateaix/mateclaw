@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Test;
 import vip.mate.wiki.WikiProperties;
 import vip.mate.wiki.dto.PageSearchResult;
 import vip.mate.wiki.model.WikiKnowledgeBaseEntity;
+import vip.mate.wiki.model.WikiPageEntity;
 
 import java.util.List;
 
@@ -48,7 +49,7 @@ class WikiContextServiceTest {
 
         WikiKnowledgeBaseEntity kb = new WikiKnowledgeBaseEntity();
         kb.setId(42L);
-        when(kbService.listByAgentId(any())).thenReturn(List.of(kb));
+        when(kbService.resolvePrimaryKb(any())).thenReturn(kb);
 
         service = new WikiContextService(kbService, pageService, hybridRetriever, properties);
     }
@@ -126,5 +127,86 @@ class WikiContextServiceTest {
     private static PageSearchResult hit(String slug, double score, String snippet) {
         return PageSearchResult.of(slug, slug, snippet, snippet,
                 List.of("keyword"), null, score);
+    }
+
+    // ==================== buildWikiContext heading + hint format ====================
+    //
+    // These tests lock in the unambiguous heading layout: heading text after
+    // `### ` MUST equal the KB name verbatim and nothing more, so the LLM
+    // can safely copy it into the `kbName` tool argument. The previous form
+    // "### {name} — {description} ({N} pages)" let the LLM paste the entire
+    // row and break findByName's exact-match lookup. The multi-KB hint must
+    // also call out kbId as the disambiguator for duplicate names.
+
+    private static WikiKnowledgeBaseEntity kbWithName(long id, String name, String description, Long agentId) {
+        WikiKnowledgeBaseEntity kb = new WikiKnowledgeBaseEntity();
+        kb.setId(id);
+        kb.setName(name);
+        kb.setDescription(description);
+        kb.setAgentId(agentId);
+        kb.setPageCount(0);
+        return kb;
+    }
+
+    private static WikiPageEntity simplePage(String slug, String title, String summary) {
+        WikiPageEntity p = new WikiPageEntity();
+        p.setSlug(slug);
+        p.setTitle(title);
+        p.setSummary(summary);
+        p.setPageType("user");
+        return p;
+    }
+
+    @Test
+    @DisplayName("buildWikiContext heading is JUST the KB name — no description, no page count")
+    void buildWikiContextHeadingIsBareName() {
+        WikiKnowledgeBaseEntity kb = kbWithName(100L, "QA-Bug-Test KB",
+                "A KB created via UI E2E test to surface wiki bugs", null);
+        when(kbService.listByAgentId(1L)).thenReturn(List.of(kb));
+        when(pageService.listSummaries(100L)).thenReturn(List.of(
+                simplePage("mateclaw", "MateClaw", "Entry page")));
+
+        String out = service.buildWikiContext(1L);
+
+        // Heading line is exact — pasting this into kbName must work without trim/strip.
+        assertThat(out).contains("### QA-Bug-Test KB\n");
+        // Description and page count live on the next line, not in the heading.
+        assertThat(out).doesNotContain("### QA-Bug-Test KB —");
+        assertThat(out).doesNotContain("### QA-Bug-Test KB (");
+        assertThat(out).contains("1 pages — A KB created via UI E2E test");
+    }
+
+    @Test
+    @DisplayName("buildWikiContext multi-KB hint mentions kbName + kbId + wiki_list_kbs")
+    void buildWikiContextMultiKbHint() {
+        when(kbService.listByAgentId(1L)).thenReturn(List.of(
+                kbWithName(100L, "Alpha", null, null),
+                kbWithName(200L, "Beta", null, null)));
+        when(pageService.listSummaries(100L)).thenReturn(List.of(simplePage("a", "A", null)));
+        when(pageService.listSummaries(200L)).thenReturn(List.of(simplePage("b", "B", null)));
+
+        String out = service.buildWikiContext(1L);
+
+        // Hint must point the LLM at the right argument and at the
+        // disambiguator for duplicate names.
+        assertThat(out)
+                .contains("kbName")
+                .contains("kbId")
+                .contains("wiki_list_kbs")
+                .contains("EXACT text after `### `");
+    }
+
+    @Test
+    @DisplayName("buildWikiContext single-KB output omits the multi-KB hint")
+    void buildWikiContextSingleKbSkipsHint() {
+        WikiKnowledgeBaseEntity kb = kbWithName(100L, "Solo", null, null);
+        when(kbService.listByAgentId(1L)).thenReturn(List.of(kb));
+        when(pageService.listSummaries(100L)).thenReturn(List.of(simplePage("a", "A", null)));
+
+        String out = service.buildWikiContext(1L);
+
+        // The "multiple knowledge bases" hint is wasted prompt budget when
+        // there's only one KB; it must stay off.
+        assertThat(out).doesNotContain("Multiple knowledge bases visible");
     }
 }

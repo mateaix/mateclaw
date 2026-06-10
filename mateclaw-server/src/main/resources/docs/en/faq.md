@@ -215,9 +215,10 @@ Edit `PROFILE.md` or `MEMORY.md` directly in the agent workspace view. Lock page
 ### I approved a tool call but the agent didn't resume
 
 1. Is `AWAITING_APPROVAL` still set? (`GET /api/v1/agents/{id}`)
-2. Did the approval actually persist? (`GET /api/v1/approvals/{id}`)
+2. Does the waiting conversation still have a pending approval? (`GET /api/v1/chat/{conversationId}/pending-approvals`)
 3. Are there errors in the agent log around the replay attempt?
-4. If replay failed, the agent should surface an error in the chat
+4. Did the approve/reject message go through the same conversation via `POST /api/v1/chat/stream`?
+5. If replay failed, the agent should surface an error in the chat
 
 ### I want to batch-approve future tool calls from this agent
 
@@ -381,8 +382,11 @@ mvn spring-boot:run -Dspring-boot.run.arguments="--logging.level.vip.mate=DEBUG"
 Browser DevTools → Network → filter `EventStream`. Or:
 
 ```bash
-curl -N -H "Authorization: Bearer <token>" \
-  "http://localhost:18088/api/v1/chat/1/stream?conversationId=1"
+curl -N -X POST 'http://localhost:18088/api/v1/chat/stream' \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -H "Accept: text/event-stream" \
+  -d '{"agentId":1, "message":"test", "conversationId":"1"}'
 ```
 
 ---

@@ -204,4 +204,67 @@ class ZipSkillFetcherTest {
         assertEquals(1, ex.scripts().size());
         assertEquals("#!/bin/sh\n", ex.scripts().get("setup.sh"));
     }
+
+    private record RawEntry(String name, byte[] content) {}
+
+    private static byte[] zipOfRaw(List<RawEntry> entries) throws IOException {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        try (ZipOutputStream zos = new ZipOutputStream(baos, StandardCharsets.UTF_8)) {
+            for (RawEntry e : entries) {
+                zos.putNextEntry(new ZipEntry(e.name()));
+                zos.write(e.content());
+                zos.closeEntry();
+            }
+        }
+        return baos.toByteArray();
+    }
+
+    @Test
+    @DisplayName("Binary entry under scripts/ is skipped, not stored corrupted (#273)")
+    void binaryEntryInScriptsIsSkipped() throws IOException {
+        // A PNG header carries a NUL byte; decoding it as UTF-8 would replace
+        // bytes with U+FFFD and persist a corrupted "text" file. The fetcher
+        // must drop it (with a WARN) while keeping the legitimate text script.
+        byte[] pngBytes = new byte[]{(byte) 0x89, 'P', 'N', 'G', 0x00, 0x1A, 0x0A, 'x'};
+        byte[] zip = zipOfRaw(List.of(
+                new RawEntry("pkg/SKILL.md", SKILL_MD.getBytes(StandardCharsets.UTF_8)),
+                new RawEntry("pkg/scripts/run.py", "print('ok')\n".getBytes(StandardCharsets.UTF_8)),
+                new RawEntry("pkg/scripts/logo.png", pngBytes),
+                new RawEntry("pkg/references/font.woff", new byte[]{'w', 'O', 'F', 'F', 0x00, 0x01})
+        ));
+
+        ZipSkillFetcher.ExtractedSkill ex = ZipSkillFetcher.extract(new ByteArrayInputStream(zip));
+
+        // Text script survives; both binaries are dropped (no corrupted entry).
+        assertEquals(Map.of("run.py", "print('ok')\n"), ex.scripts(),
+                "Binary logo.png must not be stored; the text script stays");
+        assertTrue(ex.references().isEmpty(),
+                "Binary font.woff must not be stored as corrupted text");
+        assertFalse(ex.scripts().containsKey("logo.png"));
+    }
+
+    @Test
+    @DisplayName("GBK-encoded entry names (Windows-authored zip) fall back from UTF-8 to GBK")
+    void extractsGbkEncodedNames() throws IOException {
+        org.junit.jupiter.api.Assumptions.assumeTrue(
+                java.nio.charset.Charset.isSupported("GBK"), "GBK charset not available on this JVM");
+        java.nio.charset.Charset gbk = java.nio.charset.Charset.forName("GBK");
+
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        try (ZipOutputStream zos = new ZipOutputStream(baos, gbk)) {
+            zos.putNextEntry(new ZipEntry("SKILL.md"));
+            zos.write(SKILL_MD.getBytes(gbk));
+            zos.closeEntry();
+            // Chinese filename whose GBK bytes are invalid UTF-8 → forces the fallback.
+            zos.putNextEntry(new ZipEntry("references/中文说明.md"));
+            zos.write("# 中文内容\n".getBytes(gbk));
+            zos.closeEntry();
+        }
+
+        ZipSkillFetcher.ExtractedSkill ex = ZipSkillFetcher.extract(baos.toByteArray());
+
+        assertNotNull(ex.skillMdContent());
+        assertEquals(1, ex.references().size(), "GBK-named reference should survive the charset fallback");
+        assertEquals("# 中文内容\n", ex.references().get("中文说明.md"));
+    }
 }

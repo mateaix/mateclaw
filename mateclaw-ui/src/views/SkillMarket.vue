@@ -41,14 +41,16 @@
         <!-- 分类 Tab -->
         <div class="category-tabs mc-surface-card">
           <button v-for="tab in categoryTabs" :key="tab.value" class="cat-tab"
-            :class="{ active: query.skillType === tab.value }" @click="onTabChange(tab.value)">
-            <span class="cat-icon">{{ tab.icon }}</span>
+            :class="{ active: isTabActive(tab), 'cat-tab--lifecycle': tab.kind === 'lifecycle' }"
+            @click="onTabChange(tab)">
+            <SkillLineIcon :name="tab.icon" :size="15" class="cat-icon" />
             {{ tab.label }}
-            <span class="cat-count">{{ getCategoryCount(tab.value) }}</span>
+            <span class="cat-count">{{ getCategoryCount(tab) }}</span>
           </button>
         </div>
 
-        <!-- Search + status filter (RFC-042 §2.1) -->
+        <!-- Search + sort. Enabled vs disabled is now the section split below,
+             so the old status dropdown is gone. -->
         <div class="skill-filter-bar mc-surface-card">
           <input
             v-model="query.keyword"
@@ -56,12 +58,6 @@
             type="search"
             :placeholder="t('skills.search.placeholder')"
           />
-          <select v-model="query.statusFilter" class="skill-status-filter" @change="onFilterChange">
-            <option value="">{{ t('skills.filter.all') }}</option>
-            <option value="enabled">{{ t('skills.filter.enabled') }}</option>
-            <option value="disabled">{{ t('skills.filter.disabled') }}</option>
-            <option value="scan_failed">{{ t('skills.filter.scanFailed') }}</option>
-          </select>
           <select v-model="query.sort" class="skill-status-filter" @change="onFilterChange">
             <option value="recommended">{{ t('skills.sort.recommended') }}</option>
             <option value="name">{{ t('skills.sort.name') }}</option>
@@ -71,12 +67,19 @@
           </select>
         </div>
 
-        <!-- Skill grid — RFC-090 §4.2 (Phase 1 slim).
+        <!-- Enabled / Available two-section layout. Each section paginates
+             independently via the enabled=true|false query split.
              Card surfaces 5 things: icon · name · status · description · actions.
              All findings, deps, paths, lessons, used-by are in the detail drawer. -->
-        <div class="skill-grid" v-if="skills.length > 0">
+        <div v-for="section in skillSections" :key="section.key" class="skill-section">
+          <div class="skill-section-head">
+            <span class="skill-section-title">{{ section.label }}</span>
+            <span class="skill-section-count">{{ t('skills.sections.countItems', { n: section.state.total }) }}</span>
+          </div>
+
+          <div class="skill-grid" v-if="section.state.items.length > 0">
           <div
-            v-for="skill in skills"
+            v-for="skill in section.state.items"
             :key="skill.id"
             class="skill-card mc-surface-card"
             :class="{ disabled: !skill.enabled }"
@@ -132,6 +135,12 @@
               </span>
               <span class="source-label" :class="getSourceClass(skill)">{{ getSourceLabel(skill) }}</span>
               <span v-if="skill.version" class="skill-version">v{{ skill.version }}</span>
+              <span
+                v-if="!isSkillRowVirtual(skill) && skill.lastActivityAt"
+                class="lifecycle-badge"
+                :class="{ 'lifecycle-badge--stale': skill.lifecycleState === 'stale',
+                          'lifecycle-badge--archived': skill.lifecycleState === 'archived' }"
+              ><SkillLineIcon name="clock" :size="11" />{{ lastUsedLabel(skill) }}</span>
             </div>
 
             <div class="skill-footer" @click.stop>
@@ -174,21 +183,22 @@
           </div>
         </div>
 
-        <div v-else class="empty-state mc-surface-card">
-          <div class="empty-icon">🛠️</div>
-          <h3>{{ t('skills.empty') }}</h3>
-          <p>{{ t('skills.emptyDesc') }}</p>
-        </div>
+          <div v-else class="empty-state mc-surface-card">
+            <div class="empty-icon">🛠️</div>
+            <h3>{{ section.key === 'enabled' ? t('skills.sections.emptyEnabled') : t('skills.sections.emptyAvailable') }}</h3>
+            <p v-if="section.key === 'enabled'">{{ t('skills.sections.emptyEnabledDesc') }}</p>
+          </div>
 
-        <!-- Pagination (RFC-042 §2.1) — MateClaw frosted-pill component. -->
-        <div class="skill-pagination">
-          <McPagination
-            v-model:page="query.page"
-            v-model:size="query.size"
-            :total="total"
-            :sizes="[20, 50]"
-            @change="onPagerChange"
-          />
+          <!-- Per-section pagination — MateClaw frosted-pill component. -->
+          <div v-if="section.state.total > section.state.size" class="skill-pagination">
+            <McPagination
+              v-model:page="section.state.page"
+              v-model:size="section.state.size"
+              :total="section.state.total"
+              :sizes="[20, 50]"
+              @change="() => loadSegment(section.key)"
+            />
+          </div>
         </div>
       </div>
     </div>
@@ -287,6 +297,42 @@
         <!-- Overview tab — manifest-projected chips (read-only) +
              DB-only display overrides (editable) + collapsed manifest. -->
         <div v-if="detailTab === 'overview'" class="detail-section">
+          <!-- Lifecycle: state + last-used + pin / archive / restore. -->
+          <div v-if="!isVirtualSkill" class="detail-block">
+            <div class="detail-block-head">
+              <h4 class="detail-block-title">{{ t('skills.lifecycle.section') }}</h4>
+            </div>
+            <div class="meta-chips">
+              <span class="meta-chip">
+                <span class="meta-chip-label">{{ t('skills.lifecycle.state') }}</span>
+                <span class="lc-pill" :class="'lc-' + (detailSkill.lifecycleState || 'active')">
+                  {{ t('skills.lifecycle.states.' + (detailSkill.lifecycleState || 'active')) }}
+                </span>
+              </span>
+              <span class="meta-chip">
+                <span class="meta-chip-label">{{ t('skills.lifecycle.lastUsed') }}</span>
+                {{ lastUsedLabel(detailSkill) }}
+              </span>
+            </div>
+            <div class="lifecycle-actions">
+              <label class="lifecycle-pin" :title="t('skills.lifecycle.pinHint')">
+                <input type="checkbox" :checked="!!detailSkill.pinned" @change="togglePin(detailSkill)" />
+                <SkillLineIcon name="pin" :size="14" />
+                <span>{{ t('skills.lifecycle.pin') }}</span>
+              </label>
+              <button
+                v-if="detailSkill.lifecycleState === 'archived'"
+                class="lc-btn lc-btn--restore"
+                @click="restoreSkill(detailSkill)"
+              >{{ t('skills.lifecycle.restore') }}</button>
+              <button
+                v-else-if="detailSkill.skillType !== 'builtin'"
+                class="lc-btn lc-btn--archive"
+                @click="archiveSkill(detailSkill)"
+              >{{ t('skills.lifecycle.archive') }}</button>
+            </div>
+          </div>
+
           <!-- Manifest-projected fields (chips, read-only).
                These columns are overwritten by SkillPackageResolver from
                manifest_json on every resolve, so editing them on the row
@@ -668,13 +714,29 @@ import McPagination from '@/components/common/McPagination.vue'
 import MateDrawer from '@/components/common/MateDrawer.vue'
 import SkillIcon from '@/components/common/SkillIcon.vue'
 import SkillIconPicker from '@/components/common/SkillIconPicker.vue'
+import SkillLineIcon from '@/components/skill/SkillLineIcon.vue'
 import { mcConfirm } from '@/components/common/useConfirm'
 import { useSkillName } from '@/composables/useSkillName'
 
 const { t } = useI18n()
 const { resolveSkillName, hasI18nName } = useSkillName()
-const skills = ref<Skill[]>([])
-const total = ref(0)
+
+/** Two independently-paginated sections: enabled vs disabled. The per-card
+ *  status pill still marks blocked / scan-failed skills within each section. */
+interface SkillSegment {
+  items: Skill[]
+  total: number
+  page: number
+  size: number
+}
+const segments = reactive<{ enabled: SkillSegment; available: SkillSegment }>({
+  enabled: { items: [], total: 0, page: 1, size: 20 },
+  available: { items: [], total: 0, page: 1, size: 20 },
+})
+const skillSections = computed(() => [
+  { key: 'enabled' as const, label: t('skills.sections.enabled'), state: segments.enabled },
+  { key: 'available' as const, label: t('skills.sections.available'), state: segments.available },
+])
 const counts = ref<Record<string, number>>({})
 const runtimeStatusMap = ref<Record<string, SkillRuntimeStatus>>({})
 const showModal = ref(false)
@@ -683,12 +745,11 @@ const refreshing = ref(false)
 const showImportDialog = ref(false)
 
 const query = reactive({
-  page: 1,
-  size: 20,
   keyword: '',
   skillType: 'all' as string,
-  statusFilter: '' as string,
   sort: 'recommended' as string,
+  /** '' = active+stale catalog; 'stale' / 'archived' = lifecycle tabs. */
+  lifecycleState: '' as string,
 })
 
 /** Per-skill UI state for the RFC-042 §2.3 findings panel. */
@@ -795,7 +856,7 @@ function openPreflight(skill: Skill) {
 async function onSkillInstalled(payload?: { name?: string }) {
   await loadAll()
   if (!payload?.name) return
-  const installed = skills.value.find(s => s.name === payload.name)
+  const installed = findLoadedSkill(s => s.name === payload.name)
   if (!installed) return
   if (needsSetup(installed)) {
     openPreflight(installed)
@@ -892,17 +953,30 @@ watch(detailTab, (tab) => {
 })
 
 const categoryTabs = computed(() => [
-  { label: t('skills.tabs.all'), value: 'all', icon: '🗂️' },
-  { label: t('skills.tabs.builtin'), value: 'builtin', icon: '🔧' },
-  { label: t('skills.tabs.mcp'), value: 'mcp', icon: '🔌' },
+  { label: t('skills.tabs.all'), value: 'all', icon: 'all', kind: 'source' },
+  { label: t('skills.tabs.builtin'), value: 'builtin', icon: 'builtin', kind: 'source' },
+  { label: t('skills.tabs.mcp'), value: 'mcp', icon: 'mcp', kind: 'source' },
   // ACP (Agent Communication Protocol) — auto-bridged from
   // Settings ▸ ACP Endpoints; one card per enabled endpoint.
-  { label: t('skills.tabs.acp'), value: 'acp', icon: '🤝' },
-  { label: t('skills.tabs.dynamic'), value: 'dynamic', icon: '📦' },
+  { label: t('skills.tabs.acp'), value: 'acp', icon: 'acp', kind: 'source' },
+  { label: t('skills.tabs.dynamic'), value: 'dynamic', icon: 'dynamic', kind: 'source' },
+  // Lifecycle tabs — orthogonal to skillType; they filter by lifecycle_state.
+  { label: t('skills.tabs.stale'), value: 'stale', icon: 'clock', kind: 'lifecycle' },
+  { label: t('skills.tabs.archived'), value: 'archived', icon: 'archive', kind: 'lifecycle' },
 ])
 
-function getCategoryCount(category: string) {
-  return counts.value[category] ?? 0
+/** Stale / archived counts, sourced from the curator status endpoint. */
+const lifecycleCounts = ref<Record<string, number>>({})
+
+function getCategoryCount(tab: { value: string; kind: string }) {
+  if (tab.kind === 'lifecycle') return lifecycleCounts.value[tab.value] ?? 0
+  return counts.value[tab.value] ?? 0
+}
+
+function isTabActive(tab: { value: string; kind: string }) {
+  return tab.kind === 'lifecycle'
+    ? query.lifecycleState === tab.value
+    : !query.lifecycleState && query.skillType === tab.value
 }
 
 function parseTags(tags: string): string[] {
@@ -918,7 +992,22 @@ async function loadAll() {
   // transient "checking" state until runtimeStatusMap populates.
   loadCounts()
   loadRuntimeStatus()
+  loadLifecycleCounts()
   await loadSkills()
+}
+
+/** Stale / archived tab counts — best-effort, from the curator status endpoint. */
+async function loadLifecycleCounts() {
+  try {
+    const res: any = await skillApi.curatorStatus()
+    const c = res.data?.counts || {}
+    lifecycleCounts.value = {
+      stale: Number(c.stale) || 0,
+      archived: Number(c.archived) || 0,
+    }
+  } catch {
+    lifecycleCounts.value = {}
+  }
 }
 
 /** Coalesce keyword edits into one server call per 300ms so typing doesn't thrash. */
@@ -926,39 +1015,53 @@ let searchDebounce: ReturnType<typeof setTimeout> | null = null
 watch(() => query.keyword, () => {
   if (searchDebounce) clearTimeout(searchDebounce)
   searchDebounce = setTimeout(() => {
-    query.page = 1
+    resetSegmentPages()
     loadSkills()
   }, 300)
 })
 
-function onTabChange(tab: string) {
-  query.skillType = tab
-  query.page = 1
+function onTabChange(tab: { value: string; kind: string }) {
+  if (tab.kind === 'lifecycle') {
+    query.lifecycleState = tab.value
+    query.skillType = 'all'
+  } else {
+    query.lifecycleState = ''
+    query.skillType = tab.value
+  }
+  resetSegmentPages()
   loadSkills()
 }
 
 function onFilterChange() {
-  query.page = 1
+  resetSegmentPages()
   loadSkills()
 }
 
-/** McPagination emits a single change event with both page and size,
- *  so we don't need separate handlers — just reload the list. */
-function onPagerChange() {
-  loadSkills()
+/** Reset both sections to page 1 — used whenever a shared filter changes. */
+function resetSegmentPages() {
+  segments.enabled.page = 1
+  segments.available.page = 1
 }
 
-async function loadSkills(allowPageClamp = true) {
+/** Reload both sections. Kept named loadSkills so existing call sites
+ *  (create / toggle / delete / refresh) reload the whole view unchanged. */
+async function loadSkills() {
+  await Promise.all([loadSegment('enabled'), loadSegment('available')])
+}
+
+async function loadSegment(key: 'enabled' | 'available', allowPageClamp = true) {
+  const seg = segments[key]
   try {
-    const params: Record<string, unknown> = { page: query.page, size: query.size }
+    const params: Record<string, unknown> = {
+      page: seg.page,
+      size: seg.size,
+      // The enabled flag IS the section split: 已启用 vs 未启用.
+      enabled: key === 'enabled',
+    }
     if (query.keyword) params.keyword = query.keyword.trim()
     if (query.skillType && query.skillType !== 'all') params.skillType = query.skillType
     if (query.sort) params.sort = query.sort
-    // Map the single status filter onto the backend's two independent params:
-    // enabled (bool) and scanStatus (PASSED/FAILED). scan_failed implies any enabled state.
-    if (query.statusFilter === 'enabled') params.enabled = true
-    else if (query.statusFilter === 'disabled') params.enabled = false
-    else if (query.statusFilter === 'scan_failed') params.scanStatus = 'FAILED'
+    if (query.lifecycleState) params.lifecycleState = query.lifecycleState
 
     const res: any = await skillApi.page(params)
     const data = res.data || {}
@@ -970,31 +1073,29 @@ async function loadSkills(allowPageClamp = true) {
     // successor; issue #48).
     const reportedTotal = Number(data.total) || 0
     if (reportedTotal > 0) {
-      const pageCount = Math.max(1, Math.ceil(reportedTotal / query.size))
-      if (allowPageClamp && query.page > pageCount) {
-        query.page = pageCount
-        await loadSkills(false)
+      const pageCount = Math.max(1, Math.ceil(reportedTotal / seg.size))
+      if (allowPageClamp && seg.page > pageCount) {
+        seg.page = pageCount
+        await loadSegment(key, false)
         return
       }
-      total.value = reportedTotal
+      seg.total = reportedTotal
     } else if (records.length > 0) {
-      total.value = records.length >= query.size
-        ? query.page * query.size + 1
-        : (query.page - 1) * query.size + records.length
-      // eslint-disable-next-line no-console
-      console.warn('[SkillMarket] backend returned records but total=0; rebuild server JAR to pick up the DbType fix')
+      seg.total = records.length >= seg.size
+        ? seg.page * seg.size + 1
+        : (seg.page - 1) * seg.size + records.length
     } else {
-      if (allowPageClamp && query.page > 1) {
-        query.page = 1
-        await loadSkills(false)
+      if (allowPageClamp && seg.page > 1) {
+        seg.page = 1
+        await loadSegment(key, false)
         return
       }
-      total.value = 0
+      seg.total = 0
     }
-    skills.value = records
+    seg.items = records
   } catch (e) {
-    skills.value = []
-    total.value = 0
+    seg.items = []
+    seg.total = 0
   }
 }
 
@@ -1051,7 +1152,7 @@ async function createSkillFromModal() {
     await loadAll()
     const created: Skill | undefined = res?.data
     if (created) {
-      const fresh = skills.value.find(s => s.id === created.id) || created
+      const fresh = findLoadedSkill(s => s.id === created.id) || created
       openDetailDrawer(fresh, 'overview', { editIdentity: true })
     }
   } catch (e: any) {
@@ -1192,9 +1293,22 @@ function closeDetailDrawer() {
   detailDrawerVisible.value = false
 }
 
+/** Find a loaded skill across both sections (read-only lookups). */
+function findLoadedSkill(pred: (s: Skill) => boolean): Skill | undefined {
+  return segments.enabled.items.find(pred) || segments.available.items.find(pred)
+}
+
+/** Patch a row in-place in whichever section holds it, so a panel update
+ *  doesn't need a full reload. (Enable-toggle, which moves a skill between
+ *  sections, reloads both sections instead.) */
 function patchSkillInPlace(updated: Skill) {
-  const idx = skills.value.findIndex(s => s.id === updated.id)
-  if (idx >= 0) skills.value.splice(idx, 1, { ...skills.value[idx], ...updated })
+  for (const seg of [segments.enabled, segments.available]) {
+    const idx = seg.items.findIndex(s => s.id === updated.id)
+    if (idx >= 0) {
+      seg.items.splice(idx, 1, { ...seg.items[idx], ...updated })
+      return
+    }
+  }
 }
 
 async function deleteSkill(idOrSkill: string | number | Skill) {
@@ -1204,7 +1318,7 @@ async function deleteSkill(idOrSkill: string | number | Skill) {
   // Resolve to the skill record so we can call the uninstall path by name.
   const skill: Skill | undefined = typeof idOrSkill === 'object'
     ? idOrSkill
-    : skills.value.find(s => s.id === idOrSkill)
+    : findLoadedSkill(s => s.id === idOrSkill)
   if (!skill) return
   const ok = await mcConfirm({
     title: t('skills.messages.deleteTitle'),
@@ -1234,6 +1348,80 @@ async function toggleSkill(skill: Skill) {
     await loadAll()
   } catch (e: any) {
     mcToast.error(typeof e === 'string' ? e : e?.message || t('skills.messages.toggleFailed'))
+  }
+}
+
+// ==================== Lifecycle: pin / archive / restore ====================
+
+/** Human-readable "last used" label from {@code lastActivityAt}. */
+function lastUsedLabel(skill: Skill): string {
+  const ts = skill.lastActivityAt
+  if (!ts) return t('skills.lifecycle.neverUsed')
+  const then = new Date(ts).getTime()
+  if (Number.isNaN(then)) return t('skills.lifecycle.neverUsed')
+  const days = Math.floor((Date.now() - then) / 86400000)
+  if (days <= 0) return t('skills.lifecycle.today')
+  return t('skills.lifecycle.daysAgo', { n: days })
+}
+
+async function togglePin(skill: Skill) {
+  try {
+    const res: any = await skillApi.pin(skill.id, !skill.pinned)
+    if (detailSkill.value && detailSkill.value.id === skill.id) {
+      detailSkill.value = { ...detailSkill.value, ...(res.data || {}) }
+    }
+    await loadSkills()
+    loadLifecycleCounts()
+  } catch (e: any) {
+    mcToast.error(typeof e === 'string' ? e : e?.message || t('skills.lifecycle.pinFailed'))
+  }
+}
+
+async function archiveSkill(skill: Skill) {
+  const ok = await mcConfirm({
+    title: t('skills.lifecycle.archiveTitle'),
+    message: t('skills.lifecycle.archiveConfirm', { name: resolveSkillName(skill) }),
+    tone: 'danger',
+  })
+  if (!ok) return
+  await doArchive(skill, false)
+}
+
+/** Archive call with the bound-skill 409 confirm handshake. */
+async function doArchive(skill: Skill, force: boolean) {
+  try {
+    await skillApi.archive(skill.id, { force })
+    mcToast.success(t('skills.lifecycle.archiveSuccess'))
+    closeDetailDrawer()
+    await loadAll()
+  } catch (e: any) {
+    const resp = e?.response
+    if (!force && resp?.status === 409 && resp?.data?.code === 'BOUND_SKILL_CONFIRM_REQUIRED') {
+      const bound = (resp.data.boundAgents || []) as Array<{ name?: string }>
+      const confirmForce = await mcConfirm({
+        title: t('skills.lifecycle.boundConfirmTitle'),
+        message: t('skills.lifecycle.boundConfirmBody', {
+          name: resolveSkillName(skill),
+          count: bound.length,
+          agents: bound.map(a => a.name).filter(Boolean).join('、'),
+        }),
+        tone: 'danger',
+      })
+      if (confirmForce) await doArchive(skill, true)
+      return
+    }
+    mcToast.error(typeof e === 'string' ? e : e?.message || t('skills.lifecycle.archiveFailed'))
+  }
+}
+
+async function restoreSkill(skill: Skill) {
+  try {
+    await skillApi.restore(skill.id)
+    mcToast.success(t('skills.lifecycle.restoreSuccess'))
+    closeDetailDrawer()
+    await loadAll()
+  } catch (e: any) {
+    mcToast.error(typeof e === 'string' ? e : e?.message || t('skills.lifecycle.restoreFailed'))
   }
 }
 
@@ -1277,8 +1465,7 @@ async function rescanSkill(skill: Skill) {
     const updated: Skill | undefined = res?.data
     if (updated) {
       // Patch the row in-place so the panel updates without a full page reload.
-      const idx = skills.value.findIndex(s => s.id === skill.id)
-      if (idx >= 0) skills.value.splice(idx, 1, { ...skills.value[idx], ...updated })
+      patchSkillInPlace(updated)
       mcToast.success(
         updated.securityScanStatus === 'FAILED'
           ? t('skills.security.rescanStillFailed')
@@ -1725,6 +1912,11 @@ html.dark .scan-finding-item { background: rgba(255, 255, 255, 0.05); }
 }
 
 /* 技能网格 */
+.skill-section { margin-top: 22px; }
+.skill-section:first-of-type { margin-top: 8px; }
+.skill-section-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 12px; }
+.skill-section-title { font-size: 15px; font-weight: 700; color: var(--mc-text-primary); }
+.skill-section-count { font-size: 12px; font-weight: 600; color: var(--mc-text-secondary); background: var(--mc-bg-muted); padding: 2px 8px; border-radius: 10px; }
 .skill-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 18px; }
 .skill-card {
   padding: 18px;
@@ -2357,4 +2549,39 @@ html.dark .scan-finding-item { background: rgba(255, 255, 255, 0.05); }
   color: #fff;
 }
 
+/* ==================== Lifecycle / curator ==================== */
+.cat-tab--lifecycle { margin-left: 4px; }
+.lifecycle-badge {
+  display: inline-flex; align-items: center; gap: 3px;
+  font-size: 11px; color: var(--mc-text-tertiary);
+  padding: 1px 7px; border-radius: 999px; background: var(--mc-bg-sunken);
+}
+.lifecycle-badge--stale { color: #b9770e; background: rgba(243, 156, 18, 0.14); }
+.lifecycle-badge--archived { color: var(--mc-text-tertiary); background: var(--mc-bg-muted); }
+
+.lc-pill {
+  display: inline-block; padding: 1px 8px; border-radius: 999px;
+  font-size: 11px; font-weight: 600;
+}
+.lc-active { color: #1e8e3e; background: rgba(46, 160, 67, 0.14); }
+.lc-stale { color: #b9770e; background: rgba(243, 156, 18, 0.16); }
+.lc-archived { color: var(--mc-text-secondary); background: var(--mc-bg-sunken); }
+
+.lifecycle-actions {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 10px;
+}
+.lifecycle-pin {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 13px; color: var(--mc-text-secondary); cursor: pointer; user-select: none;
+}
+.lifecycle-pin input { cursor: pointer; }
+.lc-btn {
+  padding: 5px 14px; border-radius: 8px; font-size: 13px; font-weight: 600;
+  cursor: pointer; border: 1px solid var(--mc-border); background: var(--mc-bg-muted);
+  color: var(--mc-text-secondary); transition: all 0.15s;
+}
+.lc-btn:hover { border-color: var(--mc-text-tertiary); }
+.lc-btn--archive:hover { color: #d14343; border-color: #d14343; }
+.lc-btn--restore { color: var(--mc-primary); border-color: var(--mc-primary); }
+.lc-btn--restore:hover { background: var(--mc-primary); color: #fff; }
 </style>

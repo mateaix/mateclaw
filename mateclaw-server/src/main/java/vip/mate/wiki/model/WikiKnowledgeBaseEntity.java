@@ -51,6 +51,7 @@ public class WikiKnowledgeBaseEntity {
      * NULL = 使用系统默认（mate_system_setting 的 embedding.default.model.id），
      * 再无则取任意 enabled 的 embedding 模型，最终全无则语义搜索降级为不可用。
      */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private Long embeddingModelId;
 
     @TableField(fill = FieldFill.INSERT)

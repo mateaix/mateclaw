@@ -147,7 +147,8 @@ cd ../mateclaw-server
 mvn clean package -DskipTests
 
 # 3. Copy JAR to desktop resources
-cp target/mateclaw-server.jar ../mateclaw-desktop/resources/app.jar
+JAR_FILE=$(ls -1 target/mateclaw-server-*.jar | grep -v sources | head -n 1)
+cp "$JAR_FILE" ../mateclaw-desktop/resources/app.jar
 
 # 4. Download platform-specific JRE
 cd ../mateclaw-desktop

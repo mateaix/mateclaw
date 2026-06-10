@@ -5,7 +5,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import vip.mate.wiki.WikiProperties;
 import vip.mate.wiki.model.WikiKnowledgeBaseEntity;
-import vip.mate.wiki.model.WikiRawMaterialEntity;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -18,6 +17,13 @@ import java.util.*;
  * <p>
  * 扫描本地目录中的文档文件，为每个文件创建原始材料。
  * 基于 sourcePath 去重，避免重复导入。
+ * <p>
+ * sourceDirectory 支持换行分隔的多条记录，每条可以是：
+ * <ul>
+ *   <li>普通目录路径（如 {@code /data/docs}）——递归扫描，按 SUPPORTED_EXTENSIONS 过滤</li>
+ *   <li>Glob 模式（如 {@code /data/ocr/**}{@code /*.txt}）——从固定前缀出发，用 PathMatcher 过滤</li>
+ * </ul>
+ * 以 {@code #} 开头的行视为注释，忽略。路径解析与验证委托给 {@link WikiSourcePathValidator}。
  *
  * @author MateClaw Team
  */
@@ -29,12 +35,17 @@ public class WikiDirectoryScanService {
     private final WikiKnowledgeBaseService kbService;
     private final WikiRawMaterialService rawService;
     private final WikiProperties properties;
+    private final WikiSourcePathValidator pathValidator;
 
     private static final Set<String> SUPPORTED_EXTENSIONS = Set.of(
-            "txt", "md", "pdf", "docx", "doc", "pptx", "xlsx"
+            "txt", "md", "csv", "pdf", "docx", "doc",
+            "pptx", "ppt", "xlsx", "xls", "html", "htm"
     );
 
-    private static final Set<String> TEXT_EXTENSIONS = Set.of("txt", "md");
+    private static final Set<String> TEXT_EXTENSIONS = Set.of("txt", "md", "csv");
+
+    /** 一个待处理候选文件及其所属的扫描根（用于符号链接逃逸检测）。 */
+    private record FileCandidate(Path file, Path scanRoot) {}
 
     /**
      * 扫描结果
@@ -42,7 +53,7 @@ public class WikiDirectoryScanService {
     public record ScanResult(int scanned, int added, int skipped, List<String> errors) {}
 
     /**
-     * 扫描指定知识库关联的目录
+     * 扫描指定知识库关联的目录（支持多路径 + glob）
      */
     public ScanResult scan(Long kbId) {
         WikiKnowledgeBaseEntity kb = kbService.getById(kbId);
@@ -57,31 +68,197 @@ public class WikiDirectoryScanService {
     }
 
     /**
-     * 扫描指定目录，为每个支持的文件创建原始材料
+     * 扫描指定路径配置，支持换行分隔的多条路径/Glob 模式。
+     * 单条普通路径时与旧行为完全兼容。
      */
     public ScanResult scanDirectory(Long kbId, String directoryPath) {
-        Path dir = Paths.get(directoryPath).toAbsolutePath().normalize();
-
-        if (!Files.exists(dir)) {
-            return new ScanResult(0, 0, 0, List.of("Directory does not exist: " + dir));
+        List<String> patterns = WikiSourcePathValidator.parseSourcePatterns(directoryPath);
+        if (patterns.isEmpty()) {
+            return new ScanResult(0, 0, 0, List.of("No source directory configured"));
         }
-        if (!Files.isDirectory(dir)) {
-            return new ScanResult(0, 0, 0, List.of("Path is not a directory: " + dir));
-        }
+        return scanWithPatterns(kbId, patterns);
+    }
 
-        List<Path> files = new ArrayList<>();
+    // ==================== private ====================
+
+    private ScanResult scanWithPatterns(Long kbId, List<String> patterns) {
+        List<FileCandidate> candidates = new ArrayList<>();
         List<String> errors = new ArrayList<>();
         int maxFiles = properties.getMaxScanFiles();
         long maxFileSize = properties.getMaxScanFileSize();
 
-        // 递归遍历目录
+        for (String pattern : patterns) {
+            if (candidates.size() >= maxFiles) break;
+            collectCandidates(pattern, candidates, errors, maxFiles, maxFileSize);
+        }
+
+        // Deduplicate: the same file can be matched by multiple overlapping patterns.
+        // Keep first-match order; first-match scanRoot wins for the symlink escape check.
+        Set<Path> seen = new LinkedHashSet<>();
+        candidates.removeIf(c -> !seen.add(c.file().toAbsolutePath().normalize()));
+
+        int scanned = candidates.size();
+        int added = 0;
+        int skipped = 0;
+
+        for (FileCandidate candidate : candidates) {
+            Path file = candidate.file();
+            Path scanRoot = candidate.scanRoot();
+            try {
+                // Per-file symlink guard: a symlinked file inside an allowed
+                // directory could point outside it (e.g. secret.md ->
+                // /etc/passwd). Resolve the real path and require it to stay
+                // within the validated scan root; skip escapes.
+                Path realFile;
+                try {
+                    realFile = file.toRealPath();
+                } catch (IOException e) {
+                    realFile = file.toAbsolutePath().normalize();
+                }
+                if (!realFile.startsWith(scanRoot)) {
+                    errors.add("Skipped symlink escaping the scan root: " + file.getFileName());
+                    skipped++;
+                    continue;
+                }
+                // From here on operate ONLY on the resolved real path, never the
+                // original entry. Reading `realFile` (a concrete, fully-resolved
+                // path) closes the TOCTOU window: swapping the symlink after
+                // resolution cannot redirect the read. The file name for the
+                // title still comes from the directory entry the user sees.
+                // Re-check the size on the resolved target — walkFileTree does
+                // not follow links, so a symlink's attribute size (the link
+                // length) can slip an oversized target past the visitFile gate.
+                long realSize;
+                try {
+                    realSize = Files.size(realFile);
+                } catch (IOException e) {
+                    errors.add("Failed to stat: " + file.getFileName() + " (" + e.getMessage() + ")");
+                    skipped++;
+                    continue;
+                }
+                if (realSize > properties.getMaxScanFileSize()) {
+                    errors.add("Skipped oversized file: " + file.getFileName() + " (" + realSize + " bytes)");
+                    skipped++;
+                    continue;
+                }
+                String absolutePath = realFile.toString();
+                String fileName = file.getFileName().toString();
+                String ext = getExtension(fileName);
+
+                if (TEXT_EXTENSIONS.contains(ext)) {
+                    // Text files: dedup by content hash, so an unchanged file is
+                    // skipped while a modified file (new hash) is re-ingested.
+                    String content = Files.readString(realFile, StandardCharsets.UTF_8);
+                    boolean fresh = rawService.ingestTextFileFromScan(kbId, fileName, absolutePath, content);
+                    if (fresh) {
+                        added++;
+                    } else {
+                        skipped++;
+                    }
+                    continue;
+                }
+
+                // Binary files: dedup by content hash too, so a modified file is
+                // re-ingested. The unchanged case reads the file once to hash it;
+                // only a new/changed file is read again to import.
+                String sourceType = switch (ext) {
+                    case "pdf" -> "pdf";
+                    case "docx", "doc" -> "docx";
+                    case "pptx", "ppt" -> "pptx";
+                    case "xlsx", "xls" -> "xlsx";
+                    case "html", "htm" -> "html";
+                    default -> "text";
+                };
+                boolean freshBinary = rawService.ingestBinaryFileFromScan(
+                        kbId, fileName, sourceType, absolutePath, realSize);
+                if (freshBinary) {
+                    added++;
+                } else {
+                    skipped++;
+                }
+
+            } catch (Exception e) {
+                errors.add("Failed to import: " + file.getFileName() + " (" + e.getMessage() + ")");
+            }
+        }
+
+        if (candidates.size() >= maxFiles) {
+            errors.add("Scan limit reached (" + maxFiles + " files). Some files may have been skipped.");
+        }
+
+        log.info("[Wiki] Scan completed: patterns={}, scanned={}, added={}, skipped={}, errors={}",
+                patterns, scanned, added, skipped, errors.size());
+
+        return new ScanResult(scanned, added, skipped, errors);
+    }
+
+    private void collectCandidates(String pattern, List<FileCandidate> candidates,
+                                   List<String> errors, int maxFiles, long maxFileSize) {
+        boolean hasWildcard = containsWildcard(pattern);
+        Path scanRoot;
+        PathMatcher matcher;
+        boolean requireSupportedExt;
+
+        if (!hasWildcard) {
+            // Plain directory: walk recursively, filter by SUPPORTED_EXTENSIONS.
+            try {
+                scanRoot = pathValidator.validateDirectory(pattern);
+            } catch (IllegalArgumentException e) {
+                errors.add(e.getMessage());
+                return;
+            }
+            if (!Files.exists(scanRoot) || !Files.isDirectory(scanRoot)) {
+                errors.add("Not a directory: " + scanRoot);
+                return;
+            }
+            matcher = null;
+            requireSupportedExt = true;
+        } else {
+            // Glob pattern: validate the fixed-prefix base, then apply PathMatcher.
+            String basePath = WikiSourcePathValidator.extractBasePath(pattern);
+            try {
+                scanRoot = pathValidator.validateDirectory(basePath);
+            } catch (IllegalArgumentException e) {
+                errors.add(e.getMessage());
+                return;
+            }
+            if (!Files.exists(scanRoot)) {
+                errors.add("Base directory does not exist: " + scanRoot);
+                return;
+            }
+            // validateDirectory canonicalizes via toRealPath, so scanRoot is the
+            // symlink-resolved real path and walkFileTree yields real-path-prefixed
+            // files. The matcher must use that resolved base, not the literal pattern
+            // prefix — otherwise a symlinked base never matches. Rebuild the pattern
+            // by swapping the literal base for the resolved scanRoot, keeping the
+            // wildcard tail; escape glob metacharacters in the base so a real
+            // directory name containing */?/{}/[] is treated literally.
+            String wildcardTail = pattern.substring(basePath.length());
+            // Normalise the resolved base to forward slashes: glob uses '/' as its
+            // separator, and on Windows scanRoot.toString() yields backslashes that
+            // globEscape would escape, producing a pattern that never matches.
+            String effectivePattern = globEscape(scanRoot.toString().replace('\\', '/')) + wildcardTail;
+            try {
+                matcher = FileSystems.getDefault().getPathMatcher("glob:" + effectivePattern);
+            } catch (IllegalArgumentException e) {
+                errors.add("Invalid glob pattern '" + pattern + "': " + e.getMessage());
+                return;
+            }
+            // If the filename segment already specifies an extension (e.g. *.txt),
+            // skip the secondary SUPPORTED_EXTENSIONS filter to respect the explicit choice.
+            requireSupportedExt = !patternSpecifiesExtension(pattern);
+        }
+
+        final Path finalScanRoot = scanRoot;
+        final PathMatcher finalMatcher = matcher;
+        final boolean finalRequireExt = requireSupportedExt;
+
         try {
-            Files.walkFileTree(dir, new SimpleFileVisitor<>() {
+            Files.walkFileTree(scanRoot, new SimpleFileVisitor<>() {
                 @Override
                 public FileVisitResult preVisitDirectory(Path d, BasicFileAttributes attrs) {
-                    // 跳过隐藏目录
                     String name = d.getFileName().toString();
-                    if (name.startsWith(".") && !d.equals(dir)) {
+                    if (name.startsWith(".") && !d.equals(finalScanRoot)) {
                         return FileVisitResult.SKIP_SUBTREE;
                     }
                     return FileVisitResult.CONTINUE;
@@ -89,21 +266,25 @@ public class WikiDirectoryScanService {
 
                 @Override
                 public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
-                    if (files.size() >= maxFiles) {
-                        return FileVisitResult.TERMINATE;
-                    }
+                    if (candidates.size() >= maxFiles) return FileVisitResult.TERMINATE;
                     String fileName = file.getFileName().toString();
-                    // 跳过隐藏文件
                     if (fileName.startsWith(".")) return FileVisitResult.CONTINUE;
-                    // 跳过过大文件
                     if (attrs.size() > maxFileSize) {
                         log.debug("[Wiki] Skipping large file: {} ({} bytes)", file, attrs.size());
                         return FileVisitResult.CONTINUE;
                     }
-                    // 检查扩展名
                     String ext = getExtension(fileName);
-                    if (SUPPORTED_EXTENSIONS.contains(ext)) {
-                        files.add(file);
+                    boolean accept;
+                    if (finalMatcher != null) {
+                        accept = finalMatcher.matches(file.toAbsolutePath());
+                        if (accept && finalRequireExt) {
+                            accept = SUPPORTED_EXTENSIONS.contains(ext);
+                        }
+                    } else {
+                        accept = SUPPORTED_EXTENSIONS.contains(ext);
+                    }
+                    if (accept) {
+                        candidates.add(new FileCandidate(file, finalScanRoot));
                     }
                     return FileVisitResult.CONTINUE;
                 }
@@ -115,59 +296,38 @@ public class WikiDirectoryScanService {
                 }
             });
         } catch (IOException e) {
-            return new ScanResult(0, 0, 0, List.of("Failed to scan directory: " + e.getMessage()));
+            errors.add("Failed to scan '" + pattern + "': " + e.getMessage());
         }
-
-        int scanned = files.size();
-        int added = 0;
-        int skipped = 0;
-
-        for (Path file : files) {
-            try {
-                String absolutePath = file.toAbsolutePath().normalize().toString();
-                String fileName = file.getFileName().toString();
-                String ext = getExtension(fileName);
-
-                // 基于 sourcePath 去重
-                WikiRawMaterialEntity existing = rawService.findBySourcePath(kbId, absolutePath);
-                if (existing != null) {
-                    skipped++;
-                    continue;
-                }
-
-                if (TEXT_EXTENSIONS.contains(ext)) {
-                    // 文本文件：读取内容
-                    String content = Files.readString(file, StandardCharsets.UTF_8);
-                    rawService.addText(kbId, fileName, content);
-                } else {
-                    // 二进制文件：直接引用原始路径，不复制
-                    String sourceType = switch (ext) {
-                        case "pdf" -> "pdf";
-                        case "docx", "doc" -> "docx";
-                        case "pptx" -> "pptx";
-                        case "xlsx" -> "xlsx";
-                        default -> "text";
-                    };
-                    rawService.addFile(kbId, fileName, sourceType, absolutePath, Files.size(file));
-                }
-                added++;
-
-            } catch (Exception e) {
-                errors.add("Failed to import: " + file.getFileName() + " (" + e.getMessage() + ")");
-            }
-        }
-
-        if (files.size() >= maxFiles) {
-            errors.add("Scan limit reached (" + maxFiles + " files). Some files may have been skipped.");
-        }
-
-        log.info("[Wiki] Directory scan completed: dir={}, scanned={}, added={}, skipped={}, errors={}",
-                directoryPath, scanned, added, skipped, errors.size());
-
-        return new ScanResult(scanned, added, skipped, errors);
     }
 
-    private String getExtension(String fileName) {
+    /**
+     * 判断 glob 模式的文件名段是否已显式指定扩展名（如 {@code *.txt}、{@code *.{txt,md}}），
+     * 是则不再叠加 SUPPORTED_EXTENSIONS 过滤，以尊重用户的明确选择。
+     */
+    private static boolean patternSpecifiesExtension(String pattern) {
+        int lastSlash = pattern.lastIndexOf('/');
+        String lastSeg = lastSlash >= 0 ? pattern.substring(lastSlash + 1) : pattern;
+        return lastSeg.contains(".") && containsWildcard(lastSeg);
+    }
+
+    private static boolean containsWildcard(String s) {
+        return s.contains("*") || s.contains("?") || s.contains("{") || s.contains("[");
+    }
+
+    /** Escape glob metacharacters so a literal path segment is matched verbatim. */
+    private static String globEscape(String s) {
+        StringBuilder b = new StringBuilder(s.length());
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if ("\\*?{}[]".indexOf(c) >= 0) {
+                b.append('\\');
+            }
+            b.append(c);
+        }
+        return b.toString();
+    }
+
+    private static String getExtension(String fileName) {
         int dot = fileName.lastIndexOf('.');
         return dot > 0 ? fileName.substring(dot + 1).toLowerCase() : "";
     }

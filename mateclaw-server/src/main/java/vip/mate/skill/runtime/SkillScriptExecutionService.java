@@ -28,9 +28,21 @@ import java.util.concurrent.TimeUnit;
 public class SkillScriptExecutionService {
 
     private static final long DEFAULT_TIMEOUT_SECONDS = 30;
+    private static final long MAX_TIMEOUT_SECONDS = 300;
     private static final int MAX_OUTPUT_BYTES = 50_000;
     private static final boolean IS_WINDOWS = System.getProperty("os.name", "")
             .toLowerCase(Locale.ROOT).contains("win");
+
+    /** Supported inline-code languages mapped to the temp-file extension. */
+    private static final Map<String, String> LANGUAGE_EXTENSIONS = Map.of(
+            "python", ".py",
+            "py", ".py",
+            "bash", ".sh",
+            "sh", ".sh",
+            "shell", ".sh",
+            "node", ".js",
+            "javascript", ".js",
+            "js", ".js");
 
     /**
      * 执行脚本（兼容签名 — 不注入额外 env vars）
@@ -56,6 +68,85 @@ public class SkillScriptExecutionService {
      * @return 执行结果
      */
     public ScriptResult execute(Path scriptPath, List<String> args, Map<String, String> envVars) {
+        return executeResolved(scriptPath, args, envVars, DEFAULT_TIMEOUT_SECONDS, false);
+    }
+
+    /**
+     * Execute LLM-generated source code inline, without a pre-existing script file.
+     * <p>
+     * Materializes {@code code} into a temporary file (extension chosen from
+     * {@code language}) inside {@code workingDir}, runs it through the same
+     * interpreter-selection + timeout + output-capping + env-injection path as
+     * {@link #execute(Path, List, Map)}, then deletes the temp file.
+     *
+     * <p>This is what makes a documentation-only skill (a SKILL.md with no
+     * {@code scripts:} entries) runnable: the agent reads the instructions,
+     * generates code, and runs it here.
+     *
+     * @param language       one of python / bash / node (and aliases); selects the interpreter
+     * @param code           the source code to run; must be non-blank
+     * @param workingDir     directory the temp file is written to and the process cwd. When {@code null}
+     *                       a private temp scratch directory is created and removed afterward; when
+     *                       non-null it must be an existing directory (e.g. a skill or workspace dir)
+     * @param args           optional positional arguments passed to the program
+     * @param envVars        optional env vars injected into the subprocess (e.g. decrypted skill secrets)
+     * @param timeoutSeconds optional timeout override; clamped to (0, {@value #MAX_TIMEOUT_SECONDS}], defaults to {@value #DEFAULT_TIMEOUT_SECONDS}
+     * @return execution result
+     */
+    public ScriptResult executeCode(String language, String code, Path workingDir,
+                                    List<String> args, Map<String, String> envVars, Long timeoutSeconds) {
+        if (code == null || code.isBlank()) {
+            return ScriptResult.error(-1, "No code supplied");
+        }
+        String ext = language == null ? null
+                : LANGUAGE_EXTENSIONS.get(language.trim().toLowerCase(Locale.ROOT));
+        if (ext == null) {
+            return ScriptResult.error(-1, "Unsupported language: " + language
+                    + ". Supported: python, bash, node");
+        }
+        if (workingDir != null && !Files.isDirectory(workingDir)) {
+            return ScriptResult.error(-1, "Working directory does not exist: " + workingDir);
+        }
+
+        long timeout = DEFAULT_TIMEOUT_SECONDS;
+        if (timeoutSeconds != null && timeoutSeconds > 0) {
+            timeout = Math.min(timeoutSeconds, MAX_TIMEOUT_SECONDS);
+        }
+
+        // No caller-supplied directory (e.g. an agent with no workspace base path):
+        // run in a private scratch directory and remove it afterward. Mirrors the
+        // shell tool tolerating a null working directory rather than failing.
+        Path scratchDir = null;
+        Path codeFile = null;
+        try {
+            Path dir = workingDir;
+            if (dir == null) {
+                scratchDir = Files.createTempDirectory("mc_code_ws_");
+                dir = scratchDir;
+            }
+            // Write the code into the working dir so the process cwd matches the
+            // file location — relative paths in the generated code resolve as the
+            // author expects, and skill-scoped runs stay inside the skill dir.
+            codeFile = Files.createTempFile(dir, "mc_code_", ext);
+            Files.writeString(codeFile, code, StandardCharsets.UTF_8);
+            if (!IS_WINDOWS && ext.equals(".sh")) {
+                codeFile.toFile().setExecutable(true);
+            }
+            // Scrub sensitive host env vars: the code is LLM-authored, so it must
+            // not inherit the server's API keys / tokens. Skill secrets, when
+            // supplied via envVars, are re-added on top.
+            return executeResolved(codeFile, args, envVars, timeout, true);
+        } catch (IOException e) {
+            log.error("Failed to materialize inline code: {}", e.getMessage());
+            return ScriptResult.error(-1, "Failed to write code file: " + e.getMessage());
+        } finally {
+            deleteQuietly(codeFile);
+            deleteDirQuietly(scratchDir);
+        }
+    }
+
+    private ScriptResult executeResolved(Path scriptPath, List<String> args, Map<String, String> envVars,
+                                         long timeoutSeconds, boolean scrubSensitiveEnv) {
         if (!Files.exists(scriptPath) || !Files.isRegularFile(scriptPath)) {
             return ScriptResult.error(-1, "Script not found: " + scriptPath);
         }
@@ -113,7 +204,15 @@ public class SkillScriptExecutionService {
             pb.directory(scriptPath.getParent().toFile());
             pb.redirectOutput(stdoutFile.toFile());
             pb.redirectError(stderrFile.toFile());
-            // RFC-091: inject per-skill secrets / settings as env vars.
+            // Strip secrets from the inherited environment before injecting the
+            // caller's own env. Used for LLM-authored inline code so it never
+            // sees the server's API keys / tokens via process inheritance.
+            if (scrubSensitiveEnv) {
+                pb.environment().keySet().removeIf(key ->
+                        key.contains("KEY") || key.contains("SECRET") || key.contains("TOKEN")
+                                || key.contains("PASSWORD") || key.contains("CREDENTIAL"));
+            }
+            // Inject per-skill secrets / settings as env vars.
             // pb.environment() inherits the parent process env; putAll
             // OVERRIDES same-named entries with the supplied values.
             // Null / blank values are skipped to avoid clearing
@@ -129,12 +228,12 @@ public class SkillScriptExecutionService {
 
             Process process = pb.start();
 
-            boolean finished = process.waitFor(DEFAULT_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            boolean finished = process.waitFor(timeoutSeconds, TimeUnit.SECONDS);
             if (!finished) {
                 killProcess(process);
                 String stdout = readFileTruncated(stdoutFile, MAX_OUTPUT_BYTES);
                 String stderr = readFileTruncated(stderrFile, MAX_OUTPUT_BYTES);
-                String timeoutMsg = "[timeout after " + DEFAULT_TIMEOUT_SECONDS + "s]";
+                String timeoutMsg = "[timeout after " + timeoutSeconds + "s]";
                 stderr = stderr.isEmpty() ? timeoutMsg : stderr + "\n" + timeoutMsg;
                 return new ScriptResult(-1, stdout, stderr);
             }
@@ -197,6 +296,16 @@ public class SkillScriptExecutionService {
         if (file != null) {
             try { Files.deleteIfExists(file); } catch (IOException ignored) {}
         }
+    }
+
+    /** Recursively remove a scratch directory created for an inline-code run. */
+    private static void deleteDirQuietly(Path dir) {
+        if (dir == null) return;
+        try (var paths = Files.walk(dir)) {
+            paths.sorted(java.util.Comparator.reverseOrder()).forEach(p -> {
+                try { Files.deleteIfExists(p); } catch (IOException ignored) {}
+            });
+        } catch (IOException ignored) {}
     }
 
     @lombok.Data

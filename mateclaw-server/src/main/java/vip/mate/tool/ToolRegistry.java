@@ -86,16 +86,28 @@ public class ToolRegistry {
      * which {@link AgentToolSet} relies on (built-in tools first, MCP tools second).
      */
     private LinkedHashMap<String, Object> getEnabledToolBeansByName() {
+        return getToolBeansByName(true);
+    }
+
+    /**
+     * Iterate Spring beans once, returning a {@code beanName → bean} map of
+     * every @Tool bean. When {@code enabledOnly} is true, DB rows with
+     * {@code enabled=false} are excluded; when false, disabled rows are kept for
+     * admin metadata use cases where the UI still needs to resolve aliases.
+     */
+    private LinkedHashMap<String, Object> getToolBeansByName(boolean enabledOnly) {
         // 1. 从数据库获取明确禁用的 beanName 黑名单
         //    逻辑：只有 DB 中存在记录且 enabled=false 的才跳过
         //    DB 中没有记录的 bean 默认启用（向后兼容 + 新工具自动可用）
-        Set<String> disabledBeanNames = toolMapper.selectList(
-                new LambdaQueryWrapper<ToolEntity>()
-                        .eq(ToolEntity::getEnabled, false)
-                        .isNotNull(ToolEntity::getBeanName)
-        ).stream()
-                .map(ToolEntity::getBeanName)
-                .collect(Collectors.toSet());
+        Set<String> disabledBeanNames = enabledOnly
+                ? toolMapper.selectList(
+                        new LambdaQueryWrapper<ToolEntity>()
+                                .eq(ToolEntity::getEnabled, false)
+                                .isNotNull(ToolEntity::getBeanName)
+                ).stream()
+                        .map(ToolEntity::getBeanName)
+                        .collect(Collectors.toSet())
+                : Set.of();
 
         LinkedHashMap<String, Object> enabled = new LinkedHashMap<>();
 
@@ -120,8 +132,27 @@ public class ToolRegistry {
             }
         }
 
-        log.info("Total enabled tools: {}", enabled.size());
+        log.info("Total {} tools: {}", enabledOnly ? "enabled" : "registered", enabled.size());
         return enabled;
+    }
+
+    /**
+     * Build an alias index for every registered {@code @Tool} bean, including
+     * rows disabled in DB. This is for admin display only; runtime tool
+     * exposure must continue to use {@link #getEnabledToolSet()}.
+     */
+    public AgentToolSet getAllToolBeanSetForAdmin() {
+        LinkedHashMap<String, Object> beansByName = getToolBeansByName(false);
+        List<Object> toolBeans = new ArrayList<>(beansByName.values());
+        IdentityHashMap<Object, String> nameByBean = new IdentityHashMap<>();
+        for (Map.Entry<String, Object> e : beansByName.entrySet()) {
+            nameByBean.put(e.getValue(), e.getKey());
+        }
+        List<ToolCallback> callbacks = new ArrayList<>();
+        for (Object bean : toolBeans) {
+            Collections.addAll(callbacks, ToolCallbacks.from(bean));
+        }
+        return AgentToolSet.fromCallbacks(toolBeans, callbacks, nameByBean::get);
     }
 
     /**
@@ -152,9 +183,12 @@ public class ToolRegistry {
             for (ToolCallback cb : cbs) {
                 String toolName = cb.getToolDefinition().name();
                 String descKey = "tool." + toolName + ".desc";
-                String localizedDesc = i18nService.msg(descKey);
-                // 如果 key 被解析（不等于 key 本身），使用本地化描述
-                if (!localizedDesc.equals(descKey)) {
+                // The i18n description is an optional override: tools without a
+                // bundle entry (e.g. wiki tools) keep the description declared on
+                // their @Tool annotation. Use msgOptional so an absent key is not
+                // logged as a "missing key" — that is expected, not a fault.
+                String localizedDesc = i18nService.msgOptional(descKey);
+                if (localizedDesc != null) {
                     localizedCallbacks.add(new LocaleAwareToolCallback(cb, localizedDesc));
                 } else {
                     localizedCallbacks.add(cb);

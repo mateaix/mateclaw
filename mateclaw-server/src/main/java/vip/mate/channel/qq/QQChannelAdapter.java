@@ -424,7 +424,7 @@ public class QQChannelAdapter extends AbstractChannelAdapter {
 
             switch (op) {
                 case OP_HELLO -> handleHello((Map<String, Object>) data, ws);
-                case OP_DISPATCH -> handleDispatch(eventType, (Map<String, Object>) data);
+                case OP_DISPATCH -> handleDispatch(eventType, data);
                 case OP_HEARTBEAT_ACK -> log.trace("[qq] Heartbeat ACK received");
                 case OP_RECONNECT -> {
                     log.info("[qq] Server requested reconnect");
@@ -515,32 +515,49 @@ public class QQChannelAdapter extends AbstractChannelAdapter {
 
     /**
      * 处理 DISPATCH 事件
+     * <p>
+     * `data` payload shape varies by event: object for messages/READY, empty string for RESUMED.
      */
     @SuppressWarnings("unchecked")
-    private void handleDispatch(String eventType, Map<String, Object> data) {
-        if (eventType == null || data == null) return;
+    private void handleDispatch(String eventType, Object data) {
+        if (eventType == null) return;
 
         switch (eventType) {
+            case "RESUMED" -> {
+                // RESUMED carries no payload (`d` is an empty string); don't read from it.
+                reconnectAttempts = 0;
+                connectionState.set(ConnectionState.CONNECTED);
+                lastError = null;
+                log.info("[qq] RESUMED successfully");
+            }
             case "READY" -> {
-                sessionId = (String) data.get("session_id");
+                if (!(data instanceof Map<?, ?> map)) {
+                    log.warn("[qq] READY event has non-object data: {}", data);
+                    return;
+                }
+                Map<String, Object> readyData = (Map<String, Object>) map;
+                sessionId = (String) readyData.get("session_id");
                 reconnectAttempts = 0;
                 quickDisconnectCount = 0;
                 connectionState.set(ConnectionState.CONNECTED);
                 lastError = null;
                 log.info("[qq] READY received, session_id={}", sessionId);
             }
-            case "RESUMED" -> {
-                reconnectAttempts = 0;
-                connectionState.set(ConnectionState.CONNECTED);
-                lastError = null;
-                log.info("[qq] RESUMED successfully");
-            }
-            case "C2C_MESSAGE_CREATE" -> handleMessageEvent("c2c", data);
-            case "GROUP_AT_MESSAGE_CREATE" -> handleMessageEvent("group", data);
-            case "AT_MESSAGE_CREATE" -> handleMessageEvent("guild", data);
-            case "DIRECT_MESSAGE_CREATE" -> handleMessageEvent("dm", data);
+            case "C2C_MESSAGE_CREATE" -> dispatchMessage("c2c", eventType, data);
+            case "GROUP_AT_MESSAGE_CREATE" -> dispatchMessage("group", eventType, data);
+            case "AT_MESSAGE_CREATE" -> dispatchMessage("guild", eventType, data);
+            case "DIRECT_MESSAGE_CREATE" -> dispatchMessage("dm", eventType, data);
             default -> log.debug("[qq] Unhandled event: {}", eventType);
         }
+    }
+
+    @SuppressWarnings("unchecked")
+    private void dispatchMessage(String messageType, String eventType, Object data) {
+        if (!(data instanceof Map<?, ?> map)) {
+            log.warn("[qq] {} event has non-object data, skipping: {}", eventType, data);
+            return;
+        }
+        handleMessageEvent(messageType, (Map<String, Object>) map);
     }
 
     /**

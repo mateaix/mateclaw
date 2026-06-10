@@ -41,13 +41,39 @@ public final class WikiEnrichmentApplier {
     private static final Pattern REPLACEMENT_SHAPE =
             Pattern.compile("^\\[\\[([^\\[\\]|]+)(?:\\|([^\\[\\]]+))?]]$");
 
+    /**
+     * Fenced code block — matches a triple-backtick line up to the next one.
+     * Same shape used in {@link WikiLinkService} so the applier and the
+     * extractor agree on what counts as code.
+     */
+    private static final Pattern FENCED_CODE = Pattern.compile(
+            "(?m)^```[\\s\\S]*?^```", Pattern.MULTILINE);
+
+    /** Matches inline {@code `...`} spans. Non-greedy so adjacent spans stay separate. */
+    private static final Pattern INLINE_CODE = Pattern.compile("`[^`\\n]*?`");
+
     private WikiEnrichmentApplier() {}
 
     public static Result apply(String originalContent, EnrichmentPlan plan) {
-        return apply(originalContent, plan, DEFAULT_MAX_REPLACEMENTS);
+        return apply(originalContent, plan, DEFAULT_MAX_REPLACEMENTS, null);
     }
 
     public static Result apply(String originalContent, EnrichmentPlan plan, int maxReplacements) {
+        return apply(originalContent, plan, maxReplacements, null);
+    }
+
+    /**
+     * Apply with an optional KB slug whitelist. When {@code allowedSlugsLower}
+     * is non-null, any replacement whose target slug is not in the set is
+     * silently dropped rather than failing the whole plan — matches the RFC
+     * "validate + drop hallucinated targets" intent for analyze-driven
+     * generation and lets the rest of the plan still land. {@code null}
+     * disables the check (legacy behaviour for the existing batch enrich
+     * paths that already validate elsewhere).
+     */
+    public static Result apply(String originalContent, EnrichmentPlan plan,
+                                int maxReplacements,
+                                java.util.Set<String> allowedSlugsLower) {
         if (originalContent == null) return Result.rejected("content is null");
         if (plan == null || plan.isEmpty()) {
             return Result.unchanged(originalContent);
@@ -58,9 +84,12 @@ public final class WikiEnrichmentApplier {
         }
 
         // 1) Per-original index of all candidate positions in the original text,
-        //    skipping positions that fall inside an existing wikilink.
+        //    skipping positions that fall inside an existing wikilink OR inside
+        //    a fenced/inline code block. The combined mask is what we test —
+        //    a doc that teaches wikilink syntax inside ```fence``` must not
+        //    have its examples silently wrapped.
         java.util.Map<String, List<Integer>> positionsByOriginal = new java.util.HashMap<>();
-        boolean[] insideWikilink = computeWikilinkMask(originalContent);
+        boolean[] skipMask = computeSkipMask(originalContent);
 
         // 2) Plan splices: for each replacement pick positions[occurrence-1].
         List<int[]> splices = new ArrayList<>(); // [start, end, replacementIndex]
@@ -82,9 +111,17 @@ public final class WikiEnrichmentApplier {
                 return Result.rejected("visible text mismatch: replacement='"
                         + replacement + "' must render '" + original + "'");
             }
+            // Whitelist gate (RFC §4 Phase 5): when the caller supplied an
+            // allowed slug set, drop entries that fall outside it instead of
+            // landing them. Matches the "do not invent slugs" rule on the
+            // analyze→generate path without aborting the rest of the plan.
+            if (allowedSlugsLower != null
+                    && !allowedSlugsLower.contains(slug.toLowerCase(java.util.Locale.ROOT))) {
+                continue;
+            }
 
             List<Integer> positions = positionsByOriginal.computeIfAbsent(original,
-                    o -> findPositions(originalContent, o, insideWikilink));
+                    o -> findPositions(originalContent, o, skipMask));
             int idx = r.occurrence() - 1;
             if (idx < 0 || idx >= positions.size()) {
                 // Skip silently — the page may have been re-edited since the LLM saw it.
@@ -151,13 +188,24 @@ public final class WikiEnrichmentApplier {
         return out.toString();
     }
 
-    private static boolean[] computeWikilinkMask(String content) {
+    /**
+     * Combined "do not splice here" mask — true at every offset that lies
+     * inside an existing wikilink, a fenced code block, or an inline code
+     * span. Used to keep enrichment out of code examples and existing links.
+     */
+    private static boolean[] computeSkipMask(String content) {
         boolean[] mask = new boolean[content.length()];
-        Matcher m = WIKILINK.matcher(content);
-        while (m.find()) {
-            for (int i = m.start(); i < m.end(); i++) mask[i] = true;
-        }
+        markPattern(mask, content, WIKILINK);
+        markPattern(mask, content, FENCED_CODE);
+        markPattern(mask, content, INLINE_CODE);
         return mask;
+    }
+
+    private static void markPattern(boolean[] mask, String content, Pattern pattern) {
+        Matcher m = pattern.matcher(content);
+        while (m.find()) {
+            for (int i = m.start(); i < m.end() && i < mask.length; i++) mask[i] = true;
+        }
     }
 
     private static List<Integer> findPositions(String content, String needle, boolean[] insideWikilink) {

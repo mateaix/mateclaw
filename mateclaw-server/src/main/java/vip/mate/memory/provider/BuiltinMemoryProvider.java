@@ -59,12 +59,24 @@ public class BuiltinMemoryProvider implements MemoryProvider {
     }
 
     /**
-     * Builtin memory is already injected via system prompt.
-     * No additional per-turn prefetch needed.
+     * Shared (TEAM / GLOBAL) memory is baked into the system prompt at build
+     * time. Per-owner PERSONAL memory cannot be — the agent instance is cached
+     * and reused across users — so it is injected here, per turn, for the
+     * current requester only.
      */
     @Override
-    public String prefetch(Long agentId, String userQuery) {
-        return "";
+    public String prefetch(Long agentId, String userQuery, String ownerKey) {
+        if (ownerKey == null || ownerKey.isBlank()) {
+            return "";
+        }
+        try {
+            String block = workspaceFileService.buildOwnerMemoryBlock(agentId, ownerKey);
+            return block != null ? block : "";
+        } catch (Exception e) {
+            log.warn("[BuiltinMemory] Failed to build owner memory block for agent={}, owner={}: {}",
+                    agentId, ownerKey, e.getMessage());
+            return "";
+        }
     }
 
     /**

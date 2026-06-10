@@ -57,13 +57,16 @@ public class WorkflowController {
         return R.ok(workflowService.listByWorkspace(workspaceId));
     }
 
-    @Operation(summary = "Get a workflow by id (includes inline draft).")
+    @Operation(summary = "Get a workflow by id (includes inline draft + latest published graph).")
     @GetMapping("/{id}")
     @RequireWorkspaceRole("admin")
     public R<WorkflowEntity> get(@PathVariable long id,
                                  @RequestHeader("X-Workspace-Id") long workspaceId) {
         WorkflowEntity row = workflowService.get(id, workspaceId);
         if (row == null) return R.fail("workflow not found: " + id);
+        // Surface the published revision's graph so the editor can render a
+        // published workflow whose inline draft was cleared at publish time.
+        workflowService.attachPublishedGraph(row);
         return R.ok(row);
     }
 

@@ -63,6 +63,16 @@ public class SkillRuntimeService {
     private final AcpSkillBridge acpSkillBridge;
     private final SkillUsageService usageService;
 
+    /**
+     * Mirrors {@code mateclaw.skill.disclosure.load-skill-tool.enabled}. When
+     * false the catalog guidance points at {@code readSkillFile} instead of
+     * {@code load_skill} (which is also unregistered upstream). Field-initialised
+     * to true so non-Spring unit construction keeps the default behavior.
+     */
+    @org.springframework.beans.factory.annotation.Value(
+            "${mateclaw.skill.disclosure.load-skill-tool.enabled:true}")
+    private boolean loadSkillToolEnabled = true;
+
     @Autowired
     public SkillRuntimeService(SkillService skillService,
                                SkillPackageResolver packageResolver,
@@ -368,6 +378,25 @@ public class SkillRuntimeService {
                                               Integer maxInputTokens,
                                               Long agentId,
                                               Long agentWorkspaceId) {
+        return buildSkillPromptEnhancement(boundSkillIds, effectiveToolNames, maxInputTokens,
+                agentId, agentWorkspaceId, Set.of());
+    }
+
+    /**
+     * Build the skill catalog prompt segment, pinning skills loaded this run to
+     * the top so a multi-iteration loop stops re-loading the same skill.
+     *
+     * @param loadedThisRunNames names of skills loaded via {@code load_skill}
+     *                           during the current graph run; sorted to the top
+     *                           of the catalog ahead of the usage-history
+     *                           signals. Never {@code null}.
+     */
+    public String buildSkillPromptEnhancement(Set<Long> boundSkillIds,
+                                              Set<String> effectiveToolNames,
+                                              Integer maxInputTokens,
+                                              Long agentId,
+                                              Long agentWorkspaceId,
+                                              Set<String> loadedThisRunNames) {
         List<ResolvedSkill> activeSkills;
         if (boundSkillIds != null) {
             // Per-agent filter: pick the agent's bound subset from the
@@ -427,14 +456,10 @@ public class SkillRuntimeService {
         // hide new skills behind 40+ existing ones, and the LLM tells the
         // user "no such skill" minutes after they uploaded it.
         java.time.LocalDateTime recencyCutoff = java.time.LocalDateTime.now().minus(NEW_SKILL_BOOST_WINDOW);
-        List<ResolvedSkill> sorted = SkillCatalogSorter.sortResolved(visibleSkills, SkillCatalogSort.RECOMMENDED)
-                .stream()
-                .sorted(java.util.Comparator
-                        .comparingInt((ResolvedSkill s) -> isRecentlyInstalled(s, recencyCutoff) ? 0 : 1)
-                        .thenComparingInt(s -> recentNames.contains(s.getName()) ? 0 : 1)
-                        .thenComparingInt(s -> frequentNames.contains(s.getName()) ? 0 : 1)
-                        .thenComparing(SkillCatalogSorter.resolvedComparator(SkillCatalogSort.RECOMMENDED)))
-                .toList();
+        Set<String> loadedNames = loadedThisRunNames == null ? Set.of() : loadedThisRunNames;
+        List<ResolvedSkill> sorted = applyCatalogSignals(
+                SkillCatalogSorter.sortResolved(visibleSkills, SkillCatalogSort.RECOMMENDED),
+                loadedNames, recentNames, frequentNames, recencyCutoff);
         List<ResolvedSkill> pinned = sorted.stream()
                 .filter(s -> s.getId() != null && boundIds.contains(s.getId()))
                 .toList();
@@ -448,15 +473,32 @@ public class SkillRuntimeService {
         StringBuilder sb = new StringBuilder();
         sb.append("\n\n## Skills\n");
         sb.append("This is a compact catalog. If a listed skill matches the task, ");
-        sb.append("first call `readSkillFile(skillName=<name>, filePath=\"SKILL.md\")` and follow its instructions. ");
+        if (loadSkillToolEnabled) {
+            sb.append("first call `load_skill(skillName=<name>)` to pull its SKILL.md into the conversation, ");
+            sb.append("then follow its instructions. Once loaded, the skill stays available in the conversation — ");
+            sb.append("do not load it again. ");
+        } else {
+            sb.append("first call `readSkillFile(skillName=<name>, filePath=\"SKILL.md\")` to read its instructions, ");
+            sb.append("then follow them. ");
+        }
         sb.append("If none of these skills match, call `listAvailableSkills()` to inspect the broader catalog ");
         sb.append("(it accepts `keyword=<part of name>` and `limit=` up to 50 — use them to search by topic ");
         sb.append("when the default page is truncated). ");
         sb.append("If the user names a specific skill that isn't in this table, ");
-        sb.append("call `readSkillFile(skillName=\"<exact-name>\", filePath=\"SKILL.md\")` directly — ");
+        if (loadSkillToolEnabled) {
+            sb.append("call `load_skill(skillName=\"<exact-name>\")` directly — ");
+        } else {
+            sb.append("call `readSkillFile(skillName=\"<exact-name>\", filePath=\"SKILL.md\")` directly — ");
+        }
         sb.append("the catalog above is intentionally compact and doesn't list every active skill. ");
         sb.append("Skills are documentation packages — calling a skill name as a tool will fail. ");
-        sb.append("Skills with a `scripts/` directory expose `runSkillScript`; SKILL.md will name the script when needed.\n\n");
+        sb.append("To read a skill's reference or script files, use ");
+        sb.append("`readSkillFile(skillName=<name>, filePath=\"references/...\")`. ");
+        sb.append("Skills with a `scripts/` directory expose `runSkillScript`; ");
+        sb.append("SKILL.md will name the script when needed. ");
+        sb.append("If a skill describes steps but ships no runnable script, write the code ");
+        sb.append("its instructions describe and run it with ");
+        sb.append("`execute_code(language=<python|bash|node>, code=..., skillName=<name>)`.\n\n");
         sb.append("| Skill | Status | Description |\n");
         sb.append("|-------|--------|-------------|\n");
         for (ResolvedSkill skill : selected) {
@@ -488,6 +530,33 @@ public class SkillRuntimeService {
         appendLessonsBlock(sb, lessonSkills);
 
         return sb.toString();
+    }
+
+    /**
+     * Apply the catalog ranking signals on top of the RECOMMENDED base order.
+     * Priority, highest first: loaded this run, freshly installed, recently
+     * loaded (DB history), frequently loaded (DB history), then the RECOMMENDED
+     * comparator as the stable tiebreak.
+     * <p>
+     * Package-private and static so it can be unit-tested without standing up
+     * the full service.
+     */
+    static List<ResolvedSkill> applyCatalogSignals(List<ResolvedSkill> recommended,
+                                                   Set<String> loadedThisRunNames,
+                                                   Set<String> recentNames,
+                                                   Set<String> frequentNames,
+                                                   java.time.LocalDateTime recencyCutoff) {
+        Set<String> loaded = loadedThisRunNames == null ? Set.of() : loadedThisRunNames;
+        Set<String> recent = recentNames == null ? Set.of() : recentNames;
+        Set<String> frequent = frequentNames == null ? Set.of() : frequentNames;
+        return recommended.stream()
+                .sorted(java.util.Comparator
+                        .comparingInt((ResolvedSkill s) -> loaded.contains(s.getName()) ? 0 : 1)
+                        .thenComparingInt(s -> isRecentlyInstalled(s, recencyCutoff) ? 0 : 1)
+                        .thenComparingInt(s -> recent.contains(s.getName()) ? 0 : 1)
+                        .thenComparingInt(s -> frequent.contains(s.getName()) ? 0 : 1)
+                        .thenComparing(SkillCatalogSorter.resolvedComparator(SkillCatalogSort.RECOMMENDED)))
+                .toList();
     }
 
     private static boolean isVisibleWithTools(ResolvedSkill skill, Set<String> effectiveToolNames) {

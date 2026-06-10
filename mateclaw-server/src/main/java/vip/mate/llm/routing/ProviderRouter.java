@@ -3,11 +3,11 @@ package vip.mate.llm.routing;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
-import vip.mate.agent.binding.service.AgentBindingService;
 import vip.mate.llm.model.ModelConfigEntity;
 import vip.mate.llm.service.ModelCapabilityService;
 import vip.mate.llm.service.ModelCapabilityService.Modality;
 import vip.mate.llm.service.ModelConfigService;
+import vip.mate.llm.service.ModelProviderService;
 import vip.mate.skill.manifest.SkillManifest;
 import vip.mate.skill.runtime.SkillRuntimeService;
 import vip.mate.llm.model.ModelProviderEntity;
@@ -20,27 +20,22 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * RFC-090 §9.2 调整 C — diagnostics-first ProviderRouter.
+ * Capability-aware provider routing.
  *
- * <p>This first iteration does not yet rewrite the fallback chain order
- * (the existing {@code AgentBindingService.getPreferredProviderIds} +
- * {@link vip.mate.agent.AgentGraphBuilder#buildFallbackChain} flow is
- * already in place). Instead it:
+ * <p>Given an agent's bound skills, aggregates the {@code requires-model}
+ * capabilities they declare and uses that to:
+ * <ul>
+ *   <li>{@link #diagnosePrimary} — WARN when the chosen primary model is
+ *       missing a capability the bound skills require;</li>
+ *   <li>{@link #reorderForCapabilities} — lift providers that satisfy the
+ *       required modalities to the head of the fallback chain;</li>
+ *   <li>{@link #selectPrimary} — pick a primary model that satisfies the
+ *       required modalities, falling back to the global default.</li>
+ * </ul>
  *
- * <ol>
- *   <li>Aggregates {@code requires-model} from the agent's bound skills'
- *       manifests.</li>
- *   <li>Compares the union against the primary model's resolved
- *       capability set ({@link ModelCapabilityService#resolve}).</li>
- *   <li>Logs a clear WARN if a capability is missing — surfacing the
- *       same gap RFC-085's "ready" badge would render in UI.</li>
- * </ol>
- *
- * <p>Promoting this to actual chain re-ordering (i.e. "prefer providers
- * that satisfy modelNeeds") is straightforward once we have the data
- * for it: add a phase between {@code reorderByPreferences} and the
- * model build loop. That phase is intentionally not in this commit so
- * we can ship the diagnostics path independently and watch it in dev.
+ * <p>Binding data is read through {@link AgentBindingResolver}, an
+ * abstraction declared in this package so the routing layer never depends
+ * on the agent layer directly.
  */
 @Slf4j
 @Service
@@ -48,9 +43,10 @@ import java.util.Set;
 public class ProviderRouter {
 
     private final SkillRuntimeService skillRuntimeService;
-    private final AgentBindingService bindingService;
+    private final AgentBindingResolver bindingService;
     private final ModelCapabilityService capabilityService;
     private final ModelConfigService modelConfigService;
+    private final ModelProviderService modelProviderService;
 
     /**
      * Compute the union of capability requirements declared by the
@@ -134,7 +130,7 @@ public class ProviderRouter {
         }
     }
 
-    // ==================== chain reorder (RFC-090 §9.2 调整 C) ====================
+    // ==================== chain reorder ====================
 
     /**
      * Re-rank an already preference-ordered provider list so providers
@@ -142,10 +138,9 @@ public class ProviderRouter {
      * float to the head. Stable order otherwise — providers that don't
      * satisfy keep their existing relative order.
      *
-     * <p>Called by {@link vip.mate.agent.AgentGraphBuilder#buildFallbackChain}
-     * after the user-preferences reorder. Only acts when bound skills
-     * actually declared {@code requires-model}; otherwise returns the
-     * input untouched.
+     * <p>Called when building the fallback chain, after the user-preferences
+     * reorder. Only acts when bound skills actually declared
+     * {@code requires-model}; otherwise returns the input untouched.
      */
     public List<ModelProviderEntity> reorderForCapabilities(Long agentId,
                                                              List<ModelProviderEntity> ordered) {
@@ -183,57 +178,88 @@ public class ProviderRouter {
     }
 
     /**
-     * Pick a primary {@link ModelConfigEntity} that satisfies as many
-     * required modalities as possible. Falls back to the global default
-     * when nothing better is configured.
+     * Pick a primary model using a two-pass strategy.
      *
-     * <p>Logic: try each preferred provider in turn; for each, ask
-     * {@link ModelProviderService#getDefaultModelByProvider} for its
-     * default chat model and check capability resolution. First match
-     * wins. If nothing matches, return the global default unchanged.
+     * <p>Pass 1 (capability-gated): preferred providers → global default.
+     * <p>Pass 2 (unconstrained fallback): preferred providers → global default.
+     *
+     * <p>When no preferred providers are configured the preferred branches
+     * are skipped, preserving the legacy behaviour.
      */
     public ModelConfigEntity selectPrimary(Long agentId, ModelConfigEntity globalDefault) {
         if (agentId == null) return globalDefault;
+
+        List<String> preferred = bindingService.getPreferredProviderIds(agentId);
+        Set<Modality> requiredModalities = resolveRequiredModalities(agentId);
+
+        // Pass 1: capability-satisfying providers (preferred first, global fallback)
+        if (requiredModalities != null) {
+            // 1a. preferred providers satisfying capabilities
+            for (String providerId : preferred) {
+                ModelConfigEntity candidate = pickProviderDefault(providerId);
+                if (candidate == null) continue;
+                if (satisfies(candidate, requiredModalities)) {
+                    log.info("[ProviderRouter] agent={} primary={}/{} (preferred, satisfies {})",
+                            agentId, candidate.getProvider(), candidate.getModelName(), requiredModalities);
+                    return candidate;
+                }
+            }
+            // 1b. global default satisfying capabilities
+            if (globalDefault != null && satisfies(globalDefault, requiredModalities)) {
+                log.info("[ProviderRouter] agent={} primary={}/{} (global, satisfies {})",
+                        agentId, globalDefault.getProvider(), globalDefault.getModelName(), requiredModalities);
+                return globalDefault;
+            }
+        }
+
+        // Pass 2: unconstrained (capability ignored — last resort)
+        // 2a. any available preferred provider
+        for (String providerId : preferred) {
+            ModelConfigEntity candidate = pickProviderDefault(providerId);
+            if (candidate == null) continue;
+            log.info("[ProviderRouter] agent={} primary={}/{} (preferred, unconstrained)",
+                    agentId, candidate.getProvider(), candidate.getModelName());
+            return candidate;
+        }
+        // 2b. global default (ultimate fallback)
+        if (globalDefault != null) {
+            log.info("[ProviderRouter] agent={} primary={}/{} (global default)",
+                    agentId, globalDefault.getProvider(), globalDefault.getModelName());
+            return globalDefault;
+        }
+
+        return null;
+    }
+
+    /** Returns null when no capabilities are required (skips Pass 1). */
+    private Set<Modality> resolveRequiredModalities(Long agentId) {
         Set<String> needs = aggregateModelNeeds(agentId);
-        if (needs.isEmpty()) return globalDefault;
-        Set<Modality> requiredModalities = needs.stream()
+        if (needs == null || needs.isEmpty()) return null;
+        Set<Modality> mods = needs.stream()
                 .map(this::mapToModality)
                 .filter(java.util.Objects::nonNull)
                 .collect(java.util.stream.Collectors.toCollection(
                         () -> EnumSet.noneOf(Modality.class)));
-        if (requiredModalities.isEmpty()) return globalDefault;
+        return mods.isEmpty() ? null : mods;
+    }
 
-        // Already satisfies? Skip the search.
-        if (globalDefault != null) {
-            EnumSet<Modality> resolved = capabilityService.resolve(
-                    globalDefault.getModelName(), globalDefault.getModalities());
-            if (resolved.containsAll(requiredModalities)) return globalDefault;
-        }
-
-        List<String> preferred = bindingService.getPreferredProviderIds(agentId);
-        for (String providerId : preferred) {
-            ModelConfigEntity candidate = pickProviderDefault(providerId);
-            if (candidate == null) continue;
-            EnumSet<Modality> resolved = capabilityService.resolve(
-                    candidate.getModelName(), candidate.getModalities());
-            if (resolved.containsAll(requiredModalities)) {
-                log.info("[ProviderRouter] agent={} switched primary to {}/{} for needs={}",
-                        agentId, candidate.getProvider(), candidate.getModelName(),
-                        requiredModalities);
-                return candidate;
-            }
-        }
-        // No preferred provider satisfied; keep the diagnostic warning
-        // path on the original default so the user sees the gap in logs.
-        return globalDefault;
+    private boolean satisfies(ModelConfigEntity model, Set<Modality> required) {
+        return capabilityService.resolve(model.getModelName(), model.getModalities())
+                .containsAll(required);
     }
 
     private ModelConfigEntity pickProviderDefault(String providerId) {
         if (providerId == null || providerId.isBlank()) return null;
         try {
-            return modelConfigService.getDefaultModelByProvider(providerId);
+            // A provider without usable credentials can't serve as the primary
+            // model: selecting it would only be rejected downstream and fall
+            // back to the global default, silently skipping the remaining
+            // preferred providers. Skip it here so preference resolution
+            // continues to the next entry instead.
+            if (!modelProviderService.isProviderConfigured(providerId)) return null;
+            return modelConfigService.getPrimaryChatModelByProvider(providerId);
         } catch (Exception e) {
-            // getDefaultModelByProvider can return null or throw when
+            // getPrimaryChatModelByProvider can return null or throw when
             // the provider has no enabled chat model; treat both as
             // "no candidate from this provider".
             return null;

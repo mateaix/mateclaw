@@ -116,6 +116,7 @@
         @suggestion-click="sendSuggestion"
         @toggle-thinking="handleToggleThinking"
         @approve="handleApprove"
+        @approve-always="handleApproveAlways"
         @deny="handleDeny"
       >
         <!-- Issue #81 v2 R2: blocking-only popup. Recoverable cases use the
@@ -164,6 +165,31 @@
         </div>
       </div>
 
+      <!-- Terminal-state announcement after a goal completed or exhausted
+           in this conversation. Auto-dismisses when the user clicks × or
+           starts a new goal. -->
+      <GoalSystemLine
+        v-if="goalTerminalForCurrent && currentConversationId"
+        :variant="goalTerminalForCurrent.status"
+        :title="goalSystemLineTitle"
+        :detail="goalSystemLineDetail"
+        class="goal-system-line-slot"
+        @click.stop="onGoalSystemLineDismiss"
+      />
+
+      <!-- Inline "set a goal?" invitation shown after the first assistant
+           reply when the conversation has no active goal and the user
+           hasn't dismissed it for this conv. -->
+      <GoalSetInlinePrompt
+        v-if="showGoalSetPrompt"
+        :conversation-id="currentConversationId"
+        :agent-id="String(selectedAgentId)"
+        :workspace-id="String(currentWorkspaceId || '1')"
+        :suggested-title="goalSuggestedTitle"
+        class="goal-set-prompt-slot"
+        @dismiss="onGoalPromptDismiss"
+      />
+
       <!-- 流式处理 Loading 栏（消息和输入框之间） -->
       <StreamLoadingBar
         :is-loading="isGenerating && !blockingPrompt"
@@ -191,6 +217,7 @@
         v-model="inputText"
         :loading="isGenerating && !hasPendingApproval"
         :disabled="blockingPrompt || !currentAgent"
+        :skills-enabled="!!currentAgent && !currentAgent.skillsDisabled"
         :placeholder="$t('chat.messagePlaceholder')"
         :hint="currentRuntimeModel"
         :attachments="pendingAttachments"
@@ -206,6 +233,7 @@
         @file-select="handleFileSelect"
         @attachment-remove="removeAttachment"
         @approve="handleApprove"
+        @approve-always="handleApproveAlways"
         @deny="handleDeny"
         :enable-talk-mode="!!selectedAgentId"
         :thinking-enabled="thinkingEnabled"
@@ -234,7 +262,8 @@ import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { mcToast } from '@/composables/useMcToast'
 import { ChatDotRound, Delete, Setting, UploadFilled } from '@element-plus/icons-vue'
-import { conversationApi, agentApi, modelApi, chatApi, cronJobApi } from '@/api/index'
+import { conversationApi, agentApi, modelApi, chatApi, cronJobApi, approvalApi } from '@/api/index'
+import { ElMessage } from 'element-plus'
 import { copyToClipboard } from '@/utils/clipboard'
 import { useFileDrop } from '@/composables/useFileDrop'
 import { useIsMobile, useMediaQuery, BREAKPOINTS } from '@/composables/useBreakpoint'
@@ -258,6 +287,10 @@ import ModelSelector from '@/components/chat/ModelSelector.vue'
 import { useEChartsRenderer } from '@/composables/useEChartsRenderer'
 import { useKatexRenderer } from '@/composables/useKatexRenderer'
 import { useMermaidRenderer, handleMermaidDownload } from '@/composables/useMermaidRenderer'
+import { useGoalStore } from '@/stores/useGoalStore'
+import { useWorkspaceStore } from '@/stores/useWorkspaceStore'
+import GoalSetInlinePrompt from '@/components/goal/GoalSetInlinePrompt.vue'
+import GoalSystemLine from '@/components/goal/GoalSystemLine.vue'
 
 // ============ Talk Mode ============
 const showTalkMode = ref(false)
@@ -324,6 +357,12 @@ const selectedAgentId = ref<string | number>('')
 const currentConversationId = ref<string>('')
 const inputText = ref('')
 const modelSaving = ref(false)
+// Monotonic counter for in-flight setModel PUTs. The finally handler
+// only clears modelSaving when its captured seq is still the latest, so a
+// stale-finishing earlier PUT can't unlock the selector while a newer one
+// is still in flight, and (crucially) switching conversations mid-PUT
+// can't permanently lock the selector by leaving modelSaving stuck true.
+let modelSaveSeq = 0
 // Issue #81 v2 R2: split the single showModelPrompt boolean into two flags so
 // the chat surface can either hard-block (blockingPrompt) or warn but let the
 // backend fallback chain take over (recoverablePrompt). Driven by
@@ -342,7 +381,11 @@ const providersUnavailable = ref(false)
 // otherwise the model selector trigger would show its 配置模型 fallback even
 // though there IS an active model.
 const enabledModels = ref<ModelConfig[]>([])
+// The model the CURRENT conversation uses. Per-conversation — switching it
+// never leaks into other conversations (see selectModel / applyConversationModel).
 const activeModels = ref<ActiveModelsInfo | null>(null)
+// Global default model — seeds the selector for conversations with no pin yet.
+const globalDefaultModel = ref<{ providerId: string; model: string } | null>(null)
 const pendingAttachments = ref<ChatAttachment[]>([])
 const uploadingAttachment = ref(false)
 
@@ -362,12 +405,14 @@ const headerBtnRef = ref<HTMLElement | null>(null)
 
 const headerMenuItems = computed<DropdownMenuItem[]>(() => [
   { key: 'config', label: t('chat.configModel') },
+  { key: 'sessions', label: t('chat.openSessions') },
   { divider: true },
   { key: 'clear', label: t('chat.clearMessages'), danger: true },
 ])
 
 function onHeaderMenuSelect(item: DropdownMenuItem) {
   if (item.key === 'config') goToModelSettings()
+  else if (item.key === 'sessions') router.push('/sessions')
   else if (item.key === 'clear') clearMessages()
 }
 
@@ -379,18 +424,124 @@ function onAgentPicked(value: string | number | null) {
   }
 }
 
-async function selectModel(value: string) {
+function selectModel(value: string) {
   const [providerId, model] = value.split('::')
   if (!providerId || !model) return
-  modelSaving.value = true
-  try {
-    const res: any = await modelApi.setActive({ providerId, model })
-    activeModels.value = res.data || { activeLlm: { providerId, model } }
-    await loadModelState()
-  } catch (e) {
-    mcToast.error(t('chat.switchModelFailed'))
-  } finally {
-    modelSaving.value = false
+  // Per-conversation model: switching here only affects THIS conversation.
+  // We update the selector + the local list entry immediately so the UI is
+  // responsive, then persist the pin to the server right away IF the
+  // conversation already exists. Without the eager persist, IM channels
+  // (Feishu / DingTalk / WeCom …) keep using whatever the conversation row
+  // last had — they don't see the /chat/stream payload that the web path
+  // pins on send — so the user "switches model in the chat box" but the
+  // next IM inbound message still picks the old / default model.
+  //
+  // Snapshot the previous selection BEFORE the optimistic update so a
+  // failed PUT can roll the UI back instead of stranding the user with a
+  // model the backend isn't using.
+  const prevLlm = activeModels.value?.activeLlm
+  const prevActive: ActiveModelsInfo | null = prevLlm?.providerId && prevLlm?.model
+    ? { activeLlm: { providerId: prevLlm.providerId, model: prevLlm.model } }
+    : null
+  const conv = conversations.value.find(c => c.conversationId === currentConversationId.value)
+  const prevConvProvider = conv?.modelProvider
+  const prevConvModel = conv?.modelName
+
+  activeModels.value = { activeLlm: { providerId, model } }
+  if (conv) {
+    conv.modelProvider = providerId
+    conv.modelName = model
+  }
+  // Only persist when the conversation is already in the server-side list.
+  // A brand-new chat (newConversation() generated a local id that hasn't
+  // been sent through /chat/stream yet) has no row to PUT against; that
+  // case still relies on the first /chat/stream call writing the pin.
+  if (conv && currentConversationId.value) {
+    const cid = currentConversationId.value
+    const mySeq = ++modelSaveSeq
+    modelSaving.value = true
+    conversationApi.setModel(cid, providerId, model)
+      .catch((e: any) => {
+        console.warn('[ChatConsole] Failed to persist model pin:', e)
+        mcToast.warning(t('chat.modelSaveFailed'))
+        // Roll back the visible selector + the cached conv pin so the UI
+        // doesn't keep claiming a model the backend isn't using. Only do
+        // it when the user is still on the same conversation AND hasn't
+        // picked yet another model — otherwise we'd corrupt the more
+        // recent state with this PUT's snapshot.
+        const liveConv = conversations.value.find(c => c.conversationId === cid)
+        if (liveConv && liveConv.modelProvider === providerId && liveConv.modelName === model) {
+          liveConv.modelProvider = prevConvProvider
+          liveConv.modelName = prevConvModel
+        }
+        if (currentConversationId.value !== cid) return
+        const stillShowingFailedPick =
+            activeModels.value?.activeLlm?.providerId === providerId
+            && activeModels.value?.activeLlm?.model === model
+        if (!stillShowingFailedPick) return
+        activeModels.value = prevActive
+      })
+      .finally(() => {
+        // Only the LATEST in-flight PUT clears the saving flag. An earlier
+        // PUT finishing late must not flip saving to false while a newer
+        // one is still pending (the selector would unlock during a live
+        // request); and a conversation switch mid-PUT must not strand the
+        // flag at true forever (which would lock the selector across
+        // every conversation — the original bug this seq counter fixes).
+        if (mySeq === modelSaveSeq) {
+          modelSaving.value = false
+        }
+      })
+  }
+}
+
+/**
+ * Point the model selector at a conversation's pinned model, or the global
+ * default when the conversation has no pin yet (fresh chat, IM, cron).
+ */
+function applyConversationModel(conv?: Conversation | null) {
+  if (conv?.modelProvider && conv?.modelName) {
+    activeModels.value = { activeLlm: { providerId: conv.modelProvider, model: conv.modelName } }
+  } else if (globalDefaultModel.value) {
+    activeModels.value = { activeLlm: { ...globalDefaultModel.value } }
+  }
+}
+
+/**
+ * After a poll refreshes the conversation list, the currently-open
+ * conversation may have drifted server-side: an admin may have rebound the
+ * channel to a different agent, or pinned a different model via another
+ * tab / API call. Pull the new server-side state into the local selector +
+ * agent header so the chat surface doesn't keep claiming the old binding.
+ *
+ * Skipped while a turn is generating — yanking the model / agent mid-stream
+ * would orphan the active SSE subscription.
+ */
+function reconcileCurrentConversation() {
+  if (!currentConversationId.value) return
+  if (isGenerating.value) return
+  // Don't fight an in-flight setModel write — the poll cycle may run BEFORE
+  // the PUT lands, in which case the server still reports the old pin and
+  // we'd flicker the UI back. Wait for the next tick.
+  if (modelSaving.value) return
+  const fresh = conversations.value.find(c => c.conversationId === currentConversationId.value)
+  if (!fresh) return
+  if (fresh.agentId != null && String(fresh.agentId) !== String(selectedAgentId.value)) {
+    selectedAgentId.value = fresh.agentId
+  }
+  const pickedProvider = activeModels.value?.activeLlm?.providerId
+  const pickedModel = activeModels.value?.activeLlm?.model
+  const serverHasPin = !!(fresh.modelProvider && fresh.modelName)
+  if (serverHasPin) {
+    if (fresh.modelProvider !== pickedProvider || fresh.modelName !== pickedModel) {
+      activeModels.value = { activeLlm: { providerId: fresh.modelProvider!, model: fresh.modelName! } }
+    }
+  } else if (pickedProvider || pickedModel) {
+    // Server-side pin was cleared (admin reset, model deleted, …) but the
+    // local selector still shows the old pick. Drop back to whatever the
+    // global default resolves to — applyConversationModel does the right
+    // thing when conv has no pin.
+    applyConversationModel(fresh)
   }
 }
 
@@ -590,6 +741,25 @@ function markConversationViewed(conversationId: string | undefined, lastActiveTi
 }
 
 const currentRuntimeModel = computed(() => {
+  // Bind to the per-conversation active model — the same source the model
+  // selector reads — so the indicator updates the instant the user switches.
+  // Reading the global defaultModel here left the indicator frozen on the
+  // default while the selector moved.
+  const providerId = activeModels.value?.activeLlm?.providerId
+  const modelName = activeModels.value?.activeLlm?.model
+  if (providerId && modelName) {
+    const provider = providers.value.find((p) => p.id === providerId)
+    const all = provider ? [...(provider.models || []), ...(provider.extraModels || [])] : []
+    const hit = all.find((m) => m.id === modelName || m.name === modelName)
+    if (hit) return `${hit.name || hit.id} (${hit.id})`
+    // Viewer-level users get an empty providers list — resolve via /models/enabled.
+    const em = enabledModels.value.find(
+      (m) => m.provider === providerId && (m.modelName === modelName || m.name === modelName)
+    )
+    if (em) return em.name ? `${em.name} (${em.modelName})` : em.modelName
+    return modelName
+  }
+  // No active model resolved yet — fall back to the global default, then the agent.
   if (defaultModel.value?.name && defaultModel.value?.modelName) {
     return `${defaultModel.value.name} (${defaultModel.value.modelName})`
   }
@@ -883,6 +1053,7 @@ async function pollActivity() {
   try {
     try {
       await loadConversations()
+      reconcileCurrentConversation()
     } catch {
       // 静默失败，下一轮再试
     }
@@ -971,6 +1142,124 @@ watch([selectedAgentId, currentConversationId], () => {
   syncRouteState()
 })
 
+// Load the active goal whenever the user switches conversation. The
+// avatar ring listens on goalStore.activeGoalByConv[cid]; without this
+// fetch the ring would only appear after an SSE event mutated the store.
+const goalStore = useGoalStore()
+const workspaceStoreForGoal = useWorkspaceStore()
+const currentWorkspaceId = computed(() => workspaceStoreForGoal.currentWorkspaceId ?? '1')
+watch(currentConversationId, async (cid) => {
+  if (cid) {
+    await goalStore.loadActiveForConversation(cid)
+  }
+}, { immediate: true })
+
+// Derive props for the inline prompt + system-line slots that sit
+// between MessageList and ChatInput. The prompt shows only when:
+//   1) there's a current conversation, agent, and at least one assistant
+//      reply (otherwise the prompt is premature);
+//   2) there's no active goal (the ring already covers active state);
+//   3) the user hasn't dismissed the prompt on this conv;
+//   4) we're not mid-stream (don't pop suggestions while the agent
+//      is still typing).
+const goalTerminalForCurrent = computed(() =>
+  currentConversationId.value
+    ? goalStore.recentTerminal(currentConversationId.value)
+    : null,
+)
+const goalSystemLineTitle = computed(() => {
+  const t = goalTerminalForCurrent.value
+  if (!t) return ''
+  // The leading icon is owned by GoalSystemLine (✦ / ⚠) so we don't
+  // prepend one here — doing so produced "✦ 🎉 …" double-glyph titles.
+  return t.status === 'completed' ? `目标达成 · ${t.title}` : `这次的预算用完了 · ${t.title}`
+})
+const goalSystemLineDetail = computed(() => {
+  const t = goalTerminalForCurrent.value
+  if (!t) return ''
+  if (t.status === 'completed') {
+    return t.score != null
+      ? `已完成 · final score ${t.score.toFixed(2)}`
+      : '已完成 · 总结已存入长期记忆'
+  }
+  // exhausted
+  if (t.reason === 'turn_budget') return '预算轮数用完。'
+  if (t.reason === 'llm_call_budget') return 'LLM 调用预算用完。'
+  return '预算耗尽。'
+})
+
+// True when the current conversation's message stream already contains a
+// setGoal tool call — authoritative even before the goal_created SSE event
+// updates the goal store.
+const goalSetInStream = computed(() => {
+  return messages.value.some((m) => {
+    if (m.role !== 'assistant') return false
+    const tcs: any = (m as any).metadata?.toolCalls
+    return Array.isArray(tcs) && tcs.some((tc: any) => tc?.name === 'setGoal')
+  })
+})
+
+const showGoalSetPrompt = computed(() => {
+  if (!currentConversationId.value || !selectedAgentId.value) return false
+  if (isGenerating.value) return false
+  // Active goal? The ring covers that — no need for a prompt.
+  if (goalStore.activeGoal(currentConversationId.value)) return false
+  // A goal was already set this conversation via the setGoal tool — even if
+  // the goal_created/goal_evaluated SSE event hasn't updated the store yet
+  // (the turn can end a render frame before that event lands). Reading the
+  // stream directly closes that flash window: never offer to set a goal when
+  // the agent already set one here.
+  if (goalSetInStream.value) return false
+  // Recent terminal still showing? Let the user dismiss that first.
+  if (goalTerminalForCurrent.value) return false
+  if (goalStore.isPromptDismissed(currentConversationId.value)) return false
+  // Need at least one user → assistant exchange so the prompt has
+  // context to derive a suggested title from.
+  const hasAssistantReply = messages.value.some(m => m.role === 'assistant')
+  if (!hasAssistantReply) return false
+  // Heuristic: don't claim "this looks multi-turn" without evidence. Fire
+  // the prompt only when at least one signal of a real ongoing task is
+  // present. Without these the prompt fires after one-shot Q&A like
+  // "三句话告诉我 X" and the copy lies to the user.
+  const userTurns = messages.value.filter(m => m.role === 'user').length
+  if (userTurns >= 2) return true // multiple user messages = ongoing thread
+  // Single-turn case: only suggest if the agent did non-trivial work.
+  return messages.value.some(m => {
+    if (m.role !== 'assistant') return false
+    const md: any = (m as any).metadata
+    if (!md) return false
+    // Tool calls — strongest signal of real work.
+    if (Array.isArray(md.toolCalls) && md.toolCalls.length > 0) return true
+    // Plan steps — Plan-Execute agent ran a multi-step plan.
+    if (md.plan && Array.isArray(md.plan.steps) && md.plan.steps.length > 1) return true
+    // Multiple ReAct iterations / segments — agent looped.
+    if (Array.isArray(md.segments) && md.segments.length > 3) return true
+    return false
+  })
+})
+
+// Build a sensible default title from the conversation's first user
+// message. The user can always edit later via the goal page.
+const goalSuggestedTitle = computed(() => {
+  const firstUser = messages.value.find(m => m.role === 'user')
+  const raw = (firstUser?.content || '').trim()
+  if (!raw) return '新目标'
+  // 80 char clip mirrors GoalController.create validation.
+  return raw.length > 80 ? raw.slice(0, 77) + '...' : raw
+})
+
+function onGoalPromptDismiss() {
+  if (currentConversationId.value) {
+    goalStore.dismissPrompt(currentConversationId.value)
+  }
+}
+
+function onGoalSystemLineDismiss() {
+  if (currentConversationId.value) {
+    goalStore.clearRecentTerminal(currentConversationId.value)
+  }
+}
+
 // Refetch agent capabilities (modalities + sidecar config) on agent change so
 // the multimodal routing hint above the input box can react synchronously when
 // the user attaches an image / video.
@@ -1013,7 +1302,16 @@ async function loadModelState() {
       modelApi.listEnabled(),
     ])
     defaultModel.value = defaultRes.data || null
-    activeModels.value = activeRes.data || null
+    const ga = activeRes.data?.activeLlm
+    globalDefaultModel.value = ga?.providerId && ga?.model
+      ? { providerId: ga.providerId, model: ga.model }
+      : null
+    // Seed the selector when no conversation has set it yet (fresh chat, or
+    // before a conversation is selected). A conversation that already has a
+    // model keeps it — selectConversation/applyConversationModel own that.
+    if (!activeModels.value && globalDefaultModel.value) {
+      activeModels.value = { activeLlm: { ...globalDefaultModel.value } }
+    }
     enabledModels.value = enabledRes.data || []
   } catch (e) {
     mcToast.error(t('chat.loadModelFailed'))
@@ -1177,6 +1475,8 @@ async function selectConversation(conv: Conversation) {
   }
   currentConversationId.value = conv.conversationId
   selectedAgentId.value = conv.agentId || selectedAgentId.value
+  // Restore this conversation's pinned model into the selector.
+  applyConversationModel(conv)
   // Reset cron placeholder state up front; the immediate fetch below repopulates
   // it for cron conversations so the user doesn't wait up to 4s for the next tick.
   activeCronRuns.value = []
@@ -1308,6 +1608,8 @@ function newConversation() {
   resetForNewConversation()
   currentConversationId.value = `conv_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
   messages.value = []
+  // A fresh conversation starts on the global default model.
+  applyConversationModel()
 }
 
 // The sidebar performs the delete API call(s) and emits the removed ids.
@@ -1475,6 +1777,8 @@ async function handleSendMessage(content: string) {
       agentId: selectedAgentId.value,
       contentParts,
       thinkingLevel: thinkingLevel.value,
+      modelProvider: activeModels.value?.activeLlm?.providerId,
+      modelName: activeModels.value?.activeLlm?.model,
       attachments: outgoingAttachments.map(a => ({
         type: 'file' as const,
         fileUrl: a.url,
@@ -1534,6 +1838,57 @@ async function handleApprove(pendingId: string) {
 async function handleDeny(pendingId: string) {
   if (!currentConversationId.value) return
   await handleSendMessage('/deny')
+}
+
+// Always-approve: create the matching grant first, then send /approve as usual.
+// Failure to create the grant doesn't block the approval — we still forward
+// /approve so the user's click isn't lost, just toast the error.
+async function handleApproveAlways(
+  payload: { pendingId: string; scope: 'CONVERSATION' | 'AGENT' | 'USER' },
+) {
+  if (!currentConversationId.value) return
+  const pa = activePendingApproval.value
+  if (!pa) return
+
+  // Resolve scope_id from the scope dimension.
+  let scopeId = ''
+  if (payload.scope === 'CONVERSATION') {
+    scopeId = currentConversationId.value
+  } else if (payload.scope === 'AGENT') {
+    scopeId = String(currentAgent.value?.id ?? '')
+  } else if (payload.scope === 'USER') {
+    const me = localStorage.getItem('mc-user-id')
+    if (me) scopeId = me
+  }
+  if (!scopeId) {
+    ElMessage.error('Cannot resolve scope id for always-approve')
+    await handleSendMessage('/approve')
+    return
+  }
+
+  try {
+    const sev = pa.maxSeverity ?? 'LOW'
+    // Severity ceiling = at-or-above the current finding's severity. CRITICAL
+    // never enters this path (the backend rejects it), so HIGH covers the rest.
+    const ceiling = sev === 'HIGH' || sev === 'CRITICAL' ? 'HIGH'
+      : sev === 'MEDIUM' ? 'MEDIUM' : 'LOW'
+    const ruleId = pa.findings?.find((f: { ruleId?: string }) => !!f.ruleId)?.ruleId ?? null
+    await approvalApi.createGrant({
+      scopeType: payload.scope,
+      scopeId,
+      toolName: pa.toolName,
+      ruleId,
+      maxSeverity: ceiling,
+      grantKind: payload.scope === 'CONVERSATION' ? 'UNTIL_CONVERSATION_END' : 'ALWAYS',
+      note: `created from approval banner (${pa.toolName})`,
+    })
+    ElMessage.success(
+      t('chat.approveAlwaysCreated', { tool: pa.toolName }) as string,
+    )
+  } catch (e: any) {
+    ElMessage.error(e?.message || 'Failed to create auto-approve rule')
+  }
+  await handleSendMessage('/approve')
 }
 
 // 重连到运行中的流
@@ -1928,6 +2283,8 @@ function handleCodeCopy(e: MouseEvent) {
 }
 
 .agent-badge-icon {
+  display: flex;
+  align-items: center;
   font-size: 14px;
 }
 

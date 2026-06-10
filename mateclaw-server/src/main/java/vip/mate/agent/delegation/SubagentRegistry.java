@@ -53,7 +53,14 @@ public class SubagentRegistry {
             AtomicReference<String> lastSeenTool,
             AtomicInteger staleCount,
             AtomicLong firstApiCallAt,
-            Disposable disposable
+            Disposable disposable,
+            // Tree identity: parentSubagentId is null for first-level children
+            // (spawned by the root agent); depth is 1 for first-level, 2 for a
+            // grandchild, etc. rootConversationId is the human-facing stream the
+            // whole tree reports into, used for UI-facing broadcasts at any depth.
+            String parentSubagentId,
+            int depth,
+            String rootConversationId
     ) {}
 
     private final ConcurrentMap<String, SubagentRecord> active = new ConcurrentHashMap<>();
@@ -77,6 +84,16 @@ public class SubagentRegistry {
      * children spawn within the same millisecond.
      */
     public String register(String parentConvId, String childConvId, Long agentId, String goal, Disposable d) {
+        return register(parentConvId, childConvId, agentId, goal, d, null, 1, parentConvId);
+    }
+
+    /**
+     * Register a sub-agent with full tree identity. {@code parentSubagentId} is
+     * null for first-level children; {@code depth} is 1-based; {@code rootConvId}
+     * is the human-facing conversation the whole tree reports into.
+     */
+    public String register(String parentConvId, String childConvId, Long agentId, String goal,
+                           Disposable d, String parentSubagentId, int depth, String rootConvId) {
         String sid = "sa-" + System.currentTimeMillis() + "-" + nextHexSuffix();
         active.put(sid, new SubagentRecord(
                 sid,
@@ -93,7 +110,10 @@ public class SubagentRegistry {
                 new AtomicReference<>(null),
                 new AtomicInteger(0),
                 new AtomicLong(0),
-                d));
+                d,
+                parentSubagentId,
+                depth,
+                rootConvId != null ? rootConvId : parentConvId));
         return sid;
     }
 
@@ -120,14 +140,32 @@ public class SubagentRegistry {
     }
 
     /**
-     * Snapshot of all sub-agents whose parent matches {@code parentConvId}.
-     * Filtering at the registry boundary prevents callers from accidentally
-     * surfacing other tenants' subagents in API responses.
+     * Snapshot of all sub-agents whose <em>immediate</em> parent matches
+     * {@code parentConvId}. Filtering at the registry boundary prevents callers
+     * from accidentally surfacing other tenants' subagents in API responses.
+     *
+     * <p>Note: this returns only direct children. To list a whole delegation
+     * tree (including grandchildren whose immediate parent is a child
+     * conversation), use {@link #snapshotTree(String)}.
      */
     public List<SubagentRecord> snapshot(String parentConvId) {
         if (parentConvId == null) return List.of();
         return active.values().stream()
                 .filter(r -> parentConvId.equals(r.parentConversationId()))
+                .toList();
+    }
+
+    /**
+     * Snapshot of the entire delegation tree rooted at {@code rootConvId} — the
+     * human-facing conversation. Every sub-agent at any depth carries the same
+     * {@code rootConversationId}, so this returns direct children and all deeper
+     * descendants. Tenant isolation must be enforced on {@code rootConvId} by
+     * the caller (it is the conversation the user owns).
+     */
+    public List<SubagentRecord> snapshotTree(String rootConvId) {
+        if (rootConvId == null) return List.of();
+        return active.values().stream()
+                .filter(r -> rootConvId.equals(r.rootConversationId()))
                 .toList();
     }
 

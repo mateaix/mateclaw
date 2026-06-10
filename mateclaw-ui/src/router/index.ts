@@ -177,22 +177,24 @@ const router = createRouter({
               meta: { title: 'Settings - Agent Context', requiredCapability: 'manage:agents' },
             },
             {
-              path: 'cron-jobs',
-              name: 'SettingsCronJobs',
-              component: () => import('@/views/CronJobs.vue'),
-              meta: { title: 'Settings - Cron Jobs', requiredCapability: 'manage:agents' },
+              // Unified scheduler — scheduled jobs, event triggers and run
+              // history under one tabbed page (?tab= selects the tab).
+              path: 'scheduler',
+              name: 'SettingsScheduler',
+              component: () => import('@/views/Scheduler/index.vue'),
+              meta: { title: 'Settings - Scheduler', requiredCapability: 'manage:agents' },
+            },
+            {
+              path: 'skill-curator',
+              name: 'SettingsSkillCurator',
+              component: () => import('@/views/Settings/SkillCurator/index.vue'),
+              meta: { title: 'Settings - Skill Curator', requiredCapability: 'manage:settings' },
             },
             {
               path: 'workflows',
               name: 'SettingsWorkflows',
               component: () => import('@/views/Workflows.vue'),
               meta: { title: 'Settings - Workflows', requiredCapability: 'manage:settings' },
-            },
-            {
-              path: 'triggers',
-              name: 'SettingsTriggers',
-              component: () => import('@/views/Triggers.vue'),
-              meta: { title: 'Settings - Triggers', requiredCapability: 'manage:settings' },
             },
             {
               path: 'datasources',
@@ -211,6 +213,12 @@ const router = createRouter({
               name: 'SettingsTools',
               component: () => import('@/views/Tools.vue'),
               meta: { title: 'Settings - Tools Catalog', requiredCapability: 'manage:settings' },
+            },
+            {
+              path: 'proxy',
+              name: 'SettingsProxy',
+              component: () => import('@/views/Settings/Proxy/index.vue'),
+              meta: { title: 'Settings - Proxy', requiredCapability: 'manage:settings' },
             },
             // RFC-090 Phase 7: ACP endpoints (External coding agents)
             {
@@ -263,6 +271,12 @@ const router = createRouter({
               component: () => import('@/views/Security/AuditLogs/index.vue'),
               meta: { title: 'Security - Audit Logs', requiredCapability: 'manage:security' },
             },
+            {
+              path: 'auto-approve',
+              name: 'SecurityAutoApprove',
+              component: () => import('@/views/Security/AutoApproveGrants/index.vue'),
+              meta: { title: 'Security - Auto Approve', requiredCapability: 'manage:security' },
+            },
           ],
         },
         // ==================== Forbidden ====================
@@ -272,15 +286,27 @@ const router = createRouter({
           component: () => import('@/views/Forbidden.vue'),
           meta: { title: 'Forbidden' },
         },
+        // ==================== Sessions admin ====================
+        // Cross-channel conversation manager. Surfaced from ChatConsole's
+        // header overflow menu so the user can audit / switch model per
+        // conversation without leaving the chat surface.
+        {
+          path: 'sessions',
+          name: 'Sessions',
+          component: () => import('@/views/Sessions.vue'),
+          meta: { title: 'sessions.title' },
+        },
         // ==================== Redirects (backward compatibility) ====================
-        { path: 'sessions', redirect: '/chat' },
         { path: 'workspace', redirect: '/settings/agent-context' },
         { path: 'security/workspaces', redirect: '/settings/workspaces' },
         { path: 'security/members', redirect: '/settings/members' },
         // RFC-090 Phase 4: Activity 提升到顶层
         { path: 'security/activity', redirect: '/activity' },
         { path: 'settings/activity', redirect: '/activity' },
-        { path: 'cron-jobs', redirect: '/settings/cron-jobs' },
+        // Scheduler absorbs the former Cron Jobs + Triggers pages.
+        { path: 'cron-jobs', redirect: '/settings/scheduler' },
+        { path: 'settings/cron-jobs', redirect: '/settings/scheduler' },
+        { path: 'settings/triggers', redirect: { path: '/settings/scheduler', query: { tab: 'triggers' } } },
         { path: 'datasources', redirect: '/settings/datasources' },
         { path: 'mcp-servers', redirect: '/settings/mcp-servers' },
         { path: 'token-usage', redirect: '/settings/token-usage' },

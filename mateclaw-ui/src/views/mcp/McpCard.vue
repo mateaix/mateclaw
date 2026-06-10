@@ -31,6 +31,14 @@
       <div v-if="!isCatalog" class="mcp-card-meta">
         {{ t('mcp.card.toolCount', { n: server!.toolCount || 0 }) }}
         <template v-if="lastSeen"> · {{ lastSeen }}</template>
+        <button
+          class="mcp-tier-pill"
+          :class="{ 'mcp-tier-pill--ext': tier === 'extension' }"
+          :title="tier === 'extension' ? t('mcp.tier.extensionHint') : t('mcp.tier.coreHint')"
+          @click.stop="emit('setTier', server!, tier === 'extension' ? 'core' : 'extension')"
+        >
+          {{ tier === 'extension' ? t('mcp.tier.extension') : t('mcp.tier.core') }}
+        </button>
       </div>
     </div>
 
@@ -130,6 +138,7 @@ const emit = defineEmits<{
   (e: 'edit', server: McpServer): void
   (e: 'test', server: McpServer): void
   (e: 'toggle', server: McpServer): void
+  (e: 'setTier', server: McpServer, tier: 'core' | 'extension'): void
   (e: 'add', entry: McpCatalogEntry): void
   (e: 'docs', url: string): void
 }>()
@@ -137,6 +146,11 @@ const emit = defineEmits<{
 const { t } = useI18n()
 
 const isCatalog = computed(() => !!props.catalogEntry)
+// Whole-server disclosure tier; defaults to core (matches the DB default) so
+// MCP tools stay directly callable until an admin moves the server to extension.
+const tier = computed<'core' | 'extension'>(() =>
+  props.server?.disclosureTier === 'extension' ? 'extension' : 'core',
+)
 const displayName = computed(() =>
   isCatalog.value ? props.catalogEntry!.name : props.server!.name,
 )
@@ -169,6 +183,7 @@ const statusClass = computed(() => {
   const s = props.server?.lastStatus
   if (s === 'connected') return 'mcp-status-dot--ok'
   if (s === 'error') return 'mcp-status-dot--err'
+  if (s === 'connecting') return 'mcp-status-dot--connecting'
   return 'mcp-status-dot--off'
 })
 
@@ -176,8 +191,13 @@ const hasError = computed(
   () => !isCatalog.value && props.server!.lastStatus === 'error' && !!props.server!.lastError,
 )
 
+const isConnecting = computed(
+  () => !isCatalog.value && props.server!.lastStatus === 'connecting',
+)
+
 const descriptionText = computed(() => {
   if (isCatalog.value) return props.catalogEntry!.description
+  if (isConnecting.value) return t('mcp.status.connecting')
   if (hasError.value) {
     const err = props.server!.lastError
     return err.length > 60 ? err.slice(0, 60) + '…' : err
@@ -285,6 +305,15 @@ function onPrimaryAction() {
   box-shadow: 0 0 4px rgba(239, 68, 68, 0.4);
 }
 .mcp-status-dot--off { background: var(--mc-text-tertiary); opacity: 0.4; }
+.mcp-status-dot--connecting {
+  background: #f59e0b;
+  box-shadow: 0 0 4px rgba(245, 158, 11, 0.5);
+  animation: mcp-dot-pulse 1s ease-in-out infinite;
+}
+@keyframes mcp-dot-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.78); }
+}
 
 .mcp-transport-pill {
   display: inline-flex;
@@ -316,6 +345,23 @@ function onPrimaryAction() {
   font-size: 11px;
   color: var(--mc-text-tertiary);
 }
+
+.mcp-tier-pill {
+  margin-left: 6px;
+  padding: 1px 7px;
+  border: 1px solid var(--mc-border);
+  background: var(--mc-bg-sunken);
+  color: var(--mc-text-tertiary);
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.mcp-tier-pill:hover { border-color: var(--mc-primary); color: var(--mc-primary); }
+.mcp-tier-pill--ext { background: var(--mc-primary-bg); color: var(--mc-primary); border-color: transparent; }
 
 /* Always-visible enable toggle on installed cards. Sits to the right
    of the card body; hover-reveal actions slide in to its left. */

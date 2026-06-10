@@ -118,7 +118,19 @@ public class DelegateAgentTool {
             // long-term memory surface.
             "remember",
             "remember_structured",
-            "forget_structured"
+            "forget_structured",
+            // RFC 48 — goal ownership is bound to the parent conversation.
+            // A child mutating the parent's goal would let sub-agents
+            // declare the parent's goal "completed" or replace its budget.
+            "setGoal",
+            "addGoalCriterion",
+            "completeGoal",
+            "getGoalStatus",
+            // Employee authoring spawns persistent agents; a delegated child
+            // doing so risks recursive team creation and privilege creep, so
+            // it stays with the parent (same stance as delegate* recursion
+            // guards above). The read-only capability catalog is fine to keep.
+            "create_employee"
     );
 
     /** Executor for parallel delegation — one JDK 21 virtual thread per child agent. */
@@ -225,11 +237,19 @@ public class DelegateAgentTool {
         }
 
         String parentConversationId = resolveParentConversationId();
+        // Root (human-facing) conversation at the top of the delegation tree.
+        // At depth 0 the immediate parent IS the root; deeper layers carry it
+        // forward via DelegationContext so events reach the stream the user sees.
+        String rootConversationId = DelegationContext.rootConversationId();
+        if (rootConversationId == null) rootConversationId = parentConversationId;
+        String parentSubagentId = DelegationContext.currentSubagentId();
+        int childDepth = depth + 1;
 
-        // Spawn-pause: when the operator paused this conversation's tree
-        // (via /api/v1/subagents/spawn-pause), short-circuit before creating
-        // child state so no conversation rows / relays / registry entries leak.
-        if (parentConversationId != null && subagentRegistry.isSpawnPaused(parentConversationId)) {
+        // Spawn-pause: short-circuit before creating child state when either the
+        // immediate parent or the root tree is paused, so no conversation rows /
+        // relays / registry entries leak.
+        if ((parentConversationId != null && subagentRegistry.isSpawnPaused(parentConversationId))
+                || (rootConversationId != null && subagentRegistry.isSpawnPaused(rootConversationId))) {
             return "[错误] Spawning paused for this conversation; resume via /api/v1/subagents/spawn-pause";
         }
 
@@ -251,24 +271,28 @@ public class DelegateAgentTool {
         log.info("Agent delegation: depth={}, target={}({}), childConv={}, parentConv={}",
                 depth + 1, target.getName(), target.getId(), childConversationId, parentConversationId);
 
-        // Broadcast delegation_start + register event relay to parent session
-        boolean hasParent = parentConversationId != null && streamTracker.isRunning(parentConversationId);
-        if (hasParent) {
-            streamTracker.broadcastObject(parentConversationId, "delegation_start", Map.of(
-                    "childConversationId", childConversationId,
-                    "childAgentName", target.getName(),
-                    "task", truncate(task, 200)));
-        }
-        Runnable stopRelay = hasParent ? registerBatchedRelay(childConversationId, parentConversationId, target.getName()) : null;
-
-        // Register the live sub-agent so the operator UI / heartbeat watchdog
-        // can observe it. Disposable is null in the synchronous single-task
-        // path because the executor blocks on AgentService#chat directly —
-        // there is no Flux subscription to dispose. Interrupts in this path
-        // are best-effort (status flip; no underlying cancel).
+        // Register the live sub-agent first so its stable id rides on every
+        // event. Disposable is null in the synchronous single-task path because
+        // the executor blocks on AgentService#chat directly — there is no Flux
+        // subscription to dispose. Interrupts here are best-effort (status flip).
         String subagentId = parentConversationId != null
                 ? subagentRegistry.register(parentConversationId, childConversationId,
-                        target.getId(), task, null)
+                        target.getId(), task, null, parentSubagentId, childDepth, rootConversationId)
+                : null;
+
+        // Broadcast to the ROOT conversation (not the immediate parent) so a
+        // grandchild's progress reaches the stream the user is watching. Every
+        // event carries subagentId/parentSubagentId/depth for tree rebuild.
+        boolean hasRoot = rootConversationId != null && streamTracker.isRunning(rootConversationId);
+        if (hasRoot) {
+            Map<String, Object> startEvent = delegationPayload(subagentId, parentSubagentId, childDepth,
+                    childConversationId, target.getName());
+            startEvent.put("task", truncate(task, 200));
+            streamTracker.broadcastObject(rootConversationId, "delegation_start", startEvent);
+        }
+        Runnable stopRelay = hasRoot
+                ? registerBatchedRelay(childConversationId, rootConversationId, target.getName(),
+                        subagentId, parentSubagentId, childDepth)
                 : null;
 
         // Execute child agent — RFC-063r §2.5 改动点 5: inherit the parent
@@ -277,7 +301,8 @@ public class DelegateAgentTool {
         ChatOrigin parentOrigin = ChatOrigin.from(ctx);
         ChildResult result;
         try {
-            result = runSingleChild(0, target, taskWithContext, parentConversationId, childConversationId, parentOrigin);
+            result = runSingleChild(0, target, taskWithContext, parentConversationId, childConversationId,
+                    parentOrigin, rootConversationId, subagentId, childDepth);
         } finally {
             // Cleanup relay + registry regardless of how the child returned
             // (success / exception / interruption) so we never leak entries.
@@ -291,8 +316,9 @@ public class DelegateAgentTool {
                 subagentRegistry.unregister(subagentId);
             }
         }
-        if (hasParent) {
-            broadcastEnd(parentConversationId, childConversationId, target.getName(), result);
+        if (hasRoot) {
+            broadcastEnd(rootConversationId, childConversationId, target.getName(), result,
+                    subagentId, parentSubagentId, childDepth);
         }
 
         return result.toToolResponse(target.getName());
@@ -333,15 +359,21 @@ public class DelegateAgentTool {
         }
 
         String parentConversationId = resolveParentConversationId();
+        String rootConversationId = DelegationContext.rootConversationId();
+        if (rootConversationId == null) rootConversationId = parentConversationId;
+        final String rootConvFinal = rootConversationId;
+        final String parentSubagentId = DelegationContext.currentSubagentId();
+        final int childDepth = depth + 1;
 
         // Spawn-pause: short-circuit before allocating any per-child state so
         // we don't leak conversation rows / relays / registry entries when an
-        // operator paused this conversation's tree.
-        if (parentConversationId != null && subagentRegistry.isSpawnPaused(parentConversationId)) {
+        // operator paused this conversation's tree (immediate parent or root).
+        if ((parentConversationId != null && subagentRegistry.isSpawnPaused(parentConversationId))
+                || (rootConvFinal != null && subagentRegistry.isSpawnPaused(rootConvFinal))) {
             return "[错误] Spawning paused for this conversation; resume via /api/v1/subagents/spawn-pause";
         }
 
-        boolean hasParent = parentConversationId != null && streamTracker.isRunning(parentConversationId);
+        boolean hasRoot = rootConvFinal != null && streamTracker.isRunning(rootConvFinal);
 
         // 2. Main thread: validate agents, create child conversations, register relays
         record PreparedChild(int index, AgentEntity agent, String task, String childConvId,
@@ -366,12 +398,13 @@ public class DelegateAgentTool {
             }
 
             String childConvId = createChildConv(agent, parentConversationId);
-            Runnable stopRelay = hasParent
-                    ? registerBatchedRelay(childConvId, parentConversationId, agent.getName())
-                    : null;
             String subagentId = parentConversationId != null
                     ? subagentRegistry.register(parentConversationId, childConvId,
-                            agent.getId(), task, null)
+                            agent.getId(), task, null, parentSubagentId, childDepth, rootConvFinal)
+                    : null;
+            Runnable stopRelay = hasRoot
+                    ? registerBatchedRelay(childConvId, rootConvFinal, agent.getName(),
+                            subagentId, parentSubagentId, childDepth)
                     : null;
             prepared.add(new PreparedChild(i, agent, task, childConvId, stopRelay, subagentId));
         }
@@ -382,14 +415,15 @@ public class DelegateAgentTool {
 
         log.info("Parallel delegation: {} tasks, parentConv={}", prepared.size(), parentConversationId);
 
-        // 3. Broadcast delegation_start (parallel mode)
-        if (hasParent) {
-            List<Map<String, String>> childrenInfo = prepared.stream().map(p -> Map.of(
-                    "childConversationId", p.childConvId,
-                    "childAgentName", p.agent.getName(),
-                    "task", truncate(p.task, 100)
-            )).toList();
-            streamTracker.broadcastObject(parentConversationId, "delegation_start", Map.of(
+        // 3. Broadcast delegation_start (parallel mode) to the root conversation
+        if (hasRoot) {
+            List<Map<String, Object>> childrenInfo = prepared.stream().map(p -> {
+                Map<String, Object> m = delegationPayload(p.subagentId, parentSubagentId, childDepth,
+                        p.childConvId, p.agent.getName());
+                m.put("task", truncate(p.task, 100));
+                return m;
+            }).toList();
+            streamTracker.broadcastObject(rootConvFinal, "delegation_start", Map.of(
                     "parallel", true,
                     "children", childrenInfo));
         }
@@ -405,7 +439,8 @@ public class DelegateAgentTool {
         ChatOrigin parentOriginParallel = ChatOrigin.from(ctx);
         for (PreparedChild p : prepared) {
             CompletableFuture<ChildResult> future = CompletableFuture.supplyAsync(
-                    () -> runSingleChild(p.index, p.agent, p.task, parentConversationId, p.childConvId, parentOriginParallel),
+                    () -> runSingleChild(p.index, p.agent, p.task, parentConversationId, p.childConvId,
+                            parentOriginParallel, rootConvFinal, p.subagentId, childDepth),
                     DELEGATION_EXECUTOR);
 
             // Broadcast per-child completion as soon as each child finishes
@@ -414,18 +449,16 @@ public class DelegateAgentTool {
             // because the timeout result is already handled in the collection loop below and
             // emitting here first would race-replace the correct "timeout" error before delegation_end
             // has a chance to patch remaining running segments.
-            if (hasParent) {
-                final String parentConvIdFinal = parentConversationId;
+            if (hasRoot) {
                 future.whenComplete((result, ex) -> {
                     if (ex instanceof java.util.concurrent.CancellationException) return;
-                    if (!streamTracker.isRunning(parentConvIdFinal)) return;
+                    if (!streamTracker.isRunning(rootConvFinal)) return;
                     ChildResult r = (result != null) ? result
                             : ChildResult.ofError(p.index, p.agent.getName(),
                                     ex != null ? ex.getMessage() : "Unknown error");
-                    Map<String, Object> payload = new java.util.LinkedHashMap<>();
+                    Map<String, Object> payload = delegationPayload(p.subagentId, parentSubagentId, childDepth,
+                            p.childConvId, r.agentName);
                     payload.put("taskIndex", r.taskIndex);
-                    payload.put("childConversationId", p.childConvId);
-                    payload.put("childAgentName", r.agentName);
                     payload.put("success", r.success);
                     payload.put("outcome", r.outcome);
                     payload.put("rawLength", r.rawLength);
@@ -435,7 +468,7 @@ public class DelegateAgentTool {
                     payload.put("resultPreview", r.success
                             ? truncate(r.result, 400)
                             : (r.error != null ? r.error : "error"));
-                    streamTracker.broadcastObject(parentConvIdFinal, "delegation_child_complete", payload);
+                    streamTracker.broadcastObject(rootConvFinal, "delegation_child_complete", payload);
                 });
             }
 
@@ -500,7 +533,7 @@ public class DelegateAgentTool {
         }
 
         // 7. Broadcast delegation_end with per-child structured summary
-        if (hasParent) {
+        if (hasRoot) {
             List<Map<String, Object>> childResults = results.stream().map(r -> {
                 Map<String, Object> m = new java.util.LinkedHashMap<>();
                 m.put("taskIndex", r.taskIndex);
@@ -511,15 +544,18 @@ public class DelegateAgentTool {
                 m.put("trimmedLength", r.trimmedLength);
                 m.put("blank", r.isBlank());
                 m.put("durationMs", r.durationMs);
-                // childConversationId for stable frontend segment lookup
+                // childConversationId + subagentId for stable frontend tree lookup
                 prepared.stream()
                         .filter(p -> p.index == r.taskIndex)
                         .findFirst()
-                        .ifPresent(p -> m.put("childConversationId", p.childConvId));
+                        .ifPresent(p -> {
+                            m.put("childConversationId", p.childConvId);
+                            if (p.subagentId != null) m.put("subagentId", p.subagentId);
+                        });
                 if (!r.success && r.error != null) m.put("error", r.error);
                 return m;
             }).toList();
-            streamTracker.broadcastObject(parentConversationId, "delegation_end", Map.of(
+            streamTracker.broadcastObject(rootConvFinal, "delegation_end", Map.of(
                     "parallel", true,
                     "totalDurationMs", totalDurationMs,
                     "success", results.stream().allMatch(r -> r.success),
@@ -629,7 +665,12 @@ public class DelegateAgentTool {
         if (parentConversationId == null || parentConversationId.isBlank()) {
             return errorJson("delegateAsync requires a parent conversation context");
         }
-        if (subagentRegistry.isSpawnPaused(parentConversationId)) {
+        String rootConversationId = DelegationContext.rootConversationId();
+        if (rootConversationId == null) rootConversationId = parentConversationId;
+        String parentSubagentId = DelegationContext.currentSubagentId();
+        int childDepth = depth + 1;
+        if (subagentRegistry.isSpawnPaused(parentConversationId)
+                || subagentRegistry.isSpawnPaused(rootConversationId)) {
             return errorJson("Spawning paused for this conversation; resume via /api/v1/subagents/spawn-pause");
         }
 
@@ -645,24 +686,30 @@ public class DelegateAgentTool {
 
         String childConversationId = createChildConv(target, parentConversationId);
 
+        // Register first so the subagentId + tree identity can be persisted into
+        // the task payload; the registry is process-local, but the request_json
+        // is the durable record that task_output authorizes against.
+        String subagentId = subagentRegistry.register(parentConversationId, childConversationId,
+                target.getId(), task, null, parentSubagentId, childDepth, rootConversationId);
+        final String rootConvAsync = rootConversationId;
+
         String requestJson;
         try {
             Map<String, Object> payload = new LinkedHashMap<>();
             payload.put("parentConversationId", parentConversationId);
+            payload.put("rootConversationId", rootConversationId);
             payload.put("childConversationId", childConversationId);
             payload.put("childAgentId", target.getId());
+            payload.put("subagentId", subagentId);
+            if (parentSubagentId != null) payload.put("parentSubagentId", parentSubagentId);
+            payload.put("depth", childDepth);
             payload.put("task", truncate(task, ASYNC_TASK_REQUEST_MAX_CHARS));
             payload.put("label", safeLabel);
             requestJson = objectMapper.writeValueAsString(payload);
         } catch (Exception e) {
+            subagentRegistry.unregister(subagentId);
             return errorJson("Failed to serialize task payload: " + e.getMessage());
         }
-
-        // Live observability handle — task_output never reads from it; the
-        // persistent mate_async_task row is the source of truth for status,
-        // result, and attribution.
-        String subagentId = subagentRegistry.register(parentConversationId, childConversationId,
-                target.getId(), task, null);
 
         AsyncTaskEntity entity;
         try {
@@ -675,7 +722,8 @@ public class DelegateAgentTool {
                     () -> {
                         try {
                             ChildResult childResult = runSingleChild(0, target, task,
-                                    parentConversationId, childConversationId, parentOrigin);
+                                    parentConversationId, childConversationId, parentOrigin,
+                                    rootConvAsync, subagentId, childDepth);
                             return childResult.toToolResponse(target.getName());
                         } finally {
                             subagentRegistry.get(subagentId).ifPresent(rec -> {
@@ -701,14 +749,13 @@ public class DelegateAgentTool {
                 entity.getTaskId(), target.getName(), target.getId(),
                 childConversationId, parentConversationId);
 
-        if (streamTracker.isRunning(parentConversationId)) {
-            Map<String, Object> spawnEvent = new LinkedHashMap<>();
+        if (streamTracker.isRunning(rootConvAsync)) {
+            Map<String, Object> spawnEvent = delegationPayload(subagentId, parentSubagentId, childDepth,
+                    childConversationId, target.getName());
             spawnEvent.put("taskId", entity.getTaskId());
-            spawnEvent.put("childConversationId", childConversationId);
-            spawnEvent.put("childAgentName", target.getName());
             spawnEvent.put("label", safeLabel);
             spawnEvent.put("task", truncate(task, 200));
-            streamTracker.broadcastObject(parentConversationId, "delegation_async_spawned", spawnEvent);
+            streamTracker.broadcastObject(rootConvAsync, "delegation_async_spawned", spawnEvent);
         }
 
         Map<String, Object> result = new LinkedHashMap<>();
@@ -769,11 +816,13 @@ public class DelegateAgentTool {
         // a follow-up that surfaces a stable per-channel / per-cron caller
         // identity into ChatOrigin.requesterId would close this gap.
         String taskParentConv;
+        String taskRootConv;
         try {
             JsonNode req = entity.getRequestJson() == null
                     ? null
                     : objectMapper.readTree(entity.getRequestJson());
             taskParentConv = req == null ? "" : req.path("parentConversationId").asText("");
+            taskRootConv = req == null ? "" : req.path("rootConversationId").asText("");
         } catch (Exception e) {
             return errorJson("Failed to parse task payload: " + e.getMessage());
         }
@@ -781,9 +830,15 @@ public class DelegateAgentTool {
         ChatOrigin origin = ChatOrigin.from(ctx);
         String currentUser = origin != null ? origin.requesterId() : null;
 
-        if (taskParentConv.isEmpty()
-                || currentParentConv == null
-                || !taskParentConv.equals(currentParentConv)) {
+        // Authorize the caller against EITHER the immediate spawn conversation or
+        // the root of its delegation tree. The latter lets a root agent poll a
+        // task that one of its (sub)children spawned: the child stamped its own
+        // conversation as parentConversationId, but rootConversationId points
+        // back at the user-facing conversation the root agent runs in.
+        boolean convOk = currentParentConv != null
+                && ((!taskParentConv.isEmpty() && taskParentConv.equals(currentParentConv))
+                    || (!taskRootConv.isEmpty() && taskRootConv.equals(currentParentConv)));
+        if (!convOk) {
             return errorJson("Forbidden: task does not belong to current conversation");
         }
         if (entity.getCreatedBy() == null || currentUser == null
@@ -877,8 +932,19 @@ public class DelegateAgentTool {
      */
     private ChildResult runSingleChild(int taskIndex, AgentEntity target, String task,
                                         String parentConversationId, String childConversationId,
-                                        ChatOrigin parentOrigin) {
-        DelegationContext.enter(parentConversationId, deniedToolsForChild());
+                                        ChatOrigin parentOrigin,
+                                        String rootConversationId, String subagentId, int childDepth) {
+        boolean relayChildEvents = parentConversationId != null && streamTracker.isRunning(parentConversationId);
+        if (relayChildEvents) {
+            streamTracker.register(childConversationId);
+            streamTracker.incrementFlux(childConversationId);
+        }
+        // Carry root conversation + this child's subagentId into the context so
+        // a grandchild broadcasts to the root stream and tags this as its parent.
+        // Pass the real tree depth so the gate survives the executor-thread hop:
+        // async/parallel children run with an empty ThreadLocal stack.
+        DelegationContext.enter(parentConversationId, deniedToolsForChild(),
+                rootConversationId, subagentId, childDepth);
         try {
             long startTime = System.currentTimeMillis();
             // RFC-063r §2.5 改动点 5: inherit parent origin, swap agentId
@@ -897,6 +963,9 @@ public class DelegateAgentTool {
                     taskIndex, target.getName(), e.getMessage());
             return ChildResult.ofError(taskIndex, target.getName(), e.getMessage());
         } finally {
+            if (relayChildEvents) {
+                streamTracker.complete(childConversationId);
+            }
             DelegationContext.exit();
         }
     }
@@ -1097,76 +1166,110 @@ public class DelegateAgentTool {
         return childConvId;
     }
 
-    private Runnable registerRelay(String childConvId, String parentConvId, String childAgentName) {
-        return streamTracker.addEventRelay(childConvId, (eventName, jsonData) -> {
-            if ("tool_call_started".equals(eventName) || "tool_call_completed".equals(eventName) || "phase".equals(eventName)) {
-                try {
-                    // Parse jsonData into a plain Object so the frontend receives a proper
-                    // JSON object under "data", not a string containing serialized JSON.
-                    // If parsing fails (e.g. plain text payload), fall back to the raw string.
-                    Object parsedData;
-                    try {
-                        parsedData = objectMapper.readValue(jsonData, Object.class);
-                    } catch (Exception ignored) {
-                        parsedData = jsonData;
-                    }
-                    streamTracker.broadcastObject(parentConvId, "delegation_progress", Map.of(
-                            "childConversationId", childConvId,
-                            "childAgentName", childAgentName,
-                            "originalEvent", eventName,
-                            "data", parsedData));
-                } catch (Exception e) {
-                    log.debug("Relay error: {}", e.getMessage());
-                }
-            }
-        });
+    /** Child event types that are relayed to the root for the nested delegation timeline. */
+    private static final Set<String> RELAYED_CHILD_EVENTS = Set.of(
+            "tool_call_started", "tool_call_completed", "phase",
+            "plan_created", "plan_step_started", "plan_step_completed");
+
+    /** Tree identity attached to every relayed delegation event. */
+    private record RelayIdentity(String childConvId, String childAgentName,
+                                 String subagentId, String parentSubagentId, int depth) {}
+
+    /**
+     * Builds a delegation event payload carrying tree identity. A null
+     * {@code parentSubagentId} (first-level child) is omitted rather than
+     * inserted, since downstream consumers treat absence as "top of tree".
+     */
+    private Map<String, Object> delegationPayload(String subagentId, String parentSubagentId, int depth,
+                                                  String childConvId, String childAgentName) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        if (subagentId != null) m.put("subagentId", subagentId);
+        if (parentSubagentId != null) m.put("parentSubagentId", parentSubagentId);
+        m.put("depth", depth);
+        m.put("childConversationId", childConvId);
+        m.put("childAgentName", childAgentName);
+        return m;
     }
 
     /**
-     * Registers a batched relay so a chatty child does not flood the parent
-     * transcript with one tool-call event per LLM step. The streaming layer
-     * batches {@code tool_call_started} / {@code tool_call_completed} into
-     * envelopes (5 events / 500 ms) and flushes immediately on lifecycle
-     * events ({@code subagent_*}, {@code error}, {@code phase}, etc.).
+     * Registers a batched relay so a chatty child does not flood the transcript
+     * with one tool-call event per LLM step. The streaming layer batches
+     * {@code tool_call_started} / {@code tool_call_completed} into envelopes
+     * (5 events / 500 ms) and flushes immediately on lifecycle events
+     * ({@code subagent_*}, {@code error}, {@code phase}, etc.).
      *
-     * <p>The wrapper keeps the on-the-wire shape identical to
-     * {@link #registerRelay} so frontend consumers do not need to change
-     * — both batched envelopes and pass-through events surface as
-     * {@code delegation_progress} on the parent.
+     * <p>Both batched envelopes and pass-through events surface as
+     * {@code delegation_progress} on the {@code rootConvId} stream (the
+     * human-facing conversation), tagged with subagentId/parentSubagentId/depth
+     * so the frontend can rebuild the multi-level spawn tree.
      */
-    private Runnable registerBatchedRelay(String childConvId, String parentConvId, String childAgentName) {
-        return streamTracker.addBatchedEventRelay(childConvId, parentConvId, 5, 500L,
+    private Runnable registerBatchedRelay(String childConvId, String rootConvId, String childAgentName,
+                                          String subagentId, String parentSubagentId, int depth) {
+        RelayIdentity id = new RelayIdentity(childConvId, childAgentName, subagentId, parentSubagentId, depth);
+        return streamTracker.addBatchedEventRelay(childConvId, rootConvId, 5, 500L,
                 (eventName, jsonData) -> {
-                    if ("tool_call_started".equals(eventName)
-                            || "tool_call_completed".equals(eventName)
-                            || "phase".equals(eventName)) {
-                        try {
-                            Object parsedData;
-                            try {
-                                parsedData = objectMapper.readValue(jsonData, Object.class);
-                            } catch (Exception ignored) {
-                                parsedData = jsonData;
-                            }
-                            streamTracker.broadcastObject(parentConvId, "delegation_progress", Map.of(
-                                    "childConversationId", childConvId,
-                                    "childAgentName", childAgentName,
-                                    "originalEvent", eventName,
-                                    "data", parsedData));
-                        } catch (Exception e) {
-                            log.debug("Batched relay error: {}", e.getMessage());
-                        }
+                    // (1) pass-through events arrive directly (plan/phase/error);
+                    // (2) batched tool-calls arrive as a "delegation_batch"
+                    // envelope. Unpack both into delegation_progress events so the
+                    // frontend only handles a single event shape.
+                    if ("delegation_batch".equals(eventName)) {
+                        relayBatchEnvelope(jsonData, rootConvId, id);
+                    } else if (RELAYED_CHILD_EVENTS.contains(eventName)) {
+                        relayChildEvent(eventName, jsonData, rootConvId, id);
                     }
                 });
     }
 
-    private void broadcastEnd(String parentConvId, String childConvId, String agentName, ChildResult result) {
-        streamTracker.broadcastObject(parentConvId, "delegation_end", Map.of(
-                "childConversationId", childConvId,
-                "childAgentName", agentName,
-                "success", result.success,
-                "durationMs", result.durationMs,
-                "resultPreview", result.success ? truncate(result.result, 200) : (result.error != null ? result.error : "")
-        ));
+    /** Forward one child event to the root as a delegation_progress envelope. */
+    private void relayChildEvent(String eventName, String jsonData, String rootConvId, RelayIdentity id) {
+        try {
+            Object parsedData;
+            try {
+                parsedData = objectMapper.readValue(jsonData, Object.class);
+            } catch (Exception ignored) {
+                parsedData = jsonData;
+            }
+            Map<String, Object> ev = delegationPayload(id.subagentId(), id.parentSubagentId(), id.depth(),
+                    id.childConvId(), id.childAgentName());
+            ev.put("originalEvent", eventName);
+            ev.put("data", parsedData);
+            streamTracker.broadcastObject(rootConvId, "delegation_progress", ev);
+        } catch (Exception e) {
+            log.debug("Child event relay error: {}", e.getMessage());
+        }
+    }
+
+    /** Unpack a delegation_batch envelope and replay each entry as delegation_progress. */
+    @SuppressWarnings("unchecked")
+    private void relayBatchEnvelope(String envelopeJson, String rootConvId, RelayIdentity id) {
+        try {
+            Map<String, Object> envelope = objectMapper.readValue(envelopeJson, Map.class);
+            Object eventsObj = envelope.get("events");
+            if (!(eventsObj instanceof List<?> events)) return;
+            for (Object entryObj : events) {
+                if (!(entryObj instanceof Map<?, ?> entry)) continue;
+                Object name = entry.get("event");
+                Object payload = entry.get("data");
+                if (name == null) continue;
+                if (!RELAYED_CHILD_EVENTS.contains(name.toString())) continue;
+                String payloadJson = payload == null
+                        ? "{}"
+                        : (payload instanceof String s ? s : objectMapper.writeValueAsString(payload));
+                relayChildEvent(name.toString(), payloadJson, rootConvId, id);
+            }
+        } catch (Exception e) {
+            log.debug("Batch envelope relay error: {}", e.getMessage());
+        }
+    }
+
+    private void broadcastEnd(String rootConvId, String childConvId, String agentName, ChildResult result,
+                             String subagentId, String parentSubagentId, int depth) {
+        Map<String, Object> ev = delegationPayload(subagentId, parentSubagentId, depth, childConvId, agentName);
+        ev.put("success", result.success);
+        ev.put("durationMs", result.durationMs);
+        ev.put("resultPreview",
+                result.success ? truncate(result.result, 200) : (result.error != null ? result.error : ""));
+        streamTracker.broadcastObject(rootConvId, "delegation_end", ev);
     }
 
     private String resolveParentConversationId() {

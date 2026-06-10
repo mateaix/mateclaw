@@ -1,5 +1,8 @@
 <template>
-  <div v-if="modelValue" class="modal-overlay" @click.self="close">
+  <!-- Intentionally NOT closing on overlay/outside click: the form holds
+       unsaved config and an accidental click outside used to discard it.
+       Only the × button and Cancel close the modal. -->
+  <div v-if="modelValue" class="modal-overlay">
     <div class="modal modal-wide">
       <div class="modal-header">
         <h2>
@@ -189,7 +192,7 @@ function hydrateFromServer(s: McpServer) {
     envJson: s.envJson || '',
     cwd: s.cwd || '',
     connectTimeoutSeconds: s.connectTimeoutSeconds || 30,
-    readTimeoutSeconds: s.readTimeoutSeconds || 30,
+    readTimeoutSeconds: s.readTimeoutSeconds || 60,
     enabled: s.enabled,
   })
 }

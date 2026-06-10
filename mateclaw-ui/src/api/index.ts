@@ -1,5 +1,13 @@
 import axios from 'axios'
 import { handleAuthFailure, updateTokenFromHeader } from '@/utils/auth'
+import type {
+  ApprovalGrant,
+  ApprovalGrantPage,
+  ActiveGrantsSummary,
+  CreateGrantPayload,
+  ResolutionLog,
+  GrantScope,
+} from '@/types'
 
 // Axios 实例
 export const http = axios.create({
@@ -87,7 +95,7 @@ export const authApi = {
     http.post('/auth/login', data),
   listUsers: () => http.get('/auth/users'),
   createUser: (data: any) => http.post('/auth/users', data),
-  changePassword: (id: number, oldPassword: string, newPassword: string) =>
+  changePassword: (id: string | number, oldPassword: string, newPassword: string) =>
     http.put(`/auth/users/${id}/password`, null, { params: { oldPassword, newPassword } }),
 }
 
@@ -154,6 +162,13 @@ export const chatApi = {
 // ==================== Conversation ====================
 export const conversationApi = {
   list: () => http.get('/conversations'),
+  /**
+   * Paginated list used by the Sessions admin page. Keyword matches title
+   * or conversationId server-side; ChatConsole's left panel still uses the
+   * non-paginated list() because it shows a per-agent rolling history.
+   */
+  page: (params: { page?: number; size?: number; keyword?: string }) =>
+    http.get('/conversations/page', { params }),
   listMessages: (conversationId: string, params?: { beforeId?: number; limit?: number }) =>
     http.get(`/conversations/${conversationId}/messages`, { params }),
   getStatus: (conversationId: string) =>
@@ -166,6 +181,14 @@ export const conversationApi = {
     http.put(`/conversations/${conversationId}/title`, { title }),
   setPinned: (conversationId: string, pinned: boolean) =>
     http.put(`/conversations/${conversationId}/pin`, { pinned }),
+  /**
+   * Pin this conversation to a specific (provider, model). Closes issue
+   * #183 — lets the admin UI switch model for IM-channel conversations
+   * (Feishu / DingTalk / WeCom / Telegram / Discord / QQ / Slack / WeChat),
+   * not just for the Web channel. Both params required and non-empty.
+   */
+  setModel: (conversationId: string, modelProvider: string, modelName: string) =>
+    http.put(`/conversations/${conversationId}/model`, { modelProvider, modelName }),
   batchDelete: (conversationIds: string[]) =>
     http.post('/conversations/batch-delete', { conversationIds }),
 }
@@ -185,6 +208,8 @@ export const skillApi = {
     enabled?: boolean
     /** 'PASSED' / 'FAILED' — filters by security_scan_status. */
     scanStatus?: string
+    /** 'active' / 'stale' / 'archived' — filters by lifecycle_state. */
+    lifecycleState?: string
   } = {}) => http.get('/skills', { params }),
   /** Tab count aggregate — returns { all, builtin, mcp, dynamic } */
   counts: () => http.get('/skills/counts'),
@@ -217,6 +242,35 @@ export const skillApi = {
     http.post(`/skills/${id}/secrets`, { key, value }),
   deleteSecret: (id: string | number, key: string) =>
     http.delete(`/skills/${id}/secrets/${encodeURIComponent(key)}`),
+
+  // ---- Lifecycle curator ----
+  /** Pin / unpin a skill — pinned skills are never auto-archived. */
+  pin: (id: string | number, pinned: boolean) =>
+    http.post(`/skills/${id}/pin`, { pinned }),
+  /**
+   * Manually archive a skill. When the skill is bound to an enabled agent
+   * and {@code force} is false, the backend replies HTTP 409 with
+   * {@code code: 'BOUND_SKILL_CONFIRM_REQUIRED'} and a {@code boundAgents}
+   * list; retry with {@code force: true} to confirm.
+   */
+  archive: (id: string | number, opts: { force?: boolean; reason?: string } = {}) =>
+    http.post(`/skills/${id}/archive`, { reason: opts.reason ?? null },
+      { params: { force: opts.force ?? false } }),
+  /** Restore an archived skill back to active. */
+  restore: (id: string | number) => http.post(`/skills/${id}/restore`),
+  /** Curator control-panel status (config / control / counts / lastReport). */
+  curatorStatus: () => http.get('/skills/curator/status'),
+  /** Run a curator dry-run preview immediately. */
+  curatorDryRun: () => http.post('/skills/curator/dry-run'),
+  /** Activate (apply transitions) or deactivate (preview-only) the curator. */
+  curatorActivate: (activate: boolean) =>
+    http.post('/skills/curator/activate', null, { params: { activate } }),
+  curatorPause: () => http.post('/skills/curator/pause'),
+  curatorResume: () => http.post('/skills/curator/resume'),
+  /** List recent curator run report ids. */
+  curatorReports: () => http.get('/skills/curator/reports'),
+  /** Read one curator run report (parsed run.json). */
+  curatorReport: (runId: string) => http.get(`/skills/curator/reports/${runId}`),
 }
 
 /** Shape returned by GET /skills/{id}/secrets. */
@@ -260,6 +314,11 @@ export interface LiveSubagentCard {
   subagentId: string
   parentConversationId: string | null
   childConversationId: string | null
+  rootConversationId: string | null
+  /** subagentId of the immediate parent; null for first-level (depth-1) children. */
+  parentSubagentId: string | null
+  /** 1 for a first-level child, 2 for a grandchild, etc. */
+  depth: number
   agentId: number | null
   agentName: string | null
   agentIcon: string | null
@@ -380,6 +439,13 @@ export const toolApi = {
   delete: (id: string | number) => http.delete(`/tools/${id}`),
   toggle: (id: string | number, enabled: boolean) =>
     http.put(`/tools/${id}/toggle?enabled=${enabled}`),
+  /**
+   * Set a builtin/channel tool's progressive-disclosure tier
+   * ('core' | 'extension'). MCP/ACP/skill tools are tiered at their owning
+   * source and return 409 here.
+   */
+  setDisclosureTier: (id: string | number, tier: 'core' | 'extension') =>
+    http.put(`/tools/${id}/disclosure-tier`, { tier }),
 }
 
 // ==================== Channel ====================
@@ -417,6 +483,11 @@ export const channelApi = {
     http.post('/channels/webhook/dingtalk/register/begin'),
   dingtalkRegisterStatus: (sessionId: string) =>
     http.get(`/channels/webhook/dingtalk/register/status?session=${encodeURIComponent(sessionId)}`),
+  // QQ Bot scan-to-bind (Lite portal). Uses the unified channel QR auth endpoint.
+  qqRegisterBegin: () =>
+    http.post('/channels/qrcode/qq/begin'),
+  qqRegisterStatus: (sessionId: string) =>
+    http.get(`/channels/qrcode/qq/status?session=${encodeURIComponent(sessionId)}`),
 }
 
 // ==================== MCP Server ====================
@@ -430,6 +501,9 @@ export const mcpApi = {
     http.put(`/mcp/servers/${id}/toggle?enabled=${enabled}`),
   test: (id: string | number) => http.post(`/mcp/servers/${id}/test`),
   refresh: () => http.post('/mcp/servers/refresh'),
+  /** Set the whole server's tool disclosure tier ('core' | 'extension'). */
+  setDisclosureTier: (id: string | number, tier: 'core' | 'extension') =>
+    http.put(`/mcp/servers/${id}/disclosure-tier`, { tier }),
 }
 
 // ==================== Plan ====================
@@ -463,7 +537,7 @@ export const modelApi = {
   addProviderModel: (providerId: string, data: any) =>
     http.post(`/models/${providerId}/models`, data),
   removeProviderModel: (providerId: string, modelId: string) =>
-    http.delete(`/models/${providerId}/models/${encodeURIComponent(modelId)}`),
+    http.delete(`/models/${providerId}/models`, { params: { modelId } }),
   getActive: () => http.get('/models/active'),
   setActive: (data: { providerId: string; model: string }) =>
     http.put('/models/active', data),
@@ -475,7 +549,7 @@ export const modelApi = {
   testConnection: (providerId: string) =>
     http.post(`/models/${providerId}/test-connection`),
   testModel: (providerId: string, modelId: string) =>
-    http.post(`/models/${providerId}/models/${encodeURIComponent(modelId)}/test`),
+    http.post(`/models/${providerId}/models/test`, null, { params: { modelId } }),
 
   // ==================== RFC-074: enabled / catalog ====================
   /** Full provider catalog including enabled=false rows; powers the Add Provider drawer. */
@@ -570,6 +644,14 @@ export const settingsApi = {
     http.put('/settings/sidecar', data),
 }
 
+// ==================== Global outbound proxy ====================
+export const proxyApi = {
+  get: () => http.get('/settings/proxy'),
+  update: (data: { enabled: boolean; url: string; nonProxyHosts?: string }) =>
+    http.put('/settings/proxy', data),
+  test: (url: string) => http.post('/settings/proxy/test', { url }),
+}
+
 // ==================== Workspace ====================
 const encodeFilePath = (filename: string) =>
   filename.split('/').map(encodeURIComponent).join('/')
@@ -640,6 +722,8 @@ export const securityApi = {
   toggleRule: (ruleId: string, enabled: boolean) =>
     http.put(`/security/guard/rules/${ruleId}/toggle?enabled=${enabled}`),
   deleteRule: (ruleId: string) => http.delete(`/security/guard/rules/${ruleId}`),
+  exportRules: () => http.get('/security/guard/rules/export'),
+  importRules: (data: { rules: any[] }) => http.post('/security/guard/rules/import', data),
   listAuditLogs: (params?: any) => http.get('/security/audit/logs', { params }),
   getAuditStats: () => http.get('/security/audit/stats'),
   listApprovals: (params?: any) => http.get('/security/approvals', { params }),
@@ -669,11 +753,12 @@ export const cronJobApi = {
 export const wikiApi = {
   // Knowledge Base
   listKBs: () => http.get('/wiki/knowledge-bases'),
-  getKB: (id: number) => http.get(`/wiki/knowledge-bases/${id}`),
-  listKBsByAgent: (agentId: number) => http.get(`/wiki/knowledge-bases/agent/${agentId}`),
-  createKB: (data: { name: string; description?: string; agentId?: number }) =>
+  getKB: (id: string | number) => http.get(`/wiki/knowledge-bases/${id}`),
+  listKBsByAgent: (agentId: string | number) => http.get(`/wiki/knowledge-bases/agent/${agentId}`),
+  listBindableKBs: () => http.get('/wiki/knowledge-bases/bindable'),
+  createKB: (data: { name: string; description?: string; agentId?: string | number }) =>
     http.post('/wiki/knowledge-bases', data),
-  updateKB: (id: number, data: { name?: string; description?: string; agentId?: number; embeddingModelId?: string | number | null }) =>
+  updateKB: (id: string | number, data: { name?: string; description?: string; embeddingModelId?: string | number | null }) =>
     http.put(`/wiki/knowledge-bases/${id}`, data),
   deleteKB: (id: number) => http.delete(`/wiki/knowledge-bases/${id}`),
   getConfig: (id: number) => http.get(`/wiki/knowledge-bases/${id}/config`),
@@ -681,7 +766,7 @@ export const wikiApi = {
     http.put(`/wiki/knowledge-bases/${id}/config`, { content }),
 
   // Directory Scan
-  setSourceDirectory: (id: number, path: string) =>
+  setSourceDirectory: (id: string | number, path: string) =>
     http.put(`/wiki/knowledge-bases/${id}/source-directory`, { path }),
   scanDirectory: (id: number) => http.post(`/wiki/knowledge-bases/${id}/scan`),
 
@@ -710,6 +795,20 @@ export const wikiApi = {
   // Wiki Pages
   listPages: (kbId: number, rawId?: number) =>
     http.get(`/wiki/knowledge-bases/${kbId}/pages`, rawId != null ? { params: { rawId } } : undefined),
+  // Lightweight {slug, title, archived} list for wikilink resolution. Never
+  // paginated and not scoped by the current raw-material filter — this is the
+  // authoritative resolution index used by the viewer's wikilink postprocess.
+  listPageRefs: (kbId: number, includeArchived = false) =>
+    http.get(`/wiki/knowledge-bases/${kbId}/pages/refs`, { params: { includeArchived } }),
+
+  // Broken-link lint (job-based async). POST starts/returns the running job,
+  // GET reads the most recent completed scan aggregated across the KB.
+  startBrokenLinksScan: (kbId: number) =>
+    http.post(`/wiki/knowledge-bases/${kbId}/lint/broken-links`),
+  getBrokenLinksReport: (kbId: number) =>
+    http.get(`/wiki/knowledge-bases/${kbId}/lint/broken-links`),
+  getBrokenLinksJob: (kbId: number, jobId: string) =>
+    http.get(`/wiki/knowledge-bases/${kbId}/lint/broken-links/jobs/${jobId}`),
   getPage: (kbId: number, slug: string) =>
     http.get(`/wiki/knowledge-bases/${kbId}/pages/${encodeURIComponent(slug)}`),
   updatePage: (kbId: number, slug: string, content: string) =>
@@ -720,6 +819,12 @@ export const wikiApi = {
     http.delete(`/wiki/knowledge-bases/${kbId}/pages/batch`, { data: slugs }),
   getBacklinks: (kbId: number, slug: string) =>
     http.get(`/wiki/knowledge-bases/${kbId}/pages/${encodeURIComponent(slug)}/backlinks`),
+
+  // Cross-KB lookup used by the global wikilink click handler — chat
+  // messages render [[Title]] without knowing which KB the agent read
+  // from, so the handler resolves the title across every visible KB.
+  lookupPage: (params: { title?: string; slug?: string }) =>
+    http.get(`/wiki/pages/lookup`, { params }),
 
   // Archived pages
   listArchivedPages: (kbId: number) =>
@@ -734,11 +839,11 @@ export const wikiApi = {
   getProcessingStatus: (kbId: number) => http.get(`/wiki/knowledge-bases/${kbId}/processing-status`),
 
   // RFC-029: Relations
-  getRelatedPages: (kbId: number, slug: string, topK = 5) =>
+  getRelatedPages: (kbId: number | string, slug: string, topK = 5) =>
     http.get(`/wiki/kb/${kbId}/pages/${encodeURIComponent(slug)}/related`, { params: { topK } }),
   explainRelation: (kbId: number, slugA: string, slugB: string) =>
     http.get(`/wiki/kb/${kbId}/pages/${encodeURIComponent(slugA)}/relation/${encodeURIComponent(slugB)}`),
-  getPageCitations: (kbId: number, pageId: number) =>
+  getPageCitations: (kbId: number | string, pageId: number | string) =>
     http.get(`/wiki/kb/${kbId}/pages/${pageId}/citations`),
 
   // RFC-030: Jobs
@@ -774,6 +879,7 @@ export const wikiApi = {
     outputTarget?: 'none' | 'page'
     outputFormat?: 'markdown' | 'json'
     outputSchema?: string | null
+    targetPageType?: string | null
   }) =>
     http.post('/wiki/transformations', data),
   updateTransformation: (id: number, data: {
@@ -786,6 +892,7 @@ export const wikiApi = {
     outputTarget?: 'none' | 'page'
     outputFormat?: 'markdown' | 'json'
     outputSchema?: string | null
+    targetPageType?: string | null
   }) =>
     http.put(`/wiki/transformations/${id}`, data),
   deleteTransformation: (id: number) =>
@@ -806,6 +913,53 @@ export const wikiApi = {
     http.post(`/wiki/transformations/runs/${runId}/save-as-page`),
   cancelTransformationRun: (runId: number) =>
     http.post(`/wiki/transformations/runs/${runId}/cancel`),
+
+  // ---- PageType Profile (REQ-1) ----
+  getPageTypeProfile: (kbId: string | number) =>
+    http.get(`/wiki/knowledge-bases/${kbId}/page-type-profile`),
+  savePageTypeProfile: (kbId: string | number, config: string, name?: string) =>
+    http.put(`/wiki/knowledge-bases/${kbId}/page-type-profile`, { config, name }),
+  validatePageTypeProfile: (kbId: string | number, config: string) =>
+    http.post(`/wiki/knowledge-bases/${kbId}/page-type-profile/validate`, { config }),
+  resetPageTypeProfile: (kbId: string | number) =>
+    http.post(`/wiki/knowledge-bases/${kbId}/page-type-profile/reset-default`),
+  reclassifyKB: (kbId: string | number, modelId?: string | number | null) =>
+    http.post(`/wiki/knowledge-bases/${kbId}/reclassify`, modelId != null ? { modelId } : {}),
+
+  // ---- Agent pageType permissions (REQ-3) ----
+  listPageTypePermissions: (kbId: string | number, agentId: string | number) =>
+    http.get(`/wiki/knowledge-bases/${kbId}/agents/${agentId}/page-type-permissions`),
+  savePageTypePermission: (kbId: string | number, agentId: string | number, row: {
+    pageType: string
+    canRead?: number
+    canCreate?: number
+    canUpdate?: number
+    canDelete?: number
+    writePolicy?: 'allow' | 'deny' | 'approval_required'
+  }) =>
+    http.post(`/wiki/knowledge-bases/${kbId}/agents/${agentId}/page-type-permissions`, row),
+  deletePageTypePermission: (kbId: string | number, agentId: string | number, id: string | number) =>
+    http.delete(`/wiki/knowledge-bases/${kbId}/agents/${agentId}/page-type-permissions/${id}`),
+
+  // ---- Source watcher (REQ-4) ----
+  getSourceWatcher: (kbId: string | number) =>
+    http.get(`/wiki/knowledge-bases/${kbId}/source-watcher`),
+  triggerSourceWatcher: (kbId: string | number) =>
+    http.post(`/wiki/knowledge-bases/${kbId}/source-watcher/scan`),
+
+  // ---- Pipelines (REQ-5) ----
+  listPipelines: (kbId: string | number) =>
+    http.get(`/wiki/knowledge-bases/${kbId}/pipelines`),
+  savePipeline: (kbId: string | number, config: string, format: 'yaml' | 'json' = 'yaml') =>
+    http.post(`/wiki/knowledge-bases/${kbId}/pipelines`, { config, format }),
+  validatePipeline: (kbId: string | number, config: string, format: 'yaml' | 'json' = 'yaml') =>
+    http.post(`/wiki/knowledge-bases/${kbId}/pipelines/validate`, { config, format }),
+  deletePipeline: (kbId: string | number, id: string | number) =>
+    http.delete(`/wiki/knowledge-bases/${kbId}/pipelines/${id}`),
+  listPipelineRuns: (kbId: string | number, id: string | number) =>
+    http.get(`/wiki/knowledge-bases/${kbId}/pipelines/${id}/runs`),
+  getPipelineRun: (kbId: string | number, runId: string | number) =>
+    http.get(`/wiki/knowledge-bases/${kbId}/pipeline-runs/${runId}`),
 }
 
 // ==================== Workspace (Team) ====================
@@ -838,6 +992,12 @@ export const agentBindingApi = {
     http.get(`/agents/${agentId}/provider-preferences`),
   setProviderPreferences: (agentId: string | number, providerIds: string[]) =>
     http.put(`/agents/${agentId}/provider-preferences`, providerIds),
+  // Per-agent knowledge base access scope. Empty array = unrestricted
+  // (agent can reach every KB in its workspace). IDs are kept as strings
+  // for the Snowflake-precision contract.
+  listKbs: (agentId: string | number) => http.get(`/agents/${agentId}/kbs`),
+  setKbs: (agentId: string | number, kbIds: (string | number)[]) =>
+    http.put(`/agents/${agentId}/kbs`, kbIds),
 }
 
 // ==================== Dashboard ====================
@@ -922,13 +1082,19 @@ export const hotCacheApi = {
 
 export interface WorkflowSummary {
   id: number
-  workspaceId: number
+  workspaceId: string | number
   name: string
   description?: string
   enabled: boolean
   draftJson?: string
   draftUpdatedAt?: string
   latestRevisionId?: number
+  /** Human version number of the latest published revision (1, 2, 3…) — shown
+   *  as "v3" instead of the latestRevisionId snowflake. Null when unpublished. */
+  latestRevisionNumber?: number
+  /** Latest published revision's graph JSON — populated by GET /workflows/{id}
+   *  so the editor can render a published workflow whose draft was cleared. */
+  publishedGraphJson?: string
   createTime: string
   updateTime: string
 }
@@ -948,7 +1114,7 @@ export interface WorkflowRun {
   id: number
   workflowId: number
   revisionId: number
-  workspaceId: number
+  workspaceId: string | number
   state: string
   triggeredBy?: string
   initialInputRef?: string
@@ -1011,7 +1177,7 @@ export interface ResumeResponse {
 }
 
 export const workflowApi = {
-  list: (workspaceId: number) =>
+  list: (workspaceId: string | number) =>
     http.get<WorkflowSummary[]>('/workflows', { params: { workspaceId } }),
   get: (id: number) => http.get<WorkflowSummary>(`/workflows/${id}`),
   create: (data: Partial<WorkflowSummary>) =>
@@ -1082,7 +1248,7 @@ export interface WorkflowDraftTemplate {
 
 export interface TriggerSummary {
   id: number
-  workspaceId: number
+  workspaceId: string | number
   name?: string
   patternType: string
   patternJson: string
@@ -1112,7 +1278,7 @@ export interface TriggerSummary {
 }
 
 export const triggerApi = {
-  list: (workspaceId: number) =>
+  list: (workspaceId: string | number) =>
     http.get<TriggerSummary[]>('/triggers', { params: { workspaceId } }),
   get: (id: number) => http.get<TriggerSummary>(`/triggers/${id}`),
   create: (data: Partial<TriggerSummary>) =>
@@ -1121,10 +1287,140 @@ export const triggerApi = {
     http.put<TriggerSummary>(`/triggers/${id}`, data),
   delete: (id: number) => http.delete(`/triggers/${id}`),
   ingestEvent: (envelope: {
-    workspaceId: number
+    workspaceId: string | number
     patternType: string
     eventId?: string
     senderId?: string
     data?: Record<string, unknown>
   }) => http.post('/triggers/events', envelope),
+}
+
+// ==================== Persistent goals ====================
+//
+// Snowflake IDs are sent as strings end-to-end — the backend's
+// ToStringSerializer makes responses strings, and request payloads keep
+// them as strings to dodge JS Number precision loss. See CLAUDE.md
+// "ID Handling — Snowflake Precision Convention".
+
+/** One checkable item of a goal's exit checklist. */
+export interface GoalCriterion {
+  id: string
+  text: string
+  passed: boolean
+  evidence?: string
+}
+
+export interface Goal {
+  id: string
+  conversationId: string
+  agentId: string
+  workspaceId: string
+  createdBy: string
+  title: string
+  description: string
+  exitCriteria?: string | null
+  status: 'active' | 'paused' | 'completed' | 'abandoned' | 'exhausted'
+  turnBudget: number
+  turnsUsed: number
+  llmCallBudget: number
+  agentLlmCallsUsed: number
+  evalLlmCallsUsed: number
+  totalLlmCallsUsed?: number
+  progressSummary?: string | null
+  completionScore?: number | null
+  lastEvaluationAt?: string | null
+  autoFollowupEnabled: boolean
+  followupCooldownSeconds: number
+  lastFollowupAt?: string | null
+  createTime: string
+  updateTime: string
+  /** Parsed checklist; the backend always sends an array (empty when none). */
+  criteria: GoalCriterion[]
+}
+
+export interface GoalEvent {
+  id: string
+  goalId: string
+  eventType: string
+  messageId?: string | null
+  detailJson?: string | null
+  createTime: string
+}
+
+export const goalApi = {
+  create: (data: {
+    conversationId: string
+    agentId: string | number
+    workspaceId: string | number
+    title: string
+    description?: string
+    exitCriteria?: string
+    turnBudget?: number
+    llmCallBudget?: number
+    autoFollowupEnabled?: boolean
+    followupCooldownSeconds?: number
+    criteria?: { text: string }[]
+  }) => http.post<Goal>('/goals', data),
+
+  findActive: (conversationId: string) =>
+    http.get<Goal | null>(`/goals/by-conversation/${conversationId}`),
+
+  get: (id: string) => http.get<Goal>(`/goals/${id}`),
+
+  events: (id: string, limit = 100) =>
+    http.get<GoalEvent[]>(`/goals/${id}/events`, { params: { limit } }),
+
+  list: (params?: { status?: string; limit?: number }) =>
+    http.get<Goal[]>('/goals', { params }),
+
+  update: (id: string, data: Partial<Goal>) => http.patch<Goal>(`/goals/${id}`, data),
+  pause: (id: string) => http.post<Goal>(`/goals/${id}/pause`),
+  resume: (id: string) => http.post<Goal>(`/goals/${id}/resume`),
+  abandon: (id: string) => http.post<Goal>(`/goals/${id}/abandon`),
+  addCriterion: (id: string, criterion: string) =>
+    http.post<Goal>(`/goals/${id}/criteria`, { criterion }),
+}
+
+// ==================== Approval Auto-Grant ====================
+
+/**
+ * Client for the /api/v1/approval/* surface. The backend serializes all
+ * snowflake ids as strings (CLAUDE.md precision convention); callers should
+ * keep them as strings end-to-end and never run them through Number().
+ */
+export const approvalApi = {
+  /**
+   * List grants visible in the current workspace, paged. mine=true skips the
+   * admin gate. Page is 1-based; size is bounded server-side to [1, 200].
+   */
+  listGrants: (params?: {
+    scopeType?: GrantScope
+    toolName?: string
+    revoked?: 0 | 1
+    mine?: boolean
+    page?: number
+    size?: number
+  }) => http.get<ApprovalGrantPage>('/approval/grants', { params }),
+
+  /** Active-grant summary used by the global chip + ChatInput pill counters. */
+  activeSummary: () =>
+    http.get<ActiveGrantsSummary>('/approval/grants/active'),
+
+  /** Create a grant. Returns the persisted row. */
+  createGrant: (payload: CreateGrantPayload) =>
+    http.post<ApprovalGrant>('/approval/grants', payload),
+
+  /** Soft-revoke a grant. Caller must be the grant owner OR a workspace admin. */
+  revokeGrant: (id: string) =>
+    http.delete<void>(`/approval/grants/${id}`),
+
+  /**
+   * Read approval-layer final decisions. {@code grantId} queries require admin;
+   * {@code conversationId} queries are visible to any workspace member.
+   */
+  listResolutions: (params: {
+    grantId?: string
+    conversationId?: string
+    limit?: number
+  }) => http.get<ResolutionLog[]>('/approval/resolutions', { params }),
 }

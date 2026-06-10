@@ -46,6 +46,28 @@ public class I18nService {
     }
 
     /**
+     * Resolve a message key that is expected to be optionally absent — e.g. an
+     * override that legitimately does not exist for every subject (a tool may
+     * ship its description in code rather than in the message bundle).
+     * <p>
+     * Unlike {@link #msg(String, Object...)}, a missing key returns {@code null}
+     * and is NOT logged: the caller treats absence as "use the built-in default",
+     * which is normal operation rather than a misconfiguration worth a log line.
+     *
+     * @param key  消息键
+     * @param args 占位符参数
+     * @return 解析后的消息文本，找不到 key 时返回 {@code null}
+     */
+    public String msgOptional(String key, Object... args) {
+        Locale locale = resolveLocale();
+        try {
+            return messageSource.getMessage(key, args, locale);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
      * Clear the cached Locale. Call after a language switch so that the next
      * {@link #msg(String, Object...)} call re-reads {@code SystemSettingService.getLanguage()}.
      */

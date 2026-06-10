@@ -145,8 +145,8 @@ class MultimodalRouterTest {
     }
 
     @Test
-    @DisplayName("Configured sidecar that does not actually support VISION → fallback to NONE")
-    void sidecarLacksClaimedCapability() {
+    @DisplayName("Explicit sidecar is honoured even when heuristics don't confirm VISION capability")
+    void sidecarHonouredDespiteUnconfirmedCapability() {
         ModelConfigEntity primary = chatModel("deepseek", "deepseek-chat", null);
         ModelConfigEntity vision = chatModel("acme", "acme-chat", "[]");
         vision.setId(42L);
@@ -161,8 +161,12 @@ class MultimodalRouterTest {
 
         MultimodalRoutingDecision decision = router.route(List.of(imagePart("a.png")), primary);
 
-        assertEquals(MultimodalRoutingDecision.Strategy.NONE, decision.strategy());
-        assertEquals("vision_model_unavailable", decision.skipped().get(0).reason());
+        // An explicit sidecar selection is the user's own capability declaration:
+        // honour it even when the built-in heuristics don't recognize the model as
+        // vision-capable (a wrong pick degrades gracefully at caption time, rather
+        // than the attachment being silently dropped).
+        assertEquals(MultimodalRoutingDecision.Strategy.SIDECAR, decision.strategy());
+        assertEquals(vision, decision.sidecarModel());
     }
 
     @Test

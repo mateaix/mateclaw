@@ -58,81 +58,92 @@
     <div class="conversation-list">
       <template v-for="group in groupedConversations" :key="group.label">
         <div v-if="!collapsed || isMobile" class="conv-group-title">{{ group.label }}</div>
-        <div
+        <McTooltip
           v-for="conv in group.items"
           :key="conv.conversationId"
-          class="conv-item"
-          :class="{
-            active: !selectMode && currentConversationId === conv.conversationId,
-            'is-running': conv.streamStatus === 'running',
-            'is-selected': selectMode && selectedConvIds.includes(conv.conversationId),
-            'menu-open': menuConvId === conv.conversationId,
-          }"
-          @click="onConvClick(conv)"
+          :content="conv.title"
+          placement="right"
+          :disabled="!collapsed || isMobile || !conv.title"
         >
-          <label
-            v-if="selectMode && (!collapsed || isMobile)"
-            class="conv-checkbox"
-            @click.stop
+          <div
+            class="conv-item"
+            :class="{
+              active: !selectMode && currentConversationId === conv.conversationId,
+              'is-running': conv.streamStatus === 'running',
+              'is-selected': selectMode && selectedConvIds.includes(conv.conversationId),
+              'menu-open': menuConvId === conv.conversationId,
+            }"
+            @click="onConvClick(conv)"
           >
-            <input
-              type="checkbox"
-              :checked="selectedConvIds.includes(conv.conversationId)"
-              @change="toggleConvSelection(conv)"
-            />
-          </label>
-          <div class="conv-icon">
-            <img :src="channelIconUrl(conv.source)" width="14" height="14" alt="" />
-            <span
-              v-if="conv.streamStatus === 'running'"
-              class="conv-running-dot"
-              :title="t('chat.streamGenerating')"
-            ></span>
-          </div>
-          <div v-if="!collapsed || isMobile" class="conv-info">
-            <input
-              v-if="renamingConvId === conv.conversationId"
-              v-model="renameText"
-              class="conv-title-input"
-              @keydown.enter="confirmRename(conv)"
-              @keydown.escape="cancelRename"
-              @blur="confirmRename(conv)"
+            <label
+              v-if="selectMode && (!collapsed || isMobile)"
+              class="conv-checkbox"
               @click.stop
-            />
-            <div v-else class="conv-title" @dblclick.stop="startRename(conv)">
-              <span>{{ conv.title }}</span>
-              <span
-                v-if="hasUnread(conv)"
-                class="conv-unread-dot"
-                :title="t('chat.hasUnread', '有新内容')"
-              ></span>
+            >
+              <input
+                type="checkbox"
+                :checked="selectedConvIds.includes(conv.conversationId)"
+                @change="toggleConvSelection(conv)"
+              />
+            </label>
+            <div class="conv-icon">
+              <img :src="channelIconUrl(conv.source)" width="14" height="14" alt="" />
               <span
                 v-if="conv.streamStatus === 'running'"
-                class="conv-running-badge"
+                class="conv-running-dot"
                 :title="t('chat.streamGenerating')"
+              ></span>
+            </div>
+            <div v-if="!collapsed || isMobile" class="conv-info">
+              <input
+                v-if="renamingConvId === conv.conversationId"
+                v-model="renameText"
+                class="conv-title-input"
+                @keydown.enter="confirmRename(conv)"
+                @keydown.escape="cancelRename"
+                @blur="confirmRename(conv)"
+                @click.stop
+              />
+              <div v-else class="conv-title" @dblclick.stop="startRename(conv)">
+                <span>{{ conv.title }}</span>
+                <span
+                  v-if="convGoalStatus(conv.conversationId) === 'active'"
+                  class="conv-goal-dot"
+                  :title="t('goal.sidebarActive', '此对话有正在进行的目标')"
+                ></span>
+                <span
+                  v-if="hasUnread(conv)"
+                  class="conv-unread-dot"
+                  :title="t('chat.hasUnread', '有新内容')"
+                ></span>
+                <span
+                  v-if="conv.streamStatus === 'running'"
+                  class="conv-running-badge"
+                  :title="t('chat.streamGenerating')"
+                >
+                  <span class="conv-running-badge-pulse"></span>
+                  {{ t('chat.streamGenerating') }}
+                </span>
+              </div>
+              <div class="conv-meta">
+                <span>{{ t('chat.messages', { count: conv.messageCount }) }}</span>
+                <span class="conv-dot">·</span>
+                <span>{{ formatConversationTime(conv.lastActiveTime) }}</span>
+              </div>
+            </div>
+            <!-- Single overflow ("⋮") button — opens the conversation context menu. -->
+            <div v-if="!selectMode && (!collapsed || isMobile)" class="conv-kebab-wrap">
+              <button
+                class="conv-kebab"
+                :class="{ open: menuConvId === conv.conversationId }"
+                @click.stop="openMenu(conv, $event)"
+                :title="t('common.more')"
               >
-                <span class="conv-running-badge-pulse"></span>
-                {{ t('chat.streamGenerating') }}
-              </span>
-            </div>
-            <div class="conv-meta">
-              <span>{{ t('chat.messages', { count: conv.messageCount }) }}</span>
-              <span class="conv-dot">·</span>
-              <span>{{ formatConversationTime(conv.lastActiveTime) }}</span>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg>
+              </button>
             </div>
           </div>
-          <!-- Single overflow ("⋮") button — opens the conversation context menu. -->
-          <div v-if="!selectMode && (!collapsed || isMobile)" class="conv-kebab-wrap">
-            <button
-              class="conv-kebab"
-              :class="{ open: menuConvId === conv.conversationId }"
-              @click.stop="openMenu(conv, $event)"
-              :title="t('common.more')"
-            >
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg>
-            </button>
-          </div>
-        </div>
+        </McTooltip>
       </template>
 
       <div v-if="conversations.length === 0" class="empty-convs">
@@ -181,11 +192,22 @@ import { useI18n } from 'vue-i18n'
 import { Plus } from '@element-plus/icons-vue'
 import AgentPickerDialog from '@/components/common/AgentPickerDialog.vue'
 import DropdownMenu, { type DropdownMenuItem } from '@/components/common/DropdownMenu.vue'
+import McTooltip from '@/components/common/McTooltip.vue'
 import { conversationApi } from '@/api/index'
 import { channelIconUrl } from '@/utils/channelSource'
 import { mcToast } from '@/composables/useMcToast'
 import { mcConfirm } from '@/components/common/useConfirm'
 import type { Conversation, Agent } from '@/types'
+import { useGoalStore } from '@/stores/useGoalStore'
+
+const goalStore = useGoalStore()
+/** Sidebar marker: a 6 px dot next to the conv title when that conv
+ *  has an active goal. Color tracks status (orange = in progress).
+ *  Falls back silently when the store hasn't loaded this conv yet. */
+function convGoalStatus(cid: string): string | null {
+  const g = goalStore.activeGoalByConv?.[cid]
+  return g?.status ?? null
+}
 
 const props = defineProps<{
   conversations: Conversation[]
@@ -390,7 +412,7 @@ function hasUnread(conv: Conversation): boolean {
   if (!Number.isFinite(lastActive)) return false
   let viewed = 0
   try {
-    viewed = Number(localStorage.getItem(VIEWED_KEY_PREFIX + conv.conversationId) || '0')
+    viewed = Number(localStorage.getItem(VIEWED_KEY_PREFIX + conv.conversationId) || '0') // snowflake-precision-ok: stored value is a last-viewed epoch-ms timestamp, not an id
   } catch {
     // Treat as never-viewed when storage is unavailable.
   }
@@ -675,6 +697,22 @@ function onMenuSelect(item: DropdownMenuItem) {
   margin-left: 6px;
   flex-shrink: 0;
   vertical-align: middle;
+}
+
+/* Sidebar marker for "this conversation has an active goal". Same hue
+ * family as the avatar ring; sits at 60% opacity so it whispers rather
+ * than competes with unread / running indicators on the same row. */
+.conv-goal-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--mc-primary, #d97757);
+  opacity: 0.7;
+  margin-left: 6px;
+  flex-shrink: 0;
+  vertical-align: middle;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--mc-primary, #d97757) 18%, transparent);
 }
 
 .conv-item.is-running {

@@ -5,8 +5,11 @@ import org.springframework.web.multipart.MultipartFile;
 import vip.mate.skill.installer.model.SkillBundle;
 import vip.mate.skill.runtime.SkillFrontmatterParser;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -26,6 +29,8 @@ import java.util.zip.ZipInputStream;
  *   <li>Zip Slip path traversal</li>
  *   <li>Per-file ≤1MB, total ≤50MB</li>
  *   <li>Only SKILL.md / references/ / scripts/ entries are kept</li>
+ *   <li>Binary entries are skipped with a WARN — bundle storage is text-only,
+ *       so decoding them as text would persist corrupted content</li>
  * </ul>
  *
  * <p>Extraction is two-pass: the entire archive is buffered in memory first
@@ -135,12 +140,55 @@ public class ZipSkillFetcher {
      * instead of being silently dropped.
      */
     public static ExtractedSkill extract(InputStream zipStream) throws IOException {
+        return extract(zipStream.readAllBytes());
+    }
+
+    /** Fallback charset for archives authored on Chinese Windows (entry names / content in GBK). */
+    private static final Charset GBK = Charset.isSupported("GBK") ? Charset.forName("GBK") : null;
+
+    /**
+     * Decompress raw ZIP bytes, trying UTF-8 first and falling back to GBK when
+     * an entry name fails to decode as UTF-8 — the common failure mode for zips
+     * packaged on Chinese Windows, where filenames are GBK and UTF-8 decoding
+     * throws a {@link CharacterCodingException}. Buffering the bytes (rather than
+     * a one-shot stream) is what makes the retry possible.
+     */
+    public static ExtractedSkill extract(byte[] zipBytes) throws IOException {
+        try {
+            return extract(zipBytes, StandardCharsets.UTF_8);
+        } catch (IOException | RuntimeException e) {
+            if (GBK != null && isCharsetError(e)) {
+                log.warn("[ZipSkillFetcher] UTF-8 entry decode failed, retrying with GBK (Windows-authored archive?)");
+                return extract(zipBytes, GBK);
+            }
+            throw e;
+        }
+    }
+
+    /** True if {@code t} (or any cause) is a charset-decode failure, vs a genuine "no SKILL.md" error. */
+    private static boolean isCharsetError(Throwable t) {
+        for (Throwable c = t; c != null; c = c.getCause()) {
+            if (c instanceof CharacterCodingException) {
+                return true;
+            }
+            String m = c.getMessage();
+            if (m != null && m.toLowerCase().contains("malformed")) {
+                return true;
+            }
+            if (c.getCause() == c) {
+                break;
+            }
+        }
+        return false;
+    }
+
+    private static ExtractedSkill extract(byte[] zipBytes, Charset charset) throws IOException {
         List<RawEntry> raws = new ArrayList<>();
         String skillMdContent = null;
         String skillMdPrefix = "";
         long totalSize = 0;
 
-        try (ZipInputStream zis = new ZipInputStream(zipStream, StandardCharsets.UTF_8)) {
+        try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(zipBytes), charset)) {
             ZipEntry entry;
             while ((entry = zis.getNextEntry()) != null) {
                 if (entry.isDirectory()) {
@@ -149,6 +197,13 @@ public class ZipSkillFetcher {
                 }
 
                 String entryName = entry.getName();
+
+                // Skip macOS archive cruft so it doesn't surface as "ignored" noise.
+                if (entryName.startsWith("__MACOSX/") || entryName.equals(".DS_Store")
+                        || entryName.endsWith("/.DS_Store")) {
+                    zis.closeEntry();
+                    continue;
+                }
 
                 // Zip Slip guard: normalize and reject absolute / traversal entries.
                 Path entryPath = Path.of(entryName).normalize();
@@ -176,7 +231,24 @@ public class ZipSkillFetcher {
                     throw new IOException("Total extracted size exceeds 50MB limit");
                 }
 
-                String content = new String(bytes, StandardCharsets.UTF_8);
+                // Skill bundles persist file contents as text (mate_skill_file
+                // is a TEXT column; SkillBundle carries Map<String,String>).
+                // Decoding a binary entry (.png/.woff/.zip/compiled helper, …)
+                // as text replaces every invalid byte with U+FFFD, so the file
+                // would be stored permanently corrupted and "restored" broken
+                // on every sync. Binary resources are not supported in a bundle
+                // today, so skip them with a clear WARN instead of silently
+                // mangling them — matches how unknown root-level files are
+                // already handled below. (Root-level binaries were already
+                // dropped; this also covers binaries nested in scripts/ and
+                // references/, which previously slipped through corrupted.)
+                if (isLikelyBinary(bytes)) {
+                    log.warn("[ZipSkillFetcher] Skipping binary entry (not supported in skill bundles): {}", entryName);
+                    zis.closeEntry();
+                    continue;
+                }
+
+                String content = new String(bytes, charset);
                 String normalizedName = entryPath.toString().replace('\\', '/');
                 String fileName = entryPath.getFileName().toString();
 
@@ -234,6 +306,27 @@ public class ZipSkillFetcher {
         }
 
         return new ExtractedSkill(skillMdContent, references, scripts);
+    }
+
+    /**
+     * Heuristic binary detector: an entry is treated as binary if a NUL byte
+     * (0x00) appears within the inspected prefix. UTF-8 and GBK text never
+     * contain a NUL, while virtually every binary format (PNG/WOFF/ZIP/class/
+     * native executable) carries one near the start — this is the same cheap,
+     * reliable test git uses to decide "is this a text file". Inspecting only a
+     * prefix keeps it O(1) for large entries.
+     */
+    private static boolean isLikelyBinary(byte[] bytes) {
+        if (bytes == null || bytes.length == 0) {
+            return false;
+        }
+        int limit = Math.min(bytes.length, 8000);
+        for (int i = 0; i < limit; i++) {
+            if (bytes[i] == 0x00) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

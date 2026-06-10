@@ -3,6 +3,9 @@ package vip.mate.tool.document;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -21,8 +24,9 @@ class GeneratedFileCacheScrubTest {
     private GeneratedFileCache cache;
 
     @BeforeEach
-    void setUp() {
-        cache = new GeneratedFileCache();
+    void setUp(@TempDir Path tempDir) {
+        // Hermetic storage so put() does not litter the real data/ dir.
+        cache = new GeneratedFileCache(tempDir);
     }
 
     @Test

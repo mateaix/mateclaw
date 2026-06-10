@@ -9,24 +9,37 @@ import org.springframework.stereotype.Service;
 import vip.mate.agent.binding.model.AgentProviderPreference;
 import vip.mate.agent.binding.model.AgentSkillBinding;
 import vip.mate.agent.binding.model.AgentToolBinding;
+import vip.mate.agent.binding.model.AgentWikiKbBinding;
 import vip.mate.agent.binding.repository.AgentProviderPreferenceMapper;
 import vip.mate.agent.binding.repository.AgentSkillBindingMapper;
 import vip.mate.agent.binding.repository.AgentToolBindingMapper;
+import vip.mate.agent.binding.repository.AgentWikiKbBindingMapper;
 import vip.mate.agent.model.AgentEntity;
 import vip.mate.agent.repository.AgentMapper;
 import vip.mate.exception.MateClawException;
+import vip.mate.llm.routing.AgentBindingResolver;
 import vip.mate.skill.acp.AcpSkillBridge;
 import vip.mate.skill.mcp.McpSkillBridge;
+import vip.mate.skill.lifecycle.BlockedByBindingRow;
+import vip.mate.skill.lifecycle.ConfirmRequiredException;
 import vip.mate.skill.model.SkillEntity;
 import vip.mate.skill.repository.SkillMapper;
 import vip.mate.skill.runtime.SkillRuntimeService;
 import vip.mate.skill.runtime.model.ResolvedSkill;
 import vip.mate.tool.model.AvailableToolDTO;
 import vip.mate.tool.service.AvailableToolService;
+import vip.mate.wiki.model.WikiKnowledgeBaseEntity;
+import vip.mate.wiki.repository.WikiKnowledgeBaseMapper;
 
+import java.time.Duration;
+import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -41,11 +54,22 @@ import java.util.stream.Collectors;
  */
 @Slf4j
 @Service
-public class AgentBindingService {
+public class AgentBindingService implements AgentBindingResolver {
 
     private final AgentSkillBindingMapper skillBindingMapper;
     private final AgentToolBindingMapper toolBindingMapper;
     private final AgentProviderPreferenceMapper providerPreferenceMapper;
+    /**
+     * Agent ↔ KB access-scope rows. Plain mapper (no transitive deps), so it
+     * is safe to wire directly here without risking a boot-time cycle.
+     */
+    private final AgentWikiKbBindingMapper kbBindingMapper;
+    /**
+     * Used only to verify a KB lives in the agent's workspace before pinning
+     * it. Like {@link #agentMapper}, a bare mapper avoids pulling the wiki
+     * service layer (and its dependency on agent binding) into this bean.
+     */
+    private final WikiKnowledgeBaseMapper kbMapper;
     /**
      * {@code @Lazy} — SkillRuntimeService and AgentBindingService both sit
      * near the agent boot path; the lazy proxy avoids a circular bean
@@ -84,6 +108,8 @@ public class AgentBindingService {
     public AgentBindingService(AgentSkillBindingMapper skillBindingMapper,
                                AgentToolBindingMapper toolBindingMapper,
                                AgentProviderPreferenceMapper providerPreferenceMapper,
+                               AgentWikiKbBindingMapper kbBindingMapper,
+                               WikiKnowledgeBaseMapper kbMapper,
                                @Lazy SkillRuntimeService skillRuntimeService,
                                AvailableToolService availableToolService,
                                AgentMapper agentMapper,
@@ -92,6 +118,8 @@ public class AgentBindingService {
         this.skillBindingMapper = skillBindingMapper;
         this.toolBindingMapper = toolBindingMapper;
         this.providerPreferenceMapper = providerPreferenceMapper;
+        this.kbBindingMapper = kbBindingMapper;
+        this.kbMapper = kbMapper;
         this.skillRuntimeService = skillRuntimeService;
         this.availableToolService = availableToolService;
         this.agentMapper = agentMapper;
@@ -109,13 +137,33 @@ public class AgentBindingService {
     }
 
     /**
-     * 获取 Agent 绑定的 enabled skill ID 集合。
-     * 返回 null 表示该 agent 没有自定义绑定（使用全局默认）。
+     * Effective bound skill IDs for the agent. Three return states:
+     *
+     * <ul>
+     *   <li>{@code null} — no binding rows exist and the agent has not opted
+     *       out of skills. Caller treats this as "no agent-level restriction;
+     *       inherit every globally-enabled skill" (legacy default).</li>
+     *   <li>{@code Set.of()} — either {@code skills_disabled=true} on the agent,
+     *       or binding rows exist but none are {@code enabled=true}. Caller
+     *       treats this as "this agent is explicitly scoped to zero skills" —
+     *       no SKILL.md catalog injection, no skill-expanded tools.</li>
+     *   <li>non-empty set — the explicit allowlist.</li>
+     * </ul>
+     *
+     * <p>The {@code skills_disabled} flag takes precedence over row count, so
+     * a stale (disabled flag + leftover rows) row combination still surfaces
+     * as "no skills". The {@code setSkillBindings} / {@code bindSkill} writers
+     * keep these in sync by auto-clearing the flag when a non-empty row set is
+     * persisted.
      */
+    @Override
     public Set<Long> getBoundSkillIds(Long agentId) {
+        if (isSkillsDisabled(agentId)) {
+            return Set.of();
+        }
         List<AgentSkillBinding> bindings = listSkillBindings(agentId);
         if (bindings.isEmpty()) {
-            return null; // 无绑定 → 全局默认
+            return null; // no rows → inherit global default
         }
         return bindings.stream()
                 .filter(b -> Boolean.TRUE.equals(b.getEnabled()))
@@ -125,7 +173,11 @@ public class AgentBindingService {
 
     public AgentSkillBinding bindSkill(Long agentId, Long skillId) {
         requireSameWorkspace(agentId, skillId);
-        // 检查是否已绑定
+        // Adding any skill binding is a concrete commitment — the operator
+        // wants this skill on the agent, which contradicts an opt-out flag.
+        // Clear the flag here so the data layer never holds a
+        // "skills_disabled=true + binding rows" contradiction.
+        clearSkillsDisabledFlag(agentId);
         AgentSkillBinding existing = skillBindingMapper.selectOne(
                 new LambdaQueryWrapper<AgentSkillBinding>()
                         .eq(AgentSkillBinding::getAgentId, agentId)
@@ -151,7 +203,14 @@ public class AgentBindingService {
     }
 
     /**
-     * 批量设置 Agent 的 skill 绑定（替换模式）
+     * Replace the agent's skill binding set.
+     *
+     * <p>Side effect: when {@code skillIds} contains at least one entry,
+     * the {@code skills_disabled} flag on the agent is auto-cleared. A
+     * non-empty save is a concrete commitment to those skills, so the
+     * data layer never holds a {@code disabled=true} + binding rows
+     * contradiction. An empty / null save does <strong>not</strong>
+     * touch the flag — the caller (UI toggle) owns that bit.
      */
     public void setSkillBindings(Long agentId, List<Long> skillIds) {
         // Validate every incoming skill BEFORE touching the binding rows;
@@ -163,11 +222,17 @@ public class AgentBindingService {
                 requireSameWorkspace(agentId, skillId);
             }
         }
-        // 删除旧绑定
+        // Auto-clear the flag only when an explicit non-empty binding is
+        // being committed. An empty save is ambiguous — the UI may be
+        // either "uncheck everything" (keep flag as-is so the toggle
+        // remains the source of truth) or just "no rows" (legacy). We let
+        // the writer of skills_disabled (typically the agent PUT) own that.
+        if (skillIds != null && !skillIds.isEmpty()) {
+            clearSkillsDisabledFlag(agentId);
+        }
         skillBindingMapper.delete(
                 new LambdaQueryWrapper<AgentSkillBinding>()
                         .eq(AgentSkillBinding::getAgentId, agentId));
-        // 创建新绑定
         if (skillIds != null) {
             for (Long skillId : skillIds) {
                 AgentSkillBinding binding = new AgentSkillBinding();
@@ -177,6 +242,103 @@ public class AgentBindingService {
                 skillBindingMapper.insert(binding);
             }
         }
+    }
+
+    // ==================== Lifecycle curator support ====================
+
+    /**
+     * Skill ids explicitly bound to at least one enabled agent (binding row
+     * {@code enabled = true} AND agent row {@code enabled = true}). The
+     * lifecycle curator excludes these from its candidate set so it never
+     * silently undoes a user's explicit skill picks.
+     */
+    public Set<Long> skillIdsBoundToEnabledAgents() {
+        Set<Long> enabledAgentIds = enabledAgentIds();
+        if (enabledAgentIds.isEmpty()) {
+            return Set.of();
+        }
+        return skillBindingMapper.selectList(new LambdaQueryWrapper<AgentSkillBinding>()
+                        .eq(AgentSkillBinding::getEnabled, true))
+                .stream()
+                .filter(b -> b.getSkillId() != null && enabledAgentIds.contains(b.getAgentId()))
+                .map(AgentSkillBinding::getSkillId)
+                .collect(Collectors.toSet());
+    }
+
+    /**
+     * Binding-protected skills with the detail the lifecycle run report
+     * needs: {@code {skillId, name, agentIds, daysIdle}}. Hard-exempt skills
+     * (builtin / mcp / acp / pinned) are excluded since they would not be
+     * archival candidates regardless of bindings.
+     */
+    public List<BlockedByBindingRow> blockedByBindingCandidates(LocalDateTime now) {
+        Set<Long> enabledAgentIds = enabledAgentIds();
+        if (enabledAgentIds.isEmpty()) {
+            return List.of();
+        }
+        Map<Long, List<Long>> bySkill = new HashMap<>();
+        for (AgentSkillBinding b : skillBindingMapper.selectList(new LambdaQueryWrapper<AgentSkillBinding>()
+                .eq(AgentSkillBinding::getEnabled, true))) {
+            if (b.getSkillId() == null || !enabledAgentIds.contains(b.getAgentId())) {
+                continue;
+            }
+            bySkill.computeIfAbsent(b.getSkillId(), k -> new ArrayList<>()).add(b.getAgentId());
+        }
+        if (bySkill.isEmpty()) {
+            return List.of();
+        }
+        List<BlockedByBindingRow> rows = new ArrayList<>();
+        for (SkillEntity skill : skillMapper.selectBatchIds(bySkill.keySet())) {
+            if (Boolean.TRUE.equals(skill.getBuiltin()) || Boolean.TRUE.equals(skill.getPinned())) {
+                continue;
+            }
+            String type = skill.getSkillType();
+            if (type != null && List.of("builtin", "mcp", "acp").contains(type)) {
+                continue;
+            }
+            LocalDateTime anchor = skill.getLastActivityAt() != null
+                    ? skill.getLastActivityAt() : skill.getCreateTime();
+            long daysIdle = anchor == null ? 0L : Duration.between(anchor, now).toDays();
+            rows.add(new BlockedByBindingRow(skill.getId(), skill.getName(),
+                    bySkill.get(skill.getId()), daysIdle));
+        }
+        return rows;
+    }
+
+    /**
+     * Enabled agents that explicitly bind {@code skillId}. Used by manual
+     * archive to list the agents an admin would affect before confirming.
+     */
+    public List<ConfirmRequiredException.AgentRow> enabledAgentsBoundToSkill(Long skillId) {
+        if (skillId == null) {
+            return List.of();
+        }
+        Set<Long> agentIds = skillBindingMapper.selectList(new LambdaQueryWrapper<AgentSkillBinding>()
+                        .eq(AgentSkillBinding::getSkillId, skillId)
+                        .eq(AgentSkillBinding::getEnabled, true))
+                .stream()
+                .map(AgentSkillBinding::getAgentId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        if (agentIds.isEmpty()) {
+            return List.of();
+        }
+        return agentMapper.selectList(new LambdaQueryWrapper<AgentEntity>()
+                        .in(AgentEntity::getId, agentIds)
+                        .eq(AgentEntity::getEnabled, true))
+                .stream()
+                .map(a -> new ConfirmRequiredException.AgentRow(a.getId(), a.getName()))
+                .collect(Collectors.toList());
+    }
+
+    /** Ids of every currently-enabled agent. */
+    private Set<Long> enabledAgentIds() {
+        return agentMapper.selectList(new LambdaQueryWrapper<AgentEntity>()
+                        .eq(AgentEntity::getEnabled, true)
+                        .select(AgentEntity::getId))
+                .stream()
+                .map(AgentEntity::getId)
+                .collect(Collectors.toSet());
     }
 
     /**
@@ -267,13 +429,26 @@ public class AgentBindingService {
     }
 
     /**
-     * 获取 Agent 绑定的 enabled tool name 集合。
-     * 返回 null 表示该 agent 没有自定义绑定（使用全局默认）。
+     * Effective bound tool names for the agent. Mirrors the three-state
+     * contract of {@link #getBoundSkillIds}:
+     *
+     * <ul>
+     *   <li>{@code null} — no binding rows and {@code tools_disabled=false}.
+     *       Caller defers to the global default tool set.</li>
+     *   <li>{@code Set.of()} — {@code tools_disabled=true}, or all rows are
+     *       {@code enabled=false}. The agent is explicitly scoped to no
+     *       user-pickable tools (system-level memory primitives still flow
+     *       through {@link #getEffectiveToolNames}).</li>
+     *   <li>non-empty set — the explicit allowlist.</li>
+     * </ul>
      */
     public Set<String> getBoundToolNames(Long agentId) {
+        if (isToolsDisabled(agentId)) {
+            return Set.of();
+        }
         List<AgentToolBinding> bindings = listToolBindings(agentId);
         if (bindings.isEmpty()) {
-            return null; // 无绑定 → 全局默认
+            return null; // no rows → inherit global default
         }
         return bindings.stream()
                 .filter(b -> Boolean.TRUE.equals(b.getEnabled()))
@@ -282,8 +457,8 @@ public class AgentBindingService {
     }
 
     /**
-     * RFC-090 §14.2 — single entry point that maps an agent's bindings to
-     * the set of tool names allowed at runtime.
+     * Single entry point that maps an agent's bindings to the set of tool
+     * names allowed at runtime.
      *
      * <p>Three-state semantics (mirrors {@link #getBoundSkillIds} /
      * {@link #getBoundToolNames}):
@@ -326,26 +501,43 @@ public class AgentBindingService {
      * </ul>
      */
     public Set<String> getEffectiveToolNames(Long agentId) {
+        AgentEntity agent = agentMapper.selectById(agentId);
+        boolean skillsDisabled = agent != null && Boolean.TRUE.equals(agent.getSkillsDisabled());
+        boolean toolsDisabled = agent != null && Boolean.TRUE.equals(agent.getToolsDisabled());
+
         Set<Long> boundSkillIds = getBoundSkillIds(agentId);
         Set<String> directTools = getBoundToolNames(agentId);
 
-        // (1) null + null → no restriction; defer to the global default.
+        // Four-state matrix — see issue #184.
+        //
+        // (1) Pure legacy: no flags, no rows on either side → defer to global
+        //     default (returns null). Agents created before V126 must remain
+        //     bit-identical to their previous runtime contract.
         if (boundSkillIds == null && directTools == null) {
+            return null;
+        }
+
+        // (2) Skills-only opt-out with no explicit tool restriction → still
+        //     defer tools to the global default. Without this carve-out, a
+        //     user who only said "no skills" would silently lose every
+        //     non-MCP global tool because the merge branch only emits the
+        //     SYSTEM_LEVEL set. The SKILL.md catalog itself is still
+        //     suppressed via getBoundSkillIds returning Set.of().
+        if (skillsDisabled && !toolsDisabled && directTools == null) {
             return null;
         }
 
         Set<String> merged = new LinkedHashSet<>();
 
-        if (boundSkillIds != null) {
+        if (boundSkillIds != null && !boundSkillIds.isEmpty()) {
             for (Long skillId : boundSkillIds) {
                 ResolvedSkill resolved = findResolvedSkillById(skillId);
                 if (resolved == null) continue;
                 if (!vip.mate.skill.runtime.SkillRuntimeService.passesActiveGate(resolved)) {
-                    // §14.2 fix: a disabled / security-blocked / setup-needed
-                    // skill must not contribute tools to the LLM
-                    // advertisement even if it's still bound. Without this
-                    // guard, users see ghost tools for skills they thought
-                    // were off.
+                    // A disabled / security-blocked / setup-needed skill must
+                    // not contribute tools to the LLM advertisement even if
+                    // it's still bound — otherwise the user sees ghost tools
+                    // for skills they thought were off.
                     continue;
                 }
                 Set<String> skillTools = resolved.getEffectiveAllowedTools();
@@ -354,32 +546,36 @@ public class AgentBindingService {
         }
 
         if (directTools != null) {
-            // ∪ Advanced 直选的原子 tool（§9.2 调整 B）
             merged.addAll(directTools);
         }
 
         // System-level tools that don't belong to any single skill but
-        // are agent-wide capabilities. Without this carve-out, binding
-        // any skill silently strips record_lesson / remember / structured-
-        // memory tools, breaking the §11 self-evolution loop entirely
-        // (the LLM stops being able to write to LESSONS.md / MEMORY.md).
+        // are agent-wide capabilities — structured memory primitives,
+        // workspace memory CRUD, etc. Without this carve-out, binding any
+        // skill silently strips record_lesson / remember / *memory_file
+        // tools, breaking the self-evolution loop. These survive even
+        // toolsDisabled=true because they are agent-internal infrastructure,
+        // unrelated to the user-facing capability picker.
         merged.addAll(SYSTEM_LEVEL_TOOLS);
 
         // MCP tools. An agent that bound only a skill or a built-in tool
-        // and ticked no MCP row keeps full access to every enabled MCP
-        // tool: MCP servers are an administrator-enabled capability and
-        // must not silently vanish just because some unrelated binding
-        // exists. But once the operator ticks specific MCP rows, that is a
-        // deliberate per-agent scope — only those MCP tools (already merged
-        // via directTools above) stay, and the rest are not auto-joined, so
-        // a role can be limited to a fixed MCP tool set. To instead hide a
-        // single MCP tool from an agent that ticked no MCP row, use the
-        // tool-guard deny path applied upstream in AgentGraphBuilder.
-        Set<String> enabledMcpTools = getEnabledMcpToolNames();
-        boolean agentScopedMcpExplicitly =
-                directTools != null && !Collections.disjoint(directTools, enabledMcpTools);
-        if (!agentScopedMcpExplicitly) {
-            merged.addAll(enabledMcpTools);
+        // and ticked no MCP row normally keeps full access to every enabled
+        // MCP tool (administrator-level capabilities should not silently
+        // vanish just because some unrelated binding exists). Two cases
+        // suppress the auto-include:
+        //   - tools_disabled=true → the user explicitly opted out of every
+        //     non-system tool. Auto-joining MCP would defeat that intent.
+        //   - The agent ticked at least one MCP tool itself → that signals a
+        //     deliberate per-agent MCP scope; only the ticked subset stays.
+        // To deny a single MCP tool when none are ticked and tools are
+        // enabled, use the tool-guard deny path in AgentGraphBuilder.
+        if (!toolsDisabled) {
+            Set<String> enabledMcpTools = getEnabledMcpToolNames();
+            boolean agentScopedMcpExplicitly = directTools != null && !directTools.isEmpty()
+                    && !Collections.disjoint(directTools, enabledMcpTools);
+            if (!agentScopedMcpExplicitly) {
+                merged.addAll(enabledMcpTools);
+            }
         }
 
         return merged;
@@ -407,8 +603,42 @@ public class AgentBindingService {
     }
 
     /**
-     * RFC-090 §11 — tools that exist outside the skill scope and must
-     * survive any agent-level skill binding restriction.
+     * Skill-discovery meta tools that let the LLM enumerate, load, read, or
+     * execute the workspace's skill catalog. Normally these live in
+     * {@link #SYSTEM_LEVEL_TOOLS} because every agent needs them — but when
+     * an agent has opted out of skills (issue #184), keeping them callable
+     * defeats the opt-out: the LLM can simply call {@code listAvailableSkills}
+     * to enumerate the catalog and {@code load_skill} to pull a SKILL.md
+     * into the conversation, even though the SKILL.md catalog itself was
+     * suppressed from the system prompt.
+     *
+     * <p>Resolved via {@link #getSkillDiscoveryDeniedTools} as a separate
+     * deny layer chained after the main allowlist, so the four-state matrix
+     * in {@link #getEffectiveToolNames} stays untouched.
+     */
+    private static final Set<String> SKILL_DISCOVERY_TOOLS = Set.of(
+            "listAvailableSkills",
+            "load_skill",
+            "readSkillFile",
+            "runSkillScript",
+            "listSkillFiles"
+    );
+
+    /**
+     * Tools the agent must NOT see when {@link AgentEntity#getSkillsDisabled()}
+     * is {@code true}. Empty otherwise. Chained on top of the allowlist by
+     * {@code AgentGraphBuilder} via {@code withDeniedToolsFiltered}.
+     */
+    public Set<String> getSkillDiscoveryDeniedTools(Long agentId) {
+        if (isSkillsDisabled(agentId)) {
+            return SKILL_DISCOVERY_TOOLS;
+        }
+        return Set.of();
+    }
+
+    /**
+     * Tools that exist outside the skill scope and must survive any
+     * agent-level skill binding restriction.
      *
      * <p>Add new entries here only after verifying the tool is genuinely
      * agent-wide, not skill-specific. Tools added here bypass the
@@ -437,8 +667,13 @@ public class AgentBindingService {
             // CRUD primitives above — a skill-bound agent must still be able
             // to locate a fact by keyword instead of reading whole files.
             "search_workspace_memory",
+            // Progressive tool disclosure — meta tool that activates an
+            // extension-tier tool for the rest of the conversation. Must be
+            // agent-wide so the model can always surface hidden tools.
+            "enable_tool",
             // Skill discovery / dispatch — skills are docs, not callables;
             // these helpers let the LLM read SKILL.md / run scripts.
+            "load_skill",
             "readSkillFile",
             "runSkillScript",
             "listSkillFiles",
@@ -459,6 +694,22 @@ public class AgentBindingService {
             "delegateAsync",
             "taskOutput",
             "listAvailableAgents",
+            // Persistent-goal management (RFC 48). These are agent-wide
+            // primitives — the user can decide mid-conversation that this
+            // task is a multi-turn goal, and the assistant must be able to
+            // lock it in. Pre-fix, business agents like "数据分析师" with
+            // tight bindings rejected setGoal as "not in my toolset",
+            // observed during PR4 manual QA.
+            "setGoal",
+            "addGoalCriterion",
+            "completeGoal",
+            "getGoalStatus",
+            // Conversation-scoped progress ledger — same rationale as the
+            // goal primitives above. Long multi-step research / drafting
+            // tasks need it on every business agent, not just the planner,
+            // since context-window trims can otherwise let an agent forget
+            // what it has already produced and re-do work or stall.
+            "progress_update",
             // Document / media generation — agent-wide capabilities, never
             // declared inside any skill manifest. Pre-Phase-2b these were
             // universally visible; the new gate silently strips them whenever
@@ -486,12 +737,18 @@ public class AgentBindingService {
             // refuses ("Tool not found: search"). Observed 2026-05-01 on the
             // Code Reviewer agent — the model called search → got
             // not-found → gave up before ever reaching renderDocx.
-            "search",
+            "web_search",
             "browser_use",
             "read_file",
+            "send_file",
             "write_file",
             "edit_file",
             "execute_shell_command",
+            // Inline code execution — an agent-wide capability alongside shell.
+            // Lets any agent act on a documentation-only skill (a SKILL.md with
+            // no scripts) by writing and running the code its instructions
+            // describe. Dangerous code is screened by the same tool guard.
+            "execute_code",
             "detect_file_type",
             "extract_document_text",
             "extract_pdf_text",
@@ -540,6 +797,9 @@ public class AgentBindingService {
     }
 
     public AgentToolBinding bindTool(Long agentId, String toolName) {
+        // Mirror of bindSkill: writing any tool row clears the opt-out flag
+        // so the binding state cannot contradict the agent-level toggle.
+        clearToolsDisabledFlag(agentId);
         AgentToolBinding existing = toolBindingMapper.selectOne(
                 new LambdaQueryWrapper<AgentToolBinding>()
                         .eq(AgentToolBinding::getAgentId, agentId)
@@ -586,6 +846,12 @@ public class AgentBindingService {
     public void setToolBindings(Long agentId, List<String> toolNames) {
         validateNewToolBindings(agentId, toolNames);
 
+        // Side effect parallel to setSkillBindings: a non-empty save is an
+        // explicit commitment to those tools, so the opt-out flag is
+        // auto-cleared. Empty saves leave the flag untouched.
+        if (toolNames != null && !toolNames.isEmpty()) {
+            clearToolsDisabledFlag(agentId);
+        }
         toolBindingMapper.delete(
                 new LambdaQueryWrapper<AgentToolBinding>()
                         .eq(AgentToolBinding::getAgentId, agentId));
@@ -650,7 +916,7 @@ public class AgentBindingService {
         }
     }
 
-    // ==================== Provider Preferences (RFC-009 PR-3) ====================
+    // ==================== Provider Preferences ====================
 
     /** Raw rows for the agent edit form. Sorted by sort_order ascending. */
     public List<AgentProviderPreference> listProviderPreferences(Long agentId) {
@@ -668,6 +934,7 @@ public class AgentBindingService {
      * <p>Used by {@code AgentGraphBuilder.buildFallbackChain} to bias the
      * fallback chain order per agent.</p>
      */
+    @Override
     public List<String> getPreferredProviderIds(Long agentId) {
         if (agentId == null) return Collections.emptyList();
         return listProviderPreferences(agentId).stream()
@@ -696,5 +963,133 @@ public class AgentBindingService {
             row.setEnabled(true);
             providerPreferenceMapper.insert(row);
         }
+    }
+
+    // ==================== Knowledge base access scope ====================
+
+    /** Raw scope rows for the agent edit form, oldest first. */
+    public List<AgentWikiKbBinding> listKbBindings(Long agentId) {
+        return kbBindingMapper.selectList(
+                new LambdaQueryWrapper<AgentWikiKbBinding>()
+                        .eq(AgentWikiKbBinding::getAgentId, agentId)
+                        .orderByAsc(AgentWikiKbBinding::getCreateTime));
+    }
+
+    /**
+     * Replace the agent's KB access scope. An empty / null list clears the
+     * scope, returning the agent to workspace-wide (unrestricted) access.
+     * Every incoming KB must live in the agent's workspace — pinning a KB
+     * from another tenancy is refused (403).
+     */
+    public void setKbBindings(Long agentId, List<Long> kbIds) {
+        // De-dup defensively: the unique index is (agent_id, kb_id, deleted),
+        // so two identical ids in the incoming list would collide on insert.
+        Set<Long> distinct = new LinkedHashSet<>();
+        if (kbIds != null) {
+            for (Long kbId : kbIds) {
+                if (kbId != null) {
+                    distinct.add(kbId);
+                }
+            }
+        }
+        // Validate the whole set BEFORE deleting anything, so a rejected id
+        // can't leave the agent half-scoped.
+        for (Long kbId : distinct) {
+            requireKbInAgentWorkspace(agentId, kbId);
+        }
+        kbBindingMapper.delete(
+                new LambdaQueryWrapper<AgentWikiKbBinding>()
+                        .eq(AgentWikiKbBinding::getAgentId, agentId));
+        for (Long kbId : distinct) {
+            AgentWikiKbBinding row = new AgentWikiKbBinding();
+            row.setAgentId(agentId);
+            row.setKbId(kbId);
+            row.setEnabled(true);
+            kbBindingMapper.insert(row);
+        }
+    }
+
+    /**
+     * Refuse to scope an agent to a KB outside its workspace. KBs are
+     * workspace-shared artifacts ({@code mate_wiki_knowledge_base.workspace_id});
+     * letting workspace A's agent pin workspace B's KB would cross the
+     * tenancy boundary the same way a cross-workspace skill binding would.
+     * A {@code null} workspace on either side is normalized to the default
+     * workspace (1) to match the rest of the codebase.
+     */
+    private void requireKbInAgentWorkspace(Long agentId, Long kbId) {
+        if (agentId == null) {
+            throw new MateClawException("err.agent.not_found", 404, "Agent ID is required");
+        }
+        AgentEntity agent = agentMapper.selectById(agentId);
+        if (agent == null) {
+            throw new MateClawException("err.agent.not_found", 404, "Agent 不存在: " + agentId);
+        }
+        WikiKnowledgeBaseEntity kb = kbMapper.selectById(kbId);
+        if (kb == null) {
+            throw new MateClawException("err.wiki.kb_not_found", 404,
+                    "Knowledge base 不存在: " + kbId);
+        }
+        long agentWs = agent.getWorkspaceId() == null ? 1L : agent.getWorkspaceId();
+        long kbWs = kb.getWorkspaceId() == null ? 1L : kb.getWorkspaceId();
+        if (agentWs != kbWs) {
+            throw new MateClawException("err.wiki.cross_workspace_kb_binding", 403,
+                    "Knowledge base " + kbId + " (workspace=" + kbWs
+                            + ") cannot be scoped to Agent " + agentId
+                            + " (workspace=" + agentWs + ")");
+        }
+    }
+
+    // ==================== Binding-mode flags (V126) ====================
+
+    /**
+     * Read-side check for the agent's "skills opted out entirely" toggle.
+     * Returns {@code false} when the agent row is missing — a missing agent
+     * has no opinion, so binding queries fall through to the legacy
+     * row-count path (which will surface the missing-agent issue at a more
+     * useful layer than a binding read).
+     */
+    private boolean isSkillsDisabled(Long agentId) {
+        if (agentId == null) return false;
+        AgentEntity agent = agentMapper.selectById(agentId);
+        return agent != null && Boolean.TRUE.equals(agent.getSkillsDisabled());
+    }
+
+    /** Mirror of {@link #isSkillsDisabled} for the tools opt-out toggle. */
+    private boolean isToolsDisabled(Long agentId) {
+        if (agentId == null) return false;
+        AgentEntity agent = agentMapper.selectById(agentId);
+        return agent != null && Boolean.TRUE.equals(agent.getToolsDisabled());
+    }
+
+    /**
+     * Flip {@code skills_disabled} back to false on the agent row. No-op
+     * when already false or the agent doesn't exist. Used as an auto-clear
+     * step in {@link #bindSkill} / {@link #setSkillBindings} so writing a
+     * concrete binding always wins over a stale opt-out flag.
+     */
+    private void clearSkillsDisabledFlag(Long agentId) {
+        if (agentId == null) return;
+        AgentEntity agent = agentMapper.selectById(agentId);
+        if (agent == null || !Boolean.TRUE.equals(agent.getSkillsDisabled())) {
+            return;
+        }
+        AgentEntity update = new AgentEntity();
+        update.setId(agentId);
+        update.setSkillsDisabled(false);
+        agentMapper.updateById(update);
+    }
+
+    /** Mirror of {@link #clearSkillsDisabledFlag} for the tools toggle. */
+    private void clearToolsDisabledFlag(Long agentId) {
+        if (agentId == null) return;
+        AgentEntity agent = agentMapper.selectById(agentId);
+        if (agent == null || !Boolean.TRUE.equals(agent.getToolsDisabled())) {
+            return;
+        }
+        AgentEntity update = new AgentEntity();
+        update.setId(agentId);
+        update.setToolsDisabled(false);
+        agentMapper.updateById(update);
     }
 }

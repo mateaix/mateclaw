@@ -33,6 +33,20 @@ export default defineConfig({
       '@': resolve(__dirname, 'src'),
     },
   },
+  // echarts is consumed via subpath modules (echarts/core, echarts/charts, …)
+  // that only the route-lazy Dashboard and Wiki graph views import. Vite's
+  // startup dep scan never sees these subpaths, so it re-optimizes the first
+  // time either route loads — rolling the optimized-deps hash and 504-ing the
+  // chunks the in-flight page already referenced. Pre-listing them forces a
+  // single consistent pre-bundle at server startup.
+  optimizeDeps: {
+    include: [
+      'echarts/core',
+      'echarts/charts',
+      'echarts/components',
+      'echarts/renderers',
+    ],
+  },
   server: {
     port: 5173,
     proxy: {

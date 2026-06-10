@@ -11,8 +11,7 @@ import static org.junit.jupiter.api.Assertions.*;
 /**
  * Unit tests for {@link OpenAiImageProvider} GPT-Image-2 wiring.
  *
- * <p>Inspired by hermes-agent's plugins/image_gen/openai/__init__.py — three
- * virtual model IDs (gpt-image-2-low/medium/high) all map to API model
+ * <p>Three virtual model IDs (gpt-image-2-low/medium/high) all map to API model
  * {@code gpt-image-2} with a different {@code quality} parameter. The new
  * size set is 1024x1024 / 1024x1536 / 1536x1024, distinct from DALL-E's
  * 1024x1024 / 1024x1792 / 1792x1024.
@@ -86,8 +85,7 @@ class OpenAiImageProviderGptImage2Test {
         assertEquals("medium", OpenAiImageProvider.qualityForTier("gpt-image-2-medium"));
         assertEquals("high", OpenAiImageProvider.qualityForTier("gpt-image-2-high"));
 
-        // Defensive: any unrecognised id falls back to medium (sane default;
-        // matches hermes-agent DEFAULT_MODEL = gpt-image-2-medium).
+        // Defensive: any unrecognised id falls back to medium (sane default).
         assertEquals("medium", OpenAiImageProvider.qualityForTier("anything-else"));
         assertEquals("medium", OpenAiImageProvider.qualityForTier(""));
     }
@@ -134,7 +132,7 @@ class OpenAiImageProviderGptImage2Test {
     @DisplayName("normalizeSize: extra gpt-image-2 aspect-ratio aliases (3:4, 2:3, 4:3, 3:2) work")
     void normalizeSize_gptImage2_extraAspectAliases() {
         OpenAiImageProvider p = newProvider();
-        // Per hermes-agent's spec: portrait aliases → 1024x1536, landscape → 1536x1024
+        // Portrait aliases → 1024x1536, landscape → 1536x1024
         assertEquals("1024x1536", p.normalizeSize(null, "3:4", true));
         assertEquals("1024x1536", p.normalizeSize(null, "2:3", true));
         assertEquals("1536x1024", p.normalizeSize(null, "4:3", true));

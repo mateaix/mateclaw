@@ -95,6 +95,32 @@ Two things to notice. First, the body is a prompt — not a description of one. 
 | `default` | — | Fallback value if caller omits |
 | `description` | ✅ | What the parameter controls |
 
+### Typed wrapper tools for scripts (new in v1.4)
+
+A SKILL.md can declare a `scripts:` block that turns each script entrypoint into its **own named tool** with a typed JSON Schema. Instead of one generic `runSkillScript`, the model sees `skill_<skill>_<entrypoint>` tools and fills in schema-described parameters directly.
+
+```yaml
+scripts:
+  - id: summarize
+    path: scripts/dispatch.py
+    fixedArgs: ["summarize"]        # prepended verbatim to every call
+    parameters:
+      - name: url
+        type: string
+        required: true
+  - id: translate
+    path: scripts/dispatch.py
+    fixedArgs: ["translate"]
+    parameters:
+      - name: lang
+        type: string
+        required: true
+```
+
+- **One typed tool per entrypoint** — the model gets typed params, not a free-form arg string.
+- **`fixedArgs` lets one dispatcher script back several entrypoints** — both entries above call `dispatch.py`, distinguished by the fixed leading arg, so you don't need a separate file per command.
+- **Wrappers register/deregister with the skill lifecycle** — they appear when the skill goes live and disappear when it's disabled or archived. Path traversal is blocked: only scripts under the skill's own `scripts/` directory are reachable. A database-only skill (no directory) exposes no wrappers.
+
 ---
 
 ## The runtime pipeline
@@ -317,7 +343,7 @@ Generate a standup update by analyzing recent git activity.
 
 ## Workspace isolation
 
-Each workspace gets its own copy of skills. When you enable a skill for a workspace, its files are staged under that workspace's directory, the skill's tools are scoped to that workspace, and any file the skill writes stays inside the workspace boundary. See [Workspaces](./workspaces).
+Each workspace gets its own copy of skills. When you enable a skill for a workspace, its files are staged under that workspace's directory, the skill's tools are scoped to that workspace, and any file the skill writes stays inside the workspace boundary. As of v1.4 the skill **catalog and runtime are scoped per workspace** too, so each workspace sees and runs only its own skills. See [Workspaces](./workspaces).
 
 ---
 
@@ -351,6 +377,18 @@ Don't know how to write a SKILL.md? Open the wizard.
 5. Save
 
 You don't get just a SKILL.md. You get a **multi-file bundle** — SKILL.md, references/, scripts/, secret references — packaged together.
+
+### The `skill-authoring` meta-skill (new in v1.4)
+
+There's now a built-in `skill-authoring` skill, auto-seeded on startup, that teaches an agent (or you) how to author a SKILL.md correctly. It covers:
+
+- **Required frontmatter** and what each field means
+- **Validator limits** — name must match `^[a-z0-9][a-z0-9._-]{0,63}$`, content ≤ 100k characters
+- **Built-in vs custom** authoring workflows
+- **Directory placement** for scripts/ and references/
+- **Common pitfalls** that fail validation or silently misbehave
+
+Bind it to an agent and "write me a skill that…" produces a valid bundle on the first try, not after three validation round-trips.
 
 ---
 
@@ -472,6 +510,80 @@ As of v1.3, when `ToolExecutionExecutor` sees this case AND `readSkillFile` is b
 
 ---
 
+## Progressive skill disclosure (new in v1.4)
+
+Dumping every skill's full SKILL.md into the system prompt doesn't scale — it blows the token budget and churns the prompt cache on every turn. v1.4 flips the model: the prompt carries only a compact catalog, and the agent **pulls a skill's instructions on demand**.
+
+**`load_skill(skillName, filePath?)`** loads a skill's SKILL.md (or any bundle file via the optional `filePath`) right when the agent decides to use it:
+
+- **Injected via message history, not the system prompt** — the loaded content arrives as a conversation turn, so the system prompt (and its cache) stays byte-stable across the session.
+- **Loaded skills get pinned** to the top of the runtime catalog on later turns, so the agent keeps seeing what it just pulled in.
+- The catalog guidance tells the model to `load_skill(skillName=<name>)` before using a skill, and to call it directly when the user names a specific skill.
+
+```yaml
+mateclaw:
+  skill:
+    disclosure:
+      load-skill-tool:
+        enabled: true     # default; set false to fall back to the older readSkillFile flow
+```
+
+When disabled, the catalog guidance points at `readSkillFile` instead and `load_skill` is not registered.
+
+---
+
+## The `/skill` slash menu in chat (new in 1.5.0)
+
+Don't want to prompt the employee in natural language about which skill to use? Type `/` in the chat composer to open a **searchable skill picker**:
+
+- ↑↓ to move, Enter/Tab to select, Esc to close; typing filters the enabled skills live (up to 8 shown).
+- The list comes from `GET /api/v1/skills/enabled` — real skills plus MCP/ACP-derived virtual skills (a real skill shadows a same-named virtual one). Cached per workspace for 30 seconds so reopening doesn't re-fetch.
+- Selecting a skill inserts a directive into the box: `Use the "skill name" skill: `, cursor at the end, ready for you to add context and send. The employee sees the directive in message history and runs `load_skill` to pull it.
+
+The menu shows whenever **an employee is selected and that employee hasn't disabled skills** (the frontend checks `currentAgent && !skillsDisabled`) — it is unrelated to the global progressive-disclosure switch. Setting `mateclaw.skill.disclosure.load-skill-tool.enabled` to `false` globally only stops the backend from registering the `load_skill` tool; the menu still opens (the employee just falls back to pulling skills via `readSkillFile` and similar).
+
+---
+
+## Skill lifecycle curator (new in v1.4)
+
+Agents that synthesize skills accumulate cruft — a one-off skill from three weeks ago is still in the catalog, eating a slot. The **curator** is a daily sweep that ages idle, **agent-created** skills through `active → stale → archived` and gets them out of the way without deleting anything.
+
+- Idle past `staleAfterDays` (default 30) → **stale**; idle past `archiveAfterDays` (default 90) → **archived** (workspace moved to a `.archived/` subdir). `restore` brings an archived skill back.
+- **Never touched**: built-ins, pinned skills, MCP/ACP/virtual skills, and any name starting with a protected prefix (default `sys-`, `ops-`).
+
+### Settings → Skill Curator panel
+
+- **Preview (dry-run)** — see exactly which skills the next sweep would move, before it runs.
+- **Pause / resume** the whole sweep; **activate / deactivate** an individual skill.
+- **Last run / next run** timestamps and **per-state counts** (active / stale / archived).
+
+### Configuration
+
+```yaml
+mateclaw:
+  skill:
+    curator:
+      enabled: true
+      cron: "0 0 2 * * *"        # daily at 02:00
+      staleAfterDays: 30
+      archiveAfterDays: 90
+      scope: AGENT_CREATED       # AGENT_CREATED | ALL_DYNAMIC | OFF
+      protectPrefixes: ["sys-", "ops-"]
+```
+
+`scope: AGENT_CREATED` touches only skills with a source conversation; `ALL_DYNAMIC` also sweeps manually-created dynamic skills; `OFF` disables the sweep regardless of `enabled`.
+
+### Lifecycle in the Skill Market
+
+The Skills page picks up the lifecycle:
+
+- **Lifecycle tabs** — Enabled / Stale / Archived.
+- Cards show a **"last used"** badge.
+- The detail drawer adds **manual archive / restore / pin**.
+- Manually archiving a still-bound skill triggers a **confirm handshake** — you don't silently pull a skill out from under a digital employee that's still using it.
+
+---
+
 ## ACP bridge: plug in external coding agents
 
 ACP (Agent Client Protocol) is a protocol that lets external agent clients (Claude Code, Codex, other compatible clients) plug into MateClaw as skills.
@@ -487,6 +599,10 @@ Once installed:
 Templates: `claude-code-helper`, `codex-helper` — install and go.
 
 A digital employee calls an ACP skill the same way it calls a built-in tool.
+
+### Virtual SKILL.md for MCP/ACP skills (new in v1.4)
+
+MCP- and ACP-derived skills used to be opaque tool bundles with no readable instructions. v1.4 **synthesizes a read-only virtual SKILL.md** from each MCP/ACP server's metadata (transport, command, args, env, exposed tools), so those integrations show up as **navigable skill catalogs** in the Skills page. Because they're synthesized, virtual SKILL.md rebuilds on every list call — no stale persisted copy to maintain — and `load_skill` can read it just like a real skill, giving the agent a description of what the integration can do before it calls a single tool.
 
 ---
 

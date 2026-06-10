@@ -1,7 +1,7 @@
 <template>
   <div class="raw-panel">
     <!-- Upload + Add text row -->
-    <div class="upload-row">
+    <div v-if="canManageWiki" class="upload-row">
       <div
         class="upload-zone"
         :class="{ 'is-dragging': isDragging, 'is-uploading': uploadingFiles.length > 0 }"
@@ -32,10 +32,10 @@
             <template v-else-if="isDragging">{{ t('wiki.dropToUpload') }}</template>
             <template v-else>{{ t('wiki.dropFiles') }}</template>
           </span>
-          <span class="upload-hint">.txt, .md, .pdf, .docx</span>
+          <span class="upload-hint">.txt .md .csv .pdf .docx .xlsx .pptx .html</span>
         </div>
       </div>
-      <input ref="fileInput" type="file" style="display:none" accept=".txt,.md,.pdf,.docx,.doc" multiple @change="handleFileSelect" />
+      <input ref="fileInput" type="file" style="display:none" accept=".txt,.md,.csv,.pdf,.docx,.doc,.xlsx,.xls,.pptx,.ppt,.html,.htm" multiple @change="handleFileSelect" />
       <button class="btn-secondary add-text-btn" @click="showAddText = true">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
@@ -45,7 +45,7 @@
     </div>
 
     <!-- Directory scan -->
-    <div class="dir-scan-row">
+    <div v-if="canManageWiki" class="dir-scan-row">
       <div class="dir-input-wrap">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
@@ -67,6 +67,9 @@
     </div>
     <div v-if="scanResult" class="scan-result">
       {{ t('wiki.scanResult', { scanned: scanResult.scanned, added: scanResult.added, skipped: scanResult.skipped }) }}
+      <div v-if="scanResult.errors?.length" class="scan-errors">
+        <span v-for="(err, i) in scanResult.errors" :key="i" class="scan-error-item">{{ err }}</span>
+      </div>
     </div>
 
     <!-- Raw materials list -->
@@ -163,7 +166,7 @@
               {{ raw.errorMessage }}
             </span>
           </div>
-          <div class="raw-item-actions">
+          <div v-if="canManageWiki" class="raw-item-actions">
             <button
               v-if="raw.processingStatus === 'processing' && !cancellingIds.has(raw.id)"
               class="btn-icon btn-icon-danger" :title="t('wiki.cancel')"
@@ -290,12 +293,18 @@ import { mcToast } from '@/composables/useMcToast'
 import { useFileDrop } from '@/composables/useFileDrop'
 import { Download } from '@element-plus/icons-vue'
 import { useWikiStore } from '@/stores/useWikiStore'
+import { useWorkspaceStore } from '@/stores/useWorkspaceStore'
 import { wikiApi } from '@/api/index'
 import JobStageBar from './JobStageBar.vue'
 import type { WikiProcessingJob } from '@/composables/useWikiJobPoller'
 
 const { t } = useI18n()
 const store = useWikiStore()
+const workspace = useWorkspaceStore()
+
+// Uploading, scanning and (re)processing raw material all require manage:wiki.
+// Viewers can still see the material list but get no write controls.
+const canManageWiki = computed(() => workspace.can('manage:wiki'))
 const fileInput = ref<HTMLInputElement | null>(null)
 
 // While raw materials are active, subscribe to the backend SSE progress stream.
@@ -491,7 +500,7 @@ const textTitle = ref('')
 const textContent = ref('')
 const dirPath = ref(store.currentKB?.sourceDirectory || '')
 const scanning = ref(false)
-const scanResult = ref<{ scanned: number; added: number; skipped: number } | null>(null)
+const scanResult = ref<{ scanned: number; added: number; skipped: number; errors?: string[] } | null>(null)
 
 // ─── Drag-over state ──────────────────────────────────────────────────────────
 const { isDragging, onDragEnter, onDragLeave, onDrop: handleDrop } = useFileDrop(uploadDroppedFiles)
@@ -674,7 +683,8 @@ async function handleScanDir() {
     const result = await store.scanDirectory(store.currentKB.id)
     scanResult.value = result
   } catch (e: any) {
-    console.error('Scan failed', e)
+    const msg = e?.response?.data?.message || e?.message || t('wiki.scanFailed')
+    mcToast.error(msg)
   } finally {
     scanning.value = false
   }
@@ -702,6 +712,8 @@ async function handleScanDir() {
 .dir-input { flex: 1; border: none; background: transparent; font-size: 13px; color: var(--mc-text-primary); outline: none; }
 .dir-input::placeholder { color: var(--mc-text-tertiary); }
 .scan-result { font-size: 12px; color: var(--mc-text-secondary); padding: 8px 10px; background: rgba(90,138,90,0.1); border-radius: 10px; }
+.scan-errors { margin-top: 6px; display: flex; flex-direction: column; gap: 2px; }
+.scan-error-item { color: var(--mc-danger); font-size: 11px; }
 
 /* Upload row: zone + add text side by side */
 .upload-row { display: flex; gap: 12px; align-items: stretch; }

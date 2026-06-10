@@ -47,10 +47,36 @@ public class SkillWorkspaceManager {
     }
 
     /**
-     * 按约定解析 skill 工作区路径：{root}/{skillName}/
+     * Resolve the conventional skill workspace path: {@code {root}/{sanitizedName}}.
+     * <p>
+     * Deterministic in {@code skillName} alone (no filesystem-state dependency). The
+     * non-ASCII collision fixed in #254 comes from {@link #sanitizeNameForFs} preserving
+     * Unicode letters/digits, so distinct names already map to distinct directories. No
+     * {@code -hash} suffix is appended: skill names are charset-constrained, so two names
+     * sanitizing to the same string is not a real case, and keeping the bare name avoids
+     * changing the path scheme for every existing skill (which would orphan already-created
+     * workspaces with no migration).
      */
     public Path resolveConventionPath(String skillName) {
-        return getWorkspaceRoot().resolve(sanitizeName(skillName));
+        return getWorkspaceRoot().resolve(sanitizeNameForFs(skillName));
+    }
+
+    /**
+     * Sanitize a skill name into a filesystem-safe directory segment.
+     * <p>
+     * Keeps the same charset as the legacy {@code [a-zA-Z0-9_.-]} rule but additionally
+     * preserves Unicode letters/digits ({@code \p{L}\p{N}}), so non-ASCII names no longer
+     * collapse to underscores and collide (#254). Everything else — path separators,
+     * control characters, whitespace — becomes {@code _}. Hyphens are kept (not folded to
+     * {@code _}) so existing kebab-case skill paths (e.g. {@code browser-cdp}) are unchanged
+     * across upgrades; only the Unicode handling differs from the legacy behavior.
+     */
+    private String sanitizeNameForFs(String name) {
+        if (name == null || name.isBlank()) {
+            return "unnamed";
+        }
+        String cleaned = name.strip().replaceAll("[^\\p{L}\\p{N}_.\\-]", "_");
+        return cleaned.isEmpty() ? "unnamed" : cleaned;
     }
 
     /**
@@ -116,11 +142,18 @@ public class SkillWorkspaceManager {
             Files.createDirectories(workspaceDir.resolve("scripts"));
 
             Path skillMd = workspaceDir.resolve("SKILL.md");
-            if (overwrite || !Files.exists(skillMd)) {
-                String content = (initialContent != null && !initialContent.isBlank())
-                        ? initialContent
-                        : buildDefaultSkillMd(skillName);
+            String content = (initialContent != null && !initialContent.isBlank())
+                    ? initialContent
+                    : buildDefaultSkillMd(skillName);
+            if (overwrite) {
                 Files.writeString(skillMd, content);
+            } else {
+                // 原子创建，避免并发上传时的 TOCTOU 竞态
+                try {
+                    Files.writeString(skillMd, content, StandardOpenOption.CREATE_NEW);
+                } catch (FileAlreadyExistsException e) {
+                    // 另一线程已创建，跳过写入
+                }
             }
 
             log.info("Initialized skill workspace: {} (overwrite={})", workspaceDir, overwrite);
@@ -160,12 +193,45 @@ public class SkillWorkspaceManager {
     }
 
     /**
-     * 归档 workspace 到 {root}/.archived/{name}-{timestamp}/
+     * Tri-state outcome of {@link #archiveWorkspace}. {@code MISSING} is a
+     * commit-safe no-op — the runtime accepts skills that live only in
+     * {@code mate_skill.skill_content} with no convention workspace — while
+     * {@code FAILED} is a real error callers requiring atomicity must honor.
      */
-    public void archiveWorkspace(String skillName) {
+    public enum ArchiveResult {
+        /** Workspace directory existed and was moved to {@code .archived/}. */
+        MOVED,
+        /** No convention workspace directory — commit-safe no-op. */
+        MISSING,
+        /** Workspace existed but the move failed (IOException). */
+        FAILED
+    }
+
+    /** Symmetric tri-state outcome of {@link #restoreWorkspace}. */
+    public enum RestoreResult {
+        /** Archive directory existed and was moved back into place. */
+        MOVED,
+        /** No archive directory found — DB-only skill or nothing to restore. */
+        MISSING,
+        /** Archive directory existed but the move-back failed (IOException). */
+        FAILED
+    }
+
+    /**
+     * Move {@code {root}/{name}/} to {@code {root}/.archived/{name}-{ts}/}.
+     *
+     * <p>Returns {@link ArchiveResult#MISSING} when the workspace doesn't
+     * exist — callers may treat this as a successful no-op since the runtime
+     * accepts skills that live only in {@code mate_skill.skill_content}.
+     * Returns {@link ArchiveResult#FAILED} on IOException; callers requiring
+     * atomicity must refuse to commit derived state. Returns
+     * {@link ArchiveResult#MOVED} on success, having already published
+     * {@link SkillWorkspaceEvent.Type#ARCHIVED}.
+     */
+    public ArchiveResult archiveWorkspace(String skillName) {
         Path workspaceDir = resolveConventionPath(skillName);
         if (!Files.exists(workspaceDir)) {
-            return;
+            return ArchiveResult.MISSING;
         }
 
         try {
@@ -178,8 +244,69 @@ public class SkillWorkspaceManager {
             Files.move(workspaceDir, archiveDir, StandardCopyOption.ATOMIC_MOVE);
             log.info("Archived skill workspace: {} → {}", workspaceDir, archiveDir);
             eventPublisher.publishEvent(new SkillWorkspaceEvent(skillName, SkillWorkspaceEvent.Type.ARCHIVED, archiveDir));
+            return ArchiveResult.MOVED;
         } catch (IOException e) {
             log.warn("Failed to archive workspace for skill '{}': {}", skillName, e.getMessage());
+            return ArchiveResult.FAILED;
+        }
+    }
+
+    /**
+     * Move the most recent {@code .archived/{name}-{ts}/} directory back to
+     * the convention path. Symmetric to {@link #archiveWorkspace}.
+     *
+     * <p>Returns {@link RestoreResult#MISSING} when there is no archive
+     * directory to restore (a DB-only skill, or the convention path is
+     * already populated) — callers treat this as a no-op. Returns
+     * {@link RestoreResult#FAILED} when an archive directory exists but the
+     * move-back fails.
+     */
+    public RestoreResult restoreWorkspace(String skillName) {
+        Path target = resolveConventionPath(skillName);
+        if (Files.exists(target)) {
+            log.warn("restoreWorkspace skipped: target {} already exists", target);
+            return RestoreResult.MISSING;
+        }
+        Path archiveRoot = getWorkspaceRoot().resolve(".archived");
+        if (!Files.exists(archiveRoot)) {
+            return RestoreResult.MISSING;
+        }
+
+        Optional<Path> newest = listArchivedFor(archiveRoot, sanitizeName(skillName));
+        if (newest.isEmpty()) {
+            return RestoreResult.MISSING;
+        }
+
+        try {
+            Files.move(newest.get(), target, StandardCopyOption.ATOMIC_MOVE);
+            log.info("Restored skill workspace: {} → {}", newest.get(), target);
+            eventPublisher.publishEvent(new SkillWorkspaceEvent(
+                    skillName, SkillWorkspaceEvent.Type.CREATED, target));
+            return RestoreResult.MOVED;
+        } catch (IOException e) {
+            log.warn("Failed to restore workspace for skill '{}': {}", skillName, e.getMessage());
+            return RestoreResult.FAILED;
+        }
+    }
+
+    /**
+     * Most recent archive directory for {@code sanitizedName}. Archive names
+     * are {@code {sanitizedName}-{yyyyMMdd-HHmmss}}; the timestamp suffix is
+     * matched exactly so a name like {@code foo} never picks up an archive of
+     * {@code foo-bar}. Lexical order on the fixed-width timestamp equals
+     * chronological order.
+     */
+    private Optional<Path> listArchivedFor(Path archiveRoot, String sanitizedName) {
+        java.util.regex.Pattern suffix =
+                java.util.regex.Pattern.compile(java.util.regex.Pattern.quote(sanitizedName) + "-\\d{8}-\\d{6}");
+        try (var stream = Files.list(archiveRoot)) {
+            return stream
+                    .filter(Files::isDirectory)
+                    .filter(p -> suffix.matcher(p.getFileName().toString()).matches())
+                    .max(Comparator.comparing(p -> p.getFileName().toString()));
+        } catch (IOException e) {
+            log.warn("Failed to list archive directory {}: {}", archiveRoot, e.getMessage());
+            return Optional.empty();
         }
     }
 

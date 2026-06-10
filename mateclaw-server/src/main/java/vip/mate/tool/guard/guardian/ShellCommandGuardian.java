@@ -24,7 +24,11 @@ import java.util.regex.Pattern;
 public class ShellCommandGuardian implements ToolGuardGuardian {
 
     private static final Set<String> SHELL_TOOL_NAMES = Set.of(
-            "execute_shell_command", "shell_execute", "run_command"
+            "execute_shell_command", "shell_execute", "run_command",
+            // Inline code execution runs LLM-authored source through an
+            // interpreter, so it is screened against the same dangerous-command
+            // ruleset as direct shell execution.
+            "execute_code"
     );
 
     private static final Map<String, Pattern> COMPILED_CACHE = new ConcurrentHashMap<>();
@@ -39,7 +43,15 @@ public class ShellCommandGuardian implements ToolGuardGuardian {
 
     @Override
     public boolean supports(ToolInvocationContext context) {
-        return context.toolName() != null && SHELL_TOOL_NAMES.contains(context.toolName());
+        if (context.toolName() == null || !SHELL_TOOL_NAMES.contains(context.toolName())) {
+            return false;
+        }
+        // Mutual-exclusion gate with DbRuleGuardian: when DB rules
+        // exist for this shell tool, DbRuleGuardian evaluates them
+        // and we skip — keeping the two paths strictly disjoint.
+        // Empty DB rules → we own this invocation and fall through to
+        // the hard-coded built-in shell rules below.
+        return ruleRegistry.getRulesForTool(context.toolName()).isEmpty();
     }
 
     @Override
@@ -79,7 +91,8 @@ public class ShellCommandGuardian implements ToolGuardGuardian {
                             context.toolName(),
                             rule.getParamName() != null ? rule.getParamName() : "command",
                             rule.getPattern(),
-                            snippet
+                            snippet,
+                            parseDecision(rule.getDecision())
                     ));
                 }
             }
@@ -113,6 +126,15 @@ public class ShellCommandGuardian implements ToolGuardGuardian {
         String raw = context.rawArguments();
         if (raw == null || raw.isEmpty()) return null;
         return (context.toolName() != null ? context.toolName() + " " : "") + raw;
+    }
+
+    private GuardDecision parseDecision(String raw) {
+        if (raw == null || raw.isBlank()) return null;
+        try {
+            return GuardDecision.valueOf(raw);
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
     }
 
     private String extractSnippet(String input, int matchStart, int contextLen) {

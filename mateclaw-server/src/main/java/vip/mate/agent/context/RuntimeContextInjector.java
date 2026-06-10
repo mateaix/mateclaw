@@ -46,6 +46,45 @@ public final class RuntimeContextInjector {
      * 构建运行时上下文消息（i18n 版本）。
      */
     public static String buildContextMessage(String workspaceBasePath, vip.mate.i18n.I18nService i18n) {
+        return buildContextMessage(workspaceBasePath, i18n, null);
+    }
+
+    /**
+     * Build the runtime-context message and (when {@code origin} is non-null
+     * and carries IM channel context) append a short "who is talking, where,
+     * via what channel" block so the agent's system prompt can personalise
+     * its reply. Same cache discipline as the simpler overloads — the block
+     * stays well under the spring-ai user-cache threshold (≥1024 chars).
+     *
+     * <p>The sender block is suppressed when:
+     * <ul>
+     *   <li>{@code origin} is null or {@link ChatOrigin#EMPTY}</li>
+     *   <li>the origin carries no IM context (web / cron) — both produce
+     *       a null {@code channelType} or {@code "web"}</li>
+     * </ul>
+     * Web and cron callers thus see exactly the same prompt as before.
+     */
+    public static String buildContextMessage(String workspaceBasePath,
+                                              vip.mate.i18n.I18nService i18n,
+                                              ChatOrigin origin) {
+        return buildContextMessage(workspaceBasePath, i18n, origin, null, null);
+    }
+
+    /**
+     * Full overload that also renders the agent's runtime model identity.
+     * The model line is emitted for EVERY origin (web / cron / IM / null)
+     * because it describes the agent, not the caller — only the sender
+     * block stays IM-only. {@code modelName}/{@code providerId} come from
+     * graph state ({@code RUNTIME_MODEL_NAME}/{@code RUNTIME_PROVIDER_ID}),
+     * i.e. the model selected at run start (mid-run failover is not
+     * reflected — accepted trade-off). Stays well under the 1024-char
+     * spring-ai user-cache threshold.
+     */
+    public static String buildContextMessage(String workspaceBasePath,
+                                              vip.mate.i18n.I18nService i18n,
+                                              ChatOrigin origin,
+                                              String modelName,
+                                              String providerId) {
         LocalDateTime now = LocalDateTime.now(ZONE);
         String dateStr = now.format(DATE_FMT);
         String timeStr = now.format(TIME_FMT);
@@ -66,7 +105,94 @@ public final class RuntimeContextInjector {
                 sb.append("\n[system-context] Working directory: ").append(workspaceBasePath);
                 sb.append("\nYou can only read/write files and execute commands within this directory and its subdirectories.");
             }
+            appendSkillRootHintIfPresent(sb, workspaceBasePath, i18n);
         }
+
+        appendSenderBlockIfPresent(sb, origin);
+        appendModelLineIfPresent(sb, modelName, providerId, i18n);
         return sb.toString();
+    }
+
+    /**
+     * Tell the model that the shared skill repository is reachable in addition
+     * to the workspace. Without this, a model that strictly honors the
+     * "working directory only" hint refuses to read or run skill files that
+     * live outside the workspace — even though the path sandbox now allows
+     * them. Skipped when the skill root is unknown or already sits inside the
+     * workspace (no separate boundary to explain).
+     */
+    private static void appendSkillRootHintIfPresent(StringBuilder sb, String workspaceBasePath,
+                                                      vip.mate.i18n.I18nService i18n) {
+        java.nio.file.Path skillRoot = vip.mate.tool.guard.WorkspacePathGuard.getSkillRoot();
+        if (skillRoot == null) {
+            return;
+        }
+        java.nio.file.Path wsRoot = java.nio.file.Paths.get(workspaceBasePath).toAbsolutePath().normalize();
+        if (skillRoot.startsWith(wsRoot)) {
+            return;
+        }
+        String skillRootStr = skillRoot.toString();
+        if (i18n != null) {
+            sb.append("\n").append(i18n.msg("context.skill_dir_hint", skillRootStr));
+        } else {
+            sb.append("\nShared skills live under ").append(skillRootStr)
+              .append("; you may also read and run files there, even though it is outside the working directory.");
+        }
+    }
+
+    /**
+     * Append the agent's runtime model identity. Emitted for all origins
+     * (it's an agent fact, not a sender fact). Skipped when modelName is
+     * blank. Provider parenthetical is omitted when providerId is blank.
+     */
+    private static void appendModelLineIfPresent(StringBuilder sb, String modelName,
+                                                 String providerId,
+                                                 vip.mate.i18n.I18nService i18n) {
+        if (modelName == null || modelName.isBlank()) return;
+        String model = modelName.trim();
+        sb.append("\n");
+        if (i18n != null) {
+            sb.append(i18n.msg("context.model_identity", model));
+        } else {
+            sb.append("[system-context] Model: ").append(model);
+        }
+        if (providerId != null && !providerId.isBlank()) {
+            sb.append(" (provider: ").append(providerId.trim()).append(')');
+        }
+        sb.append("\n");
+        if (i18n != null) {
+            sb.append(i18n.msg("context.model_identity_hint"));
+        } else {
+            sb.append("If asked which model you are using, answer with this value for the current run.");
+        }
+    }
+
+    /**
+     * Append a sender / channel / chat block when the origin carries
+     * meaningful IM context. Format is intentionally one line per
+     * fact so it's both LLM-readable and easy to log-grep.
+     */
+    private static void appendSenderBlockIfPresent(StringBuilder sb, ChatOrigin origin) {
+        if (origin == null || origin == ChatOrigin.EMPTY) return;
+        String channelType = origin.channelType();
+        // Only inject for real IM channels — web / null / cron should
+        // see the previous prompt verbatim so their cache hit rate
+        // and existing eval baselines don't shift.
+        if (channelType == null || channelType.isBlank()
+                || "web".equalsIgnoreCase(channelType)
+                || origin.cronOrigin()) {
+            return;
+        }
+        sb.append("\n[system-context] Channel: ").append(channelType);
+        if (origin.senderName() != null && !origin.senderName().isBlank()) {
+            sb.append("\n[system-context] Sender: ").append(origin.senderName());
+        }
+        if (origin.requesterId() != null && !origin.requesterId().isBlank()) {
+            sb.append(" (id=").append(origin.requesterId()).append(')');
+        }
+        if (origin.chatId() != null && !origin.chatId().isBlank()) {
+            sb.append("\n[system-context] Chat: ").append(origin.chatId())
+              .append(" (group conversation — multiple users may follow up)");
+        }
     }
 }

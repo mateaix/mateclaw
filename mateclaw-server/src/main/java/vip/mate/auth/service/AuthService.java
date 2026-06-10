@@ -109,15 +109,39 @@ public class AuthService {
      * 修改密码
      */
     public void changePassword(Long userId, String oldPassword, String newPassword) {
+        verifyCurrentUserPassword(userId, oldPassword);
         UserEntity user = userMapper.selectById(userId);
-        if (user == null) {
-            throw new MateClawException("err.auth.user_not_found", "用户不存在");
-        }
-        if (!passwordEncoder.matches(oldPassword, user.getPassword())) {
-            throw new MateClawException("err.auth.wrong_password", "原密码错误");
-        }
         user.setPassword(passwordEncoder.encode(newPassword));
         userMapper.updateById(user);
+    }
+
+    /**
+     * Step-up authentication: confirms that {@code rawPassword} matches the
+     * user's currently stored password without changing anything.
+     * <p>
+     * Used by sensitive operations that require re-confirmation of identity
+     * (e.g. creating a workspace-wide all-tool auto-approve grant). Throws
+     * the same {@link MateClawException} keys as {@link #changePassword} so
+     * the user-facing error message stays consistent.
+     *
+     * @throws MateClawException {@code err.auth.user_not_found} when the user
+     *         doesn't exist, or {@code err.auth.wrong_password} when the
+     *         password doesn't match.
+     */
+    public void verifyCurrentUserPassword(Long userId, String rawPassword) {
+        UserEntity user = userMapper.selectById(userId);
+        if (user == null) {
+            // 404: target user no longer exists; surfacing as 401 would mask the cause.
+            throw new MateClawException("err.auth.user_not_found", 404, "用户不存在");
+        }
+        if (rawPassword == null || !passwordEncoder.matches(rawPassword, user.getPassword())) {
+            // 403, not 401: 401 would trigger the global http interceptor's
+            // handleAuthFailure() and log the user out, but this is a step-up
+            // re-confirmation (token is still valid). Falling through to the
+            // default 500 looks like a server fault on the client; 403 cleanly
+            // communicates "valid session, wrong second-factor".
+            throw new MateClawException("err.auth.wrong_password", 403, "原密码错误");
+        }
     }
 
     /**

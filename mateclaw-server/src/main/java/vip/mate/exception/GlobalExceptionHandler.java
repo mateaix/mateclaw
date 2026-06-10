@@ -11,9 +11,14 @@ import org.springframework.validation.BindException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.context.request.async.AsyncRequestTimeoutException;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 import vip.mate.common.result.R;
 import vip.mate.i18n.I18nService;
+import vip.mate.skill.lifecycle.ConfirmRequiredException;
+
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 /**
  * Global exception handler.
@@ -68,6 +73,21 @@ public class GlobalExceptionHandler {
         return e.getMessage();
     }
 
+    /**
+     * A mutation that needs a second, explicit confirmation. Returns a real
+     * HTTP 409 with a structured body so the client can branch on the status
+     * code and render a confirm dialog from {@code boundAgents}.
+     */
+    @ExceptionHandler(ConfirmRequiredException.class)
+    public ResponseEntity<Map<String, Object>> handleConfirmRequired(ConfirmRequiredException e) {
+        log.info("Confirm required: [{}] {}", e.getCode(), e.getMessage());
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("code", e.getCode());
+        body.put("message", e.getMessage());
+        body.put("boundAgents", e.getBoundAgents());
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(body);
+    }
+
     @ExceptionHandler(BindException.class)
     public ResponseEntity<R<Void>> handleBindException(BindException e) {
         String msg = e.getBindingResult().getFieldErrors().stream()
@@ -75,6 +95,22 @@ public class GlobalExceptionHandler {
                 .findFirst()
                 .orElse("Validation failed");
         log.warn("Validation failed: {}", msg);
+        return ResponseEntity.badRequest().body(R.fail(400, msg));
+    }
+
+    /**
+     * A path variable or request parameter could not be coerced into the
+     * handler's declared type (e.g. a non-numeric segment on an {@code /{id}}
+     * route bound to {@code Long}). This is a malformed client request, not a
+     * server fault, so it must surface as 400 — never a 500 with a full stack
+     * trace from the catch-all handler below.
+     */
+    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+    public ResponseEntity<R<Void>> handleTypeMismatch(MethodArgumentTypeMismatchException e,
+                                                      HttpServletRequest request) {
+        String required = e.getRequiredType() != null ? e.getRequiredType().getSimpleName() : "expected type";
+        String msg = "Invalid value for parameter '" + e.getName() + "': expected " + required;
+        log.warn("Argument type mismatch: {} {} - {}", request.getMethod(), request.getRequestURI(), msg);
         return ResponseEntity.badRequest().body(R.fail(400, msg));
     }
 

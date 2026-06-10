@@ -81,8 +81,7 @@ class ChannelMessageTriggerTest {
         publisher.publishEvent(new ChannelMessageReceivedEvent(
                 workspace, "feishu", "msg-1", "alice", "Alice", "chat-1", "hello"));
 
-        List<WorkflowRunEntity> runs = runMapper.selectList(
-                new LambdaQueryWrapper<WorkflowRunEntity>().eq(WorkflowRunEntity::getWorkflowId, downstream));
+        List<WorkflowRunEntity> runs = awaitRuns(downstream);
         assertEquals(1, runs.size(), "channel_message envelope should have triggered exactly one run");
         assertEquals("succeeded", runs.get(0).getState());
         assertTrue(runs.get(0).getTriggeredBy() != null
@@ -116,8 +115,7 @@ class ChannelMessageTriggerTest {
         publisher.publishEvent(new ChannelMessageReceivedEvent(
                 workspace, "feishu", "msg-2", "bob", "Bob", "chat-2", "hello"));
 
-        List<WorkflowRunEntity> runs = runMapper.selectList(
-                new LambdaQueryWrapper<WorkflowRunEntity>().eq(WorkflowRunEntity::getWorkflowId, downstream));
+        List<WorkflowRunEntity> runs = awaitNoRuns(downstream);
         assertTrue(runs.isEmpty(),
                 "channelType mismatch should leave the trigger dormant");
     }
@@ -148,8 +146,7 @@ class ChannelMessageTriggerTest {
         publisher.publishEvent(new ChannelMessageReceivedEvent(
                 workspace, "feishu", "msg-3", "alice", "Alice", "chat-3", "Place an Order, please"));
 
-        List<WorkflowRunEntity> runs = runMapper.selectList(
-                new LambdaQueryWrapper<WorkflowRunEntity>().eq(WorkflowRunEntity::getWorkflowId, downstream));
+        List<WorkflowRunEntity> runs = awaitRuns(downstream);
         assertEquals(1, runs.size(),
                 "content_match should fire when the substring is present in the message");
     }
@@ -178,9 +175,28 @@ class ChannelMessageTriggerTest {
         publisher.publishEvent(new ChannelMessageReceivedEvent(
                 workspace, "feishu", "msg-4", "alice", "Alice", "chat-4", "completely unrelated text"));
 
-        List<WorkflowRunEntity> runs = runMapper.selectList(
-                new LambdaQueryWrapper<WorkflowRunEntity>().eq(WorkflowRunEntity::getWorkflowId, downstream));
+        List<WorkflowRunEntity> runs = awaitNoRuns(downstream);
         assertTrue(runs.isEmpty(),
                 "missing substring should leave the content_match trigger dormant");
+    }
+
+    // The channel-message event bridge dispatches on an @Async listener, so the
+    // downstream run is produced off the event-publishing thread. Poll briefly
+    // for it instead of reading immediately (which would race the listener).
+    private List<WorkflowRunEntity> awaitRuns(long workflowId) {
+        var q = new LambdaQueryWrapper<WorkflowRunEntity>().eq(WorkflowRunEntity::getWorkflowId, workflowId);
+        for (int i = 0; i < 50; i++) {
+            List<WorkflowRunEntity> runs = runMapper.selectList(q);
+            if (!runs.isEmpty()) return runs;
+            try { Thread.sleep(100); } catch (InterruptedException e) { Thread.currentThread().interrupt(); break; }
+        }
+        return runMapper.selectList(q);
+    }
+
+    // Give the @Async listener time to run, then confirm it produced nothing.
+    private List<WorkflowRunEntity> awaitNoRuns(long workflowId) {
+        try { Thread.sleep(1000); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        return runMapper.selectList(
+                new LambdaQueryWrapper<WorkflowRunEntity>().eq(WorkflowRunEntity::getWorkflowId, workflowId));
     }
 }

@@ -20,6 +20,7 @@ import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import vip.mate.agent.context.ChatOrigin;
 import vip.mate.agent.context.ChatOriginHolder;
+import vip.mate.approval.event.ApprovalResolutionEvent;
 import vip.mate.approval.event.WorkflowApprovalResolvedEvent;
 import vip.mate.approval.model.ToolApprovalEntity;
 import vip.mate.approval.repository.ToolApprovalMapper;
@@ -705,6 +706,41 @@ public class ApprovalWorkflowService implements ApplicationRunner {
                 log.warn("[ApprovalWorkflow] approval row lookup for resolve event failed for {}: {}",
                         snapshot.getPendingId(), e.getMessage());
             }
+        }
+
+        // Phase 5 — generic resolution event so the auto-grant resolution log
+        // can record this final decision. Distinct from the workflow-bridge
+        // event above: this fires for EVERY resolved approval (not just wf-*),
+        // and its consumer writes one mate_approval_resolution_log row.
+        // SUPERSEDED is not a user decision — the replacement pending will fire
+        // its own event when it resolves, so we skip the event here.
+        if (events != null && !"SUPERSEDED".equals(dbStatus)) {
+            String decisionSource = "TIMEOUT".equals(dbStatus)
+                    ? "TIMEOUT"
+                    : "USER_MANUAL";
+            String note = "USER_MANUAL".equals(decisionSource) && "DENIED".equals(dbStatus)
+                    ? "denied"
+                    : null;
+            ApprovalResolutionEvent resolutionEvent = new ApprovalResolutionEvent(
+                    snapshot.getPendingId(),
+                    snapshot.getConversationId(),
+                    snapshot.getAgentId(),
+                    /* userId resolves to actor or original requester */
+                    userId != null ? userId : snapshot.getUserId(),
+                    snapshot.getToolName(),
+                    snapshot.getToolArguments(),
+                    snapshot.getMaxSeverity(),
+                    snapshot.getFindingsJson(),
+                    decisionSource,
+                    note);
+            afterCommit(() -> {
+                try {
+                    events.publishEvent(resolutionEvent);
+                } catch (Exception e) {
+                    log.warn("[ApprovalWorkflow] failed to publish ApprovalResolutionEvent for {}: {}",
+                            snapshot.getPendingId(), e.getMessage());
+                }
+            });
         }
 
         boolean consumed = "consumed".equals(snapshotStatus);

@@ -44,12 +44,14 @@ import { GraphChart } from 'echarts/charts'
 import { TooltipComponent, LegendComponent } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
 import type { WikiPage } from '@/stores/useWikiStore'
+import { useWikiPageType } from '@/composables/useWikiPageType'
 import WikiGraphToolbar from './WikiGraphToolbar.vue'
 import WikiGraphNodePanel from './WikiGraphNodePanel.vue'
 
 echarts.use([GraphChart, TooltipComponent, LegendComponent, CanvasRenderer])
 
 const { t } = useI18n()
+const { typeColor, formatPageTypeLabel } = useWikiPageType()
 const props = defineProps<{ pages: WikiPage[] }>()
 const emit = defineEmits<{ (e: 'open-page', slug: string): void }>()
 
@@ -62,23 +64,6 @@ const showOrphans = ref(true)
 const typeFilter = ref('')
 const selectedNode = ref<WikiPage | null>(null)
 
-// Type → color map
-const TYPE_COLORS: Record<string, string> = {
-  concept: '#D96E46',
-  person: '#5B8DEF',
-  place: '#4CAF82',
-  event: '#F59E0B',
-  technology: '#8B5CF6',
-  organization: '#EC4899',
-  product: '#14B8A6',
-  term: '#6B7280',
-  process: '#F97316',
-  other: '#9CA3AF',
-}
-
-function typeColor(type: string | null | undefined): string {
-  return TYPE_COLORS[(type || 'other').toLowerCase()] || TYPE_COLORS.other
-}
 
 // Parse outgoing links JSON string → slug[]
 function parseLinks(outgoingLinks: string | null | undefined): string[] {
@@ -245,7 +230,7 @@ function buildOption() {
         // Look up from slugToPage instead of relying on _page in ECharts data
         const page = slugToPage.value.get(params.data.id)
         if (!page) return ''
-        const typeLabel = t(`wiki.pageTypes.${page.pageType || 'other'}`, page.pageType || 'other')
+        const typeLabel = formatPageTypeLabel(page.pageType || 'other')
         const summary = (page.summary || '').substring(0, 80)
         const ellipsis = (page.summary || '').length > 80 ? '…' : ''
         return [

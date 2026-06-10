@@ -169,6 +169,106 @@ function preprocessLatex(text: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Product cards
+// ---------------------------------------------------------------------------
+/** Shape the model is asked to emit inside a ```product-cards fence. */
+interface ProductCard {
+  name?: string
+  url?: string
+  imageUrl?: string
+  price?: number | string
+  originalPrice?: number | string
+  lowestPrice?: number | string
+  platformLabel?: string
+  shopName?: string
+  purchaseAdvice?: string
+}
+
+/** Format a numeric/string amount as `¥1,234` (drops a trailing `.0`). */
+function formatPrice(v: number | string | undefined): string {
+  if (v === undefined || v === null || v === '') return ''
+  const n = typeof v === 'number' ? v : Number(String(v).replace(/[^\d.]/g, ''))
+  if (!Number.isFinite(n)) return ''
+  const s = Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/\.0+$/, '')
+  return '¥' + s.replace(/\B(?=(\d{3})+(?!\d))/g, ',')
+}
+
+/**
+ * Render a ```product-cards fenced JSON block into a clickable card grid.
+ *
+ * Accepts a bare array or an object wrapping the array under
+ * `recommendations` / `products` / `items`. While streaming, the JSON is
+ * frequently incomplete — we swallow the parse error and show a lightweight
+ * loading placeholder rather than dumping half a JSON blob into the bubble.
+ */
+function renderProductCards(rawCode: string): string {
+  let items: ProductCard[] = []
+  try {
+    const parsed = JSON.parse(rawCode)
+    if (Array.isArray(parsed)) items = parsed
+    else if (parsed && typeof parsed === 'object') {
+      items = parsed.recommendations || parsed.products || parsed.items || []
+    }
+  } catch {
+    return '<div class="product-cards product-cards--loading">'
+      + '<span class="product-cards__dot"></span>'
+      + '<span class="product-cards__dot"></span>'
+      + '<span class="product-cards__dot"></span>'
+      + '</div>'
+  }
+  if (!Array.isArray(items) || items.length === 0) return ''
+
+  const cards = items.map((it) => {
+    const href = typeof it.url === 'string' && SAFE_LINK_RE.test(it.url) ? it.url : ''
+    const name = escapeHtml(String(it.name ?? '').trim()) || '商品'
+    const img = typeof it.imageUrl === 'string' && /^https?:/i.test(it.imageUrl) ? it.imageUrl : ''
+    const now = formatPrice(it.price)
+    const wasNum = typeof it.originalPrice === 'number' ? it.originalPrice : Number(it.originalPrice)
+    const nowNum = typeof it.price === 'number' ? it.price : Number(it.price)
+    const showWas = Number.isFinite(wasNum) && Number.isFinite(nowNum) && wasNum > nowNum
+    const was = showWas ? formatPrice(it.originalPrice) : ''
+    const low = formatPrice(it.lowestPrice)
+    const platform = escapeHtml(String(it.platformLabel ?? '').trim())
+    const shop = escapeHtml(String(it.shopName ?? '').trim())
+    const advice = escapeHtml(String(it.purchaseAdvice ?? '').trim())
+
+    // target/rel (anchor) and referrerpolicy/loading (img) are re-applied by the
+    // afterSanitizeAttributes hook — DOMPurify strips them here regardless.
+    const media = img
+      ? `<div class="product-card__media"><img src="${escapeHtml(img)}" alt="${name}"></div>`
+      : `<div class="product-card__media product-card__media--empty"></div>`
+    const meta = [platform, shop].filter(Boolean).join(' · ')
+    const priceLine = now
+      ? `<div class="product-card__price"><span class="product-card__price-now">${now}</span>`
+        + (was ? `<span class="product-card__price-was">${was}</span>` : '')
+        + `</div>`
+      : ''
+    // The whole card is the anchor, but a visible CTA makes the "tap to buy"
+    // affordance explicit (an `<a>` can't legally wrap a `<button>`, so this is
+    // a styled span). Only shown when there's a real buy URL.
+    const platformWord = platform || '商家'
+    const buyCta = href
+      ? `<span class="product-card__buy">去${platformWord}购买<span class="product-card__buy-arrow">→</span></span>`
+      : ''
+    const body = `<div class="product-card__body">`
+      + `<div class="product-card__name">${name}</div>`
+      + priceLine
+      + (meta ? `<div class="product-card__meta">${meta}</div>` : '')
+      + (low ? `<div class="product-card__low">历史最低 ${low}</div>` : '')
+      + (advice ? `<div class="product-card__advice">${advice}</div>` : '')
+      + buyCta
+      + `</div>`
+
+    if (href) {
+      return `<a class="product-card" href="${escapeHtml(href)}">${media}${body}</a>`
+    }
+    return `<div class="product-card product-card--nolink">${media}${body}</div>`
+  }).join('')
+
+  return `<div class="product-cards">${cards}</div>`
+}
+
+// ---------------------------------------------------------------------------
 // Custom renderer (marked v15 requires a plain object — class instances are
 // NOT dispatched).
 // ---------------------------------------------------------------------------
@@ -207,6 +307,15 @@ const customRenderer = {
     // ECharts: same pattern, mounted by useEChartsRenderer.
     if (infoStr === 'echarts') {
       return `<div class="echarts-block" data-echarts-option="${encodeURIComponent(rawCode)}"></div>`
+    }
+
+    // Product cards: a ```product-cards fenced block carries a JSON array (or an
+    // object wrapping `recommendations` / `products` / `items`) of shopping
+    // recommendations. We render it inline as a clickable card grid — image,
+    // name, price, platform — so price-comparison results show up as real cards
+    // in the chat instead of a markdown list. Pure HTML, no post-mount step.
+    if (infoStr === 'product-cards') {
+      return renderProductCards(rawCode)
     }
 
     const detectedLang = extractLang(infoStr)
@@ -334,6 +443,35 @@ const purifyConfig = {
   ALLOWED_URI_REGEXP: /^(?:https?:|mailto:|#|\/|\.\/|\.\.\/)/i,
 }
 
+// The custom ALLOWED_URI_REGEXP above also vets non-URI attribute *values*, so
+// DOMPurify strips `target="_blank"`, `rel="noopener"`, `referrerpolicy="..."`
+// etc. (their values don't match the URL whitelist). For product cards we need
+// those back: the buy link must open in a new tab instead of navigating away
+// from the chat, and marketplace CDN thumbnails (e.g. 360buyimg) are hotlink-
+// protected and only load with `referrer-policy: no-referrer`. An
+// afterSanitizeAttributes hook re-applies them with fixed, safe values —
+// attributes set inside this hook are NOT re-validated, so this is the
+// canonical DOMPurify pattern. Scoped strictly to product-card nodes so no
+// other rendered markdown changes behaviour.
+let productCardHookRegistered = false
+function ensureProductCardHook(): void {
+  if (productCardHookRegistered) return
+  productCardHookRegistered = true
+  DOMPurify.addHook('afterSanitizeAttributes', (node: Element) => {
+    if (!node || typeof node.tagName !== 'string') return
+    const tag = node.tagName.toLowerCase()
+    if (tag === 'a' && node.classList?.contains('product-card')) {
+      node.setAttribute('target', '_blank')
+      node.setAttribute('rel', 'noopener noreferrer')
+    } else if (tag === 'img' && typeof node.closest === 'function' && node.closest('.product-cards')) {
+      node.setAttribute('referrerpolicy', 'no-referrer')
+      node.setAttribute('loading', 'lazy')
+      node.setAttribute('decoding', 'async')
+    }
+  })
+}
+ensureProductCardHook()
+
 // ---------------------------------------------------------------------------
 // LRU render cache
 // ---------------------------------------------------------------------------
@@ -343,20 +481,43 @@ const purifyConfig = {
 const RENDER_CACHE = new Map<string, string>()
 const RENDER_CACHE_CAP = 200
 
-function cacheKey(text: string): string {
+function cacheKey(text: string, wikilink: WikilinkMode): string {
   // Compact key — collisions on the order of 10^-6 in single-conversation
   // scope, and a false hit only causes a "stale" render of unchanged content
   // (no security implication since cached values are sanitized HTML).
-  return `${text.length}:${text.slice(0, 40)}:${text.slice(-40)}`
+  // The wikilink mode is part of the key so a 'none' caller cannot read back
+  // a 'legacy'-substituted cached entry of the same source.
+  return `${wikilink}:${text.length}:${text.slice(0, 40)}:${text.slice(-40)}`
 }
 
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
+
+/**
+ * Wikilink handling mode for {@link useMarkdownRenderer}.
+ *
+ * - `'legacy'` (default): pre-markdown string substitution of `[[Title]]` into
+ *   `<a class="wiki-link" data-wiki-title="...">`, dispatching the global
+ *   `wiki-link-click` event when clicked. Kept for chat / other views that
+ *   already rely on this behaviour.
+ * - `'none'`: skip wikilink substitution entirely. Use this when the caller
+ *   wants to walk the rendered DOM itself and resolve `[[...]]` against an
+ *   authoritative `{slug, title}` index — the dedicated path used by the Wiki
+ *   page viewer, where the legacy "guess slug from title" approach is unsafe.
+ */
+export type WikilinkMode = 'legacy' | 'none'
+
+export interface RenderMarkdownOptions {
+  /** How to handle `[[...]]` syntax. Defaults to `'legacy'`. */
+  wikilink?: WikilinkMode
+}
+
 export function useMarkdownRenderer() {
-  function renderMarkdown(content: string): string {
+  function renderMarkdown(content: string, opts?: RenderMarkdownOptions): string {
     if (!content) return ''
-    const k = cacheKey(content)
+    const wikilink: WikilinkMode = opts?.wikilink ?? 'legacy'
+    const k = cacheKey(content, wikilink)
     const cached = RENDER_CACHE.get(k)
     if (cached !== undefined) {
       // Refresh LRU position — re-insert at the tail.
@@ -368,10 +529,30 @@ export function useMarkdownRenderer() {
     // 1. LaTeX placeholders (skips fenced/inline code).
     const withLatex = preprocessLatex(content)
     // 2. Wiki link substitution: [[Title]] → <a class="wiki-link" …>.
-    const withWikiLinks = withLatex.replace(
-      /\[\[([^\]]+)\]\]/g,
-      '<a class="wiki-link" href="#" data-wiki-title="$1" onclick="window.dispatchEvent(new CustomEvent(\'wiki-link-click\',{detail:{title:\'$1\'}}));return false">$1</a>'
-    )
+    //    Skipped in 'none' mode so the caller can do its own DOM postprocess.
+    const withWikiLinks =
+      wikilink === 'none'
+        ? withLatex
+        : // Split `[[slug|display]]` into slug + display halves so the
+          // `data-wiki-title` attribute carries the slug ALONE (the cross-KB
+          // lookup keys off that) and the visible label is the display text
+          // (the alias an author chose). The earlier single-capture regex
+          // copied the whole bracket interior — including the literal `|` —
+          // into both, producing `data-wiki-title="slug|display"` lookups
+          // that the backend would never resolve.
+          withLatex.replace(
+            /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g,
+            (_match, slug: string, alias?: string) => {
+              const target = slug.trim().replace(/"/g, '&quot;')
+              const visible = (alias?.trim() || slug.trim()).replace(/"/g, '&quot;')
+              return (
+                '<a class="wiki-link" href="#" data-wiki-title="' + target +
+                '" onclick="window.dispatchEvent(new CustomEvent(\'wiki-link-click\',{detail:{title:\'' +
+                target.replace(/'/g, "\\'") +
+                '\'}}));return false">' + visible + '</a>'
+              )
+            },
+          )
     // 3. Marked → 4. DOMPurify.
     const rawHtml = markedInstance.parse(withWikiLinks) as string
     const result = DOMPurify.sanitize(rawHtml, purifyConfig)

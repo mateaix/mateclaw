@@ -219,6 +219,22 @@ public class AgentToolSet {
         return callbacks.size();
     }
 
+    /**
+     * Resolve a mix of aliases (function name / Spring bean name / Java class simple name)
+     * to the {@code @Tool} function names they map to. Used to bridge persistence layers
+     * that key a tool by its class or bean name (e.g. {@code mate_tool.name}) onto the
+     * runtime callback name ({@code cb.getToolDefinition().name()}). Unknown aliases yield
+     * nothing.
+     */
+    public Set<String> functionNamesFor(Set<String> aliases) {
+        if (aliases == null || aliases.isEmpty()) {
+            return Set.of();
+        }
+        return resolveAliases(aliases).stream()
+                .map(cb -> cb.getToolDefinition().name())
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+    }
+
     // ==================== Internals ====================
 
     /**

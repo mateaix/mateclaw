@@ -8,6 +8,7 @@ import vip.mate.agent.AgentService;
 import vip.mate.agent.binding.model.AgentProviderPreference;
 import vip.mate.agent.binding.model.AgentSkillBinding;
 import vip.mate.agent.binding.model.AgentToolBinding;
+import vip.mate.agent.binding.model.AgentWikiKbBinding;
 import vip.mate.agent.binding.service.AgentBindingService;
 import vip.mate.agent.model.AgentEntity;
 import vip.mate.audit.service.AuditEventService;
@@ -52,8 +53,12 @@ public class AgentBindingController {
         verifyAgentWorkspace(agentId, workspaceId);
         bindingService.setSkillBindings(agentId, skillIds);
         agentService.invalidateAgentCache(agentId);
+        // The Vue client always sends an array, but a non-Vue caller (curl /
+        // SDK) can POST a body of just `null`, which Spring binds to a null
+        // list. The service tolerates that — guard the audit message too.
+        int count = skillIds == null ? 0 : skillIds.size();
         auditEventService.record("UPDATE", "AGENT_SKILL", String.valueOf(agentId),
-                "skills=" + skillIds.size(), null);
+                "skills=" + count, null);
         return R.ok();
     }
 
@@ -98,12 +103,14 @@ public class AgentBindingController {
         verifyAgentWorkspace(agentId, workspaceId);
         bindingService.setToolBindings(agentId, toolNames);
         agentService.invalidateAgentCache(agentId);
+        // Same null-safety rationale as setSkills above.
+        int count = toolNames == null ? 0 : toolNames.size();
         auditEventService.record("UPDATE", "AGENT_TOOL", String.valueOf(agentId),
-                "tools=" + toolNames.size(), null);
+                "tools=" + count, null);
         return R.ok();
     }
 
-    // ==================== Provider Preferences (RFC-009 PR-3) ====================
+    // ==================== Provider Preferences ====================
 
     @Operation(summary = "获取 Agent 的偏好 Provider 顺序")
     @GetMapping("/provider-preferences")
@@ -130,6 +137,32 @@ public class AgentBindingController {
         return R.ok();
     }
 
+    // ==================== Knowledge Base Access Scope ====================
+
+    @Operation(summary = "获取 Agent 的知识库访问范围")
+    @GetMapping("/kbs")
+    @RequireWorkspaceRole("viewer")
+    public R<List<AgentWikiKbBinding>> listKbs(@PathVariable Long agentId,
+                                               @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        verifyAgentWorkspace(agentId, workspaceId);
+        return R.ok(bindingService.listKbBindings(agentId));
+    }
+
+    @Operation(summary = "批量设置 Agent 的知识库访问范围（替换模式，空表示不限制）")
+    @PutMapping("/kbs")
+    @RequireWorkspaceRole("member")
+    public R<Void> setKbs(@PathVariable Long agentId, @RequestBody List<Long> kbIds,
+                          @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        verifyAgentWorkspace(agentId, workspaceId);
+        bindingService.setKbBindings(agentId, kbIds);
+        agentService.invalidateAgentCache(agentId);
+        // A non-Vue caller can POST a bare `null`; the service tolerates it.
+        int count = kbIds == null ? 0 : kbIds.size();
+        auditEventService.record("UPDATE", "AGENT_WIKI_KB", String.valueOf(agentId),
+                "kbs=" + count, null);
+        return R.ok();
+    }
+
     // ==================== Workspace Verification ====================
 
     private void verifyAgentWorkspace(Long agentId, Long headerWorkspaceId) {
@@ -139,7 +172,7 @@ public class AgentBindingController {
         }
         long requestedWs = headerWorkspaceId != null ? headerWorkspaceId : 1L;
         if (agent.getWorkspaceId() != null && !agent.getWorkspaceId().equals(requestedWs)) {
-            throw new MateClawException("err.common.wrong_workspace", "资源不属于当前工作区");
+            throw new MateClawException("err.common.wrong_workspace", 403, "资源不属于当前工作区");
         }
     }
 }

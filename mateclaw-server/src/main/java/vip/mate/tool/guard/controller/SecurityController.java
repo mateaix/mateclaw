@@ -17,6 +17,7 @@ import vip.mate.tool.guard.service.ToolGuardConfigService;
 import vip.mate.tool.guard.service.ToolGuardRuleService;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import vip.mate.workspace.core.annotation.RequireWorkspaceRole;
 
@@ -163,6 +164,36 @@ public class SecurityController {
             return R.ok("删除成功");
         } catch (IllegalArgumentException e) {
             return R.fail(e.getMessage());
+        }
+    }
+
+    @Operation(summary = "导出全部规则为 JSON")
+    @GetMapping("/guard/rules/export")
+    @RequireWorkspaceRole("admin")
+    public R<Map<String, Object>> exportRules() {
+        return R.ok(ruleService.exportRules());
+    }
+
+    @Operation(summary = "从 JSON 批量导入规则（upsert 语义）")
+    @PostMapping("/guard/rules/import")
+    @RequireWorkspaceRole("admin")
+    public R<Map<String, Object>> importRules(@RequestBody Map<String, Object> body) {
+        try {
+            Object rulesNode = body == null ? null : body.get("rules");
+            if (!(rulesNode instanceof List<?> raw)) {
+                return R.fail("Body must contain a 'rules' array");
+            }
+            com.fasterxml.jackson.databind.ObjectMapper om = new com.fasterxml.jackson.databind.ObjectMapper();
+            List<ToolGuardRuleEntity> incoming = new java.util.ArrayList<>();
+            for (Object item : raw) {
+                ToolGuardRuleEntity rule = om.convertValue(item, ToolGuardRuleEntity.class);
+                incoming.add(rule);
+            }
+            return R.ok(ruleService.importRules(incoming));
+        } catch (IllegalArgumentException e) {
+            return R.fail(e.getMessage());
+        } catch (Exception e) {
+            return R.fail("Import failed: " + e.getMessage());
         }
     }
 

@@ -26,7 +26,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 会话历史上下文窗口管理器（Hermes 风格升级版）
+ * 会话历史上下文窗口管理器（四阶段压缩升级版）
  * <p>
  * 四阶段压缩策略：
  * <ol>
@@ -170,6 +170,15 @@ public class ConversationWindowManager {
      *  conversation in a compaction storm. */
     private final ConcurrentHashMap<String, Long> ptlForceCompactAt = new ConcurrentHashMap<>();
 
+    /**
+     * Default max input tokens for the configured model window. Surfaced for
+     * the per-loop budgeter so the L1 (multi-turn compaction) and L2
+     * (per-iteration trim) layers stay calibrated to the same number.
+     */
+    public int getDefaultMaxInputTokens() {
+        return properties != null ? properties.getDefaultMaxInputTokens() : 0;
+    }
+
     /** Cooldown window after a structured PTL compaction during which a
      *  follow-up PTL is downgraded to tail-only. Picked so a single ReAct
      *  loop that retries within seconds can't burn another summary LLM
@@ -274,7 +283,7 @@ public class ConversationWindowManager {
         }
         int historyBudget = effectiveMax - reservedTokens;
 
-        // 尾部保护 token 预算：阈值的 20%（与 Hermes 一致）
+        // 尾部保护 token 预算：阈值的 20%
         int tailTokenBudget = (int) (triggerThreshold * 0.20);
 
         return compactMessages(messages, historyBudget, tailTokenBudget, chatModel,
@@ -905,6 +914,102 @@ public class ConversationWindowManager {
     }
 
     /**
+     * Age-based compaction. Replace bodies of all tool responses older than
+     * the {@code keepRecentN} most recent with a one-line placeholder, while
+     * preserving the toolCallId and tool name so the assistant/tool pairing
+     * remains valid and the model still sees "I called X earlier" in history.
+     *
+     * <p>Complementary to {@link #pruneOldToolResultsForModelInput}: that pass
+     * targets oversized or duplicate bodies regardless of age (and may spill
+     * to disk); this one targets aged bodies regardless of size. Both can run
+     * in any order — the intersection collapses to the same placeholder.
+     *
+     * <p>Spill-marker bodies retain their on-disk {@code path=} pointer
+     * inside the placeholder so a later {@code read_file} can still recover
+     * the original output. {@link #PRUNE_EXEMPT_TOOLS} (sub-agent delegations)
+     * bypass the pass entirely — their transcripts are not replayable.
+     *
+     * @param messages     full conversation in chronological order
+     * @param keepRecentN  number of newest {@link ToolResponseMessage}s kept
+     *                     verbatim; older ones are compacted. Negative or zero
+     *                     disables the pass.
+     */
+    public List<Message> compactAgedToolResponses(List<Message> messages, int keepRecentN) {
+        if (messages == null || messages.isEmpty() || keepRecentN <= 0) {
+            return messages;
+        }
+        List<Message> out = new ArrayList<>(messages);
+        int seen = 0;
+        int compacted = 0;
+        boolean anyChange = false;
+        for (int i = out.size() - 1; i >= 0; i--) {
+            if (!(out.get(i) instanceof ToolResponseMessage trm)) {
+                continue;
+            }
+            if (seen < keepRecentN) {
+                seen++;
+                continue;
+            }
+            seen++;
+
+            List<ToolResponseMessage.ToolResponse> newResponses =
+                    new ArrayList<>(trm.getResponses().size());
+            boolean messageChanged = false;
+            for (ToolResponseMessage.ToolResponse r : trm.getResponses()) {
+                String body = r.responseData();
+                String name = r.name();
+                boolean exempt = name != null && PRUNE_EXEMPT_TOOLS.contains(name);
+                if (exempt || body == null || body.isEmpty()) {
+                    newResponses.add(r);
+                    continue;
+                }
+                String placeholder = buildAgedPlaceholder(name, body);
+                if (placeholder.length() < body.length()) {
+                    newResponses.add(new ToolResponseMessage.ToolResponse(r.id(), name, placeholder));
+                    messageChanged = true;
+                    compacted++;
+                } else {
+                    // Body is already shorter than the placeholder would be —
+                    // collapsing it would only add tokens. Keep verbatim.
+                    newResponses.add(r);
+                }
+            }
+            if (messageChanged) {
+                out.set(i, ToolResponseMessage.builder().responses(newResponses).build());
+                anyChange = true;
+            }
+        }
+        if (compacted > 0) {
+            log.info("[ConversationWindow] Aged-compacted {} tool response entries (keepRecent={}) before model request",
+                    compacted, keepRecentN);
+        }
+        return anyChange ? out : messages;
+    }
+
+    /**
+     * Build the one-line "old tool output cleared" body. When the original
+     * was a spill marker, extract its {@code path=} hint so the model can
+     * still recover the full output via {@code read_file} on demand.
+     */
+    static String buildAgedPlaceholder(String toolName, String body) {
+        String safeName = (toolName == null || toolName.isBlank()) ? "tool" : toolName;
+        if (body != null && body.startsWith(ToolResultStorage.SPILL_MARKER_PREFIX)) {
+            int idx = body.indexOf(" path=");
+            if (idx >= 0) {
+                int end = body.indexOf('\n', idx);
+                String path = (end > 0 ? body.substring(idx + 6, end) : body.substring(idx + 6)).trim();
+                if (!path.isEmpty()) {
+                    return "[Old tool output cleared — '" + safeName
+                            + "' result was spilled to " + path
+                            + "; use read_file on that path if you still need it.]";
+                }
+            }
+        }
+        return "[Old tool output cleared — '" + safeName
+                + "' can be called again if its result is needed.]";
+    }
+
+    /**
      * Phase 1 - Soft trim：对工具结果做 head+tail 裁剪（保留首尾各 200 字符）。
      * <p>Spill-marker responses are left untouched so their on-disk pointer
      * survives intact across compaction.
@@ -923,10 +1028,10 @@ public class ConversationWindowManager {
                     }
                     String data = r.responseData();
                     if (data != null && data.length() > 500) {
-                        String head = data.substring(0, 200);
-                        String tail = data.substring(data.length() - 200);
+                        String marker = "\n...[trimmed " + data.length() + " chars; "
+                                + StructuredTruncator.FIDELITY_NOTE + "]...\n";
                         newResponses.add(new ToolResponseMessage.ToolResponse(
-                                r.id(), r.name(), head + "\n...[trimmed " + data.length() + " chars]...\n" + tail));
+                                r.id(), r.name(), StructuredTruncator.truncate(data, 200, 200, marker)));
                         changed = true;
                     } else {
                         newResponses.add(r);
@@ -1097,9 +1202,9 @@ public class ConversationWindowManager {
 
             String text = msg.getText();
             if (text != null && text.length() > CONTENT_MAX) {
-                text = text.substring(0, CONTENT_HEAD)
-                        + "\n...[截断 " + text.length() + " 字符]...\n"
-                        + text.substring(text.length() - CONTENT_TAIL);
+                String marker = "\n...[truncated " + text.length() + " chars; "
+                        + StructuredTruncator.FIDELITY_NOTE + "]...\n";
+                text = StructuredTruncator.truncate(text, CONTENT_HEAD, CONTENT_TAIL, marker);
             }
 
             sb.append(role).append(": ").append(text != null ? text : "").append("\n\n");

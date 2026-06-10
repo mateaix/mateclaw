@@ -59,11 +59,17 @@ public abstract class BaseAgent {
 
     /**
      * Max ReAct iterations (one reasoning + action + observation step counts as one).
-     * Default 100, hard ceiling 100 (enforced in AgentGraphBuilder so per-agent DB
+     * Default 150, hard ceiling 150 (enforced in AgentGraphBuilder so per-agent DB
      * overrides cannot exceed it).
+     *
+     * <p>Raised from 100 → 150 after the round-4 LLM-review smoke test, where a
+     * 10-model research task with browser_use + per-step verification hit the
+     * 100-iter cap with only 4/10 models completed. 150 gives roughly 50 %
+     * headroom for similar multi-step research workflows while still bounding
+     * a runaway agent.
      */
-    public static final int MAX_ITERATIONS_HARD_CEILING = 100;
-    protected int maxIterations = 100;
+    public static final int MAX_ITERATIONS_HARD_CEILING = 150;
+    protected int maxIterations = 150;
 
     /** 工作区活动目录（限制文件工具访问范围，为空不限制） */
     protected String workspaceBasePath;
@@ -117,6 +123,14 @@ public abstract class BaseAgent {
      */
     protected MultimodalRouter multimodalRouter;
     protected MediaCaptionService mediaCaptionService;
+
+    /**
+     * RFC 48 — wired by {@link AgentGraphBuilder#build} so the agent's
+     * {@code buildInitialState} can inject {@code ACTIVE_GOAL} from the
+     * conversation's active goal row. Nullable when the goal subsystem
+     * is off / not wired (legacy tests with minimal builders).
+     */
+    protected vip.mate.goal.service.GoalService goalService;
 
     /** Locale used when prompting the vision sidecar. Defaults to zh-CN when unset. */
     protected java.util.Locale userLocale = java.util.Locale.SIMPLIFIED_CHINESE;

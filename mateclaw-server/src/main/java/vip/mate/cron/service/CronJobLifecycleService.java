@@ -9,6 +9,7 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import vip.mate.agent.AgentService;
 import vip.mate.cron.delivery.CronJobCompletedEvent;
 import vip.mate.cron.model.CronJobEntity;
 import vip.mate.dashboard.model.CronJobRunEntity;
@@ -178,13 +179,30 @@ public class CronJobLifecycleService {
     public void finishRunAndPublish(CronJobEntity job, CronJobRunEntity run,
                                     String userMessage, AssistantMessage result,
                                     String conversationId, boolean silent) {
+        finishRunAndPublish(job, run, userMessage, result, conversationId, silent, null);
+    }
+
+    /**
+     * @param chatResult optional usage attribution from the LLM path; pass
+     *                   {@code null} for non-LLM paths (e.g. reminder
+     *                   direct-push) so the assistant row is persisted with
+     *                   zero token counts and null runtime model attribution.
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void finishRunAndPublish(CronJobEntity job, CronJobRunEntity run,
+                                    String userMessage, AssistantMessage result,
+                                    String conversationId, boolean silent,
+                                    AgentService.ChatResult chatResult) {
         String convId = conversationId != null ? conversationId : run.getConversationId();
         String text = result != null && result.getText() != null ? result.getText() : "";
 
+        int totalTokens = chatResult != null
+                ? chatResult.promptTokens() + chatResult.completionTokens() : 0;
         runMapper.update(null, new LambdaUpdateWrapper<CronJobRunEntity>()
                 .eq(CronJobRunEntity::getId, run.getId())
                 .set(CronJobRunEntity::getStatus, "succeeded")
-                .set(CronJobRunEntity::getFinishedAt, LocalDateTime.now()));
+                .set(CronJobRunEntity::getFinishedAt, LocalDateTime.now())
+                .set(totalTokens > 0, CronJobRunEntity::getTokenUsage, totalTokens));
 
         if (silent) {
             // No-op run: persist a short marker so the tasks_<wsId>
@@ -193,11 +211,27 @@ public class CronJobLifecycleService {
             // real content to deliver or to learn from.
             String marker = i18n != null ? i18n.msg("cron.run.silent")
                     : "（本次定时任务无新内容，已跳过）";
-            conversationService.saveMessage(convId, "assistant", marker);
+            // A silent run still made a full LLM call, so carry its token usage
+            // onto the marker message — otherwise the settings-page total (which
+            // aggregates MessageEntity token columns) under-counts cron spend.
+            if (chatResult != null
+                    && (chatResult.promptTokens() > 0 || chatResult.completionTokens() > 0)) {
+                conversationService.saveMessage(convId, "assistant", marker, null, "completed",
+                        chatResult.promptTokens(), chatResult.completionTokens(),
+                        chatResult.runtimeModel(), chatResult.runtimeProvider());
+            } else {
+                conversationService.saveMessage(convId, "assistant", marker);
+            }
             return;
         }
 
-        conversationService.saveMessage(convId, "assistant", text);
+        if (chatResult != null) {
+            conversationService.saveMessage(convId, "assistant", text, null, "completed",
+                    chatResult.promptTokens(), chatResult.completionTokens(),
+                    chatResult.runtimeModel(), chatResult.runtimeProvider());
+        } else {
+            conversationService.saveMessage(convId, "assistant", text);
+        }
 
         // Memory pipeline (existing behavior preserved — was inline in the
         // old executeJob; now lives behind the same publisher used by the

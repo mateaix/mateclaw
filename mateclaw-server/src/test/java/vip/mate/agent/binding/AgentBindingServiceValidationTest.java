@@ -58,6 +58,8 @@ class AgentBindingServiceValidationTest {
                 skillBindingMapper,
                 toolBindingMapper,
                 providerPreferenceMapper,
+                mock(vip.mate.agent.binding.repository.AgentWikiKbBindingMapper.class),
+                mock(vip.mate.wiki.repository.WikiKnowledgeBaseMapper.class),
                 skillRuntimeService,
                 availableToolService,
                 agentMapper,

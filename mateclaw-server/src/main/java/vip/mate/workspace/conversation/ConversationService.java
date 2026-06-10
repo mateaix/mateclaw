@@ -45,7 +45,13 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 /**
- * 会话管理服务
+ * Conversation management service (会话管理服务).
+ *
+ * <p>Owns the full lifecycle of {@link ConversationEntity} and
+ * {@link MessageEntity} rows — list / get-or-create / save / rename /
+ * pin / delete / compress / approval-state reconciliation — and the
+ * cascade of side-tables that hang off a conversation (approvals,
+ * async tasks, channel sessions, attachment files, tool-result spill).
  *
  * @author MateClaw Team
  */
@@ -79,18 +85,27 @@ public class ConversationService {
     }
 
     /**
-     * 获取用户的会话列表（返回 VO，包含 agentName/agentIcon/status）
+     * List conversations for a user, returned as VOs that include
+     * {@code agentName} / {@code agentIcon} / {@code status}.
+     *
+     * <p>获取用户的会话列表（返回 VO，包含 agentName / agentIcon / status）。
      */
     public List<ConversationVO> listConversations(String username) {
         return listConversations(username, null);
     }
 
     /**
-     * 获取用户的会话列表（按工作区过滤）
+     * Workspace-scoped variant of {@link #listConversations(String)}.
+     *
+     * <p>获取用户的会话列表（按工作区过滤）。
      */
     public List<ConversationVO> listConversations(String username, Long workspaceId) {
-        // 同时返回当前用户的会话 和 定时任务（system）产生的会话
-        // 排除子会话（委派产生的子会话不在侧边栏显示）
+        // Return both the current user's conversations AND those created by
+        // scheduled jobs (owner=system). Child conversations spawned by
+        // delegation are excluded — they don't belong in the sidebar.
+        //
+        // 同时返回当前用户的会话和定时任务（system）产生的会话；
+        // 排除子会话（委派产生的子会话不在侧边栏显示）。
         LambdaQueryWrapper<ConversationEntity> wrapper = new LambdaQueryWrapper<ConversationEntity>()
                 .in(ConversationEntity::getUsername, username, SYSTEM_USER)
                 .isNull(ConversationEntity::getParentConversationId)
@@ -105,7 +120,8 @@ public class ConversationService {
             return List.of();
         }
 
-        // 批量查询关联的 Agent 信息，避免 N+1 查询
+        // Batch-load associated Agent rows to avoid N+1 queries.
+        // 批量查询关联的 Agent 信息，避免 N+1 查询。
         List<Long> agentIds = entities.stream()
                 .filter(e -> e.getAgentId() != null)
                 .map(ConversationEntity::getAgentId)
@@ -117,7 +133,8 @@ public class ConversationService {
                 : agentMapper.selectBatchIds(agentIds).stream()
                         .collect(Collectors.toMap(AgentEntity::getId, a -> a));
 
-        // 转换为 VO，补充 agentName/agentIcon/status
+        // Map entities to VOs and enrich with agentName / agentIcon / status.
+        // 转换为 VO，补充 agentName / agentIcon / status。
         return entities.stream()
                 .map(entity -> {
                     AgentEntity agent = entity.getAgentId() != null
@@ -131,7 +148,79 @@ public class ConversationService {
     }
 
     /**
-     * 获取或创建会话（向后兼容，默认 workspace 1）
+     * Paginated variant used by the Sessions admin page.
+     *
+     * <p>Mirrors {@link #listConversations(String, Long)}'s filtering (current
+     * user + system rows, top-level only, optional workspace) and adds a
+     * {@code keyword} match against title / conversationId. The keyword is
+     * case-insensitive and treated as a substring.
+     *
+     * <p>会话管理页使用的分页查询。在 {@link #listConversations(String, Long)}
+     * 的基础上增加 title / conversationId 模糊匹配。
+     */
+    public com.baomidou.mybatisplus.core.metadata.IPage<ConversationVO> pageConversations(
+            String username, Long workspaceId, int page, int size, String keyword) {
+        if (page < 1) page = 1;
+        if (size < 1 || size > 200) size = 20;
+
+        com.baomidou.mybatisplus.extension.plugins.pagination.Page<ConversationEntity> pager =
+                new com.baomidou.mybatisplus.extension.plugins.pagination.Page<>(page, size);
+
+        LambdaQueryWrapper<ConversationEntity> wrapper = new LambdaQueryWrapper<ConversationEntity>()
+                .in(ConversationEntity::getUsername, username, SYSTEM_USER)
+                .isNull(ConversationEntity::getParentConversationId)
+                .orderByDesc(ConversationEntity::getPinned)
+                .orderByDesc(ConversationEntity::getLastActiveTime);
+        if (workspaceId != null) {
+            wrapper.eq(ConversationEntity::getWorkspaceId, workspaceId);
+        }
+        if (keyword != null && !keyword.isBlank()) {
+            String kw = keyword.trim();
+            wrapper.and(w -> w
+                    .like(ConversationEntity::getTitle, kw)
+                    .or()
+                    .like(ConversationEntity::getConversationId, kw));
+        }
+
+        com.baomidou.mybatisplus.core.metadata.IPage<ConversationEntity> entityPage =
+                conversationMapper.selectPage(pager, wrapper);
+
+        List<ConversationEntity> entities = entityPage.getRecords();
+        Map<Long, AgentEntity> agentMap;
+        if (entities.isEmpty()) {
+            agentMap = Map.of();
+        } else {
+            List<Long> agentIds = entities.stream()
+                    .filter(e -> e.getAgentId() != null)
+                    .map(ConversationEntity::getAgentId)
+                    .distinct()
+                    .collect(Collectors.toList());
+            agentMap = agentIds.isEmpty()
+                    ? Map.of()
+                    : agentMapper.selectBatchIds(agentIds).stream()
+                            .collect(Collectors.toMap(AgentEntity::getId, a -> a));
+        }
+
+        com.baomidou.mybatisplus.core.metadata.IPage<ConversationVO> voPage =
+                new com.baomidou.mybatisplus.extension.plugins.pagination.Page<ConversationVO>(
+                        entityPage.getCurrent(), entityPage.getSize(), entityPage.getTotal());
+        voPage.setRecords(entities.stream()
+                .map(entity -> {
+                    AgentEntity agent = entity.getAgentId() != null
+                            ? agentMap.get(entity.getAgentId())
+                            : null;
+                    String agentName = agent != null ? agent.getName() : null;
+                    String agentIcon = agent != null ? agent.getIcon() : null;
+                    return ConversationVO.from(entity, agentName, agentIcon);
+                })
+                .collect(Collectors.toList()));
+        return voPage;
+    }
+
+    /**
+     * Get-or-create conversation (backward-compat overload, defaults to workspace 1).
+     *
+     * <p>获取或创建会话（向后兼容，默认 workspace 1）。
      */
     @Transactional
     public ConversationEntity getOrCreateConversation(String conversationId, Long agentId, String username) {
@@ -139,7 +228,9 @@ public class ConversationService {
     }
 
     /**
-     * 获取或创建会话（workspace 感知）
+     * Workspace-aware get-or-create.
+     *
+     * <p>获取或创建会话（workspace 感知）。
      */
     @Transactional
     public ConversationEntity getOrCreateConversation(String conversationId, Long agentId,
@@ -163,7 +254,10 @@ public class ConversationService {
     }
 
     /**
-     * 创建子会话（委派场景），关联父会话 ID。
+     * Create a child conversation (delegation scenario), linking it back to
+     * its parent via {@code parentConversationId}.
+     *
+     * <p>创建子会话（委派场景），关联父会话 ID。
      */
     @Transactional
     public ConversationEntity createChildConversation(String childConversationId, Long agentId,
@@ -177,11 +271,19 @@ public class ConversationService {
     }
 
     /**
-     * 获取或创建共享渠道会话。
-     * <p>
-     * IM 渠道（飞书/钉钉/企微等）的会话需要在控制台中对登录用户可见，
-     * 因此统一使用 system 作为 owner。对于历史上已写成发送者昵称/open_id 的会话，
-     * 这里会自动修正为 system，避免控制台列表和消息接口因权限校验而不可见。
+     * Get-or-create a shared channel conversation.
+     *
+     * <p>IM-channel (Feishu / DingTalk / WeCom / …) conversations must be
+     * visible to every logged-in user in the admin console, so the owner is
+     * uniformly set to {@code system}. For legacy rows whose owner was
+     * historically written as a sender nickname / {@code open_id}, this
+     * method silently rewrites it to {@code system} on read — otherwise the
+     * console list and message endpoints would 403 those rows.
+     *
+     * <p>获取或创建共享渠道会话。IM 渠道（飞书 / 钉钉 / 企微等）的会话需要在控制台中
+     * 对登录用户可见，因此统一使用 {@code system} 作为 owner。对于历史上已写成发送者
+     * 昵称 / open_id 的会话，这里会自动修正为 {@code system}，避免控制台列表和
+     * 消息接口因权限校验而不可见。
      */
     @Transactional
     public ConversationEntity getOrCreateSharedConversation(String conversationId, Long agentId) {
@@ -189,12 +291,46 @@ public class ConversationService {
     }
 
     /**
-     * 获取或创建共享渠道会话（workspace 感知）
+     * Workspace-aware get-or-create for shared channel conversations.
+     *
+     * <p>Delegates to the 5-arg overload with {@code null} model defaults —
+     * preserves the legacy behavior for any caller that doesn't have an
+     * agent-level model to inherit from.
+     *
+     * <p>获取或创建共享渠道会话（workspace 感知）。委托到 5 参重载，model 默认值传
+     * {@code null}，保留对不需要继承 agent 模型的调用方的旧行为。
      */
     @Transactional
     public ConversationEntity getOrCreateSharedConversation(String conversationId, Long agentId, Long workspaceId) {
+        return getOrCreateSharedConversation(conversationId, agentId, workspaceId, null, null);
+    }
+
+    /**
+     * Get-or-create variant that seeds the conversation's pinned model from
+     * an agent-level default. Used by the IM channel path
+     * ({@code ChannelMessageRouter}) so that new IM conversations inherit
+     * the agent's currently-configured model as a baseline.
+     *
+     * <p><b>Idempotent on the model fields</b>: the {@code defaultModelProvider}
+     * / {@code defaultModelName} are written <i>only</i> when the conversation
+     * is freshly inserted. For an existing conversation — including one the
+     * user already pinned to a different model via the admin UI — the model
+     * fields are left untouched. This is the core fix for issue #183: the
+     * IM channel call site supplies the agent default, but a user-pinned
+     * model wins on every subsequent message.
+     *
+     * <p>Both defaults must be non-blank to take effect. A half-populated
+     * pair (provider without name, or vice versa) is treated as no seed —
+     * matches {@link #updateConversationModel} so a malformed agent row
+     * doesn't pin an unusable model.
+     */
+    @Transactional
+    public ConversationEntity getOrCreateSharedConversation(String conversationId, Long agentId, Long workspaceId,
+                                                            String defaultModelProvider, String defaultModelName) {
         ConversationEntity conv = conversationMapper.selectOne(new LambdaQueryWrapper<ConversationEntity>()
                 .eq(ConversationEntity::getConversationId, conversationId));
+        boolean seedModel = defaultModelProvider != null && !defaultModelProvider.isBlank()
+                && defaultModelName != null && !defaultModelName.isBlank();
         if (conv == null) {
             conv = new ConversationEntity();
             conv.setConversationId(conversationId);
@@ -204,16 +340,24 @@ public class ConversationService {
             conv.setTitle("新对话");
             conv.setMessageCount(0);
             conv.setLastActiveTime(LocalDateTime.now());
+            // Seed the agent-default model so the very first turn picks the
+            // right provider. Subsequent admin-UI switches go through
+            // updateConversationModel and override this baseline.
+            if (seedModel) {
+                conv.setModelProvider(defaultModelProvider);
+                conv.setModelName(defaultModelName);
+            }
             try {
                 conversationMapper.insert(conv);
             } catch (org.springframework.dao.DuplicateKeyException e) {
-                // 并发插入：另一个线程已创建，回退到查询
+                // Concurrent insert: another thread won the race — re-query
+                // and fall through to the owner-correction block below.
+                // 并发插入：另一个线程已创建，回退到查询；继续走下面的 owner 修正逻辑。
                 conv = conversationMapper.selectOne(new LambdaQueryWrapper<ConversationEntity>()
                         .eq(ConversationEntity::getConversationId, conversationId));
                 if (conv == null) {
                     throw new IllegalStateException("Conversation vanished after duplicate key: " + conversationId, e);
                 }
-                // 继续走下面的 owner 修正逻辑
             }
         }
 
@@ -222,8 +366,38 @@ public class ConversationService {
             conv.setUsername(SYSTEM_USER);
             changed = true;
         }
-        if (conv.getAgentId() == null && agentId != null) {
+        // Shared conversations (IM channel sessions, cron job-specific rows)
+        // take their agent from the caller's current authoritative binding —
+        // the channel's bound agent for IM, the job's bound agent for cron.
+        // Sync so the admin sidebar / dashboard / context resolution all see
+        // the same agent the runtime is dispatching to; otherwise an admin
+        // who rebinds a channel from A to B leaves every existing
+        // conversation pointing at the old A.
+        //
+        // Exception: Web-origin cron uses {@code tasks_<workspaceId>} as a
+        // single aggregate conversation for ALL of the workspace's web cron
+        // runs (see CronConversationResolver). Many jobs with different
+        // bound agents land in that same row; overwriting agentId per run
+        // would make the header / avatar / model selector flicker to
+        // whichever cron fired last. The aggregate has no single "owner
+        // agent" — leave its agentId alone (the original first-runner value
+        // is fine; UI treats this conversation specially anyway).
+        boolean isCronAggregate = conversationId != null && conversationId.startsWith("tasks_");
+        if (!isCronAggregate && agentId != null && !agentId.equals(conv.getAgentId())) {
             conv.setAgentId(agentId);
+            changed = true;
+        }
+        // Backfill model on an already-existing conversation only when BOTH
+        // model fields are still null. Pinning is sticky once set: if the
+        // user (or an earlier turn) wrote either column, we don't touch it.
+        // This handles legacy IM conversations created before this fix
+        // landed — they get the agent default on next inbound message and
+        // remain pinned thereafter.
+        if (seedModel
+                && (conv.getModelProvider() == null || conv.getModelProvider().isBlank())
+                && (conv.getModelName() == null || conv.getModelName().isBlank())) {
+            conv.setModelProvider(defaultModelProvider);
+            conv.setModelName(defaultModelName);
             changed = true;
         }
         if (changed) {
@@ -233,7 +407,10 @@ public class ConversationService {
     }
 
     /**
-     * 保存消息并更新会话统计
+     * Persist a message and update the conversation's aggregate counters
+     * ({@code messageCount}, {@code lastActiveTime}, {@code lastMessage}).
+     *
+     * <p>保存消息并更新会话统计。
      */
     @Transactional
     public MessageEntity saveMessage(String conversationId, String role, String content) {
@@ -276,21 +453,26 @@ public class ConversationService {
         message.setCompletionTokens(completionTokens);
         message.setRuntimeModel(runtimeModel);
         message.setRuntimeProvider(runtimeProvider);
-        message.setMetadata(metadata != null ? metadata : "{}");  // 初始化为空对象
+        message.setMetadata(metadata != null ? metadata : "{}");  // Initialize as empty JSON object / 初始化为空对象
         messageMapper.insert(message);
 
-        // 更新会话信息
+        // Update aggregate counters on the parent conversation row.
+        // 更新会话信息（消息计数、最后活跃时间、最后一条摘要）。
         ConversationEntity conv = conversationMapper.selectOne(new LambdaQueryWrapper<ConversationEntity>()
                 .eq(ConversationEntity::getConversationId, conversationId));
         if (conv != null) {
             conv.setMessageCount(conv.getMessageCount() + 1);
             conv.setLastActiveTime(LocalDateTime.now());
             String summary = summarizeMessage(content, parts);
-            // 用第一条用户消息作为会话标题
+            // Derive the conversation title from the first user message
+            // (only when the title is still the default "新对话").
+            // 用第一条用户消息作为会话标题。
             if ("user".equals(role) && "新对话".equals(conv.getTitle())) {
                 conv.setTitle(summary.length() > 20 ? summary.substring(0, 20) + "..." : summary);
             }
-            // 保存最后一条 AI 回复摘要
+            // Keep a short preview of the latest assistant reply for the
+            // sidebar / list view (last_message column).
+            // 保存最后一条 AI 回复摘要。
             if ("assistant".equals(role)) {
                 conv.setLastMessage(summary.length() > 50 ? summary.substring(0, 50) + "..." : summary);
             }
@@ -300,7 +482,9 @@ public class ConversationService {
     }
 
     /**
-     * 更新消息的元数据（toolCalls, plan, currentPhase 等）
+     * Update a message's metadata JSON (toolCalls, plan, currentPhase, …).
+     *
+     * <p>更新消息的元数据（toolCalls / plan / currentPhase 等）。
      */
     @Transactional
     public void updateMessageMetadata(Long messageId, String metadata) {
@@ -311,7 +495,9 @@ public class ConversationService {
     }
 
     /**
-     * 重命名会话
+     * Rename a conversation.
+     *
+     * <p>重命名会话。
      */
     @Transactional
     public void renameConversation(String conversationId, String title) {
@@ -337,7 +523,9 @@ public class ConversationService {
     }
 
     /**
-     * 更新会话的流状态（running / idle）
+     * Update a conversation's stream status ({@code running} / {@code idle}).
+     *
+     * <p>更新会话的流状态（running / idle）。
      */
     @Transactional
     public void updateStreamStatus(String conversationId, String streamStatus) {
@@ -347,6 +535,32 @@ public class ConversationService {
             conv.setStreamStatus(streamStatus);
             conversationMapper.updateById(conv);
         }
+    }
+
+    /**
+     * Pin the model a conversation uses. A blank provider or model id is a
+     * no-op (no override supplied — the conversation keeps inheriting the
+     * agent / global default). The write is skipped when the stored value
+     * already matches, so persisting the same model on every turn costs only
+     * a SELECT.
+     */
+    @Transactional
+    public void updateConversationModel(String conversationId, String modelProvider, String modelName) {
+        if (modelProvider == null || modelProvider.isBlank()
+                || modelName == null || modelName.isBlank()) {
+            return;
+        }
+        ConversationEntity conv = conversationMapper.selectOne(new LambdaQueryWrapper<ConversationEntity>()
+                .eq(ConversationEntity::getConversationId, conversationId));
+        if (conv == null) {
+            return;
+        }
+        if (modelProvider.equals(conv.getModelProvider()) && modelName.equals(conv.getModelName())) {
+            return;
+        }
+        conv.setModelProvider(modelProvider);
+        conv.setModelName(modelName);
+        conversationMapper.updateById(conv);
     }
 
     /**
@@ -374,7 +588,10 @@ public class ConversationService {
     }
 
     /**
-     * 获取会话最后一条消息内容（用于 rate limit 防护等场景）
+     * Get the latest message preview text for a conversation — used by
+     * rate-limit guards and similar duplicate-detection paths.
+     *
+     * <p>获取会话最后一条消息内容（用于 rate limit 防护等场景）。
      */
     public String getLastMessage(String conversationId) {
         ConversationEntity conv = conversationMapper.selectOne(new LambdaQueryWrapper<ConversationEntity>()
@@ -383,7 +600,9 @@ public class ConversationService {
     }
 
     /**
-     * 获取会话的消息数量
+     * Get a conversation's message count.
+     *
+     * <p>获取会话的消息数量。
      */
     public int getMessageCount(String conversationId) {
         ConversationEntity conv = conversationMapper.selectOne(new LambdaQueryWrapper<ConversationEntity>()
@@ -392,7 +611,9 @@ public class ConversationService {
     }
 
     /**
-     * 获取会话的消息历史
+     * Load the full message history for a conversation in chronological order.
+     *
+     * <p>获取会话的消息历史。
      */
     public List<MessageEntity> listMessages(String conversationId) {
         return messageMapper.selectList(new LambdaQueryWrapper<MessageEntity>()
@@ -426,8 +647,12 @@ public class ConversationService {
     }
 
     /**
-     * 加载最近 N 条消息（倒序取出后翻转为正序）。
-     * 利用复合索引 (conversation_id, create_time) 高效分页。
+     * Load the most recent N messages — pulled DESC then reversed to ASC.
+     * Uses the composite index {@code (conversation_id, create_time)} for
+     * efficient tail pagination.
+     *
+     * <p>加载最近 N 条消息（倒序取出后翻转为正序）；利用复合索引
+     * {@code (conversation_id, create_time)} 高效分页。
      */
     public List<MessageEntity> listRecentMessages(String conversationId, int lastN) {
         List<MessageEntity> recent = messageMapper.selectList(
@@ -441,7 +666,11 @@ public class ConversationService {
     }
 
     /**
-     * 分页加载指定 ID 之前的消息（用于前端上拉加载更早消息）。
+     * Load a page of messages older than a given id — used by the frontend
+     * pull-up infinite-scroll. Results are returned DESC; the caller is
+     * responsible for reversing if it needs ASC.
+     *
+     * <p>分页加载指定 ID 之前的消息（用于前端上拉加载更早消息）；
      * 返回倒序结果，调用方需自行 reverse。
      */
     public List<MessageEntity> listMessagesBefore(String conversationId, Long beforeId, int limit) {
@@ -457,7 +686,9 @@ public class ConversationService {
     }
 
     /**
-     * 查询会话消息总数。
+     * Count the total number of messages in a conversation.
+     *
+     * <p>查询会话消息总数。
      */
     public long countMessages(String conversationId) {
         return messageMapper.selectCount(
@@ -671,7 +902,10 @@ public class ConversationService {
     }
 
     /**
-     * 清空会话消息（同时清理附件文件）
+     * Wipe all messages in a conversation and reset its aggregate counters,
+     * also cleaning any attachment files those messages produced.
+     *
+     * <p>清空会话消息（同时清理附件文件）。
      */
     @Transactional
     public void clearMessages(String conversationId) {
@@ -821,9 +1055,13 @@ public class ConversationService {
     }
 
     /**
-     * 删除指定会话中所有审批占位 assistant 消息
-     * <p>
-     * 在 replay 前调用，确保 LLM 上下文中不包含任何审批相关文本。
+     * Remove all approval-placeholder assistant messages from a conversation.
+     *
+     * <p>Called before replay so the LLM context contains no approval-related
+     * stub text that could confuse the next turn.
+     *
+     * <p>删除指定会话中所有审批占位 assistant 消息。在 replay 前调用，
+     * 确保 LLM 上下文中不包含任何审批相关文本。
      */
     /**
      * Reconcile persisted assistant-message state when one or more pending approvals
@@ -1047,7 +1285,9 @@ public class ConversationService {
     }
 
     /**
-     * 检查会话是否存在
+     * Check whether a conversation row exists.
+     *
+     * <p>检查会话是否存在。
      */
     public boolean conversationExists(String conversationId) {
         return conversationMapper.selectCount(
@@ -1056,8 +1296,12 @@ public class ConversationService {
     }
 
     /**
-     * 校验用户是否拥有该会话。
-     * 定时任务产生的会话（username=system）对所有登录用户可见。
+     * Check whether a user owns the conversation, treating system-owned
+     * rows (e.g. from scheduled jobs / IM channels) as visible to every
+     * authenticated user.
+     *
+     * <p>校验用户是否拥有该会话。定时任务产生的会话（username = system）
+     * 对所有登录用户可见。
      */
     public boolean isConversationOwner(String conversationId, String username) {
         ConversationEntity conv = conversationMapper.selectOne(
@@ -1070,7 +1314,28 @@ public class ConversationService {
     }
 
     /**
-     * 获取会话的持久化流状态
+     * Look up a conversation by its string (UUID-style) id, returning the
+     * full entity or {@code null} when not found. Read-only — does not
+     * create or mutate.
+     *
+     * <p>Callers that need to derive {@code agentId} / {@code workspaceId}
+     * from a conversation (so the request cannot lie about either) should
+     * use this rather than re-running the {@code LambdaQueryWrapper}
+     * boilerplate inline.
+     */
+    public ConversationEntity findByConversationId(String conversationId) {
+        if (conversationId == null || conversationId.isBlank()) {
+            return null;
+        }
+        return conversationMapper.selectOne(
+                new LambdaQueryWrapper<ConversationEntity>()
+                        .eq(ConversationEntity::getConversationId, conversationId));
+    }
+
+    /**
+     * Get the persisted stream status for a conversation.
+     *
+     * <p>获取会话的持久化流状态。
      */
     public String getStreamStatus(String conversationId) {
         ConversationEntity conv = conversationMapper.selectOne(

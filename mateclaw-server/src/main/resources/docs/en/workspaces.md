@@ -38,20 +38,31 @@ What's **not** scoped (i.e., global):
 
 ## Workspace roles
 
-Each user is assigned to a workspace with one of four roles:
+Each user is assigned to a workspace with one of four roles. Capabilities are **additive** — a higher role inherits everything below it:
 
-| Role | Can do |
-|------|--------|
-| **Owner** | Everything, including deleting the workspace and managing members |
-| **Admin** | Everything except deleting the workspace or changing the owner |
-| **Member** | Use agents, read/write wiki, create conversations, invoke tools (subject to Tool Guard) |
-| **Viewer** | Read-only — see agents and KBs, read conversations, can't create or modify |
+| Role | Capabilities (added on top of the tier below) |
+|------|-----------------------------------------------|
+| **Viewer** | `chat`, `view:wiki`. Read-only. So that chat works, a Viewer can also read the active model and read an employee's workspace files. |
+| **Member** | Viewer + `view:memory`, `view:dashboard`, `manage:wiki`, `manage:agents` |
+| **Admin** | Member + `manage:skills`, `manage:channels`, `manage:models`, `manage:security`, `manage:settings` |
+| **Owner** | Same as Admin, plus owner-only: delete the workspace, transfer ownership |
 
 A user can belong to multiple workspaces with different roles. When they switch workspace, their effective permissions switch with them.
 
-### Role scope
+### Global admin vs workspace role
 
-Roles control **UI visibility** and **API access**. The console hides menu items users don't have permission to use — a viewer role on a workspace doesn't see the Security menu or the workspace management page at all. The backend enforces the same rules on every API endpoint, so hitting a protected endpoint as a viewer returns `403 Forbidden`.
+These are two independent permission systems:
+
+- **Global admin** — `mate_user.role='admin'`, system-wide. Manages users, creates workspaces, and spans **all** workspaces with owner-equivalent power even where it isn't a member.
+- **Workspace role** — `mate_workspace_member.role`, one per workspace, the four roles above.
+
+System-level endpoints (models / providers / OAuth / datasources, user management, workspace creation) require a global admin (`@RequireGlobalAdmin`); workspace-scoped endpoints (skills / tools / plugins) require a workspace role — reads need Member, writes need Admin.
+
+### Capability scope — the backend is the source of truth
+
+Roles control **UI visibility** and **API access**, and **the backend is the single source of truth for capabilities**: it holds a `RoleCapabilities` mapping, and the frontend never derives them locally. After a workspace switch, or on a capability-related 403, the frontend calls `GET /api/v1/workspaces/{id}/access`, which returns `memberRole`, `isGlobalAdmin`, `effectiveRole`, and `capabilities`.
+
+The frontend gates on this: routes declare a required capability; the sidebar filters by capability (no menu flash before load); a Viewer lands on `/chat`; the sidebar also shows notification badges (pending approvals, stuck employees). The backend enforces the same rules on every API endpoint, so a request lacking the capability returns `403 Forbidden`.
 
 ---
 
@@ -79,22 +90,56 @@ curl -X POST http://localhost:18088/api/v1/workspaces \
 
 ---
 
-## Inviting members
+## Members & roles
 
-`Settings → Members → Add Member`. Enter an existing MateClaw user's username, pick a role, save.
+`Settings → Members`. All member management requires **Admin or above**.
 
-The member immediately sees the workspace in their workspace switcher on next page load. No invite email, no acceptance flow — the member's account already exists in MateClaw.
+### Add a member
 
-### Via API
+Enter a username, pick a role (defaults to `member`), save.
+
+- If the user **doesn't exist**, the account is **created on the spot** — a password is required in that case.
+- If the user **exists** and you supply a password, their **password is reset** (useful when an admin removes a member, then re-adds them with a new password).
+- Nickname is optional.
+
+The member immediately sees the workspace in their workspace switcher on next page load. No invite email, no acceptance flow.
 
 ```bash
+# Add by username; creates the account with the given password if it doesn't exist
 curl -X POST http://localhost:18088/api/v1/workspaces/1/members \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
   -d '{
-    "userId": 42,
+    "username": "alice",
+    "password": "init-pass-123",
+    "nickname": "Alice",
     "role": "member"
   }'
+```
+
+### Update a member's role (Admin+, cannot change the Owner)
+
+```bash
+curl -X PUT http://localhost:18088/api/v1/workspaces/1/members/42 \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"role": "admin"}'
+```
+
+> The path is `/members/{memberId}`, **not** `/members/{memberId}/role`.
+
+### Remove a member (Admin+, cannot remove the Owner)
+
+```bash
+curl -X DELETE http://localhost:18088/api/v1/workspaces/1/members/42 \
+  -H "Authorization: Bearer <token>"
+```
+
+### List members
+
+```bash
+curl http://localhost:18088/api/v1/workspaces/1/members \
+  -H "Authorization: Bearer <token>"
 ```
 
 ---
@@ -216,7 +261,7 @@ curl -X POST http://localhost:18088/api/v1/workspaces/1/members \
 curl -X DELETE http://localhost:18088/api/v1/workspaces/1/members/42 \
   -H "Authorization: Bearer <token>"
 
-curl -X PUT http://localhost:18088/api/v1/workspaces/1/members/42/role \
+curl -X PUT http://localhost:18088/api/v1/workspaces/1/members/42 \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
   -d '{"role": "admin"}'

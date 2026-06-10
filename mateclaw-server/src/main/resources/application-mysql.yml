@@ -25,3 +25,15 @@ spring:
   h2:
     console:
       enabled: false
+
+# Production (multi-tenant server) hardening: fail closed on source-path
+# validation. With no allowed-source-roots configured, every KB source
+# directory is rejected rather than allowing full-filesystem reads — so a
+# missing allow-list cannot silently re-open arbitrary directory scanning.
+# Set MATE_WIKI_ALLOWED_SOURCE_ROOTS in .env (comma-separated paths):
+#   MATE_WIKI_ALLOWED_SOURCE_ROOTS=/data/wiki,/opt/docs
+# The default profile (H2 / desktop / single-tenant) leaves this off.
+mate:
+  wiki:
+    require-allowed-roots: true
+    allowed-source-roots: ${MATE_WIKI_ALLOWED_SOURCE_ROOTS:}

@@ -73,7 +73,7 @@ class ModelConfigServiceResolveModelTest {
         // resolveModel skips its own selectOne for null/blank input, then calls getDefaultModel(),
         // which itself runs one selectOne lookup for the default flag.
         when(modelConfigMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(defaultModel);
-        when(modelProviderService.isProviderConfigured("dashscope")).thenReturn(true);
+        when(modelProviderService.isProviderEnabledAndConfigured("dashscope")).thenReturn(true);
 
         ModelConfigEntity result = service.resolveModel(null);
 
@@ -88,7 +88,7 @@ class ModelConfigServiceResolveModelTest {
     void blankNameFallsBack() {
         ModelConfigEntity defaultModel = chatModel("dashscope", "qwen-plus", true);
         when(modelConfigMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(defaultModel);
-        when(modelProviderService.isProviderConfigured("dashscope")).thenReturn(true);
+        when(modelProviderService.isProviderEnabledAndConfigured("dashscope")).thenReturn(true);
 
         ModelConfigEntity result = service.resolveModel("   ");
 
@@ -113,7 +113,7 @@ class ModelConfigServiceResolveModelTest {
         assertEquals("claude-3-5-sonnet", result.getModelName());
         // Exactly one lookup — getDefaultModel must NOT be called.
         verify(modelConfigMapper, times(1)).selectOne(any());
-        verify(modelProviderService, never()).isProviderConfigured(any());
+        verify(modelProviderService, never()).isProviderEnabledAndConfigured(any());
     }
 
     // ── Unmatched → fall back to default ───────────────────────────────────────
@@ -126,7 +126,7 @@ class ModelConfigServiceResolveModelTest {
         when(modelConfigMapper.selectOne(any(LambdaQueryWrapper.class)))
                 .thenReturn(null)         // 1st: name lookup misses
                 .thenReturn(defaultModel); // 2nd: default flag lookup
-        when(modelProviderService.isProviderConfigured("dashscope")).thenReturn(true);
+        when(modelProviderService.isProviderEnabledAndConfigured("dashscope")).thenReturn(true);
 
         ModelConfigEntity result = service.resolveModel("ghost-model");
 

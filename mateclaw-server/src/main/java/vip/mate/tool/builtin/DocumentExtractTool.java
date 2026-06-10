@@ -3,14 +3,15 @@ package vip.mate.tool.builtin;
 import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
+import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Component;
 
 import java.io.*;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -20,7 +21,7 @@ import java.util.zip.ZipInputStream;
 
 /**
  * Document text extraction tool.
- * Supports PDF, DOCX, XLSX, PPTX with format-specific fallback chains.
+ * Supports PDF, DOCX, XLSX, PPTX, HTML with format-specific fallback chains.
  *
  * Strategy by format:
  * - PDF:       pdftotext -> pdfplumber/pypdf -> pdfbox -> OCR (scanned) -> Tika
@@ -28,6 +29,8 @@ import java.util.zip.ZipInputStream;
  * - XLSX/PPTX: Tika directly (POI-based; correctly resolves the shared-strings
  *              indirection table and walks SmartArt / chart / grouped-shape
  *              text that a naive ZIP+XML scan misses).
+ * - HTML:      jsoup parse -> drop script/style/nav/footer noise -> keep
+ *              heading hierarchy as Markdown ATX lines.
  */
 @Slf4j
 @Component
@@ -46,11 +49,13 @@ public class DocumentExtractTool {
         - Word (.docx, .doc)
         - Excel (.xlsx, .xls) - 提取为文本表格
         - PowerPoint (.pptx, .ppt)
+        - HTML (.html, .htm) - jsoup 清洗后提取正文
 
         提取策略（按格式分链）：
         - PDF:       pdftotext → pdfplumber/pypdf → pdfbox → OCR（扫描版） → Tika
         - DOCX:      textutil / pandoc / libreoffice → ZIP-XML → Tika
         - XLSX/PPTX: 直接走 Tika（基于 POI，正确解析 sharedStrings 表与 SmartArt / 图表文本）
+        - HTML:      jsoup 解析 → 去除 script/style/nav/footer 等噪音 → 保留标题层级
         - 返回详细的提取过程和元数据
 
         参数 options 可包含：
@@ -65,14 +70,28 @@ public class DocumentExtractTool {
         """)
     public String extract_document_text(
             @ToolParam(description = "文件的绝对路径或相对路径") String filePath,
-            @ToolParam(description = "可选参数 JSON，如 {\"pages\": \"1-5\", \"method\": \"tika\"}", required = false) String options) {
+            @ToolParam(description = "可选参数 JSON，如 {\"pages\": \"1-5\", \"method\": \"tika\"}", required = false) String options,
+            // RFC-063r §2.5: hidden from LLM by JsonSchemaGenerator. Carries the
+            // ChatOrigin so the workspace boundary check honors per-agent basePath.
+            @Nullable ToolContext ctx) {
 
         JSONObject result = new JSONObject();
         result.set("filePath", filePath);
         List<String> attempts = new ArrayList<>();
 
         try {
-            Path path = Paths.get(filePath).toAbsolutePath().normalize();
+            Path path;
+            try {
+                path = vip.mate.tool.guard.WorkspacePathGuard.validatePath(filePath, ctx);
+            } catch (IllegalArgumentException e) {
+                // Sandbox rejected the literal path. Try chat-upload basename
+                // resolution before surfacing the boundary error.
+                Path attachment = ChatUploadResolver.resolve(filePath);
+                if (attachment == null) {
+                    return errorResult(filePath, e.getMessage(), attempts);
+                }
+                path = attachment;
+            }
 
             if (!Files.exists(path)) {
                 // The user-uploaded chat attachment is rendered to the LLM as
@@ -134,6 +153,8 @@ public class DocumentExtractTool {
                 content = extractXlsx(path, options, attempts);
             } else if (mimeType.contains("presentationml") || mimeType.contains("powerpoint")) {
                 content = extractPptx(path, options, attempts);
+            } else if (mimeType.contains("html")) {
+                content = extractHtml(path, attempts);
             } else {
                 return errorResult(filePath, "不支持的文档类型: " + mimeType, attempts);
             }
@@ -179,10 +200,11 @@ public class DocumentExtractTool {
         """)
     public String extract_pdf_text(
             @ToolParam(description = "PDF 文件的绝对路径或相对路径") String filePath,
-            @ToolParam(description = "页码范围，如 \"1-5\" 或 \"1,3,5\"", required = false) String pages) {
+            @ToolParam(description = "页码范围，如 \"1-5\" 或 \"1,3,5\"", required = false) String pages,
+            @Nullable ToolContext ctx) {
 
         String options = pages != null ? "{\"pages\": \"" + pages + "\"}" : null;
-        return extract_document_text(filePath, options);
+        return extract_document_text(filePath, options, ctx);
     }
 
     @Tool(description = """
@@ -195,8 +217,9 @@ public class DocumentExtractTool {
         支持 .docx 和 .doc 格式
         """)
     public String extract_docx_text(
-            @ToolParam(description = "Word 文档的绝对路径或相对路径") String filePath) {
-        return extract_document_text(filePath, null);
+            @ToolParam(description = "Word 文档的绝对路径或相对路径") String filePath,
+            @Nullable ToolContext ctx) {
+        return extract_document_text(filePath, null, ctx);
     }
 
     // ==================== PDF 提取链 ====================
@@ -869,6 +892,53 @@ public class DocumentExtractTool {
         return count;
     }
 
+    // ==================== HTML 提取 ====================
+
+    /**
+     * Extract readable text from an HTML file with jsoup.
+     * <p>
+     * Drops structural noise (script / style / nav / header / footer / aside /
+     * form / iframe), then walks the surviving elements emitting headings as
+     * Markdown ATX lines ({@code # }, {@code ## } …) so the wiki preprocessor
+     * can still detect the document's heading hierarchy. The charset is
+     * auto-detected from the BOM / {@code <meta charset>} declaration.
+     */
+    private ExtractedContent extractHtml(Path path, List<String> attempts) throws Exception {
+        long t = System.currentTimeMillis();
+        org.jsoup.nodes.Document doc;
+        try {
+            // charsetName = null lets jsoup sniff the encoding from BOM / meta tag.
+            doc = org.jsoup.Jsoup.parse(path.toFile(), null);
+        } catch (IOException e) {
+            attempts.add("jsoup: 读取失败 - " + e.getMessage());
+            throw new Exception("HTML 文件读取失败: " + e.getMessage());
+        }
+
+        doc.select("script, style, noscript, nav, header, footer, aside, form, iframe").remove();
+
+        StringBuilder sb = new StringBuilder();
+        org.jsoup.nodes.Element root = doc.body() != null ? doc.body() : doc;
+        for (org.jsoup.nodes.Element el : root.getAllElements()) {
+            String text = el.ownText();
+            if (text.isBlank()) continue;
+            String tag = el.tagName();
+            if (tag.length() == 2 && tag.charAt(0) == 'h' && tag.charAt(1) >= '1' && tag.charAt(1) <= '6') {
+                int level = tag.charAt(1) - '0';
+                sb.append('\n').append("#".repeat(level)).append(' ').append(text.trim()).append('\n');
+            } else {
+                sb.append(text.trim()).append('\n');
+            }
+        }
+
+        String out = sb.toString().strip();
+        if (out.isBlank()) {
+            attempts.add("jsoup: 解析成功但无可读文本 (" + (System.currentTimeMillis() - t) + "ms)");
+            throw new Exception("HTML 提取无文本（页面可能仅含脚本 / 样式）");
+        }
+        attempts.add("jsoup: 成功 (" + (System.currentTimeMillis() - t) + "ms)");
+        return new ExtractedContent(out, "jsoup", 0);
+    }
+
     // ==================== 工具方法 ====================
 
     /**
@@ -938,6 +1008,7 @@ public class DocumentExtractTool {
         if (fileName.endsWith(".xls")) return "application/vnd.ms-excel";
         if (fileName.endsWith(".pptx")) return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
         if (fileName.endsWith(".ppt")) return "application/vnd.ms-powerpoint";
+        if (fileName.endsWith(".html") || fileName.endsWith(".htm")) return "text/html";
         return "application/octet-stream";
     }
 

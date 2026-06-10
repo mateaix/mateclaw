@@ -33,7 +33,7 @@
             <option value="zhipu-cogview">智谱 CogView</option>
             <option value="openai">OpenAI (DALL-E)</option>
             <option value="fal">fal.ai (Flux)</option>
-            <option value="google-imagen">Google Imagen</option>
+            <option value="google-imagen">Google Gemini Image (Nano Banana)</option>
             <option value="minimax">MiniMax Image</option>
           </select>
         </div>
@@ -145,10 +145,10 @@
         </div>
       </div>
 
-      <!-- Google Imagen -->
+      <!-- Google Gemini Image (Nano Banana) -->
       <div class="provider-section">
         <div class="provider-header">
-          <span class="provider-name">Google Imagen</span>
+          <span class="provider-name">Google Gemini Image (Nano Banana)</span>
           <span class="provider-tag">{{ t('settings.imageProviderTags.reuseLlmKey') }}</span>
         </div>
         <div class="settings-card">

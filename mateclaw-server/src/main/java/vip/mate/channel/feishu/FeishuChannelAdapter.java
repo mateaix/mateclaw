@@ -5,12 +5,23 @@ import com.lark.oapi.event.EventDispatcher;
 import com.lark.oapi.service.im.ImService;
 import com.lark.oapi.service.im.v1.model.P2MessageReceiveV1;
 import lombok.extern.slf4j.Slf4j;
+import reactor.core.publisher.Flux;
+import vip.mate.agent.AgentService.StreamDelta;
 import vip.mate.channel.AbstractChannelAdapter;
 import vip.mate.channel.ChannelMessage;
 import vip.mate.channel.ChannelMessageRouter;
 import vip.mate.channel.ExponentialBackoff;
+import vip.mate.channel.StreamingChannelAdapter;
+import vip.mate.channel.media.GeneratedFileScrubber;
+import vip.mate.channel.media.MediaSource;
+import vip.mate.channel.media.MediaUploadException;
+import vip.mate.channel.media.MediaUploadRequest;
+import vip.mate.channel.media.MediaUploadResult;
 import vip.mate.channel.model.ChannelEntity;
 import vip.mate.workspace.conversation.model.MessageContentPart;
+
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
 
 import java.io.InputStream;
 import java.net.URI;
@@ -52,11 +63,16 @@ import java.util.concurrent.TimeUnit;
  * - enable_quoted_context: 是否拉取被引用消息内容注入到 prompt（默认 true）
  * - silent_disconnect_threshold_seconds: WebSocket 静默断连阈值（默认 1800，0 禁用）
  * - stale_event_threshold_seconds: 过滤旧事件阈值（默认 30，0 禁用）
+ * - card_format: 卡片格式化模式 "auto"（默认）| "always" | "never"
+ *               auto: 根据内容自动检测；always: 全部包卡片；never: 全部纯文本（降级/调试用）
+ * - card_header: Markdown 卡片 header 文案，默认 "AI 助手"；设为空串可隐藏 header
+ * - require_mention: 群聊中是否需要 @机器人 才响应（默认 false）
+ *               true: 仅当消息中 @了机器人才处理；通过飞书 mentions 字段精确判断，无需配置 botPrefix
  *
  * @author MateClaw Team
  */
 @Slf4j
-public class FeishuChannelAdapter extends AbstractChannelAdapter {
+public class FeishuChannelAdapter extends AbstractChannelAdapter implements StreamingChannelAdapter {
 
     public static final String CHANNEL_TYPE = "feishu";
 
@@ -69,6 +85,38 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter {
 
     /** 消息去重：最近处理过的 message_id */
     private final Set<String> processedMessageIds = ConcurrentHashMap.newKeySet();
+
+    /**
+     * 群内 bot 别名缓存：chatId → 学到的别名集合（openId / unionId / userId / name）。
+     * <p>飞书 SDK 投递的 mention 里，bot 的标识可能是群内自定义别名（{@code ou_357e...} / 自定义名称），
+     * 而不是 {@code /bot/v3/info} 返回的全局 openId / app_name。我们在双投递场景下
+     * 机会性地学习这些别名，后续单事件投递的消息就能命中缓存。
+     */
+    private final ConcurrentHashMap<String, Set<String>> chatBotAliases = new ConcurrentHashMap<>();
+
+    /** Max learned aliases retained per chat, to bound memory on busy groups. */
+    private static final int CHAT_ALIAS_MAX = 64;
+
+    /**
+     * Per-messageId mention tracker（带 TTL）。
+     * <p>飞书 SDK 经常对同一条消息双投递：一份 mentions 含 bot 的<em>全局身份</em>（来自 /bot/v3/info），
+     * 另一份含 bot 的<em>群内别名</em>。我们累积同一 messageId 下<em>单 mention</em>投递看到的标识，
+     * 一旦其中任何一份被识别为 @bot，就把累积的标识写入 {@link #chatBotAliases}。
+     * <p>只累积单 mention 投递是有意为之：多 mention 投递（如 {@code @bot @某人}）会把 bot 与
+     * 被同时 @ 的人混在一起，无法区分，若整体学习会把人误学成 bot 别名，导致之后 @ 该人的消息
+     * 被误判为 @bot。而飞书双投递里 bot 别名那一份本身就是单 mention，所以这样既安全又不丢功能。
+     */
+    private final ConcurrentHashMap<String, MentionTrack> mentionTracker = new ConcurrentHashMap<>();
+
+    /** mention tracker 条目 TTL（60s 远大于双投递的真实间隔，几个 ms 级别）。 */
+    private static final long MENTION_TRACK_TTL_MS = 60_000L;
+
+    /** Package-private for testing. */
+    static final class MentionTrack {
+        final Set<String> seenIds = ConcurrentHashMap.newKeySet();
+        final long createdAtMs = System.currentTimeMillis();
+        volatile boolean matched = false;
+    }
 
     /** 昵称缓存：open_id → 显示名称 */
     private final ConcurrentHashMap<String, String> nicknameCache = new ConcurrentHashMap<>();
@@ -95,11 +143,159 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter {
     /** 旧事件过滤默认阈值（秒）：超过 30 秒的事件视为重连后回放 */
     private static final long DEFAULT_STALE_THRESHOLD_SECONDS = 30L;
 
+    /** Bot's own open_id, fetched once from /open-apis/bot/v3/info and cached. */
+    private volatile String botOpenId;
+
+    /** Bot's display name (app_name), fetched alongside open_id. Used for name-based mention matching. */
+    private volatile String botName;
+
+    /** Serializes lazy bot-open-id fetches so concurrent group messages share one API roundtrip. */
+    private final Object botOpenIdLock = new Object();
+
+    /**
+     * Last failure timestamp for {@code /open-apis/bot/v3/info}. While the call is in the
+     * {@link #BOT_OPENID_FAILURE_BACKOFF_MS} negative-cache window, {@link #getBotOpenId()}
+     * returns {@code null} fast so a Feishu outage doesn't trigger one synchronous retry
+     * per inbound group message.
+     */
+    private volatile long botOpenIdLastFailureMs = 0L;
+
+    /** Negative-cache window for {@link #getBotOpenId()} failures (60 s). */
+    private static final long BOT_OPENID_FAILURE_BACKOFF_MS = 60_000L;
+
+    /** SDK-backed uploader for image / file / audio / video parts. Nullable for legacy callers. */
+    private final FeishuMediaUploader mediaUploader;
+
+    /** Scrubs {@code /api/v1/files/generated/{id}} URLs into native attachments. Nullable for legacy callers. */
+    private final GeneratedFileScrubber generatedFileScrubber;
+
+    /** CardKit streaming-card manager. Nullable for legacy callers / tests. */
+    private final FeishuStreamingCardManager streamingCardManager;
+
+    /** Interactive-card dispatcher (approval cards etc.). Nullable for legacy callers / tests. */
+    private final vip.mate.channel.feishu.cards.FeishuCardDispatcher cardDispatcher;
+
+    /**
+     * Per-channel SDK {@code Client} factory — drives inbound resource
+     * downloads via {@code client.im().v1().messageResource().get(...)}
+     * instead of the legacy hand-rolled {@code HttpClient} path. Nullable
+     * for legacy callers / tests, in which case the adapter falls back
+     * to the raw HTTP path (still works, just bypasses retries / token
+     * refresh / domain switching that the SDK handles).
+     */
+    private final FeishuClientFactory clientFactory;
+
+    /**
+     * Process-local cache that exposes downloaded inbound media via
+     * {@code /api/v1/files/generated/{id}} so the conversation memory
+     * and admin UI can render the file without holding a tenant token.
+     * Nullable for legacy callers / tests.
+     */
+    private final vip.mate.tool.document.GeneratedFileCache generatedFileCache;
+
+    /**
+     * STT service for transcribing inbound voice messages. Feishu, unlike
+     * WeCom / DingTalk, does NOT include ASR text in the webhook payload —
+     * its inbound audio carries only a {@code file_key}. So we download the
+     * bytes (via {@link #downloadResource}) and run them through
+     * {@link vip.mate.stt.SttService} here, prepending the transcript as a
+     * text {@link MessageContentPart} so the agent reasons over actual
+     * content instead of the bare {@code "[音频]"} placeholder.
+     *
+     * <p>Nullable for legacy callers / tests — STT is skipped entirely when
+     * absent, and the message still goes through as audio-only (degraded
+     * but not broken).
+     */
+    private final vip.mate.stt.SttService sttService;
+
+    // ==================== Per-chat recent file cache ====================
+
+    /**
+     * Per-chat cache of recently downloaded file messages. When a file is
+     * sent in a Feishu chat (even without @mention), it is downloaded and
+     * cached here. When a follow-up text message arrives in the same chat,
+     * the cached files are injected as content parts so the agent can see
+     * and process them.
+     */
+    private static final long RECENT_FILE_TTL_MINUTES = 60;
+    private static final int RECENT_FILE_MAX_PER_CHAT = 5;
+
+    record RecentFileEntry(String fileName, String path, String fileUrl, String contentType) {}
+
+    private final Cache<String, List<RecentFileEntry>> recentFileCache = Caffeine.newBuilder()
+            .expireAfterWrite(RECENT_FILE_TTL_MINUTES, TimeUnit.MINUTES)
+            .maximumSize(200)
+            .build();
+
     public FeishuChannelAdapter(ChannelEntity channelEntity,
                                 ChannelMessageRouter messageRouter,
                                 ObjectMapper objectMapper) {
+        this(channelEntity, messageRouter, objectMapper, null, null, null, null, null, null, null);
+    }
+
+    public FeishuChannelAdapter(ChannelEntity channelEntity,
+                                ChannelMessageRouter messageRouter,
+                                ObjectMapper objectMapper,
+                                FeishuMediaUploader mediaUploader,
+                                GeneratedFileScrubber generatedFileScrubber) {
+        this(channelEntity, messageRouter, objectMapper, mediaUploader, generatedFileScrubber,
+                null, null, null, null, null);
+    }
+
+    public FeishuChannelAdapter(ChannelEntity channelEntity,
+                                ChannelMessageRouter messageRouter,
+                                ObjectMapper objectMapper,
+                                FeishuMediaUploader mediaUploader,
+                                GeneratedFileScrubber generatedFileScrubber,
+                                FeishuStreamingCardManager streamingCardManager) {
+        this(channelEntity, messageRouter, objectMapper, mediaUploader,
+                generatedFileScrubber, streamingCardManager, null, null, null, null);
+    }
+
+    public FeishuChannelAdapter(ChannelEntity channelEntity,
+                                ChannelMessageRouter messageRouter,
+                                ObjectMapper objectMapper,
+                                FeishuMediaUploader mediaUploader,
+                                GeneratedFileScrubber generatedFileScrubber,
+                                FeishuStreamingCardManager streamingCardManager,
+                                vip.mate.channel.feishu.cards.FeishuCardDispatcher cardDispatcher) {
+        this(channelEntity, messageRouter, objectMapper, mediaUploader,
+                generatedFileScrubber, streamingCardManager, cardDispatcher, null, null, null);
+    }
+
+    public FeishuChannelAdapter(ChannelEntity channelEntity,
+                                ChannelMessageRouter messageRouter,
+                                ObjectMapper objectMapper,
+                                FeishuMediaUploader mediaUploader,
+                                GeneratedFileScrubber generatedFileScrubber,
+                                FeishuStreamingCardManager streamingCardManager,
+                                vip.mate.channel.feishu.cards.FeishuCardDispatcher cardDispatcher,
+                                FeishuClientFactory clientFactory,
+                                vip.mate.tool.document.GeneratedFileCache generatedFileCache) {
+        this(channelEntity, messageRouter, objectMapper, mediaUploader,
+                generatedFileScrubber, streamingCardManager, cardDispatcher,
+                clientFactory, generatedFileCache, null);
+    }
+
+    public FeishuChannelAdapter(ChannelEntity channelEntity,
+                                ChannelMessageRouter messageRouter,
+                                ObjectMapper objectMapper,
+                                FeishuMediaUploader mediaUploader,
+                                GeneratedFileScrubber generatedFileScrubber,
+                                FeishuStreamingCardManager streamingCardManager,
+                                vip.mate.channel.feishu.cards.FeishuCardDispatcher cardDispatcher,
+                                FeishuClientFactory clientFactory,
+                                vip.mate.tool.document.GeneratedFileCache generatedFileCache,
+                                vip.mate.stt.SttService sttService) {
         super(channelEntity, messageRouter, objectMapper);
-        // 飞书 WebSocket 重连：2s→4s→8s→16s→30s，无限重试
+        this.mediaUploader = mediaUploader;
+        this.generatedFileScrubber = generatedFileScrubber;
+        this.streamingCardManager = streamingCardManager;
+        this.cardDispatcher = cardDispatcher;
+        this.clientFactory = clientFactory;
+        this.generatedFileCache = generatedFileCache;
+        this.sttService = sttService;
+        // Feishu WebSocket reconnect: 2s→4s→8s→16s→30s, infinite retry
         this.backoff = new ExponentialBackoff(2000, 30000, 2.0, -1);
     }
 
@@ -124,6 +320,12 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter {
 
         // 定时刷新 Token：过期前 5 分钟自动刷新
         scheduleTokenRefresh();
+
+        // Prefetch the bot's own open_id once the token is valid so the first
+        // require_mention check on the WebSocket dispatch thread doesn't pay
+        // the 5 s API latency. Failure is non-fatal — getBotOpenId() handles
+        // it and the negative cache keeps subsequent retries cheap.
+        getBotOpenId();
 
         String connectionMode = getConfigString("connection_mode", "websocket");
         if ("websocket".equals(connectionMode)) {
@@ -159,7 +361,17 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter {
 
         this.httpClient = null;
         this.tenantAccessToken = null;
+        // Reset bot-open-id state under the same lock getBotOpenId uses, so a
+        // dispatch thread mid-fetch sees a consistent (cleared) view rather than
+        // a torn write that could re-cache a stale id.
+        synchronized (botOpenIdLock) {
+            this.botOpenId = null;
+            this.botName = null;
+            this.botOpenIdLastFailureMs = 0L;
+        }
         this.processedMessageIds.clear();
+        this.chatBotAliases.clear();
+        this.mentionTracker.clear();
         this.nicknameCache.clear();
         this.quotedMessageCache.clear();
         log.info("[feishu] Feishu channel stopped");
@@ -181,6 +393,10 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter {
         } catch (Exception e) {
             log.warn("[feishu] Token refresh during reconnect failed: {}", e.getMessage());
         }
+
+        // Re-prefetch bot open_id after reconnect: same dispatch-thread latency
+        // concern as doStart, plus picks up a rotated app identity if any.
+        getBotOpenId();
 
         if ("websocket".equals(connectionMode)) {
             log.info("[feishu] Reconnecting WebSocket...");
@@ -221,7 +437,11 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter {
                         }
                     }
                 })
-                // Silently ignore message reaction events to avoid HandlerNotFoundException
+                // Silently ignore all other IM events to avoid HandlerNotFoundException.
+                // When the SDK receives an event without a registered handler, it throws
+                // HandlerNotFoundException → SDK catches it and sends a 500 response →
+                // the Feishu server may close the WebSocket connection. The exception is
+                // swallowed inside the SDK so it never appears in application logs.
                 .onP2MessageReactionCreatedV1(new ImService.P2MessageReactionCreatedV1Handler() {
                     @Override
                     public void handle(com.lark.oapi.service.im.v1.model.P2MessageReactionCreatedV1 event) {}
@@ -229,6 +449,63 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter {
                 .onP2MessageReactionDeletedV1(new ImService.P2MessageReactionDeletedV1Handler() {
                     @Override
                     public void handle(com.lark.oapi.service.im.v1.model.P2MessageReactionDeletedV1 event) {}
+                })
+                .onP2MessageReadV1(new ImService.P2MessageReadV1Handler() {
+                    @Override
+                    public void handle(com.lark.oapi.service.im.v1.model.P2MessageReadV1 event) {}
+                })
+                .onP2MessageRecalledV1(new ImService.P2MessageRecalledV1Handler() {
+                    @Override
+                    public void handle(com.lark.oapi.service.im.v1.model.P2MessageRecalledV1 event) {}
+                })
+                .onP2ChatMemberBotAddedV1(new ImService.P2ChatMemberBotAddedV1Handler() {
+                    @Override
+                    public void handle(com.lark.oapi.service.im.v1.model.P2ChatMemberBotAddedV1 event) {}
+                })
+                .onP2ChatMemberBotDeletedV1(new ImService.P2ChatMemberBotDeletedV1Handler() {
+                    @Override
+                    public void handle(com.lark.oapi.service.im.v1.model.P2ChatMemberBotDeletedV1 event) {}
+                })
+                .onP2ChatMemberUserAddedV1(new ImService.P2ChatMemberUserAddedV1Handler() {
+                    @Override
+                    public void handle(com.lark.oapi.service.im.v1.model.P2ChatMemberUserAddedV1 event) {}
+                })
+                .onP2ChatMemberUserDeletedV1(new ImService.P2ChatMemberUserDeletedV1Handler() {
+                    @Override
+                    public void handle(com.lark.oapi.service.im.v1.model.P2ChatMemberUserDeletedV1 event) {}
+                })
+                .onP2ChatMemberUserWithdrawnV1(new ImService.P2ChatMemberUserWithdrawnV1Handler() {
+                    @Override
+                    public void handle(com.lark.oapi.service.im.v1.model.P2ChatMemberUserWithdrawnV1 event) {}
+                })
+                .onP2ChatUpdatedV1(new ImService.P2ChatUpdatedV1Handler() {
+                    @Override
+                    public void handle(com.lark.oapi.service.im.v1.model.P2ChatUpdatedV1 event) {}
+                })
+                .onP2ChatDisbandedV1(new ImService.P2ChatDisbandedV1Handler() {
+                    @Override
+                    public void handle(com.lark.oapi.service.im.v1.model.P2ChatDisbandedV1 event) {}
+                })
+                .onP2ChatAccessEventBotP2pChatEnteredV1(new ImService.P2ChatAccessEventBotP2pChatEnteredV1Handler() {
+                    @Override
+                    public void handle(com.lark.oapi.service.im.v1.model.P2ChatAccessEventBotP2pChatEnteredV1 event) {}
+                })
+                // Interactive card button clicks (Schema 2.0) — routed through cardDispatcher.
+                // The returned P2CardActionTriggerResponse is how Schema-2.0
+                // cards update in-place; PATCH /im/v1/messages/{id} is a
+                // silent no-op for V2 cards and must not be used.
+                .onP2CardActionTrigger(new com.lark.oapi.event.cardcallback.P2CardActionTriggerHandler() {
+                    @Override
+                    public com.lark.oapi.event.cardcallback.model.P2CardActionTriggerResponse handle(
+                            com.lark.oapi.event.cardcallback.model.P2CardActionTrigger event) {
+                        if (!running.get()) return null;
+                        try {
+                            return handleCardActionTrigger(event);
+                        } catch (Exception e) {
+                            log.error("[feishu] Failed to handle card action: {}", e.getMessage(), e);
+                            return null;
+                        }
+                    }
                 })
                 .build();
 
@@ -331,8 +608,15 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter {
     }
 
     /**
-     * 关闭 WebSocket 连接
-     * SDK 的 start() 在线程中阻塞运行，通过中断线程来触发停止
+     * 关闭 WebSocket 连接。
+     * <p>
+     * 必须主动关闭底层 WebSocket 连接并触发 SDK 的内部清理（停止 pingLoop、
+     * 释放 ExecutorService）。仅置空引用会导致旧连接的 pingLoop 和线程池
+     * 持续运行，造成文件描述符和线程泄漏，最终使新连接无法建立。
+     * <p>
+     * SDK 2.7.0 起暴露了 public {@code close()} 入口，内部调用 protected
+     * {@code disconnect()} 完成 {@code conn.close(1000) → executor.shutdown() →
+     * 字段清零} 的全套清理。直接调用即可，无需反射。
      */
     private void stopWebSocket() {
         cancelSilentDisconnectWatchdog();
@@ -340,6 +624,13 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter {
         if (wsThread != null) {
             wsThread.interrupt();
             wsThread = null;
+        }
+        if (wsClient != null) {
+            try {
+                wsClient.close();
+            } catch (Exception e) {
+                log.warn("[feishu] WebSocket close failed: {}", e.getMessage());
+            }
         }
         wsClient = null;
     }
@@ -390,7 +681,253 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter {
             senderOpenId = sender.getSenderId().getOpenId();
         }
 
-        handleFeishuMessage(messageId, messageType, contentStr, chatId, chatType, senderOpenId, parentId, event);
+        com.lark.oapi.service.im.v1.model.MentionEvent[] mentions = message.getMentions();
+        boolean isBotMentioned = detectBotMentionWithLearning(mentions, chatId, messageId);
+        handleFeishuMessage(messageId, messageType, contentStr, chatId, chatType, senderOpenId, parentId, isBotMentioned, event);
+    }
+
+    // ==================== @提及检测 ====================
+
+    /**
+     * 判断本次事件是否 @ 了 bot，并机会性地学习"群内 bot 别名"。
+     *
+     * <p>飞书 SDK 在群内对同一条 @bot 的消息会双投递两个事件，两次的 mentions 数据形态不同：
+     * <ul>
+     *   <li>一份带 bot 的<em>全局身份</em>（与 {@code /open-apis/bot/v3/info} 返回的 openId / app_name 一致）；</li>
+     *   <li>一份带 bot 的<em>群内别名</em>（用户给 bot 起的 chat-scope 名，openId 也是另一套）。</li>
+     * </ul>
+     * 重启后第一条消息能命中"全局身份"那一份直接匹配；后续消息往往只来一份"群内别名"。
+     * 本方法在双投递可见时把两份的所有标识聚合到 {@link #chatBotAliases}，后续单事件投递就能命中缓存放行。
+     *
+     * <p>识别顺序：
+     * <ol>
+     *   <li>直接匹配 {@code /bot/v3/info} 拿到的 botOpenId / botName；</li>
+     *   <li>查 {@link #chatBotAliases} 缓存里学到的群内别名；</li>
+     *   <li>双投递推断：同一 messageId 之前的事件已被识别 → 本事件的 mentions 也是 bot 的别名。</li>
+     * </ol>
+     */
+    private boolean detectBotMentionWithLearning(com.lark.oapi.service.im.v1.model.MentionEvent[] mentions,
+                                                 String chatId, String messageId) {
+        return detectBotMentionWithLearning(mentions, chatId, messageId, getBotOpenId(), botName);
+    }
+
+    /** Package-private for testing: 纯有状态核心，bot 身份由调用方显式传入（避免触发 /bot/v3/info HTTP）。 */
+    boolean detectBotMentionWithLearning(com.lark.oapi.service.im.v1.model.MentionEvent[] mentions,
+                                         String chatId, String messageId,
+                                         String botOpenId, String botName) {
+        if (mentions == null || mentions.length == 0) {
+            return false;
+        }
+
+        cleanupMentionTracker();
+
+        // 把本次事件看到的所有标识累积到 per-messageId tracker —— 即使本次匹配不上，
+        // 后到的事件如果匹配成功，learnFromTrack 会把它们一起 cache。
+        MentionTrack track = null;
+        if (messageId != null) {
+            track = mentionTracker.computeIfAbsent(messageId, k -> new MentionTrack());
+            // Only single-mention deliveries are unambiguous bot identities. A
+            // multi-mention delivery (e.g. @bot @alice) mixes the bot with
+            // co-mentioned humans that must NOT be learned as aliases; Feishu's
+            // dual-delivery alias form is itself a single mention, so this is safe.
+            if (mentions.length == 1) {
+                collectMentionIdentifiers(mentions, track.seenIds);
+            }
+        }
+
+        // 1. 直接匹配 bot 的全局身份
+        if (eventMentionsContainBot(mentions, botOpenId, botName)) {
+            learnFromTrack(chatId, track);
+            if (track != null) track.matched = true;
+            return true;
+        }
+
+        // 2. 群内已学习别名命中
+        if (chatId != null) {
+            Set<String> learned = chatBotAliases.get(chatId);
+            if (learned != null && mentionMatchesAnyAlias(mentions, learned)) {
+                log.info("[feishu] @bot matched via learned chat alias: chatId={}, messageId={}", chatId, messageId);
+                learnFromTrack(chatId, track);
+                if (track != null) track.matched = true;
+                return true;
+            }
+        }
+
+        // 3. 双投递学习：同 messageId 的另一次投递已被识别 → 本事件 mentions 是 bot 别名
+        if (track != null && track.matched) {
+            log.info("[feishu] @bot inferred via dual-delivery learning: chatId={}, messageId={}", chatId, messageId);
+            learnFromTrack(chatId, track);
+            return true;
+        }
+
+        return false;
+    }
+
+    private void learnFromTrack(String chatId, MentionTrack track) {
+        if (chatId == null || track == null || track.seenIds.isEmpty()) return;
+        Set<String> aliases = chatBotAliases.computeIfAbsent(chatId, k -> ConcurrentHashMap.newKeySet());
+        if (aliases.size() >= CHAT_ALIAS_MAX) return;
+        int before = aliases.size();
+        aliases.addAll(track.seenIds);
+        int added = aliases.size() - before;
+        if (added > 0) {
+            log.info("[feishu] Learned {} new bot alias(es) for chat={} (cache size={})",
+                    added, chatId, aliases.size());
+        }
+    }
+
+    private void cleanupMentionTracker() {
+        evictStaleTracks(mentionTracker, System.currentTimeMillis(), MENTION_TRACK_TTL_MS);
+    }
+
+    /** Package-private for testing: 按 TTL 淘汰 mention tracker 中的过期项（{@code nowMs} 显式传入便于测试）。 */
+    static void evictStaleTracks(Map<String, MentionTrack> tracker, long nowMs, long ttlMs) {
+        long cutoff = nowMs - ttlMs;
+        tracker.entrySet().removeIf(e -> e.getValue().createdAtMs < cutoff);
+    }
+
+    private boolean isBotMentionedInWebhookMessage(Map<String, Object> message) {
+        Object mentionsObj = message.get("mentions");
+        if (!(mentionsObj instanceof List<?> list)) return false;
+        return webhookMentionsContainBot(list, getBotOpenId());
+    }
+
+    /** Package-private for testing: 判断 SDK mentions 数组中是否包含指定 bot（按 openId / unionId / userId / name 命中） */
+    static boolean eventMentionsContainBot(com.lark.oapi.service.im.v1.model.MentionEvent[] mentions,
+                                           String botOpenId, String botName) {
+        if (mentions == null || mentions.length == 0) return false;
+        for (var mention : mentions) {
+            var id = mention.getId();
+            // 匹配 openId、unionId、userId 中的任意一个
+            if (id != null && botOpenId != null) {
+                if (botOpenId.equals(id.getOpenId())) return true;
+                if (botOpenId.equals(id.getUnionId())) return true;
+                if (botOpenId.equals(id.getUserId())) return true;
+            }
+            // 飞书 SDK 对 bot mention 可能使用不同 ID 体系，fallback 到 name 匹配
+            if (botName != null && botName.equals(mention.getName())) return true;
+        }
+        return false;
+    }
+
+    /** Package-private for testing: 把 mentions 中每个非空 openId / unionId / userId / name 灌入 sink。 */
+    static void collectMentionIdentifiers(com.lark.oapi.service.im.v1.model.MentionEvent[] mentions,
+                                          Set<String> sink) {
+        if (mentions == null || sink == null) return;
+        for (var mention : mentions) {
+            var id = mention.getId();
+            if (id != null) {
+                if (id.getOpenId() != null) sink.add(id.getOpenId());
+                if (id.getUnionId() != null) sink.add(id.getUnionId());
+                if (id.getUserId() != null) sink.add(id.getUserId());
+            }
+            if (mention.getName() != null) sink.add(mention.getName());
+        }
+    }
+
+    /** Package-private for testing: mentions 中是否有任意 openId / unionId / userId / name 命中 aliases 集合。 */
+    static boolean mentionMatchesAnyAlias(com.lark.oapi.service.im.v1.model.MentionEvent[] mentions,
+                                          Set<String> aliases) {
+        if (mentions == null || mentions.length == 0 || aliases == null || aliases.isEmpty()) return false;
+        for (var mention : mentions) {
+            var id = mention.getId();
+            if (id != null) {
+                if (id.getOpenId() != null && aliases.contains(id.getOpenId())) return true;
+                if (id.getUnionId() != null && aliases.contains(id.getUnionId())) return true;
+                if (id.getUserId() != null && aliases.contains(id.getUserId())) return true;
+            }
+            if (mention.getName() != null && aliases.contains(mention.getName())) return true;
+        }
+        return false;
+    }
+
+    /** Package-private for testing: 判断 Webhook mentions 列表中是否包含指定 open_id */
+    static boolean webhookMentionsContainBot(List<?> mentions, String botOpenId) {
+        if (mentions == null || botOpenId == null) return false;
+        for (Object item : mentions) {
+            if (!(item instanceof Map<?, ?> mention)) continue;
+            Object idObj = mention.get("id");
+            if (!(idObj instanceof Map<?, ?> id)) continue;
+            if (botOpenId.equals(id.get("open_id"))) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Package-private for testing: returns true when a group message should be dropped
+     * because {@code require_mention} is on, the bot was not mentioned, AND we know our
+     * own open_id (so we trust the negative answer).
+     *
+     * <p>When {@code botOpenId} is {@code null} the bot identity is unavailable — either
+     * the {@code /open-apis/bot/v3/info} fetch hasn't succeeded yet, or it failed and is
+     * in the negative-cache window. In that case the gate falls open so a transient
+     * Feishu API outage doesn't silence the bot in every group it's in. The accompanying
+     * warn-level log makes the degraded mode visible.
+     */
+    static boolean isGroupNonMentionDrop(boolean isGroup,
+                                         boolean requireMention,
+                                         boolean isBotMentioned,
+                                         String botOpenId) {
+        return isGroup && requireMention && !isBotMentioned && botOpenId != null;
+    }
+
+    /**
+     * Fetches the bot's own open_id once and caches it. Returns {@code null}
+     * when the identity is unavailable; callers (currently the
+     * {@code require_mention} gate) treat {@code null} as "identity unknown"
+     * and fall open so a transient API outage doesn't silence the bot.
+     *
+     * <p>Concurrent callers share a single API roundtrip via
+     * {@link #botOpenIdLock}. On failure, {@link #botOpenIdLastFailureMs} is
+     * stamped so callers within the next {@link #BOT_OPENID_FAILURE_BACKOFF_MS}
+     * ms return {@code null} immediately instead of triggering a fresh 5 s
+     * synchronous fetch per inbound message.
+     */
+    private String getBotOpenId() {
+        String cached = botOpenId;
+        if (cached != null) return cached;
+        if (withinFailureBackoff()) return null;
+        synchronized (botOpenIdLock) {
+            // Re-check under the lock — another thread may have populated the
+            // cache or stamped a fresh failure while we were waiting.
+            if (botOpenId != null) return botOpenId;
+            if (withinFailureBackoff()) return null;
+            try {
+                ensureTokenValid();
+                String apiBase = getApiBaseUrl();
+                HttpRequest request = HttpRequest.newBuilder()
+                        .uri(URI.create(apiBase + "/open-apis/bot/v3/info"))
+                        .header("Authorization", "Bearer " + tenantAccessToken)
+                        .GET()
+                        .timeout(Duration.ofSeconds(5))
+                        .build();
+                HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+                Map<?, ?> body = objectMapper.readValue(response.body(), Map.class);
+                Map<?, ?> bot = (Map<?, ?>) body.get("bot");
+                if (bot != null && bot.get("open_id") instanceof String openId && !openId.isBlank()) {
+                    botOpenId = openId;
+                    if (bot.get("app_name") instanceof String name && !name.isBlank()) {
+                        botName = name;
+                    }
+                    log.info("[feishu] Bot info fetched: open_id={}, name={}", openId, botName);
+                    return openId;
+                }
+                // 2xx with no bot.open_id field → treat as transient failure.
+                botOpenIdLastFailureMs = System.currentTimeMillis();
+                log.warn("[feishu] /open-apis/bot/v3/info returned no bot.open_id; require_mention gate falls open for {}s",
+                        BOT_OPENID_FAILURE_BACKOFF_MS / 1000);
+            } catch (Exception e) {
+                botOpenIdLastFailureMs = System.currentTimeMillis();
+                log.warn("[feishu] Failed to fetch bot open_id (require_mention gate falls open for {}s): {}",
+                        BOT_OPENID_FAILURE_BACKOFF_MS / 1000, e.getMessage());
+            }
+            return null;
+        }
+    }
+
+    private boolean withinFailureBackoff() {
+        long last = botOpenIdLastFailureMs;
+        return last != 0L && System.currentTimeMillis() - last < BOT_OPENID_FAILURE_BACKOFF_MS;
     }
 
     // ==================== Token 管理 ====================
@@ -432,6 +969,7 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter {
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(apiBase + "/open-apis/auth/v3/tenant_access_token/internal"))
                     .header("Content-Type", "application/json; charset=utf-8")
+                    .timeout(Duration.ofSeconds(10))
                     .POST(HttpRequest.BodyPublishers.ofString(jsonBody))
                     .build();
 
@@ -536,7 +1074,8 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter {
                 }
             }
 
-            handleFeishuMessage(messageId, messageType, contentStr, chatId, chatType, senderOpenId, parentId, payload);
+            boolean isBotMentioned = isBotMentionedInWebhookMessage(message);
+            handleFeishuMessage(messageId, messageType, contentStr, chatId, chatType, senderOpenId, parentId, isBotMentioned, payload);
 
         } catch (Exception e) {
             log.error("[feishu] Failed to handle webhook: {}", e.getMessage(), e);
@@ -561,7 +1100,47 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter {
      */
     private void handleFeishuMessage(String messageId, String messageType, String contentStr,
                                       String chatId, String chatType, String senderOpenId,
-                                      String parentId, Object rawPayload) {
+                                      String parentId, boolean isBotMentioned, Object rawPayload) {
+        // Per-chat recent file cache: always download file messages (even
+        // without @mention) so they can be auto-associated with follow-up
+        // text messages in the same chat.
+        boolean isGroup = "group".equals(chatType);
+        boolean isFileMessage = "file".equals(messageType) || "image".equals(messageType)
+                || "audio".equals(messageType) || "media".equals(messageType);
+        // Compute conversationId once — used as cache key for both write (cacheRecentFile)
+        // and read (injectRecentFiles), and as the directory name under data/chat-uploads/.
+        // It MUST equal the id ChannelMessageRouter derives for this chat: the routed
+        // ChannelMessage carries chatId = (isGroup ? shortSuffix : null), so the router
+        // resolves it to feishu:{shortSuffix} for groups and feishu:{senderId} for DMs.
+        // ChatUploadResolver locates attachments under data/chat-uploads/{that id}/, and the
+        // prompt only exposes the file name (not its path) to the model — so if this id does
+        // not match, ReadFileTool / DocumentExtractTool cannot find the cached file.
+        String shortSuffix = generateShortSessionSuffix(chatId, senderOpenId, isGroup);
+        // 群会话改用完整 chatId，但存量旧会话仍在 legacy 后缀下：读时别名回退，
+        // 让升级前已存在的群沿用旧 conversationId 延续，不重写存量行。
+        if (isGroup && chatId != null) {
+            shortSuffix = resolveGroupSessionSuffix(chatId);
+        }
+        String conversationId = buildConversationId(shortSuffix, senderOpenId, isGroup);
+
+        String stagedUploadPath = null;
+        if (isFileMessage) {
+            stagedUploadPath = cacheRecentFile(messageId, messageType, contentStr, conversationId);
+        }
+
+        // require_mention 群聊过滤：群聊中必须 @机器人才响应。
+        // 当 botOpenId 为 null 时（API 抖动 / 尚未拉取成功），失败回退到放行 —
+        // 避免飞书 /open-apis/bot/v3/info 短暂不可用时整个群机器人变哑巴。
+        boolean requireMention = getConfigBoolean("require_mention", false);
+        if (isGroupNonMentionDrop(isGroup, requireMention, isBotMentioned, botOpenId)) {
+            log.debug("[feishu] require_mention=true but bot not mentioned, dropping messageId={}", messageId);
+            return;
+        }
+        if (isGroup && requireMention && !isBotMentioned) {
+            // botOpenId is null here — identity unknown, gate falls open.
+            log.warn("[feishu] require_mention=true but bot open_id unavailable; allowing messageId={}", messageId);
+        }
+
         // 消息去重
         if (messageId != null && !processedMessageIds.add(messageId)) {
             log.debug("[feishu] Duplicate message_id: {}, skipping", messageId);
@@ -582,7 +1161,7 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter {
 
         // 解析消息内容
         List<MessageContentPart> contentParts = new ArrayList<>();
-        String textContent = extractContentParts(messageId, messageType, contentStr, contentParts);
+        String textContent = extractContentParts(messageId, messageType, contentStr, contentParts, stagedUploadPath);
 
         if (contentParts.isEmpty() && (textContent == null || textContent.isBlank())) {
             log.debug("[feishu] Empty message content, ignoring");
@@ -601,10 +1180,14 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter {
             }
         }
 
-        // 生成短会话后缀
-        boolean isGroup = "group".equals(chatType);
-        String shortSuffix = generateShortSessionSuffix(chatId, senderOpenId, isGroup);
+        // Auto-associate recent files: inject file/image parts from the
+        // per-chat cache so the agent can see files sent earlier in the
+        // same conversation (user sends file → asks about it in text).
+        if (!isFileMessage && conversationId != null) {
+            textContent = injectRecentFiles(conversationId, contentParts, textContent);
+        }
 
+        // shortSuffix already computed above (kept consistent with conversationId).
         ChannelMessage channelMessage = ChannelMessage.builder()
                 .messageId(messageId)
                 .channelType(CHANNEL_TYPE)
@@ -640,6 +1223,115 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter {
     }
 
     // ==================== 消息反应 ====================
+
+    /**
+     * Acknowledge a successful agent reply by reacting to the inbound
+     * message with a "DONE" (✅) emoji. Gated by {@code enable_done_reaction}
+     * (default true) — operators that prefer a quiet UI can disable it
+     * without losing the existing inbound "THUMBSUP" ack.
+     */
+    @Override
+    public void onAgentCompleted(ChannelMessage inboundMessage) {
+        if (inboundMessage == null) return;
+        String messageId = inboundMessage.getMessageId();
+        if (messageId == null || messageId.isBlank()) return;
+        if (!getConfigBoolean("enable_done_reaction", true)) return;
+        addReactionAsync(messageId, "DONE");
+    }
+
+    // ==================== Approval card ====================
+
+    /**
+     * Card-button approval is the canonical path for Feishu when the
+     * dispatcher is wired. Tells {@code ChannelMessageRouter} not to
+     * auto-cancel pending approvals on subsequent user messages —
+     * users decide via clicking, not by typing {@code /approve}.
+     * Returns false only in legacy / test contexts where the
+     * dispatcher isn't injected (the inherited text-flow path applies).
+     */
+    @Override
+    public boolean usesInteractiveApprovalCards() {
+        return cardDispatcher != null;
+    }
+
+    /**
+     * Render the approval notice as a Schema-2.0 interactive button card
+     * so the user can approve / deny in-channel without bouncing to the
+     * web UI. Falls back to the inherited markdown-text path when the
+     * dispatcher isn't wired (legacy constructors / test rigs), the
+     * card oversizes, or the platform refuses to deliver.
+     */
+    @Override
+    public void sendApprovalNotice(String targetId,
+            vip.mate.channel.notification.ApprovalNotice notice) {
+        if (cardDispatcher == null || notice == null || targetId == null) {
+            super.sendApprovalNotice(targetId, notice);
+            return;
+        }
+        var kindOpt = cardDispatcher.lookupByName(
+                vip.mate.channel.feishu.cards.tool_guard.ToolGuardCardKindFactory.KIND_NAME);
+        if (kindOpt.isEmpty()) {
+            super.sendApprovalNotice(targetId, notice);
+            return;
+        }
+        try {
+            Map<String, Object> cardJson = kindOpt.get().renderer().render(notice);
+            boolean sent = sendCard(targetId, cardJson);
+            if (!sent) {
+                log.warn("[feishu-toolguard] sendCard returned false; falling back to text");
+                super.sendApprovalNotice(targetId, notice);
+            }
+        } catch (vip.mate.channel.cards.CardOversizedException e) {
+            log.warn("[feishu-toolguard] approval card oversized ({}); falling back to text", e.getMessage());
+            super.sendApprovalNotice(targetId, notice);
+        } catch (Exception e) {
+            log.error("[feishu-toolguard] render/send approval card failed; falling back to text: {}",
+                    e.getMessage(), e);
+            super.sendApprovalNotice(targetId, notice);
+        }
+    }
+
+    /**
+     * Dispatch a {@code P2CardActionTrigger} (button click on an
+     * interactive card) to the matching {@code FeishuCardKind} via the
+     * dispatcher and propagate the kind's response back to Feishu so
+     * the card can update in-place. Returns null when no dispatcher is
+     * wired or no kind matches the action prefix — Feishu leaves the
+     * original card unchanged in that case.
+     */
+    private com.lark.oapi.event.cardcallback.model.P2CardActionTriggerResponse handleCardActionTrigger(
+            com.lark.oapi.event.cardcallback.model.P2CardActionTrigger event) {
+        if (cardDispatcher == null || event == null || event.getEvent() == null) {
+            return null;
+        }
+        com.lark.oapi.event.cardcallback.model.P2CardActionTriggerData data = event.getEvent();
+        com.lark.oapi.event.cardcallback.model.CallBackAction action = data.getAction();
+        if (action == null || action.getValue() == null) {
+            return null;
+        }
+        Object actionField = action.getValue().get("action");
+        String actionStr = actionField != null ? actionField.toString() : null;
+        var kindOpt = cardDispatcher.lookupByAction(actionStr);
+        if (kindOpt.isEmpty()) {
+            log.debug("[feishu] No card kind registered for action={}", actionStr);
+            return null;
+        }
+        return kindOpt.get().handler().handle(this, data);
+    }
+
+    /**
+     * Re-enter the router as if the given message arrived from this
+     * channel. Used by the tool-guard card handler to re-emit the
+     * button click as a synthetic {@code /approve <pendingId>} or
+     * {@code /deny <pendingId>} so the router runs its canonical
+     * text-approve path ({@code resolveAndConsume + replay}).
+     *
+     * <p>External callers must go through {@link #onMessage}; this is
+     * the in-package fast lane that skips the WS / webhook decode.
+     */
+    public void injectSyntheticMessage(ChannelMessage message) {
+        messageRouter.enqueue(message, this, channelEntity);
+    }
 
     /**
      * 非阻塞地给消息添加表情反应
@@ -869,19 +1561,22 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter {
         return null;
     }
 
-    // ==================== 会话 ID 优化 ====================
+    // ==================== 会话 ID ====================
 
     /**
-     * 生成更短的会话标识后缀
-     * - 群聊：app_id 后 4 位 + "_" + chat_id 后 8 位
-     * - 私聊：open_id 后 12 位
+     * 生成会话标识后缀。
+     * <ul>
+     *   <li>群聊：直接使用完整 {@code chatId}（全局唯一）。旧实现用 {@code {appId后4}_{chatId后8}}
+     *       截断后缀，不同群的 {@code chatId} 后 8 位可能相同 → 会话串台。改用完整 chatId 消除碰撞。
+     *       存量旧会话不重写，由 {@link #resolveGroupSessionSuffix} 做读时别名回退。</li>
+     *   <li>私聊：保持原状（取 {@code openId} 后 12 位）。注意私聊路径下该后缀实际不参与
+     *       conversationId——{@link #buildConversationId} 对 DM 直接用完整 {@code senderOpenId}，
+     *       故私聊会话 ID 不受本次改动影响。</li>
+     * </ul>
      */
     private String generateShortSessionSuffix(String chatId, String openId, boolean isGroup) {
         if (isGroup && chatId != null) {
-            String appId = getConfigString("app_id", "");
-            String appSuffix = appId.length() >= 4 ? appId.substring(appId.length() - 4) : appId;
-            String chatSuffix = chatId.length() >= 8 ? chatId.substring(chatId.length() - 8) : chatId;
-            return appSuffix + "_" + chatSuffix;
+            return chatId;
         }
         if (openId != null) {
             return openId.length() >= 12 ? openId.substring(openId.length() - 12) : openId;
@@ -892,20 +1587,219 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter {
         return null;
     }
 
+    /**
+     * 旧群会话后缀算法：{@code {appId后4}_{chatId后8}}。仅用于读时别名回退——
+     * 在不重写存量行的前提下，让升级前已存在的群会话沿用旧 conversationId 无缝延续。
+     */
+    // Package-private for testing.
+    String legacyGroupSuffix(String chatId) {
+        if (chatId == null) return null;
+        String appId = getConfigString("app_id", "");
+        String appSuffix = appId.length() >= 4 ? appId.substring(appId.length() - 4) : appId;
+        String chatSuffix = chatId.length() >= 8 ? chatId.substring(chatId.length() - 8) : chatId;
+        return appSuffix + "_" + chatSuffix;
+    }
+
+    /**
+     * 群会话后缀的读时别名回退（不重写存量）：
+     * <ul>
+     *   <li>新群（两个 key 都无会话）→ 用完整 chatId 的 canonical key；</li>
+     *   <li>已迁移群（canonical key 已有会话）→ 用 canonical；</li>
+     *   <li>存量群（canonical 无、legacy 有）→ 沿用 legacy key，历史无缝延续。</li>
+     * </ul>
+     */
+    // Package-private for testing.
+    String resolveGroupSessionSuffix(String chatId) {
+        String canonical = chatId;
+        String legacy = legacyGroupSuffix(chatId);
+        if (legacy == null || legacy.equals(canonical)) return canonical;
+        boolean canonicalExists = messageRouter.conversationExists(CHANNEL_TYPE + ":" + canonical);
+        boolean legacyExists = !canonicalExists
+                && messageRouter.conversationExists(CHANNEL_TYPE + ":" + legacy);
+        String picked = pickGroupSessionSuffix(canonical, legacy, canonicalExists, legacyExists);
+        if (picked.equals(legacy)) {
+            log.info("[feishu] Reusing legacy group session id for chat={} (read-time alias, no migration write)", chatId);
+        }
+        return picked;
+    }
+
+    /** Package-private for testing: 纯选择逻辑——存量 legacy 会话存在且尚未迁移时沿用 legacy，否则用 canonical。 */
+    static String pickGroupSessionSuffix(String canonical, String legacy,
+                                         boolean canonicalExists, boolean legacyExists) {
+        if (!canonicalExists && legacyExists) return legacy;
+        return canonical;
+    }
+
+    /**
+     * Compute the conversationId that {@link ChannelMessageRouter} would
+     * derive for this chat, so we can save inbound files to the matching
+     * {@code data/chat-uploads/} directory.
+     *
+     * <p>The router derives the id from the routed {@link ChannelMessage},
+     * whose {@code chatId} is {@code (isGroup ? shortSuffix : null)} and whose
+     * {@code senderId} is the full open id. Mirror that exactly:
+     * {@code groups → feishu:{shortSuffix}}, {@code DMs → feishu:{senderOpenId}}.
+     */
+    static String buildConversationId(String shortSuffix, String senderOpenId, boolean isGroup) {
+        // The routed ChannelMessage carries chatId = (isGroup ? shortSuffix : null);
+        // the router then falls back to senderId when that chatId is null. Mirror both
+        // steps so the storage id matches the runtime id in every case (including the
+        // degenerate group-with-no-suffix path).
+        String routedChatId = isGroup ? shortSuffix : null;
+        String identifier = routedChatId != null ? routedChatId : senderOpenId;
+        return identifier != null ? CHANNEL_TYPE + ":" + identifier : null;
+    }
+
+    // ==================== Per-chat recent file cache ====================
+
+    /**
+     * Download an inbound file message and cache its metadata in the
+     * per-chat recent-file cache. The file is saved to
+     * {@code data/chat-uploads/{conversationId}/} so existing tools
+     * ({@code ReadFileTool}, {@code DocumentExtractTool}) can find it
+     * via {@code ChatUploadResolver}, and it gets cleaned up when the
+     * conversation is deleted.
+     *
+     * @return absolute path of the staged {@code data/chat-uploads/} copy, or
+     *         {@code null} when nothing was cached (unsupported type, missing
+     *         file key, download failure). Callers stamp this path onto the
+     *         current-message content part so the path surfaced to the LLM is
+     *         resolver-reachable instead of the sandbox-external media path.
+     */
+    private String cacheRecentFile(String messageId, String messageType, String contentStr,
+                                  String conversationId) {
+        try {
+            Map<String, Object> contentObj = objectMapper.readValue(contentStr, Map.class);
+
+            String fileKey = null;
+            String fileName = null;
+            String type; // SDK type: "image" or "file"
+
+            switch (messageType) {
+                case "image" -> {
+                    fileKey = (String) contentObj.get("image_key");
+                    type = "image";
+                }
+                case "file" -> {
+                    fileKey = (String) contentObj.get("file_key");
+                    fileName = (String) contentObj.get("file_name");
+                    type = "file";
+                }
+                case "audio" -> {
+                    fileKey = (String) contentObj.get("file_key");
+                    type = "file";
+                }
+                case "media" -> {
+                    fileKey = (String) contentObj.get("file_key");
+                    fileName = (String) contentObj.get("file_name");
+                    type = "file";
+                }
+                default -> {
+                    return null;
+                }
+            }
+
+            if (fileKey == null) return null;
+
+            // Download file bytes
+            DownloadedResource dl = "image".equals(messageType)
+                    ? maybeDownloadImage(messageId, fileKey)
+                    : maybeDownloadResource(messageId, fileKey, type, fileName);
+            if (dl == null) return null;
+
+            // Save to data/chat-uploads/{conversationId}/
+            Path uploadDir = Path.of("data", "chat-uploads", conversationId);
+            Files.createDirectories(uploadDir);
+            String rawName = (dl.fileName() != null && !dl.fileName().isBlank())
+                    ? dl.fileName() : fileKey;
+            String safeName = Path.of(rawName).getFileName().toString()
+                    .replaceAll("[^a-zA-Z0-9._-]", "_");
+            if (safeName.isBlank()) safeName = "file";
+            String storedName = System.currentTimeMillis() + "_" + safeName;
+            Path dest = uploadDir.resolve(storedName);
+            Files.copy(Path.of(dl.path()), dest, StandardCopyOption.REPLACE_EXISTING);
+
+            String contentType = dl.contentType() != null ? dl.contentType() : "application/octet-stream";
+            RecentFileEntry entry = new RecentFileEntry(safeName, dest.toAbsolutePath().toString(),
+                    dl.fileUrl(), contentType);
+
+            // Append to per-conversation cache (cap at RECENT_FILE_MAX_PER_CHAT)
+            recentFileCache.asMap().compute(conversationId, (k, existing) -> {
+                List<RecentFileEntry> list = existing != null ? new ArrayList<>(existing) : new ArrayList<>();
+                list.add(entry);
+                if (list.size() > RECENT_FILE_MAX_PER_CHAT) {
+                    list = list.subList(list.size() - RECENT_FILE_MAX_PER_CHAT, list.size());
+                }
+                return list;
+            });
+
+            log.info("[feishu] Cached recent file for conversation={}: {} ({} bytes, {})",
+                    conversationId, entry.fileName(), Files.size(dest), contentType);
+
+            return dest.toAbsolutePath().toString();
+        } catch (Exception e) {
+            log.debug("[feishu] Failed to cache recent file: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Inject recent files from the per-chat cache into the current
+     * message's content parts, so the agent can see files that were
+     * sent earlier in the same conversation.
+     *
+     * @return updated textContent with file descriptions appended
+     */
+    private String injectRecentFiles(String conversationId, List<MessageContentPart> parts, String textContent) {
+        List<RecentFileEntry> recent = recentFileCache.getIfPresent(conversationId);
+        if (recent == null || recent.isEmpty()) return textContent;
+
+        // Collect paths already in parts to avoid duplicates
+        Set<String> existingPaths = new java.util.HashSet<>();
+        for (MessageContentPart p : parts) {
+            if (p != null && p.getPath() != null) existingPaths.add(p.getPath());
+        }
+
+        StringBuilder text = new StringBuilder(textContent != null ? textContent : "");
+        for (RecentFileEntry entry : recent) {
+            if (existingPaths.contains(entry.path())) continue;
+
+            MessageContentPart part = new MessageContentPart();
+            if (entry.contentType() != null && entry.contentType().startsWith("image/")) {
+                part.setType("image");
+            } else {
+                part.setType("file");
+            }
+            part.setFileName(entry.fileName());
+            part.setPath(entry.path());
+            if (entry.fileUrl() != null) part.setFileUrl(entry.fileUrl());
+            part.setContentType(entry.contentType());
+            parts.add(part);
+
+            if (!text.isEmpty()) text.append('\n');
+            text.append("[用户发送了文件: ").append(entry.fileName()).append("]");
+        }
+        return text.toString();
+    }
+
     // ==================== 消息内容解析 ====================
 
     /**
      * 解析飞书消息内容为 contentParts
      *
-     * @param messageId   消息 ID（用于媒体下载）
-     * @param messageType 消息类型
-     * @param contentStr  消息内容 JSON 字符串
-     * @param parts       输出的 content parts
+     * @param messageId        消息 ID（用于媒体下载）
+     * @param messageType      消息类型
+     * @param contentStr       消息内容 JSON 字符串
+     * @param parts            输出的 content parts
+     * @param stagedUploadPath {@code cacheRecentFile} 复制到 {@code data/chat-uploads/}
+     *                         的绝对路径（可空）。非空时覆盖各附件 part 的 path，使其指向
+     *                         沙箱可达（经 {@code ChatUploadResolver}）的那一份，而不是
+     *                         沙箱外的 {@code ~/.mateclaw/media/} 路径。
      * @return 纯文本摘要
      */
     @SuppressWarnings("unchecked")
     private String extractContentParts(String messageId, String messageType, String contentStr,
-                                        List<MessageContentPart> parts) {
+                                        List<MessageContentPart> parts, String stagedUploadPath) {
         if (contentStr == null) return null;
 
         try {
@@ -931,11 +1825,10 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter {
                         // image. Default-on for images (separate from the
                         // file/audio/video gate) so vision works out of the
                         // box; admins can opt out with feishu_image_download_enabled=false.
-                        String localPath = maybeDownloadImage(messageId, imageKey);
+                        DownloadedResource dl = maybeDownloadImage(messageId, imageKey);
                         MessageContentPart part = MessageContentPart.image(imageKey, null);
-                        if (localPath != null) {
-                            part.setPath(localPath);
-                        }
+                        applyDownload(part, dl);
+                        if (stagedUploadPath != null) part.setPath(stagedUploadPath);
                         parts.add(part);
                     }
                     yield "[图片]";
@@ -944,9 +1837,10 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter {
                     String fileKey = (String) contentObj.get("file_key");
                     String fileName = (String) contentObj.get("file_name");
                     if (fileKey != null) {
-                        String localPath = maybeDownloadResource(messageId, fileKey, "file", fileName);
+                        DownloadedResource dl = maybeDownloadResource(messageId, fileKey, "file", fileName);
                         MessageContentPart part = MessageContentPart.file(fileKey, fileName, null);
-                        if (localPath != null) part.setPath(localPath);
+                        applyDownload(part, dl);
+                        if (stagedUploadPath != null) part.setPath(stagedUploadPath);
                         parts.add(part);
                     }
                     yield "[文件: " + (fileName != null ? fileName : "") + "]";
@@ -954,9 +1848,22 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter {
                 case "audio" -> {
                     String fileKey = (String) contentObj.get("file_key");
                     if (fileKey != null) {
-                        String localPath = maybeDownloadResource(messageId, fileKey, "file", null);
+                        // Feishu voice messages are always opus (no extension on the
+                        // wire) — give downloadResource the hint so the on-disk file
+                        // ends in .opus and SttService gets a usable MIME for routing.
+                        DownloadedResource dl = maybeDownloadResource(messageId, fileKey, "file", "voice.opus");
                         MessageContentPart part = MessageContentPart.audio(fileKey, null);
-                        if (localPath != null) part.setPath(localPath);
+                        applyDownload(part, dl);
+                        if (stagedUploadPath != null) part.setPath(stagedUploadPath);
+                        // STT hop: inject the transcript as a sibling text part BEFORE
+                        // the audio part so ChannelMessageRouter.buildPromptFromParts
+                        // sees real content instead of just "[音频]". WeCom / DingTalk
+                        // skip this step because their webhooks already include ASR
+                        // text; Feishu does not.
+                        String transcript = transcribeInboundAudio(dl);
+                        if (transcript != null && !transcript.isBlank()) {
+                            parts.add(MessageContentPart.text(transcript));
+                        }
                         parts.add(part);
                     }
                     yield "[音频]";
@@ -965,9 +1872,10 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter {
                     String fileKey = (String) contentObj.get("file_key");
                     String fileName = (String) contentObj.get("file_name");
                     if (fileKey != null) {
-                        String localPath = maybeDownloadResource(messageId, fileKey, "file", fileName);
+                        DownloadedResource dl = maybeDownloadResource(messageId, fileKey, "file", fileName);
                         MessageContentPart part = MessageContentPart.video(fileKey, fileName);
-                        if (localPath != null) part.setPath(localPath);
+                        applyDownload(part, dl);
+                        if (stagedUploadPath != null) part.setPath(stagedUploadPath);
                         parts.add(part);
                     }
                     yield "[视频]";
@@ -1043,7 +1951,8 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter {
                 (List<List<Map<String, Object>>>) localeBranch.get("content");
         if (paragraphs == null) return text.toString().trim();
 
-        boolean mediaDownload = getConfigBoolean("media_download_enabled", false);
+        // Same default-on behaviour as the standalone file/audio/video branch — see maybeDownloadResource.
+        boolean mediaDownload = getConfigBoolean("media_download_enabled", true);
 
         for (int i = 0; i < paragraphs.size(); i++) {
             List<Map<String, Object>> paragraph = paragraphs.get(i);
@@ -1087,9 +1996,9 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter {
                         if (imageKey != null) {
                             // Same reasoning as the standalone image case: vision
                             // pipelines need bytes; image_key alone is opaque.
-                            String localPath = maybeDownloadImage(messageId, imageKey);
+                            DownloadedResource dl = maybeDownloadImage(messageId, imageKey);
                             MessageContentPart imgPart = MessageContentPart.image(imageKey, null);
-                            if (localPath != null) imgPart.setPath(localPath);
+                            applyDownload(imgPart, dl);
                             parts.add(imgPart);
                             text.append("[图片]");
                         }
@@ -1097,9 +2006,11 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter {
                     case "media" -> {
                         String fileKey = (String) element.get("file_key");
                         if (fileKey != null) {
-                            String localPath = mediaDownload ? maybeDownloadResource(messageId, fileKey, "file", null) : null;
+                            DownloadedResource dl = mediaDownload
+                                    ? maybeDownloadResource(messageId, fileKey, "file", null)
+                                    : null;
                             MessageContentPart mediaPart = MessageContentPart.file(fileKey, null, null);
-                            if (localPath != null) mediaPart.setPath(localPath);
+                            applyDownload(mediaPart, dl);
                             parts.add(mediaPart);
                             text.append("[媒体]");
                         }
@@ -1124,13 +2035,44 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter {
         return result.isEmpty() ? null : result;
     }
 
-    // ==================== 媒体文件下载 ====================
+    // ==================== Inbound media download ====================
 
     /**
-     * 如果 media_download_enabled 则下载资源，否则返回 null
+     * Result of a successful inbound-resource download.
+     *
+     * @param path        absolute path on disk under
+     *                    {@code ~/.mateclaw/media/feishu/} — fed to
+     *                    {@link MessageContentPart#setPath(String)} so
+     *                    vision / file-reading tools can consume bytes
+     * @param fileUrl     {@code /api/v1/files/generated/{id}} URL backed
+     *                    by {@link vip.mate.tool.document.GeneratedFileCache}
+     *                    (10-min TTL) so the admin UI and conversation
+     *                    memory can render the file without a tenant
+     *                    token; {@code null} when the cache wasn't wired
+     *                    in (e.g. legacy tests)
+     * @param fileName    server-side filename (extension inferred from
+     *                    content-type, falls back to {@code fileNameHint}
+     *                    or the SDK-returned name)
+     * @param contentType MIME type from the download response headers
      */
-    private String maybeDownloadResource(String messageId, String fileKey, String type, String fileNameHint) {
-        if (!getConfigBoolean("media_download_enabled", false)) {
+    // Package-private for unit tests — pin the field copy contract.
+    record DownloadedResource(String path, String fileUrl,
+                              String fileName, String contentType) {}
+
+    /**
+     * Download a {@code file} / {@code audio} / {@code video} inbound
+     * resource, but only when the per-channel
+     * {@code media_download_enabled} flag is on. Default is now <b>true</b>
+     * so a user uploading a file to the bot lands as a real file the
+     * agent can read — set it to {@code false} on the channel config to
+     * opt out (e.g. tighter privacy, no disk usage).
+     *
+     * <p>Mirrors the WeCom / DingTalk pattern: text-only adapters dropping
+     * file bytes was the "did you receive my doc?" gap reported in
+     * production.
+     */
+    private DownloadedResource maybeDownloadResource(String messageId, String fileKey, String type, String fileNameHint) {
+        if (!getConfigBoolean("media_download_enabled", true)) {
             return null;
         }
         return downloadResource(messageId, fileKey, type, fileNameHint);
@@ -1145,7 +2087,7 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter {
      * downloads (e.g. tighter privacy, no disk usage) can set
      * {@code feishu_image_download_enabled=false} on the channel config.
      */
-    private String maybeDownloadImage(String messageId, String imageKey) {
+    private DownloadedResource maybeDownloadImage(String messageId, String imageKey) {
         if (!getConfigBoolean("feishu_image_download_enabled", true)) {
             return null;
         }
@@ -1153,15 +2095,133 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter {
     }
 
     /**
-     * 下载飞书消息资源（图片/文件）到本地
-     *
-     * @param messageId    消息 ID
-     * @param fileKey      资源 key（image_key 或 file_key）
-     * @param type         资源类型："image" 或 "file"
-     * @param fileNameHint 文件名提示（可选）
-     * @return 本地文件路径，失败返回 null
+     * Copy a {@link DownloadedResource}'s fields onto a
+     * {@link MessageContentPart}. {@code null} input is a no-op so the
+     * caller can keep the part as a bare {@code file_key} placeholder
+     * when download was disabled / failed.
      */
-    private String downloadResource(String messageId, String fileKey, String type, String fileNameHint) {
+    /**
+     * Read the downloaded audio bytes from disk and run them through
+     * {@link vip.mate.stt.SttService}. Returns the transcribed text, or
+     * {@code null} when STT is not wired, disabled, the download didn't
+     * produce a usable path, or every provider failed.
+     *
+     * <p>Best-effort by design — STT failure must not block the agent
+     * from seeing the audio part. The user gets the "[音频]" placeholder
+     * and any agent that's tooled-up can still investigate.
+     */
+    // Package-private for unit tests.
+    String transcribeInboundAudio(DownloadedResource dl) {
+        if (sttService == null || dl == null || dl.path() == null) {
+            return null;
+        }
+        try {
+            byte[] audioBytes = Files.readAllBytes(Path.of(dl.path()));
+            if (audioBytes.length == 0) {
+                log.debug("[feishu-stt] empty audio file at {}, skipping STT", dl.path());
+                return null;
+            }
+            String fileName = dl.fileName() != null ? dl.fileName() : "voice.opus";
+            String contentType = dl.contentType() != null ? dl.contentType() : "audio/opus";
+            // language=null → SttService falls back to the system-settings
+            // UI language hint; works for both Chinese and English without
+            // needing per-channel config.
+            Map<String, Object> result = sttService.transcribe(
+                    audioBytes, fileName, contentType, null);
+            if (!Boolean.TRUE.equals(result.get("success"))) {
+                log.warn("[feishu-stt] transcription failed: {}", result.get("error"));
+                return null;
+            }
+            String text = (String) result.get("text");
+            if (text == null || text.isBlank()) {
+                log.debug("[feishu-stt] transcription returned empty text");
+                return null;
+            }
+            log.info("[feishu-stt] transcribed {} bytes → {} chars",
+                    audioBytes.length, text.length());
+            return text;
+        } catch (Exception e) {
+            log.warn("[feishu-stt] transcription threw: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    // Package-private for unit tests.
+    static void applyDownload(MessageContentPart part, DownloadedResource dl) {
+        if (dl == null || part == null) return;
+        if (dl.path() != null) part.setPath(dl.path());
+        if (dl.fileUrl() != null) part.setFileUrl(dl.fileUrl());
+        if (dl.fileName() != null && (part.getFileName() == null || part.getFileName().isBlank())) {
+            part.setFileName(dl.fileName());
+        }
+        if (dl.contentType() != null) part.setContentType(dl.contentType());
+    }
+
+    /**
+     * Pull an inbound resource (image / file / audio / video) from
+     * Feishu and persist it both to disk and (best-effort) to the
+     * {@link vip.mate.tool.document.GeneratedFileCache}.
+     *
+     * <p>Implementation prefers the official {@code oapi-sdk}
+     * ({@code client.im().v1().messageResource().get(...)}) when a
+     * {@link FeishuClientFactory} was wired in — gets token refresh,
+     * domain switching (feishu / lark), retries, and the same
+     * {@code Authorization} contract the rest of the SDK uses for free.
+     * Falls back to the legacy hand-rolled {@code HttpClient} path
+     * when no factory is available (3-arg legacy ctor / unit tests).
+     *
+     * @param messageId    Feishu message id ({@code om_…}) — required
+     *                     by the resource endpoint to scope the file
+     * @param fileKey      resource key ({@code img_…} for images,
+     *                     {@code file_…} for everything else)
+     * @param type         SDK type discriminator: {@code "image"} for
+     *                     images, {@code "file"} for file/audio/video
+     * @param fileNameHint optional original filename (used for
+     *                     extension inference when the response has no
+     *                     useful Content-Type)
+     * @return a {@link DownloadedResource} on success, {@code null} on
+     *         any failure (logged at debug) — caller treats {@code null}
+     *         as "skip, just pass the opaque key through"
+     */
+    private DownloadedResource downloadResource(String messageId, String fileKey, String type, String fileNameHint) {
+        // ---- Prefer SDK path: token refresh, retries, domain handled by the SDK
+        if (clientFactory != null && channelEntity != null && channelEntity.getId() != null) {
+            try {
+                com.lark.oapi.Client client = clientFactory.client(channelEntity.getId());
+                com.lark.oapi.service.im.v1.model.GetMessageResourceReq req =
+                        com.lark.oapi.service.im.v1.model.GetMessageResourceReq.newBuilder()
+                                .messageId(messageId)
+                                .fileKey(fileKey)
+                                .type(type)
+                                .build();
+                com.lark.oapi.service.im.v1.model.GetMessageResourceResp resp =
+                        client.im().v1().messageResource().get(req);
+                if (!resp.success() || resp.getData() == null) {
+                    log.debug("[feishu] SDK resource.get failed: code={}, msg={}",
+                            resp.getCode(), resp.getMsg());
+                    return null;
+                }
+                byte[] bytes = resp.getData().toByteArray();
+                // SDK exposes Content-Disposition's filename via getFileName();
+                // prefer it over the hint when present.
+                String sdkFileName = resp.getFileName();
+                String preferredHint = (sdkFileName != null && !sdkFileName.isBlank())
+                        ? sdkFileName : fileNameHint;
+                // No Content-Type accessor on GetMessageResourceResp — infer
+                // from filename extension (good enough for cache MIME and
+                // for vision pipelines that key on extension).
+                String contentType = inferMimeFromName(preferredHint);
+                return persistAndCache(messageId, fileKey, bytes, preferredHint, contentType);
+            } catch (Exception e) {
+                log.debug("[feishu] SDK resource.get threw, falling back to raw HTTP: {}", e.getMessage());
+                // Fall through to raw HTTP — keeps the inbound path resilient
+                // when the SDK is temporarily unhappy (e.g. invalid req shape
+                // on a new event type the SDK doesn't yet model).
+            }
+        }
+
+        // ---- Legacy fallback: hand-rolled HTTP. Kept so the 3-arg ctor
+        // and unit tests that don't wire a factory still get bytes.
         try {
             ensureTokenValid();
             String apiBase = getApiBaseUrl();
@@ -1177,39 +2237,21 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter {
             HttpResponse<InputStream> response = httpClient.send(request,
                     HttpResponse.BodyHandlers.ofInputStream());
 
-            if (response.statusCode() != 200) {
-                log.debug("[feishu] Download resource failed: status={}", response.statusCode());
-                return null;
-            }
-
-            // 构建目标目录
-            Path mediaDir = Path.of(System.getProperty("user.home"), ".mateclaw", "media", "feishu");
-            Files.createDirectories(mediaDir);
-
-            // 安全文件名
-            String safeKey = fileKey.replaceAll("[^a-zA-Z0-9_]", "");
-            if (safeKey.isEmpty()) safeKey = "file";
-
-            // 推断扩展名
-            String ext = "bin";
-            String contentType = response.headers().firstValue("Content-Type").orElse("");
-            if (contentType.contains("jpeg") || contentType.contains("jpg")) ext = "jpg";
-            else if (contentType.contains("png")) ext = "png";
-            else if (contentType.contains("gif")) ext = "gif";
-            else if (contentType.contains("webp")) ext = "webp";
-            else if (contentType.contains("pdf")) ext = "pdf";
-            else if (fileNameHint != null && fileNameHint.contains(".")) {
-                ext = fileNameHint.substring(fileNameHint.lastIndexOf('.') + 1);
-            }
-
-            Path filePath = mediaDir.resolve(messageId + "_" + safeKey + "." + ext);
-
+            // BodyHandlers.ofInputStream does NOT auto-close the response body —
+            // callers must consume or close it on every path, including non-2xx
+            // and early-return-after-content-type. Use try-with-resources around
+            // the entire post-send block so failed downloads don't leak file
+            // descriptors during sustained traffic.
             try (InputStream is = response.body()) {
-                Files.copy(is, filePath, StandardCopyOption.REPLACE_EXISTING);
+                if (response.statusCode() != 200) {
+                    log.debug("[feishu] Download resource failed: status={}", response.statusCode());
+                    return null;
+                }
+                String contentType = response.headers().firstValue("Content-Type")
+                        .orElse(inferMimeFromName(fileNameHint));
+                byte[] bytes = is.readAllBytes();
+                return persistAndCache(messageId, fileKey, bytes, fileNameHint, contentType);
             }
-
-            log.debug("[feishu] Downloaded resource to: {}", filePath);
-            return filePath.toAbsolutePath().toString();
 
         } catch (Exception e) {
             log.debug("[feishu] Download resource failed: {}", e.getMessage());
@@ -1217,7 +2259,116 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter {
         }
     }
 
+    /**
+     * Write {@code bytes} to {@code ~/.mateclaw/media/feishu/} and,
+     * if {@link #generatedFileCache} is wired, also push them into the
+     * cache so the UI gets a {@code /api/v1/files/generated/{id}} URL.
+     * Disk persist is always attempted; cache push is best-effort.
+     */
+    private DownloadedResource persistAndCache(String messageId, String fileKey,
+                                               byte[] bytes, String fileNameHint,
+                                               String contentType) throws java.io.IOException {
+        Path mediaDir = Path.of(System.getProperty("user.home"), ".mateclaw", "media", "feishu");
+        Files.createDirectories(mediaDir);
+
+        String safeKey = fileKey.replaceAll("[^a-zA-Z0-9_]", "");
+        if (safeKey.isEmpty()) safeKey = "file";
+
+        String ext = extensionFor(contentType, fileNameHint);
+        String resolvedFileName = (fileNameHint != null && !fileNameHint.isBlank())
+                ? fileNameHint
+                : (safeKey + "." + ext);
+
+        Path filePath = mediaDir.resolve(messageId + "_" + safeKey + "." + ext);
+        Files.write(filePath, bytes);
+        log.debug("[feishu] Downloaded resource to: {} ({} bytes, {})",
+                filePath, bytes.length, contentType);
+
+        // Best-effort cache push so the UI / agent can reference the file
+        // via a tokenless URL. Failure here doesn't kill the inbound path —
+        // the local path on its own is still useful for vision tools.
+        String fileUrl = null;
+        if (generatedFileCache != null) {
+            try {
+                String id = generatedFileCache.put(bytes, resolvedFileName, contentType);
+                fileUrl = "/api/v1/files/generated/" + id;
+            } catch (Exception cacheEx) {
+                log.debug("[feishu] cache put failed: {}", cacheEx.getMessage());
+            }
+        }
+        return new DownloadedResource(filePath.toAbsolutePath().toString(),
+                fileUrl, resolvedFileName, contentType);
+    }
+
+    /** Map content-type / file-name hint to a short extension for the on-disk filename. */
+    // Package-private for unit tests.
+    static String extensionFor(String contentType, String fileNameHint) {
+        if (contentType != null) {
+            String ct = contentType.toLowerCase(java.util.Locale.ROOT);
+            if (ct.contains("jpeg") || ct.contains("jpg")) return "jpg";
+            if (ct.contains("png")) return "png";
+            if (ct.contains("gif")) return "gif";
+            if (ct.contains("webp")) return "webp";
+            if (ct.contains("pdf")) return "pdf";
+            if (ct.contains("opus")) return "opus";
+            if (ct.contains("mpeg") || ct.contains("mp3")) return "mp3";
+            if (ct.contains("mp4")) return "mp4";
+            if (ct.contains("wordprocessing") || ct.contains("msword")) return "docx";
+            if (ct.contains("spreadsheet") || ct.contains("excel")) return "xlsx";
+            if (ct.contains("presentation") || ct.contains("powerpoint")) return "pptx";
+        }
+        if (fileNameHint != null && fileNameHint.contains(".")) {
+            String hint = fileNameHint.substring(fileNameHint.lastIndexOf('.') + 1)
+                    .toLowerCase(java.util.Locale.ROOT);
+            if (!hint.isBlank()) return hint;
+        }
+        return "bin";
+    }
+
+    /**
+     * Best-effort MIME guess from a filename — the SDK download response
+     * doesn't expose Content-Type, so we fall back to the extension. Good
+     * enough for the cache (used for the {@code Content-Type} header the
+     * UI sets when re-serving) and for vision providers (most key on
+     * extension anyway).
+     */
+    // Package-private for unit tests.
+    static String inferMimeFromName(String fileName) {
+        if (fileName == null) return "application/octet-stream";
+        String lower = fileName.toLowerCase(java.util.Locale.ROOT);
+        if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
+        if (lower.endsWith(".png")) return "image/png";
+        if (lower.endsWith(".gif")) return "image/gif";
+        if (lower.endsWith(".webp")) return "image/webp";
+        if (lower.endsWith(".pdf")) return "application/pdf";
+        if (lower.endsWith(".opus")) return "audio/opus";
+        if (lower.endsWith(".mp3")) return "audio/mpeg";
+        if (lower.endsWith(".mp4")) return "video/mp4";
+        if (lower.endsWith(".docx")) return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+        if (lower.endsWith(".xlsx")) return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+        if (lower.endsWith(".pptx")) return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+        if (lower.endsWith(".txt") || lower.endsWith(".md")) return "text/plain";
+        return "application/octet-stream";
+    }
+
     // ==================== 消息发送 ====================
+
+    /**
+     * Maps a Feishu target identifier to the corresponding
+     * {@code receive_id_type} query parameter expected by the Open API.
+     * <p>
+     * Targets prefixed with {@code "ou_"} are user open_ids; everything else
+     * (group chat_ids start with {@code "oc_"}, but any non-{@code ou_} value
+     * is treated as a chat_id by default) is sent with
+     * {@code receive_id_type=chat_id}. Keeping this routing in one place
+     * keeps {@link #sendOneTextChunk}, {@link #sendCard},
+     * {@link #sendFeishuMedia} and {@link #proactiveSend} from drifting —
+     * silently misrouting the text-fallback after a failed card send to an
+     * individual was the previous regression.
+     */
+    private static String resolveReceiveIdType(String targetId) {
+        return targetId != null && targetId.startsWith("ou_") ? "open_id" : "chat_id";
+    }
 
     /**
      * Conservative per-message char ceiling. Feishu's documented limit is on
@@ -1227,6 +2378,186 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter {
      * of one wall of text. Split at paragraph / line boundaries when possible.
      */
     static final int MAX_TEXT_MESSAGE_CHARS = 4000;
+
+    // ==================== StreamingChannelAdapter ====================
+
+    /**
+     * Stream consumption strategy:
+     * <ul>
+     *   <li>{@code card_streaming_enabled=true} (default) + manager wired →
+     *       create a {@code cardkit/v1} streaming card, throttle-update its
+     *       markdown element on every delta, finalise on completion. The
+     *       receiver sees text appearing character-by-character like a
+     *       chat-app's typing animation.</li>
+     *   <li>Manager missing OR card creation fails OR config opts out →
+     *       fall back to {@link #processStreamAsText}: accumulate every
+     *       chunk and send one final regular message.</li>
+     * </ul>
+     */
+    @Override
+    public String processStream(Flux<StreamDelta> stream, ChannelMessage message, String conversationId) {
+        if (!isCardStreamingEnabled() || streamingCardManager == null
+                || channelEntity == null) {
+            return processStreamAsText(stream, message);
+        }
+
+        String receiveId = pickReceiveId(message);
+        if (receiveId == null) {
+            log.warn("[feishu-stream] No usable receive id on message; falling back to text mode");
+            return processStreamAsText(stream, message);
+        }
+        String receiveIdType = resolveReceiveIdType(receiveId);
+
+        String sessionKey = streamingCardManager.createAndDeliver(
+                channelEntity.getId(), receiveIdType, receiveId, null);
+        if (sessionKey == null) {
+            log.info("[feishu-stream] Card create/deliver failed; falling back to text mode");
+            return processStreamAsText(stream, message);
+        }
+
+        StringBuilder accumulator = new StringBuilder();
+        try {
+            stream.doOnNext(delta -> {
+                        if (delta.content() != null) {
+                            accumulator.append(delta.content());
+                            streamingCardManager.appendContent(sessionKey, delta.content(), false);
+                        }
+                    })
+                    .doOnError(err -> {
+                        log.error("[feishu-stream] stream error: sessionKey={}, err={}",
+                                sessionKey, err.getMessage());
+                        streamingCardManager.failCard(sessionKey, err.getMessage());
+                    })
+                    .blockLast(Duration.ofMinutes(5));
+
+            String finalContent = accumulator.toString();
+            if (finalContent.isBlank()) {
+                finalContent = "（无回复内容）";
+            }
+            // Strip any /api/v1/files/generated/{id} URLs out of the card
+            // text (replacing each with a "📎 filename" marker) AND send
+            // each cache-resolved file as a native Feishu attachment. The
+            // streaming card can only render markdown — without this hop
+            // the user sees a broken-looking download link instead of the
+            // actual file. Cache-miss URLs fall back to the user-facing
+            // retry hint that GeneratedFileScrubber emits.
+            String renderedContent = scrubAndSendAttachments(receiveId, finalContent);
+            streamingCardManager.finishCard(sessionKey, renderedContent);
+            log.info("[feishu-stream] Card streaming completed: sessionKey={}, contentLen={}",
+                    sessionKey, renderedContent.length());
+            return finalContent;
+
+        } catch (Exception e) {
+            log.error("[feishu-stream] Card streaming failed: sessionKey={}, err={}",
+                    sessionKey, e.getMessage(), e);
+            streamingCardManager.failCard(sessionKey, e.getMessage());
+
+            // Tag returned content with the "[错误] " prefix so
+            // ChannelMessageRouter.isErrorReply flips status='error' on the
+            // persisted row and BaseAgent.sanitizeForLlm filters it out of
+            // the next turn's history. Without this, partial streaming
+            // output (e.g. LLM 400'd mid-stream) would re-enter the prompt
+            // as a valid assistant turn and re-trigger the same 400.
+            String partial = accumulator.toString();
+            String errorPrefix = "[错误] Feishu CardKit streaming failed: " + e.getMessage();
+            if (!partial.isBlank()) {
+                return errorPrefix + "\n\n（已生成的部分内容，已忽略）\n" + partial;
+            }
+            throw new RuntimeException(errorPrefix, e);
+        }
+    }
+
+    /**
+     * Streaming fallback — accumulate all deltas, then send through the
+     * existing {@link #sendMessage} path so the message goes out as a
+     * regular text bubble (auto-upgraded to a non-streaming card by the
+     * existing {@code card_format} logic when content looks card-worthy).
+     */
+    private String processStreamAsText(Flux<StreamDelta> stream, ChannelMessage message) {
+        StringBuilder accumulator = new StringBuilder();
+        stream.doOnNext(delta -> {
+                    if (delta.content() != null) {
+                        accumulator.append(delta.content());
+                    }
+                })
+                .blockLast(Duration.ofMinutes(5));
+        String finalContent = accumulator.toString();
+        if (!finalContent.isBlank()) {
+            String replyTarget = message.getReplyToken() != null
+                    ? message.getReplyToken()
+                    : (message.getChatId() != null ? message.getChatId() : message.getSenderId());
+            if (replyTarget != null) {
+                // Same scrub-and-upload hop as the streaming card finish path —
+                // a generated-file URL in plain text would otherwise reach the
+                // user as a markdown link that opens to nothing useful in IM.
+                String renderedContent = scrubAndSendAttachments(replyTarget, finalContent);
+                sendMessage(replyTarget, renderedContent);
+            }
+        }
+        return finalContent;
+    }
+
+    /**
+     * Run {@link GeneratedFileScrubber} over outbound text. For every
+     * {@code /api/v1/files/generated/{id}} URL the cache resolves, send
+     * the bytes as a native Feishu attachment to {@code targetId} via
+     * the existing upload path. Returns the rewritten text (URLs replaced
+     * with {@code "📎 filename"} markers for hits, retry hints for
+     * cache-misses) so the caller can use it for the text bubble / card.
+     *
+     * <p>No-op when scrubber / uploader / channel entity is missing —
+     * returns input unchanged so legacy callers (3-arg ctor, tests)
+     * continue to behave like the pre-scrubber adapter. The cost of the
+     * regex scan on a normal reply with no generated URLs is one
+     * Matcher.find() that returns false, negligible.
+     */
+    // Package-private so tests can call directly without driving the full
+    // streaming pipeline. Production callers are processStream and
+    // processStreamAsText, both internal.
+    String scrubAndSendAttachments(String targetId, String content) {
+        if (content == null || content.isEmpty()
+                || generatedFileScrubber == null
+                || mediaUploader == null
+                || channelEntity == null
+                || channelEntity.getId() == null) {
+            return content;
+        }
+        GeneratedFileScrubber.ScrubResult scrubbed = generatedFileScrubber.scrub(content);
+        Long channelId = channelEntity.getId();
+        for (GeneratedFileScrubber.AttachmentHit hit : scrubbed.attachments()) {
+            uploadAndSendAttachment(targetId, channelId,
+                    new MediaSource.Bytes(hit.bytes()),
+                    hit.fileName(),
+                    hit.mediaType(),
+                    hit.mimeType(),
+                    null);
+        }
+        return scrubbed.rewrittenText();
+    }
+
+    /** Resolve the best id to receive a streaming card — prefer reply token, then chat, then sender. */
+    private static String pickReceiveId(ChannelMessage message) {
+        if (message == null) return null;
+        if (message.getReplyToken() != null && !message.getReplyToken().isBlank()) {
+            return message.getReplyToken();
+        }
+        if (message.getChatId() != null && !message.getChatId().isBlank()) {
+            return message.getChatId();
+        }
+        if (message.getSenderId() != null && !message.getSenderId().isBlank()) {
+            return message.getSenderId();
+        }
+        return null;
+    }
+
+    private boolean isCardStreamingEnabled() {
+        // Default true — streaming cards are the better UX when CardKit is
+        // available. Operators can flip card_streaming_enabled=false in
+        // configJson to fall back to the text path (useful for debugging
+        // or when targeting an old Feishu tenant that hasn't rolled out
+        // CardKit v1 universally).
+        return getConfigBoolean("card_streaming_enabled", true);
+    }
 
     @Override
     public void sendMessage(String targetId, String content) {
@@ -1239,18 +2570,32 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter {
         }
 
         ensureTokenValid();
-        List<String> chunks = splitTextForFeishu(content, MAX_TEXT_MESSAGE_CHARS);
-        if (chunks.size() > 1) {
-            log.info("[feishu] Splitting message into {} chunks ({} chars total) before send",
-                    chunks.size(), content.length());
+
+        String cardFormat = getConfigString("card_format", "auto");
+
+        if ("never".equals(cardFormat)) {
+            splitTextForFeishu(content, MAX_TEXT_MESSAGE_CHARS)
+                    .forEach(c -> sendOneTextChunk(targetId, c));
+            return;
         }
-        for (String chunk : chunks) {
-            sendOneTextChunk(targetId, chunk);
+
+        FeishuCardFormatter.ContentFormat fmt = FeishuCardFormatter.detect(content);
+
+        boolean preferCard = "always".equals(cardFormat) || fmt != FeishuCardFormatter.ContentFormat.PLAIN_TEXT;
+        if (preferCard) {
+            String cardHeader = getConfigString("card_header", FeishuCardFormatter.DEFAULT_MARKDOWN_HEADER);
+            boolean sent = sendCard(targetId, FeishuCardFormatter.render(content, fmt, cardHeader));
+            if (sent) return;
+            // Card path bailed (oversized payload, null guard, or network error) —
+            // fall through to text so the user doesn't get nothing.
         }
+        splitTextForFeishu(content, MAX_TEXT_MESSAGE_CHARS)
+                .forEach(c -> sendOneTextChunk(targetId, c));
     }
 
     private void sendOneTextChunk(String targetId, String content) {
         String apiBase = getApiBaseUrl();
+        String receiveIdType = resolveReceiveIdType(targetId);
         try {
             String jsonBody = objectMapper.writeValueAsString(Map.of(
                     "receive_id", targetId,
@@ -1259,7 +2604,7 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter {
             ));
 
             HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(apiBase + "/open-apis/im/v1/messages?receive_id_type=chat_id"))
+                    .uri(URI.create(apiBase + "/open-apis/im/v1/messages?receive_id_type=" + receiveIdType))
                     .header("Content-Type", "application/json; charset=utf-8")
                     .header("Authorization", "Bearer " + tenantAccessToken)
                     .POST(HttpRequest.BodyPublishers.ofString(jsonBody))
@@ -1269,11 +2614,106 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter {
             if (response.statusCode() != 200) {
                 log.warn("[feishu] Send message failed: status={}, body={}", response.statusCode(), response.body());
             } else {
-                log.debug("[feishu] Message sent to chat_id={} ({} chars)", targetId, content.length());
+                log.debug("[feishu] Message sent to {}={} ({} chars)", receiveIdType, targetId, content.length());
             }
 
         } catch (Exception e) {
             log.error("[feishu] Failed to send message: {}", e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Feishu rejects interactive messages whose {@code content} payload exceeds
+     * roughly 30 KB once stringified. We compare the serialized card against a
+     * slightly tighter ceiling and fall back to plain text rather than letting
+     * the request error out at the API.
+     */
+    static final int MAX_CARD_CONTENT_BYTES = 30_000;
+
+    /**
+     * Posts an Interactive Card. Returns {@code true} when the card was sent
+     * (HTTP 2xx), {@code false} when a pre-flight check rejected the call
+     * (null inputs, channel stopped, payload oversized) or the HTTP request
+     * itself failed — letting {@link #sendMessage(String, String)} fall back
+     * to plain text instead of going silent.
+     *
+     * <p>{@code targetId} format follows {@link #resolveReceiveIdType}:
+     * {@code "ou_"} prefix → open_id (1:1), anything else → chat_id (group).
+     */
+    public boolean sendCard(String targetId, Map<String, Object> cardJson) {
+        if (httpClient == null) {
+            log.warn("[feishu] Channel not started, cannot send card");
+            return false;
+        }
+        if (targetId == null || cardJson == null) {
+            log.warn("[feishu] sendCard called with null target or card");
+            return false;
+        }
+        ensureTokenValid();
+        String apiBase = getApiBaseUrl();
+        String receiveIdType = resolveReceiveIdType(targetId);
+        try {
+            String cardContent = objectMapper.writeValueAsString(cardJson);
+            int cardBytes = cardContent.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+            if (cardBytes > MAX_CARD_CONTENT_BYTES) {
+                log.warn("[feishu] Card content {} bytes exceeds {} byte limit, falling back to text",
+                        cardBytes, MAX_CARD_CONTENT_BYTES);
+                return false;
+            }
+            String jsonBody = objectMapper.writeValueAsString(Map.of(
+                    "receive_id", targetId,
+                    "msg_type", "interactive",
+                    "content", cardContent
+            ));
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(apiBase + "/open-apis/im/v1/messages?receive_id_type=" + receiveIdType))
+                    .header("Content-Type", "application/json; charset=utf-8")
+                    .header("Authorization", "Bearer " + tenantAccessToken)
+                    .POST(HttpRequest.BodyPublishers.ofString(jsonBody))
+                    .build();
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() != 200) {
+                log.warn("[feishu] Send card failed: status={}, body={}", response.statusCode(), response.body());
+                return false;
+            }
+            log.debug("[feishu] Card sent to {} (type={})", targetId, receiveIdType);
+            return true;
+        } catch (Exception e) {
+            log.error("[feishu] Failed to send card: {}", e.getMessage(), e);
+            return false;
+        }
+    }
+
+    public void updateCard(String messageId, Map<String, Object> cardJson) {
+        if (httpClient == null) {
+            log.warn("[feishu] Channel not started, cannot update card");
+            return;
+        }
+        if (messageId == null || cardJson == null) {
+            log.warn("[feishu] updateCard called with null messageId or card");
+            return;
+        }
+        ensureTokenValid();
+        String apiBase = getApiBaseUrl();
+        try {
+            String jsonBody = objectMapper.writeValueAsString(Map.of(
+                    "msg_type", "interactive",
+                    "content", objectMapper.writeValueAsString(cardJson)
+            ));
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(apiBase + "/open-apis/im/v1/messages/" + messageId))
+                    .header("Content-Type", "application/json; charset=utf-8")
+                    .header("Authorization", "Bearer " + tenantAccessToken)
+                    .method("PATCH", HttpRequest.BodyPublishers.ofString(jsonBody))
+                    .build();
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() != 200) {
+                log.warn("[feishu] Update card failed: status={}, body={}", response.statusCode(), response.body());
+            } else {
+                log.debug("[feishu] Card updated: messageId={}", messageId);
+            }
+        } catch (Exception e) {
+            log.error("[feishu] Failed to update card: {}", e.getMessage(), e);
         }
     }
 
@@ -1329,24 +2769,29 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter {
             log.warn("[feishu] Channel not started, cannot send message");
             return;
         }
+        if (parts == null || parts.isEmpty()) return;
 
         ensureTokenValid();
+
+        // Carry an explicit channelId for media uploads. Available on
+        // the entity since CRUD; only null in degenerate test stubs.
+        Long channelId = channelEntity != null ? channelEntity.getId() : null;
 
         for (MessageContentPart part : parts) {
             if (part == null) continue;
             try {
                 switch (part.getType()) {
-                    case "text" -> sendMessage(targetId, part.getText() != null ? part.getText() : "");
-                    case "image" -> {
-                        if (part.getMediaId() != null) {
-                            sendFeishuMedia(targetId, "image", Map.of("image_key", part.getMediaId()));
+                    case "text" -> handleTextPart(targetId, channelId, part);
+                    case "refusal" -> {
+                        String refusal = part.getText();
+                        if (refusal != null && !refusal.isBlank()) {
+                            sendMessage(targetId, "⚠️ " + refusal);
                         }
                     }
-                    case "file" -> {
-                        if (part.getMediaId() != null) {
-                            sendFeishuMedia(targetId, "file", Map.of("file_key", part.getMediaId()));
-                        }
-                    }
+                    case "image" -> handleMediaPart(targetId, channelId, part, "image", "image.jpg");
+                    case "file" -> handleMediaPart(targetId, channelId, part, "file", "file.bin");
+                    case "audio" -> handleMediaPart(targetId, channelId, part, "audio", "voice_reply.opus");
+                    case "video" -> handleMediaPart(targetId, channelId, part, "video", "video.mp4");
                     default -> {
                         if (part.getText() != null) sendMessage(targetId, part.getText());
                     }
@@ -1357,17 +2802,135 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter {
         }
     }
 
-    private void sendFeishuMedia(String chatId, String msgType, Map<String, Object> content) {
+    /**
+     * Handle one text part: if the scrubber is wired, rewrite any
+     * {@code /api/v1/files/generated/{id}} URL to a {@code "📎 filename"}
+     * marker and upload the cached bytes as a native attachment; if not,
+     * fall back to sending the text as-is (legacy behavior).
+     */
+    private void handleTextPart(String targetId, Long channelId, MessageContentPart part) {
+        String text = part.getText() != null ? part.getText() : "";
+        if (generatedFileScrubber == null || mediaUploader == null || channelId == null) {
+            sendMessage(targetId, text);
+            return;
+        }
+        GeneratedFileScrubber.ScrubResult scrubbed = generatedFileScrubber.scrub(text);
+        sendMessage(targetId, scrubbed.rewrittenText());
+        for (GeneratedFileScrubber.AttachmentHit hit : scrubbed.attachments()) {
+            uploadAndSendAttachment(targetId, channelId,
+                    new MediaSource.Bytes(hit.bytes()),
+                    hit.fileName(),
+                    hit.mediaType(),
+                    hit.mimeType(),
+                    null);
+        }
+    }
+
+    /**
+     * Handle one image / file / audio / video part. If {@code mediaId} is
+     * already a Feishu key (image_key / file_key) — e.g. echoed back
+     * from an earlier inbound message — send directly. Otherwise build a
+     * {@link MediaSource} from {@code path} / {@code fileUrl} /
+     * {@code text}(base64 not yet supported here) and upload via the SDK
+     * uploader first.
+     */
+    private void handleMediaPart(String targetId, Long channelId, MessageContentPart part,
+                                 String mediaType, String defaultFileName) {
+        // 1. mediaId is already a Feishu key → send straight away
+        String existingKey = part.getMediaId();
+        if (existingKey != null && (existingKey.startsWith("img_") || existingKey.startsWith("file_"))) {
+            String keyField = "image".equals(mediaType) ? "image_key" : "file_key";
+            sendFeishuMedia(targetId, mediaType, Map.of(keyField, existingKey));
+            return;
+        }
+        if (mediaUploader == null || channelId == null) {
+            sendFallbackText(targetId, part, mediaType);
+            return;
+        }
+        MediaSource source = resolveSource(part);
+        if (source == null) {
+            sendFallbackText(targetId, part, mediaType);
+            return;
+        }
+        String fileName = part.getFileName() != null ? part.getFileName() : defaultFileName;
+        uploadAndSendAttachment(targetId, channelId, source, fileName,
+                mediaType, part.getContentType(), null);
+    }
+
+    /**
+     * Resolve a {@link MessageContentPart}'s payload source — prefer
+     * already-on-disk path, fall back to fileUrl. Returns {@code null}
+     * when neither is usable (e.g. the part only carries a placeholder).
+     */
+    private static MediaSource resolveSource(MessageContentPart part) {
+        if (part.getPath() != null && !part.getPath().isBlank()) {
+            java.nio.file.Path p = java.nio.file.Path.of(part.getPath());
+            if (java.nio.file.Files.exists(p)) {
+                return new MediaSource.LocalPath(p);
+            }
+        }
+        String url = part.getFileUrl();
+        if (url != null && !url.isBlank()) {
+            return new MediaSource.RemoteUrl(url);
+        }
+        return null;
+    }
+
+    /**
+     * Upload via the SDK-backed uploader and dispatch the resulting
+     * key as a Feishu media message. Surfaces any rejection /
+     * downgrade note as a follow-up text bubble so users understand
+     * why a bubble isn't native.
+     */
+    // Package-private + non-final so tests can override and capture upload
+    // attempts without standing up a real Feishu HTTP client.
+    void uploadAndSendAttachment(String targetId, Long channelId,
+                                  MediaSource source, String fileName,
+                                  String mediaType, String contentType,
+                                  Integer durationMillis) {
+        try {
+            MediaUploadResult result = mediaUploader.upload(new MediaUploadRequest(
+                    channelId, source, fileName, mediaType, contentType, durationMillis));
+            String finalType = result.finalMediaType();
+            String keyField = "image".equals(finalType) ? "image_key" : "file_key";
+            sendFeishuMedia(targetId, finalType, Map.of(keyField, result.mediaId()));
+            if (result.downgradeNote() != null) {
+                sendMessage(targetId, "ℹ️ " + result.downgradeNote());
+            }
+        } catch (MediaUploadException e) {
+            log.warn("[feishu] Upload rejected for {} ({}): {}", fileName, mediaType, e.getMessage());
+            sendMessage(targetId, "⚠️ " + e.getMessage());
+        } catch (Exception e) {
+            log.error("[feishu] Upload failed for {} ({}): {}", fileName, mediaType, e.getMessage(), e);
+            sendMessage(targetId, "⚠️ 附件 " + fileName + " 发送失败：" + e.getMessage());
+        }
+    }
+
+    /**
+     * Last-ditch text representation when neither a Feishu key nor a
+     * usable source could be derived from the part. Keeps the bubble
+     * informative instead of swallowing the message.
+     */
+    private void sendFallbackText(String targetId, MessageContentPart part, String mediaType) {
+        StringBuilder sb = new StringBuilder("⚠️ 无法发送 ");
+        sb.append(mediaType);
+        if (part.getFileName() != null) sb.append("：").append(part.getFileName());
+        if (part.getFileUrl() != null) sb.append(" (").append(part.getFileUrl()).append(")");
+        sendMessage(targetId, sb.toString());
+    }
+
+    private void sendFeishuMedia(String targetId, String msgType, Map<String, Object> content) {
         String apiBase = getApiBaseUrl();
+        String receiveIdType = resolveReceiveIdType(targetId);
         try {
             String jsonBody = objectMapper.writeValueAsString(Map.of(
-                    "receive_id", chatId,
+                    "receive_id", targetId,
                     "msg_type", msgType,
                     "content", objectMapper.writeValueAsString(content)
             ));
 
             HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(apiBase + "/open-apis/im/v1/messages?receive_id_type=chat_id"))
+                    .uri(URI.create(apiBase + "/open-apis/im/v1/messages?receive_id_type=" + receiveIdType))
                     .header("Content-Type", "application/json; charset=utf-8")
                     .header("Authorization", "Bearer " + tenantAccessToken)
                     .POST(HttpRequest.BodyPublishers.ofString(jsonBody))
@@ -1406,14 +2969,7 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter {
 
         ensureTokenValid();
         String apiBase = getApiBaseUrl();
-
-        // 根据 targetId 前缀判断 receive_id_type
-        String receiveIdType;
-        if (targetId.startsWith("ou_")) {
-            receiveIdType = "open_id";
-        } else {
-            receiveIdType = "chat_id";
-        }
+        String receiveIdType = resolveReceiveIdType(targetId);
 
         try {
             String jsonBody = objectMapper.writeValueAsString(Map.of(

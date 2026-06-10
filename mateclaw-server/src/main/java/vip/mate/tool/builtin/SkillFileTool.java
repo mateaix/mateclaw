@@ -6,10 +6,13 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.annotation.Tool;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Component;
 import vip.mate.agent.context.ChatOrigin;
 import vip.mate.agent.context.TokenEstimator;
+import vip.mate.llm.routing.AgentBindingResolver;
 import vip.mate.skill.runtime.SkillCatalogSort;
 import vip.mate.skill.runtime.SkillCatalogSorter;
 import vip.mate.skill.runtime.SkillFileAccessPolicy;
@@ -21,6 +24,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
@@ -39,19 +43,24 @@ public class SkillFileTool {
     private final SkillFileAccessPolicy accessPolicy;
     private final SkillUsageService usageService;
 
+    @Lazy
+    @Autowired
+    private AgentBindingResolver agentBindingResolver;
+
     @Tool(description = """
-        Read a file from a skill's directory (SKILL.md, references/, or scripts/).
+        Read a file from a skill's directory (SKILL.md, references/, scripts/, or templates/).
         Use this when you need to access skill documentation or reference files.
 
         Parameters:
         - skillName: Name of the skill (e.g., "channel_message")
-        - filePath: Relative path within skill directory, must start with "references/" or "scripts/"
-                    (e.g., "references/config.md", "scripts/helper.py")
+        - filePath: Relative path within skill directory, must start with "references/", "scripts/",
+                    or "templates/" (e.g., "references/config.md", "scripts/helper.py",
+                    "templates/template.html")
                     To read SKILL.md itself, use "SKILL.md" as filePath
 
         Returns: File content as string, or error message if file not found or access denied.
 
-        Security: Only files under references/ and scripts/ can be accessed. Path traversal is blocked.
+        Security: Only files under references/, scripts/, and templates/ can be accessed. Path traversal is blocked.
         """)
     public String readSkillFile(
         @JsonProperty(required = true)
@@ -59,7 +68,7 @@ public class SkillFileTool {
         String skillName,
 
         @JsonProperty(required = true)
-        @JsonPropertyDescription("Relative file path (e.g., 'references/doc.md' or 'scripts/run.py')")
+        @JsonPropertyDescription("Relative file path (e.g., 'references/doc.md', 'scripts/run.py', or 'templates/template.html')")
         String filePath,
 
         @JsonProperty(required = false)
@@ -78,6 +87,9 @@ public class SkillFileTool {
         ResolvedSkill skill = runtimeService.findActiveSkill(skillName);
         if (skill == null) {
             return "Error: Skill '" + skillName + "' not found or not enabled";
+        }
+        if (!isSkillAllowedForAgent(skill, ctx)) {
+            return "Error: Skill '" + skillName + "' is not available for this agent.";
         }
 
         // 特殊处理：读取 SKILL.md
@@ -227,13 +239,18 @@ public class SkillFileTool {
     public String listSkillFiles(
         @JsonProperty(required = true)
         @JsonPropertyDescription("Skill name")
-        String skillName
+        String skillName,
+
+        @Nullable ToolContext ctx
     ) {
         log.info("Listing skill files: skill={}", skillName);
 
         ResolvedSkill skill = runtimeService.findActiveSkill(skillName);
         if (skill == null) {
             return "Error: Skill '" + skillName + "' not found or not enabled";
+        }
+        if (!isSkillAllowedForAgent(skill, ctx)) {
+            return "Error: Skill '" + skillName + "' is not available for this agent.";
         }
 
         StringBuilder sb = new StringBuilder();
@@ -304,10 +321,13 @@ public class SkillFileTool {
 
         @JsonProperty(required = false)
         @JsonPropertyDescription("Maximum number of skills to return, default 20, max 50")
-        Integer limit
+        Integer limit,
+
+        @Nullable ToolContext ctx
     ) {
         log.info("Listing available skills");
 
+        Set<Long> boundSkillIds = boundSkillIdsFromCtx(ctx);
         int safeLimit = limit == null || limit <= 0 ? 20 : Math.min(limit, 50);
         String kw = keyword == null ? "" : keyword.trim().toLowerCase();
         // Push freshly installed skills to the top of the truncated page so
@@ -324,6 +344,8 @@ public class SkillFileTool {
                 runtimeService.getActiveSkills().stream()
                         .filter(s -> SkillCatalogSorter.sourceMatches(s, source))
                         .filter(s -> SkillCatalogSorter.runtimeMatches(s, status))
+                        .filter(s -> boundSkillIds == null
+                                || (s.getId() != null && boundSkillIds.contains(s.getId())))
                         .filter(s -> kw.isEmpty()
                                 || containsIgnoreCase(s.getName(), kw)
                                 || containsIgnoreCase(s.getDescription(), kw))
@@ -378,6 +400,28 @@ public class SkillFileTool {
 
     private static boolean containsIgnoreCase(String value, String lowerCaseNeedle) {
         return value != null && value.toLowerCase().contains(lowerCaseNeedle);
+    }
+
+    /**
+     * Returns the agent's bound skill IDs from the tool context, or {@code null}
+     * when no binding restriction applies (agentId missing or agent has no explicit bindings).
+     */
+    @Nullable
+    private Set<Long> boundSkillIdsFromCtx(@Nullable ToolContext ctx) {
+        Long agentId = ChatOrigin.from(ctx).agentId();
+        if (agentId == null) return null;
+        return agentBindingResolver.getBoundSkillIds(agentId);
+    }
+
+    /**
+     * Returns {@code true} when the agent (identified via {@code ctx}) is allowed
+     * to access {@code skill}: either no explicit binding restriction, or the skill
+     * id is in the agent's bound set.
+     */
+    private boolean isSkillAllowedForAgent(ResolvedSkill skill, @Nullable ToolContext ctx) {
+        Set<Long> boundSkillIds = boundSkillIdsFromCtx(ctx);
+        if (boundSkillIds == null) return true;
+        return skill.getId() != null && boundSkillIds.contains(skill.getId());
     }
 
     private static String statusToken(ResolvedSkill skill) {

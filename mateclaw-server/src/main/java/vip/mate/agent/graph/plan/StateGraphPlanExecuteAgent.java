@@ -319,6 +319,24 @@ public class StateGraphPlanExecuteAgent extends BaseAgent implements StructuredS
         origin = origin.withConversationId(conversationId)
                 .withWorkspace(origin.workspaceId(), workspaceBasePath);
         inputs.put(MateClawStateKeys.CHAT_ORIGIN, origin);
+
+        // RFC 48 — inject active goal snapshot for GoalEvaluationNode.
+        // Mirrors StateGraphReActAgent.buildInitialState exactly.
+        if (goalService != null && conversationId != null && !conversationId.isBlank()) {
+            try {
+                vip.mate.goal.model.GoalEntity active =
+                        goalService.findActiveByConversation(conversationId);
+                if (active != null) {
+                    inputs.put(MateClawStateKeys.ACTIVE_GOAL, active);
+                }
+            } catch (Exception e) {
+                log.warn("[{}] findActiveByConversation failed: {}", agentName, e.getMessage());
+            }
+        }
+        inputs.put(MateClawStateKeys.GOAL_EVALUATED_THIS_RUN, false);
+        inputs.put(MateClawStateKeys.GOAL_FOLLOWUP_INJECTED, false);
+        inputs.put(MateClawStateKeys.GOAL_FOLLOWUP_PROMPT, "");
+
         return inputs;
     }
 

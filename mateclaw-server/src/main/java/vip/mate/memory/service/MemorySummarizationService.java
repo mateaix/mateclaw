@@ -46,41 +46,66 @@ public class MemorySummarizationService {
     private final AgentGraphBuilder agentGraphBuilder;
     private final MemoryProperties properties;
     private final ObjectMapper objectMapper;
+    private final StructuredMemoryService structuredMemoryService;
 
-    /** Per-agent 锁，防止并发写入 */
-    private final ConcurrentHashMap<Long, ReentrantLock> agentLocks = new ConcurrentHashMap<>();
+    /** Typed-memory categories the summarizer may route entries into. */
+    private static final java.util.Set<String> STRUCTURED_TYPES =
+            java.util.Set.of("user", "feedback", "project", "reference");
 
-    /** Per-agent 冷却时间记录 */
-    private final ConcurrentHashMap<Long, Instant> lastRunTimes = new ConcurrentHashMap<>();
+    /** Per-(agent, owner) 锁，防止并发写入 */
+    private final ConcurrentHashMap<String, ReentrantLock> agentLocks = new ConcurrentHashMap<>();
+
+    /** Per-(agent, owner) 冷却时间记录 */
+    private final ConcurrentHashMap<String, Instant> lastRunTimes = new ConcurrentHashMap<>();
+
+    /** Backwards-compatible entry without an owner key (writes shared memory). */
+    public void analyzeAndUpdateMemory(Long agentId, String conversationId) {
+        analyzeAndUpdateMemory(agentId, conversationId, null);
+    }
 
     /**
      * 分析对话并更新记忆文件
      *
      * @param agentId        Agent ID
      * @param conversationId 会话 ID
+     * @param ownerKey       memory owner this conversation is attributed to; null
+     *                       or "system" writes shared (TEAM) memory, otherwise
+     *                       memory is written PERSONAL to this owner
      */
-    public void analyzeAndUpdateMemory(Long agentId, String conversationId) {
+    public void analyzeAndUpdateMemory(Long agentId, String conversationId, String ownerKey) {
+        // Per-owner isolation is gated on the lifecycle prefetch path, which is
+        // the only auto-injector of PERSONAL memory. When that path is off,
+        // writing PERSONAL would strand memory in a bucket nothing auto-reads,
+        // so fall back to shared (legacy) writes — isolation activates together
+        // with lifecycleMediatorEnabled.
+        if (!properties.isLifecycleMediatorEnabled()) {
+            ownerKey = null;
+        }
+        // Lock / cooldown are keyed per (agent, owner) so one owner's busy
+        // extraction never starves another owner sharing the same agent.
+        String lockKey = agentId + ":" + (ownerKey == null ? "" : ownerKey);
+
         // 冷却检查
-        if (isInCooldown(agentId)) {
-            log.debug("[Memory] Agent {} is in cooldown, skipping summarization", agentId);
+        if (isInCooldown(lockKey)) {
+            log.debug("[Memory] Agent {} (owner {}) is in cooldown, skipping summarization", agentId, ownerKey);
             return;
         }
 
-        ReentrantLock lock = agentLocks.computeIfAbsent(agentId, k -> new ReentrantLock());
+        ReentrantLock lock = agentLocks.computeIfAbsent(lockKey, k -> new ReentrantLock());
         if (!lock.tryLock()) {
-            log.debug("[Memory] Agent {} is already being summarized, skipping", agentId);
+            log.debug("[Memory] Agent {} (owner {}) is already being summarized, skipping", agentId, ownerKey);
             return;
         }
 
         try {
-            doAnalyzeAndUpdate(agentId, conversationId);
-            lastRunTimes.put(agentId, Instant.now());
+            doAnalyzeAndUpdate(agentId, conversationId, ownerKey);
+            lastRunTimes.put(lockKey, Instant.now());
         } finally {
             lock.unlock();
         }
     }
 
-    private void doAnalyzeAndUpdate(Long agentId, String conversationId) {
+    private void doAnalyzeAndUpdate(Long agentId, String conversationId, String ownerKey) {
         // 1. 加载对话消息
         List<MessageEntity> messages = conversationService.listMessages(conversationId);
         if (messages.size() < properties.getMinMessagesForSummarize()) {
@@ -95,11 +120,11 @@ public class MemorySummarizationService {
             return;
         }
 
-        // 2. 加载现有记忆文件内容
-        String profileContent = readFileContentSafe(agentId, "PROFILE.md");
-        String memoryContent = readFileContentSafe(agentId, "MEMORY.md");
+        // 2. 加载现有记忆文件内容（按 owner 隔离）
+        String profileContent = readFileContentSafe(agentId, "PROFILE.md", ownerKey);
+        String memoryContent = readFileContentSafe(agentId, "MEMORY.md", ownerKey);
         String dailyFilename = "memory/" + LocalDate.now() + ".md";
-        String dailyContent = readFileContentSafe(agentId, dailyFilename);
+        String dailyContent = readFileContentSafe(agentId, dailyFilename, ownerKey);
 
         // 3. 构建对话 transcript
         String transcript = buildTranscript(messages);
@@ -148,7 +173,7 @@ public class MemorySummarizationService {
             }
 
             // 6. 应用更新
-            applyUpdates(agentId, root, dailyFilename, dailyContent);
+            applyUpdates(agentId, root, dailyFilename, dailyContent, ownerKey);
 
             String reason = root.path("reason").asText("");
             log.info("[Memory] Memory updated for agent={}, conv={}: {}", agentId, conversationId, reason);
@@ -159,7 +184,8 @@ public class MemorySummarizationService {
         }
     }
 
-    private void applyUpdates(Long agentId, JsonNode root, String dailyFilename, String existingDailyContent) {
+    private void applyUpdates(Long agentId, JsonNode root, String dailyFilename,
+                              String existingDailyContent, String ownerKey) {
         // Daily entry: 追加模式
         JsonNode dailyNode = root.path("daily_entry");
         if (!dailyNode.isNull() && dailyNode.isTextual()) {
@@ -168,8 +194,8 @@ public class MemorySummarizationService {
                 String newContent = existingDailyContent.isEmpty()
                         ? "# " + LocalDate.now() + "\n\n" + entry
                         : existingDailyContent + "\n\n" + entry;
-                workspaceFileService.saveFile(agentId, dailyFilename, newContent);
-                log.info("[Memory] Appended daily entry to {} for agent={}", dailyFilename, agentId);
+                saveMemory(agentId, dailyFilename, newContent, ownerKey);
+                log.info("[Memory] Appended daily entry to {} for agent={}, owner={}", dailyFilename, agentId, ownerKey);
             }
         }
 
@@ -178,8 +204,8 @@ public class MemorySummarizationService {
         if (!memoryNode.isNull() && memoryNode.isTextual()) {
             String content = memoryNode.asText().trim();
             if (!content.isEmpty()) {
-                workspaceFileService.saveFile(agentId, "MEMORY.md", content);
-                log.info("[Memory] Updated MEMORY.md for agent={}", agentId);
+                saveMemory(agentId, "MEMORY.md", content, ownerKey);
+                log.info("[Memory] Updated MEMORY.md for agent={}, owner={}", agentId, ownerKey);
             }
         }
 
@@ -188,9 +214,43 @@ public class MemorySummarizationService {
         if (!profileNode.isNull() && profileNode.isTextual()) {
             String content = profileNode.asText().trim();
             if (!content.isEmpty()) {
-                workspaceFileService.saveFile(agentId, "PROFILE.md", content);
-                log.info("[Memory] Updated PROFILE.md for agent={}", agentId);
+                saveMemory(agentId, "PROFILE.md", content, ownerKey);
+                log.info("[Memory] Updated PROFILE.md for agent={}, owner={}", agentId, ownerKey);
             }
+        }
+
+        // Structured entries: route typed facts (especially volatile project /
+        // reference facts kept out of the always-on MEMORY.md) into structured
+        // memory so they become query-conditioned recallable, instead of being
+        // stranded in daily notes that only the agent's tools can reach.
+        applyStructuredEntries(agentId, root.path("structured_entries"), ownerKey);
+    }
+
+    private void applyStructuredEntries(Long agentId, JsonNode entriesNode, String ownerKey) {
+        if (entriesNode == null || !entriesNode.isArray() || entriesNode.isEmpty()) {
+            return;
+        }
+        int written = 0;
+        for (JsonNode entry : entriesNode) {
+            String type = entry.path("type").asText("").trim().toLowerCase();
+            String key = entry.path("key").asText("").trim();
+            String content = entry.path("content").asText("").trim();
+            if (!STRUCTURED_TYPES.contains(type) || key.isEmpty() || content.isEmpty()) {
+                log.debug("[Memory] Skipping invalid structured entry (type={}, key={}) for agent={}",
+                        type, key, agentId);
+                continue;
+            }
+            try {
+                structuredMemoryService.remember(agentId, type, key, content, "auto-summary", ownerKey);
+                written++;
+            } catch (Exception e) {
+                log.warn("[Memory] Failed to write structured entry '{}' (type={}) for agent={}: {}",
+                        key, type, agentId, e.getMessage());
+            }
+        }
+        if (written > 0) {
+            log.info("[Memory] Routed {} structured entr{} for agent={}",
+                    written, written == 1 ? "y" : "ies", agentId);
         }
     }
 
@@ -247,13 +307,38 @@ public class MemorySummarizationService {
         }
     }
 
-    private String readFileContentSafe(Long agentId, String filename) {
+    /**
+     * Read an owner-scoped memory file. When {@code ownerKey} denotes a real
+     * owner the row is looked up by (agent, filename, owner); otherwise it falls
+     * back to the shared file so cron / system extraction keeps working.
+     */
+    private String readFileContentSafe(Long agentId, String filename, String ownerKey) {
         try {
-            WorkspaceFileEntity file = workspaceFileService.getFile(agentId, filename);
+            WorkspaceFileEntity file = isPersonal(ownerKey)
+                    ? workspaceFileService.getMemoryFile(agentId, filename, ownerKey)
+                    : workspaceFileService.getFile(agentId, filename);
             return file != null && file.getContent() != null ? file.getContent() : "";
         } catch (Exception e) {
             return "";
         }
+    }
+
+    /**
+     * Persist extracted memory to the owner's PERSONAL bucket, or to the shared
+     * (TEAM) file when there is no real owner (cron / system).
+     */
+    private void saveMemory(Long agentId, String filename, String content, String ownerKey) {
+        if (isPersonal(ownerKey)) {
+            workspaceFileService.saveMemoryFile(agentId, filename, content, ownerKey);
+        } else {
+            workspaceFileService.saveFile(agentId, filename, content);
+        }
+    }
+
+    /** A real, isolatable owner — i.e. not null/blank and not the system bucket. */
+    private boolean isPersonal(String ownerKey) {
+        return ownerKey != null && !ownerKey.isBlank()
+                && !vip.mate.memory.identity.MemoryOwnerResolver.SYSTEM_OWNER.equals(ownerKey);
     }
 
     /**
@@ -292,8 +377,8 @@ public class MemorySummarizationService {
                 || msg.contains("速率限制") || msg.contains("Too Many Requests"));
     }
 
-    private boolean isInCooldown(Long agentId) {
-        Instant lastRun = lastRunTimes.get(agentId);
+    private boolean isInCooldown(String lockKey) {
+        Instant lastRun = lastRunTimes.get(lockKey);
         if (lastRun == null) return false;
         long cooldownSeconds = properties.getCooldownMinutes() * 60L;
         return Instant.now().isBefore(lastRun.plusSeconds(cooldownSeconds));

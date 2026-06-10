@@ -88,8 +88,8 @@ mateclaw:
 
 | Code | Meaning | Response |
 |------|---------|----------|
-| 401 | Token missing, expired, or invalid | `{"code": 401, "message": "Unauthorized"}` |
-| 403 | Valid token but insufficient permissions | `{"code": 403, "message": "Forbidden"}` |
+| 401 | Token missing, expired, or invalid | `{"code":401,"msg":"Token expired or invalid","data":null}` |
+| 403 | Valid token but insufficient permissions | `{"code":403,"msg":"Forbidden","data":null}` |
 
 Frontend handles both uniformly — redirect to login, clear stored tokens.
 
@@ -100,8 +100,8 @@ MateClaw ships with `admin` / `admin123`. **Change this immediately in any deplo
 ### Spring Security config
 
 - **Stateless sessions** — no server-side session; all state in the JWT
-- **Public endpoints** — `/api/v1/auth/login`, `/h2-console/**`, `/swagger-ui/**`
-- **Protected endpoints** — everything else under `/api/v1/**`
+- **Public API endpoints** — `GET /api/v1/settings/language`, `/api/v1/auth/login`, `/api/v1/chat/stream`, `/api/v1/chat/*/stop`, `/api/v1/agents/*/chat/stream`, `/api/v1/setup/**`, `/api/v1/channels/webhook/**`, `/api/v1/channels/webchat/**`, `/api/v1/talk/ws`, `/api/v1/files/generated/**`
+- **Protected endpoints** — everything else under `/api/**`
 - **CSRF disabled** — not needed for stateless JWT
 
 ---
@@ -202,6 +202,10 @@ curl -X POST http://localhost:18088/api/v1/security/guard/rules \
   }'
 ```
 
+### Credential-rule toggles (1.4.0)
+
+Credential rules now support **per-rule control** — each rule can be enabled/disabled individually, each rule carries its own decision (allow / deny / require_approval), and the entire guard rule set can be **exported and imported as JSON** for migrating between deployments or version-controlling your policy.
+
 ### Dangerous pattern detection
 
 In addition to user-defined rules, MateClaw's shell tool has built-in detection for patterns that are dangerous no matter what. `find -delete`, `rm -rf /`, piped downloads through `bash`, and similar patterns trigger elevated approval even if a rule would otherwise allow them.
@@ -243,13 +247,15 @@ Frontend shows approval card
 User clicks Approve or Reject
      │
      ▼
-POST /api/v1/approvals/{id}/resolve
+POST /api/v1/chat/stream with /approve or /deny
      │
      ├─ Approved → reload agent, replay tool call, continue reasoning
      └─ Rejected → send rejection as observation, continue reasoning
 ```
 
 The "replay" mechanism is important. When the agent resumes, it **doesn't re-reason from scratch** — it skips straight to the approved tool call, executes it, and continues from the observation. No duplicate LLM calls, no wasted tokens.
+
+The current web path has no write-style `POST /api/v1/approvals/{id}/resolve` endpoint. Approval and denial use the same SSE channel as normal chat so replay, persistence, and cancellation all stay on one lifecycle.
 
 ### The `mate_tool_approval` table
 
@@ -279,24 +285,28 @@ Pending approvals expire after a configurable timeout (default: 10 minutes). Exp
 
 MateClaw can notify through `channel/notification/` adapters — email, in-app alert, DingTalk/Feishu push. Configure in `Settings → Security & Approval → Notifications`.
 
-### Resolving via API
+### Current API surface
 
 ```bash
-# List pending
-curl http://localhost:18088/api/v1/approvals?status=pending \
+# Hydrate pending approvals after a page refresh
+curl http://localhost:18088/api/v1/chat/{conversationId}/pending-approvals \
   -H "Authorization: Bearer <token>"
 
-# Approve
-curl -X POST http://localhost:18088/api/v1/approvals/123/resolve \
+# Approve in the waiting conversation
+curl -N -X POST http://localhost:18088/api/v1/chat/stream \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
-  -d '{"decision": "approved"}'
+  -d '{"agentId":"1","conversationId":"conv-abc123","message":"/approve"}'
 
-# Reject with reason
-curl -X POST http://localhost:18088/api/v1/approvals/123/resolve \
+# Reject in the waiting conversation
+curl -N -X POST http://localhost:18088/api/v1/chat/stream \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
-  -d '{"decision": "rejected", "notes": "Not appropriate for this workspace"}'
+  -d '{"agentId":"1","conversationId":"conv-abc123","message":"/deny"}'
+
+# Manage auto-approval grants
+curl http://localhost:18088/api/v1/approval/grants \
+  -H "Authorization: Bearer <token>"
 ```
 
 ---
@@ -370,14 +380,20 @@ Workspaces are how MateClaw keeps multiple teams' data separate. Every agent, sk
 - **Memory files** — every agent's memory is under its workspace's directory
 - **Channels** — each channel belongs to a workspace
 
-### Roles
+### Roles (four-tier RBAC)
 
-| Role | Can do |
-|------|--------|
-| **Owner** | Everything, including deleting the workspace |
-| **Admin** | Everything except deleting/changing owner |
-| **Member** | Use agents, read/write wiki, create conversations |
-| **Viewer** | Read-only — see agents and KBs, can't create or modify |
+Capabilities are **additive** — a higher role inherits everything below it.
+
+| Role | Capabilities (added on top of the tier below) |
+|------|-----------------------------------------------|
+| **Viewer** | `chat`, `view:wiki`. Read-only. So that chat works, a Viewer can also read the active model and read an employee's workspace files. |
+| **Member** | Viewer + `view:memory`, `view:dashboard`, `manage:wiki`, `manage:agents` |
+| **Admin** | Member + `manage:skills`, `manage:channels`, `manage:models`, `manage:security`, `manage:settings` |
+| **Owner** | Same as Admin, plus owner-only: delete the workspace, transfer ownership |
+
+**The backend is the single source of truth for capabilities** — it holds a `RoleCapabilities` mapping, and the frontend never derives them locally. After a workspace switch, or on a capability-related 403, the frontend calls `GET /api/v1/workspaces/{id}/access`, which returns `memberRole`, `isGlobalAdmin`, `effectiveRole`, and `capabilities`.
+
+**Global admin vs workspace role**: `mate_user.role='admin'` is the system-wide global admin — it manages users, creates workspaces, and spans **all** workspaces with owner-equivalent power even where it isn't a member; `mate_workspace_member.role` is per-workspace. System-level endpoints (models / providers / OAuth / datasources, user management, workspace creation) require a global admin (`@RequireGlobalAdmin`); workspace-scoped endpoints (skills / tools / plugins) require a workspace role — reads need Member, writes need Admin.
 
 Full details in [Workspaces](./workspaces).
 

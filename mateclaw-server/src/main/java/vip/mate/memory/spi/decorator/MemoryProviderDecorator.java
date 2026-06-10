@@ -24,6 +24,7 @@ public abstract class MemoryProviderDecorator implements MemoryProvider {
     @Override public boolean isAvailable() { return delegate.isAvailable(); }
     @Override public String systemPromptBlock(Long agentId) { return delegate.systemPromptBlock(agentId); }
     @Override public String prefetch(Long agentId, String userQuery) { return delegate.prefetch(agentId, userQuery); }
+    @Override public String prefetch(Long agentId, String userQuery, String ownerKey) { return delegate.prefetch(agentId, userQuery, ownerKey); }
     @Override public void syncTurn(Long agentId, String conversationId, String userMessage, String assistantReply) {
         delegate.syncTurn(agentId, conversationId, userMessage, assistantReply);
     }

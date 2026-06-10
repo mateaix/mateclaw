@@ -50,6 +50,8 @@ One of the questions MateClaw tries to answer with its chat UI is: **should you 
 
 Trust is earned by showing the work. MateClaw shows the work.
 
+**Execution-plan & tool-call detail viewer (1.5.0).** Every plan step and every tool-call row gets a "view details" icon on the right. Click it for a frosted-glass dialog showing the **full request arguments and response output** — the parts the inline preview truncates — with copy buttons for request and response, and a status badge (in progress / completed / failed / pending). The data lives in message metadata, so plan steps and tool calls stay readable after a page reload.
+
 ---
 
 ## Multi-channel realtime sync
@@ -86,6 +88,10 @@ Upload limits, default:
 
 Images handed to a vision-capable model get attached for visual understanding. PDFs and DOCX files go through text extraction (with OCR fallback for scanned material). Everything the agent reads lands in its context for that turn.
 
+::: tip Tool-generated files: download links survive restarts (1.5.0, #243)
+Files a worker generates via tools (documents / images / audio…) are now **persisted to disk** under `data/generated-files/`, with a 7-day retention window + a 6-hour cleanup sweep and an in-memory LRU on top — download links keep working after a restart and are no longer bounded by the old 10-minute in-memory window. The frontend intercepts `/api/v1/files/generated/{id}` downloads via a global click delegator: success goes through an authenticated fetch → blob download; failure (404/410/expired) just shows a toast, **so a dead link no longer wedges the whole page**.
+:::
+
 ### Primary model can't see images? "Multimodal sidecar" routing
 
 ::: tip Added in 1.3.0
@@ -119,7 +125,7 @@ This is the thirty-second version. The ninety-second version is in [Agents](./ag
 You type
    │
    ▼
-POST /api/v1/chat/{agentId}/message          ← or SSE for streaming
+POST /api/v1/chat?agentId={id}                ← or SSE for streaming (POST /api/v1/chat/stream)
    │
    ▼
 Conversation Manager                          ← load/create conversation, append user message
@@ -171,6 +177,62 @@ A conversation is a sequence of messages scoped to a single agent and a single u
 
 The segment representation is what powers the progressive display. It also makes the database the source of truth — the UI can reconstruct any past response exactly as it looked while streaming.
 
+### Per-conversation model selection
+
+::: tip Added in 1.4.0
+The model selector in the chat header now binds a model **to the conversation**, not as a global switch. See [issue #150](https://github.com/matevip/mateclaw/issues/150).
+:::
+
+Switching the model in the header affects **only this conversation**: the choice is stored on the conversation and takes effect starting with the **next message**. A conversation you never set explicitly falls back to the workspace default model. The runtime model indicator stays in sync with whatever is pinned on the conversation — what you see is what the next turn actually uses.
+
+This isolation also makes model config more robust: **a single bad model id no longer takes its whole provider offline**. The broken conversation only affects itself; everything else keeps running.
+
+### Conversation list management
+
+::: tip Added in 1.4.0
+The conversation sidebar grew from a plain history list into an actionable operations panel. See [issue #144](https://github.com/matevip/mateclaw/issues/144).
+:::
+
+- **Pin / unpin** — from each row's `⋮` overflow menu. Important threads stay at the top in a "Pinned" group.
+- **Multi-select batch delete** — enter multi-select mode and a checkbox appears on each row; tick several and delete them in one go.
+- **Filter by employee** — when the workspace has **2 or more employees**, a dropdown appears at the top of the sidebar to filter the list by employee (hidden with a single employee, so there's no pointless control).
+- **Status dots** — read each conversation's state at a glance: currently generating (blue pulse), an active goal in progress, or unread content.
+
+### Global keyboard shortcuts
+
+::: tip Added in 1.4.0
+Two global shortcuts let you jump between conversations without touching the mouse. The hint lives in the sidebar footer.
+:::
+
+| Shortcut | Action |
+|----------|--------|
+| `Ctrl/Cmd + K` | Open the employee picker to jump to any chat |
+| `Ctrl/Cmd + N` | Start a new conversation |
+
+`Ctrl+N` does not fire while you're typing in an input or textarea — its native behavior is left alone.
+
+### Session Admin page
+
+::: tip Added in 1.4.0
+When conversations outgrow the sidebar, reach a dedicated admin page from the chat header overflow menu ("Session Admin"), at `/sessions`.
+:::
+
+This page exists for the "lots of conversations" case:
+
+- **Server-side pagination** — no more cramming thousands of conversations into the sidebar.
+- **Search by title or ID** — filter as you type to locate a specific conversation.
+- **Depth-styled card layout** — one card per conversation, denser than the sidebar.
+- **Inline editable model chip** — each row shows and switches that conversation's model directly, without entering it first.
+- **Back button** — one click returns you to the chat console.
+
+### Shared employee picker
+
+::: tip Added in 1.4.0
+A single shared picker dialog is reused in three places: the sidebar, the `Ctrl+K` shortcut, and the new-conversation modal.
+:::
+
+All three entry points open the **same dialog** with identical behavior. Agent icons inside it are **color-coded per employee**, so in a multi-employee workspace you can tell who's who at a glance.
+
 ---
 
 ## Context window management
@@ -214,30 +276,48 @@ Go deeper in [Channels](./channels).
 ### Send a message
 
 ```bash
-curl -X POST http://localhost:18088/api/v1/chat/1/message \
+curl -X POST 'http://localhost:18088/api/v1/chat?agentId=1' \
   -H "Authorization: Bearer YOUR_JWT_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-    "content": "What is the current time in Tokyo?",
+    "message": "What is the current time in Tokyo?",
     "conversationId": "conv-abc123"
   }'
 ```
 
-Omit `conversationId` to start a new conversation.
+Omit `conversationId` to start a new conversation. `agentId` is a query parameter, **not** a path segment.
 
 ### SSE streaming
 
-```javascript
-const eventSource = new EventSource(
-  '/api/v1/chat/1/stream?conversationId=conv-abc123',
-  { headers: { 'Authorization': 'Bearer YOUR_JWT_TOKEN' } }
-);
+The SSE endpoint is `POST /api/v1/chat/stream` with `agentId` in the JSON body. Browser-native `EventSource` only supports GET, so integrators should use `fetch()` and read the response stream:
 
-eventSource.onmessage = (event) => {
-  const data = JSON.parse(event.data);
-  // handle segment
-};
+```javascript
+const resp = await fetch('/api/v1/chat/stream', {
+  method: 'POST',
+  headers: {
+    'Authorization': 'Bearer YOUR_JWT_TOKEN',
+    'Content-Type': 'application/json',
+    'Accept': 'text/event-stream',
+  },
+  body: JSON.stringify({
+    agentId: 1,
+    message: 'What is the current time in Tokyo?',
+    conversationId: 'conv-abc123',
+  }),
+});
+
+const reader = resp.body.getReader();
+const decoder = new TextDecoder();
+let buf = '';
+while (true) {
+  const { value, done } = await reader.read();
+  if (done) break;
+  buf += decoder.decode(value, { stream: true });
+  // Split on SSE `\n\n` event boundaries and dispatch segments
+}
 ```
+
+See `mateclaw-ui/src/composables/chat/useChat.ts` for a full client implementation.
 
 ### SSE event types
 

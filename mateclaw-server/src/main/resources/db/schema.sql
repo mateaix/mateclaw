@@ -30,10 +30,12 @@ CREATE TABLE IF NOT EXISTS mate_agent (
     tags           VARCHAR(256),
     workspace_id   BIGINT       NOT NULL DEFAULT 1,
     default_thinking_level VARCHAR(32) DEFAULT NULL,
+    primary_kb_id  BIGINT       DEFAULT NULL,
     create_time    DATETIME     NOT NULL,
     update_time    DATETIME     NOT NULL,
     deleted        INT          NOT NULL DEFAULT 0
 );
+CREATE INDEX IF NOT EXISTS idx_agent_primary_kb ON mate_agent(primary_kb_id);
 
 -- 模型配置表
 CREATE TABLE IF NOT EXISTS mate_model_config (
