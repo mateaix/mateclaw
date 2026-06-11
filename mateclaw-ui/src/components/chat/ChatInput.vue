@@ -67,6 +67,9 @@
         <span class="approval-bar__tool">{{ getToolLabel(pendingApproval.toolName) }}</span>
         <span class="approval-bar__label">{{ t('chat.approvalExecute') }}</span>
       </div>
+      <!-- Show WHAT is being approved (command / target path) so the user can
+           judge a destructive call before allowing it. -->
+      <code v-if="approvalDetail" class="approval-bar__detail" :title="approvalDetail">{{ approvalDetail }}</code>
       <div class="approval-bar__actions">
         <button
           type="button"
@@ -332,6 +335,34 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 const { getToolLabel } = useToolLabel()
+
+/**
+ * The most decision-relevant part of the pending tool call, shown so the user
+ * sees WHAT they are approving (e.g. the shell command or the target file path)
+ * rather than just the tool name. Parses the raw arguments JSON and prefers the
+ * command / path fields; falls back to the raw arguments string.
+ */
+const approvalDetail = computed<string | null>(() => {
+  const raw = props.pendingApproval?.arguments
+  if (!raw) return null
+  let detail = ''
+  try {
+    const parsed = JSON.parse(raw)
+    detail = parsed.command || parsed.filePath || parsed.file_path || parsed.path || ''
+    if (!detail) {
+      // No known key — show a compact key=value join of string fields.
+      detail = Object.entries(parsed)
+        .filter(([, v]) => typeof v === 'string' || typeof v === 'number')
+        .map(([k, v]) => `${k}: ${v}`)
+        .join('  ')
+    }
+  } catch {
+    detail = raw
+  }
+  detail = String(detail).trim()
+  if (!detail) return null
+  return detail.length > 300 ? detail.slice(0, 300) + '…' : detail
+})
 
 // 内部状态
 const containerRef = ref<HTMLElement | null>(null)
@@ -842,7 +873,8 @@ defineExpose({
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  flex-wrap: wrap;
+  gap: 8px 12px;
   background: var(--mc-input-bg, #ffffff);
   border-radius: 16px;
   padding: 8px 8px 8px 12px;
@@ -850,7 +882,25 @@ defineExpose({
   min-height: 50px;
 }
 
+.approval-bar__detail {
+  order: 3;
+  flex-basis: 100%;
+  margin: 0;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--mc-code-bg, rgba(217, 119, 87, 0.08));
+  color: var(--mc-text-primary, #1e293b);
+  font-family: var(--mc-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 96px;
+  overflow-y: auto;
+}
+
 .approval-bar__info {
+  order: 1;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -887,6 +937,7 @@ defineExpose({
 }
 
 .approval-bar__actions {
+  order: 2;
   display: flex;
   gap: 8px;
   align-items: center;

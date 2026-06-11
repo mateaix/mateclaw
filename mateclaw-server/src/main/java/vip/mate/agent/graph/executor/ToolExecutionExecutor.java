@@ -988,7 +988,10 @@ public class ToolExecutionExecutor {
         ToolInvocationContext guardCtx = ToolInvocationContext.of(
                 toolName, java.util.Map.of(), arguments,
                 conversationId, agentId,
-                /*channelType*/ null, requesterId, workspaceId);
+                /*channelType*/ null, requesterId, workspaceId)
+                // Carry the active workspace base path so a guardian can enforce
+                // the filesystem boundary before approval (issue #313).
+                .withWorkspaceBasePath(origin != null ? origin.workspaceBasePath() : null);
 
         if (toolGuardService != null) {
             GuardEvaluation evaluation = toolGuardService.evaluate(guardCtx);

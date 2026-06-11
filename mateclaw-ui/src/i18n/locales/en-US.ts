@@ -2091,6 +2091,13 @@ export default {
     kbDescription: 'Description',
     kbDescPlaceholder: 'Briefly describe the knowledge base purpose',
     rawMaterials: 'Raw Materials',
+    sources: {
+      tab: 'Sources',
+      autoSync: 'Auto-sync',
+      autoSyncInterval: 'every {sec}s',
+      autoSyncGlobalOffHint: 'Auto-sync needs the global switch enabled by ops',
+      toggleFailed: 'Failed to toggle auto-sync',
+    },
     pages: 'Wiki Pages',
     config: 'Config',
     transformations: {

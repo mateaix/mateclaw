@@ -112,7 +112,7 @@ class ApprovalGrantResolverTest {
     void null_workspace_id_falls_back_to_human() {
         ToolInvocationContext ctx = new ToolInvocationContext(
                 "tool", java.util.Map.of(), "touch /tmp/x", "conv-1", "agent-1",
-                null, "user-1", /* workspaceId */ null);
+                null, "user-1", /* workspaceId */ null, /* workspaceBasePath */ null);
         var r = resolver.tryAutoApprove(ctx, evaluationWith(GuardSeverity.MEDIUM, "shell.exec"));
 
         assertThat(r.isRequiresHuman()).isTrue();
@@ -229,7 +229,8 @@ class ApprovalGrantResolverTest {
     private static ToolInvocationContext ctxWithArgs(String args) {
         return new ToolInvocationContext(
                 "execute_shell_command", java.util.Map.of(), args,
-                "conv-1", "agent-1", null, "user-1", /* workspaceId */ 100L);
+                "conv-1", "agent-1", null, "user-1", /* workspaceId */ 100L,
+                /* workspaceBasePath */ null);
     }
 
     /** Builds a minimal GuardFinding using the 10-arg constructor (no decision / metadata). */

@@ -33,7 +33,14 @@ spring:
 # Set MATE_WIKI_ALLOWED_SOURCE_ROOTS in .env (comma-separated paths):
 #   MATE_WIKI_ALLOWED_SOURCE_ROOTS=/data/wiki,/opt/docs
 # The default profile (H2 / desktop / single-tenant) leaves this off.
+# Source watcher master switch (ops gate). Off by default; operators opt in.
+# AND semantics: a KB is auto-scanned only when this global switch AND that
+# KB's own auto-sync toggle are both on. Manual scans are unaffected.
+#   MATE_WIKI_WATCHER_ENABLED=true
+#   MATE_WIKI_WATCHER_INTERVAL_MS=300000   # scan interval, default 5 min
 mate:
   wiki:
     require-allowed-roots: true
     allowed-source-roots: ${MATE_WIKI_ALLOWED_SOURCE_ROOTS:}
+    watcher-enabled: ${MATE_WIKI_WATCHER_ENABLED:false}
+    watcher-interval-ms: ${MATE_WIKI_WATCHER_INTERVAL_MS:300000}

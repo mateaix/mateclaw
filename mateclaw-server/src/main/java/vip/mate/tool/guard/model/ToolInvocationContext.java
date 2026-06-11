@@ -21,7 +21,8 @@ public record ToolInvocationContext(
         String agentId,
         String channelType,
         String userId,
-        Long workspaceId
+        Long workspaceId,
+        String workspaceBasePath
 ) {
 
     /**
@@ -32,7 +33,7 @@ public record ToolInvocationContext(
                                            String conversationId, String agentId) {
         return new ToolInvocationContext(
                 toolName, Map.of(), rawArguments, conversationId, agentId,
-                null, null, null);
+                null, null, null, null);
     }
 
     /**
@@ -48,6 +49,18 @@ public record ToolInvocationContext(
                 toolName,
                 parameters != null ? parameters : Map.of(),
                 rawArguments, conversationId, agentId,
-                channelType, userId, workspaceId);
+                channelType, userId, workspaceId, null);
+    }
+
+    /**
+     * Return a copy carrying the active workspace base path. Used by the guard
+     * engine so a guardian can enforce the workspace filesystem boundary (e.g.
+     * refuse a shell command that escapes it or deletes its root) <em>before</em>
+     * the approval prompt, rather than only at execution time.
+     */
+    public ToolInvocationContext withWorkspaceBasePath(String basePath) {
+        return new ToolInvocationContext(
+                toolName, parameters, rawArguments, conversationId, agentId,
+                channelType, userId, workspaceId, basePath);
     }
 }

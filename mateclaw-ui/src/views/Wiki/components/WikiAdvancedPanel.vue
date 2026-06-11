@@ -107,41 +107,7 @@
       </template>
     </section>
 
-    <!-- ===================== REQ-4: Source Watcher ===================== -->
-    <section v-else-if="section === 'watcher'" class="adv-section">
-      <header class="adv-head">
-        <div>
-          <h3>{{ t('wiki.adv.watcher.title') }}</h3>
-          <p class="adv-desc">{{ t('wiki.adv.watcher.desc') }}</p>
-        </div>
-        <button class="btn-ghost" @click="loadWatcher" :disabled="watcher.busy">{{ t('common.refresh') }}</button>
-      </header>
-      <div class="kv-grid">
-        <div class="kv"><span>{{ t('wiki.adv.watcher.enabled') }}</span><b>{{ watcher.data.watcherEnabled ? t('common.yes') : t('common.no') }}</b></div>
-        <div class="kv"><span>{{ t('wiki.adv.watcher.active') }}</span><b>{{ watcher.data.active ? t('common.yes') : t('common.no') }}</b></div>
-        <div class="kv"><span>{{ t('wiki.adv.watcher.interval') }}</span><b>{{ watcher.data.intervalMs ? (watcher.data.intervalMs / 1000) + 's' : '—' }}</b></div>
-        <div class="kv"><span>{{ t('wiki.adv.watcher.sourceType') }}</span><b>{{ watcher.data.sourceType || '—' }}</b></div>
-      </div>
-      <label class="field-label">{{ t('wiki.adv.watcher.directory') }}</label>
-      <textarea
-        v-model="watcher.dir"
-        class="code-editor dir-editor"
-        spellcheck="false"
-        :placeholder="t('wiki.adv.watcher.dirHint')"
-      ></textarea>
-      <div class="adv-actions">
-        <button class="btn-ghost" @click="saveDirectory" :disabled="watcher.busy">{{ t('common.save') }}</button>
-      </div>
-      <p v-if="watcher.data.availableSourceTypes?.length" class="adv-desc">
-        {{ t('wiki.adv.watcher.availableTypes') }}: {{ watcher.data.availableSourceTypes.join(', ') }}
-      </p>
-      <div class="adv-actions">
-        <button class="btn-primary" @click="triggerScan" :disabled="watcher.busy || !watcher.data.active">{{ t('wiki.adv.watcher.scanNow') }}</button>
-      </div>
-      <div v-if="watcher.lastScan" class="issue-box ok">
-        {{ t('wiki.adv.watcher.scanResult', { scanned: watcher.lastScan.scanned, added: watcher.lastScan.added, skipped: watcher.lastScan.skipped, errors: watcher.lastScan.errors }) }}
-      </div>
-    </section>
+    <!-- Source-watcher moved to the unified Sources tab (RawMaterialPanel). -->
 
     <!-- ===================== REQ-5: Pipeline ===================== -->
     <section v-else-if="section === 'pipeline'" class="adv-section">
@@ -227,12 +193,11 @@ const agentStore = useAgentStore()
 const kbId = computed(() => (store.currentKB ? String(store.currentKB.id) : ''))
 const agents = computed(() => agentStore.agents)
 
-const section = ref<'profile' | 'layers' | 'permissions' | 'watcher' | 'pipeline'>('profile')
+const section = ref<'profile' | 'layers' | 'permissions' | 'pipeline'>('profile')
 const sections = computed(() => [
   { key: 'profile' as const, label: t('wiki.adv.profile.tab') },
   { key: 'layers' as const, label: t('wiki.adv.layers.tab') },
   { key: 'permissions' as const, label: t('wiki.adv.perm.tab') },
-  { key: 'watcher' as const, label: t('wiki.adv.watcher.tab') },
   { key: 'pipeline' as const, label: t('wiki.adv.pipeline.tab') },
 ])
 
@@ -243,7 +208,6 @@ function switchSection(key: typeof section.value) {
   loaded[key] = true
   if (key === 'layers') loadLayers()
   else if (key === 'permissions') { if (agents.value.length === 0) agentStore.fetchAgents() }
-  else if (key === 'watcher') loadWatcher()
   else if (key === 'pipeline') loadPipelines()
 }
 
@@ -315,31 +279,7 @@ async function deletePermission(row: any) {
 function flag(v: any) { return v ? '✓' : '·' }
 function policyClass(p?: string) { return p === 'allow' ? 'badge-ok' : p === 'deny' ? 'badge-warn' : 'badge-muted' }
 
-// ---- REQ-4 Watcher ----
-const watcher = reactive({ data: {} as any, dir: '', lastScan: null as any, busy: false })
-async function loadWatcher() {
-  if (!kbId.value) return
-  watcher.busy = true
-  try {
-    watcher.data = unwrap(await wikiApi.getSourceWatcher(kbId.value)) || {}
-    watcher.dir = watcher.data.sourceDirectory || ''
-  } catch (e: any) { mcToast.error(errMsg(e, 'Load watcher failed')) } finally { watcher.busy = false }
-}
-async function saveDirectory() {
-  watcher.busy = true
-  try {
-    await wikiApi.setSourceDirectory(kbId.value, watcher.dir)
-    mcToast.success(t('common.saved'))
-    await loadWatcher()
-  } catch (e: any) { mcToast.error(errMsg(e, 'Save failed')) } finally { watcher.busy = false }
-}
-async function triggerScan() {
-  watcher.busy = true
-  try {
-    watcher.lastScan = unwrap(await wikiApi.triggerSourceWatcher(kbId.value))
-    mcToast.success(t('wiki.adv.watcher.scanDone'))
-  } catch (e: any) { mcToast.error(errMsg(e, 'Scan failed')) } finally { watcher.busy = false }
-}
+// REQ-4 Source-watcher moved to the unified Sources tab (RawMaterialPanel).
 
 // ---- REQ-5 Pipeline ----
 const pipeline = reactive({ defs: [] as any[], config: '', issues: [] as string[], runsFor: null as any, runs: [] as any[], busy: false })

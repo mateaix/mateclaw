@@ -72,6 +72,26 @@
       </div>
     </div>
 
+    <!-- Auto-sync (per-KB source watcher): periodically scans the directory above -->
+    <div v-if="canManageWiki" class="auto-sync-row">
+      <label class="auto-sync-toggle" :class="{ disabled: !watcher.globalEnabled || watcher.busy }">
+        <input
+          type="checkbox"
+          :checked="watcher.kbEnabled"
+          :disabled="!watcher.globalEnabled || watcher.busy"
+          @change="toggleWatcher(($event.target as HTMLInputElement).checked)"
+        />
+        <span>{{ t('wiki.sources.autoSync') }}</span>
+      </label>
+      <span v-if="watcher.globalEnabled && watcher.kbEnabled" class="auto-sync-meta">
+        {{ t('wiki.sources.autoSyncInterval', { sec: Math.round(watcher.intervalMs / 1000) }) }}
+        <template v-if="watcher.sourceType"> · {{ watcher.sourceType }}</template>
+      </span>
+      <span v-else-if="!watcher.globalEnabled" class="auto-sync-hint">
+        {{ t('wiki.sources.autoSyncGlobalOffHint') }}
+      </span>
+    </div>
+
     <!-- Raw materials list -->
     <div class="raw-list">
       <h4 class="raw-list-title">
@@ -502,6 +522,48 @@ const dirPath = ref(store.currentKB?.sourceDirectory || '')
 const scanning = ref(false)
 const scanResult = ref<{ scanned: number; added: number; skipped: number; errors?: string[] } | null>(null)
 
+// ─── Per-KB auto-sync (source watcher) ────────────────────────────────────────
+// Auto-sync periodically scans the directory above. It runs only when the
+// server-global master switch (watcher.globalEnabled, ops-controlled) AND this
+// KB's toggle (watcher.kbEnabled) are both on. When the global switch is off the
+// toggle is disabled with a hint — there's nothing a non-ops user can do here.
+const watcher = reactive({
+  globalEnabled: false,
+  kbEnabled: false,
+  intervalMs: 0,
+  sourceType: null as string | null,
+  busy: false,
+})
+async function loadWatcher(kbId: number) {
+  try {
+    const res: any = await wikiApi.getSourceWatcher(kbId)
+    const d = res?.data ?? res
+    watcher.globalEnabled = !!d.watcherEnabled
+    watcher.kbEnabled = !!d.kbWatcherEnabled
+    watcher.intervalMs = d.intervalMs || 0
+    watcher.sourceType = d.sourceType || null
+  } catch { /* leave defaults; auto-sync UI just shows disabled */ }
+}
+async function toggleWatcher(next: boolean) {
+  if (!store.currentKB) return
+  watcher.busy = true
+  try {
+    await wikiApi.setWatcherEnabled(store.currentKB.id, next)
+    watcher.kbEnabled = next
+    mcToast.success(t('common.saved'))
+  } catch (e: any) {
+    mcToast.error(e?.response?.data?.message || t('wiki.sources.toggleFailed'))
+  } finally {
+    watcher.busy = false
+  }
+}
+watch(() => store.currentKB?.id, (id) => {
+  if (id) {
+    dirPath.value = store.currentKB?.sourceDirectory || ''
+    void loadWatcher(id as number)
+  }
+}, { immediate: true })
+
 // ─── Drag-over state ──────────────────────────────────────────────────────────
 const { isDragging, onDragEnter, onDragLeave, onDrop: handleDrop } = useFileDrop(uploadDroppedFiles)
 
@@ -707,6 +769,14 @@ async function handleScanDir() {
 
 /* Directory scan */
 .dir-scan-row { display: flex; gap: 10px; align-items: center; }
+
+/* Auto-sync (per-KB source watcher) */
+.auto-sync-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: -4px; }
+.auto-sync-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--mc-text-secondary); cursor: pointer; }
+.auto-sync-toggle.disabled { opacity: 0.55; cursor: not-allowed; }
+.auto-sync-toggle input { cursor: inherit; }
+.auto-sync-meta { font-size: 12px; color: var(--mc-text-tertiary); font-variant-numeric: tabular-nums; }
+.auto-sync-hint { font-size: 12px; color: var(--mc-text-tertiary); }
 .dir-input-wrap { flex: 1; display: flex; align-items: center; gap: 8px; padding: 8px 12px; border: 1px solid var(--mc-border); border-radius: 12px; background: var(--mc-bg-elevated); color: var(--mc-text-tertiary); }
 .dir-input-wrap:focus-within { border-color: var(--mc-primary); box-shadow: 0 0 0 2px rgba(217,119,87,0.1); }
 .dir-input { flex: 1; border: none; background: transparent; font-size: 13px; color: var(--mc-text-primary); outline: none; }
