@@ -13,7 +13,10 @@ import io.modelcontextprotocol.spec.McpSchema;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.mcp.SyncMcpToolCallbackProvider;
 import org.springframework.ai.tool.ToolCallback;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Component;
+import vip.mate.tool.mcp.event.McpConnectionLostEvent;
+import vip.mate.tool.mcp.event.McpServerChangedEvent;
 import vip.mate.tool.mcp.model.McpServerEntity;
 
 import jakarta.annotation.PreDestroy;
@@ -50,6 +53,21 @@ public class McpClientManager {
 
     /** serverId -> discovered tools metadata */
     private final ConcurrentHashMap<Long, List<McpSchema.Tool>> toolsCache = new ConcurrentHashMap<>();
+
+    /**
+     * serverId -> last successfully-built, prefix-wrapped tool callbacks.
+     * Served as a fallback when a live {@code listTools()} momentarily fails
+     * (e.g. the upstream server just restarted), so the agent keeps seeing the
+     * MCP tools instead of dropping the whole server and falling back to
+     * non-MCP tools. Refreshed on every successful collection.
+     */
+    private final ConcurrentHashMap<Long, List<ToolCallback>> lastGoodCallbacks = new ConcurrentHashMap<>();
+
+    private final ApplicationEventPublisher eventPublisher;
+
+    public McpClientManager(ApplicationEventPublisher eventPublisher) {
+        this.eventPublisher = eventPublisher;
+    }
 
     /** serverId -> connection result info */
     private final ConcurrentHashMap<Long, ConnectionResult> connectionResults = new ConcurrentHashMap<>();
@@ -102,6 +120,7 @@ public class McpClientManager {
             McpSyncClient old = clients.remove(serverId);
             toolsCache.remove(serverId);
             connectionResults.remove(serverId);
+            lastGoodCallbacks.remove(serverId);
             if (old != null) {
                 closeClientSafely(serverId, old);
             }
@@ -119,7 +138,7 @@ public class McpClientManager {
         long start = System.currentTimeMillis();
         McpSyncClient testClient = null;
         try {
-            testClient = buildClient(server);
+            testClient = buildClient(server, false);
             testClient.initialize();
             List<McpSchema.Tool> tools = testClient.listTools().tools();
             long latency = System.currentTimeMillis() - start;
@@ -170,15 +189,44 @@ public class McpClientManager {
             try {
                 SyncMcpToolCallbackProvider provider = new SyncMcpToolCallbackProvider(entry.getValue());
                 ToolCallback[] cbs = provider.getToolCallbacks();
-                if (cbs == null || cbs.length == 0) {
+                if (cbs != null && cbs.length > 0) {
+                    List<ToolCallback> wrapped = wrapServerCallbacks(serverId, cbs);
+                    lastGoodCallbacks.put(serverId, wrapped);
+                    allCallbacks.addAll(wrapped);
                     continue;
                 }
-                allCallbacks.addAll(wrapServerCallbacks(serverId, cbs));
+                // Live call succeeded but returned nothing. This can be a
+                // transient post-restart state while the SDK re-initializes;
+                // keep serving the last good snapshot rather than dropping the
+                // server. A server that legitimately has no tools simply has no
+                // snapshot and contributes nothing — same as before.
+                addSnapshot(allCallbacks, serverId);
             } catch (Exception e) {
-                log.warn("Failed to get tool callbacks from MCP server {}: {}", serverId, e.getMessage());
+                // A live listTools() failure usually means the upstream server
+                // restarted and the held connection went stale. Instead of
+                // dropping the whole server (which makes the agent fall back to
+                // non-MCP tools), keep serving the last known-good callbacks and
+                // ask the service layer to reconnect. For streamable_http the
+                // stale callbacks self-heal on call via the SDK's lazy
+                // re-initialization; for stdio/sse the async reconnect rebuilds
+                // them and clears the agent cache.
+                log.warn("MCP server {} listTools failed; serving cached snapshot and requesting reconnect: {}",
+                        serverId, e.getMessage());
+                eventPublisher.publishEvent(new McpConnectionLostEvent(serverId, "listTools-failed"));
+                addSnapshot(allCallbacks, serverId);
             }
         }
         return allCallbacks;
+    }
+
+    /** Append the last known-good callbacks for {@code serverId}, if any. */
+    private void addSnapshot(List<ToolCallback> out, long serverId) {
+        List<ToolCallback> snapshot = lastGoodCallbacks.get(serverId);
+        if (snapshot != null && !snapshot.isEmpty()) {
+            log.debug("Serving {} cached MCP tool callbacks for server {} while it reconnects",
+                    snapshot.size(), serverId);
+            out.addAll(snapshot);
+        }
     }
 
     /**
@@ -250,6 +298,7 @@ public class McpClientManager {
         clients.clear();
         toolsCache.clear();
         connectionResults.clear();
+        lastGoodCallbacks.clear();
         // 不清除 serverLocks：closeAll 后 server 可能被重新 connect，
         // 保留 lock 对象确保后续操作仍有互斥保护
     }
@@ -260,7 +309,7 @@ public class McpClientManager {
         long start = System.currentTimeMillis();
         McpSyncClient newClient = null;
         try {
-            newClient = buildClient(server);
+            newClient = buildClient(server, true);
             newClient.initialize();
 
             // Discover tools
@@ -301,9 +350,20 @@ public class McpClientManager {
         }
     }
 
-    private McpSyncClient buildClient(McpServerEntity server) {
+    /**
+     * Build a sync MCP client for {@code server}.
+     *
+     * @param managed {@code true} for long-lived clients placed in the active
+     *                pool (connect/replace), {@code false} for throwaway clients
+     *                (testConnection). Only managed clients arm the runtime
+     *                self-healing hooks — a server-pushed {@code tools/list_changed}
+     *                notification refreshes agent graphs, and a stdio subprocess
+     *                death requests a reconnect. A throwaway test client must stay
+     *                side-effect free.
+     */
+    private McpSyncClient buildClient(McpServerEntity server, boolean managed) {
         McpClientTransport transport = switch (server.getTransport()) {
-            case "stdio" -> buildStdioTransport(server);
+            case "stdio" -> buildStdioTransport(server, managed);
             case "sse" -> buildSseTransport(server);
             case "streamable_http" -> buildStreamableHttpTransport(server);
             default -> throw new IllegalArgumentException("Unsupported transport: " + server.getTransport());
@@ -314,12 +374,19 @@ public class McpClientManager {
         Duration requestTimeout = Duration.ofSeconds(
                 server.getReadTimeoutSeconds() != null ? server.getReadTimeoutSeconds() : 60);
 
-        return McpClient.sync(transport)
-                .requestTimeout(requestTimeout)
-                .build();
+        var spec = McpClient.sync(transport).requestTimeout(requestTimeout);
+        if (managed) {
+            // Server-pushed tool-list changes (tools/list_changed) refresh the
+            // agent graphs without any polling — the SDK invokes this consumer
+            // on the client's inbound notification thread.
+            Long serverId = server.getId();
+            spec.toolsChangeConsumer(tools ->
+                    eventPublisher.publishEvent(new McpServerChangedEvent("mcp-tools-changed:" + serverId)));
+        }
+        return spec.build();
     }
 
-    private StdioClientTransport buildStdioTransport(McpServerEntity server) {
+    private StdioClientTransport buildStdioTransport(McpServerEntity server, boolean managed) {
         String command = normalizeStdioCommand(server.getCommand());
         ServerParameters.Builder builder = ServerParameters.builder(command);
 
@@ -341,11 +408,19 @@ public class McpClientManager {
             builder.env(expandedEnv);
         }
 
-        StdioClientTransport transport = new CwdAwareStdioClientTransport(
+        CwdAwareStdioClientTransport transport = new CwdAwareStdioClientTransport(
                 builder.build(),
                 McpJsonMapper.createDefault(),
                 expandEnvVars(server.getCwd()));
         transport.setStdErrorHandler(line -> log.info("MCP stdio stderr [{}]: {}", server.getName(), line));
+        if (managed) {
+            // stdio is the one transport the MCP SDK cannot self-heal: a dead
+            // subprocess is only recoverable by respawning it, which lazy
+            // re-initialization never does. Request a reconnect on unexpected exit.
+            Long serverId = server.getId();
+            transport.setOnUnexpectedExit(() ->
+                    eventPublisher.publishEvent(new McpConnectionLostEvent(serverId, "stdio-process-exited")));
+        }
         return transport;
     }
 

@@ -146,6 +146,15 @@ mateclaw:
       #   an admin can move a noisy one to extension per server.
       # legacy: advertise every bound tool up front (pre-disclosure behavior).
       mode: ${MATECLAW_TOOLS_DISCLOSURE_MODE:progressive}
+  workspace:
+    sandbox:
+      # Global fallback filesystem boundary for file/shell tools. When a
+      # conversation has no per-workspace base path configured, operations are
+      # confined to this root instead of running unconstrained against the whole
+      # filesystem (fail-closed default). Set enabled=false to restore the legacy
+      # unconstrained behaviour for unconfigured conversations.
+      enabled: ${MATECLAW_WORKSPACE_SANDBOX_ENABLED:true}
+      root: ${MATECLAW_WORKSPACE_SANDBOX_ROOT:${user.dir}/data/workspace}
   skill:
     workspace:
       # Skill workspace root. Override with MATECLAW_SKILL_WORKSPACE_ROOT to

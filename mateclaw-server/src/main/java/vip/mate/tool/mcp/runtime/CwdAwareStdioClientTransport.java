@@ -49,6 +49,12 @@ public class CwdAwareStdioClientTransport extends StdioClientTransport {
      *  parent's own {@code isClosing} signal (which our override bypasses). */
     private volatile boolean closing = false;
 
+    /** Invoked when the child process exits while {@link #closing} is still
+     *  {@code false} — i.e. the server died on its own rather than being torn
+     *  down by {@link #closeGracefully()}. Lets the manager request a reconnect.
+     *  Null until armed by the manager for a long-lived (non-test) client. */
+    private volatile Runnable onUnexpectedExit;
+
     /** I/O threads spawned by {@link #connect}, interrupted on shutdown. */
     private final List<Thread> ioThreads = new CopyOnWriteArrayList<>();
 
@@ -76,6 +82,17 @@ public class CwdAwareStdioClientTransport extends StdioClientTransport {
     public CwdAwareStdioClientTransport(ServerParameters params, McpJsonMapper jsonMapper, String cwd) {
         super(params, jsonMapper);
         this.cwd = cwd;
+    }
+
+    /**
+     * Arm a callback fired when the child process exits unexpectedly (not via
+     * {@link #closeGracefully()}). The manager uses this to request an
+     * asynchronous reconnect — stdio is the one transport the MCP SDK cannot
+     * self-heal, because a dead subprocess can only be recovered by respawning
+     * it, which the SDK's lazy re-initialization never does.
+     */
+    public void setOnUnexpectedExit(Runnable handler) {
+        this.onUnexpectedExit = handler;
     }
 
     /**
@@ -132,6 +149,24 @@ public class CwdAwareStdioClientTransport extends StdioClientTransport {
             }
             // Retain the child so closeGracefully() can terminate it.
             this.startedProcess = process;
+
+            // Detect an unexpected death (crash / external `kill` / the user
+            // restarting the MCP service). Suppressed when `closing` is set,
+            // which is how an intentional close/replace tears the process down.
+            process.onExit().thenAccept(p -> {
+                if (closing) {
+                    return;
+                }
+                Runnable exitHandler = this.onUnexpectedExit;
+                log.warn("MCP stdio process exited unexpectedly (exit code {})", p.exitValue());
+                if (exitHandler != null) {
+                    try {
+                        exitHandler.run();
+                    } catch (Exception e) {
+                        log.warn("MCP stdio unexpected-exit handler failed: {}", e.getMessage());
+                    }
+                }
+            });
 
             // --- Resilient inbound reader (the key fix) ---
             Thread inboundThread = new Thread(() -> {

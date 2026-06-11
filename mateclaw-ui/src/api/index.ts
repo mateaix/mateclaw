@@ -946,6 +946,8 @@ export const wikiApi = {
     http.get(`/wiki/knowledge-bases/${kbId}/source-watcher`),
   triggerSourceWatcher: (kbId: string | number) =>
     http.post(`/wiki/knowledge-bases/${kbId}/source-watcher/scan`),
+  setWatcherEnabled: (kbId: string | number, enabled: boolean) =>
+    http.put(`/wiki/knowledge-bases/${kbId}/source-watcher/enabled`, { enabled }),
 
   // ---- Pipelines (REQ-5) ----
   listPipelines: (kbId: string | number) =>

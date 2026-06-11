@@ -40,6 +40,19 @@ public final class WorkspacePathGuard {
     private static volatile Path skillRoot;
 
     /**
+     * Global fallback sandbox root. When a conversation has no per-workspace
+     * base path configured, file and shell operations fall back to this root
+     * instead of running unconstrained against the whole filesystem. This is
+     * the fail-closed default: without it, a workspace whose {@code base_path}
+     * column is unset (the out-of-the-box state) leaves the agent able to read,
+     * write, and delete anywhere the server process can reach. Registered once
+     * at startup from the {@code mateclaw.workspace.sandbox.root} setting.
+     * {@code null} until set (then the legacy "no boundary when unconfigured"
+     * behaviour applies — used in tests and when the sandbox is disabled).
+     */
+    private static volatile Path defaultRoot;
+
+    /**
      * Register the shared skill repository root. A {@code null} or blank path
      * clears it, restoring workspace-only enforcement.
      */
@@ -54,6 +67,24 @@ public final class WorkspacePathGuard {
     @Nullable
     public static Path getSkillRoot() {
         return skillRoot;
+    }
+
+    /**
+     * Register the global fallback sandbox root. A {@code null} or blank path
+     * clears it, restoring the legacy unconstrained behaviour for conversations
+     * without a configured workspace base path.
+     */
+    public static void setDefaultRoot(@Nullable String path) {
+        defaultRoot = (path == null || path.isBlank())
+                ? null
+                : Paths.get(path).toAbsolutePath().normalize();
+        log.info("[WorkspacePathGuard] Default sandbox root: {}", defaultRoot);
+    }
+
+    /** The registered global fallback sandbox root, or {@code null} if none is set. */
+    @Nullable
+    public static Path getDefaultRoot() {
+        return defaultRoot;
     }
 
     /** True when {@code normalized} lives under the shared skill root (if one is set). */
@@ -196,9 +227,71 @@ public final class WorkspacePathGuard {
     /** ToolContext-aware overload — see {@link #validateShellCommand(String)}. */
     public static void validateShellCommand(String command, @Nullable ToolContext ctx) {
         if (command == null || command.isEmpty()) return;
-        String basePath = resolveBasePath(ctx);
-        if (basePath == null || basePath.isBlank()) return;
-        Path root = Paths.get(basePath).toAbsolutePath().normalize();
+        scanShellCommand(command, basePathToRoot(resolveBasePath(ctx)));
+    }
+
+    /**
+     * Non-throwing boundary check for the guard layer. Returns a human-readable
+     * violation reason when {@code command} escapes the workspace identified by
+     * {@code basePath} (or deletes its root), or {@code null} when it is in
+     * bounds / no boundary is configured. {@code basePath} may be blank, in
+     * which case the global fallback sandbox root applies (same semantics as
+     * {@link #validateShellCommand(String, ToolContext)}).
+     */
+    @Nullable
+    public static String findShellBoundaryViolation(String command, @Nullable String basePath) {
+        if (command == null || command.isEmpty()) return null;
+        Path root = basePathToRoot(basePath);
+        if (root == null) return null;
+        try {
+            scanShellCommand(command, root);
+            return null;
+        } catch (IllegalArgumentException e) {
+            return e.getMessage();
+        }
+    }
+
+    /**
+     * Non-throwing boundary check for a single filesystem path argument (e.g.
+     * the {@code filePath} of write_file / edit_file). Returns a violation
+     * reason or {@code null} when in bounds / no boundary is configured.
+     */
+    @Nullable
+    public static String findPathBoundaryViolation(String rawPath, @Nullable String basePath) {
+        if (rawPath == null || rawPath.isBlank()) return null;
+        Path root = basePathToRoot(basePath);
+        if (root == null) return null;
+        Path normalized = Paths.get(rawPath).toAbsolutePath().normalize();
+        if (!normalized.startsWith(root) && !isUnderSkillRoot(normalized)) {
+            return "Path is outside workspace boundary: " + normalized + ", allowed root: " + root;
+        }
+        return null;
+    }
+
+    /**
+     * Resolve a base-path string to a normalized root, falling back to the
+     * global sandbox root when blank. {@code null} only when neither is set.
+     */
+    @Nullable
+    private static Path basePathToRoot(@Nullable String basePath) {
+        if (basePath != null && !basePath.isBlank()) {
+            return Paths.get(basePath).toAbsolutePath().normalize();
+        }
+        return defaultRoot;
+    }
+
+    private static void scanShellCommand(String command, @Nullable Path root) {
+        if (root == null) return;
+
+        // A delete whose target resolves to the workspace root itself is an
+        // escape even though the root is "inside" its own boundary. Detected
+        // alongside the path scans below; this flag gates those equality checks
+        // so non-destructive references to the root (`ls`, `cd <root>`) stay
+        // allowed.
+        boolean destructive = DESTRUCTIVE_VERB.matcher(command).find();
+        if (destructive && DOT_ARG.matcher(command).find()) {
+            throw rootDeletionError(root);
+        }
 
         // 1. Tilde — expands to $HOME, always outside a non-$HOME workspace.
         if (TILDE_REF.matcher(command).find()) {
@@ -244,6 +337,9 @@ public final class WorkspacePathGuard {
                 // idioms (`2>/dev/null`, `cmd <(cat file)`) keep working.
                 continue;
             }
+            if (destructive && normalized.equals(root)) {
+                throw rootDeletionError(root);
+            }
             if (!normalized.startsWith(root) && !isUnderSkillRoot(normalized)) {
                 throw new IllegalArgumentException(
                         "Shell command references path outside workspace boundary: "
@@ -265,6 +361,9 @@ public final class WorkspacePathGuard {
                 continue;
             }
             if (isAllowedDeviceNode(resolved)) continue;
+            if (destructive && resolved.equals(root)) {
+                throw rootDeletionError(root);
+            }
             if (!resolved.startsWith(root) && !isUnderSkillRoot(resolved)) {
                 throw new IllegalArgumentException(
                         "Shell command uses parent-directory traversal that escapes the workspace: '"
@@ -306,6 +405,23 @@ public final class WorkspacePathGuard {
      */
     private static final Pattern RELATIVE_TRAVERSAL_TOKEN = Pattern.compile(
             "(?:^|[\\s|&;<>(`\"'={}])((?:[^\\s|&;<>()\"'`{}=/]+/)*\\.\\.(?:/[^\\s|&;<>()\"'`{}=]*)?)(?=[\\s|&;<>)`\"'=}]|$)");
+
+    /**
+     * Destructive verbs that erase whatever path follows. Used to escalate a
+     * delete aimed at the workspace root itself into a boundary violation: the
+     * normal boundary check is reflexive ({@code root startsWith root}), so a
+     * delete of the root would otherwise pass — yet it wipes the entire sandbox.
+     */
+    private static final Pattern DESTRUCTIVE_VERB = Pattern.compile(
+            "(?:^|[\\s|&;(`])(rm|rmdir|shred|srm)(?=[\\s])");
+
+    /**
+     * A bare {@code .} or {@code ./} standalone argument — when the shell cwd is
+     * the workspace root, {@code rm -rf .} / {@code rm -rf ./} erases the root's
+     * contents just like targeting the root by absolute path.
+     */
+    private static final Pattern DOT_ARG = Pattern.compile(
+            "(?:^|[\\s])(\\.|\\./)(?=[\\s]|$)");
 
     /** Bare tilde or tilde at the start of a path token: {@code ~}, {@code ~/foo}, {@code "~/bar"}. */
     private static final Pattern TILDE_REF = Pattern.compile(
@@ -349,6 +465,12 @@ public final class WorkspacePathGuard {
         return s.length() > 200 ? s.substring(0, 200) + "..." : s;
     }
 
+    private static IllegalArgumentException rootDeletionError(Path root) {
+        return new IllegalArgumentException(
+                "Shell command would delete the workspace root directory itself: " + root
+                        + ". Deleting the workspace root is refused — target a path inside it instead.");
+    }
+
     /**
      * Resolve the active workspace base path. Order of preference:
      * <ol>
@@ -363,6 +485,16 @@ public final class WorkspacePathGuard {
                 return origin.workspaceBasePath();
             }
         }
-        return ToolExecutionContext.workspaceBasePath();
+        String legacy = ToolExecutionContext.workspaceBasePath();
+        if (legacy != null && !legacy.isBlank()) {
+            return legacy;
+        }
+        // Fail closed: with no per-conversation workspace configured, confine
+        // operations to the global fallback root rather than leaving them
+        // unconstrained against the entire filesystem. Only null when no
+        // default root is registered (tests / sandbox explicitly disabled),
+        // in which case the legacy no-boundary behaviour is preserved.
+        Path dr = defaultRoot;
+        return dr != null ? dr.toString() : null;
     }
 }

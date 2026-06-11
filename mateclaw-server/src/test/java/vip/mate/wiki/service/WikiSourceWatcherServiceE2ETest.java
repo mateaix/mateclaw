@@ -35,6 +35,8 @@ class WikiSourceWatcherServiceE2ETest {
     private WikiKnowledgeBaseService kbService;
     @Autowired
     private WikiDirectoryScanService scanService;
+    @Autowired
+    private WikiRawMaterialService rawMaterialService;
 
     private static final java.util.concurrent.atomic.AtomicLong SEQ =
             new java.util.concurrent.atomic.AtomicLong(System.nanoTime());
@@ -47,6 +49,8 @@ class WikiSourceWatcherServiceE2ETest {
         WikiKnowledgeBaseEntity kb = kbService.create(
                 "watcher-" + SEQ.incrementAndGet(), "test", null);
         kbService.updateSourceDirectory(kb.getId(), sourceDir.toString());
+        // Auto-sync is per-KB opt-in; enable it so the cycle scans this KB.
+        kbService.updateWatcherEnabled(kb.getId(), true);
 
         // First cycle ingests both new files.
         int firstAdded = watcherService.runScanCycle();
@@ -108,5 +112,24 @@ class WikiSourceWatcherServiceE2ETest {
         kbService.create("nodir-" + SEQ.incrementAndGet(), "test", null);
         // Should complete without throwing (count is non-negative).
         assertTrue(watcherService.runScanCycle() >= 0);
+    }
+
+    @Test
+    void disabledKb_isNotAutoScanned_untilEnabled(@TempDir Path sourceDir) throws IOException {
+        Files.writeString(sourceDir.resolve("note.md"), "# Note\n\ncontent");
+        WikiKnowledgeBaseEntity kb = kbService.create(
+                "watcher-off-" + SEQ.incrementAndGet(), "test", null);
+        kbService.updateSourceDirectory(kb.getId(), sourceDir.toString());
+        // watcher_enabled defaults to 0 → the auto cycle must skip this KB.
+
+        watcherService.runScanCycle();
+        assertEquals(0, rawMaterialService.listByKbId(kb.getId()).size(),
+                "a KB with auto-sync disabled must not be auto-scanned");
+
+        // Once enabled, the same cycle ingests its file.
+        kbService.updateWatcherEnabled(kb.getId(), true);
+        watcherService.runScanCycle();
+        assertTrue(rawMaterialService.listByKbId(kb.getId()).size() >= 1,
+                "after enabling auto-sync the KB's file should be ingested");
     }
 }

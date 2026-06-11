@@ -41,6 +41,37 @@
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="5" cy="6" r="2.5"/><circle cx="19" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M7 7.5 10.5 16M17 7.5 13.5 16M6.7 6h10.6"/></svg>
         {{ t('wiki.graph.tab') }}
       </button>
+      <!--
+        Read-only viewers have no management view (the gear requires
+        manage:wiki), so the raw-materials and recent-activity snapshot — both
+        read-friendly surfaces — are offered here in the reading toggle instead.
+        Managers reach them through the management view, so these stay hidden
+        for them to keep the reading toggle focused on pages/graph.
+      -->
+      <template v-if="!canManage">
+        <button
+          type="button"
+          class="reading-toggle-btn"
+          :class="{ active: readingTab === 'raw' }"
+          role="tab"
+          :aria-selected="readingTab === 'raw'"
+          @click="$emit('switch-reading', 'raw')"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2 2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+          {{ t('wiki.sources.tab') }}
+        </button>
+        <button
+          type="button"
+          class="reading-toggle-btn"
+          :class="{ active: readingTab === 'hotCache' }"
+          role="tab"
+          :aria-selected="readingTab === 'hotCache'"
+          @click="$emit('switch-reading', 'hotCache')"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg>
+          {{ t('wiki.hotCache.tab') }}
+        </button>
+      </template>
     </div>
     <button
       v-if="mode === 'browse' && canManage"
@@ -88,16 +119,20 @@ import { useI18n } from 'vue-i18n'
 import type { WikiKB } from '@/stores/useWikiStore'
 import { kbAccent, kbAccentFg, kbInitial } from '../utils/kbVisual'
 
+// Reading-view surfaces: pages + graph for everyone, plus raw materials and the
+// recent-activity snapshot for read-only viewers who have no management view.
+type ReadingTab = 'pages' | 'graph' | 'raw' | 'hotCache'
+
 const props = defineProps<{
   kb: WikiKB
   mode: 'browse' | 'manage'
   canManage: boolean
-  readingTab: 'pages' | 'graph'
+  readingTab: ReadingTab
 }>()
 defineEmits<{
   (e: 'back'): void
   (e: 'switch-mode', mode: 'browse' | 'manage'): void
-  (e: 'switch-reading', tab: 'pages' | 'graph'): void
+  (e: 'switch-reading', tab: ReadingTab): void
 }>()
 
 const { t } = useI18n()
