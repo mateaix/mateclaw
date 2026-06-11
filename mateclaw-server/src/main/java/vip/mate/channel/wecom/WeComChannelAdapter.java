@@ -2870,6 +2870,16 @@ public class WeComChannelAdapter extends AbstractChannelAdapter {
         // Fallback: download disabled or failed. Browser preview will be broken
         // because the WeCom CDN URL carries a short-lived signature, but at
         // least the bubble shows "image.jpg" instead of "未命名 / unknown".
+        // The image is also unusable by the model: the URL points at AES-encrypted
+        // bytes (when aeskey is present) and expires in ~5 minutes, so without a
+        // local download the agent can only report "file not found". Warn loudly so
+        // operators know to enable media download rather than chase a phantom bug.
+        boolean encrypted = aesKey != null && !aesKey.isBlank();
+        log.warn("[wecom] Inbound image '{}' stored URL-only ({} download). The model "
+                        + "cannot read it — enable 'media_download_enabled' on this channel. "
+                        + "url={}", fileNameHint,
+                getConfigBoolean("media_download_enabled", true) ? "failed" : "disabled",
+                encrypted ? "<encrypted COS URL>" : url);
         MessageContentPart part = new MessageContentPart();
         part.setType("image");
         part.setFileName(fileNameHint);
