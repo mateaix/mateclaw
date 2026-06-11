@@ -120,6 +120,11 @@ services:
       # 示例：MATE_WIKI_ALLOWED_SOURCE_ROOTS=/data/wiki,/opt/docs
       # 记得同步在 volumes 里把宿主机路径挂进容器。
       MATE_WIKI_ALLOWED_SOURCE_ROOTS: ${MATE_WIKI_ALLOWED_SOURCE_ROOTS:-}
+      # Wiki 知识源自动同步总开关（运维总闸，默认关）。AND 语义：全局开关与
+      # 每个知识库自己的「自动同步」开关都开，该库才会被定时扫描。
+      # 间隔单位毫秒，默认 5 分钟。
+      MATE_WIKI_WATCHER_ENABLED: ${MATE_WIKI_WATCHER_ENABLED:-false}
+      MATE_WIKI_WATCHER_INTERVAL_MS: ${MATE_WIKI_WATCHER_INTERVAL_MS:-300000}
       # Skill 工作区根目录。放在 /app/data 下，让现有的 server_data 卷一并持久化
       # 已安装的 skill、运行时积累的 LESSONS.md 以及 skill 运行产物，容器重启不丢。
       # 内置 skill 仍由 JAR classpath 每次启动现场释放，空卷不会丢内置文件。

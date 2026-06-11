@@ -2103,6 +2103,13 @@ export default {
     kbDescription: '描述',
     kbDescPlaceholder: '简要描述知识库用途',
     rawMaterials: '原始材料',
+    sources: {
+      tab: '来源',
+      autoSync: '自动同步',
+      autoSyncInterval: '每 {sec} 秒',
+      autoSyncGlobalOffHint: '自动同步需运维开启全局开关',
+      toggleFailed: '切换自动同步失败',
+    },
     pages: 'Wiki 页面',
     config: '处理配置',
     transformations: {
