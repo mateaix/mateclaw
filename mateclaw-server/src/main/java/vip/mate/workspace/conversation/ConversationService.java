@@ -1033,10 +1033,38 @@ public class ConversationService {
             name = "未命名";
         }
         String path = safe(part.getPath());
-        if (path.isBlank()) {
-            return label + " " + name;
+        StringBuilder rendered = new StringBuilder(label).append(' ').append(name);
+        if (!path.isBlank()) {
+            rendered.append("（路径: ").append(path).append("）");
         }
-        return label + " " + name + "（路径: " + path + "）";
+        // A persisted caption (vision sidecar output) carries the image content
+        // into later turns: history user messages replay as text only, so without
+        // this the model would lose all knowledge of the attachment after turn 1.
+        String caption = safe(part.getCaption());
+        if (!caption.isBlank()) {
+            rendered.append("\n[图片内容] ").append(caption.trim());
+        }
+        return rendered.toString();
+    }
+
+    /**
+     * Overwrite a message's {@code content_parts} with an updated list — used by
+     * the vision sidecar to persist generated captions back onto image parts so
+     * later turns retain the image description (history replay is text-only).
+     * Best-effort: a serialization or DB failure is logged, not propagated, so
+     * the in-flight chat turn is never broken by a caption write.
+     */
+    public void updateMessageParts(MessageEntity message, List<MessageContentPart> parts) {
+        if (message == null || message.getId() == null || parts == null || parts.isEmpty()) {
+            return;
+        }
+        try {
+            message.setContentParts(serializeParts(parts));
+            messageMapper.updateById(message);
+        } catch (Exception e) {
+            log.warn("Failed to persist updated content_parts for message {}: {}",
+                    message.getId(), e.getMessage());
+        }
     }
 
     private void appendSegment(StringBuilder builder, String text) {

@@ -49,6 +49,15 @@ public class MessageContentPart {
      */
     private String mediaId;
 
+    /**
+     * Vision-model description of an image/video part, produced by the sidecar
+     * captioning path when the primary model is text-only. Persisted so the
+     * description survives into later turns: history replay sends user messages
+     * as text, and without a stored caption the image content would be lost on
+     * every follow-up question. Null for non-media parts or when no captioning ran.
+     */
+    private String caption;
+
     // ==================== 工厂方法 ====================
 
     public static MessageContentPart text(String text) {
