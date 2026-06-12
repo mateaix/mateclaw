@@ -15,7 +15,8 @@
             class="signal-tag"
             :class="sig"
           >
-            {{ signalIcon(sig) }} {{ t(`wiki.relation.${sig}`) }}
+            <el-icon class="signal-tag-icon"><component :is="signalIcon(sig)" /></el-icon>
+            {{ t(`wiki.relation.${sig}`) }}
           </span>
         </div>
         <div class="related-info">
@@ -29,7 +30,9 @@
 
 <script setup lang="ts">
 import { ref, watch } from 'vue'
+import type { Component } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { Connection, Files, TopRight, Aim } from '@element-plus/icons-vue'
 import { wikiApi } from '@/api/index'
 
 const { t } = useI18n()
@@ -53,14 +56,17 @@ interface RelatedPage {
 
 const relatedPages = ref<RelatedPage[]>([])
 
-function signalIcon(sig: string): string {
-  switch (sig) {
-    case 'shared_chunk': return '🔗'
-    case 'shared_raw': return '📂'
-    case 'direct_link': return '↗'
-    case 'semantic_near': return '◎'
-    default: return '•'
-  }
+// Map each relation signal to a project-standard Element Plus icon (replacing the
+// previous emoji glyphs, which rendered inconsistently across platforms/fonts).
+const SIGNAL_ICONS: Record<string, Component> = {
+  shared_chunk: Connection,
+  shared_raw: Files,
+  direct_link: TopRight,
+  semantic_near: Aim,
+}
+
+function signalIcon(sig: string): Component {
+  return SIGNAL_ICONS[sig] || Connection
 }
 
 async function fetchRelated() {
@@ -123,10 +129,16 @@ watch(() => [props.kbId, props.slug], fetchRelated, { immediate: true })
 }
 
 .signal-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
   font-size: 10px;
   padding: 1px 6px;
   border-radius: 4px;
   font-weight: 500;
+}
+.signal-tag-icon {
+  font-size: 11px;
 }
 .signal-tag.shared_chunk { background: rgba(59,130,246,0.1); color: #3b82f6; }
 .signal-tag.shared_raw { background: rgba(168,85,247,0.1); color: #a855f7; }
