@@ -66,6 +66,13 @@ public class ModelDiscoveryService {
 
     private static final Duration TIMEOUT = Duration.ofSeconds(10);
 
+    // Shared HttpClient for OpenAI-compatible providers — avoids creating a new
+    // native thread + connection pool per request (was causing thread-leak OOM).
+    private static final HttpClient SHARED_HTTP_CLIENT = HttpClient.newBuilder()
+            .version(HttpClient.Version.HTTP_1_1)
+            .connectTimeout(Duration.ofSeconds(30))
+            .build();
+
     // Virtual-thread executor for parallel model probing (lightweight, short-lived)
     private static final ExecutorService PROBE_EXECUTOR = Executors.newVirtualThreadPerTaskExecutor();
 
@@ -962,10 +969,7 @@ public class ModelDiscoveryService {
      * the upgrade negotiation.
      */
     private RestClient.Builder openAiCompatibleClientBuilder() {
-        HttpClient httpClient = HttpClient.newBuilder()
-                .version(HttpClient.Version.HTTP_1_1)
-                .build();
-        return RestClient.builder().requestFactory(new JdkClientHttpRequestFactory(httpClient));
+        return RestClient.builder().requestFactory(new JdkClientHttpRequestFactory(SHARED_HTTP_CLIENT));
     }
 
     @SuppressWarnings("unchecked")
