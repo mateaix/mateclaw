@@ -8,8 +8,10 @@ import jakarta.annotation.PreDestroy;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
 import vip.mate.exception.MateClawException;
+import vip.mate.tool.mcp.event.McpConnectionLostEvent;
 import vip.mate.tool.mcp.event.McpServerChangedEvent;
 import vip.mate.tool.mcp.model.McpServerEntity;
 import vip.mate.tool.mcp.repository.McpServerMapper;
@@ -20,6 +22,7 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.regex.Pattern;
@@ -59,6 +62,50 @@ public class McpServerService {
     @PreDestroy
     public void shutdownConnectExecutor() {
         connectExecutor.shutdownNow();
+    }
+
+    /**
+     * Debounce window for runtime-triggered reconnects (issue #317). A live
+     * tool call and an agent rebuild can both detect the same dead connection
+     * within milliseconds, and a crash-looping server would otherwise respawn
+     * on every {@code listTools()} miss. We collapse repeated reconnect requests
+     * for the same server inside this window.
+     */
+    private static final long RECONNECT_DEBOUNCE_MS = 10_000;
+
+    /** serverId -> last runtime reconnect attempt epoch millis. */
+    private final ConcurrentHashMap<Long, Long> lastRuntimeReconnectAt = new ConcurrentHashMap<>();
+
+    /**
+     * Heal a connection that died at runtime: a stale {@code listTools()} or a
+     * stdio subprocess that exited on its own (e.g. the user restarted the MCP
+     * service). Reloads the server config and reconnects asynchronously,
+     * debounced so a flapping server can't saturate the reconnect pool. The
+     * reconnect publishes {@link McpServerChangedEvent} on success, which clears
+     * the agent cache so the next turn rebuilds against the live tools.
+     */
+    @EventListener
+    public void onConnectionLost(McpConnectionLostEvent event) {
+        Long serverId = event.serverId();
+        if (serverId == null) {
+            return;
+        }
+        McpServerEntity server = mcpServerMapper.selectById(serverId);
+        if (server == null || !Boolean.TRUE.equals(server.getEnabled())) {
+            // Removed or disabled in the meantime — nothing to heal.
+            return;
+        }
+
+        long now = System.currentTimeMillis();
+        Long previous = lastRuntimeReconnectAt.get(serverId);
+        if (previous != null && now - previous < RECONNECT_DEBOUNCE_MS) {
+            log.debug("Skipping MCP reconnect for '{}' ({}): within debounce window", server.getName(), event.reason());
+            return;
+        }
+        lastRuntimeReconnectAt.put(serverId, now);
+
+        log.warn("MCP server '{}' connection lost ({}); reconnecting", server.getName(), event.reason());
+        reconnectAsync(server);
     }
 
     /** Publish a connection-state change so AgentService rebuilds its agent cache (issue #289). */

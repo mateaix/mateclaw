@@ -87,6 +87,35 @@ class BaseAgentMultimodalSkipNoticeTest {
     }
 
     @Test
+    @DisplayName("Vision-capable model + image with only a remote URL (never downloaded) → actionable 'enable media download' hint")
+    void remoteOnlyImage_emitsDownloadHint() {
+        // Issue #303 follow-up: WeCom/aibot delivers images as short-lived,
+        // AES-encrypted COS URLs. With channel media download off, the part is
+        // stored URL-only (path=null, mediaId=https://...). The model supports
+        // vision, so we reach the file-resolution branch — which must surface an
+        // actionable hint instead of a dead-end "文件未找到".
+        TestAgent agent = newAgentWithCaps(
+                EnumSet.of(ModelCapabilityService.Modality.VISION, ModelCapabilityService.Modality.TEXT));
+        MessageEntity msg = userMessage("看看这张图");
+        MessageContentPart remote = new MessageContentPart();
+        remote.setType("image");
+        remote.setContentType("image/jpeg");
+        remote.setFileName("image.jpg");
+        remote.setMediaId("https://ww-aibot-img.cos.example.com/x?sign=abc");
+        when(agent.conversationService.parseMessageParts(msg)).thenReturn(List.of(remote));
+
+        UserMessage result = agent.callBuildUserMessage(msg, "看看这张图");
+
+        String text = result.getText();
+        assertTrue(text.contains("未下载到本地"),
+                "remote-only attachment must hint that it was never downloaded locally");
+        assertTrue(text.contains("开启") && text.contains("媒体下载"),
+                "hint must tell the user to enable channel media download");
+        assertTrue(result.getMedia() == null || result.getMedia().isEmpty(),
+                "a remote URL must not be injected as Media");
+    }
+
+    @Test
     @DisplayName("No attachments → no system notice, prompt text unchanged")
     void noAttachments_noNoticeAdded() {
         TestAgent agent = newAgentWithCaps(EnumSet.noneOf(ModelCapabilityService.Modality.class));

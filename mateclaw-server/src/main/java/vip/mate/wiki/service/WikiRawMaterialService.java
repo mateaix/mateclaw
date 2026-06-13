@@ -633,7 +633,10 @@ public class WikiRawMaterialService {
         // 二进制文件：调用 DocumentExtractTool 提取
         if (entity.getSourcePath() != null && !entity.getSourcePath().isBlank()) {
             try {
-                String result = documentExtractTool.extract_document_text(entity.getSourcePath(), null, null);
+                // Server-managed path (staged under the wiki upload dir): use the
+                // sandbox-exempt entry so the workspace boundary guard does not
+                // reject the upload dir as "outside workspace boundary".
+                String result = documentExtractTool.extractTrustedDocument(entity.getSourcePath(), null);
                 JSONObject json = JSONUtil.parseObj(result);
                 if (json.getBool("success", false)) {
                     String text = json.getStr("text");

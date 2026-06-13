@@ -169,6 +169,17 @@ public class WikiProcessingService {
          */
         final ConcurrentHashMap<String, String> slugClaims = new ConcurrentHashMap<>();
         /**
+         * Per-run title claim table: canonical title → the actual slug of the first
+         * page that claimed that concept this run.
+         * <p>
+         * Title is the stable concept identity (the slug is LLM-generated and drifts),
+         * so this closes the parallel-create race that {@link #slugClaims} cannot:
+         * two phase-B pages with the same title but different slugs would both miss
+         * the DB lookup and insert two rows. The first to {@link ConcurrentHashMap#computeIfAbsent}
+         * wins; later creates redirect their content into the winner page.
+         */
+        final ConcurrentHashMap<String, String> titleClaims = new ConcurrentHashMap<>();
+        /**
          * Per-run merge dedup set: slugs that have already been successfully merged during
          * this raw material processing run. Prevents the same page from being merged N times
          * (once per chunk) when the document repeatedly references the same concept.
@@ -1540,6 +1551,22 @@ public class WikiProcessingService {
         // point at a tombstoned row.
         if (isAborted(rawId, "savePageContent slug=" + slug)) return false;
 
+        // Fallback 0a: canonical-title match — title is the stable concept identity.
+        // The LLM-generated slug drifts across runs and romanizations, so the same
+        // concept otherwise lands as many rows under different slugs (the duplicate
+        // explosion this guards against). If a page with the same canonical title
+        // already exists under a different slug, merge into it instead of creating.
+        WikiPageEntity existingByTitle = pageService.findByCanonicalTitle(kbId, title);
+        if (existingByTitle != null && !existingByTitle.getSlug().equals(slug)) {
+            String actualSlug = existingByTitle.getSlug();
+            pageService.updatePageByAi(kbId, actualSlug, content, pageSummary, rawId);
+            pageService.mergeSourceLineage(existingByTitle.getId(), rawId, raw.getTitle());
+            afterPagePersisted(existingByTitle.getId(), kbId, pageType, metadataNode, dependsOnNode, true);
+            log.info("[Wiki] Phase B create slug='{}' title='{}' canonical-title-matches existing '{}', updated",
+                    slug, title, actualSlug);
+            return false;
+        }
+
         // Fallback 0: cross-spelling canonical match (DB has same concept under different slug)
         WikiPageEntity existingByCanonical = pageService.findByCanonicalSlug(kbId, slug);
         if (existingByCanonical != null && !existingByCanonical.getSlug().equals(slug)) {
@@ -1552,8 +1579,34 @@ public class WikiProcessingService {
             return false;
         }
 
-        // Fallback 0.5: in-flight slug-claim arbitration across parallel chunks
+        // Fallback 0.25: in-flight title-claim arbitration across parallel pages.
+        // Closes the race that findByCanonicalTitle cannot: two parallel phase-B
+        // creates with the same title but different slugs can both miss the DB
+        // lookup (the row isn't committed yet) and insert two rows — title has no
+        // DB unique constraint, so DuplicateKey won't catch it. The first to claim
+        // the canonical title wins; losers redirect their content into the winner.
         ProgressCounter pcLocal = progressCounters.get(rawId);
+        String canonicalTitle = WikiPageService.canonicalTitle(title);
+        if (pcLocal != null && !canonicalTitle.isEmpty()) {
+            final String claimingSlug = slug;
+            String winnerSlug = pcLocal.titleClaims.computeIfAbsent(canonicalTitle, k -> claimingSlug);
+            if (!winnerSlug.equals(slug)) {
+                WikiPageEntity winner = pageService.getBySlug(kbId, winnerSlug);
+                if (winner != null) {
+                    pageService.updatePageByAi(kbId, winnerSlug, content, pageSummary, rawId);
+                    pageService.mergeSourceLineage(winner.getId(), rawId, raw.getTitle());
+                    afterPagePersisted(winner.getId(), kbId, pageType, metadataNode, dependsOnNode, true);
+                    log.info("[Wiki] Phase B create slug='{}' title='{}' lost title-claim race to '{}', updated",
+                            slug, title, winnerSlug);
+                    return false;
+                }
+                log.info("[Wiki] Phase B create slug='{}' redirects to in-flight title winner '{}'",
+                        slug, winnerSlug);
+                slug = winnerSlug;
+            }
+        }
+
+        // Fallback 0.5: in-flight slug-claim arbitration across parallel chunks
         String canonical = WikiPageService.canonicalSlug(slug);
         if (pcLocal != null && !canonical.isEmpty()) {
             final String routedSlug = slug;
@@ -2048,20 +2101,59 @@ public class WikiProcessingService {
             return "（暂无已有页面）";
         }
 
+        // The index is injected verbatim into the route / batch-create prompts, so
+        // it must stay bounded — otherwise it grows linearly with the KB and
+        // overflows the model context window. Cap by both page count and chars;
+        // truncation is safe because savePageContent dedups by canonical title at
+        // persist time, so an omitted page is merged-on-save rather than duplicated.
+        int maxChars = Math.max(0, properties.getExistingPagesIndexMaxChars());
+        int maxPages = Math.max(0, properties.getExistingPagesIndexMaxPages());
+
+        // List manually-edited pages first so user-curated entries are never the
+        // ones dropped when a cap is hit. Title order within each group is
+        // preserved (listSummaries already sorts by title).
+        List<WikiPageEntity> ordered = new ArrayList<>(summaries.size());
+        for (WikiPageEntity p : summaries) {
+            if ("manual".equals(p.getLastUpdatedBy())) ordered.add(p);
+        }
+        for (WikiPageEntity p : summaries) {
+            if (!"manual".equals(p.getLastUpdatedBy())) ordered.add(p);
+        }
+
         StringBuilder sb = new StringBuilder();
-        for (WikiPageEntity page : summaries) {
-            sb.append("- [[").append(page.getSlug()).append("]]");
+        int listed = 0;
+        for (WikiPageEntity page : ordered) {
+            StringBuilder row = new StringBuilder();
+            row.append("- [[").append(page.getSlug()).append("]]");
             if (page.getTitle() != null && !page.getTitle().isBlank()) {
-                sb.append(" — ").append(page.getTitle());
+                row.append(" — ").append(page.getTitle());
             }
             if ("manual".equals(page.getLastUpdatedBy())) {
-                sb.append(" (手动编辑)");
+                row.append(" (手动编辑)");
             }
             String summary = page.getSummary();
             if (summary != null && !summary.isBlank()) {
-                sb.append(" — ").append(summary);
+                row.append(" — ").append(summary);
             }
-            sb.append("\n");
+            row.append("\n");
+
+            // Stop before exceeding either cap, but always emit at least one row.
+            boolean overPageCap = maxPages > 0 && listed >= maxPages;
+            boolean overCharCap = maxChars > 0 && listed > 0 && sb.length() + row.length() > maxChars;
+            if (overPageCap || overCharCap) {
+                break;
+            }
+            sb.append(row);
+            listed++;
+        }
+
+        int omitted = ordered.size() - listed;
+        if (omitted > 0) {
+            sb.append("- …（已省略 ").append(omitted)
+              .append(" 个页面：已有页面过多，索引已截断。若材料涉及未列出的概念，按新建处理即可，")
+              .append("系统会在落库时按标题自动归并到既有页面）\n");
+            log.info("[Wiki] existing-pages index truncated for kbId={}: listed={} omitted={} chars={}",
+                    kbId, listed, omitted, sb.length());
         }
         return sb.toString().trim();
     }

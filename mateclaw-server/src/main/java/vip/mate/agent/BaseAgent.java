@@ -955,6 +955,11 @@ public abstract class BaseAgent {
         if (decision.strategy() == MultimodalRoutingDecision.Strategy.SIDECAR
                 && mediaCaptionService != null
                 && decision.sidecarModel() != null) {
+            // The user's actual question (text parts only, excluding media markers)
+            // so the vision model tailors its description to what was asked rather
+            // than emitting a generic caption.
+            String userQuestion = extractUserQuestion(parts);
+            boolean captionPersisted = false;
             for (MessageContentPart part : parts) {
                 if (part == null) continue;
                 String contentType = part.getContentType();
@@ -963,13 +968,23 @@ public abstract class BaseAgent {
                         && !contentType.contains("svg");
                 if (!isImage) continue;
                 MediaCaptionService.CaptionResult result = mediaCaptionService.caption(
-                        decision.sidecarModel(), part, userLocale);
+                        decision.sidecarModel(), part, userLocale, userQuestion);
                 if (result.isFailure()) {
                     log.warn("[{}] Sidecar caption failed for {}: {}",
                             agentName, part.getFileName(), result.failure().getMessage());
-                    textBuilder.append("\n\n[系统提示] 视觉模型未能解析附件 ")
-                            .append(part.getFileName())
-                            .append("，请稍后重试或在「设置 → 模型」检查视觉模型配置。");
+                    if (isRemoteOnlyAttachment(part)) {
+                        // The image was never downloaded locally (only a remote
+                        // channel URL survives) — for WeCom/aibot that URL points
+                        // at short-lived AES-encrypted bytes, so captioning can
+                        // never succeed until media download is enabled.
+                        textBuilder.append("\n\n[系统提示] 图片 ")
+                                .append(part.getFileName())
+                                .append(" 未下载到本地，无法识别；请在「设置 → 渠道」开启该渠道的媒体下载。");
+                    } else {
+                        textBuilder.append("\n\n[系统提示] 视觉模型未能解析附件 ")
+                                .append(part.getFileName())
+                                .append("，请稍后重试或在「设置 → 模型」检查视觉模型配置。");
+                    }
                     continue;
                 }
                 textBuilder.append("\n\n[图片附件描述: ")
@@ -977,8 +992,16 @@ public abstract class BaseAgent {
                         .append("]\n")
                         .append(result.description())
                         .append("\n[/图片附件描述]");
+                // Persist the caption onto the part so later turns retain the image
+                // content: history user messages replay as text only, and without a
+                // stored caption every follow-up question loses the attachment.
+                part.setCaption(result.description());
+                captionPersisted = true;
                 String identifier = identifyPart(part);
                 if (identifier != null) sidecarHandledIdentifiers.add(identifier);
+            }
+            if (captionPersisted && conversationService != null) {
+                conversationService.updateMessageParts(message, parts);
             }
         }
 
@@ -1048,7 +1071,7 @@ public abstract class BaseAgent {
             if (mediaPath == null) {
                 log.warn("[{}] {} file not found for attachment: {}, path: {}, mediaId: {}",
                         agentName, isVideo ? "Video" : "Image", part.getFileName(), part.getPath(), part.getMediaId());
-                skippedAttachments.add(part.getFileName() + "(文件未找到)");
+                skippedAttachments.add(part.getFileName() + unresolvedAttachmentReason(part));
                 continue;
             }
             try {
@@ -1081,6 +1104,52 @@ public abstract class BaseAgent {
                 ? new UserMessage(finalText)
                 : UserMessage.builder().text(finalText).media(mediaList).build();
         return new CurrentTurnUserMessage(built, decision);
+    }
+
+    /**
+     * Concatenate the text parts of a message into the user's question, dropping
+     * image/file/media parts. Returns {@code null} when there is no usable text
+     * (e.g. an image-only IM message), which makes the caption fall back to the
+     * generic full-description prompt.
+     */
+    private static String extractUserQuestion(List<MessageContentPart> parts) {
+        if (parts == null || parts.isEmpty()) return null;
+        StringBuilder sb = new StringBuilder();
+        for (MessageContentPart part : parts) {
+            if (part == null || !"text".equals(part.getType())) continue;
+            String text = part.getText();
+            if (text == null || text.isBlank()) continue;
+            if (sb.length() > 0) sb.append('\n');
+            sb.append(text.trim());
+        }
+        String question = sb.toString().trim();
+        return question.isEmpty() ? null : question;
+    }
+
+    /**
+     * True when an attachment has no resolvable local file and its only locator
+     * is a remote http(s) URL — i.e. the IM channel never downloaded it locally.
+     * For WeCom/aibot images that URL points at short-lived AES-encrypted bytes,
+     * so it is unusable as-is. Lets callers turn a generic "file not found" into
+     * an actionable hint instead of a dead end.
+     */
+    private static boolean isRemoteOnlyAttachment(MessageContentPart part) {
+        if (part == null) return false;
+        if (part.getPath() != null && !part.getPath().isBlank()) return false;
+        String locator = part.getMediaId();
+        if (locator == null || locator.isBlank()) locator = part.getFileUrl();
+        return locator != null && (locator.startsWith("http://") || locator.startsWith("https://"));
+    }
+
+    /**
+     * Reason string appended to a skipped attachment whose local file could not
+     * be resolved — distinguishes "never downloaded" (channel media download
+     * off) from a genuine missing-file so the user gets an actionable message.
+     */
+    private static String unresolvedAttachmentReason(MessageContentPart part) {
+        return isRemoteOnlyAttachment(part)
+                ? "(图片未下载到本地，无法识别；请在「设置 → 渠道」开启该渠道的媒体下载)"
+                : "(文件未找到)";
     }
 
     /**
@@ -1194,7 +1263,14 @@ public abstract class BaseAgent {
                 if ("user".equals(msg.getRole())) {
                     // 用 DB 中的实际内容（可能包含 contentParts），不用传入的 text
                     String content = conversationService.renderMessageContent(msg);
-                    return buildUserMessageForCurrentTurn(msg, content != null && !content.isBlank() ? content : userMessageText);
+                    CurrentTurnUserMessage built = buildUserMessageForCurrentTurn(
+                            msg, content != null && !content.isBlank() ? content : userMessageText);
+                    // Vision-capable models replay history as text only, so a
+                    // follow-up question about an earlier image would otherwise be
+                    // answered blind. Re-attach the most recent image to this turn
+                    // so the model actually re-sees it. (Text-only models instead
+                    // rely on the persisted sidecar caption — see buildUserMessageInternal.)
+                    return maybeCarryRecentImage(history, i, msg, built);
                 }
             }
         } catch (Exception e) {
@@ -1202,6 +1278,85 @@ public abstract class BaseAgent {
                     agentName, e.getMessage());
         }
         return new CurrentTurnUserMessage(new UserMessage(userMessageText), null);
+    }
+
+    /** How far back (in messages) to look for an image to carry into a follow-up turn. */
+    private static final int CARRY_IMAGE_LOOKBACK = 8;
+
+    /**
+     * For a vision-capable model, re-attach the most recent image from a recent
+     * earlier turn to the current user message when the current turn carries no
+     * image of its own. History is replayed as text only (see {@link #toSpringMessage}),
+     * so without this a follow-up like "what's in the top-left of that photo?" is
+     * answered blind. Bounded to a single image within {@link #CARRY_IMAGE_LOOKBACK}
+     * messages so a long conversation doesn't re-send pixels on every turn.
+     *
+     * <p>No-op (returns {@code built} unchanged) when: the model can't see images,
+     * the current turn already has an image, no recent image exists, or the recent
+     * image has no resolvable local file (e.g. an undownloaded channel URL).
+     */
+    private CurrentTurnUserMessage maybeCarryRecentImage(List<MessageEntity> history, int currentIdx,
+                                                         MessageEntity currentMsg, CurrentTurnUserMessage built) {
+        try {
+            if (built == null || !modelSupportsVision()) return built;
+            if (messageHasImagePart(currentMsg)) return built; // current turn already carries an image
+
+            int from = Math.max(0, currentIdx - CARRY_IMAGE_LOOKBACK);
+            for (int j = currentIdx - 1; j >= from; j--) {
+                MessageEntity m = history.get(j);
+                if (m == null || !"user".equals(m.getRole())) continue;
+                List<MessageContentPart> parts = conversationService.parseMessageParts(m);
+                for (int k = parts.size() - 1; k >= 0; k--) {
+                    MessageContentPart part = parts.get(k);
+                    if (!isResolvableImagePart(part)) continue;
+                    Path imgPath = resolveImagePath(part.getPath());
+                    if (imgPath == null && part.getMediaId() != null) imgPath = resolveImagePath(part.getMediaId());
+                    if (imgPath == null) continue;
+                    String contentType = part.getContentType();
+                    if (contentType == null || "image/*".equals(contentType)) contentType = "image/jpeg";
+                    try {
+                        Media carried = new Media(MimeType.valueOf(contentType), new FileSystemResource(imgPath));
+                        UserMessage orig = built.userMessage();
+                        String name = part.getFileName() == null ? "image" : part.getFileName();
+                        String text = (orig.getText() == null ? "" : orig.getText())
+                                + "\n\n[系统提示] 以下图片是用户本次对话中较早发送的「" + name
+                                + "」，当前问题很可能与它相关。请直接查看该图片作答，不要凭记忆猜测。";
+                        List<Media> media = new ArrayList<>();
+                        if (orig.getMedia() != null) media.addAll(orig.getMedia());
+                        media.add(carried);
+                        log.debug("[{}] Carried recent image {} into follow-up turn for vision model",
+                                agentName, name);
+                        return new CurrentTurnUserMessage(
+                                UserMessage.builder().text(text).media(media).build(),
+                                built.routingDecision());
+                    } catch (Exception e) {
+                        log.debug("[{}] Failed to carry recent image {}: {}",
+                                agentName, part.getFileName(), e.getMessage());
+                        return built;
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.debug("[{}] maybeCarryRecentImage failed: {}", agentName, e.getMessage());
+        }
+        return built;
+    }
+
+    private boolean messageHasImagePart(MessageEntity message) {
+        for (MessageContentPart part : conversationService.parseMessageParts(message)) {
+            if (isResolvableImagePart(part)) return true;
+        }
+        return false;
+    }
+
+    /** An image part (not SVG) — the raster kind a multimodal API can ingest. */
+    private static boolean isResolvableImagePart(MessageContentPart part) {
+        if (part == null) return false;
+        String type = part.getType();
+        String contentType = part.getContentType();
+        boolean isImage = ("image".equals(type) || "file".equals(type))
+                && contentType != null && contentType.startsWith("image/");
+        return isImage && !contentType.contains("svg");
     }
 
     protected Path resolveImagePath(String relativePath) {
