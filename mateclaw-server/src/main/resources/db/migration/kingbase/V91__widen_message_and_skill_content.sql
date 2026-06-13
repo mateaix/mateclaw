@@ -1,0 +1,5 @@
+-- V91: Widen mate_message.content / content_parts and mate_skill.skill_content
+-- from TEXT (64KB) to TEXT (16MB).
+--
+-- In KingbaseES/PostgreSQL, TEXT is already unlimited (up to 1GB),
+-- so this migration is a no-op. Keep for Flyway version compatibility.

@@ -16,9 +16,12 @@ import vip.mate.wiki.repository.WikiRelationMapper;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
@@ -291,6 +294,51 @@ public class WikiPageService {
         if (canonical.isEmpty()) return null;
         for (WikiPageEntity p : listSummaries(kbId)) {
             if (canonicalSlug(p.getSlug()).equals(canonical)) {
+                return getBySlug(kbId, p.getSlug());
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Normalize a title into its canonical identity form, mirroring how a
+     * wikilink resolver matches note names: lowercase, then drop every
+     * whitespace / hyphen / underscore (including the full-width space) so
+     * {@code "二味拔毒散"}, {@code "二味拔毒散 "} and {@code "二味-拔毒散"} all
+     * collapse to the same key.
+     * <p>
+     * Title is the stable, human-meaningful identity of a concept. The slug, by
+     * contrast, is LLM-generated and drifts across runs and romanizations
+     * ({@code erwei-badu-san} / {@code er-wei-badu-san} / an English translation),
+     * which is why slug-only matching leaks duplicate rows for one concept. Title
+     * matching is the primary dedup key; {@link #canonicalSlug(String)} stays as a
+     * secondary cross-spelling fallback.
+     */
+    public static String canonicalTitle(String title) {
+        if (title == null) return "";
+        String lowered = title.trim().toLowerCase();
+        StringBuilder sb = new StringBuilder(lowered.length());
+        for (int i = 0; i < lowered.length(); i++) {
+            char c = lowered.charAt(i);
+            if (c == '-' || c == '_' || c == '　' || Character.isWhitespace(c)) {
+                continue;
+            }
+            sb.append(c);
+        }
+        return sb.toString();
+    }
+
+    /**
+     * Find an existing page in the KB whose title canonically matches the given
+     * title. Reuses the {@link #listSummaries(Long)} cache (which carries title),
+     * then loads the full entity for the match. Returns the first canonical-title
+     * match, or {@code null} when none exists.
+     */
+    public WikiPageEntity findByCanonicalTitle(Long kbId, String title) {
+        String canonical = canonicalTitle(title);
+        if (canonical.isEmpty()) return null;
+        for (WikiPageEntity p : listSummaries(kbId)) {
+            if (canonicalTitle(p.getTitle()).equals(canonical)) {
                 return getBySlug(kbId, p.getSlug());
             }
         }
@@ -915,6 +963,192 @@ public class WikiPageService {
             affected.add(referrer.getId());
         }
         return affected;
+    }
+
+    /**
+     * Winner selection within a duplicate-title group: keep the page that
+     * carries the most information. Prefer the longest content, then the
+     * highest version (most merged), then the smallest id (earliest-created,
+     * for a stable deterministic result).
+     */
+    private static final Comparator<WikiPageEntity> MERGE_WINNER_ORDER =
+            Comparator.comparingInt((WikiPageEntity p) -> p.getContent() == null ? 0 : p.getContent().length())
+                    .thenComparingInt(p -> p.getVersion() == null ? 0 : p.getVersion())
+                    .thenComparing(WikiPageEntity::getId, Comparator.reverseOrder());
+
+    /**
+     * One-time maintenance: collapse pages that share a canonical title (see
+     * {@link #canonicalTitle(String)}) into a single page, healing the duplicate
+     * rows produced before title-based dedup existed (an LLM-minted slug drifts
+     * across runs, so one concept landed as many rows under different slugs).
+     * <p>
+     * For each group of duplicates a winner is chosen ({@link #MERGE_WINNER_ORDER});
+     * every loser's inbound {@code [[loserSlug]]} reference is redirected to the
+     * winner, the losers' source lineage is folded into the winner, their bodies
+     * are optionally appended (so no content is lost), and the loser rows are
+     * deleted. A protected page (system / locked) always wins and is never
+     * deleted; a group with more than one protected page is skipped for manual
+     * resolution.
+     *
+     * @param kbId               knowledge base to clean
+     * @param dryRun             when {@code true}, only report what would change — no writes
+     * @param concatenateContent when {@code true}, append each loser's body to the
+     *                           winner under a separator; when {@code false}, keep
+     *                           only the winner's body (loser bodies are discarded)
+     * @return a structured report (counts + per-group winner/loser slugs)
+     */
+    @Transactional
+    public Map<String, Object> mergeDuplicateTitles(Long kbId, boolean dryRun, boolean concatenateContent) {
+        List<WikiPageEntity> all = listByKbIdWithContent(kbId);
+
+        // Group by canonical title, preserving first-seen order for a stable report.
+        Map<String, List<WikiPageEntity>> groups = new LinkedHashMap<>();
+        for (WikiPageEntity p : all) {
+            String ct = canonicalTitle(p.getTitle());
+            if (ct.isEmpty()) continue;
+            groups.computeIfAbsent(ct, k -> new ArrayList<>()).add(p);
+        }
+
+        List<Map<String, Object>> groupReports = new ArrayList<>();
+        int duplicateGroups = 0;
+        int pagesRemoved = 0;
+
+        for (Map.Entry<String, List<WikiPageEntity>> entry : groups.entrySet()) {
+            List<WikiPageEntity> grp = entry.getValue();
+            if (grp.size() < 2) continue;
+
+            List<WikiPageEntity> protectedPages = grp.stream().filter(WikiPageService::isProtected).toList();
+            if (protectedPages.size() > 1) {
+                Map<String, Object> skip = new LinkedHashMap<>();
+                skip.put("canonicalTitle", entry.getKey());
+                skip.put("title", grp.get(0).getTitle());
+                skip.put("skipped", "multiple protected pages; resolve manually");
+                skip.put("slugs", grp.stream().map(WikiPageEntity::getSlug).toList());
+                groupReports.add(skip);
+                continue;
+            }
+
+            WikiPageEntity winner = protectedPages.size() == 1
+                    ? protectedPages.get(0)
+                    : grp.stream().max(MERGE_WINNER_ORDER).orElseThrow();
+            List<WikiPageEntity> losers = grp.stream()
+                    .filter(p -> !p.getId().equals(winner.getId()))
+                    .filter(p -> !isProtected(p))
+                    .toList();
+            if (losers.isEmpty()) continue;
+
+            duplicateGroups++;
+            pagesRemoved += losers.size();
+
+            Map<String, Object> gr = new LinkedHashMap<>();
+            gr.put("canonicalTitle", entry.getKey());
+            gr.put("title", winner.getTitle());
+            gr.put("winnerSlug", winner.getSlug());
+            gr.put("winnerVersion", winner.getVersion());
+            gr.put("loserSlugs", losers.stream().map(WikiPageEntity::getSlug).toList());
+            groupReports.add(gr);
+
+            if (!dryRun) {
+                mergeGroupInto(kbId, winner, losers, concatenateContent && !isProtected(winner));
+            }
+        }
+
+        if (!dryRun && duplicateGroups > 0) {
+            evictSummaryCache(kbId);
+            if (auditEventService != null) {
+                try {
+                    String detail = objectMapper.writeValueAsString(Map.of(
+                            "kbId", kbId,
+                            "duplicateGroups", duplicateGroups,
+                            "pagesRemoved", pagesRemoved,
+                            "concatenateContent", concatenateContent));
+                    auditEventService.record("wiki.page.merge-duplicates", "wiki_kb",
+                            String.valueOf(kbId), "merge duplicate titles", detail);
+                } catch (Exception e) {
+                    log.debug("[Wiki] Audit emit failed for merge-duplicates kbId={}: {}", kbId, e.toString());
+                }
+            }
+        }
+
+        Map<String, Object> report = new LinkedHashMap<>();
+        report.put("kbId", kbId);
+        report.put("dryRun", dryRun);
+        report.put("concatenateContent", concatenateContent);
+        report.put("totalPages", all.size());
+        report.put("duplicateGroups", duplicateGroups);
+        report.put("pagesRemoved", dryRun ? 0 : pagesRemoved);
+        report.put("pagesWouldRemove", pagesRemoved);
+        report.put("groups", groupReports);
+        return report;
+    }
+
+    /**
+     * Fold {@code losers} into {@code winner}: redirect inbound links, merge
+     * source lineage, optionally append bodies, then delete the loser rows.
+     */
+    private void mergeGroupInto(Long kbId, WikiPageEntity winner,
+                                List<WikiPageEntity> losers, boolean concatenate) {
+        String winnerSlug = winner.getSlug();
+
+        for (WikiPageEntity loser : losers) {
+            // Redirect every [[loserSlug]] reference (in any page, including the
+            // winner) to the winner before the loser row goes away, so no link
+            // is demoted to plain text.
+            try {
+                cascadeRenameReferrers(kbId, loser.getId(), loser.getSlug(), winnerSlug);
+            } catch (RuntimeException ex) {
+                log.warn("[Wiki] merge: redirect referrers {}→{} failed (continuing): {}",
+                        loser.getSlug(), winnerSlug, ex.toString());
+            }
+            // Fold the loser's source provenance into the winner.
+            for (SourceEntry se : parseSourceEntries(loser.getSourceEntries())) {
+                mergeSourceLineage(winner.getId(), se.rawId(), se.rawTitle());
+            }
+            for (Long rid : parseSourceRawIds(loser.getSourceRawIds())) {
+                mergeSourceLineage(winner.getId(), rid, "");
+            }
+        }
+
+        if (concatenate) {
+            // Re-load to pick up the lineage updates just written.
+            WikiPageEntity fresh = pageMapper.selectById(winner.getId());
+            if (fresh != null) {
+                StringBuilder merged = new StringBuilder(fresh.getContent() != null ? fresh.getContent() : "");
+                for (WikiPageEntity loser : losers) {
+                    String body = loser.getContent();
+                    if (body == null || body.isBlank()) continue;
+                    // Repoint the loser's own self-links so the appended text
+                    // targets the winner rather than the soon-deleted slug.
+                    body = linkService.renameLink(body, loser.getSlug(), winnerSlug);
+                    merged.append("\n\n---\n\n")
+                          .append("> Merged from duplicate page `").append(loser.getSlug()).append("`");
+                    if (loser.getTitle() != null && !loser.getTitle().isBlank()) {
+                        merged.append(" (").append(loser.getTitle()).append(")");
+                    }
+                    merged.append("\n\n").append(body);
+                }
+                fresh.setContent(merged.toString());
+                fresh.setVersion((fresh.getVersion() == null ? 1 : fresh.getVersion()) + 1);
+                fresh.setUpdateTime(LocalDateTime.now());
+                applyLinkAnalysis(fresh);
+                pageMapper.updateById(fresh);
+            }
+        }
+
+        for (WikiPageEntity loser : losers) {
+            if (relationMapper != null) {
+                try {
+                    relationMapper.delete(new LambdaQueryWrapper<WikiRelationEntity>()
+                            .eq(WikiRelationEntity::getKbId, kbId)
+                            .and(w -> w.eq(WikiRelationEntity::getPageAId, loser.getId())
+                                    .or().eq(WikiRelationEntity::getPageBId, loser.getId())));
+                } catch (RuntimeException ignore) {
+                    // relation table is a reserved cache; cleanup is best-effort
+                }
+            }
+            pageMapper.deleteById(loser.getId());
+        }
+        evictSummaryCache(kbId);
     }
 
     /**

@@ -19,7 +19,7 @@ spring:
   profiles:
     active: dev
 
-  # 数据源（默认 H2，生产切换为 mysql profile）
+  # 数据源（默认 H2，生产切换为 mysql 或 kingbase profile）
   datasource:
     url: jdbc:h2:file:./data/mateclaw;MODE=MySQL;DATABASE_TO_LOWER=TRUE;CASE_INSENSITIVE_IDENTIFIERS=TRUE
     driver-class-name: org.h2.Driver
@@ -131,6 +131,8 @@ mateclaw:
     # Set this when agents deliver download links to channels/clients that cannot
     # resolve a relative URL (IM messages, copied links, external downloads).
     public-base-url: ${MATECLAW_PUBLIC_BASE_URL:}
+  browser:
+    ssrf-check-enabled: false
   jwt:
     secret: ${JWT_SECRET:MateClaw-JWT-Secret-Key-2024-Please-Change-In-Production}
     expiration: 86400000

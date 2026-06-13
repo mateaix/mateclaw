@@ -118,6 +118,14 @@ public class DatasourceConnectionManager implements DisposableBean {
                     extra = (extra == null || extra.isBlank()) ? schemaParam : extra + "&" + schemaParam;
                 }
                 break;
+            case "kingbase":
+            case "kingbasees":
+                baseUrl = String.format("jdbc:kingbase8://%s:%d/%s", host, port, dbName);
+                if (entity.getSchemaName() != null && !entity.getSchemaName().isBlank()) {
+                    String schemaParam = "currentSchema=" + entity.getSchemaName();
+                    extra = (extra == null || extra.isBlank()) ? schemaParam : extra + "&" + schemaParam;
+                }
+                break;
             case "clickhouse":
                 baseUrl = String.format("jdbc:clickhouse://%s:%d/%s", host, port, dbName);
                 break;

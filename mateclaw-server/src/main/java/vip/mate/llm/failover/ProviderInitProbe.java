@@ -79,6 +79,7 @@ public class ProviderInitProbe {
         this.strategies = map;
     }
 
+    @Async
     @EventListener(ApplicationReadyEvent.class)
     public void onApplicationReady() {
         probeAllConfigured();

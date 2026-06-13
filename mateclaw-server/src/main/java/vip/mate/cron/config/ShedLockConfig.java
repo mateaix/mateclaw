@@ -42,7 +42,9 @@ public class ShedLockConfig {
                 JdbcTemplateLockProvider.Configuration.builder()
                         .withJdbcTemplate(new JdbcTemplate(dataSource))
                         .withTableName("shedlock")
-                        .usingDbTime() // server-side NOW() — avoids node clock drift
+                        // usingDbTime() removed — KingbaseES not in ShedLock's
+                        // built-in dialect map; app-server time is sufficient
+                        // given lockAtMostFor=PT30M
                         .build()
         );
     }

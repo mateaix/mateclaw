@@ -1,0 +1,71 @@
+spring:
+  datasource:
+    # 人大金仓 KingbaseES 数据源配置
+    # 默认连接参数：
+    #   DB_HOST=localhost, DB_PORT=54321, DB_NAME=mateclaw
+    # KingbaseES 基于 PostgreSQL，兼容 PostgreSQL JDBC 协议
+    # 通过环境变量覆盖：DB_HOST, DB_PORT, DB_NAME, DB_USERNAME, DB_PASSWORD
+    #
+    # JDBC 超时参数说明：
+    #   connectTimeout=10  — TCP 连接超时（秒），避免 OS 级超时（60-180s）
+    #   socketTimeout=30   — socket 读取超时（秒），防止僵死连接永久阻塞
+    #   loginTimeout=10    — 数据库登录超时（秒）
+    url: jdbc:kingbase8://${DB_HOST:localhost}:${DB_PORT:54321}/${DB_NAME:mateclaw}?currentSchema=mateclaw&connectTimeout=10&socketTimeout=30&loginTimeout=10
+    driver-class-name: com.kingbase8.Driver
+    username: ${DB_USERNAME:system}
+    password: ${DB_PASSWORD:Admin2026@123}
+    hikari:
+      maximum-pool-size: 30
+      minimum-idle: 5
+      connection-timeout: 30000
+      idle-timeout: 300000
+      # 原 1800000(30min) 与巡检中观察到的 30min 卡住周期吻合 — 若存在连接泄漏，
+      # 30min 后 HikariCP 强制回收旧连接才恢复。降至 10min 加快故障自愈速度。
+      max-lifetime: 600000
+      leak-detection-threshold: 30000
+      # 连接池初始化超时：若在此时长内无法获取首个有效连接，快速失败而非无限等待
+      initialization-fail-timeout: 30000
+      # Kingbase ES：每个新连接初始化时强制设置 search_path，
+      # 作为 currentSchema 参数的双重保障，防止连接落入 public schema
+      connection-init-sql: SET search_path TO mateclaw
+
+  flyway:
+    # Flyway uses PostgreSQL JDBC driver because KingbaseES is PostgreSQL-compatible
+    # on the wire protocol level. The application runtime (MyBatis) still uses the
+    # Kingbase8 driver for production queries.
+    #
+    # JDBC 超时参数：避免 Flyway 连接阶段也因 OS 级 TCP 超时而"卡住"
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:54321}/${DB_NAME:mateclaw}?currentSchema=mateclaw&connectTimeout=10&socketTimeout=30&loginTimeout=10
+    user: ${DB_USERNAME:system}
+    password: ${DB_PASSWORD:Admin2026@123}
+    locations:
+      - classpath:db/migration/kingbase
+    # 迁移前确保目标 schema 存在（Kingbase 不会自动创建非 public schema）
+    init-sqls:
+      - CREATE SCHEMA IF NOT EXISTS mateclaw
+    # 首次迁移或脚本变更后跳过 checksum 校验，避免因脚本转换导致的校验失败卡住
+    validate-on-migrate: false
+
+  h2:
+    console:
+      enabled: false
+
+# MyBatis Plus — Kingbase ES 显式数据库类型
+# PaginationInnerInterceptor 使用无参构造时依赖 JDBC URL 自动检测，
+# 在 DataSource 代理/包装层下可能检测失败回退到 MYSQL 方言，
+# 导致分页 SQL 生成 LIMIT offset,count 而非 LIMIT count OFFSET offset。
+# 显式指定 kingbase_es 确保所有分页/ID生成/批量操作使用正确的方言。
+mybatis-plus:
+  global-config:
+    db-config:
+      db-type: kingbase_es
+
+# Production (multi-tenant server) hardening: fail closed on source-path
+# validation. With no allowed-source-roots configured, every KB source
+# directory is rejected rather than allowing full-filesystem reads — so a
+# missing allow-list cannot silently re-open arbitrary directory scanning.
+# Operators set mate.wiki.allowed-source-roots to permit specific roots.
+# The default profile (H2 / desktop / single-tenant) leaves this off.
+mate:
+  wiki:
+    require-allowed-roots: true

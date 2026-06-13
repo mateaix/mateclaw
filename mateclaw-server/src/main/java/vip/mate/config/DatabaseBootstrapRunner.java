@@ -38,8 +38,11 @@ public class DatabaseBootstrapRunner implements ApplicationRunner {
     private final DataSource dataSource;
     private final JdbcTemplate jdbcTemplate;
 
-    /** Cached flag: true when running on MySQL/MariaDB, false for H2. */
+    /** Cached flag: true when running on MySQL/MariaDB, false for H2/Kingbase. */
     private volatile Boolean isMySQL;
+
+    /** Cached flag: true when running on KingbaseES. */
+    private volatile Boolean isKingbase;
 
     /**
      * When true, wait for Desktop splash screen to call /setup/init with chosen language.
@@ -111,6 +114,8 @@ public class DatabaseBootstrapRunner implements ApplicationRunner {
             String scriptName;
             if (isMySQL()) {
                 scriptName = "en-US".equals(locale) ? "db/data-mysql-en.sql" : "db/data-mysql-zh.sql";
+            } else if (isKingbase()) {
+                scriptName = "en-US".equals(locale) ? "db/data-kingbase-en.sql" : "db/data-kingbase-zh.sql";
             } else {
                 scriptName = "en-US".equals(locale) ? "db/data-en.sql" : "db/data-zh.sql";
             }
@@ -159,13 +164,27 @@ public class DatabaseBootstrapRunner implements ApplicationRunner {
             try (Connection connection = dataSource.getConnection()) {
                 String dbProduct = connection.getMetaData().getDatabaseProductName().toLowerCase();
                 isMySQL = dbProduct.contains("mysql") || dbProduct.contains("mariadb");
-                log.info("Detected database: {} (MySQL mode: {})", dbProduct, isMySQL);
+                isKingbase = dbProduct.contains("kingbase");
+                if (isKingbase) {
+                    log.info("Detected database: {} (KingbaseES mode)", dbProduct);
+                } else {
+                    log.info("Detected database: {} (MySQL mode: {})", dbProduct, isMySQL);
+                }
             } catch (Exception e) {
                 log.warn("Failed to detect database type, falling back to H2 mode", e);
                 isMySQL = false;
+                isKingbase = false;
             }
         }
         return isMySQL;
+    }
+
+    private boolean isKingbase() {
+        if (isKingbase == null) {
+            // Trigger detection
+            isMySQL();
+        }
+        return isKingbase != null && isKingbase;
     }
 
     private void runScript(String path) {
