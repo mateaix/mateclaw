@@ -235,10 +235,14 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
 
     record RecentFileEntry(String fileName, String path, String fileUrl, String contentType) {}
 
-    private final Cache<String, List<RecentFileEntry>> recentFileCache = Caffeine.newBuilder()
+    // Package-private for testing: seed the cache directly to verify injection paths.
+    final Cache<String, List<RecentFileEntry>> recentFileCache = Caffeine.newBuilder()
             .expireAfterWrite(RECENT_FILE_TTL_MINUTES, TimeUnit.MINUTES)
             .maximumSize(200)
             .build();
+
+    // Package-private for testing: redirect to a temp directory without touching real disk.
+    Path chatUploadsRoot = Path.of("data", "chat-uploads");
 
     public FeishuChannelAdapter(ChannelEntity channelEntity,
                                 ChannelMessageRouter messageRouter,
@@ -1787,7 +1791,7 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
             if (dl == null) return null;
 
             // Save to data/chat-uploads/{conversationId}/
-            Path uploadDir = Path.of("data", "chat-uploads", conversationId);
+            Path uploadDir = chatUploadsRoot.resolve(conversationId);
             Files.createDirectories(uploadDir);
             String rawName = (dl.fileName() != null && !dl.fileName().isBlank())
                     ? dl.fileName() : fileKey;
@@ -1829,7 +1833,8 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
      *
      * @return updated textContent with file descriptions appended
      */
-    private String injectRecentFiles(String conversationId, List<MessageContentPart> parts, String textContent) {
+    // Package-private for testing.
+    String injectRecentFiles(String conversationId, List<MessageContentPart> parts, String textContent) {
         List<RecentFileEntry> recent = recentFileCache.getIfPresent(conversationId);
         if (recent == null || recent.isEmpty()) {
             // Fallback: scan data/chat-uploads/{conversationId}/ on disk.
@@ -1876,11 +1881,27 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
      * are still on disk.
      */
     private List<RecentFileEntry> loadRecentFilesFromDisk(String conversationId) {
-        Path dir = Path.of("data", "chat-uploads", conversationId);
+        long cutoff = System.currentTimeMillis() - RECENT_FILE_TTL_MINUTES * 60_000L;
+        return loadRecentFilesFromDisk(chatUploadsRoot.resolve(conversationId), cutoff);
+    }
+
+    /**
+     * Package-private for testing: explicit {@code dir} and {@code cutoffMs} make the
+     * test deterministic without temp-directory path construction or time mocking.
+     * Production callers go through {@link #loadRecentFilesFromDisk(String)}.
+     */
+    List<RecentFileEntry> loadRecentFilesFromDisk(Path dir, long cutoffMs) {
         if (!Files.isDirectory(dir)) return List.of();
         try (var stream = Files.list(dir)) {
             return stream
                     .filter(Files::isRegularFile)
+                    .filter(p -> {
+                        try {
+                            return Files.getLastModifiedTime(p).toMillis() >= cutoffMs;
+                        } catch (Exception e) {
+                            return true;
+                        }
+                    })
                     .sorted((a, b) -> {
                         try {
                             return Long.compare(
