@@ -46,7 +46,10 @@ const router = createRouter({
           redirect: { path: '/agents', query: { view: 'live' } },
         },
         {
-          path: 'wiki',
+          // Optional :kbId path param so an open knowledge base survives a
+          // manual page refresh (without it, reload drops back to the library
+          // list). The legacy ?kbId=&slug= query form still resolves here too.
+          path: 'wiki/:kbId?',
           name: 'Wiki',
           component: () => import('@/views/Wiki/index.vue'),
           meta: { title: 'Wiki', requiredCapability: 'view:wiki' },
