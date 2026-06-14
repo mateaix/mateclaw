@@ -1426,3 +1426,26 @@ export const approvalApi = {
     limit?: number
   }) => http.get<ResolutionLog[]>('/approval/resolutions', { params }),
 }
+
+// ==================== 内置帮助文档 ====================
+
+export interface DocMeta {
+  slug: string
+  title: string
+}
+
+export interface DocContent {
+  slug: string
+  title: string
+  content: string
+}
+
+export const docsApi = {
+  /** 列出某语言下的全部帮助文档（slug + 标题）。 */
+  list: (lang: string) =>
+    http.get<DocMeta[]>('/docs', { params: { lang } }),
+
+  /** 读取单篇文档正文（已剥离 frontmatter）。 */
+  content: (lang: string, slug: string) =>
+    http.get<DocContent>('/docs/content', { params: { lang, slug } }),
+}
