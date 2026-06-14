@@ -66,6 +66,14 @@ const router = createRouter({
           component: () => import('@/views/Memory/index.vue'),
           meta: { title: 'Memory', requiredCapability: 'view:memory' },
         },
+        {
+          // 内置帮助文档查看器。:slug? 让刷新 / 收藏能恢复当前文档。
+          // 不加 requiredCapability —— 所有登录用户可见。
+          path: 'docs/:slug?',
+          name: 'Docs',
+          component: () => import('@/views/Docs/index.vue'),
+          meta: { title: 'Docs' },
+        },
         // ==================== Connect ====================
         {
           path: 'channels',

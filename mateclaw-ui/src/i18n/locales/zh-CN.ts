@@ -413,6 +413,9 @@ export default {
     timeMinutesAgo: '{n} 分钟前',
     timeHoursAgo: '{n} 小时前',
   },
+  docs: {
+    title: '帮助文档',
+  },
   nav: {
     dashboard: '仪表盘',
     chat: '对话',
@@ -439,6 +442,7 @@ export default {
     settingsGroup: '设置',
     agents: '员工',
     security: '安全',
+    docs: '帮助文档',
     tokenUsage: 'Token 统计',
     cronJobs: '定时任务',
     scheduler: '调度中心',
