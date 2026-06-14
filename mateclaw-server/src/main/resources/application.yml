@@ -131,8 +131,6 @@ mateclaw:
     # Set this when agents deliver download links to channels/clients that cannot
     # resolve a relative URL (IM messages, copied links, external downloads).
     public-base-url: ${MATECLAW_PUBLIC_BASE_URL:}
-  browser:
-    ssrf-check-enabled: false
   jwt:
     secret: ${JWT_SECRET:MateClaw-JWT-Secret-Key-2024-Please-Change-In-Production}
     expiration: 86400000
