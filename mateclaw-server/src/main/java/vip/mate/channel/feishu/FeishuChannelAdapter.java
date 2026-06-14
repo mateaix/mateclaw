@@ -1922,7 +1922,9 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
                     })
                     .toList();
         } catch (Exception e) {
-            log.debug("[feishu] Failed to scan disk for recent files in {}: {}", dir, e.getMessage());
+            // warn (not debug): a failed disk scan silently drops recovered files, which
+            // reproduces the exact "bot can't see the file" symptom this fallback fixes.
+            log.warn("[feishu] Failed to scan disk for recent files in {}: {}", dir, e.getMessage(), e);
             return List.of();
         }
     }

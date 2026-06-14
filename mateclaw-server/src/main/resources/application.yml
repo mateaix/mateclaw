@@ -19,7 +19,7 @@ spring:
   profiles:
     active: dev
 
-  # 数据源（默认 H2，生产切换为 mysql profile）
+  # 数据源（默认 H2，生产切换为 mysql 或 kingbase profile）
   datasource:
     url: jdbc:h2:file:./data/mateclaw;MODE=MySQL;DATABASE_TO_LOWER=TRUE;CASE_INSENSITIVE_IDENTIFIERS=TRUE
     driver-class-name: org.h2.Driver

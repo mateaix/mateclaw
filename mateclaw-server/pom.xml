@@ -344,10 +344,30 @@
             <groupId>org.flywaydb</groupId>
             <artifactId>flyway-mysql</artifactId>
         </dependency>
+        <!-- Flyway PostgreSQL support (used by KingbaseES as well since KingbaseES is PostgreSQL-compatible) -->
         <dependency>
             <groupId>org.flywaydb</groupId>
             <artifactId>flyway-database-postgresql</artifactId>
         </dependency>
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <version>42.7.7</version>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!--
+            KingbaseES (人大金仓) JDBC driver is NOT on Maven Central, so it is
+            declared in the opt-in `kingbase` Maven profile instead of here.
+            The default build never resolves it. To build with KingbaseES:
+              1. install the driver:  mvn install:install-file \
+                   -Dfile=${KINGBASE_HOME}/Interface/jdbc/kingbase8-8.6.0.jar \
+                   -DgroupId=com.kingbase8 -DartifactId=kingbase8 \
+                   -Dversion=8.6.0 -Dpackaging=jar
+              2. build with the profile:  mvn package -Pkingbase
+            No Java code imports com.kingbase8.* — the driver is loaded at
+            runtime via spring.datasource.driver-class-name only.
+        -->
 
         <!-- ===== Spring Boot Test ===== -->
         <dependency>
@@ -480,6 +500,25 @@
                     </plugin>
                 </plugins>
             </build>
+        </profile>
+
+        <!--
+          Profile: KingbaseES (人大金仓) JDBC driver.
+          The driver is not published to Maven Central, so it is kept out of the
+          default build to keep `mvn package` resolvable for everyone. Install the
+          driver into the local repository, then build with `mvn package -Pkingbase`.
+          Runtime selection is via the `kingbase` Spring profile (application-kingbase.yml).
+        -->
+        <profile>
+            <id>kingbase</id>
+            <dependencies>
+                <dependency>
+                    <groupId>com.kingbase8</groupId>
+                    <artifactId>kingbase8</artifactId>
+                    <version>8.6.0</version>
+                    <scope>runtime</scope>
+                </dependency>
+            </dependencies>
         </profile>
     </profiles>
 </project>
