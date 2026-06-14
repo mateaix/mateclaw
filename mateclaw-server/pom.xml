@@ -337,6 +337,39 @@
             <groupId>org.flywaydb</groupId>
             <artifactId>flyway-mysql</artifactId>
         </dependency>
+        <!-- Flyway PostgreSQL support (used by KingbaseES as well since KingbaseES is PostgreSQL-compatible) -->
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <version>42.7.7</version>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!-- ===== KingbaseES (人大金仓) JDBC Driver ===== -->
+        <!--
+            KingbaseES JDBC driver is NOT available on Maven Central.
+            Install it manually before building:
+              mvn install:install-file \\
+                -Dfile=/path/to/kingbase8-8.6.0.jar \\
+                -DgroupId=com.kingbase8 \\
+                -DartifactId=kingbase8 \\
+                -Dversion=8.6.0 \\
+                -Dpackaging=jar
+
+            Or configure a private Maven repository that hosts the driver.
+            The driver JAR can be obtained from the KingbaseES installation
+            directory: ${KINGBASE_HOME}/Interface/jdbc/kingbase8-8.6.0.jar
+        -->
+        <dependency>
+            <groupId>com.kingbase8</groupId>
+            <artifactId>kingbase8</artifactId>
+            <version>8.6.0</version>
+            <scope>runtime</scope>
+        </dependency>
 
         <!-- ===== Spring Boot Test ===== -->
         <dependency>

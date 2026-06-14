@@ -2,6 +2,7 @@ package vip.mate.memory.fact.projection;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import vip.mate.agent.AgentService;
@@ -14,6 +15,9 @@ import java.util.List;
  * Scheduled full rebuild of the fact projection for all active agents.
  * Cron expression configured via mate.memory.fact.projection-rebuild-cron.
  * Only runs when projection-enabled=true.
+ * <p>
+ * {@code @Async} keeps the scheduler-thread pool free — the actual DB
+ * work runs on the virtual-thread async executor.
  *
  * @author MateClaw Team
  */
@@ -26,6 +30,7 @@ public class FactProjectionScheduler {
     private final FactProjectionBuilder projectionBuilder;
     private final MemoryProperties properties;
 
+    @Async
     @Scheduled(cron = "${mate.memory.fact.projection-rebuild-cron:0 */30 * * * ?}")
     public void rebuildAll() {
         if (!properties.getFact().isProjectionEnabled()) {
