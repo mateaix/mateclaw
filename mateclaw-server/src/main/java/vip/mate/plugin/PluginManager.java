@@ -7,6 +7,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
 import org.springframework.core.annotation.Order;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Component;
 import vip.mate.channel.ChannelManager;
 import vip.mate.llm.service.ModelProviderService;
@@ -65,7 +66,9 @@ public class PluginManager {
      * Load all plugins on application startup.
      * Scans three paths in priority order: workspace > user-global.
      * Higher priority plugins shadow lower priority ones with the same name.
+     * {@code @Async} — 文件系统扫描和 JAR 类加载不阻塞主启动线程。
      */
+    @Async
     @EventListener(ApplicationReadyEvent.class)
     @Order(250)
     public void loadAllPlugins() {

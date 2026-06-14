@@ -1,0 +1,71 @@
+spring:
+  datasource:
+    # PostgreSQL data source.
+    # Default connection parameters:
+    #   DB_HOST=localhost, DB_PORT=5432, DB_NAME=mateclaw
+    # Override via env vars: DB_HOST, DB_PORT, DB_NAME, DB_USERNAME, DB_PASSWORD
+    #
+    # JDBC timeouts:
+    #   connectTimeout=10  — TCP connect timeout (s), avoids OS-level stalls
+    #   socketTimeout=30   — socket read timeout (s), prevents dead connections hanging forever
+    #   loginTimeout=10    — database login timeout (s)
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:mateclaw}?currentSchema=mateclaw&connectTimeout=10&socketTimeout=30&loginTimeout=10
+    driver-class-name: org.postgresql.Driver
+    username: ${DB_USERNAME:postgres}
+    password: ${DB_PASSWORD:postgres}
+    hikari:
+      maximum-pool-size: 30
+      minimum-idle: 5
+      connection-timeout: 30000
+      idle-timeout: 300000
+      # Recycle connections after 10 min so a leak self-heals quickly rather
+      # than surfacing as a ~30 min stall.
+      max-lifetime: 600000
+      leak-detection-threshold: 30000
+      # Fail fast if the first valid connection can't be obtained in time.
+      initialization-fail-timeout: 30000
+      # Force search_path on every new connection as a belt-and-suspenders
+      # guard alongside currentSchema, so connections never land in public.
+      connection-init-sql: SET search_path TO mateclaw
+
+  flyway:
+    # PostgreSQL and KingbaseES share the same migration tree
+    # (db/migration/kingbase) because they use the same SQL dialect.
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:mateclaw}?currentSchema=mateclaw&connectTimeout=10&socketTimeout=30&loginTimeout=10
+    user: ${DB_USERNAME:postgres}
+    password: ${DB_PASSWORD:postgres}
+    locations:
+      - classpath:db/migration/kingbase
+    # Ensure the target schema exists before migrating (PostgreSQL won't
+    # auto-create a non-public schema).
+    init-sqls:
+      - CREATE SCHEMA IF NOT EXISTS mateclaw
+    # Skip checksum validation so an in-place migration edit doesn't block startup.
+    validate-on-migrate: false
+
+  h2:
+    console:
+      enabled: false
+
+# MyBatis Plus — explicit PostgreSQL dialect.
+# The no-arg PaginationInnerInterceptor auto-detects from the JDBC URL, which
+# can fail under a wrapped/proxied DataSource and fall back to the MySQL
+# dialect (LIMIT offset,count). Pin postgre_sql so pagination / ID generation /
+# batch operations always use the correct dialect.
+mybatis-plus:
+  global-config:
+    db-config:
+      db-type: postgre_sql
+
+# Production (multi-tenant server) hardening: fail closed on Wiki source-path
+# validation. With no allowed-source-roots configured, every KB source
+# directory is rejected rather than allowing full-filesystem reads — a missing
+# allow-list cannot silently re-open arbitrary directory scanning. Override
+# MATE_WIKI_ALLOWED_SOURCE_ROOTS to permit specific roots. The default profile
+# (H2 / desktop / single-tenant) leaves this off.
+mate:
+  wiki:
+    require-allowed-roots: true
+    allowed-source-roots: ${MATE_WIKI_ALLOWED_SOURCE_ROOTS:}
+    watcher-enabled: ${MATE_WIKI_WATCHER_ENABLED:false}
+    watcher-interval-ms: ${MATE_WIKI_WATCHER_INTERVAL_MS:300000}

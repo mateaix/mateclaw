@@ -9,6 +9,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import javax.sql.DataSource;
+import java.sql.Connection;
 
 /**
  * RFC-03 Lane G2 — distributed lock provider for the cron scheduler.
@@ -37,13 +38,38 @@ public class ShedLockConfig {
 
     @Bean
     public LockProvider lockProvider(DataSource dataSource) {
-        log.info("[ShedLock] Initializing JDBC LockProvider for cron scheduling");
-        return new JdbcTemplateLockProvider(
+        boolean useDbTime = supportsDbTime(dataSource);
+        log.info("[ShedLock] Initializing JDBC LockProvider for cron scheduling (usingDbTime={})", useDbTime);
+
+        JdbcTemplateLockProvider.Configuration.Builder builder =
                 JdbcTemplateLockProvider.Configuration.builder()
                         .withJdbcTemplate(new JdbcTemplate(dataSource))
-                        .withTableName("shedlock")
-                        .usingDbTime() // server-side NOW() — avoids node clock drift
-                        .build()
-        );
+                        .withTableName("shedlock");
+
+        // Server-side DB time (NOW()) avoids node clock drift across a
+        // multi-instance deployment. ShedLock's built-in db-time dialect map
+        // covers MySQL/MariaDB, PostgreSQL, H2, etc. KingbaseES is not in that
+        // map, so usingDbTime() would throw there — fall back to app-server
+        // time for it, which is safe given lockAtMostFor=PT30M.
+        if (useDbTime) {
+            builder.usingDbTime();
+        }
+        return new JdbcTemplateLockProvider(builder.build());
+    }
+
+    /**
+     * Returns true when the DataSource's database is covered by ShedLock's
+     * built-in db-time dialect map. Only KingbaseES is excluded; on any
+     * detection failure we conservatively return false so the lock provider
+     * never throws at acquisition time.
+     */
+    private boolean supportsDbTime(DataSource dataSource) {
+        try (Connection connection = dataSource.getConnection()) {
+            String product = connection.getMetaData().getDatabaseProductName().toLowerCase();
+            return !product.contains("kingbase");
+        } catch (Exception e) {
+            log.warn("[ShedLock] Could not detect database product; using app-server time: {}", e.getMessage());
+            return false;
+        }
     }
 }

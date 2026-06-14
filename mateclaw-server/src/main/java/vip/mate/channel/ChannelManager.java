@@ -6,6 +6,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Component;
 import vip.mate.channel.dingtalk.DingTalkChannelAdapter;
 import vip.mate.channel.discord.DiscordChannelAdapter;
@@ -230,9 +231,12 @@ public class ChannelManager {
     );
 
     /**
-     * 应用启动完成后自动加载并启动所有已启用的渠道
-     * 使用 ApplicationReadyEvent 确保数据库 schema/data 初始化完成
+     * 应用启动完成后自动加载并启动所有已启用的渠道。
+     * 使用 ApplicationReadyEvent 确保数据库 schema/data 初始化完成。
+     * {@code @Async} — 渠道适配器的网络建连（如 Discord WebSocket / Telegram webhook）
+     * 可能因外部网络不可达而阻塞数分钟，异步启动避免卡住主线程。
      */
+    @Async
     @EventListener(ApplicationReadyEvent.class)
     public void init() {
         log.info("Initializing ChannelManager...");

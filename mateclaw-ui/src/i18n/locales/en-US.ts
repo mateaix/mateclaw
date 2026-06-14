@@ -413,6 +413,9 @@ export default {
     timeMinutesAgo: '{n}m ago',
     timeHoursAgo: '{n}h ago',
   },
+  docs: {
+    title: 'Docs',
+  },
   nav: {
     dashboard: 'Dashboard',
     chat: 'Chat',
@@ -439,6 +442,7 @@ export default {
     settingsGroup: 'Settings',
     agents: 'Employees',
     security: 'Security',
+    docs: 'Docs',
     tokenUsage: 'Token Usage',
     cronJobs: 'Cron Jobs',
     scheduler: 'Scheduler',
