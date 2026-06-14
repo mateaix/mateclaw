@@ -2,9 +2,10 @@
 --
 -- Step 1 — rename pre-existing duplicates. PostgreSQL uses UPDATE ... FROM
 -- instead of MySQL's UPDATE ... JOIN syntax, and || instead of CONCAT.
--- SYS_GUID() replaces MySQL's UUID() for deterministic collision avoidance.
+-- md5(random()::text) gives a unique suffix and is portable across both
+-- PostgreSQL and KingbaseES (avoids the Kingbase-only SYS_GUID()).
 UPDATE mate_agent t
-SET name = '__mate_dup_v102__' || t.id || '__' || SYS_GUID()
+SET name = '__mate_dup_v102__' || t.id || '__' || md5(random()::text)
 FROM (
     SELECT workspace_id, name, MIN(id) AS keep_id
     FROM mate_agent

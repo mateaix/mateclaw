@@ -1,53 +1,53 @@
--- MateClaw Seed Data - English (MySQL/MariaDB compatible, ON DUPLICATE KEY UPDATE)
+-- MateClaw Seed Data - English (KingbaseES / PostgreSQL syntax, ON CONFLICT DO UPDATE)
 
 -- Default admin (password: admin123, BCrypt encrypted)
 INSERT INTO mate_user (id, username, password, nickname, role, enabled, create_time, update_time, deleted)
-VALUES (1, 'admin', '$2a$10$7JB720yubVSZvUI0rEqK/.VqGOZTH.ulu33dHOiBE8ByOhJIrdAu2', 'MateClaw Admin', 'admin', TRUE, NOW(), NOW(), 0)
+VALUES (1, 'admin', '$2a$10$7JB720yubVSZvUI0rEqK/.VqGOZTH.ulu33dHOiBE8ByOhJIrdAu2', 'MateClaw Admin', 'admin', 1, NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET username=EXCLUDED.username, password=EXCLUDED.password, nickname=EXCLUDED.nickname, role=EXCLUDED.role, enabled=EXCLUDED.enabled, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
 -- Default digital employee: General Assistant (ReAct mode)
 INSERT INTO mate_agent (id, name, description, agent_type, system_prompt, model_name, max_iterations, enabled, icon, tags, create_time, update_time, deleted)
 VALUES (1000000001, 'General Assistant', 'All-purpose helper for day-to-day questions, data analysis, and tool calling', 'react',
         'You are MateClaw''s General Assistant. You can help users answer questions, analyze data, and call tools to get things done. Please respond professionally and in a friendly manner.',
-        NULL, 100, TRUE, 'pi:robot-face-happy', 'default,assistant', NOW(), NOW(), 0)
+        NULL, 100, 1, 'pi:robot-face-happy', 'default,assistant', NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, description=EXCLUDED.description, agent_type=EXCLUDED.agent_type, system_prompt=EXCLUDED.system_prompt, model_name=EXCLUDED.model_name, max_iterations=EXCLUDED.max_iterations, enabled=EXCLUDED.enabled, icon=EXCLUDED.icon, tags=EXCLUDED.tags, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
 -- Default digital employee: Task Planner (Plan-Execute mode)
 INSERT INTO mate_agent (id, name, description, agent_type, system_prompt, model_name, max_iterations, enabled, icon, tags, create_time, update_time, deleted)
 VALUES (1000000002, 'Task Planner', 'Breaks complex goals into executable steps and drives them forward to completion', 'plan_execute',
         'You are a professional Task Planner. You excel at breaking complex goals into executable steps and completing them systematically.',
-        NULL, 100, TRUE, 'pi:clipboard-note', 'planning,task', NOW(), NOW(), 0)
+        NULL, 100, 1, 'pi:clipboard-note', 'planning,task', NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, description=EXCLUDED.description, agent_type=EXCLUDED.agent_type, system_prompt=EXCLUDED.system_prompt, model_name=EXCLUDED.model_name, max_iterations=EXCLUDED.max_iterations, enabled=EXCLUDED.enabled, icon=EXCLUDED.icon, tags=EXCLUDED.tags, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
 -- Default digital employee: Reasoning Analyst (explicit reasoning loops + tool calling)
 INSERT INTO mate_agent (id, name, description, agent_type, system_prompt, model_name, max_iterations, enabled, icon, tags, create_time, update_time, deleted)
 VALUES (1000000003, 'Reasoning Analyst', 'Thinks step by step with visible reasoning, ideal for problems that need thorough deliberation', 'react',
         'You are a Reasoning Analyst, an assistant that excels at deep reasoning. When facing a problem, first think through it step by step with a clear reasoning trace, then call tools or give the answer. Please respond professionally and in a friendly manner.',
-        NULL, 100, TRUE, 'pi:cpu', 'react,reasoning,tools', NOW(), NOW(), 0)
+        NULL, 100, 1, 'pi:cpu', 'react,reasoning,tools', NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, description=EXCLUDED.description, agent_type=EXCLUDED.agent_type, system_prompt=EXCLUDED.system_prompt, model_name=EXCLUDED.model_name, max_iterations=EXCLUDED.max_iterations, enabled=EXCLUDED.enabled, icon=EXCLUDED.icon, tags=EXCLUDED.tags, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
 -- ==================== Local Model Providers (displayed first) ====================
 
 INSERT INTO mate_model_provider (provider_id, name, api_key_prefix, chat_model, api_key, base_url, generate_kwargs, is_custom, is_local, support_model_discovery, support_connection_check, freeze_url, require_api_key, create_time, update_time)
-VALUES ('ollama', 'Ollama', '', 'OpenAIChatModel', 'ollama', 'http://127.0.0.1:11434', '{"max_tokens":null}', FALSE, TRUE, TRUE, TRUE, FALSE, FALSE, NOW(), NOW())
+VALUES ('ollama', 'Ollama', '', 'OpenAIChatModel', 'ollama', 'http://127.0.0.1:11434', '{"max_tokens":null}', 0, 1, 1, 1, 0, 0, NOW(), NOW())
 ON CONFLICT (provider_id) DO UPDATE SET name=EXCLUDED.name, api_key_prefix=EXCLUDED.api_key_prefix, chat_model=EXCLUDED.chat_model, api_key=EXCLUDED.api_key, base_url=EXCLUDED.base_url, generate_kwargs=EXCLUDED.generate_kwargs, is_custom=EXCLUDED.is_custom, is_local=EXCLUDED.is_local, support_model_discovery=EXCLUDED.support_model_discovery, support_connection_check=EXCLUDED.support_connection_check, freeze_url=EXCLUDED.freeze_url, require_api_key=EXCLUDED.require_api_key, update_time=EXCLUDED.update_time;
 
 INSERT INTO mate_model_provider (provider_id, name, api_key_prefix, chat_model, api_key, base_url, generate_kwargs, is_custom, is_local, support_model_discovery, support_connection_check, freeze_url, require_api_key, create_time, update_time)
-VALUES ('lmstudio', 'LM Studio', '', 'OpenAIChatModel', '', 'http://localhost:1234/v1', '{"max_tokens":null}', FALSE, TRUE, TRUE, TRUE, FALSE, FALSE, NOW(), NOW())
+VALUES ('lmstudio', 'LM Studio', '', 'OpenAIChatModel', '', 'http://localhost:1234/v1', '{"max_tokens":null}', 0, 1, 1, 1, 0, 0, NOW(), NOW())
 ON CONFLICT (provider_id) DO UPDATE SET name=EXCLUDED.name, api_key_prefix=EXCLUDED.api_key_prefix, chat_model=EXCLUDED.chat_model, api_key=EXCLUDED.api_key, base_url=EXCLUDED.base_url, generate_kwargs=EXCLUDED.generate_kwargs, is_custom=EXCLUDED.is_custom, is_local=EXCLUDED.is_local, support_model_discovery=EXCLUDED.support_model_discovery, support_connection_check=EXCLUDED.support_connection_check, freeze_url=EXCLUDED.freeze_url, require_api_key=EXCLUDED.require_api_key, update_time=EXCLUDED.update_time;
 
 INSERT INTO mate_model_provider (provider_id, name, api_key_prefix, chat_model, api_key, base_url, generate_kwargs, is_custom, is_local, support_model_discovery, support_connection_check, freeze_url, require_api_key, create_time, update_time)
-VALUES ('llamacpp', 'llama.cpp (Local)', '', 'OpenAIChatModel', '', '', '{}', FALSE, TRUE, FALSE, TRUE, FALSE, FALSE, NOW(), NOW())
+VALUES ('llamacpp', 'llama.cpp (Local)', '', 'OpenAIChatModel', '', '', '{}', 0, 1, 0, 1, 0, 0, NOW(), NOW())
 ON CONFLICT (provider_id) DO UPDATE SET name=EXCLUDED.name, api_key_prefix=EXCLUDED.api_key_prefix, chat_model=EXCLUDED.chat_model, api_key=EXCLUDED.api_key, base_url=EXCLUDED.base_url, generate_kwargs=EXCLUDED.generate_kwargs, is_custom=EXCLUDED.is_custom, is_local=EXCLUDED.is_local, support_model_discovery=EXCLUDED.support_model_discovery, support_connection_check=EXCLUDED.support_connection_check, freeze_url=EXCLUDED.freeze_url, require_api_key=EXCLUDED.require_api_key, update_time=EXCLUDED.update_time;
 
 INSERT INTO mate_model_provider (provider_id, name, api_key_prefix, chat_model, api_key, base_url, generate_kwargs, is_custom, is_local, support_model_discovery, support_connection_check, freeze_url, require_api_key, create_time, update_time)
-VALUES ('mlx', 'MLX (Local, Apple Silicon)', '', 'OpenAIChatModel', '', '', '{}', FALSE, TRUE, FALSE, TRUE, FALSE, FALSE, NOW(), NOW())
+VALUES ('mlx', 'MLX (Local, Apple Silicon)', '', 'OpenAIChatModel', '', '', '{}', 0, 1, 0, 1, 0, 0, NOW(), NOW())
 ON CONFLICT (provider_id) DO UPDATE SET name=EXCLUDED.name, api_key_prefix=EXCLUDED.api_key_prefix, chat_model=EXCLUDED.chat_model, api_key=EXCLUDED.api_key, base_url=EXCLUDED.base_url, generate_kwargs=EXCLUDED.generate_kwargs, is_custom=EXCLUDED.is_custom, is_local=EXCLUDED.is_local, support_model_discovery=EXCLUDED.support_model_discovery, support_connection_check=EXCLUDED.support_connection_check, freeze_url=EXCLUDED.freeze_url, require_api_key=EXCLUDED.require_api_key, update_time=EXCLUDED.update_time;
 
 -- ==================== Cloud Model Providers ====================
 
 INSERT INTO mate_model_provider (provider_id, name, api_key_prefix, chat_model, api_key, base_url, generate_kwargs, is_custom, is_local, support_model_discovery, support_connection_check, freeze_url, require_api_key, create_time, update_time)
-VALUES ('dashscope', 'DashScope', 'sk-', 'DashScopeChatModel', '', '', '{}', FALSE, FALSE, TRUE, TRUE, FALSE, TRUE, NOW(), NOW())
+VALUES ('dashscope', 'DashScope', 'sk-', 'DashScopeChatModel', '', '', '{}', 0, 0, 1, 1, 0, 1, NOW(), NOW())
 ON CONFLICT (provider_id) DO UPDATE SET name=EXCLUDED.name, api_key_prefix=EXCLUDED.api_key_prefix, chat_model=EXCLUDED.chat_model, api_key=EXCLUDED.api_key, base_url=EXCLUDED.base_url, generate_kwargs=EXCLUDED.generate_kwargs, is_custom=EXCLUDED.is_custom, is_local=EXCLUDED.is_local, support_model_discovery=EXCLUDED.support_model_discovery, support_connection_check=EXCLUDED.support_connection_check, freeze_url=EXCLUDED.freeze_url, require_api_key=EXCLUDED.require_api_key, update_time=EXCLUDED.update_time;
 
 -- DashScope OpenAI-compatible endpoint: shares the same sk- key as the
@@ -55,347 +55,347 @@ ON CONFLICT (provider_id) DO UPDATE SET name=EXCLUDED.name, api_key_prefix=EXCLU
 -- families (qwen3.5-*, qwen3.6-*) are only callable here; the native endpoint
 -- returns 400 InvalidParameter for them.
 INSERT INTO mate_model_provider (provider_id, name, api_key_prefix, chat_model, api_key, base_url, generate_kwargs, is_custom, is_local, support_model_discovery, support_connection_check, freeze_url, require_api_key, create_time, update_time)
-VALUES ('dashscope-compat', 'DashScope (OpenAI-compatible)', 'sk-', 'OpenAIChatModel', '', 'https://dashscope.aliyuncs.com/compatible-mode/v1', '{}', FALSE, FALSE, TRUE, TRUE, TRUE, TRUE, NOW(), NOW())
+VALUES ('dashscope-compat', 'DashScope (OpenAI-compatible)', 'sk-', 'OpenAIChatModel', '', 'https://dashscope.aliyuncs.com/compatible-mode/v1', '{}', 0, 0, 1, 1, 1, 1, NOW(), NOW())
 ON CONFLICT (provider_id) DO UPDATE SET name=EXCLUDED.name, api_key_prefix=EXCLUDED.api_key_prefix, chat_model=EXCLUDED.chat_model, api_key=EXCLUDED.api_key, base_url=EXCLUDED.base_url, generate_kwargs=EXCLUDED.generate_kwargs, is_custom=EXCLUDED.is_custom, is_local=EXCLUDED.is_local, support_model_discovery=EXCLUDED.support_model_discovery, support_connection_check=EXCLUDED.support_connection_check, freeze_url=EXCLUDED.freeze_url, require_api_key=EXCLUDED.require_api_key, update_time=EXCLUDED.update_time;
 
 INSERT INTO mate_model_provider (provider_id, name, api_key_prefix, chat_model, api_key, base_url, generate_kwargs, is_custom, is_local, support_model_discovery, support_connection_check, freeze_url, require_api_key, create_time, update_time)
-VALUES ('modelscope', 'ModelScope', 'ms', 'OpenAIChatModel', '', 'https://api-inference.modelscope.cn/v1', '{}', FALSE, FALSE, TRUE, TRUE, TRUE, TRUE, NOW(), NOW())
+VALUES ('modelscope', 'ModelScope', 'ms', 'OpenAIChatModel', '', 'https://api-inference.modelscope.cn/v1', '{}', 0, 0, 1, 1, 1, 1, NOW(), NOW())
 ON CONFLICT (provider_id) DO UPDATE SET name=EXCLUDED.name, api_key_prefix=EXCLUDED.api_key_prefix, chat_model=EXCLUDED.chat_model, api_key=EXCLUDED.api_key, base_url=EXCLUDED.base_url, generate_kwargs=EXCLUDED.generate_kwargs, is_custom=EXCLUDED.is_custom, is_local=EXCLUDED.is_local, support_model_discovery=EXCLUDED.support_model_discovery, support_connection_check=EXCLUDED.support_connection_check, freeze_url=EXCLUDED.freeze_url, require_api_key=EXCLUDED.require_api_key, update_time=EXCLUDED.update_time;
 
 INSERT INTO mate_model_provider (provider_id, name, api_key_prefix, chat_model, api_key, base_url, generate_kwargs, is_custom, is_local, support_model_discovery, support_connection_check, freeze_url, require_api_key, create_time, update_time)
-VALUES ('aliyun-codingplan', 'Aliyun Coding Plan', 'sk-sp', 'OpenAIChatModel', '', 'https://coding.dashscope.aliyuncs.com/v1', '{}', FALSE, FALSE, FALSE, FALSE, TRUE, TRUE, NOW(), NOW())
+VALUES ('aliyun-codingplan', 'Aliyun Coding Plan', 'sk-sp', 'OpenAIChatModel', '', 'https://coding.dashscope.aliyuncs.com/v1', '{}', 0, 0, 0, 0, 1, 1, NOW(), NOW())
 ON CONFLICT (provider_id) DO UPDATE SET name=EXCLUDED.name, api_key_prefix=EXCLUDED.api_key_prefix, chat_model=EXCLUDED.chat_model, api_key=EXCLUDED.api_key, base_url=EXCLUDED.base_url, generate_kwargs=EXCLUDED.generate_kwargs, is_custom=EXCLUDED.is_custom, is_local=EXCLUDED.is_local, support_model_discovery=EXCLUDED.support_model_discovery, support_connection_check=EXCLUDED.support_connection_check, freeze_url=EXCLUDED.freeze_url, require_api_key=EXCLUDED.require_api_key, update_time=EXCLUDED.update_time;
 
 INSERT INTO mate_model_provider (provider_id, name, api_key_prefix, chat_model, api_key, base_url, generate_kwargs, is_custom, is_local, support_model_discovery, support_connection_check, freeze_url, require_api_key, create_time, update_time)
-VALUES ('aliyun-codingplan-intl', 'Aliyun Coding Plan (International)', 'sk-sp', 'OpenAIChatModel', '', 'https://coding-intl.dashscope.aliyuncs.com/v1', '{}', FALSE, FALSE, FALSE, FALSE, TRUE, TRUE, NOW(), NOW())
+VALUES ('aliyun-codingplan-intl', 'Aliyun Coding Plan (International)', 'sk-sp', 'OpenAIChatModel', '', 'https://coding-intl.dashscope.aliyuncs.com/v1', '{}', 0, 0, 0, 0, 1, 1, NOW(), NOW())
 ON CONFLICT (provider_id) DO UPDATE SET name=EXCLUDED.name, api_key_prefix=EXCLUDED.api_key_prefix, chat_model=EXCLUDED.chat_model, api_key=EXCLUDED.api_key, base_url=EXCLUDED.base_url, generate_kwargs=EXCLUDED.generate_kwargs, is_custom=EXCLUDED.is_custom, is_local=EXCLUDED.is_local, support_model_discovery=EXCLUDED.support_model_discovery, support_connection_check=EXCLUDED.support_connection_check, freeze_url=EXCLUDED.freeze_url, require_api_key=EXCLUDED.require_api_key, update_time=EXCLUDED.update_time;
 
 INSERT INTO mate_model_provider (provider_id, name, api_key_prefix, chat_model, api_key, base_url, generate_kwargs, is_custom, is_local, support_model_discovery, support_connection_check, freeze_url, require_api_key, create_time, update_time)
-VALUES ('bailian-team', 'Bailian Token Plan', 'sk-', 'OpenAIChatModel', '', 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1', '{}', FALSE, FALSE, FALSE, TRUE, TRUE, TRUE, NOW(), NOW())
+VALUES ('bailian-team', 'Bailian Token Plan', 'sk-', 'OpenAIChatModel', '', 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1', '{}', 0, 0, 0, 1, 1, 1, NOW(), NOW())
 ON CONFLICT (provider_id) DO UPDATE SET name=EXCLUDED.name, api_key_prefix=EXCLUDED.api_key_prefix, chat_model=EXCLUDED.chat_model, api_key=EXCLUDED.api_key, base_url=EXCLUDED.base_url, generate_kwargs=EXCLUDED.generate_kwargs, is_custom=EXCLUDED.is_custom, is_local=EXCLUDED.is_local, support_model_discovery=EXCLUDED.support_model_discovery, support_connection_check=EXCLUDED.support_connection_check, freeze_url=EXCLUDED.freeze_url, require_api_key=EXCLUDED.require_api_key, update_time=EXCLUDED.update_time;
 
 INSERT INTO mate_model_provider (provider_id, name, api_key_prefix, chat_model, api_key, base_url, generate_kwargs, is_custom, is_local, support_model_discovery, support_connection_check, freeze_url, require_api_key, create_time, update_time)
-VALUES ('openai', 'OpenAI', 'sk-', 'OpenAIChatModel', '', 'https://api.openai.com/v1', '{}', FALSE, FALSE, TRUE, TRUE, TRUE, TRUE, NOW(), NOW())
+VALUES ('openai', 'OpenAI', 'sk-', 'OpenAIChatModel', '', 'https://api.openai.com/v1', '{}', 0, 0, 1, 1, 1, 1, NOW(), NOW())
 ON CONFLICT (provider_id) DO UPDATE SET name=EXCLUDED.name, api_key_prefix=EXCLUDED.api_key_prefix, chat_model=EXCLUDED.chat_model, api_key=EXCLUDED.api_key, base_url=EXCLUDED.base_url, generate_kwargs=EXCLUDED.generate_kwargs, is_custom=EXCLUDED.is_custom, is_local=EXCLUDED.is_local, support_model_discovery=EXCLUDED.support_model_discovery, support_connection_check=EXCLUDED.support_connection_check, freeze_url=EXCLUDED.freeze_url, require_api_key=EXCLUDED.require_api_key, update_time=EXCLUDED.update_time;
 
 INSERT INTO mate_model_provider (provider_id, name, api_key_prefix, chat_model, api_key, base_url, generate_kwargs, is_custom, is_local, support_model_discovery, support_connection_check, freeze_url, require_api_key, create_time, update_time)
-VALUES ('azure-openai', 'Azure OpenAI', '', 'OpenAIChatModel', '', '', '{}', FALSE, FALSE, FALSE, TRUE, FALSE, TRUE, NOW(), NOW())
+VALUES ('azure-openai', 'Azure OpenAI', '', 'OpenAIChatModel', '', '', '{}', 0, 0, 0, 1, 0, 1, NOW(), NOW())
 ON CONFLICT (provider_id) DO UPDATE SET name=EXCLUDED.name, api_key_prefix=EXCLUDED.api_key_prefix, chat_model=EXCLUDED.chat_model, api_key=EXCLUDED.api_key, base_url=EXCLUDED.base_url, generate_kwargs=EXCLUDED.generate_kwargs, is_custom=EXCLUDED.is_custom, is_local=EXCLUDED.is_local, support_model_discovery=EXCLUDED.support_model_discovery, support_connection_check=EXCLUDED.support_connection_check, freeze_url=EXCLUDED.freeze_url, require_api_key=EXCLUDED.require_api_key, update_time=EXCLUDED.update_time;
 
 INSERT INTO mate_model_provider (provider_id, name, api_key_prefix, chat_model, api_key, base_url, generate_kwargs, is_custom, is_local, support_model_discovery, support_connection_check, freeze_url, require_api_key, create_time, update_time)
-VALUES ('minimax', 'MiniMax (International)', '', 'AnthropicChatModel', '', 'https://api.minimax.io/anthropic', '{}', FALSE, FALSE, FALSE, TRUE, TRUE, TRUE, NOW(), NOW())
+VALUES ('minimax', 'MiniMax (International)', '', 'AnthropicChatModel', '', 'https://api.minimax.io/anthropic', '{}', 0, 0, 0, 1, 1, 1, NOW(), NOW())
 ON CONFLICT (provider_id) DO UPDATE SET name=EXCLUDED.name, api_key_prefix=EXCLUDED.api_key_prefix, chat_model=EXCLUDED.chat_model, api_key=EXCLUDED.api_key, base_url=EXCLUDED.base_url, generate_kwargs=EXCLUDED.generate_kwargs, is_custom=EXCLUDED.is_custom, is_local=EXCLUDED.is_local, support_model_discovery=EXCLUDED.support_model_discovery, support_connection_check=EXCLUDED.support_connection_check, freeze_url=EXCLUDED.freeze_url, require_api_key=EXCLUDED.require_api_key, update_time=EXCLUDED.update_time;
 
 INSERT INTO mate_model_provider (provider_id, name, api_key_prefix, chat_model, api_key, base_url, generate_kwargs, is_custom, is_local, support_model_discovery, support_connection_check, freeze_url, require_api_key, create_time, update_time)
-VALUES ('minimax-cn', 'MiniMax (China)', '', 'AnthropicChatModel', '', 'https://api.minimaxi.com/anthropic', '{}', FALSE, FALSE, FALSE, FALSE, TRUE, TRUE, NOW(), NOW())
+VALUES ('minimax-cn', 'MiniMax (China)', '', 'AnthropicChatModel', '', 'https://api.minimaxi.com/anthropic', '{}', 0, 0, 0, 0, 1, 1, NOW(), NOW())
 ON CONFLICT (provider_id) DO UPDATE SET name=EXCLUDED.name, api_key_prefix=EXCLUDED.api_key_prefix, chat_model=EXCLUDED.chat_model, api_key=EXCLUDED.api_key, base_url=EXCLUDED.base_url, generate_kwargs=EXCLUDED.generate_kwargs, is_custom=EXCLUDED.is_custom, is_local=EXCLUDED.is_local, support_model_discovery=EXCLUDED.support_model_discovery, support_connection_check=EXCLUDED.support_connection_check, freeze_url=EXCLUDED.freeze_url, require_api_key=EXCLUDED.require_api_key, update_time=EXCLUDED.update_time;
 
 INSERT INTO mate_model_provider (provider_id, name, api_key_prefix, chat_model, api_key, base_url, generate_kwargs, is_custom, is_local, support_model_discovery, support_connection_check, freeze_url, require_api_key, create_time, update_time)
-VALUES ('kimi-cn', 'Kimi (China)', '', 'OpenAIChatModel', '', 'https://api.moonshot.cn/v1', '{}', FALSE, FALSE, TRUE, TRUE, TRUE, TRUE, NOW(), NOW())
+VALUES ('kimi-cn', 'Kimi (China)', '', 'OpenAIChatModel', '', 'https://api.moonshot.cn/v1', '{}', 0, 0, 1, 1, 1, 1, NOW(), NOW())
 ON CONFLICT (provider_id) DO UPDATE SET name=EXCLUDED.name, api_key_prefix=EXCLUDED.api_key_prefix, chat_model=EXCLUDED.chat_model, api_key=EXCLUDED.api_key, base_url=EXCLUDED.base_url, generate_kwargs=EXCLUDED.generate_kwargs, is_custom=EXCLUDED.is_custom, is_local=EXCLUDED.is_local, support_model_discovery=EXCLUDED.support_model_discovery, support_connection_check=EXCLUDED.support_connection_check, freeze_url=EXCLUDED.freeze_url, require_api_key=EXCLUDED.require_api_key, update_time=EXCLUDED.update_time;
 
 INSERT INTO mate_model_provider (provider_id, name, api_key_prefix, chat_model, api_key, base_url, generate_kwargs, is_custom, is_local, support_model_discovery, support_connection_check, freeze_url, require_api_key, create_time, update_time)
-VALUES ('kimi-intl', 'Kimi (International)', '', 'OpenAIChatModel', '', 'https://api.moonshot.ai/v1', '{}', FALSE, FALSE, TRUE, TRUE, TRUE, TRUE, NOW(), NOW())
+VALUES ('kimi-intl', 'Kimi (International)', '', 'OpenAIChatModel', '', 'https://api.moonshot.ai/v1', '{}', 0, 0, 1, 1, 1, 1, NOW(), NOW())
 ON CONFLICT (provider_id) DO UPDATE SET name=EXCLUDED.name, api_key_prefix=EXCLUDED.api_key_prefix, chat_model=EXCLUDED.chat_model, api_key=EXCLUDED.api_key, base_url=EXCLUDED.base_url, generate_kwargs=EXCLUDED.generate_kwargs, is_custom=EXCLUDED.is_custom, is_local=EXCLUDED.is_local, support_model_discovery=EXCLUDED.support_model_discovery, support_connection_check=EXCLUDED.support_connection_check, freeze_url=EXCLUDED.freeze_url, require_api_key=EXCLUDED.require_api_key, update_time=EXCLUDED.update_time;
 
 INSERT INTO mate_model_provider (provider_id, name, api_key_prefix, chat_model, api_key, base_url, generate_kwargs, is_custom, is_local, support_model_discovery, support_connection_check, freeze_url, require_api_key, create_time, update_time)
-VALUES ('kimi-code', 'Kimi Code', '', 'OpenAIChatModel', '', 'https://api.kimi.com/coding/v1', '{"headers":{"User-Agent":"RooCode/1.0","HTTP-Referer":"https://github.com/RooVetGit/Roo-Cline","X-Title":"Roo Code"}}', FALSE, FALSE, TRUE, TRUE, TRUE, TRUE, NOW(), NOW())
+VALUES ('kimi-code', 'Kimi Code', '', 'OpenAIChatModel', '', 'https://api.kimi.com/coding/v1', '{"headers":{"User-Agent":"RooCode/1.0","HTTP-Referer":"https://github.com/RooVetGit/Roo-Cline","X-Title":"Roo Code"}}', 0, 0, 1, 1, 1, 1, NOW(), NOW())
 ON CONFLICT (provider_id) DO UPDATE SET name=EXCLUDED.name, api_key_prefix=EXCLUDED.api_key_prefix, chat_model=EXCLUDED.chat_model, api_key=EXCLUDED.api_key, base_url=EXCLUDED.base_url, generate_kwargs=EXCLUDED.generate_kwargs, is_custom=EXCLUDED.is_custom, is_local=EXCLUDED.is_local, support_model_discovery=EXCLUDED.support_model_discovery, support_connection_check=EXCLUDED.support_connection_check, freeze_url=EXCLUDED.freeze_url, require_api_key=EXCLUDED.require_api_key, update_time=EXCLUDED.update_time;
 
 INSERT INTO mate_model_provider (provider_id, name, api_key_prefix, chat_model, api_key, base_url, generate_kwargs, is_custom, is_local, support_model_discovery, support_connection_check, freeze_url, require_api_key, create_time, update_time)
-VALUES ('deepseek', 'DeepSeek', 'sk-', 'OpenAIChatModel', '', 'https://api.deepseek.com', '{}', FALSE, FALSE, TRUE, TRUE, TRUE, TRUE, NOW(), NOW())
+VALUES ('deepseek', 'DeepSeek', 'sk-', 'OpenAIChatModel', '', 'https://api.deepseek.com', '{}', 0, 0, 1, 1, 1, 1, NOW(), NOW())
 ON CONFLICT (provider_id) DO UPDATE SET name=EXCLUDED.name, api_key_prefix=EXCLUDED.api_key_prefix, chat_model=EXCLUDED.chat_model, api_key=EXCLUDED.api_key, base_url=EXCLUDED.base_url, generate_kwargs=EXCLUDED.generate_kwargs, is_custom=EXCLUDED.is_custom, is_local=EXCLUDED.is_local, support_model_discovery=EXCLUDED.support_model_discovery, support_connection_check=EXCLUDED.support_connection_check, freeze_url=EXCLUDED.freeze_url, require_api_key=EXCLUDED.require_api_key, update_time=EXCLUDED.update_time;
 
 INSERT INTO mate_model_provider (provider_id, name, api_key_prefix, chat_model, api_key, base_url, generate_kwargs, is_custom, is_local, support_model_discovery, support_connection_check, freeze_url, require_api_key, create_time, update_time)
-VALUES ('anthropic', 'Anthropic', 'sk-ant-', 'AnthropicChatModel', '', 'https://api.anthropic.com', '{}', FALSE, FALSE, TRUE, TRUE, TRUE, TRUE, NOW(), NOW())
+VALUES ('anthropic', 'Anthropic', 'sk-ant-', 'AnthropicChatModel', '', 'https://api.anthropic.com', '{}', 0, 0, 1, 1, 1, 1, NOW(), NOW())
 ON CONFLICT (provider_id) DO UPDATE SET name=EXCLUDED.name, api_key_prefix=EXCLUDED.api_key_prefix, chat_model=EXCLUDED.chat_model, api_key=EXCLUDED.api_key, base_url=EXCLUDED.base_url, generate_kwargs=EXCLUDED.generate_kwargs, is_custom=EXCLUDED.is_custom, is_local=EXCLUDED.is_local, support_model_discovery=EXCLUDED.support_model_discovery, support_connection_check=EXCLUDED.support_connection_check, freeze_url=EXCLUDED.freeze_url, require_api_key=EXCLUDED.require_api_key, update_time=EXCLUDED.update_time;
 
 INSERT INTO mate_model_provider (provider_id, name, api_key_prefix, chat_model, api_key, base_url, generate_kwargs, is_custom, is_local, support_model_discovery, support_connection_check, freeze_url, require_api_key, create_time, update_time)
-VALUES ('gemini', 'Google Gemini', '', 'GeminiChatModel', '', 'https://generativelanguage.googleapis.com', '{}', FALSE, FALSE, TRUE, TRUE, TRUE, TRUE, NOW(), NOW())
+VALUES ('gemini', 'Google Gemini', '', 'GeminiChatModel', '', 'https://generativelanguage.googleapis.com', '{}', 0, 0, 1, 1, 1, 1, NOW(), NOW())
 ON CONFLICT (provider_id) DO UPDATE SET name=EXCLUDED.name, api_key_prefix=EXCLUDED.api_key_prefix, chat_model=EXCLUDED.chat_model, api_key=EXCLUDED.api_key, base_url=EXCLUDED.base_url, generate_kwargs=EXCLUDED.generate_kwargs, is_custom=EXCLUDED.is_custom, is_local=EXCLUDED.is_local, support_model_discovery=EXCLUDED.support_model_discovery, support_connection_check=EXCLUDED.support_connection_check, freeze_url=EXCLUDED.freeze_url, require_api_key=EXCLUDED.require_api_key, update_time=EXCLUDED.update_time;
 
 INSERT INTO mate_model_provider (provider_id, name, api_key_prefix, chat_model, api_key, base_url, generate_kwargs, is_custom, is_local, support_model_discovery, support_connection_check, freeze_url, require_api_key, create_time, update_time)
-VALUES ('xai', 'xAI (Grok)', 'xai-', 'OpenAIChatModel', '', 'https://api.x.ai/v1', '{}', FALSE, FALSE, TRUE, TRUE, TRUE, TRUE, NOW(), NOW())
+VALUES ('xai', 'xAI (Grok)', 'xai-', 'OpenAIChatModel', '', 'https://api.x.ai/v1', '{}', 0, 0, 1, 1, 1, 1, NOW(), NOW())
 ON CONFLICT (provider_id) DO UPDATE SET name=EXCLUDED.name, api_key_prefix=EXCLUDED.api_key_prefix, chat_model=EXCLUDED.chat_model, api_key=EXCLUDED.api_key, base_url=EXCLUDED.base_url, generate_kwargs=EXCLUDED.generate_kwargs, is_custom=EXCLUDED.is_custom, is_local=EXCLUDED.is_local, support_model_discovery=EXCLUDED.support_model_discovery, support_connection_check=EXCLUDED.support_connection_check, freeze_url=EXCLUDED.freeze_url, require_api_key=EXCLUDED.require_api_key, update_time=EXCLUDED.update_time;
 
 INSERT INTO mate_model_provider (provider_id, name, api_key_prefix, chat_model, api_key, base_url, generate_kwargs, is_custom, is_local, support_model_discovery, support_connection_check, freeze_url, require_api_key, create_time, update_time)
-VALUES ('openrouter', 'OpenRouter', 'sk-or-', 'OpenAIChatModel', '', 'https://openrouter.ai/api/v1', '{}', FALSE, FALSE, TRUE, TRUE, TRUE, TRUE, NOW(), NOW())
+VALUES ('openrouter', 'OpenRouter', 'sk-or-', 'OpenAIChatModel', '', 'https://openrouter.ai/api/v1', '{}', 0, 0, 1, 1, 1, 1, NOW(), NOW())
 ON CONFLICT (provider_id) DO UPDATE SET name=EXCLUDED.name, api_key_prefix=EXCLUDED.api_key_prefix, chat_model=EXCLUDED.chat_model, api_key=EXCLUDED.api_key, base_url=EXCLUDED.base_url, generate_kwargs=EXCLUDED.generate_kwargs, is_custom=EXCLUDED.is_custom, is_local=EXCLUDED.is_local, support_model_discovery=EXCLUDED.support_model_discovery, support_connection_check=EXCLUDED.support_connection_check, freeze_url=EXCLUDED.freeze_url, require_api_key=EXCLUDED.require_api_key, update_time=EXCLUDED.update_time;
 
 INSERT INTO mate_model_provider (provider_id, name, api_key_prefix, chat_model, api_key, base_url, generate_kwargs, is_custom, is_local, support_model_discovery, support_connection_check, freeze_url, require_api_key, create_time, update_time)
-VALUES ('siliconflow-cn', 'SiliconFlow (China)', 'sk-', 'OpenAIChatModel', '', 'https://api.siliconflow.cn/v1', '{}', FALSE, FALSE, TRUE, TRUE, TRUE, TRUE, NOW(), NOW())
+VALUES ('siliconflow-cn', 'SiliconFlow (China)', 'sk-', 'OpenAIChatModel', '', 'https://api.siliconflow.cn/v1', '{}', 0, 0, 1, 1, 1, 1, NOW(), NOW())
 ON CONFLICT (provider_id) DO UPDATE SET name=EXCLUDED.name, api_key_prefix=EXCLUDED.api_key_prefix, chat_model=EXCLUDED.chat_model, api_key=EXCLUDED.api_key, base_url=EXCLUDED.base_url, generate_kwargs=EXCLUDED.generate_kwargs, is_custom=EXCLUDED.is_custom, is_local=EXCLUDED.is_local, support_model_discovery=EXCLUDED.support_model_discovery, support_connection_check=EXCLUDED.support_connection_check, freeze_url=EXCLUDED.freeze_url, require_api_key=EXCLUDED.require_api_key, update_time=EXCLUDED.update_time;
 
 INSERT INTO mate_model_provider (provider_id, name, api_key_prefix, chat_model, api_key, base_url, generate_kwargs, is_custom, is_local, support_model_discovery, support_connection_check, freeze_url, require_api_key, create_time, update_time)
-VALUES ('siliconflow-intl', 'SiliconFlow (International)', 'sk-', 'OpenAIChatModel', '', 'https://api.siliconflow.com/v1', '{}', FALSE, FALSE, TRUE, TRUE, TRUE, TRUE, NOW(), NOW())
+VALUES ('siliconflow-intl', 'SiliconFlow (International)', 'sk-', 'OpenAIChatModel', '', 'https://api.siliconflow.com/v1', '{}', 0, 0, 1, 1, 1, 1, NOW(), NOW())
 ON CONFLICT (provider_id) DO UPDATE SET name=EXCLUDED.name, api_key_prefix=EXCLUDED.api_key_prefix, chat_model=EXCLUDED.chat_model, api_key=EXCLUDED.api_key, base_url=EXCLUDED.base_url, generate_kwargs=EXCLUDED.generate_kwargs, is_custom=EXCLUDED.is_custom, is_local=EXCLUDED.is_local, support_model_discovery=EXCLUDED.support_model_discovery, support_connection_check=EXCLUDED.support_connection_check, freeze_url=EXCLUDED.freeze_url, require_api_key=EXCLUDED.require_api_key, update_time=EXCLUDED.update_time;
 
 INSERT INTO mate_model_provider (provider_id, name, api_key_prefix, chat_model, api_key, base_url, generate_kwargs, is_custom, is_local, support_model_discovery, support_connection_check, freeze_url, require_api_key, create_time, update_time)
-VALUES ('opencode', 'OpenCode', '', 'OpenAIChatModel', '', 'https://opencode.ai/zen/v1', '{}', FALSE, FALSE, FALSE, TRUE, TRUE, FALSE, NOW(), NOW())
+VALUES ('opencode', 'OpenCode', '', 'OpenAIChatModel', '', 'https://opencode.ai/zen/v1', '{}', 0, 0, 0, 1, 1, 0, NOW(), NOW())
 ON CONFLICT (provider_id) DO UPDATE SET name=EXCLUDED.name, chat_model=EXCLUDED.chat_model, base_url=EXCLUDED.base_url, update_time=EXCLUDED.update_time;
 
 INSERT INTO mate_model_provider (provider_id, name, api_key_prefix, chat_model, api_key, base_url, generate_kwargs, is_custom, is_local, support_model_discovery, support_connection_check, freeze_url, require_api_key, create_time, update_time)
-VALUES ('zhipu-cn', 'Zhipu AI (China)', '', 'OpenAIChatModel', '', 'https://open.bigmodel.cn/api/paas/v4', '{"completionsPath":"/chat/completions"}', FALSE, FALSE, FALSE, TRUE, TRUE, TRUE, NOW(), NOW())
+VALUES ('zhipu-cn', 'Zhipu AI (China)', '', 'OpenAIChatModel', '', 'https://open.bigmodel.cn/api/paas/v4', '{"completionsPath":"/chat/completions"}', 0, 0, 0, 1, 1, 1, NOW(), NOW())
 ON CONFLICT (provider_id) DO UPDATE SET name=EXCLUDED.name, api_key_prefix=EXCLUDED.api_key_prefix, chat_model=EXCLUDED.chat_model, api_key=EXCLUDED.api_key, base_url=EXCLUDED.base_url, generate_kwargs=EXCLUDED.generate_kwargs, is_custom=EXCLUDED.is_custom, is_local=EXCLUDED.is_local, support_model_discovery=EXCLUDED.support_model_discovery, support_connection_check=EXCLUDED.support_connection_check, freeze_url=EXCLUDED.freeze_url, require_api_key=EXCLUDED.require_api_key, update_time=EXCLUDED.update_time;
 
 INSERT INTO mate_model_provider (provider_id, name, api_key_prefix, chat_model, api_key, base_url, generate_kwargs, is_custom, is_local, support_model_discovery, support_connection_check, freeze_url, require_api_key, create_time, update_time)
-VALUES ('zhipu-intl', 'Zhipu AI (International)', '', 'OpenAIChatModel', '', 'https://api.z.ai/api/paas/v4', '{"completionsPath":"/chat/completions"}', FALSE, FALSE, FALSE, TRUE, TRUE, TRUE, NOW(), NOW())
+VALUES ('zhipu-intl', 'Zhipu AI (International)', '', 'OpenAIChatModel', '', 'https://api.z.ai/api/paas/v4', '{"completionsPath":"/chat/completions"}', 0, 0, 0, 1, 1, 1, NOW(), NOW())
 ON CONFLICT (provider_id) DO UPDATE SET name=EXCLUDED.name, api_key_prefix=EXCLUDED.api_key_prefix, chat_model=EXCLUDED.chat_model, api_key=EXCLUDED.api_key, base_url=EXCLUDED.base_url, generate_kwargs=EXCLUDED.generate_kwargs, is_custom=EXCLUDED.is_custom, is_local=EXCLUDED.is_local, support_model_discovery=EXCLUDED.support_model_discovery, support_connection_check=EXCLUDED.support_connection_check, freeze_url=EXCLUDED.freeze_url, require_api_key=EXCLUDED.require_api_key, update_time=EXCLUDED.update_time;
 
 INSERT INTO mate_model_provider (provider_id, name, api_key_prefix, chat_model, api_key, base_url, generate_kwargs, is_custom, is_local, support_model_discovery, support_connection_check, freeze_url, require_api_key, create_time, update_time)
-VALUES ('volcengine', 'Volcano Engine', '', 'OpenAIChatModel', '', 'https://ark.cn-beijing.volces.com/api/v3', '{}', FALSE, FALSE, TRUE, TRUE, TRUE, TRUE, NOW(), NOW())
+VALUES ('volcengine', 'Volcano Engine', '', 'OpenAIChatModel', '', 'https://ark.cn-beijing.volces.com/api/v3', '{}', 0, 0, 1, 1, 1, 1, NOW(), NOW())
 ON CONFLICT (provider_id) DO UPDATE SET name=EXCLUDED.name, api_key_prefix=EXCLUDED.api_key_prefix, chat_model=EXCLUDED.chat_model, api_key=EXCLUDED.api_key, base_url=EXCLUDED.base_url, generate_kwargs=EXCLUDED.generate_kwargs, is_custom=EXCLUDED.is_custom, is_local=EXCLUDED.is_local, support_model_discovery=EXCLUDED.support_model_discovery, support_connection_check=EXCLUDED.support_connection_check, freeze_url=EXCLUDED.freeze_url, require_api_key=EXCLUDED.require_api_key, update_time=EXCLUDED.update_time;
 
 INSERT INTO mate_model_provider (provider_id, name, api_key_prefix, chat_model, api_key, base_url, generate_kwargs, is_custom, is_local, support_model_discovery, support_connection_check, freeze_url, require_api_key, create_time, update_time)
-VALUES ('volcengine-plan', 'Volcano Engine Coding Plan', '', 'OpenAIChatModel', '', 'https://ark.cn-beijing.volces.com/api/coding/v3', '{}', FALSE, FALSE, TRUE, TRUE, TRUE, TRUE, NOW(), NOW())
+VALUES ('volcengine-plan', 'Volcano Engine Coding Plan', '', 'OpenAIChatModel', '', 'https://ark.cn-beijing.volces.com/api/coding/v3', '{}', 0, 0, 1, 1, 1, 1, NOW(), NOW())
 ON CONFLICT (provider_id) DO UPDATE SET name=EXCLUDED.name, chat_model=EXCLUDED.chat_model, base_url=EXCLUDED.base_url, generate_kwargs=EXCLUDED.generate_kwargs, support_model_discovery=EXCLUDED.support_model_discovery, support_connection_check=EXCLUDED.support_connection_check, freeze_url=EXCLUDED.freeze_url, require_api_key=EXCLUDED.require_api_key, update_time=EXCLUDED.update_time;
 
 INSERT INTO mate_model_provider (provider_id, name, api_key_prefix, chat_model, api_key, base_url, generate_kwargs, is_custom, is_local, support_model_discovery, support_connection_check, freeze_url, require_api_key, create_time, update_time)
-VALUES ('zhipu-cn-codingplan', 'Zhipu Coding Plan (BigModel)', '', 'OpenAIChatModel', '', 'https://open.bigmodel.cn/api/coding/paas/v4', '{"completionsPath":"/chat/completions"}', FALSE, FALSE, FALSE, FALSE, TRUE, TRUE, NOW(), NOW())
+VALUES ('zhipu-cn-codingplan', 'Zhipu Coding Plan (BigModel)', '', 'OpenAIChatModel', '', 'https://open.bigmodel.cn/api/coding/paas/v4', '{"completionsPath":"/chat/completions"}', 0, 0, 0, 0, 1, 1, NOW(), NOW())
 ON CONFLICT (provider_id) DO UPDATE SET name=EXCLUDED.name, chat_model=EXCLUDED.chat_model, base_url=EXCLUDED.base_url, generate_kwargs=EXCLUDED.generate_kwargs, support_model_discovery=EXCLUDED.support_model_discovery, support_connection_check=EXCLUDED.support_connection_check, freeze_url=EXCLUDED.freeze_url, require_api_key=EXCLUDED.require_api_key, update_time=EXCLUDED.update_time;
 
 INSERT INTO mate_model_provider (provider_id, name, api_key_prefix, chat_model, api_key, base_url, generate_kwargs, is_custom, is_local, support_model_discovery, support_connection_check, freeze_url, require_api_key, create_time, update_time)
-VALUES ('zhipu-intl-codingplan', 'Zhipu Coding Plan (Z.AI)', '', 'OpenAIChatModel', '', 'https://api.z.ai/api/coding/paas/v4', '{"completionsPath":"/chat/completions"}', FALSE, FALSE, FALSE, FALSE, TRUE, TRUE, NOW(), NOW())
+VALUES ('zhipu-intl-codingplan', 'Zhipu Coding Plan (Z.AI)', '', 'OpenAIChatModel', '', 'https://api.z.ai/api/coding/paas/v4', '{"completionsPath":"/chat/completions"}', 0, 0, 0, 0, 1, 1, NOW(), NOW())
 ON CONFLICT (provider_id) DO UPDATE SET name=EXCLUDED.name, chat_model=EXCLUDED.chat_model, base_url=EXCLUDED.base_url, generate_kwargs=EXCLUDED.generate_kwargs, support_model_discovery=EXCLUDED.support_model_discovery, support_connection_check=EXCLUDED.support_connection_check, freeze_url=EXCLUDED.freeze_url, require_api_key=EXCLUDED.require_api_key, update_time=EXCLUDED.update_time;
 
 INSERT INTO mate_model_provider (provider_id, name, api_key_prefix, chat_model, api_key, base_url, generate_kwargs, is_custom, is_local, support_model_discovery, support_connection_check, freeze_url, require_api_key, auth_type, create_time, update_time)
-VALUES ('openai-chatgpt', 'OpenAI ChatGPT (OAuth)', '', 'ChatGPTChatModel', '', 'https://chatgpt.com/backend-api', '{}', FALSE, FALSE, FALSE, FALSE, TRUE, FALSE, 'oauth', NOW(), NOW())
+VALUES ('openai-chatgpt', 'OpenAI ChatGPT (OAuth)', '', 'ChatGPTChatModel', '', 'https://chatgpt.com/backend-api', '{}', 0, 0, 0, 0, 1, 0, 'oauth', NOW(), NOW())
 ON CONFLICT (provider_id) DO UPDATE SET name=EXCLUDED.name, chat_model=EXCLUDED.chat_model, base_url=EXCLUDED.base_url, auth_type=EXCLUDED.auth_type, update_time=EXCLUDED.update_time;
 
 -- RFC-062: Anthropic Claude Code OAuth provider. Credentials live on local
 -- disk (Keychain / ~/.claude/.credentials.JSONB), not in this row.
 INSERT INTO mate_model_provider (provider_id, name, api_key_prefix, chat_model, api_key, base_url, generate_kwargs, is_custom, is_local, support_model_discovery, support_connection_check, freeze_url, require_api_key, auth_type, create_time, update_time)
-VALUES ('anthropic-claude-code', 'Anthropic Claude Code (OAuth)', '', 'ClaudeCodeChatModel', '', 'https://api.anthropic.com', '{}', FALSE, FALSE, FALSE, FALSE, TRUE, FALSE, 'oauth', NOW(), NOW())
+VALUES ('anthropic-claude-code', 'Anthropic Claude Code (OAuth)', '', 'ClaudeCodeChatModel', '', 'https://api.anthropic.com', '{}', 0, 0, 0, 0, 1, 0, 'oauth', NOW(), NOW())
 ON CONFLICT (provider_id) DO UPDATE SET name=EXCLUDED.name, chat_model=EXCLUDED.chat_model, base_url=EXCLUDED.base_url, auth_type=EXCLUDED.auth_type, update_time=EXCLUDED.update_time;
 
 -- ==================== Local model pre-configs (Ollama, disabled by default) ====================
 INSERT INTO mate_model_config (id, name, provider, model_name, description, temperature, max_tokens, top_p, builtin, enabled, is_default, create_time, update_time, deleted)
-VALUES (1000000300, 'Gemma 3', 'ollama', 'gemma3:latest', 'Google Gemma 3, lightweight and efficient for local inference', 0.7, 4096, 0.8, TRUE, FALSE, FALSE, NOW(), NOW(), 0)
+VALUES (1000000300, 'Gemma 3', 'ollama', 'gemma3:latest', 'Google Gemma 3, lightweight and efficient for local inference', 0.7, 4096, 0.8, 1, 0, 0, NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, provider=EXCLUDED.provider, model_name=EXCLUDED.model_name, description=EXCLUDED.description, temperature=EXCLUDED.temperature, max_tokens=EXCLUDED.max_tokens, top_p=EXCLUDED.top_p, builtin=EXCLUDED.builtin, update_time=EXCLUDED.update_time;
 INSERT INTO mate_model_config (id, name, provider, model_name, description, temperature, max_tokens, top_p, builtin, enabled, is_default, create_time, update_time, deleted)
-VALUES (1000000301, 'Qwen 3', 'ollama', 'qwen3:latest', 'Qwen 3, excellent Chinese language capabilities', 0.7, 4096, 0.8, TRUE, FALSE, FALSE, NOW(), NOW(), 0)
+VALUES (1000000301, 'Qwen 3', 'ollama', 'qwen3:latest', 'Qwen 3, excellent Chinese language capabilities', 0.7, 4096, 0.8, 1, 0, 0, NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, provider=EXCLUDED.provider, model_name=EXCLUDED.model_name, description=EXCLUDED.description, temperature=EXCLUDED.temperature, max_tokens=EXCLUDED.max_tokens, top_p=EXCLUDED.top_p, builtin=EXCLUDED.builtin, update_time=EXCLUDED.update_time;
 INSERT INTO mate_model_config (id, name, provider, model_name, description, temperature, max_tokens, top_p, builtin, enabled, is_default, create_time, update_time, deleted)
-VALUES (1000000302, 'Llama 3.1', 'ollama', 'llama3.1:latest', 'Meta Llama 3.1, strong general-purpose model', 0.7, 4096, 0.8, TRUE, FALSE, FALSE, NOW(), NOW(), 0)
+VALUES (1000000302, 'Llama 3.1', 'ollama', 'llama3.1:latest', 'Meta Llama 3.1, strong general-purpose model', 0.7, 4096, 0.8, 1, 0, 0, NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, provider=EXCLUDED.provider, model_name=EXCLUDED.model_name, description=EXCLUDED.description, temperature=EXCLUDED.temperature, max_tokens=EXCLUDED.max_tokens, top_p=EXCLUDED.top_p, builtin=EXCLUDED.builtin, update_time=EXCLUDED.update_time;
 INSERT INTO mate_model_config (id, name, provider, model_name, description, temperature, max_tokens, top_p, builtin, enabled, is_default, create_time, update_time, deleted)
-VALUES (1000000303, 'DeepSeek R1', 'ollama', 'deepseek-r1:latest', 'DeepSeek R1 reasoning model', 0.7, 4096, 0.8, TRUE, FALSE, FALSE, NOW(), NOW(), 0)
+VALUES (1000000303, 'DeepSeek R1', 'ollama', 'deepseek-r1:latest', 'DeepSeek R1 reasoning model', 0.7, 4096, 0.8, 1, 0, 0, NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, provider=EXCLUDED.provider, model_name=EXCLUDED.model_name, description=EXCLUDED.description, temperature=EXCLUDED.temperature, max_tokens=EXCLUDED.max_tokens, top_p=EXCLUDED.top_p, builtin=EXCLUDED.builtin, update_time=EXCLUDED.update_time;
 INSERT INTO mate_model_config (id, name, provider, model_name, description, temperature, max_tokens, top_p, builtin, enabled, is_default, create_time, update_time, deleted)
-VALUES (1000000304, 'Mistral', 'ollama', 'mistral:latest', 'Mistral 7B, efficient inference', 0.7, 4096, 0.8, TRUE, FALSE, FALSE, NOW(), NOW(), 0)
+VALUES (1000000304, 'Mistral', 'ollama', 'mistral:latest', 'Mistral 7B, efficient inference', 0.7, 4096, 0.8, 1, 0, 0, NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, provider=EXCLUDED.provider, model_name=EXCLUDED.model_name, description=EXCLUDED.description, temperature=EXCLUDED.temperature, max_tokens=EXCLUDED.max_tokens, top_p=EXCLUDED.top_p, builtin=EXCLUDED.builtin, update_time=EXCLUDED.update_time;
 INSERT INTO mate_model_config (id, name, provider, model_name, description, temperature, max_tokens, top_p, builtin, enabled, is_default, create_time, update_time, deleted)
-VALUES (1000000305, 'Gemma 4', 'ollama', 'gemma4:latest', 'Google Gemma 4, next-gen high-performance local model', 0.7, 4096, 0.8, TRUE, FALSE, FALSE, NOW(), NOW(), 0)
+VALUES (1000000305, 'Gemma 4', 'ollama', 'gemma4:latest', 'Google Gemma 4, next-gen high-performance local model', 0.7, 4096, 0.8, 1, 0, 0, NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, provider=EXCLUDED.provider, model_name=EXCLUDED.model_name, description=EXCLUDED.description, temperature=EXCLUDED.temperature, max_tokens=EXCLUDED.max_tokens, top_p=EXCLUDED.top_p, builtin=EXCLUDED.builtin, update_time=EXCLUDED.update_time;
 
 -- ==================== Cloud model configurations ====================
 INSERT INTO mate_model_config (id, name, provider, model_name, description, temperature, max_tokens, top_p, builtin, enabled, is_default, create_time, update_time, deleted)
-VALUES (1000000001, 'Qwen Plus', 'dashscope', 'qwen-plus', 'Default balanced model for daily Q&A and tool calling.', 0.7, 4096, 0.8, TRUE, TRUE, TRUE, NOW(), NOW(), 0)
+VALUES (1000000001, 'Qwen Plus', 'dashscope', 'qwen-plus', 'Default balanced model for daily Q&A and tool calling.', 0.7, 4096, 0.8, 1, 1, 1, NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, provider=EXCLUDED.provider, model_name=EXCLUDED.model_name, description=EXCLUDED.description, temperature=EXCLUDED.temperature, max_tokens=EXCLUDED.max_tokens, top_p=EXCLUDED.top_p, builtin=EXCLUDED.builtin, enabled=EXCLUDED.enabled, is_default=EXCLUDED.is_default, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
 INSERT INTO mate_model_config (id, name, provider, model_name, description, temperature, max_tokens, top_p, builtin, enabled, is_default, create_time, update_time, deleted)
-VALUES (1000000002, 'Qwen Max', 'dashscope', 'qwen-max', 'Stronger reasoning capability for complex tasks.', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0)
+VALUES (1000000002, 'Qwen Max', 'dashscope', 'qwen-max', 'Stronger reasoning capability for complex tasks.', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, provider=EXCLUDED.provider, model_name=EXCLUDED.model_name, description=EXCLUDED.description, temperature=EXCLUDED.temperature, max_tokens=EXCLUDED.max_tokens, top_p=EXCLUDED.top_p, builtin=EXCLUDED.builtin, enabled=EXCLUDED.enabled, is_default=EXCLUDED.is_default, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
 INSERT INTO mate_model_config (id, name, provider, model_name, description, temperature, max_tokens, top_p, builtin, enabled, is_default, create_time, update_time, deleted)
-VALUES (1000000003, 'Qwen Turbo', 'dashscope', 'qwen-turbo', 'Low-latency model for high-frequency interaction.', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0)
+VALUES (1000000003, 'Qwen Turbo', 'dashscope', 'qwen-turbo', 'Low-latency model for high-frequency interaction.', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, provider=EXCLUDED.provider, model_name=EXCLUDED.model_name, description=EXCLUDED.description, temperature=EXCLUDED.temperature, max_tokens=EXCLUDED.max_tokens, top_p=EXCLUDED.top_p, builtin=EXCLUDED.builtin, enabled=EXCLUDED.enabled, is_default=EXCLUDED.is_default, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
 INSERT INTO mate_model_config (id, name, provider, model_name, description, temperature, max_tokens, top_p, builtin, enabled, is_default, create_time, update_time, deleted)
-VALUES (1000000004, 'Qwen Coder Plus', 'dashscope', 'qwen-coder-plus', 'Optimized for code generation and interpretation.', 0.2, 8192, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0)
+VALUES (1000000004, 'Qwen Coder Plus', 'dashscope', 'qwen-coder-plus', 'Optimized for code generation and interpretation.', 0.2, 8192, 0.8, 1, 1, 0, NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, provider=EXCLUDED.provider, model_name=EXCLUDED.model_name, description=EXCLUDED.description, temperature=EXCLUDED.temperature, max_tokens=EXCLUDED.max_tokens, top_p=EXCLUDED.top_p, builtin=EXCLUDED.builtin, enabled=EXCLUDED.enabled, is_default=EXCLUDED.is_default, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
 INSERT INTO mate_model_config (id, name, provider, model_name, description, temperature, max_tokens, top_p, builtin, enabled, is_default, create_time, update_time, deleted)
 VALUES
-(1000000101, 'Qwen3 Max', 'dashscope', 'qwen3-max', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000102, 'Qwen3 235B A22B Thinking', 'dashscope', 'qwen3-235b-a22b-thinking-2507', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000103, 'DeepSeek-V3.2', 'dashscope', 'deepseek-v3.2', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000101, 'Qwen3 Max', 'dashscope', 'qwen3-max', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000102, 'Qwen3 235B A22B Thinking', 'dashscope', 'qwen3-235b-a22b-thinking-2507', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000103, 'DeepSeek-V3.2', 'dashscope', 'deepseek-v3.2', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
 -- Note: dotted Qwen3 versions (qwen3-plus / qwen3.5-plus / qwen3.5-max / qwen3.6-*) only ship on the
 -- OpenAI-compatible endpoint. Calling them through DashScope native (text-generation/generation)
 -- returns 400 InvalidParameter. They are registered under the dashscope-compat provider, which shares
 -- the same sk- key but routes to compatible-mode/v1.
-(1000000173, 'Qwen Long', 'dashscope', 'qwen-long', 'Long-context model with extended context support', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000174, 'Qwen Plus (latest)',  'dashscope', 'qwen-plus-latest',  'Latest stable snapshot of Qwen Plus — auto-updates as Bailian rolls new releases', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000175, 'Qwen Max (latest)',   'dashscope', 'qwen-max-latest',   'Latest stable snapshot of Qwen Max — strongest reasoning capability',              0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000176, 'Qwen Turbo (latest)', 'dashscope', 'qwen-turbo-latest', 'Latest stable snapshot of Qwen Turbo — low latency, high frequency',               0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000173, 'Qwen Long', 'dashscope', 'qwen-long', 'Long-context model with extended context support', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000174, 'Qwen Plus (latest)',  'dashscope', 'qwen-plus-latest',  'Latest stable snapshot of Qwen Plus — auto-updates as Bailian rolls new releases', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000175, 'Qwen Max (latest)',   'dashscope', 'qwen-max-latest',   'Latest stable snapshot of Qwen Max — strongest reasoning capability',              0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000176, 'Qwen Turbo (latest)', 'dashscope', 'qwen-turbo-latest', 'Latest stable snapshot of Qwen Turbo — low latency, high frequency',               0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
 -- DashScope OpenAI-compat exclusive models (dot-versioned families) — share the same sk- key.
 -- Only the -plus variants are seeded; -max / -vl-max are visible in the model market but return
 -- 404 for general accounts. Users on a whitelist can add them via Settings → Models manually.
-(1000000601, 'Qwen3.6 Plus',  'dashscope-compat', 'qwen3.6-plus',  'Qwen3.6 Plus flagship — balanced reasoning and speed (compat-mode only)',     0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000603, 'Qwen3.5 Plus',  'dashscope-compat', 'qwen3.5-plus',  'Qwen3.5 Plus (compat-mode only)',                                              0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000605, 'Qwen3 VL Plus', 'dashscope-compat', 'qwen3-vl-plus', 'Qwen3 vision-language Plus — accepts image / video input (compat-mode only)', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000104, 'Qwen3.5-122B-A10B', 'modelscope', 'Qwen/Qwen3.5-122B-A10B', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000105, 'GLM-5', 'modelscope', 'ZhipuAI/GLM-5', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000106, 'Qwen3.5 Plus', 'aliyun-codingplan', 'qwen3.5-plus', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000107, 'GLM-5', 'aliyun-codingplan', 'glm-5', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000108, 'GLM-4.7', 'aliyun-codingplan', 'glm-4.7', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000109, 'MiniMax M2.5', 'aliyun-codingplan', 'MiniMax-M2.5', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000110, 'Kimi K2.5', 'aliyun-codingplan', 'kimi-k2.5', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000111, 'Qwen3 Max 2026-01-23', 'aliyun-codingplan', 'qwen3-max-2026-01-23', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000112, 'Qwen3 Coder Next', 'aliyun-codingplan', 'qwen3-coder-next', '', 0.2, 8192, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000113, 'Qwen3 Coder Plus', 'aliyun-codingplan', 'qwen3-coder-plus', '', 0.2, 8192, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000162, 'Qwen3.6 Plus',         'aliyun-codingplan',      'qwen3.6-plus',         'Aliyun Coding Plan — Qwen3.6 Plus flagship',                  0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000241, 'Qwen3.6 Plus',         'aliyun-codingplan-intl', 'qwen3.6-plus',         'Aliyun Coding Plan (Intl) — Qwen3.6 Plus flagship',           0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000242, 'Qwen3.5 Plus',         'aliyun-codingplan-intl', 'qwen3.5-plus',         'Aliyun Coding Plan (Intl) — Qwen3.5 balanced',                0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000243, 'GLM-5',                'aliyun-codingplan-intl', 'glm-5',                'Aliyun Coding Plan (Intl) — GLM-5 hosted on DashScope',       0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000244, 'GLM-4.7',              'aliyun-codingplan-intl', 'glm-4.7',              'Aliyun Coding Plan (Intl) — GLM-4.7 hosted on DashScope',     0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000245, 'MiniMax M2.5',         'aliyun-codingplan-intl', 'MiniMax-M2.5',         'Aliyun Coding Plan (Intl) — MiniMax M2.5 hosted on DashScope', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000246, 'Kimi K2.5',            'aliyun-codingplan-intl', 'kimi-k2.5',            'Aliyun Coding Plan (Intl) — Kimi K2.5 hosted on DashScope',   0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000247, 'Qwen3 Max 2026-01-23', 'aliyun-codingplan-intl', 'qwen3-max-2026-01-23', 'Aliyun Coding Plan (Intl) — Qwen3 Max pinned snapshot',       0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000248, 'Qwen3 Coder Next',     'aliyun-codingplan-intl', 'qwen3-coder-next',     'Aliyun Coding Plan (Intl) — Qwen3 Coder Next, agentic coding', 0.2, 8192, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000249, 'Qwen3 Coder Plus',     'aliyun-codingplan-intl', 'qwen3-coder-plus',     'Aliyun Coding Plan (Intl) — Qwen3 Coder Plus, agentic coding', 0.2, 8192, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000400, 'Qwen 3.6 Plus',      'bailian-team', 'qwen3.6-plus',       'Bailian Token Plan — Qwen flagship reasoning model with vision and text generation', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000401, 'DeepSeek V3.2',      'bailian-team', 'deepseek-v3.2',      'Bailian Token Plan — DeepSeek latest reasoning model',                              0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000402, 'GLM-5',              'bailian-team', 'glm-5',              'Bailian Token Plan — Zhipu GLM-5 text generation model',                            0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000403, 'Qwen Image 2.0',     'bailian-team', 'qwen-image-2.0',     'Bailian Token Plan — Qwen image generation model',                                  0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000404, 'Qwen Image 2.0 Pro', 'bailian-team', 'qwen-image-2.0-pro', 'Bailian Token Plan — Qwen image generation flagship model',                         0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000405, 'Wan 2.7 Image',      'bailian-team', 'wan2.7-image',       'Bailian Token Plan — Wan image generation model',                                   0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000406, 'Wan 2.7 Image Pro',  'bailian-team', 'wan2.7-image-pro',   'Bailian Token Plan — Wan image generation flagship model',                          0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000407, 'Qwen 3.5 Plus',            'bailian-team', 'qwen3.5-plus',            'Bailian Token Plan — Qwen3.5 balanced flagship, hybrid thinking, 128K context',  0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000408, 'Qwen 3.5 Flash',           'bailian-team', 'qwen3.5-flash',           'Bailian Token Plan — Qwen3.5 fast variant for high-frequency calls',             0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000409, 'Qwen3 VL Plus',            'bailian-team', 'qwen3-vl-plus',           'Bailian Token Plan — Qwen3 vision-language flagship, image + video',             0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000410, 'Qwen3 VL Flash',           'bailian-team', 'qwen3-vl-flash',          'Bailian Token Plan — Qwen3 vision-language fast variant',                        0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000411, 'Qwen3 Coder Plus',         'bailian-team', 'qwen3-coder-plus',        'Bailian Token Plan — Qwen3 coding flagship, agentic code editing & tools',      0.2, 8192, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000412, 'Qwen 3.6 Plus 2026-04-02', 'bailian-team', 'qwen3.6-plus-2026-04-02', 'Bailian Token Plan — pinned snapshot of Qwen 3.6 Plus released 2026-04-02',     0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000413, 'Qwen 3.6 Max (preview)',   'bailian-team', 'qwen3.6-max-preview',     'Bailian Token Plan — Qwen3.6 Max preview, strongest 3.6 reasoning',              0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000414, 'Qwen 3.6 Flash',           'bailian-team', 'qwen3.6-flash',           'Bailian Token Plan — Qwen3.6 fast variant, hybrid thinking default-on',          0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000415, 'Qwen 3.6 Flash 2026-04-16','bailian-team', 'qwen3.6-flash-2026-04-16','Bailian Token Plan — pinned snapshot of Qwen 3.6 Flash released 2026-04-16',    0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000416, 'Qwen 3.5 Omni Plus',       'bailian-team', 'qwen3.5-omni-plus',       'Bailian Token Plan — Qwen3.5 omni-modal plus, text + vision + audio in/out',    0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000114, 'GPT-5.2', 'openai', 'gpt-5.2', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000115, 'GPT-5', 'openai', 'gpt-5', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000116, 'GPT-5 Mini', 'openai', 'gpt-5-mini', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000117, 'GPT-5 Nano', 'openai', 'gpt-5-nano', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000118, 'GPT-4.1', 'openai', 'gpt-4.1', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000119, 'GPT-4.1 Mini', 'openai', 'gpt-4.1-mini', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000120, 'GPT-4.1 Nano', 'openai', 'gpt-4.1-nano', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000121, 'o3', 'openai', 'o3', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000122, 'o4-mini', 'openai', 'o4-mini', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000123, 'GPT-4o', 'openai', 'gpt-4o', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000124, 'GPT-4o Mini', 'openai', 'gpt-4o-mini', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000125, 'GPT-5 Chat', 'azure-openai', 'gpt-5-chat', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000126, 'GPT-5 Mini', 'azure-openai', 'gpt-5-mini', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000127, 'GPT-5 Nano', 'azure-openai', 'gpt-5-nano', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000128, 'GPT-4.1', 'azure-openai', 'gpt-4.1', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000129, 'GPT-4.1 Mini', 'azure-openai', 'gpt-4.1-mini', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000130, 'GPT-4.1 Nano', 'azure-openai', 'gpt-4.1-nano', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000131, 'GPT-4o', 'azure-openai', 'gpt-4o', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000132, 'GPT-4o Mini', 'azure-openai', 'gpt-4o-mini', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000133, 'MiniMax M2.5', 'minimax', 'MiniMax-M2.5', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000134, 'MiniMax M2.5 Highspeed', 'minimax', 'MiniMax-M2.5-highspeed', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000135, 'MiniMax M2.7', 'minimax', 'MiniMax-M2.7', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000136, 'MiniMax M2.7 Highspeed', 'minimax', 'MiniMax-M2.7-highspeed', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000137, 'MiniMax M2.5', 'minimax-cn', 'MiniMax-M2.5', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000138, 'MiniMax M2.5 Highspeed', 'minimax-cn', 'MiniMax-M2.5-highspeed', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000139, 'MiniMax M2.7', 'minimax-cn', 'MiniMax-M2.7', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000140, 'MiniMax M2.7 Highspeed', 'minimax-cn', 'MiniMax-M2.7-highspeed', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000141, 'Kimi K2.5', 'kimi-cn', 'kimi-k2.5', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000142, 'Kimi K2 0905 Preview', 'kimi-cn', 'kimi-k2-0905-preview', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000143, 'Kimi K2 0711 Preview', 'kimi-cn', 'kimi-k2-0711-preview', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000144, 'Kimi K2 Turbo Preview', 'kimi-cn', 'kimi-k2-turbo-preview', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000145, 'Kimi K2 Thinking', 'kimi-cn', 'kimi-k2-thinking', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000146, 'Kimi K2 Thinking Turbo', 'kimi-cn', 'kimi-k2-thinking-turbo', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000147, 'Kimi K2.5', 'kimi-intl', 'kimi-k2.5', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000148, 'Kimi K2 0905 Preview', 'kimi-intl', 'kimi-k2-0905-preview', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000149, 'Kimi K2 0711 Preview', 'kimi-intl', 'kimi-k2-0711-preview', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000150, 'Kimi K2 Turbo Preview', 'kimi-intl', 'kimi-k2-turbo-preview', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000151, 'Kimi K2 Thinking', 'kimi-intl', 'kimi-k2-thinking', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000152, 'Kimi K2 Thinking Turbo', 'kimi-intl', 'kimi-k2-thinking-turbo', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000153, 'DeepSeek Chat', 'deepseek', 'deepseek-chat', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000154, 'DeepSeek Reasoner', 'deepseek', 'deepseek-reasoner', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000601, 'Qwen3.6 Plus',  'dashscope-compat', 'qwen3.6-plus',  'Qwen3.6 Plus flagship — balanced reasoning and speed (compat-mode only)',     0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000603, 'Qwen3.5 Plus',  'dashscope-compat', 'qwen3.5-plus',  'Qwen3.5 Plus (compat-mode only)',                                              0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000605, 'Qwen3 VL Plus', 'dashscope-compat', 'qwen3-vl-plus', 'Qwen3 vision-language Plus — accepts image / video input (compat-mode only)', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000104, 'Qwen3.5-122B-A10B', 'modelscope', 'Qwen/Qwen3.5-122B-A10B', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000105, 'GLM-5', 'modelscope', 'ZhipuAI/GLM-5', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000106, 'Qwen3.5 Plus', 'aliyun-codingplan', 'qwen3.5-plus', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000107, 'GLM-5', 'aliyun-codingplan', 'glm-5', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000108, 'GLM-4.7', 'aliyun-codingplan', 'glm-4.7', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000109, 'MiniMax M2.5', 'aliyun-codingplan', 'MiniMax-M2.5', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000110, 'Kimi K2.5', 'aliyun-codingplan', 'kimi-k2.5', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000111, 'Qwen3 Max 2026-01-23', 'aliyun-codingplan', 'qwen3-max-2026-01-23', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000112, 'Qwen3 Coder Next', 'aliyun-codingplan', 'qwen3-coder-next', '', 0.2, 8192, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000113, 'Qwen3 Coder Plus', 'aliyun-codingplan', 'qwen3-coder-plus', '', 0.2, 8192, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000162, 'Qwen3.6 Plus',         'aliyun-codingplan',      'qwen3.6-plus',         'Aliyun Coding Plan — Qwen3.6 Plus flagship',                  0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000241, 'Qwen3.6 Plus',         'aliyun-codingplan-intl', 'qwen3.6-plus',         'Aliyun Coding Plan (Intl) — Qwen3.6 Plus flagship',           0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000242, 'Qwen3.5 Plus',         'aliyun-codingplan-intl', 'qwen3.5-plus',         'Aliyun Coding Plan (Intl) — Qwen3.5 balanced',                0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000243, 'GLM-5',                'aliyun-codingplan-intl', 'glm-5',                'Aliyun Coding Plan (Intl) — GLM-5 hosted on DashScope',       0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000244, 'GLM-4.7',              'aliyun-codingplan-intl', 'glm-4.7',              'Aliyun Coding Plan (Intl) — GLM-4.7 hosted on DashScope',     0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000245, 'MiniMax M2.5',         'aliyun-codingplan-intl', 'MiniMax-M2.5',         'Aliyun Coding Plan (Intl) — MiniMax M2.5 hosted on DashScope', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000246, 'Kimi K2.5',            'aliyun-codingplan-intl', 'kimi-k2.5',            'Aliyun Coding Plan (Intl) — Kimi K2.5 hosted on DashScope',   0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000247, 'Qwen3 Max 2026-01-23', 'aliyun-codingplan-intl', 'qwen3-max-2026-01-23', 'Aliyun Coding Plan (Intl) — Qwen3 Max pinned snapshot',       0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000248, 'Qwen3 Coder Next',     'aliyun-codingplan-intl', 'qwen3-coder-next',     'Aliyun Coding Plan (Intl) — Qwen3 Coder Next, agentic coding', 0.2, 8192, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000249, 'Qwen3 Coder Plus',     'aliyun-codingplan-intl', 'qwen3-coder-plus',     'Aliyun Coding Plan (Intl) — Qwen3 Coder Plus, agentic coding', 0.2, 8192, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000400, 'Qwen 3.6 Plus',      'bailian-team', 'qwen3.6-plus',       'Bailian Token Plan — Qwen flagship reasoning model with vision and text generation', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000401, 'DeepSeek V3.2',      'bailian-team', 'deepseek-v3.2',      'Bailian Token Plan — DeepSeek latest reasoning model',                              0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000402, 'GLM-5',              'bailian-team', 'glm-5',              'Bailian Token Plan — Zhipu GLM-5 text generation model',                            0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000403, 'Qwen Image 2.0',     'bailian-team', 'qwen-image-2.0',     'Bailian Token Plan — Qwen image generation model',                                  0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000404, 'Qwen Image 2.0 Pro', 'bailian-team', 'qwen-image-2.0-pro', 'Bailian Token Plan — Qwen image generation flagship model',                         0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000405, 'Wan 2.7 Image',      'bailian-team', 'wan2.7-image',       'Bailian Token Plan — Wan image generation model',                                   0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000406, 'Wan 2.7 Image Pro',  'bailian-team', 'wan2.7-image-pro',   'Bailian Token Plan — Wan image generation flagship model',                          0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000407, 'Qwen 3.5 Plus',            'bailian-team', 'qwen3.5-plus',            'Bailian Token Plan — Qwen3.5 balanced flagship, hybrid thinking, 128K context',  0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000408, 'Qwen 3.5 Flash',           'bailian-team', 'qwen3.5-flash',           'Bailian Token Plan — Qwen3.5 fast variant for high-frequency calls',             0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000409, 'Qwen3 VL Plus',            'bailian-team', 'qwen3-vl-plus',           'Bailian Token Plan — Qwen3 vision-language flagship, image + video',             0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000410, 'Qwen3 VL Flash',           'bailian-team', 'qwen3-vl-flash',          'Bailian Token Plan — Qwen3 vision-language fast variant',                        0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000411, 'Qwen3 Coder Plus',         'bailian-team', 'qwen3-coder-plus',        'Bailian Token Plan — Qwen3 coding flagship, agentic code editing & tools',      0.2, 8192, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000412, 'Qwen 3.6 Plus 2026-04-02', 'bailian-team', 'qwen3.6-plus-2026-04-02', 'Bailian Token Plan — pinned snapshot of Qwen 3.6 Plus released 2026-04-02',     0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000413, 'Qwen 3.6 Max (preview)',   'bailian-team', 'qwen3.6-max-preview',     'Bailian Token Plan — Qwen3.6 Max preview, strongest 3.6 reasoning',              0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000414, 'Qwen 3.6 Flash',           'bailian-team', 'qwen3.6-flash',           'Bailian Token Plan — Qwen3.6 fast variant, hybrid thinking default-on',          0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000415, 'Qwen 3.6 Flash 2026-04-16','bailian-team', 'qwen3.6-flash-2026-04-16','Bailian Token Plan — pinned snapshot of Qwen 3.6 Flash released 2026-04-16',    0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000416, 'Qwen 3.5 Omni Plus',       'bailian-team', 'qwen3.5-omni-plus',       'Bailian Token Plan — Qwen3.5 omni-modal plus, text + vision + audio in/out',    0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000114, 'GPT-5.2', 'openai', 'gpt-5.2', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000115, 'GPT-5', 'openai', 'gpt-5', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000116, 'GPT-5 Mini', 'openai', 'gpt-5-mini', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000117, 'GPT-5 Nano', 'openai', 'gpt-5-nano', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000118, 'GPT-4.1', 'openai', 'gpt-4.1', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000119, 'GPT-4.1 Mini', 'openai', 'gpt-4.1-mini', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000120, 'GPT-4.1 Nano', 'openai', 'gpt-4.1-nano', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000121, 'o3', 'openai', 'o3', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000122, 'o4-mini', 'openai', 'o4-mini', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000123, 'GPT-4o', 'openai', 'gpt-4o', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000124, 'GPT-4o Mini', 'openai', 'gpt-4o-mini', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000125, 'GPT-5 Chat', 'azure-openai', 'gpt-5-chat', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000126, 'GPT-5 Mini', 'azure-openai', 'gpt-5-mini', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000127, 'GPT-5 Nano', 'azure-openai', 'gpt-5-nano', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000128, 'GPT-4.1', 'azure-openai', 'gpt-4.1', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000129, 'GPT-4.1 Mini', 'azure-openai', 'gpt-4.1-mini', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000130, 'GPT-4.1 Nano', 'azure-openai', 'gpt-4.1-nano', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000131, 'GPT-4o', 'azure-openai', 'gpt-4o', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000132, 'GPT-4o Mini', 'azure-openai', 'gpt-4o-mini', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000133, 'MiniMax M2.5', 'minimax', 'MiniMax-M2.5', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000134, 'MiniMax M2.5 Highspeed', 'minimax', 'MiniMax-M2.5-highspeed', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000135, 'MiniMax M2.7', 'minimax', 'MiniMax-M2.7', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000136, 'MiniMax M2.7 Highspeed', 'minimax', 'MiniMax-M2.7-highspeed', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000137, 'MiniMax M2.5', 'minimax-cn', 'MiniMax-M2.5', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000138, 'MiniMax M2.5 Highspeed', 'minimax-cn', 'MiniMax-M2.5-highspeed', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000139, 'MiniMax M2.7', 'minimax-cn', 'MiniMax-M2.7', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000140, 'MiniMax M2.7 Highspeed', 'minimax-cn', 'MiniMax-M2.7-highspeed', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000141, 'Kimi K2.5', 'kimi-cn', 'kimi-k2.5', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000142, 'Kimi K2 0905 Preview', 'kimi-cn', 'kimi-k2-0905-preview', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000143, 'Kimi K2 0711 Preview', 'kimi-cn', 'kimi-k2-0711-preview', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000144, 'Kimi K2 Turbo Preview', 'kimi-cn', 'kimi-k2-turbo-preview', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000145, 'Kimi K2 Thinking', 'kimi-cn', 'kimi-k2-thinking', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000146, 'Kimi K2 Thinking Turbo', 'kimi-cn', 'kimi-k2-thinking-turbo', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000147, 'Kimi K2.5', 'kimi-intl', 'kimi-k2.5', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000148, 'Kimi K2 0905 Preview', 'kimi-intl', 'kimi-k2-0905-preview', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000149, 'Kimi K2 0711 Preview', 'kimi-intl', 'kimi-k2-0711-preview', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000150, 'Kimi K2 Turbo Preview', 'kimi-intl', 'kimi-k2-turbo-preview', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000151, 'Kimi K2 Thinking', 'kimi-intl', 'kimi-k2-thinking', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000152, 'Kimi K2 Thinking Turbo', 'kimi-intl', 'kimi-k2-thinking-turbo', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000153, 'DeepSeek Chat', 'deepseek', 'deepseek-chat', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000154, 'DeepSeek Reasoner', 'deepseek', 'deepseek-reasoner', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
 -- DeepSeek V4 (1M context, native thinking via DeepSeekV4ThinkingDecorator)
-(1000000282, 'DeepSeek V4 Flash', 'deepseek', 'deepseek-v4-flash', 'DeepSeek V4 Flash (1M context, reasoning via thinking-enabled mode)', NULL, 4096, NULL, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000283, 'DeepSeek V4 Pro', 'deepseek', 'deepseek-v4-pro', 'DeepSeek V4 Pro (1M context, reasoning via thinking-enabled mode)', NULL, 4096, NULL, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000155, 'Gemini 3.1 Pro Preview', 'gemini', 'gemini-3.1-pro-preview', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000156, 'Gemini 3 Flash Preview', 'gemini', 'gemini-3-flash-preview', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000157, 'Gemini 3.1 Flash Lite Preview', 'gemini', 'gemini-3.1-flash-lite-preview', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000158, 'Gemini 2.5 Pro', 'gemini', 'gemini-2.5-pro', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000159, 'Gemini 2.5 Flash', 'gemini', 'gemini-2.5-flash', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000160, 'Gemini 2.5 Flash Lite', 'gemini', 'gemini-2.5-flash-lite', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000161, 'Gemini 2.0 Flash', 'gemini', 'gemini-2.0-flash', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000340, 'Grok 4', 'xai', 'grok-4', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000341, 'Grok 4 Fast', 'xai', 'grok-4-fast', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000342, 'Grok 3', 'xai', 'grok-3', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000343, 'Grok 3 Mini', 'xai', 'grok-3-mini', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000200, 'GPT-5', 'openrouter', 'openai/gpt-5', 'GPT-5 via OpenRouter', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000201, 'Claude Opus 4.6', 'openrouter', 'anthropic/claude-opus-4-6', 'Claude Opus 4.6 via OpenRouter', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000202, 'Claude Sonnet 4.6', 'openrouter', 'anthropic/claude-sonnet-4-6', 'Claude Sonnet 4.6 via OpenRouter', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000203, 'Gemini 2.5 Pro', 'openrouter', 'google/gemini-2.5-pro', 'Gemini 2.5 Pro via OpenRouter', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000204, 'Llama 4 Maverick', 'openrouter', 'meta-llama/llama-4-maverick', 'Llama 4 Maverick via OpenRouter', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000205, 'DeepSeek R1', 'openrouter', 'deepseek/deepseek-r1', 'DeepSeek R1 via OpenRouter', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000206, 'Qwen3.6 Plus (free)', 'openrouter', 'qwen/qwen3.6-plus:free', 'Free Qwen3.6 Plus via OpenRouter (vision)', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000207, 'Gemini 2.5 Flash (free)', 'openrouter', 'google/gemini-2.5-flash:free', 'Free Gemini 2.5 Flash via OpenRouter (vision)', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000208, 'Llama 4 Maverick (free)', 'openrouter', 'meta-llama/llama-4-maverick:free', 'Free Llama 4 Maverick via OpenRouter (vision)', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000500, 'DeepSeek V3',           'siliconflow-cn',   'deepseek-ai/DeepSeek-V3',         'SiliconFlow CN — DeepSeek V3, strong general capability, free quota', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000501, 'DeepSeek R1',           'siliconflow-cn',   'deepseek-ai/DeepSeek-R1',         'SiliconFlow CN — DeepSeek R1 reasoning model',                        0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000502, 'Qwen3 235B A22B',       'siliconflow-cn',   'Qwen/Qwen3-235B-A22B',            'SiliconFlow CN — Qwen3 flagship MoE model',                           0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000503, 'Qwen3 30B A3B',         'siliconflow-cn',   'Qwen/Qwen3-30B-A3B',              'SiliconFlow CN — Qwen3 efficient MoE model',                          0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000504, 'GLM-4 9B Chat',         'siliconflow-cn',   'THUDM/glm-4-9b-chat',             'SiliconFlow CN — Zhipu GLM-4 9B, free tier',                          0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000505, 'DeepSeek V3 Pro',       'siliconflow-cn',   'Pro/deepseek-ai/DeepSeek-V3',     'SiliconFlow CN Pro — DeepSeek V3 priority tier',                      0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000506, 'DeepSeek R1 Pro',       'siliconflow-cn',   'Pro/deepseek-ai/DeepSeek-R1',     'SiliconFlow CN Pro — DeepSeek R1 priority tier',                      0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000510, 'DeepSeek V3',           'siliconflow-intl', 'deepseek-ai/DeepSeek-V3',         'SiliconFlow INTL — DeepSeek V3',                                      0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000511, 'DeepSeek R1',           'siliconflow-intl', 'deepseek-ai/DeepSeek-R1',         'SiliconFlow INTL — DeepSeek R1 reasoning model',                      0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000512, 'Qwen3 235B A22B',       'siliconflow-intl', 'Qwen/Qwen3-235B-A22B',            'SiliconFlow INTL — Qwen3 flagship MoE model',                         0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000513, 'Qwen3 30B A3B',         'siliconflow-intl', 'Qwen/Qwen3-30B-A3B',              'SiliconFlow INTL — Qwen3 efficient MoE model',                        0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000514, 'GLM-4 9B Chat',         'siliconflow-intl', 'THUDM/glm-4-9b-chat',             'SiliconFlow INTL — Zhipu GLM-4 9B, free tier',                        0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000515, 'DeepSeek V3 Pro',       'siliconflow-intl', 'Pro/deepseek-ai/DeepSeek-V3',     'SiliconFlow INTL Pro — DeepSeek V3 priority tier',                    0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000516, 'DeepSeek R1 Pro',       'siliconflow-intl', 'Pro/deepseek-ai/DeepSeek-R1',     'SiliconFlow INTL Pro — DeepSeek R1 priority tier',                    0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000520, 'Big Pickle',            'opencode',         'big-pickle',                      'OpenCode free model — Big Pickle',                                    0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000521, 'Nemotron 3 Super Free', 'opencode',         'nemotron-3-super-free',            'OpenCode free model — Nemotron 3 Super',                              0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000210, 'GLM-5-Turbo', 'zhipu-cn', 'glm-5-turbo', 'Fast inference model (recommended)', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000211, 'GLM-5V-Turbo', 'zhipu-cn', 'glm-5v-turbo', 'Multimodal vision model (recommended)', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000212, 'GLM-5', 'zhipu-cn', 'glm-5', 'Flagship model', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000213, 'GLM-5.1', 'zhipu-cn', 'glm-5.1', 'Latest flagship model', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000220, 'GLM-5-Turbo', 'zhipu-intl', 'glm-5-turbo', 'Fast inference model (International, recommended)', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000221, 'GLM-5V-Turbo', 'zhipu-intl', 'glm-5v-turbo', 'Multimodal vision model (International, recommended)', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000222, 'GLM-5', 'zhipu-intl', 'glm-5', 'Flagship model (International)', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000223, 'GLM-5.1', 'zhipu-intl', 'glm-5.1', 'Latest flagship model (International)', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000230, 'GLM-5 Coding',       'zhipu-cn-codingplan',   'glm-5',       'Zhipu Coding Plan — GLM-5 flagship',                    0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000231, 'GLM-5.1 Coding',     'zhipu-cn-codingplan',   'glm-5.1',     'Zhipu Coding Plan — GLM-5.1 latest flagship',           0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000232, 'GLM-5-Turbo Coding', 'zhipu-cn-codingplan',   'glm-5-turbo', 'Zhipu Coding Plan — GLM-5 fast variant',                0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000233, 'GLM-4.7 Coding',     'zhipu-cn-codingplan',   'glm-4.7',     'Zhipu Coding Plan — GLM-4.7',                           0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000234, 'GLM-5 Coding',       'zhipu-intl-codingplan', 'glm-5',       'Zhipu Coding Plan — GLM-5 flagship (International)',    0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000235, 'GLM-5.1 Coding',     'zhipu-intl-codingplan', 'glm-5.1',     'Zhipu Coding Plan — GLM-5.1 flagship (International)',  0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000236, 'GLM-5-Turbo Coding', 'zhipu-intl-codingplan', 'glm-5-turbo', 'Zhipu Coding Plan — GLM-5 fast (International)',        0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000237, 'GLM-4.7 Coding',     'zhipu-intl-codingplan', 'glm-4.7',     'Zhipu Coding Plan — GLM-4.7 (International)',           0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000310, 'Doubao Seed 1.8', 'volcengine', 'doubao-seed-1-8-251228', 'Doubao flagship multimodal model, text + image, 256K context', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000311, 'Doubao Seed Code Preview', 'volcengine', 'doubao-seed-code-preview-251028', 'Doubao code preview model, text + image, 256K context', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000312, 'Kimi K2.5', 'volcengine', 'kimi-k2-5-260127', 'Kimi K2.5 (hosted on Volcano Ark), text + image, 256K context', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000313, 'GLM 4.7', 'volcengine', 'glm-4-7-251222', 'GLM 4.7 (hosted on Volcano Ark), text + image, 200K context', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000314, 'DeepSeek V3.2', 'volcengine', 'deepseek-v3-2-251201', 'DeepSeek V3.2 (hosted on Volcano Ark), text + image, 128K context', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000320, 'Ark Coding Plan', 'volcengine-plan', 'ark-code-latest', 'Ark Coding Plan flagship model, 256K context', 0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000321, 'Doubao Seed Code', 'volcengine-plan', 'doubao-seed-code', 'Doubao code model, 256K context', 0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000322, 'Doubao Seed Code Preview', 'volcengine-plan', 'doubao-seed-code-preview-251028', 'Doubao code preview model, 256K context', 0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000323, 'GLM 4.7 Coding', 'volcengine-plan', 'glm-4.7', 'GLM 4.7 coding edition (hosted on Volcano Ark), 200K context', 0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000324, 'Kimi K2 Thinking', 'volcengine-plan', 'kimi-k2-thinking', 'Kimi K2 Thinking (hosted on Volcano Ark), 256K context', 0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000325, 'Kimi K2.5 Coding', 'volcengine-plan', 'kimi-k2.5', 'Kimi K2.5 coding edition (hosted on Volcano Ark), 256K context', 0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000240, 'Kimi for Coding', 'kimi-code', 'kimi-for-coding', 'Kimi Code dedicated coding model', 0.2, 32768, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000250, 'GPT-5.4', 'openai-chatgpt', 'gpt-5.4', 'ChatGPT Plus/Pro member model (OAuth login)', NULL, 128000, NULL, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000251, 'GPT-5.4 Mini', 'openai-chatgpt', 'gpt-5.4-mini', 'ChatGPT member lightweight model', NULL, 128000, NULL, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000282, 'DeepSeek V4 Flash', 'deepseek', 'deepseek-v4-flash', 'DeepSeek V4 Flash (1M context, reasoning via thinking-enabled mode)', NULL, 4096, NULL, 1, 1, 0, NOW(), NOW(), 0),
+(1000000283, 'DeepSeek V4 Pro', 'deepseek', 'deepseek-v4-pro', 'DeepSeek V4 Pro (1M context, reasoning via thinking-enabled mode)', NULL, 4096, NULL, 1, 1, 0, NOW(), NOW(), 0),
+(1000000155, 'Gemini 3.1 Pro Preview', 'gemini', 'gemini-3.1-pro-preview', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000156, 'Gemini 3 Flash Preview', 'gemini', 'gemini-3-flash-preview', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000157, 'Gemini 3.1 Flash Lite Preview', 'gemini', 'gemini-3.1-flash-lite-preview', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000158, 'Gemini 2.5 Pro', 'gemini', 'gemini-2.5-pro', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000159, 'Gemini 2.5 Flash', 'gemini', 'gemini-2.5-flash', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000160, 'Gemini 2.5 Flash Lite', 'gemini', 'gemini-2.5-flash-lite', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000161, 'Gemini 2.0 Flash', 'gemini', 'gemini-2.0-flash', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000340, 'Grok 4', 'xai', 'grok-4', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000341, 'Grok 4 Fast', 'xai', 'grok-4-fast', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000342, 'Grok 3', 'xai', 'grok-3', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000343, 'Grok 3 Mini', 'xai', 'grok-3-mini', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000200, 'GPT-5', 'openrouter', 'openai/gpt-5', 'GPT-5 via OpenRouter', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000201, 'Claude Opus 4.6', 'openrouter', 'anthropic/claude-opus-4-6', 'Claude Opus 4.6 via OpenRouter', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000202, 'Claude Sonnet 4.6', 'openrouter', 'anthropic/claude-sonnet-4-6', 'Claude Sonnet 4.6 via OpenRouter', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000203, 'Gemini 2.5 Pro', 'openrouter', 'google/gemini-2.5-pro', 'Gemini 2.5 Pro via OpenRouter', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000204, 'Llama 4 Maverick', 'openrouter', 'meta-llama/llama-4-maverick', 'Llama 4 Maverick via OpenRouter', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000205, 'DeepSeek R1', 'openrouter', 'deepseek/deepseek-r1', 'DeepSeek R1 via OpenRouter', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000206, 'Qwen3.6 Plus (free)', 'openrouter', 'qwen/qwen3.6-plus:free', 'Free Qwen3.6 Plus via OpenRouter (vision)', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000207, 'Gemini 2.5 Flash (free)', 'openrouter', 'google/gemini-2.5-flash:free', 'Free Gemini 2.5 Flash via OpenRouter (vision)', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000208, 'Llama 4 Maverick (free)', 'openrouter', 'meta-llama/llama-4-maverick:free', 'Free Llama 4 Maverick via OpenRouter (vision)', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000500, 'DeepSeek V3',           'siliconflow-cn',   'deepseek-ai/DeepSeek-V3',         'SiliconFlow CN — DeepSeek V3, strong general capability, free quota', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000501, 'DeepSeek R1',           'siliconflow-cn',   'deepseek-ai/DeepSeek-R1',         'SiliconFlow CN — DeepSeek R1 reasoning model',                        0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000502, 'Qwen3 235B A22B',       'siliconflow-cn',   'Qwen/Qwen3-235B-A22B',            'SiliconFlow CN — Qwen3 flagship MoE model',                           0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000503, 'Qwen3 30B A3B',         'siliconflow-cn',   'Qwen/Qwen3-30B-A3B',              'SiliconFlow CN — Qwen3 efficient MoE model',                          0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000504, 'GLM-4 9B Chat',         'siliconflow-cn',   'THUDM/glm-4-9b-chat',             'SiliconFlow CN — Zhipu GLM-4 9B, free tier',                          0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000505, 'DeepSeek V3 Pro',       'siliconflow-cn',   'Pro/deepseek-ai/DeepSeek-V3',     'SiliconFlow CN Pro — DeepSeek V3 priority tier',                      0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000506, 'DeepSeek R1 Pro',       'siliconflow-cn',   'Pro/deepseek-ai/DeepSeek-R1',     'SiliconFlow CN Pro — DeepSeek R1 priority tier',                      0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000510, 'DeepSeek V3',           'siliconflow-intl', 'deepseek-ai/DeepSeek-V3',         'SiliconFlow INTL — DeepSeek V3',                                      0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000511, 'DeepSeek R1',           'siliconflow-intl', 'deepseek-ai/DeepSeek-R1',         'SiliconFlow INTL — DeepSeek R1 reasoning model',                      0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000512, 'Qwen3 235B A22B',       'siliconflow-intl', 'Qwen/Qwen3-235B-A22B',            'SiliconFlow INTL — Qwen3 flagship MoE model',                         0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000513, 'Qwen3 30B A3B',         'siliconflow-intl', 'Qwen/Qwen3-30B-A3B',              'SiliconFlow INTL — Qwen3 efficient MoE model',                        0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000514, 'GLM-4 9B Chat',         'siliconflow-intl', 'THUDM/glm-4-9b-chat',             'SiliconFlow INTL — Zhipu GLM-4 9B, free tier',                        0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000515, 'DeepSeek V3 Pro',       'siliconflow-intl', 'Pro/deepseek-ai/DeepSeek-V3',     'SiliconFlow INTL Pro — DeepSeek V3 priority tier',                    0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000516, 'DeepSeek R1 Pro',       'siliconflow-intl', 'Pro/deepseek-ai/DeepSeek-R1',     'SiliconFlow INTL Pro — DeepSeek R1 priority tier',                    0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000520, 'Big Pickle',            'opencode',         'big-pickle',                      'OpenCode free model — Big Pickle',                                    0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000521, 'Nemotron 3 Super Free', 'opencode',         'nemotron-3-super-free',            'OpenCode free model — Nemotron 3 Super',                              0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000210, 'GLM-5-Turbo', 'zhipu-cn', 'glm-5-turbo', 'Fast inference model (recommended)', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000211, 'GLM-5V-Turbo', 'zhipu-cn', 'glm-5v-turbo', 'Multimodal vision model (recommended)', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000212, 'GLM-5', 'zhipu-cn', 'glm-5', 'Flagship model', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000213, 'GLM-5.1', 'zhipu-cn', 'glm-5.1', 'Latest flagship model', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000220, 'GLM-5-Turbo', 'zhipu-intl', 'glm-5-turbo', 'Fast inference model (International, recommended)', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000221, 'GLM-5V-Turbo', 'zhipu-intl', 'glm-5v-turbo', 'Multimodal vision model (International, recommended)', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000222, 'GLM-5', 'zhipu-intl', 'glm-5', 'Flagship model (International)', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000223, 'GLM-5.1', 'zhipu-intl', 'glm-5.1', 'Latest flagship model (International)', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000230, 'GLM-5 Coding',       'zhipu-cn-codingplan',   'glm-5',       'Zhipu Coding Plan — GLM-5 flagship',                    0.2, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000231, 'GLM-5.1 Coding',     'zhipu-cn-codingplan',   'glm-5.1',     'Zhipu Coding Plan — GLM-5.1 latest flagship',           0.2, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000232, 'GLM-5-Turbo Coding', 'zhipu-cn-codingplan',   'glm-5-turbo', 'Zhipu Coding Plan — GLM-5 fast variant',                0.2, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000233, 'GLM-4.7 Coding',     'zhipu-cn-codingplan',   'glm-4.7',     'Zhipu Coding Plan — GLM-4.7',                           0.2, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000234, 'GLM-5 Coding',       'zhipu-intl-codingplan', 'glm-5',       'Zhipu Coding Plan — GLM-5 flagship (International)',    0.2, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000235, 'GLM-5.1 Coding',     'zhipu-intl-codingplan', 'glm-5.1',     'Zhipu Coding Plan — GLM-5.1 flagship (International)',  0.2, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000236, 'GLM-5-Turbo Coding', 'zhipu-intl-codingplan', 'glm-5-turbo', 'Zhipu Coding Plan — GLM-5 fast (International)',        0.2, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000237, 'GLM-4.7 Coding',     'zhipu-intl-codingplan', 'glm-4.7',     'Zhipu Coding Plan — GLM-4.7 (International)',           0.2, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000310, 'Doubao Seed 1.8', 'volcengine', 'doubao-seed-1-8-251228', 'Doubao flagship multimodal model, text + image, 256K context', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000311, 'Doubao Seed Code Preview', 'volcengine', 'doubao-seed-code-preview-251028', 'Doubao code preview model, text + image, 256K context', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000312, 'Kimi K2.5', 'volcengine', 'kimi-k2-5-260127', 'Kimi K2.5 (hosted on Volcano Ark), text + image, 256K context', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000313, 'GLM 4.7', 'volcengine', 'glm-4-7-251222', 'GLM 4.7 (hosted on Volcano Ark), text + image, 200K context', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000314, 'DeepSeek V3.2', 'volcengine', 'deepseek-v3-2-251201', 'DeepSeek V3.2 (hosted on Volcano Ark), text + image, 128K context', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000320, 'Ark Coding Plan', 'volcengine-plan', 'ark-code-latest', 'Ark Coding Plan flagship model, 256K context', 0.2, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000321, 'Doubao Seed Code', 'volcengine-plan', 'doubao-seed-code', 'Doubao code model, 256K context', 0.2, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000322, 'Doubao Seed Code Preview', 'volcengine-plan', 'doubao-seed-code-preview-251028', 'Doubao code preview model, 256K context', 0.2, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000323, 'GLM 4.7 Coding', 'volcengine-plan', 'glm-4.7', 'GLM 4.7 coding edition (hosted on Volcano Ark), 200K context', 0.2, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000324, 'Kimi K2 Thinking', 'volcengine-plan', 'kimi-k2-thinking', 'Kimi K2 Thinking (hosted on Volcano Ark), 256K context', 0.2, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000325, 'Kimi K2.5 Coding', 'volcengine-plan', 'kimi-k2.5', 'Kimi K2.5 coding edition (hosted on Volcano Ark), 256K context', 0.2, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000240, 'Kimi for Coding', 'kimi-code', 'kimi-for-coding', 'Kimi Code dedicated coding model', 0.2, 32768, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000250, 'GPT-5.4', 'openai-chatgpt', 'gpt-5.4', 'ChatGPT Plus/Pro member model (OAuth login)', NULL, 128000, NULL, 1, 1, 0, NOW(), NOW(), 0),
+(1000000251, 'GPT-5.4 Mini', 'openai-chatgpt', 'gpt-5.4-mini', 'ChatGPT member lightweight model', NULL, 128000, NULL, 1, 1, 0, NOW(), NOW(), 0),
 -- GPT-5.5 series (OpenAI / Azure / OpenRouter)
-(1000000260, 'GPT-5.5', 'openai', 'gpt-5.5', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000261, 'GPT-5.5 Mini', 'openai', 'gpt-5.5-mini', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000262, 'GPT-5.5 Nano', 'openai', 'gpt-5.5-nano', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000263, 'GPT-5.5', 'azure-openai', 'gpt-5.5', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000264, 'GPT-5.5 Mini', 'azure-openai', 'gpt-5.5-mini', '', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000265, 'GPT-5.5', 'openrouter', 'openai/gpt-5.5', 'GPT-5.5 via OpenRouter', 0.7, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000260, 'GPT-5.5', 'openai', 'gpt-5.5', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000261, 'GPT-5.5 Mini', 'openai', 'gpt-5.5-mini', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000262, 'GPT-5.5 Nano', 'openai', 'gpt-5.5-nano', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000263, 'GPT-5.5', 'azure-openai', 'gpt-5.5', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000264, 'GPT-5.5 Mini', 'azure-openai', 'gpt-5.5-mini', '', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
+(1000000265, 'GPT-5.5', 'openrouter', 'openai/gpt-5.5', 'GPT-5.5 via OpenRouter', 0.7, 4096, 0.8, 1, 1, 0, NOW(), NOW(), 0),
 -- Claude 4.7 series (direct Anthropic + OpenRouter).
 -- Note: Claude 4.7 forbids temperature/top_p/top_k — handled in AgentAnthropicChatModelBuilder.
-(1000000270, 'Claude Opus 4.7', 'anthropic', 'claude-opus-4-7', 'Anthropic Claude Opus 4.7 (xhigh adaptive thinking)', NULL, 4096, NULL, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000270, 'Claude Opus 4.7', 'anthropic', 'claude-opus-4-7', 'Anthropic Claude Opus 4.7 (xhigh adaptive thinking)', NULL, 4096, NULL, 1, 1, 0, NOW(), NOW(), 0),
 -- Anthropic only released Opus 4.7 — Sonnet stays at 4.6 until further notice.
-(1000000271, 'Claude Sonnet 4.6', 'anthropic', 'claude-sonnet-4-6', 'Anthropic Claude Sonnet 4.6 (latest Sonnet — 4.7 not yet released)', NULL, 4096, NULL, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000272, 'Claude Opus 4.7', 'openrouter', 'anthropic/claude-opus-4-7', 'Claude Opus 4.7 via OpenRouter', NULL, 4096, NULL, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000273, 'Claude Sonnet 4.6', 'openrouter', 'anthropic/claude-sonnet-4-6', 'Claude Sonnet 4.6 via OpenRouter', NULL, 4096, NULL, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000271, 'Claude Sonnet 4.6', 'anthropic', 'claude-sonnet-4-6', 'Anthropic Claude Sonnet 4.6 (latest Sonnet — 4.7 not yet released)', NULL, 4096, NULL, 1, 1, 0, NOW(), NOW(), 0),
+(1000000272, 'Claude Opus 4.7', 'openrouter', 'anthropic/claude-opus-4-7', 'Claude Opus 4.7 via OpenRouter', NULL, 4096, NULL, 1, 1, 0, NOW(), NOW(), 0),
+(1000000273, 'Claude Sonnet 4.6', 'openrouter', 'anthropic/claude-sonnet-4-6', 'Claude Sonnet 4.6 via OpenRouter', NULL, 4096, NULL, 1, 1, 0, NOW(), NOW(), 0),
 -- RFC-062: Claude 4.7 via Claude Code OAuth subscription (Pro/Max plan).
-(1000000280, 'Claude Opus 4.7', 'anthropic-claude-code', 'claude-opus-4-7', 'Claude Opus 4.7 via Claude Code Pro/Max subscription', NULL, 4096, NULL, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000281, 'Claude Sonnet 4.6', 'anthropic-claude-code', 'claude-sonnet-4-6', 'Claude Sonnet 4.6 via Claude Code Pro/Max subscription', NULL, 4096, NULL, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000280, 'Claude Opus 4.7', 'anthropic-claude-code', 'claude-opus-4-7', 'Claude Opus 4.7 via Claude Code Pro/Max subscription', NULL, 4096, NULL, 1, 1, 0, NOW(), NOW(), 0),
+(1000000281, 'Claude Sonnet 4.6', 'anthropic-claude-code', 'claude-sonnet-4-6', 'Claude Sonnet 4.6 via Claude Code Pro/Max subscription', NULL, 4096, NULL, 1, 1, 0, NOW(), NOW(), 0),
 -- Claude 4.8 series (direct Anthropic + OpenRouter, including the -fast variant).
 -- Shares 4.7's strict sampling contract (temperature/top_p/top_k must be NULL)
 -- and the new xhigh thinking tier — handled in AnthropicChatModelBuilder.
-(1000000290, 'Claude Opus 4.8', 'anthropic', 'claude-opus-4-8', 'Anthropic Claude Opus 4.8 (xhigh adaptive thinking)', NULL, 4096, NULL, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000291, 'Claude Opus 4.8 Fast', 'anthropic', 'claude-opus-4-8-fast', 'Claude Opus 4.8 fast variant (higher output speed, 2x pricing)', NULL, 4096, NULL, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000292, 'Claude Opus 4.8', 'openrouter', 'anthropic/claude-opus-4-8', 'Claude Opus 4.8 via OpenRouter', NULL, 4096, NULL, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000293, 'Claude Opus 4.8 Fast', 'openrouter', 'anthropic/claude-opus-4-8-fast', 'Claude Opus 4.8 fast variant via OpenRouter', NULL, 4096, NULL, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
-(1000000294, 'Claude Opus 4.8', 'anthropic-claude-code', 'claude-opus-4-8', 'Claude Opus 4.8 via Claude Code Pro/Max subscription', NULL, 4096, NULL, TRUE, TRUE, FALSE, NOW(), NOW(), 0)
+(1000000290, 'Claude Opus 4.8', 'anthropic', 'claude-opus-4-8', 'Anthropic Claude Opus 4.8 (xhigh adaptive thinking)', NULL, 4096, NULL, 1, 1, 0, NOW(), NOW(), 0),
+(1000000291, 'Claude Opus 4.8 Fast', 'anthropic', 'claude-opus-4-8-fast', 'Claude Opus 4.8 fast variant (higher output speed, 2x pricing)', NULL, 4096, NULL, 1, 1, 0, NOW(), NOW(), 0),
+(1000000292, 'Claude Opus 4.8', 'openrouter', 'anthropic/claude-opus-4-8', 'Claude Opus 4.8 via OpenRouter', NULL, 4096, NULL, 1, 1, 0, NOW(), NOW(), 0),
+(1000000293, 'Claude Opus 4.8 Fast', 'openrouter', 'anthropic/claude-opus-4-8-fast', 'Claude Opus 4.8 fast variant via OpenRouter', NULL, 4096, NULL, 1, 1, 0, NOW(), NOW(), 0),
+(1000000294, 'Claude Opus 4.8', 'anthropic-claude-code', 'claude-opus-4-8', 'Claude Opus 4.8 via Claude Code Pro/Max subscription', NULL, 4096, NULL, 1, 1, 0, NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, provider=EXCLUDED.provider, model_name=EXCLUDED.model_name, description=EXCLUDED.description, temperature=EXCLUDED.temperature, max_tokens=EXCLUDED.max_tokens, top_p=EXCLUDED.top_p, builtin=EXCLUDED.builtin, enabled=EXCLUDED.enabled, is_default=EXCLUDED.is_default, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
 -- Default system settings
@@ -453,130 +453,127 @@ VALUES (1000000013, 'searxngBaseUrl', '', 'SearXNG instance base URL (auto-confi
 ON CONFLICT (id) DO UPDATE SET setting_key=EXCLUDED.setting_key, setting_value=EXCLUDED.setting_value, description=EXCLUDED.description, update_time=EXCLUDED.update_time;
 
 -- Speech-to-text (STT) defaults — enabled out of the box so users only need to configure an API key.
--- Skip-if-exists keyed on setting_key (FROM DUAL ... WHERE NOT EXISTS) so
+-- Skip-if-exists keyed on setting_key (SELECT ... WHERE NOT EXISTS) so
 -- we don't override a value the user explicitly set before this seed shipped,
 -- and don't trip the UNIQUE index on setting_key when their row is at a
 -- runtime-assigned id. V46 migration uses the same idiom.
 INSERT INTO mate_system_setting (id, setting_key, setting_value, description, create_time, update_time)
 SELECT 1000000020, 'sttEnabled', 'true', 'Enable speech-to-text (TalkMode mic input)', NOW(), NOW()
-FROM DUAL
 WHERE NOT EXISTS (SELECT 1 FROM mate_system_setting WHERE setting_key = 'sttEnabled');
 
 INSERT INTO mate_system_setting (id, setting_key, setting_value, description, create_time, update_time)
 SELECT 1000000021, 'sttProvider', 'auto', 'STT provider: auto / openai / dashscope', NOW(), NOW()
-FROM DUAL
 WHERE NOT EXISTS (SELECT 1 FROM mate_system_setting WHERE setting_key = 'sttProvider');
 
 INSERT INTO mate_system_setting (id, setting_key, setting_value, description, create_time, update_time)
 SELECT 1000000022, 'sttFallbackEnabled', 'true', 'Try alternate STT provider when the primary fails', NOW(), NOW()
-FROM DUAL
 WHERE NOT EXISTS (SELECT 1 FROM mate_system_setting WHERE setting_key = 'sttFallbackEnabled');
 
 -- Built-in tool: Date & Time
 INSERT INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
-VALUES (1000000001, 'DateTimeTool', 'Date & Time', 'Get current date and time information', 'builtin', 'dateTimeTool', '🕐', TRUE, TRUE, NOW(), NOW(), 0)
+VALUES (1000000001, 'DateTimeTool', 'Date & Time', 'Get current date and time information', 'builtin', 'dateTimeTool', '🕐', 1, 1, NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, display_name=EXCLUDED.display_name, description=EXCLUDED.description, tool_type=EXCLUDED.tool_type, bean_name=EXCLUDED.bean_name, icon=EXCLUDED.icon, enabled=EXCLUDED.enabled, builtin=EXCLUDED.builtin, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
 -- Built-in tool: Web Search
 INSERT INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
-VALUES (1000000002, 'WebSearchTool', 'Web Search', 'Search the internet for real-time information', 'builtin', 'webSearchTool', '🔍', TRUE, TRUE, NOW(), NOW(), 0)
+VALUES (1000000002, 'WebSearchTool', 'Web Search', 'Search the internet for real-time information', 'builtin', 'webSearchTool', '🔍', 1, 1, NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, display_name=EXCLUDED.display_name, description=EXCLUDED.description, tool_type=EXCLUDED.tool_type, bean_name=EXCLUDED.bean_name, icon=EXCLUDED.icon, enabled=EXCLUDED.enabled, builtin=EXCLUDED.builtin, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
 -- Built-in tool: Shell Execute (enabled by default, dangerous ops controlled by ToolGuard)
 INSERT INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
-VALUES (1000000003, 'ShellExecuteTool', 'Shell Execute', 'Execute shell commands on the local server. Used for system commands, viewing files, running scripts. Dangerous operations trigger approval.', 'builtin', 'shellExecuteTool', '🖥', TRUE, TRUE, NOW(), NOW(), 0)
+VALUES (1000000003, 'ShellExecuteTool', 'Shell Execute', 'Execute shell commands on the local server. Used for system commands, viewing files, running scripts. Dangerous operations trigger approval.', 'builtin', 'shellExecuteTool', '🖥', 1, 1, NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, display_name=EXCLUDED.display_name, description=EXCLUDED.description, tool_type=EXCLUDED.tool_type, bean_name=EXCLUDED.bean_name, icon=EXCLUDED.icon, enabled=EXCLUDED.enabled, builtin=EXCLUDED.builtin, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
 -- Built-in tool: Read File
 INSERT INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
-VALUES (1000000004, 'ReadFileTool', 'Read File', 'Read file contents with line range support and auto-truncation for large output.', 'builtin', 'readFileTool', '📖', TRUE, TRUE, NOW(), NOW(), 0)
+VALUES (1000000004, 'ReadFileTool', 'Read File', 'Read file contents with line range support and auto-truncation for large output.', 'builtin', 'readFileTool', '📖', 1, 1, NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, display_name=EXCLUDED.display_name, description=EXCLUDED.description, tool_type=EXCLUDED.tool_type, bean_name=EXCLUDED.bean_name, icon=EXCLUDED.icon, enabled=EXCLUDED.enabled, builtin=EXCLUDED.builtin, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
 -- Built-in tool: Write File (enabled by default, dangerous ops controlled by ToolGuard)
 INSERT INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
-VALUES (1000000005, 'WriteFileTool', 'Write File', 'Write content to a file. Overwrites if exists, creates if not. Requires user approval.', 'builtin', 'writeFileTool', '📝', TRUE, TRUE, NOW(), NOW(), 0)
+VALUES (1000000005, 'WriteFileTool', 'Write File', 'Write content to a file. Overwrites if exists, creates if not. Requires user approval.', 'builtin', 'writeFileTool', '📝', 1, 1, NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, display_name=EXCLUDED.display_name, description=EXCLUDED.description, tool_type=EXCLUDED.tool_type, bean_name=EXCLUDED.bean_name, icon=EXCLUDED.icon, enabled=EXCLUDED.enabled, builtin=EXCLUDED.builtin, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
 -- Built-in tool: Edit File (enabled by default, dangerous ops controlled by ToolGuard)
 INSERT INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
-VALUES (1000000006, 'EditFileTool', 'Edit File', 'Edit file content via find-and-replace. Matches old_text exactly and replaces with new_text. Requires user approval.', 'builtin', 'editFileTool', '✏️', TRUE, TRUE, NOW(), NOW(), 0)
+VALUES (1000000006, 'EditFileTool', 'Edit File', 'Edit file content via find-and-replace. Matches old_text exactly and replaces with new_text. Requires user approval.', 'builtin', 'editFileTool', '✏️', 1, 1, NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, display_name=EXCLUDED.display_name, description=EXCLUDED.description, tool_type=EXCLUDED.tool_type, bean_name=EXCLUDED.bean_name, icon=EXCLUDED.icon, enabled=EXCLUDED.enabled, builtin=EXCLUDED.builtin, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
 -- Built-in tool: Skill File Reader (Skill Runtime Tool)
 INSERT INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
-VALUES (1000000007, 'SkillFileTool', 'Skill File Reader', 'Read files within skill packages (SKILL.md/references/scripts) and list skill file directory tree.', 'builtin', 'skillFileTool', '📖', TRUE, TRUE, NOW(), NOW(), 0)
+VALUES (1000000007, 'SkillFileTool', 'Skill File Reader', 'Read files within skill packages (SKILL.md/references/scripts) and list skill file directory tree.', 'builtin', 'skillFileTool', '📖', 1, 1, NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, display_name=EXCLUDED.display_name, description=EXCLUDED.description, tool_type=EXCLUDED.tool_type, bean_name=EXCLUDED.bean_name, icon=EXCLUDED.icon, enabled=EXCLUDED.enabled, builtin=EXCLUDED.builtin, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
 -- Built-in tool: Skill Script Runner (Skill Runtime Tool)
 INSERT INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
-VALUES (1000000008, 'SkillScriptTool', 'Skill Script Runner', 'Execute scripts in skill package scripts/ directory (Python/Bash/Node), strictly sandboxed.', 'builtin', 'skillScriptTool', '⚡', TRUE, TRUE, NOW(), NOW(), 0)
+VALUES (1000000008, 'SkillScriptTool', 'Skill Script Runner', 'Execute scripts in skill package scripts/ directory (Python/Bash/Node), strictly sandboxed.', 'builtin', 'skillScriptTool', '⚡', 1, 1, NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, display_name=EXCLUDED.display_name, description=EXCLUDED.description, tool_type=EXCLUDED.tool_type, bean_name=EXCLUDED.bean_name, icon=EXCLUDED.icon, enabled=EXCLUDED.enabled, builtin=EXCLUDED.builtin, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
 -- Built-in tool: File Type Detector
 INSERT INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
-VALUES (1000000009, 'FileTypeDetectorTool', 'File Type Detector', 'Detect file MIME type and category to help choose the appropriate reading tool.', 'builtin', 'fileTypeDetectorTool', '🔍', TRUE, TRUE, NOW(), NOW(), 0)
+VALUES (1000000009, 'FileTypeDetectorTool', 'File Type Detector', 'Detect file MIME type and category to help choose the appropriate reading tool.', 'builtin', 'fileTypeDetectorTool', '🔍', 1, 1, NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, display_name=EXCLUDED.display_name, description=EXCLUDED.description, tool_type=EXCLUDED.tool_type, bean_name=EXCLUDED.bean_name, icon=EXCLUDED.icon, enabled=EXCLUDED.enabled, builtin=EXCLUDED.builtin, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
 -- Built-in tool: Document Extractor
 INSERT INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
-VALUES (1000000010, 'DocumentExtractTool', 'Document Extractor', 'Extract text from PDF, Word, Excel, PowerPoint documents with fallback chain.', 'builtin', 'documentExtractTool', '📄', TRUE, TRUE, NOW(), NOW(), 0)
+VALUES (1000000010, 'DocumentExtractTool', 'Document Extractor', 'Extract text from PDF, Word, Excel, PowerPoint documents with fallback chain.', 'builtin', 'documentExtractTool', '📄', 1, 1, NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, display_name=EXCLUDED.display_name, description=EXCLUDED.description, tool_type=EXCLUDED.tool_type, bean_name=EXCLUDED.bean_name, icon=EXCLUDED.icon, enabled=EXCLUDED.enabled, builtin=EXCLUDED.builtin, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
 -- Built-in tool: Workspace Memory
 INSERT INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
-VALUES (1000000011, 'WorkspaceMemoryTool', 'Workspace Memory', 'Read/write workspace Markdown documents for persistent memory (PROFILE.md, MEMORY.md, etc.).', 'builtin', 'workspaceMemoryTool', '🧠', TRUE, TRUE, NOW(), NOW(), 0)
+VALUES (1000000011, 'WorkspaceMemoryTool', 'Workspace Memory', 'Read/write workspace Markdown documents for persistent memory (PROFILE.md, MEMORY.md, etc.).', 'builtin', 'workspaceMemoryTool', '🧠', 1, 1, NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, display_name=EXCLUDED.display_name, description=EXCLUDED.description, tool_type=EXCLUDED.tool_type, bean_name=EXCLUDED.bean_name, icon=EXCLUDED.icon, enabled=EXCLUDED.enabled, builtin=EXCLUDED.builtin, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
 -- Built-in tool: Browser Control (Playwright)
 INSERT INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
-VALUES (1000000012, 'BrowserUseTool', 'Browser Control', 'Launch and control browser for web automation: navigate, screenshot, click, type, execute JS.', 'builtin', 'browserUseTool', '🌐', TRUE, TRUE, NOW(), NOW(), 0)
+VALUES (1000000012, 'BrowserUseTool', 'Browser Control', 'Launch and control browser for web automation: navigate, screenshot, click, type, execute JS.', 'builtin', 'browserUseTool', '🌐', 1, 1, NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, display_name=EXCLUDED.display_name, description=EXCLUDED.description, tool_type=EXCLUDED.tool_type, bean_name=EXCLUDED.bean_name, icon=EXCLUDED.icon, enabled=EXCLUDED.enabled, builtin=EXCLUDED.builtin, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
 -- Built-in tool: MateClaw Docs
 INSERT INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
-VALUES (1000000013, 'MateClawDocTool', 'MateClaw Docs', 'Read built-in MateClaw project documentation. action=list to list docs, action=read to read specific doc.', 'builtin', 'mateClawDocTool', '📚', TRUE, TRUE, NOW(), NOW(), 0)
+VALUES (1000000013, 'MateClawDocTool', 'MateClaw Docs', 'Read built-in MateClaw project documentation. action=list to list docs, action=read to read specific doc.', 'builtin', 'mateClawDocTool', '📚', 1, 1, NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, display_name=EXCLUDED.display_name, description=EXCLUDED.description, tool_type=EXCLUDED.tool_type, bean_name=EXCLUDED.bean_name, icon=EXCLUDED.icon, enabled=EXCLUDED.enabled, builtin=EXCLUDED.builtin, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
 -- Built-in tool: Agent Delegation (Multi-Agent Collaboration)
 INSERT INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
-VALUES (1000000014, 'DelegateAgentTool', 'Agent Delegation', 'Delegate tasks to other Agents for multi-agent collaboration. Call target Agent by name, run in isolated session and return result.', 'builtin', 'delegateAgentTool', '🤝', TRUE, TRUE, NOW(), NOW(), 0)
+VALUES (1000000014, 'DelegateAgentTool', 'Agent Delegation', 'Delegate tasks to other Agents for multi-agent collaboration. Call target Agent by name, run in isolated session and return result.', 'builtin', 'delegateAgentTool', '🤝', 1, 1, NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, display_name=EXCLUDED.display_name, description=EXCLUDED.description, tool_type=EXCLUDED.tool_type, bean_name=EXCLUDED.bean_name, icon=EXCLUDED.icon, enabled=EXCLUDED.enabled, builtin=EXCLUDED.builtin, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
 INSERT INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
-VALUES (1000000015, 'VideoGenerateTool', 'Video Generation', 'Generate videos using AI. Supports text-to-video and image-to-video modes. Video generation is asynchronous and will appear in conversation when complete.', 'builtin', 'videoGenerateTool', '🎬', TRUE, TRUE, NOW(), NOW(), 0)
+VALUES (1000000015, 'VideoGenerateTool', 'Video Generation', 'Generate videos using AI. Supports text-to-video and image-to-video modes. Video generation is asynchronous and will appear in conversation when complete.', 'builtin', 'videoGenerateTool', '🎬', 1, 1, NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, display_name=EXCLUDED.display_name, description=EXCLUDED.description, tool_type=EXCLUDED.tool_type, bean_name=EXCLUDED.bean_name, icon=EXCLUDED.icon, enabled=EXCLUDED.enabled, builtin=EXCLUDED.builtin, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
 INSERT INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
-VALUES (1000000016, 'ImageGenerateTool', 'Image Generation', 'Generate images using AI. Supports text-to-image mode with multiple providers: DashScope, OpenAI DALL-E, fal.ai Flux, Zhipu CogView. Auto-fallback between providers.', 'builtin', 'imageGenerateTool', '🎨', TRUE, TRUE, NOW(), NOW(), 0)
+VALUES (1000000016, 'ImageGenerateTool', 'Image Generation', 'Generate images using AI. Supports text-to-image mode with multiple providers: DashScope, OpenAI DALL-E, fal.ai Flux, Zhipu CogView. Auto-fallback between providers.', 'builtin', 'imageGenerateTool', '🎨', 1, 1, NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, display_name=EXCLUDED.display_name, description=EXCLUDED.description, tool_type=EXCLUDED.tool_type, bean_name=EXCLUDED.bean_name, icon=EXCLUDED.icon, enabled=EXCLUDED.enabled, builtin=EXCLUDED.builtin, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
 INSERT INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
-VALUES (1000000017, 'WikiTool', 'Wiki Knowledge Base', 'Read, search, and trace sources in Wiki knowledge bases. Supports wiki_read_page, wiki_list_pages, wiki_search_pages, wiki_trace_source.', 'builtin', 'wikiTool', '📚', TRUE, TRUE, NOW(), NOW(), 0)
+VALUES (1000000017, 'WikiTool', 'Wiki Knowledge Base', 'Read, search, and trace sources in Wiki knowledge bases. Supports wiki_read_page, wiki_list_pages, wiki_search_pages, wiki_trace_source.', 'builtin', 'wikiTool', '📚', 1, 1, NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, display_name=EXCLUDED.display_name, description=EXCLUDED.description, tool_type=EXCLUDED.tool_type, bean_name=EXCLUDED.bean_name, icon=EXCLUDED.icon, enabled=EXCLUDED.enabled, builtin=EXCLUDED.builtin, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
 -- Built-in tool: Cron Job Management
 INSERT INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
-VALUES (1000000018, 'CronJobTool', 'Scheduled Tasks', 'Create, list, enable/disable, and delete scheduled tasks (cron jobs) through chat. Supports 5-field cron expressions.', 'builtin', 'cronJobTool', '⏰', TRUE, TRUE, NOW(), NOW(), 0)
+VALUES (1000000018, 'CronJobTool', 'Scheduled Tasks', 'Create, list, enable/disable, and delete scheduled tasks (cron jobs) through chat. Supports 5-field cron expressions.', 'builtin', 'cronJobTool', '⏰', 1, 1, NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, display_name=EXCLUDED.display_name, description=EXCLUDED.description, tool_type=EXCLUDED.tool_type, bean_name=EXCLUDED.bean_name, icon=EXCLUDED.icon, enabled=EXCLUDED.enabled, builtin=EXCLUDED.builtin, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
 -- Built-in tool: DOCX Render (RFC-045 — in-process Apache POI, millisecond .docx creation)
 INSERT INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
-VALUES (1000000019, 'DocxRenderTool', 'DOCX Render', 'Render Markdown directly into a .docx and return a one-time download link. In-process Apache POI implementation, no Node.js subprocess; supports headings, bold, lists, tables. Preferred tool for creating new documents.', 'builtin', 'docxRenderTool', '📝', TRUE, TRUE, NOW(), NOW(), 0)
+VALUES (1000000019, 'DocxRenderTool', 'DOCX Render', 'Render Markdown directly into a .docx and return a one-time download link. In-process Apache POI implementation, no Node.js subprocess; supports headings, bold, lists, tables. Preferred tool for creating new documents.', 'builtin', 'docxRenderTool', '📝', 1, 1, NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, display_name=EXCLUDED.display_name, description=EXCLUDED.description, tool_type=EXCLUDED.tool_type, bean_name=EXCLUDED.bean_name, icon=EXCLUDED.icon, enabled=EXCLUDED.enabled, builtin=EXCLUDED.builtin, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
 -- Built-in tool: XLSX Render (in-process Apache POI; markdown tables -> multi-sheet workbook)
 INSERT INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
-VALUES (1000000020, 'XlsxRenderTool', 'XLSX Render', 'Render Markdown directly into a .xlsx workbook and return a one-time download link. In-process Apache POI; each # heading becomes a sheet, pipe tables become rows, numeric cells auto-detected.', 'builtin', 'xlsxRenderTool', '📊', TRUE, TRUE, NOW(), NOW(), 0)
+VALUES (1000000020, 'XlsxRenderTool', 'XLSX Render', 'Render Markdown directly into a .xlsx workbook and return a one-time download link. In-process Apache POI; each # heading becomes a sheet, pipe tables become rows, numeric cells auto-detected.', 'builtin', 'xlsxRenderTool', '📊', 1, 1, NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, display_name=EXCLUDED.display_name, description=EXCLUDED.description, tool_type=EXCLUDED.tool_type, bean_name=EXCLUDED.bean_name, icon=EXCLUDED.icon, enabled=EXCLUDED.enabled, builtin=EXCLUDED.builtin, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
 -- Built-in tool: PPTX Render (in-process Apache POI; Marp-style markdown -> .pptx deck)
 INSERT INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
-VALUES (1000000021, 'PptxRenderTool', 'PPTX Render', 'Render Marp-style Markdown directly into a .pptx deck and return a one-time download link. In-process Apache POI; --- separates slides, # / ## titles, - bullets, <!-- speaker notes -->.', 'builtin', 'pptxRenderTool', '🎞️', TRUE, TRUE, NOW(), NOW(), 0)
+VALUES (1000000021, 'PptxRenderTool', 'PPTX Render', 'Render Marp-style Markdown directly into a .pptx deck and return a one-time download link. In-process Apache POI; --- separates slides, # / ## titles, - bullets, <!-- speaker notes -->.', 'builtin', 'pptxRenderTool', '🎞️', 1, 1, NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, display_name=EXCLUDED.display_name, description=EXCLUDED.description, tool_type=EXCLUDED.tool_type, bean_name=EXCLUDED.bean_name, icon=EXCLUDED.icon, enabled=EXCLUDED.enabled, builtin=EXCLUDED.builtin, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
 -- Built-in tool: PDF Render (dual backend: LibreOffice subprocess preferred, OpenPDF + Flying Saucer fallback)
 INSERT INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
-VALUES (1000000022, 'PdfRenderTool', 'PDF Render', 'Render Markdown into a final-form .pdf and return a one-time download link. Two backends (LibreOffice subprocess preferred, OpenPDF + Flying Saucer fallback); supports YAML frontmatter for cover / page header / page footer.', 'builtin', 'pdfRenderTool', '📄', TRUE, TRUE, NOW(), NOW(), 0)
+VALUES (1000000022, 'PdfRenderTool', 'PDF Render', 'Render Markdown into a final-form .pdf and return a one-time download link. Two backends (LibreOffice subprocess preferred, OpenPDF + Flying Saucer fallback); supports YAML frontmatter for cover / page header / page footer.', 'builtin', 'pdfRenderTool', '📄', 1, 1, NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, display_name=EXCLUDED.display_name, description=EXCLUDED.description, tool_type=EXCLUDED.tool_type, bean_name=EXCLUDED.bean_name, icon=EXCLUDED.icon, enabled=EXCLUDED.enabled, builtin=EXCLUDED.builtin, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
 -- Example MCP Server: Filesystem (see MateClaw docs mcpServers.filesystem)
@@ -594,14 +591,14 @@ VALUES (
     '["-y","@modelcontextprotocol/server-filesystem","${user.home}"]',
     '{}',
     NULL,
-    FALSE,
+    0,
     30,
     60,
     'disconnected',
     NULL,
     NULL,
     0,
-    FALSE,
+    0,
     NOW(),
     NOW(),
     0
@@ -625,14 +622,14 @@ VALUES (
     '["-y","@modelcontextprotocol/server-github"]',
     '{"GITHUB_PERSONAL_ACCESS_TOKEN":""}',
     NULL,
-    FALSE,
+    0,
     30,
     60,
     'disconnected',
     NULL,
     NULL,
     0,
-    FALSE,
+    0,
     NOW(),
     NOW(),
     0
@@ -646,79 +643,79 @@ ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, description=EXCLUDED.descript
 -- be removed in the next release. New skills should NOT be added here — drop a
 -- SKILL.md under skills/<name>/ and the seed service will register it.
 INSERT INTO mate_skill (id, name, description, skill_type, icon, version, author, config_json, enabled, builtin, tags, create_time, update_time, deleted)
-VALUES (1000000001, 'cron', 'Cron job management. Create, query, pause, resume, delete tasks via commands or console. Execute on schedule and send results to channels.', 'builtin', '⏰', '1.0.0', 'MateClaw', '{"upstream":"mateclaw","entryFile":"SKILL.md"}', TRUE, TRUE, 'cron,schedule,automation', NOW(), NOW(), 0)
+VALUES (1000000001, 'cron', 'Cron job management. Create, query, pause, resume, delete tasks via commands or console. Execute on schedule and send results to channels.', 'builtin', '⏰', '1.0.0', 'MateClaw', '{"upstream":"mateclaw","entryFile":"SKILL.md"}', 1, 1, 'cron,schedule,automation', NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, description=EXCLUDED.description, skill_type=EXCLUDED.skill_type, icon=EXCLUDED.icon, version=EXCLUDED.version, author=EXCLUDED.author, config_json=EXCLUDED.config_json, enabled=EXCLUDED.enabled, builtin=EXCLUDED.builtin, tags=EXCLUDED.tags, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
 INSERT INTO mate_skill (id, name, description, skill_type, icon, version, author, config_json, enabled, builtin, tags, create_time, update_time, deleted)
-VALUES (1000000002, 'file_reader', 'Read and summarize text files such as txt, md, JSONB, csv, log, and code files. PDF and Office files are handled by dedicated skills.', 'builtin', '📄', '1.0.0', 'MateClaw', '{"upstream":"mateclaw","entryFile":"SKILL.md"}', TRUE, TRUE, 'file,reader,text,summary', NOW(), NOW(), 0)
+VALUES (1000000002, 'file_reader', 'Read and summarize text files such as txt, md, JSONB, csv, log, and code files. PDF and Office files are handled by dedicated skills.', 'builtin', '📄', '1.0.0', 'MateClaw', '{"upstream":"mateclaw","entryFile":"SKILL.md"}', 1, 1, 'file,reader,text,summary', NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, description=EXCLUDED.description, skill_type=EXCLUDED.skill_type, icon=EXCLUDED.icon, version=EXCLUDED.version, author=EXCLUDED.author, config_json=EXCLUDED.config_json, enabled=EXCLUDED.enabled, builtin=EXCLUDED.builtin, tags=EXCLUDED.tags, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
 INSERT INTO mate_skill (id, name, description, skill_type, icon, version, author, config_json, enabled, builtin, tags, create_time, update_time, deleted)
-VALUES (1000000003, 'dingtalk_channel_connect', 'Assist with DingTalk channel setup, supporting visible browser, login pause, and pre-publish checks.', 'builtin', '🤖', '1.0.0', 'MateClaw', '{"upstream":"mateclaw","entryFile":"SKILL.md"}', TRUE, TRUE, 'dingtalk,channel,browser,automation', NOW(), NOW(), 0)
+VALUES (1000000003, 'dingtalk_channel_connect', 'Assist with DingTalk channel setup, supporting visible browser, login pause, and pre-publish checks.', 'builtin', '🤖', '1.0.0', 'MateClaw', '{"upstream":"mateclaw","entryFile":"SKILL.md"}', 1, 1, 'dingtalk,channel,browser,automation', NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, description=EXCLUDED.description, skill_type=EXCLUDED.skill_type, icon=EXCLUDED.icon, version=EXCLUDED.version, author=EXCLUDED.author, config_json=EXCLUDED.config_json, enabled=EXCLUDED.enabled, builtin=EXCLUDED.builtin, tags=EXCLUDED.tags, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
 INSERT INTO mate_skill (id, name, description, skill_type, icon, version, author, config_json, enabled, builtin, tags, create_time, update_time, deleted)
-VALUES (1000000004, 'himalaya', 'Manage emails via CLI with multi-account IMAP/SMTP, search, read, reply, and attachment handling.', 'builtin', '📧', '1.0.0', 'MateClaw', '{"upstream":"mateclaw","entryFile":"SKILL.md","homepage":"https://github.com/pimalaya/himalaya"}', TRUE, TRUE, 'email,imap,smtp,cli', NOW(), NOW(), 0)
+VALUES (1000000004, 'himalaya', 'Manage emails via CLI with multi-account IMAP/SMTP, search, read, reply, and attachment handling.', 'builtin', '📧', '1.0.0', 'MateClaw', '{"upstream":"mateclaw","entryFile":"SKILL.md","homepage":"https://github.com/pimalaya/himalaya"}', 1, 1, 'email,imap,smtp,cli', NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, description=EXCLUDED.description, skill_type=EXCLUDED.skill_type, icon=EXCLUDED.icon, version=EXCLUDED.version, author=EXCLUDED.author, config_json=EXCLUDED.config_json, enabled=EXCLUDED.enabled, builtin=EXCLUDED.builtin, tags=EXCLUDED.tags, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
 INSERT INTO mate_skill (id, name, description, skill_type, icon, version, author, config_json, enabled, builtin, tags, create_time, update_time, deleted)
-VALUES (1000000005, 'news', 'Query latest news from the internet. Supports politics, finance, society, international, tech, sports, entertainment categories. Auto-adapts to built-in and tool search.', 'builtin', '📰', '2.0.0', 'MateClaw', '{"upstream":"mateclaw","entryFile":"SKILL.md"}', TRUE, TRUE, 'news,web,search,summary', NOW(), NOW(), 0)
+VALUES (1000000005, 'news', 'Query latest news from the internet. Supports politics, finance, society, international, tech, sports, entertainment categories. Auto-adapts to built-in and tool search.', 'builtin', '📰', '2.0.0', 'MateClaw', '{"upstream":"mateclaw","entryFile":"SKILL.md"}', 1, 1, 'news,web,search,summary', NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, description=EXCLUDED.description, skill_type=EXCLUDED.skill_type, icon=EXCLUDED.icon, version=EXCLUDED.version, author=EXCLUDED.author, config_json=EXCLUDED.config_json, enabled=EXCLUDED.enabled, builtin=EXCLUDED.builtin, tags=EXCLUDED.tags, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
 INSERT INTO mate_skill (id, name, description, skill_type, icon, version, author, config_json, enabled, builtin, tags, create_time, update_time, deleted)
-VALUES (1000000006, 'pdf', 'PDF operations: read, extract text and tables, merge/split, rotate, watermark, fill forms, encrypt/decrypt, OCR. Includes scripts for form field extraction, filling, bounding box validation, and PDF-to-image conversion.', 'builtin', '📕', '1.0.0', 'Anthropic Skills', '{"upstream":"mateclaw","entryFile":"SKILL.md"}', TRUE, TRUE, 'pdf,ocr,forms,document', NOW(), NOW(), 0)
+VALUES (1000000006, 'pdf', 'PDF operations: read, extract text and tables, merge/split, rotate, watermark, fill forms, encrypt/decrypt, OCR. Includes scripts for form field extraction, filling, bounding box validation, and PDF-to-image conversion.', 'builtin', '📕', '1.0.0', 'Anthropic Skills', '{"upstream":"mateclaw","entryFile":"SKILL.md"}', 1, 1, 'pdf,ocr,forms,document', NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, description=EXCLUDED.description, skill_type=EXCLUDED.skill_type, icon=EXCLUDED.icon, version=EXCLUDED.version, author=EXCLUDED.author, config_json=EXCLUDED.config_json, enabled=EXCLUDED.enabled, builtin=EXCLUDED.builtin, tags=EXCLUDED.tags, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
 INSERT INTO mate_skill (id, name, description, skill_type, icon, version, author, config_json, enabled, builtin, tags, create_time, update_time, deleted)
-VALUES (1000000007, 'docx', 'Create, read, and edit Word documents with TOC, headers/footers, tables, images, revisions and comments. Includes scripts for XML unpack/pack, schema validation, tracked changes, and LibreOffice integration.', 'builtin', '📝', '1.0.0', 'Anthropic Skills', '{"upstream":"mateclaw","entryFile":"SKILL.md"}', TRUE, TRUE, 'docx,word,document,office', NOW(), NOW(), 0)
+VALUES (1000000007, 'docx', 'Create, read, and edit Word documents with TOC, headers/footers, tables, images, revisions and comments. Includes scripts for XML unpack/pack, schema validation, tracked changes, and LibreOffice integration.', 'builtin', '📝', '1.0.0', 'Anthropic Skills', '{"upstream":"mateclaw","entryFile":"SKILL.md"}', 1, 1, 'docx,word,document,office', NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, description=EXCLUDED.description, skill_type=EXCLUDED.skill_type, icon=EXCLUDED.icon, version=EXCLUDED.version, author=EXCLUDED.author, config_json=EXCLUDED.config_json, enabled=EXCLUDED.enabled, builtin=EXCLUDED.builtin, tags=EXCLUDED.tags, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
 INSERT INTO mate_skill (id, name, description, skill_type, icon, version, author, config_json, enabled, builtin, tags, create_time, update_time, deleted)
-VALUES (1000000008, 'pptx', 'Create, read, and edit PowerPoint presentations with templates, layouts, notes and comments. Includes scripts for slide manipulation, thumbnail generation, XML validation, and LibreOffice integration.', 'builtin', '📊', '1.0.0', 'Anthropic Skills', '{"upstream":"mateclaw","entryFile":"SKILL.md"}', TRUE, TRUE, 'pptx,presentation,slides,office', NOW(), NOW(), 0)
+VALUES (1000000008, 'pptx', 'Create, read, and edit PowerPoint presentations with templates, layouts, notes and comments. Includes scripts for slide manipulation, thumbnail generation, XML validation, and LibreOffice integration.', 'builtin', '📊', '1.0.0', 'Anthropic Skills', '{"upstream":"mateclaw","entryFile":"SKILL.md"}', 1, 1, 'pptx,presentation,slides,office', NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, description=EXCLUDED.description, skill_type=EXCLUDED.skill_type, icon=EXCLUDED.icon, version=EXCLUDED.version, author=EXCLUDED.author, config_json=EXCLUDED.config_json, enabled=EXCLUDED.enabled, builtin=EXCLUDED.builtin, tags=EXCLUDED.tags, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
 INSERT INTO mate_skill (id, name, description, skill_type, icon, version, author, config_json, enabled, builtin, tags, create_time, update_time, deleted)
-VALUES (1000000009, 'xlsx', 'Read, edit, create and format spreadsheets with formula support, data cleaning and analysis. Includes scripts for formula recalculation, XML unpack/pack, schema validation, and LibreOffice integration.', 'builtin', '📈', '1.0.0', 'Anthropic Skills', '{"upstream":"mateclaw","entryFile":"SKILL.md"}', TRUE, TRUE, 'xlsx,excel,csv,spreadsheet,data', NOW(), NOW(), 0)
+VALUES (1000000009, 'xlsx', 'Read, edit, create and format spreadsheets with formula support, data cleaning and analysis. Includes scripts for formula recalculation, XML unpack/pack, schema validation, and LibreOffice integration.', 'builtin', '📈', '1.0.0', 'Anthropic Skills', '{"upstream":"mateclaw","entryFile":"SKILL.md"}', 1, 1, 'xlsx,excel,csv,spreadsheet,data', NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, description=EXCLUDED.description, skill_type=EXCLUDED.skill_type, icon=EXCLUDED.icon, version=EXCLUDED.version, author=EXCLUDED.author, config_json=EXCLUDED.config_json, enabled=EXCLUDED.enabled, builtin=EXCLUDED.builtin, tags=EXCLUDED.tags, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
 INSERT INTO mate_skill (id, name, description, skill_type, icon, version, author, config_json, enabled, builtin, tags, create_time, update_time, deleted)
-VALUES (1000000010, 'browser_visible', 'Launch a visible browser window for demos, debugging, or scenarios requiring human interaction.', 'builtin', '🖥️', '1.0.0', 'MateClaw', '{"upstream":"mateclaw","entryFile":"SKILL.md"}', TRUE, TRUE, 'browser,visible,headed,automation', NOW(), NOW(), 0)
+VALUES (1000000010, 'browser_visible', 'Launch a visible browser window for demos, debugging, or scenarios requiring human interaction.', 'builtin', '🖥️', '1.0.0', 'MateClaw', '{"upstream":"mateclaw","entryFile":"SKILL.md"}', 1, 1, 'browser,visible,headed,automation', NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, description=EXCLUDED.description, skill_type=EXCLUDED.skill_type, icon=EXCLUDED.icon, version=EXCLUDED.version, author=EXCLUDED.author, config_json=EXCLUDED.config_json, enabled=EXCLUDED.enabled, builtin=EXCLUDED.builtin, tags=EXCLUDED.tags, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
 INSERT INTO mate_skill (id, name, description, skill_type, icon, version, author, config_json, enabled, builtin, tags, create_time, update_time, deleted)
-VALUES (1000000012, 'browser_cdp', 'Connect or launch Chrome via CDP for remote debugging, browser sharing, or external tool collaboration.', 'builtin', '🔌', '1.0.0', 'MateClaw', '{"upstream":"mateclaw","entryFile":"SKILL.md"}', TRUE, TRUE, 'browser,cdp,chrome,debugging,automation', NOW(), NOW(), 0)
+VALUES (1000000012, 'browser_cdp', 'Connect or launch Chrome via CDP for remote debugging, browser sharing, or external tool collaboration.', 'builtin', '🔌', '1.0.0', 'MateClaw', '{"upstream":"mateclaw","entryFile":"SKILL.md"}', 1, 1, 'browser,cdp,chrome,debugging,automation', NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, description=EXCLUDED.description, skill_type=EXCLUDED.skill_type, icon=EXCLUDED.icon, version=EXCLUDED.version, author=EXCLUDED.author, config_json=EXCLUDED.config_json, enabled=EXCLUDED.enabled, builtin=EXCLUDED.builtin, tags=EXCLUDED.tags, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
 INSERT INTO mate_skill (id, name, description, skill_type, icon, version, author, config_json, enabled, builtin, tags, create_time, update_time, deleted)
-VALUES (1000000011, 'guidance', 'Answer user questions about MateClaw installation and configuration by reading local docs first.', 'builtin', '🧭', '1.0.0', 'MateClaw', '{"upstream":"mateclaw","entryFile":"SKILL.md"}', TRUE, TRUE, 'docs,guidance,configuration,qa', NOW(), NOW(), 0)
+VALUES (1000000011, 'guidance', 'Answer user questions about MateClaw installation and configuration by reading local docs first.', 'builtin', '🧭', '1.0.0', 'MateClaw', '{"upstream":"mateclaw","entryFile":"SKILL.md"}', 1, 1, 'docs,guidance,configuration,qa', NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, description=EXCLUDED.description, skill_type=EXCLUDED.skill_type, icon=EXCLUDED.icon, version=EXCLUDED.version, author=EXCLUDED.author, config_json=EXCLUDED.config_json, enabled=EXCLUDED.enabled, builtin=EXCLUDED.builtin, tags=EXCLUDED.tags, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
 INSERT INTO mate_skill (id, name, description, skill_type, icon, version, author, config_json, enabled, builtin, tags, create_time, update_time, deleted)
-VALUES (1000000013, 'mateclaw_source_index', 'Map user questions to MateClaw doc paths and source code entry points to reduce blind searching.', 'builtin', '🗂️', '1.0.0', 'MateClaw', '{"upstream":"mateclaw","entryFile":"SKILL.md"}', TRUE, TRUE, 'docs,index,source,qa', NOW(), NOW(), 0)
+VALUES (1000000013, 'mateclaw_source_index', 'Map user questions to MateClaw doc paths and source code entry points to reduce blind searching.', 'builtin', '🗂️', '1.0.0', 'MateClaw', '{"upstream":"mateclaw","entryFile":"SKILL.md"}', 1, 1, 'docs,index,source,qa', NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, description=EXCLUDED.description, skill_type=EXCLUDED.skill_type, icon=EXCLUDED.icon, version=EXCLUDED.version, author=EXCLUDED.author, config_json=EXCLUDED.config_json, enabled=EXCLUDED.enabled, builtin=EXCLUDED.builtin, tags=EXCLUDED.tags, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
 INSERT INTO mate_skill (id, name, description, skill_type, icon, version, author, config_json, enabled, builtin, tags, create_time, update_time, deleted)
-VALUES (1000000014, 'sql_query', 'Query databases using natural language. Discover schemas, generate SQL, and execute read-only queries against configured external datasources.', 'builtin', '📊', '1.0.0', 'MateClaw', '{"upstream":"mateclaw","entryFile":"SKILL.md"}', TRUE, TRUE, 'sql,database,query,data', NOW(), NOW(), 0)
+VALUES (1000000014, 'sql_query', 'Query databases using natural language. Discover schemas, generate SQL, and execute read-only queries against configured external datasources.', 'builtin', '📊', '1.0.0', 'MateClaw', '{"upstream":"mateclaw","entryFile":"SKILL.md"}', 1, 1, 'sql,database,query,data', NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, description=EXCLUDED.description, skill_type=EXCLUDED.skill_type, icon=EXCLUDED.icon, version=EXCLUDED.version, author=EXCLUDED.author, config_json=EXCLUDED.config_json, enabled=EXCLUDED.enabled, builtin=EXCLUDED.builtin, tags=EXCLUDED.tags, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
 INSERT INTO mate_skill (id, name, description, skill_type, icon, version, author, config_json, enabled, builtin, tags, create_time, update_time, deleted)
-VALUES (1000000015, 'steve_jobs_perspective', 'Steve Jobs thinking OS. Analyze products, evaluate decisions, and give feedback through Jobs'' perspective, using his six mental models and distinctive expression style.', 'builtin', '🍎', '1.0.0', 'MateClaw', '{"upstream":"mateclaw","entryFile":"SKILL.md"}', TRUE, TRUE, 'persona,jobs,product,strategy,thinking', NOW(), NOW(), 0)
+VALUES (1000000015, 'steve_jobs_perspective', 'Steve Jobs thinking OS. Analyze products, evaluate decisions, and give feedback through Jobs'' perspective, using his six mental models and distinctive expression style.', 'builtin', '🍎', '1.0.0', 'MateClaw', '{"upstream":"mateclaw","entryFile":"SKILL.md"}', 1, 1, 'persona,jobs,product,strategy,thinking', NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, description=EXCLUDED.description, skill_type=EXCLUDED.skill_type, icon=EXCLUDED.icon, version=EXCLUDED.version, author=EXCLUDED.author, config_json=EXCLUDED.config_json, enabled=EXCLUDED.enabled, builtin=EXCLUDED.builtin, tags=EXCLUDED.tags, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
 INSERT INTO mate_skill (id, name, description, skill_type, icon, version, author, config_json, enabled, builtin, tags, create_time, update_time, deleted)
-VALUES (1000000016, 'make_plan', 'When a task requires multi-step breakdown or uncertain execution path, request a step-by-step actionable plan from a stronger Agent, then execute it yourself.', 'builtin', '🗺️', '1.3.0', 'MateClaw', '{"upstream":"mateclaw","entryFile":"SKILL.md"}', TRUE, TRUE, 'plan,delegate,agent,collaboration', NOW(), NOW(), 0)
+VALUES (1000000016, 'make_plan', 'When a task requires multi-step breakdown or uncertain execution path, request a step-by-step actionable plan from a stronger Agent, then execute it yourself.', 'builtin', '🗺️', '1.3.0', 'MateClaw', '{"upstream":"mateclaw","entryFile":"SKILL.md"}', 1, 1, 'plan,delegate,agent,collaboration', NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, description=EXCLUDED.description, skill_type=EXCLUDED.skill_type, icon=EXCLUDED.icon, version=EXCLUDED.version, author=EXCLUDED.author, config_json=EXCLUDED.config_json, enabled=EXCLUDED.enabled, builtin=EXCLUDED.builtin, tags=EXCLUDED.tags, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
 INSERT INTO mate_skill (id, name, description, skill_type, icon, version, author, config_json, enabled, builtin, tags, create_time, update_time, deleted)
-VALUES (1000000017, 'chat_with_agent', 'When you need to consult another Agent, seek help, or the user explicitly requests an Agent to participate, use this skill for single or parallel delegation.', 'builtin', '💬', '1.2.0', 'MateClaw', '{"upstream":"mateclaw","entryFile":"SKILL.md"}', TRUE, TRUE, 'agent,chat,collaborate,delegate', NOW(), NOW(), 0)
+VALUES (1000000017, 'chat_with_agent', 'When you need to consult another Agent, seek help, or the user explicitly requests an Agent to participate, use this skill for single or parallel delegation.', 'builtin', '💬', '1.2.0', 'MateClaw', '{"upstream":"mateclaw","entryFile":"SKILL.md"}', 1, 1, 'agent,chat,collaborate,delegate', NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, description=EXCLUDED.description, skill_type=EXCLUDED.skill_type, icon=EXCLUDED.icon, version=EXCLUDED.version, author=EXCLUDED.author, config_json=EXCLUDED.config_json, enabled=EXCLUDED.enabled, builtin=EXCLUDED.builtin, tags=EXCLUDED.tags, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
 INSERT INTO mate_skill (id, name, description, skill_type, icon, version, author, config_json, enabled, builtin, tags, create_time, update_time, deleted)
-VALUES (1000000018, 'channel_message', 'Use when you need to proactively push one-way messages to users, sessions, or channels. For task completion notifications, scheduled reminders, and async result delivery.', 'builtin', '📤', '1.3.0', 'MateClaw', '{"upstream":"mateclaw","entryFile":"SKILL.md"}', TRUE, TRUE, 'channel,message,push,notify,dingtalk,feishu', NOW(), NOW(), 0)
+VALUES (1000000018, 'channel_message', 'Use when you need to proactively push one-way messages to users, sessions, or channels. For task completion notifications, scheduled reminders, and async result delivery.', 'builtin', '📤', '1.3.0', 'MateClaw', '{"upstream":"mateclaw","entryFile":"SKILL.md"}', 1, 1, 'channel,message,push,notify,dingtalk,feishu', NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, description=EXCLUDED.description, skill_type=EXCLUDED.skill_type, icon=EXCLUDED.icon, version=EXCLUDED.version, author=EXCLUDED.author, config_json=EXCLUDED.config_json, enabled=EXCLUDED.enabled, builtin=EXCLUDED.builtin, tags=EXCLUDED.tags, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
 INSERT INTO mate_skill (id, name, description, skill_type, icon, version, author, config_json, enabled, builtin, tags, create_time, update_time, deleted)
-VALUES (1000000019, 'multi_agent_collaboration', 'When a task requires the professional capabilities of multiple Agents, orchestrate parallel or serial multi-agent collaboration and integrate results.', 'builtin', '🤝', '1.4.0', 'MateClaw', '{"upstream":"mateclaw","entryFile":"SKILL.md"}', TRUE, TRUE, 'multi-agent,collaboration,orchestration,parallel', NOW(), NOW(), 0)
+VALUES (1000000019, 'multi_agent_collaboration', 'When a task requires the professional capabilities of multiple Agents, orchestrate parallel or serial multi-agent collaboration and integrate results.', 'builtin', '🤝', '1.4.0', 'MateClaw', '{"upstream":"mateclaw","entryFile":"SKILL.md"}', 1, 1, 'multi-agent,collaboration,orchestration,parallel', NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, description=EXCLUDED.description, skill_type=EXCLUDED.skill_type, icon=EXCLUDED.icon, version=EXCLUDED.version, author=EXCLUDED.author, config_json=EXCLUDED.config_json, enabled=EXCLUDED.enabled, builtin=EXCLUDED.builtin, tags=EXCLUDED.tags, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
 -- RFC-042 §2.2 — bilingual display names for the 19 builtin skills.
@@ -1337,31 +1334,31 @@ Use read_skill_file to access references/ for more background material.' WHERE i
 -- Only the Web channel is seeded — see data-en.sql for rationale.
 
 INSERT INTO mate_channel (id, name, channel_type, agent_id, bot_prefix, config_json, enabled, description, create_time, update_time, deleted)
-VALUES (1000000001, 'Web Console', 'web', 1000000001, '', '{}', TRUE,
+VALUES (1000000001, 'Web Console', 'web', 1000000001, '', '{}', 1,
         'Default Web console channel with browser SSE streaming', NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, channel_type=EXCLUDED.channel_type, agent_id=EXCLUDED.agent_id, bot_prefix=EXCLUDED.bot_prefix, config_json=EXCLUDED.config_json, enabled=EXCLUDED.enabled, description=EXCLUDED.description, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
 -- ==================== Example Cron Jobs ====================
 INSERT INTO mate_cron_job (id, name, cron_expression, timezone, agent_id, task_type, trigger_message, request_body, enabled, create_time, update_time, deleted)
-VALUES (1000100001, 'Daily Greeting', '0 9 * * *', 'Asia/Shanghai', 1000000001, 'text', 'Good morning! Please give me today''s weather report and an inspirational quote.', NULL, TRUE, NOW(), NOW(), 0)
+VALUES (1000100001, 'Daily Greeting', '0 9 * * *', 'Asia/Shanghai', 1000000001, 'text', 'Good morning! Please give me today''s weather report and an inspirational quote.', NULL, 1, NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, cron_expression=EXCLUDED.cron_expression, timezone=EXCLUDED.timezone, agent_id=EXCLUDED.agent_id, task_type=EXCLUDED.task_type, trigger_message=EXCLUDED.trigger_message, request_body=EXCLUDED.request_body, enabled=EXCLUDED.enabled, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
 INSERT INTO mate_cron_job (id, name, cron_expression, timezone, agent_id, task_type, trigger_message, request_body, enabled, create_time, update_time, deleted)
-VALUES (1000100002, 'Weekly Work Summary', '0 18 * * 5', 'Asia/Shanghai', 1000000001, 'agent', NULL, 'Please generate a weekly work summary report including main accomplishments and next week''s plan.', FALSE, NOW(), NOW(), 0)
+VALUES (1000100002, 'Weekly Work Summary', '0 18 * * 5', 'Asia/Shanghai', 1000000001, 'agent', NULL, 'Please generate a weekly work summary report including main accomplishments and next week''s plan.', 0, NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, cron_expression=EXCLUDED.cron_expression, timezone=EXCLUDED.timezone, agent_id=EXCLUDED.agent_id, task_type=EXCLUDED.task_type, trigger_message=EXCLUDED.trigger_message, request_body=EXCLUDED.request_body, enabled=EXCLUDED.enabled, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
 -- ==================== Memory Emergence Cron Jobs ====================
 -- Daily 2:00 AM: consolidate daily notes → MEMORY.md
 INSERT INTO mate_cron_job (id, name, cron_expression, timezone, agent_id, task_type, trigger_message, request_body, enabled, create_time, update_time, deleted)
-VALUES (1000100010, 'Memory Consolidation', '0 2 * * *', 'Asia/Shanghai', 1000000001, 'text', 'Review your recent memory/ daily note files and consolidate recurring important information (user preferences, stable facts, lessons learned, workflows) into MEMORY.md. Note: MEMORY.md is injected into every conversation, so only consolidate cross-project, long-term stable information; do NOT write project-specific volatile facts into MEMORY.md (project codenames, names, tech stacks, repos, a single project''s metrics/budget/team/launch date, or decisions that hold only for one project) — they conflict across projects and cause mix-ups. Keep those in the daily note or maintain them via structured project memory. Rule of thumb: only facts that still hold after switching projects belong in MEMORY.md. Keep the original daily notes intact, only update MEMORY.md. Briefly describe what consolidations were made.', NULL, TRUE, NOW(), NOW(), 0)
+VALUES (1000100010, 'Memory Consolidation', '0 2 * * *', 'Asia/Shanghai', 1000000001, 'text', 'Review your recent memory/ daily note files and consolidate recurring important information (user preferences, stable facts, lessons learned, workflows) into MEMORY.md. Note: MEMORY.md is injected into every conversation, so only consolidate cross-project, long-term stable information; do NOT write project-specific volatile facts into MEMORY.md (project codenames, names, tech stacks, repos, a single project''s metrics/budget/team/launch date, or decisions that hold only for one project) — they conflict across projects and cause mix-ups. Keep those in the daily note or maintain them via structured project memory. Rule of thumb: only facts that still hold after switching projects belong in MEMORY.md. Keep the original daily notes intact, only update MEMORY.md. Briefly describe what consolidations were made.', NULL, 1, NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, cron_expression=EXCLUDED.cron_expression, timezone=EXCLUDED.timezone, agent_id=EXCLUDED.agent_id, task_type=EXCLUDED.task_type, trigger_message=EXCLUDED.trigger_message, request_body=EXCLUDED.request_body, enabled=EXCLUDED.enabled, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
 INSERT INTO mate_cron_job (id, name, cron_expression, timezone, agent_id, task_type, trigger_message, request_body, enabled, create_time, update_time, deleted)
-VALUES (1000100011, 'Memory Consolidation', '0 2 * * *', 'Asia/Shanghai', 1000000002, 'text', 'Review your recent memory/ daily note files and consolidate recurring important information (user preferences, stable facts, lessons learned, workflows) into MEMORY.md. Note: MEMORY.md is injected into every conversation, so only consolidate cross-project, long-term stable information; do NOT write project-specific volatile facts into MEMORY.md (project codenames, names, tech stacks, repos, a single project''s metrics/budget/team/launch date, or decisions that hold only for one project) — they conflict across projects and cause mix-ups. Keep those in the daily note or maintain them via structured project memory. Rule of thumb: only facts that still hold after switching projects belong in MEMORY.md. Keep the original daily notes intact, only update MEMORY.md. Briefly describe what consolidations were made.', NULL, TRUE, NOW(), NOW(), 0)
+VALUES (1000100011, 'Memory Consolidation', '0 2 * * *', 'Asia/Shanghai', 1000000002, 'text', 'Review your recent memory/ daily note files and consolidate recurring important information (user preferences, stable facts, lessons learned, workflows) into MEMORY.md. Note: MEMORY.md is injected into every conversation, so only consolidate cross-project, long-term stable information; do NOT write project-specific volatile facts into MEMORY.md (project codenames, names, tech stacks, repos, a single project''s metrics/budget/team/launch date, or decisions that hold only for one project) — they conflict across projects and cause mix-ups. Keep those in the daily note or maintain them via structured project memory. Rule of thumb: only facts that still hold after switching projects belong in MEMORY.md. Keep the original daily notes intact, only update MEMORY.md. Briefly describe what consolidations were made.', NULL, 1, NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, cron_expression=EXCLUDED.cron_expression, timezone=EXCLUDED.timezone, agent_id=EXCLUDED.agent_id, task_type=EXCLUDED.task_type, trigger_message=EXCLUDED.trigger_message, request_body=EXCLUDED.request_body, enabled=EXCLUDED.enabled, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
 INSERT INTO mate_cron_job (id, name, cron_expression, timezone, agent_id, task_type, trigger_message, request_body, enabled, create_time, update_time, deleted)
-VALUES (1000100012, 'Memory Consolidation', '0 2 * * *', 'Asia/Shanghai', 1000000003, 'text', 'Review your recent memory/ daily note files and consolidate recurring important information (user preferences, stable facts, lessons learned, workflows) into MEMORY.md. Note: MEMORY.md is injected into every conversation, so only consolidate cross-project, long-term stable information; do NOT write project-specific volatile facts into MEMORY.md (project codenames, names, tech stacks, repos, a single project''s metrics/budget/team/launch date, or decisions that hold only for one project) — they conflict across projects and cause mix-ups. Keep those in the daily note or maintain them via structured project memory. Rule of thumb: only facts that still hold after switching projects belong in MEMORY.md. Keep the original daily notes intact, only update MEMORY.md. Briefly describe what consolidations were made.', NULL, TRUE, NOW(), NOW(), 0)
+VALUES (1000100012, 'Memory Consolidation', '0 2 * * *', 'Asia/Shanghai', 1000000003, 'text', 'Review your recent memory/ daily note files and consolidate recurring important information (user preferences, stable facts, lessons learned, workflows) into MEMORY.md. Note: MEMORY.md is injected into every conversation, so only consolidate cross-project, long-term stable information; do NOT write project-specific volatile facts into MEMORY.md (project codenames, names, tech stacks, repos, a single project''s metrics/budget/team/launch date, or decisions that hold only for one project) — they conflict across projects and cause mix-ups. Keep those in the daily note or maintain them via structured project memory. Rule of thumb: only facts that still hold after switching projects belong in MEMORY.md. Keep the original daily notes intact, only update MEMORY.md. Briefly describe what consolidations were made.', NULL, 1, NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, cron_expression=EXCLUDED.cron_expression, timezone=EXCLUDED.timezone, agent_id=EXCLUDED.agent_id, task_type=EXCLUDED.task_type, trigger_message=EXCLUDED.trigger_message, request_body=EXCLUDED.request_body, enabled=EXCLUDED.enabled, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
 -- ==================== Workspace File Seed Data ====================
@@ -1458,7 +1455,7 @@ Record identity and user profile in PROFILE.md.
 ## Make It Yours
 
 This is just a starting point. Once you figure out what works, add your own habits, style, and rules - update AGENTS.md.',
-    4096, TRUE, 0, NOW(), NOW(), 0
+    4096, 1, 0, NOW(), NOW(), 0
 )
 ON CONFLICT (id) DO UPDATE SET agent_id=EXCLUDED.agent_id, filename=EXCLUDED.filename, content=EXCLUDED.content, file_size=EXCLUDED.file_size, enabled=EXCLUDED.enabled, sort_order=EXCLUDED.sort_order, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
@@ -1499,7 +1496,7 @@ If you change this file, tell the user — this is your soul, they should know.
 ---
 
 _This file evolves with you. Once you know who you are, update it._',
-    1024, TRUE, 1, NOW(), NOW(), 0
+    1024, 1, 1, NOW(), NOW(), 0
 )
 ON CONFLICT (id) DO UPDATE SET agent_id=EXCLUDED.agent_id, filename=EXCLUDED.filename, content=EXCLUDED.content, file_size=EXCLUDED.file_size, enabled=EXCLUDED.enabled, sort_order=EXCLUDED.sort_order, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
@@ -1540,7 +1537,7 @@ VALUES (
 - Only record stable, reusable info likely to remain valid
 - Don''t pile temporary context here; use memory/YYYY-MM-DD.md
 - Sensitive info is not recorded by default',
-    1024, TRUE, 2, NOW(), NOW(), 0
+    1024, 1, 2, NOW(), NOW(), 0
 )
 ON CONFLICT (id) DO UPDATE SET agent_id=EXCLUDED.agent_id, filename=EXCLUDED.filename, content=EXCLUDED.content, file_size=EXCLUDED.file_size, enabled=EXCLUDED.enabled, sort_order=EXCLUDED.sort_order, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
@@ -1590,7 +1587,7 @@ VALUES (
 ## Pending Hypotheses
 
 - Only keep high-value hypotheses pending verification; move to stable section when confirmed, delete when invalidated',
-    1536, TRUE, 3, NOW(), NOW(), 0
+    1536, 1, 3, NOW(), NOW(), 0
 )
 ON CONFLICT (id) DO UPDATE SET agent_id=EXCLUDED.agent_id, filename=EXCLUDED.filename, content=EXCLUDED.content, file_size=EXCLUDED.file_size, enabled=EXCLUDED.enabled, sort_order=EXCLUDED.sort_order, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
@@ -1649,7 +1646,7 @@ Use SkillFileTool to view available Skills'' SKILL.md for usage details.
 ## Make It Yours
 
 This is just a starting point. Once you figure out what works, update AGENTS.md.',
-    3584, TRUE, 0, NOW(), NOW(), 0
+    3584, 1, 0, NOW(), NOW(), 0
 )
 ON CONFLICT (id) DO UPDATE SET agent_id=EXCLUDED.agent_id, filename=EXCLUDED.filename, content=EXCLUDED.content, file_size=EXCLUDED.file_size, enabled=EXCLUDED.enabled, sort_order=EXCLUDED.sort_order, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
@@ -1685,7 +1682,7 @@ You wake up fresh each session. Workspace files are your memory. Read them. Upda
 ---
 
 _This file evolves with you. Once you know who you are, update it._',
-    1024, TRUE, 1, NOW(), NOW(), 0
+    1024, 1, 1, NOW(), NOW(), 0
 )
 ON CONFLICT (id) DO UPDATE SET agent_id=EXCLUDED.agent_id, filename=EXCLUDED.filename, content=EXCLUDED.content, file_size=EXCLUDED.file_size, enabled=EXCLUDED.enabled, sort_order=EXCLUDED.sort_order, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
@@ -1715,7 +1712,7 @@ VALUES (
 ## Notes
 
 - Only store stable preferences here, not single-task details',
-    768, TRUE, 2, NOW(), NOW(), 0
+    768, 1, 2, NOW(), NOW(), 0
 )
 ON CONFLICT (id) DO UPDATE SET agent_id=EXCLUDED.agent_id, filename=EXCLUDED.filename, content=EXCLUDED.content, file_size=EXCLUDED.file_size, enabled=EXCLUDED.enabled, sort_order=EXCLUDED.sort_order, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
@@ -1748,7 +1745,7 @@ VALUES (
 ## Emerging Patterns
 
 - High-value planning experience abstracted from multiple tasks',
-    1024, TRUE, 3, NOW(), NOW(), 0
+    1024, 1, 3, NOW(), NOW(), 0
 )
 ON CONFLICT (id) DO UPDATE SET agent_id=EXCLUDED.agent_id, filename=EXCLUDED.filename, content=EXCLUDED.content, file_size=EXCLUDED.file_size, enabled=EXCLUDED.enabled, sort_order=EXCLUDED.sort_order, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
@@ -1796,7 +1793,7 @@ Use SkillFileTool to view available Skills'' SKILL.md for usage details.
 ## Make It Yours
 
 This is just a starting point. Once you figure out what works, update AGENTS.md.',
-    2304, TRUE, 0, NOW(), NOW(), 0
+    2304, 1, 0, NOW(), NOW(), 0
 )
 ON CONFLICT (id) DO UPDATE SET agent_id=EXCLUDED.agent_id, filename=EXCLUDED.filename, content=EXCLUDED.content, file_size=EXCLUDED.file_size, enabled=EXCLUDED.enabled, sort_order=EXCLUDED.sort_order, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
@@ -1832,7 +1829,7 @@ You wake up fresh each session. Workspace files are your memory. Read them. Upda
 ---
 
 _This file evolves with you. Once you know who you are, update it._',
-    1024, TRUE, 1, NOW(), NOW(), 0
+    1024, 1, 1, NOW(), NOW(), 0
 )
 ON CONFLICT (id) DO UPDATE SET agent_id=EXCLUDED.agent_id, filename=EXCLUDED.filename, content=EXCLUDED.content, file_size=EXCLUDED.file_size, enabled=EXCLUDED.enabled, sort_order=EXCLUDED.sort_order, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
@@ -1856,7 +1853,7 @@ VALUES (
 ## Notes
 
 - Only keep stable, reusable information',
-    640, TRUE, 2, NOW(), NOW(), 0
+    640, 1, 2, NOW(), NOW(), 0
 )
 ON CONFLICT (id) DO UPDATE SET agent_id=EXCLUDED.agent_id, filename=EXCLUDED.filename, content=EXCLUDED.content, file_size=EXCLUDED.file_size, enabled=EXCLUDED.enabled, sort_order=EXCLUDED.sort_order, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
@@ -1889,7 +1886,7 @@ VALUES (
 ## Emerging Patterns
 
 - Stable patterns formed after multiple validations',
-    1024, TRUE, 3, NOW(), NOW(), 0
+    1024, 1, 3, NOW(), NOW(), 0
 )
 ON CONFLICT (id) DO UPDATE SET agent_id=EXCLUDED.agent_id, filename=EXCLUDED.filename, content=EXCLUDED.content, file_size=EXCLUDED.file_size, enabled=EXCLUDED.enabled, sort_order=EXCLUDED.sort_order, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
@@ -1897,20 +1894,21 @@ ON CONFLICT (id) DO UPDATE SET agent_id=EXCLUDED.agent_id, filename=EXCLUDED.fil
 
 -- Global security config (single row, insert only if not exists, never overwrite user config)
 -- Note: tool names in guarded_tools_json must match @Tool method names (execute_shell_command / write_file / edit_file)
-INSERT IGNORE INTO mate_tool_guard_config (id, enabled, guard_scope, guarded_tools_json, denied_tools_json,
+INSERT INTO mate_tool_guard_config (id, enabled, guard_scope, guarded_tools_json, denied_tools_json,
     file_guard_enabled, sensitive_paths_json, audit_enabled, audit_min_severity, audit_retention_days,
     create_time, update_time)
 VALUES (
     1000000001,
-    TRUE,
+    1,
     'all',
     '["execute_shell_command"]',
     '[]',
-    TRUE,
+    1,
     '["/etc","/usr","/bin","/sbin","/boot","/sys","/proc","/dev"]',
-    TRUE, 'INFO', 90,
+    1, 'INFO', 90,
     NOW(), NOW()
-);
+)
+ON CONFLICT (id) DO NOTHING;
 
 -- Security rules are managed by ToolGuardRuleSeedService (Java) as single source of truth.
 -- Removed 6 legacy SQL rules. Their superset is registered in ToolGuardRuleSeedService.buildBuiltinRules() with correct tool names.
