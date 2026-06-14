@@ -21,8 +21,8 @@ SELECT 1000000903,
        'sse',
        'http://localhost:8085/sse',
        '{"Authorization": "Bearer ${CKJIA_MCP_KEY}"}',
-       0,
+       FALSE,
        'CKJIA price comparison MCP server. Disabled by default; replace the dev/test localhost URL with the production CKJIA domain before enabling.',
-       30, 30, 1,
+       30, 30, TRUE,
        NOW(), NOW(), 0
 WHERE NOT EXISTS (SELECT 1 FROM mate_mcp_server WHERE name = 'ckjia-shopping');

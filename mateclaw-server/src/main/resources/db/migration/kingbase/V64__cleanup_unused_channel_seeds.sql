@@ -7,4 +7,4 @@ WHERE id IN (1000000002, 1000000003, 1000000004, 1000000005,
              1000000006, 1000000007, 1000000008, 1000000009)
   AND channel_type IN ('dingtalk', 'feishu', 'telegram', 'discord',
                        'wecom', 'qq', 'weixin', 'slack')
-  AND enabled = 0;
+  AND enabled = FALSE;

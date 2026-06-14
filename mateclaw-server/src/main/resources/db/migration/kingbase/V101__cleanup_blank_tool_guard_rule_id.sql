@@ -7,7 +7,7 @@
 
 DELETE FROM mate_tool_guard_rule
 WHERE (rule_id IS NULL OR LENGTH(TRIM(rule_id)) = 0)
-  AND (builtin IS NULL OR builtin = 0);
+  AND (builtin IS NULL OR builtin = FALSE);
 
 ALTER TABLE mate_tool_guard_rule
     ADD CONSTRAINT ck_tool_guard_rule_id_nonblank

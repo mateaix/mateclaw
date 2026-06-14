@@ -31,7 +31,7 @@ UPDATE mate_model_provider
 -- ── Rule 3: local provider with messages in last 30 days → user is using it ─
 UPDATE mate_model_provider
    SET enabled = TRUE
- WHERE is_local = 1
+ WHERE is_local = TRUE
    AND provider_id IN (
      SELECT DISTINCT runtime_provider
        FROM mate_message
@@ -42,4 +42,4 @@ UPDATE mate_model_provider
 -- ── Rule 4: provider whose model is the current default → user is using it ─
 UPDATE mate_model_provider
    SET enabled = TRUE
- WHERE provider_id IN (SELECT provider FROM mate_model_config WHERE is_default = 1);
+ WHERE provider_id IN (SELECT provider FROM mate_model_config WHERE is_default = TRUE);

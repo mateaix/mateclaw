@@ -29,18 +29,10 @@ INSERT INTO mate_acp_endpoint
      tool_parse_mode, builtin, trusted, enabled,
      stdio_buffer_limit_bytes, workspace_id, create_time, update_time, deleted)
 VALUES
-    (9100001, 'codex', 'OpenAI Codex CLI', 'Delegate to the Codex ACP agent via npx',
-     'npx', '["-y","@zed-industries/codex-acp"]', '{}',
-     'call_detail', TRUE, TRUE, FALSE, 52428800, 1, NOW(), NOW(), 0),
-    (9100002, 'claude-code', 'Claude Code', 'Delegate to Anthropic''s Claude Code agent via npx',
-     'npx', '["-y","@zed-industries/claude-agent-acp"]', '{}',
-     'update_detail', TRUE, TRUE, FALSE, 52428800, 1, NOW(), NOW(), 0),
-    (9100003, 'opencode', 'OpenCode', 'Delegate to OpenCode ACP agent (binary on PATH)',
-     'opencode', '["acp"]', '{}',
-     'update_detail', TRUE, TRUE, FALSE, 52428800, 1, NOW(), NOW(), 0),
-    (9100004, 'qwen-code', 'Qwen Code', 'Delegate to Qwen Code ACP agent (binary on PATH)',
-     'qwen', '["--acp"]', '{}',
-     'call_detail', TRUE, TRUE, FALSE, 52428800, 1, NOW(), NOW(), 0)
+    (9100001, 'codex', 'OpenAI Codex CLI', 'Delegate to the Codex ACP agent via npx', 'npx', '["-y","@zed-industries/codex-acp"]', '{}', 'call_detail', TRUE, TRUE, FALSE, 52428800, 1, NOW(), NOW(), 0),
+    (9100002, 'claude-code', 'Claude Code', 'Delegate to Anthropic''s Claude Code agent via npx', 'npx', '["-y","@zed-industries/claude-agent-acp"]', '{}', 'update_detail', TRUE, TRUE, FALSE, 52428800, 1, NOW(), NOW(), 0),
+    (9100003, 'opencode', 'OpenCode', 'Delegate to OpenCode ACP agent (binary on PATH)', 'opencode', '["acp"]', '{}', 'update_detail', TRUE, TRUE, FALSE, 52428800, 1, NOW(), NOW(), 0),
+    (9100004, 'qwen-code', 'Qwen Code', 'Delegate to Qwen Code ACP agent (binary on PATH)', 'qwen', '["--acp"]', '{}', 'call_detail', TRUE, TRUE, FALSE, 52428800, 1, NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET display_name = EXCLUDED.display_name,
     description  = EXCLUDED.description,
     command      = EXCLUDED.command,

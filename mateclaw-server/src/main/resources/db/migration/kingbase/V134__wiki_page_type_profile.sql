@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS mate_wiki_page_type_profile (
     name          VARCHAR(128) NOT NULL,
     version       INT          NOT NULL DEFAULT 1,
     config_json   TEXT     NOT NULL,
-    enabled       SMALLINT   NOT NULL DEFAULT 1,
+    enabled       BOOLEAN   NOT NULL DEFAULT TRUE,
     create_time   TIMESTAMP(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP,
     update_time   TIMESTAMP(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP,
     deleted       INT          NOT NULL DEFAULT 0,
@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS mate_wiki_page_type_profile (
     -- ignores NULL keys for uniqueness, giving "at most one enabled per KB".
     enabled_kb    BIGINT
         GENERATED ALWAYS AS (
-            CASE WHEN enabled = 1 AND deleted = 0 THEN kb_id ELSE NULL END
+            CASE WHEN enabled = TRUE AND deleted = 0 THEN kb_id ELSE NULL END
         ) STORED,
     PRIMARY KEY (id)
 );

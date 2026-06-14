@@ -17,11 +17,11 @@
 INSERT INTO mate_model_config (id, name, provider, model_name, description, temperature, max_tokens, top_p, builtin, enabled, is_default, create_time, update_time, deleted)
 VALUES
 -- Direct Anthropic
-(1000000300, 'Claude Fable 5', 'anthropic', 'claude-fable-5', 'Anthropic Claude Fable 5 (1M context, vision, xhigh adaptive thinking)', NULL, 4096, NULL, 1, 1, 0, NOW(), NOW(), 0),
+(1000000300, 'Claude Fable 5', 'anthropic', 'claude-fable-5', 'Anthropic Claude Fable 5 (1M context, vision, xhigh adaptive thinking)', NULL, 4096, NULL, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
 -- OpenRouter passthrough
-(1000000301, 'Claude Fable 5', 'openrouter', 'anthropic/claude-fable-5', 'Claude Fable 5 via OpenRouter', NULL, 4096, NULL, 1, 1, 0, NOW(), NOW(), 0),
+(1000000301, 'Claude Fable 5', 'openrouter', 'anthropic/claude-fable-5', 'Claude Fable 5 via OpenRouter', NULL, 4096, NULL, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
 -- Claude Code OAuth (Pro/Max subscription)
-(1000000302, 'Claude Fable 5', 'anthropic-claude-code', 'claude-fable-5', 'Claude Fable 5 via Claude Code Pro/Max subscription', NULL, 4096, NULL, 1, 1, 0, NOW(), NOW(), 0)
+(1000000302, 'Claude Fable 5', 'anthropic-claude-code', 'claude-fable-5', 'Claude Fable 5 via Claude Code Pro/Max subscription', NULL, 4096, NULL, TRUE, TRUE, FALSE, NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET
     name = EXCLUDED.name,
     provider = EXCLUDED.provider,

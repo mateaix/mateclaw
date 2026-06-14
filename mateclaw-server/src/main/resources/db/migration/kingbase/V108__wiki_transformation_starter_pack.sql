@@ -6,11 +6,7 @@ INSERT INTO mate_wiki_transformation
     (id, kb_id, workspace_id, name, title, description, prompt_template,
      apply_default, model_id, enabled, output_target, create_time, update_time, deleted)
 VALUES
-(1000004001, NULL, 1,
- 'contract-risk-extract',
- '合同风险点提取',
- '逐条审查合同条款，标注风险等级、原文位置、AI 建议改写。配合企业场景 → 合同审查使用。',
-'你是一名企业法务审查员。从下面的合同文本中完整提取所有需要关注的风险条款，按以下结构输出 Markdown：
+(1000004001, NULL, 1, 'contract-risk-extract', '合同风险点提取', '逐条审查合同条款，标注风险等级、原文位置、AI 建议改写。配合企业场景 → 合同审查使用。', '你是一名企业法务审查员。从下面的合同文本中完整提取所有需要关注的风险条款，按以下结构输出 Markdown：
 
 ## 风险条款清单
 
@@ -36,14 +32,9 @@ VALUES
 合同标题：{title}
 
 合同正文：
-{input_text}',
- 0, NULL, 1, 'page', NOW(), NOW(), 0),
+{input_text}', FALSE, NULL, TRUE, 'page', NOW(), NOW(), 0),
 
-(1000004002, NULL, 1,
- 'meeting-action-items',
- '会议纪要 → 行动项',
- '从会议纪要中穷尽抽取决议 + 行动项（owner / 截止日 / 验收标准），适合周会、决策会议。',
-'你是会议纪要分析助理。从下面的纪要中穷尽抽取所有行动项与决议，按以下结构输出 Markdown：
+(1000004002, NULL, 1, 'meeting-action-items', '会议纪要 → 行动项', '从会议纪要中穷尽抽取决议 + 行动项（owner / 截止日 / 验收标准），适合周会、决策会议。', '你是会议纪要分析助理。从下面的纪要中穷尽抽取所有行动项与决议，按以下结构输出 Markdown：
 
 ## 决议清单
 按时间或重要性顺序列出每条明确决议；每条 ≤ 一句话。
@@ -68,14 +59,9 @@ VALUES
 会议主题：{title}
 
 纪要正文：
-{input_text}',
- 0, NULL, 1, 'page', NOW(), NOW(), 0),
+{input_text}', FALSE, NULL, TRUE, 'page', NOW(), NOW(), 0),
 
-(1000004003, NULL, 1,
- 'customer-profile',
- '客户邮件 / 访谈画像',
- '把客户邮件、会议纪要、CRM 记录合成一份结构化客户画像，配合企业场景 → 客户情报使用。',
-'你是销售情报员。从下面的客户邮件 / CRM 记录 / 访谈中提取一份客户画像，按以下结构输出 Markdown：
+(1000004003, NULL, 1, 'customer-profile', '客户邮件 / 访谈画像', '把客户邮件、会议纪要、CRM 记录合成一份结构化客户画像，配合企业场景 → 客户情报使用。', '你是销售情报员。从下面的客户邮件 / CRM 记录 / 访谈中提取一份客户画像，按以下结构输出 Markdown：
 
 ## 客户档案
 - **名称**：
@@ -98,14 +84,9 @@ VALUES
 客户：{title}
 
 原文：
-{input_text}',
- 0, NULL, 1, 'page', NOW(), NOW(), 0),
+{input_text}', FALSE, NULL, TRUE, 'page', NOW(), NOW(), 0),
 
-(1000004004, NULL, 1,
- 'competitor-update',
- '竞品动态摘要',
- '把新闻 / 产品 release / 招聘信号 / 客户提及合成一份竞品动态简报。',
-'你是市场情报员。从下面的材料中提取与竞争对手相关的动态，按以下结构输出 Markdown：
+(1000004004, NULL, 1, 'competitor-update', '竞品动态摘要', '把新闻 / 产品 release / 招聘信号 / 客户提及合成一份竞品动态简报。', '你是市场情报员。从下面的材料中提取与竞争对手相关的动态，按以下结构输出 Markdown：
 
 ## 涉及对手
 列出材料中提到的所有竞品公司或产品。
@@ -131,14 +112,9 @@ VALUES
 材料：{title}
 
 原文：
-{input_text}',
- 0, NULL, 1, 'page', NOW(), NOW(), 0),
+{input_text}', FALSE, NULL, TRUE, 'page', NOW(), NOW(), 0),
 
-(1000004005, NULL, 1,
- 'resume-structured-extract',
- '简历结构化',
- '把简历提取为标准化档案：教育、工作、技能、亮点。适合批量初筛。',
-'你是 HR 助理。把下面的简历提取为结构化档案：
+(1000004005, NULL, 1, 'resume-structured-extract', '简历结构化', '把简历提取为标准化档案：教育、工作、技能、亮点。适合批量初筛。', '你是 HR 助理。把下面的简历提取为结构化档案：
 
 ## 候选人信息
 - **姓名**：
@@ -172,14 +148,9 @@ VALUES
 简历：{title}
 
 原文：
-{input_text}',
- 0, NULL, 1, 'page', NOW(), NOW(), 0),
+{input_text}', FALSE, NULL, TRUE, 'page', NOW(), NOW(), 0),
 
-(1000004006, NULL, 1,
- 'incident-postmortem',
- '事故 5-Why 复盘',
- '从事故报告 / 时间线生成 5-Why 链 + 整改清单 + 相似事故关键词。适合 SRE / 运维团队。',
-'你是 SRE 事故复盘助理。从下面的事故报告 / 时间线中输出 5-Why 分析：
+(1000004006, NULL, 1, 'incident-postmortem', '事故 5-Why 复盘', '从事故报告 / 时间线生成 5-Why 链 + 整改清单 + 相似事故关键词。适合 SRE / 运维团队。', '你是 SRE 事故复盘助理。从下面的事故报告 / 时间线中输出 5-Why 分析：
 
 ## 事故概要
 - **现象**：1 句话
@@ -211,14 +182,9 @@ VALUES
 事故：{title}
 
 报告：
-{input_text}',
- 0, NULL, 1, 'page', NOW(), NOW(), 0),
+{input_text}', FALSE, NULL, TRUE, 'page', NOW(), NOW(), 0),
 
-(1000004007, NULL, 1,
- 'paper-imrad',
- '论文 IMRaD 摘要',
- '把论文 / 技术报告浓缩为 IMRaD 结构化摘要 + 关键术语表，适合研究型团队。',
-'你是学术摘要助理。把下面的论文 / 技术报告浓缩为 IMRaD 结构化摘要：
+(1000004007, NULL, 1, 'paper-imrad', '论文 IMRaD 摘要', '把论文 / 技术报告浓缩为 IMRaD 结构化摘要 + 关键术语表，适合研究型团队。', '你是学术摘要助理。把下面的论文 / 技术报告浓缩为 IMRaD 结构化摘要：
 
 ## Introduction
 解决什么问题，为什么重要（≤ 100 字）
@@ -242,6 +208,5 @@ VALUES
 论文：{title}
 
 原文：
-{input_text}',
- 0, NULL, 1, 'page', NOW(), NOW(), 0)
+{input_text}', FALSE, NULL, TRUE, 'page', NOW(), NOW(), 0)
 ON CONFLICT (id) DO NOTHING;

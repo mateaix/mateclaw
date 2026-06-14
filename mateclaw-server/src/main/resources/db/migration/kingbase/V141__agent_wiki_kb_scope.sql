@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS mate_agent_wiki_kb (
     id          BIGINT    NOT NULL PRIMARY KEY,
     agent_id    BIGINT    NOT NULL,
     kb_id       BIGINT    NOT NULL,
-    enabled     SMALLINT   NOT NULL DEFAULT 1,
+    enabled     BOOLEAN   NOT NULL DEFAULT TRUE,
     create_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     update_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     deleted     INT       NOT NULL DEFAULT 0

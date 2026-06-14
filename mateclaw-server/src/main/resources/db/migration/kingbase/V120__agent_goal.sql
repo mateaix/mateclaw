@@ -38,7 +38,7 @@ CREATE TABLE IF NOT EXISTS mate_agent_goal (
     completion_score            DOUBLE PRECISION       NULL,
     last_evaluation_at          TIMESTAMP(3)  NULL,
 
-    auto_followup_enabled       SMALLINT   NOT NULL DEFAULT 0,
+    auto_followup_enabled       BOOLEAN   NOT NULL DEFAULT FALSE,
     followup_cooldown_seconds   INT          NOT NULL DEFAULT 0,
     last_followup_at            TIMESTAMP(3)  NULL,
 

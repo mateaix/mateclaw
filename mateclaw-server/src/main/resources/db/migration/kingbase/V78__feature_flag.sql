@@ -24,13 +24,13 @@ CREATE INDEX IF NOT EXISTS idx_mff_key_flag ON mate_feature_flag (flag_key, enab
 -- Seed wiki feature flags with safe defaults. ON DUPLICATE KEY UPDATE
 -- preserves existing operator overrides on re-run.
 INSERT INTO mate_feature_flag (flag_key, enabled, description) VALUES
-    ('wiki.ocr.enabled',                FALSE, 'Image OCR / vision-in pipeline for wiki uploads'),
-    ('wiki.compile.4stage.enabled',     FALSE, 'Four-stage knowledge base compilation pipeline'),
-    ('wiki.compile.cache.enabled',      FALSE, 'Prompt cache layer for the wiki compile pipeline'),
-    ('wiki.confidence.enabled',         FALSE, 'Confidence taxonomy on wiki relations and pages'),
-    ('wiki.hot_cache.enabled',          FALSE, 'KB-level recent-activity snapshot injected into agent system prompt'),
-    ('wiki.graph.insights.enabled',     FALSE, 'Wiki graph insights panel (surprising connections, gaps, bridges)'),
-    ('wiki.graph.adamic_adar.enabled',  FALSE, 'Adamic-Adar graph signal (additive to existing four signals)'),
-    ('wiki.graph.boundary.enabled',     FALSE, 'Boundary score for surfacing dangling pages'),
-    ('wiki.relation.cache.enabled',     TRUE,  'Persistent cache for wiki page-to-page relation computation')
+    ('wiki.ocr.enabled', FALSE, 'Image OCR / vision-in pipeline for wiki uploads'),
+    ('wiki.compile.4stage.enabled', FALSE, 'Four-stage knowledge base compilation pipeline'),
+    ('wiki.compile.cache.enabled', FALSE, 'Prompt cache layer for the wiki compile pipeline'),
+    ('wiki.confidence.enabled', FALSE, 'Confidence taxonomy on wiki relations and pages'),
+    ('wiki.hot_cache.enabled', FALSE, 'KB-level recent-activity snapshot injected into agent system prompt'),
+    ('wiki.graph.insights.enabled', FALSE, 'Wiki graph insights panel (surprising connections, gaps, bridges)'),
+    ('wiki.graph.adamic_adar.enabled', FALSE, 'Adamic-Adar graph signal (additive to existing four signals)'),
+    ('wiki.graph.boundary.enabled', FALSE, 'Boundary score for surfacing dangling pages'),
+    ('wiki.relation.cache.enabled', TRUE, 'Persistent cache for wiki page-to-page relation computation')
 ON CONFLICT (flag_key) DO UPDATE SET description = EXCLUDED.description;

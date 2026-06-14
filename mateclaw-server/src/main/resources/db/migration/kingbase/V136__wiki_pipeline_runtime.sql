@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS mate_wiki_pipeline_definition (
     trigger_config_json   TEXT,
     steps_json            TEXT     NOT NULL,
     dedup_window_seconds  INT          NOT NULL DEFAULT 0,
-    enabled               SMALLINT      NOT NULL DEFAULT 1,
+    enabled               BOOLEAN      NOT NULL DEFAULT TRUE,
     create_time           TIMESTAMP(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP,
     update_time           TIMESTAMP(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP,
     deleted               INT          NOT NULL DEFAULT 0

@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS mate_agent_provider_preference (
     agent_id     BIGINT       NOT NULL,
     provider_id  VARCHAR(128) NOT NULL,
     sort_order   INT          NOT NULL DEFAULT 0,
-    enabled      SMALLINT   NOT NULL DEFAULT 1,
+    enabled      BOOLEAN   NOT NULL DEFAULT TRUE,
     create_time  TIMESTAMP     NOT NULL,
     update_time  TIMESTAMP     NOT NULL,
     deleted      INT          NOT NULL DEFAULT 0

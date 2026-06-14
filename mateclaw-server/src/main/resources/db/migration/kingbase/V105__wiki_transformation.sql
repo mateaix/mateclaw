@@ -16,9 +16,9 @@ CREATE TABLE IF NOT EXISTS mate_wiki_transformation (
 
     prompt_template TEXT NOT NULL,
 
-    apply_default   SMALLINT NOT NULL DEFAULT 0,
+    apply_default   BOOLEAN NOT NULL DEFAULT FALSE,
     model_id        BIGINT NULL,
-    enabled         SMALLINT NOT NULL DEFAULT 1,
+    enabled         BOOLEAN NOT NULL DEFAULT TRUE,
 
     create_time     TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     update_time     TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP ,

@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS mate_hook (
     id                  BIGINT       NOT NULL PRIMARY KEY,
     name                VARCHAR(128) NOT NULL,
     description         VARCHAR(512),
-    enabled             SMALLINT   NOT NULL DEFAULT 1,
+    enabled             BOOLEAN   NOT NULL DEFAULT TRUE,
     event_type          VARCHAR(64)  NOT NULL,
     match_expression    TEXT,
     action_kind         VARCHAR(32)  NOT NULL,
