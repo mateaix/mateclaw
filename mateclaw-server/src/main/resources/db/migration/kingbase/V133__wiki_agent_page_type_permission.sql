@@ -10,10 +10,14 @@ CREATE TABLE IF NOT EXISTS mate_wiki_agent_page_type_permission (
     agent_id      BIGINT      NOT NULL,
     kb_id         BIGINT      NOT NULL,
     page_type     VARCHAR(64) NOT NULL,
-    can_read      BOOLEAN     NOT NULL DEFAULT TRUE,
-    can_create    BOOLEAN     NOT NULL DEFAULT FALSE,
-    can_update    BOOLEAN     NOT NULL DEFAULT FALSE,
-    can_delete    BOOLEAN     NOT NULL DEFAULT FALSE,
+    -- SMALLINT (not BOOLEAN): the entity fields WikiAgentPageTypePermissionEntity
+    -- .can{Read,Create,Update,Delete} are Integer (1/0). Vanilla PostgreSQL cannot
+    -- map a BOOLEAN into a JDBC int, so these must stay integer-typed. Do not
+    -- "normalize" to BOOLEAN to match the other flag columns.
+    can_read      SMALLINT    NOT NULL DEFAULT 1,
+    can_create    SMALLINT    NOT NULL DEFAULT 0,
+    can_update    SMALLINT    NOT NULL DEFAULT 0,
+    can_delete    SMALLINT    NOT NULL DEFAULT 0,
     write_policy  VARCHAR(32) NOT NULL DEFAULT 'approval_required',
     create_time   TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP,
     update_time   TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP,

@@ -10,7 +10,10 @@ CREATE TABLE IF NOT EXISTS mate_wiki_page_type_profile (
     name          VARCHAR(128) NOT NULL,
     version       INT          NOT NULL DEFAULT 1,
     config_json   TEXT     NOT NULL,
-    enabled       BOOLEAN   NOT NULL DEFAULT TRUE,
+    -- SMALLINT (not BOOLEAN): WikiPageTypeProfileEntity.enabled is Integer (1/0).
+    -- Vanilla PostgreSQL cannot map a BOOLEAN into a JDBC int. The generated
+    -- column below compares enabled = 1 accordingly. Do not switch to BOOLEAN.
+    enabled       SMALLINT  NOT NULL DEFAULT 1,
     create_time   TIMESTAMP(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP,
     update_time   TIMESTAMP(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP,
     deleted       INT          NOT NULL DEFAULT 0,
@@ -18,7 +21,7 @@ CREATE TABLE IF NOT EXISTS mate_wiki_page_type_profile (
     -- ignores NULL keys for uniqueness, giving "at most one enabled per KB".
     enabled_kb    BIGINT
         GENERATED ALWAYS AS (
-            CASE WHEN enabled = TRUE AND deleted = 0 THEN kb_id ELSE NULL END
+            CASE WHEN enabled = 1 AND deleted = 0 THEN kb_id ELSE NULL END
         ) STORED,
     PRIMARY KEY (id)
 );
