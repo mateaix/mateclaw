@@ -350,24 +350,23 @@ public class NodeStreamingChatHelper {
     // provider during a rate-limit window wastes time without recovery.
     // SERVER_ERROR keeps MAX_RETRIES (upstream flaps often self-heal).
     static final int MAX_RETRIES_RATE_LIMIT = 2;
+    // EMPTY_RESPONSE: transient gateway blip often resolves on same-model
+    // retry (e.g., proxy timeout returns HTTP 200 with empty body). Keep
+    // the cap low — if it truly takes 4+ attempts, the provider is sick.
+    static final int MAX_RETRIES_EMPTY_RESPONSE = 3;
+    // UNKNOWN: conservative retry cap. Defensive: retry what we can't
+    // classify, but with a smaller budget than SERVER_ERROR (5 vs 10) to
+    // avoid masking truly fatal errors. MAX_TOTAL_DURATION_MS is the
+    // ultimate safety net.
+    static final int MAX_RETRIES_UNKNOWN = 5;
+    // Hard time budget for the primary retry loop (3 min). Prevents
+    // retries from stalling a single conversation turn indefinitely.
+    // Aligned with WikiProcessingService.llmMaxTotalDurationMs.
+    private static final long MAX_TOTAL_DURATION_MS = 3 * 60 * 1000L;
     private static final long BACKOFF_BASE_MS = 3000;
     private static final long BACKOFF_CAP_MS = 60_000;
 
     private static final ObjectMapper TOOL_ARG_JSON_MAPPER = new ObjectMapper();
-
-    /**
-     * 判断错误是否可重试（基于状态码/异常类型）
-     */
-    private static boolean isRetryable(Throwable error) {
-        String msg = extractFullErrorChain(error);
-        // Kimi engine_overloaded / 标准 HTTP 错误 / 速率限制
-        return msg.contains("engine_overloaded")
-                || msg.contains("rate_limit") || msg.contains("RateLimitError")
-                || msg.contains("429") || msg.contains("Too Many Requests")
-                || msg.contains("500") || msg.contains("502") || msg.contains("503") || msg.contains("504")
-                || msg.contains("APITimeoutError") || msg.contains("APIConnectionError")
-                || msg.contains("Connection reset") || msg.contains("Connection refused");
-    }
 
     /**
      * 分类错误类型（用于分级重试和上层 Node 决策）
@@ -384,7 +383,23 @@ public class NodeStreamingChatHelper {
                 || msg.contains("请求体中的 input tokens 总数超出了模型允许")) {
             return ErrorType.PROMPT_TOO_LONG;
         }
-        // Auth errors
+        // Auth errors — keys, certs, DNS, TLS infrastructure. These will not
+        // self-heal on retry (a bad API key / expired cert / wrong host won't
+        // suddenly become valid), so classify as AUTH_ERROR to terminate the
+        // retry loop and hand off to the fallback chain.
+        // Infrastructure-level permanent failures checked first:
+        //   DNS resolution (UnknownHostException) — misconfigured endpoint
+        //   TLS certificate (CertificateException, SSLPeerUnverifiedException,
+        //     pkix path building failed, certificate verify failed) — expired
+        //     or untrusted certs that cannot recover without human intervention
+        if (msg.contains("UnknownHostException")
+                || msg.contains("CertificateException")
+                || msg.contains("SSLPeerUnverifiedException")
+                || msg.contains("pkix path building failed")
+                || msg.contains("certificate verify failed")
+                || msg.contains("certificate_unknown")) {
+            return ErrorType.AUTH_ERROR;
+        }
         if (msg.contains("401") || msg.contains("Unauthorized") || msg.contains("Invalid API Key")
                 || msg.contains("authentication") || msg.contains("AuthenticationError")) {
             return ErrorType.AUTH_ERROR;
@@ -404,11 +419,17 @@ public class NodeStreamingChatHelper {
         // a different provider may have credits, so we should fall back instead of
         // terminating the call. Both OpenAI ("insufficient_quota") and Anthropic
         // ("credit balance is too low") use these phrases in 402-class responses.
+        // Chinese provider patterns (Zhipu 1113, DashScope, general) — same hard
+        // failure semantics: retrying the same provider won't refill the balance.
         if (msg.contains("402") || msg.contains("insufficient_quota")
                 || msg.contains("credit balance is too low")
                 || msg.contains("billing_error") || msg.contains("billing_hard_limit_reached")
                 || msg.contains("You exceeded your current quota")
-                || msg.contains("quota exceeded") || msg.contains("Quota exceeded")) {
+                || msg.contains("quota exceeded") || msg.contains("Quota exceeded")
+                || msg.contains("余额不足") || msg.contains("请充值")
+                || msg.contains("\"code\":\"1113\"") || msg.contains("\"code\":1113")
+                || msg.contains("AccountBalanceNotEnough")
+                || msg.contains("balance not enough")) {
             return ErrorType.BILLING;
         }
         // RFC-009 P3.2: MODEL_NOT_FOUND — provider rejects the requested model id.
@@ -436,19 +457,14 @@ public class NodeStreamingChatHelper {
                 || msg.contains("InvalidEndpointOrModel")) {
             return ErrorType.MODEL_NOT_FOUND;
         }
-        // Client errors (400 Bad Request — unsupported format, invalid params, etc.) — NOT retryable.
-        // DashScope's remaining "InvalidParameter" responses are request-shape bugs, e.g. a reserved
-        // or illegal tool name ("Tool names are not allowed to be [search]") or an unsupported
-        // parameter. These fail identically on every provider, so classifying them as CLIENT_ERROR
-        // (rather than MODEL_NOT_FOUND) keeps the model in the failover pool and surfaces the real
-        // cause instead of a misleading "model not available" message.
-        if (msg.contains("400") || msg.contains("Bad Request")
-                || msg.contains("invalid_request_error") || msg.contains("unsupported")
-                || msg.contains("Tool names are not allowed")
-                || msg.contains("InvalidParameter")) {
-            return ErrorType.CLIENT_ERROR;
-        }
         // Server errors and transient TLS / socket-level network hiccups.
+        // MUST be checked BEFORE CLIENT_ERROR. 5xx patterns (502/503/504) are
+        // transient gateway failures that self-heal on retry. If the error chain
+        // carries BOTH 5xx and 4xx-like keywords (a proxy 502 whose response body
+        // happens to say "bad request"), the 5xx is the root cause and should win
+        // — retrying a true 400 wastes seconds, but NOT retrying a transient 502
+        // loses the user's entire conversation turn. MAX_TOTAL_DURATION_MS
+        // provides the ultimate safety net against unbounded retry.
         // Without the TLS-specific patterns, a single SSL fatal alert
         // (e.g. bad_record_mac during long-running streams) falls through to
         // UNKNOWN — non-retryable — so one transient handshake glitch surfaces
@@ -477,8 +493,26 @@ public class NodeStreamingChatHelper {
                 // in the response body when their backend is under high load or the
                 // upstream connection to the model server is disrupted. This is a
                 // transient server-side failure — classify as retryable.
-                || msg.contains("network connection error")) {
+                || msg.contains("network connection error")
+                // AI gateway / reverse-proxy rewrites: upstream 5xx (502/503/504)
+                // surfaced as HTTP 400 with a body that describes the upstream
+                // outage. These are transient server-side failures — retryable.
+                || msg.contains("temporarily unavailable")
+                || msg.contains("service unavailable")
+                || msg.contains("model is overloaded")) {
             return ErrorType.SERVER_ERROR;
+        }
+        // Client errors (400 Bad Request — unsupported format, invalid params, etc.) — NOT retryable.
+        // DashScope's remaining "InvalidParameter" responses are request-shape bugs, e.g. a reserved
+        // or illegal tool name ("Tool names are not allowed to be [search]") or an unsupported
+        // parameter. These fail identically on every provider, so classifying them as CLIENT_ERROR
+        // (rather than MODEL_NOT_FOUND) keeps the model in the failover pool and surfaces the real
+        // cause instead of a misleading "model not available" message.
+        if (msg.contains("400") || msg.contains("Bad Request")
+                || msg.contains("invalid_request_error") || msg.contains("unsupported")
+                || msg.contains("Tool names are not allowed")
+                || msg.contains("InvalidParameter")) {
+            return ErrorType.CLIENT_ERROR;
         }
         return ErrorType.UNKNOWN;
     }
@@ -550,6 +584,15 @@ public class NodeStreamingChatHelper {
         // 主模型重试循环
         StreamResult lastResult = null;
         if (!primarySkipped) for (int attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+            // Time budget check: prevent retries from stalling a single
+            // conversation turn indefinitely (e.g., a provider that stays
+            // at 503 for minutes). Aligned with Wiki's maxTotalDurationMs.
+            long elapsedMs = System.currentTimeMillis() - callStartMs;
+            if (elapsedMs >= MAX_TOTAL_DURATION_MS) {
+                log.warn("[{}] Primary retry time budget exhausted ({}ms), handing off to fallback chain",
+                        phase, elapsedMs);
+                break;
+            }
             llmCallCount++;
             if (attempt > 0) retryCount++;
             lastResult = doStreamCall(chatModel, prompt, conversationId, phase, broadcast, attempt);
@@ -601,11 +644,18 @@ public class NodeStreamingChatHelper {
                 if (lastResult.errorType() == ErrorType.THINKING_BLOCK_ERROR) {
                     return lastResult; // 已经重试过了
                 }
-                // RFC-009: EMPTY_RESPONSE — break the primary-retry loop and fall through to
-                // the fallback chain. Retrying the same model that returned nothing is rarely
-                // productive; a different provider has a better chance of succeeding.
+                // EMPTY_RESPONSE — transient gateway blip often resolves on same-model
+                // retry (e.g., proxy timeout returns HTTP 200 with empty body).
+                // Retry up to MAX_RETRIES_EMPTY_RESPONSE before handing off to the
+                // fallback chain. A different provider has a better chance of
+                // succeeding if the same model repeatedly returns nothing.
                 if (lastResult.errorType() == ErrorType.EMPTY_RESPONSE) {
-                    log.warn("[{}] Primary returned empty response — skipping same-model retries, handing off to fallback chain", phase);
+                    if (attempt < MAX_RETRIES_EMPTY_RESPONSE) {
+                        log.warn("[{}] Primary returned empty response (attempt {}/{}), retrying same model...",
+                                phase, attempt + 1, MAX_RETRIES_EMPTY_RESPONSE + 1);
+                        continue;
+                    }
+                    log.warn("[{}] Primary exhausted empty-response retries — handing off to fallback chain", phase);
                     recordPrimary(false);
                     break;
                 }
@@ -616,25 +666,33 @@ public class NodeStreamingChatHelper {
                     logPerfSummary(phase, conversationId, callStartMs, llmCallCount, retryCount, failoverCount);
                     return lastResult;
                 }
-                // RATE_LIMIT / SERVER_ERROR past their retry budget are provider-level
-                // failures: the same model will not recover within this turn, but a
-                // different provider can. Break to the fallback chain instead of
-                // returning — recordPrimary(false) runs once at the post-loop provider
-                // health check below, and if every fallback also fails the chain
-                // walker re-surfaces this same error to the caller.
+                // RATE_LIMIT / SERVER_ERROR / UNKNOWN past their retry budget are
+                // provider-level failures: the same model will not recover within
+                // this turn, but a different provider can. Break to the fallback
+                // chain instead of returning — recordPrimary(false) runs once at
+                // the post-loop provider health check below, and if every fallback
+                // also fails the chain walker re-surfaces this same error to the
+                // caller.
+                // UNKNOWN errors are included defensively: an error we can't
+                // classify may be a transient (mis-classified by our keyword
+                // patterns) or a fatal (truly new error shape). Retrying with a
+                // smaller budget (MAX_RETRIES_UNKNOWN=5 vs MAX_RETRIES=10) is
+                // safer than immediate termination — MAX_TOTAL_DURATION_MS provides
+                // the ultimate safety net.
                 if (lastResult.errorType() == ErrorType.RATE_LIMIT
-                        || lastResult.errorType() == ErrorType.SERVER_ERROR) {
+                        || lastResult.errorType() == ErrorType.SERVER_ERROR
+                        || lastResult.errorType() == ErrorType.UNKNOWN) {
                     log.warn("[{}] Primary exhausted retries (type={}) — handing off to fallback chain",
                             phase, lastResult.errorType());
                     break;
                 }
-                // Any other non-null errored result (e.g. UNKNOWN) that doStreamCall
-                // chose NOT to retry must exit — otherwise we silently spin through
-                // attempts and waste seconds per turn on unrecoverable errors like
-                // DashScope's "url error" / unknown model.
+                // Any truly unhandled error type — safety net. Prefer falling back
+                // over terminating the entire call. If this branch is ever hit in
+                // production, the type should be added explicitly above.
                 recordPrimary(false);
-                logPerfSummary(phase, conversationId, callStartMs, llmCallCount, retryCount, failoverCount);
-                return lastResult;
+                log.warn("[{}] Primary returned unhandled error type={} — handing off to fallback chain",
+                        phase, lastResult.errorType());
+                break;
             }
             // lastResult == null 表示需要重试
         }
@@ -1155,12 +1213,20 @@ public class NodeStreamingChatHelper {
                         conversationId, phase, errorType);
             }
 
-            // Rate limit / Server error: retryable, but with different budgets.
+            // Rate limit / Server error / Unknown: retryable, but with different budgets.
             // RATE_LIMIT: cap at 2 retries then failover (RFC 06 D-2).
             // SERVER_ERROR: keep full MAX_RETRIES — upstream flaps often self-heal.
-            if (errorType == ErrorType.RATE_LIMIT || errorType == ErrorType.SERVER_ERROR) {
-                int effectiveMaxRetries = (errorType == ErrorType.RATE_LIMIT)
-                        ? MAX_RETRIES_RATE_LIMIT : MAX_RETRIES;
+            // UNKNOWN: conservative cap (5 vs 10). Defensive: retry what we can't
+            // classify, but with a smaller budget to avoid masking truly fatal
+            // errors. MAX_TOTAL_DURATION_MS provides the ultimate safety net.
+            if (errorType == ErrorType.RATE_LIMIT
+                    || errorType == ErrorType.SERVER_ERROR
+                    || errorType == ErrorType.UNKNOWN) {
+                int effectiveMaxRetries = switch (errorType) {
+                    case RATE_LIMIT -> MAX_RETRIES_RATE_LIMIT;
+                    case UNKNOWN -> MAX_RETRIES_UNKNOWN;
+                    default -> MAX_RETRIES;
+                };
                 if (attempt < effectiveMaxRetries) {
                     log.warn("[{}] Retryable error (attempt {}/{}, type={}): {}",
                             phase, attempt, effectiveMaxRetries, errorType, error.getMessage());
