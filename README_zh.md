@@ -217,9 +217,20 @@ mateclaw/
 
 ## 路线图
 
-**v1.3.0（2026-05-13 发布）** — 工作流引擎 · 6 种 pattern 触发器 · Wiki 加工器 · 每员工独立 MCP 绑定 · 多模态旁路路由 · 4 个 JVM 原生文档生成工具 · 图像编辑。完整故事见 [v1.3.0 release notes](https://claw.mate.vip/docs/zh/releases/1.3.0)。
+**v1.5.0（2026-06-04 发布）** — Goal 可勾选清单（模糊评分 → 逐项打勾）· Wiki 自维护（`[[wikilinks]]` · 事实层/经验层 · pageType 模板与权限 · 知识库流水线 · 本地目录接入）· 按拥有者隔离记忆（`owner_key` + 可见域 + `endUserId` 透传）· 每员工绑定主知识库 · 偏好 provider 驱动选型。完整故事见 [v1.5.0 release notes](https://claw.mate.vip/docs/zh/releases/1.5.0)。
 
-**下一步** — 工作流画布可拖拉编辑 · 运行回放时间线 · `loop` / `invoke_skill` step mode · 触发器优先级 + 事件回放 · 行业场景应用市场 · 更多 ACP 上游集成。
+**v1.4.0（2026-05-23 发布）** — 持续目标（锁定目标，每轮自评）· 子员工委派树（最深 3 层 · 同步 / 并行 / 异步 · 一句话组队）· 工具/技能渐进式披露 · 工作空间 RBAC（Owner / Admin / Member / Viewer）· 飞书一等公民（交互卡 / 审批卡 / 流式卡 · 渠道原生工具）。详见 [v1.4.0 release notes](https://claw.mate.vip/docs/zh/releases/1.4.0)。
+
+**v1.3.0（2026-05-13 发布）** — 工作流引擎 · 6 种 pattern 触发器 · Wiki 加工器 · 每员工独立 MCP 绑定 · 多模态旁路路由 · 4 个 JVM 原生文档生成工具 · 图像编辑。详见 [v1.3.0 release notes](https://claw.mate.vip/docs/zh/releases/1.3.0)。
+
+**v1.6.0（开发中）** — 让自驱的数字员工*更快、更会看、更易嵌入*：
+
+- **首字节更快** — 技能两段式载入（基础技能常驻，场景技能由相关性评分器按需检索）+ prefix 压缩，砍掉过去单请求动辄上百万字符的冷启动负载
+- **原生代码执行** — `execute_code` 让员工自己写、自己跑沙箱代码，完成计算、数据加工与多格式报告生成，全程在 JVM 内
+- **能记住图的视觉** — 图片跨轮次保留在上下文里；`image_analyze` 按需重新解析某张附件，"放大看那张图表"这类追问无需重新上传
+- **可嵌入、可无头** — webchat 组件升级为 Web/API 接入面，支持多会话与按终端用户身份（`endUserId`）隔离记忆
+- **真正可读的 Wiki** — 阅读与管理分离、统一的 Sources 标签页（按知识库自动同步）、可点击的跨库 `[[wikilinks]]`
+- **高负载更稳** — MCP 连接自愈 · interleaved-thinking 模型的工具调用恢复 · 计划执行的证据闸门
 
 ## 参与贡献
 
