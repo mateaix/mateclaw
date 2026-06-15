@@ -573,6 +573,7 @@ export default {
   doctor: {
     title: 'System Diagnostics',
     subtitle: 'Local instance health snapshot',
+    database: 'Connected database',
     checking: 'Checking...',
     allGood: 'All systems healthy',
     hasWarnings: '{count} warning(s)',

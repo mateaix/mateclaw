@@ -2054,6 +2054,7 @@ export default {
   doctor: {
     title: '系统诊断',
     subtitle: '本地实例健康概览',
+    database: '当前数据库',
     checking: '检查中...',
     allGood: '所有系统正常',
     hasWarnings: '{count} 个警告',
