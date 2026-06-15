@@ -149,4 +149,89 @@ class SourceEvidenceLedgerTest {
         assertFalse(validation.valid());
         assertTrue(validation.unsupportedReferences().contains("RandomMadeUpService"));
     }
+
+    @Test
+    @DisplayName("records wiki semantic chunks as numbered citations")
+    void recordsWikiSemanticChunksAsCitations() {
+        SourceEvidenceLedger ledger = SourceEvidenceLedger.fromToolResponses(List.of(
+                new ToolResponseMessage.ToolResponse("c1", "wiki_semantic_search", """
+                        {
+                          "kbId": 7,
+                          "query": "install",
+                          "matchCount": 2,
+                          "chunks": [
+                            {"index":1,"chunkId":101,"rawTitle":"Install Guide","section":"Linux","pageNumber":12,"snippet":"Use the package manager."},
+                            {"index":2,"chunkId":102,"rawTitle":"FAQ","snippet":"Restart after install."}
+                          ]
+                        }
+                        """)));
+
+        assertTrue(ledger.hasWikiEvidence());
+        assertTrue(ledger.hasWikiCitationIndex(1));
+        assertTrue(ledger.hasWikiCitationIndex(2));
+        assertFalse(ledger.hasWikiCitationIndex(3));
+    }
+
+    @Test
+    @DisplayName("rejects wiki answers without real numbered citations")
+    void rejectsWikiAnswerWithoutRealCitations() {
+        SourceEvidenceLedger ledger = SourceEvidenceLedger.fromToolResponses(List.of(
+                new ToolResponseMessage.ToolResponse("c1", "wiki_semantic_search", """
+                        {"chunks":[{"index":1,"chunkId":101,"rawTitle":"Install Guide","snippet":"Use the package manager."}]}
+                        """)));
+
+        SourceEvidenceLedger.Validation noMarker = ledger.validateAnswer("Use the package manager.");
+        assertFalse(noMarker.valid());
+        assertTrue(noMarker.unsupportedReferences().contains("missing wiki citation [n]"));
+
+        SourceEvidenceLedger.Validation unsupportedMarker = ledger.validateAnswer("""
+                Use the package manager [2].
+
+                来源：
+                [2] Install Guide
+                """);
+        assertFalse(unsupportedMarker.valid());
+        assertTrue(unsupportedMarker.unsupportedReferences().contains("wiki citation [2]"));
+    }
+
+    @Test
+    @DisplayName("requires wiki source table rows to match retrieved source titles")
+    void requiresWikiSourceTableToMatchTitles() {
+        SourceEvidenceLedger ledger = SourceEvidenceLedger.fromToolResponses(List.of(
+                new ToolResponseMessage.ToolResponse("c1", "wiki_semantic_search", """
+                        {"chunks":[{"index":1,"chunkId":101,"rawTitle":"Install Guide","section":"Linux","pageNumber":12,"snippet":"Use the package manager."}]}
+                        """)));
+
+        SourceEvidenceLedger.Validation fabricatedTitle = ledger.validateAnswer("""
+                Use the package manager [1].
+
+                来源：
+                [1] Made Up Manual
+                """);
+        assertFalse(fabricatedTitle.valid());
+        assertTrue(fabricatedTitle.unsupportedReferences().contains("wiki source title for [1]"));
+
+        SourceEvidenceLedger.Validation valid = ledger.validateAnswer("""
+                Use the package manager [1].
+
+                来源：
+                [1] Install Guide - Linux - page 12
+                """);
+        assertTrue(valid.valid());
+    }
+
+    @Test
+    @DisplayName("renders missing wiki source table for cited chunks")
+    void rendersWikiSourceTable() {
+        SourceEvidenceLedger ledger = SourceEvidenceLedger.fromToolResponses(List.of(
+                new ToolResponseMessage.ToolResponse("c1", "wiki_semantic_search", """
+                        {"chunks":[{"index":1,"chunkId":101,"rawTitle":"Install Guide","section":"Linux","pageNumber":12,"snippet":"Use the package manager."}]}
+                        """)));
+
+        String rendered = ledger.appendWikiSourceTable("Use the package manager [1].");
+
+        assertTrue(rendered.contains("来源："));
+        assertTrue(rendered.contains("[1] Install Guide - Linux - page 12"));
+        assertTrue(ledger.validateAnswer(rendered).valid());
+    }
 }

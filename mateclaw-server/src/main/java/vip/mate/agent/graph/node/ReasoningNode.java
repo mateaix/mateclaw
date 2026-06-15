@@ -271,6 +271,23 @@ public class ReasoningNode implements NodeAction {
             + "  · ledger snapshot 永远显示初始状态，对你毫无帮助\n\n"
             + "**例外**：单一问题、简单问答、不可拆解的请求 — 不需要用。\n";
 
+    private static final String GROUNDED_CONTRACT = "\n\n"
+            + "## 回答来源约束（强制规则）\n\n"
+            + "**核心原则**：你的回答必须完全基于工具返回的信息（证据），不得使用内部知识编造内容。\n\n"
+            + "**必须遵守**：\n"
+            + "1. **仅据证据作答**：如果工具返回的信息不足以回答问题，必须明确说明\"根据现有信息无法回答此问题\"。\n"
+            + "2. **标记引用来源**：回答中引用的每个事实性陈述都必须用方括号数字标记来源，例如 [1]、[2]。\n"
+            + "3. **文末列出来源**：在回答末尾列出所有引用的来源列表，格式为：\n"
+            + "   [1] 页面标题 - 章节（如有）\n"
+            + "   [2] 页面标题 - 章节（如有）\n"
+            + "4. **禁止捏造来源**：不得引用未在本次对话中通过工具获取的页面或文件。\n"
+            + "5. **内容忠实**：必须准确反映证据内容，不得歪曲、编造或过度推断。\n\n"
+            + "**违规后果**：未按规则引用来源或使用未验证的信息将导致回答被拒绝。\n";
+
+    private static String buildGroundedSystemPrompt(String basePrompt) {
+        return basePrompt + TOOL_USE_ENFORCEMENT + GROUNDED_CONTRACT;
+    }
+
     private final ChatModel chatModel;
     private final List<ToolCallback> toolCallbacks;
     /**
@@ -525,17 +542,14 @@ public class ReasoningNode implements NodeAction {
 
         // ======= 构建 Prompt =======
         String systemPrompt = accessor.systemPrompt();
-        // Append a tool-use enforcement clause to every ReasoningNode call.
-        // Without it, some models (notably DeepSeek thinking and Claude Opus)
-        // tend to "narrate" — emit a final_answer like "现在直接生成立项材料
-        // docx" instead of actually calling renderDocx, which makes the
-        // graph silently terminate at final_answer_node with the narration
-        // as the user-facing reply.
+        // Append tool-use enforcement and grounded contract to every ReasoningNode call.
+        // Without tool-use enforcement, some models tend to "narrate" instead of calling tools.
+        // Grounded contract ensures answers are based only on evidence from tool results.
         //
         // Appended at runtime rather than woven into the AgentEntity-stored
         // prompt so it stays out of the user-editable agent UI but is still
         // always-on for the runtime LLM.
-        systemPrompt = systemPrompt + TOOL_USE_ENFORCEMENT;
+        systemPrompt = buildGroundedSystemPrompt(systemPrompt);
         List<Message> messages = accessor.messages();
 
         // Per-loop budget: bound the working message list a single Reasoning
@@ -960,12 +974,14 @@ public class ReasoningNode implements NodeAction {
                     "iteration", accessor.iterationCount(),
                     "answerChars", content != null ? content.length() : 0
             ));
+            String answerWithSources = accessor.sourceEvidenceLedger()
+                    .appendWikiSourceTable(content != null ? content : "");
             SourceEvidenceLedger.Validation validation =
-                    accessor.sourceEvidenceLedger().validateAnswer(content != null ? content : "");
+                    accessor.sourceEvidenceLedger().validateAnswer(answerWithSources);
             boolean evidenceInsufficient = !validation.valid();
             String finalAnswer = evidenceInsufficient
                     ? evidenceWarning(validation.unsupportedReferences())
-                    : (content != null ? content : "");
+                    : answerWithSources;
             if (evidenceInsufficient) {
                 log.warn("[ReasoningNode] Evidence insufficient for final answer, unsupportedReferences={}",
                         validation.unsupportedReferences());
@@ -988,7 +1004,7 @@ public class ReasoningNode implements NodeAction {
                     .currentPhase("reasoning")
                     .streamedContent(evidenceInsufficient ? (content != null ? content : "") : "")
                     .finishReason(evidenceInsufficient ? FinishReason.EVIDENCE_INSUFFICIENT : FinishReason.NORMAL)
-                    .contentStreamed(!evidenceInsufficient)
+                    .contentStreamed(!evidenceInsufficient && Objects.equals(answerWithSources, content != null ? content : ""))
                     .thinkingStreamed(!result.thinking().isEmpty())
                     .llmCallCount(nextLlmCallCount)
                     .mergeUsage(state, result)
@@ -998,9 +1014,9 @@ public class ReasoningNode implements NodeAction {
     }
 
     private static String evidenceWarning(List<String> unsupportedReferences) {
-        return "\n\n[证据不足] 以下源码引用未出现在已读取/搜索到的工具证据中："
+        return "\n\n[证据不足] 以下引用未出现在本轮已读取/搜索到的工具证据中，或缺少有效来源标注："
                 + String.join(", ", unsupportedReferences)
-                + "。请继续读取相关文件后再下结论。";
+                + "。请继续检索/读取相关证据后再下结论。";
     }
 
     private AssistantMessage.ToolCall deserializeToolCall(String json) {
