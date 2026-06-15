@@ -395,7 +395,11 @@ public class NodeStreamingChatHelper {
         if (msg.contains("UnknownHostException")
                 || msg.contains("CertificateException")
                 || msg.contains("SSLPeerUnverifiedException")
-                || msg.contains("pkix path building failed")
+                // Java's ValidatorException emits "PKIX path building failed" with an
+                // uppercase PKIX, and the error chain is not lower-cased — the pattern
+                // must match the real casing, otherwise the fatal cert failure falls
+                // through to the retryable SERVER_ERROR bucket and is retried in vain.
+                || msg.contains("PKIX path building failed")
                 || msg.contains("certificate verify failed")
                 || msg.contains("certificate_unknown")) {
             return ErrorType.AUTH_ERROR;
