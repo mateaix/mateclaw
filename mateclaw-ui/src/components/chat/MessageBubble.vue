@@ -440,7 +440,7 @@ import {
   VideoPause,
   WarningFilled,
 } from '@element-plus/icons-vue'
-import { useMarkdownRenderer } from '@/composables/useMarkdownRenderer'
+import { useStreamingMarkdown } from '@/composables/useStreamingMarkdown'
 import { useAuthenticatedAttachment } from '@/composables/useAuthenticatedAttachment'
 import { useToolLabel } from '@/composables/useToolLabel'
 import { http } from '@/api'
@@ -460,7 +460,6 @@ import type { BrowserAction } from './BrowserTimeline.vue'
 import type { Message, MessageSegment, ChatAttachment, ToolCallMeta, PlanMeta } from '@/types'
 import type { ChatErrorInfo } from '@/types/chatError'
 
-const { renderMarkdown } = useMarkdownRenderer()
 const { t, locale } = useI18n()
 const { getToolLabel } = useToolLabel()
 const { blobUrls, loadAllImages, loadAllVideos, loadAllAudios, loadAllModels, downloadFile, openImage, getDisplayUrl, revokeAll } = useAuthenticatedAttachment()
@@ -614,10 +613,12 @@ const toggleThinking = () => {
   emit('toggle-thinking', localThinkingExpanded.value)
 }
 
-const renderedThinkingContent = computed(() => {
-  if (!thinkingContent.value) return ''
-  return renderMarkdown(thinkingContent.value)
-})
+// Throttle thinking + main-content markdown while the turn streams; both render
+// once at full fidelity when generation stops.
+const { html: renderedThinkingContent } = useStreamingMarkdown(
+  () => thinkingContent.value,
+  () => isGenerating.value,
+)
 
 // --- 主内容 ---
 const isApprovalPlaceholder = (text: string) => {
@@ -643,10 +644,10 @@ const parseErrorText = computed(() => {
   return errorPart?.text || ''
 })
 
-const renderedContent = computed(() => {
-  if (!displayContent.value) return ''
-  return renderMarkdown(displayContent.value)
-})
+const { html: renderedContent } = useStreamingMarkdown(
+  () => displayContent.value,
+  () => isGenerating.value,
+)
 
 const showLoadingIndicator = computed(() => {
   return isGenerating.value && !displayContent.value
