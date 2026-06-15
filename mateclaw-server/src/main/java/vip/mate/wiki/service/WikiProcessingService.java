@@ -119,6 +119,15 @@ public class WikiProcessingService {
     private WikiScaffoldService scaffoldService;
 
     /**
+     * Recomputes broken links once a raw material finishes processing. Optional
+     * (field-injected) so unit tests that construct this service directly
+     * without Spring don't need to supply it — when absent, the post-ingestion
+     * auto-scan is simply skipped.
+     */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private WikiLintJobService lintJobService;
+
+    /**
      * RFC-051 PR-3: optional model routing service. When wired, route /
      * create_page / merge_page LLM calls inside the eager pipeline ask the
      * routing chain (stepModels[step] -&gt; wikiDefaultModelId -&gt; system
@@ -537,6 +546,41 @@ public class WikiProcessingService {
             ProgressCounter pc = progressCounters.remove(rawId);
             if (pc != null) {
                 rawService.updateProgress(rawId, "done", pc.done.get(), pc.total.get());
+                // Once every material in the KB has settled, reconcile links and
+                // recompute broken_links. Gating on "no unsettled raws" avoids
+                // two hazards of doing this per-material mid-batch: (1) demoting a
+                // [[concept]] link before a later material creates that page, and
+                // (2) recording a link to a later-created page as broken. The last
+                // material to finish runs both; earlier completions skip. Both
+                // steps are idempotent, so a rare concurrent double-run is benign.
+                boolean kbSettled;
+                try {
+                    kbSettled = rawService.listByKbId(kb.getId()).stream()
+                            .noneMatch(r -> "pending".equals(r.getProcessingStatus())
+                                    || "processing".equals(r.getProcessingStatus()));
+                } catch (RuntimeException e) {
+                    kbSettled = true; // best-effort: prefer reconciling over skipping
+                }
+                if (kbSettled) {
+                    try {
+                        // Redirect alias-covered links to their covering page and
+                        // demote the genuinely uncovered ones to plain text before
+                        // the scan, so freshly imported content doesn't surface
+                        // dangling links to concepts that were merged away.
+                        pageService.reconcileKbLinks(kb.getId());
+                    } catch (RuntimeException reconErr) {
+                        log.warn("[Wiki] post-ingestion link reconciliation failed for kbId={}: {}",
+                                kb.getId(), reconErr.toString());
+                    }
+                    if (lintJobService != null) {
+                        try {
+                            lintJobService.startOrGetRunning(kb.getId());
+                        } catch (RuntimeException scanErr) {
+                            log.warn("[Wiki] post-ingestion broken-link scan trigger failed for kbId={}: {}",
+                                    kb.getId(), scanErr.toString());
+                        }
+                    }
+                }
             }
         }
     }
@@ -1303,6 +1347,17 @@ public class WikiProcessingService {
                 }
                 JsonNode metadataNode = pageJson.path("metadata");
                 JsonNode dependsOnNode = pageJson.path("depends_on");
+                // Alternate concept names this page covers (composite / 辨析
+                // pages list the fine-grained concepts they absorbed) — used by
+                // the post-ingestion reconciler to redirect [[concept]] links.
+                List<String> pageAliases = new ArrayList<>();
+                JsonNode aliasesNode = pageJson.path("aliases");
+                if (aliasesNode.isArray()) {
+                    for (JsonNode a : aliasesNode) {
+                        String s = a.asText("").trim();
+                        if (!s.isEmpty()) pageAliases.add(s);
+                    }
+                }
                 if (content.isBlank()) {
                     log.info("[Wiki] BatchCreate: blank content for slug='{}', retrying individually", slug);
                     final String blankSlug = slug;
@@ -1332,6 +1387,13 @@ public class WikiProcessingService {
                 boolean ok = false;
                 try {
                     wasCreated = savePageContent(kb, raw, slug, title, content, pageSummary, pageType, metadataNode, dependsOnNode);
+                    if (!pageAliases.isEmpty()) {
+                        try {
+                            pageService.mergeAliasesByTitle(kbId, title, pageAliases);
+                        } catch (RuntimeException aliasErr) {
+                            log.warn("[Wiki] Failed to persist aliases for title='{}': {}", title, aliasErr.toString());
+                        }
+                    }
                     if (wasCreated) {
                         created.incrementAndGet();
                         totalCreated++;
@@ -1545,6 +1607,22 @@ public class WikiProcessingService {
                                      String pageType, JsonNode metadataNode, JsonNode dependsOnNode) {
         Long kbId = kb.getId();
         Long rawId = raw.getId();
+
+        // Derive the slug deterministically from the title rather than trusting
+        // the model-supplied one. A model-minted slug romanizes inconsistently
+        // across runs (the same concept lands under different spellings) and
+        // forces every [[...]] reference to guess a transliteration that often
+        // misses — surfacing as broken links on a freshly imported KB. Title is
+        // already the canonical concept identity used for dedup below, so keying
+        // the slug off it keeps the stored slug and the human-meaningful title
+        // from ever drifting apart, and makes [[Title]] references resolve. Falls
+        // back to the supplied slug only when the title yields no usable slug.
+        if (title != null && !title.isBlank()) {
+            String derivedSlug = WikiPageService.toSlug(title);
+            if (derivedSlug != null && !derivedSlug.isBlank()) {
+                slug = derivedSlug;
+            }
+        }
 
         // Refuse to materialize a page, or merge into an existing one, for a
         // raw the user just deleted. This prevents pages whose source_raw_ids

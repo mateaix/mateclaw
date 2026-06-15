@@ -93,7 +93,10 @@ const formattedTimestamp = computed(() => {
 async function onScan() {
   if (!store.currentKB) return
   try {
-    await store.startBrokenLinksScan(Number(store.currentKB.id))
+    // Pass the raw Snowflake id through untouched — Number()/parseInt() would
+    // truncate the 19-digit id past Number.MAX_SAFE_INTEGER and scan a KB that
+    // doesn't exist (the request 404s, so "rescan" silently does nothing).
+    await store.startBrokenLinksScan(store.currentKB.id)
   } catch (e: any) {
     console.error('[Wiki] scan failed', e)
   }

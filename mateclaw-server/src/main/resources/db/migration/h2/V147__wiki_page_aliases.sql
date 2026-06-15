@@ -1,0 +1,12 @@
+-- V147: Page aliases — alternate concept names a page also covers.
+--
+-- aliases   JSON array of alternate names (concepts) that this page covers but
+--           that did not become standalone pages — e.g. a "细胞器术语辨析"
+--           discrimination page covers 叶绿体 / 线粒体 / 高尔基体. The
+--           post-ingestion link reconciler consults this so a [[叶绿体]]
+--           reference written by another page is rewritten to point at the
+--           covering page ([[细胞器术语辨析|叶绿体]]) instead of dangling as a
+--           broken link. NULL or empty array means the page declares no extra
+--           names. Distinct from the title (the page's primary identity) and
+--           outgoing_links (targets this page links out to).
+ALTER TABLE mate_wiki_page ADD COLUMN IF NOT EXISTS aliases TEXT DEFAULT NULL;
