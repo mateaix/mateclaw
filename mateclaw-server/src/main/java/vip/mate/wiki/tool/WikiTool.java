@@ -390,19 +390,20 @@ public class WikiTool {
         }
 
         JSONArray arr = new JSONArray();
+        int index = 1;
         for (HybridRetriever.ChunkHit hit : hits) {
             cn.hutool.json.JSONObject obj = JSONUtil.createObj()
+                    .set("index", index)
                     .set("chunkId", hit.chunkId())
                     .set("rawTitle", rawTitles.getOrDefault(hit.rawId(), "unknown"))
                     .set("snippet", hit.snippet())
                     .set("score", String.format("%.4f", hit.score()));
-            // RFC-051 PR-1c: surface chunk metadata when available so the agent
-            // can cite "page 12, section 'Setup / Linux'" rather than an opaque snippet.
             if (hit.pageNumber() != null) obj.set("pageNumber", hit.pageNumber());
             if (hit.headerBreadcrumb() != null && !hit.headerBreadcrumb().isBlank()) {
                 obj.set("section", hit.headerBreadcrumb());
             }
             arr.add(obj);
+            index++;
         }
 
         return JSONUtil.createObj()
@@ -410,6 +411,7 @@ public class WikiTool {
                 .set("query", query)
                 .set("matchCount", hits.size())
                 .set("chunks", arr)
+                .set("citationHint", "引用格式示例：[1] 表示第一条结果，[2] 表示第二条结果。在回答末尾列出所有引用来源。")
                 .toString();
     }
 
