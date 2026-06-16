@@ -362,9 +362,42 @@ public class NodeStreamingChatHelper {
     // Hard time budget for the primary retry loop (3 min). Prevents
     // retries from stalling a single conversation turn indefinitely.
     // Aligned with WikiProcessingService.llmMaxTotalDurationMs.
-    private static final long MAX_TOTAL_DURATION_MS = 3 * 60 * 1000L;
-    private static final long BACKOFF_BASE_MS = 3000;
-    private static final long BACKOFF_CAP_MS = 60_000;
+    //
+    // Because the backoff grows exponentially (3s, 6s, 12s, 24s, 48s, then
+    // capped at 60s), this wall-clock budget — not MAX_RETRIES — is what
+    // actually bounds a sustained SERVER_ERROR loop: only ~8 of the 10
+    // retries fit inside 3 minutes before the elapsed-time check in
+    // streamCallInternal breaks to the fallback chain.
+    //
+    // These three values are instance fields seeded from the DEFAULT_*
+    // constants (rather than compile-time constants) so tests can shrink
+    // them to exercise the full retry path in milliseconds instead of
+    // minutes. Production wiring never overrides them — see
+    // setRetryTimingForTest.
+    private static final long DEFAULT_MAX_TOTAL_DURATION_MS = 3 * 60 * 1000L;
+    private static final long DEFAULT_BACKOFF_BASE_MS = 3000;
+    private static final long DEFAULT_BACKOFF_CAP_MS = 60_000;
+
+    private long maxTotalDurationMs = DEFAULT_MAX_TOTAL_DURATION_MS;
+    private long backoffBaseMs = DEFAULT_BACKOFF_BASE_MS;
+    private long backoffCapMs = DEFAULT_BACKOFF_CAP_MS;
+
+    /**
+     * Test-only seam to shrink the retry backoff and total-time budget so the
+     * full {@link #MAX_RETRIES} path (or the time-budget cut-off) can be
+     * exercised in milliseconds instead of minutes. Package-private and never
+     * invoked from production wiring, which always keeps the {@code DEFAULT_*}
+     * timings.
+     *
+     * @param backoffBaseMs       base backoff for the first retry (doubles each attempt)
+     * @param backoffCapMs        per-attempt backoff ceiling
+     * @param maxTotalDurationMs  hard wall-clock budget for the whole primary retry loop
+     */
+    void setRetryTimingForTest(long backoffBaseMs, long backoffCapMs, long maxTotalDurationMs) {
+        this.backoffBaseMs = backoffBaseMs;
+        this.backoffCapMs = backoffCapMs;
+        this.maxTotalDurationMs = maxTotalDurationMs;
+    }
 
     private static final ObjectMapper TOOL_ARG_JSON_MAPPER = new ObjectMapper();
 
@@ -592,7 +625,7 @@ public class NodeStreamingChatHelper {
             // conversation turn indefinitely (e.g., a provider that stays
             // at 503 for minutes). Aligned with Wiki's maxTotalDurationMs.
             long elapsedMs = System.currentTimeMillis() - callStartMs;
-            if (elapsedMs >= MAX_TOTAL_DURATION_MS) {
+            if (elapsedMs >= maxTotalDurationMs) {
                 log.warn("[{}] Primary retry time budget exhausted ({}ms), handing off to fallback chain",
                         phase, elapsedMs);
                 break;
@@ -875,10 +908,10 @@ public class NodeStreamingChatHelper {
                                             String conversationId, String phase,
                                             boolean broadcast, int attempt) {
         if (attempt > 0) {
-            long delay = Math.min(BACKOFF_BASE_MS * (1L << (attempt - 1)), BACKOFF_CAP_MS);
+            long delay = Math.min(backoffBaseMs * (1L << (attempt - 1)), backoffCapMs);
             // 加入 jitter 防止雷群效应
             delay += ThreadLocalRandom.current().nextLong(0, Math.max(1, delay / 2));
-            delay = Math.min(delay, BACKOFF_CAP_MS);
+            delay = Math.min(delay, backoffCapMs);
             log.warn("[{}] Retry attempt {}/{} after {}ms for conversation {}",
                     phase, attempt, MAX_RETRIES, delay, conversationId);
             // 广播给前端：用户可见的重试倒计时

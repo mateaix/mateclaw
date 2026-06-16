@@ -73,6 +73,11 @@ public final class PlanStateAccessor {
         return state.<List<String>>value(COMPLETED_RESULTS).orElse(List.of());
     }
 
+    /** Re-plans already performed this run (0 at run start). */
+    public int replanCount() {
+        return state.value(PLAN_REPLAN_COUNT, 0);
+    }
+
     // ===== 终止 =====
 
     public String finalSummary() {
@@ -185,6 +190,10 @@ public final class PlanStateAccessor {
         // ---- 步骤控制 ----
         public OutputBuilder currentStepIndex(int index) {
             return put(CURRENT_STEP_INDEX, index);
+        }
+
+        public OutputBuilder replanCount(int count) {
+            return put(PLAN_REPLAN_COUNT, count);
         }
 
         public OutputBuilder currentStepTitle(String title) {
