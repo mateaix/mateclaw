@@ -62,6 +62,17 @@ public class ConversationService {
 
     public static final String SYSTEM_USER = "system";
 
+    /**
+     * Owner prefix for webchat conversations, written as {@code webchat:<visitorId>}
+     * (see {@code WebChatController#webchatUsername}). These rows are owned by an
+     * external visitor principal rather than a MateClaw account, so the admin
+     * console treats them like {@link #SYSTEM_USER} rows — visible to / manageable
+     * by any authenticated user in the workspace. The visitor-facing self-service
+     * endpoints keep isolating by the exact owner plus a signed visitor token, so
+     * surfacing these rows to the console does not widen a visitor's own access.
+     */
+    static final String WEBCHAT_OWNER_PREFIX = "webchat:";
+
     private final ConversationMapper conversationMapper;
     private final MessageMapper messageMapper;
     private final AgentMapper agentMapper;
@@ -97,9 +108,29 @@ public class ConversationService {
     /**
      * Workspace-scoped variant of {@link #listConversations(String)}.
      *
+     * <p>Strict ownership: only the user's own + {@code system} rows. Used by
+     * callers that must not see other principals' conversations — notably the
+     * webchat visitor self-service path, which scopes to one visitor.
+     *
      * <p>获取用户的会话列表（按工作区过滤）。
      */
     public List<ConversationVO> listConversations(String username, Long workspaceId) {
+        return listConversations(username, workspaceId, false);
+    }
+
+    /**
+     * Admin-console variant. When {@code includeChannelPrincipals} is true, also
+     * returns conversations owned by external channel principals
+     * ({@code webchat:<visitorId>}) so the console surfaces webchat threads
+     * alongside the user's own + {@code system} rows — the same way IM-channel
+     * ({@code system}-owned) conversations already appear. The visitor-facing
+     * webchat endpoints keep using the strict overload, so this does not widen a
+     * visitor's own access.
+     *
+     * <p>控制台变体：includeChannelPrincipals 为 true 时额外纳入 webchat 访客会话。
+     */
+    public List<ConversationVO> listConversations(String username, Long workspaceId,
+                                                  boolean includeChannelPrincipals) {
         // Return both the current user's conversations AND those created by
         // scheduled jobs (owner=system). Child conversations spawned by
         // delegation are excluded — they don't belong in the sidebar.
@@ -107,7 +138,7 @@ public class ConversationService {
         // 同时返回当前用户的会话和定时任务（system）产生的会话；
         // 排除子会话（委派产生的子会话不在侧边栏显示）。
         LambdaQueryWrapper<ConversationEntity> wrapper = new LambdaQueryWrapper<ConversationEntity>()
-                .in(ConversationEntity::getUsername, username, SYSTEM_USER)
+                .and(w -> applyOwnerScope(w, username, includeChannelPrincipals))
                 .isNull(ConversationEntity::getParentConversationId)
                 .orderByDesc(ConversationEntity::getPinned)
                 .orderByDesc(ConversationEntity::getLastActiveTime);
@@ -148,6 +179,20 @@ public class ConversationService {
     }
 
     /**
+     * Apply the owner-scope predicate onto a (nested) wrapper: always the user's
+     * own + {@link #SYSTEM_USER} rows; when {@code includeChannelPrincipals} is
+     * true, also external channel-principal rows ({@code webchat:%}). Kept as one
+     * helper so the list and page queries stay in lockstep.
+     */
+    private void applyOwnerScope(LambdaQueryWrapper<ConversationEntity> w,
+                                 String username, boolean includeChannelPrincipals) {
+        w.in(ConversationEntity::getUsername, username, SYSTEM_USER);
+        if (includeChannelPrincipals) {
+            w.or().likeRight(ConversationEntity::getUsername, WEBCHAT_OWNER_PREFIX);
+        }
+    }
+
+    /**
      * Paginated variant used by the Sessions admin page.
      *
      * <p>Mirrors {@link #listConversations(String, Long)}'s filtering (current
@@ -166,8 +211,10 @@ public class ConversationService {
         com.baomidou.mybatisplus.extension.plugins.pagination.Page<ConversationEntity> pager =
                 new com.baomidou.mybatisplus.extension.plugins.pagination.Page<>(page, size);
 
+        // Admin Sessions page surfaces channel conversations too, so include
+        // external webchat principals alongside the user's own + system rows.
         LambdaQueryWrapper<ConversationEntity> wrapper = new LambdaQueryWrapper<ConversationEntity>()
-                .in(ConversationEntity::getUsername, username, SYSTEM_USER)
+                .and(w -> applyOwnerScope(w, username, true))
                 .isNull(ConversationEntity::getParentConversationId)
                 .orderByDesc(ConversationEntity::getPinned)
                 .orderByDesc(ConversationEntity::getLastActiveTime);
@@ -1325,11 +1372,13 @@ public class ConversationService {
 
     /**
      * Check whether a user owns the conversation, treating system-owned
-     * rows (e.g. from scheduled jobs / IM channels) as visible to every
-     * authenticated user.
+     * rows (e.g. from scheduled jobs / IM channels) and external channel
+     * principals ({@code webchat:<visitorId>}) as visible to every
+     * authenticated user — otherwise the console could list a webchat
+     * conversation but 403 on opening / deleting / renaming it.
      *
      * <p>校验用户是否拥有该会话。定时任务产生的会话（username = system）
-     * 对所有登录用户可见。
+     * 和 webchat 访客会话（username = webchat:&lt;visitorId&gt;）对所有登录用户可见。
      */
     public boolean isConversationOwner(String conversationId, String username) {
         ConversationEntity conv = conversationMapper.selectOne(
@@ -1338,7 +1387,10 @@ public class ConversationService {
         if (conv == null) {
             return false;
         }
-        return username.equals(conv.getUsername()) || SYSTEM_USER.equals(conv.getUsername());
+        String owner = conv.getUsername();
+        return username.equals(owner)
+                || SYSTEM_USER.equals(owner)
+                || (owner != null && owner.startsWith(WEBCHAT_OWNER_PREFIX));
     }
 
     /**
