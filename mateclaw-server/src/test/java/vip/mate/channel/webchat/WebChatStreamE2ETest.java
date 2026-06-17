@@ -373,4 +373,128 @@ class WebChatStreamE2ETest {
         assertThat(err.name).isEqualTo("error");
         assertThat(err.data).contains("Invalid visitorId");
     }
+
+    // ------------------------------------------------------------------
+    // Visitor-facing lifecycle events (phase / tool_start / tool_end / plan)
+    // ------------------------------------------------------------------
+
+    @Test
+    @DisplayName("phase event from agent → forwarded as SSE phase event (typing indicator)")
+    void forwardsPhaseEvent() throws Exception {
+        org.mockito.Mockito.when(agentService.chatStructuredStream(
+                        eq(AGENT_ID), anyString(), anyString(), anyString(), isNull(), any()))
+                .thenReturn(Flux.just(
+                        new AgentService.StreamDelta(null, null, "phase",
+                                Map.of("phase", "planning", "timestamp", 1L), false),
+                        new AgentService.StreamDelta(null, null, "phase",
+                                Map.of("phase", "generating", "timestamp", 2L), false),
+                        new AgentService.StreamDelta("ok", null)));
+
+        List<SseEvent> events = sendAndDrain(
+                streamPost(API_KEY, "{\"message\":\"hi\",\"visitorId\":\"vPhase\"}"));
+
+        List<SseEvent> phases = events.stream().filter(e -> "phase".equals(e.name)).toList();
+        assertThat(phases).hasSize(2);
+        assertThat(phases.get(0).data).contains("\"phase\":\"planning\"");
+        assertThat(phases.get(1).data).contains("\"phase\":\"generating\"");
+        // Each carries a timestamp for client-side timeline rendering.
+        assertThat(phases.get(0).data).contains("\"timestamp\":");
+    }
+
+    @Test
+    @DisplayName("tool_call_started → tool_start SSE event; args are NOT leaked to the visitor")
+    void forwardsToolStartWithoutArgs() throws Exception {
+        org.mockito.Mockito.when(agentService.chatStructuredStream(
+                        eq(AGENT_ID), anyString(), anyString(), anyString(), isNull(), any()))
+                .thenReturn(Flux.just(
+                        new AgentService.StreamDelta(null, null, "tool_call_started",
+                                Map.of("toolCallId", "call_1",
+                                        "toolName", "web_search",
+                                        "arguments", "secret query with PII",
+                                        "timestamp", 1L), false),
+                        new AgentService.StreamDelta("done", null)));
+
+        List<SseEvent> events = sendAndDrain(
+                streamPost(API_KEY, "{\"message\":\"hi\",\"visitorId\":\"vTool\"}"));
+
+        SseEvent toolStart = events.stream().filter(e -> "tool_start".equals(e.name)).findFirst().orElseThrow();
+        assertThat(toolStart.data).contains("\"tool\":\"web_search\"");
+        // Critical: arguments must NOT be forwarded.
+        assertThat(toolStart.data).doesNotContain("secret query");
+        assertThat(toolStart.data).doesNotContain("PII");
+        assertThat(toolStart.data).doesNotContain("arguments");
+    }
+
+    @Test
+    @DisplayName("tool_call_completed → tool_end SSE event; result content is NOT leaked")
+    void forwardsToolEndWithoutResult() throws Exception {
+        org.mockito.Mockito.when(agentService.chatStructuredStream(
+                        eq(AGENT_ID), anyString(), anyString(), anyString(), isNull(), any()))
+                .thenReturn(Flux.just(
+                        new AgentService.StreamDelta(null, null, "tool_call_completed",
+                                Map.of("toolCallId", "call_1",
+                                        "toolName", "web_search",
+                                        "result", "<huge internal result payload>",
+                                        "success", true,
+                                        "timestamp", 1L), false),
+                        new AgentService.StreamDelta("ack", null)));
+
+        List<SseEvent> events = sendAndDrain(
+                streamPost(API_KEY, "{\"message\":\"hi\",\"visitorId\":\"vToolEnd\"}"));
+
+        SseEvent toolEnd = events.stream().filter(e -> "tool_end".equals(e.name)).findFirst().orElseThrow();
+        assertThat(toolEnd.data).contains("\"tool\":\"web_search\"");
+        assertThat(toolEnd.data).contains("\"success\":true");
+        // Result content is dropped.
+        assertThat(toolEnd.data).doesNotContain("huge internal result payload");
+        assertThat(toolEnd.data).doesNotContain("\"result\"");
+    }
+
+    @Test
+    @DisplayName("plan_created → plan SSE event with the step list")
+    void forwardsPlanEvent() throws Exception {
+        org.mockito.Mockito.when(agentService.chatStructuredStream(
+                        eq(AGENT_ID), anyString(), anyString(), anyString(), isNull(), any()))
+                .thenReturn(Flux.just(
+                        new AgentService.StreamDelta(null, null, "plan_created",
+                                Map.of("planId", 42L,
+                                        "steps", List.of("search the web", "summarize"),
+                                        "timestamp", 1L), false),
+                        new AgentService.StreamDelta("done", null)));
+
+        List<SseEvent> events = sendAndDrain(
+                streamPost(API_KEY, "{\"message\":\"hi\",\"visitorId\":\"vPlan\"}"));
+
+        SseEvent plan = events.stream().filter(e -> "plan".equals(e.name)).findFirst().orElseThrow();
+        assertThat(plan.data).contains("\"steps\":[");
+        assertThat(plan.data).contains("search the web");
+        assertThat(plan.data).contains("summarize");
+    }
+
+    @Test
+    @DisplayName("internal event types (_routing_decision / perf_summary / iteration_* / ...) are silently dropped")
+    void dropsInternalEvents() throws Exception {
+        org.mockito.Mockito.when(agentService.chatStructuredStream(
+                        eq(AGENT_ID), anyString(), anyString(), anyString(), isNull(), any()))
+                .thenReturn(Flux.just(
+                        // Internal-only — must not produce an SSE event.
+                        new AgentService.StreamDelta(null, null, "_routing_decision",
+                                Map.of("sidecar", "vision"), false),
+                        new AgentService.StreamDelta(null, null, "perf_summary",
+                                Map.of("phase", "generate", "tokensPerSec", 42.0), false),
+                        new AgentService.StreamDelta(null, null, "iteration_start",
+                                Map.of("index", 0, "reason", "tool_call"), false),
+                        new AgentService.StreamDelta(null, null, "finish_reason",
+                                Map.of("reason", "STOP"), false),
+                        new AgentService.StreamDelta("done", null)));
+
+        List<SseEvent> events = sendAndDrain(
+                streamPost(API_KEY, "{\"message\":\"hi\",\"visitorId\":\"vQuiet\"}"));
+
+        // Only meta, content_delta (for "done"), and the terminal done event —
+        // none of the internal event types leaked.
+        List<String> names = events.stream().map(e -> e.name).toList();
+        assertThat(names).isNotEmpty();
+        assertThat(names).doesNotContain("_routing_decision", "perf_summary", "iteration_start", "finish_reason");
+    }
 }
