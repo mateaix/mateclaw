@@ -195,7 +195,7 @@ class WebChatCreateSessionTest {
         controller.createSession(API_KEY, req("visitorI", "s-listed", null));
 
         String token = WebChatController.computeVisitorToken(SECRET, CHANNEL_ID, "visitorI");
-        R<?> r = controller.listSessions(API_KEY, token, "visitorI");
+        R<?> r = controller.listSessions(API_KEY, token, "visitorI", false);
         assertThat(r.getCode()).isEqualTo(200);
         assertThat(((java.util.List<WebChatController.WebChatSessionView>) (Object) r.getData()))
                 .extracting(WebChatController.WebChatSessionView::getSessionId)
