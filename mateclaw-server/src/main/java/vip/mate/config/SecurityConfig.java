@@ -62,7 +62,9 @@ public class SecurityConfig {
                     "/api/v1/channels/webhook/**",
                     "/api/v1/channels/webchat/**",
                     "/api/v1/talk/ws",
-                    // RFC-045: tool-generated files served via unguessable UUID + 10-min TTL
+                    // RFC-045: tool-generated files served via unguessable UUID; entries
+                    // expire after GeneratedFileCache.TTL (7 days) — delayed access (e.g. an
+                    // IM-delivered link opened later) is intentional, the UUID is the guard.
                     "/api/v1/files/generated/**"
                 ).permitAll()
                 // 所有其他 API 接口需要认证
