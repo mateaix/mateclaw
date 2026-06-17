@@ -808,6 +808,27 @@ public class ConversationService {
     }
 
     /**
+     * External-facing message views for untrusted callers (webchat visitors).
+     * Strips the server-side absolute file path from both the structured parts
+     * ({@code path} nulled) and the rendered text, so the server filesystem
+     * layout is never disclosed. Visitors still get {@code fileUrl} / {@code
+     * fileName} / {@code contentType} to render and download attachments.
+     */
+    public List<MessageVO> listMessageViewsExternal(String conversationId) {
+        return listMessages(conversationId).stream()
+                .map(message -> {
+                    List<MessageContentPart> parts = parseMessageParts(message);
+                    parts.forEach(p -> {
+                        if (p != null) {
+                            p.setPath(null);
+                        }
+                    });
+                    return MessageVO.from(message, parts, renderMessageContent(message, false));
+                })
+                .toList();
+    }
+
+    /**
      * Delete a conversation and cascade-clean every row that referenced it.
      * <p>
      * Tables cleaned in the same transaction:
@@ -936,6 +957,16 @@ public class ConversationService {
     }
 
     public String renderMessageContent(MessageEntity message) {
+        return renderMessageContent(message, true);
+    }
+
+    /**
+     * Render variant whose {@code includePath} controls whether the server-side
+     * file path is embedded in the text. Internal/LLM rendering keeps it (tools
+     * resolve files by path); external rendering (webchat visitors) drops it so
+     * the server filesystem layout is not disclosed to untrusted callers.
+     */
+    public String renderMessageContent(MessageEntity message, boolean includePath) {
         List<MessageContentPart> parts = parseMessageParts(message);
         if (parts.isEmpty()) {
             return message.getContent() != null ? message.getContent() : "";
@@ -949,8 +980,8 @@ public class ConversationService {
             switch (part.getType()) {
                 case "text" -> appendSegment(text, part.getText());
                 case "thinking", "tool_call", "parse_error" -> { /* skip — frontend reads these from contentParts directly */ }
-                case "file" -> appendSegment(text, renderFilePart(part));
-                case "image", "video", "audio", "model3d" -> appendSegment(text, renderMediaPart(part));
+                case "file" -> appendSegment(text, renderFilePart(part, includePath));
+                case "image", "video", "audio", "model3d" -> appendSegment(text, renderMediaPart(part, includePath));
                 default -> appendSegment(text, part.getText());
             }
         }
@@ -1000,10 +1031,10 @@ public class ConversationService {
      * picks (read_file / extract_document_text / detect_file_type / …) can be called
      * with a path that resolves directly, instead of relying on per-tool fallbacks.
      */
-    private String renderFilePart(MessageContentPart part) {
+    private String renderFilePart(MessageContentPart part, boolean includePath) {
         String name = safe(part.getFileName());
         String path = safe(part.getPath());
-        if (path.isBlank()) {
+        if (!includePath || path.isBlank()) {
             return "[附件] " + name;
         }
         return "[附件] " + name + "（路径: " + path + "）";
@@ -1020,7 +1051,7 @@ public class ConversationService {
      * already uploaded. The path lets file-reading tools ({@code read_file},
      * {@code extract_document_text}, {@code detect_file_type}) work as a fallback.
      */
-    private String renderMediaPart(MessageContentPart part) {
+    private String renderMediaPart(MessageContentPart part, boolean includePath) {
         String label = switch (part.getType()) {
             case "image" -> "[图片]";
             case "video" -> "[视频]";
@@ -1034,7 +1065,7 @@ public class ConversationService {
         }
         String path = safe(part.getPath());
         StringBuilder rendered = new StringBuilder(label).append(' ').append(name);
-        if (!path.isBlank()) {
+        if (includePath && !path.isBlank()) {
             rendered.append("（路径: ").append(path).append("）");
         }
         // A persisted caption (vision sidecar output) carries the image content
