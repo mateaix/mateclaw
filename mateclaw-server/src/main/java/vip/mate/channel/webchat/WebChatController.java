@@ -7,15 +7,24 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.io.FileSystemResource;
+import org.springframework.core.io.Resource;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
+import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.security.GeneralSecurityException;
 import java.security.MessageDigest;
+import java.util.ArrayList;
 import java.util.Base64;
 import vip.mate.channel.web.Utf8SseEmitter;
 import vip.mate.agent.AgentService;
@@ -63,6 +72,7 @@ public class WebChatController {
     private final ObjectMapper objectMapper;
     private final ConversationCompletionPublisher completionPublisher;
     private final vip.mate.memory.identity.MemoryOwnerResolver memoryOwnerResolver;
+    private final WebChatFileService fileService;
 
     /**
      * Server-only secret used to sign per-visitor tokens. Reuses the JWT secret so no extra
@@ -158,8 +168,10 @@ public class WebChatController {
                 Long webWsId = webAgent != null ? webAgent.getWorkspaceId() : 1L;
                 var conv = conversationService.getOrCreateConversation(conversationId, resolvedAgentId, webchatUsername(visitorId), webWsId);
 
-                // 保存用户消息
-                conversationService.saveMessage(conversationId, "user", message, List.of());
+                // 保存用户消息（含访客本轮引用的附件）。附件元数据一律服务端按 fileId 回查，
+                // 不信客户端传入；path 用于 Agent 侧工具读取，对外消息视图会被剥离。
+                List<MessageContentPart> userParts = buildUserParts(conversationId, message, request.getAttachmentIds());
+                conversationService.saveMessage(conversationId, "user", message, userParts);
 
                 // 初始化 SSE 流跟踪
                 streamTracker.register(conversationId);
@@ -337,7 +349,8 @@ public class WebChatController {
         if (!ownsConversation(conversationId, visitorId)) {
             return R.fail(404, "Session not found");
         }
-        return R.ok(conversationService.listMessageViews(conversationId));
+        // External view: strip server-side file paths before handing messages to the visitor.
+        return R.ok(conversationService.listMessageViewsExternal(conversationId));
     }
 
     /**
@@ -369,6 +382,155 @@ public class WebChatController {
         }
         conversationService.deleteConversation(conversationId);
         return R.ok();
+    }
+
+    /**
+     * 上传文件（入站）。访客先上传拿到 fileId，再在 /stream 的 attachmentIds 中引用。
+     * <p>鉴权同会话接口：API Key + visitor token；conversationId 服务端派生。
+     */
+    @Operation(summary = "WebChat 上传文件")
+    @PostMapping(value = "/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public R<Map<String, Object>> uploadFile(
+            @RequestHeader("X-MC-Key") String apiKey,
+            @RequestHeader(value = "X-MC-Visitor-Token", required = false) String visitorToken,
+            @RequestParam String visitorId,
+            @RequestParam(required = false) String sessionId,
+            @RequestPart("file") MultipartFile file) {
+        ChannelEntity channel = resolveChannel(apiKey);
+        if (channel == null) {
+            return R.fail(401, "Invalid API Key");
+        }
+        if (!verifyVisitorToken(visitorTokenSecret, channel.getId(), visitorId, visitorToken)) {
+            return R.fail(401, "Invalid or missing visitor token");
+        }
+        // Upload requires an established visitor identity (the token is bound to it);
+        // unlike /stream we never mint a fresh visitorId here.
+        String vid;
+        String sid;
+        try {
+            if (visitorId == null || visitorId.trim().isEmpty()) {
+                return R.fail(400, "visitorId is required");
+            }
+            vid = normalizeVisitorId(visitorId);
+            sid = normalizeSessionId(sessionId);
+        } catch (IllegalArgumentException ex) {
+            return R.fail(400, ex.getMessage());
+        }
+        String conversationId = deriveConversationId(apiKey, vid, sid);
+        try {
+            WebChatFileService.StagedFile stored = fileService.store(conversationId, file);
+            return R.ok(Map.of(
+                    "fileId", stored.storedName(),
+                    "fileName", stored.originalName(),
+                    "contentType", stored.contentType() != null ? stored.contentType() : "application/octet-stream",
+                    "size", stored.size()
+            ));
+        } catch (WebChatFileService.UploadRejectedException ex) {
+            return R.fail(400, ex.getMessage());
+        } catch (IOException ex) {
+            log.error("[WebChat] Upload failed conv={}: {}", conversationId, ex.getMessage());
+            return R.fail(500, "Upload failed");
+        }
+    }
+
+    /**
+     * 下载文件（出站）。serves both visitor-uploaded files and agent-produced files
+     * written under the conversation dir. 鉴权同上，路径在服务端派生目录内防穿越。
+     */
+    @Operation(summary = "WebChat 下载文件")
+    @GetMapping("/files")
+    public ResponseEntity<Resource> downloadFile(
+            @RequestHeader("X-MC-Key") String apiKey,
+            @RequestHeader(value = "X-MC-Visitor-Token", required = false) String visitorToken,
+            @RequestParam String visitorId,
+            @RequestParam(required = false) String sessionId,
+            @RequestParam String storedName) {
+        ChannelEntity channel = resolveChannel(apiKey);
+        if (channel == null) {
+            return ResponseEntity.status(401).build();
+        }
+        if (!verifyVisitorToken(visitorTokenSecret, channel.getId(), visitorId, visitorToken)) {
+            return ResponseEntity.status(401).build();
+        }
+        String sid;
+        try {
+            sid = normalizeSessionId(sessionId);
+        } catch (IllegalArgumentException ex) {
+            return ResponseEntity.badRequest().build();
+        }
+        String conversationId = deriveConversationId(apiKey, visitorId, sid);
+        if (!ownsConversation(conversationId, visitorId)) {
+            return ResponseEntity.status(404).build();
+        }
+        Path file = fileService.resolve(conversationId, storedName).orElse(null);
+        if (file == null) {
+            return ResponseEntity.notFound().build();
+        }
+
+        String contentType;
+        try {
+            contentType = Files.probeContentType(file);
+        } catch (IOException e) {
+            contentType = null;
+        }
+        MediaType mediaType = MediaType.APPLICATION_OCTET_STREAM;
+        if (contentType != null) {
+            try {
+                mediaType = MediaType.parseMediaType(contentType);
+            } catch (Exception ignored) {
+                // fall back to octet-stream
+            }
+        }
+        // Only inline images; everything else downloads as an attachment. nosniff
+        // stops the browser from re-interpreting the bytes as active content.
+        boolean inlineImage = contentType != null && contentType.startsWith("image/");
+        String encodedName = URLEncoder.encode(file.getFileName().toString(), StandardCharsets.UTF_8)
+                .replace("+", "%20");
+        return ResponseEntity.ok()
+                .contentType(mediaType)
+                .header("X-Content-Type-Options", "nosniff")
+                .header(HttpHeaders.CONTENT_DISPOSITION,
+                        (inlineImage ? "inline" : "attachment") + "; filename*=UTF-8''" + encodedName)
+                .body(new FileSystemResource(file));
+    }
+
+    /**
+     * Build the user message's content parts: a text part for the message plus a
+     * file/media part for each referenced attachment. Attachment metadata is
+     * resolved server-side from the staging registry (the client only sends opaque
+     * ids); an id that is unknown, expired, or belongs to another conversation is
+     * silently dropped.
+     */
+    private List<MessageContentPart> buildUserParts(String conversationId, String message,
+                                                    List<String> attachmentIds) {
+        List<MessageContentPart> parts = new ArrayList<>();
+        if (message != null && !message.isBlank()) {
+            MessageContentPart text = new MessageContentPart();
+            text.setType("text");
+            text.setText(message);
+            parts.add(text);
+        }
+        if (attachmentIds != null) {
+            for (String fileId : attachmentIds) {
+                fileService.consume(conversationId, fileId).ifPresent(sf -> {
+                    MessageContentPart p = new MessageContentPart();
+                    p.setType(WebChatFileService.partTypeFor(sf.contentType()));
+                    p.setFileName(sf.originalName());
+                    p.setContentType(sf.contentType());
+                    p.setStoredName(sf.storedName());
+                    p.setFileSize(sf.size());
+                    // Relative download ref (caller adds auth headers + visitorId/sessionId).
+                    p.setFileUrl("/api/v1/channels/webchat/files?storedName="
+                            + URLEncoder.encode(sf.storedName(), StandardCharsets.UTF_8));
+                    // Server path lets the agent's file tools read the upload; stripped from
+                    // the external message view (listMessageViewsExternal).
+                    fileService.resolve(conversationId, sf.storedName())
+                            .ifPresent(path -> p.setPath(path.toString()));
+                    parts.add(p);
+                });
+            }
+        }
+        return parts;
     }
 
     // ==================== 内部方法 ====================
@@ -566,6 +728,10 @@ public class WebChatController {
         /** Optional: open a distinct conversation thread for the same visitor.
          *  Composed into the server-derived conversationId; never used as a raw conversationId. */
         private String sessionId;
+        /** Optional: ids returned by POST /upload, referencing files this visitor uploaded
+         *  for this conversation. Metadata is resolved server-side; unknown / foreign / expired
+         *  ids are dropped. */
+        private List<String> attachmentIds;
     }
 
     /** Compact view of one of a visitor's conversation threads. */
