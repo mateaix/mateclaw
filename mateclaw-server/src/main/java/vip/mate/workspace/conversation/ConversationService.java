@@ -17,6 +17,8 @@ import vip.mate.approval.MetadataDecision;
 import vip.mate.agent.repository.AgentMapper;
 import vip.mate.approval.model.ToolApprovalEntity;
 import vip.mate.approval.repository.ToolApprovalMapper;
+import vip.mate.auth.model.UserEntity;
+import vip.mate.auth.service.AuthService;
 import vip.mate.channel.model.ChannelSessionEntity;
 import vip.mate.channel.repository.ChannelSessionMapper;
 import vip.mate.task.model.AsyncTaskEntity;
@@ -29,6 +31,7 @@ import vip.mate.workspace.conversation.repository.ConversationMapper;
 import vip.mate.workspace.conversation.repository.MessageMapper;
 import vip.mate.workspace.conversation.vo.ConversationVO;
 import vip.mate.workspace.conversation.vo.MessageVO;
+import vip.mate.workspace.core.service.WorkspaceService;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -70,6 +73,8 @@ public class ConversationService {
     private final AsyncTaskMapper asyncTaskMapper;
     private final ChannelSessionMapper channelSessionMapper;
     private final ApplicationEventPublisher eventPublisher;
+    private final AuthService authService;
+    private final WorkspaceService workspaceService;
 
     /**
      * Optional spill store. Injected via a setter so the existing @RequiredArgsConstructor
@@ -1300,8 +1305,32 @@ public class ConversationService {
      * rows (e.g. from scheduled jobs / IM channels) as visible to every
      * authenticated user.
      *
-     * <p>校验用户是否拥有该会话。定时任务产生的会话（username = system）
-     * 对所有登录用户可见。
+     * <p><b>Cross-workspace guard (issue #344).</b> The legacy contract let any
+     * logged-in user reach a system / IM / webchat-owned conversation by id —
+     * the list endpoints filtered by {@code workspaceId} but the direct-access
+     * endpoints did not. Under a multi-tenant model where workspaces are
+     * untrusted isolation boundaries, that asymmetry is a cross-workspace
+     * authorization gap. This method now also requires, for shared (non-direct)
+     * conversations, that the requester actually be a member of the
+     * conversation's workspace.
+     *
+     * <p>校验用户是否拥有该会话。直属会话直接放行;共享会话(system / IM / webchat)
+     * 额外要求请求者是该会话所属 workspace 的成员。
+     *
+     * <p>分支:
+     * <ul>
+     *   <li>会话不存在 → false</li>
+     *   <li>请求者是该会话的直属 owner → true(自己的会话,workspace 隐式一致)</li>
+     *   <li>会话无 workspace_id(老数据)→ 仅看是否 system owner(维持旧行为,避免回归)</li>
+     *   <li>请求者用户记录不存在(permitAll 端点的匿名重连)→ 仅看是否 system owner(维持旧行为)</li>
+     *   <li>请求者是全局 admin(user.role=admin)→ true(横切覆盖,与具体 workspace 无关)</li>
+     *   <li>请求者非该会话 workspace 的成员 → false</li>
+     *   <li>否则 → system owner 检查(共享会话对本 workspace 成员可见)</li>
+     * </ul>
+     *
+     * <p>调用方签名不变;调用方若需在不查 DB 的情况下做 admin 例外,可在外层先短路,
+     * 但通常让本方法统一处理以避免散落的 admin 例外逻辑。注意:本方法不读
+     * {@code X-Workspace-Id} header —— 该 header 客户端可伪造,以 DB 中的成员关系为准。
      */
     public boolean isConversationOwner(String conversationId, String username) {
         ConversationEntity conv = conversationMapper.selectOne(
@@ -1310,7 +1339,28 @@ public class ConversationService {
         if (conv == null) {
             return false;
         }
-        return username.equals(conv.getUsername()) || SYSTEM_USER.equals(conv.getUsername());
+        // 直属 owner 一律放行:会话由该用户创建,workspace 自然一致,无需再做成员校验。
+        if (username != null && username.equals(conv.getUsername())) {
+            return true;
+        }
+        // 共享会话(system / IM / webchat owner)以下收紧。
+        Long convWorkspaceId = conv.getWorkspaceId();
+        UserEntity requester = authService.findByUsername(username);
+        // 老数据无 workspace_id,或请求者为匿名(permitAll 端点重连场景):维持旧行为,
+        // 仅 system owner 可见。避免数据迁移未完成或匿名流式场景下回归。
+        if (convWorkspaceId == null || requester == null) {
+            return SYSTEM_USER.equals(conv.getUsername());
+        }
+        // 全局 admin 横切放行,覆盖所有 workspace。
+        if ("admin".equalsIgnoreCase(requester.getRole())) {
+            return true;
+        }
+        // #344 的核心守卫:必须是该会话所属 workspace 的成员(viewer 或更高)。
+        // 不读 X-Workspace-Id header —— 客户端可伪造;以 DB 成员关系为准。
+        if (!workspaceService.hasPermissionCached(convWorkspaceId, requester.getId(), "viewer")) {
+            return false;
+        }
+        return SYSTEM_USER.equals(conv.getUsername());
     }
 
     /**
