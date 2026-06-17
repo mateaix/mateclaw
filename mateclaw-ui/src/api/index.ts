@@ -846,6 +846,16 @@ export const wikiApi = {
   getPageCitations: (kbId: number | string, pageId: number | string) =>
     http.get(`/wiki/kb/${kbId}/pages/${pageId}/citations`),
 
+  // Entity-level knowledge graph
+  listEntities: (kbId: number | string, params?: { type?: string; limit?: number }) =>
+    http.get(`/wiki/kb/${kbId}/entities`, { params }),
+  getEntityGraph: (kbId: number | string, limit = 150) =>
+    http.get(`/wiki/kb/${kbId}/entity-graph`, { params: { limit } }),
+  getEntityEgo: (kbId: number | string, entityId: number | string, limit = 50) =>
+    http.get(`/wiki/kb/${kbId}/entities/${entityId}/graph`, { params: { limit } }),
+  extractEntities: (kbId: number | string, force = false) =>
+    http.post(`/wiki/kb/${kbId}/entities/extract`, null, { params: { force } }),
+
   // RFC-030: Jobs
   getWikiJobs: (kbId: number, rawId: number) =>
     http.get(`/wiki/kb/${kbId}/jobs`, { params: { rawId } }),
