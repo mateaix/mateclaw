@@ -219,6 +219,17 @@ public class WebChatController {
                                 if (model != null) modelInfo[0] = model.toString();
                                 if (provider != null) modelInfo[1] = provider.toString();
                             }
+                            // Forward a curated subset of agent lifecycle events to the
+                            // visitor SSE stream. The full event vocabulary (iteration_*,
+                            // perf_summary, _routing_decision, feedback_event, ...) is
+                            // internal — exposing it to 3rd-party websites would leak
+                            // graph internals and complicate the SDK contract. The four
+                            // types below are the ones that drive visible UX: typing
+                            // indicator (phase), tool execution badges (tool_start/end),
+                            // plan-execute checklist (plan). See docs/zh/webchat.md.
+                            if (delta.isEvent()) {
+                                forwardVisitorEvent(conversationId, delta.eventType(), delta.eventData());
+                            }
                             if (delta.content() != null && !delta.content().isEmpty()) {
                                 assistantReply.append(delta.content());
                                 if (!delta.persistenceOnly()) {
@@ -1250,6 +1261,78 @@ public class WebChatController {
             emitter.complete();
         } catch (IOException e) {
             emitter.completeWithError(e);
+        }
+    }
+
+    /**
+     * Forward a curated subset of agent lifecycle events to the visitor SSE
+     * stream as visitor-friendly {@code phase} / {@code tool_start} /
+     * {@code tool_end} / {@code plan} events. Internal event types
+     * ({@code _usage_final}, {@code _routing_decision}, {@code iteration_*},
+     * {@code perf_summary}, {@code feedback_event}, {@code finish_reason},
+     * {@code plan_step_*}) are dropped — they leak graph internals and have
+     * no visitor-facing value.
+     *
+     * <p>Tool arguments are deliberately <b>not</b> forwarded. The agent may
+     * invoke tools with PII / sensitive arguments (file paths, user queries,
+     * credentials); relaying those to a 3rd-party website frontend is a data
+     * leak. The frontend gets only the tool name and renders a localized
+     * label via its own lookup table.
+     *
+     * <p>Payloads are serialized via the injected {@link ObjectMapper} so
+     * nested maps/lists are encoded correctly (the hand-rolled {@link #escapeJson}
+     * helper is string-only).
+     *
+     * <p>Backward compat: visitors / SDKs that don't know these event types
+     * silently ignore them per the SSE spec.
+     */
+    private void forwardVisitorEvent(String conversationId, String eventType, Map<String, Object> data) {
+        if (eventType == null || data == null) return;
+        Map<String, Object> payload;
+        String sseName;
+        switch (eventType) {
+            case "phase":
+                // Graph phase transition (planning / thinking / generating /
+                // summarizing / ...). Lets the SDK show a typing indicator
+                // before the first content_delta lands.
+                sseName = "phase";
+                payload = Map.of(
+                        "phase", String.valueOf(data.getOrDefault("phase", "")),
+                        "timestamp", System.currentTimeMillis());
+                break;
+            case "tool_call_started":
+                // Tool invocation started. Args intentionally omitted — see javadoc.
+                sseName = "tool_start";
+                payload = Map.of(
+                        "tool", String.valueOf(data.getOrDefault("toolName",
+                                data.getOrDefault("tool", ""))));
+                break;
+            case "tool_call_completed":
+                // Tool invocation finished. Result content intentionally omitted.
+                sseName = "tool_end";
+                payload = new java.util.LinkedHashMap<>();
+                payload.put("tool", String.valueOf(data.getOrDefault("toolName",
+                        data.getOrDefault("tool", ""))));
+                Object success = data.get("success");
+                payload.put("success", success != null ? success : Boolean.TRUE);
+                break;
+            case "plan_created":
+                // Plan-Execute agents expose their step list. The SDK can render
+                // a checklist; subsequent plan_step_* events are dropped (too
+                // granular for a visitor view).
+                sseName = "plan";
+                payload = Map.of("steps", data.getOrDefault("steps", List.of()));
+                break;
+            default:
+                // Curated allow-list: anything else is internal — silently drop.
+                return;
+        }
+        try {
+            String json = objectMapper.writeValueAsString(payload);
+            streamTracker.broadcast(conversationId, sseName, json);
+        } catch (Exception e) {
+            log.debug("[WebChat] Failed to serialize visitor event {} for {}: {}",
+                    eventType, conversationId, e.getMessage());
         }
     }
 
