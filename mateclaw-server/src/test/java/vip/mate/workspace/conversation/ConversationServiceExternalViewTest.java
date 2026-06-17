@@ -81,4 +81,15 @@ class ConversationServiceExternalViewTest {
         assertThat(views.get(0).getContentParts().get(0).getPath()).isEqualTo(SECRET_PATH);
         assertThat(views.get(0).getContent()).contains(SECRET_PATH);
     }
+
+    @Test
+    @DisplayName("toExternalMessageViews strips path on a pre-loaded list (paginated path)")
+    void toExternalMessageViewsStripsPath() {
+        // Used by the paginated webchat endpoint, which loads entities itself.
+        List<MessageVO> views = service.toExternalMessageViews(List.of(fileMessage()));
+
+        assertThat(views).hasSize(1);
+        assertThat(views.get(0).getContentParts().get(0).getPath()).isNull();
+        assertThat(views.get(0).getContent()).doesNotContain(SECRET_PATH);
+    }
 }
