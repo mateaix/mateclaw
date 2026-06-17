@@ -73,6 +73,10 @@ public class WebChatController {
     private final ConversationCompletionPublisher completionPublisher;
     private final vip.mate.memory.identity.MemoryOwnerResolver memoryOwnerResolver;
     private final WebChatFileService fileService;
+    private final WebChatTokenRevocationService tokenRevocationService;
+
+    /** Visitor-token TTL in seconds (7 days). Mirrors GeneratedFileCache's TTL. */
+    static final long VISITOR_TOKEN_TTL_SECONDS = 7 * 24 * 3600L;
 
     /**
      * Server-only secret used to sign per-visitor tokens. Reuses the JWT secret so no extra
@@ -951,28 +955,71 @@ public class WebChatController {
     /**
      * 用服务端密钥对 (channelId, visitorId) 做 HMAC-SHA256，签发不可伪造的 visitor token。
      * 载荷含 channelId，使 token 不能跨渠道复用。
+     * <p>Token 默认 7 天后过期（{@link #VISITOR_TOKEN_TTL_SECONDS}）；过期时间作为后缀
+     * 明文附加在 HMAC 之后（{@code <base64sig>.<expEpochSec>}），既参与签名也方便解析。
+     * 过期后访客可通过 {@code /stream} 重新签发（{@code /stream} 不校验 token，只签发）。
      */
     static String computeVisitorToken(String secret, Long channelId, String visitorId) {
+        return computeVisitorToken(secret, channelId, visitorId,
+                java.time.Instant.now().getEpochSecond() + VISITOR_TOKEN_TTL_SECONDS);
+    }
+
+    /** Test/override hook: explicit expiration epoch second. */
+    static String computeVisitorToken(String secret, Long channelId, String visitorId, long expiresAtEpochSecond) {
         try {
             Mac mac = Mac.getInstance("HmacSHA256");
             mac.init(new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
-            byte[] sig = mac.doFinal((channelId + ":" + visitorId).getBytes(StandardCharsets.UTF_8));
-            return Base64.getUrlEncoder().withoutPadding().encodeToString(sig);
+            String payload = channelId + ":" + visitorId + ":" + expiresAtEpochSecond;
+            byte[] sig = mac.doFinal(payload.getBytes(StandardCharsets.UTF_8));
+            return Base64.getUrlEncoder().withoutPadding().encodeToString(sig) + "." + expiresAtEpochSecond;
         } catch (GeneralSecurityException e) {
             throw new IllegalStateException("HMAC-SHA256 unavailable", e);
         }
     }
 
     /**
-     * 常量时间校验调用方回传的 token：缺失/不匹配均返回 false。
+     * 校验调用方回传的 token 的<b>签名 + 过期</b>。不查撤销表(撤销是实例层职责,
+     * 见 {@link #verifyVisitorToken})。Static 是为了让单测可以直接验证 HMAC 语义,
+     * 不需要起 Spring context。
      */
-    static boolean verifyVisitorToken(String secret, Long channelId, String visitorId, String presented) {
+    static boolean verifyVisitorTokenSignature(String secret, Long channelId, String visitorId, String presented) {
         if (presented == null || presented.isEmpty() || visitorId == null || channelId == null) {
             return false;
         }
-        byte[] expected = computeVisitorToken(secret, channelId, visitorId).getBytes(StandardCharsets.UTF_8);
+        int dot = presented.lastIndexOf('.');
+        if (dot <= 0 || dot == presented.length() - 1) {
+            return false;
+        }
+        long exp;
+        try {
+            exp = Long.parseLong(presented.substring(dot + 1));
+        } catch (NumberFormatException e) {
+            return false;
+        }
+        if (java.time.Instant.now().getEpochSecond() >= exp) {
+            return false;
+        }
+        // Constant-time comparison of the full token (sig + ".exp"). HMAC covers
+        // both channelId:visitorId and exp, so any tampering with exp invalidates sig.
+        byte[] expected = computeVisitorToken(secret, channelId, visitorId, exp).getBytes(StandardCharsets.UTF_8);
         byte[] actual = presented.getBytes(StandardCharsets.UTF_8);
         return MessageDigest.isEqual(expected, actual);
+    }
+
+    /**
+     * 完整校验:签名 + 过期 + 撤销。任一不通过返回 false。实例方法,接入
+     * {@link WebChatTokenRevocationService}。{@code /stream} 第一次接触不调用本方法
+     * (只签发 token,不校验),所以被撤销的 visitor 仍能发起新会话——撤销只让旧的
+     * 管理 token 失效,符合 issue #351 的设计。
+     */
+    boolean verifyVisitorToken(String secret, Long channelId, String visitorId, String presented) {
+        if (!verifyVisitorTokenSignature(secret, channelId, visitorId, presented)) {
+            return false;
+        }
+        if (tokenRevocationService != null && tokenRevocationService.isRevoked(channelId, visitorId)) {
+            return false;
+        }
+        return true;
     }
 
     /**
