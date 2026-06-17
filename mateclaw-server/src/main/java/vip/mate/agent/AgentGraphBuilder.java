@@ -554,7 +554,7 @@ public class AgentGraphBuilder {
             if (auditEventService != null) {
                 executor.setAuditEventService(auditEventService);
             }
-            PlanGenerationNode planGenerationNode = new PlanGenerationNode(chatModel, planningService, streamingHelper, conversationWindowManager, toolSet);
+            PlanGenerationNode planGenerationNode = new PlanGenerationNode(chatModel, planningService, streamingHelper, conversationWindowManager, toolSet, goalService, goalProperties);
             StepExecutionNode stepExecutionNode = new StepExecutionNode(chatModel, toolSet, executor, planningService, streamTracker, reasoningEffort, streamingHelper, conversationWindowManager, skillCatalogRenderer);
             PlanSummaryNode planSummaryNode = new PlanSummaryNode(chatModel, planningService, streamingHelper);
             DirectAnswerNode directAnswerNode = new DirectAnswerNode();
@@ -579,6 +579,7 @@ public class AgentGraphBuilder {
                     .addStrategy(PlanStateKeys.CURRENT_STEP_TITLE, KeyStrategy.REPLACE)
                     .addStrategy(PlanStateKeys.CURRENT_STEP_RESULT, KeyStrategy.REPLACE)
                     .addStrategy(PlanStateKeys.COMPLETED_RESULTS, KeyStrategy.APPEND)
+                    .addStrategy(PlanStateKeys.PLAN_REPLAN_COUNT, KeyStrategy.REPLACE)
                     .addStrategy(PlanStateKeys.FINAL_SUMMARY, KeyStrategy.REPLACE)
                     .addStrategy(PlanStateKeys.DIRECT_ANSWER, KeyStrategy.REPLACE)
                     // 工作上下文（REPLACE 策略，每次重新生成）
@@ -643,6 +644,7 @@ public class AgentGraphBuilder {
                     .addStrategy(MateClawStateKeys.GOAL_EVALUATED_THIS_RUN, KeyStrategy.REPLACE)
                     .addStrategy(MateClawStateKeys.GOAL_FOLLOWUP_COUNT, KeyStrategy.REPLACE)
                     .addStrategy(MateClawStateKeys.GOAL_ACCOUNTED_LLM_CALL_COUNT, KeyStrategy.REPLACE)
+                    .addStrategy(MateClawStateKeys.GOAL_HARD_CONTINUATION_COUNT, KeyStrategy.REPLACE)
                     // Skill progressive disclosure — pinned skills loaded this
                     // run. Registered in BOTH graphs so the read-merge-write in
                     // ActionNode is not dropped on multi-node merges.
@@ -657,6 +659,7 @@ public class AgentGraphBuilder {
             //   ├→ DIRECT_ANSWER_NODE → END
             //   └→ STEP_EXECUTION → (StepProgressDispatcher)
             //       ├→ STEP_EXECUTION (loop)
+            //       ├→ PLAN_GENERATION (re-plan on step failure, bounded by PLAN_REPLAN_COUNT)
             //       └→ PLAN_SUMMARY → (active goal?)
             //                          ├→ GOAL_EVALUATION → (followup?)
             //                          │                     ├→ PLAN_GENERATION (re-plan)
@@ -690,11 +693,18 @@ public class AgentGraphBuilder {
                             Map.of(
                                     PlanStateKeys.STEP_EXECUTION_NODE, PlanStateKeys.STEP_EXECUTION_NODE,
                                     PlanStateKeys.PLAN_SUMMARY_NODE, PlanStateKeys.PLAN_SUMMARY_NODE,
+                                    // Step-failure recovery: re-plan the remaining work
+                                    // (StepProgressDispatcher returns this on phase=plan_replan).
+                                    PlanStateKeys.PLAN_GENERATION_NODE, PlanStateKeys.PLAN_GENERATION_NODE,
                                     StateGraph.END, StateGraph.END))
                     .addConditionalEdges(PlanStateKeys.PLAN_SUMMARY_NODE,
                             AsyncEdgeAction.edge_async(state -> {
                                 MateClawStateAccessor a = new MateClawStateAccessor(state);
-                                boolean hasGoal = a.hasActiveGoal();
+                                // Same-turn activation: fall back to a DB lookup (gated on the
+                                // feature flag) so a goal the agent set THIS turn is evaluated now,
+                                // not only from the next message. See GoalEvaluationNode.resolveActiveGoal.
+                                boolean hasGoal = goalProperties.isEnabled()
+                                        && GoalEvaluationNode.resolveActiveGoal(state, goalService).isPresent();
                                 boolean already = a.goalEvaluatedThisRun();
                                 return (hasGoal && !already)
                                         ? MateClawStateKeys.GOAL_EVALUATION_NODE
@@ -719,7 +729,11 @@ public class AgentGraphBuilder {
                     .addConditionalEdges(PlanStateKeys.DIRECT_ANSWER_NODE,
                             AsyncEdgeAction.edge_async(state -> {
                                 MateClawStateAccessor a = new MateClawStateAccessor(state);
-                                boolean hasGoal = a.hasActiveGoal();
+                                // Same-turn activation: fall back to a DB lookup (gated on the
+                                // feature flag) so a goal the agent set THIS turn is evaluated now,
+                                // not only from the next message. See GoalEvaluationNode.resolveActiveGoal.
+                                boolean hasGoal = goalProperties.isEnabled()
+                                        && GoalEvaluationNode.resolveActiveGoal(state, goalService).isPresent();
                                 boolean already = a.goalEvaluatedThisRun();
                                 return (hasGoal && !already)
                                         ? MateClawStateKeys.GOAL_EVALUATION_NODE
@@ -756,9 +770,17 @@ public class AgentGraphBuilder {
      * and tool-result chunking. Decoupled from the per-agent value so a small
      * {@code max_iterations} can never accidentally re-introduce the silent
      * killer.
+     * <p>
+     * The base segment budget is further multiplied to cover goal-driven "hard
+     * continuations" — each grants a fresh full iteration budget after a
+     * max-iterations turn (see {@code GoalEvaluationNode}). One run can perform
+     * up to {@link vip.mate.goal.config.GoalProperties#MAX_HARD_CONTINUATIONS_CEILING} of them, so
+     * the ceiling is sized for {@code (1 + CEILING)} segments to keep the
+     * recursion guard from tripping before the soft caps do.
      */
     private static int frameworkRecursionLimit() {
-        return (BaseAgent.MAX_ITERATIONS_HARD_CEILING + 5) * 4 + 100;
+        int perSegment = (BaseAgent.MAX_ITERATIONS_HARD_CEILING + 5) * 4;
+        return perSegment * (1 + vip.mate.goal.config.GoalProperties.MAX_HARD_CONTINUATIONS_CEILING) + 100;
     }
 
     CompiledGraph buildReActGraph(AgentToolSet toolSet, ChatModel chatModel, int maxIterations, String reasoningEffort) {
@@ -826,6 +848,7 @@ public class AgentGraphBuilder {
                     .addStrategy(MateClawStateKeys.MESSAGES, KeyStrategy.APPEND)
                     // 迭代控制
                     .addStrategy(MateClawStateKeys.CURRENT_ITERATION, KeyStrategy.REPLACE)
+                    .addStrategy(MateClawStateKeys.ITERATION_REFUND_COUNT, KeyStrategy.REPLACE)
                     .addStrategy(MateClawStateKeys.MAX_ITERATIONS, KeyStrategy.REPLACE)
                     // 工具调用
                     .addStrategy(MateClawStateKeys.TOOL_CALLS, KeyStrategy.REPLACE)
@@ -907,6 +930,7 @@ public class AgentGraphBuilder {
                     .addStrategy(MateClawStateKeys.GOAL_EVALUATED_THIS_RUN, KeyStrategy.REPLACE)
                     .addStrategy(MateClawStateKeys.GOAL_FOLLOWUP_COUNT, KeyStrategy.REPLACE)
                     .addStrategy(MateClawStateKeys.GOAL_ACCOUNTED_LLM_CALL_COUNT, KeyStrategy.REPLACE)
+                    .addStrategy(MateClawStateKeys.GOAL_HARD_CONTINUATION_COUNT, KeyStrategy.REPLACE)
                     // Skill progressive disclosure — pinned skills loaded this
                     // run. Registered in BOTH graphs so the read-merge-write in
                     // ActionNode is not dropped on multi-node merges.
@@ -956,7 +980,11 @@ public class AgentGraphBuilder {
                     .addConditionalEdges(MateClawStateKeys.FINAL_ANSWER_NODE,
                             AsyncEdgeAction.edge_async(state -> {
                                 MateClawStateAccessor a = new MateClawStateAccessor(state);
-                                boolean hasGoal = a.hasActiveGoal();
+                                // Same-turn activation: fall back to a DB lookup (gated on the
+                                // feature flag) so a goal the agent set THIS turn is evaluated now,
+                                // not only from the next message. See GoalEvaluationNode.resolveActiveGoal.
+                                boolean hasGoal = goalProperties.isEnabled()
+                                        && GoalEvaluationNode.resolveActiveGoal(state, goalService).isPresent();
                                 boolean already = a.goalEvaluatedThisRun();
                                 return (hasGoal && !already)
                                         ? MateClawStateKeys.GOAL_EVALUATION_NODE

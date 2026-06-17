@@ -30,13 +30,11 @@
 ## metadata 格式（仅 `create` 数组使用）
 
 每条 metadata 包含三个字段：
-- `slug`：URL 安全的标识符（小写字母 + 连字符）。
-  - **多音节中文词的拼音必须按整词分组、不要按字隔开**。
-    - ✅ 正确：`shennong-bencao-jing`（神农 / 本草 / 经 三个词）
-    - ❌ 错误：`shen-nong-ben-cao-jing`（按字一隔，会被识别为另一概念）
-    - ✅ 正确：`zhongyao-qiqing-peiwu`（中药 / 七情 / 配伍）
-    - ❌ 错误：`zhong-yao-qi-qing-pei-wu`
-  - **同一概念在不同段落必须用同一 slug**：选定一个 slug 就坚持用，不要换写法。
+- `slug`：页面标识符，**直接用概念名本身**——中文保留中文（**不要转拼音 / 罗马字**），英文小写、空格转连字符、去掉标点符号。
+  - ✅ 正确：`光合作用`、`神农本草经`、`energy-metabolism`
+  - ❌ 错误：`guanghe-zuoyong`、`shennong-bencao-jing`（不要转拼音）
+  - slug 应与 `title` 用词一致；系统会按标题自动规范化 slug，所以**保持 slug 与 title 一致**即可。
+  - **同一概念在不同段落必须用同一写法**：选定后就坚持用，不要换写法。
 - `title`：人类可读的页面标题
 - `summary`：一段话简短摘要（一两句话即可，让"单页生成助手"知道这一页要写什么）
 

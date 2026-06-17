@@ -268,6 +268,23 @@ function renderProductCards(rawCode: string): string {
   return `<div class="product-cards">${cards}</div>`
 }
 
+/**
+ * Lightweight loading placeholder shown in place of an echarts/mermaid block
+ * during throttled mid-stream renders. These post-mount renderers parse the
+ * fenced source (echarts: JSON.parse, mermaid: diagram grammar), which fails
+ * loudly on the half-emitted source of a still-streaming block. Emitting a
+ * neutral placeholder (no `.echarts-block` / `.mermaid-block` class, so the
+ * observers ignore it) avoids the parse churn and the mount/dispose flicker;
+ * the final non-streaming render emits the real block and mounts once.
+ */
+function chartLoadingPlaceholder(): string {
+  return '<div class="chart-loading" aria-label="Loading chart">'
+    + '<span class="chart-loading__dot"></span>'
+    + '<span class="chart-loading__dot"></span>'
+    + '<span class="chart-loading__dot"></span>'
+    + '</div>'
+}
+
 // ---------------------------------------------------------------------------
 // Custom renderer (marked v15 requires a plain object — class instances are
 // NOT dispatched).
@@ -283,6 +300,8 @@ const customRenderer = {
     // so users can copy the diagram source even before render completes; the
     // composable paints the SVG into `.mermaid-block__body`.
     if (infoStr === 'mermaid') {
+      // Mid-stream: defer to a placeholder; mermaid can't parse a partial diagram.
+      if (streamingRenderMode) return chartLoadingPlaceholder()
       const encoded = encodeURIComponent(rawCode)
       const copySvg = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`
       const downloadSvg = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>`
@@ -306,6 +325,8 @@ const customRenderer = {
 
     // ECharts: same pattern, mounted by useEChartsRenderer.
     if (infoStr === 'echarts') {
+      // Mid-stream: defer to a placeholder; the option JSON is still truncated.
+      if (streamingRenderMode) return chartLoadingPlaceholder()
       return `<div class="echarts-block" data-echarts-option="${encodeURIComponent(rawCode)}"></div>`
     }
 
@@ -323,9 +344,18 @@ const customRenderer = {
 
     let highlighted: string
     try {
-      highlighted = hasLanguage
-        ? hljs.highlight(rawCode, { language: detectedLang }).value
-        : hljs.highlightAuto(rawCode).value
+      if (hasLanguage) {
+        highlighted = hljs.highlight(rawCode, { language: detectedLang }).value
+      } else if (streamingRenderMode) {
+        // Mid-stream throttled render: skip language auto-detection. hljs
+        // probes every registered grammar, which is the single most expensive
+        // step in the pipeline and would re-run on each throttled pass over a
+        // still-growing block. Show escaped plain text now; the final
+        // (non-streaming) render does the real auto-highlight once.
+        highlighted = escapeHtml(rawCode)
+      } else {
+        highlighted = hljs.highlightAuto(rawCode).value
+      }
     } catch {
       highlighted = escapeHtml(rawCode)
     }
@@ -511,19 +541,40 @@ export type WikilinkMode = 'legacy' | 'none'
 export interface RenderMarkdownOptions {
   /** How to handle `[[...]]` syntax. Defaults to `'legacy'`. */
   wikilink?: WikilinkMode
+  /**
+   * Streaming-friendly render. When `true`, the renderer skips code-block
+   * language auto-detection (the most expensive step) and bypasses the LRU
+   * cache. Use it for the throttled mid-stream renders driven by
+   * {@link useStreamingMarkdown}; the final render must run with this off so
+   * the completed message gets full-fidelity highlighting.
+   */
+  streaming?: boolean
 }
+
+// Module-level flag read by the custom code renderer. Safe because
+// `markedInstance.parse()` runs fully synchronously (JS single-threaded) — the
+// flag is set immediately before the parse and cleared in a `finally`, so it
+// can never leak across renders.
+let streamingRenderMode = false
 
 export function useMarkdownRenderer() {
   function renderMarkdown(content: string, opts?: RenderMarkdownOptions): string {
     if (!content) return ''
     const wikilink: WikilinkMode = opts?.wikilink ?? 'legacy'
+    const streaming = opts?.streaming ?? false
     const k = cacheKey(content, wikilink)
-    const cached = RENDER_CACHE.get(k)
-    if (cached !== undefined) {
-      // Refresh LRU position — re-insert at the tail.
-      RENDER_CACHE.delete(k)
-      RENDER_CACHE.set(k, cached)
-      return cached
+    // Streaming renders bypass the cache entirely: their length-based keys
+    // collide with the final full-fidelity render of the same text, and a
+    // streaming entry (no auto-highlight) must never be served as the final
+    // result.
+    if (!streaming) {
+      const cached = RENDER_CACHE.get(k)
+      if (cached !== undefined) {
+        // Refresh LRU position — re-insert at the tail.
+        RENDER_CACHE.delete(k)
+        RENDER_CACHE.set(k, cached)
+        return cached
+      }
     }
 
     // 1. LaTeX placeholders (skips fenced/inline code).
@@ -554,8 +605,19 @@ export function useMarkdownRenderer() {
             },
           )
     // 3. Marked → 4. DOMPurify.
-    const rawHtml = markedInstance.parse(withWikiLinks) as string
+    let rawHtml: string
+    streamingRenderMode = streaming
+    try {
+      rawHtml = markedInstance.parse(withWikiLinks) as string
+    } finally {
+      streamingRenderMode = false
+    }
     const result = DOMPurify.sanitize(rawHtml, purifyConfig)
+
+    if (streaming) {
+      // Throwaway render — don't pollute the LRU with low-fidelity entries.
+      return result
+    }
 
     // Evict oldest entry when at capacity (Map preserves insertion order).
     if (RENDER_CACHE.size >= RENDER_CACHE_CAP) {

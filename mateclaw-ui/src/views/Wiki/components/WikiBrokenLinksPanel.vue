@@ -65,7 +65,9 @@ const report = computed(() => store.brokenLinksReport)
 
 async function onOpenPage(slug: string) {
   if (!store.currentKB) return
-  await store.loadPage(Number(store.currentKB.id), slug)
+  // Keep the Snowflake id as-is; Number() would truncate it and open a page
+  // lookup against a non-existent KB (per the project ID precision convention).
+  await store.loadPage(store.currentKB.id, slug)
   emit('close')
 }
 </script>

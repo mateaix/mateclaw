@@ -31,6 +31,12 @@
                 >{{ liveRunning }}</span>
               </button>
             </div>
+            <button class="btn-secondary" style="display:inline-flex;align-items:center;gap:6px;" @click="router.push('/agents/create')">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 3l1.9 4.6L18.5 9.5l-4.6 1.9L12 16l-1.9-4.6L5.5 9.5l4.6-1.9z"/>
+              </svg>
+              {{ t('agents.wizard.entry') }}
+            </button>
             <button class="btn-primary" @click="openCreateModal">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>

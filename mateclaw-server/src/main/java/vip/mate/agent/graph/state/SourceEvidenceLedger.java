@@ -20,7 +20,10 @@ import java.util.regex.Pattern;
 public record SourceEvidenceLedger(
         Set<String> sourcePaths,
         Set<String> sourceSymbols,
-        Set<String> failedPaths
+        Set<String> failedPaths,
+        Set<String> wikiPageTitles,
+        Set<String> wikiChunkIds,
+        Set<SourceEvidenceLedger.WikiCitation> wikiCitations
 ) implements Serializable {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -31,15 +34,19 @@ public record SourceEvidenceLedger(
             "\\b[A-Z][A-Za-z0-9_]*(?:Controller|Service|ServiceImpl|Node|Tool|Parser|Resolver|Manager|Syncer|Mapper|Entity|Repository|Dispatcher|Executor|Accessor|Builder|Policy|Guard)\\b");
     private static final Pattern DECLARED_TYPE = Pattern.compile(
             "\\b(?:class|interface|enum|record)\\s+([A-Z][A-Za-z0-9_]*)\\b");
+    private static final Pattern CITATION_MARKER = Pattern.compile("\\[(\\d+)\\]");
 
     public SourceEvidenceLedger {
         sourcePaths = Set.copyOf(sourcePaths == null ? Set.of() : sourcePaths);
         sourceSymbols = Set.copyOf(sourceSymbols == null ? Set.of() : sourceSymbols);
         failedPaths = Set.copyOf(failedPaths == null ? Set.of() : failedPaths);
+        wikiPageTitles = Set.copyOf(wikiPageTitles == null ? Set.of() : wikiPageTitles);
+        wikiChunkIds = Set.copyOf(wikiChunkIds == null ? Set.of() : wikiChunkIds);
+        wikiCitations = Set.copyOf(wikiCitations == null ? Set.of() : wikiCitations);
     }
 
     public static SourceEvidenceLedger empty() {
-        return new SourceEvidenceLedger(Set.of(), Set.of(), Set.of());
+        return new SourceEvidenceLedger(Set.of(), Set.of(), Set.of(), Set.of(), Set.of(), Set.of());
     }
 
     public static SourceEvidenceLedger fromToolResponses(List<ToolResponseMessage.ToolResponse> responses) {
@@ -56,6 +63,14 @@ public record SourceEvidenceLedger(
                 recordReadFile(data, builder);
             } else {
                 recordPlainTextEvidence(data, builder);
+                // Only mine wiki citations from wiki retrieval tools. Sniffing every
+                // tool's JSON for a top-level title/pages/chunks field would let
+                // unrelated tools (e.g. getGoalStatus, which returns a top-level
+                // "title") populate the citation set and falsely force [n] citation
+                // enforcement on the final answer.
+                if (isWikiTool(response.name())) {
+                    recordWikiEvidence(data, builder);
+                }
             }
         }
         return builder.build();
@@ -69,9 +84,15 @@ public record SourceEvidenceLedger(
         sourcePaths.forEach(builder::sourcePath);
         sourceSymbols.forEach(builder::symbol);
         failedPaths.forEach(builder::failedPath);
+        wikiPageTitles.forEach(builder::wikiPageTitle);
+        wikiChunkIds.forEach(builder::wikiChunkId);
+        wikiCitations.forEach(builder::wikiCitation);
         other.sourcePaths.forEach(builder::sourcePath);
         other.sourceSymbols.forEach(builder::symbol);
         other.failedPaths.forEach(builder::failedPath);
+        other.wikiPageTitles.forEach(builder::wikiPageTitle);
+        other.wikiChunkIds.forEach(builder::wikiChunkId);
+        other.wikiCitations.forEach(builder::wikiCitation);
         return builder.build();
     }
 
@@ -80,12 +101,61 @@ public record SourceEvidenceLedger(
         sourcePaths.forEach(builder::sourcePath);
         sourceSymbols.forEach(builder::symbol);
         failedPaths.forEach(builder::failedPath);
+        wikiPageTitles.forEach(builder::wikiPageTitle);
+        wikiChunkIds.forEach(builder::wikiChunkId);
+        wikiCitations.forEach(builder::wikiCitation);
         builder.sourcePath(path);
         return builder.build();
     }
 
+    public SourceEvidenceLedger withWikiPageTitle(String title) {
+        Builder builder = new Builder();
+        sourcePaths.forEach(builder::sourcePath);
+        sourceSymbols.forEach(builder::symbol);
+        failedPaths.forEach(builder::failedPath);
+        wikiPageTitles.forEach(builder::wikiPageTitle);
+        wikiChunkIds.forEach(builder::wikiChunkId);
+        wikiCitations.forEach(builder::wikiCitation);
+        builder.wikiPageTitle(title);
+        return builder.build();
+    }
+
+    public SourceEvidenceLedger withWikiChunkId(String chunkId) {
+        Builder builder = new Builder();
+        sourcePaths.forEach(builder::sourcePath);
+        sourceSymbols.forEach(builder::symbol);
+        failedPaths.forEach(builder::failedPath);
+        wikiPageTitles.forEach(builder::wikiPageTitle);
+        wikiChunkIds.forEach(builder::wikiChunkId);
+        wikiCitations.forEach(builder::wikiCitation);
+        builder.wikiChunkId(chunkId);
+        return builder.build();
+    }
+
     public boolean hasEvidence() {
-        return !sourcePaths.isEmpty() || !sourceSymbols.isEmpty() || !failedPaths.isEmpty();
+        return !sourcePaths.isEmpty() || !sourceSymbols.isEmpty() || !failedPaths.isEmpty()
+                || hasWikiEvidence();
+    }
+
+    public boolean hasWikiEvidence() {
+        return !wikiPageTitles.isEmpty() || !wikiChunkIds.isEmpty() || !wikiCitations.isEmpty();
+    }
+
+    public boolean hasWikiPageTitle(String title) {
+        if (title == null || title.isBlank()) {
+            return false;
+        }
+        String normalized = title.trim();
+        return wikiPageTitles.contains(normalized)
+                || wikiPageTitles.stream().anyMatch(t -> t.equalsIgnoreCase(normalized));
+    }
+
+    public boolean hasWikiChunkId(String chunkId) {
+        return chunkId != null && wikiChunkIds.contains(chunkId);
+    }
+
+    public boolean hasWikiCitationIndex(int index) {
+        return wikiCitations.stream().anyMatch(c -> c.index() == index);
     }
 
     public boolean hasPath(String path) {
@@ -103,6 +173,7 @@ public record SourceEvidenceLedger(
         }
         LinkedHashSet<String> unsupported = new LinkedHashSet<>();
         LinkedHashSet<String> unsupportedFileStems = new LinkedHashSet<>();
+
         Matcher fileMatcher = JAVA_FILE_REF.matcher(answer);
         while (fileMatcher.find()) {
             String ref = fileMatcher.group();
@@ -111,6 +182,7 @@ public record SourceEvidenceLedger(
                 unsupportedFileStems.add(ref.substring(0, ref.length() - ".java".length()));
             }
         }
+
         Matcher symbolMatcher = JAVA_SYMBOL_REF.matcher(answer);
         while (symbolMatcher.find()) {
             String ref = symbolMatcher.group();
@@ -118,7 +190,83 @@ public record SourceEvidenceLedger(
                 unsupported.add(ref);
             }
         }
+
+        validateWikiCitations(answer, unsupported);
+
         return unsupported.isEmpty() ? Validation.ok() : new Validation(false, List.copyOf(unsupported));
+    }
+
+    public String appendWikiSourceTable(String answer) {
+        if (answer == null || answer.isBlank() || wikiCitations.isEmpty()) {
+            return answer;
+        }
+        LinkedHashSet<Integer> used = citationIndexesIn(answer);
+        if (used.isEmpty()) {
+            return answer;
+        }
+        StringBuilder additions = new StringBuilder();
+        for (Integer index : used) {
+            WikiCitation citation = wikiCitation(index);
+            if (citation == null || sourceLineFor(answer, index) != null) {
+                continue;
+            }
+            if (additions.isEmpty()) {
+                additions.append("\n\n来源：");
+            }
+            additions.append("\n").append(citation.sourceLine());
+        }
+        return additions.isEmpty() ? answer : answer + additions;
+    }
+
+    private void validateWikiCitations(String answer, LinkedHashSet<String> unsupported) {
+        if (wikiCitations.isEmpty()) {
+            return;
+        }
+
+        LinkedHashSet<Integer> indexes = citationIndexesIn(answer);
+        if (indexes.isEmpty()) {
+            unsupported.add("missing wiki citation [n]");
+            return;
+        }
+
+        for (Integer index : indexes) {
+            WikiCitation citation = wikiCitation(index);
+            if (citation == null) {
+                unsupported.add("wiki citation [" + index + "]");
+                continue;
+            }
+            String sourceLine = sourceLineFor(answer, index);
+            if (sourceLine == null) {
+                unsupported.add("wiki source table [" + index + "]");
+            } else if (!citation.matchesSourceLine(sourceLine)) {
+                unsupported.add("wiki source title for [" + index + "]");
+            }
+        }
+    }
+
+    private LinkedHashSet<Integer> citationIndexesIn(String answer) {
+        LinkedHashSet<Integer> indexes = new LinkedHashSet<>();
+        Matcher citationMatcher = CITATION_MARKER.matcher(answer);
+        while (citationMatcher.find()) {
+            try {
+                indexes.add(Integer.parseInt(citationMatcher.group(1)));
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        return indexes;
+    }
+
+    private WikiCitation wikiCitation(int index) {
+        return wikiCitations.stream()
+                .filter(c -> c.index() == index)
+                .findFirst()
+                .orElse(null);
+    }
+
+    private static String sourceLineFor(String answer, int index) {
+        Pattern pattern = Pattern.compile("(?m)^\\s*\\[" + index + "\\]\\s+(.+)$");
+        Matcher matcher = pattern.matcher(answer);
+        return matcher.find() ? matcher.group(1).trim() : null;
     }
 
     private boolean hasFileName(String fileName) {
@@ -132,6 +280,13 @@ public record SourceEvidenceLedger(
         }
         String normalized = name.toLowerCase(Locale.ROOT).replace("-", "_");
         return normalized.equals("read_file");
+    }
+
+    private static boolean isWikiTool(String name) {
+        if (name == null) {
+            return false;
+        }
+        return name.toLowerCase(Locale.ROOT).replace("-", "_").startsWith("wiki_");
     }
 
     private static void recordReadFile(String data, Builder builder) {
@@ -158,6 +313,56 @@ public record SourceEvidenceLedger(
         recordSymbols(text, builder);
     }
 
+    private static void recordWikiEvidence(String text, Builder builder) {
+        if (text == null || text.isBlank()) {
+            return;
+        }
+        try {
+            JsonNode root = MAPPER.readTree(text);
+            recordWikiArray(root.path("chunks"), builder);
+            recordWikiArray(root.path("pages"), builder);
+            String title = root.path("title").asText("");
+            String rawTitle = root.path("rawTitle").asText("");
+            if (!title.isBlank()) {
+                builder.wikiPageTitle(title);
+                builder.wikiCitation(new WikiCitation(1, "", title, "", null));
+            }
+            if (!rawTitle.isBlank()) {
+                builder.wikiPageTitle(rawTitle);
+                builder.wikiCitation(new WikiCitation(1, "", rawTitle, "", null));
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    private static void recordWikiArray(JsonNode nodes, Builder builder) {
+        if (!nodes.isArray()) {
+            return;
+        }
+        int ordinal = 1;
+        for (JsonNode node : nodes) {
+            int index = node.path("index").isInt() ? node.path("index").asInt() : ordinal;
+            String title = firstNonBlank(node.path("rawTitle").asText(""), node.path("title").asText(""));
+            String chunkId = node.path("chunkId").asText("");
+            String section = node.path("section").asText("");
+            Integer pageNumber = node.hasNonNull("pageNumber") ? node.path("pageNumber").asInt() : null;
+            if (!title.isBlank()) {
+                builder.wikiPageTitle(title);
+            }
+            if (!chunkId.isBlank()) {
+                builder.wikiChunkId(chunkId);
+            }
+            if (!title.isBlank() || !chunkId.isBlank()) {
+                builder.wikiCitation(new WikiCitation(index, chunkId, title, section, pageNumber));
+            }
+            ordinal++;
+        }
+    }
+
+    private static String firstNonBlank(String first, String second) {
+        return first != null && !first.isBlank() ? first : (second == null ? "" : second);
+    }
+
     private static void recordSymbols(String text, Builder builder) {
         Matcher matcher = DECLARED_TYPE.matcher(text);
         while (matcher.find()) {
@@ -180,6 +385,9 @@ public record SourceEvidenceLedger(
         private final LinkedHashSet<String> sourcePaths = new LinkedHashSet<>();
         private final LinkedHashSet<String> sourceSymbols = new LinkedHashSet<>();
         private final LinkedHashSet<String> failedPaths = new LinkedHashSet<>();
+        private final LinkedHashSet<String> wikiPageTitles = new LinkedHashSet<>();
+        private final LinkedHashSet<String> wikiChunkIds = new LinkedHashSet<>();
+        private final LinkedHashSet<WikiCitation> wikiCitations = new LinkedHashSet<>();
 
         void sourcePath(String path) {
             String normalized = normalizePath(path);
@@ -207,8 +415,63 @@ public record SourceEvidenceLedger(
             }
         }
 
+        void wikiPageTitle(String title) {
+            if (title != null && !title.isBlank()) {
+                wikiPageTitles.add(title.trim());
+            }
+        }
+
+        void wikiChunkId(String chunkId) {
+            if (chunkId != null && !chunkId.isBlank()) {
+                wikiChunkIds.add(chunkId.trim());
+            }
+        }
+
+        void wikiCitation(WikiCitation citation) {
+            if (citation == null || citation.index() < 1) {
+                return;
+            }
+            wikiCitations.removeIf(existing -> existing.index() == citation.index());
+            wikiCitations.add(citation.normalized());
+        }
+
         SourceEvidenceLedger build() {
-            return new SourceEvidenceLedger(sourcePaths, sourceSymbols, failedPaths);
+            return new SourceEvidenceLedger(sourcePaths, sourceSymbols, failedPaths,
+                    wikiPageTitles, wikiChunkIds, wikiCitations);
+        }
+    }
+
+    public record WikiCitation(int index, String chunkId, String title,
+                               String section, Integer pageNumber) implements Serializable {
+        WikiCitation normalized() {
+            return new WikiCitation(index,
+                    chunkId == null ? "" : chunkId.trim(),
+                    title == null ? "" : title.trim(),
+                    section == null ? "" : section.trim(),
+                    pageNumber);
+        }
+
+        String sourceLine() {
+            StringBuilder sb = new StringBuilder();
+            sb.append("[").append(index).append("] ");
+            sb.append(title == null || title.isBlank() ? "chunkId=" + chunkId : title);
+            if (section != null && !section.isBlank()) {
+                sb.append(" - ").append(section);
+            }
+            if (pageNumber != null) {
+                sb.append(" - page ").append(pageNumber);
+            }
+            return sb.toString();
+        }
+
+        boolean matchesSourceLine(String line) {
+            if (line == null || line.isBlank()) {
+                return false;
+            }
+            if (title != null && !title.isBlank() && line.contains(title)) {
+                return true;
+            }
+            return chunkId != null && !chunkId.isBlank() && line.contains(chunkId);
         }
     }
 

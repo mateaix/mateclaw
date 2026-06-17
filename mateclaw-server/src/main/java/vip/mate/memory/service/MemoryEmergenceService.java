@@ -159,6 +159,9 @@ public class MemoryEmergenceService {
                 return buildSkippedReport(agentId, mode, topic, triggerSource, startedAt, "empty memory_content");
             }
 
+            // Deterministic backstop so the always-on MEMORY.md stays bounded even
+            // if the LLM rewrite ignores the "keep concise" instruction.
+            newContent = AlwaysOnFileBudget.enforce(newContent, properties.getMemoryMdMaxChars());
             workspaceFileService.saveFile(agentId, "MEMORY.md", newContent);
             eventPublisher.publishEvent(new MemoryWriteEvent(agentId, "MEMORY.md", "consolidate", newContent));
             String llmReason = root.path("reason").asText("");

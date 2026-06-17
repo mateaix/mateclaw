@@ -190,4 +190,100 @@ class ErrorClassificationTest {
         assertEquals(NodeStreamingChatHelper.ErrorType.AUTH_ERROR,
                 classify(new RuntimeException("401 Unauthorized: Invalid API Key (WebClientResponseException)")));
     }
+
+    // ===== AI-gateway resilience: 5xx classified BEFORE 4xx =====
+    //
+    // Reverse proxies / AI gateways often surface an upstream 5xx as an HTTP 400
+    // whose body still describes the outage. SERVER_ERROR must be matched before
+    // CLIENT_ERROR so the transient root cause wins and the call is retried,
+    // instead of being terminated as a non-retryable client error.
+
+    @Test
+    @DisplayName("502 whose chain also carries 'Bad Request' → SERVER_ERROR (5xx wins)")
+    void gateway502WithBadRequestWinsServerError() throws Exception {
+        assertEquals(NodeStreamingChatHelper.ErrorType.SERVER_ERROR,
+                classify(new RuntimeException("502 Bad Gateway: Bad Request from upstream proxy")));
+    }
+
+    @Test
+    @DisplayName("503 mixed with 'invalid_request_error' → SERVER_ERROR")
+    void mixed503And400IsServerError() throws Exception {
+        assertEquals(NodeStreamingChatHelper.ErrorType.SERVER_ERROR,
+                classify(new RuntimeException("503 Service Unavailable (invalid_request_error in body)")));
+    }
+
+    @Test
+    @DisplayName("Gateway-rewritten 400 'model is overloaded' → SERVER_ERROR")
+    void gatewayOverloadedIsServerError() throws Exception {
+        assertEquals(NodeStreamingChatHelper.ErrorType.SERVER_ERROR,
+                classify(new RuntimeException("400 Bad Request: model is overloaded, please try again")));
+    }
+
+    // ===== Provider billing patterns (Chinese + numeric codes) → BILLING =====
+
+    @Test
+    @DisplayName("Chinese '余额不足 / 请充值' → BILLING")
+    void chineseInsufficientBalanceIsBilling() throws Exception {
+        assertEquals(NodeStreamingChatHelper.ErrorType.BILLING,
+                classify(new RuntimeException("调用失败：账户余额不足，请充值后重试")));
+    }
+
+    @Test
+    @DisplayName("Zhipu '\"code\":\"1113\"' → BILLING")
+    void zhipuCode1113IsBilling() throws Exception {
+        assertEquals(NodeStreamingChatHelper.ErrorType.BILLING,
+                classify(new RuntimeException("{\"error\":{\"code\":\"1113\",\"message\":\"insufficient balance\"}}")));
+    }
+
+    @Test
+    @DisplayName("'AccountBalanceNotEnough' → BILLING")
+    void accountBalanceNotEnoughIsBilling() throws Exception {
+        assertEquals(NodeStreamingChatHelper.ErrorType.BILLING,
+                classify(new RuntimeException("AccountBalanceNotEnough: balance not enough")));
+    }
+
+    // ===== Infrastructure-fatal errors → AUTH_ERROR (HARD, no same-model retry) =====
+    //
+    // DNS / TLS-trust failures do not self-heal on retry. They are routed through
+    // AUTH_ERROR so the loop breaks straight to the fallback chain instead of
+    // burning the SERVER_ERROR retry budget on an unrecoverable condition.
+
+    @Test
+    @DisplayName("UnknownHostException (DNS) → AUTH_ERROR")
+    void unknownHostIsAuthError() throws Exception {
+        assertEquals(NodeStreamingChatHelper.ErrorType.AUTH_ERROR,
+                classify(new java.net.UnknownHostException("api.example.com")));
+    }
+
+    @Test
+    @DisplayName("CertificateException → AUTH_ERROR")
+    void certificateExceptionIsAuthError() throws Exception {
+        assertEquals(NodeStreamingChatHelper.ErrorType.AUTH_ERROR,
+                classify(new java.security.cert.CertificateException("certificate expired")));
+    }
+
+    @Test
+    @DisplayName("SSLPeerUnverifiedException → AUTH_ERROR")
+    void sslPeerUnverifiedIsAuthError() throws Exception {
+        assertEquals(NodeStreamingChatHelper.ErrorType.AUTH_ERROR,
+                classify(new javax.net.ssl.SSLPeerUnverifiedException("peer not authenticated")));
+    }
+
+    @Test
+    @DisplayName("OpenSSL-style 'certificate verify failed' → AUTH_ERROR")
+    void certificateVerifyFailedIsAuthError() throws Exception {
+        assertEquals(NodeStreamingChatHelper.ErrorType.AUTH_ERROR,
+                classify(new RuntimeException("SSL error: certificate verify failed (self-signed certificate in chain)")));
+    }
+
+    @Test
+    @DisplayName("Java TLS 'PKIX path building failed' (uppercase PKIX) → AUTH_ERROR")
+    void pkixPathBuildingIsAuthError() throws Exception {
+        // The real Java message capitalizes PKIX. Since the error chain is not
+        // lower-cased, a lowercase pattern would never match and the fatal cert
+        // failure would be retried as SERVER_ERROR. Guard against that regression.
+        assertEquals(NodeStreamingChatHelper.ErrorType.AUTH_ERROR,
+                classify(new RuntimeException(
+                        "PKIX path building failed: unable to find valid certification path to requested target")));
+    }
 }

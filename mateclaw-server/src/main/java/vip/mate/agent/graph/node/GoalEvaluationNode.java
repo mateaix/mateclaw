@@ -78,7 +78,12 @@ public class GoalEvaluationNode implements NodeAction {
 
         MateClawStateAccessor accessor = new MateClawStateAccessor(state);
 
-        Optional<Object> goalOpt = accessor.activeGoal();
+        // Resolve the active goal from the turn-start snapshot, falling back to
+        // a conversation lookup. The fallback is what makes a goal created
+        // MID-TURN (the agent calls setGoal, which only writes the DB) get
+        // evaluated on the very turn it was set — otherwise ACTIVE_GOAL is empty
+        // in this run's state and the goal would sit inert until the next message.
+        Optional<GoalEntity> goalOpt = resolveActiveGoal(state, goalService);
         if (goalOpt.isEmpty()) {
             return Map.of();
         }
@@ -94,26 +99,32 @@ public class GoalEvaluationNode implements NodeAction {
         // chat composable's `message_complete` handler optimistically sets
         // evaluating=true; without a balancing event the ring would stay
         // in that state forever after e.g. a max-iterations turn.
-        Long goalIdForEvents = (goalOpt.get() instanceof GoalEntity ge) ? ge.getId() : null;
+        Long goalIdForEvents = goalOpt.get().getId();
 
         // ReAct path: FinalAnswerNode wrote a canonical finishReason that
         // determines whether this turn counts. Plan-Execute usually doesn't
         // set finishReason on the happy path, so we only enforce these
         // exit conditions in REACT mode + the universal awaiting_approval
         // gate that both flavors share.
+        // A turn that hit the ReAct iteration cap. Continuing it needs a FRESH
+        // iteration budget (a "hard continuation"), handled in the follow-up
+        // branch below; capture it here while finishReason is still authoritative.
+        boolean reactIterationCapReached = flavor == GraphFlavor.REACT
+                && isIterationCapReached(accessor.finishReason());
+
         if (flavor == GraphFlavor.REACT) {
             String fr = accessor.finishReason();
-            if (FinishReason.EVIDENCE_INSUFFICIENT.getValue().equals(fr)
-                    || FinishReason.STOPPED.getValue().equals(fr)
-                    || FinishReason.ERROR_FALLBACK.getValue().equals(fr)
-                    || FinishReason.RETURN_DIRECT.getValue().equals(fr)
-                    || FinishReason.MAX_ITERATIONS_REACHED.getValue().equals(fr)) {
+            if (isHardSkipFinishReason(fr)) {
                 log.debug("[GoalEvaluationNode] skipping evaluation (REACT finishReason={})", fr);
                 return MateClawStateAccessor.output()
                         .goalEvaluatedThisRun(true)
                         .events(List.of(skippedEvent(goalIdForEvents, "react_finish_reason:" + fr)))
                         .build();
             }
+            // MAX_ITERATIONS_REACHED and EVIDENCE_INSUFFICIENT intentionally
+            // fall through: both mean "answer produced but the goal is likely
+            // unmet", which is exactly when a corrective follow-up helps.
+            // Max-iterations additionally needs a fresh budget (see below).
         }
         if (accessor.awaitingApproval()) {
             return MateClawStateAccessor.output()
@@ -122,14 +133,7 @@ public class GoalEvaluationNode implements NodeAction {
                     .build();
         }
 
-        Object goalObj = goalOpt.get();
-        if (!(goalObj instanceof GoalEntity goal)) {
-            log.warn("[GoalEvaluationNode] ACTIVE_GOAL is not a GoalEntity: {}", goalObj.getClass());
-            return MateClawStateAccessor.output()
-                    .goalEvaluatedThisRun(true)
-                    .events(List.of(skippedEvent(null, "non_goal_entity")))
-                    .build();
-        }
+        GoalEntity goal = goalOpt.get();
 
         String terminal = accessor.terminalAnswer();
         if (terminal.isEmpty()) {
@@ -226,6 +230,9 @@ public class GoalEvaluationNode implements NodeAction {
         }
 
         int followupCountThisRun = accessor.goalFollowupCount();
+        int hardContinuationCount = accessor.goalHardContinuationCount();
+        int hardCap = Math.min(properties.getMaxHardContinuationsPerRun(),
+                GoalProperties.MAX_HARD_CONTINUATIONS_CEILING);
         Optional<String> followup;
         try {
             followup = followupService.maybeBuildFollowup(refreshed, result);
@@ -241,11 +248,19 @@ public class GoalEvaluationNode implements NodeAction {
         // active and the cross-message turn / LLM budget (or the user) carries
         // it on.
         boolean perRunCapReached = followupCountThisRun >= properties.getMaxFollowupsPerRun();
-        if (followup.isPresent() && perRunCapReached) {
-            log.info("[GoalEvaluationNode] per-run followup cap reached ({}/{}) for goal={}; ending this run",
-                    followupCountThisRun, properties.getMaxFollowupsPerRun(), refreshed.getId());
+        // A max-iterations continuation re-runs a FULL fresh ReAct segment
+        // (iteration budget reset), so it carries a tighter, dedicated cap on
+        // top of the per-run follow-up cap — and is sized into the graph
+        // recursion ceiling. hardCap==0 keeps the legacy behaviour (a
+        // max-iterations turn simply ends the run).
+        boolean hardCapReached = reactIterationCapReached && hardContinuationCount >= hardCap;
+        if (followup.isPresent() && (perRunCapReached || hardCapReached)) {
+            log.info("[GoalEvaluationNode] follow-up suppressed for goal={} " +
+                            "(followups {}/{}, hardContinuations {}/{}, iterationCapReached={}); ending this run",
+                    refreshed.getId(), followupCountThisRun, properties.getMaxFollowupsPerRun(),
+                    hardContinuationCount, hardCap, reactIterationCapReached);
         }
-        if (followup.isPresent() && !perRunCapReached) {
+        if (followup.isPresent() && !perRunCapReached && !hardCapReached) {
             try {
                 goalService.recordFollowupInjected(refreshed.getId(), followup.get());
             } catch (Throwable t) {
@@ -283,6 +298,20 @@ public class GoalEvaluationNode implements NodeAction {
                 out.clearFinalAnswer()
                    .clearFinishReason()
                    .messages(List.of((Message) new UserMessage(followup.get())));
+                if (reactIterationCapReached) {
+                    // Hard continuation: the run's iteration budget is spent, so
+                    // grant a brand-new ReAct segment. Reset the counter, clear
+                    // the stale limit-exceeded draft/flag (FinalAnswerNode prefers
+                    // the draft over a freshly reasoned answer) and any latched
+                    // error, and advance the dedicated hard-continuation counter.
+                    out.iterationCount(0)
+                       .clearLimitExceededDraft()
+                       .error("")
+                       .goalHardContinuationCount(hardContinuationCount + 1);
+                    log.info("[GoalEvaluationNode] hard continuation {}/{} for goal={} " +
+                                    "(fresh ReAct iteration budget after max-iterations turn)",
+                            hardContinuationCount + 1, hardCap, refreshed.getId());
+                }
             } else {
                 // Plan-Execute: wipe the wider mid-pass + terminal state.
                 // WORKING_CONTEXT and PlanStateKeys.GOAL are intentionally
@@ -316,6 +345,70 @@ public class GoalEvaluationNode implements NodeAction {
                         "gap", result.gap() == null ? "" : result.gap(),
                         "goal", goalService.toResponse(refreshed)))))
                 .build();
+    }
+
+    /**
+     * Resolve the active goal for this run: prefer the turn-start
+     * {@code ACTIVE_GOAL} snapshot; if absent, fall back to a conversation
+     * lookup so a goal created mid-turn (via {@code setGoal}, which only writes
+     * the DB) is still evaluated on the turn it was set.
+     *
+     * <p>Shared by {@link #apply} and the {@code FinalAnswer/PlanSummary →
+     * GoalEvaluation} routing edges so both agree on whether a goal is active.
+     * The DB fallback costs one indexed lookup per terminal turn whose snapshot
+     * is empty; callers should additionally gate on {@code properties.isEnabled()}
+     * to skip it when the feature is off.
+     */
+    public static Optional<GoalEntity> resolveActiveGoal(OverAllState state, GoalService goalService) {
+        MateClawStateAccessor a = new MateClawStateAccessor(state);
+        Optional<Object> snapshot = a.activeGoal();
+        if (snapshot.isPresent() && snapshot.get() instanceof GoalEntity ge) {
+            return Optional.of(ge);
+        }
+        if (goalService == null) {
+            return Optional.empty();
+        }
+        String conversationId = a.conversationId();
+        if (conversationId == null || conversationId.isBlank()) {
+            return Optional.empty();
+        }
+        try {
+            return Optional.ofNullable(goalService.findActiveByConversation(conversationId));
+        } catch (Throwable t) {
+            log.warn("[GoalEvaluationNode] active-goal fallback lookup failed for conversation={}: {}",
+                    conversationId, t.toString());
+            return Optional.empty();
+        }
+    }
+
+    /**
+     * REACT-mode finish reasons that should neither count toward the goal nor
+     * trigger a continuation:
+     * <ul>
+     *   <li>{@code STOPPED} — the user halted the run; don't fight them.</li>
+     *   <li>{@code RETURN_DIRECT} — a tool produced the answer verbatim; this
+     *       is not goal-progress reasoning work to evaluate or continue.</li>
+     *   <li>{@code ERROR_FALLBACK} — a fatal error already failed the turn;
+     *       re-running immediately would just re-fail.</li>
+     * </ul>
+     * Other terminal reasons — notably {@code MAX_ITERATIONS_REACHED} and
+     * {@code EVIDENCE_INSUFFICIENT} — mean "answer produced but the goal is
+     * likely unmet", which is exactly when a corrective follow-up helps, so
+     * they are deliberately NOT skipped.
+     */
+    static boolean isHardSkipFinishReason(String finishReason) {
+        return FinishReason.STOPPED.getValue().equals(finishReason)
+                || FinishReason.RETURN_DIRECT.getValue().equals(finishReason)
+                || FinishReason.ERROR_FALLBACK.getValue().equals(finishReason);
+    }
+
+    /**
+     * True when the terminal turn hit the ReAct iteration cap. Continuing such
+     * a turn requires a fresh iteration budget (a "hard continuation"), because
+     * the run's shared budget is already exhausted.
+     */
+    static boolean isIterationCapReached(String finishReason) {
+        return FinishReason.MAX_ITERATIONS_REACHED.getValue().equals(finishReason);
     }
 
     /** Stand-in for a missing {@code GraphEventPublisher.custom()} factory. */

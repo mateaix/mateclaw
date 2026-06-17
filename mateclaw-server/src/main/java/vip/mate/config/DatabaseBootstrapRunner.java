@@ -47,6 +47,9 @@ public class DatabaseBootstrapRunner implements ApplicationRunner {
     /** Cached flag: true when running on PostgreSQL. */
     private volatile Boolean isPostgres;
 
+     /** Cached human-readable label of the connected database, e.g. "MySQL" / "H2" / "PostgreSQL". */
+    private volatile String databaseLabel;
+
     /**
      * When true, wait for Desktop splash screen to call /setup/init with chosen language.
      * When false (default), auto-initialize immediately on startup.
@@ -148,6 +151,57 @@ public class DatabaseBootstrapRunner implements ApplicationRunner {
             log.warn("Error checking database state", e);
             return false;
         }
+    }
+
+    /**
+     * Friendly product name of the currently connected database, e.g. {@code "MySQL"},
+     * {@code "PostgreSQL"}, {@code "H2"} or {@code "KingbaseES"}. Read once from JDBC
+     * metadata and cached — the connected database never changes at runtime.
+     *
+     * @return the product name, or {@code "Unknown"} if metadata is unavailable.
+     */
+    public String getDatabaseLabel() {
+        if (databaseLabel == null) {
+            try (Connection connection = dataSource.getConnection()) {
+                databaseLabel = normalizeDatabaseLabel(connection.getMetaData().getDatabaseProductName());
+            } catch (Exception e) {
+                log.debug("Failed to read database product name: {}", e.getMessage());
+                databaseLabel = "Unknown";
+            }
+        }
+        return databaseLabel;
+    }
+
+    /**
+     * Maps a raw JDBC product name to a clean, canonical label. Some drivers append
+     * version noise to the product name (e.g. KingbaseES reports "KingbaseES V008R006");
+     * collapsing on a keyword keeps the displayed label stable across driver versions
+     * and consistent with the dialect this runner detects for DDL.
+     *
+     * @return a canonical label, or {@code "Unknown"} when the product name is absent.
+     */
+    static String normalizeDatabaseLabel(String product) {
+        if (product == null || product.isBlank()) {
+            return "Unknown";
+        }
+        String lower = product.toLowerCase();
+        if (lower.contains("kingbase")) {
+            // KingbaseES is the product name; show the vendor's Chinese brand name.
+            return "人大金仓";
+        }
+        if (lower.contains("mariadb")) {
+            return "MariaDB";
+        }
+        if (lower.contains("mysql")) {
+            return "MySQL";
+        }
+        if (lower.contains("postgresql")) {
+            return "PostgreSQL";
+        }
+        if (lower.contains("h2")) {
+            return "H2";
+        }
+        return product.trim();
     }
 
     private boolean tableExists(String tableName) throws Exception {

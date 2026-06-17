@@ -40,6 +40,12 @@ const router = createRouter({
           meta: { title: 'Agents', requiredCapability: 'manage:agents' },
         },
         {
+          path: 'agents/create',
+          name: 'AgentCreateWizard',
+          component: () => import('@/views/AgentCreateWizard.vue'),
+          meta: { title: 'Create Agent', requiredCapability: 'manage:agents' },
+        },
+        {
           // Live runtime view folded into the Agents page as a sub-view.
           // Kept as a redirect so old links / bookmarks still resolve.
           path: 'backstage',

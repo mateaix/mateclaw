@@ -109,6 +109,8 @@ export const agentApi = {
   list: (params?: { enabled?: boolean }) => http.get('/agents', { params }),
   get: (id: string | number) => http.get(`/agents/${id}`),
   create: (data: any) => http.post('/agents', data),
+  /** Generate a reviewable employee draft from a one-sentence requirement (no persistence). */
+  generate: (requirement: string) => http.post('/agents/generate', { requirement }),
   update: (id: string | number, data: any) => http.put(`/agents/${id}`, data),
   delete: (id: string | number) => http.delete(`/agents/${id}`),
   chat: (id: string | number, data: any) => http.post(`/agents/${id}/chat`, data),
@@ -845,6 +847,16 @@ export const wikiApi = {
     http.get(`/wiki/kb/${kbId}/pages/${encodeURIComponent(slugA)}/relation/${encodeURIComponent(slugB)}`),
   getPageCitations: (kbId: number | string, pageId: number | string) =>
     http.get(`/wiki/kb/${kbId}/pages/${pageId}/citations`),
+
+  // Entity-level knowledge graph
+  listEntities: (kbId: number | string, params?: { type?: string; limit?: number }) =>
+    http.get(`/wiki/kb/${kbId}/entities`, { params }),
+  getEntityGraph: (kbId: number | string, limit = 150) =>
+    http.get(`/wiki/kb/${kbId}/entity-graph`, { params: { limit } }),
+  getEntityEgo: (kbId: number | string, entityId: number | string, limit = 50) =>
+    http.get(`/wiki/kb/${kbId}/entities/${entityId}/graph`, { params: { limit } }),
+  extractEntities: (kbId: number | string, force = false) =>
+    http.post(`/wiki/kb/${kbId}/entities/extract`, null, { params: { force } }),
 
   // RFC-030: Jobs
   getWikiJobs: (kbId: number, rawId: number) =>

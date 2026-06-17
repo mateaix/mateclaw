@@ -16,8 +16,14 @@ import vip.mate.agent.graph.NodeStreamingChatHelper;
 import vip.mate.agent.graph.plan.state.PlanStateAccessor;
 import vip.mate.agent.graph.plan.state.PlanStateKeys;
 import vip.mate.agent.graph.state.MateClawStateKeys;
+import vip.mate.agent.context.ChatOrigin;
 import vip.mate.agent.context.ConversationWindowManager;
 import vip.mate.agent.context.RuntimeContextInjector;
+import vip.mate.goal.config.GoalProperties;
+import vip.mate.goal.model.GoalCreateRequest;
+import vip.mate.goal.model.GoalCriterion;
+import vip.mate.goal.model.GoalEntity;
+import vip.mate.goal.service.GoalService;
 import vip.mate.planning.service.PlanningService;
 
 import java.util.ArrayList;
@@ -52,6 +58,14 @@ public class PlanGenerationNode implements NodeAction {
     private final NodeStreamingChatHelper streamingHelper;
     private final ConversationWindowManager conversationWindowManager;
     private final AgentToolSet toolSet;
+    /** Optional — auto-derive a goal from the plan. Null disables the feature (legacy/test). */
+    private final GoalService goalService;
+    private final GoalProperties goalProperties;
+
+    /** Plan steps below this size are trivial tool tasks, not goal-worthy. */
+    private static final int MIN_STEPS_FOR_AUTO_GOAL = 2;
+    /** Cap the auto-derived goal title; the full request rides in the description. */
+    private static final int AUTO_GOAL_TITLE_MAX = 80;
 
     /**
      * Structured triage result — field names use @JsonProperty to match the
@@ -168,11 +182,21 @@ public class PlanGenerationNode implements NodeAction {
                               NodeStreamingChatHelper streamingHelper,
                               ConversationWindowManager conversationWindowManager,
                               AgentToolSet toolSet) {
+        this(chatModel, planningService, streamingHelper, conversationWindowManager, toolSet, null, null);
+    }
+
+    public PlanGenerationNode(ChatModel chatModel, PlanningService planningService,
+                              NodeStreamingChatHelper streamingHelper,
+                              ConversationWindowManager conversationWindowManager,
+                              AgentToolSet toolSet,
+                              GoalService goalService, GoalProperties goalProperties) {
         this.chatModel = chatModel;
         this.planningService = planningService;
         this.streamingHelper = streamingHelper;
         this.conversationWindowManager = conversationWindowManager;
         this.toolSet = toolSet;
+        this.goalService = goalService;
+        this.goalProperties = goalProperties;
     }
 
     /**
@@ -180,7 +204,65 @@ public class PlanGenerationNode implements NodeAction {
      */
     @Deprecated
     public PlanGenerationNode(ChatModel chatModel, PlanningService planningService) {
-        this(chatModel, planningService, null, null, null);
+        this(chatModel, planningService, null, null, null, null, null);
+    }
+
+    /**
+     * Auto-derive a goal from a freshly-generated multi-step plan so the
+     * Plan-Execute path engages the goal subsystem (the planner / step executor
+     * never call {@code setGoal} themselves). The plan steps become the goal's
+     * acceptance criteria — the plan IS the decomposition — so the first
+     * evaluation skips the bootstrap round and judges those criteria directly.
+     *
+     * <p>Returns the created goal (to inject into {@code ACTIVE_GOAL} so THIS
+     * run's GoalEvaluationNode picks it up) or {@code null} when not applicable:
+     * feature off, fewer than {@link #MIN_STEPS_FOR_AUTO_GOAL} steps, no channel
+     * context, or the conversation already has an active goal. Best-effort —
+     * any failure is swallowed so planning is never blocked by goal bookkeeping.
+     */
+    GoalEntity maybeAutoCreateGoal(PlanStateAccessor accessor, List<String> steps) {
+        if (goalService == null || goalProperties == null
+                || !goalProperties.isEnabled() || !goalProperties.isAutoGoalFromPlan()) {
+            return null;
+        }
+        if (steps == null || steps.size() < MIN_STEPS_FOR_AUTO_GOAL) {
+            return null;
+        }
+        ChatOrigin origin = accessor.chatOrigin();
+        String convId = origin.conversationId();
+        if (convId == null || convId.isBlank() || origin.agentId() == null) {
+            return null;
+        }
+        try {
+            if (goalService.findActiveByConversation(convId) != null) {
+                return null; // respect an existing goal (incl. re-plan passes)
+            }
+            String request = stripInjectedContext(accessor.goal()).strip();
+            GoalCreateRequest req = new GoalCreateRequest();
+            req.setConversationId(convId);
+            req.setAgentId(origin.agentId());
+            req.setWorkspaceId(origin.workspaceId() != null ? origin.workspaceId() : 1L);
+            req.setTitle(request.isEmpty() ? "多步任务"
+                    : request.length() > AUTO_GOAL_TITLE_MAX
+                        ? request.substring(0, AUTO_GOAL_TITLE_MAX) : request);
+            req.setDescription(request);
+            List<GoalCriterion> criteria = steps.stream()
+                    .filter(s -> s != null && !s.isBlank())
+                    .map(s -> new GoalCriterion("", s.strip(), false, ""))
+                    .collect(Collectors.toList());
+            if (!criteria.isEmpty()) {
+                req.setCriteria(criteria);
+            }
+            String username = origin.requesterId() != null && !origin.requesterId().isBlank()
+                    ? origin.requesterId() : "system";
+            GoalEntity created = goalService.create(req, username);
+            log.info("[PlanGeneration] Auto-derived goal {} from plan ({} criteria) for conversation {}",
+                    created.getId(), criteria.size(), convId);
+            return created;
+        } catch (Exception e) {
+            log.warn("[PlanGeneration] Auto-goal-from-plan skipped (non-fatal): {}", e.toString());
+            return null;
+        }
     }
 
     @Override
@@ -375,7 +457,22 @@ public class PlanGenerationNode implements NodeAction {
 
             events.add(GraphEventPublisher.planCreated(plan.getId(), steps));
 
-            return PlanStateAccessor.output()
+            // Auto-derive a goal from a genuine multi-step plan so the
+            // Plan-Execute path engages the goal subsystem. Injected into
+            // ACTIVE_GOAL so this same run's GoalEvaluationNode evaluates it.
+            GoalEntity autoGoal = maybeAutoCreateGoal(accessor, steps);
+            if (autoGoal != null && goalService != null) {
+                // Surface it to the UI exactly like the setGoal tool does
+                // ({goalId, conversationId, goal}) so the goal panel hydrates
+                // even though the user never called setGoal. Same SSE event the
+                // frontend goal store already listens for.
+                events.add(new GraphEventPublisher.GraphEvent("goal_created", Map.of(
+                        "goalId", String.valueOf(autoGoal.getId()),
+                        "conversationId", conversationId,
+                        "goal", goalService.toResponse(autoGoal)), System.currentTimeMillis()));
+            }
+
+            PlanStateAccessor.OutputBuilder planOut = PlanStateAccessor.output()
                     .needsPlanning(true)
                     .planId(plan.getId())
                     .planSteps(steps)
@@ -385,8 +482,11 @@ public class PlanGenerationNode implements NodeAction {
                     .contentStreamed(true)
                     .thinkingStreamed(!result.thinking().isEmpty())
                     .mergeUsage(state, result)
-                    .events(events)
-                    .build();
+                    .events(events);
+            if (autoGoal != null) {
+                planOut.put(MateClawStateKeys.ACTIVE_GOAL, autoGoal);
+            }
+            return planOut.build();
 
         } catch (Exception e) {
             log.error("[PlanGeneration] Triage failed, falling back to single-step plan: {}", e.getMessage(), e);

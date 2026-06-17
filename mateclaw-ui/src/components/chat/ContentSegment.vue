@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { useMarkdownRenderer } from '@/composables/useMarkdownRenderer'
+import { useStreamingMarkdown } from '@/composables/useStreamingMarkdown'
 import TypingCursor from './TypingCursor.vue'
 import type { MessageSegment } from '@/types'
 
@@ -11,10 +11,14 @@ const props = withDefaults(defineProps<{
   showCursor: false,
 })
 
-const { renderMarkdown } = useMarkdownRenderer()
-
-const renderedContent = computed(() => renderMarkdown(props.segment.text || ''))
 const isRunning = computed(() => props.segment.status === 'running')
+
+// Throttle markdown rendering while the segment streams; render once at full
+// fidelity the moment it completes.
+const { html: renderedContent } = useStreamingMarkdown(
+  () => props.segment.text || '',
+  () => isRunning.value,
+)
 </script>
 
 <template>

@@ -13,7 +13,7 @@
         </svg>
         {{ edgeCount }} {{ t('wiki.graph.edges') }}
       </span>
-      <span v-if="orphanCount > 0" class="stat-item stat-warn">
+      <span v-if="mode === 'pages' && orphanCount > 0" class="stat-item stat-warn">
         <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
           <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
         </svg>
@@ -22,11 +22,23 @@
     </div>
 
     <div class="graph-controls">
-      <label class="filter-label">
+      <div class="mode-toggle">
+        <button
+          class="mode-btn"
+          :class="{ 'mode-btn--active': mode === 'pages' }"
+          @click="emit('update:mode', 'pages')"
+        >{{ t('wiki.graph.modePages') }}</button>
+        <button
+          class="mode-btn"
+          :class="{ 'mode-btn--active': mode === 'entities' }"
+          @click="emit('update:mode', 'entities')"
+        >{{ t('wiki.graph.modeEntities') }}</button>
+      </div>
+      <label v-if="mode === 'pages'" class="filter-label">
         <input :checked="showOrphans" type="checkbox" @change="emit('update:showOrphans', ($event.target as HTMLInputElement).checked)" />
         {{ t('wiki.graph.showOrphans') }}
       </label>
-      <select :value="typeFilter" class="type-select" @change="emit('update:typeFilter', ($event.target as HTMLSelectElement).value)">
+      <select v-if="mode === 'pages'" :value="typeFilter" class="type-select" @change="emit('update:typeFilter', ($event.target as HTMLSelectElement).value)">
         <option value="">{{ t('wiki.graph.allTypes') }}</option>
         <option v-for="type in availableTypes" :key="type" :value="type">
           {{ formatPageTypeLabel(type) }}
@@ -73,11 +85,13 @@ defineProps<{
   typeFilter: string
   availableTypes: string[]
   isFullscreen: boolean
+  mode: 'pages' | 'entities'
 }>()
 
 const emit = defineEmits<{
   (e: 'update:showOrphans', val: boolean): void
   (e: 'update:typeFilter', val: string): void
+  (e: 'update:mode', val: 'pages' | 'entities'): void
   (e: 'reset'): void
   (e: 'toggleFullscreen'): void
 }>()
@@ -106,6 +120,13 @@ const emit = defineEmits<{
 .stat-warn { color: var(--mc-danger, #f56c6c); }
 
 .graph-controls { display: flex; align-items: center; gap: 8px; }
+
+.mode-toggle { display: inline-flex; border: 1px solid var(--mc-border-light); border-radius: 7px; overflow: hidden; }
+.mode-btn {
+  padding: 3px 10px; font-size: 11px; border: none; cursor: pointer;
+  background: var(--mc-bg-elevated); color: var(--mc-text-secondary);
+}
+.mode-btn--active { background: var(--mc-primary, #5b8ff9); color: #fff; }
 .filter-label { display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--mc-text-secondary); cursor: pointer; }
 
 .type-select {
