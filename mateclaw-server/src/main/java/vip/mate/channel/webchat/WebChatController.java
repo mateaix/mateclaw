@@ -166,7 +166,8 @@ public class WebChatController {
                 // 创建或获取会话（workspace 从 agent 获取）
                 var webAgent = agentService.getAgent(resolvedAgentId);
                 Long webWsId = webAgent != null ? webAgent.getWorkspaceId() : 1L;
-                var conv = conversationService.getOrCreateConversation(conversationId, resolvedAgentId, webchatUsername(visitorId), webWsId);
+                var conv = conversationService.getOrCreateWebchatConversation(
+                        conversationId, resolvedAgentId, webchatUsername(visitorId), webWsId, effectiveSessionId);
 
                 // 保存用户消息（含访客本轮引用的附件）。附件元数据一律服务端按 fileId 回查，
                 // 不信客户端传入；path 用于 Agent 侧工具读取，对外消息视图会被剥离。
@@ -392,21 +393,48 @@ public class WebChatController {
      * Load this visitor's session threads (own namespace only), mapped to the
      * compact view. Sorted as {@code listConversations} returns them (pinned
      * desc, last-active desc). Shared by the list and paginated endpoints.
+     * <p>
+     * Enumeration is keyed by the visitor's username plus the channel prefix
+     * ({@code webchat:<key8>:}) rather than the full conversationId prefix, so it
+     * still catches threads whose conversationId hashed (long visitorId +
+     * sessionId). The sessionId is read from the persisted {@code webchatSessionId}
+     * column (set on creation) and only falls back to parsing the conversationId
+     * for legacy rows created before that column existed.
      */
     private List<WebChatSessionView> loadVisitorSessions(String apiKey, String visitorId) {
         String base = deriveConversationId(apiKey, visitorId, null);
-        String prefix = base + ":";
+        String channelPrefix = "webchat:" + apiKey.substring(0, Math.min(8, apiKey.length())) + ":";
         String owner = webchatUsername(visitorId);
         return conversationService.listConversations(owner).stream()
                 .filter(c -> c.getConversationId() != null
                         && owner.equals(c.getUsername())
-                        && (c.getConversationId().equals(base) || c.getConversationId().startsWith(prefix)))
+                        && c.getConversationId().startsWith(channelPrefix))
                 .map(c -> {
-                    String cid = c.getConversationId();
-                    String sid = cid.equals(base) ? null : cid.substring(prefix.length());
+                    String sid = recoverSessionId(c, base);
                     return new WebChatSessionView(sid, c.getTitle(), c.getLastActiveTime(), c.getMessageCount());
                 })
                 .collect(Collectors.toList());
+    }
+
+    /**
+     * Recover a thread's sessionId. Prefers the persisted column; for legacy
+     * rows (column null) falls back to parsing the non-hashed conversationId.
+     * Returns null for the default (no-session) thread and for legacy hashed rows
+     * whose sessionId can no longer be reconstructed.
+     */
+    private String recoverSessionId(vip.mate.workspace.conversation.vo.ConversationVO c, String base) {
+        if (c.getWebchatSessionId() != null) {
+            return c.getWebchatSessionId();
+        }
+        String cid = c.getConversationId();
+        if (cid.equals(base)) {
+            return null;
+        }
+        String prefix = base + ":";
+        if (cid.startsWith(prefix)) {
+            return cid.substring(prefix.length());
+        }
+        return null;
     }
 
     /**
