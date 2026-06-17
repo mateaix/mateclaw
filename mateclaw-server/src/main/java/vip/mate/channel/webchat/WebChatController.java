@@ -433,6 +433,9 @@ public class WebChatController {
      * 分页 + 关键词搜索某访客的会话线程。
      * <p>访客的会话集是按 visitor 命名空间限定的（数量有界），故在内存里做关键词过滤与分页。
      * keyword 不区分大小写、匹配标题子串。
+     * <p>鉴权链跟 {@link #listSessions} 完全一致,本方法只做"列表 → 关键词过滤 → 分页"的视图
+     * 包装,所以直接委托 listSessions 后处理(避免重复 resolveChannel + verifyVisitorToken
+     * 的鉴权代码)。
      */
     @Operation(summary = "分页查询访客会话线程")
     @GetMapping("/sessions/page")
@@ -444,17 +447,16 @@ public class WebChatController {
             @RequestParam(defaultValue = "20") int size,
             @RequestParam(required = false) String keyword,
             @RequestParam(defaultValue = "false") boolean includeArchived) {
-        ChannelEntity channel = resolveChannel(apiKey);
-        if (channel == null) {
-            return R.fail(401, "Invalid API Key");
-        }
-        if (!verifyVisitorToken(visitorTokenSecret, channel.getId(), visitorId, visitorToken)) {
-            return R.fail(401, "Invalid or missing visitor token");
+        @SuppressWarnings("unchecked")
+        R<List<WebChatSessionView>> base = (R<List<WebChatSessionView>>) (R<?>)
+                listSessions(apiKey, visitorToken, visitorId, includeArchived);
+        if (base.getCode() != 200) {
+            return R.fail(base.getCode(), base.getMsg());
         }
         if (page < 1) page = 1;
         if (size < 1 || size > 200) size = 20;
 
-        List<WebChatSessionView> all = loadVisitorSessions(apiKey, visitorId, includeArchived);
+        List<WebChatSessionView> all = base.getData();
         if (keyword != null && !keyword.isBlank()) {
             String kw = keyword.trim().toLowerCase(java.util.Locale.ROOT);
             all = all.stream()
