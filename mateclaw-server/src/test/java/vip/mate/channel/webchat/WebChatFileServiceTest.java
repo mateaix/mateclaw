@@ -27,7 +27,12 @@ class WebChatFileServiceTest {
     private static final String CONV = "webchat:abcd1234:visitor-1";
 
     private WebChatFileService service(boolean enabled, long maxMb, String exts) {
-        return new WebChatFileService(enabled, maxMb, exts);
+        return new WebChatFileService(enabled, maxMb, exts, 50, 200);
+    }
+
+    private WebChatFileService service(boolean enabled, long maxMb, String exts,
+                                       int maxFiles, long maxTotalMb) {
+        return new WebChatFileService(enabled, maxMb, exts, maxFiles, maxTotalMb);
     }
 
     @AfterEach
@@ -90,6 +95,17 @@ class WebChatFileServiceTest {
 
         // Bytes survive on disk for download after consume.
         assertThat(svc.resolve(CONV, stored.storedName())).isPresent();
+    }
+
+    @Test
+    @DisplayName("rejects once the per-conversation file-count quota is hit")
+    void rejectsOverFileCountQuota() throws IOException {
+        WebChatFileService svc = service(true, 20, "txt", 2, 200); // max 2 files
+        svc.store(CONV, new MockMultipartFile("file", "a.txt", "text/plain", "a".getBytes()));
+        svc.store(CONV, new MockMultipartFile("file", "b.txt", "text/plain", "b".getBytes()));
+        assertThatThrownBy(() -> svc.store(CONV,
+                new MockMultipartFile("file", "c.txt", "text/plain", "c".getBytes())))
+                .isInstanceOf(WebChatFileService.UploadRejectedException.class);
     }
 
     @Test

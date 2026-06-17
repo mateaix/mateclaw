@@ -405,9 +405,12 @@ public class WebChatController {
         String base = deriveConversationId(apiKey, visitorId, null);
         String channelPrefix = "webchat:" + apiKey.substring(0, Math.min(8, apiKey.length())) + ":";
         String owner = webchatUsername(visitorId);
-        return conversationService.listConversations(owner).stream()
+        // Query is scoped to this visitor's own rows only (no system rows), so
+        // listing a visitor's threads doesn't load every IM/cron conversation.
+        // The channel prefix is matched in-memory with a literal startsWith so a
+        // '_' / '%' in the api key's first 8 chars can't act as a LIKE wildcard.
+        return conversationService.listWebchatConversations(owner).stream()
                 .filter(c -> c.getConversationId() != null
-                        && owner.equals(c.getUsername())
                         && c.getConversationId().startsWith(channelPrefix))
                 .map(c -> {
                     String sid = recoverSessionId(c, base);
@@ -422,7 +425,7 @@ public class WebChatController {
      * Returns null for the default (no-session) thread and for legacy hashed rows
      * whose sessionId can no longer be reconstructed.
      */
-    private String recoverSessionId(vip.mate.workspace.conversation.vo.ConversationVO c, String base) {
+    private String recoverSessionId(vip.mate.workspace.conversation.model.ConversationEntity c, String base) {
         if (c.getWebchatSessionId() != null) {
             return c.getWebchatSessionId();
         }
