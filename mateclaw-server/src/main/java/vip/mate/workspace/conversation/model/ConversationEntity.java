@@ -62,6 +62,14 @@ public class ConversationEntity {
     private String modelName;
 
     /**
+     * WebChat per-thread sessionId (see V147 migration). Persisted so it can be
+     * recovered for the visitor's /sessions listing even when the conversationId
+     * hashes (long visitorId + sessionId folds into an unrecoverable hash). NULL
+     * for non-webchat rows and for a visitor's default (no-session) thread.
+     */
+    private String webchatSessionId;
+
+    /**
      * Per-conversation progress notebook JSON (see V100 migration).
      * <p>
      * Map of {@code stepKey -> {label, status, note, updatedAt}}, written by
