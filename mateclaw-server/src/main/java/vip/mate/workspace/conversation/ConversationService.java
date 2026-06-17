@@ -728,6 +728,30 @@ public class ConversationService {
     }
 
     /**
+     * Find the most recent message of a given role in a conversation.
+     * Used by the webchat regenerate flow to find the seed user message and
+     * locate the assistant reply to delete. Returns null if no match.
+     */
+    public MessageEntity findLastMessageByRole(String conversationId, String role) {
+        List<MessageEntity> msgs = messageMapper.selectList(new LambdaQueryWrapper<MessageEntity>()
+                .eq(MessageEntity::getConversationId, conversationId)
+                .eq(MessageEntity::getRole, role)
+                .orderByDesc(MessageEntity::getId)
+                .last("LIMIT 1"));
+        return msgs.isEmpty() ? null : msgs.get(0);
+    }
+
+    /**
+     * Delete a single message by its primary key. Used by the webchat
+     * regenerate flow to drop the last assistant reply before re-running.
+     * Does NOT touch the conversation's messageCount counter — that is
+     * rewritten when the new assistant message is persisted by saveMessage.
+     */
+    public void deleteMessageById(Long messageId) {
+        messageMapper.deleteById(messageId);
+    }
+
+    /**
      * Get a conversation's message count.
      *
      * <p>获取会话的消息数量。
