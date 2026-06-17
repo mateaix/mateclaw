@@ -38,7 +38,9 @@ public class ConversationController {
             Authentication auth,
             @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
         String username = auth != null ? auth.getName() : "anonymous";
-        return R.ok(conversationService.listConversations(username, workspaceId));
+        // Admin console: include external channel principals (webchat visitors)
+        // so webchat threads show up alongside the user's own + system rows.
+        return R.ok(conversationService.listConversations(username, workspaceId, true));
     }
 
     /**
