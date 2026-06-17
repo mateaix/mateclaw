@@ -142,8 +142,14 @@ public class ConversationService {
         //
         // 同时返回当前用户的会话和定时任务（system）产生的会话；
         // 排除子会话（委派产生的子会话不在侧边栏显示）。
+        //
+        // External channel principals (webchat) are only surfaced to global
+        // admins: per isConversationOwner they are the only ones who can open a
+        // webchat-owned conversation, so listing them to anyone else would show
+        // rows the caller would then 403 on (issue #344 alignment).
+        boolean includeWebchat = includeChannelPrincipals && isGlobalAdmin(username);
         LambdaQueryWrapper<ConversationEntity> wrapper = new LambdaQueryWrapper<ConversationEntity>()
-                .and(w -> applyOwnerScope(w, username, includeChannelPrincipals))
+                .and(w -> applyOwnerScope(w, username, includeWebchat))
                 .isNull(ConversationEntity::getParentConversationId)
                 .orderByDesc(ConversationEntity::getPinned)
                 .orderByDesc(ConversationEntity::getLastActiveTime);
@@ -198,6 +204,18 @@ public class ConversationService {
     }
 
     /**
+     * Whether the user is a global admin (role=admin), resolved from the DB —
+     * never from client-controlled data. Gates webchat row visibility in the
+     * admin-console list/page: {@link #isConversationOwner} only lets a global
+     * admin open a webchat-owned conversation, so only admins should see those
+     * rows — otherwise the console lists threads it would then 403 on.
+     */
+    private boolean isGlobalAdmin(String username) {
+        UserEntity u = authService.findByUsername(username);
+        return u != null && "admin".equalsIgnoreCase(u.getRole());
+    }
+
+    /**
      * Paginated variant used by the Sessions admin page.
      *
      * <p>Mirrors {@link #listConversations(String, Long)}'s filtering (current
@@ -216,10 +234,11 @@ public class ConversationService {
         com.baomidou.mybatisplus.extension.plugins.pagination.Page<ConversationEntity> pager =
                 new com.baomidou.mybatisplus.extension.plugins.pagination.Page<>(page, size);
 
-        // Admin Sessions page surfaces channel conversations too, so include
-        // external webchat principals alongside the user's own + system rows.
+        // Admin Sessions page surfaces channel conversations too, but only to
+        // global admins — they are the only ones who can open a webchat-owned
+        // conversation (issue #344), so non-admins must not see those rows.
         LambdaQueryWrapper<ConversationEntity> wrapper = new LambdaQueryWrapper<ConversationEntity>()
-                .and(w -> applyOwnerScope(w, username, true))
+                .and(w -> applyOwnerScope(w, username, isGlobalAdmin(username)))
                 .isNull(ConversationEntity::getParentConversationId)
                 .orderByDesc(ConversationEntity::getPinned)
                 .orderByDesc(ConversationEntity::getLastActiveTime);
