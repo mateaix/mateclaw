@@ -63,6 +63,37 @@ public class AuditEventService {
         }
     }
 
+    /**
+     * 异步记录审计事件,显式指定 actor(而非从 SecurityContext 推导)。
+     * <p>用于非 MateClaw 用户的写操作 —— 当前主要是 webchat 访客。actor 形如
+     * {@code "webchat:<channelId>:<visitorId>"},{@code userId} 落 0(访客没有 MateClaw 账户)。
+     * IP / User-Agent 仍尽量从当前请求抓取(webEnvironment=NONE 下为 null,可接受)。
+     */
+    public void recordAs(String actor, Long workspaceId, String action, String resourceType,
+                         String resourceId, String resourceName, String detailJson) {
+        AuditEventEntity event = new AuditEventEntity();
+        event.setUsername(actor != null ? actor : "system");
+        event.setUserId(0L);
+        event.setAction(action);
+        event.setResourceType(resourceType);
+        event.setResourceId(resourceId);
+        event.setResourceName(resourceName);
+        event.setDetailJson(detailJson);
+        event.setWorkspaceId(workspaceId);
+        event.setCreateTime(LocalDateTime.now());
+        try {
+            ServletRequestAttributes attrs = (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
+            if (attrs != null) {
+                HttpServletRequest request = attrs.getRequest();
+                event.setIpAddress(getClientIp(request));
+                event.setUserAgent(truncate(request.getHeader("User-Agent"), 256));
+            }
+        } catch (Exception ignored) {
+            // 异步或非 web 上下文：跳过 IP/UA
+        }
+        insertAsync(event);
+    }
+
     @Async
     void insertAsync(AuditEventEntity event) {
         try {
