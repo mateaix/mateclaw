@@ -288,6 +288,114 @@ public class WebChatController {
         ));
     }
 
+    /** Cap on how many empty (message_count = 0) threads one visitor may hold on a
+     *  channel at once. Guards against pathologic clients churning placeholder
+     *  sessions without ever sending a message. */
+    private static final int MAX_EMPTY_SESSIONS_PER_VISITOR = 5;
+
+    /**
+     * 显式创建一条访客会话线程（空会话）。
+     * <p>
+     * 与 {@code POST /stream} 的隐式 getOrCreate 互补：本端点先建一条 message_count=0
+     * 的占位线程，调用方拿到 {@code sessionId/conversationId/visitorToken} 之后，再决定
+     * 何时通过 {@code /stream} 发首条消息。鉴权为访客的<b>首次接触</b>：仅校验
+     * {@code X-MC-Key}，不要求 {@code X-MC-Visitor-Token}，后端会签发并回传 token，
+     * 调用方在后续 GET/PUT/DELETE 上必须回带。
+     * <p>
+     * 行为：
+     * <ul>
+     *   <li>幂等：{@code sessionId} 与该 visitor 已有线程冲突 → 直接返回现有线程，
+     *       不报错、不覆盖 title。</li>
+     *   <li>配额：单 (渠道, visitor) 未活跃空线程 ≤ {@value MAX_EMPTY_SESSIONS_PER_VISITOR}，
+     *       超出返回 409。已存在的线程走幂等路径不受配额限制。</li>
+     *   <li>title 非空时写入；为空时落默认 "新对话"，首条 user 消息仍会按现有规则截取。</li>
+     * </ul>
+     */
+    @Operation(summary = "显式创建访客会话线程（空会话）")
+    @PostMapping("/sessions")
+    public R<Map<String, Object>> createSession(
+            @RequestHeader("X-MC-Key") String apiKey,
+            @RequestBody(required = false) WebChatCreateSessionRequest request) {
+
+        ChannelEntity channel = resolveChannel(apiKey);
+        if (channel == null) {
+            return R.fail(401, "Invalid API Key");
+        }
+
+        // Resolve agent: explicit request.agentId overrides channel's bound agent,
+        // but must belong to channel's workspace (mirrors /stream).
+        final Long agentId;
+        if (request != null && request.getAgentId() != null) {
+            var requested = agentService.getAgent(request.getAgentId());
+            if (requested == null) {
+                return R.fail(400, "Requested agent not found");
+            }
+            if (channel.getWorkspaceId() != null && requested.getWorkspaceId() != null
+                    && !channel.getWorkspaceId().equals(requested.getWorkspaceId())) {
+                return R.fail(400, "Requested agent does not belong to this channel's workspace");
+            }
+            agentId = request.getAgentId();
+        } else {
+            agentId = channel.getAgentId();
+            if (agentId == null) {
+                return R.fail(400, "No agent configured for this WebChat channel");
+            }
+        }
+
+        final String visitorId;
+        final String sessionId;
+        try {
+            visitorId = normalizeVisitorId(request != null ? request.getVisitorId() : null);
+            sessionId = normalizeSessionId(request != null ? request.getSessionId() : null);
+        } catch (IllegalArgumentException ex) {
+            return R.fail(400, ex.getMessage());
+        }
+
+        String title = (request != null && request.getTitle() != null) ? request.getTitle().trim() : null;
+        if (title != null && (title.isEmpty() || title.length() > 100)) {
+            return R.fail(400, "title 不合法（1-100 字）");
+        }
+
+        String conversationId = deriveConversationId(apiKey, visitorId, sessionId);
+        String owner = webchatUsername(visitorId);
+
+        // Idempotency: existing thread is returned as-is. Title and every other
+        // field are left untouched — a re-create call must not clobber a previously
+        // set title. Existing rows are exempt from the empty-session quota.
+        ConversationEntity existing = conversationService.findByConversationId(conversationId);
+        if (existing != null && owner.equals(existing.getUsername())) {
+            return R.ok(buildCreateSessionResponse(existing, sessionId, channel.getId(), visitorId));
+        }
+
+        // Quota: count empty threads this visitor already holds on this channel.
+        // loadVisitorSessions already scopes to (channel prefix ∩ visitor owner).
+        long emptyCount = loadVisitorSessions(apiKey, visitorId).stream()
+                .filter(s -> s.getMessageCount() == null || s.getMessageCount() == 0)
+                .count();
+        if (emptyCount >= MAX_EMPTY_SESSIONS_PER_VISITOR) {
+            return R.fail(409, "未活跃会话数已达上限（" + MAX_EMPTY_SESSIONS_PER_VISITOR
+                    + "），请先发送消息或删除旧会话");
+        }
+
+        ConversationEntity conv = conversationService.getOrCreateWebchatConversation(
+                conversationId, agentId, owner, channel.getWorkspaceId(), sessionId, title);
+        return R.ok(buildCreateSessionResponse(conv, sessionId, channel.getId(), visitorId));
+    }
+
+    private Map<String, Object> buildCreateSessionResponse(ConversationEntity conv, String sessionId,
+                                                           Long channelId, String visitorId) {
+        String visitorToken = computeVisitorToken(visitorTokenSecret, channelId, visitorId);
+        // LinkedHashMap (not Map.of) because Map.of rejects null and we want a
+        // stable key order for the response payload.
+        Map<String, Object> m = new java.util.LinkedHashMap<>();
+        m.put("sessionId", sessionId != null ? sessionId : "");
+        m.put("conversationId", conv.getConversationId());
+        m.put("visitorToken", visitorToken);
+        m.put("title", conv.getTitle() != null ? conv.getTitle() : "");
+        m.put("createTime", conv.getCreateTime());
+        return m;
+    }
+
     /**
      * 列出某访客的会话线程
      * <p>
@@ -888,5 +996,21 @@ public class WebChatController {
         private String title;
         private LocalDateTime lastActiveTime;
         private Integer messageCount;
+    }
+
+    /** Body for {@code POST /sessions} — explicitly create an empty thread. */
+    @lombok.Data
+    public static class WebChatCreateSessionRequest {
+        /** Optional; server mints a UUID when absent (same convention as /stream). */
+        private String visitorId;
+        /** Optional; server generates one when absent. Whitelisted charset, ≤ 64 chars. */
+        private String sessionId;
+        /** Optional; 1–100 chars when non-blank, otherwise left null so the first
+         *  /stream message still derives the title (mirrors PUT /sessions/title rules). */
+        private String title;
+        /** Optional; override the channel's bound agent. Must belong to the channel's
+         *  workspace. Only applied on first creation — once the thread exists, a
+         *  different agentId is ignored. */
+        private Long agentId;
     }
 }

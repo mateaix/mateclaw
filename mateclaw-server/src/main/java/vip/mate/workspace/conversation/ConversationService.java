@@ -263,12 +263,40 @@ public class ConversationService {
     public ConversationEntity getOrCreateWebchatConversation(String conversationId, Long agentId,
                                                              String username, Long workspaceId,
                                                              String sessionId) {
+        return getOrCreateWebchatConversation(conversationId, agentId, username, workspaceId, sessionId, null);
+    }
+
+    /**
+     * WebChat get-or-create with an optional caller-supplied title.
+     * <p>
+     * When the row is freshly inserted and {@code title} is non-blank, it
+     * overrides the default {@code "新对话"}; otherwise the default is kept and
+     * {@link #saveMessage} will still derive a title from the first user
+     * message. An existing row is never rewritten — neither {@code sessionId}
+     * nor {@code title} are clobbered, so a session created via
+     * {@code POST /sessions} with a caller-supplied title keeps that title
+     * when the first {@code /stream} message later lands.
+     */
+    @Transactional
+    public ConversationEntity getOrCreateWebchatConversation(String conversationId, Long agentId,
+                                                             String username, Long workspaceId,
+                                                             String sessionId, String title) {
         boolean existed = conversationMapper.selectOne(new LambdaQueryWrapper<ConversationEntity>()
                 .eq(ConversationEntity::getConversationId, conversationId)) != null;
         ConversationEntity conv = getOrCreateConversation(conversationId, agentId, username, workspaceId);
-        if (!existed && sessionId != null && !sessionId.isBlank() && conv.getWebchatSessionId() == null) {
-            conv.setWebchatSessionId(sessionId);
-            conversationMapper.updateById(conv);
+        if (!existed) {
+            boolean dirty = false;
+            if (sessionId != null && !sessionId.isBlank() && conv.getWebchatSessionId() == null) {
+                conv.setWebchatSessionId(sessionId);
+                dirty = true;
+            }
+            if (title != null && !title.isBlank()) {
+                conv.setTitle(title.trim());
+                dirty = true;
+            }
+            if (dirty) {
+                conversationMapper.updateById(conv);
+            }
         }
         return conv;
     }
