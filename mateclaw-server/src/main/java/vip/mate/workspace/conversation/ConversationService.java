@@ -636,6 +636,21 @@ public class ConversationService {
     }
 
     /**
+     * Archive or unarchive a conversation (webchat soft-close). Mirrors
+     * {@link #setPinned}: archived threads stay on disk (history preserved,
+     * addressable, downloadable) but are excluded from default listings; the
+     * caller opts back in via {@code includeArchived=true}.
+     */
+    public void setArchived(String conversationId, boolean archived) {
+        ConversationEntity conv = conversationMapper.selectOne(new LambdaQueryWrapper<ConversationEntity>()
+                .eq(ConversationEntity::getConversationId, conversationId));
+        if (conv != null) {
+            conv.setArchived(archived ? 1 : 0);
+            conversationMapper.updateById(conv);
+        }
+    }
+
+    /**
      * Update a conversation's stream status ({@code running} / {@code idle}).
      *
      * <p>更新会话的流状态（running / idle）。
