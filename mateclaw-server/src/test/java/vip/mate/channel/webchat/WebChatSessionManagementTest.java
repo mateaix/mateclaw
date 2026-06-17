@@ -76,7 +76,7 @@ class WebChatSessionManagementTest {
     @DisplayName("listSessions includes the hashed long-id thread with its sessionId recovered")
     @SuppressWarnings("unchecked")
     void listsHashedThread() {
-        R<List<WebChatSessionView>> r = (R<List<WebChatSessionView>>) (R<?>) controller.listSessions(API_KEY, token, VISITOR);
+        R<List<WebChatSessionView>> r = (R<List<WebChatSessionView>>) (R<?>) controller.listSessions(API_KEY, token, VISITOR, false);
         assertThat(r.getCode()).isEqualTo(200);
         List<WebChatSessionView> sessions = r.getData();
         assertThat(sessions).hasSize(3);
@@ -88,21 +88,21 @@ class WebChatSessionManagementTest {
     @DisplayName("bad visitor token is rejected")
     @SuppressWarnings("unchecked")
     void rejectsBadToken() {
-        R<List<WebChatSessionView>> r = (R<List<WebChatSessionView>>) (R<?>) controller.listSessions(API_KEY, "bogus", VISITOR);
+        R<List<WebChatSessionView>> r = (R<List<WebChatSessionView>>) (R<?>) controller.listSessions(API_KEY, "bogus", VISITOR, false);
         assertThat(r.getCode()).isEqualTo(401);
     }
 
     @Test
     @DisplayName("pageSessions paginates and keyword-searches by title")
     void pagesAndSearches() {
-        R<Map<String, Object>> page = controller.pageSessions(API_KEY, token, VISITOR, 1, 2, null);
+        R<Map<String, Object>> page = controller.pageSessions(API_KEY, token, VISITOR, 1, 2, null, false);
         assertThat(page.getCode()).isEqualTo(200);
         assertThat(page.getData().get("total")).isEqualTo(3L);
         assertThat((List<?>) page.getData().get("items")).hasSize(2);
 
         // Rename one thread, then search for it.
         controller.renameSession(API_KEY, token, VISITOR, "s1", Map.of("title", "QuarterlyReport"));
-        R<Map<String, Object>> hit = controller.pageSessions(API_KEY, token, VISITOR, 1, 20, "quarterly");
+        R<Map<String, Object>> hit = controller.pageSessions(API_KEY, token, VISITOR, 1, 20, "quarterly", false);
         assertThat((List<?>) hit.getData().get("items")).hasSize(1);
     }
 
