@@ -393,8 +393,13 @@ const subtitle = computed(() =>
 )
 
 const allFields = computed<ChannelFieldDef[]>(() => CHANNEL_FIELD_DEFS[channelType.value] || [])
-const requiredFields = computed(() => allFields.value.filter((f) => f.required))
-const optionalFields = computed(() => allFields.value.filter((f) => !f.required))
+// readOnly fields are platform-generated on save (e.g. webchat's api_key) — the
+// user can't enter them during creation, so they must never gate "Continue" nor
+// render as fillable inputs here. They show up (required, readOnly) in the edit
+// modal once a value exists.
+const editableFields = computed(() => allFields.value.filter((f) => !f.readOnly))
+const requiredFields = computed(() => editableFields.value.filter((f) => f.required))
+const optionalFields = computed(() => editableFields.value.filter((f) => !f.required))
 
 const hasVerifier = computed(() => VERIFIABLE_TYPES.has(channelType.value))
 const isOAuthStyle = computed(() => OAUTH_STYLE_TYPES.has(channelType.value))
