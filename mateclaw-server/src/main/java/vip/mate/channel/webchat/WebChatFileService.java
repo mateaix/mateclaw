@@ -17,6 +17,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * Storage + validation for files exchanged over the WebChat channel.
@@ -47,6 +48,8 @@ public class WebChatFileService {
     private final boolean enabled;
     private final long maxSizeBytes;
     private final Set<String> allowedExtensions;
+    private final int maxFilesPerConversation;
+    private final long maxTotalBytesPerConversation;
 
     /** fileId (== storedName) -> staged metadata, pending a /stream reference. */
     private final ConcurrentHashMap<String, StagedFile> staged = new ConcurrentHashMap<>();
@@ -56,13 +59,17 @@ public class WebChatFileService {
             @Value("${mateclaw.webchat.upload.max-size-mb:20}") long maxSizeMb,
             @Value("${mateclaw.webchat.upload.allowed-extensions:"
                     + "png,jpg,jpeg,gif,webp,bmp,pdf,txt,md,csv,json,log,"
-                    + "doc,docx,xls,xlsx,ppt,pptx,zip,mp3,wav,m4a,mp4,mov,webm}") String allowedExtensionsCsv) {
+                    + "doc,docx,xls,xlsx,ppt,pptx,zip,mp3,wav,m4a,mp4,mov,webm}") String allowedExtensionsCsv,
+            @Value("${mateclaw.webchat.upload.max-files-per-conversation:50}") int maxFilesPerConversation,
+            @Value("${mateclaw.webchat.upload.max-total-mb-per-conversation:200}") long maxTotalMbPerConversation) {
         this.enabled = enabled;
         this.maxSizeBytes = maxSizeMb * 1024 * 1024;
         this.allowedExtensions = Arrays.stream(allowedExtensionsCsv.split(","))
                 .map(s -> s.trim().toLowerCase(Locale.ROOT))
                 .filter(s -> !s.isEmpty())
                 .collect(Collectors.toUnmodifiableSet());
+        this.maxFilesPerConversation = maxFilesPerConversation;
+        this.maxTotalBytesPerConversation = maxTotalMbPerConversation * 1024 * 1024;
     }
 
     /** Metadata for a staged upload. */
@@ -118,6 +125,7 @@ public class WebChatFileService {
             throw new UploadRejectedException("Invalid conversation");
         }
         Files.createDirectories(dir);
+        enforceConversationQuota(dir, file.getSize());
         Path target = dir.resolve(storedName);
         file.transferTo(target.toAbsolutePath());
 
@@ -198,6 +206,34 @@ public class WebChatFileService {
             });
             return true;
         });
+    }
+
+    /**
+     * Bound a conversation's disk footprint: reject when the dir already holds
+     * the max file count, or when adding {@code incomingSize} would push the
+     * total over the cap. Cheap dir scan (these dirs hold at most a few dozen
+     * files); pairs with the staging TTL sweep that reclaims unreferenced files.
+     */
+    private void enforceConversationQuota(Path dir, long incomingSize) throws IOException {
+        int count = 0;
+        long total = 0;
+        try (Stream<Path> files = Files.list(dir)) {
+            for (Path p : (Iterable<Path>) files::iterator) {
+                if (Files.isRegularFile(p)) {
+                    count++;
+                    total += Files.size(p);
+                }
+            }
+        }
+        if (count >= maxFilesPerConversation) {
+            throw new UploadRejectedException(
+                    "Too many files in this conversation (max " + maxFilesPerConversation + ")");
+        }
+        if (total + incomingSize > maxTotalBytesPerConversation) {
+            throw new UploadRejectedException(
+                    "Conversation upload quota exceeded (max "
+                            + (maxTotalBytesPerConversation / 1024 / 1024) + " MB)");
+        }
     }
 
     private static String extensionOf(String name) {

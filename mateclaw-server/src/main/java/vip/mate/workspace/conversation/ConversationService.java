@@ -274,6 +274,24 @@ public class ConversationService {
     }
 
     /**
+     * List a webchat visitor's own conversations (top-level threads), ordered
+     * pinned-desc then last-active-desc.
+     * <p>
+     * Scoped to {@code username = owner} only — unlike {@link #listConversations}
+     * it does <b>not</b> pull in {@code system} rows, so a visitor's /sessions
+     * call doesn't load every IM/cron conversation in the database just to list
+     * its own handful of threads. The caller still applies the channel-prefix
+     * filter (literal {@code startsWith}, wildcard-safe) to isolate the channel.
+     */
+    public List<ConversationEntity> listWebchatConversations(String username) {
+        return conversationMapper.selectList(new LambdaQueryWrapper<ConversationEntity>()
+                .eq(ConversationEntity::getUsername, username)
+                .isNull(ConversationEntity::getParentConversationId)
+                .orderByDesc(ConversationEntity::getPinned)
+                .orderByDesc(ConversationEntity::getLastActiveTime));
+    }
+
+    /**
      * Create a child conversation (delegation scenario), linking it back to
      * its parent via {@code parentConversationId}.
      *
