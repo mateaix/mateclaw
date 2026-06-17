@@ -862,7 +862,16 @@ public class ConversationService {
      * fileName} / {@code contentType} to render and download attachments.
      */
     public List<MessageVO> listMessageViewsExternal(String conversationId) {
-        return listMessages(conversationId).stream()
+        return toExternalMessageViews(listMessages(conversationId));
+    }
+
+    /**
+     * Map already-loaded message entities to external (path-stripped) views.
+     * Shared by the full-list and paginated webchat paths so sanitization stays
+     * in one place.
+     */
+    public List<MessageVO> toExternalMessageViews(List<MessageEntity> messages) {
+        return messages.stream()
                 .map(message -> {
                     List<MessageContentPart> parts = parseMessageParts(message);
                     parts.forEach(p -> {

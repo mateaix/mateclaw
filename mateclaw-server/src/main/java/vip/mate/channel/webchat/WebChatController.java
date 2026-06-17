@@ -36,7 +36,7 @@ import vip.mate.memory.event.ConversationCompletionPublisher;
 import vip.mate.workspace.conversation.ConversationService;
 import vip.mate.workspace.conversation.model.ConversationEntity;
 import vip.mate.workspace.conversation.model.MessageContentPart;
-import vip.mate.workspace.conversation.vo.MessageVO;
+import vip.mate.workspace.conversation.model.MessageEntity;
 
 import java.io.IOException;
 import java.time.LocalDateTime;
@@ -306,32 +306,63 @@ public class WebChatController {
         if (!verifyVisitorToken(visitorTokenSecret, channel.getId(), visitorId, visitorToken)) {
             return R.fail(401, "Invalid or missing visitor token");
         }
-        String base = deriveConversationId(apiKey, visitorId, null);
-        String prefix = base + ":";
-        String owner = webchatUsername(visitorId);
-        List<WebChatSessionView> sessions = conversationService.listConversations(owner).stream()
-                .filter(c -> c.getConversationId() != null
-                        && owner.equals(c.getUsername())
-                        && (c.getConversationId().equals(base) || c.getConversationId().startsWith(prefix)))
-                .map(c -> {
-                    String cid = c.getConversationId();
-                    String sid = cid.equals(base) ? null : cid.substring(prefix.length());
-                    return new WebChatSessionView(sid, c.getTitle(), c.getLastActiveTime(), c.getMessageCount());
-                })
-                .collect(Collectors.toList());
-        return R.ok(sessions);
+        return R.ok(loadVisitorSessions(apiKey, visitorId));
     }
 
     /**
-     * 获取某会话线程的消息列表
+     * 分页 + 关键词搜索某访客的会话线程。
+     * <p>访客的会话集是按 visitor 命名空间限定的（数量有界），故在内存里做关键词过滤与分页。
+     * keyword 不区分大小写、匹配标题子串。
      */
-    @Operation(summary = "获取会话消息")
-    @GetMapping("/sessions/messages")
-    public R<List<MessageVO>> sessionMessages(
+    @Operation(summary = "分页查询访客会话线程")
+    @GetMapping("/sessions/page")
+    public R<Map<String, Object>> pageSessions(
             @RequestHeader("X-MC-Key") String apiKey,
             @RequestHeader(value = "X-MC-Visitor-Token", required = false) String visitorToken,
             @RequestParam String visitorId,
-            @RequestParam(required = false) String sessionId) {
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "20") int size,
+            @RequestParam(required = false) String keyword) {
+        ChannelEntity channel = resolveChannel(apiKey);
+        if (channel == null) {
+            return R.fail(401, "Invalid API Key");
+        }
+        if (!verifyVisitorToken(visitorTokenSecret, channel.getId(), visitorId, visitorToken)) {
+            return R.fail(401, "Invalid or missing visitor token");
+        }
+        if (page < 1) page = 1;
+        if (size < 1 || size > 200) size = 20;
+
+        List<WebChatSessionView> all = loadVisitorSessions(apiKey, visitorId);
+        if (keyword != null && !keyword.isBlank()) {
+            String kw = keyword.trim().toLowerCase(java.util.Locale.ROOT);
+            all = all.stream()
+                    .filter(s -> s.getTitle() != null && s.getTitle().toLowerCase(java.util.Locale.ROOT).contains(kw))
+                    .collect(Collectors.toList());
+        }
+        long total = all.size();
+        int from = Math.min((page - 1) * size, all.size());
+        int to = Math.min(from + size, all.size());
+        List<WebChatSessionView> pageItems = all.subList(from, to);
+        return R.ok(Map.of(
+                "items", pageItems,
+                "total", total,
+                "page", page,
+                "size", size
+        ));
+    }
+
+    /**
+     * 重命名某会话线程。标题非空、长度 ≤ 100。
+     */
+    @Operation(summary = "重命名会话线程")
+    @PutMapping("/sessions/title")
+    public R<Void> renameSession(
+            @RequestHeader("X-MC-Key") String apiKey,
+            @RequestHeader(value = "X-MC-Visitor-Token", required = false) String visitorToken,
+            @RequestParam String visitorId,
+            @RequestParam(required = false) String sessionId,
+            @RequestBody Map<String, String> body) {
         ChannelEntity channel = resolveChannel(apiKey);
         if (channel == null) {
             return R.fail(401, "Invalid API Key");
@@ -349,8 +380,91 @@ public class WebChatController {
         if (!ownsConversation(conversationId, visitorId)) {
             return R.fail(404, "Session not found");
         }
-        // External view: strip server-side file paths before handing messages to the visitor.
-        return R.ok(conversationService.listMessageViewsExternal(conversationId));
+        String title = body != null && body.get("title") != null ? body.get("title").trim() : "";
+        if (title.isEmpty() || title.length() > 100) {
+            return R.fail(400, "标题不合法（1-100 字）");
+        }
+        conversationService.renameConversation(conversationId, title);
+        return R.ok();
+    }
+
+    /**
+     * Load this visitor's session threads (own namespace only), mapped to the
+     * compact view. Sorted as {@code listConversations} returns them (pinned
+     * desc, last-active desc). Shared by the list and paginated endpoints.
+     */
+    private List<WebChatSessionView> loadVisitorSessions(String apiKey, String visitorId) {
+        String base = deriveConversationId(apiKey, visitorId, null);
+        String prefix = base + ":";
+        String owner = webchatUsername(visitorId);
+        return conversationService.listConversations(owner).stream()
+                .filter(c -> c.getConversationId() != null
+                        && owner.equals(c.getUsername())
+                        && (c.getConversationId().equals(base) || c.getConversationId().startsWith(prefix)))
+                .map(c -> {
+                    String cid = c.getConversationId();
+                    String sid = cid.equals(base) ? null : cid.substring(prefix.length());
+                    return new WebChatSessionView(sid, c.getTitle(), c.getLastActiveTime(), c.getMessageCount());
+                })
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * 获取某会话线程的消息列表（支持分页）。
+     * <p>不传 limit 时返回全部消息（向后兼容）；传 limit 返回最新 limit 条 + hasMore；
+     * 传 beforeId + limit 时返回该 ID 之前的 limit 条（上拉加载更早消息）。
+     */
+    @Operation(summary = "获取会话消息（支持分页）")
+    @GetMapping("/sessions/messages")
+    public R<?> sessionMessages(
+            @RequestHeader("X-MC-Key") String apiKey,
+            @RequestHeader(value = "X-MC-Visitor-Token", required = false) String visitorToken,
+            @RequestParam String visitorId,
+            @RequestParam(required = false) String sessionId,
+            @RequestParam(required = false) Long beforeId,
+            @RequestParam(required = false) Integer limit) {
+        ChannelEntity channel = resolveChannel(apiKey);
+        if (channel == null) {
+            return R.fail(401, "Invalid API Key");
+        }
+        if (!verifyVisitorToken(visitorTokenSecret, channel.getId(), visitorId, visitorToken)) {
+            return R.fail(401, "Invalid or missing visitor token");
+        }
+        String sid;
+        try {
+            sid = normalizeSessionId(sessionId);
+        } catch (IllegalArgumentException ex) {
+            return R.fail(400, ex.getMessage());
+        }
+        String conversationId = deriveConversationId(apiKey, visitorId, sid);
+        if (!ownsConversation(conversationId, visitorId)) {
+            return R.fail(404, "Session not found");
+        }
+
+        // Backward-compatible: no limit → full external (path-stripped) list.
+        if (limit == null || limit <= 0) {
+            return R.ok(conversationService.listMessageViewsExternal(conversationId));
+        }
+
+        // Paginated: mirror ConversationController#listMessages but with the
+        // external view so visitors never see server-side file paths.
+        List<MessageEntity> messages;
+        boolean hasMore;
+        if (beforeId != null) {
+            messages = conversationService.listMessagesBefore(conversationId, beforeId, limit + 1);
+            hasMore = messages.size() > limit;
+            if (hasMore) {
+                messages = messages.subList(messages.size() - limit, messages.size());
+            }
+        } else {
+            long total = conversationService.countMessages(conversationId);
+            messages = conversationService.listRecentMessages(conversationId, limit);
+            hasMore = total > limit;
+        }
+        return R.ok(Map.of(
+                "messages", conversationService.toExternalMessageViews(messages),
+                "hasMore", hasMore
+        ));
     }
 
     /**
