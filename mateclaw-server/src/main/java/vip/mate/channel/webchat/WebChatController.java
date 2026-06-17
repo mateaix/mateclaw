@@ -413,7 +413,8 @@ public class WebChatController {
     public R<List<WebChatSessionView>> listSessions(
             @RequestHeader("X-MC-Key") String apiKey,
             @RequestHeader(value = "X-MC-Visitor-Token", required = false) String visitorToken,
-            @RequestParam String visitorId) {
+            @RequestParam String visitorId,
+            @RequestParam(defaultValue = "false") boolean includeArchived) {
         ChannelEntity channel = resolveChannel(apiKey);
         if (channel == null) {
             return R.fail(401, "Invalid API Key");
@@ -421,7 +422,7 @@ public class WebChatController {
         if (!verifyVisitorToken(visitorTokenSecret, channel.getId(), visitorId, visitorToken)) {
             return R.fail(401, "Invalid or missing visitor token");
         }
-        return R.ok(loadVisitorSessions(apiKey, visitorId));
+        return R.ok(loadVisitorSessions(apiKey, visitorId, includeArchived));
     }
 
     /**
@@ -437,7 +438,8 @@ public class WebChatController {
             @RequestParam String visitorId,
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "20") int size,
-            @RequestParam(required = false) String keyword) {
+            @RequestParam(required = false) String keyword,
+            @RequestParam(defaultValue = "false") boolean includeArchived) {
         ChannelEntity channel = resolveChannel(apiKey);
         if (channel == null) {
             return R.fail(401, "Invalid API Key");
@@ -448,7 +450,7 @@ public class WebChatController {
         if (page < 1) page = 1;
         if (size < 1 || size > 200) size = 20;
 
-        List<WebChatSessionView> all = loadVisitorSessions(apiKey, visitorId);
+        List<WebChatSessionView> all = loadVisitorSessions(apiKey, visitorId, includeArchived);
         if (keyword != null && !keyword.isBlank()) {
             String kw = keyword.trim().toLowerCase(java.util.Locale.ROOT);
             all = all.stream()
@@ -516,6 +518,19 @@ public class WebChatController {
      * for legacy rows created before that column existed.
      */
     private List<WebChatSessionView> loadVisitorSessions(String apiKey, String visitorId) {
+        return loadVisitorSessions(apiKey, visitorId, false);
+    }
+
+    /**
+     * Overload that lets the caller opt into archived threads. By default
+     * (used by /sessions listing and the empty-session quota check) archived
+     * rows are filtered out — they still exist on disk and are addressable
+     * by sessionId, but don't pollute the active listing and don't count
+     * against the "≤ 5 empty threads" quota (the visitor already declared
+     * they're done with them).
+     */
+    private List<WebChatSessionView> loadVisitorSessions(String apiKey, String visitorId,
+                                                         boolean includeArchived) {
         String base = deriveConversationId(apiKey, visitorId, null);
         String channelPrefix = "webchat:" + apiKey.substring(0, Math.min(8, apiKey.length())) + ":";
         String owner = webchatUsername(visitorId);
@@ -526,9 +541,16 @@ public class WebChatController {
         return conversationService.listWebchatConversations(owner).stream()
                 .filter(c -> c.getConversationId() != null
                         && c.getConversationId().startsWith(channelPrefix))
+                .filter(c -> includeArchived
+                        || c.getArchived() == null
+                        || c.getArchived() == 0)
                 .map(c -> {
                     String sid = recoverSessionId(c, base);
-                    return new WebChatSessionView(sid, c.getTitle(), c.getLastActiveTime(), c.getMessageCount());
+                    return new WebChatSessionView(sid, c.getTitle(), c.getLastActiveTime(),
+                            c.getMessageCount(),
+                            c.getPinned() != null ? c.getPinned() : 0,
+                            c.getArchived() != null ? c.getArchived() : 0,
+                            c.getStreamStatus() != null ? c.getStreamStatus() : "idle");
                 })
                 .collect(Collectors.toList());
     }
@@ -1047,6 +1069,12 @@ public class WebChatController {
         private String title;
         private LocalDateTime lastActiveTime;
         private Integer messageCount;
+        /** 1 if the visitor pinned this thread, 0 otherwise. */
+        private Integer pinned;
+        /** 1 if the visitor archived this thread, 0 otherwise. */
+        private Integer archived;
+        /** {@code running} if a stream is in progress on this thread, else {@code idle}. */
+        private String streamStatus;
     }
 
     /** Body for {@code POST /sessions} — explicitly create an empty thread. */
