@@ -14,6 +14,8 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import vip.mate.agent.repository.AgentMapper;
+import vip.mate.auth.model.UserEntity;
+import vip.mate.auth.service.AuthService;
 import vip.mate.workspace.conversation.model.ConversationEntity;
 import vip.mate.workspace.conversation.repository.ConversationMapper;
 
@@ -27,17 +29,23 @@ import static org.mockito.Mockito.when;
  * Pin the admin-console visibility of webchat conversations.
  *
  * <p>WebChat threads are owned by an external visitor principal
- * ({@code webchat:<visitorId>}), not a MateClaw account. They must surface in
- * the console list / page / owner-check the same way {@code system}-owned IM
- * conversations do — otherwise they are silently invisible (the reported bug).
- * The strict overload (used by the visitor self-service path) must NOT widen to
- * other principals.
+ * ({@code webchat:<visitorId>}), not a MateClaw account. The admin-console
+ * list / page surface them alongside {@code system}-owned IM rows — but only
+ * for a global admin, because per the cross-workspace guard (issue #344) only a
+ * global admin can actually open a webchat-owned conversation. Listing them to
+ * a non-admin would show rows the caller would then 403 on, so the webchat
+ * clause is gated on the requester's role. The strict overload (visitor
+ * self-service path) never widens to other principals.
+ *
+ * <p>The owner-check matrix itself is covered by
+ * {@link ConversationServiceOwnershipWorkspaceTest}.
  */
 @ExtendWith(MockitoExtension.class)
 class ConversationServiceWebchatVisibilityTest {
 
     @Mock private ConversationMapper conversationMapper;
     @Mock private AgentMapper agentMapper;
+    @Mock private AuthService authService;
 
     @InjectMocks private ConversationService service;
 
@@ -55,8 +63,9 @@ class ConversationServiceWebchatVisibilityTest {
     }
 
     @Test
-    @DisplayName("lenient list includes webchat principals (username LIKE 'webchat:%')")
-    void lenientListIncludesWebchat() {
+    @DisplayName("lenient list, global admin: includes webchat principals (username LIKE 'webchat:%')")
+    void lenientListAdminIncludesWebchat() {
+        when(authService.findByUsername("admin")).thenReturn(user("admin"));
         ArgumentCaptor<LambdaQueryWrapper<ConversationEntity>> captor =
                 ArgumentCaptor.forClass(LambdaQueryWrapper.class);
         when(conversationMapper.selectList(captor.capture())).thenReturn(List.of());
@@ -70,7 +79,21 @@ class ConversationServiceWebchatVisibilityTest {
     }
 
     @Test
-    @DisplayName("strict list excludes webchat principals (no LIKE clause)")
+    @DisplayName("lenient list, non-admin: excludes webchat principals (no LIKE clause)")
+    void lenientListNonAdminExcludesWebchat() {
+        when(authService.findByUsername("alice")).thenReturn(user("member"));
+        ArgumentCaptor<LambdaQueryWrapper<ConversationEntity>> captor =
+                ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        when(conversationMapper.selectList(captor.capture())).thenReturn(List.of());
+
+        service.listConversations("alice", 1L, true);
+
+        String sql = captor.getValue().getTargetSql();
+        assertThat(sql).doesNotContainIgnoringCase("like");
+    }
+
+    @Test
+    @DisplayName("strict list excludes webchat principals (no LIKE clause, no role lookup)")
     void strictListExcludesWebchat() {
         ArgumentCaptor<LambdaQueryWrapper<ConversationEntity>> captor =
                 ArgumentCaptor.forClass(LambdaQueryWrapper.class);
@@ -83,8 +106,9 @@ class ConversationServiceWebchatVisibilityTest {
     }
 
     @Test
-    @DisplayName("page query includes webchat principals")
-    void pageIncludesWebchat() {
+    @DisplayName("page query, global admin: includes webchat principals")
+    void pageAdminIncludesWebchat() {
+        when(authService.findByUsername("admin")).thenReturn(user("admin"));
         ArgumentCaptor<LambdaQueryWrapper<ConversationEntity>> captor =
                 ArgumentCaptor.forClass(LambdaQueryWrapper.class);
         when(conversationMapper.selectPage(any(Page.class), captor.capture()))
@@ -99,28 +123,23 @@ class ConversationServiceWebchatVisibilityTest {
     }
 
     @Test
-    @DisplayName("isConversationOwner: webchat + system + self visible; foreign user not")
-    void ownerCheckRecognizesWebchat() {
-        when(conversationMapper.selectOne(any(LambdaQueryWrapper.class)))
-                .thenReturn(ownedBy("webchat:visitor-1"));
-        assertThat(service.isConversationOwner("webchat:k:visitor-1", "admin")).isTrue();
+    @DisplayName("page query, non-admin: excludes webchat principals")
+    void pageNonAdminExcludesWebchat() {
+        when(authService.findByUsername("alice")).thenReturn(user("member"));
+        ArgumentCaptor<LambdaQueryWrapper<ConversationEntity>> captor =
+                ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        when(conversationMapper.selectPage(any(Page.class), captor.capture()))
+                .thenReturn(new Page<>());
 
-        when(conversationMapper.selectOne(any(LambdaQueryWrapper.class)))
-                .thenReturn(ownedBy("system"));
-        assertThat(service.isConversationOwner("feishu:ou_x", "admin")).isTrue();
+        service.pageConversations("alice", 1L, 1, 20, null);
 
-        when(conversationMapper.selectOne(any(LambdaQueryWrapper.class)))
-                .thenReturn(ownedBy("admin"));
-        assertThat(service.isConversationOwner("c1", "admin")).isTrue();
-
-        when(conversationMapper.selectOne(any(LambdaQueryWrapper.class)))
-                .thenReturn(ownedBy("bob"));
-        assertThat(service.isConversationOwner("c2", "admin")).isFalse();
+        String sql = captor.getValue().getTargetSql();
+        assertThat(sql).doesNotContainIgnoringCase("like");
     }
 
-    private static ConversationEntity ownedBy(String username) {
-        ConversationEntity conv = new ConversationEntity();
-        conv.setUsername(username);
-        return conv;
+    private static UserEntity user(String role) {
+        UserEntity u = new UserEntity();
+        u.setRole(role);
+        return u;
     }
 }
