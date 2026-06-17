@@ -74,6 +74,7 @@ public class WebChatController {
     private final vip.mate.memory.identity.MemoryOwnerResolver memoryOwnerResolver;
     private final WebChatFileService fileService;
     private final WebChatTokenRevocationService tokenRevocationService;
+    private final vip.mate.audit.service.AuditEventService auditService;
 
     /** Visitor-token TTL in seconds (7 days). Mirrors GeneratedFileCache's TTL. */
     static final long VISITOR_TOKEN_TTL_SECONDS = 7 * 24 * 3600L;
@@ -374,6 +375,8 @@ public class WebChatController {
         // set title. Existing rows are exempt from the empty-session quota.
         ConversationEntity existing = conversationService.findByConversationId(conversationId);
         if (existing != null && owner.equals(existing.getUsername())) {
+            audit(channel, visitorId, "webchat.create-session", conversationId,
+                    "{\"sessionId\":\"" + sessionId + "\",\"idempotent\":true}");
             return R.ok(buildCreateSessionResponse(existing, sessionId, channel.getId(), visitorId));
         }
 
@@ -389,6 +392,8 @@ public class WebChatController {
 
         ConversationEntity conv = conversationService.getOrCreateWebchatConversation(
                 conversationId, agentId, owner, channel.getWorkspaceId(), sessionId, title);
+        audit(channel, visitorId, "webchat.create-session", conversationId,
+                "{\"sessionId\":\"" + sessionId + "\",\"idempotent\":false}");
         return R.ok(buildCreateSessionResponse(conv, sessionId, channel.getId(), visitorId));
     }
 
@@ -404,6 +409,19 @@ public class WebChatController {
         m.put("title", conv.getTitle() != null ? conv.getTitle() : "");
         m.put("createTime", conv.getCreateTime());
         return m;
+    }
+
+    /**
+     * Audit a visitor-side write. Actor is {@code "webchat:<channelId>:<visitorId>"}
+     * so audit searches can filter by channel / visitor. detailJson should be
+     * a JSON object capturing whatever the operator would need to reconstruct
+     * the call (sessionId, before/after state, etc).
+     */
+    private void audit(ChannelEntity channel, String visitorId, String action,
+                       String conversationId, String detailJson) {
+        String actor = "webchat:" + channel.getId() + ":" + visitorId;
+        auditService.recordAs(actor, channel.getWorkspaceId(),
+                action, "CONVERSATION", conversationId, null, detailJson);
     }
 
     /**
@@ -508,6 +526,8 @@ public class WebChatController {
             return R.fail(400, "标题不合法（1-100 字）");
         }
         conversationService.renameConversation(conversationId, title);
+        audit(channel, visitorId, "webchat.rename-session", conversationId,
+                "{\"sessionId\":\"" + sid + "\",\"title\":\"" + title + "\"}");
         return R.ok();
     }
 
@@ -545,6 +565,8 @@ public class WebChatController {
             return R.fail(400, "body must contain {pinned: true|false}");
         }
         conversationService.setPinned(conversationId, (Boolean) v);
+        audit(channel, visitorId, "webchat.pin-session", conversationId,
+                "{\"sessionId\":\"" + sid + "\",\"pinned\":" + v + "}");
         return R.ok();
     }
 
@@ -582,6 +604,8 @@ public class WebChatController {
             return R.fail(400, "body must contain {archived: true|false}");
         }
         conversationService.setArchived(conversationId, (Boolean) v);
+        audit(channel, visitorId, "webchat.archive-session", conversationId,
+                "{\"sessionId\":\"" + sid + "\",\"archived\":" + v + "}");
         return R.ok();
     }
 
@@ -742,6 +766,8 @@ public class WebChatController {
             return R.fail(404, "Session not found");
         }
         conversationService.deleteConversation(conversationId);
+        audit(channel, visitorId, "webchat.delete-session", conversationId,
+                "{\"sessionId\":\"" + sid + "\"}");
         return R.ok();
     }
 
@@ -787,6 +813,8 @@ public class WebChatController {
         boolean stopped = streamTracker.requestStop(conversationId);
         log.info("[WebChat] Stop requested: conversationId={}, visitor={}, stopped={}",
                 conversationId, visitorId, stopped);
+        audit(channel, visitorId, "webchat.stop-session", conversationId,
+                "{\"sessionId\":\"" + sid + "\",\"stopped\":" + stopped + "}");
         return R.ok(Map.of("stopped", stopped));
     }
 
@@ -847,6 +875,8 @@ public class WebChatController {
 
         log.info("[WebChat] Regenerate: conversationId={}, visitor={}, seedMessageId={}",
                 conversationId, visitorId, lastUser.getId());
+        audit(channel, visitorId, "webchat.regenerate-session", conversationId,
+                "{\"sessionId\":\"" + sid + "\",\"seedMessageId\":" + lastUser.getId() + "}");
 
         // Reuse chatStream: it'll resolve the agent again (cheap), re-derive
         // conversationId, saveMessage user (new id, same content), and start
@@ -894,6 +924,9 @@ public class WebChatController {
         String conversationId = deriveConversationId(apiKey, vid, sid);
         try {
             WebChatFileService.StagedFile stored = fileService.store(conversationId, file);
+            audit(channel, vid, "webchat.upload-file", conversationId,
+                    "{\"sessionId\":\"" + sid + "\",\"fileId\":\"" + stored.storedName()
+                            + "\",\"size\":" + stored.size() + "}");
             return R.ok(Map.of(
                     "fileId", stored.storedName(),
                     "fileName", stored.originalName(),
