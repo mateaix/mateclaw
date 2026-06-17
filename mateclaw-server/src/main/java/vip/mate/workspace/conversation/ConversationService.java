@@ -17,6 +17,8 @@ import vip.mate.approval.MetadataDecision;
 import vip.mate.agent.repository.AgentMapper;
 import vip.mate.approval.model.ToolApprovalEntity;
 import vip.mate.approval.repository.ToolApprovalMapper;
+import vip.mate.auth.model.UserEntity;
+import vip.mate.auth.service.AuthService;
 import vip.mate.channel.model.ChannelSessionEntity;
 import vip.mate.channel.repository.ChannelSessionMapper;
 import vip.mate.task.model.AsyncTaskEntity;
@@ -29,6 +31,7 @@ import vip.mate.workspace.conversation.repository.ConversationMapper;
 import vip.mate.workspace.conversation.repository.MessageMapper;
 import vip.mate.workspace.conversation.vo.ConversationVO;
 import vip.mate.workspace.conversation.vo.MessageVO;
+import vip.mate.workspace.core.service.WorkspaceService;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -81,6 +84,8 @@ public class ConversationService {
     private final AsyncTaskMapper asyncTaskMapper;
     private final ChannelSessionMapper channelSessionMapper;
     private final ApplicationEventPublisher eventPublisher;
+    private final AuthService authService;
+    private final WorkspaceService workspaceService;
 
     /**
      * Optional spill store. Injected via a setter so the existing @RequiredArgsConstructor
@@ -137,8 +142,14 @@ public class ConversationService {
         //
         // 同时返回当前用户的会话和定时任务（system）产生的会话；
         // 排除子会话（委派产生的子会话不在侧边栏显示）。
+        //
+        // External channel principals (webchat) are only surfaced to global
+        // admins: per isConversationOwner they are the only ones who can open a
+        // webchat-owned conversation, so listing them to anyone else would show
+        // rows the caller would then 403 on (issue #344 alignment).
+        boolean includeWebchat = includeChannelPrincipals && isGlobalAdmin(username);
         LambdaQueryWrapper<ConversationEntity> wrapper = new LambdaQueryWrapper<ConversationEntity>()
-                .and(w -> applyOwnerScope(w, username, includeChannelPrincipals))
+                .and(w -> applyOwnerScope(w, username, includeWebchat))
                 .isNull(ConversationEntity::getParentConversationId)
                 .orderByDesc(ConversationEntity::getPinned)
                 .orderByDesc(ConversationEntity::getLastActiveTime);
@@ -193,6 +204,18 @@ public class ConversationService {
     }
 
     /**
+     * Whether the user is a global admin (role=admin), resolved from the DB —
+     * never from client-controlled data. Gates webchat row visibility in the
+     * admin-console list/page: {@link #isConversationOwner} only lets a global
+     * admin open a webchat-owned conversation, so only admins should see those
+     * rows — otherwise the console lists threads it would then 403 on.
+     */
+    private boolean isGlobalAdmin(String username) {
+        UserEntity u = authService.findByUsername(username);
+        return u != null && "admin".equalsIgnoreCase(u.getRole());
+    }
+
+    /**
      * Paginated variant used by the Sessions admin page.
      *
      * <p>Mirrors {@link #listConversations(String, Long)}'s filtering (current
@@ -211,10 +234,11 @@ public class ConversationService {
         com.baomidou.mybatisplus.extension.plugins.pagination.Page<ConversationEntity> pager =
                 new com.baomidou.mybatisplus.extension.plugins.pagination.Page<>(page, size);
 
-        // Admin Sessions page surfaces channel conversations too, so include
-        // external webchat principals alongside the user's own + system rows.
+        // Admin Sessions page surfaces channel conversations too, but only to
+        // global admins — they are the only ones who can open a webchat-owned
+        // conversation (issue #344), so non-admins must not see those rows.
         LambdaQueryWrapper<ConversationEntity> wrapper = new LambdaQueryWrapper<ConversationEntity>()
-                .and(w -> applyOwnerScope(w, username, true))
+                .and(w -> applyOwnerScope(w, username, isGlobalAdmin(username)))
                 .isNull(ConversationEntity::getParentConversationId)
                 .orderByDesc(ConversationEntity::getPinned)
                 .orderByDesc(ConversationEntity::getLastActiveTime);
@@ -636,6 +660,21 @@ public class ConversationService {
     }
 
     /**
+     * Archive or unarchive a conversation (webchat soft-close). Mirrors
+     * {@link #setPinned}: archived threads stay on disk (history preserved,
+     * addressable, downloadable) but are excluded from default listings; the
+     * caller opts back in via {@code includeArchived=true}.
+     */
+    public void setArchived(String conversationId, boolean archived) {
+        ConversationEntity conv = conversationMapper.selectOne(new LambdaQueryWrapper<ConversationEntity>()
+                .eq(ConversationEntity::getConversationId, conversationId));
+        if (conv != null) {
+            conv.setArchived(archived ? 1 : 0);
+            conversationMapper.updateById(conv);
+        }
+    }
+
+    /**
      * Update a conversation's stream status ({@code running} / {@code idle}).
      *
      * <p>更新会话的流状态（running / idle）。
@@ -710,6 +749,30 @@ public class ConversationService {
         ConversationEntity conv = conversationMapper.selectOne(new LambdaQueryWrapper<ConversationEntity>()
                 .eq(ConversationEntity::getConversationId, conversationId));
         return conv != null ? conv.getLastMessage() : null;
+    }
+
+    /**
+     * Find the most recent message of a given role in a conversation.
+     * Used by the webchat regenerate flow to find the seed user message and
+     * locate the assistant reply to delete. Returns null if no match.
+     */
+    public MessageEntity findLastMessageByRole(String conversationId, String role) {
+        List<MessageEntity> msgs = messageMapper.selectList(new LambdaQueryWrapper<MessageEntity>()
+                .eq(MessageEntity::getConversationId, conversationId)
+                .eq(MessageEntity::getRole, role)
+                .orderByDesc(MessageEntity::getId)
+                .last("LIMIT 1"));
+        return msgs.isEmpty() ? null : msgs.get(0);
+    }
+
+    /**
+     * Delete a single message by its primary key. Used by the webchat
+     * regenerate flow to drop the last assistant reply before re-running.
+     * Does NOT touch the conversation's messageCount counter — that is
+     * rewritten when the new assistant message is persisted by saveMessage.
+     */
+    public void deleteMessageById(Long messageId) {
+        messageMapper.deleteById(messageId);
     }
 
     /**
@@ -1477,14 +1540,37 @@ public class ConversationService {
     }
 
     /**
-     * Check whether a user owns the conversation, treating system-owned
-     * rows (e.g. from scheduled jobs / IM channels) and external channel
-     * principals ({@code webchat:<visitorId>}) as visible to every
-     * authenticated user — otherwise the console could list a webchat
-     * conversation but 403 on opening / deleting / renaming it.
+     * Check whether a user owns the conversation. Direct owners always pass;
+     * shared rows (system / IM / {@code webchat:<visitorId>} principals) are
+     * additionally gated by the requester's membership in the conversation's
+     * workspace, so they are not reachable cross-workspace by id.
      *
-     * <p>校验用户是否拥有该会话。定时任务产生的会话（username = system）
-     * 和 webchat 访客会话（username = webchat:&lt;visitorId&gt;）对所有登录用户可见。
+     * <p><b>Cross-workspace guard (issue #344).</b> The legacy contract let any
+     * logged-in user reach a system / IM / webchat-owned conversation by id —
+     * the list endpoints filtered by {@code workspaceId} but the direct-access
+     * endpoints did not. Under a multi-tenant model where workspaces are
+     * untrusted isolation boundaries, that asymmetry is a cross-workspace
+     * authorization gap. This method now also requires, for shared (non-direct)
+     * conversations, that the requester actually be a member of the
+     * conversation's workspace.
+     *
+     * <p>校验用户是否拥有该会话。直属会话直接放行;共享会话(system / IM / webchat)
+     * 额外要求请求者是该会话所属 workspace 的成员。
+     *
+     * <p>分支:
+     * <ul>
+     *   <li>会话不存在 → false</li>
+     *   <li>请求者是该会话的直属 owner → true(自己的会话,workspace 隐式一致)</li>
+     *   <li>会话无 workspace_id(老数据)→ 仅看是否 system owner(维持旧行为,避免回归)</li>
+     *   <li>请求者用户记录不存在(permitAll 端点的匿名重连)→ 仅看是否 system owner(维持旧行为)</li>
+     *   <li>请求者是全局 admin(user.role=admin)→ true(横切覆盖,与具体 workspace 无关)</li>
+     *   <li>请求者非该会话 workspace 的成员 → false</li>
+     *   <li>否则 → system owner 检查(共享会话对本 workspace 成员可见)</li>
+     * </ul>
+     *
+     * <p>调用方签名不变;调用方若需在不查 DB 的情况下做 admin 例外,可在外层先短路,
+     * 但通常让本方法统一处理以避免散落的 admin 例外逻辑。注意:本方法不读
+     * {@code X-Workspace-Id} header —— 该 header 客户端可伪造,以 DB 中的成员关系为准。
      */
     public boolean isConversationOwner(String conversationId, String username) {
         ConversationEntity conv = conversationMapper.selectOne(
@@ -1493,10 +1579,28 @@ public class ConversationService {
         if (conv == null) {
             return false;
         }
-        String owner = conv.getUsername();
-        return username.equals(owner)
-                || SYSTEM_USER.equals(owner)
-                || (owner != null && owner.startsWith(WEBCHAT_OWNER_PREFIX));
+        // 直属 owner 一律放行:会话由该用户创建,workspace 自然一致,无需再做成员校验。
+        if (username != null && username.equals(conv.getUsername())) {
+            return true;
+        }
+        // 共享会话(system / IM / webchat owner)以下收紧。
+        Long convWorkspaceId = conv.getWorkspaceId();
+        UserEntity requester = authService.findByUsername(username);
+        // 老数据无 workspace_id,或请求者为匿名(permitAll 端点重连场景):维持旧行为,
+        // 仅 system owner 可见。避免数据迁移未完成或匿名流式场景下回归。
+        if (convWorkspaceId == null || requester == null) {
+            return SYSTEM_USER.equals(conv.getUsername());
+        }
+        // 全局 admin 横切放行,覆盖所有 workspace。
+        if ("admin".equalsIgnoreCase(requester.getRole())) {
+            return true;
+        }
+        // #344 的核心守卫:必须是该会话所属 workspace 的成员(viewer 或更高)。
+        // 不读 X-Workspace-Id header —— 客户端可伪造;以 DB 成员关系为准。
+        if (!workspaceService.hasPermissionCached(convWorkspaceId, requester.getId(), "viewer")) {
+            return false;
+        }
+        return SYSTEM_USER.equals(conv.getUsername());
     }
 
     /**
