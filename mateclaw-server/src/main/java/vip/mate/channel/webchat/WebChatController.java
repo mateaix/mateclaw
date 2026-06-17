@@ -510,6 +510,80 @@ public class WebChatController {
     }
 
     /**
+     * 置顶 / 取消置顶某会话线程。Pinned 线程在访客的 /sessions 列表里排在最前
+     * (沿用 {@link ConversationService#listWebchatConversations} 的 pinned DESC 排序)。
+     */
+    @Operation(summary = "置顶 / 取消置顶会话线程")
+    @PutMapping("/sessions/pinned")
+    public R<Void> pinSession(
+            @RequestHeader("X-MC-Key") String apiKey,
+            @RequestHeader(value = "X-MC-Visitor-Token", required = false) String visitorToken,
+            @RequestParam String visitorId,
+            @RequestParam(required = false) String sessionId,
+            @RequestBody Map<String, Object> body) {
+        ChannelEntity channel = resolveChannel(apiKey);
+        if (channel == null) {
+            return R.fail(401, "Invalid API Key");
+        }
+        if (!verifyVisitorToken(visitorTokenSecret, channel.getId(), visitorId, visitorToken)) {
+            return R.fail(401, "Invalid or missing visitor token");
+        }
+        String sid;
+        try {
+            sid = normalizeSessionId(sessionId);
+        } catch (IllegalArgumentException ex) {
+            return R.fail(400, ex.getMessage());
+        }
+        String conversationId = deriveConversationId(apiKey, visitorId, sid);
+        if (!ownsConversation(conversationId, visitorId)) {
+            return R.fail(404, "Session not found");
+        }
+        Object v = body != null ? body.get("pinned") : null;
+        if (!(v instanceof Boolean)) {
+            return R.fail(400, "body must contain {pinned: true|false}");
+        }
+        conversationService.setPinned(conversationId, (Boolean) v);
+        return R.ok();
+    }
+
+    /**
+     * 归档 / 取消归档某会话线程。归档后线程仍在 DB(历史保留、按 sessionId 寻址、文件可下载),
+     * 但默认从 /sessions 列表隐藏;调用方需传 {@code includeArchived=true} 才能看到。
+     */
+    @Operation(summary = "归档 / 取消归档会话线程")
+    @PutMapping("/sessions/archive")
+    public R<Void> archiveSession(
+            @RequestHeader("X-MC-Key") String apiKey,
+            @RequestHeader(value = "X-MC-Visitor-Token", required = false) String visitorToken,
+            @RequestParam String visitorId,
+            @RequestParam(required = false) String sessionId,
+            @RequestBody Map<String, Object> body) {
+        ChannelEntity channel = resolveChannel(apiKey);
+        if (channel == null) {
+            return R.fail(401, "Invalid API Key");
+        }
+        if (!verifyVisitorToken(visitorTokenSecret, channel.getId(), visitorId, visitorToken)) {
+            return R.fail(401, "Invalid or missing visitor token");
+        }
+        String sid;
+        try {
+            sid = normalizeSessionId(sessionId);
+        } catch (IllegalArgumentException ex) {
+            return R.fail(400, ex.getMessage());
+        }
+        String conversationId = deriveConversationId(apiKey, visitorId, sid);
+        if (!ownsConversation(conversationId, visitorId)) {
+            return R.fail(404, "Session not found");
+        }
+        Object v = body != null ? body.get("archived") : null;
+        if (!(v instanceof Boolean)) {
+            return R.fail(400, "body must contain {archived: true|false}");
+        }
+        conversationService.setArchived(conversationId, (Boolean) v);
+        return R.ok();
+    }
+
+    /**
      * Load this visitor's session threads (own namespace only), mapped to the
      * compact view. Sorted as {@code listConversations} returns them (pinned
      * desc, last-active desc). Shared by the list and paginated endpoints.
