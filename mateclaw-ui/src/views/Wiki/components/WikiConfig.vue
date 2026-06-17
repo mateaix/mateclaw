@@ -46,6 +46,33 @@
       </div>
     </div>
 
+    <!-- ①c Entity extraction -->
+    <div class="config-card">
+      <div class="config-card__head">
+        <div>
+          <div class="config-card__title">{{ t('wiki.configPanel.entityExtraction') }}</div>
+          <div class="config-card__hint">{{ t('wiki.configPanel.entityExtractionHint') }}</div>
+        </div>
+        <button class="btn-save" @click="saveEntityExtraction" :disabled="savingEntityExtraction">
+          {{ savingEntityExtraction ? t('wiki.saving') : t('common.save') }}
+        </button>
+      </div>
+      <div class="ingest-mode-row">
+        <label class="entity-toggle">
+          <input type="checkbox" v-model="entityExtractionEnabled" :disabled="savingEntityExtraction" />
+          <span class="entity-toggle__label">{{ t('wiki.configPanel.entityExtractionEnable') }}</span>
+        </label>
+        <button
+          v-if="entityExtractionEnabled"
+          class="btn-save btn-save--ghost"
+          @click="runExtraction"
+          :disabled="extracting"
+        >
+          {{ extracting ? t('wiki.configPanel.entityExtractionRunning') : t('wiki.configPanel.entityExtractionRun') }}
+        </button>
+      </div>
+    </div>
+
     <!-- ② Model strategy -->
     <div class="config-card config-card--clickable" @click="modelsOpen = true">
       <div class="config-card__row">
@@ -230,6 +257,42 @@ async function saveIngestMode() {
   }
 }
 
+// ── Entity extraction ──
+// Opt-in named-entity knowledge graph extraction. Off by default because it
+// adds an LLM call per chunk on top of the page pipeline.
+const entityExtractionEnabled = ref(false)
+const savingEntityExtraction = ref(false)
+const extracting = ref(false)
+
+async function saveEntityExtraction() {
+  if (!store.currentKB) return
+  savingEntityExtraction.value = true
+  try {
+    let existingConfig: any = {}
+    try {
+      if (store.currentKB.configContent) existingConfig = JSON.parse(store.currentKB.configContent)
+    } catch { /* config may be plain text rules */ }
+    existingConfig.entityExtractionEnabled = entityExtractionEnabled.value ? true : undefined
+    await wikiApi.updateConfig(store.currentKB.id, JSON.stringify(existingConfig, null, 2))
+  } catch (e) {
+    console.error('[WikiConfig] Failed to save entity extraction toggle', e)
+  } finally {
+    savingEntityExtraction.value = false
+  }
+}
+
+async function runExtraction() {
+  if (!store.currentKB) return
+  extracting.value = true
+  try {
+    await wikiApi.extractEntities(store.currentKB.id)
+  } catch (e) {
+    console.error('[WikiConfig] Failed to start entity extraction', e)
+  } finally {
+    extracting.value = false
+  }
+}
+
 // ── Model strategy ──
 const stepKeys = ['route', 'create_page', 'merge_page', 'enrich', 'summary']
 const stepModels = reactive<Record<string, string>>({})
@@ -246,6 +309,7 @@ function loadStepModels() {
   fallbackModelIds.value = []
   wikiGlobalModelId.value = ''
   ingestMode.value = 'eager'
+  entityExtractionEnabled.value = false
   if (!store.currentKB) return
   try {
     const cfg = store.currentKB.configContent ? JSON.parse(store.currentKB.configContent) : null
@@ -258,6 +322,7 @@ function loadStepModels() {
     if (cfg?.fallbackModelIds) fallbackModelIds.value = cfg.fallbackModelIds.map(String)
     if (cfg?.wikiDefaultModelId) wikiGlobalModelId.value = String(cfg.wikiDefaultModelId)
     if (cfg?.ingestMode === 'lazy') ingestMode.value = 'lazy'
+    if (cfg?.entityExtractionEnabled) entityExtractionEnabled.value = true
   } catch { /* not JSON */ }
 }
 
@@ -475,6 +540,12 @@ loadProviderNames().then(() => {
 }
 .btn-save:hover { opacity: 0.88; }
 .btn-save:disabled { background: var(--mc-border); cursor: not-allowed; }
+.btn-save--ghost { background: transparent; color: var(--mc-primary); border: 1px solid var(--mc-primary); }
+.btn-save--ghost:disabled { background: transparent; color: var(--mc-text-tertiary); border-color: var(--mc-border); }
+
+/* Entity extraction toggle */
+.entity-toggle { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--mc-text-primary); cursor: pointer; }
+.entity-toggle__label { user-select: none; }
 
 /* Ingest mode radio group */
 .ingest-mode-row { display: flex; gap: 8px; flex-wrap: wrap; }

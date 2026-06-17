@@ -19,7 +19,7 @@ spring:
   profiles:
     active: dev
 
-  # 数据源（默认 H2，生产切换为 mysql profile）
+  # 数据源（默认 H2，生产切换为 mysql 或 kingbase profile）
   datasource:
     url: jdbc:h2:file:./data/mateclaw;MODE=MySQL;DATABASE_TO_LOWER=TRUE;CASE_INSENSITIVE_IDENTIFIERS=TRUE
     driver-class-name: org.h2.Driver
@@ -324,3 +324,14 @@ mate:
       contradiction-check-enabled: false       # experimental simple detection, enable after LLM batch impl
       trust-half-life-days: 60
       forget-enabled: true
+    # Always-on injection budget — bounds the per-turn size of the user/feedback structured block
+    system-block-max-chars: 4000               # char cap on the always-on block; over budget drops oldest by Updated date (LRU); 0 = unlimited
+    system-block-max-entries-per-type: 40       # max entries injected per type (user/feedback); 0 = unlimited
+    # Structured-memory consolidation — separate maintenance task; LLM merges duplicate/stale user/feedback entries (shared + per-owner) to curb storage growth
+    structured-consolidation-enabled: true            # off = injection cap only, no storage-side merge
+    structured-consolidation-min-entries: 8            # buckets with fewer entries skip the LLM call to save cost
+    structured-consolidation-cron: "0 30 3 * * ?"     # own schedule, decoupled from dreaming-enabled / dreaming-cron
+    structured-consolidation-max-owners-per-run: 50    # cap LLM cost per agent per run; remaining owners picked up next run; 0 = unlimited
+    # Always-on file ceilings — deterministic backstop so PROFILE.md / MEMORY.md (LLM-rewritten) cannot grow per-turn context without bound
+    profile-max-chars: 4000                            # PROFILE.md hard cap; truncates at a section boundary if the rewrite overruns; 0 = unlimited
+    memory-md-max-chars: 8000                          # MEMORY.md hard cap; 0 = unlimited

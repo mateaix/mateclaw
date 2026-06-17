@@ -2,23 +2,33 @@
   <div ref="graphViewEl" class="graph-view" :class="{ 'graph-view--fullscreen': isFullscreen }">
     <!-- Toolbar sub-component -->
     <WikiGraphToolbar
-      :node-count="nodes.length"
-      :edge-count="edges.length"
+      :node-count="graphMode === 'entities' ? entityStats.nodes : nodes.length"
+      :edge-count="graphMode === 'entities' ? entityStats.edges : edges.length"
       :orphan-count="orphanCount"
       v-model:show-orphans="showOrphans"
       v-model:type-filter="typeFilter"
+      v-model:mode="graphMode"
       :available-types="availableTypes"
       :is-fullscreen="isFullscreen"
       @reset="resetChart"
       @toggle-fullscreen="toggleFullscreen"
     />
 
-    <!-- ECharts canvas -->
-    <div ref="chartEl" class="graph-canvas" />
+    <!-- Entity-level knowledge graph -->
+    <WikiEntityGraphView
+      v-if="graphMode === 'entities'"
+      :kb-id="kbId"
+      :is-fullscreen="isFullscreen"
+      @open-page="emit('open-page', $event)"
+      @stats="entityStats = $event"
+    />
+
+    <!-- Page-level graph (ECharts canvas) -->
+    <div v-show="graphMode === 'pages'" ref="chartEl" class="graph-canvas" />
 
     <!-- Node detail panel sub-component -->
     <WikiGraphNodePanel
-      v-if="selectedNode"
+      v-if="graphMode === 'pages' && selectedNode"
       :page="selectedNode"
       :linked-pages="selectedNodeLinks"
       @close="selectedNode = null"
@@ -26,7 +36,7 @@
     />
 
     <!-- Empty state -->
-    <div v-if="nodes.length === 0" class="graph-empty">
+    <div v-if="graphMode === 'pages' && nodes.length === 0" class="graph-empty">
       <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
         <circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/>
         <line x1="5" y1="5" x2="19" y2="19" stroke-width="0.5"/>
@@ -47,6 +57,7 @@ import type { WikiPage } from '@/stores/useWikiStore'
 import { useWikiPageType } from '@/composables/useWikiPageType'
 import WikiGraphToolbar from './WikiGraphToolbar.vue'
 import WikiGraphNodePanel from './WikiGraphNodePanel.vue'
+import WikiEntityGraphView from './WikiEntityGraphView.vue'
 
 echarts.use([GraphChart, TooltipComponent, LegendComponent, CanvasRenderer])
 
@@ -63,6 +74,17 @@ const isFullscreen = ref(false)
 const showOrphans = ref(true)
 const typeFilter = ref('')
 const selectedNode = ref<WikiPage | null>(null)
+
+// 'pages' = page-link graph (default); 'entities' = named-entity graph.
+const graphMode = ref<'pages' | 'entities'>('pages')
+const entityStats = ref<{ nodes: number; edges: number }>({ nodes: 0, edges: 0 })
+
+// KB id for entity-graph fetches — every page carries its kbId; keep it a
+// string to avoid Snowflake precision loss.
+const kbId = computed<string | number | null>(() => {
+  const id = props.pages[0]?.kbId
+  return id != null ? id : null
+})
 
 
 // Parse outgoing links JSON string → slug[]
@@ -339,6 +361,14 @@ onBeforeUnmount(() => {
 // Single watcher on nodes+edges; the page-length watcher is redundant and removed.
 watch([nodes, edges], () => {
   scheduleRender()
+})
+
+// Returning to the page graph: the canvas was hidden (v-show), so let the DOM
+// settle then tell ECharts to re-measure.
+watch(graphMode, (mode) => {
+  if (mode === 'pages') {
+    nextTick(() => chart?.resize())
+  }
 })
 </script>
 

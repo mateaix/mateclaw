@@ -12,7 +12,9 @@ import vip.mate.channel.web.Utf8SseEmitter;
 import vip.mate.agent.AgentService;
 import vip.mate.agent.AgentState;
 import vip.mate.agent.model.AgentEntity;
+import vip.mate.agent.service.AgentGenerationService;
 import vip.mate.agent.vo.AgentCapabilitiesVO;
+import vip.mate.agent.vo.AgentDraftVO;
 import vip.mate.audit.service.AuditEventService;
 import vip.mate.llm.model.ModelConfigEntity;
 import vip.mate.llm.service.ModelCapabilityService;
@@ -51,6 +53,7 @@ public class AgentController {
     private final ModelConfigService modelConfigService;
     private final ModelCapabilityService modelCapabilityService;
     private final SystemSettingService systemSettingService;
+    private final AgentGenerationService agentGenerationService;
     private final ObjectMapper objectMapper;
     private final ExecutorService sseExecutor = Executors.newCachedThreadPool();
 
@@ -126,6 +129,16 @@ public class AgentController {
         } catch (Exception e) {
             return null;
         }
+    }
+
+    @Operation(summary = "根据一句话需求生成员工草稿（不落库）")
+    @PostMapping("/generate")
+    @RequireWorkspaceRole("member")
+    public R<AgentDraftVO> generate(
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId,
+            @RequestBody GenerateRequest request) {
+        long wsId = workspaceId != null ? workspaceId : 1L;
+        return R.ok(agentGenerationService.generateDraft(request.getRequirement(), wsId));
     }
 
     @Operation(summary = "创建Agent")
@@ -268,6 +281,11 @@ public class AgentController {
     public static class ChatRequest {
         private String message;
         private String conversationId = "default";
+    }
+
+    @lombok.Data
+    public static class GenerateRequest {
+        private String requirement;
     }
 
     /**

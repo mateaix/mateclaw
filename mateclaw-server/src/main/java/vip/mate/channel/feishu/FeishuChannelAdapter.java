@@ -222,10 +222,14 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
 
     record RecentFileEntry(String fileName, String path, String fileUrl, String contentType) {}
 
-    private final Cache<String, List<RecentFileEntry>> recentFileCache = Caffeine.newBuilder()
+    // Package-private for testing: seed the cache directly to verify injection paths.
+    final Cache<String, List<RecentFileEntry>> recentFileCache = Caffeine.newBuilder()
             .expireAfterWrite(RECENT_FILE_TTL_MINUTES, TimeUnit.MINUTES)
             .maximumSize(200)
             .build();
+
+    // Package-private for testing: redirect to a temp directory without touching real disk.
+    Path chatUploadsRoot = Path.of("data", "chat-uploads");
 
     public FeishuChannelAdapter(ChannelEntity channelEntity,
                                 ChannelMessageRouter messageRouter,
@@ -1669,6 +1673,7 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
     private String cacheRecentFile(String messageId, String messageType, String contentStr,
                                   String conversationId) {
         try {
+            log.info("[feishu] cacheRecentFile: type={}, conversationId={}, messageId={}", messageType, conversationId, messageId);
             Map<String, Object> contentObj = objectMapper.readValue(contentStr, Map.class);
 
             String fileKey = null;
@@ -1708,7 +1713,7 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
             if (dl == null) return null;
 
             // Save to data/chat-uploads/{conversationId}/
-            Path uploadDir = Path.of("data", "chat-uploads", conversationId);
+            Path uploadDir = chatUploadsRoot.resolve(conversationId);
             Files.createDirectories(uploadDir);
             String rawName = (dl.fileName() != null && !dl.fileName().isBlank())
                     ? dl.fileName() : fileKey;
@@ -1738,7 +1743,7 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
 
             return dest.toAbsolutePath().toString();
         } catch (Exception e) {
-            log.debug("[feishu] Failed to cache recent file: {}", e.getMessage());
+            log.warn("[feishu] Failed to cache recent file for conversation={}: {}", conversationId, e.getMessage(), e);
             return null;
         }
     }
@@ -1750,9 +1755,17 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
      *
      * @return updated textContent with file descriptions appended
      */
-    private String injectRecentFiles(String conversationId, List<MessageContentPart> parts, String textContent) {
+    // Package-private for testing.
+    String injectRecentFiles(String conversationId, List<MessageContentPart> parts, String textContent) {
         List<RecentFileEntry> recent = recentFileCache.getIfPresent(conversationId);
-        if (recent == null || recent.isEmpty()) return textContent;
+        if (recent == null || recent.isEmpty()) {
+            // Fallback: scan data/chat-uploads/{conversationId}/ on disk.
+            // Survives process restart / Caffeine TTL expiry / GC eviction.
+            recent = loadRecentFilesFromDisk(conversationId);
+            if (recent.isEmpty()) return textContent;
+            log.info("[feishu] injectRecentFiles: cache miss, recovered {} file(s) from disk for conversation={}",
+                    recent.size(), conversationId);
+        }
 
         // Collect paths already in parts to avoid duplicates
         Set<String> existingPaths = new java.util.HashSet<>();
@@ -1780,6 +1793,93 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
             text.append("[用户发送了文件: ").append(entry.fileName()).append("]");
         }
         return text.toString();
+    }
+
+    /**
+     * Scan {@code data/chat-uploads/{conversationId}/} on disk and return
+     * the most recent files as {@link RecentFileEntry}s.  Used as a
+     * fallback when the in-memory Caffeine cache has been evicted
+     * (process restart, TTL expiry, GC pressure) but the staged copies
+     * are still on disk.
+     */
+    private List<RecentFileEntry> loadRecentFilesFromDisk(String conversationId) {
+        long cutoff = System.currentTimeMillis() - RECENT_FILE_TTL_MINUTES * 60_000L;
+        return loadRecentFilesFromDisk(chatUploadsRoot.resolve(conversationId), cutoff);
+    }
+
+    /**
+     * Package-private for testing: explicit {@code dir} and {@code cutoffMs} make the
+     * test deterministic without temp-directory path construction or time mocking.
+     * Production callers go through {@link #loadRecentFilesFromDisk(String)}.
+     */
+    List<RecentFileEntry> loadRecentFilesFromDisk(Path dir, long cutoffMs) {
+        if (!Files.isDirectory(dir)) return List.of();
+        try (var stream = Files.list(dir)) {
+            return stream
+                    .filter(Files::isRegularFile)
+                    .filter(p -> {
+                        try {
+                            return Files.getLastModifiedTime(p).toMillis() >= cutoffMs;
+                        } catch (Exception e) {
+                            return true;
+                        }
+                    })
+                    .sorted((a, b) -> {
+                        try {
+                            return Long.compare(
+                                    Files.getLastModifiedTime(b).toMillis(),
+                                    Files.getLastModifiedTime(a).toMillis());
+                        } catch (Exception e) {
+                            return 0;
+                        }
+                    })
+                    .limit(RECENT_FILE_MAX_PER_CHAT)
+                    .map(p -> {
+                        String fileName = p.getFileName().toString();
+                        // Strip timestamp prefix (e.g. "1777391026594_report.pdf" → "report.pdf")
+                        int sep = fileName.indexOf('_');
+                        String display = (sep > 0 && sep < 20) ? fileName.substring(sep + 1) : fileName;
+                        String contentType = guessContentType(p);
+                        return new RecentFileEntry(display, p.toAbsolutePath().toString(), null, contentType);
+                    })
+                    .toList();
+        } catch (Exception e) {
+            // warn (not debug): a failed disk scan silently drops recovered files, which
+            // reproduces the exact "bot can't see the file" symptom this fallback fixes.
+            log.warn("[feishu] Failed to scan disk for recent files in {}: {}", dir, e.getMessage(), e);
+            return List.of();
+        }
+    }
+
+    /** Best-effort content type from file extension. */
+    private static String guessContentType(Path p) {
+        String name = p.getFileName().toString().toLowerCase();
+        if (name.endsWith(".pdf")) return "application/pdf";
+        if (name.endsWith(".docx")) return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+        if (name.endsWith(".xlsx")) return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+        if (name.endsWith(".pptx")) return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+        if (name.endsWith(".doc")) return "application/msword";
+        if (name.endsWith(".xls")) return "application/vnd.ms-excel";
+        if (name.endsWith(".ppt")) return "application/vnd.ms-powerpoint";
+        if (name.endsWith(".txt")) return "text/plain";
+        if (name.endsWith(".csv")) return "text/csv";
+        if (name.endsWith(".json")) return "application/json";
+        if (name.endsWith(".xml")) return "application/xml";
+        if (name.endsWith(".md")) return "text/markdown";
+        if (name.endsWith(".png")) return "image/png";
+        if (name.endsWith(".jpg") || name.endsWith(".jpeg")) return "image/jpeg";
+        if (name.endsWith(".gif")) return "image/gif";
+        if (name.endsWith(".webp")) return "image/webp";
+        if (name.endsWith(".mp3")) return "audio/mpeg";
+        if (name.endsWith(".ogg")) return "audio/ogg";
+        if (name.endsWith(".opus")) return "audio/opus";
+        if (name.endsWith(".wav")) return "audio/wav";
+        if (name.endsWith(".mp4")) return "video/mp4";
+        if (name.endsWith(".mov")) return "video/quicktime";
+        if (name.endsWith(".zip")) return "application/zip";
+        if (name.endsWith(".rar")) return "application/x-rar-compressed";
+        if (name.endsWith(".7z")) return "application/x-7z-compressed";
+        return "application/octet-stream";
     }
 
     // ==================== 消息内容解析 ====================

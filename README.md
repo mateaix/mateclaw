@@ -217,9 +217,20 @@ Full docs at **[claw.mate.vip/docs](https://claw.mate.vip/docs)** — setup, arc
 
 ## Roadmap
 
-**v1.3.0 (shipped 2026-05-13)** — Workflow engine · 6-pattern trigger system · Wiki transformations · per-agent MCP binding · multimodal sidecar routing · four JVM-native document generation tools · image edit. See the [v1.3.0 release notes](https://claw.mate.vip/docs/en/releases/1.3.0) for the full story.
+**v1.5.0 (shipped 2026-06-04)** — Goal checklists (fuzzy score → ticked boxes) · self-maintaining Wiki (`[[wikilinks]]` · fact/experience layers · pageType profiles & permissions · KB pipelines · local-directory ingest) · per-owner memory isolation (`owner_key` + visibility scope + `endUserId` passthrough) · per-agent primary knowledge base · provider-preference model routing. Full story in the [v1.5.0 release notes](https://claw.mate.vip/docs/en/releases/1.5.0).
 
-**Next** — Drag-to-edit workflow canvas · run replay timeline · `loop` and `invoke_skill` step modes · trigger priorities and event replay · industry scenario marketplace · more ACP upstream integrations.
+**v1.4.0 (shipped 2026-05-23)** — Persistent Goals (lock a goal, self-evaluate every turn) · subagent delegation tree (3 levels deep · sync / parallel / async · one-sentence team builder) · progressive tool/skill disclosure · Workspace RBAC (Owner / Admin / Member / Viewer) · Feishu first-class (interactive / approval / streaming cards · channel-native tools). See the [v1.4.0 release notes](https://claw.mate.vip/docs/en/releases/1.4.0).
+
+**v1.3.0 (shipped 2026-05-13)** — Workflow engine · 6-pattern trigger system · Wiki transformations · per-agent MCP binding · multimodal sidecar routing · four JVM-native document-generation tools · image edit. See the [v1.3.0 release notes](https://claw.mate.vip/docs/en/releases/1.3.0).
+
+**v1.6.0 (in progress)** — make the autonomous employee *fast, sharp-eyed, and embeddable*:
+
+- **Faster first token** — two-stage skill loading (base skills resident, scenario skills retrieved on demand by a relevance scorer) plus prefix compression, cutting the cold-start payload that used to blow past a million characters
+- **Native code execution** — `execute_code` lets an employee write and run sandboxed code to compute, transform data, and assemble multi-format reports, all JVM-side
+- **Vision that persists** — images stay in context across turns; `image_analyze` re-reads an attachment on demand, so "zoom into that chart" follow-ups work without re-uploading
+- **Embeddable & headless** — the webchat widget becomes a Web/API surface with multi-session support and per-end-user identity (`endUserId`), isolating memory per end user
+- **A Wiki you actually read** — reading split from management, a unified Sources tab with per-KB auto-sync, and clickable cross-KB `[[wikilinks]]`
+- **Steadier under load** — self-healing MCP connections · tool-call recovery on interleaved-thinking models · evidence-gated plan execution
 
 ## Contributing
 

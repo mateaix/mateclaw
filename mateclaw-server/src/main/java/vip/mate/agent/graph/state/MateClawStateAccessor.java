@@ -80,6 +80,11 @@ public final class MateClawStateAccessor {
         return state.value(LLM_CALL_COUNT, 0);
     }
 
+    /** Iterations refunded this run for setup-only (progressive-disclosure) rounds (0 at run start). */
+    public int iterationRefundCount() {
+        return state.value(ITERATION_REFUND_COUNT, 0);
+    }
+
     // ===== 观察历史 =====
 
     @SuppressWarnings("unchecked")
@@ -303,6 +308,11 @@ public final class MateClawStateAccessor {
         return state.value(GOAL_ACCOUNTED_LLM_CALL_COUNT, 0);
     }
 
+    /** Hard continuations (fresh-budget ReAct segments) performed this run (0 at run start). */
+    public int goalHardContinuationCount() {
+        return state.value(GOAL_HARD_CONTINUATION_COUNT, 0);
+    }
+
     /**
      * Bridge across ReAct and Plan-Execute: ReAct writes the terminal text
      * to {@link MateClawStateKeys#FINAL_ANSWER} via FinalAnswerNode;
@@ -366,6 +376,10 @@ public final class MateClawStateAccessor {
 
         public OutputBuilder needsToolCall(boolean needs) {
             return put(NEEDS_TOOL_CALL, needs);
+        }
+
+        public OutputBuilder iterationRefundCount(int count) {
+            return put(ITERATION_REFUND_COUNT, count);
         }
 
         // ---- 消息 ----
@@ -552,6 +566,10 @@ public final class MateClawStateAccessor {
             return put(GOAL_ACCOUNTED_LLM_CALL_COUNT, n);
         }
 
+        public OutputBuilder goalHardContinuationCount(int n) {
+            return put(GOAL_HARD_CONTINUATION_COUNT, n);
+        }
+
         /** Wipe FINAL_ANSWER on follow-up so the next graph pass doesn't
          *  immediately re-terminate via the existing final text. */
         public OutputBuilder clearFinalAnswer() {
@@ -561,6 +579,18 @@ public final class MateClawStateAccessor {
         /** Wipe FINISH_REASON for the same reason as clearFinalAnswer(). */
         public OutputBuilder clearFinishReason() {
             return put(FINISH_REASON, "");
+        }
+
+        /**
+         * Wipe the limit-exceeded draft + flag. Required before a hard
+         * continuation re-enters the ReAct loop: FinalAnswerNode prefers
+         * FINAL_ANSWER_DRAFT over a freshly reasoned answer, so a stale draft
+         * left by LimitExceededNode would otherwise resurface as the next
+         * segment's answer.
+         */
+        public OutputBuilder clearLimitExceededDraft() {
+            put(FINAL_ANSWER_DRAFT, "");
+            return put(LIMIT_EXCEEDED, false);
         }
 
         /** Plan-Execute follow-up: clear the terminal-side plan summary so

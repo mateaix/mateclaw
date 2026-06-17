@@ -38,6 +38,16 @@ public class WikiPageEntity {
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private String outgoingLinks;
 
+    /**
+     * Alternate concept names this page also covers (JSON array, e.g.
+     * ["叶绿体","线粒体"]). Set for discrimination / composite pages that absorb
+     * several fine-grained concepts which never became standalone pages. The
+     * post-ingestion link reconciler uses these so a [[叶绿体]] reference from
+     * another page resolves to this page instead of dangling.
+     */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private String aliases;
+
     /** 来源原始材料 ID（JSON 数组） */
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private String sourceRawIds;

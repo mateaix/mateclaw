@@ -7,15 +7,24 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.io.FileSystemResource;
+import org.springframework.core.io.Resource;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
+import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.security.GeneralSecurityException;
 import java.security.MessageDigest;
+import java.util.ArrayList;
 import java.util.Base64;
 import vip.mate.channel.web.Utf8SseEmitter;
 import vip.mate.agent.AgentService;
@@ -27,7 +36,7 @@ import vip.mate.memory.event.ConversationCompletionPublisher;
 import vip.mate.workspace.conversation.ConversationService;
 import vip.mate.workspace.conversation.model.ConversationEntity;
 import vip.mate.workspace.conversation.model.MessageContentPart;
-import vip.mate.workspace.conversation.vo.MessageVO;
+import vip.mate.workspace.conversation.model.MessageEntity;
 
 import java.io.IOException;
 import java.time.LocalDateTime;
@@ -63,6 +72,7 @@ public class WebChatController {
     private final ObjectMapper objectMapper;
     private final ConversationCompletionPublisher completionPublisher;
     private final vip.mate.memory.identity.MemoryOwnerResolver memoryOwnerResolver;
+    private final WebChatFileService fileService;
 
     /**
      * Server-only secret used to sign per-visitor tokens. Reuses the JWT secret so no extra
@@ -156,10 +166,13 @@ public class WebChatController {
                 // 创建或获取会话（workspace 从 agent 获取）
                 var webAgent = agentService.getAgent(resolvedAgentId);
                 Long webWsId = webAgent != null ? webAgent.getWorkspaceId() : 1L;
-                var conv = conversationService.getOrCreateConversation(conversationId, resolvedAgentId, webchatUsername(visitorId), webWsId);
+                var conv = conversationService.getOrCreateWebchatConversation(
+                        conversationId, resolvedAgentId, webchatUsername(visitorId), webWsId, effectiveSessionId);
 
-                // 保存用户消息
-                conversationService.saveMessage(conversationId, "user", message, List.of());
+                // 保存用户消息（含访客本轮引用的附件）。附件元数据一律服务端按 fileId 回查，
+                // 不信客户端传入；path 用于 Agent 侧工具读取，对外消息视图会被剥离。
+                List<MessageContentPart> userParts = buildUserParts(conversationId, message, request.getAttachmentIds());
+                conversationService.saveMessage(conversationId, "user", message, userParts);
 
                 // 初始化 SSE 流跟踪
                 streamTracker.register(conversationId);
@@ -275,6 +288,114 @@ public class WebChatController {
         ));
     }
 
+    /** Cap on how many empty (message_count = 0) threads one visitor may hold on a
+     *  channel at once. Guards against pathologic clients churning placeholder
+     *  sessions without ever sending a message. */
+    private static final int MAX_EMPTY_SESSIONS_PER_VISITOR = 5;
+
+    /**
+     * 显式创建一条访客会话线程（空会话）。
+     * <p>
+     * 与 {@code POST /stream} 的隐式 getOrCreate 互补：本端点先建一条 message_count=0
+     * 的占位线程，调用方拿到 {@code sessionId/conversationId/visitorToken} 之后，再决定
+     * 何时通过 {@code /stream} 发首条消息。鉴权为访客的<b>首次接触</b>：仅校验
+     * {@code X-MC-Key}，不要求 {@code X-MC-Visitor-Token}，后端会签发并回传 token，
+     * 调用方在后续 GET/PUT/DELETE 上必须回带。
+     * <p>
+     * 行为：
+     * <ul>
+     *   <li>幂等：{@code sessionId} 与该 visitor 已有线程冲突 → 直接返回现有线程，
+     *       不报错、不覆盖 title。</li>
+     *   <li>配额：单 (渠道, visitor) 未活跃空线程 ≤ {@value MAX_EMPTY_SESSIONS_PER_VISITOR}，
+     *       超出返回 409。已存在的线程走幂等路径不受配额限制。</li>
+     *   <li>title 非空时写入；为空时落默认 "新对话"，首条 user 消息仍会按现有规则截取。</li>
+     * </ul>
+     */
+    @Operation(summary = "显式创建访客会话线程（空会话）")
+    @PostMapping("/sessions")
+    public R<Map<String, Object>> createSession(
+            @RequestHeader("X-MC-Key") String apiKey,
+            @RequestBody(required = false) WebChatCreateSessionRequest request) {
+
+        ChannelEntity channel = resolveChannel(apiKey);
+        if (channel == null) {
+            return R.fail(401, "Invalid API Key");
+        }
+
+        // Resolve agent: explicit request.agentId overrides channel's bound agent,
+        // but must belong to channel's workspace (mirrors /stream).
+        final Long agentId;
+        if (request != null && request.getAgentId() != null) {
+            var requested = agentService.getAgent(request.getAgentId());
+            if (requested == null) {
+                return R.fail(400, "Requested agent not found");
+            }
+            if (channel.getWorkspaceId() != null && requested.getWorkspaceId() != null
+                    && !channel.getWorkspaceId().equals(requested.getWorkspaceId())) {
+                return R.fail(400, "Requested agent does not belong to this channel's workspace");
+            }
+            agentId = request.getAgentId();
+        } else {
+            agentId = channel.getAgentId();
+            if (agentId == null) {
+                return R.fail(400, "No agent configured for this WebChat channel");
+            }
+        }
+
+        final String visitorId;
+        final String sessionId;
+        try {
+            visitorId = normalizeVisitorId(request != null ? request.getVisitorId() : null);
+            sessionId = normalizeSessionId(request != null ? request.getSessionId() : null);
+        } catch (IllegalArgumentException ex) {
+            return R.fail(400, ex.getMessage());
+        }
+
+        String title = (request != null && request.getTitle() != null) ? request.getTitle().trim() : null;
+        if (title != null && (title.isEmpty() || title.length() > 100)) {
+            return R.fail(400, "title 不合法（1-100 字）");
+        }
+
+        String conversationId = deriveConversationId(apiKey, visitorId, sessionId);
+        String owner = webchatUsername(visitorId);
+
+        // Idempotency: existing thread is returned as-is. Title and every other
+        // field are left untouched — a re-create call must not clobber a previously
+        // set title. Existing rows are exempt from the empty-session quota.
+        ConversationEntity existing = conversationService.findByConversationId(conversationId);
+        if (existing != null && owner.equals(existing.getUsername())) {
+            return R.ok(buildCreateSessionResponse(existing, sessionId, channel.getId(), visitorId));
+        }
+
+        // Quota: count empty threads this visitor already holds on this channel.
+        // loadVisitorSessions already scopes to (channel prefix ∩ visitor owner).
+        long emptyCount = loadVisitorSessions(apiKey, visitorId).stream()
+                .filter(s -> s.getMessageCount() == null || s.getMessageCount() == 0)
+                .count();
+        if (emptyCount >= MAX_EMPTY_SESSIONS_PER_VISITOR) {
+            return R.fail(409, "未活跃会话数已达上限（" + MAX_EMPTY_SESSIONS_PER_VISITOR
+                    + "），请先发送消息或删除旧会话");
+        }
+
+        ConversationEntity conv = conversationService.getOrCreateWebchatConversation(
+                conversationId, agentId, owner, channel.getWorkspaceId(), sessionId, title);
+        return R.ok(buildCreateSessionResponse(conv, sessionId, channel.getId(), visitorId));
+    }
+
+    private Map<String, Object> buildCreateSessionResponse(ConversationEntity conv, String sessionId,
+                                                           Long channelId, String visitorId) {
+        String visitorToken = computeVisitorToken(visitorTokenSecret, channelId, visitorId);
+        // LinkedHashMap (not Map.of) because Map.of rejects null and we want a
+        // stable key order for the response payload.
+        Map<String, Object> m = new java.util.LinkedHashMap<>();
+        m.put("sessionId", sessionId != null ? sessionId : "");
+        m.put("conversationId", conv.getConversationId());
+        m.put("visitorToken", visitorToken);
+        m.put("title", conv.getTitle() != null ? conv.getTitle() : "");
+        m.put("createTime", conv.getCreateTime());
+        return m;
+    }
+
     /**
      * 列出某访客的会话线程
      * <p>
@@ -294,32 +415,63 @@ public class WebChatController {
         if (!verifyVisitorToken(visitorTokenSecret, channel.getId(), visitorId, visitorToken)) {
             return R.fail(401, "Invalid or missing visitor token");
         }
-        String base = deriveConversationId(apiKey, visitorId, null);
-        String prefix = base + ":";
-        String owner = webchatUsername(visitorId);
-        List<WebChatSessionView> sessions = conversationService.listConversations(owner).stream()
-                .filter(c -> c.getConversationId() != null
-                        && owner.equals(c.getUsername())
-                        && (c.getConversationId().equals(base) || c.getConversationId().startsWith(prefix)))
-                .map(c -> {
-                    String cid = c.getConversationId();
-                    String sid = cid.equals(base) ? null : cid.substring(prefix.length());
-                    return new WebChatSessionView(sid, c.getTitle(), c.getLastActiveTime(), c.getMessageCount());
-                })
-                .collect(Collectors.toList());
-        return R.ok(sessions);
+        return R.ok(loadVisitorSessions(apiKey, visitorId));
     }
 
     /**
-     * 获取某会话线程的消息列表
+     * 分页 + 关键词搜索某访客的会话线程。
+     * <p>访客的会话集是按 visitor 命名空间限定的（数量有界），故在内存里做关键词过滤与分页。
+     * keyword 不区分大小写、匹配标题子串。
      */
-    @Operation(summary = "获取会话消息")
-    @GetMapping("/sessions/messages")
-    public R<List<MessageVO>> sessionMessages(
+    @Operation(summary = "分页查询访客会话线程")
+    @GetMapping("/sessions/page")
+    public R<Map<String, Object>> pageSessions(
             @RequestHeader("X-MC-Key") String apiKey,
             @RequestHeader(value = "X-MC-Visitor-Token", required = false) String visitorToken,
             @RequestParam String visitorId,
-            @RequestParam(required = false) String sessionId) {
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "20") int size,
+            @RequestParam(required = false) String keyword) {
+        ChannelEntity channel = resolveChannel(apiKey);
+        if (channel == null) {
+            return R.fail(401, "Invalid API Key");
+        }
+        if (!verifyVisitorToken(visitorTokenSecret, channel.getId(), visitorId, visitorToken)) {
+            return R.fail(401, "Invalid or missing visitor token");
+        }
+        if (page < 1) page = 1;
+        if (size < 1 || size > 200) size = 20;
+
+        List<WebChatSessionView> all = loadVisitorSessions(apiKey, visitorId);
+        if (keyword != null && !keyword.isBlank()) {
+            String kw = keyword.trim().toLowerCase(java.util.Locale.ROOT);
+            all = all.stream()
+                    .filter(s -> s.getTitle() != null && s.getTitle().toLowerCase(java.util.Locale.ROOT).contains(kw))
+                    .collect(Collectors.toList());
+        }
+        long total = all.size();
+        int from = Math.min((page - 1) * size, all.size());
+        int to = Math.min(from + size, all.size());
+        List<WebChatSessionView> pageItems = all.subList(from, to);
+        return R.ok(Map.of(
+                "items", pageItems,
+                "total", total,
+                "page", page,
+                "size", size
+        ));
+    }
+
+    /**
+     * 重命名某会话线程。标题非空、长度 ≤ 100。
+     */
+    @Operation(summary = "重命名会话线程")
+    @PutMapping("/sessions/title")
+    public R<Void> renameSession(
+            @RequestHeader("X-MC-Key") String apiKey,
+            @RequestHeader(value = "X-MC-Visitor-Token", required = false) String visitorToken,
+            @RequestParam String visitorId,
+            @RequestParam(required = false) String sessionId,
+            @RequestBody Map<String, String> body) {
         ChannelEntity channel = resolveChannel(apiKey);
         if (channel == null) {
             return R.fail(401, "Invalid API Key");
@@ -337,7 +489,121 @@ public class WebChatController {
         if (!ownsConversation(conversationId, visitorId)) {
             return R.fail(404, "Session not found");
         }
-        return R.ok(conversationService.listMessageViews(conversationId));
+        String title = body != null && body.get("title") != null ? body.get("title").trim() : "";
+        if (title.isEmpty() || title.length() > 100) {
+            return R.fail(400, "标题不合法（1-100 字）");
+        }
+        conversationService.renameConversation(conversationId, title);
+        return R.ok();
+    }
+
+    /**
+     * Load this visitor's session threads (own namespace only), mapped to the
+     * compact view. Sorted as {@code listConversations} returns them (pinned
+     * desc, last-active desc). Shared by the list and paginated endpoints.
+     * <p>
+     * Enumeration is keyed by the visitor's username plus the channel prefix
+     * ({@code webchat:<key8>:}) rather than the full conversationId prefix, so it
+     * still catches threads whose conversationId hashed (long visitorId +
+     * sessionId). The sessionId is read from the persisted {@code webchatSessionId}
+     * column (set on creation) and only falls back to parsing the conversationId
+     * for legacy rows created before that column existed.
+     */
+    private List<WebChatSessionView> loadVisitorSessions(String apiKey, String visitorId) {
+        String base = deriveConversationId(apiKey, visitorId, null);
+        String channelPrefix = "webchat:" + apiKey.substring(0, Math.min(8, apiKey.length())) + ":";
+        String owner = webchatUsername(visitorId);
+        // Query is scoped to this visitor's own rows only (no system rows), so
+        // listing a visitor's threads doesn't load every IM/cron conversation.
+        // The channel prefix is matched in-memory with a literal startsWith so a
+        // '_' / '%' in the api key's first 8 chars can't act as a LIKE wildcard.
+        return conversationService.listWebchatConversations(owner).stream()
+                .filter(c -> c.getConversationId() != null
+                        && c.getConversationId().startsWith(channelPrefix))
+                .map(c -> {
+                    String sid = recoverSessionId(c, base);
+                    return new WebChatSessionView(sid, c.getTitle(), c.getLastActiveTime(), c.getMessageCount());
+                })
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * Recover a thread's sessionId. Prefers the persisted column; for legacy
+     * rows (column null) falls back to parsing the non-hashed conversationId.
+     * Returns null for the default (no-session) thread and for legacy hashed rows
+     * whose sessionId can no longer be reconstructed.
+     */
+    private String recoverSessionId(vip.mate.workspace.conversation.model.ConversationEntity c, String base) {
+        if (c.getWebchatSessionId() != null) {
+            return c.getWebchatSessionId();
+        }
+        String cid = c.getConversationId();
+        if (cid.equals(base)) {
+            return null;
+        }
+        String prefix = base + ":";
+        if (cid.startsWith(prefix)) {
+            return cid.substring(prefix.length());
+        }
+        return null;
+    }
+
+    /**
+     * 获取某会话线程的消息列表（支持分页）。
+     * <p>不传 limit 时返回全部消息（向后兼容）；传 limit 返回最新 limit 条 + hasMore；
+     * 传 beforeId + limit 时返回该 ID 之前的 limit 条（上拉加载更早消息）。
+     */
+    @Operation(summary = "获取会话消息（支持分页）")
+    @GetMapping("/sessions/messages")
+    public R<?> sessionMessages(
+            @RequestHeader("X-MC-Key") String apiKey,
+            @RequestHeader(value = "X-MC-Visitor-Token", required = false) String visitorToken,
+            @RequestParam String visitorId,
+            @RequestParam(required = false) String sessionId,
+            @RequestParam(required = false) Long beforeId,
+            @RequestParam(required = false) Integer limit) {
+        ChannelEntity channel = resolveChannel(apiKey);
+        if (channel == null) {
+            return R.fail(401, "Invalid API Key");
+        }
+        if (!verifyVisitorToken(visitorTokenSecret, channel.getId(), visitorId, visitorToken)) {
+            return R.fail(401, "Invalid or missing visitor token");
+        }
+        String sid;
+        try {
+            sid = normalizeSessionId(sessionId);
+        } catch (IllegalArgumentException ex) {
+            return R.fail(400, ex.getMessage());
+        }
+        String conversationId = deriveConversationId(apiKey, visitorId, sid);
+        if (!ownsConversation(conversationId, visitorId)) {
+            return R.fail(404, "Session not found");
+        }
+
+        // Backward-compatible: no limit → full external (path-stripped) list.
+        if (limit == null || limit <= 0) {
+            return R.ok(conversationService.listMessageViewsExternal(conversationId));
+        }
+
+        // Paginated: mirror ConversationController#listMessages but with the
+        // external view so visitors never see server-side file paths.
+        List<MessageEntity> messages;
+        boolean hasMore;
+        if (beforeId != null) {
+            messages = conversationService.listMessagesBefore(conversationId, beforeId, limit + 1);
+            hasMore = messages.size() > limit;
+            if (hasMore) {
+                messages = messages.subList(messages.size() - limit, messages.size());
+            }
+        } else {
+            long total = conversationService.countMessages(conversationId);
+            messages = conversationService.listRecentMessages(conversationId, limit);
+            hasMore = total > limit;
+        }
+        return R.ok(Map.of(
+                "messages", conversationService.toExternalMessageViews(messages),
+                "hasMore", hasMore
+        ));
     }
 
     /**
@@ -369,6 +635,155 @@ public class WebChatController {
         }
         conversationService.deleteConversation(conversationId);
         return R.ok();
+    }
+
+    /**
+     * 上传文件（入站）。访客先上传拿到 fileId，再在 /stream 的 attachmentIds 中引用。
+     * <p>鉴权同会话接口：API Key + visitor token；conversationId 服务端派生。
+     */
+    @Operation(summary = "WebChat 上传文件")
+    @PostMapping(value = "/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public R<Map<String, Object>> uploadFile(
+            @RequestHeader("X-MC-Key") String apiKey,
+            @RequestHeader(value = "X-MC-Visitor-Token", required = false) String visitorToken,
+            @RequestParam String visitorId,
+            @RequestParam(required = false) String sessionId,
+            @RequestPart("file") MultipartFile file) {
+        ChannelEntity channel = resolveChannel(apiKey);
+        if (channel == null) {
+            return R.fail(401, "Invalid API Key");
+        }
+        if (!verifyVisitorToken(visitorTokenSecret, channel.getId(), visitorId, visitorToken)) {
+            return R.fail(401, "Invalid or missing visitor token");
+        }
+        // Upload requires an established visitor identity (the token is bound to it);
+        // unlike /stream we never mint a fresh visitorId here.
+        String vid;
+        String sid;
+        try {
+            if (visitorId == null || visitorId.trim().isEmpty()) {
+                return R.fail(400, "visitorId is required");
+            }
+            vid = normalizeVisitorId(visitorId);
+            sid = normalizeSessionId(sessionId);
+        } catch (IllegalArgumentException ex) {
+            return R.fail(400, ex.getMessage());
+        }
+        String conversationId = deriveConversationId(apiKey, vid, sid);
+        try {
+            WebChatFileService.StagedFile stored = fileService.store(conversationId, file);
+            return R.ok(Map.of(
+                    "fileId", stored.storedName(),
+                    "fileName", stored.originalName(),
+                    "contentType", stored.contentType() != null ? stored.contentType() : "application/octet-stream",
+                    "size", stored.size()
+            ));
+        } catch (WebChatFileService.UploadRejectedException ex) {
+            return R.fail(400, ex.getMessage());
+        } catch (IOException ex) {
+            log.error("[WebChat] Upload failed conv={}: {}", conversationId, ex.getMessage());
+            return R.fail(500, "Upload failed");
+        }
+    }
+
+    /**
+     * 下载文件（出站）。serves both visitor-uploaded files and agent-produced files
+     * written under the conversation dir. 鉴权同上，路径在服务端派生目录内防穿越。
+     */
+    @Operation(summary = "WebChat 下载文件")
+    @GetMapping("/files")
+    public ResponseEntity<Resource> downloadFile(
+            @RequestHeader("X-MC-Key") String apiKey,
+            @RequestHeader(value = "X-MC-Visitor-Token", required = false) String visitorToken,
+            @RequestParam String visitorId,
+            @RequestParam(required = false) String sessionId,
+            @RequestParam String storedName) {
+        ChannelEntity channel = resolveChannel(apiKey);
+        if (channel == null) {
+            return ResponseEntity.status(401).build();
+        }
+        if (!verifyVisitorToken(visitorTokenSecret, channel.getId(), visitorId, visitorToken)) {
+            return ResponseEntity.status(401).build();
+        }
+        String sid;
+        try {
+            sid = normalizeSessionId(sessionId);
+        } catch (IllegalArgumentException ex) {
+            return ResponseEntity.badRequest().build();
+        }
+        String conversationId = deriveConversationId(apiKey, visitorId, sid);
+        if (!ownsConversation(conversationId, visitorId)) {
+            return ResponseEntity.status(404).build();
+        }
+        Path file = fileService.resolve(conversationId, storedName).orElse(null);
+        if (file == null) {
+            return ResponseEntity.notFound().build();
+        }
+
+        String contentType;
+        try {
+            contentType = Files.probeContentType(file);
+        } catch (IOException e) {
+            contentType = null;
+        }
+        MediaType mediaType = MediaType.APPLICATION_OCTET_STREAM;
+        if (contentType != null) {
+            try {
+                mediaType = MediaType.parseMediaType(contentType);
+            } catch (Exception ignored) {
+                // fall back to octet-stream
+            }
+        }
+        // Only inline images; everything else downloads as an attachment. nosniff
+        // stops the browser from re-interpreting the bytes as active content.
+        boolean inlineImage = contentType != null && contentType.startsWith("image/");
+        String encodedName = URLEncoder.encode(file.getFileName().toString(), StandardCharsets.UTF_8)
+                .replace("+", "%20");
+        return ResponseEntity.ok()
+                .contentType(mediaType)
+                .header("X-Content-Type-Options", "nosniff")
+                .header(HttpHeaders.CONTENT_DISPOSITION,
+                        (inlineImage ? "inline" : "attachment") + "; filename*=UTF-8''" + encodedName)
+                .body(new FileSystemResource(file));
+    }
+
+    /**
+     * Build the user message's content parts: a text part for the message plus a
+     * file/media part for each referenced attachment. Attachment metadata is
+     * resolved server-side from the staging registry (the client only sends opaque
+     * ids); an id that is unknown, expired, or belongs to another conversation is
+     * silently dropped.
+     */
+    private List<MessageContentPart> buildUserParts(String conversationId, String message,
+                                                    List<String> attachmentIds) {
+        List<MessageContentPart> parts = new ArrayList<>();
+        if (message != null && !message.isBlank()) {
+            MessageContentPart text = new MessageContentPart();
+            text.setType("text");
+            text.setText(message);
+            parts.add(text);
+        }
+        if (attachmentIds != null) {
+            for (String fileId : attachmentIds) {
+                fileService.consume(conversationId, fileId).ifPresent(sf -> {
+                    MessageContentPart p = new MessageContentPart();
+                    p.setType(WebChatFileService.partTypeFor(sf.contentType()));
+                    p.setFileName(sf.originalName());
+                    p.setContentType(sf.contentType());
+                    p.setStoredName(sf.storedName());
+                    p.setFileSize(sf.size());
+                    // Relative download ref (caller adds auth headers + visitorId/sessionId).
+                    p.setFileUrl("/api/v1/channels/webchat/files?storedName="
+                            + URLEncoder.encode(sf.storedName(), StandardCharsets.UTF_8));
+                    // Server path lets the agent's file tools read the upload; stripped from
+                    // the external message view (listMessageViewsExternal).
+                    fileService.resolve(conversationId, sf.storedName())
+                            .ifPresent(path -> p.setPath(path.toString()));
+                    parts.add(p);
+                });
+            }
+        }
+        return parts;
     }
 
     // ==================== 内部方法 ====================
@@ -566,6 +981,10 @@ public class WebChatController {
         /** Optional: open a distinct conversation thread for the same visitor.
          *  Composed into the server-derived conversationId; never used as a raw conversationId. */
         private String sessionId;
+        /** Optional: ids returned by POST /upload, referencing files this visitor uploaded
+         *  for this conversation. Metadata is resolved server-side; unknown / foreign / expired
+         *  ids are dropped. */
+        private List<String> attachmentIds;
     }
 
     /** Compact view of one of a visitor's conversation threads. */
@@ -577,5 +996,21 @@ public class WebChatController {
         private String title;
         private LocalDateTime lastActiveTime;
         private Integer messageCount;
+    }
+
+    /** Body for {@code POST /sessions} — explicitly create an empty thread. */
+    @lombok.Data
+    public static class WebChatCreateSessionRequest {
+        /** Optional; server mints a UUID when absent (same convention as /stream). */
+        private String visitorId;
+        /** Optional; server generates one when absent. Whitelisted charset, ≤ 64 chars. */
+        private String sessionId;
+        /** Optional; 1–100 chars when non-blank, otherwise left null so the first
+         *  /stream message still derives the title (mirrors PUT /sessions/title rules). */
+        private String title;
+        /** Optional; override the channel's bound agent. Must belong to the channel's
+         *  workspace. Only applied on first creation — once the thread exists, a
+         *  different agentId is ignored. */
+        private Long agentId;
     }
 }

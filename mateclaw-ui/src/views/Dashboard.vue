@@ -7,6 +7,11 @@
             <div class="mc-page-kicker">{{ t('dashboard.kicker') }}</div>
             <h1 class="mc-page-title">{{ t('dashboard.title') }}</h1>
             <p class="mc-page-desc">{{ t('dashboard.desc') }}</p>
+            <div v-if="dbLabel" class="db-chip" :title="t('doctor.database')">
+              <svg class="db-chip__icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/></svg>
+              <span class="db-chip__label">{{ t('doctor.database') }}</span>
+              <span class="db-chip__value">{{ dbLabel }}</span>
+            </div>
           </div>
           <div class="hero-note mc-surface-card">
             <div class="hero-note__label">{{ t('dashboard.periods.today') }}</div>
@@ -190,7 +195,7 @@ import { ref, reactive, computed, onMounted, onUnmounted, nextTick, watch } from
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { ArrowRight, ChatDotRound, DataLine, Document, Tools } from '@element-plus/icons-vue'
-import { dashboardApi, modelApi } from '@/api'
+import { dashboardApi, modelApi, http } from '@/api'
 import { getProviderIcon, onProviderIconError } from '@/utils/providerIcons'
 import * as echarts from 'echarts/core'
 import { LineChart } from 'echarts/charts'
@@ -219,6 +224,9 @@ const todayStats = reactive({
 // ── Model configuration card ──
 const modelProviders = ref<any[]>([])
 const activeModel = ref<{ providerId: string; model: string } | null>(null)
+// Connected database product name (e.g. "MySQL" / "H2" / "PostgreSQL"), surfaced
+// as a subtle line in the page header. Empty string hides it when unavailable.
+const dbLabel = ref('')
 
 const readyProviderCount = computed(
   () => modelProviders.value.filter((p) => providerChipStatus(p) === 'ready').length,
@@ -270,6 +278,15 @@ onMounted(async () => {
     }
   } catch {
     // Dashboard data is non-critical
+  }
+
+  // Connected database label — independent and non-critical. Reuses the
+  // existing system health endpoint, which already reports the product name.
+  try {
+    const healthRes: any = await http.get('/system/health')
+    dbLabel.value = (healthRes?.data || healthRes)?.database || ''
+  } catch {
+    dbLabel.value = ''
   }
 
   // Model configuration card — loaded independently so a failure here never
@@ -413,6 +430,34 @@ function calcDuration(run: any): string {
   min-height: 0;
   overflow-y: auto;
   padding-right: 4px;
+}
+
+.db-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 14px;
+  padding: 4px 10px;
+  border: 1px solid var(--mc-border);
+  border-radius: 999px;
+  background: var(--mc-bg-sunken);
+  font-size: 12px;
+  line-height: 1;
+  color: var(--mc-text-secondary);
+}
+
+.db-chip__icon {
+  color: var(--mc-text-tertiary);
+  flex-shrink: 0;
+}
+
+.db-chip__label {
+  color: var(--mc-text-tertiary);
+}
+
+.db-chip__value {
+  font-weight: 600;
+  color: var(--mc-text-primary);
 }
 
 .hero-note {

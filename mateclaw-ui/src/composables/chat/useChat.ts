@@ -2059,10 +2059,16 @@ export function useChat(options: UseChatOptions): UseChatReturn {
     currentAssistantId.value = assistantMessage.id as string
 
     try {
-      // connect() owns lastEventId injection — it knows whether the dedup
-      // state still applies to this conversation. Passing it from out here
-      // would race the per-conv reset that connect does and could leak a
-      // different conv's id into this reconnect.
+      // reconnectStream always rebuilds from an EMPTY placeholder (above), so it
+      // needs the server to replay the WHOLE buffer — not just events newer than
+      // a previously-acked lastEventId. Clearing it forces connect() to omit
+      // lastEventId so the backend full-replays and the placeholder repaints.
+      // Without this, a reconnect into the same conversation (poll-detected
+      // running stream after a switch-away, window refocus) dedup-skips the
+      // buffer and the bubble stays blank until a hard refresh resets this ref —
+      // the "switch conversations mid-stream → blank, refresh fixes it" bug.
+      // Setting null (not a foreign id) right before connect can't leak or race.
+      stream.lastEventId.value = null
       await stream.connect({
         conversationId,
         reconnect: true,

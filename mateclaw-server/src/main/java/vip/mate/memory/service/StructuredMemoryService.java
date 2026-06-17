@@ -105,6 +105,7 @@ public class StructuredMemoryService {
 
     private final WorkspaceFileService workspaceFileService;
     private final ApplicationEventPublisher eventPublisher;
+    private final vip.mate.memory.MemoryProperties properties;
 
     /** Per-file lock to prevent concurrent read-modify-write on the same file */
     private final ConcurrentHashMap<String, ReentrantLock> fileLocks = new ConcurrentHashMap<>();
@@ -240,33 +241,131 @@ public class StructuredMemoryService {
         return buildMemoryBlock(agentId, null);
     }
 
+    /** Reserve left for structural overhead (headers, blank lines) when truncating a single oversized entry. */
+    private static final int BLOCK_STRUCTURE_RESERVE = 120;
+
     /** Owner-scoped variant of {@link #buildMemoryBlock(Long)}. */
     public String buildMemoryBlock(Long agentId, String ownerKey) {
-        StringBuilder sb = new StringBuilder();
-        boolean hasContent = false;
+        int maxChars = Math.max(0, properties.getSystemBlockMaxChars());
+        int maxPerType = Math.max(0, properties.getSystemBlockMaxEntriesPerType());
 
+        // 1. Collect every always-on entry with its update date and a global
+        //    insertion index (file order, types in SYSTEM_PROMPT_TYPES order).
+        //    Truncate any single entry larger than the whole budget so it can
+        //    never blow the cap on its own.
+        int contentCap = maxChars > 0 ? Math.max(1, maxChars - BLOCK_STRUCTURE_RESERVE) : -1;
+        List<BlockEntry> all = new ArrayList<>();
+        int globalIndex = 0;
         for (String type : SYSTEM_PROMPT_TYPES) {
             String fileContent = readFileSafe(agentId, toFilename(type), ownerKey);
             if (fileContent.isBlank()) continue;
+            for (Map.Entry<String, String> entry : parseSections(fileContent).entrySet()) {
+                String content = extractContentOnly(entry.getValue());
+                if (content.isBlank()) continue;
+                if (contentCap >= 0 && content.length() > contentCap) {
+                    content = content.substring(0, contentCap) + "…";
+                }
+                all.add(new BlockEntry(type, entry.getKey(), content,
+                        extractUpdated(entry.getValue()), globalIndex++));
+            }
+        }
+        if (all.isEmpty()) return "";
 
-            Map<String, String> sections = parseSections(fileContent);
-            if (sections.isEmpty()) continue;
+        // 2. Enforce the always-on budget against the TRUE rendered length
+        //    (headers, blank lines, and the omission note all counted), keeping
+        //    the most-recently-updated entries so accumulated memory cannot grow
+        //    the per-turn context without bound.
+        Set<BlockEntry> kept = selectWithinBudget(all, maxChars, maxPerType);
+        int omitted = all.size() - kept.size();
+        return renderBlock(all, kept, omitted);
+    }
+
+    /** A candidate entry for the always-on block, with budget metadata. */
+    private record BlockEntry(String type, String key, String content,
+                              String updated, int index) {}
+
+    /**
+     * Render the always-on block: survivors grouped by type, in original file
+     * order (stable ordering keeps the system prefix cacheable), followed by an
+     * omission note when entries were dropped.
+     */
+    private String renderBlock(List<BlockEntry> all, Set<BlockEntry> kept, int omitted) {
+        StringBuilder sb = new StringBuilder();
+        boolean hasContent = false;
+        for (String type : SYSTEM_PROMPT_TYPES) {
+            List<BlockEntry> typeEntries = all.stream()
+                    .filter(e -> e.type().equals(type) && kept.contains(e))
+                    .sorted(Comparator.comparingInt(BlockEntry::index))
+                    .toList();
+            if (typeEntries.isEmpty()) continue;
 
             if (!hasContent) {
                 sb.append("## Structured Memory\n\n");
                 hasContent = true;
             }
-
             sb.append("### ").append(typeDisplayName(type)).append("\n");
-            for (Map.Entry<String, String> entry : sections.entrySet()) {
-                // Extract just the content line (skip metadata)
-                String content = extractContentOnly(entry.getValue());
-                sb.append("- **").append(entry.getKey()).append("**: ").append(content).append("\n");
+            for (BlockEntry e : typeEntries) {
+                sb.append("- **").append(e.key()).append("**: ").append(e.content()).append("\n");
             }
             sb.append("\n");
         }
-
+        if (omitted > 0) {
+            sb.append("> ").append(omitted)
+              .append(" older memory entries omitted to bound context size.\n");
+        }
         return sb.toString().trim();
+    }
+
+    /**
+     * Select the entries that fit the always-on injection budget, preferring the
+     * most-recently-updated ones. Applies a per-type entry cap first, then a
+     * global character budget measured against the actual rendered block (not
+     * just bullet lengths). Newer entries (later update date, then later
+     * insertion order) win; ties and missing dates fall back to insertion order.
+     */
+    private Set<BlockEntry> selectWithinBudget(List<BlockEntry> all, int maxChars, int maxPerType) {
+        // Keep-priority: most recent update first, then most recently inserted.
+        Comparator<BlockEntry> newestFirst = Comparator
+                .comparing(BlockEntry::updated, Comparator.nullsFirst(Comparator.naturalOrder()))
+                .thenComparingInt(BlockEntry::index)
+                .reversed();
+
+        // Per-type cap: drop the oldest entries beyond the cap.
+        List<BlockEntry> survivors = new ArrayList<>(all);
+        if (maxPerType > 0) {
+            Set<BlockEntry> overflow = new HashSet<>();
+            for (String type : SYSTEM_PROMPT_TYPES) {
+                List<BlockEntry> ofType = survivors.stream()
+                        .filter(e -> e.type().equals(type))
+                        .sorted(newestFirst)
+                        .toList();
+                if (ofType.size() > maxPerType) {
+                    overflow.addAll(ofType.subList(maxPerType, ofType.size()));
+                }
+            }
+            survivors.removeAll(overflow);
+        }
+
+        if (maxChars <= 0) {
+            return new HashSet<>(survivors);
+        }
+
+        // Global character budget: admit newest entries while the fully rendered
+        // block stays within budget. Measuring the real render (including the
+        // omission note) makes the cap exact; once an entry no longer fits, every
+        // remaining entry is older and is dropped too.
+        List<BlockEntry> ordered = survivors.stream().sorted(newestFirst).toList();
+        Set<BlockEntry> picked = new HashSet<>();
+        for (BlockEntry e : ordered) {
+            Set<BlockEntry> trial = new HashSet<>(picked);
+            trial.add(e);
+            int omittedIfStop = all.size() - trial.size();
+            if (renderBlock(all, trial, Math.max(0, omittedIfStop)).length() > maxChars) {
+                break;
+            }
+            picked.add(e);
+        }
+        return picked;
     }
 
     /**
@@ -398,6 +497,97 @@ public class StructuredMemoryService {
 
     private String toFilename(String type) {
         return "structured/" + type + ".md";
+    }
+
+    // ==================== Consolidation support ====================
+
+    /** The always-on structured types injected into every system prompt. */
+    public List<String> alwaysOnTypes() {
+        return SYSTEM_PROMPT_TYPES;
+    }
+
+    /** Read the raw Markdown of a structured type file (owner-scoped when personal). */
+    public String readTypeRaw(Long agentId, String type, String ownerKey) {
+        validateType(type);
+        return readFileSafe(agentId, toFilename(type), ownerKey);
+    }
+
+    /** Count the {@code ## key} entries in a structured file's raw Markdown. */
+    public int countEntries(String rawContent) {
+        return (rawContent == null || rawContent.isBlank()) ? 0 : parseSections(rawContent).size();
+    }
+
+    /**
+     * Distinct buckets that hold entries for a structured type and are eligible
+     * for consolidation: the shared bucket (returned as {@code null}) plus each
+     * personal owner that has its own row. Lets the nightly maintenance pass
+     * consolidate per-owner memory, where most growth actually accumulates.
+     */
+    public List<String> consolidatableOwnerKeys(Long agentId, String type) {
+        validateType(type);
+        String filename = toFilename(type);
+        List<String> owners = new ArrayList<>();
+        owners.add(null); // shared (TEAM/GLOBAL) bucket
+        for (WorkspaceFileEntity f : workspaceFileService.listFiles(agentId)) {
+            if (filename.equals(f.getFilename()) && isPersonal(f.getOwnerKey())
+                    && !owners.contains(f.getOwnerKey())) {
+                owners.add(f.getOwnerKey());
+            }
+        }
+        return owners;
+    }
+
+    /**
+     * Atomically replace all entries of a structured type with a consolidated set,
+     * re-serialized in the canonical {@code ## key / content / > Source | Updated}
+     * format. Used by the nightly consolidation pass to shrink always-on memory.
+     * Insertion order of {@code entries} is preserved.
+     * <p>
+     * Update dates are preserved per key: an entry whose key already existed keeps
+     * its original {@code Updated} date, and a newly-merged key inherits the newest
+     * date among the existing entries. This keeps recency/LRU semantics intact —
+     * consolidation must not make a batch of old facts look freshly written.
+     */
+    public void replaceTypeEntries(Long agentId, String type, String ownerKey,
+                                   LinkedHashMap<String, String> entries, String source) {
+        validateType(type);
+        String filename = toFilename(type);
+        String lockKey = agentId + ":" + (ownerKey == null ? "" : ownerKey) + ":" + filename;
+        ReentrantLock lock = fileLocks.computeIfAbsent(lockKey, k -> new ReentrantLock());
+        lock.lock();
+        try {
+            // Derive prior update dates so consolidation preserves provenance.
+            Map<String, String> keyToDate = new HashMap<>();
+            String newestDate = "";
+            for (Map.Entry<String, String> s : parseSections(readFileSafe(agentId, filename, ownerKey)).entrySet()) {
+                String d = extractUpdated(s.getValue());
+                if (!d.isEmpty()) {
+                    keyToDate.put(s.getKey(), d);
+                    if (d.compareTo(newestDate) > 0) newestDate = d;
+                }
+            }
+            String fallbackDate = newestDate.isEmpty() ? LocalDate.now().toString() : newestDate;
+            String src = source != null ? source : "consolidation";
+
+            StringBuilder sb = new StringBuilder();
+            for (Map.Entry<String, String> e : entries.entrySet()) {
+                if (e.getKey() == null || e.getKey().isBlank()
+                        || e.getValue() == null || e.getValue().isBlank()) {
+                    continue;
+                }
+                String key = e.getKey().trim();
+                String date = keyToDate.getOrDefault(key, fallbackDate);
+                if (sb.length() > 0) sb.append("\n\n");
+                sb.append("## ").append(key).append("\n")
+                  .append(e.getValue().trim())
+                  .append("\n> Source: ").append(src).append(" | Updated: ").append(date);
+            }
+            saveStructured(agentId, filename, sb.toString(), ownerKey);
+            log.info("[StructuredMemory] Replaced {} entries in '{}' for agent={} owner={} (source={})",
+                    entries.size(), filename, agentId, ownerKey, src);
+        } finally {
+            lock.unlock();
+        }
     }
 
     private void validateType(String type) {

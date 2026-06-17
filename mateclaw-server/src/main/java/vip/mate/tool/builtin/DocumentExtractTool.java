@@ -8,10 +8,12 @@ import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Component;
+import vip.mate.tool.guard.WorkspacePathGuard;
 
 import java.io.*;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -75,24 +77,54 @@ public class DocumentExtractTool {
             // ChatOrigin so the workspace boundary check honors per-agent basePath.
             @Nullable ToolContext ctx) {
 
+        Path path;
+        try {
+            path = WorkspacePathGuard.validatePath(filePath, ctx);
+        } catch (IllegalArgumentException e) {
+            // Sandbox rejected the literal path. Try chat-upload basename
+            // resolution before surfacing the boundary error.
+            Path attachment = ChatUploadResolver.resolve(filePath);
+            if (attachment == null) {
+                return errorResult(filePath, e.getMessage(), new ArrayList<>());
+            }
+            path = attachment;
+        }
+        return extractResolved(filePath, path, options);
+    }
+
+    /**
+     * Internal, sandbox-exempt extraction for server-managed file paths.
+     * <p>
+     * The wiki ingest pipeline stages an uploaded raw material under its own
+     * upload directory and feeds that stored path straight back here. The path
+     * is produced by the server, never by the model, so the workspace boundary
+     * guard — whose job is to stop the LLM reading arbitrary disk locations —
+     * must not apply: the wiki upload dir is a sibling of the global sandbox root
+     * and would otherwise be rejected as "outside workspace boundary", surfacing
+     * to the user as "No text content available". Callers must pass a path the
+     * server itself produced, not anything derived from model output.
+     *
+     * @param filePath absolute, server-controlled path to the staged document
+     * @param options  same options JSON accepted by {@link #extract_document_text}
+     */
+    public String extractTrustedDocument(String filePath, String options) {
+        Path path = Paths.get(filePath).toAbsolutePath().normalize();
+        return extractResolved(filePath, path, options);
+    }
+
+    /**
+     * Shared extraction body running on an already-resolved {@link Path}: detects
+     * the document type and drives the per-format extractor chain. Both the
+     * sandbox-guarded {@link #extract_document_text} tool entry and the trusted
+     * {@link #extractTrustedDocument} internal entry funnel through here so the
+     * extraction logic stays in one place.
+     */
+    private String extractResolved(String filePath, Path path, String options) {
         JSONObject result = new JSONObject();
         result.set("filePath", filePath);
         List<String> attempts = new ArrayList<>();
 
         try {
-            Path path;
-            try {
-                path = vip.mate.tool.guard.WorkspacePathGuard.validatePath(filePath, ctx);
-            } catch (IllegalArgumentException e) {
-                // Sandbox rejected the literal path. Try chat-upload basename
-                // resolution before surfacing the boundary error.
-                Path attachment = ChatUploadResolver.resolve(filePath);
-                if (attachment == null) {
-                    return errorResult(filePath, e.getMessage(), attempts);
-                }
-                path = attachment;
-            }
-
             if (!Files.exists(path)) {
                 // The user-uploaded chat attachment is rendered to the LLM as
                 // "[附件] foo.docx" without its stored path, and Chinese / non-ASCII

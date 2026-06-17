@@ -62,6 +62,17 @@ public class ConversationService {
 
     public static final String SYSTEM_USER = "system";
 
+    /**
+     * Owner prefix for webchat conversations, written as {@code webchat:<visitorId>}
+     * (see {@code WebChatController#webchatUsername}). These rows are owned by an
+     * external visitor principal rather than a MateClaw account, so the admin
+     * console treats them like {@link #SYSTEM_USER} rows — visible to / manageable
+     * by any authenticated user in the workspace. The visitor-facing self-service
+     * endpoints keep isolating by the exact owner plus a signed visitor token, so
+     * surfacing these rows to the console does not widen a visitor's own access.
+     */
+    static final String WEBCHAT_OWNER_PREFIX = "webchat:";
+
     private final ConversationMapper conversationMapper;
     private final MessageMapper messageMapper;
     private final AgentMapper agentMapper;
@@ -97,9 +108,29 @@ public class ConversationService {
     /**
      * Workspace-scoped variant of {@link #listConversations(String)}.
      *
+     * <p>Strict ownership: only the user's own + {@code system} rows. Used by
+     * callers that must not see other principals' conversations — notably the
+     * webchat visitor self-service path, which scopes to one visitor.
+     *
      * <p>获取用户的会话列表（按工作区过滤）。
      */
     public List<ConversationVO> listConversations(String username, Long workspaceId) {
+        return listConversations(username, workspaceId, false);
+    }
+
+    /**
+     * Admin-console variant. When {@code includeChannelPrincipals} is true, also
+     * returns conversations owned by external channel principals
+     * ({@code webchat:<visitorId>}) so the console surfaces webchat threads
+     * alongside the user's own + {@code system} rows — the same way IM-channel
+     * ({@code system}-owned) conversations already appear. The visitor-facing
+     * webchat endpoints keep using the strict overload, so this does not widen a
+     * visitor's own access.
+     *
+     * <p>控制台变体：includeChannelPrincipals 为 true 时额外纳入 webchat 访客会话。
+     */
+    public List<ConversationVO> listConversations(String username, Long workspaceId,
+                                                  boolean includeChannelPrincipals) {
         // Return both the current user's conversations AND those created by
         // scheduled jobs (owner=system). Child conversations spawned by
         // delegation are excluded — they don't belong in the sidebar.
@@ -107,7 +138,7 @@ public class ConversationService {
         // 同时返回当前用户的会话和定时任务（system）产生的会话；
         // 排除子会话（委派产生的子会话不在侧边栏显示）。
         LambdaQueryWrapper<ConversationEntity> wrapper = new LambdaQueryWrapper<ConversationEntity>()
-                .in(ConversationEntity::getUsername, username, SYSTEM_USER)
+                .and(w -> applyOwnerScope(w, username, includeChannelPrincipals))
                 .isNull(ConversationEntity::getParentConversationId)
                 .orderByDesc(ConversationEntity::getPinned)
                 .orderByDesc(ConversationEntity::getLastActiveTime);
@@ -148,6 +179,20 @@ public class ConversationService {
     }
 
     /**
+     * Apply the owner-scope predicate onto a (nested) wrapper: always the user's
+     * own + {@link #SYSTEM_USER} rows; when {@code includeChannelPrincipals} is
+     * true, also external channel-principal rows ({@code webchat:%}). Kept as one
+     * helper so the list and page queries stay in lockstep.
+     */
+    private void applyOwnerScope(LambdaQueryWrapper<ConversationEntity> w,
+                                 String username, boolean includeChannelPrincipals) {
+        w.in(ConversationEntity::getUsername, username, SYSTEM_USER);
+        if (includeChannelPrincipals) {
+            w.or().likeRight(ConversationEntity::getUsername, WEBCHAT_OWNER_PREFIX);
+        }
+    }
+
+    /**
      * Paginated variant used by the Sessions admin page.
      *
      * <p>Mirrors {@link #listConversations(String, Long)}'s filtering (current
@@ -166,8 +211,10 @@ public class ConversationService {
         com.baomidou.mybatisplus.extension.plugins.pagination.Page<ConversationEntity> pager =
                 new com.baomidou.mybatisplus.extension.plugins.pagination.Page<>(page, size);
 
+        // Admin Sessions page surfaces channel conversations too, so include
+        // external webchat principals alongside the user's own + system rows.
         LambdaQueryWrapper<ConversationEntity> wrapper = new LambdaQueryWrapper<ConversationEntity>()
-                .in(ConversationEntity::getUsername, username, SYSTEM_USER)
+                .and(w -> applyOwnerScope(w, username, true))
                 .isNull(ConversationEntity::getParentConversationId)
                 .orderByDesc(ConversationEntity::getPinned)
                 .orderByDesc(ConversationEntity::getLastActiveTime);
@@ -251,6 +298,72 @@ public class ConversationService {
             throw new IllegalArgumentException("无权操作该会话");
         }
         return conv;
+    }
+
+    /**
+     * WebChat get-or-create that also records the thread's {@code sessionId} on
+     * insert, so the visitor's /sessions listing can recover it even when the
+     * conversationId hashes (long visitorId + sessionId). The session id is
+     * written only when the row is first created; an existing row is left as-is.
+     */
+    @Transactional
+    public ConversationEntity getOrCreateWebchatConversation(String conversationId, Long agentId,
+                                                             String username, Long workspaceId,
+                                                             String sessionId) {
+        return getOrCreateWebchatConversation(conversationId, agentId, username, workspaceId, sessionId, null);
+    }
+
+    /**
+     * WebChat get-or-create with an optional caller-supplied title.
+     * <p>
+     * When the row is freshly inserted and {@code title} is non-blank, it
+     * overrides the default {@code "新对话"}; otherwise the default is kept and
+     * {@link #saveMessage} will still derive a title from the first user
+     * message. An existing row is never rewritten — neither {@code sessionId}
+     * nor {@code title} are clobbered, so a session created via
+     * {@code POST /sessions} with a caller-supplied title keeps that title
+     * when the first {@code /stream} message later lands.
+     */
+    @Transactional
+    public ConversationEntity getOrCreateWebchatConversation(String conversationId, Long agentId,
+                                                             String username, Long workspaceId,
+                                                             String sessionId, String title) {
+        boolean existed = conversationMapper.selectOne(new LambdaQueryWrapper<ConversationEntity>()
+                .eq(ConversationEntity::getConversationId, conversationId)) != null;
+        ConversationEntity conv = getOrCreateConversation(conversationId, agentId, username, workspaceId);
+        if (!existed) {
+            boolean dirty = false;
+            if (sessionId != null && !sessionId.isBlank() && conv.getWebchatSessionId() == null) {
+                conv.setWebchatSessionId(sessionId);
+                dirty = true;
+            }
+            if (title != null && !title.isBlank()) {
+                conv.setTitle(title.trim());
+                dirty = true;
+            }
+            if (dirty) {
+                conversationMapper.updateById(conv);
+            }
+        }
+        return conv;
+    }
+
+    /**
+     * List a webchat visitor's own conversations (top-level threads), ordered
+     * pinned-desc then last-active-desc.
+     * <p>
+     * Scoped to {@code username = owner} only — unlike {@link #listConversations}
+     * it does <b>not</b> pull in {@code system} rows, so a visitor's /sessions
+     * call doesn't load every IM/cron conversation in the database just to list
+     * its own handful of threads. The caller still applies the channel-prefix
+     * filter (literal {@code startsWith}, wildcard-safe) to isolate the channel.
+     */
+    public List<ConversationEntity> listWebchatConversations(String username) {
+        return conversationMapper.selectList(new LambdaQueryWrapper<ConversationEntity>()
+                .eq(ConversationEntity::getUsername, username)
+                .isNull(ConversationEntity::getParentConversationId)
+                .orderByDesc(ConversationEntity::getPinned)
+                .orderByDesc(ConversationEntity::getLastActiveTime));
     }
 
     /**
@@ -808,6 +921,36 @@ public class ConversationService {
     }
 
     /**
+     * External-facing message views for untrusted callers (webchat visitors).
+     * Strips the server-side absolute file path from both the structured parts
+     * ({@code path} nulled) and the rendered text, so the server filesystem
+     * layout is never disclosed. Visitors still get {@code fileUrl} / {@code
+     * fileName} / {@code contentType} to render and download attachments.
+     */
+    public List<MessageVO> listMessageViewsExternal(String conversationId) {
+        return toExternalMessageViews(listMessages(conversationId));
+    }
+
+    /**
+     * Map already-loaded message entities to external (path-stripped) views.
+     * Shared by the full-list and paginated webchat paths so sanitization stays
+     * in one place.
+     */
+    public List<MessageVO> toExternalMessageViews(List<MessageEntity> messages) {
+        return messages.stream()
+                .map(message -> {
+                    List<MessageContentPart> parts = parseMessageParts(message);
+                    parts.forEach(p -> {
+                        if (p != null) {
+                            p.setPath(null);
+                        }
+                    });
+                    return MessageVO.from(message, parts, renderMessageContent(message, false));
+                })
+                .toList();
+    }
+
+    /**
      * Delete a conversation and cascade-clean every row that referenced it.
      * <p>
      * Tables cleaned in the same transaction:
@@ -936,6 +1079,16 @@ public class ConversationService {
     }
 
     public String renderMessageContent(MessageEntity message) {
+        return renderMessageContent(message, true);
+    }
+
+    /**
+     * Render variant whose {@code includePath} controls whether the server-side
+     * file path is embedded in the text. Internal/LLM rendering keeps it (tools
+     * resolve files by path); external rendering (webchat visitors) drops it so
+     * the server filesystem layout is not disclosed to untrusted callers.
+     */
+    public String renderMessageContent(MessageEntity message, boolean includePath) {
         List<MessageContentPart> parts = parseMessageParts(message);
         if (parts.isEmpty()) {
             return message.getContent() != null ? message.getContent() : "";
@@ -949,8 +1102,8 @@ public class ConversationService {
             switch (part.getType()) {
                 case "text" -> appendSegment(text, part.getText());
                 case "thinking", "tool_call", "parse_error" -> { /* skip — frontend reads these from contentParts directly */ }
-                case "file" -> appendSegment(text, renderFilePart(part));
-                case "image", "video", "audio", "model3d" -> appendSegment(text, renderMediaPart(part));
+                case "file" -> appendSegment(text, renderFilePart(part, includePath));
+                case "image", "video", "audio", "model3d" -> appendSegment(text, renderMediaPart(part, includePath));
                 default -> appendSegment(text, part.getText());
             }
         }
@@ -1000,10 +1153,10 @@ public class ConversationService {
      * picks (read_file / extract_document_text / detect_file_type / …) can be called
      * with a path that resolves directly, instead of relying on per-tool fallbacks.
      */
-    private String renderFilePart(MessageContentPart part) {
+    private String renderFilePart(MessageContentPart part, boolean includePath) {
         String name = safe(part.getFileName());
         String path = safe(part.getPath());
-        if (path.isBlank()) {
+        if (!includePath || path.isBlank()) {
             return "[附件] " + name;
         }
         return "[附件] " + name + "（路径: " + path + "）";
@@ -1020,7 +1173,7 @@ public class ConversationService {
      * already uploaded. The path lets file-reading tools ({@code read_file},
      * {@code extract_document_text}, {@code detect_file_type}) work as a fallback.
      */
-    private String renderMediaPart(MessageContentPart part) {
+    private String renderMediaPart(MessageContentPart part, boolean includePath) {
         String label = switch (part.getType()) {
             case "image" -> "[图片]";
             case "video" -> "[视频]";
@@ -1033,10 +1186,38 @@ public class ConversationService {
             name = "未命名";
         }
         String path = safe(part.getPath());
-        if (path.isBlank()) {
-            return label + " " + name;
+        StringBuilder rendered = new StringBuilder(label).append(' ').append(name);
+        if (includePath && !path.isBlank()) {
+            rendered.append("（路径: ").append(path).append("）");
         }
-        return label + " " + name + "（路径: " + path + "）";
+        // A persisted caption (vision sidecar output) carries the image content
+        // into later turns: history user messages replay as text only, so without
+        // this the model would lose all knowledge of the attachment after turn 1.
+        String caption = safe(part.getCaption());
+        if (!caption.isBlank()) {
+            rendered.append("\n[图片内容] ").append(caption.trim());
+        }
+        return rendered.toString();
+    }
+
+    /**
+     * Overwrite a message's {@code content_parts} with an updated list — used by
+     * the vision sidecar to persist generated captions back onto image parts so
+     * later turns retain the image description (history replay is text-only).
+     * Best-effort: a serialization or DB failure is logged, not propagated, so
+     * the in-flight chat turn is never broken by a caption write.
+     */
+    public void updateMessageParts(MessageEntity message, List<MessageContentPart> parts) {
+        if (message == null || message.getId() == null || parts == null || parts.isEmpty()) {
+            return;
+        }
+        try {
+            message.setContentParts(serializeParts(parts));
+            messageMapper.updateById(message);
+        } catch (Exception e) {
+            log.warn("Failed to persist updated content_parts for message {}: {}",
+                    message.getId(), e.getMessage());
+        }
     }
 
     private void appendSegment(StringBuilder builder, String text) {
@@ -1297,11 +1478,13 @@ public class ConversationService {
 
     /**
      * Check whether a user owns the conversation, treating system-owned
-     * rows (e.g. from scheduled jobs / IM channels) as visible to every
-     * authenticated user.
+     * rows (e.g. from scheduled jobs / IM channels) and external channel
+     * principals ({@code webchat:<visitorId>}) as visible to every
+     * authenticated user — otherwise the console could list a webchat
+     * conversation but 403 on opening / deleting / renaming it.
      *
      * <p>校验用户是否拥有该会话。定时任务产生的会话（username = system）
-     * 对所有登录用户可见。
+     * 和 webchat 访客会话（username = webchat:&lt;visitorId&gt;）对所有登录用户可见。
      */
     public boolean isConversationOwner(String conversationId, String username) {
         ConversationEntity conv = conversationMapper.selectOne(
@@ -1310,7 +1493,10 @@ public class ConversationService {
         if (conv == null) {
             return false;
         }
-        return username.equals(conv.getUsername()) || SYSTEM_USER.equals(conv.getUsername());
+        String owner = conv.getUsername();
+        return username.equals(owner)
+                || SYSTEM_USER.equals(owner)
+                || (owner != null && owner.startsWith(WEBCHAT_OWNER_PREFIX));
     }
 
     /**

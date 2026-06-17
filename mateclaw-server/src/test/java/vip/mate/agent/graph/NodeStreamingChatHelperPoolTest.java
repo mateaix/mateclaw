@@ -122,7 +122,7 @@ class NodeStreamingChatHelperPoolTest {
         pool.add("dashscope");                                  // second fallback alive
 
         // Use AUTH_ERROR (HARD) on primary — triggers the immediate break-to-walker
-        // path. Picking SERVER_ERROR would burn 5 retries (~110s) and then exit
+        // path. Picking SERVER_ERROR would burn MAX_RETRIES retries and then exit
         // without ever hitting the walker, which is unrelated to the property
         // under test here.
         ChatModel primary = errorModel(new RuntimeException("401 Unauthorized"));
@@ -211,8 +211,8 @@ class NodeStreamingChatHelperPoolTest {
         pool.add("openai");
         pool.add("dashscope");
 
-        // EMPTY_RESPONSE is SOFT and breaks straight to fallback (no 5x retry)
-        // — keeps the test fast while still exercising the SOFT path.
+        // EMPTY_RESPONSE retries same model up to MAX_RETRIES_EMPTY_RESPONSE (3),
+        // then breaks to fallback. Keeps the test fast while exercising the SOFT path.
         ChatModel primary = emptyResponseModel();
         ChatModel fallback = successModel("ok");
         var helper = helper(List.of(new FallbackEntry("dashscope", fallback)), "openai");

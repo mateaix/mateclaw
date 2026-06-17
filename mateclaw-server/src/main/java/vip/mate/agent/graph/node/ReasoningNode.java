@@ -141,19 +141,96 @@ public class ReasoningNode implements NodeAction {
             + "required step is already done, output the final answer to the user now.";
 
     /**
-     * A turn carrying no tool call, no content, and no thinking is not a usable
-     * answer — it would route to the final-answer branch as an empty string and
-     * terminate the run. Fatal / prompt-too-long / partial results are handled by
-     * their own branches and must not be misread as "empty".
+     * Continuation nudge for the most common premature-stop pattern: an empty
+     * turn immediately after a successful tool call. The tool result is already
+     * in context but the model stopped before writing the user-facing answer
+     * (e.g. a download URL produced by a send-file tool). Anchoring the nudge to
+     * the tool result recovers the answer in the same run instead of leaving the
+     * user to send another message to resume.
      */
-    static boolean isEmptyCompletion(NodeStreamingChatHelper.StreamResult result) {
+    private static final String POST_TOOL_EMPTY_NUDGE =
+            "上一步工具已成功返回(结果在上文)。请基于工具结果直接给出面向用户的最终答复"
+            + "(例如下载地址 / 执行结论),不要停在思考阶段,也不要只描述\"接下来要做什么\"。";
+
+    /**
+     * Continuation nudge for a turn that carries reasoning/thinking but no
+     * visible content and no tool call. Interleaved-thinking models sometimes
+     * "decide" the task is done in their reasoning yet never emit the answer
+     * text; this re-prompts them to write it (or call the next tool).
+     */
+    private static final String THINKING_ONLY_NUDGE =
+            "你已完成思考但还没有输出正文。请现在把面向用户的最终答案写出来;"
+            + "如果还有未完成的步骤,则立即调用对应工具。";
+
+    /**
+     * Why a no-tool-call reasoning turn cannot yet be accepted as a final answer.
+     * Both non-FINAL states route a turn into the bounded continuation-nudge loop
+     * instead of letting the final-answer branch emit an empty string and end the
+     * run prematurely.
+     */
+    enum ContinuationIntent {
+        /**
+         * Real user-facing content present, or a tool call, or a failure owned by
+         * another branch (fatal / prompt-too-long / partial) — finalize normally.
+         */
+        FINAL,
+        /**
+         * Reasoning/thinking present but no visible content and no tool call. The
+         * model "thought it was done" without writing the answer — common on
+         * interleaved-thinking models after a tool result. Nudge it to emit it.
+         */
+        THINKING_ONLY,
+        /** No content, no thinking, no tool call — a fully blank turn. Nudge to continue. */
+        BLANK,
+    }
+
+    /**
+     * Classify a no-tool-call turn's continuation intent. Fatal / prompt-too-long
+     * / partial results are handled by their own branches and must not be misread
+     * as needing a nudge.
+     */
+    static ContinuationIntent classifyContinuation(NodeStreamingChatHelper.StreamResult result) {
         if (result == null || result.hasToolCalls() || result.hasFatalError()
                 || result.isPromptTooLong() || result.partial()) {
-            return false;
+            return ContinuationIntent.FINAL;
         }
         boolean noContent = result.text() == null || result.text().isBlank();
+        if (!noContent) {
+            return ContinuationIntent.FINAL;
+        }
         boolean noThinking = result.thinking() == null || result.thinking().isBlank();
-        return noContent && noThinking;
+        return noThinking ? ContinuationIntent.BLANK : ContinuationIntent.THINKING_ONLY;
+    }
+
+    /**
+     * A fully blank turn (no tool call, no content, no thinking) is not a usable
+     * answer — it would route to the final-answer branch as an empty string and
+     * terminate the run. Retained as a thin predicate over {@link #classifyContinuation}.
+     */
+    static boolean isEmptyCompletion(NodeStreamingChatHelper.StreamResult result) {
+        return classifyContinuation(result) == ContinuationIntent.BLANK;
+    }
+
+    /**
+     * True when the newest conversational turn in the model input is a tool
+     * response — i.e. the model is about to reason over a fresh tool result. Used
+     * to pick the result-anchored continuation nudge for the common "empty turn
+     * right after a tool call" stop pattern.
+     */
+    static boolean lastTurnIsToolResponse(List<Message> messages) {
+        if (messages == null) {
+            return false;
+        }
+        for (int i = messages.size() - 1; i >= 0; i--) {
+            Message m = messages.get(i);
+            if (m instanceof ToolResponseMessage) {
+                return true;
+            }
+            if (m instanceof UserMessage || m instanceof AssistantMessage) {
+                return false;
+            }
+        }
+        return false;
     }
 
     /**
@@ -193,6 +270,40 @@ public class ReasoningNode implements NodeAction {
             + "  · 漏做项目 → 任务不完整 → 撞 max_iterations 还没干完\n"
             + "  · ledger snapshot 永远显示初始状态，对你毫无帮助\n\n"
             + "**例外**：单一问题、简单问答、不可拆解的请求 — 不需要用。\n";
+
+    private static final String GROUNDED_CONTRACT = "\n\n"
+            + "## 回答来源约束（强制规则）\n\n"
+            + "**核心原则**：你的回答必须完全基于工具返回的信息（证据），不得使用内部知识编造内容。\n\n"
+            + "**必须遵守**：\n"
+            + "1. **仅据证据作答**：如果工具返回的信息不足以回答问题，必须明确说明\"根据现有信息无法回答此问题\"。\n"
+            + "2. **标记引用来源**：回答中引用的每个事实性陈述都必须用方括号数字标记来源，例如 [1]、[2]。\n"
+            + "3. **文末列出来源**：在回答末尾列出所有引用的来源列表，格式为：\n"
+            + "   [1] 页面标题 - 章节（如有）\n"
+            + "   [2] 页面标题 - 章节（如有）\n"
+            + "4. **禁止捏造来源**：不得引用未在本次对话中通过工具获取的页面或文件。\n"
+            + "5. **内容忠实**：必须准确反映证据内容，不得歪曲、编造或过度推断。\n\n"
+            + "**违规后果**：未按规则引用来源或使用未验证的信息将导致回答被拒绝。\n";
+
+    private static String buildGroundedSystemPrompt(String basePrompt, boolean groundingEnforced) {
+        String prompt = basePrompt + TOOL_USE_ENFORCEMENT;
+        return groundingEnforced ? prompt + GROUNDED_CONTRACT : prompt;
+    }
+
+    /**
+     * The grounded-answer contract (cite-or-refuse) only fits agents that retrieve
+     * from a knowledge base. Detecting a bound {@code wiki_*} tool scopes the strict
+     * regime to those scenarios instead of degrading every agent — a casual agent
+     * with no KB should not be forced to refuse or emit [n] citations.
+     */
+    private boolean hasWikiTool() {
+        if (toolCallbacks == null) {
+            return false;
+        }
+        return toolCallbacks.stream().anyMatch(cb -> {
+            String name = cb.getToolDefinition().name();
+            return name != null && name.toLowerCase(Locale.ROOT).replace("-", "_").startsWith("wiki_");
+        });
+    }
 
     private final ChatModel chatModel;
     private final List<ToolCallback> toolCallbacks;
@@ -448,17 +559,16 @@ public class ReasoningNode implements NodeAction {
 
         // ======= 构建 Prompt =======
         String systemPrompt = accessor.systemPrompt();
-        // Append a tool-use enforcement clause to every ReasoningNode call.
-        // Without it, some models (notably DeepSeek thinking and Claude Opus)
-        // tend to "narrate" — emit a final_answer like "现在直接生成立项材料
-        // docx" instead of actually calling renderDocx, which makes the
-        // graph silently terminate at final_answer_node with the narration
-        // as the user-facing reply.
+        // Tool-use enforcement is always appended: without it some models tend to
+        // "narrate" instead of calling tools. The grounded contract (cite-or-refuse)
+        // is appended only when the agent has a knowledge-base (wiki_*) tool bound,
+        // so KB-grounded scenarios get strict source attribution while general
+        // agents keep their normal answering behaviour.
         //
         // Appended at runtime rather than woven into the AgentEntity-stored
         // prompt so it stays out of the user-editable agent UI but is still
         // always-on for the runtime LLM.
-        systemPrompt = systemPrompt + TOOL_USE_ENFORCEMENT;
+        systemPrompt = buildGroundedSystemPrompt(systemPrompt, hasWikiTool());
         List<Message> messages = accessor.messages();
 
         // Per-loop budget: bound the working message list a single Reasoning
@@ -677,22 +787,40 @@ public class ReasoningNode implements NodeAction {
                 }
             }
 
-            // Empty-completion guard: a turn with no tool call, no content, and
-            // no thinking is not a real answer. Under heavy message-window
-            // trimming on long multi-step tasks the model occasionally emits a
-            // blank turn; the final-answer branch would then treat it as "done"
-            // (finalAnswer="") and end the run prematurely (observed: a 10-item
-            // research task stopping at item 2). Re-prompt it to continue —
-            // bounded, so a model that genuinely has nothing left still
-            // terminates cleanly through the normal empty-answer path below.
+            // Continuation guard: a no-tool-call turn with no visible content is
+            // not a real answer, whether it is fully blank or carries only
+            // reasoning. The final-answer branch would otherwise treat it as
+            // "done" (finalAnswer="") and end the run prematurely. Two shapes:
+            //   BLANK         — no content, no thinking, no tool call. Seen under
+            //                   heavy message-window trimming on long multi-step
+            //                   tasks (a 10-item research task stopping at item 2).
+            //   THINKING_ONLY — reasoning present but no content and no tool call.
+            //                   Interleaved-thinking models "decide" they are done
+            //                   in their reasoning yet never emit the answer text;
+            //                   most often right after a tool result (e.g. a
+            //                   send-file tool succeeds but the download URL is
+            //                   never written, so the user has to send another
+            //                   message to resume).
+            // Re-prompt to continue — bounded, so a model that genuinely has
+            // nothing left still terminates cleanly through the normal
+            // empty-answer path below. When the newest turn is a tool result, an
+            // answer-anchored nudge recovers the user-facing reply in the same run.
             int emptyRetries = 0;
-            while (emptyRetries < MAX_EMPTY_COMPLETION_RETRIES && isEmptyCompletion(result)) {
+            for (ContinuationIntent intent = classifyContinuation(result);
+                    emptyRetries < MAX_EMPTY_COMPLETION_RETRIES && intent != ContinuationIntent.FINAL;
+                    intent = classifyContinuation(result)) {
                 emptyRetries++;
-                log.warn("[ReasoningNode] Empty LLM completion (no tool call / content / thinking); "
-                                + "nudging to continue (retry {}/{}), conv={}",
-                        emptyRetries, MAX_EMPTY_COMPLETION_RETRIES, conversationId);
+                boolean afterTool = lastTurnIsToolResponse(promptMessages);
+                String nudge = afterTool
+                        ? POST_TOOL_EMPTY_NUDGE
+                        : (intent == ContinuationIntent.THINKING_ONLY
+                                ? THINKING_ONLY_NUDGE
+                                : EMPTY_COMPLETION_NUDGE);
+                log.warn("[ReasoningNode] {} completion (afterTool={}); nudging to continue "
+                                + "(retry {}/{}), conv={}",
+                        intent, afterTool, emptyRetries, MAX_EMPTY_COMPLETION_RETRIES, conversationId);
                 List<Message> nudgedMessages = new ArrayList<>(promptMessages);
-                nudgedMessages.add(new UserMessage(EMPTY_COMPLETION_NUDGE));
+                nudgedMessages.add(new UserMessage(nudge));
                 Prompt nudgePrompt = new Prompt(nudgedMessages, options);
                 nextLlmCallCount++;
                 result = streamingHelper.streamCall(
@@ -865,12 +993,14 @@ public class ReasoningNode implements NodeAction {
                     "iteration", accessor.iterationCount(),
                     "answerChars", content != null ? content.length() : 0
             ));
+            String answerWithSources = accessor.sourceEvidenceLedger()
+                    .appendWikiSourceTable(content != null ? content : "");
             SourceEvidenceLedger.Validation validation =
-                    accessor.sourceEvidenceLedger().validateAnswer(content != null ? content : "");
+                    accessor.sourceEvidenceLedger().validateAnswer(answerWithSources);
             boolean evidenceInsufficient = !validation.valid();
             String finalAnswer = evidenceInsufficient
                     ? evidenceWarning(validation.unsupportedReferences())
-                    : (content != null ? content : "");
+                    : answerWithSources;
             if (evidenceInsufficient) {
                 log.warn("[ReasoningNode] Evidence insufficient for final answer, unsupportedReferences={}",
                         validation.unsupportedReferences());
@@ -893,7 +1023,7 @@ public class ReasoningNode implements NodeAction {
                     .currentPhase("reasoning")
                     .streamedContent(evidenceInsufficient ? (content != null ? content : "") : "")
                     .finishReason(evidenceInsufficient ? FinishReason.EVIDENCE_INSUFFICIENT : FinishReason.NORMAL)
-                    .contentStreamed(!evidenceInsufficient)
+                    .contentStreamed(!evidenceInsufficient && Objects.equals(answerWithSources, content != null ? content : ""))
                     .thinkingStreamed(!result.thinking().isEmpty())
                     .llmCallCount(nextLlmCallCount)
                     .mergeUsage(state, result)
@@ -903,9 +1033,9 @@ public class ReasoningNode implements NodeAction {
     }
 
     private static String evidenceWarning(List<String> unsupportedReferences) {
-        return "\n\n[证据不足] 以下源码引用未出现在已读取/搜索到的工具证据中："
+        return "\n\n[证据不足] 以下引用未出现在本轮已读取/搜索到的工具证据中，或缺少有效来源标注："
                 + String.join(", ", unsupportedReferences)
-                + "。请继续读取相关文件后再下结论。";
+                + "。请继续检索/读取相关证据后再下结论。";
     }
 
     private AssistantMessage.ToolCall deserializeToolCall(String json) {

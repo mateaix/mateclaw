@@ -216,11 +216,14 @@ public class WikiLintJobService {
      * the whole scan.
      */
     private ScanCounts scan(Long kbId) {
-        // listSummaries gives us the active (non-archived) page slug set —
-        // archived pages are NOT considered as valid targets, matching the
-        // resolver's behaviour.
+        // listSummaries gives us the active (non-archived) pages — archived
+        // pages are NOT considered as valid targets, matching the resolver's
+        // behaviour. The key set carries both slugs AND titles so a
+        // `[[Page Title]]` reference to an existing page resolves the same way
+        // the viewer renders it, instead of being reported as a false-positive
+        // broken link.
         List<WikiPageEntity> summaries = pageService.listSummaries(kbId);
-        Set<String> activeSlugs = linkService.lowercaseSlugSet(summaries);
+        Set<String> activeSlugs = linkService.resolvableTargetKeys(summaries);
 
         // Now fetch the same pages WITH content so we can re-extract outlinks.
         // We must not use listSummaries here because it omits the content

@@ -1154,6 +1154,19 @@ watch(currentConversationId, async (cid) => {
   }
 }, { immediate: true })
 
+// Re-fetch the active goal when a turn finishes. A goal can be created or
+// mutated mid-conversation — e.g. auto-derived server-side from a Plan-Execute
+// plan, or completed by the agent — without the conversation id changing and
+// without a goal_* SSE event reaching this client (skipped creation, missed
+// event, reconnect). The per-conversation watch above only fires on switch, so
+// this transition-to-idle refresh is what keeps the goal ring honest after
+// every turn against the persisted truth.
+watch(isGenerating, async (generating, wasGenerating) => {
+  if (wasGenerating && !generating && currentConversationId.value) {
+    await goalStore.loadActiveForConversation(currentConversationId.value)
+  }
+})
+
 // Derive props for the inline prompt + system-line slots that sit
 // between MessageList and ChatInput. The prompt shows only when:
 //   1) there's a current conversation, agent, and at least one assistant
