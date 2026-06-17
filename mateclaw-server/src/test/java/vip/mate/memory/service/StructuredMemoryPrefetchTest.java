@@ -2,8 +2,13 @@ package vip.mate.memory.service;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.context.ApplicationEventPublisher;
+import vip.mate.memory.MemoryProperties;
 import vip.mate.workspace.document.WorkspaceFileService;
+
+import java.time.LocalDate;
+import java.util.LinkedHashMap;
 import vip.mate.workspace.document.model.WorkspaceFileEntity;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -28,7 +33,7 @@ class StructuredMemoryPrefetchTest {
         if (userMd != null) {
             when(files.getFile(AGENT_ID, "structured/user.md")).thenReturn(fileWith(userMd));
         }
-        return new StructuredMemoryService(files, mock(ApplicationEventPublisher.class));
+        return new StructuredMemoryService(files, mock(ApplicationEventPublisher.class), new MemoryProperties());
     }
 
     private WorkspaceFileEntity fileWith(String content) {
@@ -121,7 +126,7 @@ class StructuredMemoryPrefetchTest {
         WorkspaceFileEntity ref = new WorkspaceFileEntity();
         ref.setContent("## api_endpoint\n参考:订单查询接口 /api/orders。\n> Source: agent | Updated: 2026-05-29");
         when(files.getFile(AGENT_ID, "structured/reference.md")).thenReturn(ref);
-        StructuredMemoryService svc = new StructuredMemoryService(files, mock(ApplicationEventPublisher.class));
+        StructuredMemoryService svc = new StructuredMemoryService(files, mock(ApplicationEventPublisher.class), new MemoryProperties());
 
         String block = svc.buildPrefetchBlock(AGENT_ID, "订单查询接口参考是什么?");
 
@@ -139,5 +144,89 @@ class StructuredMemoryPrefetchTest {
         assertEquals("", svc.buildPrefetchBlock(AGENT_ID, "今天天气怎么样?"));
         assertEquals("", svc.buildPrefetchBlock(AGENT_ID, ""));
         assertEquals("", svc.buildPrefetchBlock(AGENT_ID, null));
+    }
+
+    @Test
+    @DisplayName("system prompt block enforces the char budget, keeping newest entries")
+    void systemBlockEnforcesCharBudget() {
+        // Five user entries, each ~60 chars, oldest to newest by update date.
+        StringBuilder userMd = new StringBuilder();
+        for (int i = 1; i <= 5; i++) {
+            userMd.append("## fact_").append(i)
+                  .append("\nThis is a reasonably long stored preference number ").append(i).append(".")
+                  .append("\n> Source: agent | Updated: 2026-05-0").append(i).append("\n\n");
+        }
+        WorkspaceFileService files = mock(WorkspaceFileService.class);
+        when(files.getFile(eq(AGENT_ID), anyString())).thenReturn(null);
+        when(files.getFile(AGENT_ID, "structured/user.md")).thenReturn(fileWith(userMd.toString()));
+
+        MemoryProperties props = new MemoryProperties();
+        props.setSystemBlockMaxChars(160);
+        StructuredMemoryService svc = new StructuredMemoryService(
+                files, mock(ApplicationEventPublisher.class), props);
+
+        String block = svc.buildMemoryBlock(AGENT_ID);
+
+        // The whole rendered block (headers + bullets + omission note) is bounded.
+        assertTrue(block.length() <= 160, "rendered block must not exceed the char budget, was " + block.length());
+        // Newest entries survive, oldest are dropped, and the omission is disclosed.
+        assertTrue(block.contains("fact_5"), "newest entry must be kept");
+        assertFalse(block.contains("fact_1"), "oldest entry must be evicted under budget");
+        assertTrue(block.contains("older memory entries omitted"), "omission must be disclosed");
+    }
+
+    @Test
+    @DisplayName("replaceTypeEntries preserves prior update dates and does not blanket-stamp today")
+    void replaceTypeEntriesPreservesDates() {
+        WorkspaceFileService files = mock(WorkspaceFileService.class);
+        when(files.getFile(eq(AGENT_ID), anyString())).thenReturn(null);
+        when(files.getFile(AGENT_ID, "structured/user.md")).thenReturn(
+                fileWith("## a\nold value\n> Source: agent | Updated: 2026-01-01"));
+        StructuredMemoryService svc = new StructuredMemoryService(
+                files, mock(ApplicationEventPublisher.class), new MemoryProperties());
+
+        LinkedHashMap<String, String> entries = new LinkedHashMap<>();
+        entries.put("a", "consolidated value");   // existing key — keeps its date
+        entries.put("b", "newly merged fact");    // new key — inherits newest prior date
+        svc.replaceTypeEntries(AGENT_ID, "user", null, entries, "consolidation");
+
+        ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class);
+        verify(files).saveFile(eq(AGENT_ID), eq("structured/user.md"), captor.capture());
+        String written = captor.getValue();
+
+        // The existing key keeps its original date; the merged key inherits it too;
+        // nothing is freshly stamped with today's date.
+        assertTrue(written.indexOf("2026-01-01") != written.lastIndexOf("2026-01-01"),
+                "both entries should carry the preserved prior date");
+        assertFalse(written.contains(LocalDate.now().toString()),
+                "consolidation must not blanket-stamp entries with today's date");
+    }
+
+    @Test
+    @DisplayName("replaceTypeEntries writes canonical format and round-trips into the always-on block")
+    void replaceTypeEntriesRoundTrips() {
+        WorkspaceFileService files = mock(WorkspaceFileService.class);
+        when(files.getFile(eq(AGENT_ID), anyString())).thenReturn(null);
+        StructuredMemoryService svc = new StructuredMemoryService(
+                files, mock(ApplicationEventPublisher.class), new MemoryProperties());
+
+        LinkedHashMap<String, String> entries = new LinkedHashMap<>();
+        entries.put("reply_style", "偏好简洁直接的回答。");
+        entries.put("language", "始终用中文回答。");
+        svc.replaceTypeEntries(AGENT_ID, "user", null, entries, "consolidation");
+
+        ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class);
+        verify(files).saveFile(eq(AGENT_ID), eq("structured/user.md"), captor.capture());
+        String written = captor.getValue();
+
+        assertTrue(written.contains("## reply_style"), "key header must be written");
+        assertTrue(written.contains("## language"), "second key header must be written");
+        assertTrue(written.contains("> Source: consolidation | Updated:"), "metadata line must be written");
+
+        // The rewritten file round-trips back through the always-on block.
+        when(files.getFile(AGENT_ID, "structured/user.md")).thenReturn(fileWith(written));
+        String block = svc.buildMemoryBlock(AGENT_ID);
+        assertTrue(block.contains("reply_style") && block.contains("language"),
+                "consolidated entries must be readable as always-on memory");
     }
 }

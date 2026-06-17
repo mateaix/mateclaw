@@ -34,6 +34,7 @@ class GoalStateKeyDoubleRegistrationTest {
             "GOAL_FOLLOWUP_INJECTED",
             "GOAL_FOLLOWUP_PROMPT",
             "GOAL_EVALUATED_THIS_RUN",
+            "GOAL_HARD_CONTINUATION_COUNT",
     };
 
     @Test

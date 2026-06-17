@@ -67,7 +67,8 @@ class WikiProcessingServiceLazyTest {
                 new WikiLinkService(om),
                 properties, modelConfigService, agentGraphBuilder, om,
                 progressBus, citationService,
-                mock(org.springframework.context.ApplicationEventPublisher.class));
+                mock(org.springframework.context.ApplicationEventPublisher.class),
+                mock(WikiEntityExtractionService.class));
     }
 
     private WikiRawMaterialEntity raw() {

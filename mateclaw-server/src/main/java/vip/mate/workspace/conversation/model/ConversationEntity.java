@@ -52,6 +52,16 @@ public class ConversationEntity {
     private Integer pinned;
 
     /**
+     * Archive flag (webchat): 0 = active (default), 1 = archived.
+     * Archived threads stay in the DB (history preserved, still addressable
+     * by sessionId, downloadable) but are excluded from the default
+     * /sessions listing. A visitor opts into seeing them via
+     * {@code includeArchived=true}. Archive dominates pin — an archived
+     * AND pinned thread is still hidden by default.
+     */
+    private Integer archived;
+
+    /**
      * Provider id of the model this conversation is pinned to. NULL means
      * "inherit" — fall back to the agent's model override, then the global
      * default. Paired with {@link #modelName}.
@@ -60,6 +70,14 @@ public class ConversationEntity {
 
     /** Model id this conversation is pinned to. See {@link #modelProvider}. */
     private String modelName;
+
+    /**
+     * WebChat per-thread sessionId (see V147 migration). Persisted so it can be
+     * recovered for the visitor's /sessions listing even when the conversationId
+     * hashes (long visitorId + sessionId folds into an unrecoverable hash). NULL
+     * for non-webchat rows and for a visitor's default (no-session) thread.
+     */
+    private String webchatSessionId;
 
     /**
      * Per-conversation progress notebook JSON (see V100 migration).

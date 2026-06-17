@@ -767,25 +767,23 @@ public class WikiPageService {
                 kbId, deletedPageId, likePattern);
         if (candidates.isEmpty()) return List.of();
 
-        // Pre-compute the active slug set ONCE for the recompute pass — every
-        // referrer's broken_links recompute would otherwise re-trigger the
-        // summary query.
+        // Pre-compute the resolvable target keys (slugs + titles) ONCE for the
+        // recompute pass — every referrer's broken_links recompute would
+        // otherwise re-trigger the summary query.
         Set<String> activeSlugs;
         try {
-            activeSlugs = linkService.lowercaseSlugSet(listSummaries(kbId));
+            activeSlugs = linkService.resolvableTargetKeys(listSummaries(kbId));
         } catch (RuntimeException e) {
-            activeSlugs = java.util.Collections.emptySet();
+            activeSlugs = new HashSet<>();
         }
         // The deleted page is, by construction, no longer "active" — remove
-        // its slug from the set so any referrers' broken_links recompute
-        // doesn't accidentally still resolve `[[deletedSlug]]` in their
-        // (now-rewritten) content.
-        if (!activeSlugs.contains(slugLower)) {
-            // already missing — common case
-        } else {
-            Set<String> trimmed = new HashSet<>(activeSlugs);
-            trimmed.remove(slugLower);
-            activeSlugs = trimmed;
+        // its slug AND title from the set so any referrers' broken_links
+        // recompute doesn't accidentally still resolve `[[deletedSlug]]` or
+        // `[[Deleted Title]]` in their (now-rewritten) content if listSummaries
+        // returned a stale cache that still included the deleted page.
+        activeSlugs.remove(slugLower);
+        if (snapshotTitle != null && !snapshotTitle.isBlank()) {
+            activeSlugs.remove(snapshotTitle.trim().toLowerCase(Locale.ROOT));
         }
 
         List<Long> affected = new ArrayList<>(candidates.size());
@@ -922,18 +920,17 @@ public class WikiPageService {
 
         Set<String> activeSlugs;
         try {
-            activeSlugs = linkService.lowercaseSlugSet(listSummaries(kbId));
+            activeSlugs = linkService.resolvableTargetKeys(listSummaries(kbId));
         } catch (RuntimeException e) {
-            activeSlugs = java.util.Collections.emptySet();
+            activeSlugs = new HashSet<>();
         }
         // The renamed page is now under newSlug; oldSlug is gone, newSlug
         // should resolve. listSummaries has been evicted above so this picks
         // up the new row when re-queried, but be defensive in case the cache
-        // hasn't repopulated yet.
-        Set<String> activeBase = new HashSet<>(activeSlugs);
-        activeBase.remove(slugLower);
-        activeBase.add(newSlug.toLowerCase(Locale.ROOT));
-        activeSlugs = activeBase;
+        // hasn't repopulated yet. The title is unchanged by a rename, so it
+        // stays resolvable via the title key carried in the set.
+        activeSlugs.remove(slugLower);
+        activeSlugs.add(newSlug.toLowerCase(Locale.ROOT));
 
         List<Long> affected = new ArrayList<>(candidates.size());
         for (WikiPageEntity referrer : candidates) {
@@ -1287,26 +1284,123 @@ public class WikiPageService {
         // update path) and every extracted target is recorded as broken —
         // which is harmless because tests don't assert on broken_links
         // values, and production code paths never hit this branch.
-        Set<String> activeSlugs;
+        Set<String> resolvableKeys;
         try {
-            activeSlugs = linkService.lowercaseSlugSet(listSummaries(entity.getKbId()));
+            resolvableKeys = linkService.resolvableTargetKeys(listSummaries(entity.getKbId()));
         } catch (RuntimeException e) {
-            log.warn("[Wiki] applyLinkAnalysis: failed to load slug set for kbId={}, treating as empty: {}",
+            log.warn("[Wiki] applyLinkAnalysis: failed to load target keys for kbId={}, treating as empty: {}",
                     entity.getKbId(), e.toString());
-            activeSlugs = java.util.Collections.emptySet();
+            resolvableKeys = new HashSet<>();
         }
-        // Include self-slug so [[my-own-slug]] doesn't appear as broken on the
-        // very save that creates the page (listSummaries may not see it yet
-        // depending on cache state).
+        // Include self slug + title so [[my-own-slug]] / [[My Own Title]] don't
+        // appear as broken on the very save that creates the page (listSummaries
+        // may not see it yet depending on cache state).
         if (entity.getSlug() != null && !entity.getSlug().isBlank()) {
-            Set<String> withSelf = new HashSet<>(activeSlugs);
-            withSelf.add(entity.getSlug().toLowerCase(Locale.ROOT));
-            activeSlugs = withSelf;
+            resolvableKeys.add(entity.getSlug().toLowerCase(Locale.ROOT));
         }
-        WikiLinkService.LinkAnalysis a = linkService.analyze(entity.getContent(), activeSlugs);
+        if (entity.getTitle() != null && !entity.getTitle().isBlank()) {
+            resolvableKeys.add(entity.getTitle().trim().toLowerCase(Locale.ROOT));
+        }
+        WikiLinkService.LinkAnalysis a = linkService.analyze(entity.getContent(), resolvableKeys);
         entity.setOutgoingLinks(linkService.toJsonArray(a.outgoingLinks()));
         entity.setBrokenLinks(linkService.toJsonArray(a.brokenLinks()));
         entity.setBrokenLinksScannedAt(LocalDateTime.now());
+    }
+
+    /**
+     * Merge {@code newAliases} into the page identified by {@code title} (the
+     * canonical concept identity used for dedup). Aliases are the alternate
+     * concept names a discrimination / composite page also covers; they let the
+     * post-ingestion reconciler redirect {@code [[concept]]} references that
+     * never became their own page. The page's own title is never stored as an
+     * alias of itself. No-op when the page or alias list is empty.
+     */
+    public void mergeAliasesByTitle(Long kbId, String title, List<String> newAliases) {
+        if (kbId == null || title == null || newAliases == null || newAliases.isEmpty()) return;
+        WikiPageEntity page = findByCanonicalTitle(kbId, title);
+        if (page == null) page = getBySlug(kbId, toSlug(title));
+        if (page == null) return;
+        Set<String> merged = new java.util.LinkedHashSet<>(linkService.fromJsonArray(page.getAliases()));
+        String ownTitle = page.getTitle() == null ? "" : page.getTitle().trim();
+        boolean added = false;
+        for (String a : newAliases) {
+            String t = a == null ? "" : a.trim();
+            if (t.isEmpty() || t.equalsIgnoreCase(ownTitle)) continue;
+            if (merged.add(t)) added = true;
+        }
+        if (!added) return;
+        pageMapper.update(null, new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<WikiPageEntity>()
+                .eq(WikiPageEntity::getId, page.getId())
+                .set(WikiPageEntity::getAliases, linkService.toJsonArray(new ArrayList<>(merged))));
+        evictSummaryCache(kbId);
+    }
+
+    /**
+     * Post-ingestion link reconciliation for a KB. Each {@code [[target]]} the
+     * model wrote is handled by where its concept ended up:
+     * <ul>
+     *   <li>resolves to a real page (slug or title) → left untouched;</li>
+     *   <li>matches another page's declared alias → rewritten to
+     *       {@code [[coverSlug|target]]} so it links to the covering page;</li>
+     *   <li>otherwise → demoted to plain text (the concept name), removing the
+     *       dangling link entirely.</li>
+     * </ul>
+     * Only pages whose content actually changes are re-persisted, so re-running
+     * after a settled KB is a cheap no-op. Touches content + outgoing_links
+     * only — the caller recomputes broken_links via the lint scan afterwards.
+     *
+     * @return the number of pages rewritten
+     */
+    public int reconcileKbLinks(Long kbId) {
+        if (kbId == null) return 0;
+        List<WikiPageEntity> pages = pageMapper.selectList(
+                new LambdaQueryWrapper<WikiPageEntity>()
+                        .select(WikiPageEntity::getId, WikiPageEntity::getSlug, WikiPageEntity::getTitle,
+                                WikiPageEntity::getContent, WikiPageEntity::getAliases)
+                        .eq(WikiPageEntity::getKbId, kbId)
+                        .ne(WikiPageEntity::getArchived, 1));
+        if (pages.isEmpty()) return 0;
+        Set<String> resolvable = linkService.resolvableTargetKeys(pages);
+        // alias (lowercased) → covering page slug; first declarer wins, and a
+        // name owned by a real page is never treated as an alias.
+        Map<String, String> aliasToSlug = new LinkedHashMap<>();
+        for (WikiPageEntity p : pages) {
+            if (p.getSlug() == null || p.getSlug().isBlank()) continue;
+            for (String a : linkService.fromJsonArray(p.getAliases())) {
+                String key = a == null ? "" : a.trim().toLowerCase(Locale.ROOT);
+                if (key.isEmpty() || resolvable.contains(key)) continue;
+                aliasToSlug.putIfAbsent(key, p.getSlug());
+            }
+        }
+        int changed = 0;
+        for (WikiPageEntity p : pages) {
+            String content = p.getContent();
+            if (content == null || !content.contains("[[")) continue;
+            String selfSlug = p.getSlug() == null ? "" : p.getSlug().toLowerCase(Locale.ROOT);
+            String reconciled = linkService.reconcileLinks(content, (target, alias) -> {
+                String key = target.trim().toLowerCase(Locale.ROOT);
+                if (resolvable.contains(key)) return null; // real page — keep
+                String display = (alias != null && !alias.isBlank()) ? alias : target;
+                String coverSlug = aliasToSlug.get(key);
+                if (coverSlug != null && !coverSlug.toLowerCase(Locale.ROOT).equals(selfSlug)) {
+                    return "[[" + coverSlug + "|" + display + "]]"; // redirect to covering page
+                }
+                return display; // demote dangling link to plain text
+            });
+            if (!reconciled.equals(content)) {
+                List<String> outlinks = new ArrayList<>(linkService.extractOutlinks(reconciled));
+                pageMapper.update(null, new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<WikiPageEntity>()
+                        .eq(WikiPageEntity::getId, p.getId())
+                        .set(WikiPageEntity::getContent, reconciled)
+                        .set(WikiPageEntity::getOutgoingLinks, linkService.toJsonArray(outlinks)));
+                changed++;
+            }
+        }
+        if (changed > 0) {
+            evictSummaryCache(kbId);
+            log.info("[Wiki] Link reconciliation rewrote {} page(s) for kbId={}", changed, kbId);
+        }
+        return changed;
     }
 
     /**

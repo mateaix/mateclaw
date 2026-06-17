@@ -616,6 +616,29 @@ html.dark body::before {
   font-size: 13px;
 }
 
+/* Streaming placeholder for echarts/mermaid blocks (shown until the fenced
+   source finishes streaming, then replaced by the real chart). */
+.markdown-body .chart-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin: 14px 0;
+  min-height: 120px;
+  border-radius: 12px;
+  background: var(--mc-bg-elevated);
+  border: 1px solid var(--mc-border-light);
+}
+.markdown-body .chart-loading__dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--mc-border, #cbd5e1);
+  animation: mc-product-pulse 1.4s ease-in-out infinite;
+}
+.markdown-body .chart-loading__dot:nth-child(2) { animation-delay: 0.2s; }
+.markdown-body .chart-loading__dot:nth-child(3) { animation-delay: 0.4s; }
+
 /* ================================================================
    Product cards (from ```product-cards fenced blocks — shopping /
    price-comparison results rendered as a clickable card grid)

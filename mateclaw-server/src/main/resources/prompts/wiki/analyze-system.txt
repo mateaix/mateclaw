@@ -32,10 +32,10 @@
 
 ## slug 规范（仅用于 `key_concepts` 中的建议 slug）
 
-- 多音节中文词按整词分组拼音，不要按字一隔
-  - ✅ `zhongyao-qiqing-peiwu`（中药 / 七情 / 配伍）
-  - ❌ `zhong-yao-qi-qing-pei-wu`
-- 小写字母 + 连字符，无空格
+- **直接用概念名本身**：中文保留中文（**不要转拼音**），英文小写、空格转连字符
+  - ✅ `光合作用`、`energy-metabolism`
+  - ❌ `guanghe-zuoyong`（不要转拼音）
+- slug 与概念名用词保持一致，无空格
 
 ## 关键纪律
 

@@ -30,6 +30,16 @@ public final class MateClawStateKeys {
     public static final String CURRENT_ITERATION = "current_iteration";
     public static final String MAX_ITERATIONS = "max_iterations";
 
+    /**
+     * Iterations refunded this run because a reasoning round did no real work —
+     * its whole tool batch was progressive-disclosure setup ({@code load_skill}
+     * / {@code enable_tool}). ObservationNode skips the iteration increment for
+     * such rounds so a tight budget isn't eaten by the load-then-use two-step;
+     * this counter bounds the refunds so a model that only ever loads skills
+     * still terminates. Implicitly 0 at run start. REPLACE strategy.
+     */
+    public static final String ITERATION_REFUND_COUNT = "iteration_refund_count";
+
     // ===== 工具调用（REPLACE 策略）=====
     public static final String TOOL_CALLS = "tool_calls";
     public static final String TOOL_RESULTS = "tool_results";
@@ -227,6 +237,22 @@ public final class MateClawStateKeys {
      * exhausting the goal's LLM budget prematurely. Implicitly 0 at run start.
      */
     public static final String GOAL_ACCOUNTED_LLM_CALL_COUNT = "goal_accounted_llm_call_count";
+
+    /**
+     * Number of "hard continuations" already performed in THIS graph run — a
+     * hard continuation is a goal follow-up that re-enters the ReAct loop with
+     * a FRESH iteration budget (CURRENT_ITERATION reset to 0) after a turn that
+     * ended in {@link FinishReason#MAX_ITERATIONS_REACHED}. Unlike a normal
+     * follow-up (which shares the run's single iteration budget), a hard
+     * continuation grants the goal a brand-new ReAct segment so a task too big
+     * for one budget can keep going autonomously instead of stalling until the
+     * user sends another message. Because each such segment costs up to a full
+     * {@code maxIterations} worth of node visits, it is bounded by a dedicated,
+     * tighter cap ({@code mateclaw.goal.max-hard-continuations-per-run}, clamped
+     * to {@link vip.mate.goal.config.GoalProperties#MAX_HARD_CONTINUATIONS_CEILING})
+     * and sized into the graph recursion ceiling. Implicitly 0 at run start.
+     */
+    public static final String GOAL_HARD_CONTINUATION_COUNT = "goal_hard_continuation_count";
 
     /** Graph-node identifier for the GoalEvaluationNode. */
     public static final String GOAL_EVALUATION_NODE = "goal_evaluation";

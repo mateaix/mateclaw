@@ -67,7 +67,7 @@ public class SystemHealthService {
             }
         }
 
-        return new HealthResponse(overall, checks);
+        return new HealthResponse(overall, checks, bootstrapRunner.getDatabaseLabel());
     }
 
     private HealthCheck checkDefaultModel() {
@@ -190,7 +190,7 @@ public class SystemHealthService {
 
     // ==================== Response Records ====================
 
-    public record HealthResponse(String overall, List<HealthCheck> checks) {}
+    public record HealthResponse(String overall, List<HealthCheck> checks, String database) {}
 
     public record HealthCheck(String name, String status, String message, HealthAction action) {}
 

@@ -28,7 +28,9 @@ BEGIN
         SELECT 1 FROM information_schema.columns
         WHERE table_name = 'mate_wiki_page' AND column_name = 'stale'
     ) THEN
-        ALTER TABLE mate_wiki_page ADD COLUMN stale BOOLEAN NOT NULL DEFAULT FALSE;
+        -- SMALLINT (not BOOLEAN): WikiPageEntity.stale is Integer (1/0). Vanilla
+        -- PostgreSQL cannot map a BOOLEAN into a JDBC int. Do not switch to BOOLEAN.
+        ALTER TABLE mate_wiki_page ADD COLUMN stale SMALLINT NOT NULL DEFAULT 0;
     END IF;
 END $$;
 

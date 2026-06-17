@@ -9,6 +9,7 @@ import vip.mate.wiki.model.WikiPageEntity;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -114,19 +115,27 @@ public class WikiLinkService {
     }
 
     /**
-     * Compute the broken subset of {@code outlinks} given the KB's active
-     * page slug set. {@code activeSlugs} is expected to be already lowercased
-     * — callers compute it once per scan and reuse across pages.
+     * Compute the broken subset of {@code outlinks} given the KB's set of
+     * resolvable link-target keys. {@code resolvableKeysLower} is expected to
+     * be already lowercased and to contain BOTH page slugs and page titles
+     * (see {@link #resolvableTargetKeys}) — callers compute it once per scan
+     * and reuse it across pages.
+     * <p>
+     * A target counts as broken only when it matches neither a slug nor a
+     * title, mirroring the page viewer's {@code resolveWikilink}. Matching on
+     * slugs alone would report every {@code [[Page Title]]} reference to an
+     * existing page as broken even though the viewer renders it as a working
+     * link.
      *
-     * @return targets that have no matching page slug, in the same insertion
+     * @return targets that resolve to no existing page, in the same insertion
      *         order as {@code outlinks}
      */
-    public List<String> computeBrokenLinks(Set<String> outlinks, Set<String> activeSlugsLower) {
+    public List<String> computeBrokenLinks(Set<String> outlinks, Set<String> resolvableKeysLower) {
         if (outlinks == null || outlinks.isEmpty()) return Collections.emptyList();
-        if (activeSlugsLower == null) activeSlugsLower = Collections.emptySet();
+        if (resolvableKeysLower == null) resolvableKeysLower = Collections.emptySet();
         List<String> broken = new ArrayList<>();
         for (String t : outlinks) {
-            if (!activeSlugsLower.contains(t)) broken.add(t);
+            if (!resolvableKeysLower.contains(t)) broken.add(t);
         }
         return broken;
     }
@@ -134,11 +143,12 @@ public class WikiLinkService {
     /**
      * Convenience: extract + compute in one call. Used from
      * {@code WikiPageService.save/update} where both fields are written in
-     * the same transaction.
+     * the same transaction. {@code resolvableKeysLower} should carry slugs
+     * and titles — see {@link #resolvableTargetKeys}.
      */
-    public LinkAnalysis analyze(String content, Set<String> activeSlugsLower) {
+    public LinkAnalysis analyze(String content, Set<String> resolvableKeysLower) {
         Set<String> outlinks = extractOutlinks(content);
-        List<String> broken = computeBrokenLinks(outlinks, activeSlugsLower);
+        List<String> broken = computeBrokenLinks(outlinks, resolvableKeysLower);
         return new LinkAnalysis(new ArrayList<>(outlinks), broken);
     }
 
@@ -179,6 +189,45 @@ public class WikiLinkService {
                 .filter(s -> s != null && !s.isBlank())
                 .map(s -> s.toLowerCase(Locale.ROOT))
                 .collect(Collectors.toUnmodifiableSet());
+    }
+
+    /**
+     * Build the set of resolvable wikilink-target keys for a KB from a
+     * pre-loaded page list — the union of each page's lowercased slug AND its
+     * trimmed-lowercased title.
+     * <p>
+     * This is the broken-link counterpart to {@link #lowercaseSlugSet} and is
+     * what {@link #computeBrokenLinks} should be fed: it mirrors the page
+     * viewer's {@code resolveWikilink}, which resolves a {@code [[target]]}
+     * against an exact slug OR an exact title before declaring it broken.
+     * Using slugs alone flags every {@code [[Page Title]]} reference to an
+     * existing page as broken even though the viewer renders it as a working
+     * link — a false positive that is pervasive when slugs are transliterated
+     * (e.g. a CJK title {@code 光合作用} stored under the pinyin slug
+     * {@code guanghe-zuoyong}).
+     * <p>
+     * Titles are trimmed before lowercasing to match {@code extractOutlinks},
+     * which trims a {@code [[ Page Title ]]} target before recording it.
+     *
+     * @param pages active pages (callers filter out archived); both slug and
+     *              title columns must be loaded
+     * @return mutable set of lowercased slug + title keys; empty for null/empty
+     */
+    public Set<String> resolvableTargetKeys(List<WikiPageEntity> pages) {
+        if (pages == null || pages.isEmpty()) return new HashSet<>();
+        Set<String> keys = new HashSet<>(pages.size() * 2);
+        for (WikiPageEntity p : pages) {
+            if (p == null) continue;
+            String slug = p.getSlug();
+            if (slug != null && !slug.isBlank()) {
+                keys.add(slug.toLowerCase(Locale.ROOT));
+            }
+            String title = p.getTitle();
+            if (title != null && !title.isBlank()) {
+                keys.add(title.trim().toLowerCase(Locale.ROOT));
+            }
+        }
+        return keys;
     }
 
     // ============================================================
@@ -234,6 +283,48 @@ public class WikiLinkService {
                     ? "[[" + newSlug + "|" + alias + "]]"
                     : "[[" + newSlug + "]]";
         });
+    }
+
+    /**
+     * Decides what to do with one wikilink during reconciliation. Receives the
+     * original-case target (before any {@code |alias}) and the explicit alias
+     * (or {@code null}); returns {@code null} to leave the link untouched, or
+     * the literal replacement text — plain text to demote a dangling link, or a
+     * re-formed {@code [[coverSlug|display]]} to redirect it to a covering page.
+     */
+    @FunctionalInterface
+    public interface LinkReconciler {
+        String reconcile(String target, String alias);
+    }
+
+    /**
+     * Walk {@code content} and hand every wikilink to {@code reconciler}, used
+     * by the post-ingestion pass that redirects or demotes links the model
+     * wrote to concepts that never became their own page. Mirrors
+     * {@link #rewriteWikilinks} (code spans preserved verbatim) but passes the
+     * original-case target so the reconciler can build readable display text.
+     */
+    public String reconcileLinks(String content, LinkReconciler reconciler) {
+        if (content == null || content.isEmpty()) return content;
+        List<Region> regions = splitByCode(content);
+        StringBuilder out = new StringBuilder(content.length() + 16);
+        for (Region r : regions) {
+            if (r.isCode) { out.append(r.text); continue; }
+            Matcher m = WIKILINK.matcher(r.text);
+            int last = 0;
+            while (m.find()) {
+                out.append(r.text, last, m.start());
+                String raw = m.group(1).trim();
+                int pipe = raw.indexOf('|');
+                String target = (pipe >= 0 ? raw.substring(0, pipe) : raw).trim();
+                String alias = pipe >= 0 ? raw.substring(pipe + 1).trim() : null;
+                String replacement = target.isEmpty() ? null : reconciler.reconcile(target, alias);
+                out.append(replacement == null ? m.group() : replacement);
+                last = m.end();
+            }
+            out.append(r.text, last, r.text.length());
+        }
+        return out.toString();
     }
 
     /**

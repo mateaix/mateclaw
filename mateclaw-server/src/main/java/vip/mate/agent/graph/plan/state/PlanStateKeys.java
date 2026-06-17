@@ -27,6 +27,15 @@ public final class PlanStateKeys {
     public static final String CURRENT_STEP_RESULT = "current_step_result";
     public static final String COMPLETED_RESULTS = "completed_results"; // APPEND 策略
 
+    /**
+     * Number of re-plans performed in THIS graph run (REPLACE strategy). When a
+     * step throws, the executor re-plans the remaining work around the failure
+     * (carried in {@link #WORKING_CONTEXT}) instead of aborting outright, up to
+     * a small bound — this counter enforces that bound so a pathological failure
+     * loop can't re-plan forever. Implicitly 0 at run start.
+     */
+    public static final String PLAN_REPLAN_COUNT = "plan_replan_count";
+
     // ===== 终止 =====
     public static final String FINAL_SUMMARY = "final_summary";
     public static final String DIRECT_ANSWER = "direct_answer";         // 简单问答的直接回答

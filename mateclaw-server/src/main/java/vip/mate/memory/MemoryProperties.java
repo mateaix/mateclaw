@@ -81,6 +81,66 @@ public class MemoryProperties {
     /** 禁用的 MemoryProvider ID 集合（例如 "structured", "session_search"） */
     private Set<String> disabledProviders = new HashSet<>();
 
+    // ==================== Always-on injection budget ====================
+
+    /**
+     * Character budget for the always-on structured memory block injected into
+     * every system prompt (user + feedback entries). When exceeded, the
+     * most-recently-updated entries are kept and older ones are omitted, so
+     * accumulated memory cannot grow the per-turn context without bound.
+     * 0 = unlimited (legacy behavior).
+     */
+    private int systemBlockMaxChars = 4000;
+
+    /**
+     * Hard cap on the number of entries injected per structured type in the
+     * always-on block. Keeps the newest entries per type even when the global
+     * character budget would otherwise admit more from a single type.
+     * 0 = unlimited.
+     */
+    private int systemBlockMaxEntriesPerType = 40;
+
+    /**
+     * Enable the nightly consolidation pass over always-on structured memory
+     * (user/feedback): an LLM merges near-duplicate and stale entries so the
+     * files shrink on disk rather than only being trimmed at injection time.
+     */
+    private boolean structuredConsolidationEnabled = true;
+
+    /**
+     * Minimum entry count before a structured type is consolidated. Below this
+     * the file is already small, so the LLM call is skipped.
+     */
+    private int structuredConsolidationMinEntries = 8;
+
+    /**
+     * Cron expression for the structured-memory consolidation maintenance task.
+     * Independent of {@code dreamingCron} so the two passes can be scheduled
+     * (and gated) separately. Default: 3:30 AM daily, after nightly emergence.
+     */
+    private String structuredConsolidationCron = "0 30 3 * * ?";
+
+    /**
+     * Maximum number of owner buckets (shared + personal) consolidated per agent
+     * per run. Bounds LLM cost on agents with many per-owner memory buckets;
+     * remaining owners are picked up on subsequent runs. 0 = unlimited.
+     */
+    private int structuredConsolidationMaxOwnersPerRun = 50;
+
+    /**
+     * Deterministic character ceiling for PROFILE.md, the always-on user-profile
+     * file. The summarization pass rewrites it and is asked to stay concise; this
+     * is the hard backstop that truncates at a section boundary if it overruns.
+     * 0 = unlimited.
+     */
+    private int profileMaxChars = 4000;
+
+    /**
+     * Deterministic character ceiling for MEMORY.md, the always-on long-term
+     * memory file rewritten by summarization and emergence. 0 = unlimited.
+     */
+    private int memoryMdMaxChars = 8000;
+
     // ==================== Dream v2 Feature Flags ====================
 
     // --- Phase 1: Lifecycle mediator wiring ---

@@ -10,7 +10,9 @@ CREATE TABLE IF NOT EXISTS mate_wiki_pipeline_definition (
     trigger_config_json   TEXT,
     steps_json            TEXT     NOT NULL,
     dedup_window_seconds  INT          NOT NULL DEFAULT 0,
-    enabled               BOOLEAN      NOT NULL DEFAULT TRUE,
+    -- SMALLINT (not BOOLEAN): WikiPipelineDefinitionEntity.enabled is Integer (1/0).
+    -- Vanilla PostgreSQL cannot map a BOOLEAN into a JDBC int. Do not switch to BOOLEAN.
+    enabled               SMALLINT     NOT NULL DEFAULT 1,
     create_time           TIMESTAMP(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP,
     update_time           TIMESTAMP(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP,
     deleted               INT          NOT NULL DEFAULT 0

@@ -57,4 +57,21 @@ public class WikiKbConfig {
      * pageType to be granted explicitly per agent.
      */
     private String defaultReadPolicy;
+
+    /**
+     * Opt-in for entity-level knowledge graph extraction on this KB. When
+     * {@code true}, an extraction pass runs after ingest/embedding to pull
+     * named entities (person, organization, location, ...) and their
+     * relations from source chunks into the {@code mate_wiki_entity*} tables.
+     * {@code null} or {@code false} keeps the legacy behaviour (page graph
+     * only). Off by default because extraction adds LLM calls per chunk.
+     */
+    private Boolean entityExtractionEnabled;
+
+    /**
+     * Optional whitelist of entity types to extract, e.g.
+     * {@code ["person","organization","location"]}. {@code null} or empty
+     * lets the extractor use its built-in default type set.
+     */
+    private List<String> entityTypes;
 }
