@@ -301,6 +301,26 @@ public class ConversationService {
     }
 
     /**
+     * WebChat get-or-create that also records the thread's {@code sessionId} on
+     * insert, so the visitor's /sessions listing can recover it even when the
+     * conversationId hashes (long visitorId + sessionId). The session id is
+     * written only when the row is first created; an existing row is left as-is.
+     */
+    @Transactional
+    public ConversationEntity getOrCreateWebchatConversation(String conversationId, Long agentId,
+                                                             String username, Long workspaceId,
+                                                             String sessionId) {
+        boolean existed = conversationMapper.selectOne(new LambdaQueryWrapper<ConversationEntity>()
+                .eq(ConversationEntity::getConversationId, conversationId)) != null;
+        ConversationEntity conv = getOrCreateConversation(conversationId, agentId, username, workspaceId);
+        if (!existed && sessionId != null && !sessionId.isBlank() && conv.getWebchatSessionId() == null) {
+            conv.setWebchatSessionId(sessionId);
+            conversationMapper.updateById(conv);
+        }
+        return conv;
+    }
+
+    /**
      * Create a child conversation (delegation scenario), linking it back to
      * its parent via {@code parentConversationId}.
      *
