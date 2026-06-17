@@ -789,6 +789,75 @@ public class WebChatController {
     }
 
     /**
+     * 重新生成最后一条助手回复。
+     * <p>
+     * 语义:找到会话最后一条 {@code role=user} 消息 → stop 当前流(如有)→ 删除最后一条
+     * {@code role=assistant} 消息 → 用 last user message 重新启动 agent turn。
+     * 实际启动复用 {@link #chatStream},它会重新 saveMessage user(新消息 id,内容相同)。
+     * 这样不重复 100 行 SSE 代码,代价是用户消息多一条(语义上等同"重发")。
+     * <p>
+     * 没有任何 user 消息时返回 400(无内容可重新生成)。
+     */
+    @Operation(summary = "重新生成最后一条助手回复")
+    @PostMapping(value = "/sessions/regenerate", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter regenerateSession(
+            @RequestHeader("X-MC-Key") String apiKey,
+            @RequestHeader(value = "X-MC-Visitor-Token", required = false) String visitorToken,
+            @RequestParam String visitorId,
+            @RequestParam(required = false) String sessionId) {
+        SseEmitter emitter = new Utf8SseEmitter(10 * 60 * 1000L);
+        ChannelEntity channel = resolveChannel(apiKey);
+        if (channel == null) {
+            sendErrorAndComplete(emitter, "Invalid API Key");
+            return emitter;
+        }
+        if (!verifyVisitorToken(visitorTokenSecret, channel.getId(), visitorId, visitorToken)) {
+            sendErrorAndComplete(emitter, "Invalid or missing visitor token");
+            return emitter;
+        }
+        String sid;
+        try {
+            sid = normalizeSessionId(sessionId);
+        } catch (IllegalArgumentException ex) {
+            sendErrorAndComplete(emitter, ex.getMessage());
+            return emitter;
+        }
+        String conversationId = deriveConversationId(apiKey, visitorId, sid);
+        if (!ownsConversation(conversationId, visitorId)) {
+            sendErrorAndComplete(emitter, "Session not found");
+            return emitter;
+        }
+
+        // Stop any in-flight stream first so its doOnComplete doesn't race the
+        // delete/save below. Single-node webchat means requestStop hits the
+        // right disposable; multi-node is a separate epic.
+        streamTracker.requestStop(conversationId);
+
+        MessageEntity lastAssistant = conversationService.findLastMessageByRole(conversationId, "assistant");
+        if (lastAssistant != null) {
+            conversationService.deleteMessageById(lastAssistant.getId());
+        }
+        MessageEntity lastUser = conversationService.findLastMessageByRole(conversationId, "user");
+        if (lastUser == null) {
+            sendErrorAndComplete(emitter, "No user message to regenerate from");
+            return emitter;
+        }
+
+        log.info("[WebChat] Regenerate: conversationId={}, visitor={}, seedMessageId={}",
+                conversationId, visitorId, lastUser.getId());
+
+        // Reuse chatStream: it'll resolve the agent again (cheap), re-derive
+        // conversationId, saveMessage user (new id, same content), and start
+        // the agent turn. visitorId echoes through to keep the visitor-scoped
+        // memory owner consistent.
+        WebChatRequest req = new WebChatRequest();
+        req.setMessage(lastUser.getContent());
+        req.setVisitorId(visitorId);
+        req.setSessionId(sid);
+        return chatStream(apiKey, req);
+    }
+
+    /**
      * 上传文件（入站）。访客先上传拿到 fileId，再在 /stream 的 attachmentIds 中引用。
      * <p>鉴权同会话接口：API Key + visitor token；conversationId 服务端派生。
      */
