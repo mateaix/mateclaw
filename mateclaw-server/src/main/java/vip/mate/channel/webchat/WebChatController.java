@@ -203,7 +203,7 @@ public class WebChatController {
                                 .withSender(null, "api", null);
                 String webchatOwnerKey = memoryOwnerResolver.resolve(webchatOrigin);
 
-                agentService.chatStructuredStream(resolvedAgentId, message, conversationId, visitorId, null, webchatOrigin)
+                reactor.core.Disposable disposable = agentService.chatStructuredStream(resolvedAgentId, message, conversationId, visitorId, null, webchatOrigin)
                         .doOnNext(delta -> {
                             if (delta.isEvent() && "_usage_final".equals(delta.eventType())) {
                                 Map<String, Object> data = delta.eventData();
@@ -251,6 +251,12 @@ public class WebChatController {
                             streamTracker.complete(conversationId);
                         })
                         .subscribe();
+                // Bind the subscription's Disposable so requestStop() (invoked by
+                // POST /sessions/stop) can actually dispose the Flux and interrupt
+                // the LLM stream. Without this, stopRequested is set but the underlying
+                // HTTP call keeps running — token burn + side-effect tools still fire.
+                // Mirrors ChatController#chatStream line 495.
+                streamTracker.setDisposable(conversationId, disposable);
 
             } catch (Exception e) {
                 log.error("[WebChat] Error: {}", e.getMessage(), e);
@@ -635,6 +641,51 @@ public class WebChatController {
         }
         conversationService.deleteConversation(conversationId);
         return R.ok();
+    }
+
+    /**
+     * 停止访客某线程正在进行中的 SSE 流。
+     * <p>
+     * 鉴权同其他会话管理端点(API Key + visitorToken + 会话归属)。内部调
+     * {@link ChatStreamTracker#requestStop(String)}——靠 chatStream 注册时绑定的
+     * Disposable 实际中断 Flux;返回 {@code stopped=false} 表示当前没有活跃流
+     * (幂等,不报错)。
+     * <p>
+     * 不做 approval sweep:webchat 渠道目前不暴露 approval UI,且无 MateClaw
+     * username 可传给 {@code denyAllByConversation}。若未来 webchat 接入审批流,
+     * 再单独评估是否补这层。
+     */
+    @Operation(summary = "停止访客会话线程的进行中流")
+    @PostMapping("/sessions/stop")
+    public R<Map<String, Object>> stopSession(
+            @RequestHeader("X-MC-Key") String apiKey,
+            @RequestHeader(value = "X-MC-Visitor-Token", required = false) String visitorToken,
+            @RequestParam String visitorId,
+            @RequestParam(required = false) String sessionId) {
+        ChannelEntity channel = resolveChannel(apiKey);
+        if (channel == null) {
+            return R.fail(401, "Invalid API Key");
+        }
+        if (!verifyVisitorToken(visitorTokenSecret, channel.getId(), visitorId, visitorToken)) {
+            return R.fail(401, "Invalid or missing visitor token");
+        }
+        String sid;
+        try {
+            sid = normalizeSessionId(sessionId);
+        } catch (IllegalArgumentException ex) {
+            return R.fail(400, ex.getMessage());
+        }
+        String conversationId = deriveConversationId(apiKey, visitorId, sid);
+        // ownsConversation is the existence + ownership guard: an unknown sessionId
+        // maps to a conversationId that either doesn't exist or belongs to someone
+        // else — both return 404 so the caller can't probe the namespace.
+        if (!ownsConversation(conversationId, visitorId)) {
+            return R.fail(404, "Session not found");
+        }
+        boolean stopped = streamTracker.requestStop(conversationId);
+        log.info("[WebChat] Stop requested: conversationId={}, visitor={}, stopped={}",
+                conversationId, visitorId, stopped);
+        return R.ok(Map.of("stopped", stopped));
     }
 
     /**
