@@ -75,6 +75,8 @@ public class WebChatController {
     private final WebChatFileService fileService;
     private final WebChatTokenRevocationService tokenRevocationService;
     private final vip.mate.audit.service.AuditEventService auditService;
+    private final vip.mate.llm.routing.AgentBindingResolver agentBindingResolver;
+    private final vip.mate.skill.repository.SkillMapper skillMapper;
 
     /** Visitor-token TTL in seconds (7 days). Mirrors GeneratedFileCache's TTL. */
     static final long VISITOR_TOKEN_TTL_SECONDS = 7 * 24 * 3600L;
@@ -308,6 +310,68 @@ public class WebChatController {
                 "primaryColor", textOrDefault(config, "primary_color", "#409eff"),
                 "welcomeMessage", textOrDefault(config, "welcome_message", "")
         ));
+    }
+
+    /**
+     * 列出访客在当前 channel 上可见的技能清单(供下游集成方实现 "/" slash
+     * picker UI)。返回的是<b>展示级元数据</b>——id、slug、本地化名、描述、
+     * 图标,不暴露 SKILL.md 正文、config、安全扫描结果等内部字段。
+     * <p>
+     * 鉴权链跟 {@link #listSessions} 一致:API Key 解析 channel + visitorToken
+     * HMAC 校验。{@code agentId} 可选,缺省回落到 channel 绑定的 agent;
+     * 必须属于该 channel 的 workspace(沿用 {@code /stream} 的反越权路径)。
+     * <p>
+     * 可见范围 = 显式绑定到该 agent 的 enabled 技能。无显式绑定的 agent
+     * (意为"用全局默认")返回空清单——visitor 看不到候选,但仍可走自然语言
+     * 让 LLM 自行调 {@code load_skill}。
+     */
+    @Operation(summary = "列出访客可见技能(供 slash picker UI)")
+    @GetMapping("/skills")
+    public R<List<WebChatSkillView>> listSkills(
+            @RequestHeader("X-MC-Key") String apiKey,
+            @RequestHeader(value = "X-MC-Visitor-Token", required = false) String visitorToken,
+            @RequestParam(required = false) Long agentId,
+            @RequestParam String visitorId) {
+        ChannelEntity channel = resolveChannel(apiKey);
+        if (channel == null) {
+            return R.fail(401, "Invalid API Key");
+        }
+        if (!verifyVisitorToken(visitorTokenSecret, channel.getId(), visitorId, visitorToken)) {
+            return R.fail(401, "Invalid or missing visitor token");
+        }
+        // Resolve the target agent: same anti-escalation rule as /stream — an
+        // explicit agentId must belong to the channel's workspace.
+        Long resolvedAgentId = channel.getAgentId();
+        if (agentId != null) {
+            var requested = agentService.getAgent(agentId);
+            if (requested == null) {
+                return R.fail(404, "Requested agent not found");
+            }
+            if (channel.getWorkspaceId() != null && requested.getWorkspaceId() != null
+                    && !channel.getWorkspaceId().equals(requested.getWorkspaceId())) {
+                return R.fail(403, "Requested agent does not belong to this channel's workspace");
+            }
+            resolvedAgentId = agentId;
+        }
+        if (resolvedAgentId == null) {
+            return R.ok(List.of());
+        }
+        // Bound-skill IDs is null when the agent has no explicit binding (meaning
+        // "use global defaults"); treat that as "no candidates surfaced to the
+        // picker" so the agent config stays the source of truth for visitor UI.
+        java.util.Set<Long> boundIds = agentBindingResolver.getBoundSkillIds(resolvedAgentId);
+        if (boundIds == null || boundIds.isEmpty()) {
+            return R.ok(List.of());
+        }
+        List<vip.mate.skill.model.SkillEntity> skills = skillMapper.selectBatchIds(boundIds);
+        return R.ok(skills.stream()
+                .filter(s -> Boolean.TRUE.equals(s.getEnabled()))
+                // Stable order: by slug asc, fall back to id for ties (e.g. null slug).
+                .sorted(java.util.Comparator.comparing(
+                        s -> s.getName() != null ? s.getName() : "",
+                        java.util.Comparator.nullsFirst(String::compareToIgnoreCase)))
+                .map(WebChatSkillView::from)
+                .toList());
     }
 
     /** Cap on how many empty (message_count = 0) threads one visitor may hold on a
@@ -1383,6 +1447,35 @@ public class WebChatController {
         private Integer archived;
         /** {@code running} if a stream is in progress on this thread, else {@code idle}. */
         private String streamStatus;
+    }
+
+    /**
+     * Display-level view of a skill surfaced to webchat visitors for the slash
+     * picker UI. Carries only the fields a UI needs to render a row — id (for
+     * logging / debugging), localised name, description, icon. Deliberately
+     * omits SKILL.md content, config JSON, scan results and other internal
+     * columns: those never leave the admin console.
+     */
+    @lombok.Data
+    public static class WebChatSkillView {
+        private Long id;
+        /** Immutable slug the LLM takes as {@code load_skill(name=…)}; this is what the slash picker must splice into the directive text. */
+        private String name;
+        private String nameZh;
+        private String nameEn;
+        private String description;
+        private String icon;
+
+        static WebChatSkillView from(vip.mate.skill.model.SkillEntity s) {
+            WebChatSkillView v = new WebChatSkillView();
+            v.id = s.getId();
+            v.name = s.getName();
+            v.nameZh = s.getNameZh();
+            v.nameEn = s.getNameEn();
+            v.description = s.getDescription();
+            v.icon = s.getIcon();
+            return v;
+        }
     }
 
     /** Body for {@code POST /sessions} — explicitly create an empty thread. */
