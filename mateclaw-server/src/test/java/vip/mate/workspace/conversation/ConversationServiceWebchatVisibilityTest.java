@@ -156,12 +156,12 @@ class ConversationServiceWebchatVisibilityTest {
 
         service.listConversations("admin", 1L, true);
 
-        // Assert on the rendered SQL (not the param values, which MyBatis-Plus
-        // percent-escapes internally) so the test stays independent of that
-        // implementation detail.
-        String sql = captor.getValue().getTargetSql().toLowerCase();
-        assertThat(sql).contains("not like");
-        assertThat(sql).contains("conversation_id");
+        // The bound LIKE pattern must be exactly "%:" (ends-with colon), not
+        // "%%:%" (contains colon). The earlier notLike("%:") form produced
+        // the latter via MyBatis-Plus auto-wrapping + percent-escape, which
+        // filtered out every webchat:… / feishu:… / cron:… conversation.
+        assertThat(captor.getValue().getTargetSql().toLowerCase()).contains("not like");
+        assertThat(captor.getValue().getParamNameValuePairs().values()).contains("%:");
     }
 
     @Test
@@ -175,9 +175,10 @@ class ConversationServiceWebchatVisibilityTest {
 
         service.pageConversations("admin", 1L, 1, 20, null);
 
-        String sql = captor.getValue().getTargetSql().toLowerCase();
-        assertThat(sql).contains("not like");
-        assertThat(sql).contains("conversation_id");
+        // Force the nested-wrapper param merge: getParamNameValuePairs() is
+        // empty until getTargetSql() (or equivalent) has been called once.
+        assertThat(captor.getValue().getTargetSql().toLowerCase()).contains("not like");
+        assertThat(captor.getValue().getParamNameValuePairs().values()).contains("%:");
     }
 
     @Test
@@ -189,9 +190,9 @@ class ConversationServiceWebchatVisibilityTest {
 
         service.listConversations("admin", 1L); // strict 2-arg
 
-        String sql = captor.getValue().getTargetSql().toLowerCase();
-        assertThat(sql).contains("not like");
-        assertThat(sql).contains("conversation_id");
+        // Force the nested-wrapper param merge before checking values.
+        assertThat(captor.getValue().getTargetSql().toLowerCase()).contains("not like");
+        assertThat(captor.getValue().getParamNameValuePairs().values()).contains("%:");
     }
 
     private static UserEntity user(String role) {
