@@ -210,9 +210,18 @@ public class ConversationService {
      * Showing them in the console surfaces threads that 500/403 on open
      * because the trailing ":" makes some reverse proxies strip the path
      * tail (issue #369).
+     *
+     * <p>Uses {@code notLikeLeft} rather than {@code notLike(...,"%:")}: the
+     * latter auto-wraps the value with extra {@code %} on both sides AND
+     * escapes the user-supplied {@code %}, producing a {@code %%:%} pattern
+     * that matches <em>any id containing a colon</em> — silently filtering
+     * out every {@code webchat:…}, {@code feishu:…}, {@code cron:…}
+     * conversation from the list. {@code notLikeLeft} only prepends the
+     * wildcard, giving the intended {@code NOT LIKE '%:'} ("does not end
+     * with a colon").
      */
     private void applyMalformedIdGuard(LambdaQueryWrapper<ConversationEntity> w) {
-        w.notLike(ConversationEntity::getConversationId, "%:");
+        w.notLikeLeft(ConversationEntity::getConversationId, ":");
     }
 
     /**
