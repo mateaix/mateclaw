@@ -9,6 +9,7 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.validation.BindException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.context.request.async.AsyncRequestTimeoutException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
@@ -119,6 +120,21 @@ public class GlobalExceptionHandler {
                                                          HttpServletRequest request) {
         log.warn("Resource not found: {} {}", request.getMethod(), request.getRequestURI());
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(R.fail(404, "Resource not found"));
+    }
+
+    /**
+     * Spring's default lets this escape to the catch-all below, surfacing as a
+     * 500 with a stack trace. Return a clean 405 so the client gets a
+     * structured body and the log stays at WARN. Doubles as a defence when a
+     * malformed path segment makes a reverse proxy strip the trailing path
+     * (e.g. a conversationId ending in ":" lands a GET on a @DeleteMapping).
+     */
+    @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
+    public ResponseEntity<R<Void>> handleMethodNotSupported(HttpRequestMethodNotSupportedException e,
+                                                             HttpServletRequest request) {
+        log.warn("Method not supported: {} {} (supported: {})",
+                request.getMethod(), request.getRequestURI(), e.getSupportedHttpMethods());
+        return ResponseEntity.status(HttpStatus.METHOD_NOT_ALLOWED).body(R.fail(405, "Method not allowed"));
     }
 
     @ExceptionHandler(Exception.class)
