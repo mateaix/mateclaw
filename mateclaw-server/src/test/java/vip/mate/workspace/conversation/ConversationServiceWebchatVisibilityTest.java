@@ -79,7 +79,7 @@ class ConversationServiceWebchatVisibilityTest {
     }
 
     @Test
-    @DisplayName("lenient list, non-admin: excludes webchat principals (no LIKE clause)")
+    @DisplayName("lenient list, non-admin: excludes webchat principals (no 'webchat:%' param)")
     void lenientListNonAdminExcludesWebchat() {
         when(authService.findByUsername("alice")).thenReturn(user("member"));
         ArgumentCaptor<LambdaQueryWrapper<ConversationEntity>> captor =
@@ -88,12 +88,14 @@ class ConversationServiceWebchatVisibilityTest {
 
         service.listConversations("alice", 1L, true);
 
-        String sql = captor.getValue().getTargetSql();
-        assertThat(sql).doesNotContainIgnoringCase("like");
+        // The malformed-id guard still emits a NOT LIKE, so we assert on the
+        // param value instead of the LIKE keyword.
+        assertThat(captor.getValue().getParamNameValuePairs().values())
+                .doesNotContain("webchat:%");
     }
 
     @Test
-    @DisplayName("strict list excludes webchat principals (no LIKE clause, no role lookup)")
+    @DisplayName("strict list excludes webchat principals (no 'webchat:%' param, no role lookup)")
     void strictListExcludesWebchat() {
         ArgumentCaptor<LambdaQueryWrapper<ConversationEntity>> captor =
                 ArgumentCaptor.forClass(LambdaQueryWrapper.class);
@@ -101,8 +103,8 @@ class ConversationServiceWebchatVisibilityTest {
 
         service.listConversations("admin", 1L); // strict 2-arg
 
-        String sql = captor.getValue().getTargetSql();
-        assertThat(sql).doesNotContainIgnoringCase("like");
+        assertThat(captor.getValue().getParamNameValuePairs().values())
+                .doesNotContain("webchat:%");
     }
 
     @Test
@@ -133,8 +135,63 @@ class ConversationServiceWebchatVisibilityTest {
 
         service.pageConversations("alice", 1L, 1, 20, null);
 
-        String sql = captor.getValue().getTargetSql();
-        assertThat(sql).doesNotContainIgnoringCase("like");
+        assertThat(captor.getValue().getParamNameValuePairs().values())
+                .doesNotContain("webchat:%");
+    }
+
+    // ------------------------------------------------------------------
+    // Malformed conversationId guard — rows whose id ends in ":" (e.g. an
+    // empty-visitorId webchat thread) are filtered out of every admin list
+    // query, regardless of role. Surfacing them triggers 500/403 on open
+    // because the trailing ":" confuses some reverse proxies (issue #369).
+    // ------------------------------------------------------------------
+
+    @Test
+    @DisplayName("lenient list: applies NOT LIKE '%:' guard to filter malformed ids")
+    void lenientListAppliesMalformedIdGuard() {
+        when(authService.findByUsername("admin")).thenReturn(user("admin"));
+        ArgumentCaptor<LambdaQueryWrapper<ConversationEntity>> captor =
+                ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        when(conversationMapper.selectList(captor.capture())).thenReturn(List.of());
+
+        service.listConversations("admin", 1L, true);
+
+        // Assert on the rendered SQL (not the param values, which MyBatis-Plus
+        // percent-escapes internally) so the test stays independent of that
+        // implementation detail.
+        String sql = captor.getValue().getTargetSql().toLowerCase();
+        assertThat(sql).contains("not like");
+        assertThat(sql).contains("conversation_id");
+    }
+
+    @Test
+    @DisplayName("page query: applies the same NOT LIKE '%:' guard")
+    void pageAppliesMalformedIdGuard() {
+        when(authService.findByUsername("admin")).thenReturn(user("admin"));
+        ArgumentCaptor<LambdaQueryWrapper<ConversationEntity>> captor =
+                ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        when(conversationMapper.selectPage(any(Page.class), captor.capture()))
+                .thenReturn(new Page<>());
+
+        service.pageConversations("admin", 1L, 1, 20, null);
+
+        String sql = captor.getValue().getTargetSql().toLowerCase();
+        assertThat(sql).contains("not like");
+        assertThat(sql).contains("conversation_id");
+    }
+
+    @Test
+    @DisplayName("strict list also applies the guard — malformed ids never leak to owner-only views")
+    void strictListAppliesMalformedIdGuard() {
+        ArgumentCaptor<LambdaQueryWrapper<ConversationEntity>> captor =
+                ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        when(conversationMapper.selectList(captor.capture())).thenReturn(List.of());
+
+        service.listConversations("admin", 1L); // strict 2-arg
+
+        String sql = captor.getValue().getTargetSql().toLowerCase();
+        assertThat(sql).contains("not like");
+        assertThat(sql).contains("conversation_id");
     }
 
     private static UserEntity user(String role) {
