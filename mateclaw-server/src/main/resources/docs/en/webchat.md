@@ -69,6 +69,7 @@ init({ apiKey: 'your-channel-api-key', server: 'https://<your-deployment>' })
 | POST | `/stream` | API Key | SSE streaming chat (issues visitorToken); the body may include an optional `agentId` to override the channel's bound agent (must be in the same workspace as the channel) |
 | GET | `/config` | API Key | Get channel config (title/placeholder/...) |
 | GET | `/skills` | + visitorToken | List skills visible to this agent (for building your own slash picker UI) |
+| GET | `/wiki/pages` | + visitorToken | List wiki pages visible to this agent (for building your own `[[slug]]` reference picker UI) |
 | POST | `/sessions` | API Key | Explicitly create an empty session thread |
 | GET | `/sessions` | + visitorToken | List sessions (excludes archived by default) |
 | GET | `/sessions/page` | + visitorToken | Paginated + keyword search |
@@ -230,6 +231,58 @@ curl -N -X POST https://mate.example.com/api/v1/channels/webchat/stream \
 ```
 
 > Note: the directive text relies on the LLM "obeying" and calling `load_skill`. Under complex tasks it occasionally drifts; for production, bind the target skill to the agent and reinforce the system prompt in `AGENTS.md`.
+
+## Wiki knowledge-base reference (`[[slug]]` picker)
+
+The knowledge base has a picker parallel to the slash-skill one — using the **Obsidian / Wikipedia wikilink convention `[[slug]]`**. The user types `[[` in the input box to open a picker, selects a page, and a `[[<slug>]]` token is inserted. On submit the input is rewritten into a directive text, and the LLM calls `wiki_read_page(slug=...)` to read the referenced page before answering. The backend **does no `[[` parsing** — webchat uses the exact same agent runtime as the admin console.
+
+Directive text format (**exact**):
+
+- English: `Reference the wiki page [[<slug>]]: <user message>`
+- Chinese: `参考知识库页面 [[<slug>]]：<用户消息>`
+
+Multiple references are supported naturally (just list them):
+
+```
+Reference the wiki pages [[auth-design]], [[webchat-integration]]: how do these two work together?
+```
+
+To build your own picker, first list the pages via the new endpoint:
+
+```bash
+curl "https://mate.example.com/api/v1/channels/webchat/wiki/pages?visitorId=v1" \
+  -H "X-MC-Key: your-api-key" \
+  -H "X-MC-Visitor-Token: <token>"
+# returns [{"kbId":1,"kbName":"MateClaw Docs","slug":"webchat-integration",
+#           "title":"WebChat Integration Guide","summary":"...","pageType":"source"}, ...]
+```
+
+Optional query parameters:
+
+| Parameter | Required | Notes |
+|---|---|---|
+| `visitorId` | yes | Visitor ID |
+| `agentId` | no | Override the channel's bound agent; must be in the same workspace as the channel |
+| `keyword` | no | Filter, matches `slug` OR `title` (LIKE) |
+
+Behavior:
+
+- **Scope**: KBs explicitly bound to the agent (`mate_agent_wiki_kb`); with no bindings, falls back to every KB in the workspace (mirrors the wiki-tool default)
+- **Page filter**: excludes `pageType=synthesis` (LLM intermediate artifacts)
+- **100-page cap**: when exceeded (and no `keyword`), returns `422` asking the caller to narrow with a keyword
+- **Returned fields**: only `kbId / kbName / slug / title / summary / pageType`; **no** content, embedding, sourceRawIds, or outgoingLinks (admin-console-only)
+- **Ordering**: by `slug` ascending
+
+After a user picks a page, construct the message (English directive example):
+
+```bash
+curl -N -X POST https://mate.example.com/api/v1/channels/webchat/stream \
+  -H "X-MC-Key: your-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{"visitorId":"v1","message":"Reference the wiki page [[webchat-integration]]: summarize the integration flow"}'
+```
+
+> Note: `[[slug]]` is a convention hint for the LLM (documented in the `wiki_read_page` `@Tool` description), but the LLM can still drift under complex tasks. For production, reinforce the system prompt in `AGENTS.md`, or bind the target KB to a dedicated agent to narrow the retrieval space.
 
 ## curl examples
 

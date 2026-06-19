@@ -69,6 +69,7 @@ init({ apiKey: 'your-channel-api-key', server: 'https://<你的部署地址>' })
 | POST | `/stream` | API Key | SSE 流式对话(签发 visitorToken);请求体可选传 `agentId` 覆盖渠道绑定的 agent(必须与渠道同 workspace) |
 | GET | `/config` | API Key | 拿渠道配置(title/placeholder/...) |
 | GET | `/skills` | + visitorToken | 列出该 agent 绑定的可见技能(供下游自建 slash picker UI) |
+| GET | `/wiki/pages` | + visitorToken | 列出该 agent 可见的 wiki 页面(供下游自建 `[[slug]]` 引用 picker UI) |
 | POST | `/sessions` | API Key | 显式创建空会话线程 |
 | GET | `/sessions` | + visitorToken | 列出会话(默认排除 archived) |
 | GET | `/sessions/page` | + visitorToken | 分页 + 关键词搜索 |
@@ -235,6 +236,58 @@ curl -N -X POST https://mate.example.com/api/v1/channels/webchat/stream \
 ```
 
 > 注意:指令文本依赖 LLM "听话"调用 `load_skill`。复杂任务下偶发漂移,生产环境建议把目标技能**绑定**到 agent(`agentId` 对应的)并在 `AGENTS.md` 里强化系统提示。
+
+## Wiki 知识库引用(`[[slug]]` picker)
+
+跟技能调用一样,wiki 知识库也可以通过 picker 显式指代——用 **Obsidian / Wikipedia 风格的 `[[slug]]` 链接语法**。用户在输入框敲 `[[` 触发 picker,选中后插入 `[[<slug>]]` token,发送时改写为指令文本,LLM 收到后调 `wiki_read_page(slug=...)` 读取该页面再做答。后端**不做任何 `[[` 解析**,webchat 走的是和主控台完全一样的 agent runtime。
+
+指令文本格式(**精确**):
+
+- 中文:`参考知识库页面 [[<slug>]]:<用户消息>`
+- 英文:`Reference the wiki page [[<slug>]]: <user message>`
+
+多引用天然支持(并列写即可):
+
+```
+参考知识库页面 [[auth-design]]、[[webchat-integration]]:这两套怎么协同?
+```
+
+下游集成方要自建 picker UI,先用端点拿页面清单:
+
+```bash
+curl "https://mate.example.com/api/v1/channels/webchat/wiki/pages?visitorId=v1" \
+  -H "X-MC-Key: your-api-key" \
+  -H "X-MC-Visitor-Token: <token>"
+# 返回 [{"kbId":1,"kbName":"MateClaw 文档","slug":"webchat-integration",
+#        "title":"WebChat 接入指南","summary":"...","pageType":"source"}, ...]
+```
+
+可选 query 参数:
+
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `visitorId` | 是 | 访客 ID |
+| `agentId` | 否 | 显式指定 agent,缺省回落到渠道绑定;必须与渠道同 workspace |
+| `keyword` | 否 | 关键词过滤,匹配 `slug` 或 `title`(LIKE) |
+
+行为约束:
+
+- **可见范围**:agent 显式绑定的 KB(`mate_agent_wiki_kb` 表);无绑定时回落到该 workspace 全部 KB(跟 wiki 工具的默认行为一致)
+- **页面过滤**:排除 `pageType=synthesis`(LLM 中间产物,对终端访客无意义)
+- **100 页上限**:超出时(且未传 `keyword`)返回 `422`,要求传 `keyword` 收窄
+- **返回字段**:仅 `kbId / kbName / slug / title / summary / pageType`;**不包含**正文、embedding、sourceRawIds、outgoingLinks(这些只走管理控制台)
+- **排序**:按 `slug` 字母序
+
+选中后构造消息(中文 directive 示例):
+
+```bash
+curl -N -X POST https://mate.example.com/api/v1/channels/webchat/stream \
+  -H "X-MC-Key: your-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{"visitorId":"v1","message":"参考知识库页面 [[webchat-integration]]:总结这套接入流程"}'
+```
+
+> 注意:`[[slug]]` 是给 LLM 看的约定提示(`wiki_read_page` 的 `@Tool` description 里写明了),但 LLM 仍可能漂移——复杂任务下建议同时在 `AGENTS.md` 里强化提示,或把目标 KB **绑定**到专用 agent 收窄检索空间。
 
 ## curl 示例
 
