@@ -976,6 +976,32 @@ public class AgentBindingService implements AgentBindingResolver {
     }
 
     /**
+     * Effective KB ids the agent may see. Three states (mirror
+     * {@link #getBoundSkillIds}):
+     *
+     * <ul>
+     *   <li>{@code null} — no binding rows. Caller treats this as "no
+     *       agent-level restriction; inherit every KB in the agent's
+     *       workspace" (the default wiki-tool behavior).</li>
+     *   <li>{@code Set.of()} — rows exist but none are {@code enabled=true}.
+     *       Caller treats this as "explicitly scoped to zero KBs".</li>
+     *   <li>non-empty set — the explicit allowlist.</li>
+     * </ul>
+     */
+    @Override
+    public Set<Long> getBoundKbIds(Long agentId) {
+        List<AgentWikiKbBinding> bindings = listKbBindings(agentId);
+        if (bindings.isEmpty()) {
+            return null;
+        }
+        return bindings.stream()
+                .filter(b -> Boolean.TRUE.equals(b.getEnabled()))
+                .map(AgentWikiKbBinding::getKbId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+    }
+
+    /**
      * Replace the agent's KB access scope. An empty / null list clears the
      * scope, returning the agent to workspace-wide (unrestricted) access.
      * Every incoming KB must live in the agent's workspace — pinning a KB
