@@ -256,7 +256,8 @@
             </button>
             <button v-if="editingAgent" class="modal-tab" :class="{ active: modalTab === 'wiki' }" @click="modalTab = 'wiki'">
               {{ t('agents.tabs.wiki', 'Wiki') }}
-              <span v-if="selectedKbIds.length" class="tab-badge">{{ selectedKbIds.length }}</span>
+              <span v-if="form.wikiDisabled" class="tab-badge tab-badge--off">{{ t('agents.binding.disableAllWikiBadge') }}</span>
+              <span v-else-if="selectedKbIds.length" class="tab-badge">{{ selectedKbIds.length }}</span>
             </button>
           </div>
 
@@ -622,24 +623,46 @@
               <span class="binding-intro__kicker">{{ t('agents.binding.wikiKicker') }}</span>
               <p class="binding-intro__tagline">{{ t('agents.binding.wikiTagline') }}</p>
             </div>
+            <!-- Issue #304: explicit "no KBs" toggle. Empty selection alone
+                 falls through to "inherit workspace-wide" (every KB visible,
+                 context bloat for agents that don't need a KB), so an operator
+                 who wants zero KBs needs this dedicated bit — mirrors the
+                 skills_disabled / tools_disabled pattern. -->
+            <div class="binding-disable-row">
+              <label class="binding-disable-label">
+                <input type="checkbox" v-model="form.wikiDisabled" class="binding-disable-checkbox" />
+                <span class="binding-disable-text">
+                  <strong>{{ t('agents.binding.disableAllWiki') }}</strong>
+                  <span class="binding-disable-hint">{{ t('agents.binding.disableAllWikiHint') }}</span>
+                </span>
+              </label>
+            </div>
             <p class="binding-hint">{{ t('agents.binding.wikiHint') }}</p>
             <div v-if="availableKBs.length === 0" class="binding-empty">{{ t('agents.binding.noKBs') }}</div>
             <template v-else>
-              <p class="binding-hint" :class="{ 'binding-hint--warn': selectedKbIds.length > 0 }">
-                {{ selectedKbIds.length === 0 ? t('agents.binding.wikiScopeAll') : t('agents.binding.wikiScopeLimited', { count: selectedKbIds.length }) }}
+              <p class="binding-hint" :class="{ 'binding-hint--warn': !form.wikiDisabled && selectedKbIds.length > 0 }">
+                <template v-if="form.wikiDisabled">{{ t('agents.binding.wikiScopeNone') }}</template>
+                <template v-else>{{ selectedKbIds.length === 0 ? t('agents.binding.wikiScopeAll') : t('agents.binding.wikiScopeLimited', { count: selectedKbIds.length }) }}</template>
               </p>
-              <div class="binding-list">
+              <div class="binding-list" :class="{ 'binding-list--disabled': form.wikiDisabled }">
                 <label
                   v-for="kb in availableKBs"
                   :key="kb.id"
                   class="binding-item"
-                  :class="{ selected: isKbInScope(kb.id) }"
+                  :class="{
+                    selected: !form.wikiDisabled && isKbInScope(kb.id),
+                    'binding-item--inert': form.wikiDisabled,
+                  }"
                 >
+                  <!-- Manual :checked (not v-model) so flipping the toggle
+                       back on restores the previous picks in one click. Same
+                       inert-checkbox trick the skills picker uses (issue #184). -->
                   <input
                     type="checkbox"
                     class="binding-checkbox"
-                    :checked="isKbInScope(kb.id)"
+                    :checked="!form.wikiDisabled && isKbInScope(kb.id)"
                     @change="toggleKbScope(kb.id)"
+                    :disabled="form.wikiDisabled"
                   />
                   <span class="binding-icon">📚</span>
                   <div class="binding-info">
@@ -650,7 +673,8 @@
                   <button
                     type="button"
                     class="kb-primary-toggle"
-                    :class="{ 'kb-primary-toggle--active': selectedKBId === String(kb.id) }"
+                    :class="{ 'kb-primary-toggle--active': !form.wikiDisabled && selectedKBId === String(kb.id) }"
+                    :disabled="form.wikiDisabled"
                     :title="t('agents.binding.wikiSetPrimary')"
                     @click.prevent.stop="setPrimaryKb(kb.id)"
                   >{{ selectedKBId === String(kb.id) ? t('agents.binding.wikiPrimary') : t('agents.binding.wikiSetPrimary') }}</button>
@@ -945,6 +969,10 @@ const defaultForm = (): Partial<Agent> & { name: string; defaultThinkingLevel: s
   // "zero rows = inherit global default" contract for newly-created agents.
   skillsDisabled: false,
   toolsDisabled: false,
+  // Issue #304 — same contract for the wiki/knowledge-base picker. Empty
+  // selection alone would fall through to "inherit workspace-wide", so an
+  // operator who wants zero KBs in the context needs this dedicated bit.
+  wikiDisabled: false,
 })
 
 const form = ref(defaultForm())
@@ -1259,6 +1287,7 @@ async function openEditModal(agent: Agent) {
     primaryKbId: agent.primaryKbId != null ? String(agent.primaryKbId) : null,
     skillsDisabled: agent.skillsDisabled === true,
     toolsDisabled: agent.toolsDisabled === true,
+    wikiDisabled: (agent as any).wikiDisabled === true,
   }
   tagInput.value = ''
   recentlyRemovedTag.value = null
@@ -1377,9 +1406,12 @@ async function saveAgent() {
         await agentBindingApi.setSkills(agentId, skillIdsToSave)
         await agentBindingApi.setTools(agentId, toolNamesToSave)
         await agentBindingApi.setProviderPreferences(agentId, selectedProviderIds.value)
-        // KB access scope. Empty = unrestricted (workspace-wide). Sent as
-        // strings per the Snowflake-precision contract.
-        await agentBindingApi.setKbs(agentId, selectedKbIds.value)
+        // KB access scope. Issue #304: when wiki_disabled is on the agent
+        // sees zero KBs regardless of the binding list, so clear the save
+        // payload — same pattern as skills/tools above. Empty save leaves
+        // the wiki_disabled flag untouched (the toggle owns the bit).
+        const kbIdsToSave = form.value.wikiDisabled ? [] : selectedKbIds.value
+        await agentBindingApi.setKbs(agentId, kbIdsToSave)
       } catch (bindingError: any) {
         mcToast.error(bindingError?.message || t('agents.messages.saveFailed'))
         // Pull the authoritative server state back into the editing form so

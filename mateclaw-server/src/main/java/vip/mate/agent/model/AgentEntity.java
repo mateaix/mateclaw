@@ -131,6 +131,22 @@ public class AgentEntity {
     @TableField(value = "tools_disabled")
     private Boolean toolsDisabled;
 
+    /**
+     * Explicit opt-out from every knowledge base. When {@code true},
+     * {@code AgentBindingService.getBoundKbIds} returns
+     * {@link java.util.Collections#emptySet()} and the wiki tools degrade with
+     * their standard "no knowledge base" message; the webchat
+     * {@code /wiki/pages} picker endpoint returns an empty list. Without this
+     * flag, leaving the KB picker empty means "inherit workspace-wide" — every
+     * KB visible — which is the right default but leaves no way to express
+     * "this agent intentionally uses no KB" (issue #304).
+     *
+     * <p>Same defaulting / auto-clear / update strategy contract as
+     * {@link #skillsDisabled}.
+     */
+    @TableField(value = "wiki_disabled")
+    private Boolean wikiDisabled;
+
     @TableField(fill = FieldFill.INSERT)
     private LocalDateTime createTime;
 

@@ -59,6 +59,13 @@ export interface Agent {
    * delegation primitives still pass through. Defaults to `false`.
    */
   toolsDisabled?: boolean
+  /**
+   * Explicit opt-out: this agent sees zero knowledge bases regardless of
+   * leftover `mate_agent_wiki_kb` rows. Wiki tools degrade with their
+   * standard "no knowledge base" message; the webchat `/wiki/pages` picker
+   * returns an empty list. Defaults to `false`. Issue #304.
+   */
+  wikiDisabled?: boolean
   createTime?: string
   updateTime?: string
 }
