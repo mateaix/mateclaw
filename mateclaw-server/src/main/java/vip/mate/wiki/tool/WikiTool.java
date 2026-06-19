@@ -178,6 +178,10 @@ public class WikiTool {
             Use sectionHeading to read only one section by its heading text.
             The result includes a "sourceFiles" field listing the source documents this page was derived from.
             When using content from this page in your answer, cite the page title and source files.
+
+            Convention: a user message containing `[[<slug>]]` (e.g. `参考知识库页面 [[auth-design]]: ...`)
+            is a wiki-page reference inserted by the chat picker. Treat each `[[slug]]` as a request to
+            consult that page first — call this tool with the bare slug before answering.
             """)
     public String wiki_read_page(
             @ToolParam(description = "Agent ID") Long agentId,
