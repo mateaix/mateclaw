@@ -66,8 +66,9 @@ init({ apiKey: 'your-channel-api-key', server: 'https://<your-deployment>' })
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| POST | `/stream` | API Key | SSE streaming chat (issues visitorToken) |
+| POST | `/stream` | API Key | SSE streaming chat (issues visitorToken); the body may include an optional `agentId` to override the channel's bound agent (must be in the same workspace as the channel) |
 | GET | `/config` | API Key | Get channel config (title/placeholder/...) |
+| GET | `/skills` | + visitorToken | List skills visible to this agent (for building your own slash picker UI) |
 | POST | `/sessions` | API Key | Explicitly create an empty session thread |
 | GET | `/sessions` | + visitorToken | List sessions (excludes archived by default) |
 | GET | `/sessions/page` | + visitorToken | Paginated + keyword search |
@@ -198,6 +199,37 @@ curl -X POST https://mate.example.com/api/v1/admin/webchat/revoked-visitor \
 ```
 
 After revocation, all of that visitor's management endpoints return 401 (`/stream` is unaffected and can re-issue a fresh token). Revocation state is briefly cached, so under a multi-instance deployment it takes up to ~10 minutes to fully propagate. Un-revoke via `DELETE` on the same endpoint.
+
+## Skill invocation (slash picker)
+
+The admin-console chat input shows a skill picker when you type `/`. This is a **pure frontend affordance** — selecting a skill rewrites the input box into a directive:
+
+- English: `Use the "<skill-name>" skill: <user message>`
+- Chinese: `使用「<技能名>」技能:<用户消息>`
+
+The directive goes out as a regular user message on `/stream`, and the LLM voluntarily calls the `load_skill` meta-tool when it sees it (see [skills.md](./skills.md#the-slash-menu)). The backend **does no `/` parsing**; webchat uses the exact same agent runtime as the admin console, so this path works out of the box for webchat callers.
+
+To build your own picker, first list the skills via the new endpoint:
+
+```bash
+curl https://mate.example.com/api/v1/channels/webchat/skills?visitorId=v1 \
+  -H "X-MC-Key: your-api-key" \
+  -H "X-MC-Visitor-Token: <token>"
+# returns [{"id":..., "name":"news-summary", "nameZh":"News Summary", "description":"...", "icon":"..."}]
+```
+
+The `agentId` query parameter is optional (falls back to the channel's bound agent). Only skills **explicitly bound to the agent AND enabled** are returned, sorted by slug. The response carries display-level metadata only — **no** SKILL.md content, configJson, or security scan results (those stay admin-console-only).
+
+After a user picks a skill, construct the message:
+
+```bash
+curl -N -X POST https://mate.example.com/api/v1/channels/webchat/stream \
+  -H "X-MC-Key: your-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{"visitorId":"v1","message":"Use the \"news-summary\" skill: summarize the top 3 AI stories today"}'
+```
+
+> Note: the directive text relies on the LLM "obeying" and calling `load_skill`. Under complex tasks it occasionally drifts; for production, bind the target skill to the agent and reinforce the system prompt in `AGENTS.md`.
 
 ## curl examples
 

@@ -66,8 +66,9 @@ init({ apiKey: 'your-channel-api-key', server: 'https://<你的部署地址>' })
 
 | 方法 | 路径 | 鉴权 | 用途 |
 |---|---|---|---|
-| POST | `/stream` | API Key | SSE 流式对话(签发 visitorToken) |
+| POST | `/stream` | API Key | SSE 流式对话(签发 visitorToken);请求体可选传 `agentId` 覆盖渠道绑定的 agent(必须与渠道同 workspace) |
 | GET | `/config` | API Key | 拿渠道配置(title/placeholder/...) |
+| GET | `/skills` | + visitorToken | 列出该 agent 绑定的可见技能(供下游自建 slash picker UI) |
 | POST | `/sessions` | API Key | 显式创建空会话线程 |
 | GET | `/sessions` | + visitorToken | 列出会话(默认排除 archived) |
 | GET | `/sessions/page` | + visitorToken | 分页 + 关键词搜索 |
@@ -203,6 +204,37 @@ curl -X POST https://mate.example.com/api/v1/admin/webchat/revoked-visitor \
 ```
 
 撤销后该 visitor 的所有管理端点调用返回 401(`/stream` 不受影响,可重新签发新 token)。撤销状态带短时缓存,多实例下最长约 10 分钟生效。取消撤销用 `DELETE` 同一端点。
+
+## 技能调用(slash picker)
+
+主控台前端在输入框键入 `/` 会弹出技能选择菜单。这是**纯前端 affordance**——选中后输入框被改写成指令文本:
+
+- 中文:`使用「<技能名>」技能:<用户消息>`
+- 英文:`Use the "<skill-name>" skill: <用户消息>`
+
+指令文本作为普通 user message 发到 `/stream`,LLM 收到后调用 `load_skill` 元工具(详见 [skills.md](./skills.md#slash-菜单))。后端**不做 `/` 解析**,webchat 走的是和主控台完全一样的 agent runtime,所以这条路径对 webchat 调用方**开箱即用**。
+
+下游集成方要自建 picker UI,先用新端点拿清单:
+
+```bash
+curl https://mate.example.com/api/v1/channels/webchat/skills?visitorId=v1 \
+  -H "X-MC-Key: your-api-key" \
+  -H "X-MC-Visitor-Token: <token>"
+# 返回 [{"id":..., "name":"news-summary", "nameZh":"新闻摘要", "description":"...", "icon":"..."}]
+```
+
+可选 `agentId` 参数(默认回落到渠道绑定的 agent);只返回该 agent **显式绑定且 enabled** 的技能,按 slug 字母序排序。返回字段是展示级元数据,**不包含** SKILL.md 正文、configJson、安全扫描结果——这些只走管理控制台。
+
+选中后构造消息:
+
+```bash
+curl -N -X POST https://mate.example.com/api/v1/channels/webchat/stream \
+  -H "X-MC-Key: your-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{"visitorId":"v1","message":"使用「新闻摘要」技能:总结今天最重要的 3 条 AI 新闻"}'
+```
+
+> 注意:指令文本依赖 LLM "听话"调用 `load_skill`。复杂任务下偶发漂移,生产环境建议把目标技能**绑定**到 agent(`agentId` 对应的)并在 `AGENTS.md` 里强化系统提示。
 
 ## curl 示例
 
