@@ -319,6 +319,7 @@ const purifyConfig = {
   ADD_ATTR: [
     'target', 'rel', 'class',
     'data-code', 'data-echarts-option', 'data-wiki-title', 'data-slug',
+    'data-citation-index', 'data-citation-title',
     'data-tex', 'data-mermaid', 'data-mermaid-download',
     'x1', 'y1', 'x2', 'y2',
     'aria-label', 'open',
@@ -375,6 +376,77 @@ export interface RenderMarkdownOptions {
   wikilink?: WikilinkMode
 }
 
+// ---------------------------------------------------------------------------
+// Wiki citation pre-processor
+// ---------------------------------------------------------------------------
+// Parses the canonical "来源：" source table appended by the backend's
+// SourceEvidenceLedger.appendWikiSourceTable() to build a citation index →
+// title map, then replaces every [n] marker in the answer body with a
+// clickable <a> and wraps entire source-table rows so the full line is
+// clickable.
+function preprocessWikiCitations(text: string): string {
+  let sourceIdx = -1
+  const dblIdx = text.indexOf('\n\n来源：')
+  if (dblIdx >= 0) {
+    sourceIdx = dblIdx + 2
+  } else {
+    const sngIdx = text.indexOf('\n来源：')
+    if (sngIdx >= 0) {
+      sourceIdx = sngIdx + 1
+    } else if (text.startsWith('来源：')) {
+      sourceIdx = 0
+    }
+  }
+  if (sourceIdx < 0) return text
+
+  const body = text.slice(0, sourceIdx)
+  const sourceSection = text.slice(sourceIdx)
+
+  const map = new Map<number, string>()
+  const sourceLineRe = /^\[(\d+)\]\s+(.+)$/gm
+  let slMatch: RegExpExecArray | null
+  while ((slMatch = sourceLineRe.exec(sourceSection)) !== null) {
+    const index = parseInt(slMatch[1], 10)
+    if (map.has(index)) continue
+    const fullContent = slMatch[2].trim()
+    const title = fullContent.split(' - ')[0].trim()
+    if (title) map.set(index, title)
+  }
+  if (map.size === 0) return text
+
+  // Body: replace only the [n] marker.
+  const bodyWithCitations = body.replace(
+    /\[(\d+)\]/g,
+    (match, indexStr: string) => {
+      const idx = parseInt(indexStr, 10)
+      const title = map.get(idx)
+      if (!title) return match
+      return (
+        '<a class="wiki-citation" href="#" data-citation-index="' + idx +
+        '" data-citation-title="' + escapeHtml(title) +
+        '">' + match + '</a>'
+      )
+    },
+  )
+
+  // Source table: wrap the entire row.
+  const sourceWithCitations = sourceSection.replace(
+    /^(\s*\[(\d+)\]\s+.+)$/gm,
+    (fullLine, _content, indexStr: string) => {
+      const idx = parseInt(indexStr, 10)
+      const title = map.get(idx)
+      if (!title) return fullLine
+      return (
+        '<a class="wiki-citation" href="#" data-citation-index="' + idx +
+        '" data-citation-title="' + escapeHtml(title) +
+        '">' + fullLine + '</a>'
+      )
+    },
+  )
+
+  return bodyWithCitations + sourceWithCitations
+}
+
 export function useMarkdownRenderer() {
   function renderMarkdown(content: string, opts?: RenderMarkdownOptions): string {
     if (!content) return ''
@@ -415,8 +487,10 @@ export function useMarkdownRenderer() {
               )
             },
           )
+    // 2.5 Wiki citation preprocessing: [n] → <a class="wiki-citation" …>
+    const withCitations = preprocessWikiCitations(withWikiLinks)
     // 3. Marked → 4. DOMPurify.
-    const rawHtml = markedInstance.parse(withWikiLinks) as string
+    const rawHtml = markedInstance.parse(withCitations) as string
     const result = DOMPurify.sanitize(rawHtml, purifyConfig)
 
     // Evict oldest entry when at capacity (Map preserves insertion order).

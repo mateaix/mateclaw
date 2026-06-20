@@ -197,18 +197,43 @@ public record SourceEvidenceLedger(
         if (used.isEmpty()) {
             return answer;
         }
+
+        String result = answer;
         StringBuilder additions = new StringBuilder();
+
         for (Integer index : used) {
             WikiCitation citation = wikiCitation(index);
-            if (citation == null || sourceLineFor(answer, index) != null) {
+            if (citation == null) {
                 continue;
             }
-            if (additions.isEmpty()) {
-                additions.append("\n\n来源：");
+            String canonicalLine = citation.sourceLine();
+            if (sourceLineFor(result, index) != null) {
+                // Normalize in-place: replace the existing (possibly
+                // non-canonical) source line with the standard format so
+                // the frontend can reliably parse the source table.
+                result = replaceSourceLine(result, index, canonicalLine);
+            } else {
+                if (additions.isEmpty()) {
+                    additions.append("\n\n来源：");
+                }
+                additions.append("\n").append(canonicalLine);
             }
-            additions.append("\n").append(citation.sourceLine());
         }
-        return additions.isEmpty() ? answer : answer + additions;
+
+        // If source lines were normalized in-place but no 来源： header
+        // exists, insert one before the first source line so the frontend
+        // preprocessWikiCitations() can locate the source table.
+        if (additions.isEmpty() && !result.contains("来源：")) {
+            java.util.regex.Matcher firstSource = java.util.regex.Pattern
+                    .compile("(?m)^\\[")
+                    .matcher(result);
+            if (firstSource.find()) {
+                int pos = firstSource.start();
+                result = result.substring(0, pos) + "\n\n来源：\n" + result.substring(pos);
+            }
+        }
+
+        return additions.isEmpty() ? result : result + additions;
     }
 
     private void validateWikiCitations(String answer, LinkedHashSet<String> unsupported) {
@@ -260,6 +285,18 @@ public record SourceEvidenceLedger(
         Pattern pattern = Pattern.compile("(?m)^\\s*\\[" + index + "\\]\\s+(.+)$");
         Matcher matcher = pattern.matcher(answer);
         return matcher.find() ? matcher.group(1).trim() : null;
+    }
+
+    /**
+     * Replace the existing source line for {@code index} with the canonical
+     * form. Matches a full line starting with optional whitespace, {@code [N]},
+     * then any content, and replaces it in-place so the frontend can reliably
+     * parse the source table to build a citation index → title map.
+     */
+    private static String replaceSourceLine(String answer, int index, String canonicalLine) {
+        Pattern pattern = Pattern.compile("(?m)^\\s*\\[" + index + "\\]\\s+.+$");
+        return pattern.matcher(answer).replaceFirst(
+                java.util.regex.Matcher.quoteReplacement(canonicalLine));
     }
 
     private boolean hasFileName(String fileName) {
