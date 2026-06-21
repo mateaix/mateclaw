@@ -441,6 +441,7 @@ export default {
     untitled: '未命名计划',
     steps: '步骤',
     viewResult: '点击查看结果',
+    delegatedTo: '委派给',
     col: {
       pending: '待执行',
       running: '执行中',

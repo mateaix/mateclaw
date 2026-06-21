@@ -27,7 +27,9 @@ import vip.mate.agent.context.RuntimeContextInjector;
 import vip.mate.agent.graph.executor.ToolExecutionExecutor;
 import vip.mate.channel.web.ChatStreamTracker;
 import vip.mate.planning.service.PlanningService;
+import vip.mate.agent.context.ChatOrigin;
 import vip.mate.skill.runtime.SkillCatalogRenderer;
+import vip.mate.tool.builtin.DelegateAgentTool;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -67,6 +69,17 @@ public class StepExecutionNode implements NodeAction {
      * pre-disclosure behavior of baking it into the system prompt is gone).
      */
     private final SkillCatalogRenderer skillCatalogRenderer;
+
+    /**
+     * Optional per-step delegation executor. Set after construction (this node is
+     * built by AgentGraphBuilder, not Spring) so a plan step assigned to a
+     * specialist agent runs on that agent. Null disables per-step delegation.
+     */
+    private DelegateAgentTool delegateAgentTool;
+
+    public void setDelegateAgentTool(DelegateAgentTool delegateAgentTool) {
+        this.delegateAgentTool = delegateAgentTool;
+    }
 
     /**
      * Per-step tool-call ceiling, aligned with {@code BaseAgent.MAX_ITERATIONS_HARD_CEILING}.
@@ -198,6 +211,19 @@ public class StepExecutionNode implements NodeAction {
         // "react_step" / "first_turn" markers when both stream into the
         // same SSE feed.
         boolean iterationEventsOn = streamTracker == null || streamTracker.isIterationEventsEnabled();
+
+        // Per-step delegation: when this step is assigned to a different
+        // specialist agent, run it on that agent (as an isolated child) and use
+        // its reply as the step result, instead of executing locally with the
+        // parent agent's tools. assignedAgentId comes from the DB so it survives
+        // replay / approval-resume.
+        Long assignedAgentId = planningService.getStepAssignedAgent(planId, stepIndex);
+        if (delegateAgentTool != null && assignedAgentId != null
+                && !assignedAgentId.equals(parseLongOrNull(agentId))) {
+            return executeDelegatedStep(accessor, stepIndex, step, planId, assignedAgentId,
+                    chatOrigin, events, iterationEventsOn);
+        }
+
         if (iterationEventsOn) {
             events.add(GraphEventPublisher.iterationStart(stepIndex, "plan_step", "parent", null));
         }
@@ -620,6 +646,82 @@ public class StepExecutionNode implements NodeAction {
                 .put(MateClawStateKeys.COMPLETION_TOKENS, state.value(MateClawStateKeys.COMPLETION_TOKENS, 0) + stepCompletionTokens)
                 .events(events)
                 .build();
+    }
+
+    /**
+     * Execute a step by delegating it to its assigned specialist agent. The
+     * delegated agent runs the step description as a self-contained goal and its
+     * reply becomes the step result. Mirrors the success/failure bookkeeping of
+     * the local execution path (sub-plan status, completed-results accumulation,
+     * incremental working-context update) so the rest of the plan graph is
+     * unaffected by where the step ran.
+     */
+    private Map<String, Object> executeDelegatedStep(
+            PlanStateAccessor accessor, int stepIndex, String step, Long planId,
+            Long assignedAgentId, ChatOrigin chatOrigin,
+            List<GraphEventPublisher.GraphEvent> events, boolean iterationEventsOn) {
+
+        if (iterationEventsOn) {
+            events.add(GraphEventPublisher.iterationStart(stepIndex, "plan_step", "parent", null));
+        }
+        events.add(GraphEventPublisher.stepStarted(stepIndex, step));
+        events.add(GraphEventPublisher.phase("executing", Map.of(
+                "stepIndex", stepIndex, "stepTitle", step,
+                "delegatedAgentId", String.valueOf(assignedAgentId))));
+        planningService.updateSubPlanStatus(planId, stepIndex, "running");
+
+        log.info("[StepExecution] Delegating step {} to agent {}", stepIndex + 1, assignedAgentId);
+
+        String result;
+        try {
+            result = delegateAgentTool.delegateByAgentId(assignedAgentId, step, chatOrigin);
+        } catch (Exception e) {
+            log.error("[StepExecution] Delegated step {} threw: {}", stepIndex, e.getMessage(), e);
+            result = "[错误] 委派执行异常：" + e.getMessage();
+        }
+
+        String finalResult = result != null ? result : "";
+        boolean failed = finalResult.isEmpty() || finalResult.startsWith("[错误]");
+        if (failed) {
+            planningService.updateSubPlanFailure(planId, stepIndex, finalResult);
+        } else {
+            planningService.updateSubPlanResult(planId, stepIndex, finalResult);
+        }
+
+        events.add(GraphEventPublisher.stepCompleted(stepIndex, finalResult));
+        if (iterationEventsOn) {
+            events.add(GraphEventPublisher.iterationEnd(stepIndex, "parent", null, finalResult.length(), 0));
+        }
+
+        // Keep the rolling working-context in sync exactly like the local path
+        // so later steps see this delegated step's result.
+        String prevWorkingContext = accessor.workingContext();
+        String formattedNewStep = formatStepResult(stepIndex, finalResult);
+        String updatedWorkingContext = prevWorkingContext.isEmpty()
+                ? rebuildWorkingContext(accessor, appendOne(accessor.completedResults(), formattedNewStep))
+                : appendStepIncremental(prevWorkingContext, formattedNewStep);
+
+        return PlanStateAccessor.output()
+                .currentStepResult(finalResult)
+                .completedResults(formattedNewStep)
+                .currentStepIndex(stepIndex + 1)
+                .workingContext(updatedWorkingContext)
+                .currentPhase("step_completed")
+                .contentStreamed(true)
+                .events(events)
+                .build();
+    }
+
+    /** Parse a string id to Long, or null when blank / non-numeric. */
+    private static Long parseLongOrNull(String s) {
+        if (s == null || s.isBlank()) {
+            return null;
+        }
+        try {
+            return Long.parseLong(s.trim());
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 
     /**

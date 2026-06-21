@@ -83,6 +83,19 @@
                 <span class="pb-card__steps">{{ group.latest.completedSteps }}/{{ group.latest.totalSteps }}</span>
                 <span v-if="group.plans.length > 1" class="pb-card__runs" :title="t('plans.runs', { n: group.plans.length })">×{{ group.plans.length }}</span>
               </div>
+              <!-- Sub-task breakdown: surfaces how many steps are still pending /
+                   running, so an in-progress plan no longer hides its queued work. -->
+              <div v-if="showDist(group.latest)" class="pb-card__dist">
+                <span v-if="stepDist(group.latest).running" class="pb-distchip is-running">
+                  {{ stepDist(group.latest).running }} {{ t('plans.col.running') }}
+                </span>
+                <span v-if="stepDist(group.latest).pending" class="pb-distchip is-pending">
+                  {{ stepDist(group.latest).pending }} {{ t('plans.col.pending') }}
+                </span>
+                <span v-if="stepDist(group.latest).completed" class="pb-distchip is-completed">
+                  {{ stepDist(group.latest).completed }} {{ t('plans.col.completed') }}
+                </span>
+              </div>
             </article>
 
             <button
@@ -256,6 +269,24 @@ function toggleCell(lane: Lane, status: PlanStatus) {
 function progressPct(plan: Plan): number {
   if (!plan.totalSteps) return 0
   return Math.round((plan.completedSteps / plan.totalSteps) * 100)
+}
+
+// Sub-task status breakdown for a plan card. Plan-execute runs steps
+// sequentially, so at most one step is "running" at any time; the rest of the
+// not-yet-done steps are pending. Derived from the plan summary fields so the
+// list endpoint stays cheap (no per-plan step fetch).
+function stepDist(plan: Plan): { pending: number; running: number; completed: number } {
+  const total = plan.totalSteps ?? 0
+  const completed = Math.min(plan.completedSteps ?? 0, total)
+  const running = plan.status === 'running' && completed < total ? 1 : 0
+  const pending = Math.max(0, total - completed - running)
+  return { pending, running, completed }
+}
+
+// Only worth showing for multi-step plans that are still active; a finished or
+// single-step plan is already fully described by the progress bar.
+function showDist(plan: Plan): boolean {
+  return (plan.totalSteps ?? 0) > 1 && (plan.status === 'running' || plan.status === 'pending')
 }
 
 function laneLetter(name: string): string {
@@ -555,6 +586,38 @@ onMounted(reload)
   align-items: center;
   gap: 8px;
   margin-top: 9px;
+}
+
+/* Sub-task breakdown chips */
+.pb-card__dist {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 8px;
+}
+.pb-distchip {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: var(--mc-radius-full);
+  font-size: 10.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 16px;
+  background: var(--mc-bg-muted);
+  color: var(--mc-text-tertiary);
+}
+.pb-distchip.is-running {
+  background: var(--mc-primary-bg);
+  color: var(--mc-primary);
+}
+.pb-distchip.is-pending {
+  background: var(--mc-bg-muted);
+  color: var(--mc-text-secondary);
+}
+.pb-distchip.is-completed {
+  background: var(--mc-success-bg, var(--mc-bg-muted));
+  color: var(--mc-success);
 }
 .pb-card__steps {
   font-size: 11px;

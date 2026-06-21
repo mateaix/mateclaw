@@ -324,6 +324,26 @@ public class DelegateAgentTool {
         return result.toToolResponse(target.getName());
     }
 
+    /**
+     * Delegate a task to an agent by id — used by per-step plan delegation so a
+     * plan step can run on a dedicated specialist agent. Resolves the target by
+     * id, then reuses {@link #delegateToAgent}'s isolated-child execution
+     * (sub-agent registry, event relay, depth guard). The parent {@link ChatOrigin}
+     * is forwarded so the child inherits channel / workspace binding. Returns the
+     * child's reply text, or an error string when the agent is missing/disabled.
+     */
+    public String delegateByAgentId(Long agentId, String task, ChatOrigin parentOrigin) {
+        if (agentId == null) {
+            return "[错误] 未指定委派 Agent。";
+        }
+        AgentEntity target = agentMapper.selectById(agentId);
+        if (target == null || !Boolean.TRUE.equals(target.getEnabled())) {
+            return "[错误] 未找到 id=" + agentId + " 的已启用 Agent。";
+        }
+        ToolContext ctx = (parentOrigin != null ? parentOrigin : ChatOrigin.EMPTY).toToolContext();
+        return delegateToAgent(target.getName(), task, false, ctx);
+    }
+
     // ==================== Parallel delegation ====================
 
     @vip.mate.tool.ConcurrencyUnsafe("internally fans out to its own thread pool; outer executor must not double-parallelize")

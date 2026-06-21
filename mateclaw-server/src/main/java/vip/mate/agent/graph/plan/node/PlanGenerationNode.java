@@ -10,8 +10,11 @@ import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.converter.BeanOutputConverter;
+import org.springframework.util.StringUtils;
+import vip.mate.agent.AgentService;
 import vip.mate.agent.AgentToolSet;
 import vip.mate.agent.GraphEventPublisher;
+import vip.mate.agent.model.AgentEntity;
 import vip.mate.agent.graph.NodeStreamingChatHelper;
 import vip.mate.agent.graph.plan.state.PlanStateAccessor;
 import vip.mate.agent.graph.plan.state.PlanStateKeys;
@@ -27,6 +30,7 @@ import vip.mate.goal.service.GoalService;
 import vip.mate.planning.service.PlanningService;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -61,6 +65,9 @@ public class PlanGenerationNode implements NodeAction {
     /** Optional — auto-derive a goal from the plan. Null disables the feature (legacy/test). */
     private final GoalService goalService;
     private final GoalProperties goalProperties;
+    /** Optional — advertise delegatable specialist agents to the planner and
+     *  resolve per-step assignments. Null disables per-step delegation (legacy/test). */
+    private final AgentService agentService;
 
     /** Plan steps below this size are trivial tool tasks, not goal-worthy. */
     private static final int MIN_STEPS_FOR_AUTO_GOAL = 2;
@@ -75,7 +82,12 @@ public class PlanGenerationNode implements NodeAction {
             @JsonProperty("needs_planning") boolean needsPlanning,
             @JsonProperty("direct_answer")  String directAnswer,
             @JsonProperty("plan_type")      String planType,
-            @JsonProperty("steps")          List<String> steps
+            @JsonProperty("steps")          List<String> steps,
+            // Optional per-step delegation: agent names parallel to steps (same
+            // order). An empty string / missing entry means "run with the parent
+            // agent". Only populated when delegatable specialist agents are
+            // advertised to the planner; absent for backward compatibility.
+            @JsonProperty("step_agents")    List<String> stepAgents
     ) {}
 
     private static final String PLANNING_PROMPT = """
@@ -190,6 +202,16 @@ public class PlanGenerationNode implements NodeAction {
                               ConversationWindowManager conversationWindowManager,
                               AgentToolSet toolSet,
                               GoalService goalService, GoalProperties goalProperties) {
+        this(chatModel, planningService, streamingHelper, conversationWindowManager, toolSet,
+                goalService, goalProperties, null);
+    }
+
+    public PlanGenerationNode(ChatModel chatModel, PlanningService planningService,
+                              NodeStreamingChatHelper streamingHelper,
+                              ConversationWindowManager conversationWindowManager,
+                              AgentToolSet toolSet,
+                              GoalService goalService, GoalProperties goalProperties,
+                              AgentService agentService) {
         this.chatModel = chatModel;
         this.planningService = planningService;
         this.streamingHelper = streamingHelper;
@@ -197,6 +219,7 @@ public class PlanGenerationNode implements NodeAction {
         this.toolSet = toolSet;
         this.goalService = goalService;
         this.goalProperties = goalProperties;
+        this.agentService = agentService;
     }
 
     /**
@@ -263,6 +286,60 @@ public class PlanGenerationNode implements NodeAction {
             log.warn("[PlanGeneration] Auto-goal-from-plan skipped (non-fatal): {}", e.toString());
             return null;
         }
+    }
+
+    /**
+     * Enabled agents in the given workspace, excluding the parent (plan) agent
+     * itself — these are the agents a step can be delegated to. Empty when
+     * delegation is unavailable (no {@link AgentService}) or no peers exist.
+     */
+    private List<AgentEntity> listDelegatableAgents(Long workspaceId, String parentAgentId) {
+        if (agentService == null || workspaceId == null) {
+            return List.of();
+        }
+        try {
+            return agentService.listAgentsByWorkspace(workspaceId, true).stream()
+                    .filter(a -> a.getId() != null && !String.valueOf(a.getId()).equals(parentAgentId))
+                    .collect(Collectors.toList());
+        } catch (Exception e) {
+            log.warn("[PlanGeneration] Failed to list delegatable agents (non-fatal): {}", e.toString());
+            return List.of();
+        }
+    }
+
+    /**
+     * Map the planner's {@code step_agents} (agent names, parallel to steps) to
+     * agent ids. Returns {@code null} when nothing is delegated so {@code createPlan}
+     * stays on the legacy path. Names are matched case-insensitively against the
+     * delegatable agents; blank / unknown / parent-agent names resolve to {@code null}
+     * (that step runs with the parent agent).
+     */
+    private List<Long> resolveStepAgents(List<String> steps, List<String> stepAgents,
+                                         Long workspaceId, String parentAgentId) {
+        if (stepAgents == null || stepAgents.isEmpty() || steps == null || steps.isEmpty()) {
+            return null;
+        }
+        List<AgentEntity> delegatable = listDelegatableAgents(workspaceId, parentAgentId);
+        if (delegatable.isEmpty()) {
+            return null;
+        }
+        Map<String, Long> byName = new HashMap<>();
+        for (AgentEntity a : delegatable) {
+            if (a.getName() != null) {
+                byName.put(a.getName().trim().toLowerCase(), a.getId());
+            }
+        }
+        List<Long> ids = new ArrayList<>();
+        boolean any = false;
+        for (int i = 0; i < steps.size(); i++) {
+            String name = i < stepAgents.size() ? stepAgents.get(i) : null;
+            Long id = (name == null || name.isBlank()) ? null : byName.get(name.trim().toLowerCase());
+            if (id != null) {
+                any = true;
+            }
+            ids.add(id);
+        }
+        return any ? ids : null;
     }
 
     @Override
@@ -339,6 +416,24 @@ public class PlanGenerationNode implements NodeAction {
                 promptMessages.add(new UserMessage(
                         "可用工具：" + toolNames
                                 + "\n单次工具调用应归为单步（B），不要拆成多步。"));
+            }
+
+            // Advertise delegatable specialist agents so the planner can assign a
+            // multi-step plan's step to a dedicated agent (e.g. a test step to a
+            // QA agent, a UI step to a frontend agent). Only fills the step's
+            // step_agents slot; unassigned steps stay with the parent agent.
+            // Skipped entirely when no peer agents exist in the workspace.
+            List<AgentEntity> delegatable = listDelegatableAgents(chatOrigin.workspaceId(), agentId);
+            if (!delegatable.isEmpty()) {
+                String agentLines = delegatable.stream()
+                        .map(a -> "- " + a.getName()
+                                + (StringUtils.hasText(a.getDescription()) ? "：" + a.getDescription() : ""))
+                        .collect(Collectors.joining("\n"));
+                promptMessages.add(new UserMessage(
+                        "可委派的专职 Agent（仅当某步骤明显属于其专长时才指派，否则该步骤留空、由你自己执行）：\n"
+                                + agentLines
+                                + "\n若要委派，在 step_agents 数组对应位置填写 Agent 名称（与 steps 同序、等长）；"
+                                + "不委派的步骤填空字符串。多数步骤通常不需要委派。"));
             }
 
             // Inject working context (rolling conversation summary) so triage respects
@@ -455,9 +550,15 @@ public class PlanGenerationNode implements NodeAction {
                 steps = List.of(goal);
             }
 
-            var plan = planningService.createPlan(agentId, conversationId, goal, steps);
-            log.info("[PlanGeneration] Plan created: id={}, steps={} ({})",
-                    plan.getId(), steps.size(), steps.size() == 1 ? "single-step" : "multi-step");
+            // Resolve any per-step agent delegation the planner asked for. Null
+            // when nothing is delegated, keeping createPlan on the legacy path.
+            List<Long> stepAgentIds = resolveStepAgents(steps,
+                    triage != null ? triage.stepAgents() : null,
+                    chatOrigin.workspaceId(), agentId);
+            var plan = planningService.createPlan(agentId, conversationId, goal, steps, stepAgentIds);
+            log.info("[PlanGeneration] Plan created: id={}, steps={} ({}){}",
+                    plan.getId(), steps.size(), steps.size() == 1 ? "single-step" : "multi-step",
+                    stepAgentIds != null ? ", per-step delegation=" + stepAgentIds : "");
 
             events.add(GraphEventPublisher.planCreated(plan.getId(), steps));
 

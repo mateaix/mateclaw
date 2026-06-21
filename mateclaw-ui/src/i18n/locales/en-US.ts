@@ -441,6 +441,7 @@ export default {
     untitled: 'Untitled plan',
     steps: 'steps',
     viewResult: 'Click to view result',
+    delegatedTo: 'Delegated to',
     col: {
       pending: 'To Do',
       running: 'In Progress',

@@ -68,6 +68,10 @@
                 <span class="pd-step__dot" :class="`is-${step.status}`"></span>
                 <div class="pd-step__body">
                   <div class="pd-step__title"><b>{{ step.stepIndex + 1 }}.</b> {{ step.description }}</div>
+                  <div v-if="delegatedAgentName(step)" class="pd-step__agent">
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                    <span>{{ t('plans.delegatedTo') }} {{ delegatedAgentName(step) }}</span>
+                  </div>
                   <div v-if="step.result && expanded === String(step.id)" class="pd-step__result markdown-body" v-html="resultHtml"></div>
                   <div v-else-if="step.result" class="pd-step__hint">{{ t('plans.viewResult') }}</div>
                 </div>
@@ -85,6 +89,7 @@ import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
 import SkillIcon from '@/components/common/SkillIcon.vue'
 import { useStreamingMarkdown } from '@/composables/useStreamingMarkdown'
+import { useAgentStore } from '@/stores/useAgentStore'
 import type { Plan, SubPlan } from '@/types'
 
 const props = defineProps<{
@@ -98,7 +103,16 @@ const props = defineProps<{
 const emit = defineEmits<{ close: [] }>()
 
 const { t } = useI18n()
+const agentStore = useAgentStore()
 const expanded = ref<string>('')
+
+// Resolve the delegated agent's display name from its id via the agent store.
+// Empty string when the step isn't delegated (runs with the parent agent).
+function delegatedAgentName(step: SubPlan): string {
+  if (step.assignedAgentId == null || step.assignedAgentId === '') return ''
+  const a = agentStore.agents.find((x) => String(x.id) === String(step.assignedAgentId))
+  return a?.name || ''
+}
 
 // Render the plan output and the expanded step result as markdown, reusing the
 // same renderer the chat uses. `streaming = false` → full-fidelity one-shot
@@ -432,6 +446,18 @@ html.dark .pd-tile {
   margin-top: 5px;
   font-size: 11.5px;
   color: var(--mc-primary);
+}
+.pd-step__agent {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 5px;
+  padding: 1px 8px;
+  border-radius: var(--mc-radius-full);
+  background: var(--mc-primary-bg);
+  color: var(--mc-primary);
+  font-size: 11px;
+  font-weight: 600;
 }
 
 @media (max-width: 600px) {

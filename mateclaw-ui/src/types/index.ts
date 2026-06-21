@@ -718,6 +718,9 @@ export interface SubPlan {
   result?: string
   startTime?: string
   endTime?: string
+  /** Delegated specialist agent for this step (snowflake id — keep as string).
+   *  Absent/null means the step runs with the parent (plan) agent. */
+  assignedAgentId?: string | number
 }
 
 export interface Plan {
