@@ -30,10 +30,13 @@ import vip.mate.planning.service.PlanningService;
 import vip.mate.agent.context.ChatOrigin;
 import vip.mate.skill.runtime.SkillCatalogRenderer;
 import vip.mate.tool.builtin.DelegateAgentTool;
+import vip.mate.tool.builtin.DelegationContext;
+import vip.mate.tool.builtin.ToolExecutionContext;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 步骤执行节点
@@ -221,7 +224,7 @@ public class StepExecutionNode implements NodeAction {
         if (delegateAgentTool != null && assignedAgentId != null
                 && !assignedAgentId.equals(parseLongOrNull(agentId))) {
             return executeDelegatedStep(accessor, stepIndex, step, planId, assignedAgentId,
-                    chatOrigin, events, iterationEventsOn);
+                    conversationId, chatOrigin, events, iterationEventsOn);
         }
 
         if (iterationEventsOn) {
@@ -658,7 +661,7 @@ public class StepExecutionNode implements NodeAction {
      */
     private Map<String, Object> executeDelegatedStep(
             PlanStateAccessor accessor, int stepIndex, String step, Long planId,
-            Long assignedAgentId, ChatOrigin chatOrigin,
+            Long assignedAgentId, String conversationId, ChatOrigin chatOrigin,
             List<GraphEventPublisher.GraphEvent> events, boolean iterationEventsOn) {
 
         if (iterationEventsOn) {
@@ -672,12 +675,28 @@ public class StepExecutionNode implements NodeAction {
 
         log.info("[StepExecution] Delegating step {} to agent {}", stepIndex + 1, assignedAgentId);
 
+        // Seed the delegation context with the plan's REAL conversation id (from
+        // graph state) so the delegated child conversation is parented to it and
+        // stays hidden from the user's conversation list. The ChatOrigin in the
+        // plan-execute path carries no conversationId, so delegateByAgentId can't
+        // derive the parent on its own — we provide it here.
+        boolean seeded = false;
+        if (conversationId != null && !conversationId.isBlank()
+                && DelegationContext.parentConversationId() == null
+                && ToolExecutionContext.conversationId() == null) {
+            DelegationContext.enter(conversationId, Set.of(), conversationId, null, 0);
+            seeded = true;
+        }
         String result;
         try {
             result = delegateAgentTool.delegateByAgentId(assignedAgentId, step, chatOrigin);
         } catch (Exception e) {
             log.error("[StepExecution] Delegated step {} threw: {}", stepIndex, e.getMessage(), e);
             result = "[错误] 委派执行异常：" + e.getMessage();
+        } finally {
+            if (seeded) {
+                DelegationContext.exit();
+            }
         }
 
         String finalResult = result != null ? result : "";
