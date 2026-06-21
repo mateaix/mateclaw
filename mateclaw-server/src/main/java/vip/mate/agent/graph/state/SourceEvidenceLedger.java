@@ -231,7 +231,7 @@ public record SourceEvidenceLedger(
         // exists, insert one before the first source line so the frontend
         // preprocessWikiCitations() can locate the source table.
         if (additions.isEmpty() && !result.contains("来源：")) {
-            java.util.regex.Matcher firstSource = java.util.regex.Pattern
+            Matcher firstSource = Pattern
                     .compile("(?m)^\\[")
                     .matcher(result);
             if (firstSource.find()) {
@@ -303,7 +303,7 @@ public record SourceEvidenceLedger(
     private static String replaceSourceLine(String answer, int index, String canonicalLine) {
         Pattern pattern = Pattern.compile("(?m)^\\s*\\[" + index + "\\]\\s+.+$");
         return pattern.matcher(answer).replaceFirst(
-                java.util.regex.Matcher.quoteReplacement(canonicalLine));
+                Matcher.quoteReplacement(canonicalLine));
     }
 
     private boolean hasFileName(String fileName) {

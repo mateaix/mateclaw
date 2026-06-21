@@ -111,3 +111,8 @@ scripts/.*-sync-state.json
 # Sandbox / external client work that lives in this directory
 # but should not ship in the repo.
 outputs/
+
+# This is a pnpm monorepo — pnpm-lock.yaml is the only lockfile we track.
+# Ignore stray npm/yarn lockfiles so they are not committed by mistake.
+package-lock.json
+yarn.lock
