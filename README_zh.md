@@ -10,14 +10,14 @@
 
 <p align="center"><sub><b>Agent Harness · Spring Boot 内核 · 一个 JAR 交付</b></sub></p>
 
-[![GitHub 仓库](https://img.shields.io/badge/GitHub-仓库-black.svg?logo=github)](https://github.com/matevip/mateclaw)
+[![GitHub 仓库](https://img.shields.io/badge/GitHub-仓库-black.svg?logo=github)](https://github.com/mateaix/mateclaw)
 [![文档](https://img.shields.io/badge/文档-在线-green.svg?logo=readthedocs&label=Docs)](https://claw.mate.vip/docs)
 [![在线演示](https://img.shields.io/badge/演示-在线-orange.svg?logo=vercel&label=Demo)](https://claw-demo.mate.vip)
 [![官网](https://img.shields.io/badge/官网-claw.mate.vip-blue.svg?logo=googlechrome&label=Site)](https://claw.mate.vip)
 [![Java 版本](https://img.shields.io/badge/Java-21+-blue.svg?logo=openjdk&label=Java)](https://adoptium.net/)
 [![Spring Boot](https://img.shields.io/badge/Spring%20Boot-3.5-brightgreen.svg?logo=springboot)](https://spring.io/projects/spring-boot)
 [![Vue](https://img.shields.io/badge/Vue-3-4FC08D.svg?logo=vuedotjs)](https://vuejs.org/)
-[![最后提交](https://img.shields.io/github/last-commit/matevip/mateclaw)](https://github.com/matevip/mateclaw)
+[![最后提交](https://img.shields.io/github/last-commit/mateaix/mateclaw)](https://github.com/mateaix/mateclaw)
 [![许可证](https://img.shields.io/badge/license-Apache--2.0-red.svg?logo=opensourceinitiative&label=License)](LICENSE)
 
 [[官网](https://claw.mate.vip)] [[在线演示](https://claw-demo.mate.vip)] [[文档](https://claw.mate.vip/docs)] [[English](README.md)]
@@ -161,7 +161,7 @@ docker compose up -d          # http://localhost:18080
 
 ### 桌面端
 
-从 [GitHub Releases](https://github.com/matevip/mateclaw/releases) 下载安装包。内嵌 JRE 21，无需额外装 Java。
+从 [GitHub Releases](https://github.com/mateaix/mateclaw/releases) 下载安装包。内嵌 JRE 21，无需额外装 Java。
 
 ---
 
@@ -193,7 +193,7 @@ mateclaw/
 └── .env.example
 ```
 
-桌面端安装包通过 [GitHub Releases](https://github.com/matevip/mateclaw/releases) 分发，内嵌 JRE 21——无需安装 Java。
+桌面端安装包通过 [GitHub Releases](https://github.com/mateaix/mateclaw/releases) 分发，内嵌 JRE 21——无需安装 Java。
 
 ## 技术栈
 
@@ -235,7 +235,7 @@ mateclaw/
 ## 参与贡献
 
 ```bash
-git clone https://github.com/matevip/mateclaw.git
+git clone https://github.com/mateaix/mateclaw.git
 cd mateclaw
 cd mateclaw-server && mvn clean compile
 cd ../mateclaw-ui && pnpm install && pnpm dev

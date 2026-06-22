@@ -17,7 +17,7 @@ hero:
       link: /en/intro
     - theme: alt
       text: GitHub
-      link: https://github.com/matevip/mateclaw
+      link: https://github.com/mateaix/mateclaw
 
 features:
   - icon: 🧑‍💼

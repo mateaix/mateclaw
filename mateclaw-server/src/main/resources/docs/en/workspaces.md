@@ -204,7 +204,7 @@ Not supported directly. You have two options:
 1. **Export and import** — some resources have JSON export (agents via API, wiki KBs via API). Re-create them in the target workspace.
 2. **Change ownership** — an admin or owner can directly update the `workspace_id` column in the database for simple resources. This is not officially supported; do it at your own risk and only with a backup.
 
-We'd like to support first-class moving in a future release. If you need this, leave a note on the [GitHub issue](https://github.com/matevip/mateclaw/issues).
+We'd like to support first-class moving in a future release. If you need this, leave a note on the [GitHub issue](https://github.com/mateaix/mateclaw/issues).
 
 ---
 

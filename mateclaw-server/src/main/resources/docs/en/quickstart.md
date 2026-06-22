@@ -8,7 +8,7 @@ If you want Docker or local development instead, those live in [Configuration](.
 
 ## 1. Download
 
-Grab the latest installer from [GitHub Releases](https://github.com/matevip/mateclaw/releases).
+Grab the latest installer from [GitHub Releases](https://github.com/mateaix/mateclaw/releases).
 
 - **Windows** — `MateClaw-Setup-x.y.z.exe`
 - **macOS** — `MateClaw-x.y.z.dmg`
@@ -71,7 +71,7 @@ First run should Just Work. If it didn't:
 - **Backend never boots** — Check the log file (macOS: `~/Library/Application Support/MateClaw/logs/mateclaw.log`; Windows: `%APPDATA%\MateClaw\logs\mateclaw.log`). The desktop app picks a dynamic port — any port conflict is reported clearly in the log.
 - **Model call fails** — Wrong API key or network can't reach the provider. Go back to Settings, re-verify the key, or try a different provider.
 - **UI is blank** — Hard-refresh with Ctrl/Cmd+Shift+R. Electron caches aggressively.
-- **Still broken** — Open an issue on [GitHub](https://github.com/matevip/mateclaw/issues) with the tail of `app.log`. We read them.
+- **Still broken** — Open an issue on [GitHub](https://github.com/mateaix/mateclaw/issues) with the tail of `app.log`. We read them.
 
 ---
 

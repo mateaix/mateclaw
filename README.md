@@ -10,14 +10,14 @@
 
 <p align="center"><sub><b>Agent Harness · Spring Boot inside · One JAR to ship</b></sub></p>
 
-[![GitHub Repo](https://img.shields.io/badge/GitHub-Repo-black.svg?logo=github)](https://github.com/matevip/mateclaw)
+[![GitHub Repo](https://img.shields.io/badge/GitHub-Repo-black.svg?logo=github)](https://github.com/mateaix/mateclaw)
 [![Documentation](https://img.shields.io/badge/Docs-Website-green.svg?logo=readthedocs&label=Docs)](https://claw.mate.vip/docs)
 [![Live Demo](https://img.shields.io/badge/Demo-Online-orange.svg?logo=vercel&label=Demo)](https://claw-demo.mate.vip)
 [![Website](https://img.shields.io/badge/Website-claw.mate.vip-blue.svg?logo=googlechrome&label=Site)](https://claw.mate.vip)
 [![Java Version](https://img.shields.io/badge/Java-21+-blue.svg?logo=openjdk&label=Java)](https://adoptium.net/)
 [![Spring Boot](https://img.shields.io/badge/Spring%20Boot-3.5-brightgreen.svg?logo=springboot)](https://spring.io/projects/spring-boot)
 [![Vue](https://img.shields.io/badge/Vue-3-4FC08D.svg?logo=vuedotjs)](https://vuejs.org/)
-[![Last Commit](https://img.shields.io/github/last-commit/matevip/mateclaw)](https://github.com/matevip/mateclaw)
+[![Last Commit](https://img.shields.io/github/last-commit/mateaix/mateclaw)](https://github.com/mateaix/mateclaw)
 [![License](https://img.shields.io/badge/license-Apache--2.0-red.svg?logo=opensourceinitiative&label=License)](LICENSE)
 
 [[Website](https://claw.mate.vip)] [[Live Demo](https://claw-demo.mate.vip)] [[Documentation](https://claw.mate.vip/docs)] [[中文](README_zh.md)]
@@ -161,7 +161,7 @@ docker compose up -d          # http://localhost:18080
 
 ### Desktop
 
-Download from [GitHub Releases](https://github.com/matevip/mateclaw/releases). Bundles JRE 21. No Java install needed.
+Download from [GitHub Releases](https://github.com/mateaix/mateclaw/releases). Bundles JRE 21. No Java install needed.
 
 ---
 
@@ -193,7 +193,7 @@ mateclaw/
 └── .env.example
 ```
 
-Desktop binaries ship via [GitHub Releases](https://github.com/matevip/mateclaw/releases) with a bundled JRE 21 — no Java install needed.
+Desktop binaries ship via [GitHub Releases](https://github.com/mateaix/mateclaw/releases) with a bundled JRE 21 — no Java install needed.
 
 ## Tech stack
 
@@ -235,7 +235,7 @@ Full docs at **[claw.mate.vip/docs](https://claw.mate.vip/docs)** — setup, arc
 ## Contributing
 
 ```bash
-git clone https://github.com/matevip/mateclaw.git
+git clone https://github.com/mateaix/mateclaw.git
 cd mateclaw
 cd mateclaw-server && mvn clean compile
 cd ../mateclaw-ui && pnpm install && pnpm dev
