@@ -134,13 +134,22 @@ function statusLabel(status: string): string {
   return t(`plans.col.${status}`, status)
 }
 
-// The persisted goal can carry an appended "[Follow-up guidance] ..." block
-// (added when a goal follow-up re-enters planning). Strip it for display so the
-// title reads as the original task, not the internal re-prompt.
+// Recover the user's actual request for the title. Plans persisted before the
+// server-side scrub carry the fully-assembled prompt — a <memory-context> recall
+// block, a scheduled-run wrapper whose payload follows [任务指令], and a trailing
+// [Follow-up guidance] block. Strip all three so the title reads as the task.
+// Mirrors the backend PlanGenerationNode.displayGoal scrubber; a no-op on clean goals.
 function cleanGoal(goal: string): string {
   if (!goal) return ''
-  const i = goal.indexOf('[Follow-up guidance]')
-  return (i >= 0 ? goal.slice(0, i) : goal).trim()
+  let s = goal
+    .replace(/<\s*memory-context\s*>[\s\S]*?<\s*\/\s*memory-context\s*>/gi, '')
+    .replace(/<\/?\s*memory-context\s*>/gi, '')
+  const task = s.lastIndexOf('[任务指令]')
+  if (task >= 0) s = s.slice(task + '[任务指令]'.length)
+  const followup = s.indexOf('[Follow-up guidance]')
+  if (followup >= 0) s = s.slice(0, followup)
+  s = s.trim()
+  return s || goal.trim()
 }
 
 function letter(name?: string): string {

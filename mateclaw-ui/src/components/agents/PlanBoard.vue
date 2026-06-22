@@ -219,12 +219,23 @@ function planTs(p: Plan): number {
   return p.createTime ? new Date(p.createTime).getTime() : 0
 }
 
-// Drop the appended "[Follow-up guidance] ..." block so re-runs of one objective
-// share a title — and therefore a group.
+// Recover the user's actual request for display/grouping. Plans created before
+// the server-side scrub (and any not yet migrated) persisted the fully-assembled
+// prompt: a <memory-context> recall block, a scheduled-run wrapper whose payload
+// follows [任务指令], and a trailing [Follow-up guidance] block. Strip all three
+// so the card shows the task and re-runs of one objective share a group. Mirrors
+// the backend PlanGenerationNode.displayGoal scrubber; a no-op on clean goals.
 function cleanGoal(goal?: string): string {
   if (!goal) return ''
-  const i = goal.indexOf('[Follow-up guidance]')
-  return (i >= 0 ? goal.slice(0, i) : goal).trim()
+  let s = goal
+    .replace(/<\s*memory-context\s*>[\s\S]*?<\s*\/\s*memory-context\s*>/gi, '')
+    .replace(/<\/?\s*memory-context\s*>/gi, '')
+  const task = s.lastIndexOf('[任务指令]')
+  if (task >= 0) s = s.slice(task + '[任务指令]'.length)
+  const followup = s.indexOf('[Follow-up guidance]')
+  if (followup >= 0) s = s.slice(0, followup)
+  s = s.trim()
+  return s || goal.trim()
 }
 
 // Group a column's plans by cleaned goal, newest run first; groups ordered by
