@@ -10,7 +10,11 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -35,6 +39,34 @@ public class MateClawDocService {
     /** VitePress 首页，无正文，从用户可见列表中排除。 */
     private static final String INDEX_SLUG = "index";
 
+    /** 一个文档分组：组标题（中/英）+ 该组内文档的有序 slug 列表。 */
+    private record DocGroup(String zhLabel, String enLabel, List<String> slugs) {}
+
+    /**
+     * 帮助文档的分组与顺序，镜像 VitePress 文档站侧栏 (docs/.vitepress/config.ts)：
+     * 开始 → 使用 → 扩展 → 运维 → 开发 → 参考。
+     * 磁盘上存在但未登记于此的文档会被归入末尾的「更多 / More」分组——不会丢失，
+     * 也提示维护者把它补进对应分组。改了 VitePress 侧栏时，同步更新这里即可保持一致。
+     */
+    private static final List<DocGroup> STRUCTURE = List.of(
+            new DocGroup("开始", "Start",
+                    List.of("intro", "quickstart", "desktop")),
+            new DocGroup("使用", "Use",
+                    List.of("chat", "agents", "goals", "wiki", "memory", "multimodal", "model3d",
+                            "channels", "webchat", "wecom-tuning", "ambient-ai", "workflow", "triggers")),
+            new DocGroup("扩展", "Extend",
+                    List.of("tools", "skills", "mcp", "acp")),
+            new DocGroup("运维", "Operate",
+                    List.of("console", "backstage", "docker-deploy", "workspaces", "security", "models", "doctor", "config")),
+            new DocGroup("开发", "Develop",
+                    List.of("api", "architecture", "contributing")),
+            new DocGroup("参考", "Reference",
+                    List.of("releases", "roadmap", "faq")));
+
+    /** 未登记文档的兜底分组标题。 */
+    private static final String OTHER_ZH = "更多";
+    private static final String OTHER_EN = "More";
+
     /** 开头的 YAML frontmatter 块：`---\n ... \n---`。 */
     private static final Pattern FRONTMATTER = Pattern.compile("^---\\s*\\n.*?\\n---\\s*\\n", Pattern.DOTALL);
     /** frontmatter 里的 `title:` 字段。 */
@@ -42,17 +74,18 @@ public class MateClawDocService {
     /** 正文里的首个 ATX 一级标题 `# xxx`。 */
     private static final Pattern H1 = Pattern.compile("(?m)^#\\s+(.+?)\\s*$");
 
-    public record DocMeta(String slug, String title) {}
+    public record DocMeta(String slug, String title, String group) {}
 
     /**
-     * 列出某语言下的全部文档（排除 index.md），按 slug 排序，
-     * 每篇带一个用于展示的标题。
+     * 列出某语言下的全部文档（排除 index.md），按 {@link #STRUCTURE} 的分组与顺序输出，
+     * 每篇带展示标题和所属分组。磁盘上存在但未登记的文档归入末尾「更多」分组，按字母序。
      */
     public List<DocMeta> list(String lang) {
         if (lang == null || !VALID_LANG.matcher(lang).matches()) {
             return List.of();
         }
-        List<DocMeta> docs = new ArrayList<>();
+        // 先扫描磁盘上实际存在的文档：slug -> Resource（保序，作为兜底分组的输入）。
+        Map<String, Resource> available = new LinkedHashMap<>();
         try {
             PathMatchingResourcePatternResolver resolver = new PathMatchingResourcePatternResolver();
             Resource[] resources = resolver.getResources("classpath:docs/" + lang + "/*.md");
@@ -65,13 +98,34 @@ public class MateClawDocService {
                 if (INDEX_SLUG.equals(slug)) {
                     continue;
                 }
-                docs.add(new DocMeta(slug, resolveTitle(r, slug)));
+                available.put(slug, r);
             }
         } catch (IOException e) {
             log.debug("No {} docs found: {}", lang, e.getMessage());
         }
-        docs.sort((a, b) -> a.slug().compareTo(b.slug()));
-        return docs;
+
+        boolean en = "en".equals(lang);
+        List<DocMeta> ordered = new ArrayList<>();
+        Set<String> placed = new HashSet<>();
+        // 1) 按结构分组、按顺序输出已存在的文档。
+        for (DocGroup g : STRUCTURE) {
+            String label = en ? g.enLabel() : g.zhLabel();
+            for (String slug : g.slugs()) {
+                Resource r = available.get(slug);
+                if (r == null) {
+                    continue;
+                }
+                ordered.add(new DocMeta(slug, resolveTitle(r, slug), label));
+                placed.add(slug);
+            }
+        }
+        // 2) 未登记于结构的文档归入「更多」分组，按字母序，避免遗漏。
+        String otherLabel = en ? OTHER_EN : OTHER_ZH;
+        available.entrySet().stream()
+                .filter(e -> !placed.contains(e.getKey()))
+                .sorted(Map.Entry.comparingByKey())
+                .forEach(e -> ordered.add(new DocMeta(e.getKey(), resolveTitle(e.getValue(), e.getKey()), otherLabel)));
+        return ordered;
     }
 
     /**
@@ -132,16 +186,18 @@ public class MateClawDocService {
         if (raw == null) {
             return slug;
         }
+        // 侧栏要简洁标题：优先正文首个 H1（如「LLM Wiki 知识库」），
+        // 再退回 frontmatter 的 title（可能是较长的 SEO 标题），最后退回 slug。
+        Matcher h1 = H1.matcher(stripFrontmatter(raw));
+        if (h1.find()) {
+            return h1.group(1).trim();
+        }
         Matcher fm = FRONTMATTER.matcher(raw);
         if (fm.find()) {
             Matcher title = TITLE_FIELD.matcher(fm.group());
             if (title.find()) {
                 return unquote(title.group(1));
             }
-        }
-        Matcher h1 = H1.matcher(stripFrontmatter(raw));
-        if (h1.find()) {
-            return h1.group(1).trim();
         }
         return slug;
     }

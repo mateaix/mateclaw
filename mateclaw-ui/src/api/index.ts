@@ -1457,6 +1457,8 @@ export const approvalApi = {
 export interface DocMeta {
   slug: string
   title: string
+  /** Group label (e.g. 开始 / 使用 / 扩展), mirroring the docs site sidebar sections. */
+  group: string
 }
 
 export interface DocContent {
