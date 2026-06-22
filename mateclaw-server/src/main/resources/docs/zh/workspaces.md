@@ -295,7 +295,6 @@ curl -X PUT http://localhost:18088/api/v1/workspaces/1/members/42 \
 | `workspace_id` | 外键到 `mate_workspace` |
 | `user_id` | 外键到 `mate_user` |
 | `role` | `owner` / `admin` / `member` / `viewer` |
-| `joined_at` | 用户加入这个工作空间的时间 |
 | `create_time` / `update_time` | 时间戳 |
 
 ---

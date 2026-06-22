@@ -21,6 +21,8 @@ Segments arrive progressively. They persist to the database in real time — mea
 
 This used to not be true. Now it is.
 
+References in the reply are live too: `[[slug]]` wikilinks and the `[1]` / `[2]` **source citation markers** that appear when the agent answers from a knowledge base are all clickable — each one navigates directly to the corresponding wiki page. Every line of the "Sources:" list at the end of a reply is also fully clickable. See [LLM Wiki · Click-through from chat](./wiki#click-through-from-chat).
+
 ---
 
 ## The task list, for plans that take time

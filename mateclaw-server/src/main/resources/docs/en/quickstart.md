@@ -68,7 +68,7 @@ Each of those has its own page in the sidebar when you're ready to go deeper.
 First run should Just Work. If it didn't:
 
 - **Installer won't launch** — On Windows, right-click → Properties → Unblock. On macOS, allow the unsigned app in System Settings → Privacy & Security.
-- **Backend never boots** — Check `~/.mateclaw/logs/app.log` (Windows: `%USERPROFILE%\.mateclaw\logs\`). Nine times out of ten it's a port conflict on 18088.
+- **Backend never boots** — Check the log file (macOS: `~/Library/Application Support/MateClaw/logs/mateclaw.log`; Windows: `%APPDATA%\MateClaw\logs\mateclaw.log`). The desktop app picks a dynamic port — any port conflict is reported clearly in the log.
 - **Model call fails** — Wrong API key or network can't reach the provider. Go back to Settings, re-verify the key, or try a different provider.
 - **UI is blank** — Hard-refresh with Ctrl/Cmd+Shift+R. Electron caches aggressively.
 - **Still broken** — Open an issue on [GitHub](https://github.com/matevip/mateclaw/issues) with the tail of `app.log`. We read them.

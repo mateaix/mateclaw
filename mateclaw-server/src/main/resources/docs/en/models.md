@@ -23,8 +23,8 @@ MateClaw doesn't care which LLM you use. It talks to every mainstream provider t
 | **xAI / Grok** | Grok 3, Grok 4 | openai | OpenAI-compatible (base URL + API key); xAI brand icon in the UI |
 | **DeepSeek** | deepseek-chat, deepseek-coder, **DeepSeek V4 flash + pro** (thinking-mode) | openai | OpenAI-compatible |
 | **Kimi (Moonshot)** | moonshot-v1-8k/32k/128k | openai | OpenAI-compatible |
-| **Zhipu AI** | GLM-5-Turbo, GLM-5V-Turbo, GLM-5, GLM-5.1 | openai | OpenAI-compatible |
-| **MiniMax** | abab6.5, abab5.5; expanded video catalog + CN endpoint | openai | OpenAI-compatible |
+| **Zhipu AI** | GLM-5-Turbo, GLM-5V-Turbo, GLM-5, GLM-5.1, **GLM-5.2** | openai | OpenAI-compatible; CN + international standard endpoints plus two Coding Plan subscription endpoints |
+| **MiniMax** | abab6.5, abab5.5; expanded video catalog + CN endpoint | anthropic | Anthropic Messages API-compatible (endpoint `/anthropic`) |
 | **SiliconFlow CN/INTL** | Routed inference across hosted models | openai | Two endpoints, OpenAI-compatible |
 | **OpenCode** | Code-tuned routing | openai | OpenAI-compatible |
 | **OpenRouter** | 200+ models with free tier | openai | Routes to any upstream with one key |
@@ -45,8 +45,8 @@ Five protocols cover everything:
 
 | Protocol | Used by |
 |----------|---------|
-| **OpenAI** | OpenAI, Kimi, DeepSeek, MiniMax, Zhipu, OpenRouter, LM Studio, llama.cpp, MLX |
-| **Anthropic** | Claude family |
+| **OpenAI** | OpenAI, Kimi, DeepSeek, Zhipu, OpenRouter, LM Studio, llama.cpp, MLX |
+| **Anthropic** | Claude family, MiniMax |
 | **DashScope** | Qwen family |
 | **Gemini** | Google Gemini family |
 | **Ollama** | Locally hosted models via Ollama |
@@ -387,7 +387,7 @@ Every provider you add joins an `AvailableProviderPool` that's probed at startup
 - **Automatic fallback** — if the primary provider returns an `AUTH_ERROR`, `BILLING`, `MODEL_NOT_FOUND`, `NETWORK`, or `5xx`, the runtime rolls forward to the next provider in the chain instead of bubbling up the error
 - **Per-agent priority** — bind an agent to "OpenAI first, then Anthropic, then DashScope" via the drag-to-reorder editor in `Settings → Models`
 - **Live pool state** — green / amber / red badges show each provider's health
-- **4-protocol probe** — DashScope, OpenAI-compatible, Anthropic, Ollama-style
+- **5-protocol probe** — DashScope, OpenAI-compatible, Anthropic, Gemini, Ollama-style
 - **Manual reprobe + auto-reprobe on config change** — no restart after rotating a key
 - **Egress sanitizer** — provider-specific options (e.g., `reasoning_effort` for OpenAI reasoning models) are stripped at egress when failing over to a provider that doesn't support them, so leaked options can't 400 the fallback
 - **UI distinguishes 401 from session expiry** — provider auth errors and user session expiry now show different messages with different remediation

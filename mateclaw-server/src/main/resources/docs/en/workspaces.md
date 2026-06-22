@@ -290,7 +290,6 @@ curl -X PUT http://localhost:18088/api/v1/workspaces/1/members/42 \
 | `workspace_id` | FK to `mate_workspace` |
 | `user_id` | FK to `mate_user` |
 | `role` | `owner` / `admin` / `member` / `viewer` |
-| `joined_at` | When the user joined this workspace |
 | `create_time` / `update_time` | Timestamps |
 
 ---

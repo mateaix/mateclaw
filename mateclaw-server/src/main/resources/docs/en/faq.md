@@ -226,7 +226,7 @@ You want an **allow rule**, not a blanket approval. `Settings → Security & App
 
 ### How long do pending approvals stay pending?
 
-Default 10 minutes, then they expire and become `rejected`. Configure with `mateclaw.tool.guard.approval-timeout-seconds`.
+Default 30 minutes, after which they expire and become `timeout` (the agent treats it as a denial). The timeout is set in the Tool Guard config on the admin Security page, not in application.yml.
 
 ---
 

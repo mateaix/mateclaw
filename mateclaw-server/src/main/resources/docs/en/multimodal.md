@@ -2,7 +2,7 @@
 
 Speech, music, images, video — all first-class in MateClaw, not tacked on.
 
-Most AI products treat multimodal generation as a plugin you bolt on later. MateClaw ships with it as core infrastructure: **six image providers, four video providers, three TTS backends, three STT backends, and two music providers**, all unified behind a single tool interface so agents can call any of them without knowing which vendor is underneath.
+Most AI products treat multimodal generation as a plugin you bolt on later. MateClaw ships with it as core infrastructure: **six image providers, six video providers, three TTS backends, two STT backends, and two music providers**, all unified behind a single tool interface so agents can call any of them without knowing which vendor is underneath.
 
 Configure once. Use everywhere.
 
@@ -100,7 +100,7 @@ Text-to-3D and image-to-3D both work; output is a `.glb` rendered inline by `<mo
 
 - **DashScope CosyVoice** — Chinese + English, natural prosody
 - **OpenAI TTS** — alloy, echo, fable, onyx, nova, shimmer
-- **MiniMax T2A** — Chinese voices with emotion tags
+- **Edge TTS** — free, no API key required; wide voice selection
 
 Click the speaker icon on any assistant message to read it aloud. The voice is whichever TTS provider is active in Settings.
 
@@ -143,12 +143,8 @@ Every multimodal capability is exposed as a tool:
 | Tool | Signature |
 |------|-----------|
 | `image_generate` | `(prompt, style?, size?)` |
-| `image_edit` | `(image_id, prompt)` — where the provider supports it |
 | `video_generate` | `(prompt, duration?)` |
-| `video_from_image` | `(image_id, prompt)` |
 | `music_generate` | `(prompt, style?, lyrics?)` |
-| `tts_synthesize` | `(text, voice?)` |
-| `stt_transcribe` | `(audio_id, language?)` |
 
 Agents call them exactly like any other tool. The tool layer handles provider selection, retries, async polling, and attachment binding.
 

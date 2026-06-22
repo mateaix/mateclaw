@@ -211,7 +211,7 @@ Electron 主进程通过 Node.js `child_process` 管理 Spring Boot 后端：
 |----|------|
 | macOS | `~/Library/Application Support/MateClaw/data/` |
 | Windows | `%APPDATA%/MateClaw/data/` |
-| Linux | `~/.local/share/MateClaw/data/` |
+| Linux | `~/.config/MateClaw/data/` |
 
 日志、工作空间文件、技能脚本、Wiki 内容都在同一个用户目录下。做重大变更前**备份**。
 
@@ -257,9 +257,9 @@ Electron 主进程通过 Node.js `child_process` 管理 Spring Boot 后端：
 
 1. 安装版自带 JRE——不需要装 Java。开发版：确认 `java -version` 显示 21+。
 2. 看日志：
-   - macOS：`~/Library/Logs/MateClaw/`
+   - macOS：`~/Library/Application Support/MateClaw/logs/`
    - Windows：`%APPDATA%/MateClaw/logs/`
-   - Linux：`~/.local/share/MateClaw/logs/`
+   - Linux：`~/.config/MateClaw/logs/`
 3. 从终端启动看控制台输出
 4. 确认后端选的端口没被防火墙挡
 

@@ -404,12 +404,12 @@ Total routes extracted: 406.
 | `GET` | `/api/v1/skills/{id}` | `Get` |
 | `PUT` | `/api/v1/skills/{id}` | `Update` |
 | `POST` | `/api/v1/skills/{id}/archive` | `Archive` |
-| `GET` | `/api/v1/skills/{id}/employees` | `List agents that can use this skill (RFC-090 §14.2)` |
+| `GET` | `/api/v1/skills/{id}/employees` | `List agents that can use this skill` |
 | `POST` | `/api/v1/skills/{id}/export-workspace` | `Export To Workspace` |
-| `GET` | `/api/v1/skills/{id}/lessons` | `Read per-skill LESSONS.md (RFC-090 §11.4)` |
-| `POST` | `/api/v1/skills/{id}/lessons/clear` | `Clear all lessons for a skill (RFC-090 §11.4)` |
+| `GET` | `/api/v1/skills/{id}/lessons` | `Read per-skill LESSONS.md` |
+| `POST` | `/api/v1/skills/{id}/lessons/clear` | `Clear all lessons for a skill` |
 | `POST` | `/api/v1/skills/{id}/pin` | `Pin` |
-| `GET` | `/api/v1/skills/{id}/requirements` | `Pre-flight requirement statuses for a skill (RFC-090)` |
+| `GET` | `/api/v1/skills/{id}/requirements` | `Pre-flight requirement statuses for a skill` |
 | `POST` | `/api/v1/skills/{id}/rescan` | `Rescan` |
 | `POST` | `/api/v1/skills/{id}/restore` | `Restore` |
 | `POST` | `/api/v1/skills/{id}/sync-files` | `Re-sync this skill's bundle files from DB → local workspace cache` |
@@ -423,7 +423,7 @@ Total routes extracted: 406.
 
 | Method | Path | Purpose / handler |
 |---|---|---|
-| `GET` | `/api/v1/skill-templates` | `List skill templates (RFC-091)` |
+| `GET` | `/api/v1/skill-templates` | `List skill templates` |
 | `GET` | `/api/v1/skill-templates/{id}` | `Get a single skill template` |
 | `POST` | `/api/v1/skill-templates/{id}/instantiate` | `Instantiate a template into a skill` |
 

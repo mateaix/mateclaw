@@ -109,7 +109,7 @@ Only MateClaw fills out the right column completely, because only MateClaw has a
 
 - **Multi-agent runtime** (ReAct + Plan-Execute)
 - **Cron scheduling + retry**
-- **9 IM channel adapters** with exponential-backoff reconnect
+- **8 IM channel adapters** with exponential-backoff reconnect
 - **Persistent memory** ([Memory](./memory) — Dreaming makes it know you better every day)
 - **Wiki knowledge layer** ([LLM Wiki](./wiki) — gives the agent something to base research on)
 - **Tool Guard** ([Security](./security) — sensitive ops still ask you first)

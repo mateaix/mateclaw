@@ -182,7 +182,7 @@ Create a role-specific agent → install skills → connect MCP servers → conf
 
 | Symptom | Most likely cause |
 |---------|-------------------|
-| Backend won't start | Port 18088 is taken. Check `~/.mateclaw/logs/app.log` |
+| Backend won't start | Port 18088 is taken. Check `<userData>/logs/mateclaw.log` (macOS: `~/Library/Application Support/MateClaw/logs/mateclaw.log`) |
 | Model call fails | Wrong API key or network issue. Go back to Settings |
 | UI is blank | Ctrl+Shift+R to hard-refresh |
 | Ollama says "does not support tools" | Switch to a function-calling model (qwen3, llama3.1:8b+) |

@@ -119,6 +119,39 @@ Feels like: the worker answers a segment → pauses a beat → **keeps going** �
 
 ---
 
+## Getting unstuck
+
+::: tip New
+Long tasks don't stall because they're hard — they stall because they **get stuck**: hitting the iteration cap with nothing left to show, spinning on a broken tool until the budget is gone, or crashing a plan at a bad step and stopping dead. This group of mechanisms lets the worker pick itself back up, route around failures, and keep going without waiting for your next message.
+:::
+
+### Hard continuation on the iteration cap
+
+Previously, if a ReAct loop ran out of `max_iterations` (finish reason `MAX_ITERATIONS_REACHED`), the goal subsystem **skipped** that run entirely — no evaluation, no continuation, the task just stopped there. Now it takes a **hard-continuation** path: it resets the iteration counter, clears the "over-limit draft", and gives the worker a **fresh full iteration budget** to carry on.
+
+This is different from the auto-followup described above. Auto-followup triggers when the evaluator decides "not yet done." Hard continuation triggers specifically when the worker **hits the iteration cap** — it resets the iteration budget itself. Each hard continuation consumes one full iteration quota, so there is a limit: by default, at most **1** per run (compile-time hard ceiling of 3). Set to `0` to disable and restore the old behaviour (hitting the cap ends that run).
+
+### Stall detection and re-planning
+
+In Plan-Execute mode, an individual step may **throw an exception** or fall into a **stall** — repeating the same tool call that keeps failing, or getting back identical "no new information" results each time, burning through the tool budget and then "completing" with an empty result that poisons every downstream step that depended on it.
+
+The runtime signs each tool response and runs a two-level check:
+
+- **WARN**: after the same call fails several times in a row, a system hint is injected telling the model to try a different approach (each unique call gets at most one warning).
+- **HALT**: if the call continues to fail after the warning, the step is marked stuck and the inner loop exits.
+
+When a step is HALTed or throws an exception, the runtime triggers **re-planning**: the current plan is cleared, and a "completed-steps summary + failure reason + skip the bad step" context is passed back to the planning node to generate a new plan. Re-planning happens at most **1 time per run**. The UI receives a `plan_replan` event carrying the failed step index and the reason.
+
+### Meta-tool turns don't count (iteration refunds)
+
+Progressive disclosure tools such as `load_skill` / `enable_tool` are **configuration actions**, not real work. When every tool call in a ReAct turn is one of these meta-tools, that turn's iteration counter **is not incremented** (the iteration is refunded), preventing a model focused on loading skills from burning through its entire budget on setup steps alone. At most 3 refunds per run.
+
+### Auto-deriving a goal from a multi-step plan
+
+When a Plan-Execute plan has **two or more steps** and the current conversation has no active goal, the planning node **automatically creates a goal**, using the plan's steps as exit criteria, and broadcasts a `goal_created` event so the UI's goal panel refreshes. This means long plans are naturally held under the goal system's "follow-through to completion" semantics. Controlled by `mateclaw.goal.auto-goal-from-plan` (on by default).
+
+---
+
 ## A goal is a checklist (1.5.0+)
 
 In 1.4.0 the evaluator gave a completion score (0–1) and a one-line "what's missing" each turn. The problem: **what does 0.8 mean** — which boxes are done, which aren't? You couldn't see it.
@@ -275,6 +308,10 @@ mateclaw:
     auto-followup-cooldown-seconds: 0
     # Hard cap on auto-followups within a single graph run (per-message safety net; overall budget is turnBudget).
     max-followups-per-run: 8
+    # Max hard continuations when the iteration cap is hit per run (0 = disabled; compile-time ceiling is 3).
+    max-hard-continuations-per-run: 1
+    # Automatically derive a goal from a multi-step Plan-Execute plan when no active goal exists.
+    auto-goal-from-plan: true
     # Model used by the evaluator. Empty = same model as the chat agent.
     # Recommended: a cheap model like qwen-turbo / glm-4-flash.
     evaluator-model: ""
@@ -293,7 +330,7 @@ Two tables, all `mate_`-prefixed:
 | `mate_agent_goal` | Goal itself; status / budgets / dual LLM counters / auto-followup config |
 | `mate_agent_goal_event` | Append-only event log; powers the timeline view |
 
-Flyway migration `V120__agent_goal.sql` (H2 + MySQL dialects).
+Flyway migration `V120__agent_goal.sql` (H2 / MySQL / KingbaseES dialects).
 
 ---
 

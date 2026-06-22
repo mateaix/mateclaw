@@ -226,7 +226,7 @@ UI 里用 `工具 → MCP 服务`。三种传输模式：stdio、streamable_http
 
 ### Pending 审批能放多久？
 
-默认 10 分钟，之后过期变成 `rejected`。用 `mateclaw.tool.guard.approval-timeout-seconds` 配置。
+默认 30 分钟，过期后状态变成 `timeout`（Agent 当成拒绝处理）。超时时长在管理台「安全」页的 Tool Guard 配置里调，不在 application.yml。
 
 ---
 
