@@ -192,6 +192,20 @@ public class SkillCuratorReportStore {
             sb.append('\n');
         }
 
+        if (!r.getConsolidations().isEmpty()) {
+            sb.append("## Consolidations\n\n");
+            sb.append("Narrow agent-created skills merged into a broader umbrella skill.\n\n");
+            sb.append("| umbrella | new? | absorbed | applied | reason |\n|---|---|---|---|---|\n");
+            for (SkillCuratorReport.ConsolidationRow c : r.getConsolidations()) {
+                sb.append("| ").append(c.umbrella())
+                        .append(" | ").append(c.umbrellaCreated() ? "create" : "edit")
+                        .append(" | ").append(String.join(", ", c.absorbed()))
+                        .append(" | ").append(c.applied() ? "yes" : "preview")
+                        .append(" | ").append(c.reason() == null ? "" : c.reason()).append(" |\n");
+            }
+            sb.append('\n');
+        }
+
         if (!r.getReconciliations().isEmpty()) {
             sb.append("## Reconciliations\n\n");
             for (String line : r.getReconciliations()) {

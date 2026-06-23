@@ -895,6 +895,15 @@ public class SkillController {
         return R.ok(skillCuratorJob.status());
     }
 
+    @Operation(summary = "开启/关闭 curator 合并去重 pass")
+    @PostMapping("/curator/consolidate")
+    @RequireWorkspaceRole("admin")
+    public R<Map<String, Object>> curatorConsolidate(
+            @RequestParam(defaultValue = "true") boolean enabled) {
+        skillCuratorJob.setConsolidate(enabled);
+        return R.ok(skillCuratorJob.status());
+    }
+
     @Operation(summary = "curator 控制面状态")
     @GetMapping("/curator/status")
     @RequireWorkspaceRole("member")

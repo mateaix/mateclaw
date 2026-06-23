@@ -280,6 +280,9 @@ export const skillApi = {
     http.post('/skills/curator/activate', null, { params: { activate } }),
   curatorPause: () => http.post('/skills/curator/pause'),
   curatorResume: () => http.post('/skills/curator/resume'),
+  /** Enable or disable the consolidation (merge near-duplicate skills) pass. */
+  curatorConsolidate: (enabled: boolean) =>
+    http.post('/skills/curator/consolidate', null, { params: { enabled } }),
   /** List recent curator run report ids. */
   curatorReports: () => http.get('/skills/curator/reports'),
   /** Read one curator run report (parsed run.json). */
