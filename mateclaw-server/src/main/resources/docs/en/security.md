@@ -73,11 +73,10 @@ MateClaw does sliding-window token renewal. When a token's remaining lifetime fa
 
 ```yaml
 mateclaw:
-  auth:
-    jwt:
-      secret: your-secret-key-must-be-at-least-32-characters-long
-      expiration: 86400000    # 24h in milliseconds
-      sliding-window: true
+  jwt:
+    secret: your-secret-key-must-be-at-least-32-characters-long
+    expiration: 86400000          # token lifetime (ms, default 24h)
+    renewal-threshold: 7200000    # sliding renewal when remaining lifetime drops below this (ms)
 ```
 
 ::: warning
@@ -267,7 +266,7 @@ The current web path has no write-style `POST /api/v1/approvals/{id}/resolve` en
 | `tool_name` | The tool being called |
 | `tool_args` | JSON of the actual arguments |
 | `rule_id` | Which rule triggered the approval |
-| `status` | `pending` / `approved` / `rejected` / `expired` |
+| `status` | `pending` / `approved` / `denied` / `consumed` / `timeout` / `superseded` |
 | `requested_at` | When the approval was created |
 | `resolved_at` | When the user decided |
 | `resolved_by` | Who decided |
@@ -279,7 +278,7 @@ Sometimes the agent's tool arguments contain placeholders — a computed file pa
 
 ### Timeouts
 
-Pending approvals expire after a configurable timeout (default: 10 minutes). Expired approvals become `rejected`, and the agent treats expiry the same as user rejection.
+Pending approvals expire after a configurable timeout (default: 30 minutes). Expired approvals become `timeout`, and the agent treats expiry the same as user rejection.
 
 ### Notifications
 
@@ -348,20 +347,14 @@ Allow / Deny
 
 ### Configuration
 
+Allowed / denied path rules live in the database and are managed from the admin Security page or `GET` / `PUT /api/v1/security/guard/config/file-guard` — **not application.yml**. The only YAML piece is the **global fallback sandbox root** that file/shell tools are confined to when a conversation has no per-workspace base path:
+
 ```yaml
 mateclaw:
-  security:
-    file-guard:
-      enabled: true
-      allowed-paths:
-        - "${user.dir}/workspace"
-        - "${java.io.tmpdir}/mateclaw"
-      denied-paths:
-        - "/etc"
-        - "/usr"
-        - "${user.home}/.ssh"
-        - "${user.home}/.config"
-        - "${user.home}/.env"
+  workspace:
+    sandbox:
+      enabled: true                    # set false to restore the legacy unconstrained behaviour
+      root: ${user.dir}/data/workspace # fallback sandbox root, created at startup
 ```
 
 Visual editor on `Settings → Security & Approval → File Guard`.
@@ -534,41 +527,30 @@ server {
 
 ## Security configuration reference
 
+application.yml carries **only two** security-related blocks — JWT and the filesystem sandbox:
+
 ```yaml
 mateclaw:
-  auth:
-    jwt:
-      secret: ${JWT_SECRET:your-secret-key-at-least-32-chars}
-      expiration: 86400
-      sliding-window-ratio: 0.5
+  jwt:
+    secret: ${JWT_SECRET:your-secret-key-at-least-32-chars}
+    expiration: 86400000          # token lifetime (milliseconds)
+    renewal-threshold: 7200000    # sliding renewal when remaining lifetime drops below this (ms)
 
-  tool:
-    guard:
+  # Global fallback sandbox for file/shell tools: when a conversation has no
+  # per-workspace base path, all file/shell operations are confined to this
+  # root (fail-closed default)
+  workspace:
+    sandbox:
       enabled: true
-      default-policy: require_approval
-      approval-timeout-seconds: 600
-      notifications:
-        email-enabled: false
-        dingtalk-enabled: false
-
-  security:
-    file-guard:
-      enabled: true
-      allowed-paths:
-        - "${user.dir}/workspace"
-      denied-paths:
-        - "/etc"
-        - "${user.home}/.ssh"
-
-    audit-log:
-      enabled: true
-      retention-days: 90
-
-    skill:
-      security-scan:
-        enabled: true
-        block-critical: true
+      root: ${user.dir}/data/workspace
 ```
+
+**Everything else is managed in the database — from the admin Security page (or `/api/v1/security/guard/*`), not application.yml:**
+
+- **Tool Guard** switch, default policy, rules, approval timeout (default 30 minutes), notification channels → `mate_tool_guard_config` / `mate_tool_guard_rule`
+- **File Guard** allowed / denied path rules → `GET` / `PUT /api/v1/security/guard/config/file-guard`
+- **Audit log** is always on, written row by row to `mate_tool_guard_audit_log`, exportable as CSV
+- **Skill security scan** findings surface during skill installation; CRITICAL findings are blocked by default
 
 ---
 

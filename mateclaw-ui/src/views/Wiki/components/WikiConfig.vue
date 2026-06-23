@@ -71,6 +71,25 @@
           {{ extracting ? t('wiki.configPanel.entityExtractionRunning') : t('wiki.configPanel.entityExtractionRun') }}
         </button>
       </div>
+
+      <!-- Entity types to extract (whitelist). Empty = use built-in defaults. -->
+      <div v-if="entityExtractionEnabled" class="entity-types">
+        <div class="entity-types__label">{{ t('wiki.configPanel.entityTypesLabel') }}</div>
+        <el-select
+          v-model="entityTypes"
+          multiple
+          filterable
+          allow-create
+          default-first-option
+          :reserve-keyword="false"
+          size="small"
+          class="entity-types__select"
+          :placeholder="t('wiki.configPanel.entityTypesPlaceholder')"
+        >
+          <el-option v-for="opt in DEFAULT_ENTITY_TYPES" :key="opt" :label="formatEntityType(opt)" :value="opt" />
+        </el-select>
+        <div class="entity-types__hint">{{ t('wiki.configPanel.entityTypesHint') }}</div>
+      </div>
     </div>
 
     <!-- ② Model strategy -->
@@ -186,8 +205,21 @@ import WikiModelPicker, { type ModelOption } from './WikiModelPicker.vue'
 import WikiConfigRules from './WikiConfigRules.vue'
 import WikiConfigModels from './WikiConfigModels.vue'
 
-const { t } = useI18n()
+const { t, te } = useI18n()
 const store = useWikiStore()
+
+// Built-in entity types offered as suggestions; users may add custom ones.
+// Empty config falls back to the backend's default set.
+const DEFAULT_ENTITY_TYPES = ['person', 'organization', 'location', 'event', 'product', 'concept']
+
+// Localized label for an entity type in the suggestion dropdown.
+function formatEntityType(type: string): string {
+  const key = (type || '').toLowerCase()
+  if (!key) return ''
+  const i18nKey = `wiki.entityTypes.${key}`
+  if (te(i18nKey)) return `${t(i18nKey)} (${key})`
+  return key
+}
 
 // ── Rules state ──
 const configContent = ref('')
@@ -261,6 +293,7 @@ async function saveIngestMode() {
 // Opt-in named-entity knowledge graph extraction. Off by default because it
 // adds an LLM call per chunk on top of the page pipeline.
 const entityExtractionEnabled = ref(false)
+const entityTypes = ref<string[]>([])
 const savingEntityExtraction = ref(false)
 const extracting = ref(false)
 
@@ -273,6 +306,12 @@ async function saveEntityExtraction() {
       if (store.currentKB.configContent) existingConfig = JSON.parse(store.currentKB.configContent)
     } catch { /* config may be plain text rules */ }
     existingConfig.entityExtractionEnabled = entityExtractionEnabled.value ? true : undefined
+    // Normalize to trimmed lowercase keys so they match the extractor's type
+    // normalization; empty list drops the field and uses backend defaults.
+    const cleanedTypes = entityExtractionEnabled.value
+      ? [...new Set(entityTypes.value.map(s => s.trim().toLowerCase()).filter(Boolean))]
+      : []
+    existingConfig.entityTypes = cleanedTypes.length > 0 ? cleanedTypes : undefined
     await wikiApi.updateConfig(store.currentKB.id, JSON.stringify(existingConfig, null, 2))
   } catch (e) {
     console.error('[WikiConfig] Failed to save entity extraction toggle', e)
@@ -285,7 +324,9 @@ async function runExtraction() {
   if (!store.currentKB) return
   extracting.value = true
   try {
-    await wikiApi.extractEntities(store.currentKB.id)
+    // Manual trigger is a full rebuild (force): re-process every chunk so the
+    // current entity-type config takes effect even on already-extracted KBs.
+    await wikiApi.extractEntities(store.currentKB.id, true)
   } catch (e) {
     console.error('[WikiConfig] Failed to start entity extraction', e)
   } finally {
@@ -310,6 +351,7 @@ function loadStepModels() {
   wikiGlobalModelId.value = ''
   ingestMode.value = 'eager'
   entityExtractionEnabled.value = false
+  entityTypes.value = []
   if (!store.currentKB) return
   try {
     const cfg = store.currentKB.configContent ? JSON.parse(store.currentKB.configContent) : null
@@ -323,6 +365,7 @@ function loadStepModels() {
     if (cfg?.wikiDefaultModelId) wikiGlobalModelId.value = String(cfg.wikiDefaultModelId)
     if (cfg?.ingestMode === 'lazy') ingestMode.value = 'lazy'
     if (cfg?.entityExtractionEnabled) entityExtractionEnabled.value = true
+    if (Array.isArray(cfg?.entityTypes)) entityTypes.value = cfg.entityTypes.map(String)
   } catch { /* not JSON */ }
 }
 
@@ -546,6 +589,12 @@ loadProviderNames().then(() => {
 /* Entity extraction toggle */
 .entity-toggle { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--mc-text-primary); cursor: pointer; }
 .entity-toggle__label { user-select: none; }
+
+/* Entity types editor */
+.entity-types { display: flex; flex-direction: column; gap: 6px; }
+.entity-types__label { font-size: 12px; font-weight: 600; color: var(--mc-text-secondary); }
+.entity-types__select { width: 100%; }
+.entity-types__hint { font-size: 11px; color: var(--mc-text-tertiary); line-height: 1.4; }
 
 /* Ingest mode radio group */
 .ingest-mode-row { display: flex; gap: 8px; flex-wrap: wrap; }

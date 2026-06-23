@@ -73,11 +73,10 @@ MateClaw 实现了滑动窗口 token 续签。当 token 剩余有效期低于 `r
 
 ```yaml
 mateclaw:
-  auth:
-    jwt:
-      secret: your-secret-key-must-be-at-least-32-characters-long
-      expiration: 86400000    # 24 小时，毫秒
-      sliding-window: true
+  jwt:
+    secret: your-secret-key-must-be-at-least-32-characters-long
+    expiration: 86400000          # token 有效期（毫秒，默认 24 小时）
+    renewal-threshold: 7200000    # 剩余有效期低于此值（毫秒）触发滑动续期
 ```
 
 ::: warning
@@ -267,7 +266,7 @@ POST /api/v1/chat/stream，消息为 /approve 或 /deny
 | `tool_name` | 要调的工具 |
 | `tool_args` | 实际参数的 JSON |
 | `rule_id` | 触发审批的规则 |
-| `status` | `pending` / `approved` / `rejected` / `expired` |
+| `status` | `pending` / `approved` / `denied` / `consumed` / `timeout` / `superseded` |
 | `requested_at` | 审批被创建的时间 |
 | `resolved_at` | 用户决定的时间 |
 | `resolved_by` | 谁决定的 |
@@ -279,7 +278,7 @@ POST /api/v1/chat/stream，消息为 /approve 或 /deny
 
 ### 超时
 
-Pending approval 在一个可配置的超时后过期（默认 10 分钟）。过期的审批变成 `rejected`，Agent 把这个过期当作用户的拒绝一样对待。
+Pending approval 在一个可配置的超时后过期（默认 30 分钟）。过期的审批变成 `timeout`，Agent 把这个过期当作用户的拒绝一样对待。
 
 ### 通知
 
@@ -348,20 +347,14 @@ File Guard 是文件系统级的访问控制。它坐在读写文件的任何工
 
 ### 配置
 
+允许 / 禁止路径规则存在数据库，从管理台「安全」页或 `GET` / `PUT /api/v1/security/guard/config/file-guard` 管理——**不在 application.yml**。application.yml 里只有一项：会话没有 per-workspace base path 时，文件 / Shell 工具被限制其中的**全局兜底沙箱根**：
+
 ```yaml
 mateclaw:
-  security:
-    file-guard:
-      enabled: true
-      allowed-paths:
-        - "${user.dir}/workspace"
-        - "${java.io.tmpdir}/mateclaw"
-      denied-paths:
-        - "/etc"
-        - "/usr"
-        - "${user.home}/.ssh"
-        - "${user.home}/.config"
-        - "${user.home}/.env"
+  workspace:
+    sandbox:
+      enabled: true                    # 设 false 恢复旧的不受限行为
+      root: ${user.dir}/data/workspace # 兜底沙箱根，启动时自动创建
 ```
 
 可视化编辑器在 `设置 → 安全与审批 → File Guard`。
@@ -534,41 +527,29 @@ server {
 
 ## 安全配置参考
 
+application.yml 里**只有两块**安全相关配置——JWT 和文件沙箱：
+
 ```yaml
 mateclaw:
-  auth:
-    jwt:
-      secret: ${JWT_SECRET:your-secret-key-at-least-32-chars}
-      expiration: 86400
-      sliding-window-ratio: 0.5
+  jwt:
+    secret: ${JWT_SECRET:your-secret-key-at-least-32-chars}
+    expiration: 86400000          # token 有效期（毫秒）
+    renewal-threshold: 7200000    # 剩余有效期低于此值时滑动续期（毫秒）
 
-  tool:
-    guard:
+  # 文件 / Shell 工具的全局兜底沙箱：会话没有 per-workspace base path 时，
+  # 所有文件 / Shell 操作被限制在这个根目录内（fail-closed 默认）
+  workspace:
+    sandbox:
       enabled: true
-      default-policy: require_approval
-      approval-timeout-seconds: 600
-      notifications:
-        email-enabled: false
-        dingtalk-enabled: false
-
-  security:
-    file-guard:
-      enabled: true
-      allowed-paths:
-        - "${user.dir}/workspace"
-      denied-paths:
-        - "/etc"
-        - "${user.home}/.ssh"
-
-    audit-log:
-      enabled: true
-      retention-days: 90
-
-    skill:
-      security-scan:
-        enabled: true
-        block-critical: true
+      root: ${user.dir}/data/workspace
 ```
+
+**其余安全配置不走 application.yml，而是存在数据库、从管理台「安全」页（或 `/api/v1/security/guard/*`）管理**：
+
+- **Tool Guard** 的开关、默认策略、规则、审批超时（默认 30 分钟）、通知渠道 → `mate_tool_guard_config` / `mate_tool_guard_rule`
+- **File Guard** 的允许 / 禁止路径规则 → `GET` / `PUT /api/v1/security/guard/config/file-guard`
+- **审计日志**默认常开，逐条写入 `mate_tool_guard_audit_log`，可导出 CSV
+- **技能安全扫描**的发现落在技能安装流程里，CRITICAL 发现默认拦截
 
 ---
 

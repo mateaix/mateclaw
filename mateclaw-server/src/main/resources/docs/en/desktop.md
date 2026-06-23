@@ -211,7 +211,7 @@ Frontend assets can be **hot-updated independently** — a frontend-only fix doe
 |-----|------|
 | macOS | `~/Library/Application Support/MateClaw/data/` |
 | Windows | `%APPDATA%/MateClaw/data/` |
-| Linux | `~/.local/share/MateClaw/data/` |
+| Linux | `~/.config/MateClaw/data/` |
 
 Logs, workspace files, skill scripts, wiki content all live alongside the database in the same user directory. Back it up before major changes.
 
@@ -257,9 +257,9 @@ The desktop app reads env vars the same way the standalone backend does. But the
 
 1. Installed app bundles JRE — you don't need Java. Dev build from source: verify `java -version` shows 21+.
 2. Check logs:
-   - macOS: `~/Library/Logs/MateClaw/`
+   - macOS: `~/Library/Application Support/MateClaw/logs/`
    - Windows: `%APPDATA%/MateClaw/logs/`
-   - Linux: `~/.local/share/MateClaw/logs/`
+   - Linux: `~/.config/MateClaw/logs/`
 3. Launch from terminal to see console output
 4. Confirm backend port isn't blocked
 

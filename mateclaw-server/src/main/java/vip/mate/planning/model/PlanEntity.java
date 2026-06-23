@@ -21,6 +21,9 @@ public class PlanEntity {
     /** 关联的 Agent ID（字符串） */
     private String agentId;
 
+    /** 产生该计划的对话/运行 ID（可空，历史行为 null）。用于把计划绑定到具体运行、支持跨员工/协同分组。 */
+    private String conversationId;
+
     /** 任务目标 */
     private String goal;
 

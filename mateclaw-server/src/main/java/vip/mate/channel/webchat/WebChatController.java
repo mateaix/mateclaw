@@ -77,6 +77,8 @@ public class WebChatController {
     private final vip.mate.audit.service.AuditEventService auditService;
     private final vip.mate.llm.routing.AgentBindingResolver agentBindingResolver;
     private final vip.mate.skill.repository.SkillMapper skillMapper;
+    private final vip.mate.wiki.repository.WikiPageMapper wikiPageMapper;
+    private final vip.mate.wiki.repository.WikiKnowledgeBaseMapper wikiKbMapper;
 
     /** Visitor-token TTL in seconds (7 days). Mirrors GeneratedFileCache's TTL. */
     static final long VISITOR_TOKEN_TTL_SECONDS = 7 * 24 * 3600L;
@@ -374,10 +376,167 @@ public class WebChatController {
                 .toList());
     }
 
+    /**
+     * 列出访客可见的 wiki 页面，供下游自建「`[[slug]]` 引用 picker」UI。
+     * <p>
+     * 鉴权链跟 {@link #listSkills} 一致：API Key 解析 channel + visitorToken
+     * HMAC 校验。{@code agentId} 可选，缺省回落到 channel 绑定的 agent；
+     * 必须属于该 channel 的 workspace（沿用 {@code /stream} 的反越权路径）。
+     * <p>
+     * 可见范围 = agent 绑定的 KB（无显式绑定时回落到 workspace 内全部 KB）
+     * 下的所有 page，排除 {@code pageType=synthesis}（LLM 中间产物）。
+     * 上限 {@value WEBCHAT_WIKI_PICKER_MAX_PAGES}：超出时强制要求 {@code keyword}。
+     * <p>
+     * 出参仅暴露展示级元数据（slug / title / summary / pageType / kbId /
+     * kbName），不包含正文、embedding、sourceRawIds 等内部字段。
+     */
+    @Operation(summary = "列出访客可见 wiki 页面（供 [[slug]] picker UI）")
+    @GetMapping("/wiki/pages")
+    public R<List<WebChatWikiPageView>> listWikiPages(
+            @RequestHeader("X-MC-Key") String apiKey,
+            @RequestHeader(value = "X-MC-Visitor-Token", required = false) String visitorToken,
+            @RequestParam(required = false) Long agentId,
+            @RequestParam String visitorId,
+            @RequestParam(required = false) String keyword) {
+        ChannelEntity channel = resolveChannel(apiKey);
+        if (channel == null) {
+            return R.fail(401, "Invalid API Key");
+        }
+        if (!verifyVisitorToken(visitorTokenSecret, channel.getId(), visitorId, visitorToken)) {
+            return R.fail(401, "Invalid or missing visitor token");
+        }
+        // Resolve the target agent — same anti-escalation rule as /stream and
+        // /skills: an explicit agentId must belong to the channel's workspace.
+        Long resolvedAgentId = channel.getAgentId();
+        if (agentId != null) {
+            var requested = agentService.getAgent(agentId);
+            if (requested == null) {
+                return R.fail(404, "Requested agent not found");
+            }
+            if (channel.getWorkspaceId() != null && requested.getWorkspaceId() != null
+                    && !channel.getWorkspaceId().equals(requested.getWorkspaceId())) {
+                return R.fail(403, "Requested agent does not belong to this channel's workspace");
+            }
+            resolvedAgentId = agentId;
+        }
+        if (resolvedAgentId == null) {
+            return R.ok(List.of());
+        }
+
+        // Resolve the KB scope: null = workspace-wide (every KB in the agent's
+        // workspace); non-empty set = explicit allowlist. Set.of() (rows exist
+        // but none enabled) means "agent is explicitly scoped to zero KBs" —
+        // surface as empty so the picker shows nothing rather than falling
+        // through to workspace-wide.
+        java.util.Set<Long> boundKbIds = agentBindingResolver.getBoundKbIds(resolvedAgentId);
+        Long workspaceId = channel.getWorkspaceId();
+        java.util.Set<Long> effectiveKbIds;
+        if (boundKbIds != null) {
+            if (boundKbIds.isEmpty()) {
+                return R.ok(List.of());
+            }
+            effectiveKbIds = boundKbIds;
+        } else {
+            // No explicit binding → fall back to every KB in the channel's
+            // workspace. Matches the wiki-tool behavior (an unscoped agent
+            // sees workspace-wide KBs).
+            effectiveKbIds = wikiKbMapper.selectList(
+                            new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<vip.mate.wiki.model.WikiKnowledgeBaseEntity>()
+                                    .eq(vip.mate.wiki.model.WikiKnowledgeBaseEntity::getWorkspaceId,
+                                            workspaceId == null ? 1L : workspaceId))
+                    .stream()
+                    .map(vip.mate.wiki.model.WikiKnowledgeBaseEntity::getId)
+                    .filter(java.util.Objects::nonNull)
+                    .collect(java.util.stream.Collectors.toSet());
+            if (effectiveKbIds.isEmpty()) {
+                return R.ok(List.of());
+            }
+        }
+
+        // Build the page query: KB scope + exclude hidden pageTypes + optional
+        // keyword filter on slug/title. Use a single LIKE with OR so a visitor
+        // typing "auth" matches either "auth-design" (slug) or "Auth Design" (title).
+        String trimmedKeyword = keyword == null ? null : keyword.trim();
+        boolean hasKeyword = trimmedKeyword != null && !trimmedKeyword.isEmpty();
+
+        // Cap check: if no keyword and total candidate count exceeds the cap,
+        // refuse — the caller must narrow with a keyword. Counting before
+        // selecting avoids materializing a huge list into memory.
+        // NOTE: the count wrapper is built WITHOUT ORDER BY — H2 in MySQL mode
+        // rejects "ORDER BY slug" on a COUNT(*) query (column must appear in
+        // GROUP BY). The select wrapper below adds ORDER BY slug.
+        if (!hasKeyword) {
+            long total = wikiPageMapper.selectCount(buildWikiPageFilterWrapper(effectiveKbIds, null));
+            if (total > WEBCHAT_WIKI_PICKER_MAX_PAGES) {
+                return R.fail(422, "Wiki page count (" + total
+                        + ") exceeds picker cap (" + WEBCHAT_WIKI_PICKER_MAX_PAGES
+                        + "); please provide a 'keyword' query parameter to narrow.");
+            }
+        }
+
+        List<vip.mate.wiki.model.WikiPageEntity> pages = wikiPageMapper.selectList(
+                buildWikiPageFilterWrapper(effectiveKbIds, hasKeyword ? trimmedKeyword : null)
+                        .orderByAsc(vip.mate.wiki.model.WikiPageEntity::getSlug));
+        if (pages.isEmpty()) {
+            return R.ok(List.of());
+        }
+
+        // Hydrate KB names so the picker UI can show "<kb>: <page title>" and
+        // the LLM can disambiguate when two KBs share a slug.
+        java.util.Map<Long, String> kbNames = wikiKbMapper.selectBatchIds(effectiveKbIds).stream()
+                .collect(java.util.stream.Collectors.toMap(
+                        vip.mate.wiki.model.WikiKnowledgeBaseEntity::getId,
+                        kb -> kb.getName() != null ? kb.getName() : "",
+                        (a, b) -> a));
+
+        return R.ok(pages.stream()
+                .map(p -> WebChatWikiPageView.from(p, kbNames.get(p.getKbId())))
+                .toList());
+    }
+
+    /**
+     * Build the WHERE-clause portion of the wiki-page picker query: KB scope +
+     * pageType-not-in-hidden + optional keyword LIKE on slug / title.
+     * Returned without ORDER BY so the caller can layer sorting (select) or
+     * nothing (count) on top — H2 in MySQL mode rejects ORDER BY on COUNT(*).
+     */
+    private com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<vip.mate.wiki.model.WikiPageEntity>
+            buildWikiPageFilterWrapper(java.util.Set<Long> kbIds, String keyword) {
+        com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<vip.mate.wiki.model.WikiPageEntity> w =
+                new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<vip.mate.wiki.model.WikiPageEntity>()
+                        .in(vip.mate.wiki.model.WikiPageEntity::getKbId, kbIds)
+                        .notIn(vip.mate.wiki.model.WikiPageEntity::getPageType, WEBCHAT_WIKI_HIDDEN_PAGE_TYPES);
+        if (keyword != null && !keyword.isEmpty()) {
+            String like = "%" + keyword + "%";
+            w.and(qq -> qq.like(vip.mate.wiki.model.WikiPageEntity::getSlug, like)
+                    .or().like(vip.mate.wiki.model.WikiPageEntity::getTitle, like));
+        }
+        return w;
+    }
+
     /** Cap on how many empty (message_count = 0) threads one visitor may hold on a
      *  channel at once. Guards against pathologic clients churning placeholder
      *  sessions without ever sending a message. */
     private static final int MAX_EMPTY_SESSIONS_PER_VISITOR = 5;
+
+    /**
+     * Upper bound on the page count the wiki-page picker will return without a
+     * keyword filter. Beyond this the caller MUST supply {@code keyword} —
+     * returning 500 pages to a visitor picker is both bandwidth-wasteful and
+     * unusable as a UI. Mirrors the slash-skill picker's "small list, search
+     * when too big" stance.
+     */
+    private static final int WEBCHAT_WIKI_PICKER_MAX_PAGES = 100;
+
+    /**
+     * Page types hidden from the visitor picker. {@code synthesis} pages are
+     * LLM-generated intermediate artifacts (compiled on demand by
+     * {@code wiki_compile_page}); they aren't curated source material and
+     * surfacing them to a downstream visitor is noise. Entity / concept /
+     * source pages are human-readable references the visitor can meaningfully
+     * point the LLM at.
+     */
+    private static final java.util.Set<String> WEBCHAT_WIKI_HIDDEN_PAGE_TYPES = java.util.Set.of("synthesis");
 
     /**
      * 显式创建一条访客会话线程（空会话）。
@@ -1474,6 +1633,38 @@ public class WebChatController {
             v.nameEn = s.getNameEn();
             v.description = s.getDescription();
             v.icon = s.getIcon();
+            return v;
+        }
+    }
+
+    /**
+     * Display-level projection of a wiki page for the visitor-facing
+     * {@code [[slug]]} picker. Carries the slug the LLM consumes (via
+     * {@code wiki_read_page(slug=…)}), the human-readable title/summary for
+     * picker UI, and the KB id + name for disambiguation when an agent is
+     * scoped to multiple KBs that may share a slug. Deliberately omits
+     * content / embedding / sourceRawIds / outgoingLinks — those stay
+     * admin-console-only.
+     */
+    @lombok.Data
+    public static class WebChatWikiPageView {
+        private Long kbId;
+        private String kbName;
+        /** Immutable slug — what the picker splices into the {@code [[slug]]} token; the LLM consumes it as {@code wiki_read_page(slug=…)}. */
+        private String slug;
+        private String title;
+        private String summary;
+        /** {@code entity} / {@code concept} / {@code source} / ... — never {@code synthesis} (filtered out upstream). Useful for picker grouping/icons. */
+        private String pageType;
+
+        static WebChatWikiPageView from(vip.mate.wiki.model.WikiPageEntity p, String kbName) {
+            WebChatWikiPageView v = new WebChatWikiPageView();
+            v.kbId = p.getKbId();
+            v.kbName = kbName;
+            v.slug = p.getSlug();
+            v.title = p.getTitle();
+            v.summary = p.getSummary();
+            v.pageType = p.getPageType();
             return v;
         }
     }

@@ -125,65 +125,56 @@ mate:
 ```yaml
 mate:
   wiki:
-    chunk-size: 1200
-    chunk-overlap: 200
-    digestion-concurrency: 2
-    llm-model-config-id: 1
-    min-concept-occurrences: 2
-    max-page-backlinks: 50
-    lock-on-manual-edit: true
-    rebuild-sources-on-update: true
+    enabled: true
+    max-chunk-size: 30000
+    max-context-chars: 10000
+    max-pages-per-raw: 15
+    max-parallel-raw-materials: 3
+    max-parallel-phase-b-pages: 3
+    auto-process-on-upload: true
+    upload-dir: ./data/wiki-uploads
 ```
 
-Eight knobs. Details in [LLM Wiki](./wiki).
+Details in [LLM Wiki](./wiki).
 
 ### Tool Guard (rule-based)
 
-```yaml
-mateclaw:
-  tool:
-    guard:
-      enabled: true
-      default-policy: require_approval    # `allow` / `deny` / `require_approval`
-      approval-timeout-seconds: 600
-      rules:
-        - tool: ShellExecuteTool
-          arg-pattern: "^(ls|cat|grep|find)\\s"
-          action: allow
-          priority: 100
-        - tool: ShellExecuteTool
-          action: require_approval
-          priority: 50
-```
+Tool Guard's global switch, default policy, and rules are **not configured in application.yml** — they live in the database (`mate_tool_guard_config` / `mate_tool_guard_rule`) and are edited from the admin **Security** page or via REST:
 
-Details in [Security & Approval](./security).
+| Method | Path | What it does |
+|---|---|---|
+| `GET` / `PUT` | `/api/v1/security/guard/config` | Global switch + default policy (`allow` / `deny` / `require_approval`) |
+| `GET` | `/api/v1/security/guard/rules/builtin` | Built-in rules |
+| `GET` / `POST` | `/api/v1/security/guard/rules` | List / create custom rules |
+| `PUT` | `/api/v1/security/guard/rules/{ruleId}` | Update a rule |
+| `PUT` | `/api/v1/security/guard/rules/{ruleId}/toggle` | Enable/disable a single rule |
+
+Each rule matches on tool name + argument pattern and yields an `allow` / `deny` / `require_approval` action, ordered by priority. Details in [Security & Approval](./security).
 
 ### File Guard
 
+File Guard has two layers:
+
+1. **Allowed / denied path rules** — like Tool Guard, stored in the database and edited from the admin **Security** page; REST is `GET` / `PUT /api/v1/security/guard/config/file-guard`. **Not in application.yml.**
+2. **Global fallback sandbox root** — the only piece that lives in application.yml. When a conversation has no per-workspace base path configured, file/shell tools are confined to this root (fail-closed default):
+
 ```yaml
 mateclaw:
-  security:
-    file-guard:
-      enabled: true
-      allowed-paths:
-        - "${user.dir}/workspace"
-        - "${java.io.tmpdir}/mateclaw"
-      denied-paths:
-        - "/etc"
-        - "/usr"
-        - "${user.home}/.ssh"
-        - "${user.home}/.config"
+  workspace:
+    sandbox:
+      enabled: true                       # set false to restore the legacy unconstrained behaviour
+      root: ${user.dir}/data/workspace    # fallback sandbox root, created at startup
 ```
+
+Environment overrides: `MATECLAW_WORKSPACE_SANDBOX_ENABLED` / `MATECLAW_WORKSPACE_SANDBOX_ROOT`.
 
 ### JWT authentication
 
 ```yaml
 mateclaw:
-  auth:
-    jwt:
-      secret: ${JWT_SECRET:your-secret-key-at-least-32-characters-long}
-      expiration: 86400000
-      sliding-window: true
+  jwt:
+    secret: ${JWT_SECRET:your-secret-key-at-least-32-characters-long}
+    expiration: 86400000
 ```
 
 ::: warning

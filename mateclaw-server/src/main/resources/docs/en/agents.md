@@ -107,7 +107,7 @@ Change an agent's type at any time. Same system prompt works reasonably in both 
 
 ## Multi-agent parallel delegation
 
-An agent doesn't work alone. One agent can delegate to another — or to **three at once**.
+An agent doesn't work alone. One agent can delegate to another — or to **multiple agents at once** (up to 8).
 
 - **Single delegation** — hand a sub-task to a specific agent; it runs in an isolated session, results stream back
 - **Parallel delegation** — fan out to multiple agents at once, each in its own session
@@ -130,8 +130,9 @@ Three delegation tools, one per cadence:
 
 Children deny a default set of tools so the tree can't run away:
 
-- `delegateToAgent` / `delegateParallel` (recursion guard — children can't launch their own synchronous/parallel delegations, avoiding a delegation storm)
-- the `setGoal` family + the `remember` family (goal and memory ownership stays with the parent)
+- `delegateToAgent` / `delegateParallel` / `listAvailableAgents` (recursion guard — children can't launch their own synchronous/parallel delegations and can't enumerate sibling agents)
+- `setGoal` / `addGoalCriterion` / `completeGoal` / `getGoalStatus` (goal ownership stays with the parent)
+- `remember` / `remember_structured` / `forget_structured` (children can't write into the parent's long-term memory)
 - `create_employee` (children can't conjure new employees)
 
 This default deny list is tunable via `mateclaw.delegation.child-denied-tools`.
@@ -150,6 +151,41 @@ The ChatConsole draws the whole delegation tree, not a flat log:
 
 ---
 
+## Plan Kanban
+
+::: tip New
+The `Digital Employees` page now has a three-way toggle at the top: **Roster / Live / Plan Kanban**. The Kanban surfaces every plan produced by every employee in the workspace, sorted by status into a single board so you can see at a glance who's doing what and where things are stuck. (Visible to admins only.)
+:::
+
+The board is a global view of **Plan-and-Execute plans**, with four columns that plans fall into automatically:
+
+| Column | Meaning |
+|--------|---------|
+| **Pending** | Plan generated, first step hasn't started yet |
+| **Running** | First step has started |
+| **Done** | All steps completed |
+| **Failed** | A step failed and won't be retried |
+
+The layout is **swimlane-style**: each employee that has plans gets its own row, ordered by most-recent activity, with a top-of-page dropdown to filter to a single employee. Multiple re-plans for the same goal collapse into **one card + ×N badge** — no stacking. Each card shows the goal text, a progress bar (completed / total steps), and step-distribution chips (N pending / M running / K done).
+
+The board is **read-only** — state is driven by execution, not drag-and-drop. Click a card and a **plan detail panel** slides in from the right: assigned employee, status, KPIs (step count / progress / creation date), execution output (Markdown rendered), and an expandable step timeline. A "Goals" button at the top links directly to the active [Goals](./goals) list.
+
+REST: `GET /api/v1/plans?limit=N` (most-recent N plans across all employees), `GET /api/v1/plans?agentId=...` (by employee), `GET /api/v1/plans/{id}` (with step detail).
+
+### Per-step delegation to specialist employees
+
+::: tip New
+A multi-step plan doesn't have to be run by a single employee from start to finish. When generating a plan, the planner can assign **individual steps** to more-specialized employees in the workspace.
+:::
+
+The mechanism is **automatic** — no manual wiring required. During planning, the system shows the planner every other enabled employee in the workspace (name and description included); the planner marks a step for a specialist employee when that step clearly falls within the specialist's domain, leaving the remaining steps to itself. Most steps typically need no delegation.
+
+- Delegation is recorded in `mate_sub_plan.assigned_agent_id`; a blue badge — **"Delegated to &lt;employee name&gt;"** — appears below the step in the plan detail panel
+- Delegated steps execute in a **sub-conversation** scoped to the parent plan's conversation — they do **not** leak into the top-level conversation list as independent sessions
+- Step-level delegation shares the same semantics as the [Goals](./goals) system and the [multi-level delegation tree](#multi-level-subagent-delegation-tree) above: the parent breaks up the work, specialists do their part
+
+---
+
 ## Build a team from one sentence: the digital-employee builder skill
 
 ::: tip New in 1.4.0
@@ -164,6 +200,24 @@ The skill starts from your one sentence and runs the full chain:
 4. **Chain them into a workflow draft** — links the employees into a [workflow](./workflow) draft you can tweak right away
 
 The companion tool **`list_capability_catalog`** lets the skill survey which tools / skills / knowledge bases the deployment has available before assigning capabilities to roles. Created employees are **enabled on creation** — no extra toggle to flip.
+
+---
+
+## Single-employee creation wizard
+
+::: tip New
+The team-builder skill above creates a whole team in one shot. If you only need **one** employee and don't want to fill in every field by hand, use the **Create Wizard** button in the top-right corner of the employee list — describe what you want in a sentence, and the AI drafts the employee for you to tweak before saving.
+:::
+
+This is a separate three-step UI wizard (`Digital Employees → Create Wizard`), distinct from the team-builder skill: the skill outputs a team through a chat interface; the wizard outputs a single employee through a dedicated page.
+
+1. **Describe** — type a natural-language sentence in the input box ("an operations assistant that tracks competitor news and writes a daily brief"). Example chips below the box let you fill one in with a single click
+2. **Review** — the AI returns a draft: name, avatar emoji, role, goal, system prompt, type (`react` / `plan_execute`), suggested opening question, tags, and **recommended tool / skill / knowledge-base bindings**. Every field is editable; the capabilities list uses a searchable picker
+3. **Publish** — confirm and the employee is created along with all tool / skill / KB bindings in one go; you're offered "Start chatting / Create another / Back to list"
+
+**Hallucination prevention** is the key design decision here: the AI can only suggest tools, skills, and KBs that **actually exist** in your deployment — anything the model invents that doesn't match a real capability is verified and discarded server-side during generation, before the draft ever reaches the wizard. Every binding shown in the draft is immediately usable.
+
+Backend endpoint: `POST /api/v1/agents/generate`, request body `{ "requirement": "your one-sentence description" }`, response is a validated draft.
 
 ---
 
@@ -188,7 +242,7 @@ Not every question deserves deep reasoning, but some do. MateClaw lets you turn 
 5. Choose the type (`react` or `plan_execute`)
 6. Write (or edit) the system prompt (role / goal / backstory get auto-appended — don't repeat them)
 7. Pick which tools they can use, bind any knowledge bases they should read
-8. Set `max_iterations` (default 10)
+8. Set `max_iterations` (default 100)
 9. Save
 
 Live immediately. Call them from chat or via API.
@@ -250,6 +304,27 @@ When an employee invokes a wiki tool, the resolution order is:
 
 Migration note: early versions persisted the binding on `mate_wiki_knowledge_base.agent_id` (one-to-one, exclusive semantics). Starting with the V130 migration, every legacy `kb.agent_id` is backfilled into the corresponding `agent.primary_kb_id`; the old column stays around as a read-only fallback, but new writes only touch `agent.primary_kb_id`. If you relied on `kb.agent_id` to isolate a KB to a specific agent, revisit those bindings in the editor — KBs are now visible to every employee in the workspace.
 
+#### Disable knowledge bases entirely for an employee
+
+::: tip New
+The top of the "Knowledge Base" tab now has a toggle: **This employee does not use any knowledge base**. It is the symmetric counterpart to the tool-disable and skill-disable opt-out switches.
+:::
+
+There are two distinct meanings of "no KB selected":
+
+- **Selector left empty** = "I haven't specified one" → at runtime, the employee **inherits all workspace KBs** (the default behavior)
+- **Toggle switched on** = "I explicitly want zero KBs" → at runtime, the employee's visible KB set is treated as **empty**
+
+After saving with the toggle on, the employee's KB binding is cleared and marked as "explicitly KB-free"; a **Disabled** badge appears on the tab. The effect:
+
+- `wiki_read_page` / `wiki_search_pages` / `wiki_semantic_search` and every other wiki tool return `"no knowledge base"` — the tools are still in the toolset, they just produce no results
+- The webchat `/wiki/pages` endpoint returns an empty list for this employee
+- All KB injection and grounding is off
+
+**Off by default** — all existing employees are unaffected. The toggle can be removed at any time: selecting at least one KB in the picker and saving automatically clears the flag (a non-empty binding takes precedence over the opt-out, preventing contradictory state).
+
+The flag lives in `mate_agent.wiki_disabled` (V154 migration, covering H2 / MySQL / KingbaseES).
+
 ### System prompt best practices
 
 The system prompt is the employee's voice, priorities, and constraints. **Role / Goal / Backstory**, skill instructions, and workspace memory all get automatically appended to the final prompt — you don't write those yourself.
@@ -309,6 +384,10 @@ Why the turn ended:
 | `SUMMARIZED` | Completed after a context-compression pass |
 | `MAX_ITERATIONS_REACHED` | Forced convergence at iteration limit |
 | `ERROR_FALLBACK` | Degraded answer after an error |
+| `INCOMPLETE` | Response did not finish; needs retry or continuation |
+| `EVIDENCE_INSUFFICIENT` | Final answer cited facts not verified by any tool result |
+| `STOPPED` | User actively stopped the turn |
+| `RETURN_DIRECT` | A tool with `returnDirect=true` short-circuited the loop; result delivered without re-entering the LLM |
 
 ---
 
@@ -317,12 +396,14 @@ Why the turn ended:
 These are things the runtime does so agents don't fail in ways you'd have to debug:
 
 - **Context pruning** — when the context window gets too full, earlier turns get summarized by the LLM and the summary replaces them. Cached for 30 minutes. Injected as a user message, not a system message, to prevent prompt injection from historical content.
-- **Structured compaction (on prompt-too-long)** — when the model returns "prompt too long," the runtime walks a four-stage escalation: **soft trim → hard clear → pre-prune → LLM structured summary**. At every stage it **always preserves the prefix** — the system prompt + the goal anchor stay intact — and injects the final summary as a UserMessage. Delegation tool results are **never compacted** (they're a child's hard-won output; lose them and they're gone). After a failed summary there's a **10-minute cooldown**, so the runtime won't keep hammering the LLM inside the same over-budget turn.
+- **Structured compaction (on prompt-too-long)** — when the model returns "prompt too long," the runtime walks a four-stage escalation: **soft trim → hard clear → pre-prune → LLM structured summary**. At every stage it **always preserves the prefix** — the system prompt + the goal anchor stay intact — and injects the final summary as a UserMessage. Delegation tool results are **never compacted** (they're a child's hard-won output; lose them and they're gone). After a PTL-triggered compaction there's a **1-minute cooldown**, so the runtime won't keep hammering the LLM inside the same over-budget turn.
 - **Thinking recovery** — if a stream breaks mid-response, the partial thinking and content persist and show up when the conversation reloads.
 - **Iteration limit handler** — instead of crashing when `max_iterations` is hit, the runtime forces a best-effort summary answer.
 - **Stale stream cleanup** — every open SSE stream is tracked, abandoned ones are reaped automatically.
 - **429 retry** — LLM rate-limit errors trigger automatic retries with backoff.
 - **Repetition detection** — agents looping on the same tool call get forced out.
+- **Stall detection + re-planning** — in Plan-and-Execute mode, when a step throws an exception or repeatedly fails inside a tool loop, the runtime discards the current plan, carries the failure reason back to the planning node, and **re-plans** to route around the broken step — rather than pushing a garbage result forward. See [Goals · Stall detection and re-planning](./goals#stall-detection-and-re-planning).
+- **Hard continuation on the iteration cap** — an employee with an active goal that hits its iteration limit can **resume with a full fresh iteration budget** instead of stopping and waiting for you to send another message. See [Goals · Hard continuation](./goals#hard-continuation-on-the-iteration-cap).
 - **Configurable tool timeouts** — one slow tool can't freeze a turn.
 - **Channel health monitor** — failing channel adapters restart with exponential backoff.
 

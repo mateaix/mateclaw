@@ -125,65 +125,56 @@ mate:
 ```yaml
 mate:
   wiki:
-    chunk-size: 1200
-    chunk-overlap: 200
-    digestion-concurrency: 2
-    llm-model-config-id: 1
-    min-concept-occurrences: 2
-    max-page-backlinks: 50
-    lock-on-manual-edit: true
-    rebuild-sources-on-update: true
+    enabled: true
+    max-chunk-size: 30000
+    max-context-chars: 10000
+    max-pages-per-raw: 15
+    max-parallel-raw-materials: 3
+    max-parallel-phase-b-pages: 3
+    auto-process-on-upload: true
+    upload-dir: ./data/wiki-uploads
 ```
 
-八个旋钮。细节在 [LLM Wiki](./wiki)。
+细节在 [LLM Wiki](./wiki)。
 
 ### Tool Guard（基于规则）
 
-```yaml
-mateclaw:
-  tool:
-    guard:
-      enabled: true
-      default-policy: require_approval    # `allow` / `deny` / `require_approval`
-      approval-timeout-seconds: 600
-      rules:
-        - tool: ShellExecuteTool
-          arg-pattern: "^(ls|cat|grep|find)\\s"
-          action: allow
-          priority: 100
-        - tool: ShellExecuteTool
-          action: require_approval
-          priority: 50
-```
+Tool Guard 的全局开关、默认策略和规则**不在 application.yml 里配置**——它们存在数据库（`mate_tool_guard_config` / `mate_tool_guard_rule`），通过管理台的「安全」页或 REST 编辑：
 
-细节在 [安全与审批](./security)。
+| 方法 | 路径 | 作用 |
+|---|---|---|
+| `GET` / `PUT` | `/api/v1/security/guard/config` | 全局开关 + 默认策略（`allow` / `deny` / `require_approval`） |
+| `GET` | `/api/v1/security/guard/rules/builtin` | 内置规则 |
+| `GET` / `POST` | `/api/v1/security/guard/rules` | 列出 / 新增自定义规则 |
+| `PUT` | `/api/v1/security/guard/rules/{ruleId}` | 修改规则 |
+| `PUT` | `/api/v1/security/guard/rules/{ruleId}/toggle` | 启停单条规则 |
+
+每条规则按工具名 + 参数模式匹配，命中后给出 `allow` / `deny` / `require_approval` 动作，按优先级排序。细节在 [安全与审批](./security)。
 
 ### File Guard
 
+File Guard 分两层：
+
+1. **允许 / 禁止路径规则**——和 Tool Guard 一样存数据库、走管理台「安全」页，REST 为 `GET` / `PUT /api/v1/security/guard/config/file-guard`，**不在 application.yml 里**。
+2. **全局兜底沙箱根**——唯一写在 application.yml 里的部分。当某个会话没有配置 per-workspace base path 时，文件 / Shell 工具被限制在这个根目录内（fail-closed 默认）：
+
 ```yaml
 mateclaw:
-  security:
-    file-guard:
-      enabled: true
-      allowed-paths:
-        - "${user.dir}/workspace"
-        - "${java.io.tmpdir}/mateclaw"
-      denied-paths:
-        - "/etc"
-        - "/usr"
-        - "${user.home}/.ssh"
-        - "${user.home}/.config"
+  workspace:
+    sandbox:
+      enabled: true                       # 设 false 恢复旧的不受限行为
+      root: ${user.dir}/data/workspace    # 兜底沙箱根，启动时自动创建
 ```
+
+环境变量覆盖：`MATECLAW_WORKSPACE_SANDBOX_ENABLED` / `MATECLAW_WORKSPACE_SANDBOX_ROOT`。
 
 ### JWT 认证
 
 ```yaml
 mateclaw:
-  auth:
-    jwt:
-      secret: ${JWT_SECRET:your-secret-key-at-least-32-characters-long}
-      expiration: 86400000
-      sliding-window: true
+  jwt:
+    secret: ${JWT_SECRET:your-secret-key-at-least-32-characters-long}
+    expiration: 86400000
 ```
 
 ::: warning

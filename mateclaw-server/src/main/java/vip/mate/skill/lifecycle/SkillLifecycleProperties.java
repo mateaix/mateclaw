@@ -42,4 +42,23 @@ public class SkillLifecycleProperties {
 
     /** Skills whose name starts with any of these prefixes are never touched. */
     private List<String> protectPrefixes = new ArrayList<>(List.of("sys-", "ops-"));
+
+    /**
+     * Whether the daily sweep also runs a consolidation pass that merges
+     * near-duplicate agent-created skills into broader umbrella skills.
+     * Off by default — it spends an LLM call and rewrites skills, so opt-in.
+     */
+    private boolean consolidate = false;
+
+    /** Minimum candidate skills present before a consolidation pass runs. */
+    private int consolidateMinSkills = 4;
+
+    /** Hard cap on merge groups applied in a single consolidation pass. */
+    private int consolidateMaxGroupsPerRun = 2;
+
+    /** Character budget for the catalog handed to the consolidation reviewer. */
+    private int consolidateCatalogCharBudget = 12000;
+
+    /** Consolidation model ID ({@code null} = follow the system default model). */
+    private String consolidateModelId;
 }

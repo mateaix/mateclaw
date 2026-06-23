@@ -117,3 +117,8 @@ outputs/
 
 # Local superpowers design docs (not for repo)
 docs/superpowers/
+
+# This is a pnpm monorepo — pnpm-lock.yaml is the only lockfile we track.
+# Ignore stray npm/yarn lockfiles so they are not committed by mistake.
+package-lock.json
+yarn.lock

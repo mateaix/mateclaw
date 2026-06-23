@@ -1,0 +1,11 @@
+-- V155: Link a plan to the conversation/run that produced it.
+--
+-- mate_plan previously carried only agent_id, so a plan could not be tied to a
+-- specific conversation or delegation run — every listByAgent query mixed all of
+-- an agent's plans across all conversations, and a multi-agent collaboration
+-- could not be reconstructed. conversation_id makes plans groupable by run and
+-- is the foundation for the cross-agent / assignee-swimlane plan board.
+--
+-- Nullable: legacy rows (and any plan created before this column existed) keep
+-- a NULL conversation_id and simply don't participate in run-level grouping.
+ALTER TABLE mate_plan ADD COLUMN IF NOT EXISTS conversation_id VARCHAR(64);

@@ -279,10 +279,10 @@ Before v1.2.0, all employees could call every MCP tool by default — it was a g
 ### Three problems it solves
 
 **Problem 1: Tool namespace collisions.**
-Two MCP servers both expose `read_file` — which one wins? v1.3.0 internally uses a **stable server-prefixed callback name** (`{serverName}__{toolName}`) and persists it to `mate_mcp_server.cached_tools`. The picker shows them as `serverA__read_file` and `serverB__read_file`; the agent's prompt maps them back to original names to save tokens and avoid LLM confusion.
+Two MCP servers both expose `read_file` — which one wins? v1.3.0 internally uses a **stable server-prefixed callback name** (`{serverName}__{toolName}`) and persists it to `mate_mcp_server.tools_cache_json`. The picker shows them as `serverA__read_file` and `serverB__read_file`; the agent's prompt maps them back to original names to save tokens and avoid LLM confusion.
 
 **Problem 2: MCP server / tool rename breaks bindings.**
-In v1.2.0, renaming a server orphaned every employee bound to it. v1.3.0 introduces a **persistent tool cache**: every successful list-tools writes tool metadata to a `cached_tools` JSON column on `mate_mcp_server`. When validating bindings and the server is temporarily unreachable, the cache is consulted as fallback — bindings stay marked `stale` and become live again the moment the server reconnects.
+In v1.2.0, renaming a server orphaned every employee bound to it. v1.3.0 introduces a **persistent tool cache**: every successful list-tools writes tool metadata to a `tools_cache_json` JSON column on `mate_mcp_server`. When validating bindings and the server is temporarily unreachable, the cache is consulted as fallback — bindings stay marked `stale` and become live again the moment the server reconnects.
 
 **Problem 3: Save silently accepted non-existent tool references.**
 A typo'd `nonexistent-server.weird-tool` would save fine and blow up at runtime. v1.3.0 runs `AgentBindingService.validate(...)` on save:
@@ -300,7 +300,7 @@ A typo'd `nonexistent-server.weird-tool` would save fine and blow up at runtime.
 
 ### Data contract
 
-- `mate_mcp_server.cached_tools` (new column in v1.3.0): JSON array, each element `{name, description, inputSchema, lastSeenAt}`
+- `mate_mcp_server.tools_cache_json` (new column in v1.3.0): JSON array, each element `{name, description, inputSchema, lastSeenAt}`
 - `mate_agent_tool.tool_name`: stores the **prefixed callback name** `{serverName}__{toolName}` rather than the raw name, so a server rename surfaces immediately as an observable join miss
 - `AgentBindingService.getEffectiveToolNames(agentId)` is the single source of truth for tool dispatch — runs every turn, ensuring the editor view and the runtime view always agree
 
