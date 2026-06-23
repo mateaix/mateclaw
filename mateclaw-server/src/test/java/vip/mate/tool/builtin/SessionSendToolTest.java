@@ -7,14 +7,15 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import vip.mate.agent.AgentService;
 import vip.mate.agent.context.ChatOrigin;
+import vip.mate.agent.delegation.SubagentRegistry;
 import vip.mate.workspace.conversation.model.ConversationEntity;
 import vip.mate.workspace.conversation.repository.ConversationMapper;
 
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -34,7 +35,8 @@ class SessionSendToolTest {
     @Mock AgentService agentService;
     @Mock ConversationMapper conversationMapper;
 
-    @InjectMocks SessionSendTool tool;
+    private SubagentRegistry registry;
+    private SessionSendTool tool;
 
     @BeforeAll
     static void initMyBatisPlusCache() {
@@ -45,6 +47,8 @@ class SessionSendToolTest {
 
     @BeforeEach
     void setUp() {
+        registry = new SubagentRegistry();
+        tool = new SessionSendTool(agentService, conversationMapper, registry);
         ToolExecutionContext.clear();
         while (DelegationContext.currentDepth() > 0) {
             DelegationContext.exit();
@@ -88,7 +92,6 @@ class SessionSendToolTest {
     @Test
     void rejectsSessionOwnedByAnotherConversation() {
         ToolExecutionContext.set("conv-root", "tester");
-        // Child's parent is a different conversation than the caller.
         when(conversationMapper.selectOne(any())).thenReturn(child("child-1", "other-conv", 7L));
         String out = tool.sendToSubagent("child-1", "do more", null);
         assertTrue(out.contains("does not belong to this conversation"), out);
@@ -98,7 +101,6 @@ class SessionSendToolTest {
     @Test
     void rejectsWhenDepthLimitReached() {
         ToolExecutionContext.set("conv-root", "tester");
-        // Simulate being already at the max delegation depth.
         DelegationContext.enter("conv", java.util.Set.of(), "root", "sa", DelegateAgentTool.MAX_DELEGATION_DEPTH);
         try {
             String out = tool.sendToSubagent("child-1", "do more", null);
@@ -122,5 +124,24 @@ class SessionSendToolTest {
         assertTrue(out.contains("child-1"), out);
         assertTrue(out.contains("refined result"), out);
         verify(agentService).chat(eq(7L), eq("refine it"), eq("child-1"), any(ChatOrigin.class));
+    }
+
+    @Test
+    void registersDuringContinuationAndUnregistersAfter() {
+        ToolExecutionContext.set("conv-root", "tester");
+        when(conversationMapper.selectOne(any())).thenReturn(child("child-1", "conv-root", 7L));
+        // While the child runs, the continuation must be visible in the registry
+        // (so SessionListTool / the control API can see and interrupt it).
+        when(agentService.chat(eq(7L), any(), eq("child-1"), any(ChatOrigin.class))).thenAnswer(inv -> {
+            assertFalse(registry.snapshot("conv-root").isEmpty(),
+                    "continuation should be registered while running");
+            return "done";
+        });
+
+        tool.sendToSubagent("child-1", "keep going", null);
+
+        // ...and cleaned up afterwards so it never leaks.
+        assertTrue(registry.snapshot("conv-root").isEmpty(),
+                "continuation should be unregistered after completion");
     }
 }

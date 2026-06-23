@@ -10,6 +10,7 @@ import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Component;
 import vip.mate.agent.AgentService;
 import vip.mate.agent.context.ChatOrigin;
+import vip.mate.agent.delegation.SubagentRegistry;
 import vip.mate.workspace.conversation.model.ConversationEntity;
 import vip.mate.workspace.conversation.repository.ConversationMapper;
 
@@ -40,6 +41,7 @@ public class SessionSendTool {
 
     private final AgentService agentService;
     private final ConversationMapper conversationMapper;
+    private final SubagentRegistry subagentRegistry;
 
     @Tool(description = """
             Send a follow-up message to a sub-agent you previously delegated to, continuing its
@@ -90,9 +92,12 @@ public class SessionSendTool {
         Long agentId = child.getAgentId();
         ChatOrigin origin = ChatOrigin.from(ctx).withAgent(agentId).withConversationId(sessionId);
 
-        // Re-enter the delegation context one level below the caller so the
+        // Register the continuation so an in-flight follow-up is visible to
+        // SessionListTool and interruptible via the subagent control API, then
+        // re-enter the delegation context one level below the caller so the
         // continued child stays gated (cannot delegate / send onward) and the
         // depth cap keeps holding for anything it tries to spawn.
+        String subagentId = subagentRegistry.register(callerConversationId, sessionId, agentId, message, null);
         DelegationContext.enter(callerConversationId, DelegateAgentTool.DEFAULT_CHILD_DENIED_TOOLS,
                 resolveRootConversationId(callerConversationId), null, callerDepth + 1);
         try {
@@ -104,6 +109,7 @@ public class SessionSendTool {
             return "[Error] Sub-agent follow-up failed: " + e.getMessage();
         } finally {
             DelegationContext.exit();
+            subagentRegistry.unregister(subagentId);
         }
     }
 
