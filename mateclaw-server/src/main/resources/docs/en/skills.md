@@ -281,10 +281,8 @@ curl -X POST http://localhost:18088/api/v1/skills \
   }'
 
 # Enable / disable
-curl -X PUT http://localhost:18088/api/v1/skills/1 \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer YOUR_JWT_TOKEN" \
-  -d '{"enabled": true}'
+curl -X PUT "http://localhost:18088/api/v1/skills/1/toggle?enabled=true" \
+  -H "Authorization: Bearer YOUR_JWT_TOKEN"
 
 # Delete
 curl -X DELETE http://localhost:18088/api/v1/skills/1 \

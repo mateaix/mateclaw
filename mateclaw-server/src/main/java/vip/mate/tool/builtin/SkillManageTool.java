@@ -82,6 +82,10 @@ public class SkillManageTool {
         - create: Create a new skill with SKILL.md content (YAML frontmatter + markdown body)
         - edit: Replace entire skill content (for major rewrites; preferred when changing version + body together)
         - patch: Find-and-replace a specific section (for small targeted fixes)
+        - write_file: Write a supporting file under the skill's references/ or scripts/ directory
+          (e.g. a long reference doc the SKILL.md links to, or a re-runnable script). Put the
+          file body in 'content' and the path in 'filePath'. Keep SKILL.md itself lean and move
+          bulky detail into references/.
         - delete: Remove a skill
 
         SKILL.md format example:
@@ -125,6 +129,10 @@ public class SkillManageTool {
             @JsonPropertyDescription("For patch action: the new text to replace with")
             String newText,
 
+            @JsonProperty
+            @JsonPropertyDescription("For write_file action: relative path under references/ or scripts/ (e.g. 'references/api.md', 'scripts/run.sh'). No '..' allowed.")
+            String filePath,
+
             // RFC-063r §2.5: carries the calling agent's ChatOrigin; hidden
             // from the LLM by JsonSchemaGenerator. Used to stamp the new
             // skill with the agent's owning workspace.
@@ -143,20 +151,23 @@ public class SkillManageTool {
                     + "'. Must match: lowercase letters, digits, hyphens, dots (1-64 chars, start with letter/digit)";
         }
 
-        Long workspaceId = ChatOrigin.from(toolContext).workspaceId();
+        ChatOrigin origin = ChatOrigin.from(toolContext);
+        Long workspaceId = origin.workspaceId();
+        String sourceConversationId = origin.conversationId();
 
         return switch (action.strip().toLowerCase()) {
-            case "create" -> doCreate(normalizedName, content, workspaceId);
-            case "edit"   -> doEdit(normalizedName, content);
-            case "patch"  -> doPatch(normalizedName, oldText, newText);
-            case "delete" -> doDelete(normalizedName);
-            default -> "Error: unknown action '" + action + "'. Use: create | edit | patch | delete";
+            case "create"     -> doCreate(normalizedName, content, workspaceId, sourceConversationId);
+            case "edit"       -> doEdit(normalizedName, content);
+            case "patch"      -> doPatch(normalizedName, oldText, newText);
+            case "write_file" -> doWriteFile(normalizedName, filePath, content);
+            case "delete"     -> doDelete(normalizedName);
+            default -> "Error: unknown action '" + action + "'. Use: create | edit | patch | write_file | delete";
         };
     }
 
     // ==================== Create ====================
 
-    private String doCreate(String name, String content, Long workspaceId) {
+    private String doCreate(String name, String content, Long workspaceId, String sourceConversationId) {
         if (content == null || content.isBlank()) {
             return "Error: content is required for create action. Provide full SKILL.md content.";
         }
@@ -186,6 +197,12 @@ public class SkillManageTool {
             skill.setVersion(extractVersion(content));
             skill.setSecurityScanStatus("PASSED");
             skill.setWorkspaceId(workspaceId);
+            // Stamp the originating conversation so the lifecycle curator can
+            // age this skill under its AGENT_CREATED scope. Without it,
+            // agent-authored skills are invisible to the curator's default sweep.
+            if (sourceConversationId != null && !sourceConversationId.isBlank()) {
+                skill.setSourceConversationId(sourceConversationId);
+            }
 
             skillService.createSkill(skill);
 
@@ -329,6 +346,54 @@ public class SkillManageTool {
             log.error("[SkillManage] Failed to patch skill '{}': {}", name, e.getMessage(), e);
             return "Error patching skill: " + e.getMessage();
         }
+    }
+
+    // ==================== Write supporting file ====================
+
+    /**
+     * Write a supporting file under the skill's {@code references/} or
+     * {@code scripts/} directory. The path is validated and confined to the
+     * skill workspace by {@link SkillWorkspaceManager#writeWorkspaceFile}; the
+     * content is security-scanned just like SKILL.md so an agent can't drop a
+     * dangerous script alongside an otherwise-clean skill.
+     */
+    private String doWriteFile(String name, String filePath, String content) {
+        if (filePath == null || filePath.isBlank()) {
+            return "Error: filePath is required for write_file (e.g. 'references/api.md' or 'scripts/run.sh').";
+        }
+        if (content == null) {
+            return "Error: content is required for write_file action.";
+        }
+        if (content.length() > MAX_CONTENT_CHARS) {
+            return "Error: content too large (" + content.length() + " chars, max " + MAX_CONTENT_CHARS + ")";
+        }
+
+        SkillEntity existing = skillService.findByName(name);
+        if (existing == null) {
+            return "Error: skill '" + name + "' not found. Create it first with action='create'.";
+        }
+        if (Boolean.TRUE.equals(existing.getBuiltin())) {
+            return "Error: cannot write files into builtin skill '" + name + "'.";
+        }
+
+        // Security scan the file body — scripts especially must be screened.
+        String scanError = runSecurityScan(content, name);
+        if (scanError != null) {
+            return scanError;
+        }
+
+        try {
+            workspaceManager.writeWorkspaceFile(name, filePath, content);
+        } catch (IllegalArgumentException e) {
+            return "Error: " + e.getMessage()
+                    + " (paths must start with references/ or scripts/, and may not contain '..').";
+        } catch (Exception e) {
+            log.error("[SkillManage] Failed to write file '{}' for skill '{}': {}", filePath, name, e.getMessage(), e);
+            return "Error writing skill file: " + e.getMessage();
+        }
+
+        log.info("[SkillManage] Agent wrote skill file: skill={}, path={}", name, filePath);
+        return "File '" + filePath + "' written to skill '" + name + "' (security scan: PASSED).";
     }
 
     // ==================== Delete ====================

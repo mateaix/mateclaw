@@ -1,0 +1,10 @@
+## Existing skills
+Review these FIRST. Prefer improving one of them over creating a new skill. Avoid duplicates.
+
+{skills}
+
+## Conversation to review
+
+{transcript}
+
+Decide what — if anything — to create or improve, following the discipline rules. Output ONLY the JSON array.

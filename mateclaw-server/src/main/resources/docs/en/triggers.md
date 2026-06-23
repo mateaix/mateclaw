@@ -51,7 +51,7 @@ Implemented in `TriggerPatternMatcher.java`. Each pattern matches its `pattern_j
 | `cron` | On a cron expression (**does not flow through ingest**; runs from the scheduler) | `cronExpression`, `timezone` | Reuses the `cron/` module's ShedLock + Spring TaskScheduler; **does NOT write into mate_cron_job, does NOT call CronJobService** |
 | `webhook` | Generic event passthrough (**v0 does no further filtering** — secret check happens at the channel layer; the trigger itself just matches `patternType=webhook`) | (none in v0) | Through the unified `POST /api/v1/triggers/events` entry + envelope wrap |
 | `channel_message` | Channel receives a message | `channelType` (optional, compared against envelope `data.channelType`), `senderEquals` (optional, exact sender id match) | Side-channel through `ChannelWebhookController`; original routing unaffected |
-| `agent_lifecycle` | Agent lifecycle events | `agentId` (optional), `phase` (optional: `spawned` / `terminated` / `crashed`) | Hangs off `ReActLifecycleListener` |
+| `agent_lifecycle` | Agent lifecycle events | `agentId` (optional), `phase` (optional: `spawned` / `enabled` / `disabled` / `terminated`; `crashed` reserved for a future release) | Hangs off `AgentLifecycleEventBridge` |
 | `content_match` | Substring must appear in the envelope content | `substring` (**required**, case-insensitive contains-match against envelope `data.content`) | Generic content filter; the event source is whatever fed the envelope |
 | `workflow_completion` | A workflow run reaches a terminal state | `sourceWorkflowId` (optional), `stateFilter` (optional: `completed` / `failed` / `any`) | Listens to `WorkflowEngine` terminal events; recursion guard below |
 
@@ -118,7 +118,7 @@ The drawer has structured forms per pattern type — no hand-written `pattern_js
 
 - `cron` → cron expression input + timezone dropdown + next-fire preview. The expression can be typed by hand, or click the edit button beside the input to open the **visual cron editor** (see below)
 - `channel_message` → channel type (optional) + sender id exact-match (optional)
-- `agent_lifecycle` → agent (optional) + phase: `spawned` / `terminated` / `crashed` (optional)
+- `agent_lifecycle` → agent (optional) + phase: `spawned` / `enabled` / `disabled` / `terminated` (optional)
 - `content_match` → substring (**required**), matched case-insensitively against envelope `data.content`
 - `workflow_completion` → upstream workflow (optional) + state filter: `completed` / `failed` / `any` (optional)
 - `webhook` → no extra fields in v0 (transparent passthrough)
@@ -272,7 +272,7 @@ v0 deliberately **does not persist envelopes inside `mate_trigger_event`** — f
 - **No visualization of trigger → workflow chains** — multiple triggers dispatching to the same workflow appear as two independent lists in the UI
 - **No inter-trigger priority / dependency** — when an event hits multiple triggers, dispatches are serialized by ascending DB id
 - **No dedicated webhook entry / IP allowlist** — there's no `/webhook/{slug}` route in v0; `/events` is the unified entry. Stricter IP control belongs at the front-door nginx / gateway
-- **`agent_lifecycle` granularity is `spawned` / `terminated` / `crashed`** — not "started / completed / failed" per step
+- **`agent_lifecycle` phase only covers CRUD operations** — the phases actually emitted are `spawned` / `enabled` / `disabled` / `terminated`; `crashed` (runtime error hook) is reserved for a future release and is never fired today
 - **No event replay** — `mate_trigger_event` only persists dedup metadata, not envelopes; "redispatch this event" requires the upstream source to re-emit
 
 ---
@@ -284,7 +284,7 @@ v0 deliberately **does not persist envelopes inside `mate_trigger_event`** — f
 | Cron trigger doesn't fire | 1) `enabled=true`? 2) Does the cron expression + timezone parse to a next-fire time? The editor previews it. 3) Is the ShedLock held by another instance? Check the `shedlock` table. |
 | `POST /events` returns 200 but no dispatch happens | The response body contains a per-trigger fire / drop summary — look for `BOT_SELF` / `RATE_LIMITED` / `DEDUPED` / `PATTERN_MISMATCH` |
 | `channel_message` doesn't fire | 1) Does the envelope's `data.channelType` match this trigger's `pattern_json.channelType`? 2) `bot_self_filter=true` and a non-default `BotSelfFilter` is filtering it? 3) For `content_match`, the `substring` field must actually appear in `data.content` |
-| `agent_lifecycle` doesn't fire | Confirm `pattern_json.phase` is `spawned` / `terminated` / `crashed` (not `started` / `completed` / `failed`) |
+| `agent_lifecycle` doesn't fire | Confirm `pattern_json.phase` is one of `spawned` / `enabled` / `disabled` / `terminated` (not `started` / `completed` / `failed`); `crashed` is reserved for a future release and is never emitted today |
 | Cron trigger stops firing after restart | Look at startup log for `syncFromDatabase()` errors; common cause is corrupted `pattern_json` failing deserialization |
 | `mate_trigger.last_error` reads `"rate-limited"` | Raise `rate_limit_per_min`, or split the trigger into multiple ones partitioned by group |
 | `bot_self_filter=true` doesn't seem to filter | Confirm a non-noop `BotSelfFilter` Spring Bean is registered — the default `NoopBotSelfFilter` always returns `false` |

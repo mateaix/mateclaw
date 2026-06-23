@@ -9,27 +9,30 @@ import { useWikiStore } from '@/stores/useWikiStore'
  * built-in ten types.
  */
 
-// Fixed colours for the built-in ten types so existing KBs look unchanged.
+// Earthy categorical palette tuned to the warm terracotta + teal app theme
+// (see main.css design tokens). Hues are mutually contrasting yet share an
+// earthy register so the page graph, sidebar and toolbar feel of-a-piece with
+// the rest of the UI. Shared with the entity graph for one visual language.
 const BUILTIN_COLORS: Record<string, string> = {
-  concept: '#D96E46',
-  person: '#5B8DEF',
-  place: '#4CAF82',
-  event: '#F59E0B',
-  technology: '#8B5CF6',
-  organization: '#EC4899',
-  product: '#14B8A6',
-  term: '#6B7280',
-  process: '#F97316',
-  other: '#9CA3AF',
+  concept: '#6B9A55',      // sage
+  person: '#D97757',       // terracotta (theme primary)
+  place: '#E0A030',        // goldenrod
+  event: '#9B5E8E',        // plum
+  technology: '#4FA39B',   // aqua
+  organization: '#2F8F83', // teal (theme accent)
+  product: '#5B7DB1',      // denim blue
+  term: '#A07B5C',         // taupe
+  process: '#C08A4E',      // ochre
+  other: '#9C8576',        // warm grey
 }
 
 // Palette for custom / synthesis types not in the built-in map. A type name is
 // hashed to a stable index so the same type always gets the same colour within
 // and across sessions, without needing a colour field on the profile schema.
+// Same earthy family so generated types stay on-theme.
 const HASH_PALETTE = [
-  '#0EA5E9', '#A855F7', '#22C55E', '#EAB308', '#EF4444',
-  '#06B6D4', '#D946EF', '#84CC16', '#F43F5E', '#3B82F6',
-  '#10B981', '#FB923C',
+  '#C0533F', '#B06E7C', '#8B934A', '#A07B5C', '#5B7DB1', '#9B5E8E',
+  '#4FA39B', '#C08A4E', '#6B9A55', '#2F8F83', '#D97757', '#E0A030',
 ]
 
 function hashIndex(s: string, mod: number): number {

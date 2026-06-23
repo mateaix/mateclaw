@@ -31,9 +31,11 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Extracts a named-entity knowledge graph from source chunks: it pulls
@@ -90,7 +92,15 @@ public class WikiEntityExtractionService {
      *              chunks already processed
      */
     public int extractForKb(Long kbId, boolean force) {
-        return extract(kbId, chunkService.listByKbId(kbId), force);
+        int touched = extract(kbId, chunkService.listByKbId(kbId), force);
+        if (force && touched > 0) {
+            // A forced full rebuild may have dropped entity types from the KB
+            // config; entities that no longer earn a mention become orphans.
+            // Skip pruning when the run resolved nothing (e.g. the model was
+            // unavailable) so a total failure can't wipe the existing graph.
+            pruneOrphanEntities(kbId);
+        }
+        return touched;
     }
 
     private int extract(Long kbId, List<WikiChunkEntity> chunks, boolean force) {
@@ -119,13 +129,20 @@ public class WikiEntityExtractionService {
             if (chunk.getContent() == null || chunk.getContent().isBlank()) {
                 continue;
             }
-            if (!force && hasMentions(chunk.getId())) {
+            boolean alreadyProcessed = hasMentions(chunk.getId());
+            if (alreadyProcessed && !force) {
                 continue;
             }
             try {
                 EntityExtractionResult result = callExtract(chatModel, converter, systemPrompt, chunk);
                 if (result == null) {
                     continue;
+                }
+                // Forced re-extraction: only now that we have a fresh result do
+                // we wipe the chunk's prior mentions/relations, so a failed LLM
+                // call leaves the existing graph intact instead of destroying it.
+                if (alreadyProcessed) {
+                    clearChunkArtifacts(chunk.getId());
                 }
                 persistChunk(kbId, chunk, result, resolved, index);
             } catch (Exception e) {
@@ -333,6 +350,71 @@ public class WikiEntityExtractionService {
         Long count = mentionMapper.selectCount(new LambdaQueryWrapper<WikiEntityMentionEntity>()
                 .eq(WikiEntityMentionEntity::getChunkId, chunkId));
         return count != null && count > 0;
+    }
+
+    /**
+     * Remove a chunk's previously-extracted mentions and relations and roll
+     * back the affected entities' mention counts so a forced re-extraction is
+     * idempotent. Entities themselves are kept here; orphans (those left with
+     * zero mentions after a full rebuild) are swept by {@link #pruneOrphanEntities}.
+     */
+    private void clearChunkArtifacts(Long chunkId) {
+        List<WikiEntityMentionEntity> existing = mentionMapper.selectList(
+                new LambdaQueryWrapper<WikiEntityMentionEntity>()
+                        .eq(WikiEntityMentionEntity::getChunkId, chunkId));
+        Set<Long> affected = new HashSet<>();
+        for (WikiEntityMentionEntity m : existing) {
+            if (m.getEntityId() != null) {
+                affected.add(m.getEntityId());
+            }
+        }
+        mentionMapper.delete(new LambdaQueryWrapper<WikiEntityMentionEntity>()
+                .eq(WikiEntityMentionEntity::getChunkId, chunkId));
+        relationMapper.delete(new LambdaQueryWrapper<WikiEntityRelationEntity>()
+                .eq(WikiEntityRelationEntity::getEvidenceChunkId, chunkId));
+        // Recompute each affected entity's mention count from the surviving
+        // (non-deleted) rows rather than decrementing, so counts stay exact.
+        for (Long entityId : affected) {
+            WikiEntityEntity e = entityMapper.selectById(entityId);
+            if (e == null) {
+                continue;
+            }
+            Long remaining = mentionMapper.selectCount(new LambdaQueryWrapper<WikiEntityMentionEntity>()
+                    .eq(WikiEntityMentionEntity::getEntityId, entityId));
+            int count = remaining == null ? 0 : remaining.intValue();
+            e.setMentionCount(count);
+            e.setSalience(BigDecimal.valueOf((double) count / (count + 5.0))
+                    .setScale(4, RoundingMode.HALF_UP));
+            entityMapper.updateById(e);
+        }
+    }
+
+    /**
+     * Delete entities in a KB that have no mentions left (and the relations that
+     * referenced them). Runs after a forced full rebuild so entity types removed
+     * from the KB config stop appearing in the graph.
+     */
+    private void pruneOrphanEntities(Long kbId) {
+        List<WikiEntityEntity> orphans = entityMapper.selectList(
+                new LambdaQueryWrapper<WikiEntityEntity>()
+                        .eq(WikiEntityEntity::getKbId, kbId)
+                        .and(w -> w.isNull(WikiEntityEntity::getMentionCount)
+                                .or().le(WikiEntityEntity::getMentionCount, 0)));
+        if (orphans == null || orphans.isEmpty()) {
+            return;
+        }
+        Set<Long> ids = new HashSet<>();
+        for (WikiEntityEntity e : orphans) {
+            ids.add(e.getId());
+        }
+        relationMapper.delete(new LambdaQueryWrapper<WikiEntityRelationEntity>()
+                .eq(WikiEntityRelationEntity::getKbId, kbId)
+                .and(w -> w.in(WikiEntityRelationEntity::getSubjectEntityId, ids)
+                        .or().in(WikiEntityRelationEntity::getObjectEntityId, ids)));
+        entityMapper.delete(new LambdaQueryWrapper<WikiEntityEntity>()
+                .eq(WikiEntityEntity::getKbId, kbId)
+                .in(WikiEntityEntity::getId, ids));
+        log.info("[WikiEntity] Pruned {} orphan entities for kbId={}", ids.size(), kbId);
     }
 
     private Long firstCitingPage(Long chunkId) {

@@ -7,7 +7,7 @@
       <button class="entity-panel__close" @click="selected = null">×</button>
       <h3 class="entity-panel__title">{{ selected.canonicalName }}</h3>
       <span class="entity-panel__type" :style="{ background: typeColor(selected.type) }">
-        {{ selected.type }}
+        {{ formatType(selected.type) }}
       </span>
       <span class="entity-panel__count">{{ selected.mentionCount || 0 }} {{ t('wiki.graph.mentions') }}</span>
 
@@ -61,7 +61,7 @@ import { wikiApi } from '@/api'
 
 echarts.use([GraphChart, TooltipComponent, LegendComponent, CanvasRenderer])
 
-const { t } = useI18n()
+const { t, te } = useI18n()
 
 interface EntityNode {
   id: number | string
@@ -95,12 +95,47 @@ const selected = ref<EntityNode | null>(null)
 const egoEdges = ref<{ predicate: string; label: string }[]>([])
 const egoPages = ref<{ pageId: number | string; slug: string; title: string }[]>([])
 
-// Stable color per entity type via a small hash → palette.
-const PALETTE = ['#5b8ff9', '#5ad8a6', '#f6bd16', '#e8684a', '#6dc8ec', '#9270ca', '#ff9d4d', '#269a99']
+// Earthy categorical palette tuned to the warm terracotta + teal app theme
+// (see main.css design tokens). Each common entity type gets a fixed, mutually
+// contrasting hue — person (terracotta) vs product (denim) reads as a clear
+// warm/cool split rather than the near-identical blues used before. All hues
+// sit at mid lightness so they stay legible on both the light and dark canvas.
+const ENTITY_TYPE_COLORS: Record<string, string> = {
+  person: '#D97757',       // terracotta (theme primary)
+  organization: '#2F8F83', // teal (theme accent)
+  location: '#E0A030',     // goldenrod
+  place: '#E0A030',
+  event: '#9B5E8E',        // plum
+  product: '#5B7DB1',      // denim blue
+  concept: '#6B9A55',      // sage
+  technology: '#4FA39B',   // aqua
+  term: '#C0533F',         // brick
+  other: '#9C8576',        // warm taupe
+}
+// Stable fallback palette (same earthy family) for user-defined types.
+const FALLBACK_PALETTE = ['#C08A4E', '#B06E7C', '#8B934A', '#A07B5C', '#5B7DB1', '#9B5E8E', '#4FA39B', '#C0533F']
 function typeColor(type: string): string {
+  const key = (type || 'other').toLowerCase()
+  const fixed = ENTITY_TYPE_COLORS[key]
+  if (fixed) return fixed
   let h = 0
-  for (let i = 0; i < (type || '').length; i++) h = (h * 31 + type.charCodeAt(i)) >>> 0
-  return PALETTE[h % PALETTE.length]
+  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0
+  return FALLBACK_PALETTE[h % FALLBACK_PALETTE.length]
+}
+// Resolve a CSS custom property to its computed value so ECharts (canvas, which
+// can't read CSS vars) picks up the active light/dark theme color.
+function cssVar(name: string, fallback: string): string {
+  if (typeof document === 'undefined') return fallback
+  const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim()
+  return v || fallback
+}
+// Localized label for an entity type, fallback to capitalized raw key.
+function formatType(type: string): string {
+  const key = (type || '').toLowerCase()
+  if (!key) return ''
+  const i18nKey = `wiki.entityTypes.${key}`
+  if (te(i18nKey)) return t(i18nKey)
+  return key.charAt(0).toUpperCase() + key.slice(1)
 }
 
 async function load() {
@@ -123,14 +158,34 @@ function buildOption() {
   // Keep IDs as strings throughout — backend issues Snowflake IDs that lose
   // precision if coerced to Number.
   const idSet = new Set(nodes.value.map(n => String(n.id)))
+
+  // Distinct entity types present → ECharts categories. The category index
+  // drives each node's color and powers the legend: clicking a type in the
+  // legend filters its nodes (and their edges) in or out of the graph.
+  const types: string[] = []
+  for (const n of nodes.value) {
+    const tp = (n.type || 'other').toLowerCase()
+    if (!types.includes(tp)) types.push(tp)
+  }
+  types.sort()
+  const typeIndex = new Map(types.map((tp, i) => [tp, i]))
+  const categories = types.map(tp => ({
+    name: formatType(tp),
+    itemStyle: { color: typeColor(tp) },
+  }))
+
+  const labelColor = cssVar('--mc-text-secondary', '#665245')
+  const legendColor = cssVar('--mc-text-tertiary', '#9b7d6c')
   const nodeList = nodes.value.map(n => {
     const size = Math.max(12, Math.min(46, 12 + (n.mentionCount || 0) * 3))
     return {
       id: String(n.id),
       name: n.canonicalName,
       symbolSize: size,
-      itemStyle: { color: typeColor(n.type) },
-      label: { show: size > 22, position: 'right' as const, fontSize: 10, color: 'var(--mc-text-secondary)', distance: 4 },
+      category: typeIndex.get((n.type || 'other').toLowerCase()) ?? 0,
+      // Always show the entity name (not just on hover); larger/more-mentioned
+      // nodes get a slightly bigger label so hubs stand out.
+      label: { show: true, position: 'right' as const, fontSize: size > 26 ? 12 : 10, color: labelColor, distance: 5 },
     }
   })
   const edgeList = edges.value
@@ -144,6 +199,17 @@ function buildOption() {
 
   return {
     backgroundColor: 'transparent',
+    legend: [{
+      top: 8,
+      left: 'center',
+      type: 'scroll',
+      itemWidth: 10,
+      itemHeight: 10,
+      itemGap: 12,
+      icon: 'circle',
+      textStyle: { fontSize: 11, color: legendColor },
+      data: categories.map(c => c.name),
+    }],
     tooltip: {
       trigger: 'item',
       formatter: (params: any) => {
@@ -152,13 +218,14 @@ function buildOption() {
         if (!node) return ''
         const desc = (node.description || '').substring(0, 80)
         return `<div style="max-width:220px;white-space:normal"><strong>${node.canonicalName}</strong>`
-          + `<small style="color:#999;display:block">${node.type}</small>`
+          + `<small style="color:#999;display:block">${formatType(node.type)}</small>`
           + (desc ? `<span style="font-size:11px">${desc}</span>` : '') + '</div>'
       },
     },
     series: [{
       type: 'graph',
       layout: 'force',
+      categories,
       data: nodeList,
       links: edgeList,
       roam: true,

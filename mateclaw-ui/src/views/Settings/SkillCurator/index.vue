@@ -29,6 +29,9 @@
           <span v-if="status.control.paused" class="curator-pill pill-warn">
             {{ t('skillCurator.statePaused') }}
           </span>
+          <span class="curator-pill" :class="status.control.consolidate ? 'pill-on' : 'pill-muted'">
+            {{ status.control.consolidate ? t('skillCurator.consolidateOn') : t('skillCurator.consolidateOff') }}
+          </span>
         </div>
         <p class="curator-hint">
           {{ status.control.paused ? t('skillCurator.pausedHint')
@@ -59,7 +62,12 @@
             class="btn-secondary" :disabled="busy"
             @click="setPaused(false)"
           >{{ t('skillCurator.resume') }}</button>
+          <button
+            class="btn-secondary" :disabled="busy"
+            @click="setConsolidate(!status.control.consolidate)"
+          >{{ status.control.consolidate ? t('skillCurator.disableConsolidate') : t('skillCurator.enableConsolidate') }}</button>
         </div>
+        <p class="curator-hint">{{ t('skillCurator.consolidateHint') }}</p>
       </div>
 
       <!-- Counts -->
@@ -121,6 +129,16 @@
               <span class="report-meta">{{ tr.daysIdle }}d</span>
             </div>
           </div>
+          <div v-if="(selectedReport.consolidations || []).length > 0" class="report-transitions">
+            <div class="report-transitions-head">{{ t('skillCurator.reportConsolidations') }}</div>
+            <div v-for="(c, i) in selectedReport.consolidations" :key="`c${i}`" class="report-transition">
+              <code>{{ c.umbrella }}</code>
+              <span>{{ c.umbrellaCreated ? t('skillCurator.consolidateCreate') : t('skillCurator.consolidateEdit') }} ⇐ {{ (c.absorbed || []).join(', ') }}</span>
+              <span class="curator-pill" :class="c.applied ? 'pill-on' : 'pill-muted'">
+                {{ c.applied ? t('skillCurator.reportApplied') : t('skillCurator.reportDryRun') }}
+              </span>
+            </div>
+          </div>
         </div>
       </div>
     </template>
@@ -140,7 +158,7 @@ const { t } = useI18n()
 interface CuratorStatus {
   config: { enabled: boolean; scope: string; staleAfterDays: number; archiveAfterDays: number; cron: string }
   control: {
-    activated: boolean; paused: boolean
+    activated: boolean; paused: boolean; consolidate: boolean
     lastObservedAt: string | null; lastDryRunAt: string | null
     lastRunAt: string | null; nextScheduledRun: string | null
   }
@@ -154,6 +172,7 @@ interface CuratorReport {
   planned?: { stale: number; archived: number; reactivated: number }
   applied?: { stale: number; archived: number; reactivated: number }
   transitions?: Array<{ name: string; from: string; to: string; daysIdle: number }>
+  consolidations?: Array<{ umbrella: string; umbrellaCreated: boolean; absorbed: string[]; applied: boolean; reason: string }>
 }
 
 const loading = ref(true)
@@ -237,6 +256,19 @@ async function setPaused(paused: boolean) {
     const res: any = paused ? await skillApi.curatorPause() : await skillApi.curatorResume()
     status.value = res.data as CuratorStatus
     mcToast.success(t(paused ? 'skillCurator.pauseSuccess' : 'skillCurator.resumeSuccess'))
+  } catch (e: any) {
+    mcToast.error(e?.message || t('skillCurator.actionFailed'))
+  } finally {
+    busy.value = false
+  }
+}
+
+async function setConsolidate(enabled: boolean) {
+  busy.value = true
+  try {
+    const res: any = await skillApi.curatorConsolidate(enabled)
+    status.value = res.data as CuratorStatus
+    mcToast.success(t(enabled ? 'skillCurator.consolidateSuccess' : 'skillCurator.disableConsolidateSuccess'))
   } catch (e: any) {
     mcToast.error(e?.message || t('skillCurator.actionFailed'))
   } finally {

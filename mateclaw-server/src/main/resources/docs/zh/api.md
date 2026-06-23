@@ -2,6 +2,8 @@
 
 本页以 `mateclaw-server/src/main/java` 下的 Spring MVC Controller 注解为准。下面的路由索引由源码注解重建；如果它和旧功能页冲突，以本页和源码为接口契约。
 
+> 想要机读的 OpenAPI 文档（导入 Postman / Apifox、在线调试）？见 [OpenAPI / Swagger 指南](./openapi.md) —— 部署后访问 `/swagger-ui.html`。
+
 ## 全局契约
 
 应用 REST 端点默认使用 `/api/v1` 前缀。大多数 JSON 响应使用项目统一信封：
@@ -33,6 +35,119 @@ Authorization: Bearer <token>
 `SecurityConfig` 中放行的公共路径包括登录、首次初始化、webhook/webchat 回调、chat stream/stop、agent stream、talk WebSocket、`GET /api/v1/settings/language`，以及 `/api/v1/files/generated/**` 一次性生成文件下载。认证通过后，`@RequireWorkspaceRole`、`@RequireGlobalAdmin` 等角色约束仍会继续生效。
 
 工作空间接口通常接受 `X-Workspace-Id`。省略时，很多 handler 会为了桌面/本地兼容回退到 workspace `1`。
+
+## 通用约定
+
+下面是所有端点共用的结构约定。读完这一节，再看后面的旗舰端点示例和完整路由表就能对上。
+
+### 统一响应信封 `R<T>`
+
+源码：`vip.mate.common.result.R`（`R.java`）。三个字段：
+
+| 字段 | 类型 | 含义 |
+|---|---|---|
+| `code` | `int` | 状态码。`200` 为成功；其余见下方「状态码」 |
+| `msg` | `string` | 提示信息。**注意是 `msg` 不是 `message`** |
+| `data` | `T` | 业务数据；失败时为 `null` |
+
+成功示例：
+
+```json
+{ "code": 200, "msg": "success", "data": { "id": "1", "name": "助手A" } }
+```
+
+失败示例：
+
+```json
+{ "code": 401, "msg": "Token expired or invalid", "data": null }
+```
+
+**HTTP 状态码与 `code` 对齐**：`RHttpStatusAdvice`（`ResponseBodyAdvice`）在 `code != 200` 时把 HTTP 状态设成 `HttpStatus.resolve(code)`。即业务码 `401` → HTTP 401，业务码 `404` → HTTP 404。业务码若不是合法 HTTP 状态（如 `1001`、`2001`），则 HTTP 回落到 `500`。
+
+### 状态码
+
+源码：`vip.mate.common.result.ResultCode`。注意区分两类：
+
+| 码 | 含义 | 是否直接作 HTTP 状态 |
+|---|---|---|
+| `200` | 成功 | 是 |
+| `400` | 参数错误 | 是 |
+| `401` | 未认证 | 是 |
+| `403` | 无权限 | 是 |
+| `404` | 资源不存在 | 是 |
+| `500` | 系统错误 | 是 |
+| `1001` | Agent 不存在 | 否（HTTP 500） |
+| `1002` | Agent 忙碌 | 否（HTTP 500） |
+| `2001` | LLM 调用错误 | 否（HTTP 500） |
+| `3001` | 工具不存在 | 否（HTTP 500） |
+| `4001` | 渠道错误 | 否（HTTP 500） |
+
+### 错误模型
+
+错误统一由 `GlobalExceptionHandler`（`@RestControllerAdvice`）处理。下表覆盖常见情况：
+
+| HTTP | 触发 | 响应体 |
+|---|---|---|
+| 400 | `@Valid` / `BindException` 校验失败 | `{code:400, msg:"字段名: 默认信息"}` — 只返回**首个**字段错误 |
+| 400 | `MethodArgumentTypeMismatchException`（如 `/{id}` 传了非数字） | `{code:400, msg:"Invalid value for parameter 'X': expected Long"}` |
+| 401 | 未认证 / token 无效（`SecurityConfig` 的 `authenticationEntryPoint`） | `{code:401, msg:"Token expired or invalid"}` |
+| 403 | 工作区角色不足（`WorkspaceAccessInterceptor` 直接写响应） | `{code:403, msg:"...", data:null}` |
+| 404 | 路由不匹配（`NoResourceFoundException`） | `{code:404, msg:"Resource not found"}` |
+| 405 | 方法不允许（`HttpRequestMethodNotSupportedException`） | `{code:405, msg:"Method not allowed"}` |
+| 409 | 需二次确认（`ConfirmRequiredException`） | **打破信封**：`{code, message, boundAgents}`（字段是 `message`，**不是** `msg`）—— 全 API 唯一非 `R` 响应 |
+| 500 | 兜底（`Exception`） | `{code:500, msg:"Internal server error"}` — 栈不外泄 |
+| 503 | 异步超时（非 SSE 请求） | `{code:503, msg:"Request timeout, please try again"}` |
+
+> SSE 端点（`/chat/stream` 等）出错时**不发 JSON 信封**，而是发送 SSE `error` 事件：`event: error` / `data: {"message":"..."}`。详见 [WebChat 指南](./webchat.md#sse-事件协议)。
+
+### 分页结构
+
+分页端点直接返回 `R<IPage<T>>`，`data` 是 MyBatis Plus 的 `Page` 序列化结构：
+
+```json
+{
+  "code": 200,
+  "data": {
+    "records": [ /* 当前页数据 */ ],
+    "total": 128,
+    "size": 20,
+    "current": 1,
+    "pages": 7
+  }
+}
+```
+
+| 字段 | 含义 |
+|---|---|
+| `records` | 当前页数据数组（**字段名是 `records`**，不是 `list`/`items`） |
+| `total` | 总记录数 |
+| `size` | 每页条数 |
+| `current` | 当前页码，从 `1` 开始 |
+| `pages` | 总页数 |
+
+常见分页查询参数：`page`（默认 1）、`size`（默认 20）。示例端点见 `GET /api/v1/audit/events`、`GET /api/v1/conversations/page`。
+
+### ID 与类型约定
+
+- **Snowflake `Long` 序列化为 JSON 字符串**：后端所有主键是 `Long`，但 Jackson 序列化成字符串。客户端（尤其 JS）应**全程按 `string` 处理**，避免 `Number.MAX_SAFE_INTEGER` 精度丢失。
+- **密码字段只写不读**：`UserEntity.password` 标注 `@JsonProperty(access = WRITE_ONLY)`，登录/建用户时接受写入，但任何响应里都不会出现。
+
+### 认证模型
+
+`JwtAuthFilter` 支持三种 token 形态，全部走 `Authorization` 头：
+
+1. **JWT**：`Authorization: Bearer <jwt>`。以 `eyJ` 开头（base64 头）。登录接口返回的 `token` 字段即此。
+2. **Personal Access Token (PAT)**：`Authorization: Bearer <pat>`。以 `mc_` 前缀开头，用于 headless / CI / SDK 场景。PAT 在 `POST /api/v1/auth/tokens` 创建时**明文只返回一次**，之后只存哈希。filter 按 `mc_` 前缀分发到 PAT 校验路径。
+3. **SSE 的 `?token=` 查询参数**：浏览器原生 `EventSource` 不能设置自定义请求头，SSE 流式端点额外接受 `?token=<token>`（JWT 或 PAT 均可）。
+
+**滑动续期**：JWT 接近过期（默认剩余 < 2 小时）时，响应头回传新 token —— `X-New-Token: <newJwt>`（同时设 `Access-Control-Expose-Headers: X-New-Token`）。客户端应监听并替换本地存储的 token。JWT TTL 默认 24 小时（`mateclaw.jwt.expiration=86400000`）。
+
+### `X-Workspace-Id` 的工作机制
+
+- **无 ThreadLocal / 请求上下文持有**。工作区 ID 通过两种途径消费：
+  1. **RBAC 拦截**：`WorkspaceAccessInterceptor` 对标注了 `@RequireWorkspaceRole`（角色 owner > admin > member > viewer）或 `@RequireGlobalAdmin` 的方法，读取 `X-Workspace-Id` 做权限校验。缺失或无法解析时回落 workspace `1`。权限不足直接写 403 JSON 响应。
+  2. **业务读取**：许多 Controller 用 `@RequestHeader(value="X-Workspace-Id", required=false) Long workspaceId` 直接取值用于数据查询范围；缺失时同样回落 `1`。
+- 因此工作区隔离由「拦截器鉴权 + Controller 自取」两段配合实现，客户端调用工作区相关接口时应显式传 `X-Workspace-Id`。
 
 ## 常用接口
 
@@ -71,6 +186,217 @@ curl -N -X POST http://localhost:18088/api/v1/chat/stream \
 ### 非 REST 端点
 
 `/api/v1/talk/ws` 由 `WebSocketConfig` 注册，用于 Talk Mode。它会出现在 `SecurityConfig` 的公共 WebSocket 路由里，但不计入下面的 controller 路由索引。
+
+## 旗舰端点参考
+
+下面是接入最频繁的端点的完整请求/响应说明。字段均与源码 DTO 一一对齐。下面的 406 行路由表是完整索引，本节是高频端点的「人读」详解。
+
+### 登录：`POST /api/v1/auth/login`
+
+公开端点（无需认证）。换取 JWT。
+
+**请求体** `LoginRequest`（`AuthController.java`）：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `username` | string | 用户名 |
+| `password` | string | 密码 |
+
+**响应** `R<LoginResponse>`：
+
+```json
+{
+  "code": 200,
+  "data": {
+    "id": "1",
+    "token": "eyJhbGciOi...",
+    "username": "admin",
+    "nickname": "管理员",
+    "role": "admin"
+  }
+}
+```
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `id` | string | 用户 ID（Snowflake，字符串） |
+| `token` | string | **JWT**，后续请求放 `Authorization: Bearer <token>`。响应里没有独立 expiry 字段，过期时间在 JWT 的 `exp` claim 内 |
+| `username` | string | 用户名 |
+| `nickname` | string | 昵称 |
+| `role` | string | `admin` 或 `user` |
+
+**错误**：用户名/密码错误 → HTTP 401，`{code:401, msg:"用户名或密码错误"}`。
+
+```bash
+curl -X POST http://localhost:18088/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"admin123"}'
+```
+
+### 流式对话：`POST /api/v1/chat/stream`
+
+> 公开端点（`SecurityConfig` 放行 `/api/v1/chat/stream`），但实际使用时仍需 token 才能定位用户与权限——传 `?token=` 或 `Authorization` 头。
+
+返回 `text/event-stream`，**不走 JSON 信封**。SSE 事件协议（`meta` / `content_delta` / `done` / `error` 等）见 [WebChat 指南](./webchat.md#sse-事件协议)。
+
+**请求体** `ChatController.ChatStreamRequest`（`ChatController.java:1211`）：
+
+| 字段 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `agentId` | string | — | 必填，目标 Agent ID |
+| `message` | string | — | 本轮用户消息（与 `contentParts` 二选一） |
+| `contentParts` | array | — | 多模态消息分片（图文混合），与 `message` 二选一 |
+| `conversationId` | string | `"default"` | 会话 ID；新会话用客户端生成的唯一串 |
+| `reconnect` | boolean | — | `true` = 断线重连，不发新消息，只附着到已有流 |
+| `lastEventId` | string | — | 仅 `reconnect=true` 有意义：跳过 id ≤ 此值的事件，避免重放重复 |
+| `thinkingLevel` | string | null | 思考深度：`off` / `low` / `medium` / `high` / `max`；null 跟随 Agent 默认 |
+| `modelProvider` | string | null | 本会话模型 provider 覆盖（与 `modelName` 配对） |
+| `modelName` | string | null | 本会话模型名覆盖 |
+| `endUserId` | string | null | 第三方终端用户 ID，用于一个 MateClaw 账号下的记忆隔离 |
+
+浏览器原生 `EventSource` 不支持 POST body，必须用 `fetch()` + 流式 reader。
+
+```bash
+curl -N -X POST "http://localhost:18088/api/v1/chat/stream?token=$TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Accept: text/event-stream" \
+  -d '{"agentId":"1","message":"你好","conversationId":"conv-abc123"}'
+```
+
+相关端点：`POST /api/v1/chat/{conversationId}/stop`（停止生成）、`POST /api/v1/chat/{conversationId}/interrupt`（排队后续消息，不打断当前流）。
+
+### Agent 管理
+
+挂在 `/api/v1/agents`，`@Tag("Agent管理")`。所有方法需 `@RequireWorkspaceRole`（至少 `viewer`，写入需 `member`）。
+
+**列表** `GET /api/v1/agents?enabled=true` — 请求头 `X-Workspace-Id`；返回 `R<List<AgentEntity>>`。
+
+**创建** `POST /api/v1/agents` — 请求体是 `AgentEntity`（关键字段见下），后端强制注入 `workspaceId` 与 `creatorUserId`。返回创建后的完整实体。
+
+`AgentEntity` 关键字段（`AgentEntity.java`）：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `id` | string | Agent ID（创建时忽略，后端分配） |
+| `name` | string | 名称 |
+| `description` | string | 描述 |
+| `agentType` | string | `react` 或 `plan_execute` |
+| `systemPrompt` | string | 系统提示词 |
+| `modelName` | string | Per-Agent 模型覆盖（模型名）；空则用全局默认 |
+| `maxIterations` | int | 最大迭代次数 |
+| `enabled` | boolean | 是否启用 |
+| `icon` | string | 图标（emoji 或 URL） |
+| `tags` | string | 标签（逗号分隔） |
+| `defaultThinkingLevel` | string | 默认思考深度 |
+| `primaryKbId` | string | 主知识库 ID |
+| `skillsDisabled` | boolean | 显式禁用所有 Skill |
+| `toolsDisabled` | boolean | 显式禁用所有非系统工具 |
+
+**删除** `DELETE /api/v1/agents/{id}` — 三选一鉴权：系统 admin / 工作区 admin+ / 创建者本人。否则 403。
+
+```bash
+# 列表
+curl http://localhost:18088/api/v1/agents?enabled=true \
+  -H "Authorization: Bearer $TOKEN" -H "X-Workspace-Id: 1"
+
+# 创建
+curl -X POST http://localhost:18088/api/v1/agents \
+  -H "Authorization: Bearer $TOKEN" -H "X-Workspace-Id: 1" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"客服助手","agentType":"react","systemPrompt":"你是一名客服","enabled":true}'
+```
+
+> 同目录下还有 `GET /api/v1/agents/{id}/chat/stream`（GET 形式的 SSE，与上面 POST `/chat/stream` 并存）、`POST /api/v1/agents/{id}/chat`（同步对话）、`POST /api/v1/agents/{id}/execute`（Plan-Execute）。
+
+### 会话管理
+
+挂在 `/api/v1/conversations`，`@Tag("会话管理")`。按当前登录用户（JWT principal）隔离。
+
+**列表** `GET /api/v1/conversations` — 返回 `R<List<ConversationVO>>`。`ConversationVO` 在会话实体基础上补充展示字段：
+
+| 字段 | 说明 |
+|---|---|
+| `conversationId` | 会话 ID（字符串，非 Snowflake） |
+| `title` | 标题 |
+| `agentId` / `agentName` / `agentIcon` | 关联 Agent |
+| `username` | 会话归属用户 |
+| `messageCount` | 消息数 |
+| `lastMessage` / `lastActiveTime` | 最近消息与时间 |
+| `pinned` / `archived` | 置顶 / 归档（0/1） |
+| `modelProvider` / `modelName` | 会话级模型覆盖 |
+| `status` | `active`（24h 内活跃）/ `closed` |
+| `streamStatus` | `idle` / `running` |
+| `source` | 来源渠道：`web` / `feishu` / `dingtalk` / `telegram` / `discord` / `wecom` / `qq` / `weixin` / `cron` |
+
+**分页** `GET /api/v1/conversations/page?page=1&size=20&keyword=xxx` — 返回 `R<IPage<ConversationVO>>`（分页结构见「通用约定」）。
+
+**消息历史** `GET /api/v1/conversations/{conversationId}/messages` — 支持三种模式：
+- 不传 `limit`：返回全部消息（`R<List<MessageVO>>`，向后兼容）。
+- 传 `limit`：返回最新 `limit` 条 + `hasMore` 标志：`R<{messages: MessageVO[], hasMore: boolean}>`。
+- 传 `beforeId` + `limit`：上拉加载更早消息。
+
+`MessageVO` 关键字段：`id`、`role`、`content`、`toolName`、`status`、`metadata`（对象，含 toolCalls 等）、`promptTokens` / `completionTokens`、`runtimeModel` / `runtimeProvider`、`contentParts`、`createTime`。
+
+**会话级操作**：`PUT .../title`（重命名）、`PUT .../pin`（置顶 `{pinned:bool}`）、`PUT .../model`（切换模型 `{modelProvider, modelName}`）、`DELETE .../messages`（清空消息保留会话）、`DELETE .../{conversationId}`（删除会话）、`POST /batch-delete`（`{conversationIds: [...]}`）、`GET .../status`（查流状态 `{streamStatus}`）。
+
+> 所有操作都先校验 `isConversationOwner(conversationId, username)`，非归属者返回 403。
+
+### 模型配置
+
+挂在 `/api/v1/models`，`@Tag("模型配置管理")`。`GET /` 与 `GET /catalog` 需 `@RequireGlobalAdmin`（含 API Key 等敏感信息）；`/enabled`、`/default`、`/active` 仅需 `viewer`。
+
+- `GET /api/v1/models` — 已启用 Provider 列表（`R<List<ProviderInfoDTO>>`，含密钥，admin only）。
+- `GET /api/v1/models/enabled` — 已启用模型列表（`R<List<ModelConfigEntity>>`，无密钥）。
+- `GET /api/v1/models/default` — 全局默认模型（`R<ModelConfigEntity>`）。
+- `GET /api/v1/models/active` — 当前激活模型 `{activeLlm: {provider, modelName}}`。
+- `PUT /api/v1/models/active` — 设置激活模型。
+
+### 审计事件（分页示范）
+
+`GET /api/v1/audit/events` — `@RequireWorkspaceRole("admin")`，返回 `R<IPage<AuditEventEntity>>`，是「分页 + 工作区头」的标准示范。
+
+| 查询参数 | 默认 | 说明 |
+|---|---|---|
+| `action` | — | 动作过滤（如 `CREATE` / `UPDATE` / `DELETE`） |
+| `resourceType` | — | 资源类型过滤（如 `AGENT`） |
+| `startTime` | — | ISO 8601 起始时间 |
+| `endTime` | — | ISO 8601 结束时间 |
+| `page` | 1 | 页码 |
+| `size` | 20 | 每页条数 |
+
+```bash
+curl "http://localhost:18088/api/v1/audit/events?page=1&size=20&resourceType=AGENT" \
+  -H "Authorization: Bearer $TOKEN" -H "X-Workspace-Id: 1"
+```
+
+### 修改密码：`PUT /api/v1/auth/users/{id}/password`
+
+注意三点（与直觉不同）：
+
+1. 参数走 **`@RequestParam` 而非请求体**：`oldPassword` 和 `newPassword` 都是 query 参数。
+2. 路径里的 `{id}` **仅信息性**：实际操作的用户从 JWT principal 解析（`auth.getName()`），用户只能改自己的密码。
+3. 需登录（非 `@RequireGlobalAdmin`）。
+
+```bash
+curl -X PUT "http://localhost:18088/api/v1/auth/users/1/password?oldPassword=admin123&newPassword=newPass456" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+### Personal Access Token
+
+挂在 `/api/v1/auth/tokens`，`@Tag("Personal Access Tokens")`。用于 headless / CI / SDK。
+
+- `GET /api/v1/auth/tokens` — 列出我的 PAT（仅元数据，**明文永不返回**）。
+- `POST /api/v1/auth/tokens` — 创建 PAT：**明文只在此响应里出现一次**，之后只存 SHA-256 哈希，无法找回。创建后立即保存。
+- `DELETE /api/v1/auth/tokens/{id}` — 软删除吊销，此后用该 token 鉴权会失败。
+
+创建出的 PAT（`mc_` 前缀）可直接放 `Authorization: Bearer mc_...`，`JwtAuthFilter` 按前缀分发到 PAT 校验路径，与 JWT 行为一致。
+
+### 工具审批（重要澄清）
+
+**没有** `POST /api/v1/approvals/{id}/resolve` 这样的独立审批 REST 端点。Web 端的批准 / 拒绝通过在等待中的会话里发送 `/approve` 或 `/deny` 走 chat stream replay 流程。刷新页面后的只读「补水」接口是 `GET /api/v1/chat/{conversationId}/pending-approvals`。自动批准策略在 `/api/v1/approval/grants` 下管理。
+
+> 需二次确认的危险操作会触发 `ConfirmRequiredException` —— 返回 **HTTP 409** 且**打破 `R` 信封**：`{code, message, boundAgents}`（字段是 `message` 不是 `msg`），客户端应按 409 状态码分支渲染确认弹窗。
 
 ## 源码对齐路由索引
 
@@ -285,7 +611,7 @@ curl -N -X POST http://localhost:18088/api/v1/chat/stream \
 | `GET` | `/api/v1/models/active` | `获取当前激活模型` |
 | `PUT` | `/api/v1/models/active` | `设置当前激活模型` |
 | `GET` | `/api/v1/models/by-type` | `按类型筛选模型（chat / embedding），可选 modality 过滤` |
-| `GET` | `/api/v1/models/catalog` | `RFC-074: 获取 Provider 全量目录（含未启用），供 Add Provider 抽屉使用` |
+| `GET` | `/api/v1/models/catalog` | `获取 Provider 全量目录（含未启用），供 Add Provider 抽屉使用` |
 | `DELETE` | `/api/v1/models/custom-providers` | `删除自定义 Provider（查询参数变体，兼容含特殊字符的旧 ID）` |
 | `POST` | `/api/v1/models/custom-providers` | `创建自定义 Provider` |
 | `DELETE` | `/api/v1/models/custom-providers/{providerId}` | `删除自定义 Provider` |
@@ -299,10 +625,10 @@ curl -N -X POST http://localhost:18088/api/v1/chat/stream \
 | `PUT` | `/api/v1/models/{id}` | `更新模型` |
 | `POST` | `/api/v1/models/{id}/default` | `设置默认模型` |
 | `PUT` | `/api/v1/models/{providerId}/config` | `更新 Provider 配置` |
-| `POST` | `/api/v1/models/{providerId}/disable` | `RFC-074: 禁用 Provider（如其下模型为当前默认会自动切换）` |
+| `POST` | `/api/v1/models/{providerId}/disable` | `禁用 Provider（如其下模型为当前默认会自动切换）` |
 | `POST` | `/api/v1/models/{providerId}/discover` | `发现远端模型` |
 | `POST` | `/api/v1/models/{providerId}/discover/apply` | `批量添加发现的模型` |
-| `POST` | `/api/v1/models/{providerId}/enable` | `RFC-074: 启用 Provider` |
+| `POST` | `/api/v1/models/{providerId}/enable` | `启用 Provider` |
 | `DELETE` | `/api/v1/models/{providerId}/models` | `从 Provider 删除模型` |
 | `POST` | `/api/v1/models/{providerId}/models` | `向 Provider 添加模型` |
 | `POST` | `/api/v1/models/{providerId}/models/test` | `测试单个模型可用性` |
@@ -375,7 +701,7 @@ curl -N -X POST http://localhost:18088/api/v1/chat/stream \
 
 | 方法 | 路径 | 用途 / handler |
 |---|---|---|
-| `GET` | `/api/v1/skills` | `获取技能分页列表（RFC-042 §2.1）` |
+| `GET` | `/api/v1/skills` | `获取技能分页列表` |
 | `POST` | `/api/v1/skills` | `创建技能` |
 | `GET` | `/api/v1/skills/counts` | `获取各类型技能计数（tab 徽章用）` |
 | `POST` | `/api/v1/skills/curator/activate` | `激活/取消激活 curator（真正归档 vs 仅预览）` |
@@ -398,19 +724,19 @@ curl -N -X POST http://localhost:18088/api/v1/chat/stream \
 | `GET` | `/api/v1/skills/runtime/status` | `获取所有技能的运行时解析状态（管理页面使用）` |
 | `GET` | `/api/v1/skills/summary` | `获取已启用技能摘要（按类型分组）` |
 | `POST` | `/api/v1/skills/sync-files` | `Re-sync every skill's bundle files (admin)` |
-| `POST` | `/api/v1/skills/synthesize-from-conversation` | `从对话历史合成 Skill（RFC-023）` |
+| `POST` | `/api/v1/skills/synthesize-from-conversation` | `从对话历史合成 Skill` |
 | `GET` | `/api/v1/skills/type/{skillType}` | `按类型获取技能列表` |
 | `DELETE` | `/api/v1/skills/{id}` | `硬删除技能 (admin only — 物理删除 + 工作区清空)` |
 | `GET` | `/api/v1/skills/{id}` | `获取技能详情` |
 | `PUT` | `/api/v1/skills/{id}` | `更新技能` |
 | `POST` | `/api/v1/skills/{id}/archive` | `手动归档技能` |
-| `GET` | `/api/v1/skills/{id}/employees` | `List agents that can use this skill (RFC-090 §14.2)` |
+| `GET` | `/api/v1/skills/{id}/employees` | `列出能使用该技能的员工` |
 | `POST` | `/api/v1/skills/{id}/export-workspace` | `将 skill 导出到工作区目录` |
-| `GET` | `/api/v1/skills/{id}/lessons` | `Read per-skill LESSONS.md (RFC-090 §11.4)` |
-| `POST` | `/api/v1/skills/{id}/lessons/clear` | `Clear all lessons for a skill (RFC-090 §11.4)` |
+| `GET` | `/api/v1/skills/{id}/lessons` | `读取该技能的 LESSONS.md` |
+| `POST` | `/api/v1/skills/{id}/lessons/clear` | `清空该技能的所有 lessons` |
 | `POST` | `/api/v1/skills/{id}/pin` | `钉住/取消钉住技能（钉住的技能不会被自动归档）` |
-| `GET` | `/api/v1/skills/{id}/requirements` | `Pre-flight requirement statuses for a skill (RFC-090)` |
-| `POST` | `/api/v1/skills/{id}/rescan` | `重新扫描单个技能（RFC-042 §2.3.4）` |
+| `GET` | `/api/v1/skills/{id}/requirements` | `该技能的前置依赖检查状态` |
+| `POST` | `/api/v1/skills/{id}/rescan` | `重新扫描单个技能` |
 | `POST` | `/api/v1/skills/{id}/restore` | `恢复已归档的技能` |
 | `POST` | `/api/v1/skills/{id}/sync-files` | `Re-sync this skill's bundle files from DB → local workspace cache` |
 | `PUT` | `/api/v1/skills/{id}/toggle` | `启用/禁用技能` |
@@ -423,7 +749,7 @@ curl -N -X POST http://localhost:18088/api/v1/chat/stream \
 
 | 方法 | 路径 | 用途 / handler |
 |---|---|---|
-| `GET` | `/api/v1/skill-templates` | `List skill templates (RFC-091)` |
+| `GET` | `/api/v1/skill-templates` | `获取技能模板列表` |
 | `GET` | `/api/v1/skill-templates/{id}` | `Get a single skill template` |
 | `POST` | `/api/v1/skill-templates/{id}/instantiate` | `Instantiate a template into a skill` |
 

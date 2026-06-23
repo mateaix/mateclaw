@@ -252,4 +252,4 @@ curl -N -X POST https://mate.example.com/api/v1/channels/webchat/stream \
 
 ## 关联
 
-- 上游 epic issue:https://github.com/matevip/mateclaw/issues/355
+- 上游 epic issue:https://github.com/mateaix/mateclaw/issues/355

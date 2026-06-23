@@ -236,6 +236,68 @@ class SourceEvidenceLedgerTest {
     }
 
     @Test
+    @DisplayName("normalizes non-canonical source lines to standard format")
+    void normalizesNonCanonicalSourceLines() {
+        SourceEvidenceLedger ledger = SourceEvidenceLedger.fromToolResponses(List.of(
+                new ToolResponseMessage.ToolResponse("c1", "wiki_semantic_search", """
+                        {"chunks":[{"index":1,"chunkId":101,"rawTitle":"Install Guide","section":"Linux","pageNumber":12,"snippet":"Use the package manager."}]}
+                        """)));
+
+        String rendered = ledger.appendWikiSourceTable("""
+                Use the package manager [1].
+
+                来源：
+                [1] Install Guide（参考文档）
+                """);
+
+        assertTrue(rendered.contains("[1] Install Guide - Linux - page 12"),
+                "non-canonical source line should be normalized: " + rendered);
+        assertFalse(rendered.contains("（参考文档）"),
+                "non-canonical text must be removed: " + rendered);
+        assertTrue(ledger.validateAnswer(rendered).valid());
+    }
+
+    @Test
+    @DisplayName("canonical source line is left unchanged (idempotent)")
+    void canonicalSourceLineUnchanged() {
+        SourceEvidenceLedger ledger = SourceEvidenceLedger.fromToolResponses(List.of(
+                new ToolResponseMessage.ToolResponse("c1", "wiki_semantic_search", """
+                        {"chunks":[{"index":1,"chunkId":101,"rawTitle":"Install Guide","section":"Linux","pageNumber":12,"snippet":"Use the package manager."}]}
+                        """)));
+
+        String canonical = """
+                Use the package manager [1].
+
+                来源：
+                [1] Install Guide - Linux - page 12
+                """;
+
+        String rendered = ledger.appendWikiSourceTable(canonical);
+        assertEquals(canonical, rendered);
+    }
+
+    @Test
+    @DisplayName("inserts 来源： header when source lines exist without one")
+    void insertsSourceHeaderWhenMissing() {
+        SourceEvidenceLedger ledger = SourceEvidenceLedger.fromToolResponses(List.of(
+                new ToolResponseMessage.ToolResponse("c1", "wiki_semantic_search", """
+                        {"chunks":[{"index":1,"chunkId":101,"rawTitle":"MAST-Data数据集","section":"","pageNumber":null,"snippet":"..."}]}
+                        """)));
+
+        String rendered = ledger.appendWikiSourceTable("""
+                根据数据集 [1] 的描述。
+
+                [1] MAST-Data数据集
+                """);
+
+        assertTrue(rendered.contains("来源："),
+                "来源： header must be present: " + rendered);
+        assertTrue(rendered.contains("[1] MAST-Data数据集"),
+                "source line content must be preserved: " + rendered);
+        assertTrue(ledger.validateAnswer(rendered).valid());
+    }
+
+    @Test
     @DisplayName("non-wiki tool JSON with a top-level title does not create wiki citations")
     void nonWikiToolWithTitleDoesNotForceCitations() {
         // getGoalStatus returns a top-level "title" field; it must not be mined as a

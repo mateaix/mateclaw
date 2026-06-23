@@ -38,6 +38,7 @@ class WorkspacePathGuardSandboxTest {
         ToolExecutionContext.clear();
         WorkspacePathGuard.setDefaultRoot(null);
         WorkspacePathGuard.setSkillRoot(null);
+        WorkspacePathGuard.clearTrustedRoots();
     }
 
     // ==================== Defect 1: fail-closed default root ====================
@@ -114,6 +115,61 @@ class WorkspacePathGuardSandboxTest {
         void noDefaultRoot_noop() {
             assertDoesNotThrow(() -> WorkspacePathGuard.validateShellCommand("cat /etc/passwd"));
             assertDoesNotThrow(() -> WorkspacePathGuard.validatePath("/etc/passwd"));
+        }
+    }
+
+    // ============ Tool-result spill dir is trusted outside the boundary (issue #403) ============
+
+    @Nested
+    @DisplayName("A registered tool-result spill root is readable outside the workspace boundary")
+    class TrustedSpillRoot {
+
+        private static final String SPILL_ROOT = "/tmp/mate-tool-result-spill/tool-results";
+
+        @BeforeEach
+        void setup() {
+            // A conversation bound to a workspace, with a central spill dir that
+            // lives outside that workspace — the production scenario from #403.
+            ToolExecutionContext.set("conv", "user", WORKSPACE);
+            WorkspacePathGuard.addTrustedRoot(SPILL_ROOT);
+        }
+
+        @Test
+        @DisplayName("validatePath: reading a spilled tool result outside the workspace is allowed")
+        void validatePathSpill_pass() {
+            assertDoesNotThrow(() ->
+                    WorkspacePathGuard.validatePath(SPILL_ROOT + "/conv/call_2.txt"));
+        }
+
+        @Test
+        @DisplayName("findPathBoundaryViolation: spill path reports no violation")
+        void findPathBoundaryViolationSpill_null() {
+            org.junit.jupiter.api.Assertions.assertNull(
+                    WorkspacePathGuard.findPathBoundaryViolation(
+                            SPILL_ROOT + "/conv/call_2.txt", WORKSPACE));
+        }
+
+        @Test
+        @DisplayName("Shell: cat-ing a spilled tool result outside the workspace is allowed")
+        void shellSpill_pass() {
+            assertDoesNotThrow(() ->
+                    WorkspacePathGuard.validateShellCommand("cat " + SPILL_ROOT + "/conv/call_2.txt"));
+        }
+
+        @Test
+        @DisplayName("A non-spill path outside the workspace is still blocked")
+        void unrelatedOutside_stillBlocked() {
+            assertThrows(IllegalArgumentException.class, () ->
+                    WorkspacePathGuard.validatePath("/etc/passwd"));
+            assertThrows(IllegalArgumentException.class, () ->
+                    WorkspacePathGuard.validateShellCommand("cat /etc/passwd"));
+        }
+
+        @Test
+        @DisplayName("Deleting inside the trusted spill root is not a root-deletion escape")
+        void deleteInsideSpillRoot_pass() {
+            assertDoesNotThrow(() ->
+                    WorkspacePathGuard.validateShellCommand("rm -rf " + SPILL_ROOT + "/conv"));
         }
     }
 

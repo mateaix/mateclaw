@@ -263,4 +263,109 @@ class DelegateAgentToolTest {
         assertTrue(result.contains("超时") || result.contains("✗"),
                 "Should contain timeout indicator for SlowAgent: " + result);
     }
+
+    // ===== delegateParallel: fail-fast on required failure (RFC 05 Q3) =====
+
+    @Test
+    @DisplayName("delegateParallel fails fast: required failure cancels a slow sibling")
+    void delegateParallelRequiredFailureCancelsSibling() {
+        AgentEntity failAgent = new AgentEntity();
+        failAgent.setId(20L);
+        failAgent.setName("FailAgent");
+        failAgent.setEnabled(true);
+        failAgent.setWorkspaceId(1L);
+
+        AgentEntity slowAgent = new AgentEntity();
+        slowAgent.setId(21L);
+        slowAgent.setName("SlowAgent");
+        slowAgent.setEnabled(true);
+        slowAgent.setWorkspaceId(1L);
+
+        when(agentMapper.selectOne(any(LambdaQueryWrapper.class)))
+                .thenReturn(failAgent)
+                .thenReturn(slowAgent);
+        when(streamTracker.isRunning(any())).thenReturn(false);
+        // Required FailAgent errors immediately → arms fail-fast.
+        when(agentService.chat(eq(20L), anyString(), anyString(), any()))
+                .thenThrow(new RuntimeException("boom"));
+        // SlowAgent would block well past the 3 s test budget; fail-fast cancels it.
+        when(agentService.chat(eq(21L), anyString(), anyString(), any())).thenAnswer(inv -> {
+            Thread.sleep(10_000);
+            return "unreachable";
+        });
+
+        ToolExecutionContext.set("parent-ff", "admin");
+        String json = "[{\"agentName\":\"FailAgent\",\"task\":\"a\"},{\"agentName\":\"SlowAgent\",\"task\":\"b\"}]";
+
+        long start = System.currentTimeMillis();
+        String result = delegateAgentTool.delegateParallel(json, null);
+        long elapsed = System.currentTimeMillis() - start;
+
+        assertTrue(elapsed < 2500, "fail-fast should return well before the budget, took " + elapsed + "ms");
+        assertTrue(result.contains("cancelled=1"), "slow sibling should be cancelled: " + result);
+        assertTrue(result.contains("已取消"), "should label the cancelled sibling: " + result);
+    }
+
+    @Test
+    @DisplayName("delegateParallel: optional task failure does not abort the batch")
+    void delegateParallelOptionalFailureDoesNotAbort() {
+        AgentEntity optAgent = new AgentEntity();
+        optAgent.setId(30L);
+        optAgent.setName("OptAgent");
+        optAgent.setEnabled(true);
+        optAgent.setWorkspaceId(1L);
+
+        AgentEntity okAgent = new AgentEntity();
+        okAgent.setId(31L);
+        okAgent.setName("OkAgent");
+        okAgent.setEnabled(true);
+        okAgent.setWorkspaceId(1L);
+
+        when(agentMapper.selectOne(any(LambdaQueryWrapper.class)))
+                .thenReturn(optAgent)
+                .thenReturn(okAgent);
+        when(streamTracker.isRunning(any())).thenReturn(false);
+        when(agentService.chat(eq(30L), anyString(), anyString(), any()))
+                .thenThrow(new RuntimeException("opt boom"));
+        when(agentService.chat(eq(31L), anyString(), anyString(), any()))
+                .thenReturn("ok result done");
+
+        ToolExecutionContext.set("parent-opt", "admin");
+        String json = "[{\"agentName\":\"OptAgent\",\"task\":\"a\",\"optional\":true},"
+                + "{\"agentName\":\"OkAgent\",\"task\":\"b\"}]";
+        String result = delegateAgentTool.delegateParallel(json, null);
+
+        // An optional failure must not cancel anything; the other task completes normally.
+        assertTrue(result.contains("cancelled=0"), "no cancellation expected: " + result);
+        assertTrue(result.contains("OkAgent"), "ok task should be reported: " + result);
+    }
+
+    // ===== delegateParallel: per-task timeout override (RFC 05 Q2) =====
+
+    @Test
+    @DisplayName("delegateParallel: per-task timeout_seconds widens the batch budget")
+    void delegateParallelTimeoutOverrideWidensBudget() {
+        AgentEntity longAgent = new AgentEntity();
+        longAgent.setId(40L);
+        longAgent.setName("LongAgent");
+        longAgent.setEnabled(true);
+        longAgent.setWorkspaceId(1L);
+
+        when(agentMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(longAgent);
+        when(streamTracker.isRunning(any())).thenReturn(false);
+        // Sleeps 4 s — beyond the 3 s test budget, but within the 6 s override.
+        when(agentService.chat(eq(40L), anyString(), anyString(), any())).thenAnswer(inv -> {
+            Thread.sleep(4_000);
+            return "long task finished ok";
+        });
+
+        ToolExecutionContext.set("parent-to", "admin");
+        String json = "[{\"agentName\":\"LongAgent\",\"task\":\"a\",\"timeout_seconds\":6}]";
+        String result = delegateAgentTool.delegateParallel(json, null);
+
+        // With the override the child finishes instead of timing out at 3 s.
+        assertTrue(result.contains("long task finished ok") || result.contains("success=1"),
+                "long task should complete within the widened budget: " + result);
+        assertFalse(result.contains("timeout=1"), "should not time out with the override: " + result);
+    }
 }

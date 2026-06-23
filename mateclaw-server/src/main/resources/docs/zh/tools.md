@@ -314,10 +314,8 @@ curl http://localhost:18088/api/v1/tools \
   -H "Authorization: Bearer YOUR_JWT_TOKEN"
 
 # 启用 / 禁用
-curl -X PUT http://localhost:18088/api/v1/tools/1 \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer YOUR_JWT_TOKEN" \
-  -d '{"enabled": false}'
+curl -X PUT "http://localhost:18088/api/v1/tools/1/toggle?enabled=false" \
+  -H "Authorization: Bearer YOUR_JWT_TOKEN"
 
 # 设置内置或渠道工具的披露分级
 curl -X PUT http://localhost:18088/api/v1/tools/1/disclosure-tier \
