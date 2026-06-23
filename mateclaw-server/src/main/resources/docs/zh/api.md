@@ -285,7 +285,7 @@ curl -N -X POST http://localhost:18088/api/v1/chat/stream \
 | `GET` | `/api/v1/models/active` | `获取当前激活模型` |
 | `PUT` | `/api/v1/models/active` | `设置当前激活模型` |
 | `GET` | `/api/v1/models/by-type` | `按类型筛选模型（chat / embedding），可选 modality 过滤` |
-| `GET` | `/api/v1/models/catalog` | `RFC-074: 获取 Provider 全量目录（含未启用），供 Add Provider 抽屉使用` |
+| `GET` | `/api/v1/models/catalog` | `获取 Provider 全量目录（含未启用），供 Add Provider 抽屉使用` |
 | `DELETE` | `/api/v1/models/custom-providers` | `删除自定义 Provider（查询参数变体，兼容含特殊字符的旧 ID）` |
 | `POST` | `/api/v1/models/custom-providers` | `创建自定义 Provider` |
 | `DELETE` | `/api/v1/models/custom-providers/{providerId}` | `删除自定义 Provider` |
@@ -299,10 +299,10 @@ curl -N -X POST http://localhost:18088/api/v1/chat/stream \
 | `PUT` | `/api/v1/models/{id}` | `更新模型` |
 | `POST` | `/api/v1/models/{id}/default` | `设置默认模型` |
 | `PUT` | `/api/v1/models/{providerId}/config` | `更新 Provider 配置` |
-| `POST` | `/api/v1/models/{providerId}/disable` | `RFC-074: 禁用 Provider（如其下模型为当前默认会自动切换）` |
+| `POST` | `/api/v1/models/{providerId}/disable` | `禁用 Provider（如其下模型为当前默认会自动切换）` |
 | `POST` | `/api/v1/models/{providerId}/discover` | `发现远端模型` |
 | `POST` | `/api/v1/models/{providerId}/discover/apply` | `批量添加发现的模型` |
-| `POST` | `/api/v1/models/{providerId}/enable` | `RFC-074: 启用 Provider` |
+| `POST` | `/api/v1/models/{providerId}/enable` | `启用 Provider` |
 | `DELETE` | `/api/v1/models/{providerId}/models` | `从 Provider 删除模型` |
 | `POST` | `/api/v1/models/{providerId}/models` | `向 Provider 添加模型` |
 | `POST` | `/api/v1/models/{providerId}/models/test` | `测试单个模型可用性` |
@@ -375,7 +375,7 @@ curl -N -X POST http://localhost:18088/api/v1/chat/stream \
 
 | 方法 | 路径 | 用途 / handler |
 |---|---|---|
-| `GET` | `/api/v1/skills` | `获取技能分页列表（RFC-042 §2.1）` |
+| `GET` | `/api/v1/skills` | `获取技能分页列表` |
 | `POST` | `/api/v1/skills` | `创建技能` |
 | `GET` | `/api/v1/skills/counts` | `获取各类型技能计数（tab 徽章用）` |
 | `POST` | `/api/v1/skills/curator/activate` | `激活/取消激活 curator（真正归档 vs 仅预览）` |
@@ -398,19 +398,19 @@ curl -N -X POST http://localhost:18088/api/v1/chat/stream \
 | `GET` | `/api/v1/skills/runtime/status` | `获取所有技能的运行时解析状态（管理页面使用）` |
 | `GET` | `/api/v1/skills/summary` | `获取已启用技能摘要（按类型分组）` |
 | `POST` | `/api/v1/skills/sync-files` | `Re-sync every skill's bundle files (admin)` |
-| `POST` | `/api/v1/skills/synthesize-from-conversation` | `从对话历史合成 Skill（RFC-023）` |
+| `POST` | `/api/v1/skills/synthesize-from-conversation` | `从对话历史合成 Skill` |
 | `GET` | `/api/v1/skills/type/{skillType}` | `按类型获取技能列表` |
 | `DELETE` | `/api/v1/skills/{id}` | `硬删除技能 (admin only — 物理删除 + 工作区清空)` |
 | `GET` | `/api/v1/skills/{id}` | `获取技能详情` |
 | `PUT` | `/api/v1/skills/{id}` | `更新技能` |
 | `POST` | `/api/v1/skills/{id}/archive` | `手动归档技能` |
-| `GET` | `/api/v1/skills/{id}/employees` | `List agents that can use this skill (RFC-090 §14.2)` |
+| `GET` | `/api/v1/skills/{id}/employees` | `列出能使用该技能的员工` |
 | `POST` | `/api/v1/skills/{id}/export-workspace` | `将 skill 导出到工作区目录` |
-| `GET` | `/api/v1/skills/{id}/lessons` | `Read per-skill LESSONS.md (RFC-090 §11.4)` |
-| `POST` | `/api/v1/skills/{id}/lessons/clear` | `Clear all lessons for a skill (RFC-090 §11.4)` |
+| `GET` | `/api/v1/skills/{id}/lessons` | `读取该技能的 LESSONS.md` |
+| `POST` | `/api/v1/skills/{id}/lessons/clear` | `清空该技能的所有 lessons` |
 | `POST` | `/api/v1/skills/{id}/pin` | `钉住/取消钉住技能（钉住的技能不会被自动归档）` |
-| `GET` | `/api/v1/skills/{id}/requirements` | `Pre-flight requirement statuses for a skill (RFC-090)` |
-| `POST` | `/api/v1/skills/{id}/rescan` | `重新扫描单个技能（RFC-042 §2.3.4）` |
+| `GET` | `/api/v1/skills/{id}/requirements` | `该技能的前置依赖检查状态` |
+| `POST` | `/api/v1/skills/{id}/rescan` | `重新扫描单个技能` |
 | `POST` | `/api/v1/skills/{id}/restore` | `恢复已归档的技能` |
 | `POST` | `/api/v1/skills/{id}/sync-files` | `Re-sync this skill's bundle files from DB → local workspace cache` |
 | `PUT` | `/api/v1/skills/{id}/toggle` | `启用/禁用技能` |
@@ -423,7 +423,7 @@ curl -N -X POST http://localhost:18088/api/v1/chat/stream \
 
 | 方法 | 路径 | 用途 / handler |
 |---|---|---|
-| `GET` | `/api/v1/skill-templates` | `List skill templates (RFC-091)` |
+| `GET` | `/api/v1/skill-templates` | `获取技能模板列表` |
 | `GET` | `/api/v1/skill-templates/{id}` | `Get a single skill template` |
 | `POST` | `/api/v1/skill-templates/{id}/instantiate` | `Instantiate a template into a skill` |
 

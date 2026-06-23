@@ -1,8 +1,10 @@
 package vip.mate.agent.graph.executor;
 
+import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.messages.ToolResponseMessage;
 import vip.mate.agent.context.StructuredTruncator;
+import vip.mate.tool.guard.WorkspacePathGuard;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.stereotype.Component;
@@ -71,6 +73,30 @@ public class ToolResultStorage {
     public ToolResultStorage(ToolResultProperties props) {
         this.props = props;
         this.excludedToolsSnapshot = props.excludedToolsSet();
+    }
+
+    /**
+     * Trust the deterministic spill roots with the workspace path guard at
+     * startup, before any spill happens in this JVM. Without this, a
+     * conversation that spilled in a previous run and is then resumed after a
+     * restart would have its {@code read_file} of the still-on-disk spill path
+     * rejected as a boundary escape until the next spill re-registers the root.
+     * The per-workspace branch ({@code <workspace>/.mateclaw/tool-results}) is
+     * intentionally not registered here — it already sits inside its own
+     * workspace boundary.
+     */
+    @PostConstruct
+    void registerSpillRootsAsTrusted() {
+        if (!props.isEnabled()) {
+            return;
+        }
+        if (!props.getStorageBaseDir().isEmpty()) {
+            WorkspacePathGuard.addTrustedRoot(props.getStorageBaseDir());
+        }
+        String tmp = System.getProperty("java.io.tmpdir");
+        if (tmp != null && !tmp.isEmpty()) {
+            WorkspacePathGuard.addTrustedRoot(Paths.get(tmp, "mateclaw", "tool-results").toString());
+        }
     }
 
     /** D-6: current cumulative spill count (monotonically increasing). */
@@ -283,18 +309,30 @@ public class ToolResultStorage {
 
     private Path resolveBaseDir(String workspaceBasePath) {
         Path base;
+        boolean outsideWorkspace;
         if (!props.getStorageBaseDir().isEmpty()) {
             base = Paths.get(props.getStorageBaseDir());
+            outsideWorkspace = true;
         } else if (workspaceBasePath != null && !workspaceBasePath.isBlank()) {
+            // Inside the workspace boundary already — read_file of these spill
+            // files is permitted without an extra trusted-root registration.
             base = Paths.get(workspaceBasePath, ".mateclaw", "tool-results");
+            outsideWorkspace = false;
         } else {
             String tmp = System.getProperty("java.io.tmpdir");
             if (tmp == null || tmp.isEmpty()) return null;
             base = Paths.get(tmp, "mateclaw", "tool-results");
+            outsideWorkspace = true;
         }
         // Register so the retention sweep and conversation-delete hook can
         // reach this root even when the workspace path is no longer in scope.
         observedRoots.add(base);
+        // A spill directory that lives outside the workspace must be trusted by
+        // the path guard; otherwise the read_file the spill preview tells the
+        // agent to perform is rejected as a workspace-boundary escape.
+        if (outsideWorkspace) {
+            WorkspacePathGuard.addTrustedRoot(base.toString());
+        }
         return base;
     }
 

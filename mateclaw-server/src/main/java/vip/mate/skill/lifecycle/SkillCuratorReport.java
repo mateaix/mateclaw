@@ -38,6 +38,7 @@ public class SkillCuratorReport {
     private final List<TransitionRow> transitions;
     private final List<BlockedByBindingRow> blockedByBindings;
     private final List<String> reconciliations;
+    private final List<ConsolidationRow> consolidations;
 
     /** Set by the report store after the run directory is written. */
     @JsonIgnore
@@ -54,6 +55,7 @@ public class SkillCuratorReport {
         this.transitions = List.copyOf(b.transitions);
         this.blockedByBindings = List.copyOf(b.blockedByBindings);
         this.reconciliations = List.copyOf(b.reconciliations);
+        this.consolidations = List.copyOf(b.consolidations);
     }
 
     public void setPath(Path path) {
@@ -81,6 +83,15 @@ public class SkillCuratorReport {
 
     public record TransitionRow(Long skillId, String name, String from, String to, long daysIdle) {}
 
+    /**
+     * One consolidation group: narrow skills in {@code absorbed} were folded
+     * into the {@code umbrella} skill. {@code umbrellaCreated} distinguishes a
+     * brand-new umbrella from an edit of an existing skill; {@code applied} is
+     * false for a dry-run preview.
+     */
+    public record ConsolidationRow(String umbrella, boolean umbrellaCreated,
+                                   List<String> absorbed, boolean applied, String reason) {}
+
     public static Builder builder() {
         return new Builder();
     }
@@ -98,6 +109,7 @@ public class SkillCuratorReport {
         private final List<TransitionRow> transitions = new ArrayList<>();
         private List<BlockedByBindingRow> blockedByBindings = new ArrayList<>();
         private final List<String> reconciliations = new ArrayList<>();
+        private final List<ConsolidationRow> consolidations = new ArrayList<>();
 
         public Builder runAt(LocalDateTime runAt) {
             this.runAt = runAt;
@@ -162,6 +174,13 @@ public class SkillCuratorReport {
         public Builder reconciliation(String message) {
             if (message != null && !message.isBlank()) {
                 this.reconciliations.add(message);
+            }
+            return this;
+        }
+
+        public Builder consolidation(ConsolidationRow row) {
+            if (row != null) {
+                this.consolidations.add(row);
             }
             return this;
         }

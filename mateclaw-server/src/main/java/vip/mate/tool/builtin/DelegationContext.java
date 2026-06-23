@@ -1,37 +1,44 @@
 package vip.mate.tool.builtin;
 
+import vip.mate.agent.delegation.SubagentRunContext;
+
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.Set;
 
 /**
  * Tracks Agent delegation call context to prevent infinite recursion and carry parent session info.
- * <p>
- * Uses a ThreadLocal stack so that nested delegations correctly restore the previous layer's
- * parentConversationId and childDeniedTools on exit.
- * Each {@link DelegateAgentTool} delegation calls enter() before and exit() after execution.
+ *
+ * <p>Thin thread-local adapter over {@link SubagentRunContext}: each layer's
+ * identity is an immutable {@link SubagentRunContext}, and this class keeps a
+ * per-thread stack of them so nested delegations correctly restore the previous
+ * layer's context on {@link #exit()}. Each {@link DelegateAgentTool} delegation
+ * calls {@link #enter} before and {@link #exit} after execution.
+ *
+ * <p>The value object is the canonical carrier; this adapter only manages its
+ * thread-confined lifecycle. Call sites that already hold a
+ * {@link SubagentRunContext} should prefer passing it explicitly — a thread-local
+ * stack does not survive virtual-thread / reactive hops, which is why the
+ * explicit-depth {@link #enter(String, Set, String, String, int)} overload
+ * exists for async / parallel children that start on a fresh executor thread.
  *
  * @author MateClaw Team
  */
 public final class DelegationContext {
 
-    /**
-     * Snapshot of one delegation layer's state.
-     *
-     * <p>{@code rootConversationId} is the human-facing conversation at the top
-     * of the delegation tree — every layer carries it unchanged so that a
-     * grandchild's progress events can be broadcast to the same stream the user
-     * is watching, rather than to its immediate (machine-only) parent.
-     * {@code currentSubagentId} is the id of the subagent running THIS layer; a
-     * deeper child reads it as its own {@code parentSubagentId} to reconstruct
-     * the spawn tree.
-     */
-    private record Frame(String parentConversationId, Set<String> childDeniedTools,
-                         String rootConversationId, String currentSubagentId, int depth) {}
-
-    private static final ThreadLocal<Deque<Frame>> STACK = ThreadLocal.withInitial(ArrayDeque::new);
+    private static final ThreadLocal<Deque<SubagentRunContext>> STACK =
+            ThreadLocal.withInitial(ArrayDeque::new);
 
     private DelegationContext() {}
+
+    /**
+     * The context of the layer currently executing on this thread, or
+     * {@link SubagentRunContext#ROOT} when not inside any delegation.
+     */
+    public static SubagentRunContext current() {
+        SubagentRunContext top = STACK.get().peek();
+        return top != null ? top : SubagentRunContext.ROOT;
+    }
 
     /**
      * Current delegation depth (0 = top-level call, not inside any delegation).
@@ -42,38 +49,32 @@ public final class DelegationContext {
      * depth is carried in via {@link #enter(String, Set, String, String, int)}.
      */
     public static int currentDepth() {
-        Frame top = STACK.get().peek();
-        return top != null ? top.depth : 0;
+        return current().depth();
     }
 
     /** Depth for the next layer when the caller doesn't pass one explicitly. */
     private static int nextDepth() {
-        Frame top = STACK.get().peek();
-        return (top != null ? top.depth : 0) + 1;
+        return current().depth() + 1;
     }
 
     /** Parent conversation ID for event relay (from the current frame) */
     public static String parentConversationId() {
-        Frame top = STACK.get().peek();
-        return top != null ? top.parentConversationId : null;
+        return current().parentConversationId();
     }
 
     /** Denied tools set for the child Agent (from the current frame) */
     public static Set<String> childDeniedTools() {
-        Frame top = STACK.get().peek();
-        return top != null && top.childDeniedTools != null ? top.childDeniedTools : Set.of();
+        return current().deniedTools();
     }
 
     /** Root (human-facing) conversation ID for the whole tree, or null at top level. */
     public static String rootConversationId() {
-        Frame top = STACK.get().peek();
-        return top != null ? top.rootConversationId : null;
+        return current().rootConversationId();
     }
 
     /** Subagent id of the layer currently executing, or null at top level. */
     public static String currentSubagentId() {
-        Frame top = STACK.get().peek();
-        return top != null ? top.currentSubagentId : null;
+        return current().currentSubagentId();
     }
 
     /** Enter the next delegation layer (with parent conversation ID and child tool restrictions) */
@@ -100,8 +101,8 @@ public final class DelegationContext {
      */
     public static void enter(String parentConversationId, Set<String> deniedTools,
                              String rootConversationId, String currentSubagentId, int depth) {
-        STACK.get().push(new Frame(parentConversationId, deniedTools,
-                rootConversationId, currentSubagentId, depth));
+        push(new SubagentRunContext(depth, parentConversationId, rootConversationId,
+                currentSubagentId, deniedTools));
     }
 
     /** Enter the next delegation layer (backward-compatible overload) */
@@ -109,9 +110,19 @@ public final class DelegationContext {
         enter(null, null, null, null, nextDepth());
     }
 
+    /**
+     * Push a pre-built context onto this thread's stack. Preferred when the
+     * caller already holds an explicit {@link SubagentRunContext} (e.g. one
+     * reconstructed on a fresh executor thread), so the identity is threaded
+     * as a value rather than reassembled from positional arguments.
+     */
+    public static void push(SubagentRunContext context) {
+        STACK.get().push(context);
+    }
+
     /** Exit the current delegation layer, restoring the previous layer's context */
     public static void exit() {
-        Deque<Frame> stack = STACK.get();
+        Deque<SubagentRunContext> stack = STACK.get();
         if (!stack.isEmpty()) {
             stack.pop();
         }

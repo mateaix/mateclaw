@@ -1,6 +1,6 @@
 {
   "name": "mateclaw-ui",
-  "version": "1.6.0-SNAPSHOT",
+  "version": "1.7.0-SNAPSHOT",
   "private": true,
   "type": "module",
   "description": "MateClaw - Personal AI Assistant Web Console",

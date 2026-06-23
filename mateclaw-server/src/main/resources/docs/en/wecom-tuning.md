@@ -111,7 +111,7 @@ Fix: magic-byte sniff:
 - Other common formats (PNG / JPEG / MP4 / MP3 / WAV) all recognized
 - Truly unknown → keep `.bin`, don't pretend it's something else
 
-Implemented in `WeComChannelAdapter.sniffMagic()` + `refineZipKind()`.
+Implemented in `MediaTypeSniffer.sniff()` + `MediaTypeSniffer.refineZipKind()`, called from `InboundMediaDownloader.download()`.
 
 ---
 

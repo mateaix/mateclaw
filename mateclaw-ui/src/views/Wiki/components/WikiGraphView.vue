@@ -87,6 +87,14 @@ const kbId = computed<string | number | null>(() => {
 })
 
 
+// Resolve a CSS custom property to its computed value so ECharts (canvas, which
+// can't read CSS vars) renders labels in the active light/dark theme color.
+function cssVar(name: string, fallback: string): string {
+  if (typeof document === 'undefined') return fallback
+  const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim()
+  return v || fallback
+}
+
 // Parse outgoing links JSON string → slug[]
 function parseLinks(outgoingLinks: string | null | undefined): string[] {
   if (!outgoingLinks) return []
@@ -209,6 +217,7 @@ const selectedNodeLinks = computed(() => {
 })
 
 function buildOption() {
+  const labelColor = cssVar('--mc-text-secondary', '#665245')
   const nodeSet = new Set(nodes.value.map(p => p.slug))
   const nodeList = nodes.value.map(p => {
     const outDeg = parseLinks(p.outgoingLinks).filter(l => {
@@ -227,7 +236,7 @@ function buildOption() {
         show: size > 22,
         position: 'right' as const,
         fontSize: 10,
-        color: 'var(--mc-text-secondary)',
+        color: labelColor,
         distance: 4,
       },
       // Do NOT embed Vue reactive proxies here — ECharts normalizes data and strips them.

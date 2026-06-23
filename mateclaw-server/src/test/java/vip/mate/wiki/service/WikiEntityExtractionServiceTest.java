@@ -149,6 +149,30 @@ class WikiEntityExtractionServiceTest {
     }
 
     @Test
+    @DisplayName("extractForKb(force): clears a chunk's prior mentions/relations before re-extracting")
+    void extractForKb_forceClearsBeforeReextract() {
+        when(chunkService.listByKbId(KB_ID)).thenReturn(List.of(chunk(1L, "Alice works at Acme.")));
+        // Chunk already processed → hasMentions() is true, so the force path runs
+        // its clear step instead of skipping.
+        when(mentionMapper.selectCount(any(Wrapper.class))).thenReturn(1L);
+        // One stale mention exists for this chunk, pointing at an entity not in
+        // the store (so the count-recompute loop simply skips it).
+        WikiEntityMentionEntity stale = new WikiEntityMentionEntity();
+        stale.setEntityId(999L);
+        stale.setChunkId(1L);
+        when(mentionMapper.selectList(any())).thenReturn(List.of(stale));
+
+        int touched = service.extractForKb(KB_ID, true);
+
+        assertEquals(2, touched, "should re-resolve both entities on a forced rebuild");
+        // Stale artifacts wiped exactly once before re-extraction.
+        verify(mentionMapper, times(1)).delete(any());
+        verify(relationMapper, times(1)).delete(any());
+        // Fresh mentions re-inserted (2 entities), not duplicated on top of the old ones.
+        verify(mentionMapper, times(2)).insert(any(WikiEntityMentionEntity.class));
+    }
+
+    @Test
     @DisplayName("extractForRaw: skips chunks that already have mentions")
     void extractForRaw_skipsProcessedChunks() {
         when(chunkService.listByRawId(RAW_ID)).thenReturn(List.of(chunk(1L, "Alice works at Acme.")));

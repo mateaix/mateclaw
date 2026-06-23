@@ -59,6 +59,13 @@ export interface Agent {
    * delegation primitives still pass through. Defaults to `false`.
    */
   toolsDisabled?: boolean
+  /**
+   * Explicit opt-out: this agent sees zero knowledge bases regardless of
+   * leftover `mate_agent_wiki_kb` rows. Wiki tools degrade with their
+   * standard "no knowledge base" message; the webchat `/wiki/pages` picker
+   * returns an empty list. Defaults to `false`. Issue #304.
+   */
+  wikiDisabled?: boolean
   createTime?: string
   updateTime?: string
 }
@@ -711,11 +718,16 @@ export interface SubPlan {
   result?: string
   startTime?: string
   endTime?: string
+  /** Delegated specialist agent for this step (snowflake id — keep as string).
+   *  Absent/null means the step runs with the parent (plan) agent. */
+  assignedAgentId?: string | number
 }
 
 export interface Plan {
   id: string | number
   agentId: string
+  /** Conversation/run that produced the plan (may be absent on legacy rows). */
+  conversationId?: string
   goal: string
   status: 'pending' | 'running' | 'completed' | 'failed'
   totalSteps: number

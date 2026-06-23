@@ -158,6 +158,30 @@ public class AgentGraphBuilder {
     }
 
     /**
+     * Optional per-step delegation dependencies for the Plan-Execute graph.
+     * Setter injection (like {@link #auditEventService}) breaks the
+     * {@code AgentService ⇆ AgentGraphBuilder} construction cycle. Null when not
+     * wired (legacy / test) — per-step delegation is then simply disabled.
+     */
+    private AgentService agentService;
+
+    // @Lazy on the injection point: inject a lazy-resolution proxy so the
+    // AgentService ⇆ AgentGraphBuilder cycle is broken at bean-creation time
+    // (the real bean is resolved on first use, when the graph is built).
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setAgentService(@org.springframework.context.annotation.Lazy AgentService agentService) {
+        this.agentService = agentService;
+    }
+
+    private vip.mate.tool.builtin.DelegateAgentTool delegateAgentTool;
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setDelegateAgentTool(
+            @org.springframework.context.annotation.Lazy vip.mate.tool.builtin.DelegateAgentTool delegateAgentTool) {
+        this.delegateAgentTool = delegateAgentTool;
+    }
+
+    /**
      * 根据 AgentEntity 构建完整的 Agent 实例（沿用 Agent / 全局默认模型）。
      */
     public BaseAgent build(AgentEntity entity) {
@@ -554,8 +578,11 @@ public class AgentGraphBuilder {
             if (auditEventService != null) {
                 executor.setAuditEventService(auditEventService);
             }
-            PlanGenerationNode planGenerationNode = new PlanGenerationNode(chatModel, planningService, streamingHelper, conversationWindowManager, toolSet, goalService, goalProperties);
+            PlanGenerationNode planGenerationNode = new PlanGenerationNode(chatModel, planningService, streamingHelper, conversationWindowManager, toolSet, goalService, goalProperties, agentService);
             StepExecutionNode stepExecutionNode = new StepExecutionNode(chatModel, toolSet, executor, planningService, streamTracker, reasoningEffort, streamingHelper, conversationWindowManager, skillCatalogRenderer);
+            // Per-step delegation: route a step assigned to a specialist agent
+            // through DelegateAgentTool (null when delegation deps aren't wired).
+            stepExecutionNode.setDelegateAgentTool(delegateAgentTool);
             PlanSummaryNode planSummaryNode = new PlanSummaryNode(chatModel, planningService, streamingHelper);
             DirectAnswerNode directAnswerNode = new DirectAnswerNode();
 

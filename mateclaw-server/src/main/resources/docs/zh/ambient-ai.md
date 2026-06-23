@@ -109,7 +109,7 @@ MateClaw 的答案是：**你团队已经在用的所有聊天软件，就是那
 
 - **多 Agent 引擎**（ReAct + Plan-Execute）
 - **Cron 调度 + 失败重试**
-- **9 个 IM 渠道适配器**（每个都有指数退避重连）
+- **8 个 IM 渠道适配器**（每个都有指数退避重连）
 - **持久化记忆**（[Memory](./memory)，Dreaming 之后越用越懂你）
 - **Wiki 知识层**（[LLM Wiki](./wiki)，让调研有依据）
 - **Tool Guard**（[Security](./security)，敏感操作问你一句再执行）

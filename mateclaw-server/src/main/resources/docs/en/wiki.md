@@ -91,7 +91,7 @@ Ingestion is idempotent. Re-run it on the same material and existing pages get u
 Eager ingest runs in two phases for an order-of-magnitude speedup:
 
 - **Phase A (route)** — extracts metadata and concept routing, deciding which pages each chunk feeds into.
-- **Phase B (merge)** — generates pages in parallel, 60+ at a time. Each raw material gets its own **progress bar** — no more staring at "processing…" wondering what's happening.
+- **Phase B (merge)** — generates pages in parallel across multiple raw materials simultaneously; the degree of concurrency is tunable. Each raw material gets its own **progress bar** — no more staring at "processing…" wondering what's happening.
 
 **Resumable**: interrupted mid-import? Hit "Reprocess" and only the unfinished pages re-run; everything already produced stays put. Documents larger than the embedding model's context get mean-pool sub-segmented automatically.
 
@@ -285,7 +285,7 @@ The bound KB doesn't just contribute summaries — it also contributes a small, 
 - **Recent changes** — page creations and compilations since the last rebuild
 - **Active threads** — open questions and unresolved decisions
 
-The rebuilder fires asynchronously when a conversation ends (`ConversationCompletedEvent`), debounced inside a configurable window (default ~30 s) so a flurry of short turns doesn't churn LLM calls. An admin can also trigger a rebuild manually — that path bypasses the debounce.
+The rebuilder fires asynchronously when a conversation ends (`ConversationCompletedEvent`), debounced inside a configurable window (default 5 min) so a flurry of short turns doesn't churn LLM calls. An admin can also trigger a rebuild manually — that path bypasses the debounce.
 
 The injection is gated by the `wiki.hot_cache.enabled` feature flag (off → empty injection) and is capped at the **two highest-priority KBs** per agent so the system prompt stays small.
 
@@ -389,8 +389,8 @@ that teaches wikilink syntax doesn't accidentally lint itself).
 Each KB shows a banner at the top of the workspace. Click "Scan dead
 links" to start a job:
 
-| Method | Path | What it does |
-|---|---|---|
+| Endpoint | What it does |
+|---|---|
 | `POST /api/v1/wiki/knowledge-bases/{kbId}/lint/broken-links` | Starts a job (async, job-based). Returns `{jobId, status, startedAt}`. Idempotent — repeat POSTs while a job is in flight return the same id |
 | `GET .../lint/broken-links` | Returns the latest completed scan as a per-page aggregate |
 | `GET .../lint/broken-links/jobs/{jobId}` | Status check for a specific job |
@@ -453,6 +453,12 @@ page — clicking a `[[link]]` in chat gets you there directly. The
 lookup is strict case-insensitive exact (no canonical fuzzing), so
 if the LLM wrote a slug that doesn't exist you see the toast rather
 than getting silently redirected to a similarly-named page.
+
+### `[n]` citation markers are clickable too
+
+When an agent answers using wiki retrieval, the reply ends with a "Sources:" list (`[1] Title — Section — page N`). The **inline citation markers** (`[1]`, `[2]`, etc.) are now themselves clickable, and every line of the sources list is also fully clickable — either takes you directly to the corresponding wiki page. The navigation logic is shared with wikilinks above: title-based cross-KB lookup, with 0 / 1 / multiple-hit behaviour of toast / direct navigation / picker respectively.
+
+The backend normalises source lines into a canonical format (adding the "Sources:" header when missing, rewriting legacy formats in-place) so the frontend can reliably identify them and wire up the `[n]` markers as links. This requires the KB to have Wiki enabled and the material to have been ingested.
 
 ### Phase roadmap (all phases landed)
 
@@ -579,7 +585,7 @@ When the `wiki.ocr.enabled` feature flag is on, MateClaw runs every uploaded ima
 |---|---|---|
 | `dashscope-vision` | `qwen-vl-max` | DashScope OpenAI-compatible endpoint; reuses the DashScope provider configured in the UI |
 | `zhipu-vision` | `glm-5v-turbo` | Zhipu BigModel; OpenAI-compatible |
-| `volcano-doubao-vision` | configurable | ByteDance Volcano Doubao vision |
+| `doubao-vision` | configurable | ByteDance Volcano Doubao vision |
 
 Providers are auto-detected by order. Configure their keys / base URLs in `Settings → Models` like any other provider — the vision pipeline picks up the credentials from there.
 
@@ -625,13 +631,47 @@ This UI used to be cosmetic — the Java side dropped the config on the floor an
 
 ---
 
+## Knowledge graph: the entity layer
+
+::: tip New
+The page layer answers "which page covers this topic." The **entity layer** answers "who relates to whom, and how." During ingest, alongside chunking, embedding, and page writing, the system can run an additional **entity extraction** pass: pulling out named entities — people, organisations, locations, events, products, concepts — and the typed relationships between them, connecting everything into a navigable knowledge graph.
+:::
+
+### What gets extracted, and when
+
+Two kinds of objects are produced:
+
+- **Entities (nodes)** — each entity has a canonical name, aliases, a description, a salience score, a mention count, and an embedding vector used for near-duplicate merging. Six built-in types: `person` / `organization` / `location` / `event` / `product` / `concept`.
+- **Relations (edges)** — subject → predicate → object triples, where the predicate is a snake\_case phrase (`works_for`, `located_in`, `founded`, etc.). Each relation carries an evidence quotation.
+
+Extraction runs after embeddings are written, as an **independent async pass** that does not block page generation. It is **incremental** by default — chunks that have already been processed are skipped. Entity normalisation works in three tiers: an in-process runtime cache → exact database key lookup → cosine similarity against stored embeddings (threshold 0.92) to merge near-synonyms. "阿里巴巴" and "Alibaba" collapse to the same node.
+
+Extraction only runs when **entity extraction is enabled** in the KB configuration. To force a full re-extraction immediately: `POST /api/v1/wiki/kb/{kbId}/entities/extract?force=true` — force mode captures a new graph before replacing the old one, so a complete LLM failure leaves the existing graph intact.
+
+### Configuring entity types
+
+In `Wiki → Config → Entity Extraction`: toggling the switch on reveals a tag editor (multi-select, searchable, inline create). The six built-in types are suggested by default; you can type a custom type (e.g. `technology`, `law`) and press Enter to add it. Leaving the list empty falls back to the built-in six. The type list is stored in the KB's `configContent` JSON under the `entityTypes` key.
+
+### Exploring the graph
+
+The Wiki graph view toolbar gains a **Page graph / Entity graph** toggle. In entity graph mode:
+
+- The full graph is loaded in one call (`GET /api/v1/wiki/kb/{kbId}/entity-graph`). Nodes are coloured by type; labels are always visible.
+- A **type legend** at the top lists every entity type present in the graph. Clicking a type label toggles that type's nodes on or off — useful when the graph is large.
+- Clicking a node loads its **ego-graph**: the right-hand panel lists the entity's aliases, its relations, and the **wiki pages that mention it** (each is a clickable link).
+- Colours follow a shared earthy palette that matches the page-type graph. Because the graph renders on canvas and cannot read CSS variables, the palette is resolved from the current theme's computed styles at runtime, so both light and dark mode display correct label colours.
+
+The three underlying tables are described in the [Data model](#data-model-if-you-re-curious) section below.
+
+---
+
 ## Data model (if you're curious)
 
-Nine tables:
+Core tables (see feature sections for the complete list):
 
 | Table | Purpose |
 |---|---|
-| `mate_wiki_knowledge_base` | One row per KB. Owner, name, description, config JSON (`ingestMode`, `wikiDefaultModelId`, `stepModels`, fallback chain). |
+| `mate_wiki_knowledge_base` | One row per KB. Owner, name, description, config JSON (`ingestMode`, `wikiDefaultModelId`, `stepModels`, `entityExtractionEnabled`, `entityTypes`, fallback chain). |
 | `mate_wiki_raw_material` | One row per upload. Status, byte hash, source path, last successfully-processed hash. |
 | `mate_wiki_page` | One row per generated page. Title, summary, body, `source_raw_ids` (provenance), `page_type`, `locked`, version, plus `embedding` / `embedding_model` / `embedding_text_version` so transformation synthesis pages enter semantic search directly. |
 | `mate_wiki_chunk` | One row per chunk. content + hash + offsets + embedding, plus `page_number`, `header_breadcrumb`, `source_section`, `token_count`. |
@@ -640,6 +680,9 @@ Nine tables:
 | `mate_wiki_image_caption_cache` | SHA-256 keyed cache of vision-extracted captions. `caption`, `visible_text`, `mime_type`, `capture_model`, `provider_id`, `duration_ms`, `hit_count`. |
 | `mate_wiki_transformation` | One row per transformation template. `name`, `title`, `description`, `prompt_template`, `model_id`, `apply_default`, `output_target`, `output_format`, `output_schema`. `kb_id=NULL` = workspace-wide. |
 | `mate_wiki_transformation_run` | One row per template execution. `status`, `output`, `error`, `duration_ms`, `model_id`, `triggered_by`, `input_tokens`, `output_tokens`, `total_tokens`, `output_page_id`. |
+| `mate_wiki_entity` (V148) | One row per entity. Canonical name, type, aliases JSON, `salience`, `mention_count`, `embedding` (used for near-duplicate merging). |
+| `mate_wiki_entity_mention` (V149) | One occurrence of an entity in a chunk. `entity_id`, `chunk_id`, `page_id` (back-reference to the wiki page), `surface_form`, `evidence`. |
+| `mate_wiki_entity_relation` (V150) | Entity relation triple. `subject_entity_id`, `predicate`, `object_entity_id`, `evidence`, `evidence_chunk_id`. |
 
 `mate_wiki_page` also carries two protection flags:
 

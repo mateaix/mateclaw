@@ -111,7 +111,7 @@ WeCom 群里转发的文件经常**没有 filename 字段**。落地存成 `file
 - 其他常见格式（PNG / JPEG / MP4 / MP3 / WAV）都能正确识别
 - 实在认不出 → 保留 `.bin`，至少不假装是其他格式
 
-实现在 `WeComChannelAdapter.sniffMagic()` + `refineZipKind()`。
+实现在 `MediaTypeSniffer.sniff()` + `MediaTypeSniffer.refineZipKind()`（被 `InboundMediaDownloader.download()` 调用）。
 
 ---
 

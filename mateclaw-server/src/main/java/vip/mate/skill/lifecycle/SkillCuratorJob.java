@@ -39,6 +39,8 @@ public class SkillCuratorJob {
     static final String FIRST_RUN_KEY = "skill.curator.firstRunCompleted";
     /** Runtime kill switch — pauses the scheduled sweep without a redeploy. */
     static final String PAUSED_KEY = "skill.curator.paused";
+    /** Runtime override for the consolidation pass (falls back to config). */
+    static final String CONSOLIDATE_KEY = "skill.curator.consolidate";
     /** ISO-8601 timestamp of the last auto dry-run, for throttling. */
     static final String LAST_DRY_RUN_KEY = "skill.curator.lastDryRunAt";
     /** ISO-8601 timestamp of the first sweep observation after install. */
@@ -57,6 +59,7 @@ public class SkillCuratorJob {
     private final AgentBindingService agentBindingService;
     private final SkillWorkspaceManager workspaceManager;
     private final CuratorRunNotifier notifier;
+    private final SkillConsolidationService consolidationService;
 
     @Scheduled(cron = "${mateclaw.skill.curator.cron:0 0 2 * * *}")
     @SchedulerLock(name = "skill-curator", lockAtMostFor = "PT10M", lockAtLeastFor = "PT30S")
@@ -127,6 +130,16 @@ public class SkillCuratorJob {
         systemSettingService.saveBool(PAUSED_KEY, paused, "Skill curator paused");
     }
 
+    /** Set the runtime consolidation flag (overrides the config default). */
+    public void setConsolidate(boolean on) {
+        systemSettingService.saveBool(CONSOLIDATE_KEY, on, "Skill curator consolidation enabled");
+    }
+
+    /** Effective consolidation switch: runtime override, falling back to config. */
+    private boolean effectiveConsolidate() {
+        return systemSettingService.getBool(CONSOLIDATE_KEY, properties.isConsolidate());
+    }
+
     /** Aggregated control-panel state for the admin UI. */
     public Map<String, Object> status() {
         Map<String, Object> config = new LinkedHashMap<>();
@@ -139,6 +152,7 @@ public class SkillCuratorJob {
         Map<String, Object> control = new LinkedHashMap<>();
         control.put("activated", systemSettingService.getBool(FIRST_RUN_KEY, false));
         control.put("paused", systemSettingService.getBool(PAUSED_KEY, false));
+        control.put("consolidate", effectiveConsolidate());
         control.put("lastObservedAt", systemSettingService.getString(LAST_OBSERVED_KEY, null));
         control.put("lastDryRunAt", systemSettingService.getString(LAST_DRY_RUN_KEY, null));
         control.put("lastRunAt", systemSettingService.getString(LAST_RUN_KEY, null));
@@ -211,6 +225,15 @@ public class SkillCuratorJob {
                 .plannedCounts(plannedStale, plannedArchived, plannedReactivate)
                 .appliedCounts(appliedStale, appliedArchived, appliedReactivate)
                 .blockedByBindings(agentBindingService.blockedByBindingCandidates(now));
+
+        // Consolidation pass (opt-in). Reload candidates so it sees the state
+        // left by the aging pass above and never merges a just-archived skill.
+        if (effectiveConsolidate()) {
+            List<SkillEntity> mergeCandidates = loadCandidates().stream()
+                    .filter(s -> !"archived".equals(s.getLifecycleState()))
+                    .toList();
+            consolidationService.consolidate(mergeCandidates, now, dryRun, report);
+        }
 
         return reportStore.write(report.build());
     }

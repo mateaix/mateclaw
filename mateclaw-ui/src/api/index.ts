@@ -9,6 +9,17 @@ import type {
   GrantScope,
 } from '@/types'
 
+/**
+ * URL-encode a conversation id before interpolating it into a path. Some ids
+ * contain characters that the browser interprets as URL structural — notably
+ * `#`, which webchat emits as a hash marker when the visitorId+sessionId pair
+ * exceeds the conversation_id column width (see WebChatController#deriveConversationId:
+ * `webchat:<key8>:#<sha256[0..40]>`). Without encoding, everything after the
+ * `#` is treated as a fragment and never reaches the server, producing 405 on
+ * `@DeleteMapping` fallbacks and 403 from the owner check.
+ */
+const encId = (id: string) => encodeURIComponent(id)
+
 // Axios 实例
 export const http = axios.create({
   baseURL: '/api/v1',
@@ -156,9 +167,9 @@ export const chatApi = {
     })
   },
   stop: (conversationId: string) =>
-    http.post<{ stopped: boolean }>(`/chat/${conversationId}/stop`),
+    http.post<{ stopped: boolean }>(`/chat/${encId(conversationId)}/stop`),
   getPendingApprovals: (conversationId: string) =>
-    http.get(`/chat/${conversationId}/pending-approvals`),
+    http.get(`/chat/${encId(conversationId)}/pending-approvals`),
 }
 
 // ==================== Conversation ====================
@@ -172,17 +183,17 @@ export const conversationApi = {
   page: (params: { page?: number; size?: number; keyword?: string }) =>
     http.get('/conversations/page', { params }),
   listMessages: (conversationId: string, params?: { beforeId?: number; limit?: number }) =>
-    http.get(`/conversations/${conversationId}/messages`, { params }),
+    http.get(`/conversations/${encId(conversationId)}/messages`, { params }),
   getStatus: (conversationId: string) =>
-    http.get(`/conversations/${conversationId}/status`),
+    http.get(`/conversations/${encId(conversationId)}/status`),
   delete: (conversationId: string) =>
-    http.delete(`/conversations/${conversationId}`),
+    http.delete(`/conversations/${encId(conversationId)}`),
   clearMessages: (conversationId: string) =>
-    http.delete(`/conversations/${conversationId}/messages`),
+    http.delete(`/conversations/${encId(conversationId)}/messages`),
   rename: (conversationId: string, title: string) =>
-    http.put(`/conversations/${conversationId}/title`, { title }),
+    http.put(`/conversations/${encId(conversationId)}/title`, { title }),
   setPinned: (conversationId: string, pinned: boolean) =>
-    http.put(`/conversations/${conversationId}/pin`, { pinned }),
+    http.put(`/conversations/${encId(conversationId)}/pin`, { pinned }),
   /**
    * Pin this conversation to a specific (provider, model). Closes issue
    * #183 — lets the admin UI switch model for IM-channel conversations
@@ -190,7 +201,7 @@ export const conversationApi = {
    * not just for the Web channel. Both params required and non-empty.
    */
   setModel: (conversationId: string, modelProvider: string, modelName: string) =>
-    http.put(`/conversations/${conversationId}/model`, { modelProvider, modelName }),
+    http.put(`/conversations/${encId(conversationId)}/model`, { modelProvider, modelName }),
   batchDelete: (conversationIds: string[]) =>
     http.post('/conversations/batch-delete', { conversationIds }),
 }
@@ -269,6 +280,9 @@ export const skillApi = {
     http.post('/skills/curator/activate', null, { params: { activate } }),
   curatorPause: () => http.post('/skills/curator/pause'),
   curatorResume: () => http.post('/skills/curator/resume'),
+  /** Enable or disable the consolidation (merge near-duplicate skills) pass. */
+  curatorConsolidate: (enabled: boolean) =>
+    http.post('/skills/curator/consolidate', null, { params: { enabled } }),
   /** List recent curator run report ids. */
   curatorReports: () => http.get('/skills/curator/reports'),
   /** Read one curator run report (parsed run.json). */
@@ -511,6 +525,8 @@ export const mcpApi = {
 // ==================== Plan ====================
 export const planApi = {
   listByAgent: (agentId: string) => http.get(`/plans?agentId=${agentId}`),
+  /** Cross-agent recent plans for the team / swimlane board. */
+  listAll: (limit = 100) => http.get('/plans', { params: { limit } }),
   get: (id: string | number) => http.get(`/plans/${id}`),
 }
 
@@ -1377,7 +1393,7 @@ export const goalApi = {
   }) => http.post<Goal>('/goals', data),
 
   findActive: (conversationId: string) =>
-    http.get<Goal | null>(`/goals/by-conversation/${conversationId}`),
+    http.get<Goal | null>(`/goals/by-conversation/${encId(conversationId)}`),
 
   get: (id: string) => http.get<Goal>(`/goals/${id}`),
 
@@ -1444,6 +1460,8 @@ export const approvalApi = {
 export interface DocMeta {
   slug: string
   title: string
+  /** Group label (e.g. 开始 / 使用 / 扩展), mirroring the docs site sidebar sections. */
+  group: string
 }
 
 export interface DocContent {

@@ -150,6 +150,7 @@ public class ConversationService {
         boolean includeWebchat = includeChannelPrincipals && isGlobalAdmin(username);
         LambdaQueryWrapper<ConversationEntity> wrapper = new LambdaQueryWrapper<ConversationEntity>()
                 .and(w -> applyOwnerScope(w, username, includeWebchat))
+                .and(this::applyMalformedIdGuard)
                 .isNull(ConversationEntity::getParentConversationId)
                 .orderByDesc(ConversationEntity::getPinned)
                 .orderByDesc(ConversationEntity::getLastActiveTime);
@@ -204,6 +205,26 @@ public class ConversationService {
     }
 
     /**
+     * Exclude rows whose conversationId ends in ":" — malformed (e.g.
+     * {@code webchat:<key8>:} with empty visitorId, from older versions).
+     * Showing them in the console surfaces threads that 500/403 on open
+     * because the trailing ":" makes some reverse proxies strip the path
+     * tail (issue #369).
+     *
+     * <p>Uses {@code notLikeLeft} rather than {@code notLike(...,"%:")}: the
+     * latter auto-wraps the value with extra {@code %} on both sides AND
+     * escapes the user-supplied {@code %}, producing a {@code %%:%} pattern
+     * that matches <em>any id containing a colon</em> — silently filtering
+     * out every {@code webchat:…}, {@code feishu:…}, {@code cron:…}
+     * conversation from the list. {@code notLikeLeft} only prepends the
+     * wildcard, giving the intended {@code NOT LIKE '%:'} ("does not end
+     * with a colon").
+     */
+    private void applyMalformedIdGuard(LambdaQueryWrapper<ConversationEntity> w) {
+        w.notLikeLeft(ConversationEntity::getConversationId, ":");
+    }
+
+    /**
      * Whether the user is a global admin (role=admin), resolved from the DB —
      * never from client-controlled data. Gates webchat row visibility in the
      * admin-console list/page: {@link #isConversationOwner} only lets a global
@@ -239,6 +260,7 @@ public class ConversationService {
         // conversation (issue #344), so non-admins must not see those rows.
         LambdaQueryWrapper<ConversationEntity> wrapper = new LambdaQueryWrapper<ConversationEntity>()
                 .and(w -> applyOwnerScope(w, username, isGlobalAdmin(username)))
+                .and(this::applyMalformedIdGuard)
                 .isNull(ConversationEntity::getParentConversationId)
                 .orderByDesc(ConversationEntity::getPinned)
                 .orderByDesc(ConversationEntity::getLastActiveTime);

@@ -976,6 +976,42 @@ public class AgentBindingService implements AgentBindingResolver {
     }
 
     /**
+     * Effective KB ids the agent may see. Three states (mirror
+     * {@link #getBoundSkillIds}):
+     *
+     * <ul>
+     *   <li>{@code null} — {@code wiki_disabled=false} AND no binding rows.
+     *       Caller treats this as "no agent-level restriction; inherit every
+     *       KB in the agent's workspace" (the default wiki-tool behavior).</li>
+     *   <li>{@code Set.of()} — either {@code wiki_disabled=true}, or binding
+     *       rows exist but none are {@code enabled=true}. Caller treats this
+     *       as "explicitly scoped to zero KBs" — wiki tools degrade with
+     *       their standard "no knowledge base" message.</li>
+     *   <li>non-empty set — the explicit allowlist.</li>
+     * </ul>
+     *
+     * <p>The {@code wiki_disabled} flag takes precedence over row count, so
+     * a stale (flag + leftover rows) combination still surfaces as "no KBs".
+     * Mirrors how {@code skills_disabled} interacts with
+     * {@link #getBoundSkillIds}.
+     */
+    @Override
+    public Set<Long> getBoundKbIds(Long agentId) {
+        if (isWikiDisabled(agentId)) {
+            return Set.of();
+        }
+        List<AgentWikiKbBinding> bindings = listKbBindings(agentId);
+        if (bindings.isEmpty()) {
+            return null;
+        }
+        return bindings.stream()
+                .filter(b -> Boolean.TRUE.equals(b.getEnabled()))
+                .map(AgentWikiKbBinding::getKbId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+    }
+
+    /**
      * Replace the agent's KB access scope. An empty / null list clears the
      * scope, returning the agent to workspace-wide (unrestricted) access.
      * Every incoming KB must live in the agent's workspace — pinning a KB
@@ -996,6 +1032,12 @@ public class AgentBindingService implements AgentBindingResolver {
         // can't leave the agent half-scoped.
         for (Long kbId : distinct) {
             requireKbInAgentWorkspace(agentId, kbId);
+        }
+        // Auto-clear wiki_disabled on a non-empty save — same contract as
+        // setSkillBindings: a concrete KB commitment contradicts an opt-out
+        // flag, so the data layer must never hold both states at once.
+        if (!distinct.isEmpty()) {
+            clearWikiDisabledFlag(agentId);
         }
         kbBindingMapper.delete(
                 new LambdaQueryWrapper<AgentWikiKbBinding>()
@@ -1090,6 +1132,30 @@ public class AgentBindingService implements AgentBindingResolver {
         AgentEntity update = new AgentEntity();
         update.setId(agentId);
         update.setToolsDisabled(false);
+        agentMapper.updateById(update);
+    }
+
+    /** Mirror of {@link #isSkillsDisabled} for the wiki/knowledge-base opt-out toggle. */
+    private boolean isWikiDisabled(Long agentId) {
+        if (agentId == null) return false;
+        AgentEntity agent = agentMapper.selectById(agentId);
+        return agent != null && Boolean.TRUE.equals(agent.getWikiDisabled());
+    }
+
+    /**
+     * Mirror of {@link #clearSkillsDisabledFlag} for the wiki toggle. Used as
+     * an auto-clear step in {@link #setKbBindings} so a concrete KB commitment
+     * always wins over a stale opt-out flag.
+     */
+    private void clearWikiDisabledFlag(Long agentId) {
+        if (agentId == null) return;
+        AgentEntity agent = agentMapper.selectById(agentId);
+        if (agent == null || !Boolean.TRUE.equals(agent.getWikiDisabled())) {
+            return;
+        }
+        AgentEntity update = new AgentEntity();
+        update.setId(agentId);
+        update.setWikiDisabled(false);
         agentMapper.updateById(update);
     }
 }
