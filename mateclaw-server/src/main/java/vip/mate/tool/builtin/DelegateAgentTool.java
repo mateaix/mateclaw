@@ -48,7 +48,9 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class DelegateAgentTool {
 
-    private static final int MAX_DELEGATION_DEPTH = 3;
+    // Package-private so sibling session tools (e.g. SessionSendTool, which
+    // re-enters a child run) share one source of truth for the recursion cap.
+    static final int MAX_DELEGATION_DEPTH = 3;
     private static final int MAX_RESULT_LENGTH = 4000;
     /**
      * Cap on children dispatched in a single delegateParallel call. Set to 8
@@ -114,6 +116,10 @@ public class DelegateAgentTool {
             "delegateToAgent",
             "delegateParallel",
             "listAvailableAgents",
+            // A child following up on its own grand-children via send would be
+            // horizontal dispatch that bypasses the spawn depth gate, so the
+            // continuation tool stays with the parent (same stance as delegate*).
+            "sendToSubagent",
             // Memory writes from children would pollute the parent's shared
             // long-term memory surface.
             "remember",
@@ -321,7 +327,15 @@ public class DelegateAgentTool {
                     subagentId, parentSubagentId, childDepth);
         }
 
-        return result.toToolResponse(target.getName());
+        String response = result.toToolResponse(target.getName());
+        // Surface the child's session handle so the parent can follow up on this
+        // exact sub-agent (its conversation persists past this call) via
+        // send_to_subagent, instead of re-spawning a fresh, context-less child.
+        if (result.success() && childConversationId != null) {
+            response += "\n\n[session_id: " + childConversationId
+                    + " — to follow up with this sub-agent, call send_to_subagent(session_id, message)]";
+        }
+        return response;
     }
 
     /**
