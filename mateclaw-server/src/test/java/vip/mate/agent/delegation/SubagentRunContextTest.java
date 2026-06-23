@@ -62,10 +62,10 @@ class SubagentRunContextTest {
     }
 
     /**
-     * RFC 08 G1 guardrail: a context passed explicitly carries its depth across
-     * a fresh executor thread, where a size-based thread-local stack would reset
-     * to 1. Reconstructing the layer via {@link DelegationContext#push} on the
-     * child thread reproduces the real tree depth.
+     * Guardrail: a context passed explicitly carries its depth across a fresh
+     * executor thread, where a size-based thread-local stack would reset to 1.
+     * Reconstructing the layer via {@link DelegationContext#push} on the child
+     * thread reproduces the real tree depth.
      */
     @Test
     void explicitContextCarriesDepthAcrossThreadHop() throws Exception {
