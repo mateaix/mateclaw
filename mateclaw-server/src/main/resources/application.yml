@@ -116,11 +116,16 @@ mybatis-plus:
     log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
 
 # SpringDoc OpenAPI
+# 注意：/swagger-ui*、/v3/api-docs*、/webjars/** 落在 SecurityConfig 的
+# .anyRequest().permitAll()，即 Swagger UI 当前公开可访问。如生产需要收口，
+# 在 SecurityConfig 加显式规则（不要在此处配）。
 springdoc:
   api-docs:
     path: /v3/api-docs
   swagger-ui:
     path: /swagger-ui.html
+  # 把单个嵌套 query 参数对象（如分页 wrapper）拍平成独立字段，减少 schema 噪音
+  default-flat-param-object: true
 
 # MateClaw 自定义配置
 mateclaw:
@@ -131,6 +136,15 @@ mateclaw:
     # Set this when agents deliver download links to channels/clients that cannot
     # resolve a relative URL (IM messages, copied links, external downloads).
     public-base-url: ${MATECLAW_PUBLIC_BASE_URL:}
+  openapi:
+    # SpringDoc OpenAPI 元信息（驱动 /swagger-ui.html 与 /v3/api-docs）。
+    # server-url 留空时由 SpringDoc 从请求 host 推导，避免 Try it out 打到错误地址。
+    # 生产若需固定，通过 MATECLAW_OPENAPI_SERVER_URL 覆盖（如 https://mate.example.com）。
+    title: ${MATECLAW_OPENAPI_TITLE:MateClaw REST API}
+    version: ${MATECLAW_OPENAPI_VERSION:1.0}
+    server-url: ${MATECLAW_OPENAPI_SERVER_URL:}
+    # description 留空则使用 OpenApiConfig 中的内置默认描述
+    description: ${MATECLAW_OPENAPI_DESCRIPTION:}
   jwt:
     secret: ${JWT_SECRET:MateClaw-JWT-Secret-Key-2024-Please-Change-In-Production}
     expiration: 86400000
