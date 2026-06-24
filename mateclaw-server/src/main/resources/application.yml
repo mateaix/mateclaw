@@ -145,6 +145,11 @@ mateclaw:
     server-url: ${MATECLAW_OPENAPI_SERVER_URL:}
     # description 留空则使用 OpenApiConfig 中的内置默认描述
     description: ${MATECLAW_OPENAPI_DESCRIPTION:}
+    # 是否公开 Swagger UI / OpenAPI 文档路径（/swagger-ui*、/v3/api-docs*、/webjars/**）。
+    # true  = 任何人可浏览（本地开发 / 内网默认）；
+    # false = 需要全局管理员（ROLE_ADMIN）才能访问，由 SecurityConfig 强制。
+    # 生产数据库 profile（mysql/kingbase/postgres）默认覆盖为 false。
+    expose-ui: ${MATECLAW_OPENAPI_EXPOSE_UI:true}
   jwt:
     secret: ${JWT_SECRET:MateClaw-JWT-Secret-Key-2024-Please-Change-In-Production}
     expiration: 86400000

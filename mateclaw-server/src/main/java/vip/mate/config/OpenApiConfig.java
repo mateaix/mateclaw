@@ -27,11 +27,12 @@ import java.util.List;
  * Personal Access Token 以 {@code mc_} 开头（PAT_PREFIX）。因此 Swagger
  * UI 的 Authorize 按钮只需填入任意一种 token 即可。
  *
- * <h3>注意：Swagger 当前公开可访问</h3>
- * {@link SecurityConfig#filterChain} 中 {@code /api/**} 要求认证，但
- * {@code /swagger-ui*}、{@code /v3/api-docs*}、{@code /webjars/**} 落到
- * {@code .anyRequest().permitAll()}，即 Swagger UI 当前是公开的。如生产环境
- * 需要收口，应在 SecurityConfig 显式加规则，而不是改本类。
+ * <h3>访问控制（在 SecurityConfig，不在本类）</h3>
+ * Swagger UI / OpenAPI 文档路径（{@code /swagger-ui*}、{@code /v3/api-docs*}、
+ * {@code /webjars/**}）的鉴权由 {@link SecurityConfig#filterChain} 通过
+ * {@code mateclaw.openapi.expose-ui} 开关控制：本地/默认 profile 公开，
+ * 生产数据库 profile（mysql/kingbase/postgres）默认要求全局管理员
+ * （{@code ROLE_ADMIN}）。访问规则只属于 SecurityConfig，不要加到本类。
  *
  * <h3>未做的事（与「全局配置 + 安全方案」范围一致）</h3>
  * 不逐个 Controller 补 {@code @Parameter} / {@code @ApiResponse} /

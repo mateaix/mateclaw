@@ -55,16 +55,24 @@ mateclaw:
     version: ${MATECLAW_OPENAPI_VERSION:1.0}
     server-url: ${MATECLAW_OPENAPI_SERVER_URL:}   # empty → derived from request host
     description: ${MATECLAW_OPENAPI_DESCRIPTION:}  # empty → built-in default
+    expose-ui: ${MATECLAW_OPENAPI_EXPOSE_UI:true}  # whether the Swagger/OpenAPI paths are public, see the security section below
 ```
 
 When `server-url` is empty, SpringDoc derives it from the request host so "Try it out" hits the right address; for fixed production URLs (e.g. behind a reverse proxy), set `MATECLAW_OPENAPI_SERVER_URL=https://mate.example.com`.
 
-## ⚠️ Security note: Swagger is currently public
+## 🔒 Access control: Swagger is locked down by default in production
 
-In `SecurityConfig.filterChain`, `/api/**` requires authentication, but `/swagger-ui*`, `/v3/api-docs*`, and `/webjars/**` fall through to `.anyRequest().permitAll()` — meaning **Swagger UI is publicly accessible** without login; anyone can browse the full endpoint surface (including request/response schemas).
+Access to the Swagger UI / OpenAPI document paths (`/swagger-ui*`, `/v3/api-docs*`, `/webjars/**`) is controlled by the `mateclaw.openapi.expose-ui` flag and enforced explicitly in `SecurityConfig.filterChain` (no longer relying on the `.anyRequest().permitAll()` fallthrough):
 
-- Local dev / intranet deployments: usually acceptable.
-- Public production deployments: consider adding an explicit auth rule for the Swagger paths in `SecurityConfig` (e.g. require `@RequireGlobalAdmin`). Don't rely on the network layer alone. When locking it down, edit `SecurityConfig`, not `OpenApiConfig`.
+| `expose-ui` | Behavior | Default profile |
+|---|---|---|
+| `true` | Publicly accessible — anyone can browse the full endpoint surface (incl. request/response schemas) without login | Local / default profile (H2, desktop) |
+| `false` | Requires a global admin (`ROLE_ADMIN`); anonymous → 401, non-admin → 403 | Production database profiles (`mysql` / `kingbase` / `postgres`) |
+
+- Local dev: defaults to `true`, so `http://localhost:18088/swagger-ui.html` is reachable directly.
+- Public production: defaults to `false` (locked down). To temporarily open it on an internal/staging host, set `MATECLAW_OPENAPI_EXPOSE_UI=true`.
+- Note: once locked, opening `/swagger-ui.html` in a browser won't automatically carry the SPA's JWT (the token lives in localStorage, not a cookie), so even an admin cannot open it from the browser directly. To debug, either set `expose-ui=true` temporarily, or fetch `/v3/api-docs` with a client that sends the `Authorization` header.
+- The access rule lives only in `SecurityConfig`, not `OpenApiConfig`.
 
 ## See also
 
