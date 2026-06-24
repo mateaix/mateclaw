@@ -1039,6 +1039,28 @@ export const dashboardApi = {
   recentRuns: (limit = 20) => http.get('/dashboard/cron-runs', { params: { limit } }),
 }
 
+// ==================== Operational Data Export ====================
+export const operationalApi = {
+  generate: (startDate: string, endDate: string) =>
+    http.post('/operational-data/generate', null, { params: { startDate, endDate } }),
+  progress: (taskId: string) =>
+    http.get('/operational-data/progress', { params: { taskId } }),
+  /** Download file — uses native fetch to avoid axios R<T> interceptor */
+  download: async (taskId: string, token: string): Promise<void> => {
+    const jwt = localStorage.getItem('token')
+    const resp = await fetch(`/api/v1/operational-data/download?taskId=${taskId}&token=${token}`, {
+      headers: { Authorization: jwt ? `Bearer ${jwt}` : '' },
+    })
+    if (!resp.ok) throw new Error(`Download failed: ${resp.status}`)
+    const blob = await resp.blob()
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(blob)
+    a.download = `ops_data.zip`
+    a.click()
+    URL.revokeObjectURL(a.href)
+  },
+}
+
 // ==================== Plugins ====================
 export const pluginApi = {
   list: () => http.get('/plugins'),
