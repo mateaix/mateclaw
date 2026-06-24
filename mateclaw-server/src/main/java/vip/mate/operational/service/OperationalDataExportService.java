@@ -70,11 +70,10 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 /**
- * Operational data export service: asynchronously builds a 9-sheet Excel report
- * and serves it through a one-time download.
+ * 运营数据导出服务——异步生成 9 Sheet Excel，一次下载。
  * <p>
- * Data-sourcing strategy: prefer reusing existing service methods, fall back to
- * direct mapper queries, then aggregate in memory.
+ * 设计原则（来自 design/operational-data-export.md）：
+ * SQL/Service → API → 自算。优先复现有 Service，其次 Mapper 直查，内存聚合。
  */
 @Service
 public class OperationalDataExportService {
@@ -207,27 +206,34 @@ public class OperationalDataExportService {
             throw new IllegalStateException("正在生成中，请等待");
         }
         ExportTask task = new ExportTask();
-        try {
-            tasks.put(task.getTaskId(), task);
-            CompletableFuture.runAsync(() -> runExport(task, from, to, true));
-        } catch (RuntimeException e) {
-            // Async submission failed, so runExport's finally will never release
-            // the lock — release it here to avoid wedging the flag permanently.
-            generating.set(false);
-            throw e;
-        }
+        tasks.put(task.getTaskId(), task);
+        CompletableFuture.runAsync(() -> runExport(task, from, to, true));
         return task;
     }
 
-    /** 后台直接调用（无限制） */
-    public ExportTask exportBackend(LocalDate start, LocalDate end) {
+    /** 后台直接调用（无限制），返回 ZIP 字节数组（不落盘）。 */
+    public byte[] exportBackendBytes(LocalDate start, LocalDate end) {
         if (!generating.compareAndSet(false, true)) {
             throw new IllegalStateException("前端或后台已有生成任务在运行");
         }
-        ExportTask task = new ExportTask();
-        tasks.put(task.getTaskId(), task);
-        runExport(task, start, end, false);
-        return task;
+        try {
+            long t0 = System.currentTimeMillis();
+            byte[] zip = doExport(start, end, step -> {}, false);
+            log.info("CLI export completed: {} KB, {}ms", zip.length / 1024,
+                     System.currentTimeMillis() - t0);
+            try {
+                auditEventService.recordSync("EXPORT", "OPERATIONAL_DATA",
+                    start + "~" + end, "运营数据导出 9 sheets (CLI)", null);
+            } catch (Exception e) {
+                log.warn("Failed to write audit for CLI export: {}", e.getMessage());
+            }
+            return zip;
+        } catch (Exception e) {
+            log.error("CLI export failed", e);
+            throw new RuntimeException("导出失败: " + e.getMessage(), e);
+        } finally {
+            generating.set(false);
+        }
     }
 
     /** 查询任务进度 */
@@ -240,10 +246,8 @@ public class OperationalDataExportService {
         ExportTask task = tasks.get(taskId);
         if (task == null) return null;
         if (!token.equals(task.getDownloadToken())) return null;
+        if (task.isDownloaded()) return null;
         if (!"completed".equals(task.getStatus())) return null;
-        // Atomically claim the one-time download so concurrent requests cannot
-        // both succeed; a second caller gets null (treated as 410 Gone).
-        if (!task.claimDownload()) return null;
         return task;
     }
 
@@ -539,8 +543,7 @@ public class OperationalDataExportService {
         Map<String, Long> byDateMsg = new TreeMap<>();
         for (MessageEntity m : msgs) {
             String date = m.getCreateTime().toLocalDate().toString();
-            String prov = (m.getRuntimeProvider() != null && !m.getRuntimeProvider().isBlank())
-                ? m.getRuntimeProvider() : "-";
+            String prov = m.getRuntimeProvider() != null ? m.getRuntimeProvider() : "-";
             String key = date + "|" + prov;
             long[] acc = byDateProv.computeIfAbsent(key, k -> new long[3]);
             acc[0] += m.getPromptTokens() != null ? m.getPromptTokens() : 0;
@@ -551,9 +554,7 @@ public class OperationalDataExportService {
 
         int r = 1;
         for (Map.Entry<String, long[]> e : byDateProv.entrySet()) {
-            // split with limit -1 keeps a trailing empty field (provider "-" guards
-            // blanks, but never rely on split dropping trailing segments).
-            String[] parts = e.getKey().split("\\|", -1);
+            String[] parts = e.getKey().split("\\|");
             long[] v = e.getValue();
             Row row = sheet.createRow(r++);
             createCell(row, 0, parts[0], null);
@@ -592,7 +593,7 @@ public class OperationalDataExportService {
             long[] acc = usageByName.computeIfAbsent(u.getSkillName(), k -> new long[]{0, 0});
             acc[0] += u.getLoadCount() != null ? u.getLoadCount() : 0;
             acc[1] = Math.max(acc[1], u.getLastLoadedAt() != null
-                ? u.getLastLoadedAt().toEpochSecond(ZoneOffset.UTC) : 0);
+                ? u.getLastLoadedAt().toEpochSecond(java.time.ZoneOffset.UTC) : 0);
         }
 
         // agent bindings
@@ -627,7 +628,7 @@ public class OperationalDataExportService {
             createCell(row, 7, s.getDescription(), null);
             long[] usage = usageByName.get(s.getName());
             if (usage != null && usage[1] > 0) {
-                createCell(row, 8, LocalDateTime.ofEpochSecond(usage[1], 0, ZoneOffset.UTC), dateStyle);
+                createCell(row, 8, java.time.LocalDateTime.ofEpochSecond(usage[1], 0, java.time.ZoneOffset.UTC), dateStyle);
                 createCell(row, 9, usage[0], numStyle);
             } else {
                 createCell(row, 8, "", null);
@@ -668,11 +669,10 @@ public class OperationalDataExportService {
         Map<String, Long> userDuration = new LinkedHashMap<>();
         Map<String, LocalDateTime> userLastActive = new LinkedHashMap<>();
         for (ConversationEntity c : convs) {
-            String key = (c.getWorkspaceId() != null ? c.getWorkspaceId() : 0) + "|"
-                + (c.getUsername() != null && !c.getUsername().isBlank() ? c.getUsername() : "-");
+            String key = (c.getWorkspaceId() != null ? c.getWorkspaceId() : 0) + "|" + (c.getUsername() != null ? c.getUsername() : "-");
             userConvIds.computeIfAbsent(key, k -> new HashSet<>()).add(c.getConversationId());
             if (c.getCreateTime() != null && c.getLastActiveTime() != null) {
-                userDuration.merge(key, (long) Duration.between(c.getCreateTime(), c.getLastActiveTime()).getSeconds(), Long::sum);
+                userDuration.merge(key, (long) java.time.Duration.between(c.getCreateTime(), c.getLastActiveTime()).getSeconds(), Long::sum);
             }
             if (c.getLastActiveTime() != null) {
                 userLastActive.merge(key, c.getLastActiveTime(), (a, b) -> a.isAfter(b) ? a : b);
@@ -697,8 +697,7 @@ public class OperationalDataExportService {
             // Aggregate by (ws, username)
             // Re-query to get the user mapping... For simplicity, aggregate in memory
             Map<String, String> convWsMap = convs.stream().collect(Collectors.toMap(
-                ConversationEntity::getConversationId, c -> (c.getWorkspaceId() != null ? c.getWorkspaceId() : 0L) + "|"
-                    + (c.getUsername() != null && !c.getUsername().isBlank() ? c.getUsername() : "-"), (a, b) -> a));
+                ConversationEntity::getConversationId, c -> (c.getWorkspaceId() != null ? c.getWorkspaceId() : 0L) + "|" + c.getUsername(), (a, b) -> a));
             for (MessageEntity m : msgs) {
                 String key = convWsMap.get(m.getConversationId());
                 if (key == null) continue;
@@ -715,7 +714,7 @@ public class OperationalDataExportService {
 
         int r = 1;
         for (String key : userConvIds.keySet()) {
-            String[] parts = key.split("\\|", -1);
+            String[] parts = key.split("\\|");
             long wsId = Long.parseLong(parts[0]);
             String uname = parts[1];
             long[] acc = userMap.getOrDefault(key, new long[5]);
@@ -813,7 +812,7 @@ public class OperationalDataExportService {
                     (long)(next.getCompletionTokens() != null ? next.getCompletionTokens() : 0), numStyle);
                 createCell(row, 10, next.getRuntimeModel(), null);
                 createCell(row, 11, next.getRuntimeProvider(), null);
-                createCell(row, 12, Duration.between(m.getCreateTime(), next.getCreateTime()).toMillis() / 1000.0, numStyle);
+                createCell(row, 12, java.time.Duration.between(m.getCreateTime(), next.getCreateTime()).toMillis() / 1000.0, numStyle);
             }
         }
         for (int i = 0; i < cols.length; i++) sheet.autoSizeColumn(i);
@@ -1144,7 +1143,7 @@ public class OperationalDataExportService {
             createCell(row, 2, run.getTriggerType(), null);
             createCell(row, 3, run.getStatus(), null);
             if (run.getStartedAt() != null && run.getFinishedAt() != null) {
-                createCell(row, 4, Duration.between(run.getStartedAt(), run.getFinishedAt()).toMillis() / 1000.0, null);
+                createCell(row, 4, java.time.Duration.between(run.getStartedAt(), run.getFinishedAt()).toMillis() / 1000.0, null);
             } else {
                 createCell(row, 4, "", null);
             }
@@ -1283,14 +1282,7 @@ public class OperationalDataExportService {
         } else if (value instanceof String s) {
             cell.setCellValue(s);
         } else if (value instanceof Long l) {
-            // Snowflake IDs exceed the 2^53-1 exact-integer range of Excel's
-            // numeric (double) cells and would be rounded or shown in scientific
-            // notation; write out-of-range longs as text to preserve precision.
-            if (l > 9007199254740991L || l < -9007199254740991L) {
-                cell.setCellValue(String.valueOf(l));
-            } else {
-                cell.setCellValue((double) l);
-            }
+            cell.setCellValue((double) l);
         } else if (value instanceof Integer i) {
             cell.setCellValue((double) i);
         } else if (value instanceof Double d) {
