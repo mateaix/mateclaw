@@ -106,6 +106,7 @@ export default {
       collapse: 'Collapse',
       expand: 'Expand',
       running: 'running',
+      planning: 'Planning…',
     },
     detail: {
       viewDetail: 'View details',

@@ -106,6 +106,7 @@ export default {
       collapse: '收起总览',
       expand: '展开总览',
       running: '运行中',
+      planning: '规划中…',
     },
     detail: {
       viewDetail: '查看详情',

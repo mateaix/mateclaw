@@ -247,6 +247,7 @@
         <RunOverviewPanel
           :messages="messages"
           :is-generating="isGenerating"
+          :agent-type="currentAgent?.agentType"
         />
 
         <!-- Talk Mode 覆盖层 -->

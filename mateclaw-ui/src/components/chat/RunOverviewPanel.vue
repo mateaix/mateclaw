@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
-import { Connection, Loading, Select, CloseBold, WarningFilled, Clock, ArrowDown, Expand, Fold } from '@element-plus/icons-vue'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { Connection, Loading, Expand, Fold } from '@element-plus/icons-vue'
 import { useToolLabel } from '@/composables/useToolLabel'
 import type { Message, MessageSegment, DelegationNode, PlanMeta } from '@/types'
 import PlanStepsPanel from './PlanStepsPanel.vue'
@@ -16,15 +16,43 @@ import DelegationNodeView from './DelegationNodeView.vue'
  * assistant message's metadata, and each delegation timeline segment becomes a
  * top-level node in the sub-agent tree. No extra API calls — the sub-agent
  * REST surface is admin-gated, but the same state arrives over the chat stream.
+ *
+ * Visibility: shown whenever there is something to show, and additionally kept
+ * mounted with a "planning…" placeholder while a plan-capable agent is running
+ * so the rail does not pop in and out at the start of every turn. For non-plan
+ * agents it stays hidden until an actual plan or delegation appears. On narrow
+ * viewports the expanded rail floats over the chat as a drawer instead of
+ * squeezing the conversation column.
  */
 const props = defineProps<{
   messages: Message[]
   isGenerating: boolean
+  /** Active agent type; "plan_execute" agents get the planning placeholder. */
+  agentType?: string
 }>()
 
 const { getToolLabel } = useToolLabel()
 
 const collapsed = ref(false)
+
+// Narrow-viewport handling: below this width the expanded rail overlays the chat
+// as a drawer (rather than display:none, which hid the feature entirely).
+const isNarrow = ref(false)
+let mql: MediaQueryList | null = null
+function onMqlChange(e: MediaQueryListEvent | MediaQueryList) {
+  isNarrow.value = e.matches
+  // Default to collapsed on narrow screens so the drawer never covers the chat
+  // unprompted; the user expands it deliberately.
+  if (e.matches) collapsed.value = true
+}
+onMounted(() => {
+  mql = window.matchMedia('(max-width: 1280px)')
+  onMqlChange(mql)
+  mql.addEventListener('change', onMqlChange)
+})
+onBeforeUnmount(() => {
+  mql?.removeEventListener('change', onMqlChange)
+})
 
 /** The most recent assistant message — the turn whose progress we track. */
 const latestAssistant = computed<Message | undefined>(() => {
@@ -74,13 +102,30 @@ const planProgress = computed(() => {
 })
 
 const hasContent = computed(() => !!currentPlan.value || subagentNodes.value.length > 0)
+
+/** Plan-capable agents earn the placeholder so the rail stays stable mid-run. */
+const expectsPlan = computed(() => props.agentType === 'plan_execute')
+
+/** Keep the rail mounted while a plan-capable agent runs, even before the plan
+ *  has streamed in — avoids the rail flickering in once per turn. */
+const showPanel = computed(() => hasContent.value || (props.isGenerating && expectsPlan.value))
+
+/** Show the "planning…" placeholder only when a plan is genuinely expected. */
+const planning = computed(() => !currentPlan.value && props.isGenerating && expectsPlan.value)
+
+/** The floating-drawer backdrop is only relevant on narrow, expanded state. */
+const showBackdrop = computed(() => isNarrow.value && !collapsed.value && showPanel.value)
 </script>
 
 <template>
+  <teleport to="body" :disabled="!showBackdrop">
+    <div v-if="showBackdrop" class="run-overview__backdrop" @click="collapsed = true"></div>
+  </teleport>
+
   <aside
-    v-if="hasContent"
+    v-if="showPanel"
     class="run-overview"
-    :class="{ 'is-collapsed': collapsed }"
+    :class="{ 'is-collapsed': collapsed, 'is-narrow': isNarrow }"
   >
     <!-- Collapsed rail: badges only -->
     <button
@@ -94,6 +139,7 @@ const hasContent = computed(() => !!currentPlan.value || subagentNodes.value.len
       <span v-if="subagentNodes.length" class="run-overview__rail-badge is-sub">
         <el-icon :size="12"><Connection /></el-icon>{{ subagentNodes.length }}
       </span>
+      <el-icon v-if="isGenerating" class="run-overview__rail-live is-loading" :size="13"><Loading /></el-icon>
     </button>
 
     <template v-else>
@@ -121,6 +167,10 @@ const hasContent = computed(() => !!currentPlan.value || subagentNodes.value.len
             :plan="currentPlan"
             :is-generating="isGenerating"
           />
+          <p v-else-if="planning" class="run-overview__empty is-planning">
+            <el-icon class="is-loading" :size="13"><Loading /></el-icon>
+            {{ $t('chat.runOverview.planning') }}
+          </p>
           <p v-else class="run-overview__empty">{{ $t('chat.runOverview.noPlan') }}</p>
         </section>
 
@@ -162,6 +212,24 @@ const hasContent = computed(() => !!currentPlan.value || subagentNodes.value.len
   width: 44px;
 }
 
+/* Narrow viewports: the expanded rail floats over the chat as a drawer instead
+   of squeezing the conversation column. The collapsed rail (44px) stays in flow. */
+.run-overview.is-narrow:not(.is-collapsed) {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(340px, 88vw);
+  z-index: 2000;
+  box-shadow: -4px 0 24px rgba(0, 0, 0, 0.18);
+}
+.run-overview__backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1999;
+  background: rgba(0, 0, 0, 0.3);
+}
+
 .run-overview__rail {
   display: flex;
   flex-direction: column;
@@ -190,6 +258,9 @@ const hasContent = computed(() => !!currentPlan.value || subagentNodes.value.len
   padding: 1px 6px;
 }
 .run-overview__rail-badge.is-sub {
+  color: var(--mc-primary);
+}
+.run-overview__rail-live {
   color: var(--mc-primary);
 }
 
@@ -260,16 +331,17 @@ const hasContent = computed(() => !!currentPlan.value || subagentNodes.value.len
   color: var(--mc-text-quaternary, #c0bfbc);
   text-align: center;
 }
+.run-overview__empty.is-planning {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: var(--mc-primary);
+}
 
 .run-overview__subagents {
   display: flex;
   flex-direction: column;
   gap: 6px;
-}
-
-@media (max-width: 1280px) {
-  .run-overview {
-    display: none;
-  }
 }
 </style>
