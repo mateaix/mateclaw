@@ -539,7 +539,8 @@ public class OperationalDataExportService {
         Map<String, Long> byDateMsg = new TreeMap<>();
         for (MessageEntity m : msgs) {
             String date = m.getCreateTime().toLocalDate().toString();
-            String prov = m.getRuntimeProvider() != null ? m.getRuntimeProvider() : "-";
+            String prov = (m.getRuntimeProvider() != null && !m.getRuntimeProvider().isBlank())
+                ? m.getRuntimeProvider() : "-";
             String key = date + "|" + prov;
             long[] acc = byDateProv.computeIfAbsent(key, k -> new long[3]);
             acc[0] += m.getPromptTokens() != null ? m.getPromptTokens() : 0;
@@ -550,7 +551,9 @@ public class OperationalDataExportService {
 
         int r = 1;
         for (Map.Entry<String, long[]> e : byDateProv.entrySet()) {
-            String[] parts = e.getKey().split("\\|");
+            // split with limit -1 keeps a trailing empty field (provider "-" guards
+            // blanks, but never rely on split dropping trailing segments).
+            String[] parts = e.getKey().split("\\|", -1);
             long[] v = e.getValue();
             Row row = sheet.createRow(r++);
             createCell(row, 0, parts[0], null);
@@ -665,7 +668,8 @@ public class OperationalDataExportService {
         Map<String, Long> userDuration = new LinkedHashMap<>();
         Map<String, LocalDateTime> userLastActive = new LinkedHashMap<>();
         for (ConversationEntity c : convs) {
-            String key = (c.getWorkspaceId() != null ? c.getWorkspaceId() : 0) + "|" + (c.getUsername() != null ? c.getUsername() : "-");
+            String key = (c.getWorkspaceId() != null ? c.getWorkspaceId() : 0) + "|"
+                + (c.getUsername() != null && !c.getUsername().isBlank() ? c.getUsername() : "-");
             userConvIds.computeIfAbsent(key, k -> new HashSet<>()).add(c.getConversationId());
             if (c.getCreateTime() != null && c.getLastActiveTime() != null) {
                 userDuration.merge(key, (long) Duration.between(c.getCreateTime(), c.getLastActiveTime()).getSeconds(), Long::sum);
@@ -693,7 +697,8 @@ public class OperationalDataExportService {
             // Aggregate by (ws, username)
             // Re-query to get the user mapping... For simplicity, aggregate in memory
             Map<String, String> convWsMap = convs.stream().collect(Collectors.toMap(
-                ConversationEntity::getConversationId, c -> (c.getWorkspaceId() != null ? c.getWorkspaceId() : 0L) + "|" + c.getUsername(), (a, b) -> a));
+                ConversationEntity::getConversationId, c -> (c.getWorkspaceId() != null ? c.getWorkspaceId() : 0L) + "|"
+                    + (c.getUsername() != null && !c.getUsername().isBlank() ? c.getUsername() : "-"), (a, b) -> a));
             for (MessageEntity m : msgs) {
                 String key = convWsMap.get(m.getConversationId());
                 if (key == null) continue;
@@ -710,7 +715,7 @@ public class OperationalDataExportService {
 
         int r = 1;
         for (String key : userConvIds.keySet()) {
-            String[] parts = key.split("\\|");
+            String[] parts = key.split("\\|", -1);
             long wsId = Long.parseLong(parts[0]);
             String uname = parts[1];
             long[] acc = userMap.getOrDefault(key, new long[5]);
