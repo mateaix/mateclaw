@@ -7,10 +7,14 @@
             <div class="mc-page-kicker">{{ t('dashboard.kicker') }}</div>
             <h1 class="mc-page-title">{{ t('dashboard.title') }}</h1>
             <p class="mc-page-desc">{{ t('dashboard.desc') }}</p>
-            <button v-if="isGlobalAdmin" class="export-btn" @click="openExportDialog">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-              {{ t('dashboard.operationalExport') }}
-            </button>
+            <div class="header-meta">
+              <div v-if="dbLabel" class="db-chip" :title="t('doctor.database')">
+                <svg class="db-chip__icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/></svg>
+                <span class="db-chip__label">{{ t('doctor.database') }}</span>
+                <span class="db-chip__value">{{ dbLabel }}</span>
+              </div>
+              <OperationalExport />
+            </div>
           </div>
           <div class="header-actions">
             <div class="hero-note mc-surface-card">
@@ -189,70 +193,6 @@
       </div>
     </div>
 
-    <!-- 导出运营数据弹窗 -->
-    <el-dialog v-model="exportDialogVisible" :title="t('dashboard.operationalExport')" width="420px" :close-on-click-modal="false">
-      <div class="export-dialog-body">
-        <p class="export-dialog-desc">{{ t('dashboard.exportDescription') }}</p>
-        <el-date-picker
-          v-model="exportDateRange"
-          type="daterange"
-          range-separator="~"
-          :start-placeholder="'开始日期'"
-          :end-placeholder="'结束日期'"
-          format="YYYY-MM-DD"
-          value-format="YYYY-MM-DD"
-          :disabled-date="disabledExportDate"
-          style="width:100%"
-        />
-
-        <!-- Circular progress -->
-        <div v-if="exportStatus === 'generating' || exportStatus === 'locked'" class="export-progress">
-          <div class="circular-progress">
-            <svg class="progress-ring" viewBox="0 0 120 120">
-              <!-- background track -->
-              <circle class="progress-track" cx="60" cy="60" r="52" fill="none" />
-              <!-- animated progress arc -->
-              <circle class="progress-arc" cx="60" cy="60" r="52" fill="none"
-                :stroke-dasharray="circumference"
-                :stroke-dashoffset="progressOffset" />
-            </svg>
-            <div class="circular-inner">
-              <span class="circular-step">{{ exportStep }}/{{ exportTotal }}</span>
-              <span class="circular-label">{{ exportStepLabel }}</span>
-            </div>
-          </div>
-        </div>
-
-        <p v-if="exportStatus === 'completed'" class="export-expired-hint">{{ t('dashboard.expiredHint') }}</p>
-        <p v-if="exportStatus === 'failed'" class="export-error-hint">生成失败，请重试</p>
-      </div>
-      <template #footer>
-        <el-button @click="exportDialogVisible = false">关闭</el-button>
-        <el-button
-          v-if="exportStatus === 'idle' || exportStatus === 'failed'"
-          type="primary"
-          :disabled="!exportDateRange"
-          @click="doGenerate"
-        >
-          {{ exportStatus === 'failed' ? t('dashboard.regenerating') : t('dashboard.generateReport') }}
-        </el-button>
-        <el-button
-          v-else-if="exportStatus === 'generating' || exportStatus === 'locked'"
-          type="primary"
-          disabled
-          loading
-        >
-          {{ exportStatus === 'locked' ? t('dashboard.exportInProgress') : t('dashboard.generating') }}
-        </el-button>
-        <el-button
-          v-else-if="exportStatus === 'completed'"
-          type="primary"
-          @click="doDownload"
-        >
-          {{ t('dashboard.downloadReport') }}
-        </el-button>
-      </template>
-    </el-dialog>
   </div>
 </template>
 
@@ -261,9 +201,9 @@ import { ref, reactive, computed, onMounted, onUnmounted, nextTick, watch } from
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { ArrowRight, ChatDotRound, DataLine, Document, Tools } from '@element-plus/icons-vue'
-import { dashboardApi, modelApi, operationalApi } from '@/api'
+import { dashboardApi, modelApi, http } from '@/api'
 import { getProviderIcon, onProviderIconError } from '@/utils/providerIcons'
-import { useWorkspaceStore } from '@/stores/useWorkspaceStore'
+import OperationalExport from '@/components/dashboard/OperationalExport.vue'
 import * as echarts from 'echarts/core'
 import { LineChart } from 'echarts/charts'
 import { GridComponent, TooltipComponent, LegendComponent } from 'echarts/components'
@@ -273,8 +213,10 @@ echarts.use([LineChart, GridComponent, TooltipComponent, LegendComponent, Canvas
 
 const { t, locale } = useI18n()
 const router = useRouter()
-const workspaceStore = useWorkspaceStore()
-const isGlobalAdmin = computed(() => workspaceStore.isGlobalAdmin)
+
+// Connected database product name (e.g. "MySQL" / "H2" / "PostgreSQL"), shown as
+// a subtle chip in the page header. Empty string hides it when unavailable.
+const dbLabel = ref('')
 
 const overview = ref<Record<string, any>>({})
 const recentRuns = ref<any[]>([])
@@ -358,6 +300,15 @@ onMounted(async () => {
     activeModel.value = (activeRes as any).data?.activeLlm || null
   } catch {
     // Non-critical
+  }
+
+  // Connected database label — independent and non-critical. Reuses the existing
+  // system health endpoint, which already reports the product name.
+  try {
+    const healthRes: any = await http.get('/system/health')
+    dbLabel.value = (healthRes?.data || healthRes)?.database || ''
+  } catch {
+    dbLabel.value = ''
   }
 })
 
@@ -461,121 +412,6 @@ function calcDuration(run: any): string {
   return (ms / 1000).toFixed(1) + 's'
 }
 
-// ── Operational Data Export ──
-const exportDialogVisible = ref(false)
-const exportDateRange = ref<[string, string] | null>(null)
-const exportStatus = ref<'idle' | 'generating' | 'locked' | 'completed' | 'failed'>('idle')
-const exportStep = ref(0)
-const exportTotal = ref(9)
-const exportTaskId = ref('')
-const exportDownloadToken = ref('')
-let exportPollTimer: ReturnType<typeof setInterval> | null = null
-
-const stepLabels = ['概览汇总', 'Token用量', '技能统计', '用户统计', '用户对话', '安全与审计', '渠道统计', '模型配置', '定时任务']
-
-const exportStepLabel = computed(() => {
-  const i = exportStep.value - 1
-  return stepLabels[i] || ''
-})
-
-const circumference = 2 * Math.PI * 52  // r=52
-
-const progressOffset = computed(() => {
-  const pct = Math.min(exportStep.value / exportTotal.value, 1)
-  return circumference * (1 - pct)
-})
-
-const disabledExportDate = (date: Date) => {
-  // Max 90 days, not in the future
-  const now = new Date()
-  now.setHours(23, 59, 59, 0)
-  return date > now
-}
-
-function openExportDialog() {
-  // Reconnect to in-progress or completed task
-  if (exportStatus.value === 'completed') {
-    // Keep completed state — user can still download
-  } else if (exportStatus.value === 'generating' || exportStatus.value === 'locked') {
-    // Resume polling for in-progress task
-    startPolling()
-  } else {
-    // Fresh start
-    const end = new Date()
-    const start = new Date()
-    start.setDate(start.getDate() - 30)
-    exportDateRange.value = [formatDateStr(start), formatDateStr(end)]
-    exportStatus.value = 'idle'
-    exportStep.value = 0
-  }
-  exportDialogVisible.value = true
-}
-
-watch(exportDialogVisible, (v) => {
-  if (!v && exportPollTimer) {
-    clearInterval(exportPollTimer)
-    exportPollTimer = null
-  }
-})
-
-function formatDateStr(d: Date): string {
-  return d.toISOString().slice(0, 10)
-}
-
-async function doGenerate() {
-  if (!exportDateRange.value) return
-  try {
-    exportStatus.value = 'generating'
-    const [start, end] = exportDateRange.value
-    const res: any = await operationalApi.generate(start, end)
-    exportTaskId.value = res.data?.taskId || res.taskId || ''
-    if (!exportTaskId.value) throw new Error('No taskId')
-    startPolling()
-  } catch (e: any) {
-    const msg = e?.response?.data?.msg || e?.message || 'Unknown error'
-    if (e?.response?.status === 409) {
-      exportStatus.value = 'locked'
-    } else {
-      exportStatus.value = 'failed'
-      console.error('Export generate failed:', msg)
-    }
-  }
-}
-
-function startPolling() {
-  if (exportPollTimer) clearInterval(exportPollTimer)
-  exportPollTimer = setInterval(async () => {
-    try {
-      const res: any = await operationalApi.progress(exportTaskId.value)
-      const data = res.data || res
-      exportStep.value = data.step || 0
-      exportTotal.value = data.total || 9
-      if (data.status === 'completed') {
-        exportStatus.value = 'completed'
-        exportDownloadToken.value = data.downloadToken || ''
-        if (exportPollTimer) { clearInterval(exportPollTimer); exportPollTimer = null }
-      } else if (data.status === 'failed') {
-        exportStatus.value = 'failed'
-        if (exportPollTimer) { clearInterval(exportPollTimer); exportPollTimer = null }
-      }
-    } catch {
-      exportStatus.value = 'failed'
-      if (exportPollTimer) { clearInterval(exportPollTimer); exportPollTimer = null }
-    }
-  }, 1000)
-}
-
-async function doDownload() {
-  try {
-    await operationalApi.download(exportTaskId.value, exportDownloadToken.value)
-    exportDialogVisible.value = false
-    exportStatus.value = 'idle'
-    exportTaskId.value = ''
-    exportDownloadToken.value = ''
-  } catch (e) {
-    console.error('Download failed:', e)
-  }
-}
 </script>
 
 <style scoped>
@@ -646,106 +482,35 @@ async function doDownload() {
   line-height: 1.5;
 }
 
-/* ── Export button ── */
-.export-btn {
+/* ── Header meta row: database chip + export trigger ── */
+.header-meta {
   display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+.db-chip {
+  display: inline-flex;
   align-items: center;
   gap: 6px;
-  margin-top: 12px;
-  padding: 8px 14px;
-  border: 1px solid var(--mc-border-light);
-  border-radius: 8px;
-  background: var(--mc-bg-surface);
-  color: var(--mc-text-secondary);
-  font-size: 13px;
-  cursor: pointer;
-  transition: all 0.2s;
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-.export-btn:hover {
-  border-color: var(--mc-primary);
-  color: var(--mc-primary);
-}
-
-/* ── Export dialog ── */
-.export-dialog-body {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-.export-dialog-desc {
-  margin: 0;
-  font-size: 13px;
+  padding: 4px 10px;
+  border: 1px solid var(--mc-border);
+  border-radius: 999px;
+  background: var(--mc-bg-sunken);
+  font-size: 12px;
+  line-height: 1;
   color: var(--mc-text-secondary);
 }
-.export-progress {
-  display: flex;
-  justify-content: center;
-  padding: 12px 0;
+.db-chip__icon {
+  color: var(--mc-text-tertiary);
 }
-.circular-progress {
-  width: 120px;
-  height: 120px;
-  position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+.db-chip__label {
+  color: var(--mc-text-tertiary);
 }
-.progress-ring {
-  position: absolute;
-  inset: 0;
-  width: 120px;
-  height: 120px;
-  animation: ring-rotate 80s linear infinite;
-}
-.progress-track {
-  stroke: var(--mc-border-light, #e5e7eb);
-  stroke-width: 8;
-}
-.progress-arc {
-  stroke: var(--mc-primary, #4f7aff);
-  stroke-width: 8;
-  stroke-linecap: round;
-  transition: stroke-dashoffset 0.6s cubic-bezier(0.4, 0, 0.2, 1);
-  transform: rotate(-90deg);
-  transform-origin: 60px 60px;
-}
-@keyframes ring-rotate {
-  to { transform: rotate(360deg); }
-}
-.circular-inner {
-  width: 96px;
-  height: 96px;
-  border-radius: 50%;
-  background: var(--mc-bg-surface);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  z-index: 1;
-}
-.circular-step {
-  font-size: 22px;
-  font-weight: 700;
-  color: var(--mc-primary);
-}
-.circular-label {
-  font-size: 11px;
-  color: var(--mc-text-muted);
-  margin-top: 2px;
-}
-.export-expired-hint {
-  text-align: center;
-  font-size: 12px;
-  color: var(--mc-text-muted);
-  margin: 0;
-}
-.export-error-hint {
-  text-align: center;
-  font-size: 12px;
-  color: var(--mc-danger, #ef4444);
-  margin: 0;
+.db-chip__value {
+  font-weight: 600;
+  color: var(--mc-text-primary);
 }
 
 .section-head {
