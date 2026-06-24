@@ -5,17 +5,11 @@ export { default as ChatInput } from './ChatInput.vue'
 export { default as TypingCursor } from './TypingCursor.vue'
 
 // Composables
-export { useTyping } from '@/composables/chat/useTyping'
 export { useStream } from '@/composables/chat/useStream'
 export { useStickToBottom } from '@/composables/chat/useStickToBottom'
 export { useMessages } from '@/composables/chat/useMessages'
 
 // Types
-export type {
-  UseTypingOptions,
-  UseTypingReturn,
-} from '@/composables/chat/useTyping'
-
 export type {
   SSEEvent,
   SSEEventType,

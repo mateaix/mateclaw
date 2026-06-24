@@ -88,13 +88,33 @@
         </slot>
       </div>
     </div>
+
+    <!-- 回到底部浮动按钮：用户上拉阅读历史时出现，15秒无操作自动吸附到边缘 -->
+    <Transition name="fade-up">
+      <div
+        v-if="!isAtBottom"
+        ref="scrollBtnWrapperRef"
+        class="scroll-to-bottom-wrapper"
+        :class="{ docked: isButtonDocked }"
+        @mouseenter="undockButton"
+      >
+       <button
+         class="scroll-to-bottom"
+         type="button"
+         :title="$t('chat.scrollToBottom') || '回到底部'"
+         @click="scrollToBottom({ smooth: true })"
+       >
+         <el-icon><ArrowDown /></el-icon>
+       </button>
+      </div>
+    </Transition>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, watch, nextTick } from 'vue'
+import { computed, ref, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ChatDotRound, DataLine, EditPen, Monitor, Right } from '@element-plus/icons-vue'
+import { ArrowDown, ChatDotRound, DataLine, EditPen, Monitor, Right } from '@element-plus/icons-vue'
 
 const { t } = useI18n()
 import MessageBubble from './MessageBubble.vue'
@@ -166,7 +186,7 @@ const isCronHeader = (msg: Message) => {
 }
 
 // 智能滚动
-const { scrollRef, contentRef, isAtBottom, scrollToBottom } = useStickToBottom({
+const { scrollRef, contentRef, isAtBottom, escapedFromLock, scrollToBottom } = useStickToBottom({
   enabled: props.autoScroll,
   offset: 70,
   smooth: true,
@@ -185,6 +205,8 @@ watch(
   () => props.messages,
   async () => {
     await nextTick()
+    // 用户已向上滚动查看历史内容时不自动滚动
+    if (escapedFromLock.value) return
     scrollToBottom()
   },
   { deep: true }
@@ -200,6 +222,55 @@ watch(
     }
   }
 )
+
+// ========== 回到底部按钮：15秒无操作自动吸附到边缘 ==========
+const DOCK_DELAY_MS = 15000
+let dockTimer: ReturnType<typeof setTimeout> | null = null
+const isButtonDocked = ref(false)
+
+function clearDockTimer() {
+  if (dockTimer) { clearTimeout(dockTimer); dockTimer = null }
+}
+
+function resetDockTimer() {
+  isButtonDocked.value = false
+  if (!isAtBottom.value) {
+    clearDockTimer()
+    dockTimer = setTimeout(() => { isButtonDocked.value = true }, DOCK_DELAY_MS)
+  }
+}
+
+function undockButton() {
+  isButtonDocked.value = false
+  resetDockTimer()
+}
+
+watch(isAtBottom, (atBottom) => {
+  if (atBottom) { clearDockTimer(); isButtonDocked.value = false }
+  else resetDockTimer()
+})
+
+watch(scrollRef, (el, _, onCleanup) => {
+  if (!el) return
+  el.addEventListener('scroll', resetDockTimer, { passive: true })
+  onCleanup(() => el.removeEventListener('scroll', resetDockTimer))
+})
+
+onUnmounted(() => clearDockTimer())
+
+// ========== End 键快捷回到底部 ==========
+function handleGlobalKeydown(e: KeyboardEvent) {
+  if (e.key !== 'End') return
+  // 不在输入框内才响应（textarea / input / contentEditable）
+  const el = document.activeElement
+  if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || (el as HTMLElement).isContentEditable)) return
+  if (isAtBottom.value) return
+  e.preventDefault()
+  scrollToBottom({ smooth: true })
+}
+
+onMounted(() => document.addEventListener('keydown', handleGlobalKeydown))
+onUnmounted(() => document.removeEventListener('keydown', handleGlobalKeydown))
 </script>
 
 <style scoped>
@@ -396,10 +467,87 @@ watch(
   }
 }
 
-/* 滚动提示 */
-.is-scrolling .scroll-to-bottom {
+.scroll-to-bottom-wrapper {
+  position: absolute;
+  bottom: 20%;
+  right: 0;
+  z-index: 10;
+  width: 48px;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 6px 8px;
+}
+
+.scroll-to-bottom {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1px solid var(--mc-border, #e2e8f0);
+  background: var(--mc-bg-elevated, rgba(255, 255, 255, 0.92));
+  backdrop-filter: blur(6px);
+  color: var(--mc-text-secondary, #64748b);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
   opacity: 1;
   pointer-events: auto;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  transform: translateX(0);
+  transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1),
+              opacity 0.35s ease,
+              box-shadow 0.2s ease,
+              background 0.2s ease;
+  flex-shrink: 0;
+}
+
+.scroll-to-bottom:hover {
+  background: var(--mc-panel-raised, #f1f5f9);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+  transform: scale(1.08);
+  color: var(--mc-primary, #D97757);
+  border-color: var(--mc-primary, #D97757);
+}
+
+/* 点击反馈：按下时微微缩小再弹回 */
+.scroll-to-bottom:active {
+  transform: scale(0.88);
+  transition: transform 0.1s ease;
+}
+
+/* 吸附到边缘：只露出约 8px */
+.scroll-to-bottom-wrapper.docked .scroll-to-bottom {
+  transform: translateX(28px);
+  opacity: 0.45;
+  /* 呼吸灯：微弱的脉冲光晕提醒用户按钮还在 */
+  animation: dock-breathe 3s ease-in-out infinite;
+}
+
+@keyframes dock-breathe {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(217, 119, 87, 0); }
+  50%      { box-shadow: 0 0 8px 2px rgba(217, 119, 87, 0.18); }
+}
+
+/* 鼠标靠近即还原 */
+.scroll-to-bottom-wrapper.docked:hover .scroll-to-bottom {
+  transform: translateX(0);
+  opacity: 1;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  animation: none;
+}
+
+/* Transition: fade + slide up */
+.fade-up-enter-active,
+.fade-up-leave-active {
+  transition: opacity 0.25s ease, transform 0.25s ease;
+}
+.fade-up-enter-from,
+.fade-up-leave-to {
+  opacity: 0;
+  transform: translateY(16px);
 }
 
 /* ===== 移动端适配 ===== */
@@ -414,6 +562,21 @@ watch(
 
   .empty-state {
     min-height: 240px;
+  }
+
+  /* 移动端：按钮更大、位置更靠下（拇指热区） */
+  .scroll-to-bottom-wrapper {
+    bottom: 12%;
+  }
+
+  .scroll-to-bottom {
+    width: 44px;
+    height: 44px;
+    font-size: 18px;
+  }
+
+  .scroll-to-bottom-wrapper.docked .scroll-to-bottom {
+    transform: translateX(36px); /* 44px - 8px = 36 */
   }
 
   .welcome-screen {

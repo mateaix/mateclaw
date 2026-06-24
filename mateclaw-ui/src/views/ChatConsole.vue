@@ -243,13 +243,6 @@
       />
     </div>
 
-        <!-- 运行总览侧栏：计划进度 + 子 Agent 实时状态 -->
-        <RunOverviewPanel
-          :messages="messages"
-          :is-generating="isGenerating"
-          :agent-type="currentAgent?.agentType"
-        />
-
         <!-- Talk Mode 覆盖层 -->
         <TalkMode
           v-if="showTalkMode"
@@ -275,7 +268,6 @@ import { copyToClipboard } from '@/utils/clipboard'
 import { useFileDrop } from '@/composables/useFileDrop'
 import { useIsMobile, useMediaQuery, BREAKPOINTS } from '@/composables/useBreakpoint'
 import { useChat } from '@/composables/chat/useChat'
-import RunOverviewPanel from '@/components/chat/RunOverviewPanel.vue'
 import { reconstructErrorInfo } from '@/types/chatError'
 import { reconcileMessages, extractMessages } from '@/utils/messageReconcile'
 import type { Conversation, Agent, ModelConfig, ProviderInfo, ActiveModelsInfo, ChatAttachment, MessageContentPart, Message, ToolCallMeta, StreamPhase } from '@/types'
@@ -1515,7 +1507,9 @@ async function selectConversation(conv: Conversation) {
     if (currentConversationId.value !== requestedConvId) return
     // 点同一个会话时，若已有 SSE 在跑就不要覆盖本地消息状态
     if (switchingAway || !isGenerating.value) {
-      messages.value = extractMessages(res).messages.map((msg: Message) => normalizeMessage(msg))
+      // 若会话仍在运行中，保留 generating 状态以免破坏 isGenerating 和重连逻辑
+      const convRunning = conv.streamStatus === 'running'
+      messages.value = extractMessages(res).messages.map((msg: Message) => normalizeMessage(msg, convRunning))
     }
 
     // Hydrate pending approvals：恢复刷新后丢失的审批卡片（RFC-067 §4.9）
@@ -1914,7 +1908,7 @@ async function handleApproveAlways(
 
 // 重连到运行中的流
 async function reconnectStream(conversationId: string) {
-  if (isGenerating.value) return
+  // useChat.reconnectStream 内部已有更精细的 guard（同会话+isGenerating 才跳过），此处无需重复
   try {
     await reconnectChatStream(conversationId)
   } catch (e) {
@@ -2008,7 +2002,7 @@ function buildOutgoingParts(text: string, attachments: ChatAttachment[]): Messag
 }
 
 // ============ 工具函数 ============
-function normalizeMessage(raw: Message): Message {
+function normalizeMessage(raw: Message, preserveGeneratingStatus?: boolean): Message {
   const msg: Message = { ...raw, contentParts: raw.contentParts ? [...raw.contentParts] : [] }
 
   // 统一解析 metadata：确保是对象而非 JSON 字符串
@@ -2078,7 +2072,9 @@ function normalizeMessage(raw: Message): Message {
     msg.metadata = { ...msg.metadata, toolCalls: cleaned }
   }
 
-  if (msg.status === 'generating') msg.status = 'failed'
+  // 当会话仍在运行时（如切换回一个正在生成的会话），保留 generating 状态
+  // 以正确驱动 isGenerating / loading 指示器 / reconnect 逻辑
+  if (!preserveGeneratingStatus && msg.status === 'generating') msg.status = 'failed'
   // interrupted 是合法的历史状态（interrupt-with-followup），不映射为 stopped
   if (!msg.status) msg.status = 'completed'
 

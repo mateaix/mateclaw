@@ -2028,7 +2028,9 @@ export function useChat(options: UseChatOptions): UseChatReturn {
 
   // Reconnect to a stream that is already running on the backend
   const reconnectStream = async (conversationId: string) => {
-    if (isGenerating.value) return
+    // 仅当同一会话已有活跃 SSE 连接时才跳过（防止双流），
+    // 加载了另一会话的 generating 消息并不代表当前 stream 还在跑
+    if (isGenerating.value && streamConversationId === conversationId) return
 
     // Clear any leftover stop fallback timer
     if (stopFallbackTimer) { clearTimeout(stopFallbackTimer); stopFallbackTimer = null }
@@ -2054,9 +2056,20 @@ export function useChat(options: UseChatOptions): UseChatReturn {
       }
     }
 
-    const assistantMessage = createAssistantMessage('', conversationId)
-    ;(assistantMessage as any)._turnId = activeTurnId
-    currentAssistantId.value = assistantMessage.id as string
+    // 若消息列表中已有该会话的 assistant 消息（status=generating/awaiting_approval），
+    // 直接复用而不是创建新气泡，避免切换回生成中会话时出现重复消息
+    const existingAsst = [...messages.value].reverse().find(
+      m => m.role === 'assistant'
+        && m.conversationId === conversationId
+        && (m.status === 'generating' || m.status === 'awaiting_approval')
+    )
+    if (existingAsst) {
+      currentAssistantId.value = existingAsst.id as string
+    } else {
+      const assistantMessage = createAssistantMessage('', conversationId)
+      ;(assistantMessage as any)._turnId = activeTurnId
+      currentAssistantId.value = assistantMessage.id as string
+    }
 
     try {
       // reconnectStream always rebuilds from an EMPTY placeholder (above), so it

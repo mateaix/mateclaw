@@ -224,6 +224,7 @@ export default {
     modelSaveFailed: 'Model switch was not saved — the next message may still use the previous model',
     openSessions: 'Session Admin',
     clearMessages: 'Clear Messages',
+    scrollToBottom: 'Back to bottom',
     goToModelSettings: 'Go to Model Settings',
     configModelFirst: 'Please configure a model first',
     modelUnavailable: 'Current model is unavailable',

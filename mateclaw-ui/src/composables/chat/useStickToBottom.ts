@@ -125,13 +125,21 @@ export function useStickToBottom(
     isAtBottom.value = false
   }
 
-  // 处理滚动事件
-  const handleScroll = () => {
-    if (!scrollRef.value) return
-    if (isScrolling) {
+ // 处理滚动事件
+ const handleScroll = () => {
+   if (!scrollRef.value) return
+   if (isScrolling) {
+      // 即使在程序化滚动中，也要检测用户是否在向上滚动（滚动条/触摸操作）
+      const currentScrollTop = scrollRef.value.scrollTop
+      if (currentScrollTop < lastScrollTop) {
+        // 用户在程序化滚动过程中向上滚动了 → 中断自动滚动
+        isScrolling = false
+        escapedFromLock.value = true
+        isAtBottom.value = false
+      }
       lastScrollTop = scrollRef.value.scrollTop
-      return
-    }
+     return
+   }
 
     const element = scrollRef.value
     const currentScrollTop = element.scrollTop
