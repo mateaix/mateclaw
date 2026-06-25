@@ -13,25 +13,45 @@
  *                                "local" connection option is hidden in the
  *                                splash UI.
  *
+ * Branding is controlled by branding.config.json or BRAND_* env vars.
+ * See scripts/branding.cjs for details.
+ *
  * Usage:
  *   BUILD_MODE=remote npx electron-builder --mac
  *   npm run package:mac:remote
+ *   BRAND_NAME=MyAI npm run package:mac:remote
  */
 'use strict'
 
+const { loadBrandConfig } = require('./scripts/branding.cjs')
+
 const mode = process.env.BUILD_MODE === 'remote' ? 'remote' : 'local'
+const brand = loadBrandConfig(__dirname)
+
+// Derive a short slug from the brand name for artifact file names.
+// "MyAI" → "MyAI", "Cool App" → "Cool_App"
+const brandSlug = brand.name.replace(/\s+/g, '_')
+
+// Parse GitHub URL for publish config (owner/repo)
+let githubOwner = 'matevip'
+let githubRepo = 'mateclaw'
+const ghMatch = brand.githubUrl.match(/github\.com\/([^/]+)\/([^/]+)/)
+if (ghMatch) {
+  githubOwner = ghMatch[1]
+  githubRepo = ghMatch[2]
+}
 
 /** @type {import('electron-builder').Configuration} */
 const config = {
-  appId: 'vip.mate.mateclaw',
-  productName: 'MateClaw',
-  copyright: 'Copyright © 2026 MateClaw Team',
+  appId: brand.appId,
+  productName: brand.name,
+  copyright: brand.copyright,
   directories: { output: 'release' },
   publish: [
     {
       provider: 'github',
-      owner: 'matevip',
-      repo: 'mateclaw',
+      owner: githubOwner,
+      repo: githubRepo,
     },
   ],
   files: ['dist-electron', 'dist'],
@@ -69,8 +89,8 @@ const config = {
     // Differentiate installers so users can tell local vs remote builds apart.
     artifactName:
       mode === 'remote'
-        ? 'MateClaw_Remote_${version}_${arch}.${ext}'
-        : 'MateClaw_${version}_${arch}.${ext}',
+        ? `${brandSlug}_Remote_${'$'}{version}_${'$'}{arch}.${'$'}{ext}`
+        : `${brandSlug}_${'$'}{version}_${'$'}{arch}.${'$'}{ext}`,
   },
 
   dmg: {
@@ -78,7 +98,7 @@ const config = {
       { x: 130, y: 220 },
       { x: 410, y: 220, type: 'link', path: '/Applications' },
     ],
-    title: 'MateClaw ${version}',
+    title: `${brand.name} ${'$'}{version}`,
   },
 
   win: {
@@ -89,8 +109,8 @@ const config = {
     icon: 'build/icon.ico',
     artifactName:
       mode === 'remote'
-        ? 'MateClaw_Remote_${version}_${arch}_Setup.${ext}'
-        : 'MateClaw_${version}_${arch}_Setup.${ext}',
+        ? `${brandSlug}_Remote_${'$'}{version}_${'$'}{arch}_Setup.${'$'}{ext}`
+        : `${brandSlug}_${'$'}{version}_${'$'}{arch}_Setup.${'$'}{ext}`,
   },
 
   nsis: {
@@ -111,8 +131,8 @@ const config = {
     category: 'Utility',
     artifactName:
       mode === 'remote'
-        ? 'MateClaw_Remote_${version}.${ext}'
-        : 'MateClaw_${version}.${ext}',
+        ? `${brandSlug}_Remote_${'$'}{version}.${'$'}{ext}`
+        : `${brandSlug}_${'$'}{version}.${'$'}{ext}`,
   },
 }
 
