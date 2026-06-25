@@ -230,6 +230,35 @@ public class OperationalDataExportService {
         return task;
     }
 
+    /**
+     * Backend-only export entry point for the CLI: no 90-day cap and no timeout,
+     * returns the ZIP bytes directly instead of writing to disk. Reachable only
+     * from the operator CLI, never over HTTP.
+     */
+    public byte[] exportBackendBytes(LocalDate start, LocalDate end) {
+        if (!generating.compareAndSet(false, true)) {
+            throw new IllegalStateException("前端或后台已有生成任务在运行");
+        }
+        try {
+            long t0 = System.currentTimeMillis();
+            byte[] zip = doExport(start, end, step -> {}, false);
+            log.info("CLI export completed: {} KB, {}ms", zip.length / 1024,
+                     System.currentTimeMillis() - t0);
+            try {
+                auditEventService.recordSync("EXPORT", "OPERATIONAL_DATA",
+                    start + "~" + end, "运营数据导出 9 sheets (CLI)", null);
+            } catch (Exception e) {
+                log.warn("Failed to write audit for CLI export: {}", e.getMessage());
+            }
+            return zip;
+        } catch (Exception e) {
+            log.error("CLI export failed", e);
+            throw new RuntimeException("导出失败: " + e.getMessage(), e);
+        } finally {
+            generating.set(false);
+        }
+    }
+
     /** 查询任务进度 */
     public ExportTask getProgress(String taskId) {
         return tasks.get(taskId);
