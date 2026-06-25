@@ -50,6 +50,7 @@ import java.util.stream.Collectors;
 import reactor.core.Disposable;
 import vip.mate.approval.PendingApproval;
 import vip.mate.approval.ResolveOutcome;
+import vip.mate.agent.context.ChatOrigin;
 
 /**
  * WebChat 嵌入式对话接口
@@ -1260,12 +1261,12 @@ public class WebChatController {
                 // Restore the original ChatOrigin captured at createPending time.
                 // Falls back to a fresh webchat origin when none was persisted
                 // (defensive — mirrors ChatController:304-306).
-                vip.mate.agent.context.ChatOrigin replayOrigin =
+                ChatOrigin replayOrigin =
                         approvalService.restoreChatOrigin(snapshot.getChatOrigin());
-                if (replayOrigin == vip.mate.agent.context.ChatOrigin.EMPTY) {
+                if (replayOrigin == ChatOrigin.EMPTY) {
                     var agent = agentService.getAgent(replayAgentId);
                     Long wsId = agent != null ? agent.getWorkspaceId() : 1L;
-                    replayOrigin = vip.mate.agent.context.ChatOrigin.web(
+                    replayOrigin = ChatOrigin.web(
                             conversationId, actor, wsId, null).withSender(null, "api", null);
                 }
 
