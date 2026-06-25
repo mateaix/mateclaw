@@ -1068,10 +1068,10 @@ public class WebChatController {
         // mirroring how the web ChatController uses the logged-in username.
         int deniedCount = 0;
         try {
-            java.util.List<vip.mate.approval.ResolveOutcome> denied =
+            java.util.List<ResolveOutcome> denied =
                     approvalService.denyAllByConversation(conversationId, webchatUsername(visitorId));
             deniedCount = denied.size();
-            for (vip.mate.approval.ResolveOutcome o : denied) {
+            for (ResolveOutcome o : denied) {
                 try {
                     streamTracker.broadcast(conversationId, "tool_approval_resolved",
                             objectMapper.writeValueAsString(java.util.Map.of(
@@ -1131,8 +1131,19 @@ public class WebChatController {
         if (!ownsConversation(conversationId, visitorId)) {
             return R.fail(404, "Session not found");
         }
-        // Resolve and broadcast outside the persistence transaction (RFC-067 §4.2):
-        // SSE is not rollback-capable.
+        // IDOR guard (review #415): the caller owns the conversation, but the
+        // pendingId is client-supplied — cross-check that the pending actually
+        // belongs to this conversation before resolving, otherwise a visitor
+        // could resolve / replay another visitor's guarded tool call.
+        // getPending(pendingId) gives the exact record (vs findPendingByConversation
+        // which returns the earliest, wrong when several pendings coexist).
+        var ownedOpt = approvalService.getPending(pendingId);
+        if (ownedOpt.isEmpty()
+                || !conversationId.equals(ownedOpt.get().getConversationId())) {
+            return R.fail(404, "Pending approval not found for this session");
+        }
+        // Resolve and broadcast outside the persistence transaction: SSE is
+        // not rollback-capable, so the broadcast must follow a committed DB write.
         String actor = webchatUsername(visitorId);
         ResolveOutcome outcome = approvalService.resolve(pendingId, actor, "denied");
         broadcastApprovalResolved(conversationId, outcome);
@@ -1189,6 +1200,15 @@ public class WebChatController {
             sendErrorAndComplete(emitter, "Session not found");
             return emitter;
         }
+        // IDOR guard (review #415): cross-check the client-supplied pendingId
+        // actually belongs to this conversation before resolving, otherwise a
+        // visitor could approve + replay another visitor's guarded tool call.
+        var ownedApprovalOpt = approvalService.getPending(pendingId);
+        if (ownedApprovalOpt.isEmpty()
+                || !conversationId.equals(ownedApprovalOpt.get().getConversationId())) {
+            sendErrorAndComplete(emitter, "Pending approval not found for this session");
+            return emitter;
+        }
 
         emitter.onCompletion(() -> log.debug("[WebChat] approve SSE completed: {}", conversationId));
         emitter.onTimeout(() -> {
@@ -1202,6 +1222,14 @@ public class WebChatController {
 
         String actor = webchatUsername(visitorId);
         sseExecutor.execute(() -> {
+            // Register + attach the emitter FIRST so every downstream branch
+            // (already-resolved, no-agent, error, replay) can broadcast a
+            // terminal event the SDK actually receives. Doing this after
+            // resolveAndConsume left the already-resolved / error paths
+            // broadcasting into a subscriber-less tracker, so the SSE hung
+            // to the 10-min timeout (review #415).
+            streamTracker.register(conversationId);
+            streamTracker.attach(conversationId, emitter);
             try {
                 // Atomically consume the approval (DB + metadata + memory, single tx).
                 ResolveOutcome consumed = approvalService.resolveAndConsume(pendingId, actor);
@@ -1248,8 +1276,6 @@ public class WebChatController {
                 final int[] usage = {0, 0};
                 final String[] modelInfo = {null, null};
 
-                streamTracker.register(conversationId);
-                streamTracker.attach(conversationId, emitter);
                 streamTracker.broadcast(conversationId, "message_start",
                         "{\"role\":\"assistant\"}");
 

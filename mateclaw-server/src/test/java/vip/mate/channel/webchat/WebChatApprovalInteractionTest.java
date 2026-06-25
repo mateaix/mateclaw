@@ -106,9 +106,12 @@ class WebChatApprovalInteractionTest {
         assertThat(r.getData().get("resolved")).isEqualTo(Boolean.TRUE);
         assertThat(r.getData().get("decision")).isEqualTo("denied");
 
-        // The approval is no longer pending.
-        PendingApproval after = approvalService.findPendingByConversation(cid);
-        assertThat(after == null || !"pending".equals(after.getStatus()))
+        // The approval is no longer pending. Query by the exact pendingId (not
+        // findPendingByConversation, which returns the earliest pending and
+        // would be polluted by cross-test map state when several pendings
+        // coexist for the same conversation).
+        var after = approvalService.getPending(pendingId);
+        assertThat(after.isEmpty() || !"pending".equals(after.get().getStatus()))
                 .as("approval should be resolved, not pending").isTrue();
     }
 
@@ -139,14 +142,52 @@ class WebChatApprovalInteractionTest {
     }
 
     @Test
-    @DisplayName("deny of an already-resolved / unknown pending is a safe idempotent return")
+    @DisplayName("deny of an unknown pendingId returns 404 (does not leak existence)")
     void denyUnknownPendingIsSafe() {
         controller.createSession(API_KEY, req("visitorE", "s1"));
         R<Map<String, Object>> r = controller.denySession(
                 API_KEY, tokenFor("visitorE"), "visitorE", "s1", "wf-ghostthatdoesnotexist");
-        assertThat(r.getCode()).isEqualTo(200);
-        // dbSynced=false — nothing flipped, but the call is not an error.
-        assertThat(r.getData().get("resolved")).isEqualTo(Boolean.FALSE);
+        // After the IDOR guard (review #415) an unknown / mismatched pendingId
+        // is rejected with 404 rather than an idempotent 200 — this also avoids
+        // leaking whether a given pendingId exists.
+        assertThat(r.getCode()).isEqualTo(404);
+    }
+
+    // ---------------- IDOR guard (review #415) ----------------
+
+    @Test
+    @DisplayName("deny rejects a pendingId belonging to ANOTHER visitor's session → 404")
+    void denyRejectsCrossVisitorPendingId() {
+        // Victim owns session victimX and its pending approval.
+        String pendingIdVictim = seedPending("victimX", "s1");
+        // Attacker also has a valid token + own session (ownsConversation passes).
+        controller.createSession(API_KEY, req("attackerY", "s1"));
+
+        // Attacker tries to deny the victim's pendingId while authenticated as
+        // the attacker against the attacker's own session. Before the IDOR fix
+        // this would resolve the victim's approval — a cross-visitor privilege
+        // escalation. Now the pendingId↔conversationId cross-check returns 404.
+        R<Map<String, Object>> r = controller.denySession(
+                API_KEY, tokenFor("attackerY"), "attackerY", "s1", pendingIdVictim);
+
+        assertThat(r.getCode()).isEqualTo(404);
+
+        // The victim's approval is untouched.
+        String cidVictim = WebChatController.deriveConversationId(API_KEY, "victimX", "s1");
+        var stillPending = approvalService.getPending(pendingIdVictim);
+        assertThat(stillPending).as("victim's approval must not be resolved by attacker").isPresent();
+        assertThat(stillPending.get().getStatus()).isEqualTo("pending");
+    }
+
+    @Test
+    @DisplayName("deny rejects a pendingId that does not belong to the caller's session → 404")
+    void denyRejectsMismatchedPendingId() {
+        // Visitor owns the session, but passes a pendingId that doesn't match
+        // the session's pending (e.g. a stale/guessed id).
+        seedPending("visitorH", "s1");
+        R<Map<String, Object>> r = controller.denySession(
+                API_KEY, tokenFor("visitorH"), "visitorH", "s1", "wf-not-yours-12345");
+        assertThat(r.getCode()).isEqualTo(404);
     }
 
     // ---------------- stop sweep (A4) ----------------

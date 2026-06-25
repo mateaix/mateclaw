@@ -775,6 +775,17 @@ public class ApprovalWorkflowService implements ApplicationRunner {
     /**
      * 代理查询方法
      */
+    /**
+     * Look up a pending approval by its exact id. Delegates to the underlying
+     * {@link ApprovalService#getPending} so callers that only hold the workflow
+     * facade (e.g. WebChatController) can fetch the precise record for an IDOR
+     * cross-check without falling back to {@code findPendingByConversation}
+     * (which returns the earliest pending, wrong when several coexist).
+     */
+    public java.util.Optional<PendingApproval> getPending(String pendingId) {
+        return approvalService.getPending(pendingId);
+    }
+
     public PendingApproval findPendingByConversation(String conversationId) {
         return approvalService.findPendingByConversation(conversationId);
     }
