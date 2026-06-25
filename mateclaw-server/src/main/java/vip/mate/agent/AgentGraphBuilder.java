@@ -153,6 +153,9 @@ public class AgentGraphBuilder {
     private vip.mate.audit.service.AuditEventService auditEventService;
 
     @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private ContextPressureMonitor contextPressureMonitor;
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
     public void setAuditEventService(vip.mate.audit.service.AuditEventService s) {
         this.auditEventService = s;
     }
@@ -439,6 +442,7 @@ public class AgentGraphBuilder {
         agent.modelCapabilities = modelCapabilityService.resolve(
                 runtimeModel.getModelName(), runtimeModel.getModalities());
         agent.runtimeProviderId = provider != null ? provider.getProviderId() : "";
+        agent.runtimeModelType = runtimeModel.getModelType() != null ? runtimeModel.getModelType() : "chat";
         agent.runtimeModelConfig = runtimeModel;
         agent.toolSet = toolSet;
         // RFC 48 — wire the goal lookup so buildInitialState can inject
@@ -853,6 +857,9 @@ public class AgentGraphBuilder {
             // capability from reasoningEffort == null.
             boolean supportsReasoningEffort = primaryModelConfig != null
                     && ModelFamily.detect(primaryModelConfig.getModelName()).supportsReasoningEffort();
+            if (contextPressureMonitor != null) {
+                reasoningNode.setContextPressureMonitor(contextPressureMonitor);
+            }
             ReasoningNode reasoningNode = new ReasoningNode(chatModel, toolSet, reasoningEffort,
                     supportsReasoningEffort,
                     streamingHelper, conversationWindowManager, streamTracker, 0, wikiContextService,

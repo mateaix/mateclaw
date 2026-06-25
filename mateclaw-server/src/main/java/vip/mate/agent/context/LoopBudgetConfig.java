@@ -13,7 +13,15 @@ package vip.mate.agent.context;
  * <p>Field semantics:
  * <ul>
  *   <li>{@code triggerTokens} — token threshold above which budgeting kicks
- *       in. Compared against {@code historyTokens + reservedPrefixTokens}
+ *       in. Compared against {@code historyTokens + reservedPrefixTokens
+    public static LoopBudgetConfig fromAllocation(vip.mate.context.adaptive.DynamicBudgetAllocator.Allocation alloc) {
+        int ctx = alloc.effectiveWindow() > 0 ? alloc.effectiveWindow() : 32000;
+        int t = Math.max(MIN_TRIGGER_TOKENS, alloc.compactTriggerTokens());
+        int tail = Math.max(MIN_TAIL_TOKENS, alloc.keepTailTokens());
+        if (tail >= t) tail = Math.max(MIN_TAIL_TOKENS, t - MIN_TRIGGER_TOKENS);
+        return new LoopBudgetConfig(t, tail, 4, 1.5, alloc.systemTokens() + alloc.toolsTokens(), 200);
+    }
+}
  *       so the budgeter accounts for the full prompt the LLM will see,
  *       not just the message list.</li>
  *   <li>{@code keepTailTokens} — token budget reserved for the tail (recent

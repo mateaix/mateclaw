@@ -1,4 +1,4 @@
-package vip.mate.agent.graph.node;
+﻿package vip.mate.agent.graph.node;
 
 import com.alibaba.cloud.ai.graph.OverAllState;
 import com.alibaba.cloud.ai.graph.action.NodeAction;
@@ -22,6 +22,8 @@ import vip.mate.llm.chatmodel.ThinkingLevelHolder;
 import vip.mate.agent.graph.NodeStreamingChatHelper;
 import vip.mate.agent.context.ConversationWindowManager;
 import vip.mate.agent.context.LoopBudgetConfig;
+import vip.mate.context.adaptive.ContextPressureMonitor;
+import vip.mate.context.adaptive.DynamicBudgetAllocator;
 import vip.mate.agent.context.LoopMessageBudgeter;
 import vip.mate.agent.context.RuntimeContextInjector;
 import vip.mate.agent.context.TokenEstimator;
@@ -333,6 +335,12 @@ public class ReasoningNode implements NodeAction {
     private final int maxOutputTokens;
     /** Wiki 相关性注入（可选，null 时跳过） */
     private final vip.mate.wiki.service.WikiContextService wikiContextService;
+
+    private ContextPressureMonitor contextPressureMonitor;
+
+    void setContextPressureMonitor(ContextPressureMonitor m) { this.contextPressureMonitor = m; }
+
+    private final DynamicBudgetAllocator budgetAllocator = new DynamicBudgetAllocator();
     /**
      * Renders the {@code ## Skills} catalog each turn so its ordering reacts to
      * skills loaded this run (load_skill pins). Null in legacy / test
@@ -470,6 +478,13 @@ public class ReasoningNode implements NodeAction {
      * otherwise the documented fallback.
      */
     private int loopContextWindowTokens() {
+        if (contextPressureMonitor != null) {
+            vip.mate.context.adaptive.ContextProfile profile =
+                    vip.mate.context.adaptive.ContextProfile.fromModelType(runtimeModelType);
+            if (profile.isDynamic() && profile.hasTextContext()) {
+                int v = contextPressureMonitor.getEffectiveWindow(runtimeModelName, runtimeProviderId);
+            if (v > 0) return v;
+        }
         if (conversationWindowManager != null) {
             int v = conversationWindowManager.getDefaultMaxInputTokens();
             if (v > 0) return v;
@@ -594,9 +609,13 @@ public class ReasoningNode implements NodeAction {
         // still hold once budget fires.
         int systemTokens = TokenEstimator.estimateTokens(systemPrompt);
         int toolsTokens = TokenEstimator.estimateToolsTokens(toolCallbacks);
-        int loopReservedPrefixTokens = systemTokens + toolsTokens
+        int currentMsgTokens = TokenEstimator.estimateTokens(userMsg);
+        DynamicBudgetAllocator.Allocation alloc = budgetAllocator.allocate(
+                contextPressureMonitor, runtimeProviderId, runtimeModelName,
+                systemTokens, toolsTokens, currentMsgTokens, loopContextWindowTokens());
+        int loopReservedPrefixTokens = alloc.systemTokens() + alloc.toolsTokens()
                 + maxOutputTokens + LOOP_PREFIX_AUXILIARY_RESERVE_TOKENS;
-        LoopBudgetConfig loopCfg = LoopBudgetConfig.forContext(loopContextWindowTokens())
+        LoopBudgetConfig loopCfg = LoopBudgetConfig.fromAllocation(alloc)
                 .withReservedPrefixTokens(loopReservedPrefixTokens);
         LoopMessageBudgeter.Result budgeted = LOOP_BUDGETER.budget(messages, loopCfg);
         // Only log when the budget actually modified the list — a triggered-
@@ -621,6 +640,7 @@ public class ReasoningNode implements NodeAction {
         String userMsg = state.value(MateClawStateKeys.USER_MESSAGE, "");
         String runtimeModelName = state.value(MateClawStateKeys.RUNTIME_MODEL_NAME, "");
         String runtimeProviderId = state.value(MateClawStateKeys.RUNTIME_PROVIDER_ID, "");
+        String runtimeModelType = state.value(MateClawStateKeys.RUNTIME_MODEL_TYPE, "chat");
 
         // Build the non-history prefix ONCE. The PTL retry branch below
         // reuses this list verbatim so the retried prompt has exactly the
@@ -751,6 +771,11 @@ public class ReasoningNode implements NodeAction {
             // Prompt 仍带 wiki / runtime context；早期的 tail-only 路径会把
             // wiki 段一起丢掉，重试后的 prompt 比原始更短少一层信息。
             if (result.isPromptTooLong() && conversationWindowManager != null) {
+                // Notify the adaptive context tracker of the overflow
+                if (contextPressureMonitor != null) {
+                    int estTokens = vip.mate.agent.context.TokenEstimator.estimateTokens(messages);
+                    if (estTokens > 0) contextPressureMonitor.onLlmOverflow(runtimeProviderId, runtimeModelName, estTokens);
+                }
                 log.warn("[ReasoningNode] Prompt too long, attempting STRUCTURED compaction and retry");
 
                 // MateClawStateAccessor.agentId() returns String per state
@@ -966,6 +991,7 @@ public class ReasoningNode implements NodeAction {
             log.info("[ReasoningNode] LLM requested {} tool call(s): {}",
                     result.toolCalls().size(),
                     result.toolCalls().stream().map(AssistantMessage.ToolCall::name).toList());
+            notifyPressureMonitor(result);
             pushPhase(conversationId, "executing_tool", Map.of(
                     "iteration", accessor.iterationCount(),
                     "toolCount", result.toolCalls().size()
@@ -1254,5 +1280,18 @@ public class ReasoningNode implements NodeAction {
             log.debug("[ReasoningNode] Failed to extract Anthropic model name: {}", e.getMessage());
         }
         return null;
+    }
+}
+
+    private void notifyPressureMonitor(NodeStreamingChatHelper.StreamResult result) {
+        if (contextPressureMonitor == null) return;
+        try {
+            vip.mate.context.adaptive.ContextProfile profile =
+                    vip.mate.context.adaptive.ContextProfile.fromModelType(runtimeModelType);
+            if (profile.isDynamic() && profile.hasTextContext()) {
+                contextPressureMonitor.onLlmSuccess(runtimeProviderId, runtimeModelName, null,
+                        result.promptTokens(), result.completionTokens(), 0);
+            }
+        } catch (Exception ignored) { }
     }
 }

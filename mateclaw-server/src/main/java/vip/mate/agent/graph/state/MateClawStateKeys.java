@@ -159,6 +159,7 @@ public final class MateClawStateKeys {
     // ===== 运行时模型快照（REPLACE 策略，buildInitialState 注入）=====
     public static final String RUNTIME_MODEL_NAME = "runtime_model_name";
     public static final String RUNTIME_PROVIDER_ID = "runtime_provider_id";
+    String RUNTIME_MODEL_TYPE = "runtime_model_type";
 
     // ===== RFC-052: Tool returnDirect 与数据隔离 =====
 

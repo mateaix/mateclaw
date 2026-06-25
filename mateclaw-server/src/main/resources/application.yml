@@ -253,6 +253,12 @@ mateclaw:
 
 # MateClaw Agent 配置
 mate:
+  context:
+    adaptive:
+      enabled: ${MATECLAW_CONTEXT_ADAPTIVE_ENABLED:true}
+      gateway-mode: ${MATECLAW_CONTEXT_GATEWAY_MODE:auto}
+      max-window: 2000000
+      db-persist: true
   agent:
     # Deterministic Markdown cleanup of the final answer (heading spaces, glued
     # ---, table pipe alignment) before persistence / channel delivery. Set to

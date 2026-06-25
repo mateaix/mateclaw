@@ -88,6 +88,8 @@ public enum ModelFamily {
     private final boolean supportsReasoningEffort;
     private final boolean fixedTemperatureOne;
     private final boolean suppressTopP;
+
+    private final vip.mate.context.adaptive.ContextProfile contextProfile;
     private final boolean thinking;
 
     ModelFamily(boolean useMaxCompletionTokens, boolean suppressMaxTokens,
@@ -99,6 +101,7 @@ public enum ModelFamily {
         this.fixedTemperatureOne = fixedTemperatureOne;
         this.suppressTopP = suppressTopP;
         this.thinking = thinking;
+        this.contextProfile = vip.mate.context.adaptive.ContextProfile.DYNAMIC_CHAT;
     }
 
     /** 是否必须用 max_completion_tokens 替代 max_tokens */
@@ -129,6 +132,10 @@ public enum ModelFamily {
     /** 是否为 thinking/reasoning 模型 */
     public boolean isThinking() {
         return thinking;
+    }
+
+    public vip.mate.context.adaptive.ContextProfile contextProfile() {
+        return contextProfile;
     }
 
     /**
@@ -180,5 +187,15 @@ public enum ModelFamily {
         }
 
         return STANDARD;
+    }
+}
+
+    public static vip.mate.context.adaptive.ContextProfile detectContextProfile(String modelName) {
+        return detect(modelName).contextProfile();
+    }
+}
+
+    public static vip.mate.context.adaptive.ContextProfile detectContextProfile(String modelName) {
+        return detect(modelName).contextProfile();
     }
 }
