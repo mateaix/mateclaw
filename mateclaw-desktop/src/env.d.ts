@@ -25,6 +25,7 @@ interface ConnectionConfigState {
   remoteUrl: string
   servers: RemoteServer[]
   forceChoose: boolean
+  buildMode: 'local' | 'remote'
 }
 
 interface ConnectionTestResult {
@@ -36,6 +37,7 @@ interface ConnectionTestResult {
 interface MateClawAPI {
   getPlatform: () => Promise<string>
   getVersion: () => Promise<string>
+  getBuildMode: () => Promise<'local' | 'remote'>
   getBackendUrl: () => Promise<string>
   isBackendReady: () => Promise<boolean>
   getUserDataPath: () => Promise<string>

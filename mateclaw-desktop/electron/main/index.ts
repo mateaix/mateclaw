@@ -47,6 +47,31 @@ const trustedCertHosts = new Set<string>()
 // handler, which prompts the user before loading the page.
 const insecureAgent = new https.Agent({ rejectUnauthorized: false })
 
+// ─── Build Mode Detection ────────────────────────────────────────────────────
+
+/**
+ * The desktop app ships in two variants:
+ *
+ *  "local"  — bundles the JRE and Spring Boot JAR in extraResources so the
+ *             app can run an embedded backend.  This is the traditional full
+ *             build.
+ *
+ *  "remote" — omits the JRE/JAR (~530 MB lighter).  The app can only connect
+ *             to a remote server.  The "local" option is hidden in the splash
+ *             connection chooser.
+ *
+ * Detection is done at runtime by checking whether the JAR exists in the
+ * resources directory.  This avoids any build-time code injection — the same
+ * main-process code runs in both builds; the only difference is whether the
+ * JAR/JRE files are present.
+ */
+function detectBuildMode(): 'local' | 'remote' {
+  const jarPath = getJarPath()
+  return existsSync(jarPath) ? 'local' : 'remote'
+}
+
+const BUILD_MODE = detectBuildMode()
+
 interface UpdaterState {
   status: 'idle' | 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error'
   version?: string
@@ -131,6 +156,15 @@ function getAvailablePort(): Promise<number> {
 }
 
 async function startJavaBackend(): Promise<void> {
+  // Remote builds have no bundled JRE/JAR — refuse to start the local backend
+  // and guide the user toward the connection chooser instead of showing a
+  // generic "file not found" error.
+  if (BUILD_MODE === 'remote') {
+    console.log('[MateClaw] Remote build — local backend unavailable, showing connection chooser')
+    sendToWindow('backend:status', 'choose')
+    return
+  }
+
   BACKEND_PORT = await getAvailablePort()
   BACKEND_URL = `http://localhost:${BACKEND_PORT}`
   console.log(`[MateClaw] Using dynamic port: ${BACKEND_PORT}`)
@@ -308,6 +342,16 @@ async function bootConnection(): Promise<void> {
   }
 
   const cfg = loadConfig()
+
+  // Remote builds cannot start a local backend.  If the user previously
+  // saved 'local' mode (e.g. they upgraded from a full build), ignore the
+  // stale preference and fall through to the connection chooser.
+  if (BUILD_MODE === 'remote' && cfg.mode === 'local') {
+    connectionMode = null
+    sendToWindow('backend:status', 'choose')
+    return
+  }
+
   if (cfg.mode === 'local') {
     connectionMode = 'local'
     await startJavaBackend()
@@ -544,6 +588,10 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('app:get-version', () => app.getVersion())
 
+  // Let the renderer know whether this is a local (full) or remote (lite) build
+  // so the splash can hide the "local" connection option in remote builds.
+  ipcMain.handle('app:get-build-mode', () => BUILD_MODE)
+
   ipcMain.handle('app:get-backend-url', () => BACKEND_URL)
 
   ipcMain.handle('app:is-backend-ready', () => backendReady)
@@ -576,6 +624,9 @@ function registerIpcHandlers(): void {
       servers: cfg.servers,
       // The renderer shows the chooser on first run or when "Switch Server" forced it.
       forceChoose: forceChooser,
+      // Tell the renderer which build variant is running so it can hide the
+      // "local" option in remote (lite) builds.
+      buildMode: BUILD_MODE,
     }
   })
 
@@ -584,6 +635,11 @@ function registerIpcHandlers(): void {
   })
 
   ipcMain.handle('connection:use-local', async () => {
+    // Remote builds have no bundled JRE/JAR — reject the local mode request.
+    if (BUILD_MODE === 'remote') {
+      sendToWindow('backend:crashed', '此版本为轻量版（Remote），不支持本地内嵌后端。请选择连接远程服务器。')
+      return
+    }
     forceChooser = false
     saveConfig({ mode: 'local' })
     connectionMode = 'local'

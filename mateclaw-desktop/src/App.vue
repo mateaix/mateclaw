@@ -16,6 +16,8 @@ const remoteUrlInput = ref('')
 const testing = ref(false)
 const testResult = ref<{ ok: boolean; msg: string } | null>(null)
 const recentServers = ref<RemoteServer[]>([])
+// Build variant: 'local' = full (bundles JRE+JAR), 'remote' = lite (connect to remote server only)
+const buildMode = ref<'local' | 'remote'>('local')
 
 let BACKEND_URL = ''
 
@@ -235,7 +237,21 @@ onMounted(async () => {
       const cfg = await window.mateClawAPI.getConnectionConfig()
       recentServers.value = cfg.servers || []
       remoteUrlInput.value = cfg.remoteUrl || ''
-      if (cfg.forceChoose || !cfg.mode) {
+      buildMode.value = cfg.buildMode || 'local'
+
+      // Remote (lite) builds: skip the mode chooser, go straight to the
+      // remote server form — the "local" option is not available.
+      if (buildMode.value === 'remote') {
+        if (cfg.forceChoose || !cfg.mode || cfg.mode === 'local') {
+          status.value = 'connection-select'
+          connView.value = 'remote-form'
+        } else {
+          connectionMode.value = cfg.mode
+          if (await window.mateClawAPI.isBackendReady()) {
+            handleBackendReady()
+          }
+        }
+      } else if (cfg.forceChoose || !cfg.mode) {
         status.value = 'connection-select'
         connView.value = 'choose'
       } else {
@@ -325,7 +341,11 @@ function createParticles() {
         <template v-if="connView === 'choose'">
           <div class="lang-title">选择连接方式 / Connection</div>
           <div class="lang-options">
-            <button class="lang-card" @click="chooseLocal">
+            <button
+              v-if="buildMode === 'local'"
+              class="lang-card"
+              @click="chooseLocal"
+            >
               <span class="lang-flag">💻</span>
               <span class="lang-label">本地运行</span>
               <span class="lang-desc">在本机内嵌运行服务</span>
@@ -335,6 +355,10 @@ function createParticles() {
               <span class="lang-label">连接远程</span>
               <span class="lang-desc">接入集中部署的服务器</span>
             </button>
+          </div>
+          <!-- Remote (lite) build notice -->
+          <div v-if="buildMode === 'remote'" class="remote-build-notice">
+            当前为轻量版客户端，仅支持连接远程服务器
           </div>
         </template>
 
@@ -899,6 +923,16 @@ function createParticles() {
 .lang-desc {
   font-size: 11px;
   color: var(--text-tertiary);
+}
+.remote-build-notice {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  text-align: center;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  width: 100%;
 }
 
 /* ══════════════════════════════════════════════════

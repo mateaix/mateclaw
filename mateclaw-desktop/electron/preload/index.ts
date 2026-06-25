@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld('mateClawAPI', {
   // Platform info
   getPlatform: () => ipcRenderer.invoke('app:get-platform'),
   getVersion: () => ipcRenderer.invoke('app:get-version'),
+  getBuildMode: () => ipcRenderer.invoke('app:get-build-mode'),
   getBackendUrl: () => ipcRenderer.invoke('app:get-backend-url'),
   isBackendReady: () => ipcRenderer.invoke('app:is-backend-ready'),
   getUserDataPath: () => ipcRenderer.invoke('app:get-user-data-path'),
