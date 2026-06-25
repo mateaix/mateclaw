@@ -10,11 +10,12 @@ import org.springframework.stereotype.Component;
 
 import java.io.IOException;
 import java.time.Duration;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Rate limiter for login endpoint — prevents brute force attacks.
- * Allows max 5 login attempts per IP per minute.
+ * Rate limiter for login + SSO bind endpoints — prevents brute force attacks.
+ * Allows max 5 attempts per IP per minute across all password-checking paths.
  *
  * @author MateClaw Team
  */
@@ -23,7 +24,13 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class LoginRateLimitFilter implements Filter {
 
     private static final int MAX_ATTEMPTS = 5;
-    private static final String LOGIN_PATH = "/api/v1/auth/login";
+    /**
+     * Endpoints that accept a username + password and must be rate-limited
+     * against brute force. SSO callback is excluded (no password submitted).
+     */
+    private static final Set<String> PROTECTED_PATHS = Set.of(
+            "/api/v1/auth/login",
+            "/api/v1/auth/sso/bind");
 
     /** IP → attempt count, auto-expires after 1 minute */
     private final Cache<String, AtomicInteger> attempts = Caffeine.newBuilder()
@@ -36,7 +43,7 @@ public class LoginRateLimitFilter implements Filter {
             throws IOException, ServletException {
         HttpServletRequest httpReq = (HttpServletRequest) request;
 
-        if ("POST".equalsIgnoreCase(httpReq.getMethod()) && LOGIN_PATH.equals(httpReq.getRequestURI())) {
+        if ("POST".equalsIgnoreCase(httpReq.getMethod()) && PROTECTED_PATHS.contains(httpReq.getRequestURI())) {
             String ip = getClientIp(httpReq);
             AtomicInteger count = attempts.get(ip, k -> new AtomicInteger(0));
             int current = count.incrementAndGet();

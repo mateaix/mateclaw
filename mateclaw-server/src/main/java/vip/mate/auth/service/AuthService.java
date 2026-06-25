@@ -50,7 +50,8 @@ public class AuthService {
                 .eq(UserEntity::getUsername, request.getUsername())
                 .eq(UserEntity::getEnabled, true));
 
-        if (user == null || !passwordEncoder.matches(request.getPassword(), user.getPassword())) {
+        if (user == null || user.getPassword() == null
+                || !passwordEncoder.matches(request.getPassword(), user.getPassword())) {
             throw new MateClawException("err.auth.invalid_credentials", 401, "用户名或密码错误");
         }
 
@@ -212,7 +213,10 @@ public class AuthService {
         return userMapper.selectById(userId);
     }
 
-    private String generateToken(UserEntity user) {
+    /**
+     * 生成 JWT token。SSO 登录路径复用此方法签发格式一致的 token。
+     */
+    public String generateToken(UserEntity user) {
         return Jwts.builder()
                 .subject(user.getUsername())
                 .claim("userId", user.getId())
