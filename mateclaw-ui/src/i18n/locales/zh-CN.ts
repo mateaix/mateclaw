@@ -224,6 +224,7 @@ export default {
     modelSaveFailed: '模型切换未保存，下条消息可能仍走原模型',
     openSessions: '会话管理',
     clearMessages: '清空消息',
+    scrollToBottom: '回到底部',
     goToModelSettings: '前往模型设置',
     configModelFirst: '请先配置模型',
     modelUnavailable: '当前模型不可用',
