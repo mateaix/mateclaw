@@ -110,6 +110,20 @@ export const authApi = {
     http.put(`/auth/users/${id}/password`, null, { params: { oldPassword, newPassword } }),
 }
 
+// ==================== SSO ====================
+export const ssoApi = {
+  /** List enabled SSO providers (for rendering login buttons) */
+  providers: () => http.get('/auth/sso/providers'),
+  /** Get the authorize URL + state for a provider */
+  authorize: (provider: string) => http.get(`/auth/sso/${provider}/authorize`),
+  /** Exchange OAuth2 code for JWT */
+  callback: (provider: string, code: string, state: string) =>
+    http.post(`/auth/sso/${provider}/callback`, { code, state }),
+  /** Bind an SSO identity to an existing account (link-only mode) */
+  bind: (bindToken: string, username: string, password: string) =>
+    http.post('/auth/sso/bind', { bindToken, username, password }),
+}
+
 // ==================== Agent ====================
 export const agentApi = {
   /**

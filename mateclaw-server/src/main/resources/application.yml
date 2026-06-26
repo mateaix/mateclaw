@@ -153,6 +153,21 @@ mateclaw:
   jwt:
     secret: ${JWT_SECRET:MateClaw-JWT-Secret-Key-2024-Please-Change-In-Production}
     expiration: 86400000
+  sso:
+    # 全局开关（默认关闭，不影响现有部署）
+    enabled: ${SSO_ENABLED:false}
+    # 「仅允许绑定已有账号」模式（false = 允许自动创建新用户）
+    link-only: ${SSO_LINK_ONLY:false}
+    # 新建 SSO 用户的默认角色
+    default-role: ${SSO_DEFAULT_ROLE:user}
+    feishu:
+      enabled: ${SSO_FEISHU_ENABLED:false}
+      app-id: ${SSO_FEISHU_APP_ID:}
+      app-secret: ${SSO_FEISHU_APP_SECRET:}
+      # 国际版切换: feishu (国内) / lark (国际版 Lark)
+      domain: ${SSO_FEISHU_DOMAIN:feishu}
+      # SSO 回调地址，通常 https://your-domain/login?sso=callback
+      redirect-uri: ${SSO_FEISHU_REDIRECT_URI:}
   # 搜索配置已迁移至数据库（mate_system_setting 表），通过 UI 系统设置管理
   # MCP server 配置已迁移至数据库（mate_mcp_server 表），通过 UI 管理
   mcp:
