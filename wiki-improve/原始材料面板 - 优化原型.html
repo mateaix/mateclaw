@@ -1,0 +1,1461 @@
+<!DOCTYPE html>
+<!-- saved from url=(0118)file:///Users/sharon/ai-project/mateclaw/%E5%8E%9F%E5%A7%8B%E6%9D%90%E6%96%99%E4%BC%98%E5%8C%96%E5%8E%9F%E5%9E%8B.html -->
+<html lang="zh-CN"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>原始材料面板 - 优化原型</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --bg-card: #1a1d27;
+    --bg-hover: #21253a;
+    --bg-input: #12151f;
+    --border: #2a2f45;
+    --border-focus: #5b6aff;
+    --text: #e2e6f3;
+    --text-muted: #7a82a8;
+    --text-dim: #4a5275;
+    --accent: #5b6aff;
+    --accent-hover: #7080ff;
+    --accent-light: rgba(91,106,255,0.12);
+    --green: #22c55e;
+    --green-bg: rgba(34,197,94,0.1);
+    --yellow: #f59e0b;
+    --yellow-bg: rgba(245,158,11,0.1);
+    --red: #ef4444;
+    --red-bg: rgba(239,68,68,0.1);
+    --blue: #38bdf8;
+    --blue-bg: rgba(56,189,248,0.1);
+    --purple: #a78bfa;
+    --purple-bg: rgba(167,139,250,0.1);
+    --radius: 8px;
+    --radius-sm: 5px;
+    --shadow: 0 4px 20px rgba(0,0,0,0.4);
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
+    font-size: 13px;
+    line-height: 1.5;
+    min-height: 100vh;
+  }
+
+  /* ── Layout ── */
+  .app-shell {
+    display: flex;
+    height: 100vh;
+  }
+
+  .sidebar-nav {
+    width: 52px;
+    background: #0b0d14;
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 12px 0;
+    gap: 4px;
+    flex-shrink: 0;
+  }
+  .nav-icon {
+    width: 36px; height: 36px;
+    border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--text-dim);
+    cursor: pointer;
+    font-size: 16px;
+    transition: all 0.15s;
+  }
+  .nav-icon:hover { color: var(--text); background: var(--bg-hover); }
+  .nav-icon.active { background: var(--accent-light); color: var(--accent); }
+
+  .main-content {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* ── Workspace Header ── */
+  .workspace-header {
+    height: 48px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    padding: 0 16px;
+    gap: 12px;
+    background: var(--bg-card);
+    flex-shrink: 0;
+  }
+  .kb-badge {
+    display: flex; align-items: center; gap: 8px;
+  }
+  .kb-color-dot {
+    width: 24px; height: 24px; border-radius: 6px;
+    background: linear-gradient(135deg, #5b6aff, #8b5cf6);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: 700; color: #fff;
+  }
+  .kb-name { font-weight: 600; font-size: 14px; }
+  .header-sep { width: 1px; height: 20px; background: var(--border); }
+  .tabs { display: flex; gap: 2px; margin-left: 4px; }
+  .tab {
+    padding: 5px 12px; border-radius: 6px;
+    color: var(--text-muted); cursor: pointer;
+    font-size: 13px;
+    transition: all 0.15s;
+  }
+  .tab:hover { color: var(--text); background: var(--bg-hover); }
+  .tab.active { background: var(--accent-light); color: var(--accent); }
+
+  /* ── Panel Body ── */
+  .panel-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  /* ── Path Config Section ── */
+  .section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 10px;
+  }
+  .section-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .section-title .icon { font-size: 14px; }
+
+  .path-config-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+
+  .path-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr 80px 100px 36px 36px;
+    gap: 0;
+    align-items: center;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    transition: background 0.12s;
+  }
+  .path-row:last-child { border-bottom: none; }
+  .path-row:hover { background: var(--bg-hover); }
+
+  .path-alias {
+    display: flex; align-items: center; gap: 8px;
+  }
+  .path-alias-text { font-weight: 600; color: var(--text); }
+  .path-alias-tag {
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 10px;
+    background: var(--accent-light);
+    color: var(--accent);
+    font-weight: 600;
+  }
+  .path-server {
+    font-family: monospace;
+    font-size: 11px;
+    color: var(--text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .path-count {
+    font-size: 12px;
+    color: var(--text-muted);
+    display: flex; align-items: center; gap: 4px;
+  }
+  .path-schedule {
+    display: flex; align-items: center; gap: 6px;
+  }
+
+  .toggle-switch {
+    position: relative;
+    width: 32px; height: 18px;
+    cursor: pointer;
+  }
+  .toggle-switch input { display: none; }
+  .toggle-track {
+    position: absolute; inset: 0;
+    background: var(--border);
+    border-radius: 9px;
+    transition: background 0.2s;
+  }
+  .toggle-switch input:checked + .toggle-track { background: var(--accent); }
+  .toggle-thumb {
+    position: absolute;
+    top: 2px; left: 2px;
+    width: 14px; height: 14px;
+    background: #fff;
+    border-radius: 50%;
+    transition: transform 0.2s;
+  }
+  .toggle-switch input:checked ~ .toggle-thumb { transform: translateX(14px); }
+
+  .schedule-text {
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+  .schedule-text.active { color: var(--green); }
+
+  .icon-btn {
+    width: 28px; height: 28px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px;
+    transition: all 0.15s;
+  }
+  .icon-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-light); }
+  .icon-btn.danger:hover { border-color: var(--red); color: var(--red); background: var(--red-bg); }
+  .icon-btn.success:hover { border-color: var(--green); color: var(--green); background: var(--green-bg); }
+
+  .path-add-row {
+    padding: 10px 14px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    border-top: 1px dashed var(--border);
+    cursor: pointer;
+    color: var(--text-dim);
+    font-size: 12px;
+    transition: all 0.15s;
+  }
+  .path-add-row:hover { color: var(--accent); background: var(--accent-light); }
+
+  /* ── Search & Filter Bar ── */
+  .filter-bar {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 10px 14px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  .search-input-wrap {
+    position: relative;
+    flex: 1;
+    min-width: 200px;
+  }
+  .search-icon {
+    position: absolute;
+    left: 10px; top: 50%;
+    transform: translateY(-50%);
+    color: var(--text-dim);
+    font-size: 14px;
+  }
+  .search-input {
+    width: 100%;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    padding: 7px 10px 7px 32px;
+    font-size: 13px;
+    outline: none;
+    transition: border-color 0.15s;
+  }
+  .search-input:focus { border-color: var(--border-focus); }
+  .search-input::placeholder { color: var(--text-dim); }
+
+  .filter-sep { width: 1px; height: 24px; background: var(--border); }
+
+  .filter-group { display: flex; align-items: center; gap: 6px; }
+  .filter-label { font-size: 12px; color: var(--text-muted); }
+
+  .select-filter {
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    padding: 6px 10px;
+    font-size: 12px;
+    outline: none;
+    cursor: pointer;
+    transition: border-color 0.15s;
+  }
+  .select-filter:focus { border-color: var(--border-focus); }
+
+  .filter-chips { display: flex; gap: 6px; flex-wrap: wrap; }
+  .chip {
+    padding: 4px 10px;
+    border-radius: 20px;
+    font-size: 11px;
+    cursor: pointer;
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    transition: all 0.15s;
+  }
+  .chip:hover { border-color: var(--accent); color: var(--accent); }
+  .chip.active { background: var(--accent-light); border-color: var(--accent); color: var(--accent); }
+  .chip.green { color: var(--green); border-color: rgba(34,197,94,0.3); }
+  .chip.green.active { background: var(--green-bg); border-color: var(--green); }
+  .chip.red { color: var(--red); border-color: rgba(239,68,68,0.3); }
+  .chip.red.active { background: var(--red-bg); border-color: var(--red); }
+  .chip.yellow { color: var(--yellow); border-color: rgba(245,158,11,0.3); }
+  .chip.yellow.active { background: var(--yellow-bg); border-color: var(--yellow); }
+
+  .results-count {
+    margin-left: auto;
+    font-size: 12px;
+    color: var(--text-dim);
+    white-space: nowrap;
+  }
+
+  /* ── Batch Action Bar ── */
+  .batch-bar {
+    background: linear-gradient(135deg, rgba(91,106,255,0.15), rgba(91,106,255,0.08));
+    border: 1px solid rgba(91,106,255,0.4);
+    border-radius: var(--radius);
+    padding: 10px 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    display: none;
+  }
+  .batch-bar.visible { display: flex; }
+  .batch-count {
+    font-weight: 600;
+    color: var(--accent);
+    font-size: 13px;
+  }
+  .batch-sep { width: 1px; height: 20px; background: rgba(91,106,255,0.3); }
+  .batch-actions { display: flex; gap: 8px; }
+  .batch-btn {
+    padding: 5px 12px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--bg-card);
+    color: var(--text);
+    cursor: pointer;
+    font-size: 12px;
+    display: flex; align-items: center; gap: 5px;
+    transition: all 0.15s;
+  }
+  .batch-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-light); }
+  .batch-btn.danger:hover { border-color: var(--red); color: var(--red); background: var(--red-bg); }
+  .clear-sel {
+    margin-left: auto;
+    font-size: 12px;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: 4px;
+  }
+  .clear-sel:hover { color: var(--text); background: var(--bg-hover); }
+
+  /* ── File Group ── */
+  .file-groups { display: flex; flex-direction: column; gap: 10px; }
+
+  .file-group {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+
+  .group-header {
+    display: flex;
+    align-items: center;
+    padding: 10px 14px;
+    cursor: pointer;
+    transition: background 0.12s;
+    gap: 10px;
+    user-select: none;
+  }
+  .group-header:hover { background: var(--bg-hover); }
+
+  .group-chevron {
+    color: var(--text-dim);
+    font-size: 11px;
+    transition: transform 0.2s;
+    width: 14px; text-align: center;
+  }
+  .group-chevron.open { transform: rotate(90deg); }
+
+  .group-checkbox {
+    width: 16px; height: 16px;
+    border-radius: 4px;
+    border: 1.5px solid var(--border);
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+    transition: all 0.15s;
+  }
+  .group-checkbox.checked { background: var(--accent); border-color: var(--accent); }
+  .group-checkbox.partial { background: transparent; border-color: var(--accent); }
+
+  .group-color-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .group-alias { font-weight: 600; font-size: 13px; color: var(--text); }
+  .group-path { font-size: 11px; color: var(--text-muted); font-family: monospace; }
+
+  .group-stats {
+    display: flex; align-items: center; gap: 8px;
+    margin-left: auto;
+  }
+  .stat-pill {
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .stat-pill.total { background: rgba(122,130,168,0.15); color: var(--text-muted); }
+  .stat-pill.ok { background: var(--green-bg); color: var(--green); }
+  .stat-pill.err { background: var(--red-bg); color: var(--red); }
+  .stat-pill.pending { background: var(--yellow-bg); color: var(--yellow); }
+
+  .group-actions { display: flex; gap: 6px; }
+
+  /* ── File Table ── */
+  .file-table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+  .file-table th {
+    padding: 8px 14px;
+    text-align: left;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    background: rgba(0,0,0,0.2);
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  .file-table th:first-child { width: 36px; }
+  .file-table th.sortable { cursor: pointer; }
+  .file-table th.sortable:hover { color: var(--text); }
+  .sort-icon { font-size: 10px; margin-left: 3px; opacity: 0.5; }
+  .sort-icon.asc::after { content: "↑"; }
+  .sort-icon.desc::after { content: "↓"; }
+
+  .file-table td {
+    padding: 9px 14px;
+    border-bottom: 1px solid rgba(42,47,69,0.5);
+    vertical-align: middle;
+  }
+  .file-table tr:last-child td { border-bottom: none; }
+  .file-table tr:hover td { background: rgba(91,106,255,0.04); }
+  .file-table tr.selected td { background: rgba(91,106,255,0.08); }
+
+  .row-checkbox {
+    width: 16px; height: 16px;
+    border-radius: 4px;
+    border: 1.5px solid var(--border);
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: all 0.15s;
+  }
+  .row-checkbox.checked { background: var(--accent); border-color: var(--accent); }
+  .row-checkbox svg { display: none; }
+  .row-checkbox.checked svg { display: block; }
+
+  .header-checkbox {
+    width: 16px; height: 16px;
+    border-radius: 4px;
+    border: 1.5px solid var(--border);
+    cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center;
+    transition: all 0.15s;
+    background: transparent;
+  }
+  .header-checkbox.checked { background: var(--accent); border-color: var(--accent); }
+  .header-checkbox.partial { border-color: var(--accent); }
+
+  .file-name-cell { display: flex; align-items: center; gap: 8px; }
+  .file-icon { font-size: 15px; flex-shrink: 0; }
+  .file-name { color: var(--text); font-size: 12px; }
+  .file-name:hover { color: var(--accent); cursor: pointer; text-decoration: underline; }
+
+  .status-badge {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 2px 8px; border-radius: 10px;
+    font-size: 11px; font-weight: 600;
+    white-space: nowrap;
+  }
+  .status-badge .dot {
+    width: 5px; height: 5px; border-radius: 50%;
+  }
+  .status-badge.completed { background: var(--green-bg); color: var(--green); }
+  .status-badge.completed .dot { background: var(--green); }
+  .status-badge.processing { background: var(--blue-bg); color: var(--blue); }
+  .status-badge.processing .dot { background: var(--blue); animation: pulse 1.2s infinite; }
+  .status-badge.pending { background: var(--yellow-bg); color: var(--yellow); }
+  .status-badge.pending .dot { background: var(--yellow); }
+  .status-badge.failed { background: var(--red-bg); color: var(--red); }
+  .status-badge.failed .dot { background: var(--red); }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
+
+  .cell-muted { font-size: 11px; color: var(--text-muted); }
+  .cell-dim { font-size: 11px; color: var(--text-dim); }
+
+  .progress-mini {
+    width: 80px; height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .progress-fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 2px;
+    transition: width 0.3s;
+  }
+  .progress-fill.green { background: var(--green); }
+
+  .row-actions {
+    display: flex; gap: 4px;
+    opacity: 0;
+    transition: opacity 0.15s;
+  }
+  .file-table tr:hover .row-actions { opacity: 1; }
+
+  /* ── Error Section ── */
+  .error-section {
+    background: rgba(239,68,68,0.05);
+    border: 1px solid rgba(239,68,68,0.25);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+  .error-section-header {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 14px;
+    cursor: pointer;
+    background: rgba(239,68,68,0.08);
+    border-bottom: 1px solid rgba(239,68,68,0.2);
+  }
+  .error-icon { color: var(--red); font-size: 14px; }
+  .error-title { font-weight: 600; color: var(--red); font-size: 13px; }
+  .error-count {
+    padding: 1px 7px; border-radius: 10px;
+    background: var(--red-bg); color: var(--red);
+    font-size: 11px; font-weight: 700;
+  }
+  .error-hint {
+    margin-left: auto;
+    font-size: 11px;
+    color: rgba(239,68,68,0.6);
+  }
+
+  .error-item {
+    display: flex; align-items: flex-start; gap: 12px;
+    padding: 10px 14px;
+    border-bottom: 1px solid rgba(239,68,68,0.1);
+  }
+  .error-item:last-child { border-bottom: none; }
+  .error-file-info { flex: 1; min-width: 0; }
+  .error-file-name { font-size: 12px; color: var(--text); margin-bottom: 3px; }
+  .error-msg { font-size: 11px; color: rgba(239,68,68,0.8); font-family: monospace; }
+  .error-actions { display: flex; gap: 6px; flex-shrink: 0; }
+
+  .btn {
+    padding: 5px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    cursor: pointer;
+    border: 1px solid;
+    display: inline-flex; align-items: center; gap: 5px;
+    transition: all 0.15s;
+    font-weight: 500;
+  }
+  .btn-primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+  }
+  .btn-primary:hover { background: var(--accent-hover); }
+  .btn-ghost {
+    background: transparent;
+    border-color: var(--border);
+    color: var(--text-muted);
+  }
+  .btn-ghost:hover { border-color: var(--text-muted); color: var(--text); }
+  .btn-danger {
+    background: transparent;
+    border-color: rgba(239,68,68,0.4);
+    color: var(--red);
+  }
+  .btn-danger:hover { background: var(--red-bg); border-color: var(--red); }
+
+  /* ── Upload Zone ── */
+  .upload-zone {
+    border: 2px dashed var(--border);
+    border-radius: var(--radius);
+    padding: 24px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.2s;
+    background: rgba(0,0,0,0.1);
+  }
+  .upload-zone:hover {
+    border-color: var(--accent);
+    background: var(--accent-light);
+  }
+  .upload-zone-icon { font-size: 28px; margin-bottom: 8px; opacity: 0.5; }
+  .upload-zone-text { font-size: 13px; color: var(--text-muted); }
+  .upload-zone-hint { font-size: 11px; color: var(--text-dim); margin-top: 4px; }
+  .upload-zone-actions { display: flex; gap: 8px; justify-content: center; margin-top: 12px; }
+
+  /* ── Modals ── */
+  .modal-overlay {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.7);
+    display: flex; align-items: center; justify-content: center;
+    z-index: 1000;
+    display: none;
+  }
+  .modal-overlay.open { display: flex; }
+  .modal {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    width: 560px;
+    max-height: 80vh;
+    overflow-y: auto;
+    box-shadow: var(--shadow);
+  }
+  .modal-header {
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .modal-title { font-size: 15px; font-weight: 700; }
+  .modal-close {
+    width: 28px; height: 28px;
+    border-radius: 6px;
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 16px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .modal-close:hover { background: var(--bg-hover); color: var(--text); }
+  .modal-body { padding: 20px; display: flex; flex-direction: column; gap: 14px; }
+  .modal-footer {
+    padding: 14px 20px;
+    border-top: 1px solid var(--border);
+    display: flex; justify-content: flex-end; gap: 8px;
+  }
+
+  .form-field { display: flex; flex-direction: column; gap: 5px; }
+  .form-label { font-size: 12px; font-weight: 600; color: var(--text-muted); }
+  .form-input {
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    padding: 8px 10px;
+    font-size: 13px;
+    outline: none;
+    width: 100%;
+    transition: border-color 0.15s;
+  }
+  .form-input:focus { border-color: var(--border-focus); }
+  .form-hint { font-size: 11px; color: var(--text-dim); }
+
+  .schedule-config-row {
+    display: flex; align-items: center; gap: 12px;
+    padding: 10px;
+    background: var(--bg-input);
+    border-radius: 6px;
+    border: 1px solid var(--border);
+  }
+
+  /* ── Preview Modal ── */
+  .preview-modal .modal { width: 720px; }
+  .preview-content {
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 16px;
+    font-family: monospace;
+    font-size: 12px;
+    color: var(--text-muted);
+    max-height: 400px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    line-height: 1.7;
+  }
+
+  /* ── Scrollbar ── */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
+
+  /* ── Tooltip ── */
+  [data-tip] { position: relative; }
+  [data-tip]:hover::after {
+    content: attr(data-tip);
+    position: absolute;
+    bottom: calc(100% + 6px);
+    left: 50%; transform: translateX(-50%);
+    background: #111;
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 4px 8px;
+    border-radius: 5px;
+    font-size: 11px;
+    white-space: nowrap;
+    pointer-events: none;
+    z-index: 100;
+  }
+
+  .tag {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 600;
+    background: var(--purple-bg);
+    color: var(--purple);
+  }
+</style>
+<style>@keyframes spin { to { transform: rotate(360deg); } }</style><style>@keyframes spin { to { transform: rotate(360deg); } }</style><style>@keyframes spin { to { transform: rotate(360deg); } }</style><style>@keyframes spin { to { transform: rotate(360deg); } }</style></head>
+<body>
+
+<div class="app-shell">
+  <!-- Slim sidebar nav (for context) -->
+  <div class="sidebar-nav">
+    <div class="nav-icon" title="聊天">💬</div>
+    <div class="nav-icon active" title="知识库">📚</div>
+    <div class="nav-icon" title="助手">🤖</div>
+    <div class="nav-icon" title="设置" style="margin-top:auto">⚙️</div>
+  </div>
+
+  <div class="main-content">
+    <!-- Workspace Header -->
+    <div class="workspace-header">
+      <div class="kb-badge">
+        <div class="kb-color-dot">A</div>
+        <span class="kb-name">AMBER 合规知识库</span>
+      </div>
+      <div class="header-sep"></div>
+      <div class="tabs">
+        <div class="tab">Raw</div>
+        <div class="tab active">原始材料</div>
+        <div class="tab">Pages</div>
+        <div class="tab">Graph</div>
+        <div class="tab">Config</div>
+      </div>
+      <div style="margin-left:auto; display:flex; gap:8px;">
+        <button class="btn btn-ghost" style="font-size:12px;">⟳ 全量扫描</button>
+        <button class="btn btn-primary" style="font-size:12px;" onclick="openModal(&#39;addPathModal&#39;)">+ 新增路径</button>
+      </div>
+    </div>
+
+    <!-- Panel Body -->
+    <div class="panel-body">
+
+      <!-- ① Path Config -->
+      <div>
+        <div class="section-header">
+          <span class="section-title"><span class="icon">🗂️</span> 服务器路径配置</span>
+          <span class="cell-muted">共 3 条路径 · 247 个文件</span>
+        </div>
+        <div class="path-config-card">
+          <!-- Path Row 1 -->
+          <div class="path-row">
+            <div class="path-alias">
+              <div class="path-alias-text">中基协处罚公告</div>
+              <span class="path-alias-tag">2025</span>
+            </div>
+            <div class="path-server">/data/amac/penalties/2025/</div>
+            <div class="path-count">📄 <strong>108</strong> 文件</div>
+            <div class="path-schedule">
+              <label class="toggle-switch">
+                <input type="checkbox" checked="" onchange="updateSchedule(this)">
+                <div class="toggle-track"></div>
+                <div class="toggle-thumb"></div>
+              </label>
+              <span class="schedule-text active">每日 02:00</span>
+            </div>
+            <div class="icon-btn success" data-tip="单路径增量扫描" onclick="triggerScan(this)" style="">⟳</div>
+            <div class="icon-btn danger" data-tip="移除路径">✕</div>
+          </div>
+          <!-- Path Row 2 -->
+          <div class="path-row">
+            <div class="path-alias">
+              <div class="path-alias-text">AMBER 系统材料</div>
+            </div>
+            <div class="path-server">/data/amber/documents/</div>
+            <div class="path-count">📄 <strong>93</strong> 文件</div>
+            <div class="path-schedule">
+              <label class="toggle-switch">
+                <input type="checkbox" checked="" onchange="updateSchedule(this)">
+                <div class="toggle-track"></div>
+                <div class="toggle-thumb"></div>
+              </label>
+              <span class="schedule-text active">每日 03:30</span>
+            </div>
+            <div class="icon-btn success" data-tip="单路径增量扫描">⟳</div>
+            <div class="icon-btn danger" data-tip="移除路径">✕</div>
+          </div>
+          <!-- Path Row 3 -->
+          <div class="path-row">
+            <div class="path-alias">
+              <div class="path-alias-text">历史存档文档</div>
+              <span class="path-alias-tag" style="background:rgba(122,130,168,0.15);color:var(--text-muted)">2024</span>
+            </div>
+            <div class="path-server">/data/archive/2024/</div>
+            <div class="path-count">📄 <strong>46</strong> 文件</div>
+            <div class="path-schedule">
+              <label class="toggle-switch">
+                <input type="checkbox" onchange="updateSchedule(this)">
+                <div class="toggle-track"></div>
+                <div class="toggle-thumb"></div>
+              </label>
+              <span class="schedule-text">未启用</span>
+            </div>
+            <div class="icon-btn success" data-tip="单路径增量扫描">⟳</div>
+            <div class="icon-btn danger" data-tip="移除路径">✕</div>
+          </div>
+          <!-- Add Row -->
+          <div class="path-add-row" onclick="openModal(&#39;addPathModal&#39;)">
+            <span>＋</span> 添加新的服务器路径…
+          </div>
+        </div>
+      </div>
+
+      <!-- ② Search & Filter Bar -->
+      <div class="filter-bar">
+        <div class="search-input-wrap">
+          <span class="search-icon">🔍</span>
+          <input class="search-input" id="searchInput" placeholder="搜索文件名，如 202509、处罚、AMBER…" oninput="filterFiles()">
+        </div>
+        <div class="filter-sep"></div>
+        <div class="filter-group">
+          <span class="filter-label">路径</span>
+          <select class="select-filter" onchange="filterFiles()">
+            <option>全部路径</option>
+            <option>中基协处罚公告</option>
+            <option>AMBER 系统材料</option>
+            <option>历史存档文档</option>
+          </select>
+        </div>
+        <div class="filter-sep"></div>
+        <div class="filter-group">
+          <span class="filter-label">排序</span>
+          <select class="select-filter" id="sortSelect" onchange="sortFiles()">
+            <option value="name">按名称</option>
+            <option value="date">按时间</option>
+            <option value="size">按大小</option>
+            <option value="status">按状态</option>
+          </select>
+        </div>
+        <div class="filter-sep"></div>
+        <div class="filter-chips">
+          <span class="chip" onclick="toggleChip(this,&#39;all&#39;)">全部 247</span>
+          <span class="chip green active" onclick="toggleChip(this,&#39;completed&#39;)">✓ 已完成 201</span>
+          <span class="chip active-processing" onclick="toggleChip(this,&#39;processing&#39;)" style="padding:4px 10px;border-radius:20px;font-size:11px;cursor:pointer;border:1px solid rgba(56,189,248,0.3);color:var(--blue)">⟳ 处理中 12</span>
+          <span class="chip yellow" onclick="toggleChip(this,&#39;pending&#39;)">· 待处理 21</span>
+          <span class="chip red" onclick="toggleChip(this,&#39;failed&#39;)">✕ 失败 13</span>
+        </div>
+        <span class="results-count" id="resultsCount">显示 247 条</span>
+      </div>
+
+      <!-- ③ Batch Action Bar -->
+      <div class="batch-bar visible" id="batchBar">
+        <span class="batch-count" id="batchCount">已选 4 个文件</span>
+        <div class="batch-sep"></div>
+        <div class="batch-actions">
+          <button class="batch-btn" onclick="alert(&#39;批量重扫所选文件&#39;)">⟳ 批量重扫</button>
+          <button class="batch-btn" onclick="alert(&#39;批量下载所选文件&#39;)">⬇ 批量下载</button>
+          <button class="batch-btn" onclick="openModal(&#39;moveGroupModal&#39;)">📁 迁移分组</button>
+          <button class="batch-btn danger" onclick="alert(&#39;批量删除确认弹窗&#39;)">🗑 批量删除</button>
+        </div>
+        <span class="clear-sel" onclick="clearSelection()">✕ 取消选择</span>
+      </div>
+
+      <!-- ④ File Groups -->
+      <div class="file-groups" id="fileGroups">
+
+        <!-- Group 1: 中基协处罚公告 -->
+        <div class="file-group" id="group1">
+          <div class="group-header" onclick="toggleGroup(&#39;group1&#39;)">
+            <div class="group-chevron open" id="chevron-group1">▶</div>
+            <div class="group-checkbox checked" id="gchk-group1" onclick="toggleGroupCheck(event,&#39;group1&#39;)">
+              <svg width="10" height="8" viewBox="0 0 10 8"><path d="M1 4L3.5 6.5L9 1" stroke="white" stroke-width="1.5" fill="none" stroke-linecap="round"></path></svg>
+            </div>
+            <div class="group-color-dot" style="background:#5b6aff;"></div>
+            <span class="group-alias">中基协处罚公告</span>
+            <span class="group-path">/data/amac/penalties/2025/</span>
+            <div class="group-stats">
+              <span class="stat-pill total">108 文件</span>
+              <span class="stat-pill ok">✓ 95</span>
+              <span class="stat-pill err">✕ 5</span>
+              <span class="stat-pill pending">· 8</span>
+            </div>
+            <div class="group-actions" onclick="event.stopPropagation()">
+              <button class="icon-btn success" data-tip="增量扫描此路径">⟳</button>
+              <button class="icon-btn" data-tip="编辑路径配置">✎</button>
+            </div>
+          </div>
+          <div id="body-group1" style="">
+            <table class="file-table">
+              <thead>
+                <tr>
+                  <th><span class="header-checkbox checked" id="hchk-group1" onclick="toggleAllInGroup(&#39;group1&#39;)">
+                    <svg width="10" height="8" viewBox="0 0 10 8"><path d="M1 4L3.5 6.5L9 1" stroke="white" stroke-width="1.5" fill="none" stroke-linecap="round"></path></svg>
+                  </span></th>
+                  <th class="sortable">文件名 <span class="sort-icon asc"></span></th>
+                  <th>状态</th>
+                  <th>进度</th>
+                  <th class="sortable">大小 <span class="sort-icon"></span></th>
+                  <th class="sortable">扫描时间 <span class="sort-icon desc"></span></th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr class="selected" data-group="group1">
+                  <td><div class="row-checkbox checked" onclick="toggleRow(this)"><svg width="10" height="8" viewBox="0 0 10 8"><path d="M1 4L3.5 6.5L9 1" stroke="white" stroke-width="1.5" fill="none" stroke-linecap="round"></path></svg></div></td>
+                  <td><div class="file-name-cell"><span class="file-icon">📄</span><span class="file-name" onclick="openModal(&#39;previewModal&#39;)">202506_AMAC_处罚公告_0089.pdf</span></div></td>
+                  <td><span class="status-badge completed"><span class="dot"></span>已完成</span></td>
+                  <td><div class="progress-mini"><div class="progress-fill green" style="width:100%"></div></div></td>
+                  <td class="cell-muted">2.3 MB</td>
+                  <td class="cell-dim">2025-06-07 14:22</td>
+                  <td><div class="row-actions">
+                    <button class="icon-btn" data-tip="在线预览" onclick="openModal(&#39;previewModal&#39;)">👁</button>
+                    <button class="icon-btn" data-tip="重新处理">⟳</button>
+                    <button class="icon-btn" data-tip="下载">⬇</button>
+                    <button class="icon-btn" data-tip="迁移分组">📁</button>
+                    <button class="icon-btn danger" data-tip="删除">🗑</button>
+                  </div></td>
+                </tr>
+                <tr data-group="group1">
+                  <td><div class="row-checkbox checked" onclick="toggleRow(this)"><svg width="10" height="8" viewBox="0 0 10 8"><path d="M1 4L3.5 6.5L9 1" stroke="white" stroke-width="1.5" fill="none" stroke-linecap="round"></path></svg></div></td>
+                  <td><div class="file-name-cell"><span class="file-icon">📄</span><span class="file-name">202506_AMAC_处罚公告_0088.pdf</span></div></td>
+                  <td><span class="status-badge completed"><span class="dot"></span>已完成</span></td>
+                  <td><div class="progress-mini"><div class="progress-fill green" style="width:100%"></div></div></td>
+                  <td class="cell-muted">1.8 MB</td>
+                  <td class="cell-dim">2025-06-07 14:20</td>
+                  <td><div class="row-actions">
+                    <button class="icon-btn" data-tip="在线预览" onclick="openModal(&#39;previewModal&#39;)">👁</button>
+                    <button class="icon-btn" data-tip="重新处理">⟳</button>
+                    <button class="icon-btn" data-tip="下载">⬇</button>
+                    <button class="icon-btn" data-tip="迁移分组">📁</button>
+                    <button class="icon-btn danger" data-tip="删除">🗑</button>
+                  </div></td>
+                </tr>
+                <tr data-group="group1" class="selected">
+                  <td><div class="row-checkbox checked" onclick="toggleRow(this)"><svg width="10" height="8" viewBox="0 0 10 8"><path d="M1 4L3.5 6.5L9 1" stroke="white" stroke-width="1.5" fill="none" stroke-linecap="round"></path></svg></div></td>
+                  <td><div class="file-name-cell"><span class="file-icon">📄</span><span class="file-name">202506_AMAC_处罚公告_0087.pdf</span></div></td>
+                  <td><span class="status-badge processing"><span class="dot"></span>处理中</span></td>
+                  <td><div class="progress-mini"><div class="progress-fill" style="width:62%"></div></div></td>
+                  <td class="cell-muted">3.1 MB</td>
+                  <td class="cell-dim">2025-06-08 09:10</td>
+                  <td><div class="row-actions">
+                    <button class="icon-btn" data-tip="在线预览" onclick="openModal(&#39;previewModal&#39;)">👁</button>
+                    <button class="icon-btn danger" data-tip="取消处理">⊘</button>
+                  </div></td>
+                </tr>
+                <tr data-group="group1" class="selected">
+                  <td><div class="row-checkbox checked" onclick="toggleRow(this)"><svg width="10" height="8" viewBox="0 0 10 8"><path d="M1 4L3.5 6.5L9 1" stroke="white" stroke-width="1.5" fill="none" stroke-linecap="round"></path></svg></div></td>
+                  <td><div class="file-name-cell"><span class="file-icon">📄</span><span class="file-name">202505_AMAC_处罚公告_0076.pdf</span></div></td>
+                  <td><span class="status-badge pending"><span class="dot"></span>待处理</span></td>
+                  <td><div class="progress-mini"><div class="progress-fill" style="width:0%"></div></div></td>
+                  <td class="cell-muted">0.9 MB</td>
+                  <td class="cell-dim">2025-06-08 09:00</td>
+                  <td><div class="row-actions">
+                    <button class="icon-btn" data-tip="开始处理">▶</button>
+                    <button class="icon-btn danger" data-tip="删除">🗑</button>
+                  </div></td>
+                </tr>
+              </tbody>
+            </table>
+            <div style="padding:8px 14px; display:flex; justify-content:space-between; align-items:center; border-top:1px solid var(--border);">
+              <span class="cell-dim">显示 4 / 108 条 &nbsp;·&nbsp; <a href="file:///Users/sharon/ai-project/mateclaw/%E5%8E%9F%E5%A7%8B%E6%9D%90%E6%96%99%E4%BC%98%E5%8C%96%E5%8E%9F%E5%9E%8B.html#" style="color:var(--accent);font-size:11px;">加载更多</a></span>
+              <span class="cell-dim" style="font-size:11px;">最后扫描：2025-06-08 09:00 &nbsp;·&nbsp; <span style="color:var(--green)">增量模式</span></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Group 2: AMBER 系统材料 -->
+        <div class="file-group" id="group2">
+          <div class="group-header" onclick="toggleGroup(&#39;group2&#39;)">
+            <div class="group-chevron open" id="chevron-group2">▶</div>
+            <div class="group-checkbox" id="gchk-group2" onclick="toggleGroupCheck(event,&#39;group2&#39;)"></div>
+            <div class="group-color-dot" style="background:#22c55e;"></div>
+            <span class="group-alias">AMBER 系统材料</span>
+            <span class="group-path">/data/amber/documents/</span>
+            <div class="group-stats">
+              <span class="stat-pill total">93 文件</span>
+              <span class="stat-pill ok">✓ 85</span>
+              <span class="stat-pill err">✕ 3</span>
+              <span class="stat-pill pending">· 5</span>
+            </div>
+            <div class="group-actions" onclick="event.stopPropagation()">
+              <button class="icon-btn success" data-tip="增量扫描此路径">⟳</button>
+              <button class="icon-btn" data-tip="编辑路径配置">✎</button>
+            </div>
+          </div>
+          <div id="body-group2" style="">
+            <table class="file-table">
+              <thead>
+                <tr>
+                  <th><span class="header-checkbox" id="hchk-group2" onclick="toggleAllInGroup(&#39;group2&#39;)"></span></th>
+                  <th class="sortable">文件名</th>
+                  <th>状态</th>
+                  <th>进度</th>
+                  <th>大小</th>
+                  <th>扫描时间</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr data-group="group2">
+                  <td><div class="row-checkbox" onclick="toggleRow(this)"><svg width="10" height="8" viewBox="0 0 10 8"><path d="M1 4L3.5 6.5L9 1" stroke="white" stroke-width="1.5" fill="none" stroke-linecap="round"></path></svg></div></td>
+                  <td><div class="file-name-cell"><span class="file-icon">📝</span><span class="file-name">AMBER_系统设计规范_v3.2.md</span></div></td>
+                  <td><span class="status-badge completed"><span class="dot"></span>已完成</span></td>
+                  <td><div class="progress-mini"><div class="progress-fill green" style="width:100%"></div></div></td>
+                  <td class="cell-muted">156 KB</td>
+                  <td class="cell-dim">2025-06-05 11:30</td>
+                  <td><div class="row-actions">
+                    <button class="icon-btn" data-tip="在线预览" onclick="openModal(&#39;previewModal&#39;)">👁</button>
+                    <button class="icon-btn" data-tip="重新处理">⟳</button>
+                    <button class="icon-btn" data-tip="下载">⬇</button>
+                    <button class="icon-btn" data-tip="迁移分组">📁</button>
+                    <button class="icon-btn danger" data-tip="删除">🗑</button>
+                  </div></td>
+                </tr>
+                <tr data-group="group2">
+                  <td><div class="row-checkbox" onclick="toggleRow(this)"><svg width="10" height="8" viewBox="0 0 10 8"><path d="M1 4L3.5 6.5L9 1" stroke="white" stroke-width="1.5" fill="none" stroke-linecap="round"></path></svg></div></td>
+                  <td><div class="file-name-cell"><span class="file-icon">📝</span><span class="file-name">AMBER_API接口文档_2025Q2.md</span></div></td>
+                  <td><span class="status-badge completed"><span class="dot"></span>已完成</span></td>
+                  <td><div class="progress-mini"><div class="progress-fill green" style="width:100%"></div></div></td>
+                  <td class="cell-muted">89 KB</td>
+                  <td class="cell-dim">2025-06-04 16:00</td>
+                  <td><div class="row-actions">
+                    <button class="icon-btn" data-tip="在线预览" onclick="openModal(&#39;previewModal&#39;)">👁</button>
+                    <button class="icon-btn" data-tip="重新处理">⟳</button>
+                    <button class="icon-btn" data-tip="下载">⬇</button>
+                    <button class="icon-btn" data-tip="迁移分组">📁</button>
+                    <button class="icon-btn danger" data-tip="删除">🗑</button>
+                  </div></td>
+                </tr>
+              </tbody>
+            </table>
+            <div style="padding:8px 14px; display:flex; justify-content:space-between; align-items:center; border-top:1px solid var(--border);">
+              <span class="cell-dim">显示 2 / 93 条 &nbsp;·&nbsp; <a href="file:///Users/sharon/ai-project/mateclaw/%E5%8E%9F%E5%A7%8B%E6%9D%90%E6%96%99%E4%BC%98%E5%8C%96%E5%8E%9F%E5%9E%8B.html#" style="color:var(--accent);font-size:11px;">加载更多</a></span>
+              <span class="cell-dim" style="font-size:11px;">最后扫描：2025-06-08 03:30 &nbsp;·&nbsp; <span style="color:var(--green)">增量模式</span></span>
+            </div>
+          </div>
+        </div>
+
+      </div><!-- /file-groups -->
+
+      <!-- ⑤ Error Files Section -->
+      <div class="error-section" id="errorSection">
+        <div class="error-section-header" onclick="toggleError()">
+          <span class="error-icon">⚠</span>
+          <span class="error-title">异常文件独立分区</span>
+          <span class="error-count" id="errorCount">13</span>
+          <span class="error-hint">点击展开 · 这些文件需要单独排查</span>
+          <div style="margin-left:auto; display:flex; gap:8px;" onclick="event.stopPropagation()">
+            <button class="btn btn-ghost" style="font-size:11px;">全部重试</button>
+            <button class="btn btn-danger" style="font-size:11px;">清空异常</button>
+          </div>
+        </div>
+        <div id="errorBody" style="display:none;">
+          <div class="error-item">
+            <span style="font-size:18px;flex-shrink:0">📄</span>
+            <div class="error-file-info">
+              <div class="error-file-name">202503_AMAC_处罚公告_0054.pdf <span class="tag">解析报错</span></div>
+              <div class="error-msg">PDFParseError: Failed to extract text from encrypted PDF (page 3-7)</div>
+            </div>
+            <div class="error-actions">
+              <button class="btn btn-ghost" style="font-size:11px;">👁 预览</button>
+              <button class="btn btn-ghost" style="font-size:11px;" onclick="openModal(&#39;previewModal&#39;)">⟳ 重试</button>
+              <button class="btn btn-danger" style="font-size:11px;">🗑</button>
+            </div>
+          </div>
+          <div class="error-item">
+            <span style="font-size:18px;flex-shrink:0">📄</span>
+            <div class="error-file-info">
+              <div class="error-file-name">202504_AMAC_处罚公告_0063.pdf <span class="tag" style="background:rgba(239,68,68,0.15);color:var(--red)">扫描失败</span></div>
+              <div class="error-msg">NetworkError: Connection timeout when fetching /data/amac/penalties/2025/ (retried 3x)</div>
+            </div>
+            <div class="error-actions">
+              <button class="btn btn-ghost" style="font-size:11px;">⟳ 重试</button>
+              <button class="btn btn-danger" style="font-size:11px;">🗑</button>
+            </div>
+          </div>
+          <div class="error-item">
+            <span style="font-size:18px;flex-shrink:0">📝</span>
+            <div class="error-file-info">
+              <div class="error-file-name">AMBER_旧版合同模板_v1.docx <span class="tag">内容解析报错</span></div>
+              <div class="error-msg">DocxParseError: Unsupported OLE compound document format</div>
+            </div>
+            <div class="error-actions">
+              <button class="btn btn-ghost" style="font-size:11px;">👁 预览</button>
+              <button class="btn btn-ghost" style="font-size:11px;">⟳ 重试</button>
+              <button class="btn btn-danger" style="font-size:11px;">🗑</button>
+            </div>
+          </div>
+          <div style="padding:8px 14px; text-align:center; border-top:1px solid rgba(239,68,68,0.1);">
+            <a href="file:///Users/sharon/ai-project/mateclaw/%E5%8E%9F%E5%A7%8B%E6%9D%90%E6%96%99%E4%BC%98%E5%8C%96%E5%8E%9F%E5%9E%8B.html#" style="color:var(--red);font-size:11px;">查看全部 13 个异常文件 →</a>
+          </div>
+        </div>
+      </div>
+
+      <!-- ⑥ Upload Zone (手动上传入口) -->
+      <div class="upload-zone">
+        <div class="upload-zone-icon">📤</div>
+        <div class="upload-zone-text">拖拽文件到此处，或点击手动上传</div>
+        <div class="upload-zone-hint">支持 .txt · .md · .pdf · .docx · .csv</div>
+        <div class="upload-zone-actions">
+          <button class="btn btn-primary" style="font-size:12px;">选择文件</button>
+          <button class="btn btn-ghost" style="font-size:12px;">粘贴文本内容</button>
+        </div>
+      </div>
+
+    </div><!-- /panel-body -->
+  </div><!-- /main-content -->
+</div><!-- /app-shell -->
+
+<!-- ─── Modal: Add Path ─── -->
+<div class="modal-overlay" id="addPathModal">
+  <div class="modal">
+    <div class="modal-header">
+      <span class="modal-title">新增服务器路径</span>
+      <button class="modal-close" onclick="closeModal(&#39;addPathModal&#39;)">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-field">
+        <label class="form-label">业务别名</label>
+        <input class="form-input" placeholder="例：中基协2025处罚公告">
+        <span class="form-hint">用于在文件列表中标识来源分组，建议简洁易读</span>
+      </div>
+      <div class="form-field">
+        <label class="form-label">服务器物理路径</label>
+        <input class="form-input" placeholder="例：/data/amac/penalties/2025/">
+        <span class="form-hint">需为服务器可访问的绝对路径</span>
+      </div>
+      <div class="form-field">
+        <label class="form-label">文件类型过滤（可选）</label>
+        <input class="form-input" placeholder="例：*.pdf, *.txt（留空表示全部）">
+      </div>
+      <div class="form-field">
+        <label class="form-label">定时自动扫描</label>
+        <div class="schedule-config-row">
+          <label class="toggle-switch">
+            <input type="checkbox" id="scheduleToggle" onchange="toggleScheduleConfig()">
+            <div class="toggle-track"></div>
+            <div class="toggle-thumb"></div>
+          </label>
+          <span class="form-hint" id="scheduleHint" style="color: var(--green);">开启 · 按计划自动增量扫描</span>
+        </div>
+        <div id="scheduleCron" style="margin-top: 8px;">
+          <select class="select-filter" style="width:100%">
+            <option>每小时</option>
+            <option selected="">每日 02:00</option>
+            <option>每日 06:00</option>
+            <option>每日 10:00</option>
+            <option>每日 22:00</option>
+            <option>每周一 03:00</option>
+            <option>自定义 Cron 表达式</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-field">
+        <label class="form-label">扫描模式</label>
+        <div style="display:flex; gap:8px;">
+          <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; padding: 8px 12px; border-color: var(--accent); border-top-style: ; border-top-width: ; border-right-style: ; border-right-width: ; border-bottom-style: ; border-bottom-width: ; border-left-style: ; border-left-width: ; border-image-source: ; border-image-slice: ; border-image-width: ; border-image-outset: ; border-image-repeat: ; border-radius: 6px; flex: 1 1 0%; transition: 0.15s;" id="modeIncr" onclick="selectMode(&#39;incr&#39;)">
+            <input type="radio" name="scanMode" checked="" style="accent-color:var(--accent)">
+            <div>
+              <div style="font-size:12px;font-weight:600;">增量扫描</div>
+              <div class="form-hint">仅同步新增文件，不重复处理</div>
+            </div>
+          </label>
+          <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; padding: 8px 12px; border-color: var(--border); border-top-style: ; border-top-width: ; border-right-style: ; border-right-width: ; border-bottom-style: ; border-bottom-width: ; border-left-style: ; border-left-width: ; border-image-source: ; border-image-slice: ; border-image-width: ; border-image-outset: ; border-image-repeat: ; border-radius: 6px; flex: 1 1 0%; transition: 0.15s;" id="modeFull" onclick="selectMode(&#39;full&#39;)">
+            <input type="radio" name="scanMode" style="accent-color:var(--accent)">
+            <div>
+              <div style="font-size:12px;font-weight:600;">全量扫描</div>
+              <div class="form-hint">重新处理目录下所有文件</div>
+            </div>
+          </label>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal(&#39;addPathModal&#39;)">取消</button>
+      <button class="btn btn-primary">确认添加</button>
+    </div>
+  </div>
+</div>
+
+<!-- ─── Modal: Move Group ─── -->
+<div class="modal-overlay" id="moveGroupModal">
+  <div class="modal" style="width:420px">
+    <div class="modal-header">
+      <span class="modal-title">迁移分组</span>
+      <button class="modal-close" onclick="closeModal(&#39;moveGroupModal&#39;)">✕</button>
+    </div>
+    <div class="modal-body">
+      <div style="font-size:12px;color:var(--text-muted);margin-bottom:4px;">已选 <strong style="color:var(--accent)">2</strong> 个文件，请选择目标分组：</div>
+      <div style="display:flex;flex-direction:column;gap:8px;">
+        <label style="display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--border);border-radius:6px;cursor:pointer;transition:background 0.12s;" onmouseover="this.style.background=&#39;var(--bg-hover)&#39;" onmouseout="this.style.background=&#39;&#39;">
+          <input type="radio" name="targetGroup" style="accent-color:var(--accent)">
+          <div class="group-color-dot" style="background:#5b6aff;"></div>
+          <div>
+            <div style="font-size:13px;font-weight:600;">中基协处罚公告</div>
+            <div class="form-hint">/data/amac/penalties/2025/</div>
+          </div>
+        </label>
+        <label style="display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--border);border-radius:6px;cursor:pointer;transition:background 0.12s;" onmouseover="this.style.background=&#39;var(--bg-hover)&#39;" onmouseout="this.style.background=&#39;&#39;">
+          <input type="radio" name="targetGroup" style="accent-color:var(--accent)">
+          <div class="group-color-dot" style="background:#22c55e;"></div>
+          <div>
+            <div style="font-size:13px;font-weight:600;">AMBER 系统材料</div>
+            <div class="form-hint">/data/amber/documents/</div>
+          </div>
+        </label>
+        <label style="display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--border);border-radius:6px;cursor:pointer;transition:background 0.12s;" onmouseover="this.style.background=&#39;var(--bg-hover)&#39;" onmouseout="this.style.background=&#39;&#39;">
+          <input type="radio" name="targetGroup" style="accent-color:var(--accent)">
+          <div class="group-color-dot" style="background:#94a3b8;"></div>
+          <div>
+            <div style="font-size:13px;font-weight:600;">历史存档文档</div>
+            <div class="form-hint">/data/archive/2024/</div>
+          </div>
+        </label>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal(&#39;moveGroupModal&#39;)">取消</button>
+      <button class="btn btn-primary">确认迁移</button>
+    </div>
+  </div>
+</div>
+
+<!-- ─── Modal: File Preview ─── -->
+<div class="modal-overlay preview-modal" id="previewModal">
+  <div class="modal" style="width:720px">
+    <div class="modal-header">
+      <span class="modal-title">📄 202506_AMAC_处罚公告_0089.pdf</span>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <button class="btn btn-ghost" style="font-size:11px;">⬇ 下载</button>
+        <button class="modal-close" onclick="closeModal(&#39;previewModal&#39;)">✕</button>
+      </div>
+    </div>
+    <div class="modal-body">
+      <div style="display:flex;gap:16px;margin-bottom:12px;flex-wrap:wrap;">
+        <span class="cell-muted">📁 中基协处罚公告</span>
+        <span class="cell-muted">📏 2.3 MB</span>
+        <span class="cell-muted">📅 2025-06-07 14:22</span>
+        <span class="status-badge completed" style="font-size:11px;"><span class="dot"></span>已完成</span>
+        <span class="cell-muted">🔗 生成 12 个知识页面</span>
+      </div>
+      <div class="preview-content">中国证券投资基金业协会处罚公告
+
+公告编号：2025-XZ-0089
+发布日期：2025年6月5日
+
+一、处罚对象
+私募基金管理人：某资产管理有限公司
+登记编码：P1234567
+
+二、违规事实
+1. 未按规定向协会报送2024年度财务报告，逾期达180天。
+2. 基金合同约定的投资范围与实际投资存在重大偏差，涉及未登记的结构化产品。
+3. 投资者适当性管理制度不健全，向不符合条件的投资者销售相关产品。
+
+三、处罚决定
+根据《私募投资基金监督管理暂行办法》第三十八条及《中国证券投资基金业协会自律规则》
+相关规定，协会决定：
+1. 给予该机构书面警告处分；
+2. 暂停受理该机构新产品备案申请，期限6个月；
+3. 将上述违规情况记入诚信档案，并向监管部门报告。
+
+四、当事人权利
+当事人如对本处罚决定有异议，可在收到本决定书之日起15个工作日内向协会提出
+书面申诉。
+
+中国证券投资基金业协会
+2025年6月5日</div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal(&#39;previewModal&#39;)">关闭</button>
+      <button class="btn btn-primary" onclick="alert(&#39;跳转到关联的知识页面&#39;)">查看生成的页面 →</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  // ── Group toggle ──
+  function toggleGroup(id) {
+    const body = document.getElementById('body-' + id);
+    const ch = document.getElementById('chevron-' + id);
+    const isOpen = body.style.display !== 'none';
+    body.style.display = isOpen ? 'none' : '';
+    ch.classList.toggle('open', !isOpen);
+  }
+
+  // ── Error section toggle ──
+  function toggleError() {
+    const body = document.getElementById('errorBody');
+    const isOpen = body.style.display !== 'none';
+    body.style.display = isOpen ? 'none' : '';
+  }
+
+  // ── Row selection ──
+  let selectedCount = 0;
+  function toggleRow(el) {
+    const row = el.closest('tr');
+    el.classList.toggle('checked');
+    row.classList.toggle('selected', el.classList.contains('checked'));
+    recountSelected();
+  }
+
+  function recountSelected() {
+    selectedCount = document.querySelectorAll('.row-checkbox.checked').length;
+    const bar = document.getElementById('batchBar');
+    bar.classList.toggle('visible', selectedCount > 0);
+    document.getElementById('batchCount').textContent = '已选 ' + selectedCount + ' 个文件';
+  }
+
+  function clearSelection() {
+    document.querySelectorAll('.row-checkbox.checked').forEach(el => {
+      el.classList.remove('checked');
+      el.closest('tr').classList.remove('selected');
+    });
+    document.querySelectorAll('.header-checkbox, .group-checkbox').forEach(el => {
+      el.classList.remove('checked','partial');
+      el.innerHTML = '';
+    });
+    recountSelected();
+  }
+
+  function toggleAllInGroup(groupId) {
+    const hchk = document.getElementById('hchk-' + groupId);
+    const allRows = document.querySelectorAll(`tr[data-group="${groupId}"] .row-checkbox`);
+    const isChecking = !hchk.classList.contains('checked');
+    hchk.classList.toggle('checked', isChecking);
+    hchk.classList.remove('partial');
+    hchk.innerHTML = isChecking ? '<svg width="10" height="8" viewBox="0 0 10 8"><path d="M1 4L3.5 6.5L9 1" stroke="white" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg>' : '';
+    allRows.forEach(cb => {
+      cb.classList.toggle('checked', isChecking);
+      cb.closest('tr').classList.toggle('selected', isChecking);
+    });
+    recountSelected();
+  }
+
+  function toggleGroupCheck(e, groupId) {
+    e.stopPropagation();
+    toggleAllInGroup(groupId);
+  }
+
+  // ── Modals ──
+  function openModal(id) {
+    document.getElementById(id).classList.add('open');
+  }
+  function closeModal(id) {
+    document.getElementById(id).classList.remove('open');
+  }
+  document.querySelectorAll('.modal-overlay').forEach(overlay => {
+    overlay.addEventListener('click', e => {
+      if (e.target === overlay) overlay.classList.remove('open');
+    });
+  });
+
+  // ── Schedule toggle in modal ──
+  function toggleScheduleConfig() {
+    const on = document.getElementById('scheduleToggle').checked;
+    document.getElementById('scheduleCron').style.display = on ? '' : 'none';
+    document.getElementById('scheduleHint').textContent = on ? '开启 · 按计划自动增量扫描' : '关闭 · 需手动触发扫描';
+    document.getElementById('scheduleHint').style.color = on ? 'var(--green)' : '';
+  }
+
+  // ── Scan mode select ──
+  function selectMode(mode) {
+    document.getElementById('modeIncr').style.borderColor = mode === 'incr' ? 'var(--accent)' : 'var(--border)';
+    document.getElementById('modeFull').style.borderColor = mode === 'full' ? 'var(--accent)' : 'var(--border)';
+  }
+  selectMode('incr');
+
+  // ── Schedule toggle per row ──
+  function updateSchedule(el) {
+    const wrap = el.closest('.path-schedule');
+    const txt = wrap.querySelector('.schedule-text');
+    txt.classList.toggle('active', el.checked);
+    txt.textContent = el.checked ? '每日 02:00' : '未启用';
+  }
+
+  // ── Scan trigger ──
+  function triggerScan(btn) {
+    btn.textContent = '⟳';
+    btn.style.color = 'var(--blue)';
+    btn.style.animation = 'spin 1s linear infinite';
+    const style = document.createElement('style');
+    style.textContent = '@keyframes spin { to { transform: rotate(360deg); } }';
+    document.head.appendChild(style);
+    setTimeout(() => {
+      btn.textContent = '✓';
+      btn.style.animation = '';
+      btn.style.color = 'var(--green)';
+      setTimeout(() => {
+        btn.textContent = '⟳';
+        btn.style.color = '';
+      }, 2000);
+    }, 2500);
+  }
+
+  // ── Filter chips ──
+  function toggleChip(el, val) {
+    document.querySelectorAll('.filter-chips .chip').forEach(c => c.classList.remove('active'));
+    el.classList.add('active');
+  }
+
+  // ── Search / filter (cosmetic) ──
+  function filterFiles() {
+    const q = document.getElementById('searchInput').value.toLowerCase();
+    let shown = 0;
+    document.querySelectorAll('.file-table tbody tr').forEach(tr => {
+      const name = tr.querySelector('.file-name');
+      if (!name) return;
+      const match = !q || name.textContent.toLowerCase().includes(q);
+      tr.style.display = match ? '' : 'none';
+      if (match) shown++;
+    });
+    document.getElementById('resultsCount').textContent = q ? `显示 ${shown} 条` : '显示 247 条';
+  }
+
+  function sortFiles() {}
+</script>
+
+
+</body></html>
