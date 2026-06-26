@@ -1,6 +1,6 @@
 /**
  * 智能滚动 Composable
- * 参考 @agentscope-ai/chat 的 StickToBottom 实现，提供智能的自动滚动体验
+ * 提供"贴底/脱离锁定"的智能自动滚动体验：内容增长时自动贴底，用户上滚后释放锁定
  */
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 
