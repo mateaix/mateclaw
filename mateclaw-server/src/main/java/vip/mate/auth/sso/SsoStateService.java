@@ -8,6 +8,7 @@ import io.jsonwebtoken.security.Keys;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import vip.mate.auth.sso.model.SsoStateEntity;
@@ -15,10 +16,12 @@ import vip.mate.auth.sso.provider.SsoUserInfo;
 import vip.mate.auth.sso.repository.SsoStateMapper;
 import vip.mate.exception.MateClawException;
 
+import javax.crypto.Mac;
 import javax.crypto.SecretKey;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
+import java.util.Date;
 import java.util.Map;
 import java.util.UUID;
 
@@ -126,8 +129,8 @@ public class SsoStateService {
                 .claim("externalId", info.externalId())
                 .claim("unionId", info.unionId())
                 .claim("externalName", info.displayName())
-                .issuedAt(new java.util.Date(now))
-                .expiration(new java.util.Date(now + BIND_TOKEN_TTL_SECONDS * 1000L))
+                .issuedAt(new Date(now))
+                .expiration(new Date(now + BIND_TOKEN_TTL_SECONDS * 1000L))
                 .signWith(getSignKey())
                 .compact();
     }
@@ -166,7 +169,7 @@ public class SsoStateService {
         consumed.setCreatedAt(LocalDateTime.now());
         try {
             stateMapper.insert(consumed);
-        } catch (org.springframework.dao.DuplicateKeyException e) {
+        } catch (DuplicateKeyException e) {
             throw new MateClawException("err.sso.bind_token_used",
                     400, "bind_token 已被使用, 请重新登录");
         }
@@ -213,7 +216,7 @@ public class SsoStateService {
 
     private String hmacSha256Hex(String input) {
         try {
-            javax.crypto.Mac mac = javax.crypto.Mac.getInstance("HmacSHA256");
+            Mac mac = Mac.getInstance("HmacSHA256");
             mac.init(getSignKey());
             byte[] hash = mac.doFinal(input.getBytes(StandardCharsets.UTF_8));
             StringBuilder sb = new StringBuilder();

@@ -2,8 +2,10 @@ package vip.mate.auth.sso;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -46,9 +48,9 @@ public class SsoService {
     private final AuthService authService;
     private final SsoProperties ssoProperties;
     private final BCryptPasswordEncoder passwordEncoder;
-    private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
+    private final ObjectMapper objectMapper;
     /** Optional — audit may be null in narrow test contexts. */
-    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    @Autowired(required = false)
     private AuditEventService auditService;
 
     // ==================== authorize ====================
@@ -228,6 +230,16 @@ public class SsoService {
                         503, "SSO 登录遇到并发冲突, 请重试");
             }
             return createSsoUser(providerId, info, true);
+        } catch (RuntimeException e) {
+            // Identity insert failed for a non-duplicate reason (e.g. transient DB error).
+            // The two inserts are not in a shared transaction — this method is self-invoked
+            // and the enclosing callback performs a network call, so a method-level
+            // @Transactional would not apply. Roll back the freshly inserted user here so we
+            // never leave a passwordless orphan account behind.
+            if (newUser.getId() != null) {
+                userMapper.deleteById(newUser.getId());
+            }
+            throw e;
         }
     }
 
@@ -240,7 +252,7 @@ public class SsoService {
     private void audit(String action, String provider, String externalId, Long userId) {
         if (auditService != null) {
             try {
-                String detail = objectMapper.writeValueAsString(java.util.Map.of(
+                String detail = objectMapper.writeValueAsString(Map.of(
                         "provider", provider != null ? provider : "",
                         "userId", userId != null ? userId : "null"));
                 auditService.record(action, "sso",
