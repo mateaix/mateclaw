@@ -14,6 +14,13 @@ import {
   recordServer,
   type ConnectionMode,
 } from './config'
+import {
+  loadLocalToolsConfig,
+  saveLocalToolsConfig,
+  expandPath,
+  type LocalToolsConfig,
+} from './localToolsConfig'
+import { LocalBridge } from './localBridge'
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -31,6 +38,23 @@ let javaProcess: ChildProcess | null = null
 let isQuitting = false
 let isUpdating = false
 let backendReady = false
+
+// Local-tool tunnel: lets a remote agent operate this machine's files/shell
+// through an authenticated WebSocket back to the backend. The JWT is read from
+// the renderer's localStorage (where the admin SPA stores it after login).
+async function readRendererToken(): Promise<string | null> {
+  if (!mainWindow || mainWindow.isDestroyed()) return null
+  try {
+    const token = await mainWindow.webContents.executeJavaScript(
+      'window.localStorage && window.localStorage.getItem("token")'
+    )
+    return typeof token === 'string' && token.length > 0 ? token : null
+  } catch {
+    return null
+  }
+}
+
+const localBridge = new LocalBridge(() => BACKEND_URL, readRendererToken)
 
 // Connection state: which backend the shell is talking to.
 let connectionMode: ConnectionMode | null = null
@@ -156,6 +180,9 @@ function getAvailablePort(): Promise<number> {
 }
 
 async function startJavaBackend(): Promise<void> {
+  // A tunnel pinned to a prior backend URL must be dropped before the embedded
+  // server comes up on a fresh port; it reconnects once the backend is ready.
+  localBridge.stop()
   // Remote builds have no bundled JRE/JAR — refuse to start the local backend
   // and guide the user toward the connection chooser instead of showing a
   // generic "file not found" error.
@@ -284,6 +311,12 @@ function pollBackendReady(): void {
       console.log(`[MateClaw] Backend ready (${elapsed}ms, status: ${res.statusCode})`)
       sendToWindow('backend:status', 'ready')
 
+      // Bring up the local-tool tunnel. It waits for a renderer JWT (post-login)
+      // and reconnects on its own, so starting it here is safe even pre-login.
+      if (loadLocalToolsConfig().enabled) {
+        localBridge.start()
+      }
+
       // Do NOT auto-navigate — let the splash screen handle it
       // after language selection / setup check completes.
     })
@@ -373,6 +406,9 @@ function startRemoteConnection(url: string): void {
   }
   connectionMode = 'remote'
   backendReady = false
+  // Drop any tunnel pinned to the previous backend; it is re-established against
+  // the new URL once the backend reports ready.
+  localBridge.stop()
   BACKEND_URL = normalized
   console.log(`[MateClaw] Remote mode → ${BACKEND_URL}`)
   pollBackendReady()
@@ -413,6 +449,7 @@ function probeServer(
 function goToConnectionChooser(): void {
   forceChooser = true
   backendReady = false
+  localBridge.stop()
   loadSplash()
 }
 
@@ -678,6 +715,36 @@ function registerIpcHandlers(): void {
     }
   })
 
+  // ── Local tools IPC ──
+
+  ipcMain.handle('localtools:get-config', () => ({
+    ...loadLocalToolsConfig(),
+    connected: localBridge.isConnected(),
+  }))
+
+  ipcMain.handle('localtools:set-config', (_event, patch: Partial<LocalToolsConfig>) => {
+    const saved = saveLocalToolsConfig(patch)
+    // Honor an enable/disable toggle immediately.
+    if (saved.enabled && backendReady) {
+      localBridge.start()
+    } else if (!saved.enabled) {
+      localBridge.stop()
+    }
+    return saved
+  })
+
+  ipcMain.handle('localtools:add-dir', async () => {
+    const dir = await pickAllowedDirectory()
+    return { ...loadLocalToolsConfig(), added: dir }
+  })
+
+  ipcMain.handle('localtools:remove-dir', (_event, dir: string) => {
+    const cfg = loadLocalToolsConfig()
+    return saveLocalToolsConfig({
+      allowedDirs: cfg.allowedDirs.filter((d) => d !== dir),
+    })
+  })
+
   // ── Auto Updater IPC ──
 
   ipcMain.handle('updater:get-state', () => updaterState)
@@ -754,6 +821,63 @@ function showAboutDialog(): void {
   })
 }
 
+// Add a directory to the local-tools whitelist via a native folder picker.
+// Returns the added path, or null if the user cancelled.
+async function pickAllowedDirectory(): Promise<string | null> {
+  const parent = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined
+  const result = parent
+    ? await dialog.showOpenDialog(parent, { properties: ['openDirectory', 'createDirectory'] })
+    : await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'] })
+  if (result.canceled || result.filePaths.length === 0) return null
+
+  const dir = result.filePaths[0]
+  const cfg = loadLocalToolsConfig()
+  if (!cfg.allowedDirs.includes(dir)) {
+    saveLocalToolsConfig({ allowedDirs: [...cfg.allowedDirs, dir] })
+  }
+  return dir
+}
+
+// Native overview of the local-tools settings, with quick actions to add a
+// directory or toggle the feature. Keeps management self-contained in the
+// desktop shell without requiring a renderer settings page.
+async function showLocalToolsSettings(): Promise<void> {
+  const cfg = loadLocalToolsConfig()
+  const dirs = cfg.allowedDirs.length > 0
+    ? cfg.allowedDirs.map((d) => `  • ${d}`).join('\n')
+    : `  （未配置 — ${cfg.failClosed ? '默认拒绝所有本地访问' : '默认允许全部本地访问'}）`
+  const detail = [
+    `状态: ${cfg.enabled ? '已启用' : '已停用'}`,
+    `隧道: ${localBridge.isConnected() ? '已连接' : '未连接'}`,
+    '',
+    '允许访问的目录:',
+    dirs,
+  ].join('\n')
+
+  const parent = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined
+  const opts = {
+    type: 'info' as const,
+    title: '本地工具设置',
+    message: '本地文件/命令工具',
+    detail,
+    buttons: ['关闭', '添加目录…', cfg.enabled ? '停用' : '启用'],
+    defaultId: 0,
+    cancelId: 0,
+    noLink: true,
+  }
+  const res = parent
+    ? await dialog.showMessageBox(parent, opts)
+    : await dialog.showMessageBox(opts)
+
+  if (res.response === 1) {
+    await pickAllowedDirectory()
+  } else if (res.response === 2) {
+    const saved = saveLocalToolsConfig({ enabled: !cfg.enabled })
+    if (saved.enabled && backendReady) localBridge.start()
+    else if (!saved.enabled) localBridge.stop()
+  }
+}
+
 async function menuCheckForUpdates(): Promise<void> {
   if (!app.isPackaged) {
     dialog.showMessageBox({ type: 'info', message: 'Update check is not available in dev mode.' })
@@ -795,6 +919,7 @@ function setupApplicationMenu(): void {
         { label: 'Check for Updates...', click: menuCheckForUpdates },
         { type: 'separator' },
         { label: 'Switch Server…', click: goToConnectionChooser },
+        { label: '本地工具设置…', click: () => { void showLocalToolsSettings() } },
         { type: 'separator' },
         { role: 'hide' },
         { role: 'hideOthers' },
@@ -811,6 +936,7 @@ function setupApplicationMenu(): void {
       label: 'File',
       submenu: [
         { label: 'Switch Server…', click: goToConnectionChooser },
+        { label: '本地工具设置…', click: () => { void showLocalToolsSettings() } },
         { type: 'separator' },
         { role: 'quit', label: 'Exit' },
       ],
@@ -966,6 +1092,7 @@ app.on('before-quit', async (event) => {
   isQuitting = true
   event.preventDefault()
 
+  localBridge.stop()
   try {
     await stopJavaBackend()
   } catch (err) {

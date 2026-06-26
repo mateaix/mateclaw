@@ -91,6 +91,10 @@ public class SecurityConfig {
                     "/api/v1/channels/webhook/**",
                     "/api/v1/channels/webchat/**",
                     "/api/v1/talk/ws",
+                    // Desktop local-tool tunnel — the handshake interceptor
+                    // authenticates the ?token= query param itself, so the
+                    // upgrade request is opened to the filter chain like talk/ws.
+                    "/api/v1/desktop/ws",
                     // RFC-045: tool-generated files served via unguessable UUID; entries
                     // expire after GeneratedFileCache.TTL (7 days) — delayed access (e.g. an
                     // IM-delivered link opened later) is intentional, the UUID is the guard.
