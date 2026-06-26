@@ -14,8 +14,14 @@
     "setup": "npm run setup:jar && npm run setup:jre",
     "setup:all-platforms": "bash scripts/build-all-platforms.sh --all",
     "package:mac": "npm run build && electron-builder --mac",
+    "package:mac:local": "npm run build && cross-env BUILD_MODE=local electron-builder --mac",
+    "package:mac:remote": "npm run build && cross-env BUILD_MODE=remote electron-builder --mac",
     "package:win": "npm run build && electron-builder --win",
+    "package:win:local": "npm run build && cross-env BUILD_MODE=local electron-builder --win",
+    "package:win:remote": "npm run build && cross-env BUILD_MODE=remote electron-builder --win",
     "package:all": "bash scripts/build-all-platforms.sh --all",
+    "package:all:local": "bash scripts/build-all-platforms.sh --local",
+    "package:all:remote": "bash scripts/build-all-platforms.sh --remote",
     "publish:github": "bash scripts/publish-github.sh",
     "publish:github:draft": "bash scripts/publish-github.sh --draft"
   },
@@ -25,6 +31,7 @@
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^5.2.1",
+    "cross-env": "^10.1.0",
     "electron": "^33.3.1",
     "electron-builder": "^25.1.8",
     "typescript": "^5.7.3",
@@ -32,5 +39,11 @@
     "vite-plugin-electron": "^0.28.8",
     "vite-plugin-electron-renderer": "^0.14.6",
     "vue-tsc": "^2.2.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "electron",
+      "esbuild"
+    ]
   }
 }
