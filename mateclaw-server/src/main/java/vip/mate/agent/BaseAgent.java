@@ -1218,10 +1218,14 @@ public abstract class BaseAgent {
     }
 
     /**
-     * 解析图片文件的绝对路径。
+     * Resolve the absolute path of an image file.
      * <p>
-     * 上传文件存储在 data/chat-uploads/ 下，是相对于 Spring Boot 工作目录的路径。
-     * MCP 工具的工作目录可能不同，所以这里直接解析为绝对路径。
+     * The storage location of uploaded files is resolved by
+     * {@code ChatUploadLocationResolver} in priority order: the Agent's
+     * workspaceBasePath → the Workspace's basePath → a configurable default
+     * directory ({@code mateclaw.chat.upload.base-dir}, default
+     * {@code data/chat-uploads}). An MCP tool's working directory may differ,
+     * so this resolves directly to an absolute path.
      */
     /**
      * 构建当前用户消息的 UserMessage（含 multimodal 图片注入）。

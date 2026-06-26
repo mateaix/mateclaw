@@ -110,6 +110,20 @@ export const authApi = {
     http.put(`/auth/users/${id}/password`, null, { params: { oldPassword, newPassword } }),
 }
 
+// ==================== SSO ====================
+export const ssoApi = {
+  /** List enabled SSO providers (for rendering login buttons) */
+  providers: () => http.get('/auth/sso/providers'),
+  /** Get the authorize URL + state for a provider */
+  authorize: (provider: string) => http.get(`/auth/sso/${provider}/authorize`),
+  /** Exchange OAuth2 code for JWT */
+  callback: (provider: string, code: string, state: string) =>
+    http.post(`/auth/sso/${provider}/callback`, { code, state }),
+  /** Bind an SSO identity to an existing account (link-only mode) */
+  bind: (bindToken: string, username: string, password: string) =>
+    http.post('/auth/sso/bind', { bindToken, username, password }),
+}
+
 // ==================== Agent ====================
 export const agentApi = {
   /**
@@ -1037,6 +1051,28 @@ export const dashboardApi = {
   agentRanking: (days = 7, topN = 10) => http.get('/dashboard/agent-ranking', { params: { days, topN } }),
   cronJobRuns: (cronJobId: string | number, limit = 20) => http.get(`/dashboard/cron-runs/${cronJobId}`, { params: { limit } }),
   recentRuns: (limit = 20) => http.get('/dashboard/cron-runs', { params: { limit } }),
+}
+
+// ==================== Operational Data Export ====================
+export const operationalApi = {
+  generate: (startDate: string, endDate: string) =>
+    http.post('/operational-data/generate', null, { params: { startDate, endDate } }),
+  progress: (taskId: string) =>
+    http.get('/operational-data/progress', { params: { taskId } }),
+  /** Download file — uses native fetch to avoid axios R<T> interceptor */
+  download: async (taskId: string, token: string): Promise<void> => {
+    const jwt = localStorage.getItem('token')
+    const resp = await fetch(`/api/v1/operational-data/download?taskId=${taskId}&token=${token}`, {
+      headers: { Authorization: jwt ? `Bearer ${jwt}` : '' },
+    })
+    if (!resp.ok) throw new Error(`Download failed: ${resp.status}`)
+    const blob = await resp.blob()
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(blob)
+    a.download = `ops_data.zip`
+    a.click()
+    URL.revokeObjectURL(a.href)
+  },
 }
 
 // ==================== Plugins ====================

@@ -1,6 +1,7 @@
 package vip.mate.config;
 
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
@@ -29,6 +30,22 @@ public class SecurityConfig {
     private final JwtAuthFilter jwtAuthFilter;
 
     /**
+     * SpringDoc Swagger UI / OpenAPI document paths. These serve the full REST
+     * surface (every endpoint plus request/response schemas), so they are gated
+     * explicitly instead of relying on the {@code .anyRequest().permitAll()}
+     * fallthrough. Whether they are public or admin-only is driven by
+     * {@code mateclaw.openapi.expose-ui} (see {@link #filterChain}).
+     */
+    private static final String[] OPENAPI_PATHS = {
+            "/swagger-ui.html",
+            "/swagger-ui/**",
+            "/v3/api-docs",
+            "/v3/api-docs/**",
+            "/v3/api-docs.yaml",
+            "/webjars/**"
+    };
+
+    /**
      * 密码编码器独立配置（打破 SecurityConfig → JwtAuthFilter → AuthService → BCryptPasswordEncoder 循环）
      */
     @Configuration
@@ -39,8 +56,19 @@ public class SecurityConfig {
         }
     }
 
+    /**
+     * Configure the security filter chain.
+     *
+     * @param exposeOpenApiUi when {@code true} the Swagger UI / OpenAPI document
+     *        paths are public; when {@code false} they require a global admin
+     *        ({@code ROLE_ADMIN}). Defaults to {@code false} (locked down) when the
+     *        property is absent — the base {@code application.yml} enables it for
+     *        local dev while the production database profiles keep it off.
+     */
     @Bean
-    public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
+    public SecurityFilterChain filterChain(
+            HttpSecurity http,
+            @Value("${mateclaw.openapi.expose-ui:false}") boolean exposeOpenApiUi) throws Exception {
         http
             .csrf(AbstractHttpConfigurer::disable)
             .headers(headers -> headers
@@ -48,13 +76,14 @@ public class SecurityConfig {
                 .frameOptions(frame -> frame.sameOrigin())
             )
             .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
-            .authorizeHttpRequests(auth -> auth
+            .authorizeHttpRequests(auth -> {
                 // GET /settings/language stays anonymous (first-paint i18n). PUT
                 // requires login + admin (see @RequireGlobalAdmin on the controller).
-                .requestMatchers(HttpMethod.GET, "/api/v1/settings/language").permitAll()
+                auth.requestMatchers(HttpMethod.GET, "/api/v1/settings/language").permitAll()
                 // 公开 API 接口
                 .requestMatchers(
                     "/api/v1/auth/login",
+                    "/api/v1/auth/sso/**",
                     "/api/v1/agents/*/chat/stream",
                     "/api/v1/chat/stream",
                     "/api/v1/chat/*/stop",
@@ -62,16 +91,28 @@ public class SecurityConfig {
                     "/api/v1/channels/webhook/**",
                     "/api/v1/channels/webchat/**",
                     "/api/v1/talk/ws",
+                    // Desktop local-tool tunnel — the handshake interceptor
+                    // authenticates the ?token= query param itself, so the
+                    // upgrade request is opened to the filter chain like talk/ws.
+                    "/api/v1/desktop/ws",
                     // RFC-045: tool-generated files served via unguessable UUID; entries
                     // expire after GeneratedFileCache.TTL (7 days) — delayed access (e.g. an
                     // IM-delivered link opened later) is intentional, the UUID is the guard.
                     "/api/v1/files/generated/**"
-                ).permitAll()
+                ).permitAll();
+                // Swagger UI / OpenAPI document — explicit rule rather than the
+                // permitAll() fallthrough. Public for local dev, admin-only in
+                // production, driven by mateclaw.openapi.expose-ui.
+                if (exposeOpenApiUi) {
+                    auth.requestMatchers(OPENAPI_PATHS).permitAll();
+                } else {
+                    auth.requestMatchers(OPENAPI_PATHS).hasRole("ADMIN");
+                }
                 // 所有其他 API 接口需要认证
-                .requestMatchers("/api/**").authenticated()
-                // 非 API 请求（前端路由、静态资源、Swagger、H2 Console 等）全部放行
-                .anyRequest().permitAll()
-            )
+                auth.requestMatchers("/api/**").authenticated()
+                // 非 API 请求（前端路由、静态资源、H2 Console 等）全部放行
+                .anyRequest().permitAll();
+            })
             .exceptionHandling(ex -> ex
                 .authenticationEntryPoint((request, response, authException) -> {
                     response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);

@@ -69,3 +69,11 @@ mybatis-plus:
 mate:
   wiki:
     require-allowed-roots: true
+
+# Production hardening: lock down the Swagger UI / OpenAPI document so it is not
+# anonymously browsable. Requires a global admin (ROLE_ADMIN); SecurityConfig
+# enforces it. Set MATECLAW_OPENAPI_EXPOSE_UI=true to re-open it for an
+# internal/staging host.
+mateclaw:
+  openapi:
+    expose-ui: ${MATECLAW_OPENAPI_EXPOSE_UI:false}
