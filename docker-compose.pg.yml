@@ -1,0 +1,70 @@
+# PostgreSQL override for docker-compose.yml.
+#
+# Usage:
+#   cp .env.example .env            # set PGSQL_DB_PASSWORD (and the rest)
+#   docker compose -f docker-compose.yml -f docker-compose.pg.yml up -d
+#
+# The base docker-compose.yml runs the app on MySQL. This override adds a
+# PostgreSQL service, re-points mateclaw-server at it, and keeps MySQL from
+# starting — so the stack runs on PostgreSQL instead.
+#
+# Schema: the mateclaw schema is created by Flyway on startup
+# (application-postgres.yml -> spring.flyway.init-sqls: CREATE SCHEMA IF NOT
+# EXISTS mateclaw), so the postgres container needs no init script.
+
+services:
+  # Gate MySQL behind a profile so a plain `up` with this override does NOT
+  # start the MySQL container. Start it explicitly with `--profile mysql` only
+  # if you want both DBs side by side.
+  #
+  # Note: docker compose still interpolates the base mysql service's ${VAR:?}
+  # at config-load time even though the service won't start, so .env must still
+  # carry DB_ROOT_PASSWORD / DB_PASSWORD (any non-empty placeholder is fine for
+  # a PG-only deployment — the mysql container never runs). The PostgreSQL
+  # credentials the app actually uses come from PGSQL_DB_* below.
+  mysql:
+    profiles: ["mysql"]
+
+  # PostgreSQL service (not present in the base compose file).
+  postgres:
+    image: postgres:16-alpine
+    container_name: mateclaw-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${PGSQL_DB_NAME:-mateclaw}
+      POSTGRES_USER: ${PGSQL_DB_USERNAME:-postgres}
+      POSTGRES_PASSWORD: ${PGSQL_DB_PASSWORD:?PGSQL_DB_PASSWORD is required in .env}
+      TZ: Asia/Shanghai
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PGSQL_DB_USERNAME:-postgres} -d ${PGSQL_DB_NAME:-mateclaw}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mateclaw-server:
+    depends_on:
+      # Drop the inherited mysql dependency (compose merges depends_on maps, so
+      # without !reset the base's `mysql: service_healthy` would survive and
+      # block startup since mysql no longer starts). Requires Compose v2.20+.
+      mysql: !reset null
+      postgres:
+        condition: service_healthy
+      searxng:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: postgres
+      DB_HOST: postgres
+      DB_PORT: 5432
+      # application-postgres.yml reads DB_NAME / DB_USERNAME / DB_PASSWORD.
+      # Align them with the postgres service's PGSQL_DB_* values so a single set
+      # of .env values drives both the server and the container.
+      DB_NAME: ${PGSQL_DB_NAME:-mateclaw}
+      DB_USERNAME: ${PGSQL_DB_USERNAME:-postgres}
+      DB_PASSWORD: ${PGSQL_DB_PASSWORD:?PGSQL_DB_PASSWORD is required in .env}
+
+volumes:
+  postgres_data:
