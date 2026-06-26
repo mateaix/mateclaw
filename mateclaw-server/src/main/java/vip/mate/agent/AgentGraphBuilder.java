@@ -1327,7 +1327,7 @@ public class AgentGraphBuilder {
      * @throws IllegalArgumentException when an absolute override escapes the
      *         workspace root
      */
-    static String resolveAgentBasePath(String agentOverride, String workspaceBase) {
+    public static String resolveAgentBasePath(String agentOverride, String workspaceBase) {
         boolean hasOverride = agentOverride != null && !agentOverride.isBlank();
         boolean hasWorkspace = workspaceBase != null && !workspaceBase.isBlank();
         if (!hasOverride) {

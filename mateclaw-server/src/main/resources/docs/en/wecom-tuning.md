@@ -212,7 +212,7 @@ Fix: `AsyncTaskMediaDispatcher.forwardToImIfBound(conversationId, parts)`:
 - Slack: via `filesUploadV2` (see [Slack channel](./channels#slack))
 - Channels without `sendContentParts` (QQ, etc.): catch UnsupportedOperationException + log; one unsupported channel doesn't block the rest
 
-Files live at `data/chat-uploads/{conversationId}/`, served at `/api/v1/chat/files/{conversationId}/{storedName}`. Frontend and channel attachment views all read by this URL.
+Files live at `data/chat-uploads/{conversationId}/` by default, but when the conversation's Agent / Workspace has a `basePath` configured, attachments land under `{basePath}/chat-uploads/{conversationId}/` (precedence: Agent `workspaceBasePath` → Workspace `basePath` → default dir `mateclaw.chat.upload.base-dir`). Reads and cleanup probe both the new and legacy locations, so pre-migration attachments stay accessible. Served at `/api/v1/chat/files/{conversationId}/{storedName}`; frontend and channel attachment views all read by this URL.
 
 ---
 

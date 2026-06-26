@@ -1220,7 +1220,9 @@ public abstract class BaseAgent {
     /**
      * 解析图片文件的绝对路径。
      * <p>
-     * 上传文件存储在 data/chat-uploads/ 下，是相对于 Spring Boot 工作目录的路径。
+     * 上传文件的存储位置由 {@code ChatUploadLocationResolver} 按优先级解析：
+     * Agent 的 workspaceBasePath → Workspace 的 basePath → 可配置默认目录
+     * （{@code mateclaw.chat.upload.base-dir}，默认 {@code data/chat-uploads}）。
      * MCP 工具的工作目录可能不同，所以这里直接解析为绝对路径。
      */
     /**

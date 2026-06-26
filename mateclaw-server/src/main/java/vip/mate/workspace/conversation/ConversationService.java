@@ -31,13 +31,13 @@ import vip.mate.workspace.conversation.repository.ConversationMapper;
 import vip.mate.workspace.conversation.repository.MessageMapper;
 import vip.mate.workspace.conversation.vo.ConversationVO;
 import vip.mate.workspace.conversation.vo.MessageVO;
+import vip.mate.workspace.core.service.ChatUploadLocationResolver;
 import vip.mate.workspace.core.service.WorkspaceService;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -86,6 +86,14 @@ public class ConversationService {
     private final ApplicationEventPublisher eventPublisher;
     private final AuthService authService;
     private final WorkspaceService workspaceService;
+
+    /**
+     * Resolves the workspace/agent-aware chat-upload directory. The resolver
+     * injects {@code AgentService} lazily, which breaks the would-be cycle
+     * (agentService → agentGraphBuilder → this → resolver → agentService), so a
+     * plain constructor injection here is sufficient.
+     */
+    private final ChatUploadLocationResolver chatUploadLocationResolver;
 
     /**
      * Optional spill store. Injected via a setter so the existing @RequiredArgsConstructor
@@ -1656,38 +1664,46 @@ public class ConversationService {
         return conv != null ? conv.getStreamStatus() : null;
     }
 
-    private static final Path UPLOAD_ROOT = Paths.get("data", "chat-uploads");
-
     /**
      * 清理会话关联的附件文件
+     * <p>
+     * 遍历所有候选上传根（workspace/agent 感知根 + 默认根），逐一删除
+     * 各根下该会话的附件目录。这样无论附件落在新的工作空间目录还是
+     * 迁移前的默认目录，都能被清理。
      */
     public void cleanAttachmentFiles(String conversationId) {
-        Path dir;
-        try {
-            dir = UPLOAD_ROOT.resolve(conversationId);
-        } catch (InvalidPathException e) {
-            // Conversation id contains characters illegal on this filesystem
-            // (e.g. ':' in cron:<jobId> on Windows). No attachments could
-            // ever have been written under such an id on this OS, so there
-            // is nothing to clean.
-            log.debug("Skipping attachment cleanup for non-path-safe conversation id: {}", conversationId);
-            return;
+        boolean cleanedAny = false;
+        for (Path root : chatUploadLocationResolver.resolveCandidateUploadRoots(conversationId)) {
+            Path dir;
+            try {
+                dir = root.resolve(conversationId);
+            } catch (InvalidPathException e) {
+                // Conversation id contains characters illegal on this filesystem
+                // (e.g. ':' in cron:<jobId> on Windows). No attachments could
+                // ever have been written under such an id on this OS, so there
+                // is nothing to clean.
+                log.debug("Skipping attachment cleanup for non-path-safe conversation id: {}", conversationId);
+                return;
+            }
+            if (!Files.exists(dir)) {
+                continue;
+            }
+            try (Stream<Path> walk = Files.walk(dir)) {
+                walk.sorted(Comparator.reverseOrder())
+                        .forEach(p -> {
+                            try {
+                                Files.deleteIfExists(p);
+                            } catch (IOException e) {
+                                log.warn("Failed to delete attachment file: {}", p, e);
+                            }
+                        });
+                cleanedAny = true;
+            } catch (IOException e) {
+                log.warn("Failed to walk attachment directory for conversation: {}", conversationId, e);
+            }
         }
-        if (!Files.exists(dir)) {
-            return;
-        }
-        try (Stream<Path> walk = Files.walk(dir)) {
-            walk.sorted(Comparator.reverseOrder())
-                    .forEach(p -> {
-                        try {
-                            Files.deleteIfExists(p);
-                        } catch (IOException e) {
-                            log.warn("Failed to delete attachment file: {}", p, e);
-                        }
-                    });
+        if (cleanedAny) {
             log.info("Cleaned attachment files for conversation: {}", conversationId);
-        } catch (IOException e) {
-            log.warn("Failed to walk attachment directory for conversation: {}", conversationId, e);
         }
     }
 }

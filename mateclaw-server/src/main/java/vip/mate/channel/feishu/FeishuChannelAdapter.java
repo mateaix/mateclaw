@@ -229,7 +229,47 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
             .build();
 
     // Package-private for testing: redirect to a temp directory without touching real disk.
+    // Used as the fallback upload root when no ChatUploadLocationResolver is wired
+    // (e.g. direct-construction unit tests set this to a tmp dir).
     Path chatUploadsRoot = Path.of("data", "chat-uploads");
+
+    /**
+     * Workspace/agent-aware upload-root resolver. Set by the production factory
+     * (ChannelManager); null in unit tests, which override {@link #chatUploadsRoot}
+     * instead. When non-null, attachment reads/writes resolve through it so files
+     * land under the workspace base path; otherwise the legacy
+     * {@link #chatUploadsRoot} field applies.
+     */
+    vip.mate.workspace.core.service.ChatUploadLocationResolver chatUploadLocationResolver;
+
+    /**
+     * Resolve the upload root for a conversation, preferring the wired resolver
+     * (workspace/agent-aware) and falling back to the legacy field. Read paths
+     * should use {@link #candidateChatUploadRoots(String)} to probe both the
+     * workspace-scoped root and the legacy root.
+     */
+    private java.nio.file.Path chatUploadRootFor(String conversationId) {
+        if (chatUploadLocationResolver != null) {
+            return chatUploadLocationResolver.resolveUploadRoot(conversationId);
+        }
+        return chatUploadsRoot;
+    }
+
+    /**
+     * Ordered candidate upload roots for a conversation: workspace-scoped first
+     * (when the resolver is wired), then the legacy field. Used by read/scan
+     * paths so attachments written before the workspace-aware relocation are
+     * still found.
+     */
+    private java.util.List<java.nio.file.Path> candidateChatUploadRoots(String conversationId) {
+        java.util.List<java.nio.file.Path> roots = new java.util.ArrayList<>();
+        if (chatUploadLocationResolver != null) {
+            roots.addAll(chatUploadLocationResolver.resolveCandidateUploadRoots(conversationId));
+        } else {
+            roots.add(chatUploadsRoot);
+        }
+        return roots;
+    }
 
     public FeishuChannelAdapter(ChannelEntity channelEntity,
                                 ChannelMessageRouter messageRouter,
@@ -291,6 +331,28 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
                                 FeishuClientFactory clientFactory,
                                 vip.mate.tool.document.GeneratedFileCache generatedFileCache,
                                 vip.mate.stt.SttService sttService) {
+        this(channelEntity, messageRouter, objectMapper, mediaUploader,
+                generatedFileScrubber, streamingCardManager, cardDispatcher,
+                clientFactory, generatedFileCache, sttService, null);
+    }
+
+    /**
+     * Full constructor used by the production factory (ChannelManager). The
+     * trailing {@code chatUploadLocationResolver} enables workspace/agent-aware
+     * attachment storage; {@code null} (or a shorter overload) keeps the legacy
+     * {@code data/chat-uploads} behaviour.
+     */
+    public FeishuChannelAdapter(ChannelEntity channelEntity,
+                                ChannelMessageRouter messageRouter,
+                                ObjectMapper objectMapper,
+                                FeishuMediaUploader mediaUploader,
+                                GeneratedFileScrubber generatedFileScrubber,
+                                FeishuStreamingCardManager streamingCardManager,
+                                vip.mate.channel.feishu.cards.FeishuCardDispatcher cardDispatcher,
+                                FeishuClientFactory clientFactory,
+                                vip.mate.tool.document.GeneratedFileCache generatedFileCache,
+                                vip.mate.stt.SttService sttService,
+                                vip.mate.workspace.core.service.ChatUploadLocationResolver chatUploadLocationResolver) {
         super(channelEntity, messageRouter, objectMapper);
         this.mediaUploader = mediaUploader;
         this.generatedFileScrubber = generatedFileScrubber;
@@ -299,6 +361,7 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
         this.clientFactory = clientFactory;
         this.generatedFileCache = generatedFileCache;
         this.sttService = sttService;
+        this.chatUploadLocationResolver = chatUploadLocationResolver;
         // Feishu WebSocket reconnect: 2s→4s→8s→16s→30s, infinite retry
         this.backoff = new ExponentialBackoff(2000, 30000, 2.0, -1);
     }
@@ -1712,8 +1775,8 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
                     : maybeDownloadResource(messageId, fileKey, type, fileName);
             if (dl == null) return null;
 
-            // Save to data/chat-uploads/{conversationId}/
-            Path uploadDir = chatUploadsRoot.resolve(conversationId);
+            // Save under the workspace/agent-aware upload root ({convId}/ subdir)
+            Path uploadDir = chatUploadRootFor(conversationId).resolve(conversationId);
             Files.createDirectories(uploadDir);
             String rawName = (dl.fileName() != null && !dl.fileName().isBlank())
                     ? dl.fileName() : fileKey;
@@ -1796,15 +1859,20 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
     }
 
     /**
-     * Scan {@code data/chat-uploads/{conversationId}/} on disk and return
-     * the most recent files as {@link RecentFileEntry}s.  Used as a
-     * fallback when the in-memory Caffeine cache has been evicted
-     * (process restart, TTL expiry, GC pressure) but the staged copies
-     * are still on disk.
+     * Scan the conversation's upload dir(s) on disk and return the most recent
+     * files as {@link RecentFileEntry}s. Used as a fallback when the in-memory
+     * Caffeine cache has been evicted (process restart, TTL expiry, GC pressure)
+     * but the staged copies are still on disk. Probes every candidate root
+     * (workspace-scoped + legacy default) so files written before the
+     * workspace-aware relocation are still found.
      */
     private List<RecentFileEntry> loadRecentFilesFromDisk(String conversationId) {
         long cutoff = System.currentTimeMillis() - RECENT_FILE_TTL_MINUTES * 60_000L;
-        return loadRecentFilesFromDisk(chatUploadsRoot.resolve(conversationId), cutoff);
+        List<RecentFileEntry> merged = new java.util.ArrayList<>();
+        for (Path root : candidateChatUploadRoots(conversationId)) {
+            merged.addAll(loadRecentFilesFromDisk(root.resolve(conversationId), cutoff));
+        }
+        return merged;
     }
 
     /**

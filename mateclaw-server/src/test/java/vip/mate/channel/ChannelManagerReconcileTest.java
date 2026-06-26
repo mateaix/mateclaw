@@ -62,7 +62,8 @@ class ChannelManagerReconcileTest {
                 mock(vip.mate.channel.feishu.cards.FeishuCardDispatcher.class),
                 mock(vip.mate.channel.feishu.FeishuClientFactory.class),
                 mock(vip.mate.stt.SttService.class),
-                election);
+                election,
+                mock(vip.mate.workspace.core.service.ChatUploadLocationResolver.class));
         adapter = new TrackingAdapter();
     }
 
