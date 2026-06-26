@@ -40,6 +40,17 @@ Use Plan-and-Execute when the task needs several ordered steps and you want to w
 
 ---
 
+## Run Overview: see the whole long task at a glance
+
+Long tasks (multi-step plans, multi-agent collaboration) used to mean scrolling up and down the message stream to track progress. The chat view now has an always-on **Run Overview** rail on the right that assembles the data the backend already streams into one place — no scrolling back:
+
+- **Plan progress** — in Plan mode, live per-step status (pending / running / completed) and a progress count, with expandable step results. A "planning…" placeholder shows before the plan streams in, so the rail doesn't flicker.
+- **Live sub-agent status** — delegated sub-agents render as a live **tree**: name, tools called, running / completed / error / stalled state; multi-level delegation expands layer by layer.
+
+The rail **collapses to a badged strip**; below 1280px it degrades to a **floating drawer** so it never squeezes the conversation column. It's pure frontend with zero new endpoints, reusing the existing SSE event stream — so the delegation tree still appears inline in the message too; the rail just lifts the "current / active" overview into a persistent place.
+
+---
+
 ## Thinking, tool calls, and what to trust
 
 One of the questions MateClaw tries to answer with its chat UI is: **should you trust what the AI just told you?** The default answer elsewhere is "look at the answer and guess". MateClaw tries to do better.

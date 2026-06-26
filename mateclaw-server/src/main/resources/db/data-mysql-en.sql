@@ -497,6 +497,16 @@ INSERT INTO mate_tool (id, name, display_name, description, tool_type, bean_name
 VALUES (1000000005, 'WriteFileTool', 'Write File', 'Write content to a file. Overwrites if exists, creates if not. Requires user approval.', 'builtin', 'writeFileTool', '📝', TRUE, TRUE, NOW(), NOW(), 0)
 ON DUPLICATE KEY UPDATE name=VALUES(name), display_name=VALUES(display_name), description=VALUES(description), tool_type=VALUES(tool_type), bean_name=VALUES(bean_name), icon=VALUES(icon), enabled=VALUES(enabled), builtin=VALUES(builtin), update_time=VALUES(update_time), deleted=VALUES(deleted);
 
+-- Built-in tool: Local File Access (operates on the user's local desktop via the desktop tunnel)
+INSERT INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
+VALUES (1000000026, 'LocalFileTools', 'Local File Access', 'Read/write/edit/list/stat files on the user''s local desktop machine via the desktop tunnel. Directory-whitelisted; writes and edits require native user approval.', 'builtin', 'localFileTools', '💻', TRUE, TRUE, NOW(), NOW(), 0)
+ON DUPLICATE KEY UPDATE name=VALUES(name), display_name=VALUES(display_name), description=VALUES(description), tool_type=VALUES(tool_type), bean_name=VALUES(bean_name), icon=VALUES(icon), enabled=VALUES(enabled), builtin=VALUES(builtin), update_time=VALUES(update_time), deleted=VALUES(deleted);
+
+-- Built-in tool: Local Shell (operates on the user's local desktop via the desktop tunnel)
+INSERT INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
+VALUES (1000000027, 'LocalShellTool', 'Local Shell', 'Execute shell commands on the user''s local desktop machine via the desktop tunnel. Requires native user approval.', 'builtin', 'localShellTool', '🖥', TRUE, TRUE, NOW(), NOW(), 0)
+ON DUPLICATE KEY UPDATE name=VALUES(name), display_name=VALUES(display_name), description=VALUES(description), tool_type=VALUES(tool_type), bean_name=VALUES(bean_name), icon=VALUES(icon), enabled=VALUES(enabled), builtin=VALUES(builtin), update_time=VALUES(update_time), deleted=VALUES(deleted);
+
 -- Built-in tool: Edit File (enabled by default, dangerous ops controlled by ToolGuard)
 INSERT INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
 VALUES (1000000006, 'EditFileTool', 'Edit File', 'Edit file content via find-and-replace. Matches old_text exactly and replaces with new_text. Requires user approval.', 'builtin', 'editFileTool', '✏️', TRUE, TRUE, NOW(), NOW(), 0)

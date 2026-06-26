@@ -2,6 +2,7 @@ package vip.mate.workspace.conversation;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -12,6 +13,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import vip.mate.agent.repository.AgentMapper;
 import vip.mate.workspace.conversation.repository.ConversationMapper;
 import vip.mate.workspace.conversation.repository.MessageMapper;
+import vip.mate.workspace.core.service.ChatUploadLocationResolver;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -19,12 +21,15 @@ import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Comparator;
+import java.util.List;
 import java.util.UUID;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.when;
 
 /**
  * Regression coverage for issue #36: deleting a CRON-task conversation throws
@@ -47,10 +52,20 @@ class ConversationServiceCleanAttachmentFilesTest {
     @Mock private MessageMapper messageMapper;
     @Mock private AgentMapper agentMapper;
     @Spy private ObjectMapper objectMapper = new ObjectMapper();
+    @Mock private ChatUploadLocationResolver chatUploadLocationResolver;
 
     @InjectMocks private ConversationService service;
 
     private Path createdDir;
+
+    @BeforeEach
+    void stubResolver() {
+        // cleanAttachmentFiles now resolves the upload root via the resolver.
+        // Point its candidate roots at the legacy default dir so both the
+        // happy-path and unrepresentable-id cases exercise the real filesystem.
+        when(chatUploadLocationResolver.resolveCandidateUploadRoots(any()))
+                .thenReturn(List.of(Paths.get("data", "chat-uploads")));
+    }
 
     @AfterEach
     void cleanup() throws IOException {

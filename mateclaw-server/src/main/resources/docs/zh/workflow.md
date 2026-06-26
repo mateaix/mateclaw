@@ -98,6 +98,12 @@ v0 = internal alpha。**7 种 step mode + 6 种 trigger pattern**。`loop` / `in
 
 > **不在 v1.3.0 里**：`loop`（迭代 N 次或对数组逐项处理）、`invoke_skill`（直接调用 skill 不经过员工）。等用户反馈再加。
 
+> **`await_approval` 的渠道通知（1.7.0 起真正生效）**：`approverChannels[]` 的每个元素是
+> - `"channelType"`（如 `"web"`）—— **不主动推送**，运营到管理端 resolve；
+> - `"channelType:targetId"`（如 `"feishu:oc_xxx"`、`"wecom:xxx"`）—— **推送审批通知**到该目标（飞书/企微群）。
+>
+> 审批通过后工作流**从暂停步骤自动恢复**（resolve→resume 桥接）。飞书/企微群里可**直接点卡片按钮批准/拒绝**完成 resolve。详见[安全与审批](./security)。
+
 ### 表达式：Pebble 子集
 
 工作流**不**用全功能模板引擎——它支持的是 Kestra 同款 Pebble 子集，只够做条件判断和变量引用，不能跑代码。

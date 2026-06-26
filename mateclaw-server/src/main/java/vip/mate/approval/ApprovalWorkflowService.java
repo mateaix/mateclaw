@@ -335,6 +335,29 @@ public class ApprovalWorkflowService implements ApplicationRunner {
             approvalMapper.insert(entity);
             log.info("[ApprovalWorkflow] requested workflow approval row id={}, runId={}, workspace={}, kind={}",
                     entity.getId(), runId, workspaceId, kind);
+
+            // ISSUE #413: register the workflow approval into the in-memory map
+            // so the resolve → resume bridge actually fires. Without this, the
+            // row only lives in DB and ApprovalService.getPending("wf-...") returns
+            // null, so performResolve() short-circuits at the "not pending" guard
+            // and never reaches the WorkflowApprovalResolvedEvent publish in
+            // Phase 4 — leaving ApprovalResumeBridge as dead code. Mirrors the
+            // recoverFromDb() snapshot shape exactly.
+            Instant createdAt = entity.getCreatedAt() != null
+                    ? entity.getCreatedAt().atZone(ZoneId.systemDefault()).toInstant()
+                    : Instant.now();
+            PendingApproval snapshot = new PendingApproval(
+                    entity.getPendingId(),
+                    entity.getConversationId(),
+                    /*userId*/ null,
+                    entity.getToolName(),
+                    entity.getToolArguments(),
+                    /*reason*/ entity.getSummary(),
+                    createdAt,
+                    "pending");
+            snapshot.setSummary(entity.getSummary());
+            approvalService.registerRecovered(snapshot);
+
             return entity.getId();
         } catch (Exception e) {
             log.warn("[ApprovalWorkflow] requestWorkflowApproval failed: {}", e.getMessage());
@@ -775,6 +798,17 @@ public class ApprovalWorkflowService implements ApplicationRunner {
     /**
      * 代理查询方法
      */
+    /**
+     * Look up a pending approval by its exact id. Delegates to the underlying
+     * {@link ApprovalService#getPending} so callers that only hold the workflow
+     * facade (e.g. WebChatController) can fetch the precise record for an IDOR
+     * cross-check without falling back to {@code findPendingByConversation}
+     * (which returns the earliest pending, wrong when several coexist).
+     */
+    public java.util.Optional<PendingApproval> getPending(String pendingId) {
+        return approvalService.getPending(pendingId);
+    }
+
     public PendingApproval findPendingByConversation(String conversationId) {
         return approvalService.findPendingByConversation(conversationId);
     }

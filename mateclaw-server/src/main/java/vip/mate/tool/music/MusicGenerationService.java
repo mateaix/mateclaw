@@ -12,12 +12,12 @@ import vip.mate.task.AsyncTaskService;
 import vip.mate.task.model.AsyncTaskEntity;
 import vip.mate.workspace.conversation.ConversationService;
 import vip.mate.workspace.conversation.model.MessageContentPart;
+import vip.mate.workspace.core.service.ChatUploadLocationResolver;
 
 import jakarta.annotation.PreDestroy;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -55,8 +55,8 @@ public class MusicGenerationService {
      * audio as a native attachment. Web-class channels keep using SSE only.
      */
     private final AsyncTaskMediaDispatcher asyncTaskMediaDispatcher;
+    private final ChatUploadLocationResolver uploadLocationResolver;
 
-    private static final Path UPLOAD_ROOT = Paths.get("data", "chat-uploads");
     private static final String TASK_TYPE = "music_generation";
 
     /** Dedicated virtual-thread worker. Music generation blocks on a single
@@ -191,7 +191,7 @@ public class MusicGenerationService {
 
     private PersistedAudio persistAudio(String conversationId, String taskId,
                                          MusicGenerationResult result) throws IOException {
-        Path dir = UPLOAD_ROOT.resolve(conversationId);
+        Path dir = uploadLocationResolver.resolveUploadRoot(conversationId).resolve(conversationId);
         Files.createDirectories(dir);
         String fileName = "music_" + taskId + "." + result.getFormat();
         Path filePath = dir.resolve(fileName);

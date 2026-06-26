@@ -5,11 +5,11 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
+import vip.mate.workspace.core.service.ChatUploadLocationResolver;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.Arrays;
 import java.util.Locale;
 import java.util.Optional;
@@ -39,9 +39,6 @@ import java.util.stream.Stream;
 @Service
 public class WebChatFileService {
 
-    /** Shared with the JWT chat upload dir so deleteConversation cleanup applies. */
-    private static final Path UPLOAD_ROOT = Paths.get("data", "chat-uploads");
-
     /** How long an uploaded-but-unreferenced file lingers before the sweep removes it. */
     private static final long STAGING_TTL_MS = 60 * 60 * 1000L; // 1 hour
 
@@ -50,6 +47,7 @@ public class WebChatFileService {
     private final Set<String> allowedExtensions;
     private final int maxFilesPerConversation;
     private final long maxTotalBytesPerConversation;
+    private final ChatUploadLocationResolver uploadLocationResolver;
 
     /** fileId (== storedName) -> staged metadata, pending a /stream reference. */
     private final ConcurrentHashMap<String, StagedFile> staged = new ConcurrentHashMap<>();
@@ -61,7 +59,8 @@ public class WebChatFileService {
                     + "png,jpg,jpeg,gif,webp,bmp,pdf,txt,md,csv,json,log,"
                     + "doc,docx,xls,xlsx,ppt,pptx,zip,mp3,wav,m4a,mp4,mov,webm}") String allowedExtensionsCsv,
             @Value("${mateclaw.webchat.upload.max-files-per-conversation:50}") int maxFilesPerConversation,
-            @Value("${mateclaw.webchat.upload.max-total-mb-per-conversation:200}") long maxTotalMbPerConversation) {
+            @Value("${mateclaw.webchat.upload.max-total-mb-per-conversation:200}") long maxTotalMbPerConversation,
+            ChatUploadLocationResolver uploadLocationResolver) {
         this.enabled = enabled;
         this.maxSizeBytes = maxSizeMb * 1024 * 1024;
         this.allowedExtensions = Arrays.stream(allowedExtensionsCsv.split(","))
@@ -70,6 +69,7 @@ public class WebChatFileService {
                 .collect(Collectors.toUnmodifiableSet());
         this.maxFilesPerConversation = maxFilesPerConversation;
         this.maxTotalBytesPerConversation = maxTotalMbPerConversation * 1024 * 1024;
+        this.uploadLocationResolver = uploadLocationResolver;
     }
 
     /** Metadata for a staged upload. */
@@ -111,7 +111,7 @@ public class WebChatFileService {
 
         String originalName = file.getOriginalFilename() != null ? file.getOriginalFilename() : "file";
         // Strip any directory components, then collapse to a safe charset.
-        String baseName = Paths.get(originalName).getFileName().toString();
+        String baseName = Path.of(originalName).getFileName().toString();
         String ext = extensionOf(baseName);
         if (ext.isEmpty() || !allowedExtensions.contains(ext)) {
             throw new UploadRejectedException("File type not allowed: ." + ext);
@@ -119,8 +119,9 @@ public class WebChatFileService {
         String safeName = baseName.replaceAll("[^a-zA-Z0-9._-]", "_");
 
         String storedName = UUID.randomUUID() + "_" + safeName;
-        Path dir = UPLOAD_ROOT.resolve(conversationId).normalize();
-        if (!dir.startsWith(UPLOAD_ROOT.normalize())) {
+        Path uploadRoot = uploadLocationResolver.resolveUploadRoot(conversationId).normalize();
+        Path dir = uploadRoot.resolve(conversationId).normalize();
+        if (!dir.startsWith(uploadRoot)) {
             // conversationId is server-derived, so this should never happen; fail closed if it does.
             throw new UploadRejectedException("Invalid conversation");
         }
@@ -169,12 +170,16 @@ public class WebChatFileService {
         if (storedName == null || storedName.isBlank()) {
             return Optional.empty();
         }
-        Path base = UPLOAD_ROOT.resolve(conversationId).normalize();
-        Path file = base.resolve(storedName).normalize();
-        if (!file.startsWith(base) || !Files.exists(file) || !Files.isRegularFile(file)) {
-            return Optional.empty();
+        // Check every candidate root (workspace-scoped dir + legacy default dir)
+        // so files written before the workspace-aware relocation still resolve.
+        for (Path root : uploadLocationResolver.resolveCandidateUploadRoots(conversationId)) {
+            Path base = root.resolve(conversationId).normalize();
+            Path file = base.resolve(storedName).normalize();
+            if (file.startsWith(base) && Files.exists(file) && Files.isRegularFile(file)) {
+                return Optional.of(file);
+            }
         }
-        return Optional.of(file);
+        return Optional.empty();
     }
 
     /** Map a content type to the MessageContentPart type the agent/UI understands. */

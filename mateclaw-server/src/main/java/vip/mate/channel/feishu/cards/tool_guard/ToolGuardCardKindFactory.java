@@ -3,6 +3,7 @@ package vip.mate.channel.feishu.cards.tool_guard;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Component;
 import vip.mate.approval.ApprovalService;
+import vip.mate.approval.ApprovalWorkflowService;
 import vip.mate.channel.feishu.cards.FeishuCardKind;
 
 /**
@@ -27,21 +28,27 @@ public class ToolGuardCardKindFactory {
     public static final String ACTION_PREFIX = ToolGuardButtonValue.ACTION_PREFIX;
 
     private final ApprovalService approvalService;
+    /** ISSUE #413 P2-B3: resolves workflow-scoped (wf-) approvals from card clicks. */
+    private final ApprovalWorkflowService approvalWorkflowService;
     private final ObjectMapper objectMapper;
 
     public ToolGuardCardKindFactory(ApprovalService approvalService,
+                                     ApprovalWorkflowService approvalWorkflowService,
                                      ObjectMapper objectMapper) {
         this.approvalService = approvalService;
+        this.approvalWorkflowService = approvalWorkflowService;
         this.objectMapper = objectMapper;
     }
 
     public FeishuCardKind create() {
         ToolGuardButtonValue buttonValue = new ToolGuardButtonValue(objectMapper);
         ToolGuardCardRenderer renderer = new ToolGuardCardRenderer(buttonValue);
-        // Handler no longer needs ApprovalWorkflowService — the canonical
-        // resolve + replay path runs via a synthetic /approve|/deny
-        // message injected back into the router.
-        ToolGuardCardHandler handler = new ToolGuardCardHandler(approvalService, buttonValue);
+        // ISSUE #413 P2-B3: handler needs ApprovalWorkflowService to resolve
+        // wf- workflow approvals inline (the synthetic /approve injection is
+        // a dead end for wf- ids). Regular tool approvals still go through
+        // the synthetic /approve | /deny router path as before.
+        ToolGuardCardHandler handler = new ToolGuardCardHandler(
+                approvalService, approvalWorkflowService, buttonValue);
         return new FeishuCardKind(KIND_NAME, ACTION_PREFIX, renderer, handler);
     }
 }

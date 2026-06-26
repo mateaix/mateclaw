@@ -134,6 +134,13 @@ public class ChannelManager {
      */
     private final ChannelLeaderElection leaderElection;
 
+    /**
+     * Workspace/agent-aware chat-upload resolver, passed into adapters so their
+     * inbound media downloads land under the channel's workspace base path
+     * (falling back to the configured default dir).
+     */
+    private final vip.mate.workspace.core.service.ChatUploadLocationResolver chatUploadLocationResolver;
+
     /** 运行中的渠道适配器：channelId -> adapter */
     private final Map<Long, ChannelAdapter> activeAdapters = new HashMap<>();
 
@@ -1197,14 +1204,16 @@ public class ChannelManager {
             case "dingtalk" -> new DingTalkChannelAdapter(channel, messageRouter, objectMapper, generatedFileCache);
             case "feishu" -> new FeishuChannelAdapter(channel, messageRouter, objectMapper,
                     feishuMediaUploader, generatedFileScrubber, feishuStreamingCardManager,
-                    feishuCardDispatcher, feishuClientFactory, generatedFileCache, sttService);
+                    feishuCardDispatcher, feishuClientFactory, generatedFileCache, sttService,
+                    chatUploadLocationResolver);
             case "telegram" -> new TelegramChannelAdapter(channel, messageRouter, objectMapper);
             case "discord" -> new DiscordChannelAdapter(channel, messageRouter, objectMapper);
             case "wecom" -> new WeComChannelAdapter(channel, messageRouter, objectMapper,
                     approvalNotificationService, weComCardDispatcher, weComKeepaliveScheduler,
-                    generatedFileCache);
+                    generatedFileCache, chatUploadLocationResolver);
             case "qq" -> new QQChannelAdapter(channel, messageRouter, objectMapper);
-            case "weixin" -> new WeixinChannelAdapter(channel, messageRouter, objectMapper);
+            case "weixin" -> new WeixinChannelAdapter(channel, messageRouter, objectMapper,
+                    chatUploadLocationResolver);
             case "slack" -> new vip.mate.channel.slack.SlackChannelAdapter(channel, messageRouter, objectMapper);
             case "webchat" -> new vip.mate.channel.webchat.WebChatChannelAdapter(channel, messageRouter, objectMapper);
             default -> throw new IllegalArgumentException("Unsupported channel type: " + type);
