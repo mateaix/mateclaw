@@ -3,6 +3,7 @@ package vip.mate.channel.wecom.cards.tool_guard;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Component;
 import vip.mate.approval.ApprovalService;
+import vip.mate.approval.ApprovalWorkflowService;
 import vip.mate.channel.wecom.cards.WeComCardKind;
 
 /**
@@ -34,17 +35,23 @@ public class ToolGuardCardKindFactory {
     public static final String MESSAGE_TYPE = "tool_guard_approval";
 
     private final ApprovalService approvalService;
+    /** ISSUE #413 P2-B3: resolves workflow-scoped (wf-) approvals from card clicks. */
+    private final ApprovalWorkflowService approvalWorkflowService;
     private final ObjectMapper objectMapper;
 
-    public ToolGuardCardKindFactory(ApprovalService approvalService, ObjectMapper objectMapper) {
+    public ToolGuardCardKindFactory(ApprovalService approvalService,
+                                     ApprovalWorkflowService approvalWorkflowService,
+                                     ObjectMapper objectMapper) {
         this.approvalService = approvalService;
+        this.approvalWorkflowService = approvalWorkflowService;
         this.objectMapper = objectMapper;
     }
 
     public WeComCardKind create() {
         ToolGuardButtonKey buttonKey = new ToolGuardButtonKey(objectMapper);
         ToolGuardCardRenderer renderer = new ToolGuardCardRenderer(buttonKey);
-        ToolGuardCardHandler handler = new ToolGuardCardHandler(approvalService, buttonKey);
+        ToolGuardCardHandler handler = new ToolGuardCardHandler(
+                approvalService, approvalWorkflowService, buttonKey);
         return new WeComCardKind(
                 "tool_guard_approval",
                 MESSAGE_TYPE,

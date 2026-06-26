@@ -1,0 +1,91 @@
+{
+    "version": 1,
+    "pageTypes": {
+        "concept": {
+            "label": "Concept",
+            "description": "An abstract idea, theory, method or definition.",
+            "layer": "fact",
+            "schema": {
+                "name": {"type": "string", "required": true},
+                "case_count": {"type": "number", "required": true},
+                "tags": {"type": "enum", "value": ["纪律处分","异常经营","失联机构"], "required": true},
+                "last_updated": {"type": "date", "required": true}
+            },
+            "route": null,
+            "create": { "instructions": "正文必须包含以下部分：概述（对处罚概念的简短描述）、时间分布（xx年：xx案例）、典型案例（10个，包含日期、字号、违规行为）、处罚依据、处罚措施" },
+            "merge": null,
+            "template": {
+                "key": "concept",
+                "markdown": "## 概述\n\n本概念页收录 **N** 个涉及「{{name}}」的主体案例。\n\n## 时间分布\n\n- 2026年：N个案例\n- 2025年：N个案例\n- 2024年：N个案例\n- 2023年：N个案例\n\n## 典型案例\n\n### 1. [机构名](entities/机构名.md)\n\n- **日期**：\n- **字号**：\n- **违规行为**：\n\n## 违规构成要件\n\n一般包括：\n1. 违规主体（机构或个人）\n2. 违规行为的具体表现\n3. 主观过错（如故意或过失）\n4. 损害后果\n\n## 处罚依据\n\n- 《法规名》\n\n## 处罚措施\n\n常见的处罚措施包括：\n- **机构**：警告、罚款、责令改正、公开谴责、取消会员资格、撤销登记等\n- **个人**：警告、罚款、取消基金从业资格、加入黑名单等"
+            }
+        },
+        "organization": {
+            "label": "Organization",
+            "description": "A company, institution or group.",
+            "layer": "fact",
+            "schema": {
+                "name": {"type": "string", "required": true},
+                "source_count": {"type": "number", "required": true},
+                "first_incident": {"type": "date", "required": true},
+                "last_incident": {"type": "date", "required": true},
+                "tags": {"type": "enum", "value": ["纪律处分","异常经营","失联机构"], "required": true}
+            },
+            "route": null,
+            "create": { "instructions": "name提取要干净，去掉”以下简称xxx”的字样。正文必须包含以下部分：处罚记录（字号、日期、来源文件、违规行为、违规行为对应的概念页）、违规类型汇总（concept链接）" },
+            "merge": { "instructions": "合并同名的公司主体及处罚案件。如果主体名称（name）存在OCR处理的错别字，可以合并为同一主体" },
+            "template": {
+                "key": "organization",
+                "markdown": "## 基本信息\n\n- **名称**: {{name}}\n- **类型**: 基金管理人\n- **首次处罚**: \n- **最近处罚**: \n- **字号**: \n\n## 处罚记录\n\n### 案件 1\n\n- **字号**: \n- **日期**: \n- **来源**: \n\n**违规行为**: \n\n**违规行为对应的概念页**: \n\n- **处罚措施**: \n- **法规依据**: \n\n## 违规类型汇总\n\n- [概念页名称](concepts/概念页名称.md)"
+            }
+        },
+        "regulation": {
+            "label": "Regulation",
+            "description": "Laws or rules cited in every regulation files",
+            "layer": "fact",
+            "schema": {
+                "name": {"type": "string", "required": true},
+                "issuing_body": {"type": "string", "required": true},
+                "effective_date": {"type": "date", "required": true},
+                "cited_count": {"type": "number", "required": true},
+                "tags": {"type": "string", "required": true}
+            },
+            "route": null,
+            "create": { "instructions": "正文包含以下内容：概述、关联违规类型（concept链接，xxx条）、高频条款（引用次数xxx，关联违规）、典型案例（organization链接）" },
+            "merge": null,
+            "template": {
+                "key": "regulation",
+                "markdown": "## 概述\n\n法规的基本介绍和适用范围。\n\n## 关联违规类型\n\n- [违规类型名](concepts/违规类型名.md) — N 次引用\n\n## 高频条款\n\n### 第X条（条款简述）\n\n- 引用次数：N\n- 关联违规：[违规类型](concepts/违规类型.md)\n\n## 典型案例\n\n- [机构名](entities/机构名.md)"
+            }
+        },
+        "module": {
+            "label": "Module",
+            "description": "summary of each regulation module",
+            "layer": "fact",
+            "schema": {
+                "name": {"type": "enum", "value": ["纪律处分","异常经营","失联机构"], "required": true},
+                "description": {"type": "string", "required": true},
+                "source_count": {"type": "number", "required": true},
+                "last_updated": {"type": "date", "required": true}
+            },
+            "route": null,
+            "create": { "instructions": "正文包含以下部分：统计概览（记录总数：xxx条）、实体列表" },
+            "merge": null,
+            "template": {
+                "key": "module",
+                "markdown": "## 统计概览\n\n- **涉及主体**: N 个\n- **记录总数**: N 条\n\n## 实体列表\n\n- **YYYY-MM**: 机构名 (N 条记录)"
+            }
+        },
+        "analysis": {
+            "label": "Analysis",
+            "description": "give some professional suggests based on fact data.",
+            "layer": "experience",
+            "schema": {},
+            "route": null,
+            "create": null,
+            "merge": null,
+            "template": null
+        }
+    },
+    "fallbackType": "concept",
+    "allowAdditionalFields": true
+}

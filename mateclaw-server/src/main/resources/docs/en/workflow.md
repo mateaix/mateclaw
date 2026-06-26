@@ -98,6 +98,12 @@ How it reads:
 
 > **Not in v1.3.0**: `loop` (iterate N times or per-item over an array) and `invoke_skill` (call a skill without going through an employee). Coming based on user feedback.
 
+> **`await_approval` channel notifications (actually delivered since 1.7.0)**: each element of `approverChannels[]` is either
+> - `"channelType"` (e.g. `"web"`) — **not actively pushed**; resolve from the admin side; or
+> - `"channelType:targetId"` (e.g. `"feishu:oc_xxx"`, `"wecom:xxx"`) — **pushes an approval notification** to that target (Feishu/WeCom group).
+>
+> Once approved, the workflow **resumes from the paused step automatically** (the resolve → resume bridge). In a Feishu/WeCom group you can **tap the card's Approve/Deny button** to resolve it directly. See [Approval & security](./security).
+
 ### Expressions: a Pebble subset
 
 Workflow does **not** use a full template engine — it supports the same Pebble subset as Kestra, just enough to gate conditionals and reference variables, with no code execution.

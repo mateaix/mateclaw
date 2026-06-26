@@ -1,13 +1,14 @@
 package vip.mate.tool.model3d;
 
 import cn.hutool.http.HttpUtil;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
+import vip.mate.workspace.core.service.ChatUploadLocationResolver;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 
 /**
  * Downloads generated 3D-model assets (.glb / .obj / .fbx) from the provider's
@@ -16,13 +17,14 @@ import java.nio.file.Paths;
  */
 @Slf4j
 @Component
+@RequiredArgsConstructor
 public class Model3dFileDownloader {
 
-    private static final Path UPLOAD_ROOT = Paths.get("data", "chat-uploads");
+    private final ChatUploadLocationResolver uploadLocationResolver;
 
     public Path download(String modelUrl, String conversationId, String taskId,
                           String preferredExtension) throws IOException {
-        Path dir = UPLOAD_ROOT.resolve(conversationId);
+        Path dir = uploadLocationResolver.resolveUploadRoot(conversationId).resolve(conversationId);
         Files.createDirectories(dir);
 
         String ext = guessExtension(modelUrl, preferredExtension);

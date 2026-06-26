@@ -30,7 +30,6 @@ import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.io.IOException;
 import reactor.core.Disposable;
 
@@ -62,7 +61,7 @@ public class ChatController {
     private final ObjectMapper objectMapper;
     private final ConversationCompletionPublisher completionPublisher;
     private final vip.mate.memory.identity.MemoryOwnerResolver memoryOwnerResolver;
-    private final Path uploadRoot = Paths.get("data", "chat-uploads");
+    private final vip.mate.workspace.core.service.ChatUploadLocationResolver uploadLocationResolver;
 
     // 使用虚拟线程池处理 SSE（Java 17+ 兼容，Java 21 可用 Executors.newVirtualThreadPerTaskExecutor()）
     private final ExecutorService sseExecutor = Executors.newCachedThreadPool();
@@ -1075,7 +1074,9 @@ public class ChatController {
             Authentication auth) throws IOException {
 
         String username = auth != null ? auth.getName() : "anonymous";
-        // 校验会话归属（会话可能尚未创建，此时允许上传——后续 stream/chat 会创建并绑定用户）
+        // 校验会话归属（会话可能尚未创建，此时允许上传——后续 stream/chat 会创建并绑定用户）。
+        // 注意：会话尚不存在时，附件暂存到默认目录（resolveUploadRoot 查不到会话即回退）；
+        // 会话创建后读取走双重查找，仍能命中。
         if (conversationService.conversationExists(conversationId)
                 && !conversationService.isConversationOwner(conversationId, username)) {
             return R.fail(403, "无权操作该会话");
@@ -1087,6 +1088,7 @@ public class ChatController {
         String originalFilename = file.getOriginalFilename() != null ? file.getOriginalFilename() : "file";
         String safeFilename = Path.of(originalFilename).getFileName().toString().replaceAll("[^a-zA-Z0-9._-]", "_");
         String storedName = System.currentTimeMillis() + "_" + safeFilename;
+        Path uploadRoot = uploadLocationResolver.resolveUploadRoot(conversationId);
         Path conversationDir = uploadRoot.resolve(conversationId);
         Files.createDirectories(conversationDir);
         Path target = conversationDir.resolve(storedName);
@@ -1119,8 +1121,20 @@ public class ChatController {
             return ResponseEntity.status(403).build();
         }
 
-        Path filePath = uploadRoot.resolve(conversationId).resolve(storedName).normalize();
-        if (!Files.exists(filePath) || !filePath.startsWith(uploadRoot.resolve(conversationId).normalize())) {
+        // Check every candidate root (workspace-scoped dir + legacy default dir)
+        // so attachments written before the workspace-aware relocation, and the
+        // current workspace-scoped ones, are both servable. Each candidate keeps
+        // its own startsWith traversal guard.
+        Path filePath = null;
+        for (Path root : uploadLocationResolver.resolveCandidateUploadRoots(conversationId)) {
+            Path conversationDir = root.resolve(conversationId).normalize();
+            Path candidate = conversationDir.resolve(storedName).normalize();
+            if (Files.exists(candidate) && candidate.startsWith(conversationDir)) {
+                filePath = candidate;
+                break;
+            }
+        }
+        if (filePath == null) {
             return ResponseEntity.notFound().build();
         }
 

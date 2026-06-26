@@ -4,6 +4,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockMultipartFile;
+import vip.mate.workspace.core.service.ChatUploadLocationResolverTestSupport;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -27,12 +28,13 @@ class WebChatFileServiceTest {
     private static final String CONV = "webchat:abcd1234:visitor-1";
 
     private WebChatFileService service(boolean enabled, long maxMb, String exts) {
-        return new WebChatFileService(enabled, maxMb, exts, 50, 200);
+        return service(enabled, maxMb, exts, 50, 200);
     }
 
     private WebChatFileService service(boolean enabled, long maxMb, String exts,
                                        int maxFiles, long maxTotalMb) {
-        return new WebChatFileService(enabled, maxMb, exts, maxFiles, maxTotalMb);
+        return new WebChatFileService(enabled, maxMb, exts, maxFiles, maxTotalMb,
+                ChatUploadLocationResolverTestSupport.legacyDefault());
     }
 
     @AfterEach

@@ -6,11 +6,11 @@ import org.springframework.stereotype.Service;
 import vip.mate.channel.web.ChatStreamTracker;
 import vip.mate.system.model.SystemSettingsDTO;
 import vip.mate.system.service.SystemSettingService;
+import vip.mate.workspace.core.service.ChatUploadLocationResolver;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.*;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -28,8 +28,8 @@ public class TtsService {
     private final SystemSettingService systemSettingService;
     private final TtsProviderRegistry providerRegistry;
     private final ChatStreamTracker streamTracker;
+    private final ChatUploadLocationResolver uploadLocationResolver;
 
-    private static final Path UPLOAD_ROOT = Paths.get("data", "chat-uploads");
     private static final int MAX_TEXT_LENGTH = 4096;
 
     /** 用于自动 TTS 的异步线程池 */
@@ -204,7 +204,7 @@ public class TtsService {
 
     private Path saveAudioFile(String conversationId, String fileId, byte[] data, String format)
             throws IOException {
-        Path dir = UPLOAD_ROOT.resolve(conversationId);
+        Path dir = uploadLocationResolver.resolveUploadRoot(conversationId).resolve(conversationId);
         Files.createDirectories(dir);
         String fileName = "tts_" + fileId + "." + format;
         Path filePath = dir.resolve(fileName);

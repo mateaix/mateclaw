@@ -1,15 +1,16 @@
 package vip.mate.tool.image;
 
 import cn.hutool.http.HttpUtil;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
+import vip.mate.workspace.core.service.ChatUploadLocationResolver;
 
 import java.io.IOException;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.Base64;
 
 /**
@@ -19,9 +20,10 @@ import java.util.Base64;
  */
 @Slf4j
 @Component
+@RequiredArgsConstructor
 public class ImageFileDownloader {
 
-    private static final Path UPLOAD_ROOT = Paths.get("data", "chat-uploads");
+    private final ChatUploadLocationResolver uploadLocationResolver;
 
     /**
      * Persist an image referenced by either a {@code data:} URL (inline base64 /
@@ -38,7 +40,7 @@ public class ImageFileDownloader {
         if (imageUrl == null) {
             throw new IOException("imageUrl is null");
         }
-        Path dir = UPLOAD_ROOT.resolve(conversationId);
+        Path dir = uploadLocationResolver.resolveUploadRoot(conversationId).resolve(conversationId);
         Files.createDirectories(dir);
 
         if (imageUrl.startsWith("data:")) {
@@ -110,7 +112,7 @@ public class ImageFileDownloader {
      * 将 Base64 编码的图片保存到本地
      */
     public Path saveBase64(String base64Data, String conversationId, String taskId, int index) throws IOException {
-        Path dir = UPLOAD_ROOT.resolve(conversationId);
+        Path dir = uploadLocationResolver.resolveUploadRoot(conversationId).resolve(conversationId);
         Files.createDirectories(dir);
 
         String fileName = "image_" + taskId + "_" + index + ".png";
