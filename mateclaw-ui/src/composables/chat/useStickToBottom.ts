@@ -127,9 +127,11 @@ export function useStickToBottom(
   }
 
   // 处理滚动事件
- const handleScroll = () => {
-   if (!scrollRef.value) return
-   if (isScrolling) {
+  const handleScroll = () => {
+    if (!scrollRef.value) return
+    if (isScrolling) {
+      // User scrolled up during a programmatic scroll — release the lock so the
+      // view stops snapping back to the bottom.
       const currentScrollTop = scrollRef.value.scrollTop
       if (currentScrollTop < lastScrollTop) {
         isScrolling = false
@@ -138,7 +140,7 @@ export function useStickToBottom(
       }
       lastScrollTop = scrollRef.value.scrollTop
       return
-   }
+    }
 
     const element = scrollRef.value
     const currentScrollTop = element.scrollTop

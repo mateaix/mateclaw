@@ -2060,7 +2060,7 @@ export function useChat(options: UseChatOptions): UseChatReturn {
         && (m.status === 'generating' || m.status === 'awaiting_approval')
     )
     if (existingAsst) {
-      updateMessage(existingAsst.id, {
+      updateMessage(existingAsst.id as string, {
         ...existingAsst,
         content: '',
         contentParts: [],
