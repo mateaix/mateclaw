@@ -1074,7 +1074,9 @@ public class ChatController {
             Authentication auth) throws IOException {
 
         String username = auth != null ? auth.getName() : "anonymous";
-        // 校验会话归属（会话可能尚未创建，此时允许上传——后续 stream/chat 会创建并绑定用户）
+        // 校验会话归属（会话可能尚未创建，此时允许上传——后续 stream/chat 会创建并绑定用户）。
+        // 注意：会话尚不存在时，附件暂存到默认目录（resolveUploadRoot 查不到会话即回退）；
+        // 会话创建后读取走双重查找，仍能命中。
         if (conversationService.conversationExists(conversationId)
                 && !conversationService.isConversationOwner(conversationId, username)) {
             return R.fail(403, "无权操作该会话");

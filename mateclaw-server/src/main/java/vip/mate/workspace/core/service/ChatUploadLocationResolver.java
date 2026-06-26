@@ -5,10 +5,13 @@ import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Lazy;
+import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
 import vip.mate.agent.AgentService;
 import vip.mate.agent.AgentGraphBuilder;
 import vip.mate.agent.model.AgentEntity;
+import vip.mate.exception.MateClawException;
+import vip.mate.workspace.conversation.event.ConversationDeletedEvent;
 import vip.mate.workspace.core.config.ChatUploadProperties;
 import vip.mate.workspace.core.model.WorkspaceEntity;
 import vip.mate.workspace.conversation.model.ConversationEntity;
@@ -158,40 +161,26 @@ public class ChatUploadLocationResolver {
         if (workspaceId != null) {
             try {
                 workspace = workspaceService.getById(workspaceId);
-            } catch (Exception e) {
-                log.debug("[ChatUpload] workspace {} lookup failed: {}", workspaceId, e.getMessage());
+            } catch (MateClawException e) {
+                // Workspace row missing — fall through to the default root.
+                log.debug("[ChatUpload] workspace {} not found: {}", workspaceId, e.getMessage());
             }
         }
 
         String agentOverride = null;
-        Long agentWorkspaceId = workspaceId;
         if (agentId != null) {
             try {
                 AgentEntity agent = agentService.getAgent(agentId);
                 agentOverride = agent.getWorkspaceBasePath();
-                if (agent.getWorkspaceId() != null) {
-                    agentWorkspaceId = agent.getWorkspaceId();
-                }
-            } catch (Exception e) {
-                log.debug("[ChatUpload] agent {} lookup failed: {}", agentId, e.getMessage());
+            } catch (MateClawException e) {
+                log.debug("[ChatUpload] agent {} not found: {}", agentId, e.getMessage());
             }
         }
 
-        // If the agent belongs to a different workspace than the caller passed,
-        // prefer the agent's own workspace basePath as the scoping root.
-        String workspaceBase = null;
-        if (agentWorkspaceId != null) {
-            try {
-                WorkspaceEntity wsForAgent = workspaceService.getById(agentWorkspaceId);
-                if (wsForAgent != null) {
-                    workspaceBase = wsForAgent.getBasePath();
-                }
-            } catch (Exception e) {
-                log.debug("[ChatUpload] agent workspace {} lookup failed: {}", agentWorkspaceId, e.getMessage());
-            }
-        } else if (workspace != null) {
-            workspaceBase = workspace.getBasePath();
-        }
+        // A conversation's agent always belongs to the conversation's workspace
+        // (enforced at creation), so the workspace basePath is the scoping root
+        // for both the agent override and the no-override case.
+        String workspaceBase = workspace != null ? workspace.getBasePath() : null;
 
         String resolvedBase;
         try {
@@ -232,5 +221,19 @@ public class ChatUploadLocationResolver {
         if (conversationId != null) {
             conversationCache.invalidate(conversationId);
         }
+    }
+
+    /**
+     * Drop the cached {@code conversationId → ConversationEntity} mapping when a
+     * conversation is deleted, mirroring {@code WorkspaceLookupCache}'s listener.
+     * Without this, a re-created conversation with the same id (rare, but
+     * possible across a backup restore) would inherit the stale workspace/agent
+     * mapping for up to five minutes — and {@code cleanAttachmentFiles} would
+     * walk the wrong (stale) upload directory. The delete tx has already
+     * committed when this fires, so the cache entry is safe to evict.
+     */
+    @EventListener
+    public void onConversationDeleted(ConversationDeletedEvent event) {
+        invalidate(event.conversationId());
     }
 }
