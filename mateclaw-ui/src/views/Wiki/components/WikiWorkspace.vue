@@ -187,7 +187,7 @@ async function onOpenPage(slug: string) {
 .tab-btn:hover { color: var(--mc-text-primary); }
 .tab-btn.active { color: var(--mc-primary); background: var(--mc-bg-elevated); box-shadow: 0 1px 4px rgba(0,0,0,0.08); font-weight: 600; }
 .tab-content { flex: 1; min-height: 0; overflow-y: auto; padding-right: 2px; }
-.tab-content--config { overflow: hidden; padding-right: 0; }
+.tab-content--config { overflow-y: auto; padding-right: 0; }
 .tab-content--graph { overflow: hidden; padding: 0; }
 
 .empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; min-height: 200px; color: var(--mc-text-tertiary); text-align: center; }
