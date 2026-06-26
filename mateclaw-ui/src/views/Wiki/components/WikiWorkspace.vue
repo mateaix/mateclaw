@@ -156,8 +156,15 @@ const tabs = computed<{ key: WikiTab; label: string }[]>(() => {
 
 // Snap to each view's default tab whenever the KB or the view mode changes, so
 // the user never lands on a stale tab (or one that doesn't exist in this mode).
+// Use an array of getters (not a single getter returning an array): the latter
+// returns a fresh array reference on every evaluation, so Vue's Object.is check
+// always reports a change and the callback fires on *any* currentKB
+// reassignment — including background refreshes (refreshCurrentKB) that keep the
+// same id. That would yank the user off the config tab back to 'raw' every time
+// a poll/SSE refresh reassigned the KB object. The array-of-getters form
+// compares each source individually, so it fires only on a real id/mode change.
 watch(
-  () => [store.currentKB?.id, store.workspaceMode],
+  [() => store.currentKB?.id, () => store.workspaceMode],
   () => { activeTab.value = store.workspaceMode === 'manage' ? 'raw' : 'pages' },
   { immediate: true },
 )

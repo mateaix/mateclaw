@@ -439,6 +439,14 @@ onBeforeUnmount(() => {
     clearInterval(fallbackTimer)
     fallbackTimer = null
   }
+  // Stop the per-raw job poller too. Without this the setTimeout chain keeps
+  // running after the panel unmounts (e.g. switching to the config tab while a
+  // raw is still processing), calling refreshCurrentKB() every 3s and snapping
+  // the user back to this tab.
+  if (jobPoller != null) {
+    clearTimeout(jobPoller)
+    jobPoller = null
+  }
 })
 
 // RFC-033: Job polling per raw material
