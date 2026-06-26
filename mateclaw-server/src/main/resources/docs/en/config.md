@@ -14,8 +14,10 @@ Deep-dive topics have their own pages — Tool Guard rules in [Security & Approv
 |---------|----------|--------------|
 | `default` | H2 file at `./data/mateclaw` | No action needed |
 | `mysql` | MySQL 8.0+ | `spring.profiles.active=mysql` or `SPRING_PROFILES_ACTIVE=mysql` |
+| `postgres` | PostgreSQL 14+ | `spring.profiles.active=postgres` or `SPRING_PROFILES_ACTIVE=postgres` |
+| `kingbase` | KingbaseES 8+ | `spring.profiles.active=kingbase` (needs `-Pkingbase` build) |
 
-Docker deployments activate `mysql` automatically. Desktop builds use `default`.
+Docker deployments activate `mysql` by default; for PostgreSQL layer in `docker-compose.pg.yml` (see [PostgreSQL deployment](./database-postgresql)). Desktop builds use `default`.
 
 ---
 
@@ -56,6 +58,27 @@ spring:
     password: ${MYSQL_ROOT_PASSWORD}
     driver-class-name: com.mysql.cj.jdbc.Driver
 ```
+
+### Database — PostgreSQL (production)
+
+```yaml
+spring:
+  profiles:
+    active: postgres
+  datasource:
+    # stringtype=unspecified is REQUIRED: JSON columns are JSONB on PG; without
+    # it a String write fails with "column is of type jsonb but expression is of
+    # type character varying".
+    url: jdbc:postgresql://localhost:5432/mateclaw?currentSchema=mateclaw&stringtype=unspecified
+    username: ${DB_USERNAME:postgres}
+    password: ${DB_PASSWORD}
+    driver-class-name: org.postgresql.Driver
+```
+
+PostgreSQL uses its own migration tree `db/migration/postgresql` (JSON columns
+as JSONB). For the full guide — JSONB design, backups, upgrade path from the
+kingbase tree — see [PostgreSQL deployment](./database-postgresql). KingbaseES
+shares PG's dialect; use the `kingbase` profile with a `-Pkingbase` build.
 
 ### AI model — managed in the UI, not YAML
 
@@ -261,9 +284,12 @@ MateClaw uses **Flyway** for schema migrations:
 
 1. `db/migration/h2/V*__*.sql` — H2-dialect migration scripts
 2. `db/migration/mysql/V*__*.sql` — MySQL-dialect migration scripts
-3. After migrations, seed data is loaded from `db/data-*.sql` — idempotent
+3. `db/migration/kingbase/V*__*.sql` — KingbaseES (PostgreSQL-family) dialect
+4. `db/migration/postgresql/V*__*.sql` — PostgreSQL dialect (forked from kingbase; JSON columns as JSONB)
+5. After migrations, seed data is loaded from `db/data-*.sql` — idempotent
 
-Flyway auto-selects the correct dialect path based on the active Spring profile. Every startup runs a `repair` before `migrate`, self-healing checksum drift and partially-failed migrations (especially important for desktop users upgrading offline).
+Flyway auto-selects the correct dialect path based on the active Spring profile.
+New migrations must be added to **all four** trees with the same version number. Every startup runs a `repair` before `migrate`, self-healing checksum drift and partially-failed migrations (especially important for desktop users upgrading offline).
 
 ### Table conventions
 
@@ -293,6 +319,19 @@ export SPRING_PROFILES_ACTIVE=mysql
 export MYSQL_ROOT_PASSWORD=your-password
 mvn spring-boot:run
 ```
+
+### Switching to PostgreSQL
+
+```bash
+export SPRING_PROFILES_ACTIVE=postgres
+export DB_HOST=localhost DB_PORT=5432 DB_NAME=mateclaw
+export DB_USERNAME=postgres DB_PASSWORD=your-password
+mvn spring-boot:run
+```
+
+Flyway creates the `mateclaw` schema automatically. See [PostgreSQL
+deployment](./database-postgresql) for the JSONB notes and the
+`stringtype=unspecified` requirement.
 
 ---
 

@@ -29,6 +29,18 @@ This page covers **requirements, steps, verification, and common gotchas**. For 
 | `searxng` | Built from `./docker/searxng/` | Keyless search fallback | `8088` |
 | `mateclaw-server` | Built from `mateclaw-server/Dockerfile` | Spring Boot backend + embedded browser | `18080` |
 
+### Using PostgreSQL instead of MySQL
+
+The compose file already ships a `postgres` service (unused by
+`mateclaw-server` by default). Layer in `docker-compose.pg.yml` to switch the
+backend to PostgreSQL; the MySQL container won't start:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.pg.yml up -d
+```
+
+See [PostgreSQL deployment](./database-postgresql) for details.
+
 ---
 
 ## SearXNG search service

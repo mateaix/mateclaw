@@ -104,7 +104,7 @@ You hire coworkers, not chat boxes. Each one has a **Role**, a **Goal**, a **Bac
 Text-to-speech · Speech-to-text · Image · Music · Video · 3D. First-class, not add-ons. **Sidecar routing** (1.3.0+) means a text-only main model + an image attachment no longer dead-ends — a configured vision model describes the image, and the main model answers. **Image edit** lands too: refer to an earlier conversation attachment by `msg:<id>:<idx>` and ask the model to recolor or restyle it. Four **document-generation tools** (`DocxRenderTool` / `XlsxRenderTool` / `PptxRenderTool` / `PdfRenderTool`) render Markdown straight to Office files inside the JVM — no subprocess, no Office install.
 
 ### Enterprise-ready
-RBAC + JWT. **Personal Access Tokens** for headless scripts and CI. **HMAC-SHA-256 outbound webhook signing**. **Distributed Cron lock** so multi-instance deployments don't double-fire. Full audit trail. Flyway-managed schema that auto-heals on upgrade. One JAR to ship. MySQL in production, H2 for dev — nothing to change in your code.
+RBAC + JWT. **Personal Access Tokens** for headless scripts and CI. **HMAC-SHA-256 outbound webhook signing**. **Distributed Cron lock** so multi-instance deployments don't double-fire. Full audit trail. Flyway-managed schema that auto-heals on upgrade. One JAR to ship. MySQL, PostgreSQL, or KingbaseES in production, H2 for dev — nothing to change in your code.
 
 ---
 
@@ -203,7 +203,7 @@ Desktop binaries ship via [GitHub Releases](https://github.com/mateaix/mateclaw/
 | Digital Employee Runtime | StateGraph · ReAct + Plan-Execute · Role / Goal / Backstory · LESSONS self-evolution |
 | Orchestration | Workflow (7 step modes · Pebble DSL) · Triggers (6 pattern types · event governance) · Wiki Transformations (1.3.0+) |
 | Capability Extension | SKILL.md packages · MCP (stdio / SSE / HTTP · per-agent binding) · ACP bridge (Claude Code / Codex) |
-| Database | H2 (dev) · MySQL 8.0+ (prod) |
+| Database | H2 (dev) · MySQL 8.0+ / PostgreSQL 14+ / KingbaseES 8+ (prod) |
 | Auth | Spring Security + JWT |
 | Frontend | Vue 3 · TypeScript · Vite · Element Plus · TailwindCSS 4 |
 | Desktop | Electron · electron-updater · JRE 21 (bundled) |
