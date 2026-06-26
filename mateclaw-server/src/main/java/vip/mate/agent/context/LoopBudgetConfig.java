@@ -1,5 +1,7 @@
 package vip.mate.agent.context;
 
+import vip.mate.context.intelligence.budget.TokenBudget;
+
 /**
  * Configuration for per-reasoning-loop message budgeting.
  *
@@ -136,5 +138,28 @@ public record LoopBudgetConfig(
     public LoopBudgetConfig withReservedPrefixTokens(int reservedPrefixTokens) {
         return new LoopBudgetConfig(triggerTokens, keepTailTokens, minTailMessages,
                 tailSoftCeilingRatio, reservedPrefixTokens, targetMaxMessages);
+    }
+
+    /**
+     * v2 factory method: derive LoopBudgetConfig from {@link TokenBudget} (design doc §5.5 / §10.1).
+     * <p>
+     * Replaces v1's fromAllocation. {@code triggerTokens} and {@code keepTailTokens} are taken directly from
+     * TokenBudget (computed multi-factorially by {@code TokenBudgetPlanner.plan}); other fields reuse
+     * the sensible defaults from {@link #forContext}.
+     * <p>
+     * <b>Boundary protection</b>: TokenBudget may produce values below MIN_TRIGGER_TOKENS /
+     * MIN_TAIL_TOKENS under very small windows (e.g. 4K); Math.max floors them here, and when tail ≥ trigger
+     * falls back to {@code trigger - MIN_TRIGGER_TOKENS} (same protection logic as {@link #forContext}).
+     *
+     * @param budget budget planned by v2 TokenBudgetPlanner (non-null)
+     * @return LoopBudgetConfig (validated via compact constructor)
+     */
+    public static LoopBudgetConfig fromBudget(TokenBudget budget) {
+        int trigger = Math.max(MIN_TRIGGER_TOKENS, budget.compactTriggerTokens());
+        int tail = Math.max(MIN_TAIL_TOKENS, budget.keepTailTokens());
+        if (tail >= trigger) {
+            tail = Math.max(MIN_TAIL_TOKENS, trigger - MIN_TRIGGER_TOKENS);
+        }
+        return new LoopBudgetConfig(trigger, tail, 4, 1.5, 0, 200);
     }
 }

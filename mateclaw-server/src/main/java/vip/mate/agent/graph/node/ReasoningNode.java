@@ -15,6 +15,7 @@ import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.model.tool.ToolCallingChatOptions;
 import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.tool.ToolCallback;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.util.StringUtils;
 import vip.mate.agent.AgentToolSet;
 import vip.mate.agent.GraphEventPublisher;
@@ -29,6 +30,12 @@ import vip.mate.agent.graph.state.FinishReason;
 import vip.mate.agent.graph.state.MateClawStateAccessor;
 import vip.mate.agent.graph.state.MateClawStateKeys;
 import vip.mate.agent.graph.state.SourceEvidenceLedger;
+import vip.mate.context.intelligence.budget.TokenBudget;
+import vip.mate.context.intelligence.budget.TokenBudgetPlanner;
+import vip.mate.context.intelligence.event.LlmOverflowSignal;
+import vip.mate.context.intelligence.event.LlmSuccessSignal;
+import vip.mate.context.intelligence.snapshot.EnvSnapshot;
+import vip.mate.context.intelligence.snapshot.EnvSnapshotStore;
 
 import vip.mate.channel.web.ChatStreamTracker;
 
@@ -350,6 +357,14 @@ public class ReasoningNode implements NodeAction {
      */
     private final vip.mate.agent.progress.ProgressLedgerService progressLedgerService;
 
+    /**
+     * Context Intelligence v2 components (design doc §10.1). All three can be null:
+     * legacy callers / test constructors that don't inject them fall back to the yml fallback in {@link #loopContextWindowTokens()}.
+     */
+    private final ApplicationEventPublisher eventPublisher;
+    private final EnvSnapshotStore envSnapshotStore;
+    private final TokenBudgetPlanner tokenBudgetPlanner;
+
     public ReasoningNode(ChatModel chatModel, AgentToolSet toolSet, String reasoningEffort,
                          NodeStreamingChatHelper streamingHelper,
                          ConversationWindowManager conversationWindowManager,
@@ -448,6 +463,31 @@ public class ReasoningNode implements NodeAction {
                          vip.mate.skill.runtime.SkillCatalogRenderer skillCatalogRenderer,
                          vip.mate.tool.disclosure.ToolDisclosureService toolDisclosureService,
                          vip.mate.agent.progress.ProgressLedgerService progressLedgerService) {
+        this(chatModel, toolSet, reasoningEffort, supportsReasoningEffort, streamingHelper,
+                conversationWindowManager, streamTracker, maxOutputTokens, wikiContextService,
+                skillCatalogRenderer, toolDisclosureService, progressLedgerService,
+                null, null, null);
+    }
+
+    /**
+     * Context Intelligence v2 primary constructor (design doc §10.2).
+     * <p>
+     * Adds 3 parameters: {@code eventPublisher} / {@code envSnapshotStore} / {@code tokenBudgetPlanner}.
+     * All three can be null (legacy callers / test scenarios); when null, falls back to yml + hardcoded fallback,
+     * with behavior identical to v1.
+     */
+    public ReasoningNode(ChatModel chatModel, AgentToolSet toolSet, String reasoningEffort,
+                         boolean supportsReasoningEffort,
+                         NodeStreamingChatHelper streamingHelper,
+                         ConversationWindowManager conversationWindowManager,
+                         ChatStreamTracker streamTracker, int maxOutputTokens,
+                         vip.mate.wiki.service.WikiContextService wikiContextService,
+                         vip.mate.skill.runtime.SkillCatalogRenderer skillCatalogRenderer,
+                         vip.mate.tool.disclosure.ToolDisclosureService toolDisclosureService,
+                         vip.mate.agent.progress.ProgressLedgerService progressLedgerService,
+                         ApplicationEventPublisher eventPublisher,
+                         EnvSnapshotStore envSnapshotStore,
+                         TokenBudgetPlanner tokenBudgetPlanner) {
         this.chatModel = chatModel;
         this.toolSet = toolSet;
         this.toolCallbacks = toolSet.callbacks();
@@ -461,6 +501,9 @@ public class ReasoningNode implements NodeAction {
         this.wikiContextService = wikiContextService;
         this.skillCatalogRenderer = skillCatalogRenderer;
         this.progressLedgerService = progressLedgerService;
+        this.eventPublisher = eventPublisher;
+        this.envSnapshotStore = envSnapshotStore;
+        this.tokenBudgetPlanner = tokenBudgetPlanner;
     }
 
     /**
@@ -475,6 +518,74 @@ public class ReasoningNode implements NodeAction {
             if (v > 0) return v;
         }
         return DEFAULT_LOOP_CONTEXT_WINDOW_TOKENS;
+    }
+
+    /**
+     * Context Intelligence v2: build LoopBudgetConfig (design doc §5.5 / §10.1).
+     * <p>
+     * Three-tier fallback (§8.1):
+     * <ol>
+     *   <li>envSnapshotStore + tokenBudgetPlanner available and snapshot valid → multi-factor budget planning</li>
+     *   <li>snapshot empty (enabled=false or cold start) → fallback to yml loopContextWindowTokens()</li>
+     *   <li>yml also unconfigured → fallback to DEFAULT_LOOP_CONTEXT_WINDOW_TOKENS = 128_000</li>
+     * </ol>
+     * Any exception is caught and falls back to forContext; never affects the reasoning main flow.
+     */
+    private LoopBudgetConfig buildLoopBudgetConfig(
+            String providerId, String modelName,
+            int systemTokens, int toolsTokens, int reservedPrefixTokens) {
+        // Tier 1: attempt dynamic budget
+        if (envSnapshotStore != null && tokenBudgetPlanner != null) {
+            try {
+                EnvSnapshot snapshot = envSnapshotStore.get(providerId, modelName);
+                int fallbackWindow = loopContextWindowTokens();
+                TokenBudget budget = tokenBudgetPlanner.plan(snapshot, systemTokens, toolsTokens, fallbackWindow);
+                return LoopBudgetConfig.fromBudget(budget)
+                        .withReservedPrefixTokens(reservedPrefixTokens);
+            } catch (Exception e) {
+                log.debug("[ReasoningNode] Context Intelligence plan failed, falling back to forContext: {}",
+                        e.getMessage());
+            }
+        }
+        // Tier 2 + 3: yml / hardcoded fallback
+        return LoopBudgetConfig.forContext(loopContextWindowTokens())
+                .withReservedPrefixTokens(reservedPrefixTokens);
+    }
+
+    /**
+     * Context Intelligence v2: publish LLM overflow signal (design doc §5.3).
+     * <p>
+     * Synchronous event (@EventListener without @Async), ensures confidenceUpper is updated before PTL retry.
+     * Silently skipped when eventPublisher is null (v1 compatibility).
+     */
+    private void publishOverflowSignal(String provider, String modelName, String modelType,
+                                       int attemptedTokens, String traceId) {
+        if (eventPublisher == null) return;
+        try {
+            eventPublisher.publishEvent(new LlmOverflowSignal(
+                    provider, modelName, modelType, attemptedTokens, traceId));
+        } catch (Exception e) {
+            log.debug("[ReasoningNode] publishOverflowSignal failed (non-fatal): {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Context Intelligence v2: publish LLM success signal (design doc §5.2).
+     * <p>
+     * Asynchronous event (@Async("signalExecutor")), does not block the reasoning thread.
+     * Silently skipped when eventPublisher is null (v1 compatibility).
+     */
+    private void publishSuccessSignal(String provider, String modelName, String modelType,
+                                      int promptTokens, int completionTokens,
+                                      long latencyMs, String traceId) {
+        if (eventPublisher == null) return;
+        try {
+            eventPublisher.publishEvent(new LlmSuccessSignal(
+                    provider, modelName, modelType,
+                    promptTokens, completionTokens, latencyMs, traceId));
+        } catch (Exception e) {
+            log.debug("[ReasoningNode] publishSuccessSignal failed (non-fatal): {}", e.getMessage());
+        }
     }
 
     public ReasoningNode(ChatModel chatModel, AgentToolSet toolSet, String reasoningEffort,
@@ -511,6 +622,9 @@ public class ReasoningNode implements NodeAction {
         this.wikiContextService = null;
         this.skillCatalogRenderer = null;
         this.progressLedgerService = null;
+        this.eventPublisher = null;
+        this.envSnapshotStore = null;
+        this.tokenBudgetPlanner = null;
     }
 
     @Override
@@ -596,8 +710,15 @@ public class ReasoningNode implements NodeAction {
         int toolsTokens = TokenEstimator.estimateToolsTokens(toolCallbacks);
         int loopReservedPrefixTokens = systemTokens + toolsTokens
                 + maxOutputTokens + LOOP_PREFIX_AUXILIARY_RESERVE_TOKENS;
-        LoopBudgetConfig loopCfg = LoopBudgetConfig.forContext(loopContextWindowTokens())
-                .withReservedPrefixTokens(loopReservedPrefixTokens);
+
+        // Context Intelligence v2: prefer deriving budget from EnvSnapshot + TokenBudgetPlanner
+        // (design doc §5.5 / §10.1). When any of the three is null or snapshot is empty, falls back to
+        // the yml fallback LoopBudgetConfig.forContext(loopContextWindowTokens()).
+        String ctxRuntimeModelName = state.value(MateClawStateKeys.RUNTIME_MODEL_NAME, "");
+        String ctxRuntimeProviderId = state.value(MateClawStateKeys.RUNTIME_PROVIDER_ID, "");
+        LoopBudgetConfig loopCfg = buildLoopBudgetConfig(
+                ctxRuntimeProviderId, ctxRuntimeModelName,
+                systemTokens, toolsTokens, loopReservedPrefixTokens);
         LoopMessageBudgeter.Result budgeted = LOOP_BUDGETER.budget(messages, loopCfg);
         // Only log when the budget actually modified the list — a triggered-
         // but-no-op pass is normal (history fits comfortably under the tail
@@ -743,6 +864,11 @@ public class ReasoningNode implements NodeAction {
                 "llmCallCount", nextLlmCallCount
         ));
 
+        // Context Intelligence v2: wrap timing for LlmSuccessSignal.latencyMs
+        long llmCallStartMs = System.currentTimeMillis();
+        String ctxTraceId = state.value(MateClawStateKeys.TRACE_ID, "");
+        String ctxRuntimeModelType = state.value(MateClawStateKeys.RUNTIME_MODEL_TYPE, "");
+
         NodeStreamingChatHelper.StreamResult result;
         try {
             result = streamingHelper.streamCall(chatModel, prompt, conversationId, "reasoning");
@@ -751,6 +877,9 @@ public class ReasoningNode implements NodeAction {
             // Prompt 仍带 wiki / runtime context；早期的 tail-only 路径会把
             // wiki 段一起丢掉，重试后的 prompt 比原始更短少一层信息。
             if (result.isPromptTooLong() && conversationWindowManager != null) {
+                // Context Intelligence v2: publish overflow signal (synchronous, effective before retry)
+                publishOverflowSignal(ctxRuntimeProviderId, ctxRuntimeModelName, ctxRuntimeModelType,
+                        result.promptTokens(), ctxTraceId);
                 log.warn("[ReasoningNode] Prompt too long, attempting STRUCTURED compaction and retry");
 
                 // MateClawStateAccessor.agentId() returns String per state
@@ -841,6 +970,15 @@ public class ReasoningNode implements NodeAction {
                     .contentStreamed(true)
                     .thinkingStreamed(true)
                     .build();
+        }
+
+        // Context Intelligence v2: publish success signal (asynchronous, does not block reasoning)
+        // Only published when the final result is non-PTL / non-user-stopped — PTL already published the overflow signal above,
+        // and user-stop carries no valid token information.
+        if (!result.isPromptTooLong() && !result.stopped()) {
+            long latencyMs = System.currentTimeMillis() - llmCallStartMs;
+            publishSuccessSignal(ctxRuntimeProviderId, ctxRuntimeModelName, ctxRuntimeModelType,
+                    result.promptTokens(), result.completionTokens(), latencyMs, ctxTraceId);
         }
 
         // ======= 处理 StreamResult =======
