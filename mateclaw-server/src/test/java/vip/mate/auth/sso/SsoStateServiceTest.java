@@ -3,7 +3,6 @@ package vip.mate.auth.sso;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -54,7 +53,7 @@ class SsoStateServiceTest {
 
     @BeforeEach
     void setUp() throws Exception {
-        service = new SsoStateService(stateMapper, new ObjectMapper());
+        service = new SsoStateService(stateMapper);
         // jwtSecret is @Value-injected; set it via reflection since there's no Spring context.
         Field f = SsoStateService.class.getDeclaredField("jwtSecret");
         f.setAccessible(true);

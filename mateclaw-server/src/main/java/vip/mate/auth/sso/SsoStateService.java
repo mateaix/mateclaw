@@ -2,7 +2,6 @@ package vip.mate.auth.sso;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.security.Keys;
@@ -54,7 +53,6 @@ public class SsoStateService {
     private static final String KIND_BIND = "bind";
 
     private final SsoStateMapper stateMapper;
-    private final ObjectMapper objectMapper;
 
     @Value("${mateclaw.jwt.secret:MateClaw-JWT-Secret-Key-2024-Please-Change-In-Production}")
     private String jwtSecret;
@@ -100,10 +98,14 @@ public class SsoStateService {
             throw new MateClawException("err.sso.state_invalid", 400, "state 签名校验失败");
         }
 
-        // 2. 一次性消费: UPDATE consumed=1 WHERE token=? AND consumed=0
+        // 2. 一次性消费 + TTL: UPDATE consumed=1 WHERE token=? AND consumed=0 AND created_at > cutoff.
+        // 加 created_at 条件让 5min TTL 在消费阶段强制生效 —— 否则未消费的 state
+        // 只在 1h purge 后才物理删除, /authorize 后 30min 的 /callback 仍能通过。
+        LocalDateTime cutoff = LocalDateTime.now().minusSeconds(STATE_TTL_SECONDS);
         int rows = stateMapper.update(null, new LambdaUpdateWrapper<SsoStateEntity>()
                 .eq(SsoStateEntity::getToken, state)
                 .eq(SsoStateEntity::getConsumed, 0)
+                .gt(SsoStateEntity::getCreatedAt, cutoff)
                 .set(SsoStateEntity::getConsumed, 1));
         if (rows == 0) {
             throw new MateClawException("err.sso.state_expired_or_used",

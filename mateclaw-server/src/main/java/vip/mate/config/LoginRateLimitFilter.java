@@ -27,6 +27,13 @@ public class LoginRateLimitFilter implements Filter {
     /**
      * Endpoints that accept a username + password and must be rate-limited
      * against brute force. SSO callback is excluded (no password submitted).
+     * <p>
+     * The counter is keyed by client IP only (not IP + path), so 5 failed
+     * password attempts on /auth/login also locks /auth/sso/bind for the same
+     * IP within the window. This is intentional: all entries share the same
+     * brute-force surface, and a normal user who fat-fingers their password
+     * 5 times is unlikely to immediately need SSO bind. If finer isolation is
+     * needed later, switch the cache key to {@code ip + ":" + path}.
      */
     private static final Set<String> PROTECTED_PATHS = Set.of(
             "/api/v1/auth/login",

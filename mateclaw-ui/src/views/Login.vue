@@ -188,18 +188,17 @@ async function handleSsoCallback(provider: string, code: string, state: string) 
     const res: any = await ssoApi.callback(provider, code, state)
     const data = res.data || res
 
-    // link-only mode: backend returns bindRequired signal
-    if (data.bindRequired || (typeof data === 'string' && data.includes('bindRequired'))) {
-      // Extract bindToken from the response (R envelope code=200, msg carries the serialized map)
-      const bindData = typeof data === 'string' ? parseBindString(data) : data
+    // link-only mode: backend returns { bindRequired: true, bindToken, provider, displayName }
+    if (data.bindRequired) {
       bindDialog.visible = true
-      bindDialog.bindToken = bindData.bindToken || ''
-      bindDialog.provider = bindData.provider || provider
+      bindDialog.bindToken = data.bindToken || ''
+      bindDialog.provider = data.provider || provider
       bindDialog.error = ''
       return
     }
 
-    await applyLogin(data)
+    // Success: loginResponse carries the JWT
+    await applyLogin(data.loginResponse)
     // Clean the query params so a refresh doesn't replay the callback.
     router.replace({ path: '/login' })
   } catch (e: any) {
@@ -232,16 +231,6 @@ function cancelBind() {
   bindDialog.username = ''
   bindDialog.password = ''
   bindDialog.error = ''
-}
-
-/** Parse the serialized bind signal from a stringified R envelope msg. */
-function parseBindString(s: string): Record<string, string> {
-  const out: Record<string, string> = {}
-  for (const key of ['bindToken', 'provider', 'displayName']) {
-    const m = s.match(new RegExp(`${key}=([^,}]*)`))
-    if (m) out[key] = m[1].trim()
-  }
-  return out
 }
 </script>
 

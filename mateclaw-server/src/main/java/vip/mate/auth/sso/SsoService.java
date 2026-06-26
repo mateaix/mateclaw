@@ -46,6 +46,7 @@ public class SsoService {
     private final AuthService authService;
     private final SsoProperties ssoProperties;
     private final BCryptPasswordEncoder passwordEncoder;
+    private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
     /** Optional — audit may be null in narrow test contexts. */
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private AuditEventService auditService;
@@ -73,11 +74,11 @@ public class SsoService {
      * <p>
      * 已绑定用户直接签发 JWT; 未绑定用户根据 link-only 策略决定行为:
      * <ul>
-     *   <li>link-only → 抛 {@link BindRequiredException} 携带 bind_token</li>
+     *   <li>link-only → 返回 {@link SsoCallbackResponse#bindRequired} 携带 bind_token</li>
      *   <li>默认 → 自动创建 mate_user (含并发幂等保护)</li>
      * </ul>
      */
-    public LoginResponse handleCallback(String providerId, String code, String state) {
+    public SsoCallbackResponse handleCallback(String providerId, String code, String state) {
         // 1. 校验 state (签名 + 过期 + 一次性消费)
         stateService.verifyState(state);
 
@@ -97,19 +98,19 @@ public class SsoService {
             }
             updateIdentityOnLogin(identity, info);
             audit("sso.login", providerId, info.externalId(), user.getId());
-            return loginSuccess(user);
+            return SsoCallbackResponse.of(loginSuccess(user));
         }
 
         // 4. 未绑定
         if (ssoProperties.isLinkOnly()) {
             String bindToken = stateService.issueBindToken(providerId, info);
             audit("sso.bind_required", providerId, info.externalId(), null);
-            throw new BindRequiredException(bindToken, providerId, info.displayName());
+            return SsoCallbackResponse.bindRequired(bindToken, providerId, info.displayName());
         }
 
-        // 5. 默认: 自动创建 (含并发幂等)
-        UserEntity newUser = createSsoUser(providerId, info);
-        return loginSuccess(newUser);
+        // 5. 默认: 自动创建 (含并发幂等, 最多重试一次)
+        UserEntity newUser = createSsoUser(providerId, info, false);
+        return SsoCallbackResponse.of(loginSuccess(newUser));
     }
 
     // ==================== bind (link-only 模式) ====================
@@ -152,8 +153,6 @@ public class SsoService {
         return loginSuccess(user);
     }
 
-    // ==================== 内部方法 ====================
-
     /**
      * 查找已绑定的外部身份。union_id 优先, 回退 external_id。
      */
@@ -187,8 +186,10 @@ public class SsoService {
 
     /**
      * 自动创建 SSO 用户 (含并发幂等: catch DuplicateKeyException → 回滚孤儿 user → 重查)。
+     *
+     * @param retry 是否已重试过一次。第二次仍撞 PK 时直接抛异常 (不再递归, 避免栈溢出)。
      */
-    private UserEntity createSsoUser(String providerId, SsoUserInfo info) {
+    private UserEntity createSsoUser(String providerId, SsoUserInfo info, boolean retry) {
         UserEntity newUser = new UserEntity();
         newUser.setUsername(providerId + "_" + info.externalId()); // feishu_<full open_id>
         newUser.setPassword(null); // 仅 SSO 登录
@@ -218,11 +219,15 @@ public class SsoService {
                     + "rolling back orphan user {}, falling back to existing", providerId, info.externalId(), newUser.getId());
             userMapper.deleteById(newUser.getId()); // mate_user 无 @TableLogic, 物理删
             ExternalIdentityEntity existing = findIdentity(providerId, info);
-            if (existing == null) {
-                // 极端竞态: identity 也被并发删了。重试一次创建。
-                return createSsoUser(providerId, info);
+            if (existing != null) {
+                return userMapper.selectById(existing.getUserId());
             }
-            return userMapper.selectById(existing.getUserId());
+            // 极端竞态: identity 也被并发删了。重试一次, 不再递归。
+            if (retry) {
+                throw new MateClawException("err.sso.concurrent_create_failed",
+                        503, "SSO 登录遇到并发冲突, 请重试");
+            }
+            return createSsoUser(providerId, info, true);
         }
     }
 
@@ -235,33 +240,14 @@ public class SsoService {
     private void audit(String action, String provider, String externalId, Long userId) {
         if (auditService != null) {
             try {
+                String detail = objectMapper.writeValueAsString(java.util.Map.of(
+                        "provider", provider != null ? provider : "",
+                        "userId", userId != null ? userId : "null"));
                 auditService.record(action, "sso",
-                        provider + ":" + externalId, externalId,
-                        "{\"provider\":\"" + provider + "\",\"userId\":"
-                                + (userId != null ? userId : "null") + "}");
+                        provider + ":" + externalId, externalId, detail);
             } catch (Exception e) {
                 log.debug("[SSO] audit write failed for {}: {}", action, e.getMessage());
             }
-        }
-    }
-
-    /**
-     * link-only 模式下未绑定时抛出, 携带 bind_token 供前端引导绑定。
-     * Controller 层 catch 后返回结构化响应 (非错误码, 而是引导信号)。
-     */
-    public static class BindRequiredException extends RuntimeException {
-        @lombok.Getter
-        private final String bindToken;
-        @lombok.Getter
-        private final String provider;
-        @lombok.Getter
-        private final String displayName;
-
-        public BindRequiredException(String bindToken, String provider, String displayName) {
-            super("SSO identity not bound; bind_token issued");
-            this.bindToken = bindToken;
-            this.provider = provider;
-            this.displayName = displayName;
         }
     }
 }
