@@ -186,7 +186,7 @@ const isCronHeader = (msg: Message) => {
 }
 
 // 智能滚动
-const { scrollRef, contentRef, isAtBottom, escapedFromLock, scrollToBottom, resetLock } = useStickToBottom({
+const { scrollRef, contentRef, isAtBottom, escapedFromLock, scrollToBottom } = useStickToBottom({
   enabled: props.autoScroll,
   offset: 70,
   smooth: true,
@@ -275,8 +275,6 @@ function handleGlobalKeydown(e: KeyboardEvent) {
 }
 
 onMounted(() => document.addEventListener('keydown', handleGlobalKeydown))
-defineExpose({ resetScrollLock: resetLock })
-
 onUnmounted(() => {
   clearDockTimer()
   document.removeEventListener('keydown', handleGlobalKeydown)

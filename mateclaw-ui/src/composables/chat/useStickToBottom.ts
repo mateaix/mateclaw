@@ -31,8 +31,7 @@ export interface StickToBottomReturn {
   /** 停止自动滚动 */
   stopScroll: () => void
   /** 检查是否在底部 */
- checkIsAtBottom: () => boolean
-  resetLock: () => void
+  checkIsAtBottom: () => boolean
 }
 
 // 默认配置
@@ -127,24 +126,12 @@ export function useStickToBottom(
   }
 
   // 处理滚动事件
- const handleScroll = () => {
-   if (!scrollRef.value) return
-   if (isScrolling) {
-      // Detect user-initiated upward scroll (scrollbar drag / touchpad) even
-      // while a programmatic smooth-scroll is in flight. Without this check,
-      // scrollbar/touchpad up-scrolls during the ~700 ms isScrolling window
-      // are swallowed and the user is bounced back to the bottom on the next
-      // message update.
-      const currentScrollTop = scrollRef.value.scrollTop
-      if (currentScrollTop < lastScrollTop) {
-        // User is scrolling up during programmatic scroll — abort it
-        isScrolling = false
-        escapedFromLock.value = true
-        isAtBottom.value = false
-      }
+  const handleScroll = () => {
+    if (!scrollRef.value) return
+    if (isScrolling) {
       lastScrollTop = scrollRef.value.scrollTop
       return
-   }
+    }
 
     const element = scrollRef.value
     const currentScrollTop = element.scrollTop
@@ -194,11 +181,6 @@ export function useStickToBottom(
         isAtBottom.value = true
       }
     }, 100)
-  }
-
-  const resetLock = () => {
-    escapedFromLock.value = false
-    isAtBottom.value = true
   }
 
   // ResizeObserver 监听内容变化
@@ -263,7 +245,6 @@ export function useStickToBottom(
     scrollToBottom,
     stopScroll,
     checkIsAtBottom,
-    resetLock,
   }
 }
 
