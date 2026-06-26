@@ -1347,6 +1347,15 @@ public class AgentGraphBuilder {
             return agentOverride;
         }
         if (hasWorkspace) {
+            // Relative override resolves under the workspace root; reject any value
+            // that escapes it via "../" so attachment/media/tool I/O stays contained.
+            Path wsRoot = Paths.get(workspaceBase).toAbsolutePath().normalize();
+            Path resolved = wsRoot.resolve(agentOverride).normalize();
+            if (!resolved.startsWith(wsRoot)) {
+                throw new IllegalArgumentException(
+                        "Agent workspaceBasePath override must stay inside the workspace root: "
+                                + resolved + " escapes " + wsRoot);
+            }
             return Paths.get(workspaceBase).resolve(agentOverride).toString();
         }
         return agentOverride;

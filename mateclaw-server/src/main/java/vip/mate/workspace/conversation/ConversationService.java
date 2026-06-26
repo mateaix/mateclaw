@@ -1665,13 +1665,19 @@ public class ConversationService {
     }
 
     /**
-     * 清理会话关联的附件文件
+     * Clean up the attachment files associated with a conversation.
      * <p>
-     * 遍历所有候选上传根（workspace/agent 感知根 + 默认根），逐一删除
-     * 各根下该会话的附件目录。这样无论附件落在新的工作空间目录还是
-     * 迁移前的默认目录，都能被清理。
+     * Walks every candidate upload root (the workspace/agent-aware root plus the
+     * default root) and deletes that conversation's attachment directory under
+     * each, so attachments are removed whether they landed in the new workspace
+     * directory or the pre-migration default directory.
      */
     public void cleanAttachmentFiles(String conversationId) {
+        if (conversationId == null || conversationId.isBlank()) {
+            // A blank id would resolve to the upload root itself and wipe every
+            // conversation's attachments — never walk/delete a bare root.
+            return;
+        }
         boolean cleanedAny = false;
         for (Path root : chatUploadLocationResolver.resolveCandidateUploadRoots(conversationId)) {
             Path dir;

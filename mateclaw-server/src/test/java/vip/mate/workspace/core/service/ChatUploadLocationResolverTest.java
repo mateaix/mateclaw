@@ -144,6 +144,23 @@ class ChatUploadLocationResolverTest {
     }
 
     @Test
+    @DisplayName("relative agent override that escapes the workspace root via ../ falls back to workspace basePath")
+    void relativeAgentOverrideEscapingWorkspaceFallsBackToWorkspace() {
+        stubConversation("c5b", 7L, 99L);
+        Path wsBase = tempDir.resolve("ws-root");
+        when(workspaceService.getById(7L)).thenReturn(workspace(7L, wsBase.toString()));
+        // Relative override climbs out of the workspace root — resolveAgentBasePath
+        // rejects it; the resolver falls back to the workspace basePath.
+        when(agentService.getAgent(99L)).thenReturn(agent(99L, "../../escape", 7L));
+
+        ChatUploadLocationResolver r = resolver(tempDir);
+        Path root = r.resolveUploadRoot("c5b");
+
+        assertThat(root).isEqualTo(wsBase.toAbsolutePath().normalize()
+                .resolve(ChatUploadLocationResolver.UPLOAD_SUBDIR));
+    }
+
+    @Test
     @DisplayName("candidate roots: workspace-scoped first, then default (dual-lookup order)")
     void candidateRootsOrderedScopedThenDefault() {
         stubConversation("c6", 7L, null);
