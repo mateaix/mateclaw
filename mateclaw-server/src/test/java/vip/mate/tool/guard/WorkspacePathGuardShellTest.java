@@ -8,6 +8,8 @@ import org.junit.jupiter.api.condition.DisabledOnOs;
 import org.junit.jupiter.api.condition.OS;
 import vip.mate.tool.builtin.ToolExecutionContext;
 
+import java.nio.file.Path;
+
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -26,8 +28,16 @@ class WorkspacePathGuardShellTest {
     private static final String WORKSPACE = "/tmp/ws-guard-shell-test";
     private static final String SKILL_ROOT = "/tmp/ws-guard-skill-root";
 
+    // The global fallback sandbox root is process-wide mutable static state that
+    // another test (or the app context, in a full-suite run) may have set. Save
+    // and restore it so the "no workspace configured" cases here are deterministic
+    // rather than depending on whatever the previous test left behind.
+    private Path savedDefaultRoot;
+
     @BeforeEach
     void setup() {
+        savedDefaultRoot = WorkspacePathGuard.getDefaultRoot();
+        WorkspacePathGuard.setDefaultRoot(null);
         ToolExecutionContext.set("conv-test", "test-user", WORKSPACE);
     }
 
@@ -35,6 +45,7 @@ class WorkspacePathGuardShellTest {
     void teardown() {
         ToolExecutionContext.clear();
         WorkspacePathGuard.setSkillRoot(null);
+        WorkspacePathGuard.setDefaultRoot(savedDefaultRoot == null ? null : savedDefaultRoot.toString());
     }
 
     // ==================== No-op when sandbox absent ====================

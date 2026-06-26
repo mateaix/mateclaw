@@ -148,10 +148,30 @@ public class WeixinChannelAdapter extends AbstractChannelAdapter {
     /** 用于文件 URL 下载的 HttpClient */
     private HttpClient uploadHttpClient;
 
+    /**
+     * Workspace/agent-aware upload-root resolver, set by the production factory.
+     * Null in unit tests (the legacy {@code data/chat-uploads} default applies).
+     */
+    private vip.mate.workspace.core.service.ChatUploadLocationResolver chatUploadLocationResolver;
+
     public WeixinChannelAdapter(ChannelEntity channelEntity,
                                 ChannelMessageRouter messageRouter,
                                 ObjectMapper objectMapper) {
         super(channelEntity, messageRouter, objectMapper);
+    }
+
+    /**
+     * Full constructor used by the production factory (ChannelManager). The
+     * trailing {@code chatUploadLocationResolver} enables workspace/agent-aware
+     * attachment storage; {@code null} keeps the legacy {@code data/chat-uploads}
+     * behaviour.
+     */
+    public WeixinChannelAdapter(ChannelEntity channelEntity,
+                                ChannelMessageRouter messageRouter,
+                                ObjectMapper objectMapper,
+                                vip.mate.workspace.core.service.ChatUploadLocationResolver chatUploadLocationResolver) {
+        super(channelEntity, messageRouter, objectMapper);
+        this.chatUploadLocationResolver = chatUploadLocationResolver;
     }
 
     @Override
@@ -666,7 +686,9 @@ public class WeixinChannelAdapter extends AbstractChannelAdapter {
             return null;
         }
 
-        Path uploadDir = Path.of("data", "chat-uploads", conversationId);
+        Path uploadDir = (chatUploadLocationResolver != null)
+                ? chatUploadLocationResolver.resolveUploadRoot(conversationId).resolve(conversationId)
+                : Path.of("data", "chat-uploads", conversationId);
         return InboundMediaDownloader.download(
                         () -> client.downloadMedia("", aesKey, encryptQueryParam),
                         filenameHint,

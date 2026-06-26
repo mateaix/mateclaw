@@ -2,7 +2,9 @@ package vip.mate.channel.wecom.cards.tool_guard;
 
 import lombok.extern.slf4j.Slf4j;
 import vip.mate.approval.ApprovalService;
+import vip.mate.approval.ApprovalWorkflowService;
 import vip.mate.approval.PendingApproval;
+import vip.mate.approval.ResolveOutcome;
 import vip.mate.channel.ChannelMessage;
 import vip.mate.channel.wecom.WeComChannelAdapter;
 import vip.mate.channel.wecom.cards.WeComCardHandler;
@@ -37,10 +39,20 @@ import java.util.Optional;
 public class ToolGuardCardHandler implements WeComCardHandler {
 
     private final ApprovalService approvalService;
+    /**
+     * ISSUE #413 P2-B3: resolves workflow-scoped ({@code wf-}) approvals
+     * inline — the synthetic /approve injection is a dead end for wf- ids
+     * (their conversationId is {@code workflow:run:{runId}}, unmatched by
+     * any IM conversation). May be null in narrow test contexts.
+     */
+    private final ApprovalWorkflowService approvalWorkflowService;
     private final ToolGuardButtonKey buttonKey;
 
-    public ToolGuardCardHandler(ApprovalService approvalService, ToolGuardButtonKey buttonKey) {
+    public ToolGuardCardHandler(ApprovalService approvalService,
+                                 ApprovalWorkflowService approvalWorkflowService,
+                                 ToolGuardButtonKey buttonKey) {
         this.approvalService = approvalService;
+        this.approvalWorkflowService = approvalWorkflowService;
         this.buttonKey = buttonKey;
     }
 
@@ -76,6 +88,19 @@ public class ToolGuardCardHandler implements WeComCardHandler {
         PendingApproval pending = opt.get();
 
         // ---- 3. Identity check (fail-closed) ----
+        // Workflow-scoped approvals (wf- prefix, ISSUE #413 P2-B3) have no
+        // human requester (userId is null — the run is system-initiated).
+        // Their cards only reach the channels declared in await_approval's
+        // approverChannels, so any audience member is a legitimate approver.
+        // We resolve inline (no synthetic injection: the router path can't
+        // route a workflow:run:{runId} conversationId) and the
+        // ApprovalResumeBridge resumes the run off the resolved event.
+        if (pendingId.startsWith("wf-")) {
+            handleWorkflowApproval(adapter, eventReqId, taskId, pendingId,
+                    decoded.toolName(), action, clickerUserId);
+            return;
+        }
+
         // Agent/cron ("system") or unattributed (null) approvals have no human
         // requester to match the clicker against; a group card would let any
         // member resolve a guarded action. Reject here (mirrors the feishu card
@@ -114,6 +139,48 @@ public class ToolGuardCardHandler implements WeComCardHandler {
             // the approve/deny — operator log is the safety net.
             log.error("[wecom-toolguard] Failed to inject command for pending={}: {}",
                     pendingId, e.getMessage(), e);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Workflow-scoped approval (ISSUE #413 P2-B3)
+    // ------------------------------------------------------------------
+
+    /**
+     * Resolve a {@code wf-} workflow approval inline, then render the
+     * resolved card — both within the WeCom 5s callback window. The
+     * synthetic /approve injection is bypassed because the router cannot
+     * route a {@code workflow:run:{runId}} conversationId. The
+     * {@link vip.mate.workflow.runtime.ApprovalResumeBridge} picks up the
+     * {@code WorkflowApprovalResolvedEvent} published inside resolve and
+     * resumes the paused run asynchronously.
+     *
+     * <p>Identity: any audience member may resolve — the card only reaches
+     * the channels declared in {@code await_approval.approverChannels}.
+     */
+    private void handleWorkflowApproval(WeComChannelAdapter adapter, String eventReqId, String taskId,
+                                        String pendingId, String toolName,
+                                        ToolGuardButtonKey.Action action, String clickerUserId) {
+        if (approvalWorkflowService == null) {
+            log.warn("[wecom-toolguard] ApprovalWorkflowService unavailable, cannot resolve wf- {} "
+                    + "(use the admin console)", pendingId);
+            renderExpired(adapter, eventReqId, taskId, toolName);
+            return;
+        }
+        String decision = action == ToolGuardButtonKey.Action.APPROVE ? "approved" : "denied";
+        try {
+            ResolveOutcome outcome = approvalWorkflowService.resolve(pendingId, clickerUserId, decision);
+            if (!outcome.dbSynced()) {
+                log.info("[wecom-toolguard] wf- {} already resolved: {}", pendingId, outcome.decision());
+                renderExpired(adapter, eventReqId, taskId, toolName);
+                return;
+            }
+            log.info("[wecom-toolguard] Resolved wf- {} as {} by {} (run resume delegated to bridge)",
+                    pendingId, decision, abbrev(clickerUserId));
+            renderResolved(adapter, eventReqId, taskId, toolName, action, clickerUserId);
+        } catch (Exception e) {
+            log.error("[wecom-toolguard] Failed to resolve wf- {}: {}", pendingId, e.getMessage(), e);
+            renderExpired(adapter, eventReqId, taskId, toolName);
         }
     }
 

@@ -10,6 +10,7 @@ import vip.mate.workflow.model.WorkflowRunPauseEntity;
 import vip.mate.workflow.model.WorkflowRunStepEntity;
 import vip.mate.workflow.repository.WorkflowRunPauseMapper;
 import vip.mate.workflow.repository.WorkflowRunStepMapper;
+import vip.mate.workflow.runtime.ChannelDispatcher;
 import vip.mate.workflow.runtime.StepAdapter;
 import vip.mate.workflow.runtime.StepResult;
 import vip.mate.workflow.runtime.WorkflowRunContext;
@@ -57,6 +58,13 @@ public class AwaitApprovalStepAdapter implements StepAdapter {
      *  adapter falls back to a no-op approval row when null. */
     @Autowired(required = false)
     private ApprovalWorkflowService approvalService;
+    /**
+     * ISSUE #413: used to push the approval notice to every channel listed in
+     * {@code approverChannels}. Optional — null in narrow test contexts (the
+     * notice is skipped and the pause still resolves via REST / inbox).
+     */
+    @Autowired(required = false)
+    private ChannelDispatcher channelDispatcher;
 
     public AwaitApprovalStepAdapter(WorkflowRunPauseMapper pauseMapper,
                                     WorkflowRunStepMapper stepMapper) {
@@ -129,7 +137,70 @@ public class AwaitApprovalStepAdapter implements StepAdapter {
             }
         }
 
+        // ISSUE #413: push the approval notice to the configured channels so
+        // the approver actually learns an approval is waiting. Before this,
+        // approverChannels was write-only metadata and a workflow that asked
+        // for IM notification silently dropped it.
+        notifyApproverChannels(cfg, context, context.runId(), pauseToken);
+
         return StepResult.paused(pauseToken,
                 "awaiting " + (cfg.approvalKind() == null ? "approval" : cfg.approvalKind()));
+    }
+
+    /**
+     * ISSUE #413: push the approval notice to every channel in
+     * {@code approverChannels}. Previously this field was written into the
+     * approval row's {@code tool_arguments} and never read back, so a workflow
+     * that declared {@code approverChannels: ["feishu"]} silently dropped the
+     * notice — the IM group never learned an approval was waiting.
+     *
+     * <p>Element format is {@code "channelType"} (e.g. {@code "web"} — no
+     * proactive dispatch, operator uses the admin console) or
+     * {@code "channelType:targetId"} (e.g. {@code "feishu:oc_xxx"} — pushes a
+     * text notice to that target). The short {@code pauseId} suffix is
+     * included so the operator can correlate the notice with the inbox entry.
+     * Each channel failure is logged and skipped — a delivery hiccup on one
+     * channel must not fail the step (the pause row + REST resume are the
+     * canonical recovery path).
+     */
+    private void notifyApproverChannels(StepMode.AwaitApproval cfg, WorkflowRunContext context,
+                                        long runId, String pauseToken) {
+        if (channelDispatcher == null || cfg.approverChannels() == null) {
+            return;
+        }
+        String kind = cfg.approvalKind() == null || cfg.approvalKind().isBlank() ? "approval" : cfg.approvalKind().trim();
+        String shortToken = pauseToken.substring(0, Math.min(8, pauseToken.length()));
+        String message = "🔐 工作流审批待处理\n"
+                + "**类型**: " + kind + "\n"
+                + (cfg.approvalMessage() != null && !cfg.approvalMessage().isBlank()
+                        ? "**说明**: " + cfg.approvalMessage() + "\n" : "")
+                + "**runId**: " + runId + "\n"
+                + "**审批码**: " + shortToken + "\n"
+                + "请前往管理端审批（工作流 → 运行记录 → 恢复）。";
+
+        for (String entry : cfg.approverChannels()) {
+            if (entry == null || entry.isBlank()) continue;
+            String channelType = entry;
+            String targetId = null;
+            int colon = entry.indexOf(':');
+            if (colon > 0) {
+                channelType = entry.substring(0, colon);
+                targetId = entry.substring(colon + 1);
+            }
+            // "web" (and any channel with no target) means "operator handles
+            // it from the admin console" — no proactive push.
+            if (targetId == null || targetId.isBlank()) continue;
+            try {
+                ChannelDispatcher.DispatchResult result =
+                        channelDispatcher.dispatch(context.workspaceId(), channelType, targetId, message);
+                if (!result.success()) {
+                    org.slf4j.LoggerFactory.getLogger(AwaitApprovalStepAdapter.class)
+                            .warn("await_approval notify failed for channel '{}': {}", channelType, result.message());
+                }
+            } catch (Exception e) {
+                org.slf4j.LoggerFactory.getLogger(AwaitApprovalStepAdapter.class)
+                        .warn("await_approval notify threw for channel '{}': {}", channelType, e.getMessage());
+            }
+        }
     }
 }
