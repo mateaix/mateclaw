@@ -2028,7 +2028,7 @@ export function useChat(options: UseChatOptions): UseChatReturn {
 
   // Reconnect to a stream that is already running on the backend
   const reconnectStream = async (conversationId: string) => {
-    if (isGenerating.value) return
+    if (isGenerating.value && streamConversationId === conversationId) return
 
     // Clear any leftover stop fallback timer
     if (stopFallbackTimer) { clearTimeout(stopFallbackTimer); stopFallbackTimer = null }
@@ -2054,9 +2054,28 @@ export function useChat(options: UseChatOptions): UseChatReturn {
       }
     }
 
-    const assistantMessage = createAssistantMessage('', conversationId)
-    ;(assistantMessage as any)._turnId = activeTurnId
-    currentAssistantId.value = assistantMessage.id as string
+    const existingAsst = [...messages.value].reverse().find(
+      m => m.role === 'assistant'
+        && m.conversationId === conversationId
+        && (m.status === 'generating' || m.status === 'awaiting_approval')
+    )
+    if (existingAsst) {
+      updateMessage(existingAsst.id as string, {
+        ...existingAsst,
+        content: '',
+        contentParts: [],
+        _turnId: activeTurnId,
+        metadata: {
+          ...((existingAsst as any).metadata || {}),
+          segments: [],
+        },
+      } as any)
+      currentAssistantId.value = existingAsst.id as string
+    } else {
+      const assistantMessage = createAssistantMessage('', conversationId)
+      ;(assistantMessage as any)._turnId = activeTurnId
+      currentAssistantId.value = assistantMessage.id as string
+    }
 
     try {
       // reconnectStream always rebuilds from an EMPTY placeholder (above), so it

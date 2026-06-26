@@ -5,6 +5,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import vip.mate.workspace.core.service.ChatUploadLocationResolverTestSupport;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -38,7 +39,7 @@ class ImageFileDownloaderTest {
 
     @BeforeEach
     void setUp() {
-        downloader = new ImageFileDownloader();
+        downloader = new ImageFileDownloader(ChatUploadLocationResolverTestSupport.legacyDefault());
     }
 
     @AfterEach

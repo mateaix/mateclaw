@@ -585,6 +585,15 @@ public class NodeStreamingChatHelper {
     private StreamResult streamCallInternal(ChatModel chatModel, Prompt prompt,
                                              String conversationId, String phase,
                                              boolean broadcast) {
+        // Normalize every assistant tool call in the outgoing history to valid
+        // JSON arguments. The streaming aggregator already does this for the
+        // current turn's calls, but tool calls replayed from persisted history
+        // (e.g. an earlier MCP tool call with empty arguments, or messages
+        // stored by an older build) bypass that path. Strict providers reject
+        // the whole request with HTTP 400 when any function.arguments is not
+        // parseable JSON, so harmonize them here at the single send chokepoint.
+        prompt = normalizeToolCallArguments(prompt);
+
         // 在开始 LLM 调用前检查停止标志
         if (streamTracker.isStopRequested(conversationId)) {
             log.info("[{}] Stop requested before LLM call, aborting: conversationId={}", phase, conversationId);
@@ -1537,6 +1546,66 @@ public class NodeStreamingChatHelper {
         log.debug("[dropTrailingAssistant] trimmed {} trailing AssistantMessage(s) from prompt (size {} -> {})",
                 messages.size() - end, messages.size(), end);
         return new Prompt(new ArrayList<>(messages.subList(0, end)), prompt.getOptions());
+    }
+
+    /**
+     * Rebuild any {@link AssistantMessage} whose tool calls carry blank or
+     * non-JSON {@code function.arguments} so the entire outgoing prompt stays
+     * acceptable to strict OpenAI-compatible providers (e.g. aliyun-codingplan,
+     * which 400s the whole request otherwise). Messages with no tool calls, or
+     * whose tool-call arguments are already valid JSON, pass through untouched —
+     * preserving content, metadata, and media. Returns the input unchanged when
+     * nothing needs fixing.
+     */
+    static Prompt normalizeToolCallArguments(Prompt prompt) {
+        if (prompt == null) {
+            return null;
+        }
+        List<Message> messages = prompt.getInstructions();
+        if (messages == null || messages.isEmpty()) {
+            return prompt;
+        }
+        List<Message> rebuilt = null;
+        for (int i = 0; i < messages.size(); i++) {
+            Message m = messages.get(i);
+            if (!(m instanceof AssistantMessage am)
+                    || am.getToolCalls() == null || am.getToolCalls().isEmpty()) {
+                if (rebuilt != null) rebuilt.add(m);
+                continue;
+            }
+            List<AssistantMessage.ToolCall> fixedCalls = null;
+            List<AssistantMessage.ToolCall> calls = am.getToolCalls();
+            for (int j = 0; j < calls.size(); j++) {
+                AssistantMessage.ToolCall tc = calls.get(j);
+                String safe = sanitizeToolCallArguments(tc.name(), tc.arguments());
+                if (!safe.equals(tc.arguments())) {
+                    if (fixedCalls == null) fixedCalls = new ArrayList<>(calls);
+                    fixedCalls.set(j, new AssistantMessage.ToolCall(tc.id(), tc.type(), tc.name(), safe));
+                }
+            }
+            if (fixedCalls == null) {
+                if (rebuilt != null) rebuilt.add(m);
+                continue;
+            }
+            if (rebuilt == null) {
+                rebuilt = new ArrayList<>(messages.subList(0, i));
+            }
+            AssistantMessage.Builder builder = AssistantMessage.builder()
+                    .content(am.getText() == null ? "" : am.getText())
+                    .toolCalls(fixedCalls);
+            if (am.getMetadata() != null && !am.getMetadata().isEmpty()) {
+                builder.properties(am.getMetadata());
+            }
+            if (am.getMedia() != null && !am.getMedia().isEmpty()) {
+                builder.media(am.getMedia());
+            }
+            rebuilt.add(builder.build());
+        }
+        if (rebuilt == null) {
+            return prompt;
+        }
+        log.debug("[normalizeToolCallArguments] normalized non-JSON tool-call arguments in outgoing prompt");
+        return new Prompt(rebuilt, prompt.getOptions());
     }
 
     private StreamResult buildErrorResult(String errorMsg, String conversationId, String phase) {

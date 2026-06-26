@@ -1,8 +1,14 @@
 package vip.mate.wiki.profile;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.core.JsonToken;
+import com.fasterxml.jackson.databind.DeserializationContext;
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
+import com.fasterxml.jackson.databind.deser.std.StdDeserializer;
 import lombok.Data;
 
+import java.io.IOException;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -43,10 +49,32 @@ public class WikiPageTypeDef {
 
     @Data
     @JsonIgnoreProperties(ignoreUnknown = true)
+    @JsonDeserialize(using = WikiPageTypeDef.StageInstructions.Deserializer.class)
     public static class StageInstructions {
         private String instructions;
         /** Optional template key referenced by the create stage. */
         private String template;
+
+        static class Deserializer extends StdDeserializer<StageInstructions> {
+            Deserializer() { super(StageInstructions.class); }
+
+            @Override
+            public StageInstructions deserialize(JsonParser p, DeserializationContext ctx) throws IOException {
+                StageInstructions s = new StageInstructions();
+                if (p.currentToken() == JsonToken.VALUE_STRING) {
+                    s.setInstructions(p.getText());
+                } else if (p.currentToken() == JsonToken.START_OBJECT) {
+                    while (p.nextToken() != JsonToken.END_OBJECT) {
+                        String field = p.currentName();
+                        p.nextToken();
+                        if ("instructions".equals(field)) s.setInstructions(p.getValueAsString());
+                        else if ("template".equals(field)) s.setTemplate(p.getText());
+                        else p.skipChildren();
+                    }
+                }
+                return s;
+            }
+        }
     }
 
     @Data

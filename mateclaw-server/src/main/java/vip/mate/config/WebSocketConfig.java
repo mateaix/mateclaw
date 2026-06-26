@@ -9,6 +9,8 @@ import org.springframework.web.socket.config.annotation.WebSocketConfigurer;
 import org.springframework.web.socket.config.annotation.WebSocketHandlerRegistry;
 import org.springframework.web.socket.server.standard.ServletServerContainerFactoryBean;
 import vip.mate.channel.web.TalkModeWebSocketHandler;
+import vip.mate.tool.local.DesktopBridgeHandshakeInterceptor;
+import vip.mate.tool.local.DesktopBridgeWebSocketHandler;
 
 /**
  * WebSocket 配置
@@ -37,10 +39,18 @@ public class WebSocketConfig implements WebSocketConfigurer {
     private static final int MAX_TEXT_BUFFER_BYTES = 64 * 1024;
 
     private final TalkModeWebSocketHandler talkModeHandler;
+    private final DesktopBridgeWebSocketHandler desktopBridgeHandler;
+    private final DesktopBridgeHandshakeInterceptor desktopBridgeHandshakeInterceptor;
 
     @Override
     public void registerWebSocketHandlers(WebSocketHandlerRegistry registry) {
         registry.addHandler(talkModeHandler, "/api/v1/talk/ws")
+                .setAllowedOrigins("*");
+        // Desktop local-tool tunnel. The handshake interceptor authenticates the
+        // ?token= query param and pins the username into the session attributes;
+        // an unauthenticated socket never reaches the handler.
+        registry.addHandler(desktopBridgeHandler, "/api/v1/desktop/ws")
+                .addInterceptors(desktopBridgeHandshakeInterceptor)
                 .setAllowedOrigins("*");
     }
 

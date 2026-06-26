@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import vip.mate.approval.ApprovalService;
+import vip.mate.approval.ApprovalWorkflowService;
 import vip.mate.channel.feishu.cards.tool_guard.ToolGuardButtonValue;
 import vip.mate.channel.feishu.cards.tool_guard.ToolGuardCardKindFactory;
 
@@ -23,6 +24,7 @@ class FeishuCardDispatcherTest {
     private FeishuCardDispatcher newDispatcher() {
         ToolGuardCardKindFactory factory = new ToolGuardCardKindFactory(
                 mock(ApprovalService.class),
+                mock(ApprovalWorkflowService.class),
                 new ObjectMapper());
         return new FeishuCardDispatcher(factory);
     }

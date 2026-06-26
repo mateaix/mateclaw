@@ -77,6 +77,8 @@ init({ apiKey: 'your-channel-api-key', server: 'https://<your-deployment>' })
 | DELETE | `/sessions` | + visitorToken | Delete |
 | POST | `/sessions/stop` | + visitorToken | Stop an in-flight stream |
 | POST | `/sessions/regenerate` | + visitorToken | Regenerate the last assistant reply |
+| POST | `/sessions/approve` | + visitorToken | Approve a pending tool approval and replay (SSE) |
+| POST | `/sessions/deny` | + visitorToken | Deny a pending tool approval (synchronous JSON) |
 | GET | `/sessions/messages` | + visitorToken | Message list (paginated) |
 | POST | `/upload` | + visitorToken | Upload an attachment (returns fileId) |
 | GET | `/files` | + visitorToken | Download a file (uploaded or agent-generated) |
@@ -185,6 +187,31 @@ data: {"message":"..."}  (on failure)
 - **Delete** (`DELETE /sessions`): permanent, unrecoverable.
 
 Each session returned by `/sessions` includes: `sessionId`, `title`, `lastActiveTime`, `messageCount`, `pinned`, `archived`, `streamStatus` (`running` / `idle`).
+
+## Tool approval resolve (API-Key channel)
+
+When an agent bound to WebChat calls a tool protected by [Tool Guard](./security), that turn **suspends waiting for approval**. The visitor can approve or deny it in-session instead of letting it time out.
+
+- **Approve** `POST /sessions/approve` — with `sessionId` + `pendingId`. Auth reuses visitorToken + conversation ownership; the `pendingId` is **strictly validated to belong to this session** (else 404), closing a cross-visitor IDOR. Approving **replays** the suspended tool call and resumes as SSE.
+- **Deny** `POST /sessions/deny` — with `sessionId` + `pendingId`, returns synchronous JSON, no replay.
+
+Both broadcast a `tool_approval_resolved` SSE event (see [Optional realtime progress events](#optional-realtime-progress-events) above) so the SDK / frontend clears the approval banner in real time.
+
+> Whether an approval appears depends on whether the agent's bound Tool Guard rules set `require_approval` for some tool. Get `pendingId` from the `tool_approval_requested` event.
+
+```bash
+# Approve (resumes as SSE)
+curl -N -X POST "https://mate.example.com/api/v1/channels/webchat/sessions/approve" \
+  -H "X-MC-Key: <API Key>" -H "X-Visitor-Token: <visitorToken>" \
+  -H "Content-Type: application/json" \
+  -d '{"sessionId":"s1","pendingId":"<pendingId>"}'
+
+# Deny (synchronous JSON)
+curl -X POST "https://mate.example.com/api/v1/channels/webchat/sessions/deny" \
+  -H "X-MC-Key: <API Key>" -H "X-Visitor-Token: <visitorToken>" \
+  -H "Content-Type: application/json" \
+  -d '{"sessionId":"s1","pendingId":"<pendingId>"}'
+```
 
 ## visitorToken revocation (admin)
 
