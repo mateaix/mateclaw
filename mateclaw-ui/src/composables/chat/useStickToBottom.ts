@@ -32,6 +32,7 @@ export interface StickToBottomReturn {
   stopScroll: () => void
   /** 检查是否在底部 */
   checkIsAtBottom: () => boolean
+  resetLock: () => void
 }
 
 // 默认配置
@@ -126,12 +127,18 @@ export function useStickToBottom(
   }
 
   // 处理滚动事件
-  const handleScroll = () => {
-    if (!scrollRef.value) return
-    if (isScrolling) {
+ const handleScroll = () => {
+   if (!scrollRef.value) return
+   if (isScrolling) {
+      const currentScrollTop = scrollRef.value.scrollTop
+      if (currentScrollTop < lastScrollTop) {
+        isScrolling = false
+        escapedFromLock.value = true
+        isAtBottom.value = false
+      }
       lastScrollTop = scrollRef.value.scrollTop
       return
-    }
+   }
 
     const element = scrollRef.value
     const currentScrollTop = element.scrollTop
@@ -181,6 +188,11 @@ export function useStickToBottom(
         isAtBottom.value = true
       }
     }, 100)
+  }
+
+  const resetLock = () => {
+    escapedFromLock.value = false
+    isAtBottom.value = true
   }
 
   // ResizeObserver 监听内容变化
@@ -245,6 +257,7 @@ export function useStickToBottom(
     scrollToBottom,
     stopScroll,
     checkIsAtBottom,
+    resetLock,
   }
 }
 
