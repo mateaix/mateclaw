@@ -70,6 +70,13 @@ public class ChannelMessageRouter {
     @Autowired(required = false)
     private ApplicationEventPublisher events;
 
+    /** Field-injected for the same reason as {@link #events}: the chat-upload
+     *  resolver resolves the workspace-aware TTS output directory on the
+     *  voice-reply path. Optional so tests that build the router directly
+     *  still work; falls back to the legacy default dir when unset. */
+    @Autowired(required = false)
+    private vip.mate.workspace.core.service.ChatUploadLocationResolver chatUploadLocationResolver;
+
     /** 队列条目：封装消息及其路由上下文 */
     private record QueueEntry(ChannelMessage message, ChannelAdapter adapter, ChannelEntity channelEntity) {}
 
@@ -1491,10 +1498,12 @@ public class ChannelMessageRouter {
                 // 构建音频 MessageContentPart
                 String audioUrl = (String) result.get("audioUrl");
                 String fileName = Paths.get(audioUrl).getFileName().toString();
-                Path audioPath = Paths.get("data", "chat-uploads", conversationId, fileName);
+                // TTS output may live under a workspace-scoped dir or the legacy
+                // default dir — probe each candidate root to find the file.
+                Path audioPath = resolveVoiceReplyAudio(conversationId, fileName);
 
-                if (!Files.exists(audioPath)) {
-                    log.warn("[voice-reply] TTS output file not found: {}", audioPath);
+                if (audioPath == null) {
+                    log.warn("[voice-reply] TTS output file not found for conversation {} ({})", conversationId, fileName);
                     return;
                 }
 
@@ -1514,6 +1523,27 @@ public class ChannelMessageRouter {
                 log.warn("[voice-reply] Failed for conversation {}: {}", conversationId, e.getMessage());
             }
         });
+    }
+
+    /**
+     * Resolve the TTS audio file across every candidate upload root. Returns the
+     * first existing match, or {@code null} when the file is absent under every
+     * root. Used by the voice-reply path so workspace-scoped and legacy default
+     * outputs are both found.
+     */
+    private Path resolveVoiceReplyAudio(String conversationId, String fileName) {
+        if (chatUploadLocationResolver != null) {
+            for (Path root : chatUploadLocationResolver.resolveCandidateUploadRoots(conversationId)) {
+                Path candidate = root.resolve(conversationId).resolve(fileName);
+                if (Files.exists(candidate)) {
+                    return candidate;
+                }
+            }
+        }
+        // Fallback to the legacy default dir when the resolver is absent
+        // (e.g. direct-construction unit tests).
+        Path legacy = Paths.get("data", "chat-uploads", conversationId, fileName);
+        return Files.exists(legacy) ? legacy : null;
     }
 
     /**

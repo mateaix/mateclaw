@@ -1,13 +1,14 @@
 package vip.mate.tool.video;
 
 import cn.hutool.http.HttpUtil;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
+import vip.mate.workspace.core.service.ChatUploadLocationResolver;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 
 /**
  * 视频文件下载器 — 从 provider CDN 下载视频到本地存储
@@ -16,9 +17,10 @@ import java.nio.file.Paths;
  */
 @Slf4j
 @Component
+@RequiredArgsConstructor
 public class VideoFileDownloader {
 
-    private static final Path UPLOAD_ROOT = Paths.get("data", "chat-uploads");
+    private final ChatUploadLocationResolver uploadLocationResolver;
 
     /**
      * 下载视频到本地
@@ -29,7 +31,7 @@ public class VideoFileDownloader {
      * @return 本地文件路径
      */
     public Path download(String videoUrl, String conversationId, String taskId) throws IOException {
-        Path dir = UPLOAD_ROOT.resolve(conversationId);
+        Path dir = uploadLocationResolver.resolveUploadRoot(conversationId).resolve(conversationId);
         Files.createDirectories(dir);
 
         String extension = guessExtension(videoUrl);

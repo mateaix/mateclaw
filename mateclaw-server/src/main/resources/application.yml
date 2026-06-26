@@ -153,6 +153,21 @@ mateclaw:
   jwt:
     secret: ${JWT_SECRET:MateClaw-JWT-Secret-Key-2024-Please-Change-In-Production}
     expiration: 86400000
+  sso:
+    # 全局开关（默认关闭，不影响现有部署）
+    enabled: ${SSO_ENABLED:false}
+    # 「仅允许绑定已有账号」模式（false = 允许自动创建新用户）
+    link-only: ${SSO_LINK_ONLY:false}
+    # 新建 SSO 用户的默认角色
+    default-role: ${SSO_DEFAULT_ROLE:user}
+    feishu:
+      enabled: ${SSO_FEISHU_ENABLED:false}
+      app-id: ${SSO_FEISHU_APP_ID:}
+      app-secret: ${SSO_FEISHU_APP_SECRET:}
+      # 国际版切换: feishu (国内) / lark (国际版 Lark)
+      domain: ${SSO_FEISHU_DOMAIN:feishu}
+      # SSO 回调地址，通常 https://your-domain/login?sso=callback
+      redirect-uri: ${SSO_FEISHU_REDIRECT_URI:}
   # 搜索配置已迁移至数据库（mate_system_setting 表），通过 UI 系统设置管理
   # MCP server 配置已迁移至数据库（mate_mcp_server 表），通过 UI 管理
   mcp:
@@ -174,6 +189,15 @@ mateclaw:
       # unconstrained behaviour for unconfigured conversations.
       enabled: ${MATECLAW_WORKSPACE_SANDBOX_ENABLED:true}
       root: ${MATECLAW_WORKSPACE_SANDBOX_ROOT:${user.dir}/data/workspace}
+  chat:
+    upload:
+      # Root directory for conversation chat attachments when neither the active
+      # agent nor its workspace configures a base path. Attachments resolve to
+      # {baseDir}/{conversationId}/{storedName}. When a workspace/agent base path
+      # IS configured, attachments land under {basePath}/chat-uploads/{convId}/
+      # instead; reads and cleanup still check this default dir so legacy uploads
+      # remain resolvable. Defaults to the legacy location for zero-config parity.
+      base-dir: ${MATECLAW_CHAT_UPLOAD_BASE_DIR:data/chat-uploads}
   skill:
     workspace:
       # Skill workspace root. Override with MATECLAW_SKILL_WORKSPACE_ROOT to

@@ -1001,6 +1001,25 @@ const activeCronRuns = ref<ActiveCronRun[]>([])
 function isCronConversation(cid: string | null | undefined): boolean {
   return !!cid && (cid.startsWith('tasks_') || cid.startsWith('cron_'))
 }
+// True when a conversation id was minted client-side for a brand-new chat
+// the user hasn't sent anything in yet, so the backend has never persisted
+// (and therefore can't "own") it. Every per-conversation endpoint called with
+// such an id is rejected with 403 "无权访问该会话" — the status/messages poller
+// and the goal loader both skip the request entirely for these ids instead of
+// spamming the console with ownership errors.
+//
+// Conservative by construction: an id counts as ephemeral only when it is
+// absent from BOTH the loaded conversation list AND the local message buffer,
+// so a freshly-persisted conversation is never mistaken for one. At worst a
+// single stray 403 slips through during the persist race, which the leaf
+// callers swallow.
+function isEphemeralConversation(cid: string | null | undefined): boolean {
+  if (!cid) return true
+  // Server-managed virtual conversations (cron / scheduled tasks) always exist.
+  if (cid.startsWith('tasks_') || cid.startsWith('cron_')) return false
+  if (conversations.value.some((c) => c.conversationId === cid)) return false
+  return !messages.value.some((m: any) => m.conversationId === cid)
+}
 async function refreshActiveCronRuns(cid: string) {
   if (!isCronConversation(cid)) {
     activeCronRuns.value = []
@@ -1065,8 +1084,13 @@ async function pollActivity() {
     } catch {
       // 静默失败，下一轮再试
     }
-    // 自己没在生成时才刷新当前选中会话的消息 + 探测是否该接入流
-    if (currentConversationId.value && !isGenerating.value && streamPhase.value !== 'awaiting_approval') {
+    // 自己没在生成时才刷新当前选中会话的消息 + 探测是否该接入流。
+    // 跳过尚未落库的临时会话(新建空会话、还没发消息):后端查不到会话行,
+    // getStatus / listMessages 一律 403,4s 轮询会把 console 刷爆(见 issue #408)。
+    if (currentConversationId.value
+        && !isGenerating.value
+        && streamPhase.value !== 'awaiting_approval'
+        && !isEphemeralConversation(currentConversationId.value)) {
       const cid = currentConversationId.value
       try {
         const statusRes: any = await conversationApi.getStatus(cid)
@@ -1157,7 +1181,10 @@ const goalStore = useGoalStore()
 const workspaceStoreForGoal = useWorkspaceStore()
 const currentWorkspaceId = computed(() => workspaceStoreForGoal.currentWorkspaceId ?? '1')
 watch(currentConversationId, async (cid) => {
-  if (cid) {
+  // Skip un-persisted conversations: a brand-new empty chat has no goal yet
+  // and the lookup would only 403 (Not the owner). The ring is hydrated by the
+  // goal_created SSE event once the first turn lands.
+  if (cid && !isEphemeralConversation(cid)) {
     await goalStore.loadActiveForConversation(cid)
   }
 }, { immediate: true })
@@ -1170,7 +1197,9 @@ watch(currentConversationId, async (cid) => {
 // this transition-to-idle refresh is what keeps the goal ring honest after
 // every turn against the persisted truth.
 watch(isGenerating, async (generating, wasGenerating) => {
-  if (wasGenerating && !generating && currentConversationId.value) {
+  if (wasGenerating && !generating
+      && currentConversationId.value
+      && !isEphemeralConversation(currentConversationId.value)) {
     await goalStore.loadActiveForConversation(currentConversationId.value)
   }
 })

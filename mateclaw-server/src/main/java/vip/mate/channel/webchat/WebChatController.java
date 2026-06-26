@@ -47,6 +47,10 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+import reactor.core.Disposable;
+import vip.mate.approval.PendingApproval;
+import vip.mate.approval.ResolveOutcome;
+import vip.mate.agent.context.ChatOrigin;
 
 /**
  * WebChat 嵌入式对话接口
@@ -79,6 +83,14 @@ public class WebChatController {
     private final vip.mate.skill.repository.SkillMapper skillMapper;
     private final vip.mate.wiki.repository.WikiPageMapper wikiPageMapper;
     private final vip.mate.wiki.repository.WikiKnowledgeBaseMapper wikiKbMapper;
+    /**
+     * ISSUE #413 P1-A2/A3/A4: drives the approval lifecycle for WebChat
+     * (API-Key) channels. Before this, a tool guarded by ToolGuard would
+     * create a pending approval and park the turn, but the visitor had no
+     * way to resolve it -- the approval hung until the 30-min GC timeout
+     * and the turn was wasted.
+     */
+    private final vip.mate.approval.ApprovalWorkflowService approvalService;
 
     /** Visitor-token TTL in seconds (7 days). Mirrors GeneratedFileCache's TTL. */
     static final long VISITOR_TOKEN_TTL_SECONDS = 7 * 24 * 3600L;
@@ -1013,9 +1025,12 @@ public class WebChatController {
      * Disposable 实际中断 Flux;返回 {@code stopped=false} 表示当前没有活跃流
      * (幂等,不报错)。
      * <p>
-     * 不做 approval sweep:webchat 渠道目前不暴露 approval UI,且无 MateClaw
-     * username 可传给 {@code denyAllByConversation}。若未来 webchat 接入审批流,
-     * 再单独评估是否补这层。
+     * Approval sweep (ISSUE #413 P1-A4): deny any pending approvals on this
+     * conversation so they do not hang for 30 minutes until the GC timeout.
+     * The visitor username derived from visitorId is the actor -- it resolves
+     * the "no MateClaw username" blocker noted in the old javadoc.
+     * Each denied approval broadcasts a { tool_approval_resolved} SSE
+     * event so the SDK clears its banner immediately.
      */
     @Operation(summary = "停止访客会话线程的进行中流")
     @PostMapping("/sessions/stop")
@@ -1049,7 +1064,314 @@ public class WebChatController {
                 conversationId, visitorId, stopped);
         audit(channel, visitorId, "webchat.stop-session", conversationId,
                 "{\"sessionId\":\"" + sid + "\",\"stopped\":" + stopped + "}");
+        // ISSUE #413 P1-A4: deny pending approvals so they do not linger for
+        // 30 min waiting on a GC timeout. The visitor username is the actor,
+        // mirroring how the web ChatController uses the logged-in username.
+        int deniedCount = 0;
+        try {
+            java.util.List<ResolveOutcome> denied =
+                    approvalService.denyAllByConversation(conversationId, webchatUsername(visitorId));
+            deniedCount = denied.size();
+            for (ResolveOutcome o : denied) {
+                try {
+                    streamTracker.broadcast(conversationId, "tool_approval_resolved",
+                            objectMapper.writeValueAsString(java.util.Map.of(
+                                    "pendingId", o.pendingId(),
+                                    "decision", "denied",
+                                    "toolName", o.toolName() != null ? o.toolName() : "")));
+                } catch (Exception broadcastErr) {
+                    log.debug("[WebChat] approval_resolved broadcast failed for {}: {}",
+                            o.pendingId(), broadcastErr.getMessage());
+                }
+            }
+        } catch (Exception sweepErr) {
+            log.warn("[WebChat] approval sweep failed for {}: {}", conversationId, sweepErr.getMessage());
+        }
+        if (deniedCount > 0) {
+            log.info("[WebChat] Denied {} pending approval(s) on stop for {}", deniedCount, conversationId);
+        }
         return R.ok(Map.of("stopped", stopped));
+    }
+
+    /**
+     * 拒绝一个待审批的工具调用 (ISSUE #413 P1-A2)。
+     * <p>
+     * 鉴权同其它会话管理端点 (API Key + visitorToken + 会话归属)。仅允许
+     * 发起对话的访客拒绝自己会话的审批 —— 身份校验通过
+     * {@code webchatUsername(visitorId)} 与 pending.userId 的等价比较
+     * (对位 IM 渠道的 senderId == requester 校验)。
+     * <p>
+     * resolve 后立即广播 {@code tool_approval_resolved} SSE 事件，让 SDK
+     * 实时清理审批 banner。返回同步 JSON (非 SSE)，因为 deny 不需要重放工具。
+     *
+     * @param pendingId the approval pendingId returned in the
+     *                  {@code tool_approval_requested} event
+     */
+    @Operation(summary = "拒绝访客会话中的待审批工具调用")
+    @PostMapping("/sessions/deny")
+    public R<Map<String, Object>> denySession(
+            @RequestHeader("X-MC-Key") String apiKey,
+            @RequestHeader(value = "X-MC-Visitor-Token", required = false) String visitorToken,
+            @RequestParam String visitorId,
+            @RequestParam(required = false) String sessionId,
+            @RequestParam String pendingId) {
+        ChannelEntity channel = resolveChannel(apiKey);
+        if (channel == null) {
+            return R.fail(401, "Invalid API Key");
+        }
+        if (!verifyVisitorToken(visitorTokenSecret, channel.getId(), visitorId, visitorToken)) {
+            return R.fail(401, "Invalid or missing visitor token");
+        }
+        String sid;
+        try {
+            sid = normalizeSessionId(sessionId);
+        } catch (IllegalArgumentException ex) {
+            return R.fail(400, ex.getMessage());
+        }
+        String conversationId = deriveConversationId(apiKey, visitorId, sid);
+        if (!ownsConversation(conversationId, visitorId)) {
+            return R.fail(404, "Session not found");
+        }
+        // IDOR guard (review #415): the caller owns the conversation, but the
+        // pendingId is client-supplied — cross-check that the pending actually
+        // belongs to this conversation before resolving, otherwise a visitor
+        // could resolve / replay another visitor's guarded tool call.
+        // getPending(pendingId) gives the exact record (vs findPendingByConversation
+        // which returns the earliest, wrong when several pendings coexist).
+        var ownedOpt = approvalService.getPending(pendingId);
+        if (ownedOpt.isEmpty()
+                || !conversationId.equals(ownedOpt.get().getConversationId())) {
+            return R.fail(404, "Pending approval not found for this session");
+        }
+        // Resolve and broadcast outside the persistence transaction: SSE is
+        // not rollback-capable, so the broadcast must follow a committed DB write.
+        String actor = webchatUsername(visitorId);
+        ResolveOutcome outcome = approvalService.resolve(pendingId, actor, "denied");
+        broadcastApprovalResolved(conversationId, outcome);
+        audit(channel, visitorId, "webchat.deny-approval", conversationId,
+                "{\"pendingId\":\"" + escapeJson(pendingId) + "\",\"resolved\":"
+                        + outcome.dbSynced() + "}");
+        return R.ok(Map.of("resolved", outcome.dbSynced(), "decision", outcome.decision()));
+    }
+
+    /**
+     * 批准一个待审批的工具调用并重放 (ISSUE #413 P1-A2 + P1-A3)。
+     * <p>
+     * 与 deny 不同，approve 返回 SSE 流：原子消费审批记录后，用捕获的
+     * toolCallPayload 重放工具调用，把工具结果回灌 agent 继续本轮对话。
+     * 重放模式对位 web 渠道的 ChatController —— 复用
+     * {@code chatWithReplayStream} + {@code restoreChatOrigin} 恢复原始
+     * ChatOrigin (webchat origin 在 createPending 时已通过 ChatOriginHolder
+     * 持久化到 approval 行)。
+     * <p>
+     * 重放期间可能再次触发审批 (一个工具批准后 agent 可能调用下一个受保护
+     * 工具) —— 该场景由 {@code tool_approval_requested} 直推事件自然覆盖，
+     * 无需特殊处理。事件投递走与 {@link #chatStream} 相同的 broadcast 路径。
+     *
+     * @param pendingId the approval pendingId returned in the
+     *                  {@code tool_approval_requested} event
+     */
+    @Operation(summary = "批准访客会话中的待审批工具调用并重放")
+    @PostMapping(value = "/sessions/approve", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter approveSession(
+            @RequestHeader("X-MC-Key") String apiKey,
+            @RequestHeader(value = "X-MC-Visitor-Token", required = false) String visitorToken,
+            @RequestParam String visitorId,
+            @RequestParam(required = false) String sessionId,
+            @RequestParam String pendingId) {
+        SseEmitter emitter = new Utf8SseEmitter(10 * 60 * 1000L);
+        ChannelEntity channel = resolveChannel(apiKey);
+        if (channel == null) {
+            sendErrorAndComplete(emitter, "Invalid API Key");
+            return emitter;
+        }
+        if (!verifyVisitorToken(visitorTokenSecret, channel.getId(), visitorId, visitorToken)) {
+            sendErrorAndComplete(emitter, "Invalid or missing visitor token");
+            return emitter;
+        }
+        String sid;
+        try {
+            sid = normalizeSessionId(sessionId);
+        } catch (IllegalArgumentException ex) {
+            sendErrorAndComplete(emitter, ex.getMessage());
+            return emitter;
+        }
+        String conversationId = deriveConversationId(apiKey, visitorId, sid);
+        if (!ownsConversation(conversationId, visitorId)) {
+            sendErrorAndComplete(emitter, "Session not found");
+            return emitter;
+        }
+        // IDOR guard (review #415): cross-check the client-supplied pendingId
+        // actually belongs to this conversation before resolving, otherwise a
+        // visitor could approve + replay another visitor's guarded tool call.
+        var ownedApprovalOpt = approvalService.getPending(pendingId);
+        if (ownedApprovalOpt.isEmpty()
+                || !conversationId.equals(ownedApprovalOpt.get().getConversationId())) {
+            sendErrorAndComplete(emitter, "Pending approval not found for this session");
+            return emitter;
+        }
+
+        emitter.onCompletion(() -> log.debug("[WebChat] approve SSE completed: {}", conversationId));
+        emitter.onTimeout(() -> {
+            log.debug("[WebChat] approve SSE timeout: {}", conversationId);
+            streamTracker.complete(conversationId);
+        });
+        emitter.onError(e -> {
+            log.debug("[WebChat] approve SSE error: {} - {}", conversationId, e.getMessage());
+            streamTracker.complete(conversationId);
+        });
+
+        String actor = webchatUsername(visitorId);
+        sseExecutor.execute(() -> {
+            // Register + attach the emitter FIRST so every downstream branch
+            // (already-resolved, no-agent, error, replay) can broadcast a
+            // terminal event the SDK actually receives. Doing this after
+            // resolveAndConsume left the already-resolved / error paths
+            // broadcasting into a subscriber-less tracker, so the SSE hung
+            // to the 10-min timeout (review #415).
+            streamTracker.register(conversationId);
+            streamTracker.attach(conversationId, emitter);
+            try {
+                // Atomically consume the approval (DB + metadata + memory, single tx).
+                ResolveOutcome consumed = approvalService.resolveAndConsume(pendingId, actor);
+                if (consumed.consumedSnapshot() == null) {
+                    // already resolved / not found — emit a terminal done so the
+                    // SDK's stream listener closes cleanly instead of hanging.
+                    broadcastApprovalResolved(conversationId, consumed);
+                    streamTracker.broadcast(conversationId, "done",
+                            "{\"status\":\"already_resolved\"}");
+                    return;
+                }
+
+                // Notify the SDK the approval flipped (clears the banner) before
+                // replay output starts streaming.
+                broadcastApprovalResolved(conversationId, consumed);
+
+                PendingApproval snapshot = consumed.consumedSnapshot();
+                Long replayAgentId = snapshot.getAgentId() != null
+                        ? parseLongOrNull(snapshot.getAgentId()) : null;
+                if (replayAgentId == null) {
+                    log.warn("[WebChat] approve: no agentId on consumed approval {}, cannot replay",
+                            pendingId);
+                    streamTracker.broadcast(conversationId, "done",
+                            "{\"status\":\"error\",\"message\":\"No agent bound to approval\"}");
+                    return;
+                }
+
+                // Restore the original ChatOrigin captured at createPending time.
+                // Falls back to a fresh webchat origin when none was persisted
+                // (defensive — mirrors ChatController:304-306).
+                ChatOrigin replayOrigin =
+                        approvalService.restoreChatOrigin(snapshot.getChatOrigin());
+                if (replayOrigin == ChatOrigin.EMPTY) {
+                    var agent = agentService.getAgent(replayAgentId);
+                    Long wsId = agent != null ? agent.getWorkspaceId() : 1L;
+                    replayOrigin = ChatOrigin.web(
+                            conversationId, actor, wsId, null).withSender(null, "api", null);
+                }
+
+                // Neutral replay prompt (aligned with IM + web channels — naming a
+                // tool here can mislead the LLM on fallthrough).
+                String replayPrompt = "继续执行已批准的工具调用。";
+                StringBuilder assistantReply = new StringBuilder();
+                final int[] usage = {0, 0};
+                final String[] modelInfo = {null, null};
+
+                streamTracker.broadcast(conversationId, "message_start",
+                        "{\"role\":\"assistant\"}");
+
+                Disposable disposable = agentService.chatWithReplayStream(
+                        replayAgentId, replayPrompt, conversationId,
+                        snapshot.getToolCallPayload(), actor, replayOrigin)
+                        .doOnNext(delta -> {
+                            if (delta.isEvent() && "_usage_final".equals(delta.eventType())) {
+                                Map<String, Object> data = delta.eventData();
+                                usage[0] = ((Number) data.getOrDefault("promptTokens", 0)).intValue();
+                                usage[1] = ((Number) data.getOrDefault("completionTokens", 0)).intValue();
+                                Object model = data.get("runtimeModelName");
+                                Object provider = data.get("runtimeProviderId");
+                                if (model != null) modelInfo[0] = model.toString();
+                                if (provider != null) modelInfo[1] = provider.toString();
+                            }
+                            if (delta.isEvent()) {
+                                forwardVisitorEvent(conversationId, delta.eventType(), delta.eventData());
+                            }
+                            if (delta.content() != null && !delta.content().isEmpty()) {
+                                assistantReply.append(delta.content());
+                                if (!delta.persistenceOnly()) {
+                                    streamTracker.broadcast(conversationId, "content_delta",
+                                            "{\"text\":" + escapeJson(delta.content()) + "}");
+                                }
+                            }
+                            if (delta.thinking() != null && !delta.thinking().isEmpty()
+                                    && !delta.persistenceOnly()) {
+                                streamTracker.broadcast(conversationId, "thinking_delta",
+                                        "{\"text\":" + escapeJson(delta.thinking()) + "}");
+                            }
+                        })
+                        .doOnComplete(() -> {
+                            String reply = assistantReply.toString();
+                            try {
+                                if (!reply.isBlank()) {
+                                    conversationService.saveMessage(
+                                            conversationId, "assistant", reply, List.of(),
+                                            "completed", usage[0], usage[1], modelInfo[0], modelInfo[1]);
+                                }
+                            } catch (Exception persistErr) {
+                                log.warn("[WebChat] approve replay persist failed: {}", persistErr.getMessage());
+                            }
+                            streamTracker.broadcast(conversationId, "done",
+                                    "{\"status\":\"completed\"}");
+                            streamTracker.complete(conversationId);
+                        })
+                        .doOnError(e -> {
+                            log.error("[WebChat] approve replay stream error: {}", e.getMessage());
+                            streamTracker.broadcast(conversationId, "error",
+                                    "{\"message\":" + escapeJson(e.getMessage()) + "}");
+                            streamTracker.complete(conversationId);
+                        })
+                        .subscribe();
+                streamTracker.setDisposable(conversationId, disposable);
+            } catch (Exception e) {
+                log.error("[WebChat] approve failed for {}: {}", conversationId, e.getMessage());
+                try {
+                    streamTracker.broadcast(conversationId, "error",
+                            "{\"message\":" + escapeJson(e.getMessage()) + "}");
+                } catch (Exception ignored) {}
+                streamTracker.complete(conversationId);
+            }
+        });
+        audit(channel, visitorId, "webchat.approve-approval", conversationId,
+                "{\"pendingId\":\"" + escapeJson(pendingId) + "\",\"replay\":true}");
+        return emitter;
+    }
+
+    /** Parse a Long leniently; null/blank/non-numeric return null. */
+    private static Long parseLongOrNull(String s) {
+        if (s == null || s.isBlank()) return null;
+        try {
+            return Long.parseLong(s.trim());
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    /**
+     * Broadcast a {@code tool_approval_resolved} event so the SDK clears its
+     * approval banner in real time. Shared by approve / deny / stop-sweep.
+     * (ISSUE #413 P1)
+     */
+    private void broadcastApprovalResolved(String conversationId, ResolveOutcome outcome) {
+        try {
+            streamTracker.broadcast(conversationId, "tool_approval_resolved",
+                    objectMapper.writeValueAsString(Map.of(
+                            "pendingId", outcome.pendingId(),
+                            "decision", outcome.decision() != null ? outcome.decision() : "",
+                            "toolName", outcome.toolName() != null ? outcome.toolName() : "")));
+        } catch (Exception e) {
+            log.debug("[WebChat] approval_resolved broadcast failed for {}: {}",
+                    outcome.pendingId(), e.getMessage());
+        }
     }
 
     /**

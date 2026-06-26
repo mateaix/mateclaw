@@ -280,6 +280,12 @@ public class WeComChannelAdapter extends AbstractChannelAdapter {
      */
     private final vip.mate.tool.document.GeneratedFileCache generatedFileCache;
 
+    /**
+     * Workspace/agent-aware upload-root resolver, set by the production factory.
+     * Null in unit tests (the legacy {@code data/chat-uploads} default applies).
+     */
+    private vip.mate.workspace.core.service.ChatUploadLocationResolver chatUploadLocationResolver;
+
     public WeComChannelAdapter(ChannelEntity channelEntity,
                                ChannelMessageRouter messageRouter,
                                ObjectMapper objectMapper,
@@ -297,11 +303,30 @@ public class WeComChannelAdapter extends AbstractChannelAdapter {
                                vip.mate.channel.wecom.cards.WeComCardDispatcher cardDispatcher,
                                WeComKeepaliveScheduler keepaliveScheduler,
                                vip.mate.tool.document.GeneratedFileCache generatedFileCache) {
+        this(channelEntity, messageRouter, objectMapper, approvalNotificationService,
+                cardDispatcher, keepaliveScheduler, generatedFileCache, null);
+    }
+
+    /**
+     * Full constructor used by the production factory (ChannelManager). The
+     * trailing {@code chatUploadLocationResolver} enables workspace/agent-aware
+     * attachment storage; {@code null} keeps the legacy {@code data/chat-uploads}
+     * behaviour.
+     */
+    public WeComChannelAdapter(ChannelEntity channelEntity,
+                               ChannelMessageRouter messageRouter,
+                               ObjectMapper objectMapper,
+                               vip.mate.channel.notification.ApprovalNotificationService approvalNotificationService,
+                               vip.mate.channel.wecom.cards.WeComCardDispatcher cardDispatcher,
+                               WeComKeepaliveScheduler keepaliveScheduler,
+                               vip.mate.tool.document.GeneratedFileCache generatedFileCache,
+                               vip.mate.workspace.core.service.ChatUploadLocationResolver chatUploadLocationResolver) {
         super(channelEntity, messageRouter, objectMapper);
         this.approvalNotificationService = approvalNotificationService;
         this.cardDispatcher = cardDispatcher;
         this.keepaliveScheduler = keepaliveScheduler;
         this.generatedFileCache = generatedFileCache;
+        this.chatUploadLocationResolver = chatUploadLocationResolver;
         // Default to 8 bounded attempts (~4 minutes total at 2s..30s exponential)
         // so the UI eventually settles in ERROR instead of getting stuck in
         // RECONNECTING forever. User config still overrides (-1 = infinite).
@@ -2936,14 +2961,17 @@ public class WeComChannelAdapter extends AbstractChannelAdapter {
      */
     private InboundMediaDownloader.DownloadedMedia downloadInboundMedia(String url, String aesKey, String msgId,
                                                     String fileNameHint, String conversationId) {
-        // Store under data/chat-uploads/{conversationId} so the existing
+        // Store under the workspace/agent-aware upload root ({convId}/ subdir),
+        // falling back to the legacy data/chat-uploads default, so the existing
         // /api/v1/chat/files/{convId}/{storedName} endpoint serves the file
         // back to the chat bubble — the WeCom CDN URL carries a short-lived
         // signature that expires before a browser can fetch it. The shared
         // pipeline owns retry/backoff, magic-byte type detection, and the
         // dedup-named write; the WeCom-specific AES-256-CBC decrypt stays here
         // inside the byte source so a fetch + decrypt is retried as one unit.
-        Path uploadDir = Path.of("data", "chat-uploads", conversationId);
+        Path uploadDir = (chatUploadLocationResolver != null)
+                ? chatUploadLocationResolver.resolveUploadRoot(conversationId).resolve(conversationId)
+                : Path.of("data", "chat-uploads", conversationId);
         String hint = (fileNameHint == null || fileNameHint.isBlank()) ? null : fileNameHint;
         return InboundMediaDownloader.download(
                 () -> {
