@@ -9,6 +9,6 @@ BEGIN
         SELECT 1 FROM information_schema.columns
         WHERE table_name = 'mate_channel' AND column_name = 'identity_json'
     ) THEN
-        ALTER TABLE mate_channel ADD COLUMN identity_json TEXT;
+        ALTER TABLE mate_channel ADD COLUMN identity_json JSONB;
     END IF;
 END $$;

@@ -1,24 +1,14 @@
 -- V53: Recover from V52's silent no-op.
--- See h2/V53 for the full rationale. Same surgery, Kingbase-flavored.
--- Idempotent: rows already at "websocket" are skipped by the WHERE clause.
-
+-- See h2/V53 for the full rationale. Same intent, PostgreSQL JSONB flavour.
+--
+-- The kingbase/h2/mysql trees treat config_json as TEXT and do string surgery
+-- (TRIM / POSITION / SUBSTRING / CONCAT / REPLACE) to inject or rewrite the
+-- connection_mode key. On PostgreSQL config_json is JSONB (this tree only), so
+-- those text functions don't apply. The JSONB merge operator `||` sets the key
+-- in one step (right side wins), COALESCE handles NULL, and the WHERE clause is
+-- idempotent: rows already at "websocket" are skipped.
 UPDATE mate_channel
-SET config_json = CASE
-        WHEN config_json IS NULL OR TRIM(config_json) = '' OR TRIM(config_json) = '{}' THEN
-            '{"connection_mode":"websocket"}'
-        WHEN POSITION('"connection_mode"' IN config_json) = 0 THEN
-            CONCAT('{"connection_mode":"websocket",', SUBSTRING(config_json, 2))
-        ELSE
-            REPLACE(
-                REPLACE(config_json,
-                    '"connection_mode": "webhook"', '"connection_mode": "websocket"'),
-                '"connection_mode":"webhook"', '"connection_mode":"websocket"'
-            )
-    END
+SET config_json = COALESCE(config_json, '{}'::jsonb) || '{"connection_mode":"websocket"}'::jsonb
 WHERE channel_type = 'feishu'
   AND deleted = 0
-  AND (
-        config_json IS NULL
-     OR (POSITION('"connection_mode": "websocket"' IN config_json) = 0
-         AND POSITION('"connection_mode":"websocket"' IN config_json) = 0)
-  );
+  AND config_json->>'connection_mode' IS DISTINCT FROM 'websocket';

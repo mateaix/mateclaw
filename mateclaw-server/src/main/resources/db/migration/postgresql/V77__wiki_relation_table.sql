@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS mate_wiki_relation (
     page_b_id       BIGINT NOT NULL,
 
     total_score     DECIMAL(8, 4),
-    signals_json    TEXT,
+    signals_json    JSONB,
 
     type            VARCHAR(32),
 

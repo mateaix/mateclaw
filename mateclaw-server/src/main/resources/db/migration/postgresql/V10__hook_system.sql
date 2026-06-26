@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS mate_hook (
     event_type          VARCHAR(64)  NOT NULL,
     match_expression    TEXT,
     action_kind         VARCHAR(32)  NOT NULL,
-    action_config       TEXT         NOT NULL,
+    action_config       JSONB        NOT NULL DEFAULT '{}'::jsonb,
     rate_limit_per_min  INT          DEFAULT 60,
     timeout_ms          INT          DEFAULT 3000,
     source              VARCHAR(16)  DEFAULT 'db',

@@ -18,7 +18,7 @@ BEGIN
         SELECT 1 FROM information_schema.columns
         WHERE table_name = 'mate_wiki_page' AND column_name = 'depends_on_json'
     ) THEN
-        ALTER TABLE mate_wiki_page ADD COLUMN depends_on_json TEXT;
+        ALTER TABLE mate_wiki_page ADD COLUMN depends_on_json JSONB;
     END IF;
 END $$;
 
@@ -40,7 +40,7 @@ BEGIN
         SELECT 1 FROM information_schema.columns
         WHERE table_name = 'mate_wiki_page' AND column_name = 'stale_reason_json'
     ) THEN
-        ALTER TABLE mate_wiki_page ADD COLUMN stale_reason_json TEXT;
+        ALTER TABLE mate_wiki_page ADD COLUMN stale_reason_json JSONB;
     END IF;
 END $$;
 

@@ -68,7 +68,7 @@ CREATE TABLE IF NOT EXISTS mate_agent_goal_event (
     goal_id      BIGINT       NOT NULL,
     event_type   VARCHAR(32)  NOT NULL,
     message_id   BIGINT       NULL,
-    detail_json  TEXT     NULL,
+    detail_json  JSONB     NULL,
     create_time  TIMESTAMP(3)  NOT NULL,
     PRIMARY KEY (id)
 );

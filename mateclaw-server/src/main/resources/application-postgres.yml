@@ -9,7 +9,17 @@ spring:
     #   connectTimeout=10  — TCP connect timeout (s), avoids OS-level stalls
     #   socketTimeout=30   — socket read timeout (s), prevents dead connections hanging forever
     #   loginTimeout=10    — database login timeout (s)
-    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:mateclaw}?currentSchema=mateclaw&connectTimeout=10&socketTimeout=30&loginTimeout=10
+    #
+    # stringtype=unspecified — REQUIRED for the JSONB columns in the postgresql
+    # migration tree. MyBatis / the JDBC driver bind JSON column values as
+    # java.lang.String via setString, which PostgreSQL types as `varchar`. Writing
+    # a varchar into a `jsonb` column otherwise fails with "column is of type jsonb
+    # but expression is of type character varying". With stringtype=unspecified the
+    # driver sends String params as `unknown`, letting PostgreSQL coerce them to
+    # jsonb (and validate the JSON) at write time. This covers both the
+    # JacksonTypeHandler path (CronJobEntity.deliveryConfig) and the plain String
+    # JSON columns (config_json / settings_json / headers_json / ...).
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:mateclaw}?currentSchema=mateclaw&connectTimeout=10&socketTimeout=30&loginTimeout=10&stringtype=unspecified
     driver-class-name: org.postgresql.Driver
     username: ${DB_USERNAME:postgres}
     password: ${DB_PASSWORD:postgres}
@@ -36,7 +46,7 @@ spring:
     # two trees are byte-identical, so switching locations is transparent for
     # existing PostgreSQL deployments: Flyway tracks version + checksum, not
     # the classpath location, and identical scripts keep identical checksums.
-    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:mateclaw}?currentSchema=mateclaw&connectTimeout=10&socketTimeout=30&loginTimeout=10
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:mateclaw}?currentSchema=mateclaw&connectTimeout=10&socketTimeout=30&loginTimeout=10&stringtype=unspecified
     user: ${DB_USERNAME:postgres}
     password: ${DB_PASSWORD:postgres}
     locations:

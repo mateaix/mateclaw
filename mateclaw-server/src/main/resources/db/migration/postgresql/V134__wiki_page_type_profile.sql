@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS mate_wiki_page_type_profile (
     kb_id         BIGINT       NOT NULL,
     name          VARCHAR(128) NOT NULL,
     version       INT          NOT NULL DEFAULT 1,
-    config_json   TEXT     NOT NULL,
+    config_json   JSONB    NOT NULL DEFAULT '{}'::jsonb,
     -- SMALLINT (not BOOLEAN): WikiPageTypeProfileEntity.enabled is Integer (1/0).
     -- Vanilla PostgreSQL cannot map a BOOLEAN into a JDBC int. The generated
     -- column below compares enabled = 1 accordingly. Do not switch to BOOLEAN.
@@ -36,7 +36,7 @@ BEGIN
         SELECT 1 FROM information_schema.columns
         WHERE table_name = 'mate_wiki_page' AND column_name = 'metadata_json'
     ) THEN
-        ALTER TABLE mate_wiki_page ADD COLUMN metadata_json TEXT;
+        ALTER TABLE mate_wiki_page ADD COLUMN metadata_json JSONB;
     END IF;
 END $$;
 
@@ -56,7 +56,7 @@ BEGIN
         SELECT 1 FROM information_schema.columns
         WHERE table_name = 'mate_wiki_page' AND column_name = 'metadata_validation_json'
     ) THEN
-        ALTER TABLE mate_wiki_page ADD COLUMN metadata_validation_json TEXT;
+        ALTER TABLE mate_wiki_page ADD COLUMN metadata_validation_json JSONB;
     END IF;
 END $$;
 

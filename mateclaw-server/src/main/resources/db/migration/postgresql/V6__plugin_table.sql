@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS mate_plugin (
     author        VARCHAR(128),
     entrypoint    VARCHAR(256) NOT NULL,
     jar_path      VARCHAR(512),
-    config_json   TEXT          NOT NULL DEFAULT ('{}'),
+    config_json   JSONB         NOT NULL DEFAULT '{}'::jsonb,
     enabled       BOOLEAN      NOT NULL DEFAULT TRUE,
     status        VARCHAR(32)  NOT NULL DEFAULT 'LOADED',
     error_message TEXT,

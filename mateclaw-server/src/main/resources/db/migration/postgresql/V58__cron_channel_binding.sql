@@ -16,7 +16,7 @@ BEGIN
         SELECT 1 FROM information_schema.columns
         WHERE table_name = 'mate_cron_job' AND column_name = 'delivery_config'
     ) THEN
-        ALTER TABLE mate_cron_job ADD COLUMN delivery_config TEXT;
+        ALTER TABLE mate_cron_job ADD COLUMN delivery_config JSONB;
     END IF;
 END $$;
 

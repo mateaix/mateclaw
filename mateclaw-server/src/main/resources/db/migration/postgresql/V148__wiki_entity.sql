@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS mate_wiki_entity (
     normalized_key  VARCHAR(256) NOT NULL,
     type            VARCHAR(32)  NOT NULL,
 
-    aliases_json    TEXT,
+    aliases_json    JSONB,
     description     TEXT,
     salience        DECIMAL(5, 4),
     mention_count   INT NOT NULL DEFAULT 0,

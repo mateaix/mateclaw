@@ -9,6 +9,6 @@ BEGIN
         SELECT 1 FROM information_schema.columns
         WHERE table_name = 'mate_skill' AND column_name = 'manifest_json'
     ) THEN
-        ALTER TABLE mate_skill ADD COLUMN manifest_json TEXT;
+        ALTER TABLE mate_skill ADD COLUMN manifest_json JSONB;
     END IF;
 END $$;

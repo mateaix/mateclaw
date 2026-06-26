@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS mate_workspace (
     slug          VARCHAR(64)  NOT NULL,
     description   VARCHAR(256),
     owner_id      BIGINT,
-    settings_json TEXT,
+    settings_json JSONB,
     base_path     VARCHAR(512),
     create_time   TIMESTAMP     NOT NULL,
     update_time   TIMESTAMP     NOT NULL,

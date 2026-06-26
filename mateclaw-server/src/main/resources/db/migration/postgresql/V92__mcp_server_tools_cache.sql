@@ -16,7 +16,7 @@ BEGIN
         SELECT 1 FROM information_schema.columns
         WHERE table_name = 'mate_mcp_server' AND column_name = 'tools_cache_json'
     ) THEN
-        ALTER TABLE mate_mcp_server ADD COLUMN tools_cache_json TEXT;
+        ALTER TABLE mate_mcp_server ADD COLUMN tools_cache_json JSONB;
     END IF;
 END $$;
 
