@@ -29,13 +29,18 @@ spring:
       connection-init-sql: SET search_path TO mateclaw
 
   flyway:
-    # PostgreSQL and KingbaseES share the same migration tree
-    # (db/migration/kingbase) because they use the same SQL dialect.
+    # PostgreSQL has its own migration tree (db/migration/postgresql),
+    # forked from the KingbaseES tree (which shares PostgreSQL's SQL dialect).
+    # The fork lets PostgreSQL-only optimizations (e.g. TEXT -> JSONB) diverge
+    # from KingbaseES without affecting Kingbase deployments. At fork time the
+    # two trees are byte-identical, so switching locations is transparent for
+    # existing PostgreSQL deployments: Flyway tracks version + checksum, not
+    # the classpath location, and identical scripts keep identical checksums.
     url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:mateclaw}?currentSchema=mateclaw&connectTimeout=10&socketTimeout=30&loginTimeout=10
     user: ${DB_USERNAME:postgres}
     password: ${DB_PASSWORD:postgres}
     locations:
-      - classpath:db/migration/kingbase
+      - classpath:db/migration/postgresql
     # Ensure the target schema exists before migrating (PostgreSQL won't
     # auto-create a non-public schema).
     init-sqls:
