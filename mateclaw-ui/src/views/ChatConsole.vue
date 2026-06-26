@@ -1454,7 +1454,7 @@ async function hydrateStateFromRoute() {
       try {
         const res: any = await conversationApi.listMessages(conversationId)
         if (currentConversationId.value !== conversationId) return
-        messages.value = extractMessages(res).messages.map((msg: Message) => normalizeMessage(msg))
+      messages.value = extractMessages(res).messages.map((msg: Message) => normalizeMessage(msg, true))
       } catch {
         // 消息加载失败，保持空
       }
@@ -1493,6 +1493,7 @@ async function selectConversation(conv: Conversation) {
   const switchingAway = currentConversationId.value !== conv.conversationId
   if (switchingAway) {
     resetForNewConversation()
+    messageListRef.value?.resetScrollLock()
   }
   currentConversationId.value = conv.conversationId
   selectedAgentId.value = conv.agentId || selectedAgentId.value
@@ -1515,7 +1516,8 @@ async function selectConversation(conv: Conversation) {
     if (currentConversationId.value !== requestedConvId) return
     // 点同一个会话时，若已有 SSE 在跑就不要覆盖本地消息状态
     if (switchingAway || !isGenerating.value) {
-      messages.value = extractMessages(res).messages.map((msg: Message) => normalizeMessage(msg))
+      const convRunning = conv.streamStatus === 'running'
+      messages.value = extractMessages(res).messages.map((msg: Message) => normalizeMessage(msg, convRunning))
     }
 
     // Hydrate pending approvals：恢复刷新后丢失的审批卡片（RFC-067 §4.9）
@@ -1914,7 +1916,6 @@ async function handleApproveAlways(
 
 // 重连到运行中的流
 async function reconnectStream(conversationId: string) {
-  if (isGenerating.value) return
   try {
     await reconnectChatStream(conversationId)
   } catch (e) {
@@ -2008,7 +2009,7 @@ function buildOutgoingParts(text: string, attachments: ChatAttachment[]): Messag
 }
 
 // ============ 工具函数 ============
-function normalizeMessage(raw: Message): Message {
+function normalizeMessage(raw: Message, preserveGeneratingStatus?: boolean): Message {
   const msg: Message = { ...raw, contentParts: raw.contentParts ? [...raw.contentParts] : [] }
 
   // 统一解析 metadata：确保是对象而非 JSON 字符串
@@ -2078,7 +2079,7 @@ function normalizeMessage(raw: Message): Message {
     msg.metadata = { ...msg.metadata, toolCalls: cleaned }
   }
 
-  if (msg.status === 'generating') msg.status = 'failed'
+  if (!preserveGeneratingStatus && msg.status === 'generating') msg.status = 'failed'
   // interrupted 是合法的历史状态（interrupt-with-followup），不映射为 stopped
   if (!msg.status) msg.status = 'completed'
 
