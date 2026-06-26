@@ -212,7 +212,7 @@ MateClaw 在 link 分支检测到 `mp.weixin.qq.com` 后，会自动给模型追
 - Slack：通过 `filesUploadV2` 直传（参考 [Slack channel](./channels#slack)）
 - 不支持 `sendContentParts` 的渠道（QQ 等）：catch UnsupportedOperationException + log，不让一个不支持的渠道卡住整批分发
 
-文件路径在 `data/chat-uploads/{conversationId}/`，serve URL 是 `/api/v1/chat/files/{conversationId}/{storedName}`，前端 / 渠道附件视图都按这个 URL 读。
+文件路径默认在 `data/chat-uploads/{conversationId}/`，但当会话的 Agent / Workspace 配置了 `basePath` 时，附件落在 `{basePath}/chat-uploads/{conversationId}/`（解析优先级：Agent `workspaceBasePath` → Workspace `basePath` → 默认目录 `mateclaw.chat.upload.base-dir`）。读取与清理会同时探测新旧位置，迁移前的旧附件仍可访问。serve URL 是 `/api/v1/chat/files/{conversationId}/{storedName}`，前端 / 渠道附件视图都按这个 URL 读。
 
 ---
 
