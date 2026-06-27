@@ -514,6 +514,7 @@ export default {
   },
   notifications: {
     pendingApprovals: '{n} tool call(s) pending approval',
+    failedWikiJobs: '{n} knowledge base material(s) failed or degraded',
   },
   live: {
     kicker: 'Live',
@@ -2525,6 +2526,10 @@ export default {
       EMBEDDING_FAILED: 'Embedding failed — this material is not semantically searchable yet; check the embedding model and reprocess.',
       ENTITY_EXTRACTION_FAILED: 'Entity-graph extraction failed — the knowledge graph may be incomplete; reprocess later.',
       UNKNOWN: 'Some background processing did not finish — see details.',
+    },
+    failureCenter: {
+      title: 'Knowledge base processing issues',
+      open: 'Open',
     },
     progress: {
       preparing: 'Preparing…',

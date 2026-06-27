@@ -2050,6 +2050,7 @@ export default {
   },
   notifications: {
     pendingApprovals: '{n} 个工具调用等待审批',
+    failedWikiJobs: '{n} 个知识库材料处理失败或降级',
   },
   live: {
     kicker: '现场',
@@ -2537,6 +2538,10 @@ export default {
       EMBEDDING_FAILED: '向量化失败，该材料暂时无法被语义检索，请检查 embedding 模型后重新处理',
       ENTITY_EXTRACTION_FAILED: '实体图谱抽取失败，知识图谱可能不完整，可稍后重新处理',
       UNKNOWN: '部分后台处理未完成，请查看详情',
+    },
+    failureCenter: {
+      title: '知识库处理异常',
+      open: '打开',
     },
     progress: {
       preparing: '准备中…',

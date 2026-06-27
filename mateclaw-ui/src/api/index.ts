@@ -390,6 +390,7 @@ export const liveApi = {
 export interface NotificationSummary {
   pendingApprovals: number
   stuckAgents: number
+  failedWikiJobs: number
   failedCrons: number
   downChannels: number
   downMcps: number
@@ -782,6 +783,22 @@ export const cronJobApi = {
 }
 
 // ==================== Wiki Knowledge Base ====================
+// One row in the cross-KB failure center. ids are strings (global Long→String
+// Jackson config) to avoid Snowflake precision loss.
+export interface WikiFailureItem {
+  rawId: string
+  kbId: string
+  kbName: string
+  workspaceId: string | null
+  title: string
+  processingStatus: string
+  errorCode: string | null
+  errorMessage: string | null
+  warningCode: string | null
+  warningMessage: string | null
+  updateTime: string | null
+}
+
 export const wikiApi = {
   // Knowledge Base
   listKBs: () => http.get('/wiki/knowledge-bases'),
@@ -801,6 +818,9 @@ export const wikiApi = {
   setSourceDirectory: (id: string | number, path: string) =>
     http.put(`/wiki/knowledge-bases/${id}/source-directory`, { path }),
   scanDirectory: (id: number) => http.post(`/wiki/knowledge-bases/${id}/scan`),
+
+  // Centralized cross-KB failure center (admin only)
+  listFailures: (limit = 100) => http.get<{ data: WikiFailureItem[] }>(`/wiki/admin/failures?limit=${limit}`),
 
   // Raw Materials
   listRaw: (kbId: number) => http.get(`/wiki/knowledge-bases/${kbId}/raw`),

@@ -509,6 +509,16 @@ public class WikiRawMaterialService {
         rawMapper.updateById(entity);
     }
 
+    /** Cross-KB count of materials needing operator attention (failed/partial/degraded). */
+    public long countFailures() {
+        return rawMapper.countFailures();
+    }
+
+    /** Cross-KB list of materials needing operator attention, newest first (capped). */
+    public java.util.List<vip.mate.wiki.dto.WikiFailureItem> listFailures(int limit) {
+        return rawMapper.listFailures(Math.max(1, Math.min(limit, 500)));
+    }
+
     /**
      * Terminal/intermediate status transition that also records a structured
      * {@code errorCode} (see {@code WikiProcessingService#classifyErrorCode}).
