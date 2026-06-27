@@ -18,6 +18,7 @@ import vip.mate.agent.model.AgentEntity;
 import vip.mate.agent.repository.AgentMapper;
 import vip.mate.exception.MateClawException;
 import vip.mate.llm.routing.AgentBindingResolver;
+import vip.mate.llm.routing.ProviderModelRef;
 import vip.mate.skill.acp.AcpSkillBridge;
 import vip.mate.skill.mcp.McpSkillBridge;
 import vip.mate.skill.lifecycle.BlockedByBindingRow;
@@ -943,22 +944,53 @@ public class AgentBindingService implements AgentBindingResolver {
                 .collect(Collectors.toList());
     }
 
+    @Override
+    public List<ProviderModelRef> getPreferredProviderModels(Long agentId) {
+        if (agentId == null) return Collections.emptyList();
+        return listProviderPreferences(agentId).stream()
+                .filter(p -> Boolean.TRUE.equals(p.getEnabled()))
+                .map(p -> new ProviderModelRef(p.getProviderId(), p.getModelId()))
+                .collect(Collectors.toList());
+    }
+
     /**
      * Replace the full preference list for an agent. {@code providerIds}
      * is the new ordered preference (index 0 = highest preference).
      * Empty / null list clears all preferences for the agent.
+     *
+     * <p>Convenience for the provider-only call sites — each provider pins
+     * its default model. See {@link #setProviderModelPreferences} for the
+     * model-aware form.
      */
     public void setProviderPreferences(Long agentId, List<String> providerIds) {
+        if (providerIds == null) {
+            setProviderModelPreferences(agentId, null);
+            return;
+        }
+        setProviderModelPreferences(agentId, providerIds.stream()
+                .map(id -> new ProviderModelRef(id, null))
+                .collect(Collectors.toList()));
+    }
+
+    /**
+     * Replace the full preference list for an agent with (provider, model)
+     * entries. {@code refs} is the new ordered preference (index 0 = highest);
+     * a {@code modelId} of {@code null} pins the provider's default model. The
+     * same provider may appear multiple times with different models, forming a
+     * preferred-model chain. Empty / null list clears all preferences.
+     */
+    public void setProviderModelPreferences(Long agentId, List<ProviderModelRef> refs) {
         providerPreferenceMapper.delete(
                 new LambdaQueryWrapper<AgentProviderPreference>()
                         .eq(AgentProviderPreference::getAgentId, agentId));
-        if (providerIds == null) return;
+        if (refs == null) return;
         int order = 0;
-        for (String providerId : providerIds) {
-            if (providerId == null || providerId.isBlank()) continue;
+        for (ProviderModelRef ref : refs) {
+            if (ref == null || ref.providerId() == null || ref.providerId().isBlank()) continue;
             AgentProviderPreference row = new AgentProviderPreference();
             row.setAgentId(agentId);
-            row.setProviderId(providerId.trim());
+            row.setProviderId(ref.providerId().trim());
+            row.setModelId(ref.modelId());
             row.setSortOrder(order++);
             row.setEnabled(true);
             providerPreferenceMapper.insert(row);

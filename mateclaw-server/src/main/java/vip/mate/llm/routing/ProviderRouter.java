@@ -189,14 +189,14 @@ public class ProviderRouter {
     public ModelConfigEntity selectPrimary(Long agentId, ModelConfigEntity globalDefault) {
         if (agentId == null) return globalDefault;
 
-        List<String> preferred = bindingService.getPreferredProviderIds(agentId);
+        List<ProviderModelRef> preferred = bindingService.getPreferredProviderModels(agentId);
         Set<Modality> requiredModalities = resolveRequiredModalities(agentId);
 
-        // Pass 1: capability-satisfying providers (preferred first, global fallback)
+        // Pass 1: capability-satisfying entries (preferred first, global fallback)
         if (requiredModalities != null) {
-            // 1a. preferred providers satisfying capabilities
-            for (String providerId : preferred) {
-                ModelConfigEntity candidate = pickProviderDefault(providerId);
+            // 1a. preferred (provider, model) entries satisfying capabilities
+            for (ProviderModelRef ref : preferred) {
+                ModelConfigEntity candidate = pickPreferredModel(ref);
                 if (candidate == null) continue;
                 if (satisfies(candidate, requiredModalities)) {
                     log.info("[ProviderRouter] agent={} primary={}/{} (preferred, satisfies {})",
@@ -213,9 +213,9 @@ public class ProviderRouter {
         }
 
         // Pass 2: unconstrained (capability ignored — last resort)
-        // 2a. any available preferred provider
-        for (String providerId : preferred) {
-            ModelConfigEntity candidate = pickProviderDefault(providerId);
+        // 2a. any available preferred entry
+        for (ProviderModelRef ref : preferred) {
+            ModelConfigEntity candidate = pickPreferredModel(ref);
             if (candidate == null) continue;
             log.info("[ProviderRouter] agent={} primary={}/{} (preferred, unconstrained)",
                     agentId, candidate.getProvider(), candidate.getModelName());
@@ -229,6 +229,28 @@ public class ProviderRouter {
         }
 
         return null;
+    }
+
+    /**
+     * Resolve a preference entry to a usable primary model. A pinned model
+     * ({@code modelId != null}) is honoured when its provider is configured and
+     * the model is enabled; otherwise we fall back to the provider's default
+     * chat model so a deleted/disabled pin does not silently drop the provider.
+     */
+    private ModelConfigEntity pickPreferredModel(ProviderModelRef ref) {
+        if (ref == null) return null;
+        if (ref.modelId() == null) return pickProviderDefault(ref.providerId());
+        if (ref.providerId() == null || ref.providerId().isBlank()) return null;
+        try {
+            if (!modelProviderService.isProviderConfigured(ref.providerId())) return null;
+            ModelConfigEntity m = modelConfigService.getModel(ref.modelId());
+            if (m != null && Boolean.TRUE.equals(m.getEnabled())) return m;
+        } catch (Exception e) {
+            // getModel throws when the pinned model id no longer exists.
+            log.info("[ProviderRouter] pinned model {} for provider {} unresolved ({}), using provider default",
+                    ref.modelId(), ref.providerId(), e.getMessage());
+        }
+        return pickProviderDefault(ref.providerId());
     }
 
     /** Returns null when no capabilities are required (skips Pass 1). */
