@@ -1031,11 +1031,16 @@ export const agentBindingApi = {
   unbindSkill: (agentId: string | number, skillId: number) => http.delete(`/agents/${agentId}/skills/${skillId}`),
   listTools: (agentId: string | number) => http.get(`/agents/${agentId}/tools`),
   setTools: (agentId: string | number, toolNames: string[]) => http.put(`/agents/${agentId}/tools`, toolNames),
-  // RFC-009 PR-3: per-agent provider preference order. Empty list = use global chain order.
+  // Per-agent preferred-model chain (provider + model). Empty list = use the
+  // global chain order. modelId null = the provider's default model; the same
+  // provider may appear multiple times with different models. modelId is a
+  // string to preserve Snowflake precision.
   listProviderPreferences: (agentId: string | number) =>
     http.get(`/agents/${agentId}/provider-preferences`),
-  setProviderPreferences: (agentId: string | number, providerIds: string[]) =>
-    http.put(`/agents/${agentId}/provider-preferences`, providerIds),
+  setProviderPreferences: (
+    agentId: string | number,
+    preferences: Array<{ providerId: string; modelId: string | null }>,
+  ) => http.put(`/agents/${agentId}/provider-preferences`, preferences),
   // Per-agent knowledge base access scope. Empty array = unrestricted
   // (agent can reach every KB in its workspace). IDs are kept as strings
   // for the Snowflake-precision contract.
