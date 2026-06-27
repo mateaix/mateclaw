@@ -20,6 +20,7 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 public class WebMvcConfig implements WebMvcConfigurer {
 
     private final WorkspaceAccessInterceptor workspaceAccessInterceptor;
+    private final vip.mate.kbopen.auth.KbScopeInterceptor kbScopeInterceptor;
 
     /** CORS allowed origins, comma-separated. Default "*" for dev, restrict in production. */
     @Value("${mateclaw.cors.allowed-origins:*}")
@@ -29,6 +30,10 @@ public class WebMvcConfig implements WebMvcConfigurer {
     public void addInterceptors(InterceptorRegistry registry) {
         registry.addInterceptor(workspaceAccessInterceptor)
                 .addPathPatterns("/api/**");
+        // KB Open API scope+ownership checks (A1). Runs after KbOpenApiAuthFilter
+        // injected the KbApiKeyContext into the request attributes.
+        registry.addInterceptor(kbScopeInterceptor)
+                .addPathPatterns("/api/v1/open/kb/**");
     }
 
     @Override
