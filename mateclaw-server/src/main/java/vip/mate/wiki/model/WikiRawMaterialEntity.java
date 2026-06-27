@@ -64,8 +64,18 @@ public class WikiRawMaterialEntity {
     /** 上次成功处理时的 content_hash，用于重处理时的短路判断 */
     private String lastProcessedHash;
 
-    /** 错误信息 */
+    /** 错误信息（原始异常文本，供排查使用） */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private String errorMessage;
+
+    /**
+     * 结构化错误码，与 {@code WikiProcessingService#classifyErrorCode} 同一词表
+     * （AUTH_ERROR / BILLING / MODEL_NOT_FOUND / RATE_LIMIT / TIMEOUT /
+     * SERVER_ERROR / CONTENT_FILTER / NO_CONTENT / EMPTY_RESULT / UNKNOWN）。
+     * 供前端做本地化的友好提示；null 表示无错误。
+     */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private String errorCode;
 
     /**
      * RFC-012 M2 v2 UI：当前处理阶段（null 未开始 / "route" / "phase-b" / "done"）。

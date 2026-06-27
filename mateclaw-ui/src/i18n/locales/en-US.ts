@@ -2506,6 +2506,20 @@ export default {
       cancelled: 'CANCELLED',
       cancelling: 'CANCELLING…',
     },
+    // Friendly, localized hints keyed by the backend's structured error code.
+    // The raw exception text is kept as the hover tooltip for troubleshooting.
+    errorCode: {
+      AUTH_ERROR: 'Model authentication failed — check that the provider API key is correct and valid.',
+      BILLING: 'Provider quota exhausted or billing error — check your account balance.',
+      MODEL_NOT_FOUND: 'The selected model is missing or unavailable — switch models in the knowledge base settings.',
+      RATE_LIMIT: 'Rate-limited by the provider — please retry in a moment.',
+      TIMEOUT: 'The model timed out — retry later or switch to a faster model.',
+      SERVER_ERROR: 'The provider is temporarily unavailable (5xx) — please retry later.',
+      CONTENT_FILTER: 'Content was blocked by the model safety filter — adjust the material and retry.',
+      NO_CONTENT: 'No text could be extracted from this material — check that the file is not empty or corrupt.',
+      EMPTY_RESULT: 'The model generated no pages — reprocess to retry.',
+      UNKNOWN: 'Processing failed — see details or the server logs.',
+    },
     progress: {
       preparing: 'Preparing…',
       uploading: 'Uploading {pct}%',

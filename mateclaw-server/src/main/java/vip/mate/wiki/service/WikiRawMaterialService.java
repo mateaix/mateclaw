@@ -478,11 +478,23 @@ public class WikiRawMaterialService {
         rawMapper.updateById(entity);
     }
 
-    @Transactional
     public void updateProcessingStatus(Long id, String status, String errorMessage) {
+        updateProcessingStatus(id, status, null, errorMessage);
+    }
+
+    /**
+     * Terminal/intermediate status transition that also records a structured
+     * {@code errorCode} (see {@code WikiProcessingService#classifyErrorCode}).
+     * Both error fields carry {@link com.baomidou.mybatisplus.annotation.FieldStrategy#ALWAYS}
+     * on the entity, so a success transition with {@code null} code/message
+     * clears any stale failure left from a prior run.
+     */
+    @Transactional
+    public void updateProcessingStatus(Long id, String status, String errorCode, String errorMessage) {
         WikiRawMaterialEntity entity = rawMapper.selectById(id);
         if (entity == null) return;
         entity.setProcessingStatus(status);
+        entity.setErrorCode(errorCode);
         entity.setErrorMessage(errorMessage);
         if ("completed".equals(status)) {
             entity.setLastProcessedAt(java.time.LocalDateTime.now());

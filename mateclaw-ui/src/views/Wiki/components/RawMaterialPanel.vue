@@ -180,10 +180,10 @@
               {{ t('wiki.cancelledHint') }}
             </span>
             <span
-              v-else-if="raw.errorMessage && (raw.processingStatus === 'failed' || raw.processingStatus === 'partial')"
-              class="error-hint" :title="raw.errorMessage"
+              v-else-if="(raw.errorCode || raw.errorMessage) && (raw.processingStatus === 'failed' || raw.processingStatus === 'partial')"
+              class="error-hint" :title="raw.errorMessage || friendlyError(raw)"
             >
-              {{ raw.errorMessage }}
+              {{ friendlyError(raw) }}
             </span>
           </div>
           <div v-if="canManageWiki" class="raw-item-actions">
@@ -327,6 +327,19 @@ const workspace = useWorkspaceStore()
 const canManageWiki = computed(() => workspace.can('manage:wiki'))
 const fileInput = ref<HTMLInputElement | null>(null)
 
+// Map a structured backend errorCode to a localized, user-friendly hint.
+// Falls back to the raw backend message, then to a generic failure label, so
+// the user always sees something meaningful — never a blank "failed" badge.
+function friendlyError(raw: { errorCode?: string | null; errorMessage?: string | null }): string {
+  const code = raw.errorCode
+  if (code) {
+    const key = `wiki.errorCode.${code}`
+    const msg = t(key)
+    if (msg !== key) return msg
+  }
+  return raw.errorMessage || t('wiki.errorCode.UNKNOWN')
+}
+
 // While raw materials are active, subscribe to the backend SSE progress stream.
 // A slower polling fallback keeps the UI in sync if SSE reconnects or misses a
 // terminal event. The database remains the source of truth.
@@ -390,7 +403,14 @@ function openSse(kbId: number) {
     try {
       const data = JSON.parse(ev.data)
       const raw = store.rawMaterials.find(r => r.id === data.rawId)
-      if (raw) raw.processingStatus = 'failed'
+      if (raw) {
+        raw.processingStatus = 'failed'
+        // Surface the failure immediately from the event payload instead of
+        // waiting for the refresh round-trip — and never drop it: a null
+        // message would otherwise leave the user with a blank "failed" badge.
+        if (typeof data.error === 'string') raw.errorMessage = data.error
+        if (typeof data.errorCode === 'string') raw.errorCode = data.errorCode
+      }
       // Clear stale job entry
       delete rawJobs[data.rawId]
       if (store.currentKB) void store.refreshCurrentKB()
