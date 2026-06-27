@@ -936,15 +936,6 @@ public class AgentBindingService implements AgentBindingResolver {
      * fallback chain order per agent.</p>
      */
     @Override
-    public List<String> getPreferredProviderIds(Long agentId) {
-        if (agentId == null) return Collections.emptyList();
-        return listProviderPreferences(agentId).stream()
-                .filter(p -> Boolean.TRUE.equals(p.getEnabled()))
-                .map(AgentProviderPreference::getProviderId)
-                .collect(Collectors.toList());
-    }
-
-    @Override
     public List<ProviderModelRef> getPreferredProviderModels(Long agentId) {
         if (agentId == null) return Collections.emptyList();
         return listProviderPreferences(agentId).stream()

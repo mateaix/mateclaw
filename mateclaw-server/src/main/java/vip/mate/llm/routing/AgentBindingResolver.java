@@ -21,15 +21,6 @@ public interface AgentBindingResolver {
     Set<Long> getBoundSkillIds(Long agentId);
 
     /**
-     * Provider ids the agent prefers, in priority order; empty when none.
-     *
-     * <p>Id-only view kept for capability-aware provider reordering. Routing
-     * that needs the model dimension should use
-     * {@link #getPreferredProviderModels(Long)}.
-     */
-    List<String> getPreferredProviderIds(Long agentId);
-
-    /**
      * Ordered preferred-model chain for the agent: each entry is a provider
      * plus an optional pinned model ({@code modelId == null} = the provider's
      * default chat model). The same provider may repeat with different models,
