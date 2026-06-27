@@ -8,6 +8,7 @@ import org.springframework.context.ApplicationEventPublisher;
 import vip.mate.exception.MateClawException;
 import vip.mate.wiki.dto.PageSearchResult;
 import vip.mate.wiki.job.WikiProcessingJobService;
+import vip.mate.wiki.job.model.WikiProcessingJobEntity;
 import vip.mate.wiki.model.WikiChunkEntity;
 import vip.mate.wiki.model.WikiKnowledgeBaseEntity;
 import vip.mate.wiki.model.WikiRawMaterialEntity;
@@ -23,7 +24,9 @@ import vip.mate.wiki.service.WikiRelationService;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyInt;
@@ -48,6 +51,7 @@ class WikiRelationControllerIdorTest {
     private WikiKnowledgeBaseService kbService;
     private WikiRawMaterialService rawService;
     private WikiChunkMapper chunkMapper;
+    private WikiProcessingJobMapper jobMapper;
     private HybridRetriever hybridRetriever;
     private WikiRelationController controller;
 
@@ -56,13 +60,14 @@ class WikiRelationControllerIdorTest {
         kbService = mock(WikiKnowledgeBaseService.class);
         rawService = mock(WikiRawMaterialService.class);
         chunkMapper = mock(WikiChunkMapper.class);
+        jobMapper = mock(WikiProcessingJobMapper.class);
         hybridRetriever = mock(HybridRetriever.class);
         when(hybridRetriever.search(anyLong(), anyString(), anyString(), anyInt()))
                 .thenReturn(List.<PageSearchResult>of());
         controller = new WikiRelationController(
                 mock(WikiRelationService.class),
                 mock(WikiProcessingJobService.class),
-                mock(WikiProcessingJobMapper.class),
+                jobMapper,
                 mock(WikiPageService.class),
                 mock(WikiPageCitationMapper.class),
                 hybridRetriever,
@@ -132,6 +137,36 @@ class WikiRelationControllerIdorTest {
         assertThatThrownBy(() -> controller.kbStats(999L, 1L))
                 .isInstanceOf(MateClawException.class)
                 .hasMessageContaining("not found");
+    }
+
+    // ---------------- getJobs rawId cross-KB filter ----------------
+
+    @Test
+    @DisplayName("getJobs: rawId belonging to the same KB is returned")
+    void getJobsRawIdSameKbReturned() {
+        when(kbService.getById(10L)).thenReturn(kb(10L, 1L));
+        WikiProcessingJobEntity job = new WikiProcessingJobEntity();
+        job.setId(1L);
+        job.setKbId(10L);          // same KB as the path → allowed
+        when(jobMapper.findLatestByRawId(50L)).thenReturn(Optional.of(job));
+
+        List<?> result = controller.getJobs(10L, 50L, 1L);
+
+        assertThat(result).hasSize(1);
+    }
+
+    @Test
+    @DisplayName("getJobs: rawId pointing at another KB's job is filtered out")
+    void getJobsRawIdCrossKbFiltered() {
+        when(kbService.getById(10L)).thenReturn(kb(10L, 1L));  // caller's KB
+        WikiProcessingJobEntity foreignJob = new WikiProcessingJobEntity();
+        foreignJob.setId(2L);
+        foreignJob.setKbId(99L);     // job belongs to a different KB → dropped
+        when(jobMapper.findLatestByRawId(50L)).thenReturn(Optional.of(foreignJob));
+
+        List<?> result = controller.getJobs(10L, 50L, 1L);
+
+        assertThat(result).isEmpty();
     }
 
     @Test

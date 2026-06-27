@@ -112,6 +112,11 @@ public class WikiRelationController {
         verifyKBWorkspace(kbId, workspaceId);
         if (rawId != null) {
             return jobMapper.findLatestByRawId(rawId)
+                    // Guard against a partial IDOR: kbId is workspace-checked
+                    // above, but rawId is an independent query param that could
+                    // point at another KB's material. Require the resolved job
+                    // to actually belong to this kbId.
+                    .filter(j -> kbId.equals(j.getKbId()))
                     .map(List::of).orElse(List.of());
         }
         return jobMapper.listQueued(kbId, 20);
