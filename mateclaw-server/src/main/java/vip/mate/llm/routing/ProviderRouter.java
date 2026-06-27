@@ -244,7 +244,14 @@ public class ProviderRouter {
         try {
             if (!modelProviderService.isProviderConfigured(ref.providerId())) return null;
             ModelConfigEntity m = modelConfigService.getModel(ref.modelId());
-            if (m != null && Boolean.TRUE.equals(m.getEnabled())) return m;
+            // Honour the pin only when it is a usable chat model that actually
+            // belongs to this entry's provider; otherwise fall back to the
+            // provider's default chat model.
+            if (m != null && Boolean.TRUE.equals(m.getEnabled())
+                    && ref.providerId().equals(m.getProvider())
+                    && (m.getModelType() == null || "chat".equals(m.getModelType()))) {
+                return m;
+            }
         } catch (Exception e) {
             // getModel throws when the pinned model id no longer exists.
             log.info("[ProviderRouter] pinned model {} for provider {} unresolved ({}), using provider default",

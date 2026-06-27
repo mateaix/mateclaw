@@ -269,4 +269,43 @@ class ProviderRouterSelectPrimaryTest {
         assertEquals("dashscope", result.getProvider());
         assertEquals("qwen-max", result.getModelName());
     }
+
+    @Test
+    @DisplayName("13. Pinned model that belongs to a different provider falls back to the provider default")
+    void pinnedModelWrongProviderFallsBack() {
+        stubNoCapabilities();
+        when(bindingService.getPreferredProviderModels(AGENT_ID))
+                .thenReturn(List.of(new ProviderModelRef("dashscope", 88L)));
+        when(modelProviderService.isProviderConfigured("dashscope")).thenReturn(true);
+        // The pinned id resolves to a model owned by ANOTHER provider — must not
+        // be used under dashscope's cooldown/credentials.
+        when(modelConfigService.getModel(88L)).thenReturn(model("openai", "gpt-4o", true));
+        when(modelConfigService.getPrimaryChatModelByProvider("dashscope"))
+                .thenReturn(model("dashscope", "qwen-max"));
+
+        ModelConfigEntity result = router.selectPrimary(AGENT_ID, model("anthropic", "claude"));
+
+        assertNotNull(result);
+        assertEquals("dashscope", result.getProvider());
+        assertEquals("qwen-max", result.getModelName());
+    }
+
+    @Test
+    @DisplayName("14. Pinned non-chat (embedding) model falls back to the provider default")
+    void pinnedNonChatModelFallsBack() {
+        stubNoCapabilities();
+        when(bindingService.getPreferredProviderModels(AGENT_ID))
+                .thenReturn(List.of(new ProviderModelRef("dashscope", 55L)));
+        when(modelProviderService.isProviderConfigured("dashscope")).thenReturn(true);
+        ModelConfigEntity embedding = model("dashscope", "text-embedding-v3", true);
+        embedding.setModelType("embedding");
+        when(modelConfigService.getModel(55L)).thenReturn(embedding);
+        when(modelConfigService.getPrimaryChatModelByProvider("dashscope"))
+                .thenReturn(model("dashscope", "qwen-max"));
+
+        ModelConfigEntity result = router.selectPrimary(AGENT_ID, model("openai", "gpt-4o"));
+
+        assertNotNull(result);
+        assertEquals("qwen-max", result.getModelName());
+    }
 }

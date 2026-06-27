@@ -945,25 +945,6 @@ public class AgentBindingService implements AgentBindingResolver {
     }
 
     /**
-     * Replace the full preference list for an agent. {@code providerIds}
-     * is the new ordered preference (index 0 = highest preference).
-     * Empty / null list clears all preferences for the agent.
-     *
-     * <p>Convenience for the provider-only call sites — each provider pins
-     * its default model. See {@link #setProviderModelPreferences} for the
-     * model-aware form.
-     */
-    public void setProviderPreferences(Long agentId, List<String> providerIds) {
-        if (providerIds == null) {
-            setProviderModelPreferences(agentId, null);
-            return;
-        }
-        setProviderModelPreferences(agentId, providerIds.stream()
-                .map(id -> new ProviderModelRef(id, null))
-                .collect(Collectors.toList()));
-    }
-
-    /**
      * Replace the full preference list for an agent with (provider, model)
      * entries. {@code refs} is the new ordered preference (index 0 = highest);
      * a {@code modelId} of {@code null} pins the provider's default model. The

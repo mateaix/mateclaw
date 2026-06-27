@@ -1258,7 +1258,20 @@ public class AgentGraphBuilder {
         if (ref.modelId() != null) {
             try {
                 ModelConfigEntity m = modelConfigService.getModel(ref.modelId());
-                if (m != null && Boolean.TRUE.equals(m.getEnabled())) return m;
+                // Honour the pin only when it is a usable chat model that actually
+                // belongs to this entry's provider. The FallbackEntry is keyed by
+                // ref.providerId() for cooldown/pool, so a model from a different
+                // provider would mis-key the chain; an embedding model would never
+                // serve as a chat fallback. Either case falls back to the
+                // provider's default chat model.
+                if (m != null && Boolean.TRUE.equals(m.getEnabled())
+                        && ref.providerId().equals(m.getProvider())
+                        && (m.getModelType() == null || "chat".equals(m.getModelType()))) {
+                    return m;
+                }
+                log.info("[LlmFailover] pinned model {} for provider {} not usable "
+                                + "(disabled / wrong provider / non-chat), using provider default",
+                        ref.modelId(), ref.providerId());
             } catch (Exception e) {
                 log.info("[LlmFailover] pinned model {} for provider {} unresolved ({}), using provider default",
                         ref.modelId(), ref.providerId(), e.getMessage());
