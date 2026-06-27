@@ -12,8 +12,11 @@ import vip.mate.wiki.model.WikiRawMaterialEntity;
 import vip.mate.wiki.sse.WikiProgressBus;
 
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
@@ -33,6 +36,7 @@ class WikiProcessingServiceErrorCodeTest {
     private WikiKnowledgeBaseService kbService;
     private WikiRawMaterialService rawService;
     private WikiChunkService chunkService;
+    private WikiEmbeddingService embeddingService;
     private WikiProgressBus progressBus;
     private WikiProcessingService service;
 
@@ -44,11 +48,12 @@ class WikiProcessingServiceErrorCodeTest {
         kbService = mock(WikiKnowledgeBaseService.class);
         rawService = mock(WikiRawMaterialService.class);
         chunkService = mock(WikiChunkService.class);
+        embeddingService = mock(WikiEmbeddingService.class);
         progressBus = mock(WikiProgressBus.class);
         ObjectMapper om = new ObjectMapper();
         service = new WikiProcessingService(
                 kbService, rawService, mock(WikiPageService.class), chunkService,
-                mock(WikiEmbeddingService.class), new WikiLinkService(om),
+                embeddingService, new WikiLinkService(om),
                 new WikiProperties(), mock(ModelConfigService.class),
                 mock(AgentGraphBuilder.class), om, progressBus,
                 mock(WikiCitationService.class),
@@ -98,5 +103,37 @@ class WikiProcessingServiceErrorCodeTest {
         verify(progressBus).broadcast(eq(KB_ID), eq(WikiProgressBus.EVENT_RAW_FAILED),
                 argThat((Map<String, Object> m) -> "AUTH_ERROR".equals(m.get("errorCode"))
                         && "401 Unauthorized".equals(m.get("error"))));
+    }
+
+    @Test
+    @DisplayName("async embedding failure surfaces a non-blocking warning, not a failed status")
+    void embeddingFailure_surfacesWarning() throws InterruptedException {
+        WikiRawMaterialEntity raw = new WikiRawMaterialEntity();
+        raw.setId(RAW_ID);
+        raw.setKbId(KB_ID);
+        raw.setProcessingStatus("pending");
+        WikiKnowledgeBaseEntity kb = new WikiKnowledgeBaseEntity();
+        kb.setId(KB_ID);
+        kb.setConfigContent("{\"ingestMode\":\"lazy\"}");
+
+        when(rawService.claimForProcessing(RAW_ID)).thenReturn(true);
+        when(rawService.getById(RAW_ID)).thenReturn(raw);
+        when(rawService.getTextContent(raw)).thenReturn("Some real document text. ".repeat(20));
+        when(kbService.getById(KB_ID)).thenReturn(kb);
+
+        // The async embedding sweep fails; recordWarning fires from that thread,
+        // so latch on it to make the assertion deterministic.
+        CountDownLatch warned = new CountDownLatch(1);
+        when(embeddingService.embedMissingChunks(KB_ID)).thenThrow(new RuntimeException("embed boom"));
+        doAnswer(inv -> { warned.countDown(); return null; })
+                .when(rawService).recordWarning(eq(RAW_ID), eq("EMBEDDING_FAILED"), any());
+
+        service.processRawMaterial(RAW_ID);
+
+        assertTrue(warned.await(5, TimeUnit.SECONDS), "recordWarning should have been invoked");
+        // Material itself completed — the warning must not have flipped it to failed.
+        verify(rawService, never()).updateProcessingStatus(eq(RAW_ID), eq("failed"), any(), any());
+        verify(progressBus).broadcast(eq(KB_ID), eq(WikiProgressBus.EVENT_RAW_WARNING),
+                argThat((Map<String, Object> m) -> "EMBEDDING_FAILED".equals(m.get("warningCode"))));
     }
 }

@@ -185,6 +185,12 @@
             >
               {{ friendlyError(raw) }}
             </span>
+            <span
+              v-if="(raw.warningCode || raw.warningMessage) && raw.processingStatus !== 'failed'"
+              class="warning-hint" :title="raw.warningMessage || friendlyWarning(raw)"
+            >
+              ⚠ {{ friendlyWarning(raw) }}
+            </span>
           </div>
           <div v-if="canManageWiki" class="raw-item-actions">
             <button
@@ -340,6 +346,17 @@ function friendlyError(raw: { errorCode?: string | null; errorMessage?: string |
   return raw.errorMessage || t('wiki.errorCode.UNKNOWN')
 }
 
+// Same idea for the non-blocking warning surface (degraded-but-usable rows).
+function friendlyWarning(raw: { warningCode?: string | null; warningMessage?: string | null }): string {
+  const code = raw.warningCode
+  if (code) {
+    const key = `wiki.warningCode.${code}`
+    const msg = t(key)
+    if (msg !== key) return msg
+  }
+  return raw.warningMessage || t('wiki.warningCode.UNKNOWN')
+}
+
 // While raw materials are active, subscribe to the backend SSE progress stream.
 // A slower polling fallback keeps the UI in sync if SSE reconnects or misses a
 // terminal event. The database remains the source of truth.
@@ -414,6 +431,19 @@ function openSse(kbId: number) {
       // Clear stale job entry
       delete rawJobs[data.rawId]
       if (store.currentKB) void store.refreshCurrentKB()
+    } catch { /* ignore */ }
+  })
+  es.addEventListener('raw.warning', (ev: MessageEvent) => {
+    try {
+      const data = JSON.parse(ev.data)
+      const raw = store.rawMaterials.find(r => r.id === data.rawId)
+      // A warning lands async after the material already completed, so the
+      // refresh round-trip on raw.completed has already happened — apply it
+      // live here, otherwise it would only appear on the next manual reload.
+      if (raw) {
+        if (typeof data.warning === 'string') raw.warningMessage = data.warning
+        if (typeof data.warningCode === 'string') raw.warningCode = data.warningCode
+      }
     } catch { /* ignore */ }
   })
   es.onerror = () => {
@@ -867,6 +897,7 @@ async function handleScanDir() {
 .raw-item-meta { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 .raw-item-actions { display: flex; gap: 4px; flex-shrink: 0; }
 .error-hint { font-size: 11px; color: var(--mc-danger); max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.warning-hint { font-size: 11px; color: var(--mc-warning, #d98e00); max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .page-count-chip { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; font-weight: 500; color: var(--mc-text-secondary); background: var(--mc-bg-sunken); border-radius: 9999px; padding: 2px 7px; }
 
 /* Two-phase digest progress bar (RFC-012 M2 v2 UI) */

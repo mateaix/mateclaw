@@ -2520,6 +2520,12 @@ export default {
       EMPTY_RESULT: 'The model generated no pages — reprocess to retry.',
       UNKNOWN: 'Processing failed — see details or the server logs.',
     },
+    // Non-blocking warnings: the material processed but an async sub-step failed.
+    warningCode: {
+      EMBEDDING_FAILED: 'Embedding failed — this material is not semantically searchable yet; check the embedding model and reprocess.',
+      ENTITY_EXTRACTION_FAILED: 'Entity-graph extraction failed — the knowledge graph may be incomplete; reprocess later.',
+      UNKNOWN: 'Some background processing did not finish — see details.',
+    },
     progress: {
       preparing: 'Preparing…',
       uploading: 'Uploading {pct}%',

@@ -526,6 +526,7 @@ public class WikiProcessingService {
             // every pending chunk and produce more "all chunks failed" noise.
             if (totalChunks > 0 && !"cancelled".equals(finalStatus)) {
                 final Long fKbId = kb.getId();
+                final Long fRawId = rawId;
                 WIKI_EXECUTOR.submit(() -> {
                     try {
                         int embedded = embeddingService.embedMissingChunks(fKbId);
@@ -538,8 +539,10 @@ public class WikiProcessingService {
                         // emit a calmer notice here instead of a generic failure log.
                         log.warn("[Wiki] Async embedding aborted by circuit-breaker for kbId={}: {}",
                                 fKbId, ex.getMessage());
+                        surfaceWarning(fKbId, fRawId, "EMBEDDING_FAILED", ex.getMessage());
                     } catch (Exception ex) {
                         log.warn("[Wiki] Async embedding failed for kbId={}: {}", fKbId, ex.getMessage());
+                        surfaceWarning(fKbId, fRawId, "EMBEDDING_FAILED", ex.getMessage());
                     }
                 });
             }
@@ -560,6 +563,7 @@ public class WikiProcessingService {
                         }
                     } catch (Exception ex) {
                         log.warn("[Wiki] Async entity extraction failed for kbId={}: {}", fKbId, ex.getMessage());
+                        surfaceWarning(fKbId, fRawId, "ENTITY_EXTRACTION_FAILED", ex.getMessage());
                     }
                 });
             }
@@ -2717,6 +2721,24 @@ public class WikiProcessingService {
         TransientLlmException(String msg) { super(msg); }
     }
 
+    /**
+     * Persist a non-blocking warning on a completed material whose async sub-step
+     * (embedding / entity extraction) failed, and push it live so the UI can flag
+     * the degradation without a reload. Best-effort: a warning must never escalate
+     * into a pipeline failure, so any bookkeeping error here is swallowed.
+     */
+    private void surfaceWarning(Long kbId, Long rawId, String warningCode, String warningMessage) {
+        try {
+            rawService.recordWarning(rawId, warningCode, warningMessage);
+            progressBus.broadcast(kbId, WikiProgressBus.EVENT_RAW_WARNING,
+                    Map.of("rawId", rawId,
+                            "warningCode", warningCode,
+                            "warning", warningMessage == null ? "" : warningMessage));
+        } catch (Exception ex) {
+            log.warn("[Wiki] Failed to record warning for raw={}: {}", rawId, ex.getMessage());
+        }
+    }
+
     // ==================== RFC-030: Error classification ====================
 
     /**
@@ -3022,6 +3044,7 @@ public class WikiProcessingService {
             // Async embedding — mirror the eager path so a slow embedding model
             // does not block the raw from reaching completed.
             final Long fKbId = kbId;
+            final Long fRawId = rawId;
             WIKI_EXECUTOR.submit(() -> {
                 try {
                     int embedded = embeddingService.embedMissingChunks(fKbId);
@@ -3031,8 +3054,10 @@ public class WikiProcessingService {
                 } catch (WikiEmbeddingProviderFailingException ex) {
                     log.warn("[Wiki] Lazy async embedding aborted by circuit-breaker for kbId={}: {}",
                             fKbId, ex.getMessage());
+                    surfaceWarning(fKbId, fRawId, "EMBEDDING_FAILED", ex.getMessage());
                 } catch (Exception ex) {
                     log.warn("[Wiki] Lazy async embedding failed for kbId={}: {}", fKbId, ex.getMessage());
+                    surfaceWarning(fKbId, fRawId, "EMBEDDING_FAILED", ex.getMessage());
                 }
             });
 

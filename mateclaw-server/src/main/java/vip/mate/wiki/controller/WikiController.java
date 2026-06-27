@@ -526,6 +526,8 @@ public class WikiController {
             item.put("processingStatus", raw.getProcessingStatus());
             item.put("errorCode", raw.getErrorCode());
             item.put("errorMessage", raw.getErrorMessage());
+            item.put("warningCode", raw.getWarningCode());
+            item.put("warningMessage", raw.getWarningMessage());
             item.put("progressPhase", raw.getProgressPhase());
             item.put("progressDone", raw.getProgressDone());
             item.put("progressTotal", raw.getProgressTotal());

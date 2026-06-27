@@ -2532,6 +2532,12 @@ export default {
       EMPTY_RESULT: '模型未生成任何页面，可重新处理以重试',
       UNKNOWN: '处理失败，请查看详情或后台日志',
     },
+    // Non-blocking warnings: the material processed but an async sub-step failed.
+    warningCode: {
+      EMBEDDING_FAILED: '向量化失败，该材料暂时无法被语义检索，请检查 embedding 模型后重新处理',
+      ENTITY_EXTRACTION_FAILED: '实体图谱抽取失败，知识图谱可能不完整，可稍后重新处理',
+      UNKNOWN: '部分后台处理未完成，请查看详情',
+    },
     progress: {
       preparing: '准备中…',
       uploading: '上传 {pct}%',
