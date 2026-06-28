@@ -69,36 +69,40 @@ public class WikiRawMaterialEntity {
     private String errorMessage;
 
     /**
-     * 结构化错误码，与 {@code WikiProcessingService#classifyErrorCode} 同一词表
-     * （AUTH_ERROR / BILLING / MODEL_NOT_FOUND / RATE_LIMIT / TIMEOUT /
-     * SERVER_ERROR / CONTENT_FILTER / NO_CONTENT / EMPTY_RESULT / UNKNOWN）。
-     * 供前端做本地化的友好提示；null 表示无错误。
+     * Structured error code, sharing the same vocabulary as
+     * {@code WikiProcessingService#classifyErrorCode}
+     * (AUTH_ERROR / BILLING / MODEL_NOT_FOUND / RATE_LIMIT / TIMEOUT /
+     * SERVER_ERROR / CONTENT_FILTER / NO_CONTENT / EMPTY_RESULT / UNKNOWN).
+     * Used by the frontend for localized friendly messages; null = no error.
      */
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private String errorCode;
 
     /**
-     * 非阻断告警码：材料整体处理成功（completed/partial），但某个异步子步骤
-     * （向量化 embedding / 实体图抽取）失败导致功能降级（如无法语义检索）。
-     * 与 {@link #errorCode} 同一友好提示机制；null 表示无告警。
+     * Non-blocking warning code: the material was processed successfully
+     * overall (completed/partial), but an async sub-step (embedding /
+     * entity-graph extraction) failed causing a degraded feature (e.g. no
+     * semantic search). Shares the same friendly-prompt mechanism as
+     * {@link #errorCode}; null = no warning.
      */
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private String warningCode;
 
-    /** 告警原始文本（供排查），与 {@link #warningCode} 配套。 */
+    /** Raw warning text (for troubleshooting), paired with {@link #warningCode}. */
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private String warningMessage;
 
     /**
-     * RFC-012 M2 v2 UI：当前处理阶段（null 未开始 / "route" / "phase-b" / "done"）。
-     * 供前端决定是否显示进度条以及显示"准备中"还是具体进度。
+     * RFC-012 M2 v2 UI: current processing phase (null = not started /
+     * "route" / "phase-b" / "done"). Drives whether the frontend shows a
+     * progress bar and whether it says "preparing" or a concrete percentage.
      */
     private String progressPhase;
 
-    /** RFC-012 M2 v2 UI：本次处理计划的总页数（route 阶段确定后写入）。 */
+    /** RFC-012 M2 v2 UI: total pages planned for this run (set after route phase). */
     private Integer progressTotal;
 
-    /** RFC-012 M2 v2 UI：已完成的页数（每个 phase B 页成功后 +1）。 */
+    /** RFC-012 M2 v2 UI: completed page count (incremented per successful phase-B page). */
     private Integer progressDone;
 
     @TableField(fill = FieldFill.INSERT)

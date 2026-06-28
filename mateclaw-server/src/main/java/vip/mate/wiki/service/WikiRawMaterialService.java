@@ -22,6 +22,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.HexFormat;
 import java.util.List;
+import vip.mate.wiki.dto.WikiFailureItem;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -515,7 +516,7 @@ public class WikiRawMaterialService {
     }
 
     /** Cross-KB list of materials needing operator attention, newest first (capped). */
-    public java.util.List<vip.mate.wiki.dto.WikiFailureItem> listFailures(int limit) {
+    public List<WikiFailureItem> listFailures(int limit) {
         return rawMapper.listFailures(Math.max(1, Math.min(limit, 500)));
     }
 
