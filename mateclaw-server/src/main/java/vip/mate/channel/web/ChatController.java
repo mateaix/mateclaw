@@ -1731,6 +1731,11 @@ public class ChatController {
                 || lower.contains("client abort") || lower.contains("closed");
     }
 
+    /** Markdown link pointing at a generated-file download URL. Used by the
+     *  StreamAccumulator to surface generated artifacts in the run-overview rail. */
+    private static final java.util.regex.Pattern GENERATED_FILE_LINK_PATTERN =
+            java.util.regex.Pattern.compile("\\[([^\\]]+)\\]\\(([^)]*?/api/v1/files/generated/[a-zA-Z0-9-]+)\\)");
+
     /**
      * 流式累积器 — 收集 StreamDelta 事件，持久化到 DB。
      * <p>
@@ -1753,6 +1758,8 @@ public class ChatController {
         private final List<Map<String, Object>> planStepResults = new ArrayList<>();
         /** RFC-052: tool names whose returnDirect output was folded into the assistant message */
         private final List<String> directToolNames = new ArrayList<>();
+        /** Generated file artifacts extracted from tool results — surfaced in the run-overview rail. */
+        private final List<Map<String, Object>> generatedFiles = new ArrayList<>();
         private int segCounter = 0;
         private int promptTokens = 0;
         private int completionTokens = 0;
@@ -2024,6 +2031,30 @@ public class ChatController {
                         break;
                     }
                 }
+                // Extract generated-file links from the tool result so the
+                // run-overview rail can surface artifacts without re-scanning
+                // segments on the frontend.
+                extractGeneratedFiles(String.valueOf(data.getOrDefault("result", "")), toolName);
+            }
+        }
+
+        /** Scan a tool result for markdown links pointing at generated-file
+         *  download URLs and collect them into {@link #generatedFiles}.
+         *  De-duplicates by URL so a link echoed in later tool results doesn't
+         *  produce duplicate entries in the run-overview rail. */
+        private void extractGeneratedFiles(String result, String toolName) {
+            if (result == null || result.isBlank()) return;
+            java.util.regex.Matcher m = GENERATED_FILE_LINK_PATTERN.matcher(result);
+            while (m.find()) {
+                String url = m.group(2);
+                boolean dup = generatedFiles.stream()
+                        .anyMatch(f -> url.equals(String.valueOf(f.get("url"))));
+                if (dup) continue;
+                Map<String, Object> file = new LinkedHashMap<>();
+                file.put("filename", m.group(1));
+                file.put("url", url);
+                file.put("toolName", toolName);
+                generatedFiles.add(file);
             }
         }
 
@@ -2146,6 +2177,9 @@ public class ChatController {
                     // (assembled by FinalAnswerNode). UI uses this to badge
                     // historical messages as "data returned directly by tool".
                     metadata.put("directToolNames", directToolNames);
+                }
+                if (!generatedFiles.isEmpty()) {
+                    metadata.put("generatedFiles", generatedFiles);
                 }
                 if (!finishReason.isEmpty()) {
                     // Surface graph FinishReason so MemorySummarizationGate and
