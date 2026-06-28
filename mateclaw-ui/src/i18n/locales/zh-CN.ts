@@ -105,6 +105,7 @@ export default {
       title: '运行总览',
       plan: '计划进度',
       subagents: '子 Agent',
+      files: '生成文件',
       noPlan: '暂无执行计划',
       noSubagents: '暂无子 Agent',
       collapse: '收起总览',

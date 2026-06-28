@@ -2,7 +2,7 @@
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { Connection, Loading, Expand, Fold } from '@element-plus/icons-vue'
 import { useToolLabel } from '@/composables/useToolLabel'
-import type { Message, MessageSegment, DelegationNode, PlanMeta } from '@/types'
+import type { Message, MessageSegment, DelegationNode, PlanMeta, GeneratedFile } from '@/types'
 import PlanStepsPanel from './PlanStepsPanel.vue'
 import DelegationNodeView from './DelegationNodeView.vue'
 
@@ -94,6 +94,8 @@ const subagentNodes = computed<DelegationNode[]>(() =>
 
 const runningSubagents = computed(() => subagentNodes.value.filter(n => n.status === 'running').length)
 
+const generatedFiles = computed<GeneratedFile[]>(() => latestAssistant.value?.metadata?.generatedFiles || [])
+
 const planProgress = computed(() => {
   const p = currentPlan.value
   if (!p?.steps?.length) return ''
@@ -101,7 +103,7 @@ const planProgress = computed(() => {
   return `${done}/${p.steps.length}`
 })
 
-const hasContent = computed(() => !!currentPlan.value || subagentNodes.value.length > 0)
+const hasContent = computed(() => !!currentPlan.value || subagentNodes.value.length > 0 || generatedFiles.value.length > 0)
 
 /** Plan-capable agents earn the placeholder so the rail stays stable mid-run. */
 const expectsPlan = computed(() => props.agentType === 'plan_execute')
@@ -115,6 +117,12 @@ const planning = computed(() => !currentPlan.value && props.isGenerating && expe
 
 /** The floating-drawer backdrop is only relevant on narrow, expanded state. */
 const showBackdrop = computed(() => isNarrow.value && !collapsed.value && showPanel.value)
+
+/** Derive a CSS class from the filename extension for a lightweight file-type icon. */
+function fileIconClass(filename: string): string {
+  const ext = (filename.split('.').pop() || '').toLowerCase()
+  return `is-${ext}`
+}
 </script>
 
 <template>
@@ -138,6 +146,9 @@ const showBackdrop = computed(() => isNarrow.value && !collapsed.value && showPa
       <span v-if="planProgress" class="run-overview__rail-badge">{{ planProgress }}</span>
       <span v-if="subagentNodes.length" class="run-overview__rail-badge is-sub">
         <el-icon :size="12"><Connection /></el-icon>{{ subagentNodes.length }}
+      </span>
+      <span v-if="generatedFiles.length" class="run-overview__rail-badge is-file">
+        {{ generatedFiles.length }}
       </span>
       <el-icon v-if="isGenerating" class="run-overview__rail-live is-loading" :size="13"><Loading /></el-icon>
     </button>
@@ -190,6 +201,28 @@ const showBackdrop = computed(() => isNarrow.value && !collapsed.value && showPa
             />
           </div>
           <p v-else class="run-overview__empty">{{ $t('chat.runOverview.noSubagents') }}</p>
+        </section>
+
+        <!-- Generated files -->
+        <section v-if="generatedFiles.length" class="run-overview__section">
+          <div class="run-overview__section-title">
+            {{ $t('chat.runOverview.files') }}
+            <span class="run-overview__count">{{ generatedFiles.length }}</span>
+          </div>
+          <div class="run-overview__files">
+            <a
+              v-for="(file, idx) in generatedFiles"
+              :key="idx"
+              :href="file.url"
+              target="_blank"
+              rel="noopener"
+              class="run-overview__file"
+              :title="file.filename"
+            >
+              <span class="run-overview__file-icon" :class="fileIconClass(file.filename)"></span>
+              <span class="run-overview__file-name">{{ file.filename }}</span>
+            </a>
+          </div>
         </section>
       </div>
     </template>
@@ -259,6 +292,9 @@ const showBackdrop = computed(() => isNarrow.value && !collapsed.value && showPa
 }
 .run-overview__rail-badge.is-sub {
   color: var(--mc-primary);
+}
+.run-overview__rail-badge.is-file {
+  color: var(--mc-success, #67c23a);
 }
 .run-overview__rail-live {
   color: var(--mc-primary);
@@ -343,5 +379,49 @@ const showBackdrop = computed(() => isNarrow.value && !collapsed.value && showPa
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+.run-overview__files {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.run-overview__file {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--mc-border-light);
+  background: var(--mc-bg-sunken, #f3f0ed);
+  text-decoration: none;
+  font-size: 12px;
+  color: var(--mc-text-primary);
+  transition: border-color 0.15s, background 0.15s;
+}
+.run-overview__file:hover {
+  border-color: var(--mc-primary);
+  background: var(--mc-bg-hover, #f0ece8);
+}
+.run-overview__file-icon {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  background: var(--mc-text-quaternary, #c0bfbc);
+}
+.run-overview__file-icon.is-docx { background: #2b579a; }
+.run-overview__file-icon.is-xlsx { background: #217346; }
+.run-overview__file-icon.is-pptx { background: #d24726; }
+.run-overview__file-icon.is-pdf { background: #db4437; }
+.run-overview__file-icon.is-png,
+.run-overview__file-icon.is-jpg,
+.run-overview__file-icon.is-jpeg,
+.run-overview__file-icon.is-gif,
+.run-overview__file-icon.is-svg { background: #e8a33d; }
+.run-overview__file-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 </style>

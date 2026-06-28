@@ -14,6 +14,7 @@ import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 
 import jakarta.servlet.http.HttpServletResponse;
+import vip.mate.kbopen.auth.KbOpenApiAuthFilter;
 
 /**
  * Spring Security 配置
@@ -28,6 +29,7 @@ import jakarta.servlet.http.HttpServletResponse;
 public class SecurityConfig {
 
     private final JwtAuthFilter jwtAuthFilter;
+    private final KbOpenApiAuthFilter kbOpenApiAuthFilter;
 
     /**
      * SpringDoc Swagger UI / OpenAPI document paths. These serve the full REST
@@ -90,6 +92,9 @@ public class SecurityConfig {
                     "/api/v1/setup/**",
                     "/api/v1/channels/webhook/**",
                     "/api/v1/channels/webchat/**",
+                    // KB Open API: authenticated by KbOpenApiAuthFilter (API key),
+                    // not JWT — must be permitAll so the filter is the sole gatekeeper (R1).
+                    "/api/v1/open/kb/**",
                     "/api/v1/talk/ws",
                     // Desktop local-tool tunnel — the handshake interceptor
                     // authenticates the ?token= query param itself, so the
@@ -120,6 +125,7 @@ public class SecurityConfig {
                     response.getWriter().write("{\"code\":401,\"msg\":\"Token expired or invalid\",\"data\":null}");
                 })
             )
+            .addFilterBefore(kbOpenApiAuthFilter, UsernamePasswordAuthenticationFilter.class)
             .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class);
 
         return http.build();
