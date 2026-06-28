@@ -195,8 +195,10 @@ class WikiProcessingServiceLazyTest {
         service.processRawMaterial(RAW_ID);
 
         verify(chunkService, never()).persistChunks(anyLong(), anyLong(), anyList(), anyList());
-        verify(rawService).updateProcessingStatus(eq(RAW_ID), eq("failed"), eq("No text content available"));
-        verify(progressBus).broadcast(eq(KB_ID), eq(WikiProgressBus.EVENT_RAW_FAILED), any());
+        verify(rawService).updateProcessingStatus(eq(RAW_ID), eq("failed"), eq("NO_CONTENT"), eq("No text content available"));
+        // RAW_FAILED now carries the structured errorCode alongside the message.
+        verify(progressBus).broadcast(eq(KB_ID), eq(WikiProgressBus.EVENT_RAW_FAILED),
+                argThat((Map<String, Object> m) -> "NO_CONTENT".equals(m.get("errorCode"))));
     }
 
     @Test

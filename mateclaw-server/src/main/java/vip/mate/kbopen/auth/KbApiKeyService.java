@@ -227,7 +227,9 @@ public class KbApiKeyService {
         if (scopes == null || scopes.isBlank()) {
             return Set.of("kb:*");
         }
-        return Set.of(scopes.split(","));
+        return Set.of(scopes.split(",")).stream()
+                .map(String::trim)
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
     }
 
     /** Return value of {@link #create}. */

@@ -390,6 +390,7 @@ export const liveApi = {
 export interface NotificationSummary {
   pendingApprovals: number
   stuckAgents: number
+  failedWikiJobs: number
   failedCrons: number
   downChannels: number
   downMcps: number
@@ -782,6 +783,22 @@ export const cronJobApi = {
 }
 
 // ==================== Wiki Knowledge Base ====================
+// One row in the cross-KB failure center. ids are strings (global Long→String
+// Jackson config) to avoid Snowflake precision loss.
+export interface WikiFailureItem {
+  rawId: string
+  kbId: string
+  kbName: string
+  workspaceId: string | null
+  title: string
+  processingStatus: string
+  errorCode: string | null
+  errorMessage: string | null
+  warningCode: string | null
+  warningMessage: string | null
+  updateTime: string | null
+}
+
 export const wikiApi = {
   // Knowledge Base
   listKBs: () => http.get('/wiki/knowledge-bases'),
@@ -801,6 +818,9 @@ export const wikiApi = {
   setSourceDirectory: (id: string | number, path: string) =>
     http.put(`/wiki/knowledge-bases/${id}/source-directory`, { path }),
   scanDirectory: (id: number) => http.post(`/wiki/knowledge-bases/${id}/scan`),
+
+  // Centralized cross-KB failure center (admin only)
+  listFailures: (limit = 100) => http.get<{ data: WikiFailureItem[] }>(`/wiki/admin/failures?limit=${limit}`),
 
   // Raw Materials
   listRaw: (kbId: number) => http.get(`/wiki/knowledge-bases/${kbId}/raw`),
@@ -1031,11 +1051,16 @@ export const agentBindingApi = {
   unbindSkill: (agentId: string | number, skillId: number) => http.delete(`/agents/${agentId}/skills/${skillId}`),
   listTools: (agentId: string | number) => http.get(`/agents/${agentId}/tools`),
   setTools: (agentId: string | number, toolNames: string[]) => http.put(`/agents/${agentId}/tools`, toolNames),
-  // RFC-009 PR-3: per-agent provider preference order. Empty list = use global chain order.
+  // Per-agent preferred-model chain (provider + model). Empty list = use the
+  // global chain order. modelId null = the provider's default model; the same
+  // provider may appear multiple times with different models. modelId is a
+  // string to preserve Snowflake precision.
   listProviderPreferences: (agentId: string | number) =>
     http.get(`/agents/${agentId}/provider-preferences`),
-  setProviderPreferences: (agentId: string | number, providerIds: string[]) =>
-    http.put(`/agents/${agentId}/provider-preferences`, providerIds),
+  setProviderPreferences: (
+    agentId: string | number,
+    preferences: Array<{ providerId: string; modelId: string | null }>,
+  ) => http.put(`/agents/${agentId}/provider-preferences`, preferences),
   // Per-agent knowledge base access scope. Empty array = unrestricted
   // (agent can reach every KB in its workspace). IDs are kept as strings
   // for the Snowflake-precision contract.
