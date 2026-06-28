@@ -1,9 +1,13 @@
 package vip.mate.kbopen.research;
 
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import vip.mate.wiki.service.WikiResearchService.ResearchResult;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
@@ -20,6 +24,19 @@ import java.util.concurrent.ConcurrentHashMap;
  * would need to live in a shared store — but research is short-lived (< 1 min
  * typical) and the SSE stream must connect to the node running the job, so
  * sticky routing is a prerequisite anyway.
+ *
+ * <h3>Lifecycle invariants</h3>
+ * <ul>
+ *   <li>{@link Status#CANCELLED} is a <b>sticky</b> terminal state: a late
+ *       {@link #complete}/{@link #fail} arriving after cancel is a no-op, so
+ *       the user who cancelled never sees a COMPLETED report.</li>
+ *   <li>Terminal sessions are evicted by {@link #evictExpired} after
+ *       {@code mate.kbopen.research.session-ttl} (default 30 min) so the map
+ *       cannot grow without bound.</li>
+ *   <li>{@link #startIfAllowed} enforces a per-key concurrency cap
+ *       ({@code mate.kbopen.research.max-concurrent-per-key}, default 3) as a
+ *       DoS / runaway-cost guard on top of the per-minute rate limiter.</li>
+ * </ul>
  */
 @Slf4j
 @Component
@@ -27,33 +44,103 @@ public class KbResearchSessionRegistry {
 
     public enum Status { RUNNING, COMPLETED, FAILED, CANCELLED }
 
+    /** Adds {@code updatedAt} so the eviction sweep can find stale terminals. */
     public record Session(String sessionId, Long keyId, Long kbId, String topic, Status status,
-                          ResearchResult result, String error) {}
+                          ResearchResult result, String error, Instant updatedAt) {
+
+        /** Convenience for {@link #register} (status=RUNNING, no result). */
+        static Session running(String sessionId, Long keyId, Long kbId, String topic) {
+            return new Session(sessionId, keyId, kbId, topic, Status.RUNNING, null, null, Instant.now());
+        }
+
+        private Session with(Status newStatus, ResearchResult res, String err) {
+            return new Session(sessionId, keyId, kbId, topic, newStatus, res, err, Instant.now());
+        }
+    }
+
+    /** Exception thrown by {@link #startIfAllowed} when the per-key cap is hit. */
+    public static class TooManyConcurrentException extends RuntimeException {
+        public TooManyConcurrentException(String msg) { super(msg); }
+    }
 
     private final Map<String, Session> sessions = new ConcurrentHashMap<>();
 
+    private final int maxConcurrentPerKey;
+    private final Duration sessionTtl;
+
+    public KbResearchSessionRegistry(
+            @Value("${mate.kbopen.research.max-concurrent-per-key:3}") int maxConcurrentPerKey,
+            @Value("${mate.kbopen.research.session-ttl:PT30M}") Duration sessionTtl) {
+        this.maxConcurrentPerKey = maxConcurrentPerKey;
+        this.sessionTtl = sessionTtl;
+    }
+
+    /**
+     * Reserve a slot for a new session, enforcing the per-key concurrency cap.
+     *
+     * @throws TooManyConcurrentException if {@code keyId} already has
+     *         {@code maxConcurrentPerKey} RUNNING sessions.
+     */
+    public void startIfAllowed(String sessionId, Long keyId, Long kbId, String topic) {
+        long running = sessions.values().stream()
+                .filter(s -> keyId.equals(s.keyId()) && s.status() == Status.RUNNING)
+                .count();
+        if (running >= maxConcurrentPerKey) {
+            throw new TooManyConcurrentException(
+                    "API key already has " + running + " running research session(s); limit is " + maxConcurrentPerKey);
+        }
+        sessions.put(sessionId, Session.running(sessionId, keyId, kbId, topic));
+    }
+
+    /** Back-compat with existing callers / tests. Equivalent to {@code startIfAllowed} without the cap check. */
     public void register(String sessionId, Long keyId, Long kbId, String topic) {
-        sessions.put(sessionId, new Session(sessionId, keyId, kbId, topic, Status.RUNNING, null, null));
+        sessions.put(sessionId, Session.running(sessionId, keyId, kbId, topic));
     }
 
     public Optional<Session> get(String sessionId) {
         return Optional.ofNullable(sessions.get(sessionId));
     }
 
+    /** RUNNING → COMPLETED. No-op on a session that was already CANCELLED (sticky terminal). */
     public void complete(String sessionId, ResearchResult result) {
         sessions.computeIfPresent(sessionId, (k, s) ->
-                new Session(s.sessionId(), s.keyId(), s.kbId(), s.topic(), Status.COMPLETED, result, null));
+                s.status() == Status.CANCELLED ? s : s.with(Status.COMPLETED, result, null));
     }
 
+    /** RUNNING → FAILED. No-op on a session that was already CANCELLED (sticky terminal). */
     public void fail(String sessionId, String error) {
         sessions.computeIfPresent(sessionId, (k, s) ->
-                new Session(s.sessionId(), s.keyId(), s.kbId(), s.topic(), Status.FAILED, null, error));
+                s.status() == Status.CANCELLED ? s : s.with(Status.FAILED, null, error));
     }
 
+    /** RUNNING → CANCELLED. Returns false if the session is missing or already terminal. */
     public boolean cancel(String sessionId) {
-        return sessions.computeIfPresent(sessionId, (k, s) ->
-                s.status() == Status.RUNNING
-                        ? new Session(s.sessionId(), s.keyId(), s.kbId(), s.topic(), Status.CANCELLED, null, null)
-                        : s) != null;
+        Session before = sessions.computeIfPresent(sessionId, (k, s) ->
+                s.status() == Status.RUNNING ? s.with(Status.CANCELLED, null, null) : s);
+        return before != null && before.status() == Status.CANCELLED;
+    }
+
+    /**
+     * Drop terminal sessions older than {@code sessionTtl}. Called periodically
+     * by {@link #evictExpired}; public for testing.
+     */
+    public int evictExpired(Instant now) {
+        int removed = 0;
+        for (Map.Entry<String, Session> e : sessions.entrySet()) {
+            Session s = e.getValue();
+            if (s.status() != Status.RUNNING && now.isAfter(s.updatedAt().plus(sessionTtl))) {
+                if (sessions.remove(e.getKey()) != null) removed++;
+            }
+        }
+        if (removed > 0) {
+            log.info("[KbResearchSessionRegistry] Evicted {} terminal session(s) older than {}", removed, sessionTtl);
+        }
+        return removed;
+    }
+
+    /** Scheduled sweep — runs every 5 min. */
+    @Scheduled(fixedDelay = 5 * 60 * 1000L)
+    public void evictExpired() {
+        evictExpired(Instant.now());
     }
 }
