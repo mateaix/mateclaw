@@ -6,6 +6,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
 import vip.mate.agent.AgentService;
 import vip.mate.agent.binding.model.AgentProviderPreference;
+import vip.mate.llm.routing.ProviderModelRef;
 import vip.mate.agent.binding.model.AgentSkillBinding;
 import vip.mate.agent.binding.model.AgentToolBinding;
 import vip.mate.agent.binding.model.AgentWikiKbBinding;
@@ -122,18 +123,18 @@ public class AgentBindingController {
         return R.ok(bindingService.listProviderPreferences(agentId));
     }
 
-    @Operation(summary = "批量设置 Agent 的偏好 Provider 顺序（替换模式）")
+    @Operation(summary = "批量设置 Agent 的偏好模型链（供应商 + 模型，替换模式）")
     @PutMapping("/provider-preferences")
     @RequireWorkspaceRole("member")
     public R<Void> setProviderPreferences(
             @PathVariable Long agentId,
-            @RequestBody List<String> providerIds,
+            @RequestBody List<ProviderModelRef> preferences,
             @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
         verifyAgentWorkspace(agentId, workspaceId);
-        bindingService.setProviderPreferences(agentId, providerIds);
+        bindingService.setProviderModelPreferences(agentId, preferences);
         agentService.invalidateAgentCache(agentId);
         auditEventService.record("UPDATE", "AGENT_PROVIDER_PREF", String.valueOf(agentId),
-                "providers=" + providerIds.size(), null);
+                "entries=" + (preferences == null ? 0 : preferences.size()), null);
         return R.ok();
     }
 
