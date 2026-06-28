@@ -87,9 +87,10 @@ public class KbOpenApiAuthFilter extends OncePerRequestFilter {
         if (StringUtils.hasText(bearer) && bearer.startsWith("Bearer ")) {
             return bearer.substring(7).trim();
         }
-        // SSE fallback: query param (EventSource can't set headers)
-        String queryToken = request.getParameter("token");
-        return StringUtils.hasText(queryToken) ? queryToken.trim() : null;
+        // TODO: add ?token= SSE fallback once Deep Research SSE endpoint is live.
+        //  EventSource can't set custom headers; for now P0-A has no SSE path so
+        //  query param would leak the key into access / proxy logs (R5).
+        return null;
     }
 
     private void sendUnauthorized(HttpServletResponse response, String message) throws IOException {

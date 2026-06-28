@@ -14,6 +14,7 @@ import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 
 import jakarta.servlet.http.HttpServletResponse;
+import vip.mate.kbopen.auth.KbOpenApiAuthFilter;
 
 /**
  * Spring Security 配置
@@ -28,7 +29,7 @@ import jakarta.servlet.http.HttpServletResponse;
 public class SecurityConfig {
 
     private final JwtAuthFilter jwtAuthFilter;
-    private final vip.mate.kbopen.auth.KbOpenApiAuthFilter kbOpenApiAuthFilter;
+    private final KbOpenApiAuthFilter kbOpenApiAuthFilter;
 
     /**
      * SpringDoc Swagger UI / OpenAPI document paths. These serve the full REST

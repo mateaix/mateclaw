@@ -15,8 +15,8 @@ import java.time.LocalDateTime;
  * Knowledge Base Open API Key entity.
  *
  * <p>Plaintext keys are never persisted; only the SHA-256 hash lives in
- * {@link #tokenHash}. The {@code prefix} column stores the first 4 chars of
- * the plaintext purely for UI display ({@code "mck_ab****"}) — it does not
+ * {@link #tokenHash}. The {@code prefix} column stores the first 8 chars of
+ * the plaintext purely for UI display ({@code "mck_ab12****"}) — it does not
  * compromise security because the hash is not reversible.
  */
 @Data
@@ -32,7 +32,7 @@ public class KbApiKeyEntity {
     @JsonIgnore
     private String tokenHash;
 
-    /** First 4 chars of plaintext, for UI display only. */
+    /** First 8 chars of plaintext ({@code "mck_" + 4 random}), for UI display only. */
     private String prefix;
 
     /** Owning workspace — the isolation boundary. */
