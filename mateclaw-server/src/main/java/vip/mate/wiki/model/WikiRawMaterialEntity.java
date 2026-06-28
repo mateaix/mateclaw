@@ -93,16 +93,16 @@ public class WikiRawMaterialEntity {
     private String warningMessage;
 
     /**
-     * RFC-012 M2 v2 UI: current processing phase (null = not started /
-     * "route" / "phase-b" / "done"). Drives whether the frontend shows a
-     * progress bar and whether it says "preparing" or a concrete percentage.
+     * Current processing phase (null = not started / "route" / "phase-b" /
+     * "done"). Drives whether the frontend shows a progress bar and whether
+     * it says "preparing" or a concrete percentage.
      */
     private String progressPhase;
 
-    /** RFC-012 M2 v2 UI: total pages planned for this run (set after route phase). */
+    /** Total pages planned for this run (set after route phase). */
     private Integer progressTotal;
 
-    /** RFC-012 M2 v2 UI: completed page count (incremented per successful phase-B page). */
+    /** Completed page count (incremented per successful phase-B page). */
     private Integer progressDone;
 
     @TableField(fill = FieldFill.INSERT)
