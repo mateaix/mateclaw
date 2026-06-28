@@ -15,7 +15,7 @@
 -- provider-default rows are not DB-enforced; the service replaces the whole
 -- list on save and the UI prevents that, so this is intentional.
 
-ALTER TABLE mate_agent_provider_preference ADD COLUMN model_id BIGINT;
+ALTER TABLE mate_agent_provider_preference ADD COLUMN IF NOT EXISTS model_id BIGINT;
 DROP INDEX IF EXISTS uk_agent_provider;
 CREATE UNIQUE INDEX IF NOT EXISTS uk_agent_provider_model
     ON mate_agent_provider_preference(agent_id, provider_id, model_id);
