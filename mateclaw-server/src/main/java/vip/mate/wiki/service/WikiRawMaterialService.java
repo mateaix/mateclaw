@@ -152,7 +152,7 @@ public class WikiRawMaterialService {
         entity.setFileSize((long) content.getBytes(StandardCharsets.UTF_8).length);
         entity.setSourcePath(sourcePath);
         entity.setProcessingStatus("pending");
-        entity.setErrorMessage(null);
+        clearFailureState(entity);
         entity.setExtractedText(null);
         entity.setProgressPhase(null);
         entity.setProgressDone(0);
@@ -227,7 +227,7 @@ public class WikiRawMaterialService {
         entity.setFileSize(fileSize);
         entity.setSourcePath(sourcePath);
         entity.setProcessingStatus("pending");
-        entity.setErrorMessage(null);
+        clearFailureState(entity);
         entity.setExtractedText(null);
         entity.setProgressPhase(null);
         entity.setProgressDone(0);
@@ -411,7 +411,7 @@ public class WikiRawMaterialService {
             return false;
         }
         entity.setProcessingStatus("processing");
-        entity.setErrorMessage(null);
+        clearFailureState(entity);
         // RFC-012 M2 v2 UI：新一轮处理开始，清掉上次遗留的进度显示
         entity.setProgressPhase(null);
         entity.setProgressTotal(0);
@@ -478,11 +478,60 @@ public class WikiRawMaterialService {
         rawMapper.updateById(entity);
     }
 
-    @Transactional
     public void updateProcessingStatus(Long id, String status, String errorMessage) {
+        updateProcessingStatus(id, status, null, errorMessage);
+    }
+
+    /**
+     * Reset all failure/warning surfacing fields to a clean slate for a fresh
+     * run. Required because {@code errorCode}/{@code errorMessage}/{@code warning*}
+     * all carry {@code FieldStrategy.ALWAYS}: a row loaded then re-saved would
+     * otherwise re-persist its stale values.
+     */
+    private static void clearFailureState(WikiRawMaterialEntity e) {
+        e.setErrorCode(null);
+        e.setErrorMessage(null);
+        e.setWarningCode(null);
+        e.setWarningMessage(null);
+    }
+
+    /**
+     * Record a non-blocking warning on a material that finished processing but
+     * had an async sub-step (embedding / entity extraction) fail. Does not touch
+     * {@code processingStatus} — the material is still usable, just degraded.
+     */
+    @Transactional
+    public void recordWarning(Long id, String warningCode, String warningMessage) {
+        WikiRawMaterialEntity entity = rawMapper.selectById(id);
+        if (entity == null) return;
+        entity.setWarningCode(warningCode);
+        entity.setWarningMessage(warningMessage);
+        rawMapper.updateById(entity);
+    }
+
+    /** Cross-KB count of materials needing operator attention (failed/partial/degraded). */
+    public long countFailures() {
+        return rawMapper.countFailures();
+    }
+
+    /** Cross-KB list of materials needing operator attention, newest first (capped). */
+    public java.util.List<vip.mate.wiki.dto.WikiFailureItem> listFailures(int limit) {
+        return rawMapper.listFailures(Math.max(1, Math.min(limit, 500)));
+    }
+
+    /**
+     * Terminal/intermediate status transition that also records a structured
+     * {@code errorCode} (see {@code WikiProcessingService#classifyErrorCode}).
+     * Both error fields carry {@link com.baomidou.mybatisplus.annotation.FieldStrategy#ALWAYS}
+     * on the entity, so a success transition with {@code null} code/message
+     * clears any stale failure left from a prior run.
+     */
+    @Transactional
+    public void updateProcessingStatus(Long id, String status, String errorCode, String errorMessage) {
         WikiRawMaterialEntity entity = rawMapper.selectById(id);
         if (entity == null) return;
         entity.setProcessingStatus(status);
+        entity.setErrorCode(errorCode);
         entity.setErrorMessage(errorMessage);
         if ("completed".equals(status)) {
             entity.setLastProcessedAt(java.time.LocalDateTime.now());
@@ -539,7 +588,7 @@ public class WikiRawMaterialService {
         }
         boolean wasPartial = "partial".equals(entity.getProcessingStatus());
         entity.setProcessingStatus("pending");
-        entity.setErrorMessage(null);
+        clearFailureState(entity);
         rawMapper.updateById(entity);
 
         if (wasPartial) {
@@ -798,7 +847,7 @@ public class WikiRawMaterialService {
             raw.setProgressPhase(null);
             raw.setProgressTotal(0);
             raw.setProgressDone(0);
-            raw.setErrorMessage(null);
+            clearFailureState(raw);
             rawMapper.updateById(raw);
 
             if (properties.isAutoProcessOnUpload()) {

@@ -1272,13 +1272,14 @@ export default {
       toolUnavailableTooltip: '此工具的命名与同服务下的另一个工具冲突，无法绑定（{reason}）。请在上游 MCP 服务中重命名后重试。',
       toolOrphanGroup: '已绑定但当前不可用',
       toolOrphanDescription: '此工具在以前绑定过，但已不在当前可用工具列表中（如所属 MCP 服务被删除或工具被上游下线）。取消勾选并保存可清理掉这条遗留绑定。',
-      providersHint: '此智能体优先使用的提供商顺序（数字越小越先尝试）。留空则按全局可用池顺序回退。提供商进入冷却或被移出池时仍会被自动跳过。',
-      providersAddHint: '点击下方提供商加入偏好列表：',
+      providersHint: '此智能体优先使用的「供应商 + 模型」链（数字越小越先尝试）。每条可指定具体模型，同一供应商可重复添加并分别选不同模型；留空则按全局可用池顺序回退。供应商进入冷却或被移出池时仍会被自动跳过。',
+      providersAddHint: '点击下方供应商添加一条偏好（同一供应商可多次添加，分别选模型）：',
+      providerDefaultModel: '供应商默认模型',
       noSkills: '暂无可用技能',
       noTools: '暂无可用工具',
       noMatchingSkills: '没有匹配的技能',
       noMatchingTools: '没有匹配的工具',
-      noProviderPreferences: '尚未配置偏好顺序，将按全局回退链顺序使用。',
+      noProviderPreferences: '尚未配置偏好模型链，将按全局回退链顺序使用。',
       wikiKicker: '知识库访问范围',
       wikiTagline: '限定此智能体可访问的知识库，防止它读取与业务无关的内容。',
       wikiHint: '勾选此智能体允许访问的知识库；可将其中一个设为默认（未指定 kbId/kbName 时优先使用）。',
@@ -2050,6 +2051,7 @@ export default {
   },
   notifications: {
     pendingApprovals: '{n} 个工具调用等待审批',
+    failedWikiJobs: '{n} 个知识库材料处理失败或降级',
   },
   live: {
     kicker: '现场',
@@ -2517,6 +2519,30 @@ export default {
       failed: '失败',
       cancelled: '已取消',
       cancelling: '正在取消…',
+    },
+    // Friendly, localized hints keyed by the backend's structured error code.
+    // The raw exception text is kept as the hover tooltip for troubleshooting.
+    errorCode: {
+      AUTH_ERROR: '模型鉴权失败，请检查供应商的 API Key 是否正确、有效',
+      BILLING: '供应商额度不足或计费异常，请检查账户余额',
+      MODEL_NOT_FOUND: '所选模型不存在或不可用，请在知识库设置中更换模型',
+      RATE_LIMIT: '请求过于频繁，已被供应商限流，请稍后重试',
+      TIMEOUT: '模型响应超时，请稍后重试或更换更快的模型',
+      SERVER_ERROR: '供应商服务暂时不可用（5xx），请稍后重试',
+      CONTENT_FILTER: '内容被模型安全策略拦截，请调整材料内容后重试',
+      NO_CONTENT: '未能从该材料中提取到文本内容，请检查文件是否为空或损坏',
+      EMPTY_RESULT: '模型未生成任何页面，可重新处理以重试',
+      UNKNOWN: '处理失败，请查看详情或后台日志',
+    },
+    // Non-blocking warnings: the material processed but an async sub-step failed.
+    warningCode: {
+      EMBEDDING_FAILED: '向量化失败，该材料暂时无法被语义检索，请检查 embedding 模型后重新处理',
+      ENTITY_EXTRACTION_FAILED: '实体图谱抽取失败，知识图谱可能不完整，可稍后重新处理',
+      UNKNOWN: '部分后台处理未完成，请查看详情',
+    },
+    failureCenter: {
+      title: '知识库处理异常',
+      open: '打开',
     },
     progress: {
       preparing: '准备中…',
