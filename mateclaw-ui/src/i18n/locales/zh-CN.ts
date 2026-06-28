@@ -2051,6 +2051,7 @@ export default {
   },
   notifications: {
     pendingApprovals: '{n} 个工具调用等待审批',
+    failedWikiJobs: '{n} 个知识库材料处理失败或降级',
   },
   live: {
     kicker: '现场',
@@ -2518,6 +2519,30 @@ export default {
       failed: '失败',
       cancelled: '已取消',
       cancelling: '正在取消…',
+    },
+    // Friendly, localized hints keyed by the backend's structured error code.
+    // The raw exception text is kept as the hover tooltip for troubleshooting.
+    errorCode: {
+      AUTH_ERROR: '模型鉴权失败，请检查供应商的 API Key 是否正确、有效',
+      BILLING: '供应商额度不足或计费异常，请检查账户余额',
+      MODEL_NOT_FOUND: '所选模型不存在或不可用，请在知识库设置中更换模型',
+      RATE_LIMIT: '请求过于频繁，已被供应商限流，请稍后重试',
+      TIMEOUT: '模型响应超时，请稍后重试或更换更快的模型',
+      SERVER_ERROR: '供应商服务暂时不可用（5xx），请稍后重试',
+      CONTENT_FILTER: '内容被模型安全策略拦截，请调整材料内容后重试',
+      NO_CONTENT: '未能从该材料中提取到文本内容，请检查文件是否为空或损坏',
+      EMPTY_RESULT: '模型未生成任何页面，可重新处理以重试',
+      UNKNOWN: '处理失败，请查看详情或后台日志',
+    },
+    // Non-blocking warnings: the material processed but an async sub-step failed.
+    warningCode: {
+      EMBEDDING_FAILED: '向量化失败，该材料暂时无法被语义检索，请检查 embedding 模型后重新处理',
+      ENTITY_EXTRACTION_FAILED: '实体图谱抽取失败，知识图谱可能不完整，可稍后重新处理',
+      UNKNOWN: '部分后台处理未完成，请查看详情',
+    },
+    failureCenter: {
+      title: '知识库处理异常',
+      open: '打开',
     },
     progress: {
       preparing: '准备中…',

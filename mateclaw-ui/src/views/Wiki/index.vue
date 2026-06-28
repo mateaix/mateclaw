@@ -2,6 +2,10 @@
   <div class="mc-page-shell wiki-shell">
     <div class="mc-page-frame wiki-frame">
       <div class="mc-page-inner wiki-inner">
+        <WikiFailureCenter
+          v-if="!store.currentKB && isAdmin"
+          @open="openFromFailureCenter"
+        />
         <WikiLibrary
           v-if="!store.currentKB"
           :kbs="store.knowledgeBases"
@@ -40,7 +44,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, watch, onMounted } from 'vue'
+import { ref, reactive, watch, onMounted, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { useWikiStore, type WikiKB } from '@/stores/useWikiStore'
@@ -49,12 +53,17 @@ import { mcConfirm } from '@/components/common/useConfirm'
 import { mcToast } from '@/composables/useMcToast'
 import WikiLibrary from './components/WikiLibrary.vue'
 import WikiWorkspace from './components/WikiWorkspace.vue'
+import WikiFailureCenter from './components/WikiFailureCenter.vue'
 
 const route = useRoute()
 const router = useRouter()
 
 const { t } = useI18n()
 const store = useWikiStore()
+
+// The cross-KB failure center spans every workspace, so it is admin-only —
+// mirrors the gate on the backing endpoint.
+const isAdmin = computed(() => (localStorage.getItem('role') || 'user') === 'admin')
 
 interface KBStats {
   pageCount: number
@@ -84,6 +93,12 @@ const newKBDesc = ref('')
 
 async function enterKB(id: number) {
   await store.selectKB(id, 'browse')
+}
+
+// The failure center emits a Snowflake kbId as a string — keep it a string end
+// to end (snowflake-precision-ok) and let the store cast satisfy its signature.
+async function openFromFailureCenter(kbId: string) {
+  await store.selectKB(kbId as unknown as number, 'browse')
 }
 
 async function enterKBManage(id: number) {
