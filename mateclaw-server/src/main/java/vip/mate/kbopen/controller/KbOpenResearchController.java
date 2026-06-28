@@ -17,10 +17,12 @@ import vip.mate.kbopen.auth.RequireKbScope;
 import vip.mate.kbopen.research.KbResearchSessionRegistry;
 import vip.mate.kbopen.research.KbResearchSessionRegistry.Session;
 import vip.mate.kbopen.research.KbResearchSessionRegistry.Status;
+import vip.mate.kbopen.research.KbResearchSessionRegistry.TooManyConcurrentException;
 import vip.mate.wiki.service.WikiKnowledgeBaseService;
 import vip.mate.wiki.service.WikiResearchService;
 import vip.mate.wiki.service.WikiResearchService.ResearchResult;
 
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -37,6 +39,17 @@ import java.util.concurrent.Executors;
  * <p>R7: the SSE endpoint uses {@code ?token=} query param because browser
  * EventSource cannot set Authorization headers. The {@code KbOpenApiAuthFilter}
  * already falls back to query param tokens.
+ *
+ * <h3>Cost &amp; lifecycle controls (review #446)</h3>
+ * <ul>
+ *   <li>Cancel is <b>cooperative</b>: it calls {@link ChatStreamTracker#requestStop}
+ *       so {@link WikiResearchService} bails at the next stage boundary — the
+ *       draft fan-out and compose LLM calls are skipped, not run to completion.</li>
+ *   <li>CANCELLED is a <b>sticky terminal</b>: a late complete() after cancel is
+ *       a no-op in the registry, so the user never sees a COMPLETED report.</li>
+ *   <li>Per-key <b>concurrency cap</b> ({@code mate.kbopen.research.max-concurrent-per-key})
+ *       stops one key from spawning unbounded parallel pipelines → 429.</li>
+ * </ul>
  */
 @Slf4j
 @Tag(name = "KB Open API — Deep Research")
@@ -73,11 +86,20 @@ public class KbOpenResearchController {
         String sessionId = "open-research-" + UUID.randomUUID();
         streamTracker.register(sessionId);
         streamTracker.incrementFlux(sessionId);
-        sessionRegistry.register(sessionId, ctx.keyId(), kbId, topic);
+        // Per-key concurrency cap (DoS / runaway-cost guard on top of the
+        // per-minute rate limiter). Throws → 429 below.
+        try {
+            sessionRegistry.startIfAllowed(sessionId, ctx.keyId(), kbId, topic);
+        } catch (TooManyConcurrentException e) {
+            try { streamTracker.complete(sessionId); } catch (Exception ignored) {}
+            throw new MateClawException(429, e.getMessage());
+        }
 
         RESEARCH_EXEC.submit(() -> {
             try {
                 ResearchResult result = researchService.research(kbId, topic, sessionId, req.topKPerQuestion());
+                // complete() is a no-op if the user already cancelled — the
+                // sticky CANCELLED terminal wins over a late COMPLETED.
                 sessionRegistry.complete(sessionId, result);
             } catch (Exception e) {
                 log.error("[KbOpenResearch] Failed sessionId={}: {}", sessionId, e.getMessage(), e);
@@ -136,7 +158,7 @@ public class KbOpenResearchController {
         Status status = session.status();
         ResearchResult result = session.result();
 
-        Map<String, Object> data = new java.util.LinkedHashMap<>();
+        Map<String, Object> data = new LinkedHashMap<>();
         data.put("sessionId", sessionId);
         data.put("status", status.name().toLowerCase());
         data.put("topic", session.topic());
@@ -163,8 +185,12 @@ public class KbOpenResearchController {
         if (session.status() != Status.RUNNING) {
             throw new MateClawException(409, "Session is not running (status: " + session.status() + ")");
         }
+        // Cooperative cancellation: signal the running pipeline to bail at the
+        // next stage boundary (plan→draft, draft→compose, and inside the draft
+        // fan-out) rather than running LLM calls to completion.
+        streamTracker.requestStop(sessionId);
         sessionRegistry.cancel(sessionId);
-        // Signal the SSE stream to close
+        // Close the SSE stream so subscribers detach immediately.
         try {
             streamTracker.broadcast(sessionId, "cancelled", "{\"message\":\"cancelled by user\"}");
             streamTracker.broadcast(sessionId, "done", "{}");
