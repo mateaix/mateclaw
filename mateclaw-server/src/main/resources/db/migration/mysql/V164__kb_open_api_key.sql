@@ -1,4 +1,4 @@
--- V161: Knowledge Base Open API Key.
+-- V164: Knowledge Base Open API Key.
 -- External API keys for programmatic access to knowledge base retrieval,
 -- tracing, and graph traversal. Like PAT (V76), plaintext is never stored —
 -- only the SHA-256 hash. A DB compromise reveals ownership, scope, and bound
@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS mate_kb_api_key (
     id                 BIGINT       NOT NULL PRIMARY KEY,
     name               VARCHAR(128) NOT NULL,
     token_hash         CHAR(64)     NOT NULL,
-    prefix             VARCHAR(6)   NOT NULL,
+    prefix             VARCHAR(12)  NOT NULL,
     workspace_id       BIGINT       NOT NULL,
     created_by         BIGINT       NOT NULL,
     scopes             VARCHAR(255),

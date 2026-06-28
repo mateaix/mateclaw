@@ -1,11 +1,11 @@
--- V161: Knowledge Base Open API Key (Kingbase dialect).
--- See mysql/V161 for full design notes.
+-- V164: Knowledge Base Open API Key (Kingbase dialect).
+-- See mysql/V164 for full design notes.
 
 CREATE TABLE IF NOT EXISTS mate_kb_api_key (
     id                 BIGINT       NOT NULL PRIMARY KEY,
     name               VARCHAR(128) NOT NULL,
     token_hash         CHAR(64)     NOT NULL,
-    prefix             VARCHAR(6)   NOT NULL,
+    prefix             VARCHAR(12)  NOT NULL,
     workspace_id       BIGINT       NOT NULL,
     created_by         BIGINT       NOT NULL,
     scopes             VARCHAR(255),

@@ -272,7 +272,7 @@ public class KbOpenApiController {
         List<ChangedPage> stalePages = allPages.stream()
                 .filter(p -> p.getStale() != null && p.getStale() == 1)
                 .map(p -> new ChangedPage(p.getSlug(), p.getTitle(), p.getKnowledgeLayer(),
-                        p.getUpdateTime(), "上游 fact 页面变更"))
+                        p.getUpdateTime(), "Upstream fact page changed"))
                 .collect(Collectors.toList());
 
         return R.ok(new WhatsNewResult(kbId, since, changedPages, stalePages));
@@ -289,8 +289,9 @@ public class KbOpenApiController {
             throw new MateClawException(404, "Knowledge base not found: " + kbId);
         }
         int pageCount = pageService.countByKbId(kbId);
-        List<WikiPageEntity> pages = pageService.listByKbId(kbId);
-        long pagesWithLinks = pages.stream()
+        // Must use listByKbIdWithContent — listByKbId nulls out content.
+        List<WikiPageEntity> pagesWithContent = pageService.listByKbIdWithContent(kbId);
+        long pagesWithLinks = pagesWithContent.stream()
                 .filter(p -> p.getContent() != null && p.getContent().contains("[["))
                 .count();
 

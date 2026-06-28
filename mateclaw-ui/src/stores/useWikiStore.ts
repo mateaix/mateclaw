@@ -25,6 +25,14 @@ export interface WikiRawMaterial {
   processingStatus: string
   lastProcessedAt: string | null
   errorMessage: string | null
+  // Structured failure code (AUTH_ERROR / BILLING / MODEL_NOT_FOUND / RATE_LIMIT /
+  // TIMEOUT / SERVER_ERROR / CONTENT_FILTER / NO_CONTENT / EMPTY_RESULT / UNKNOWN);
+  // drives the localized friendly hint. null when there is no error.
+  errorCode: string | null
+  // Non-blocking warning: the material processed but an async sub-step
+  // (embedding / entity extraction) failed, degrading it. null when clean.
+  warningCode: string | null
+  warningMessage: string | null
   createTime: string
   // Two-stage ingestion progress: backend writes total after routing and
   // increments done as each generated page finishes.
