@@ -11,6 +11,7 @@ import vip.mate.wiki.job.WikiProcessingJobService;
 import vip.mate.wiki.job.model.WikiProcessingJobEntity;
 import vip.mate.wiki.model.WikiChunkEntity;
 import vip.mate.wiki.model.WikiKnowledgeBaseEntity;
+import vip.mate.wiki.model.WikiPageEntity;
 import vip.mate.wiki.model.WikiRawMaterialEntity;
 import vip.mate.wiki.repository.WikiChunkMapper;
 import vip.mate.wiki.repository.WikiPageCitationMapper;
@@ -53,6 +54,8 @@ class WikiRelationControllerIdorTest {
     private WikiChunkMapper chunkMapper;
     private WikiProcessingJobMapper jobMapper;
     private HybridRetriever hybridRetriever;
+    private WikiPageService pageService;
+    private WikiPageCitationMapper citationMapper;
     private WikiRelationController controller;
 
     @BeforeEach
@@ -62,14 +65,16 @@ class WikiRelationControllerIdorTest {
         chunkMapper = mock(WikiChunkMapper.class);
         jobMapper = mock(WikiProcessingJobMapper.class);
         hybridRetriever = mock(HybridRetriever.class);
+        pageService = mock(WikiPageService.class);
+        citationMapper = mock(WikiPageCitationMapper.class);
         when(hybridRetriever.search(anyLong(), anyString(), anyString(), anyInt()))
                 .thenReturn(List.<PageSearchResult>of());
         controller = new WikiRelationController(
                 mock(WikiRelationService.class),
                 mock(WikiProcessingJobService.class),
                 jobMapper,
-                mock(WikiPageService.class),
-                mock(WikiPageCitationMapper.class),
+                pageService,
+                citationMapper,
                 hybridRetriever,
                 mock(ApplicationEventPublisher.class),
                 new ObjectMapper(),
@@ -191,6 +196,48 @@ class WikiRelationControllerIdorTest {
         assertThatCode(() ->
                 controller.searchPreview(10L, Map.of("query", "x"), 99L))
                 .doesNotThrowAnyException();
+    }
+
+    // ---------------- pageCitations cross-KB filter (review on #439) ----------------
+
+    @Test
+    @DisplayName("pageCitations: pageId belonging to the same KB is returned")
+    void pageCitationsSameKbReturned() {
+        when(kbService.getById(10L)).thenReturn(kb(10L, 1L));
+        WikiPageEntity page = new WikiPageEntity();
+        page.setId(77L);
+        page.setKbId(10L);  // same KB as the path → allowed
+        when(pageService.getById(77L)).thenReturn(page);
+        when(citationMapper.listWithRawByPageId(77L)).thenReturn(List.of());
+
+        var result = controller.pageCitations(10L, 77L, 1L);
+
+        assertThat(result).isEmpty();
+    }
+
+    @Test
+    @DisplayName("pageCitations: pageId pointing at another KB is filtered out")
+    void pageCitationsCrossKbFiltered() {
+        when(kbService.getById(10L)).thenReturn(kb(10L, 1L));  // caller's KB
+        WikiPageEntity foreignPage = new WikiPageEntity();
+        foreignPage.setId(88L);
+        foreignPage.setKbId(99L);  // page belongs to a different KB → dropped
+        when(pageService.getById(88L)).thenReturn(foreignPage);
+
+        var result = controller.pageCitations(10L, 88L, 1L);
+
+        assertThat(result).isEmpty();
+    }
+
+    @Test
+    @DisplayName("pageCitations: unknown pageId → empty list")
+    void pageCitationsUnknownPageReturnsEmpty() {
+        when(kbService.getById(10L)).thenReturn(kb(10L, 1L));
+        when(pageService.getById(999L)).thenReturn(null);
+
+        var result = controller.pageCitations(10L, 999L, 1L);
+
+        assertThat(result).isEmpty();
     }
 
     // ---------------- rawId / chunkId endpoints (resolve owning KB) ----------------

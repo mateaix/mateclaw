@@ -98,6 +98,14 @@ public class WikiRelationController {
             @PathVariable Long pageId,
             @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
         verifyKBWorkspace(kbId, workspaceId);
+        // Guard against a partial IDOR: kbId is workspace-checked above, but
+        // pageId is an independent path variable that could point at a page in
+        // another KB. Require the resolved page to actually belong to this kbId
+        // (same pattern as the getJobs(rawId) cross-KB filter).
+        WikiPageEntity page = pageService.getById(pageId);
+        if (page == null || !kbId.equals(page.getKbId())) {
+            return List.of();
+        }
         return citationMapper.listWithRawByPageId(pageId);
     }
 
