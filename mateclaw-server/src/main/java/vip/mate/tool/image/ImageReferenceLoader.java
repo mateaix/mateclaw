@@ -4,6 +4,8 @@ import cn.hutool.http.HttpUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
+import vip.mate.common.net.SsrfAllowlist;
+import vip.mate.common.net.SsrfProperties;
 import vip.mate.workspace.conversation.ConversationService;
 import vip.mate.workspace.conversation.model.MessageContentPart;
 import vip.mate.workspace.conversation.model.MessageEntity;
@@ -48,6 +50,7 @@ public class ImageReferenceLoader {
     private static final int HTTP_TIMEOUT_MS = 30_000;
 
     private final ConversationService conversationService;
+    private final SsrfProperties ssrfProperties;
 
     /**
      * Resolve a list of input strings; null / blank entries are skipped.
@@ -144,15 +147,8 @@ public class ImageReferenceLoader {
         if (host == null) {
             throw new IOException("URL has no host: " + url);
         }
-        // Conservative SSRF guard: reject obvious internal targets. Refine later
-        // if the project gains a dedicated SsrFPolicy module.
-        String lowered = host.toLowerCase();
-        if (lowered.equals("localhost")
-                || lowered.equals("127.0.0.1")
-                || lowered.startsWith("10.")
-                || lowered.startsWith("192.168.")
-                || lowered.startsWith("169.254.")
-                || lowered.startsWith("172.")) {
+        // SSRF guard: reject obvious internal targets unless explicitly allowlisted.
+        if (isInternalHost(host) && !SsrfAllowlist.matchesHost(host, ssrfProperties.getSsrfAllowlist())) {
             throw new IOException("Refusing to download image from internal host: " + host);
         }
         try {
@@ -169,6 +165,32 @@ public class ImageReferenceLoader {
         } catch (Exception e) {
             throw new IOException("Failed to download image " + url + ": " + e.getMessage(), e);
         }
+    }
+
+    /** Match common private / loopback / link-local hosts by string form (no DNS lookup). */
+    private static boolean isInternalHost(String host) {
+        if (host == null) {
+            return true;
+        }
+        String h = host.toLowerCase();
+        if (h.equals("localhost") || h.equals("127.0.0.1") || h.equals("::1")) {
+            return true;
+        }
+        if (h.startsWith("10.") || h.startsWith("192.168.") || h.startsWith("169.254.")) {
+            return true;
+        }
+        if (h.startsWith("172.")) {
+            String[] parts = h.split("\\.");
+            if (parts.length >= 2) {
+                try {
+                    int second = Integer.parseInt(parts[1]);
+                    return second >= 16 && second <= 31; // 172.16.0.0 – 172.31.255.255
+                } catch (NumberFormatException ignore) {
+                    return false;
+                }
+            }
+        }
+        return false;
     }
 
     // ==================== form: msg:<messageId>:<partIndex> ====================
