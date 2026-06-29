@@ -97,8 +97,8 @@ public class StateGraphPlanExecuteAgent extends BaseAgent implements StructuredS
             log.info("[{}] Plan-Execute replay stream: conversationId={}", agentName, conversationId);
             Map<String, Object> inputs = buildInitialState(userMessage, conversationId);
 
-            // 从 DB 恢复 awaiting_approval 状态的计划上下文
-            PlanningService.PlanResumeContext ctx = planningService.findAwaitingApprovalContext();
+            // 从 DB 恢复 awaiting_approval 状态的计划上下文（按 conversationId 过滤，避免并发会话误取）
+            PlanningService.PlanResumeContext ctx = planningService.findAwaitingApprovalContext(conversationId);
             if (ctx != null) {
                 inputs.put(PlanStateKeys.PLAN_ID, ctx.planId());
                 inputs.put(PlanStateKeys.PLAN_STEPS, ctx.steps());

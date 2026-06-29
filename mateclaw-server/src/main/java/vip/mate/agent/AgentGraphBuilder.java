@@ -1530,10 +1530,11 @@ public class AgentGraphBuilder {
                 adopting a KB article as the user's project.
 
                 ## Session Search
-                - `session_search(agentId, currentConversationId, mode, query, limit)` — search conversation history
+                - `session_search(agentId, mode, query, limit)` — search conversation history
                 - mode="recent": list recent conversations (titles, times, message counts)
                 - mode="search": keyword full-text search across past messages
                 - Use this to recall previous discussions, look up past decisions, or find context from earlier conversations
+                - Only completed sessions (not currently running) are included in results
 
                 ## Tool Usage Guidelines
                 When you have available tools, use them to access local system information, files, or execute commands.

@@ -58,13 +58,17 @@ public class SessionSearchService {
 
     /**
      * List recent conversations for the given agent.
+     * Excludes the current conversation and any still-running sessions to prevent
+     * cross-conversation context leakage in concurrent multi-conversation scenarios.
      */
-    public List<Map<String, Object>> listRecent(Long agentId, int limit) {
+    public List<Map<String, Object>> listRecent(Long agentId, String currentConversationId, int limit) {
         int effectiveLimit = Math.min(Math.max(limit, 1), 50);
         String sql = """
                 SELECT conversation_id, title, message_count, last_active_time, create_time
                 FROM mate_conversation
                 WHERE agent_id = ? AND deleted = 0
+                  AND conversation_id != ?
+                  AND (stream_status IS NULL OR stream_status != 'running')
                 ORDER BY last_active_time DESC
                 LIMIT ?
                 """;
@@ -77,7 +81,7 @@ public class SessionSearchService {
             row.put("lastActiveTime", toLocalDateTime(rs.getTimestamp("last_active_time")));
             row.put("createTime", toLocalDateTime(rs.getTimestamp("create_time")));
             return row;
-        }, agentId, effectiveLimit);
+        }, agentId, currentConversationId != null ? currentConversationId : "", effectiveLimit);
     }
 
     // ==================== MySQL FULLTEXT ====================
@@ -93,6 +97,7 @@ public class SessionSearchService {
                 WHERE c.agent_id = ? AND m.conversation_id != ?
                   AND m.role IN ('user', 'assistant')
                   AND m.deleted = 0 AND c.deleted = 0
+                  AND (c.stream_status IS NULL OR c.stream_status != 'running')
                   AND MATCH(m.content) AGAINST(? IN NATURAL LANGUAGE MODE)
                 ORDER BY relevance DESC
                 LIMIT ?
@@ -116,6 +121,7 @@ public class SessionSearchService {
                 WHERE c.agent_id = ? AND m.conversation_id != ?
                   AND m.role IN ('user', 'assistant')
                   AND m.deleted = 0 AND c.deleted = 0
+                  AND (c.stream_status IS NULL OR c.stream_status != 'running')
                   AND LOWER(m.content) LIKE LOWER(CONCAT('%', ?, '%'))
                 ORDER BY m.create_time DESC
                 LIMIT ?
