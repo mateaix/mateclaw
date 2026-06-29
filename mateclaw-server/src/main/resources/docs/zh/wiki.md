@@ -95,6 +95,17 @@ eager 模式分两阶段，速度提了一个数量级：
 
 **可恢复**：中途断了？点"重新处理"，只重跑未完成的页面，已生成的不动。超过模型上下文限制的文档，系统自动做 mean-pool 子段切分——你不用管。
 
+#### 省 token：给廉价步骤配轻量模型
+
+消化会跑好几类 LLM 步骤：路由、合并生成、富化、摘要、实体抽取。其中 **路由 / 富化 / 摘要 / 实体抽取** 是高频但轻量的活，没必要和「合并生成」用同一个高价模型。
+
+给它们指定一个便宜模型即可显著省 token，页面生成质量不受影响：
+
+- **系统级** —— 系统设置里配 `wiki.lightModelId`（一个模型 id），对所有知识库的廉价步骤生效；
+- **每库覆盖** —— 知识库配置里写 `wikiLightModelId`，覆盖系统级设置。
+
+不配则一切照旧（廉价步骤仍走 KB 默认 / 系统默认模型）。优先级：`stepModels.<步骤>`（钉死某步）→ 轻量模型（仅廉价步骤）→ `wikiDefaultModelId` → 系统默认。
+
 ### Lazy 模式：先入索引，按需出页面
 
 链路缩成四步：
@@ -627,7 +638,7 @@ stepModels[step]   →   wikiDefaultModelId   →   系统默认模型
 | 表名 | 用途 |
 |------|------|
 | `mate_wiki_knowledge_base` | 每个 KB 一行。owner、名字、描述、配置 JSON（含 `ingestMode` / `wikiDefaultModelId` / `stepModels` / `entityExtractionEnabled` / `entityTypes` 等）。 |
-| `mate_wiki_raw_material` | 每份上传一行。状态、byte hash、来源路径、上次成功处理时的 hash。 |
+| `mate_wiki_raw_material` | 每份上传一行。状态、byte hash、来源路径、上次成功处理时的 hash；失败时的结构化 `error_code` + `error_message`，已完成但降级时的 `warning_code` + `warning_message`。 |
 | `mate_wiki_page` | 每个生成页面一行。标题、摘要、正文、`source_raw_ids`（回指原文）、`page_type`、`locked`、版本号，外加 `embedding` / `embedding_model` / `embedding_text_version` 让 synthesis 页直接进语义搜索。 |
 | `mate_wiki_chunk` | 每个 chunk 一行。content + hash + 偏移 + embedding，外加 `page_number` / `header_breadcrumb` / `source_section` / `token_count`。 |
 | `mate_wiki_relation` | 缓存的页对页边（共享 chunk / 共享原文 / 直接链接 / 语义近邻），用于检索时的 1 跳关系 boost 和关联推荐工具。 |
@@ -652,10 +663,49 @@ stepModels[step]   →   wikiDefaultModelId   →   系统默认模型
 |---|---|
 | `POST /api/v1/wiki/admin/kb/{kbId}/rebuild-overview` | 立即按当前数据重写 overview marker 区域 |
 | `POST /api/v1/wiki/admin/backfill-tokens` | 立即跑一批 token_count 回填，返回 `pendingBefore/pendingAfter/filledThisBatch` |
+| `GET /api/v1/wiki/admin/failures?limit=100` | 跨知识库列出需要关注的材料（failed / partial / 带告警），见下方"处理失败的可见性"（平台管理员） |
 
 `application.yml` 的 `mate.wiki` 配置块控制切块大小、并发度、auto-process 等全局参数；具体到每个 KB 的入库模式 / 模型策略 / 备选模型链，写在 KB 的 `configContent` JSON 里——前端配置页直接编辑。
 
 > 旧 chunk 的 `token_count` 列允许 NULL；后台有个低频 cron `WikiChunkTokenBackfillJob` 用 `ceil(charCount / 4)` 按批回填，不影响主链路。
+
+---
+
+## 处理失败的可见性
+
+后台消化大多是异步任务，过去出错往往只能去服务端日志看。现在错误会**结构化地落到原始材料上、并实时推到前端**。
+
+### 结构化错误码
+
+每条 raw material 失败时，除原始错误文本（`error_message`）外还记一个**结构化错误码** `error_code`：
+
+`AUTH_ERROR`（鉴权失败）/ `BILLING`（额度/计费）/ `MODEL_NOT_FOUND` / `RATE_LIMIT`（限流）/ `TIMEOUT` / `SERVER_ERROR`（5xx）/ `CONTENT_FILTER`（安全策略拦截）/ `NO_CONTENT`（提取不到文本）/ `EMPTY_RESULT`（模型没产出页面）/ `UNKNOWN`。
+
+前端据此显示本地化友好提示（如"模型鉴权失败，请检查供应商密钥"），原始异常串折叠为 hover 详情。重新处理成功后这两列自动清空。
+
+### 非阻断告警
+
+有些子步骤在材料**已完成之后**才异步跑——向量化（embedding）、实体图谱抽取。它们失败不影响页面本身，但会让材料**降级**（最典型：向量化失败 → 该材料暂时无法被语义检索）。这类失败不再只写日志，而是记一个非阻断告警 `warning_code`（`EMBEDDING_FAILED` / `ENTITY_EXTRACTION_FAILED`）+ `warning_message`，材料仍是"完成"但带一个 ⚠ 标记。
+
+### 进度 SSE 事件
+
+KB 进度流 `GET /api/v1/wiki/knowledge-bases/{kbId}/progress`（SSE）推送：
+
+| 事件 | 何时 | 关键字段 |
+|---|---|---|
+| `raw.started` | 开始处理一条材料 | `rawId` |
+| `route.done` / `chunk.done` | 阶段进度 | `rawId` + 进度计数 |
+| `raw.completed` | 材料完成（含 partial） | `rawId` / `status` / `totalPages` |
+| `raw.failed` | 材料失败 | `rawId` / `error` / `errorCode` |
+| `raw.warning` | 已完成但某异步子步骤失败 | `rawId` / `warning` / `warningCode` |
+
+### 跨知识库失败中心（管理员）
+
+不用逐个 KB 翻，管理员可在一处看全部需要关注的材料（failed / partial / 带告警）：
+
+- `GET /api/v1/wiki/admin/failures?limit=100` —— 跨**所有**知识库列出，含 KB 名、状态、错误/告警码、时间（平台管理员 `ROLE_ADMIN`，跨 workspace）。
+- 通知摘要 `GET /api/v1/notifications/summary` 新增 `failedWikiJobs` 计数，驱动侧边栏 Wiki 入口的关注徽标。
+- 前端 Wiki 库视图顶部有一个可折叠的"失败中心"，一键进入对应 KB。
 
 ---
 
