@@ -318,8 +318,10 @@ public class WikiProcessingService {
             // Phase 1: 获取文本内容
             String textContent = rawService.getTextContent(raw);
             if (textContent == null || textContent.isBlank()) {
-                rawService.updateProcessingStatus(rawId, "failed", "No text content available");
+                rawService.updateProcessingStatus(rawId, "failed", "NO_CONTENT", "No text content available");
                 kbService.updateStatus(kb.getId(), "active");
+                progressBus.broadcast(kb.getId(), WikiProgressBus.EVENT_RAW_FAILED,
+                        Map.of("rawId", rawId, "error", "No text content available", "errorCode", "NO_CONTENT"));
                 return;
             }
 
@@ -382,6 +384,10 @@ public class WikiProcessingService {
 
             String finalStatus;
             String finalDetail = null;
+            // Structured failure code (null unless finalStatus becomes "failed"),
+            // carried into both the persisted row and the RAW_FAILED SSE event so
+            // the UI can localize the failure instead of echoing raw English text.
+            String finalErrorCode = null;
             // Cancellation takes precedence over the normal terminal-state logic:
             // chunks that observed the cancel flag returned early as "failed", but
             // those aren't real failures — the user asked to stop. Surface that
@@ -408,9 +414,10 @@ public class WikiProcessingService {
                     log.info("[Wiki] Eager produced 0 pages but {} chunks indexed; marking partial for raw={}",
                             totalChunks, rawId);
                 } else {
-                    rawService.updateProcessingStatus(rawId, "failed", "No pages generated from LLM response");
-                    finalStatus = "failed";
+                    finalErrorCode = "EMPTY_RESULT";
                     finalDetail = "No pages generated from LLM response";
+                    rawService.updateProcessingStatus(rawId, "failed", finalErrorCode, finalDetail);
+                    finalStatus = "failed";
                 }
             } else if (failedChunks > 0 || failedPages > 0) {
                 // 部分成功：chunk 整体失败 或 chunk 内有 page 失败
@@ -444,7 +451,9 @@ public class WikiProcessingService {
             // RFC-012 M3：广播终态
             if ("failed".equals(finalStatus)) {
                 progressBus.broadcast(kb.getId(), WikiProgressBus.EVENT_RAW_FAILED,
-                        Map.of("rawId", rawId, "error", finalDetail == null ? "" : finalDetail));
+                        Map.of("rawId", rawId,
+                                "error", finalDetail == null ? "" : finalDetail,
+                                "errorCode", finalErrorCode == null ? "UNKNOWN" : finalErrorCode));
             } else {
                 progressBus.broadcast(kb.getId(), WikiProgressBus.EVENT_RAW_COMPLETED,
                         Map.of(
@@ -517,6 +526,7 @@ public class WikiProcessingService {
             // every pending chunk and produce more "all chunks failed" noise.
             if (totalChunks > 0 && !"cancelled".equals(finalStatus)) {
                 final Long fKbId = kb.getId();
+                final Long fRawId = rawId;
                 WIKI_EXECUTOR.submit(() -> {
                     try {
                         int embedded = embeddingService.embedMissingChunks(fKbId);
@@ -529,8 +539,10 @@ public class WikiProcessingService {
                         // emit a calmer notice here instead of a generic failure log.
                         log.warn("[Wiki] Async embedding aborted by circuit-breaker for kbId={}: {}",
                                 fKbId, ex.getMessage());
+                        surfaceWarning(fKbId, fRawId, "EMBEDDING_FAILED", ex.getMessage());
                     } catch (Exception ex) {
                         log.warn("[Wiki] Async embedding failed for kbId={}: {}", fKbId, ex.getMessage());
+                        surfaceWarning(fKbId, fRawId, "EMBEDDING_FAILED", ex.getMessage());
                     }
                 });
             }
@@ -551,6 +563,7 @@ public class WikiProcessingService {
                         }
                     } catch (Exception ex) {
                         log.warn("[Wiki] Async entity extraction failed for kbId={}: {}", fKbId, ex.getMessage());
+                        surfaceWarning(fKbId, fRawId, "ENTITY_EXTRACTION_FAILED", ex.getMessage());
                     }
                 });
             }
@@ -562,6 +575,7 @@ public class WikiProcessingService {
             // checkpoint rejected between chunks).
             boolean cancelled = rawService.isCancelRequested(rawId);
             String terminalStatus = cancelled ? "cancelled" : "failed";
+            String errorCode = cancelled ? null : classifyErrorCode(e);
             String detail = cancelled
                     ? "Cancelled by user (interrupted: " + (e.getMessage() == null ? "unknown" : e.getMessage()) + ")"
                     : e.getMessage();
@@ -570,7 +584,7 @@ public class WikiProcessingService {
             } else {
                 log.error("[Wiki] Processing failed for raw={}: {}", rawId, e.getMessage(), e);
             }
-            rawService.updateProcessingStatus(rawId, terminalStatus, detail);
+            rawService.updateProcessingStatus(rawId, terminalStatus, errorCode, detail);
             kbService.updateStatus(kb.getId(), "active");
             if (wikiJobService != null && jobId != null) {
                 try {
@@ -587,7 +601,9 @@ public class WikiProcessingService {
                         Map.of("rawId", rawId, "status", "cancelled"));
             } else {
                 progressBus.broadcast(kb.getId(), WikiProgressBus.EVENT_RAW_FAILED,
-                        Map.of("rawId", rawId, "error", e.getMessage() == null ? "unknown" : e.getMessage()));
+                        Map.of("rawId", rawId,
+                                "error", e.getMessage() == null ? "unknown" : e.getMessage(),
+                                "errorCode", errorCode == null ? "UNKNOWN" : errorCode));
             }
         } finally {
             // RFC-012 M2 v2 UI v2：写入最终进度并清理共享计数器
@@ -2705,6 +2721,24 @@ public class WikiProcessingService {
         TransientLlmException(String msg) { super(msg); }
     }
 
+    /**
+     * Persist a non-blocking warning on a completed material whose async sub-step
+     * (embedding / entity extraction) failed, and push it live so the UI can flag
+     * the degradation without a reload. Best-effort: a warning must never escalate
+     * into a pipeline failure, so any bookkeeping error here is swallowed.
+     */
+    private void surfaceWarning(Long kbId, Long rawId, String warningCode, String warningMessage) {
+        try {
+            rawService.recordWarning(rawId, warningCode, warningMessage);
+            progressBus.broadcast(kbId, WikiProgressBus.EVENT_RAW_WARNING,
+                    Map.of("rawId", rawId,
+                            "warningCode", warningCode,
+                            "warning", warningMessage == null ? "" : warningMessage));
+        } catch (Exception ex) {
+            log.warn("[Wiki] Failed to record warning for raw={}: {}", rawId, ex.getMessage());
+        }
+    }
+
     // ==================== RFC-030: Error classification ====================
 
     /**
@@ -2975,10 +3009,10 @@ public class WikiProcessingService {
         try {
             String textContent = rawService.getTextContent(raw);
             if (textContent == null || textContent.isBlank()) {
-                rawService.updateProcessingStatus(rawId, "failed", "No text content available");
+                rawService.updateProcessingStatus(rawId, "failed", "NO_CONTENT", "No text content available");
                 kbService.updateStatus(kbId, "active");
                 progressBus.broadcast(kbId, WikiProgressBus.EVENT_RAW_FAILED,
-                        Map.of("rawId", rawId, "error", "No text content available"));
+                        Map.of("rawId", rawId, "error", "No text content available", "errorCode", "NO_CONTENT"));
                 return;
             }
 
@@ -3010,6 +3044,7 @@ public class WikiProcessingService {
             // Async embedding — mirror the eager path so a slow embedding model
             // does not block the raw from reaching completed.
             final Long fKbId = kbId;
+            final Long fRawId = rawId;
             WIKI_EXECUTOR.submit(() -> {
                 try {
                     int embedded = embeddingService.embedMissingChunks(fKbId);
@@ -3019,8 +3054,10 @@ public class WikiProcessingService {
                 } catch (WikiEmbeddingProviderFailingException ex) {
                     log.warn("[Wiki] Lazy async embedding aborted by circuit-breaker for kbId={}: {}",
                             fKbId, ex.getMessage());
+                    surfaceWarning(fKbId, fRawId, "EMBEDDING_FAILED", ex.getMessage());
                 } catch (Exception ex) {
                     log.warn("[Wiki] Lazy async embedding failed for kbId={}: {}", fKbId, ex.getMessage());
+                    surfaceWarning(fKbId, fRawId, "EMBEDDING_FAILED", ex.getMessage());
                 }
             });
 
@@ -3058,11 +3095,13 @@ public class WikiProcessingService {
                     rawId, kbId, totalChunks);
         } catch (Exception e) {
             log.error("[Wiki] Lazy processing failed for raw={}: {}", rawId, e.getMessage(), e);
-            rawService.updateProcessingStatus(rawId, "failed", e.getMessage());
+            String errorCode = classifyErrorCode(e);
+            rawService.updateProcessingStatus(rawId, "failed", errorCode, e.getMessage());
             kbService.updateStatus(kbId, "active");
             progressBus.broadcast(kbId, WikiProgressBus.EVENT_RAW_FAILED,
                     Map.of("rawId", rawId,
-                            "error", e.getMessage() == null ? "unknown" : e.getMessage()));
+                            "error", e.getMessage() == null ? "unknown" : e.getMessage(),
+                            "errorCode", errorCode == null ? "UNKNOWN" : errorCode));
         }
     }
 }

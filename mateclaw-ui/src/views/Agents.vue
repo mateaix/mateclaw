@@ -260,7 +260,7 @@
             </button>
             <button v-if="editingAgent" class="modal-tab" :class="{ active: modalTab === 'providers' }" @click="modalTab = 'providers'">
               {{ t('agents.tabs.providers', 'Providers') }}
-              <span v-if="selectedProviderIds.length" class="tab-badge">{{ selectedProviderIds.length }}</span>
+              <span v-if="selectedProviderPrefs.length" class="tab-badge">{{ selectedProviderPrefs.length }}</span>
             </button>
             <button v-if="editingAgent" class="modal-tab" :class="{ active: modalTab === 'wiki' }" @click="modalTab = 'wiki'">
               {{ t('agents.tabs.wiki', 'Wiki') }}
@@ -593,34 +593,39 @@
             </details>
           </div>
 
-          <!-- Providers Tab (RFC-009 PR-3) -->
+          <!-- Providers Tab — preferred-model chain (provider + model) -->
           <div v-if="modalTab === 'providers'" class="binding-tab">
             <p class="binding-hint">{{ t('agents.binding.providersHint') }}</p>
-            <!-- Picked: ordered list with up/down/remove controls -->
-            <div v-if="selectedProviderIds.length" class="provider-pref-list">
+            <!-- Picked: ordered (provider, model) entries with up/down/remove -->
+            <div v-if="selectedProviderPrefs.length" class="provider-pref-list">
               <div
-                v-for="(pid, idx) in selectedProviderIds"
-                :key="pid"
+                v-for="(pref, idx) in selectedProviderPrefs"
+                :key="idx"
                 class="provider-pref-item"
               >
                 <span class="provider-pref-rank">{{ idx + 1 }}</span>
-                <span class="provider-pref-name">{{ providerNameById(pid) }}</span>
-                <span class="provider-pref-id">{{ pid }}</span>
-                <button class="provider-pref-btn" :disabled="idx === 0" @click="moveProvider(idx, -1)">↑</button>
-                <button class="provider-pref-btn" :disabled="idx === selectedProviderIds.length - 1" @click="moveProvider(idx, 1)">↓</button>
-                <button class="provider-pref-btn danger" @click="removeProvider(idx)">✕</button>
+                <span class="provider-pref-name">{{ providerNameById(pref.providerId) }}</span>
+                <select class="provider-pref-model" v-model="pref.modelId">
+                  <option :value="null">{{ t('agents.binding.providerDefaultModel') }}</option>
+                  <option v-for="m in modelsForProvider(pref.providerId)" :key="m.id" :value="m.id">
+                    {{ m.modelName }}
+                  </option>
+                </select>
+                <button class="provider-pref-btn" :disabled="idx === 0" @click="moveProviderEntry(idx, -1)">↑</button>
+                <button class="provider-pref-btn" :disabled="idx === selectedProviderPrefs.length - 1" @click="moveProviderEntry(idx, 1)">↓</button>
+                <button class="provider-pref-btn danger" @click="removeProviderEntry(idx)">✕</button>
               </div>
             </div>
             <div v-else class="binding-empty">{{ t('agents.binding.noProviderPreferences') }}</div>
 
-            <!-- Unpicked: click to append -->
-            <div v-if="unpickedProviders.length" class="provider-pref-pool">
+            <!-- Pool: click to append an entry (same provider may repeat) -->
+            <div v-if="availableProviders.length" class="provider-pref-pool">
               <p class="binding-hint" style="margin-top: 14px">{{ t('agents.binding.providersAddHint') }}</p>
               <button
-                v-for="p in unpickedProviders"
+                v-for="p in availableProviders"
                 :key="p.id"
                 class="provider-pref-add-btn"
-                @click="addProvider(p.id)"
+                @click="addProviderEntry(p.id)"
               >+ {{ p.name }}</button>
             </div>
           </div>
@@ -936,12 +941,16 @@ function setPrimaryKb(id: string | number) {
   }
   selectedKBId.value = sid
 }
-// RFC-009 PR-3: per-agent provider preference order
+// Per-agent preferred-model chain. Each entry is a provider plus an optional
+// pinned model (modelId null = the provider's default model). The same provider
+// may appear more than once with different models. modelId is a string to keep
+// Snowflake precision (Long is serialised as a string by the backend).
 const availableProviders = ref<{ id: string; name: string }[]>([])
-const selectedProviderIds = ref<string[]>([])
+const selectedProviderPrefs = ref<Array<{ providerId: string; modelId: string | null }>>([])
 // RFC-03 Lane G1: per-Agent model override picker — populated from the
 // global enabled-models list, blank value means "fall back to default".
-const availableModels = ref<Array<{ id: number; name: string; provider: string; modelName: string }>>([])
+// id is a string (Snowflake serialised as string).
+const availableModels = ref<Array<{ id: string; name: string; provider: string; modelName: string }>>([])
 
 // Template selector state
 const showTemplateSelector = ref(false)
@@ -1225,36 +1234,37 @@ function openBlankCreateModal() {
   toolBindingSearch.value = ''
   selectedSkillIds.value = []
   selectedToolNames.value = []
-  selectedProviderIds.value = []
+  selectedProviderPrefs.value = []
   availableKBs.value = []
   selectedKBId.value = null
   selectedKbIds.value = []
   showModal.value = true
 }
 
-// RFC-009 PR-3: provider preference helpers
-const unpickedProviders = computed(() =>
-  availableProviders.value.filter(p => !selectedProviderIds.value.includes(p.id))
-)
-
+// Preferred-model chain helpers
 function providerNameById(id: string): string {
   return availableProviders.value.find(p => p.id === id)?.name || id
 }
 
-function addProvider(id: string) {
-  if (!selectedProviderIds.value.includes(id)) {
-    selectedProviderIds.value.push(id)
-  }
+// Enabled models offered by a given provider, for that entry's model dropdown.
+function modelsForProvider(providerId: string) {
+  return availableModels.value.filter(m => m.provider === providerId)
 }
 
-function removeProvider(idx: number) {
-  selectedProviderIds.value.splice(idx, 1)
+// Append a new chain entry (defaults to the provider's default model). The same
+// provider may appear more than once, so we never dedup here.
+function addProviderEntry(providerId: string) {
+  selectedProviderPrefs.value.push({ providerId, modelId: null })
 }
 
-function moveProvider(idx: number, dir: -1 | 1) {
+function removeProviderEntry(idx: number) {
+  selectedProviderPrefs.value.splice(idx, 1)
+}
+
+function moveProviderEntry(idx: number, dir: -1 | 1) {
   const next = idx + dir
-  if (next < 0 || next >= selectedProviderIds.value.length) return
-  const arr = selectedProviderIds.value
+  if (next < 0 || next >= selectedProviderPrefs.value.length) return
+  const arr = selectedProviderPrefs.value
   ;[arr[idx], arr[next]] = [arr[next], arr[idx]]
 }
 
@@ -1337,9 +1347,14 @@ async function openEditModal(agent: Agent) {
     selectedToolNames.value = ((boundToolsRes as any).data || [])
       .filter((b: any) => b.enabled)
       .map((b: any) => b.toolName)
-    selectedProviderIds.value = ((providerPrefsRes as any).data || [])
+    selectedProviderPrefs.value = ((providerPrefsRes as any).data || [])
       .filter((b: any) => b.enabled)
-      .map((b: any) => b.providerId)
+      .map((b: any) => ({
+        providerId: b.providerId,
+        // modelId arrives as a string (Long→String) or null; normalise to keep
+        // the dropdown's option values type-aligned.
+        modelId: b.modelId != null ? String(b.modelId) : null,
+      }))
   } catch {
     mcToast.error(t('agents.messages.loadFailed'))
   }
@@ -1417,7 +1432,7 @@ async function saveAgent() {
       try {
         await agentBindingApi.setSkills(agentId, skillIdsToSave)
         await agentBindingApi.setTools(agentId, toolNamesToSave)
-        await agentBindingApi.setProviderPreferences(agentId, selectedProviderIds.value)
+        await agentBindingApi.setProviderPreferences(agentId, selectedProviderPrefs.value)
         // KB access scope. Issue #304: when wiki_disabled is on the agent
         // sees zero KBs regardless of the binding list, so clear the save
         // payload — same pattern as skills/tools above. Empty save leaves
@@ -1931,8 +1946,12 @@ html.dark .seg-count.warn {
   display: inline-flex; align-items: center; justify-content: center;
   background: var(--mc-primary); color: white; font-size: 11px; font-weight: 700; flex-shrink: 0;
 }
-.provider-pref-name { font-size: 14px; color: var(--mc-text-primary); flex: 1; }
-.provider-pref-id { font-size: 12px; color: var(--mc-text-tertiary); font-family: ui-monospace, monospace; }
+.provider-pref-name { font-size: 14px; color: var(--mc-text-primary); flex: 0 0 auto; min-width: 96px; }
+.provider-pref-model {
+  flex: 1; min-width: 0; height: 28px; padding: 0 8px;
+  border: 1px solid var(--mc-border-light); border-radius: 6px;
+  background: var(--mc-bg); color: var(--mc-text-primary); font-size: 13px; cursor: pointer;
+}
 .provider-pref-btn {
   border: 1px solid var(--mc-border-light); background: var(--mc-bg);
   width: 26px; height: 26px; border-radius: 6px; cursor: pointer;

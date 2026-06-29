@@ -13,6 +13,7 @@ import vip.mate.agent.runtime.AgentRuntimeAggregator;
 import vip.mate.approval.ApprovalWorkflowService;
 import vip.mate.common.result.R;
 import vip.mate.exception.MateClawException;
+import vip.mate.wiki.service.WikiRawMaterialService;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -36,6 +37,7 @@ public class NotificationController {
 
     private final ApprovalWorkflowService approvalWorkflowService;
     private final AgentRuntimeAggregator agentRuntimeAggregator;
+    private final WikiRawMaterialService wikiRawMaterialService;
 
     @Operation(summary = "Aggregated counts for the sidebar attention badges")
     @GetMapping("/summary")
@@ -49,10 +51,16 @@ public class NotificationController {
         int stuckAgents = admin
                 ? agentRuntimeAggregator.snapshot().summary().stuck()
                 : 0;
+        // Cross-KB Wiki ingest failures/degradations — admin-only, mirroring
+        // stuckAgents (the list view it links to spans every workspace).
+        int failedWikiJobs = admin
+                ? (int) Math.min(Integer.MAX_VALUE, wikiRawMaterialService.countFailures())
+                : 0;
 
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("pendingApprovals", pendingApprovals);
         payload.put("stuckAgents", stuckAgents);
+        payload.put("failedWikiJobs", failedWikiJobs);
         // Reserved fields — wire shape stays stable so the frontend doesn't
         // need a fan-out when these get real semantics later.
         payload.put("failedCrons", 0);

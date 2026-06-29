@@ -18,6 +18,7 @@ const POLL_INTERVAL_MS = 15_000
 const summary = ref<NotificationSummary>({
   pendingApprovals: 0,
   stuckAgents: 0,
+  failedWikiJobs: 0,
   failedCrons: 0,
   downChannels: 0,
   downMcps: 0,
@@ -57,6 +58,7 @@ async function refresh(): Promise<void> {
       summary.value = {
         pendingApprovals: toCount(raw.pendingApprovals),
         stuckAgents: toCount(raw.stuckAgents),
+        failedWikiJobs: toCount(raw.failedWikiJobs),
         failedCrons: toCount(raw.failedCrons),
         downChannels: toCount(raw.downChannels),
         downMcps: toCount(raw.downMcps),
@@ -97,6 +99,7 @@ export function useNotificationCenter() {
     summary: computed(() => summary.value),
     pendingApprovals: computed(() => summary.value.pendingApprovals),
     stuckAgents: computed(() => summary.value.stuckAgents),
+    failedWikiJobs: computed(() => summary.value.failedWikiJobs),
     refresh,
   }
 }

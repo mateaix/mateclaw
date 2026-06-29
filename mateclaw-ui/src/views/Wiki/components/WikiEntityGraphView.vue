@@ -2,6 +2,15 @@
   <div class="entity-graph">
     <div ref="chartEl" class="graph-canvas" />
 
+    <!-- Find a node by name: highlights it (dimming the rest) and opens its panel -->
+    <GraphNodeSearch
+      v-if="nodes.length"
+      class="graph-search"
+      :nodes="searchNodes"
+      @focus="focusEntity"
+      @clear="clearHighlight"
+    />
+
     <!-- Entity detail panel -->
     <div v-if="selected" class="entity-panel">
       <button class="entity-panel__close" @click="selected = null">×</button>
@@ -51,13 +60,14 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import * as echarts from 'echarts/core'
 import { GraphChart } from 'echarts/charts'
 import { TooltipComponent, LegendComponent } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
 import { wikiApi } from '@/api'
+import GraphNodeSearch from './GraphNodeSearch.vue'
 
 echarts.use([GraphChart, TooltipComponent, LegendComponent, CanvasRenderer])
 
@@ -252,6 +262,32 @@ function renderChart() {
   chart.setOption(buildOption(), { notMerge: true, lazyUpdate: true })
 }
 
+// Candidates for the node search box: name + type label + category color.
+const searchNodes = computed(() =>
+  nodes.value.map(n => ({
+    id: String(n.id),
+    name: n.canonicalName,
+    type: formatType(n.type),
+    color: typeColor(n.type),
+  })),
+)
+
+// Search hit: open the entity's panel and emphasize its node (focus:'adjacency'
+// dims everything else so the match stands out even in a dense graph).
+function focusEntity(id: string) {
+  const node = nodes.value.find(n => String(n.id) === String(id))
+  if (!node) return
+  openEntity(node)
+  if (!chart) return
+  const idx = nodes.value.findIndex(n => String(n.id) === String(id))
+  chart.dispatchAction({ type: 'downplay', seriesIndex: 0 })
+  if (idx >= 0) chart.dispatchAction({ type: 'highlight', seriesIndex: 0, dataIndex: idx })
+}
+
+function clearHighlight() {
+  chart?.dispatchAction({ type: 'downplay', seriesIndex: 0 })
+}
+
 async function openEntity(node: EntityNode) {
   selected.value = node
   egoEdges.value = []
@@ -296,6 +332,8 @@ defineExpose({ reload: load })
 <style scoped>
 .entity-graph { position: relative; flex: 1; min-height: 0; width: 100%; display: flex; }
 .graph-canvas { flex: 1; min-height: 0; width: 100%; }
+/* Search sits top-left; the legend is top-center, the detail panel top-right. */
+.graph-search { position: absolute; top: 12px; left: 12px; z-index: 5; }
 
 .graph-empty {
   position: absolute; inset: 0; display: flex; flex-direction: column;

@@ -180,10 +180,16 @@
               {{ t('wiki.cancelledHint') }}
             </span>
             <span
-              v-else-if="raw.errorMessage && (raw.processingStatus === 'failed' || raw.processingStatus === 'partial')"
-              class="error-hint" :title="raw.errorMessage"
+              v-else-if="(raw.errorCode || raw.errorMessage) && (raw.processingStatus === 'failed' || raw.processingStatus === 'partial')"
+              class="error-hint" :title="raw.errorMessage || friendlyError(raw)"
             >
-              {{ raw.errorMessage }}
+              {{ friendlyError(raw) }}
+            </span>
+            <span
+              v-if="(raw.warningCode || raw.warningMessage) && raw.processingStatus !== 'failed'"
+              class="warning-hint" :title="raw.warningMessage || friendlyWarning(raw)"
+            >
+              ⚠ {{ friendlyWarning(raw) }}
             </span>
           </div>
           <div v-if="canManageWiki" class="raw-item-actions">
@@ -327,6 +333,30 @@ const workspace = useWorkspaceStore()
 const canManageWiki = computed(() => workspace.can('manage:wiki'))
 const fileInput = ref<HTMLInputElement | null>(null)
 
+// Map a structured backend errorCode to a localized, user-friendly hint.
+// Falls back to the raw backend message, then to a generic failure label, so
+// the user always sees something meaningful — never a blank "failed" badge.
+function friendlyError(raw: { errorCode?: string | null; errorMessage?: string | null }): string {
+  const code = raw.errorCode
+  if (code) {
+    const key = `wiki.errorCode.${code}`
+    const msg = t(key)
+    if (msg !== key) return msg
+  }
+  return raw.errorMessage || t('wiki.errorCode.UNKNOWN')
+}
+
+// Same idea for the non-blocking warning surface (degraded-but-usable rows).
+function friendlyWarning(raw: { warningCode?: string | null; warningMessage?: string | null }): string {
+  const code = raw.warningCode
+  if (code) {
+    const key = `wiki.warningCode.${code}`
+    const msg = t(key)
+    if (msg !== key) return msg
+  }
+  return raw.warningMessage || t('wiki.warningCode.UNKNOWN')
+}
+
 // While raw materials are active, subscribe to the backend SSE progress stream.
 // A slower polling fallback keeps the UI in sync if SSE reconnects or misses a
 // terminal event. The database remains the source of truth.
@@ -390,10 +420,30 @@ function openSse(kbId: number) {
     try {
       const data = JSON.parse(ev.data)
       const raw = store.rawMaterials.find(r => r.id === data.rawId)
-      if (raw) raw.processingStatus = 'failed'
+      if (raw) {
+        raw.processingStatus = 'failed'
+        // Surface the failure immediately from the event payload instead of
+        // waiting for the refresh round-trip — and never drop it: a null
+        // message would otherwise leave the user with a blank "failed" badge.
+        if (typeof data.error === 'string') raw.errorMessage = data.error
+        if (typeof data.errorCode === 'string') raw.errorCode = data.errorCode
+      }
       // Clear stale job entry
       delete rawJobs[data.rawId]
       if (store.currentKB) void store.refreshCurrentKB()
+    } catch { /* ignore */ }
+  })
+  es.addEventListener('raw.warning', (ev: MessageEvent) => {
+    try {
+      const data = JSON.parse(ev.data)
+      const raw = store.rawMaterials.find(r => r.id === data.rawId)
+      // A warning lands async after the material already completed, so the
+      // refresh round-trip on raw.completed has already happened — apply it
+      // live here, otherwise it would only appear on the next manual reload.
+      if (raw) {
+        if (typeof data.warning === 'string') raw.warningMessage = data.warning
+        if (typeof data.warningCode === 'string') raw.warningCode = data.warningCode
+      }
     } catch { /* ignore */ }
   })
   es.onerror = () => {
@@ -438,6 +488,14 @@ onBeforeUnmount(() => {
   if (fallbackTimer != null) {
     clearInterval(fallbackTimer)
     fallbackTimer = null
+  }
+  // Stop the per-raw job poller too. Without this the setTimeout chain keeps
+  // running after the panel unmounts (e.g. switching to the config tab while a
+  // raw is still processing), calling refreshCurrentKB() every 3s and snapping
+  // the user back to this tab.
+  if (jobPoller != null) {
+    clearTimeout(jobPoller)
+    jobPoller = null
   }
 })
 
@@ -847,6 +905,7 @@ async function handleScanDir() {
 .raw-item-meta { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 .raw-item-actions { display: flex; gap: 4px; flex-shrink: 0; }
 .error-hint { font-size: 11px; color: var(--mc-danger); max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.warning-hint { font-size: 11px; color: var(--mc-warning, #d98e00); max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .page-count-chip { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; font-weight: 500; color: var(--mc-text-secondary); background: var(--mc-bg-sunken); border-radius: 9999px; padding: 2px 7px; }
 
 /* Two-phase digest progress bar (RFC-012 M2 v2 UI) */

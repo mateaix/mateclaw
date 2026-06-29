@@ -95,6 +95,17 @@ Eager ingest runs in two phases for an order-of-magnitude speedup:
 
 **Resumable**: interrupted mid-import? Hit "Reprocess" and only the unfinished pages re-run; everything already produced stays put. Documents larger than the embedding model's context get mean-pool sub-segmented automatically.
 
+#### Save tokens: a light model for the cheap steps
+
+Digest runs several kinds of LLM step: route, merge generation, enrich, summary, entity extraction. The **route / enrich / summary / entity-extraction** steps are high-volume but lightweight — no need to run them on the same premium model as page merging.
+
+Point them at a cheaper model to cut token spend without touching page-generation quality:
+
+- **System-wide** — set `wiki.lightModelId` (a model id) in system settings; it applies to the cheap steps of every KB.
+- **Per-KB override** — set `wikiLightModelId` in the KB config to override the system-wide value.
+
+Leave both unset and nothing changes (the cheap steps keep using the KB / system default). Precedence: `stepModels.<step>` (pin a step) → light model (cheap steps only) → `wikiDefaultModelId` → system default.
+
 ### Lazy: index now, compile later
 
 The pipeline collapses to four steps:
@@ -672,7 +683,7 @@ Core tables (see feature sections for the complete list):
 | Table | Purpose |
 |---|---|
 | `mate_wiki_knowledge_base` | One row per KB. Owner, name, description, config JSON (`ingestMode`, `wikiDefaultModelId`, `stepModels`, `entityExtractionEnabled`, `entityTypes`, fallback chain). |
-| `mate_wiki_raw_material` | One row per upload. Status, byte hash, source path, last successfully-processed hash. |
+| `mate_wiki_raw_material` | One row per upload. Status, byte hash, source path, last successfully-processed hash; structured `error_code` + `error_message` on failure, and `warning_code` + `warning_message` when completed-but-degraded. |
 | `mate_wiki_page` | One row per generated page. Title, summary, body, `source_raw_ids` (provenance), `page_type`, `locked`, version, plus `embedding` / `embedding_model` / `embedding_text_version` so transformation synthesis pages enter semantic search directly. |
 | `mate_wiki_chunk` | One row per chunk. content + hash + offsets + embedding, plus `page_number`, `header_breadcrumb`, `source_section`, `token_count`. |
 | `mate_wiki_relation` | Cached page-to-page edges (shared chunks, shared raws, direct links, semantic neighbors) used to power the 1-hop retrieval boost and the related-pages tool. |
@@ -697,10 +708,49 @@ For when you don't want to wait for the cron / event hooks to catch up:
 |---|---|
 | `POST /api/v1/wiki/admin/kb/{kbId}/rebuild-overview` | Force-rewrite the overview marker region from current stats. |
 | `POST /api/v1/wiki/admin/backfill-tokens` | Run one batch of the token-count backfill now; returns `pendingBefore` / `pendingAfter` / `filledThisBatch`. |
+| `GET /api/v1/wiki/admin/failures?limit=100` | Cross-KB list of materials needing attention (failed / partial / warning); see "Failure visibility" below (platform admin). |
 
 The `mate.wiki` block in `application.yml` controls global knobs (chunk size, parallelism, auto-process-on-upload). Per-KB knobs (ingest mode, step models, fallback chain) live inside the KB's `configContent` JSON and are edited through the config UI.
 
 > The `token_count` column is nullable for legacy chunks; a low-frequency cron `WikiChunkTokenBackfillJob` fills them with `ceil(charCount / 4)` over time, never blocking ingest.
+
+---
+
+## Failure visibility
+
+Ingest is mostly async background work, so failures used to be visible only in the server log. They are now **structured onto the raw material and pushed live to the UI**.
+
+### Structured error codes
+
+When a raw material fails, alongside the raw text (`error_message`) it records a **structured `error_code`**:
+
+`AUTH_ERROR` / `BILLING` / `MODEL_NOT_FOUND` / `RATE_LIMIT` / `TIMEOUT` / `SERVER_ERROR` (5xx) / `CONTENT_FILTER` / `NO_CONTENT` (no extractable text) / `EMPTY_RESULT` (model produced no pages) / `UNKNOWN`.
+
+The UI renders a localized friendly hint from the code (e.g. "Model authentication failed — check the provider key") and keeps the raw exception as a hover detail. Both columns are cleared on a successful reprocess.
+
+### Non-blocking warnings
+
+Some sub-steps run async **after** the material is already completed — embedding and entity-graph extraction. Their failure does not affect the pages, but it degrades the material (most notably: a failed embedding means the material is not semantically searchable yet). Instead of only logging, these record a non-blocking `warning_code` (`EMBEDDING_FAILED` / `ENTITY_EXTRACTION_FAILED`) + `warning_message`; the material stays "completed" but carries a ⚠ marker.
+
+### Progress SSE events
+
+The KB progress stream `GET /api/v1/wiki/knowledge-bases/{kbId}/progress` (SSE) emits:
+
+| Event | When | Key fields |
+|---|---|---|
+| `raw.started` | a material starts processing | `rawId` |
+| `route.done` / `chunk.done` | stage progress | `rawId` + progress counters |
+| `raw.completed` | material finished (incl. partial) | `rawId` / `status` / `totalPages` |
+| `raw.failed` | material failed | `rawId` / `error` / `errorCode` |
+| `raw.warning` | completed but an async sub-step failed | `rawId` / `warning` / `warningCode` |
+
+### Cross-KB failure center (admin)
+
+Instead of opening each KB in turn, an admin sees everything needing attention (failed / partial / warning) in one place:
+
+- `GET /api/v1/wiki/admin/failures?limit=100` — lists across **all** knowledge bases with KB name, status, error/warning code, and time (platform admin `ROLE_ADMIN`, spans every workspace).
+- The notification summary `GET /api/v1/notifications/summary` gains a `failedWikiJobs` count, driving the attention badge on the sidebar Wiki item.
+- The frontend Wiki library view shows a collapsible failure center at the top with one-click open into the owning KB.
 
 ---
 
