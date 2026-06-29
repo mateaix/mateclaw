@@ -459,6 +459,7 @@ export default {
     steps: 'steps',
     viewResult: 'Click to view result',
     delegatedTo: 'Delegated to',
+    queuedSpillHint: 'Queued steps of an in-progress plan — the same plan also shows in In Progress',
     col: {
       pending: 'To Do',
       running: 'In Progress',

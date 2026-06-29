@@ -459,6 +459,7 @@ export default {
     steps: '步骤',
     viewResult: '点击查看结果',
     delegatedTo: '委派给',
+    queuedSpillHint: '进行中计划的待执行步骤——同一计划也显示在「执行中」列',
     col: {
       pending: '待执行',
       running: '执行中',
