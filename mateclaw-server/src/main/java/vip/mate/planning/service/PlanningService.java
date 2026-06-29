@@ -224,12 +224,24 @@ public class PlanningService {
     /**
      * 审批 replay 上下文：找到最近一条 running 且含 awaiting_approval 步骤的计划，
      * 返回恢复图执行所需的全部状态。
+     * <p>
+     * 必须传入 conversationId 以确保会话隔离 —— 同一 agent 的多个并发会话
+     * 可能同时存在 running 计划，若不按会话过滤会跨会话误取计划。
+     * conversationId 为 null 时（兼容历史调用方）回退到全局查询，但会打告警。
      */
-    public PlanResumeContext findAwaitingApprovalContext() {
-        PlanEntity plan = planMapper.selectOne(new LambdaQueryWrapper<PlanEntity>()
+    public PlanResumeContext findAwaitingApprovalContext(String conversationId) {
+        if (conversationId == null || conversationId.isBlank()) {
+            log.warn("[PlanningService] findAwaitingApprovalContext called without conversationId, " +
+                    "risk of cross-conversation plan pickup in concurrent scenarios");
+        }
+        LambdaQueryWrapper<PlanEntity> wrapper = new LambdaQueryWrapper<PlanEntity>()
                 .eq(PlanEntity::getStatus, "running")
                 .orderByDesc(PlanEntity::getCreateTime)
-                .last("LIMIT 1"));
+                .last("LIMIT 1");
+        if (conversationId != null && !conversationId.isBlank()) {
+            wrapper.eq(PlanEntity::getConversationId, conversationId);
+        }
+        PlanEntity plan = planMapper.selectOne(wrapper);
         if (plan == null) return null;
 
         List<SubPlanEntity> subPlans = subPlanMapper.selectList(

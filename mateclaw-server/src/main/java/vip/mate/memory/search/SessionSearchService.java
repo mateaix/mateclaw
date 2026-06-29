@@ -35,7 +35,9 @@ public class SessionSearchService {
 
     /**
      * Search messages across conversations for the given agent.
-     * Excludes the current conversation.
+     * Excludes the current conversation AND any conversation currently in
+     * 'running' stream status, so that concurrent sibling conversations of
+     * the same agent don't leak in-progress context into each other.
      */
     public List<SessionSearchResult> search(Long agentId, String currentConversationId,
                                             String query, int limit) {
@@ -43,28 +45,37 @@ public class SessionSearchService {
             return List.of();
         }
         int effectiveLimit = Math.min(Math.max(limit, 1), 50);
+        String excludeConvId = currentConversationId != null ? currentConversationId : "";
 
         try {
             if (isMySql()) {
-                return searchMySQL(agentId, currentConversationId, query, effectiveLimit);
+                return searchMySQL(agentId, excludeConvId, query, effectiveLimit);
             } else {
-                return searchH2(agentId, currentConversationId, query, effectiveLimit);
+                return searchH2(agentId, excludeConvId, query, effectiveLimit);
             }
         } catch (Exception e) {
             log.warn("[SessionSearch] Search failed, falling back to LIKE: {}", e.getMessage());
-            return searchH2(agentId, currentConversationId, query, effectiveLimit);
+            return searchH2(agentId, excludeConvId, query, effectiveLimit);
         }
     }
 
     /**
      * List recent conversations for the given agent.
+     * Excludes the current conversation and any conversation currently in
+     * 'running' stream status to avoid surfacing concurrent in-flight
+     * conversations.
      */
-    public List<Map<String, Object>> listRecent(Long agentId, int limit) {
+    public List<Map<String, Object>> listRecent(Long agentId, String currentConversationId, int limit) {
         int effectiveLimit = Math.min(Math.max(limit, 1), 50);
+        String excludeConvId = currentConversationId != null && !currentConversationId.isBlank()
+                ? currentConversationId : "";
+
         String sql = """
                 SELECT conversation_id, title, message_count, last_active_time, create_time
                 FROM mate_conversation
                 WHERE agent_id = ? AND deleted = 0
+                  AND (stream_status IS NULL OR stream_status != 'running')
+                  AND (? = '' OR conversation_id != ?)
                 ORDER BY last_active_time DESC
                 LIMIT ?
                 """;
@@ -77,13 +88,14 @@ public class SessionSearchService {
             row.put("lastActiveTime", toLocalDateTime(rs.getTimestamp("last_active_time")));
             row.put("createTime", toLocalDateTime(rs.getTimestamp("create_time")));
             return row;
-        }, agentId, effectiveLimit);
+        }, agentId, excludeConvId, excludeConvId, effectiveLimit);
     }
 
     // ==================== MySQL FULLTEXT ====================
 
     private List<SessionSearchResult> searchMySQL(Long agentId, String currentConversationId,
                                                    String query, int limit) {
+        // 排除当前会话 + 排除正在运行中的并发兄弟会话，避免上下文串台
         String sql = """
                 SELECT m.conversation_id, m.role, m.content, m.create_time,
                        c.title,
@@ -93,6 +105,7 @@ public class SessionSearchService {
                 WHERE c.agent_id = ? AND m.conversation_id != ?
                   AND m.role IN ('user', 'assistant')
                   AND m.deleted = 0 AND c.deleted = 0
+                  AND (c.stream_status IS NULL OR c.stream_status != 'running')
                   AND MATCH(m.content) AGAINST(? IN NATURAL LANGUAGE MODE)
                 ORDER BY relevance DESC
                 LIMIT ?
@@ -109,6 +122,7 @@ public class SessionSearchService {
         // Escape SQL LIKE special chars
         String escapedQuery = query.replace("%", "\\%").replace("_", "\\_");
 
+        // 排除当前会话 + 排除正在运行中的并发兄弟会话，避免上下文串台
         String sql = """
                 SELECT m.conversation_id, m.role, m.content, m.create_time, c.title
                 FROM mate_message m
@@ -116,6 +130,7 @@ public class SessionSearchService {
                 WHERE c.agent_id = ? AND m.conversation_id != ?
                   AND m.role IN ('user', 'assistant')
                   AND m.deleted = 0 AND c.deleted = 0
+                  AND (c.stream_status IS NULL OR c.stream_status != 'running')
                   AND LOWER(m.content) LIKE LOWER(CONCAT('%', ?, '%'))
                 ORDER BY m.create_time DESC
                 LIMIT ?
