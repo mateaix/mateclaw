@@ -112,7 +112,7 @@ public class SkillFileService {
         LocalDateTime now = LocalDateTime.now();
         for (var entry : incoming.entrySet()) {
             String path = entry.getKey();
-            String content = entry.getValue() == null ? "" : entry.getValue();
+            String content = stripNul(entry.getValue() == null ? "" : entry.getValue(), path, skillId);
             String hash = sha256Hex(content);
             int size = content.getBytes(StandardCharsets.UTF_8).length;
 
@@ -161,6 +161,34 @@ public class SkillFileService {
     public int deleteAllForSkill(Long skillId) {
         if (skillId == null) return 0;
         return mapper.deleteBySkillId(skillId);
+    }
+
+    /**
+     * Strip NUL characters ({@code \u0000}) from bundle content before it is
+     * persisted.
+     *
+     * <p>This is the universal backstop for the PostgreSQL text contract:
+     * PG rejects {@code 0x00} in {@code text}/{@code jsonb} columns
+     * ("invalid byte sequence for encoding UTF8: 0x00"), whereas MySQL
+     * ({@code utf8mb4 TEXT}) and H2 ({@code CLOB}) silently tolerate it — so
+     * this corruption never surfaces on the default dev database and must be
+     * caught here. {@code applyBundleFiles} is the single write chokepoint for
+     * {@code mate_skill_file}, covering the Zip installer, the Git installer
+     * <em>and</em> the disk→DB reverse flow in {@code SkillFileSyncer}, so the
+     * guard belongs here rather than at any one fetch boundary.
+     *
+     * <p>The fetchers reject genuinely-binary entries up front (see
+     * {@code ZipSkillFetcher.isLikelyBinary} / the equivalent in
+     * {@code GitSkillFetcher}); this only ever fires for otherwise-text content
+     * that carries a stray NUL, so stripping (rather than aborting the whole
+     * install) is the least-surprising recovery.
+     */
+    private static String stripNul(String content, String path, Long skillId) {
+        if (content == null || content.indexOf('\0') < 0) {
+            return content;
+        }
+        log.warn("Stripping NUL byte(s) from skill file content before persist: skill_id={} path={}", skillId, path);
+        return content.replace("\u0000", "");
     }
 
     private boolean bucketHasEntries(Map<String, String> files, String prefix) {

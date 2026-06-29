@@ -7,6 +7,7 @@ import vip.mate.skill.installer.model.SkillBundle;
 import vip.mate.skill.runtime.SkillFrontmatterParser;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.HashMap;
@@ -208,12 +209,41 @@ public class GitSkillFetcher {
             public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
                 if (attrs.isRegularFile() && attrs.size() < 1_000_000) { // 跳过超过 1MB 的文件
                     String relativePath = dir.relativize(file).toString();
-                    files.put(relativePath, Files.readString(file));
+                    byte[] bytes = Files.readAllBytes(file);
+                    // Skill bundles are stored as text (mate_skill_file is a TEXT
+                    // column). Skip binary entries — mirrors ZipSkillFetcher and,
+                    // critically, keeps a NUL byte (which a binary carries and PG
+                    // rejects in text columns) out of the bundle. NUL is valid
+                    // UTF-8, so Files.readString would otherwise keep it verbatim
+                    // and the insert would fail only on PostgreSQL.
+                    if (isLikelyBinary(bytes)) {
+                        log.warn("[GitSkillFetcher] Skipping binary file (not supported in skill bundles): {}", relativePath);
+                        return FileVisitResult.CONTINUE;
+                    }
+                    files.put(relativePath, new String(bytes, StandardCharsets.UTF_8));
                 }
                 return FileVisitResult.CONTINUE;
             }
         });
         return files;
+    }
+
+    /**
+     * Treat a file as binary if it contains a NUL byte (0x00) anywhere — the
+     * same cheap, reliable test git uses, and the one ZipSkillFetcher applies.
+     * Text never carries a NUL; binaries (and the rare text file with a stray
+     * NUL) do, and PostgreSQL rejects NUL in the {@code TEXT} content column.
+     */
+    private static boolean isLikelyBinary(byte[] bytes) {
+        if (bytes == null || bytes.length == 0) {
+            return false;
+        }
+        for (byte b : bytes) {
+            if (b == 0x00) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
