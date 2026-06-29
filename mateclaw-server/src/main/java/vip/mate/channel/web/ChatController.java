@@ -1103,8 +1103,8 @@ public class ChatController {
         response.setFileName(originalFilename);
         response.setStoredName(storedName);
         response.setUrl("/api/v1/chat/files/" + conversationId + "/" + storedName);
-        // 使用相对路径，避免暴露服务端绝对路径
-        response.setPath(uploadRoot.resolve(conversationId).resolve(storedName).toString());
+        // 用 root 相对路径，避免暴露服务端绝对路径（uploadRoot 现在恒为绝对路径）。
+        response.setPath(toRelativeUploadPath(uploadRoot, conversationId, storedName));
         response.setSize(file.getSize());
         response.setContentType(file.getContentType());
         return R.ok(response);
@@ -1498,6 +1498,31 @@ public class ChatController {
 
     static boolean isAssistantPersisted(MessageEntity savedAssistant) {
         return savedAssistant != null;
+    }
+
+    /**
+     * Build the value stored in {@code ChatUploadResponse.path} (and, downstream,
+     * the message content part): a root-relative path like
+     * {@code chat-uploads/{convId}/{storedName}}, never the absolute on-disk
+     * location.
+     * <p>
+     * {@code uploadRoot} is always absolute (the resolver normalizes it via
+     * {@code toAbsolutePath().normalize()}), and this field is purely
+     * informational — it is rendered into the LLM prompt ("附件: foo (path)") and
+     * returned to the client, while retrieval goes through the basename-based
+     * {@code ChatUploadResolver} plus the {@code /api/v1/chat/files/...} URL. So
+     * the absolute form must be avoided: it leaks the server's filesystem layout
+     * into the prompt/response and breaks if the deploy directory ever moves.
+     * <p>
+     * The path is made relative to {@code uploadRoot}'s parent so the trailing
+     * upload sub-directory name is preserved (e.g. {@code chat-uploads/...}), and
+     * separators are normalized to {@code /} so the value is stable across OSes.
+     */
+    static String toRelativeUploadPath(Path uploadRoot, String conversationId, String storedName) {
+        Path target = uploadRoot.resolve(conversationId).resolve(storedName);
+        Path base = uploadRoot.getParent();
+        Path relative = base != null ? base.relativize(target) : target;
+        return relative.toString().replace('\\', '/');
     }
 
     private MessageEntity saveEmptyAssistantPlaceholder(String conversationId, String status,
