@@ -48,7 +48,10 @@ public class BrowserProperties {
     /** Maximum concurrent browser sessions across all agents. Prevents runaway memory usage. */
     private int maxSessions = 5;
 
-    /** Block navigations to loopback, private, link-local and cloud-metadata hosts. */
+    /**
+     * Block navigations to loopback, private, link-local and cloud-metadata hosts.
+     * Narrow exceptions are configured via {@code mateclaw.security.ssrf-allowlist}.
+     */
     private boolean ssrfCheckEnabled = true;
 
     /** Viewport width (px) for launched browsers. */

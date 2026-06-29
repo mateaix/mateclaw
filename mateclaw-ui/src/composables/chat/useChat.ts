@@ -16,7 +16,7 @@ import { useMessageQueue } from './useMessageQueue'
 import { useGoalStore } from '@/stores/useGoalStore'
 import { useSystemSettingsStore } from '@/stores/useSystemSettingsStore'
 import { storeToRefs } from 'pinia'
-import type { Message, MessageContentPart, MessageSegment, StreamPhase, HeartbeatData, QueuedMessage, PhaseEventData, DelegationNode, DelegationToolEntry, PlanMeta } from '@/types'
+import type { Message, MessageContentPart, MessageSegment, StreamPhase, HeartbeatData, QueuedMessage, PhaseEventData, DelegationNode, DelegationToolEntry, PlanMeta, GeneratedFile } from '@/types'
 import { classifyBackendError, type ChatErrorInfo } from '@/types/chatError'
 import { http } from '@/api'
 
@@ -415,6 +415,21 @@ export function useChat(options: UseChatOptions): UseChatReturn {
       if (m) return m[1]
     }
     return null
+  }
+
+  /** Markdown link pointing at a generated-file download URL. */
+  const GENERATED_FILE_LINK_RE = /\[([^\]]+)\]\(((?:https?:\/\/[^/\s)\]]+)?\/api\/v1\/files\/generated\/[A-Za-z0-9-]+)\)/g
+
+  /** Extract generated-file artifacts from a tool result string. */
+  function extractGeneratedFiles(result: unknown, toolName: string): GeneratedFile[] {
+    if (typeof result !== 'string' || !result) return []
+    const files: GeneratedFile[] = []
+    let m: RegExpExecArray | null
+    GENERATED_FILE_LINK_RE.lastIndex = 0
+    while ((m = GENERATED_FILE_LINK_RE.exec(result)) !== null) {
+      files.push({ filename: m[1], url: m[2], toolName })
+    }
+    return files
   }
 
   // ===== SSE event handlers =====
@@ -860,9 +875,21 @@ export function useChat(options: UseChatOptions): UseChatReturn {
             status: 'completed'
           }
         }
+        // Extract generated-file links from the tool result for the run-overview rail.
+        // De-duplicate by URL so a link echoed in later tool results doesn't
+        // produce duplicate entries.
+        const newFiles = extractGeneratedFiles(data.result, data.toolName)
+        const existingFiles = (metadata?.generatedFiles || []) as GeneratedFile[]
+        const existingUrls = new Set(existingFiles.map(f => f.url))
+        const dedupedNew = newFiles.filter(f => !existingUrls.has(f.url))
+        const generatedFiles = dedupedNew.length
+          ? [...existingFiles, ...dedupedNew]
+          : existingFiles.length
+            ? existingFiles
+            : undefined
         updateMessage(currentAssistantId.value, {
           ...msg,
-          metadata: { ...metadata, toolCalls, runningToolName: undefined }
+          metadata: { ...metadata, toolCalls, runningToolName: undefined, generatedFiles }
         } as any)
       }
       // Segments: prefer toolCallId match, fall back to first-running by toolName.
@@ -2028,7 +2055,7 @@ export function useChat(options: UseChatOptions): UseChatReturn {
 
   // Reconnect to a stream that is already running on the backend
   const reconnectStream = async (conversationId: string) => {
-    if (isGenerating.value) return
+    if (isGenerating.value && streamConversationId === conversationId) return
 
     // Clear any leftover stop fallback timer
     if (stopFallbackTimer) { clearTimeout(stopFallbackTimer); stopFallbackTimer = null }
@@ -2054,9 +2081,28 @@ export function useChat(options: UseChatOptions): UseChatReturn {
       }
     }
 
-    const assistantMessage = createAssistantMessage('', conversationId)
-    ;(assistantMessage as any)._turnId = activeTurnId
-    currentAssistantId.value = assistantMessage.id as string
+    const existingAsst = [...messages.value].reverse().find(
+      m => m.role === 'assistant'
+        && m.conversationId === conversationId
+        && (m.status === 'generating' || m.status === 'awaiting_approval')
+    )
+    if (existingAsst) {
+      updateMessage(existingAsst.id as string, {
+        ...existingAsst,
+        content: '',
+        contentParts: [],
+        _turnId: activeTurnId,
+        metadata: {
+          ...((existingAsst as any).metadata || {}),
+          segments: [],
+        },
+      } as any)
+      currentAssistantId.value = existingAsst.id as string
+    } else {
+      const assistantMessage = createAssistantMessage('', conversationId)
+      ;(assistantMessage as any)._turnId = activeTurnId
+      currentAssistantId.value = assistantMessage.id as string
+    }
 
     try {
       // reconnectStream always rebuilds from an EMPTY placeholder (above), so it

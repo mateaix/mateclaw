@@ -52,6 +52,9 @@ public final class WikiKbConfigParser {
             } else if ("wikiDefaultModelId".equals(key)) {
                 Long parsed = parseLong(value);
                 if (parsed != null) config.setWikiDefaultModelId(parsed);
+            } else if ("wikiLightModelId".equals(key)) {
+                Long parsed = parseLong(value);
+                if (parsed != null) config.setWikiLightModelId(parsed);
             } else if (key.startsWith("stepModels.")) {
                 Long parsed = parseLong(value);
                 if (parsed != null) {

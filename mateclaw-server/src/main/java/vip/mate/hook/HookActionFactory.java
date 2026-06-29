@@ -7,6 +7,7 @@ import org.springframework.http.client.ClientHttpRequestFactory;
 import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
+import vip.mate.common.net.SsrfProperties;
 import vip.mate.hook.action.*;
 import vip.mate.hook.model.HookEntity;
 
@@ -26,6 +27,7 @@ public class HookActionFactory {
 
     private final ObjectMapper objectMapper;
     private final HookProperties props;
+    private final SsrfProperties ssrfProperties;
 
     /** 懒加载的共享 RestClient；所有 HttpAction 复用同一连接池。 */
     private volatile RestClient httpRestClient;
@@ -48,6 +50,7 @@ public class HookActionFactory {
                     URI.create(required(cfg, "url")),
                     text(cfg, "body", null),
                     props.getTrustedDomains(),
+                    ssrfProperties.getSsrfAllowlist(),
                     timeoutMs,
                     text(cfg, "hmacSecret", null),
                     text(cfg, "signatureHeader", null));

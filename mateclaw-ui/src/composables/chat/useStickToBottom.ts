@@ -1,6 +1,6 @@
 /**
  * 智能滚动 Composable
- * 参考 @agentscope-ai/chat 的 StickToBottom 实现，提供智能的自动滚动体验
+ * 提供"贴底/脱离锁定"的智能自动滚动体验：内容增长时自动贴底，用户上滚后释放锁定
  */
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 
@@ -32,6 +32,7 @@ export interface StickToBottomReturn {
   stopScroll: () => void
   /** 检查是否在底部 */
   checkIsAtBottom: () => boolean
+  resetLock: () => void
 }
 
 // 默认配置
@@ -129,6 +130,14 @@ export function useStickToBottom(
   const handleScroll = () => {
     if (!scrollRef.value) return
     if (isScrolling) {
+      // User scrolled up during a programmatic scroll — release the lock so the
+      // view stops snapping back to the bottom.
+      const currentScrollTop = scrollRef.value.scrollTop
+      if (currentScrollTop < lastScrollTop) {
+        isScrolling = false
+        escapedFromLock.value = true
+        isAtBottom.value = false
+      }
       lastScrollTop = scrollRef.value.scrollTop
       return
     }
@@ -181,6 +190,11 @@ export function useStickToBottom(
         isAtBottom.value = true
       }
     }, 100)
+  }
+
+  const resetLock = () => {
+    escapedFromLock.value = false
+    isAtBottom.value = true
   }
 
   // ResizeObserver 监听内容变化
@@ -245,6 +259,7 @@ export function useStickToBottom(
     scrollToBottom,
     stopScroll,
     checkIsAtBottom,
+    resetLock,
   }
 }
 

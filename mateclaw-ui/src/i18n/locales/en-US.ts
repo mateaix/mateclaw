@@ -105,6 +105,7 @@ export default {
       title: 'Run Overview',
       plan: 'Plan Progress',
       subagents: 'Sub-agents',
+      files: 'Generated Files',
       noPlan: 'No execution plan yet',
       noSubagents: 'No sub-agents yet',
       collapse: 'Collapse',
@@ -458,6 +459,7 @@ export default {
     steps: 'steps',
     viewResult: 'Click to view result',
     delegatedTo: 'Delegated to',
+    queuedSpillHint: 'Queued steps of an in-progress plan — the same plan also shows in In Progress',
     col: {
       pending: 'To Do',
       running: 'In Progress',
@@ -514,6 +516,7 @@ export default {
   },
   notifications: {
     pendingApprovals: '{n} tool call(s) pending approval',
+    failedWikiJobs: '{n} knowledge base material(s) failed or degraded',
   },
   live: {
     kicker: 'Live',
@@ -1397,13 +1400,14 @@ export default {
       toolUnavailableTooltip: 'This tool\'s name conflicts with another tool on the same server and cannot be bound ({reason}). Rename the upstream tool to resolve.',
       toolOrphanGroup: 'Bound but no longer available',
       toolOrphanDescription: 'This tool was previously bound but is no longer in the available catalog (its MCP server may have been removed, or the tool was retired upstream). Uncheck and save to clean up the leftover binding.',
-      providersHint: 'Preferred provider order for this agent (lower index tried first). Leave empty to use the global available-pool order. Cooling-down or pool-removed providers are still skipped automatically.',
-      providersAddHint: 'Click a provider below to add it to the preference list:',
+      providersHint: 'Preferred provider + model chain for this agent (lower index tried first). Each entry may pin a specific model, and the same provider may be added more than once with different models. Leave empty to use the global available-pool order. Cooling-down or pool-removed providers are still skipped automatically.',
+      providersAddHint: 'Click a provider below to add an entry (the same provider may be added multiple times, each with its own model):',
+      providerDefaultModel: 'Provider default model',
       noSkills: 'No skills available',
       noTools: 'No tools available',
       noMatchingSkills: 'No matching skills',
       noMatchingTools: 'No matching tools',
-      noProviderPreferences: 'No preferences set — the agent uses the global fallback chain order.',
+      noProviderPreferences: 'No preferred-model chain set — the agent uses the global fallback chain order.',
       wikiKicker: 'Knowledge Base Access',
       wikiTagline: 'Limit which knowledge bases this agent can reach, so it never reads content outside its scope.',
       wikiHint: 'Tick the knowledge bases this agent may access; mark one as the default (used by wiki tools when no kbId/kbName is given).',
@@ -2506,6 +2510,30 @@ export default {
       cancelled: 'CANCELLED',
       cancelling: 'CANCELLING…',
     },
+    // Friendly, localized hints keyed by the backend's structured error code.
+    // The raw exception text is kept as the hover tooltip for troubleshooting.
+    errorCode: {
+      AUTH_ERROR: 'Model authentication failed — check that the provider API key is correct and valid.',
+      BILLING: 'Provider quota exhausted or billing error — check your account balance.',
+      MODEL_NOT_FOUND: 'The selected model is missing or unavailable — switch models in the knowledge base settings.',
+      RATE_LIMIT: 'Rate-limited by the provider — please retry in a moment.',
+      TIMEOUT: 'The model timed out — retry later or switch to a faster model.',
+      SERVER_ERROR: 'The provider is temporarily unavailable (5xx) — please retry later.',
+      CONTENT_FILTER: 'Content was blocked by the model safety filter — adjust the material and retry.',
+      NO_CONTENT: 'No text could be extracted from this material — check that the file is not empty or corrupt.',
+      EMPTY_RESULT: 'The model generated no pages — reprocess to retry.',
+      UNKNOWN: 'Processing failed — see details or the server logs.',
+    },
+    // Non-blocking warnings: the material processed but an async sub-step failed.
+    warningCode: {
+      EMBEDDING_FAILED: 'Embedding failed — this material is not semantically searchable yet; check the embedding model and reprocess.',
+      ENTITY_EXTRACTION_FAILED: 'Entity-graph extraction failed — the knowledge graph may be incomplete; reprocess later.',
+      UNKNOWN: 'Some background processing did not finish — see details.',
+    },
+    failureCenter: {
+      title: 'Knowledge base processing issues',
+      open: 'Open',
+    },
     progress: {
       preparing: 'Preparing…',
       uploading: 'Uploading {pct}%',
@@ -2654,6 +2682,9 @@ export default {
       resetView: 'Reset view',
       fullscreen: 'Fullscreen',
       exitFullscreen: 'Exit fullscreen',
+      searchPlaceholder: 'Search nodes by name…',
+      searchNoMatch: 'No matching node',
+      searchClear: 'Clear',
       linksTo: 'Links to',
       openPage: 'Open page',
       empty: 'No graph data — process some raw materials first',

@@ -35,6 +35,12 @@ contextBridge.exposeInMainWorld('mateClawAPI', {
     return () => ipcRenderer.removeListener('backend:crashed', handler)
   },
 
+  // Local tools (file/shell proxy) management
+  getLocalToolsConfig: () => ipcRenderer.invoke('localtools:get-config'),
+  setLocalToolsConfig: (patch: unknown) => ipcRenderer.invoke('localtools:set-config', patch),
+  addLocalToolsDir: () => ipcRenderer.invoke('localtools:add-dir'),
+  removeLocalToolsDir: (dir: string) => ipcRenderer.invoke('localtools:remove-dir', dir),
+
   // Auto-updater
   getUpdaterState: () => ipcRenderer.invoke('updater:get-state'),
   checkForUpdates: () => ipcRenderer.invoke('updater:check'),

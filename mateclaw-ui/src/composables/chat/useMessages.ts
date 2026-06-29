@@ -1,6 +1,5 @@
 /**
  * 消息状态管理 Composable
- * 参考 @agentscope-ai/chat 的消息管理实现
  */
 import { ref, computed } from 'vue'
 import type { Message, MessageContentPart } from '@/types'
