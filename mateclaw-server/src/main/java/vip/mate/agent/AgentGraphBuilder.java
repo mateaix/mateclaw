@@ -133,6 +133,11 @@ public class AgentGraphBuilder {
     private final vip.mate.goal.service.GoalFollowupService goalFollowupService;
     private final vip.mate.goal.config.GoalProperties goalProperties;
 
+    // Context Intelligence v2 components (design doc §10.2)
+    private final org.springframework.context.ApplicationEventPublisher eventPublisher;
+    private final vip.mate.context.intelligence.snapshot.EnvSnapshotStore envSnapshotStore;
+    private final vip.mate.context.intelligence.budget.TokenBudgetPlanner tokenBudgetPlanner;
+
     /**
      * Auto-grant resolver wired into the executor so an active
      * {@code mate_approval_grant} row can skip {@code createPending()} for matching
@@ -651,6 +656,9 @@ public class AgentGraphBuilder {
                     .addStrategy(MateClawStateKeys.LLM_CALL_COUNT, KeyStrategy.REPLACE)
                     .addStrategy(MateClawStateKeys.RUNTIME_MODEL_NAME, KeyStrategy.REPLACE)
                     .addStrategy(MateClawStateKeys.RUNTIME_PROVIDER_ID, KeyStrategy.REPLACE)
+                    // v1 Bug 3 fix: RUNTIME_MODEL_TYPE was missing registration, causing it to be lost on multi-node merges;
+                    // ContextProfile.fromModelType fell back to defaults. See design doc §10.3.
+                    .addStrategy(MateClawStateKeys.RUNTIME_MODEL_TYPE, KeyStrategy.REPLACE)
                     // SourceEvidenceLedger: ActionNode 把每轮 ToolResponse 抽取出的
                     // (sourcePaths, sourceSymbols, failedPaths) merge 进这个 ledger，
                     // 后续 ReasoningNode / FinalAnswerNode 调 validateAnswer 校验
@@ -857,7 +865,8 @@ public class AgentGraphBuilder {
             ReasoningNode reasoningNode = new ReasoningNode(chatModel, toolSet, reasoningEffort,
                     supportsReasoningEffort,
                     streamingHelper, conversationWindowManager, streamTracker, 0, wikiContextService,
-                    skillCatalogRenderer, toolDisclosureService, progressLedgerService);
+                    skillCatalogRenderer, toolDisclosureService, progressLedgerService,
+                    eventPublisher, envSnapshotStore, tokenBudgetPlanner);
             ActionNode actionNode = new ActionNode(executor, streamTracker);
             ObservationProcessor observationProcessor = new ObservationProcessor(graphObservationProperties);
             ObservationNode observationNode = new ObservationNode(observationProcessor, streamTracker);
@@ -938,6 +947,9 @@ public class AgentGraphBuilder {
                     .addStrategy(MateClawStateKeys.COMPLETION_TOKENS, KeyStrategy.REPLACE)
                     .addStrategy(MateClawStateKeys.RUNTIME_MODEL_NAME, KeyStrategy.REPLACE)
                     .addStrategy(MateClawStateKeys.RUNTIME_PROVIDER_ID, KeyStrategy.REPLACE)
+                    // v1 Bug 3 fix: RUNTIME_MODEL_TYPE was missing registration, causing it to be lost on multi-node merges;
+                    // ContextProfile.fromModelType fell back to defaults. See design doc §10.3.
+                    .addStrategy(MateClawStateKeys.RUNTIME_MODEL_TYPE, KeyStrategy.REPLACE)
                     // SourceEvidenceLedger: ActionNode 把每轮 ToolResponse 抽取出的
                     // (sourcePaths, sourceSymbols, failedPaths) merge 进这个 ledger，
                     // 后续 ReasoningNode / FinalAnswerNode 调 validateAnswer 校验

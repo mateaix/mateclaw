@@ -524,6 +524,8 @@ public class StateGraphReActAgent extends BaseAgent implements StructuredStreamC
         inputs.put(COMPLETION_TOKENS, 0);
         inputs.put(RUNTIME_MODEL_NAME, modelName != null ? modelName : "");
         inputs.put(RUNTIME_PROVIDER_ID, runtimeProviderId != null ? runtimeProviderId : "");
+        // Context Intelligence v2: inject modelType for ContextProfile.fromModelType() threshold check
+        inputs.put(RUNTIME_MODEL_TYPE, runtimeModelConfig != null && runtimeModelConfig.getModelType() != null ? runtimeModelConfig.getModelType() : "");
         inputs.put(TRACE_ID, UUID.randomUUID().toString().substring(0, 8));
 
         // Multimodal sidecar routing — null when the turn carries no media or

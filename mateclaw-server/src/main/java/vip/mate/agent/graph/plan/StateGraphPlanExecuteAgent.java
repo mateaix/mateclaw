@@ -299,6 +299,8 @@ public class StateGraphPlanExecuteAgent extends BaseAgent implements StructuredS
         inputs.put(MateClawStateKeys.COMPLETION_TOKENS, 0);
         inputs.put(MateClawStateKeys.RUNTIME_MODEL_NAME, modelName != null ? modelName : "");
         inputs.put(MateClawStateKeys.RUNTIME_PROVIDER_ID, runtimeProviderId != null ? runtimeProviderId : "");
+        // Context Intelligence v2: inject modelType for ContextProfile.fromModelType() threshold check
+        inputs.put(MateClawStateKeys.RUNTIME_MODEL_TYPE, runtimeModelConfig != null && runtimeModelConfig.getModelType() != null ? runtimeModelConfig.getModelType() : "");
         inputs.put(MateClawStateKeys.TRACE_ID, UUID.randomUUID().toString().substring(0, 8));
 
         if (currentTurn.routingDecision() != null

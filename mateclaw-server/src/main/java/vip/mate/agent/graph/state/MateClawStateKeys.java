@@ -159,6 +159,14 @@ public final class MateClawStateKeys {
     // ===== 运行时模型快照（REPLACE 策略，buildInitialState 注入）=====
     public static final String RUNTIME_MODEL_NAME = "runtime_model_name";
     public static final String RUNTIME_PROVIDER_ID = "runtime_provider_id";
+    /**
+     * Runtime model type (chat / reasoning / embedding / ...), injected by buildInitialState.
+     * <p>
+     * Context Intelligence v2 uses {@code ContextProfile.fromModelType(modelType)}
+     * to decide whether to participate in dynamic window probing ({@code isDynamic() && hasTextContext()}).
+     * v1 failed to register this key, causing it to be lost on multi-node merges, and ContextProfile inference fell back to defaults.
+     */
+    public static final String RUNTIME_MODEL_TYPE = "runtime_model_type";
 
     // ===== RFC-052: Tool returnDirect 与数据隔离 =====
 

@@ -341,6 +341,13 @@ mate:
         compact-trigger-ratio: 0.75
         preserve-recent-pairs: 2
         summary-max-tokens: 300
+  # Context Intelligence v2 模块配置（设计文档 §C.9）
+  # 动态探测模型上下文窗口，优化历史消息裁剪与 token 预算分配
+  context:
+    intelligence:
+      enabled: true
+      metrics:
+        enabled: true
   # Wiki 知识库配置
   wiki:
     enabled: true                       # 是否启用 Wiki 知识库功能
