@@ -79,6 +79,7 @@ public class JwtAuthFilter extends OncePerRequestFilter {
                     user.getUsername(), null,
                     List.of(new SimpleGrantedAuthority("ROLE_" + user.getRole().toUpperCase()))
             );
+            auth.setDetails(user.getId());   // immutable user id for on-behalf-of forwarding
             SecurityContextHolder.getContext().setAuthentication(auth);
             patService.recordUse(pat); // debounced inside the service
         } catch (Exception ignored) {
@@ -99,6 +100,7 @@ public class JwtAuthFilter extends OncePerRequestFilter {
                     username, null,
                     List.of(new SimpleGrantedAuthority("ROLE_" + user.getRole().toUpperCase()))
             );
+            auth.setDetails(user.getId());   // immutable user id for on-behalf-of forwarding
             SecurityContextHolder.getContext().setAuthentication(auth);
 
             // 滑动窗口续期：Token 接近过期时自动签发新 Token

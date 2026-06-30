@@ -214,7 +214,7 @@ public class SkillReflectionService {
      */
     private ToolContext buildToolContext(Long agentId, String conversationId) {
         ChatOrigin origin = new ChatOrigin(agentId, conversationId, "", null, null,
-                null, null, false, null, null, null, null);
+                null, null, false, null, null, null, null, null);
         return new ToolContext(Map.of(ChatOrigin.CTX_KEY, origin));
     }
 
