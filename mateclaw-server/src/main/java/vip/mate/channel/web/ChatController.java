@@ -556,7 +556,7 @@ public class ChatController {
                 // tools that need a workspace path read it from the agent (origin
                 // is enriched with workspaceBasePath in StateGraph buildInitialState).
                 vip.mate.agent.context.ChatOrigin webOrigin =
-                        memoryOrigin(conversationId, username, workspaceId, request.getEndUserId())
+                        memoryOrigin(conversationId, username, requesterUserIdOf(auth), workspaceId, request.getEndUserId())
                                 .withBaseUrl(requestBaseUrl);
                 Disposable disposable = agentService.chatStructuredStream(agentId, promptText, conversationId, username, request.getThinkingLevel(), webOrigin)
                         .doOnNext(delta -> {
@@ -1057,7 +1057,7 @@ public class ChatController {
         // Carry the web origin so per-owner memory recall (read) and the
         // post-conversation memory write below agree on the same owner key.
         vip.mate.agent.context.ChatOrigin webOrigin =
-                memoryOrigin(request.getConversationId(), username, workspaceId, request.getEndUserId());
+                memoryOrigin(request.getConversationId(), username, requesterUserIdOf(auth), workspaceId, request.getEndUserId());
         AgentService.ChatResult result = agentService.chatWithUsage(agentId, promptText, request.getConversationId(), webOrigin);
         String response = result.content();
         conversationService.saveMessage(request.getConversationId(), "assistant", response, null, "completed",
@@ -1170,17 +1170,33 @@ public class ChatController {
      * MateClaw user ({@code user:<username>}).
      */
     private vip.mate.agent.context.ChatOrigin memoryOrigin(String conversationId, String username,
-                                                           Long workspaceId, String endUserId) {
+                                                           Long requesterUserId, Long workspaceId,
+                                                           String endUserId) {
         // Resolve the public base URL here, on the request thread, so it can ride
         // the origin into async tool execution where no request is bound. Tools
         // then mint absolute download links without operator config.
         String baseUrl = resolveRequestBaseUrl();
         if (endUserId != null && !endUserId.isBlank()) {
+            // Third-party single-account integration: the requester is an external
+            // end-user id, not a MateClaw account — no requesterUserId to assert.
             return vip.mate.agent.context.ChatOrigin
                     .web(conversationId, endUserId.trim(), workspaceId, null, baseUrl)
                     .withSender(null, "api", null);
         }
-        return vip.mate.agent.context.ChatOrigin.web(conversationId, username, workspaceId, null, baseUrl);
+        // Authenticated web user: carry the immutable id so on-behalf-of identity
+        // forwarding can assert "MateClaw authenticated this user" (not an anon id).
+        return vip.mate.agent.context.ChatOrigin.web(conversationId, username, workspaceId, null, baseUrl, requesterUserId);
+    }
+
+    /**
+     * Extract the authenticated user's immutable numeric id from the
+     * {@link Authentication} details (stamped by {@code JwtAuthFilter} for both
+     * the JWT and PAT paths). Null when not authenticated or details absent.
+     */
+    private Long requesterUserIdOf(org.springframework.security.core.Authentication auth) {
+        if (auth == null) return null;
+        Object details = auth.getDetails();
+        return details instanceof Long id ? id : null;
     }
 
     /**

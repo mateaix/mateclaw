@@ -4,7 +4,10 @@ import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.Jwts;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.springframework.ai.chat.model.ToolContext;
+import vip.mate.agent.context.ChatOrigin;
 import vip.mate.tool.builtin.ToolExecutionContext;
 
 import java.security.KeyPair;
@@ -17,9 +20,13 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Tests {@link McpIdentityForwardService}: plaintext vs signed-token resolution,
- * fail-closed when token mode lacks a key, and that a minted token verifies
- * against the public key with the right claims.
+ * Tests {@link McpIdentityForwardService}: identity typing across channels,
+ * plaintext vs signed-token resolution, and fail-closed behaviour.
+ *
+ * <p>The core of this suite is the {@code trust}/{@code channel_type} typing —
+ * making sure an authenticated MateClaw user, a webchat visitor, an IM sender,
+ * and a cron run are forwarded with distinguishable, non-fabricated identities
+ * (see RFC: on-behalf-of identity typing, issue #459 review).
  */
 class McpIdentityForwardServiceTest {
 
@@ -32,50 +39,149 @@ class McpIdentityForwardServiceTest {
         return new McpIdentityForwardService(p);
     }
 
-    @Test
-    @DisplayName("plaintext mode: injects username under USER_ARG")
-    void plaintext() {
-        ToolExecutionContext.set("c1", "alice");
-        var p = new McpIdentityForwardProperties();
-        Optional<McpIdentityForwardService.Injection> inj = svc(p).resolve(null, "my-api");
-        assertThat(inj).isPresent();
-        assertThat(inj.get().key()).isEqualTo(McpIdentityForwardProperties.USER_ARG);
-        assertThat(inj.get().value()).isEqualTo("alice");
+    /** Build a ToolContext carrying the given origin, mirroring ToolExecutionExecutor. */
+    private static ToolContext ctx(ChatOrigin origin) {
+        return new ToolContext(Map.of(ChatOrigin.CTX_KEY, origin));
     }
 
-    @Test
-    @DisplayName("no authenticated user: nothing injected")
-    void noUser() {
-        var p = new McpIdentityForwardProperties();
-        assertThat(svc(p).resolve(null, "my-api")).isEmpty();
+    private static KeyPair rsaKeyPair() {
+        try {
+            return KeyPairGenerator.getInstance("RSA").genKeyPair();
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
     }
 
-    @Test
-    @DisplayName("token mode but no key: fail-closed (nothing injected)")
-    void tokenModeNoKey() {
-        ToolExecutionContext.set("c1", "alice");
-        var p = new McpIdentityForwardProperties();
-        p.getToken().setEnabled(true);   // no private-key-pem
-        assertThat(svc(p).resolve(null, "my-api")).isEmpty();
-    }
-
-    @Test
-    @DisplayName("token mode: mints an RS256 JWT that verifies with the public key")
-    void tokenMintAndVerify() throws Exception {
-        KeyPair kp = KeyPairGenerator.getInstance("RSA").genKeyPair();   // 2048 default
+    /** Token-mode config signed with {@code kp}'s private key. */
+    private static McpIdentityForwardProperties tokenProps(KeyPair kp) {
         var p = new McpIdentityForwardProperties();
         p.getToken().setEnabled(true);
         p.getToken().setIssuer("mateclaw");
         p.getToken().setTtlSeconds(60);
         p.getToken().setPrivateKeyPem(Base64.getEncoder().encodeToString(kp.getPrivate().getEncoded()));
+        return p;
+    }
 
-        ToolExecutionContext.set("c1", "alice");
-        Optional<McpIdentityForwardService.Injection> inj = svc(p).resolve(null, "my-api");
+    // ==================== Identity typing across channels ====================
 
+    @Nested
+    @DisplayName("classify: identity typing per channel")
+    class Classify {
+
+        @Test
+        @DisplayName("authenticated web user → sub=userId, trust=authenticated")
+        void authenticatedWebUser() {
+            ChatOrigin origin = ChatOrigin.web("c1", "alice", 1L, null, null, 42L);
+            McpIdentityForwardService.ResolvedIdentity id = svc(new McpIdentityForwardProperties()).classify(ctx(origin));
+            assertThat(id.subject()).isEqualTo("42");
+            assertThat(id.trust()).isEqualTo(McpIdentityForwardService.TRUST_AUTHENTICATED);
+            assertThat(id.channelType()).isEqualTo("web");
+        }
+
+        @Test
+        @DisplayName("webchat visitor (channelType=api) → trust=anonymous, sub=visitorId")
+        void webchatVisitor() {
+            // webchat sets requesterId=visitorId and channelType=api via withSender
+            ChatOrigin origin = ChatOrigin.web("c1", "visitor-xyz", 1L, null)
+                    .withSender(null, "api", null);
+            McpIdentityForwardService.ResolvedIdentity id = svc(new McpIdentityForwardProperties()).classify(ctx(origin));
+            assertThat(id.subject()).isEqualTo("visitor-xyz");
+            assertThat(id.trust()).isEqualTo(McpIdentityForwardService.TRUST_ANONYMOUS);
+            assertThat(id.channelType()).isEqualTo("api");
+        }
+
+        @Test
+        @DisplayName("IM sender (channelType=feishu) → trust=external")
+        void imSender() {
+            ChatOrigin origin = new ChatOrigin(null, "c1", "im_user_1", 1L, null,
+                    9L, null, false, "张三", "feishu", "grp1", null, null);
+            McpIdentityForwardService.ResolvedIdentity id = svc(new McpIdentityForwardProperties()).classify(ctx(origin));
+            assertThat(id.subject()).isEqualTo("im_user_1");
+            assertThat(id.trust()).isEqualTo(McpIdentityForwardService.TRUST_EXTERNAL);
+            assertThat(id.channelType()).isEqualTo("feishu");
+        }
+
+        @Test
+        @DisplayName("cron origin → NONE (never assert identity for a non-user)")
+        void cronOrigin() {
+            ChatOrigin origin = ChatOrigin.cron("c1", 1L, null, 9L, null);
+            assertThat(svc(new McpIdentityForwardProperties()).classify(ctx(origin)))
+                    .isEqualTo(McpIdentityForwardService.ResolvedIdentity.NONE);
+        }
+
+        @Test
+        @DisplayName("system requesterId → NONE")
+        void systemRequester() {
+            // An origin whose requesterId is "system" but cronOrigin=false (defensive)
+            ChatOrigin origin = new ChatOrigin(null, "c1", "system", 1L, null,
+                    null, null, false, null, null, null, null, null);
+            assertThat(svc(new McpIdentityForwardProperties()).classify(ctx(origin)))
+                    .isEqualTo(McpIdentityForwardService.ResolvedIdentity.NONE);
+        }
+
+        @Test
+        @DisplayName("web origin without userId falls back to ThreadLocal username (legacy path)")
+        void webOriginLegacyThreadLocal() {
+            ToolExecutionContext.set("c1", "alice");
+            // 5-arg web(): no requesterUserId → falls back to ThreadLocal
+            ChatOrigin origin = ChatOrigin.web("c1", "alice", 1L, null, null);
+            McpIdentityForwardService.ResolvedIdentity id = svc(new McpIdentityForwardProperties()).classify(ctx(origin));
+            assertThat(id.subject()).isEqualTo("alice");
+            assertThat(id.trust()).isEqualTo(McpIdentityForwardService.TRUST_AUTHENTICATED);
+        }
+    }
+
+    // ==================== Resolution: plaintext & token modes ====================
+
+    @Test
+    @DisplayName("plaintext mode: injects '<trust>:<subject>' under USER_ARG")
+    void plaintextTyped() {
+        ChatOrigin origin = ChatOrigin.web("c1", "alice", 1L, null, null, 42L);
+        var p = new McpIdentityForwardProperties();
+        Optional<McpIdentityForwardService.Injection> inj = svc(p).resolve(ctx(origin), "my-api");
+        assertThat(inj).isPresent();
+        assertThat(inj.get().key()).isEqualTo(McpIdentityForwardProperties.USER_ARG);
+        assertThat(inj.get().value()).isEqualTo("authenticated:42");
+    }
+
+    @Test
+    @DisplayName("plaintext mode: anonymous visitor carries trust=anonymous prefix")
+    void plaintextAnonymous() {
+        ChatOrigin origin = ChatOrigin.web("c1", "visitor-xyz", 1L, null).withSender(null, "api", null);
+        Optional<McpIdentityForwardService.Injection> inj =
+                svc(new McpIdentityForwardProperties()).resolve(ctx(origin), "my-api");
+        assertThat(inj).isPresent();
+        assertThat(inj.get().value()).startsWith("anonymous:visitor-xyz");
+    }
+
+    @Test
+    @DisplayName("no usable identity (cron): nothing injected")
+    void noIdentity() {
+        ChatOrigin origin = ChatOrigin.cron("c1", 1L, null, 9L, null);
+        assertThat(svc(new McpIdentityForwardProperties()).resolve(ctx(origin), "my-api")).isEmpty();
+    }
+
+    @Test
+    @DisplayName("token mode but no key: fail-closed (nothing injected)")
+    void tokenModeNoKey() {
+        ChatOrigin origin = ChatOrigin.web("c1", "alice", 1L, null, null, 42L);
+        var p = new McpIdentityForwardProperties();
+        p.getToken().setEnabled(true);   // no private-key-pem
+        assertThat(svc(p).resolve(ctx(origin), "my-api")).isEmpty();
+    }
+
+    @Test
+    @DisplayName("token mode: mints RS256 JWT that verifies with trust/channel_type claims")
+    void tokenMintAndVerify() throws Exception {
+        KeyPair kp = rsaKeyPair();
+        var p = tokenProps(kp);
+        ChatOrigin origin = ChatOrigin.web("c1", "alice", 1L, null, null, 42L);
+
+        Optional<McpIdentityForwardService.Injection> inj = svc(p).resolve(ctx(origin), "my-api");
         assertThat(inj).isPresent();
         assertThat(inj.get().key()).isEqualTo(McpIdentityForwardProperties.TOKEN_ARG);
 
-        // The REST backend would do exactly this: verify with the public key.
+        // The REST backend verifies with the public key and reads the typed claims.
         Claims claims = Jwts.parser()
                 .verifyWith(kp.getPublic())
                 .requireIssuer("mateclaw")
@@ -84,9 +190,31 @@ class McpIdentityForwardServiceTest {
                 .parseSignedClaims(inj.get().value())
                 .getPayload();
 
-        assertThat(claims.getSubject()).isEqualTo("alice");
+        assertThat(claims.getSubject()).isEqualTo("42");
+        assertThat(claims.get("trust", String.class)).isEqualTo(McpIdentityForwardService.TRUST_AUTHENTICATED);
+        assertThat(claims.get("channel_type", String.class)).isEqualTo("web");
         assertThat(claims.getExpiration()).isAfter(new Date());
-        assertThat(claims.getId()).isNotBlank();   // jti present
+        assertThat(claims.getId()).isNotBlank();
+    }
+
+    @Test
+    @DisplayName("token mode: anonymous visitor token carries trust=anonymous")
+    void tokenAnonymousVisitor() throws Exception {
+        KeyPair kp = rsaKeyPair();
+        var p = tokenProps(kp);
+        ChatOrigin origin = ChatOrigin.web("c1", "visitor-xyz", 1L, null).withSender(null, "api", null);
+
+        Optional<McpIdentityForwardService.Injection> inj = svc(p).resolve(ctx(origin), "my-api");
+        assertThat(inj).isPresent();
+
+        Claims claims = Jwts.parser()
+                .verifyWith(kp.getPublic())
+                .build()
+                .parseSignedClaims(inj.get().value())
+                .getPayload();
+        assertThat(claims.getSubject()).isEqualTo("visitor-xyz");
+        assertThat(claims.get("trust", String.class)).isEqualTo(McpIdentityForwardService.TRUST_ANONYMOUS);
+        assertThat(claims.get("channel_type", String.class)).isEqualTo("api");
     }
 
     @Test
