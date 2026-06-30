@@ -2,72 +2,58 @@ package vip.mate.tool.mcp.runtime;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import vip.mate.tool.builtin.ToolExecutionContext;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Unit tests for {@link IdentityForwardingToolCallback#withIdentity} — the
- * in-band identity injection that lets a STDIO MCP server forward the caller to
- * its REST backend. Pure string/JSON behavior, runs everywhere.
+ * Unit tests for {@link IdentityForwardingToolCallback#withClaim} — the in-band
+ * JSON merge that carries identity to a STDIO MCP server. Pure string/JSON
+ * behavior; identity resolution (plaintext vs token) is tested in
+ * {@link McpIdentityForwardServiceTest}.
  */
 class IdentityForwardingToolCallbackTest {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
-    private static final String KEY = McpIdentityForwardProperties.IDENTITY_ARG;
-
-    @AfterEach
-    void clearContext() {
-        ToolExecutionContext.clear();
-    }
+    private static final String KEY = McpIdentityForwardProperties.USER_ARG;
 
     @Test
-    @DisplayName("injects username into JSON args under the reserved key")
-    void injectsUsername() throws Exception {
-        String out = IdentityForwardingToolCallback.withIdentity("{\"q\":\"hi\"}", "alice");
-        JsonNode n = MAPPER.readTree(out);
+    @DisplayName("merges the claim into JSON args under the given key")
+    void mergesClaim() throws Exception {
+        JsonNode n = MAPPER.readTree(IdentityForwardingToolCallback.withClaim("{\"q\":\"hi\"}", KEY, "alice"));
         assertThat(n.get("q").asText()).isEqualTo("hi");
         assertThat(n.get(KEY).asText()).isEqualTo("alice");
     }
 
     @Test
     @DisplayName("overwrites an LLM-supplied value of the reserved key (no spoofing)")
-    void overwritesLlmSuppliedIdentity() throws Exception {
-        String out = IdentityForwardingToolCallback.withIdentity(
-                "{\"q\":\"hi\",\"" + KEY + "\":\"attacker\"}", "alice");
+    void overwritesLlmSuppliedValue() throws Exception {
+        String out = IdentityForwardingToolCallback.withClaim(
+                "{\"q\":\"hi\",\"" + KEY + "\":\"attacker\"}", KEY, "alice");
         assertThat(MAPPER.readTree(out).get(KEY).asText()).isEqualTo("alice");
     }
 
     @Test
-    @DisplayName("blank/empty input becomes a fresh object carrying the identity")
+    @DisplayName("blank/empty input becomes a fresh object carrying the claim")
     void emptyInputGetsObject() throws Exception {
         for (String in : new String[]{null, "", "   "}) {
-            String out = IdentityForwardingToolCallback.withIdentity(in, "bob");
+            String out = IdentityForwardingToolCallback.withClaim(in, KEY, "bob");
             assertThat(MAPPER.readTree(out).get(KEY).asText()).isEqualTo("bob");
         }
     }
 
     @Test
-    @DisplayName("no authenticated user → input forwarded unchanged (never fabricate identity)")
-    void noUserLeavesInputUnchanged() {
-        assertThat(IdentityForwardingToolCallback.withIdentity("{\"q\":\"hi\"}", null)).isEqualTo("{\"q\":\"hi\"}");
-        assertThat(IdentityForwardingToolCallback.withIdentity("{\"q\":\"hi\"}", "  ")).isEqualTo("{\"q\":\"hi\"}");
-    }
-
-    @Test
     @DisplayName("non-object args (array/scalar) are forwarded unchanged, not corrupted")
     void nonObjectInputUnchanged() {
-        assertThat(IdentityForwardingToolCallback.withIdentity("[1,2,3]", "alice")).isEqualTo("[1,2,3]");
-        assertThat(IdentityForwardingToolCallback.withIdentity("\"plain\"", "alice")).isEqualTo("\"plain\"");
+        assertThat(IdentityForwardingToolCallback.withClaim("[1,2,3]", KEY, "alice")).isEqualTo("[1,2,3]");
+        assertThat(IdentityForwardingToolCallback.withClaim("\"plain\"", KEY, "alice")).isEqualTo("\"plain\"");
     }
 
     @Test
     @DisplayName("malformed JSON is forwarded unchanged (surfaces downstream, not masked)")
     void malformedJsonUnchanged() {
-        assertThat(IdentityForwardingToolCallback.withIdentity("{not json", "alice")).isEqualTo("{not json");
+        assertThat(IdentityForwardingToolCallback.withClaim("{not json", KEY, "alice")).isEqualTo("{not json");
     }
 
     @Test

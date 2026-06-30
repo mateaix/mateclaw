@@ -65,15 +65,15 @@ public class McpClientManager {
 
     private final ApplicationEventPublisher eventPublisher;
 
-    private final McpIdentityForwardProperties identityForwardProperties;
+    private final McpIdentityForwardService identityForwardService;
 
     /** serverId -> server name, captured at build time for identity-forward opt-in matching. */
     private final ConcurrentHashMap<Long, String> serverNames = new ConcurrentHashMap<>();
 
     public McpClientManager(ApplicationEventPublisher eventPublisher,
-                            McpIdentityForwardProperties identityForwardProperties) {
+                            McpIdentityForwardService identityForwardService) {
         this.eventPublisher = eventPublisher;
-        this.identityForwardProperties = identityForwardProperties;
+        this.identityForwardService = identityForwardService;
     }
 
     /** serverId -> connection result info */
@@ -197,8 +197,11 @@ public class McpClientManager {
                 SyncMcpToolCallbackProvider provider = new SyncMcpToolCallbackProvider(entry.getValue());
                 ToolCallback[] cbs = provider.getToolCallbacks();
                 if (cbs != null && cbs.length > 0) {
-                    boolean forwardIdentity = identityForwardProperties.forwardsTo(serverId, serverNames.get(serverId));
-                    List<ToolCallback> wrapped = wrapServerCallbacks(serverId, cbs, forwardIdentity);
+                    String serverName = serverNames.get(serverId);
+                    McpIdentityForwardService idSvc =
+                            identityForwardService.forwardsTo(serverId, serverName) ? identityForwardService : null;
+                    String audience = idSvc != null ? identityForwardService.audienceFor(serverId, serverName) : null;
+                    List<ToolCallback> wrapped = wrapServerCallbacks(serverId, cbs, idSvc, audience);
                     lastGoodCallbacks.put(serverId, wrapped);
                     allCallbacks.addAll(wrapped);
                     continue;
@@ -250,16 +253,19 @@ public class McpClientManager {
      * real {@link McpSyncClient}.
      */
     static List<ToolCallback> wrapServerCallbacks(long serverId, ToolCallback[] cbs) {
-        return wrapServerCallbacks(serverId, cbs, false);
+        return wrapServerCallbacks(serverId, cbs, null, null);
     }
 
     /**
-     * @param forwardIdentity when {@code true}, each callback is additionally
-     *        wrapped in {@link IdentityForwardingToolCallback} (inside the prefix
-     *        wrapper) so the authenticated username rides along with the call.
-     *        Driven by {@link McpIdentityForwardProperties} opt-in per server.
+     * @param identitySvc when non-null, each callback is additionally wrapped in
+     *        {@link IdentityForwardingToolCallback} (inside the prefix wrapper) so
+     *        the caller's identity rides along with the call. Driven by
+     *        {@link McpIdentityForwardService} opt-in per server; {@code null}
+     *        means this server does not forward identity.
+     * @param audience the token audience for this server (ignored in plaintext mode).
      */
-    static List<ToolCallback> wrapServerCallbacks(long serverId, ToolCallback[] cbs, boolean forwardIdentity) {
+    static List<ToolCallback> wrapServerCallbacks(long serverId, ToolCallback[] cbs,
+                                                  McpIdentityForwardService identitySvc, String audience) {
         List<String> rawNames = new ArrayList<>(cbs.length);
         for (ToolCallback cb : cbs) {
             rawNames.add(cb.getToolDefinition() != null ? cb.getToolDefinition().name() : null);
@@ -285,7 +291,9 @@ public class McpClientManager {
                         serverId, raw, d.prefixedName(), d.unavailableReason());
                 continue;
             }
-            ToolCallback inner = forwardIdentity ? new IdentityForwardingToolCallback(cb) : cb;
+            ToolCallback inner = identitySvc != null
+                    ? new IdentityForwardingToolCallback(cb, identitySvc, audience)
+                    : cb;
             out.add(new PrefixedNameToolCallback(d.prefixedName(), inner));
         }
         return out;

@@ -448,12 +448,80 @@ if __name__ == "__main__":
 > `__mateclaw_user__` as an optional parameter (as above) or strict validation
 > will reject it.
 
-### Trust model
+### Two trust models
 
-The injected value is a **plaintext username** — appropriate when REST is on a
-trusted network and authenticates the MCP service by API key, treating the
-forwarded user as on-behalf-of. For stronger isolation, mint a short-lived
-**signed token** (JWT) instead of the raw username and validate it at REST.
+**① Plaintext (default)**: injects the plaintext username. Fits a trusted
+network where the backend authenticates the MCP service by API key and treats
+the forwarded user as on-behalf-of. The backend trusts the raw string.
+
+**② Signed token (recommended across a trust boundary)**: injects a short-lived
+**RS256 JWT** that MateClaw signs with a private key (reserved key becomes
+**`__mateclaw_token__`**); the REST backend **verifies it with the public key**,
+so it trusts the signature — not the MCP service, the Python script, or the
+transport.
+
+```yaml
+mateclaw:
+  mcp:
+    identity-forward:
+      servers:
+        - my-internal-api
+      token:
+        enabled: true
+        issuer: mateclaw
+        ttl-seconds: 60                 # short, tens of seconds
+        key-id: mateclaw-mcp-1
+        private-key-pem: ${MCP_IDFWD_PRIVATE_KEY_PEM:}   # PKCS#8 PEM (RS256 private key)
+        audiences:                      # optional; default aud = server name
+          my-internal-api: https://api.internal
+```
+
+Generate the key pair (private → MateClaw, public → REST backend):
+
+```bash
+openssl genpkey -algorithm RSA -pkcs8 -out mcp-idfwd-private.pem
+openssl pkey -in mcp-idfwd-private.pem -pubout -out mcp-idfwd-public.pem
+# private-key-pem takes the private key body (PEM headers optional; stripped on parse)
+```
+
+Token claims: `iss`, `sub`=user, `aud`=this server, `iat`, `exp` (short), `jti`.
+`aud` + short `exp` bound replay to tens of seconds and to one backend. **When
+token mode is on but no key is configured, it fails closed** (no token minted,
+nothing injected — the backend rejects) rather than silently downgrading to
+plaintext.
+
+> `sub` carries the MateClaw user identifier (`ChatOrigin.requesterId`). If your
+> backend authorizes on an immutable numeric id, resolve username→id before
+> minting (kept decoupled from the user store here).
+
+The MCP server (Python) only forwards — it does not verify:
+
+```python
+@mcp.tool()
+def query_orders(keyword: str, __mateclaw_token__: str | None = None) -> str:
+    if not __mateclaw_token__:
+        raise ValueError("missing identity token")
+    headers = {"Authorization": f"Bearer {__mateclaw_token__}"}   # forward to REST
+    return httpx.get(f"{REST_BASE}/orders", params={"q": keyword}, headers=headers, timeout=30).text
+```
+
+REST backend verifies (pseudocode):
+
+```python
+import jwt  # PyJWT
+claims = jwt.decode(token, public_key_pem, algorithms=["RS256"],
+                    issuer="mateclaw", audience="https://api.internal")
+user = claims["sub"]            # trusted only after signature verification
+# → per-user authorization; invalid/expired → 401
+```
+
+> Public-key distribution: for now an operator configures the public key on the
+> REST side out-of-band. A JWKS endpoint for auto-distribution + rotation is a
+> natural follow-up.
+>
+> Relationship to the API key: you can keep the API key as service/channel auth
+> ("this MCP service may talk to the backend") plus the JWT as the user
+> assertion — two clean layers — or let the JWT carry both.
 
 ---
 
