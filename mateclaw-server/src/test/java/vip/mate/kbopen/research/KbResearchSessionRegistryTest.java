@@ -29,10 +29,10 @@ class KbResearchSessionRegistryTest {
     }
 
     @Test
-    @DisplayName("register creates a RUNNING session")
+    @DisplayName("startIfAllowed creates a RUNNING session")
     void registerCreatesRunning() {
         KbResearchSessionRegistry registry = newRegistry();
-        registry.register("s1", 100L, 10L, "test topic");
+        registry.startIfAllowed("s1", 100L, 10L, "test topic");
 
         Optional<Session> session = registry.get("s1");
         assertThat(session).isPresent();
@@ -47,7 +47,7 @@ class KbResearchSessionRegistryTest {
     @DisplayName("complete transitions RUNNING → COMPLETED with result")
     void completeTransitionsToCompleted() {
         KbResearchSessionRegistry registry = newRegistry();
-        registry.register("s1", 100L, 10L, "topic");
+        registry.startIfAllowed("s1", 100L, 10L, "topic");
 
         registry.complete("s1", RESULT);
 
@@ -61,7 +61,7 @@ class KbResearchSessionRegistryTest {
     @DisplayName("fail transitions RUNNING → FAILED with error")
     void failTransitionsToFailed() {
         KbResearchSessionRegistry registry = newRegistry();
-        registry.register("s1", 100L, 10L, "topic");
+        registry.startIfAllowed("s1", 100L, 10L, "topic");
 
         registry.fail("s1", "LLM timeout");
 
@@ -74,7 +74,7 @@ class KbResearchSessionRegistryTest {
     @DisplayName("cancel transitions RUNNING → CANCELLED")
     void cancelTransitionsToCancelled() {
         KbResearchSessionRegistry registry = newRegistry();
-        registry.register("s1", 100L, 10L, "topic");
+        registry.startIfAllowed("s1", 100L, 10L, "topic");
 
         boolean cancelled = registry.cancel("s1");
 
@@ -87,7 +87,7 @@ class KbResearchSessionRegistryTest {
     @DisplayName("cancel on non-running session returns false (no-op)")
     void cancelOnCompletedIsNoop() {
         KbResearchSessionRegistry registry = newRegistry();
-        registry.register("s1", 100L, 10L, "topic");
+        registry.startIfAllowed("s1", 100L, 10L, "topic");
         registry.complete("s1", RESULT);
 
         boolean cancelled = registry.cancel("s1");
@@ -110,7 +110,7 @@ class KbResearchSessionRegistryTest {
     @DisplayName("complete after cancel is a no-op — CANCELLED is sticky")
     void completeAfterCancelIsNoop() {
         KbResearchSessionRegistry registry = newRegistry();
-        registry.register("s1", 100L, 10L, "topic");
+        registry.startIfAllowed("s1", 100L, 10L, "topic");
         registry.cancel("s1");
 
         // Late complete() arriving from the async pipeline must NOT overwrite
@@ -126,7 +126,7 @@ class KbResearchSessionRegistryTest {
     @DisplayName("fail after cancel is a no-op — CANCELLED is sticky")
     void failAfterCancelIsNoop() {
         KbResearchSessionRegistry registry = newRegistry();
-        registry.register("s1", 100L, 10L, "topic");
+        registry.startIfAllowed("s1", 100L, 10L, "topic");
         registry.cancel("s1");
 
         registry.fail("s1", "race condition");
@@ -225,10 +225,10 @@ class KbResearchSessionRegistryTest {
         // Tiny TTL so a fresh terminal (updatedAt≈now) is clearly within window.
         Duration ttl = Duration.ofSeconds(60);
         KbResearchSessionRegistry registry = new KbResearchSessionRegistry(3, ttl);
-        registry.register("s1", 100L, 10L, "running");        // RUNNING — never evicted
-        registry.register("s2", 100L, 10L, "stale-completed");
+        registry.startIfAllowed("s1", 100L, 10L, "running");        // RUNNING — never evicted
+        registry.startIfAllowed("s2", 100L, 10L, "stale-completed");
         registry.complete("s2", RESULT);                        // terminal, will be aged
-        registry.register("s3", 100L, 10L, "fresh-cancelled");
+        registry.startIfAllowed("s3", 100L, 10L, "fresh-cancelled");
         registry.cancel("s3");                                  // terminal, fresh
 
         // Horizon well past TTL: both terminals s2 and s3 are now stale.
@@ -245,7 +245,7 @@ class KbResearchSessionRegistryTest {
     void evictExpiredKeepsFreshTerminal() {
         Duration ttl = Duration.ofHours(1);
         KbResearchSessionRegistry registry = new KbResearchSessionRegistry(3, ttl);
-        registry.register("s1", 100L, 10L, "just-completed");
+        registry.startIfAllowed("s1", 100L, 10L, "just-completed");
         registry.complete("s1", RESULT);                        // updatedAt ≈ now
 
         // Evict only 5 seconds later — well within the 1h TTL.

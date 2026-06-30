@@ -108,12 +108,6 @@ public class KbResearchSessionRegistry {
         sessions.put(sessionId, Session.running(sessionId, keyId, kbId, topic));
     }
 
-    /** Back-compat with existing callers / tests. Equivalent to {@code startIfAllowed} without the cap check. */
-    public void register(String sessionId, Long keyId, Long kbId, String topic) {
-        runningPerKey.computeIfAbsent(keyId, k -> new AtomicInteger()).incrementAndGet();
-        sessions.put(sessionId, Session.running(sessionId, keyId, kbId, topic));
-    }
-
     public Optional<Session> get(String sessionId) {
         return Optional.ofNullable(sessions.get(sessionId));
     }
