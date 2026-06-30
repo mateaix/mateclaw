@@ -51,7 +51,8 @@ public class SessionSearchTool {
             mode = "recent";
         }
 
-        // 从 ToolContext 强制读取当前会话 ID（替代 LLM 自传，防止并发会话记忆混乱）
+        // Read the current conversation id from the ToolContext rather than trusting
+        // the LLM to pass it, so concurrent sessions of the same agent stay isolated.
         String currentConversationId = "";
         if (toolContext != null) {
             String fromOrigin = ChatOrigin.from(toolContext).conversationId();
