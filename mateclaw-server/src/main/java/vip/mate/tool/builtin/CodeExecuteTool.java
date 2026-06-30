@@ -20,6 +20,7 @@ import vip.mate.skill.runtime.SkillScriptExecutionService;
 import vip.mate.skill.runtime.model.ResolvedSkill;
 import vip.mate.skill.secret.SkillSecretService;
 import vip.mate.tool.document.GeneratedFileCache;
+import vip.mate.tool.document.WorkspaceArtifactSurfacer;
 import vip.mate.tool.guard.WorkspacePathGuard;
 
 import java.nio.file.Files;
@@ -29,8 +30,6 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 /**
  * Built-in tool: execute LLM-generated source code inline.
@@ -62,12 +61,6 @@ public class CodeExecuteTool {
     private final SkillSecretService skillSecretService;
     private final ObjectMapper objectMapper;
     private final GeneratedFileCache generatedFileCache;
-
-    /** Artifact-surfacing bounds: keep heap and noise in check (best-effort feature). */
-    private static final int ARTIFACT_SCAN_DEPTH = 4;
-    private static final int MAX_ARTIFACTS = 8;
-    private static final long MAX_ARTIFACT_BYTES = 20L * 1024 * 1024;
-    private static final long MAX_TOTAL_ARTIFACT_BYTES = 48L * 1024 * 1024;
 
     @Lazy
     @Autowired
@@ -168,95 +161,12 @@ public class CodeExecuteTool {
             // Surface any files the run wrote as one-click downloads so the user can
             // grab generated artifacts (xlsx / csv / images / …) without the model
             // having to call send_file or echo a server path.
-            List<String> fileLinks = collectArtifactLinks(workingDir, runStart, ctx);
+            List<String> fileLinks = WorkspaceArtifactSurfacer.collect(generatedFileCache, workingDir, runStart, ctx);
             return formatResult(result, fileLinks);
         } catch (Exception e) {
             log.error("[CodeExecute] Execution failed: {}", e.getMessage());
             return formatError("Execution failed: " + e.getMessage());
         }
-    }
-
-    /**
-     * Best-effort: register files created or modified in {@code workingDir} during
-     * this run into the generated-file cache and return their download links in the
-     * {@code [name](url)} markdown form the chat layer scans for. Never throws — a
-     * failure here must not fail the code run.
-     */
-    List<String> collectArtifactLinks(Path workingDir, long sinceMillis, @Nullable ToolContext ctx) {
-        if (workingDir == null || !Files.isDirectory(workingDir)) {
-            return List.of();
-        }
-        List<String> links = new ArrayList<>();
-        long totalBytes = 0L;
-        try (Stream<Path> walk = Files.walk(workingDir, ARTIFACT_SCAN_DEPTH)) {
-            List<Path> candidates = walk
-                    .filter(Files::isRegularFile)
-                    .filter(p -> !isNoiseArtifact(p))
-                    .filter(p -> modifiedSince(p, sinceMillis))
-                    .limit(200)
-                    .toList();
-            for (Path p : candidates) {
-                if (links.size() >= MAX_ARTIFACTS) {
-                    break;
-                }
-                try {
-                    long size = Files.size(p);
-                    if (size <= 0 || size > MAX_ARTIFACT_BYTES || totalBytes + size > MAX_TOTAL_ARTIFACT_BYTES) {
-                        continue;
-                    }
-                    byte[] bytes = Files.readAllBytes(p);
-                    totalBytes += size;
-                    String name = p.getFileName().toString();
-                    String id = generatedFileCache.put(bytes, name, probeMime(p, name));
-                    links.add("[" + name + "](" + generatedFileCache.downloadUrl(id, ctx) + ")");
-                } catch (Exception perFile) {
-                    log.debug("[CodeExecute] skip artifact {}: {}", p, perFile.getMessage());
-                }
-            }
-        } catch (Exception e) {
-            log.debug("[CodeExecute] artifact scan failed for {}: {}", workingDir, e.getMessage());
-        }
-        return links;
-    }
-
-    private static boolean modifiedSince(Path p, long sinceMillis) {
-        try {
-            // 1s slack absorbs filesystem mtime granularity.
-            return Files.getLastModifiedTime(p).toMillis() >= sinceMillis - 1000L;
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
-    /** Skip hidden files, dependency/cache dirs, and obvious scratch/log files. */
-    private static boolean isNoiseArtifact(Path p) {
-        for (Path seg : p) {
-            String s = seg.toString();
-            if (s.startsWith(".") || s.equals("__pycache__") || s.equals("node_modules")) {
-                return true;
-            }
-        }
-        String name = p.getFileName().toString().toLowerCase();
-        return name.endsWith(".pyc") || name.endsWith(".tmp") || name.endsWith(".lock")
-                || name.endsWith(".log") || name.endsWith(".class");
-    }
-
-    private static String probeMime(Path p, String name) {
-        try {
-            String mime = Files.probeContentType(p);
-            if (mime != null && !mime.isBlank()) {
-                return mime;
-            }
-        } catch (Exception ignore) {
-            // fall through to extension default
-        }
-        String lower = name.toLowerCase();
-        if (lower.endsWith(".xlsx")) return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
-        if (lower.endsWith(".docx")) return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-        if (lower.endsWith(".pptx")) return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
-        if (lower.endsWith(".csv")) return "text/csv";
-        if (lower.endsWith(".pdf")) return "application/pdf";
-        return "application/octet-stream";
     }
 
     /**
@@ -293,13 +203,14 @@ public class CodeExecuteTool {
         return List.of(trimmed);
     }
 
-    private String formatResult(SkillScriptExecutionService.ScriptResult result, List<String> fileLinks) {
+    String formatResult(SkillScriptExecutionService.ScriptResult result, List<String> fileLinks) {
         // generatedFiles carries [name](url) markdown so the chat layer surfaces the
         // artifacts as one-click downloads, and the model can echo them to the user.
+        // It's a single JSON *string* (links joined by newlines), not an array — a
+        // JSON array's own '[' sits adjacent to the markdown '[' and the link-
+        // extraction regex would then capture '"[name' as the filename.
         String filesField = (fileLinks == null || fileLinks.isEmpty()) ? "" :
-                ",\n  \"generatedFiles\": ["
-                        + fileLinks.stream().map(this::jsonEscape).collect(Collectors.joining(", "))
-                        + "]";
+                ",\n  \"generatedFiles\": " + jsonEscape(String.join("\n", fileLinks));
         return String.format(
             "{\n  \"exitCode\": %d,\n  \"stdout\": %s,\n  \"stderr\": %s%s\n}",
             result.getExitCode(),

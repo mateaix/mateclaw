@@ -8,6 +8,8 @@ import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Component;
+import vip.mate.tool.document.GeneratedFileCache;
+import vip.mate.tool.document.WorkspaceArtifactSurfacer;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -15,6 +17,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Predicate;
@@ -41,6 +44,7 @@ import java.util.function.Predicate;
 public class ShellExecuteTool {
 
     private final vip.mate.i18n.I18nService i18n;
+    private final GeneratedFileCache generatedFileCache;
 
     private static final int DEFAULT_TIMEOUT_SECONDS = 60;
     private static final int MAX_OUTPUT_BYTES = 10_000;
@@ -50,7 +54,8 @@ public class ShellExecuteTool {
     @vip.mate.tool.ConcurrencyUnsafe("shell command execution can mutate global state in ways the executor can't reason about")
     @Tool(description = "Execute a shell command on the local server. For running system commands, viewing files, running scripts. "
             + "Uses cmd.exe on Windows, /bin/sh on Linux/macOS. "
-            + "Dangerous operations trigger security approval. Returns structured result with exitCode, stdout, stderr, timedOut.")
+            + "Dangerous operations trigger security approval. Returns structured result with exitCode, stdout, stderr, timedOut, "
+            + "and (when the command wrote files) a generatedFiles string of [name](url) download links — echo them so the user can download what you produced.")
     public String execute_shell_command(
             @ToolParam(description = "Shell command to execute") String command,
             @ToolParam(description = "Timeout in seconds, default 60", required = false) Integer timeoutSeconds,
@@ -107,6 +112,7 @@ public class ShellExecuteTool {
             pb.redirectOutput(stdoutFile.toFile());
             pb.redirectError(stderrFile.toFile());
 
+            long runStart = System.currentTimeMillis();
             Process process = pb.start();
 
             boolean completed = process.waitFor(timeout, TimeUnit.SECONDS);
@@ -130,6 +136,14 @@ public class ShellExecuteTool {
                 result.set("stdout", stdout);
                 result.set("stderr", stderr);
                 result.set("timedOut", false);
+                // Surface files the command wrote as one-click downloads (same path
+                // as execute_code). A single newline-joined string, not a JSON array,
+                // so the link-extraction regex captures the clean filename.
+                java.nio.file.Path workingDir = vip.mate.tool.guard.WorkspacePathGuard.getWorkingDirectory(ctx);
+                List<String> fileLinks = WorkspaceArtifactSurfacer.collect(generatedFileCache, workingDir, runStart, ctx);
+                if (!fileLinks.isEmpty()) {
+                    result.set("generatedFiles", String.join("\n", fileLinks));
+                }
             }
 
         } catch (Exception e) {
