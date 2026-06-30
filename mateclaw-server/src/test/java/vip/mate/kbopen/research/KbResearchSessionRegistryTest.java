@@ -167,6 +167,56 @@ class KbResearchSessionRegistryTest {
         assertThat(registry.get("s2")).isPresent();
     }
 
+    @Test
+    @DisplayName("cancelled and failed sessions also release their slot (counter consistency)")
+    void cancelledAndFailedReleaseSlot() {
+        KbResearchSessionRegistry registry = new KbResearchSessionRegistry(1, Duration.ofMinutes(30));
+        registry.startIfAllowed("s1", 100L, 10L, "t1");
+        registry.cancel("s1");                       // RUNNING → CANCELLED releases slot
+        registry.startIfAllowed("s2", 100L, 10L, "t2");
+        assertThat(registry.get("s2")).isPresent();
+
+        registry.fail("s2", "boom");                  // RUNNING → FAILED releases slot
+        registry.startIfAllowed("s3", 100L, 10L, "t3");
+        assertThat(registry.get("s3")).isPresent();
+    }
+
+    @Test
+    @DisplayName("concurrent starts never exceed the per-key cap (no check-then-act race)")
+    void startIfAllowedIsAtomicUnderConcurrency() throws Exception {
+        int cap = 3;
+        KbResearchSessionRegistry registry = new KbResearchSessionRegistry(cap, Duration.ofMinutes(30));
+        int threads = cap * 4; // far more contenders than slots
+        java.util.concurrent.CountDownLatch start = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicInteger admitted = new java.util.concurrent.atomic.AtomicInteger();
+        java.util.concurrent.atomic.AtomicInteger rejected = new java.util.concurrent.atomic.AtomicInteger();
+        java.util.List<Thread> workers = new java.util.ArrayList<>();
+
+        for (int i = 0; i < threads; i++) {
+            String sid = "concurrent-" + i;
+            Thread t = Thread.ofVirtual().start(() -> {
+                try {
+                    start.await();
+                    registry.startIfAllowed(sid, 100L, 10L, "t");
+                    admitted.incrementAndGet();
+                } catch (TooManyConcurrentException e) {
+                    rejected.incrementAndGet();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            workers.add(t);
+        }
+        start.countDown();
+        for (Thread t : workers) t.join();
+
+        // The whole point: exactly `cap` sessions get in, no matter the
+        // scheduling. The old stream-and-count impl could admit more under
+        // contention.
+        assertThat(admitted.get()).isEqualTo(cap);
+        assertThat(rejected.get()).isEqualTo(threads - cap);
+    }
+
     // ── Review #446: TTL eviction ─────────────────────────────────────────
 
     @Test

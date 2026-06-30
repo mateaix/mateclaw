@@ -11,6 +11,7 @@ import java.time.Instant;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Tracks active Deep Research sessions started via the Open API.
@@ -65,6 +66,16 @@ public class KbResearchSessionRegistry {
 
     private final Map<String, Session> sessions = new ConcurrentHashMap<>();
 
+    /**
+     * Per-key count of RUNNING sessions, kept in lock-step with the
+     * {@code status==RUNNING} sessions in {@link #sessions}. Maintained
+     * atomically so {@link #startIfAllowed} can enforce the cap without a
+     * check-then-act race (two concurrent starts could both pass a stream-based
+     * count and both put). Incremented on start, decremented on each
+     * RUNNING→terminal transition (complete/fail/cancel).
+     */
+    private final Map<Long, AtomicInteger> runningPerKey = new ConcurrentHashMap<>();
+
     private final int maxConcurrentPerKey;
     private final Duration sessionTtl;
 
@@ -78,22 +89,28 @@ public class KbResearchSessionRegistry {
     /**
      * Reserve a slot for a new session, enforcing the per-key concurrency cap.
      *
+     * <p>Atomic: {@code incrementAndGet} + rollback on overflow, so concurrent
+     * starts for the same key cannot both slip past the cap. The previous
+     * stream-and-count impl had a check-then-act race.
+     *
      * @throws TooManyConcurrentException if {@code keyId} already has
      *         {@code maxConcurrentPerKey} RUNNING sessions.
      */
     public void startIfAllowed(String sessionId, Long keyId, Long kbId, String topic) {
-        long running = sessions.values().stream()
-                .filter(s -> keyId.equals(s.keyId()) && s.status() == Status.RUNNING)
-                .count();
-        if (running >= maxConcurrentPerKey) {
+        AtomicInteger count = runningPerKey.computeIfAbsent(keyId, k -> new AtomicInteger());
+        int now = count.incrementAndGet();
+        if (now > maxConcurrentPerKey) {
+            count.decrementAndGet(); // rollback — slot was not granted
             throw new TooManyConcurrentException(
-                    "API key already has " + running + " running research session(s); limit is " + maxConcurrentPerKey);
+                    "API key already has " + maxConcurrentPerKey
+                            + " running research session(s); limit is " + maxConcurrentPerKey);
         }
         sessions.put(sessionId, Session.running(sessionId, keyId, kbId, topic));
     }
 
     /** Back-compat with existing callers / tests. Equivalent to {@code startIfAllowed} without the cap check. */
     public void register(String sessionId, Long keyId, Long kbId, String topic) {
+        runningPerKey.computeIfAbsent(keyId, k -> new AtomicInteger()).incrementAndGet();
         sessions.put(sessionId, Session.running(sessionId, keyId, kbId, topic));
     }
 
@@ -103,21 +120,52 @@ public class KbResearchSessionRegistry {
 
     /** RUNNING → COMPLETED. No-op on a session that was already CANCELLED (sticky terminal). */
     public void complete(String sessionId, ResearchResult result) {
-        sessions.computeIfPresent(sessionId, (k, s) ->
-                s.status() == Status.CANCELLED ? s : s.with(Status.COMPLETED, result, null));
+        sessions.computeIfPresent(sessionId, (k, s) -> {
+            if (s.status() == Status.CANCELLED) {
+                return s; // sticky terminal — no transition, no counter change
+            }
+            decrementRunning(s.keyId()); // RUNNING → COMPLETED releases the slot
+            return s.with(Status.COMPLETED, result, null);
+        });
     }
 
     /** RUNNING → FAILED. No-op on a session that was already CANCELLED (sticky terminal). */
     public void fail(String sessionId, String error) {
-        sessions.computeIfPresent(sessionId, (k, s) ->
-                s.status() == Status.CANCELLED ? s : s.with(Status.FAILED, null, error));
+        sessions.computeIfPresent(sessionId, (k, s) -> {
+            if (s.status() == Status.CANCELLED) {
+                return s;
+            }
+            decrementRunning(s.keyId());
+            return s.with(Status.FAILED, null, error);
+        });
     }
 
     /** RUNNING → CANCELLED. Returns false if the session is missing or already terminal. */
     public boolean cancel(String sessionId) {
-        Session before = sessions.computeIfPresent(sessionId, (k, s) ->
-                s.status() == Status.RUNNING ? s.with(Status.CANCELLED, null, null) : s);
-        return before != null && before.status() == Status.CANCELLED;
+        Session[] before = new Session[1];
+        sessions.computeIfPresent(sessionId, (k, s) -> {
+            before[0] = s;
+            if (s.status() == Status.RUNNING) {
+                decrementRunning(s.keyId());
+                return s.with(Status.CANCELLED, null, null);
+            }
+            return s;
+        });
+        return before[0] != null && before[0].status() == Status.RUNNING;
+    }
+
+    /** Release one running-slot for {@code keyId}, floored at 0. */
+    private void decrementRunning(Long keyId) {
+        AtomicInteger count = runningPerKey.get(keyId);
+        if (count != null) {
+            // getAndDeccrement would go negative; clamp instead so repeated
+            // terminal transitions (e.g. complete after cancel) can't drift.
+            while (true) {
+                int cur = count.get();
+                if (cur <= 0) break;
+                if (count.compareAndSet(cur, cur - 1)) break;
+            }
+        }
     }
 
     /**
