@@ -383,6 +383,80 @@ Keeps secrets out of the database.
 
 ---
 
+## Forwarding the user's identity to an MCP server (on-behalf-of)
+
+A STDIO MCP server is **one shared subprocess per configuration**, used by every
+user; its environment is fixed at spawn and STDIO has no per-request header
+channel like HTTP. So per-user identity **cannot travel via env** — it must ride
+in-band with each tool call.
+
+MateClaw can inject the **authenticated username** into every tool call for a
+chosen server, so the server can call its downstream REST backend on behalf of
+that user.
+
+### Enable (opt-in, per server)
+
+Off by default — injecting into every server would leak the username to any
+third-party MCP server. Enable per server by **name or id**:
+
+```yaml
+mateclaw:
+  mcp:
+    identity-forward:
+      servers:
+        - my-internal-api      # server name in mate_mcp_server
+        - 1000000042           # or the numeric server id
+```
+
+### Data contract
+
+When enabled, MateClaw injects the reserved argument **`__mateclaw_user__`**
+(value = authenticated username) into each tool call's JSON arguments. It is
+injected by trusted server code, **never by the LLM** — any model-supplied value
+of the same key is overwritten, so the model cannot spoof identity. When there is
+no authenticated user, nothing is injected (identity is never fabricated).
+
+The MCP server reads and strips the key, then calls REST with it plus its own
+backend API key (e.g. an `X-On-Behalf-Of` header):
+
+```python
+# FastMCP example: MCP server as a Python CLI script (STDIO)
+import os, httpx
+from mcp.server.fastmcp import FastMCP
+
+mcp = FastMCP("my-internal-api")
+REST_BASE = os.environ["REST_BASE"]
+API_KEY = os.environ["BACKEND_API_KEY"]      # service-level key (authenticates the MCP service)
+
+@mcp.tool()
+def query_orders(keyword: str, __mateclaw_user__: str | None = None) -> str:
+    if not __mateclaw_user__:
+        raise ValueError("missing injected identity")   # reject identity-less calls
+    headers = {
+        "Authorization": f"ApiKey {API_KEY}",            # service identity
+        "X-On-Behalf-Of": __mateclaw_user__,             # the acting user
+    }
+    r = httpx.get(f"{REST_BASE}/orders", params={"q": keyword}, headers=headers, timeout=30)
+    r.raise_for_status()
+    return r.text
+
+if __name__ == "__main__":
+    mcp.run()   # STDIO
+```
+
+> If a tool's input schema is `additionalProperties: false`, declare
+> `__mateclaw_user__` as an optional parameter (as above) or strict validation
+> will reject it.
+
+### Trust model
+
+The injected value is a **plaintext username** — appropriate when REST is on a
+trusted network and authenticates the MCP service by API key, treating the
+forwarded user as on-behalf-of. For stronger isolation, mint a short-lived
+**signed token** (JWT) instead of the raw username and validate it at REST.
+
+---
+
 ## Troubleshooting
 
 ### "Command not found" (stdio)

@@ -37,7 +37,7 @@ class McpClientManagerSnapshotTest {
     @SuppressWarnings("unchecked")
     void staleListToolsServesSnapshotAndRequestsReconnect() throws Exception {
         ApplicationEventPublisher publisher = mock(ApplicationEventPublisher.class);
-        McpClientManager manager = new McpClientManager(publisher);
+        McpClientManager manager = new McpClientManager(publisher, new McpIdentityForwardProperties());
 
         // A client whose connection went stale: every listTools() throws.
         McpSyncClient deadClient = mock(McpSyncClient.class);

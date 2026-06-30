@@ -65,8 +65,15 @@ public class McpClientManager {
 
     private final ApplicationEventPublisher eventPublisher;
 
-    public McpClientManager(ApplicationEventPublisher eventPublisher) {
+    private final McpIdentityForwardProperties identityForwardProperties;
+
+    /** serverId -> server name, captured at build time for identity-forward opt-in matching. */
+    private final ConcurrentHashMap<Long, String> serverNames = new ConcurrentHashMap<>();
+
+    public McpClientManager(ApplicationEventPublisher eventPublisher,
+                            McpIdentityForwardProperties identityForwardProperties) {
         this.eventPublisher = eventPublisher;
+        this.identityForwardProperties = identityForwardProperties;
     }
 
     /** serverId -> connection result info */
@@ -190,7 +197,8 @@ public class McpClientManager {
                 SyncMcpToolCallbackProvider provider = new SyncMcpToolCallbackProvider(entry.getValue());
                 ToolCallback[] cbs = provider.getToolCallbacks();
                 if (cbs != null && cbs.length > 0) {
-                    List<ToolCallback> wrapped = wrapServerCallbacks(serverId, cbs);
+                    boolean forwardIdentity = identityForwardProperties.forwardsTo(serverId, serverNames.get(serverId));
+                    List<ToolCallback> wrapped = wrapServerCallbacks(serverId, cbs, forwardIdentity);
                     lastGoodCallbacks.put(serverId, wrapped);
                     allCallbacks.addAll(wrapped);
                     continue;
@@ -242,6 +250,16 @@ public class McpClientManager {
      * real {@link McpSyncClient}.
      */
     static List<ToolCallback> wrapServerCallbacks(long serverId, ToolCallback[] cbs) {
+        return wrapServerCallbacks(serverId, cbs, false);
+    }
+
+    /**
+     * @param forwardIdentity when {@code true}, each callback is additionally
+     *        wrapped in {@link IdentityForwardingToolCallback} (inside the prefix
+     *        wrapper) so the authenticated username rides along with the call.
+     *        Driven by {@link McpIdentityForwardProperties} opt-in per server.
+     */
+    static List<ToolCallback> wrapServerCallbacks(long serverId, ToolCallback[] cbs, boolean forwardIdentity) {
         List<String> rawNames = new ArrayList<>(cbs.length);
         for (ToolCallback cb : cbs) {
             rawNames.add(cb.getToolDefinition() != null ? cb.getToolDefinition().name() : null);
@@ -267,7 +285,8 @@ public class McpClientManager {
                         serverId, raw, d.prefixedName(), d.unavailableReason());
                 continue;
             }
-            out.add(new PrefixedNameToolCallback(d.prefixedName(), cb));
+            ToolCallback inner = forwardIdentity ? new IdentityForwardingToolCallback(cb) : cb;
+            out.add(new PrefixedNameToolCallback(d.prefixedName(), inner));
         }
         return out;
     }
@@ -362,6 +381,11 @@ public class McpClientManager {
      *                side-effect free.
      */
     private McpSyncClient buildClient(McpServerEntity server, boolean managed) {
+        if (server.getId() != null && server.getName() != null) {
+            // Remember the name so identity-forward opt-in can be matched by name
+            // (not just numeric id) when callbacks are wrapped.
+            serverNames.put(server.getId(), server.getName());
+        }
         McpClientTransport transport = switch (server.getTransport()) {
             case "stdio" -> buildStdioTransport(server, managed);
             case "sse" -> buildSseTransport(server);
