@@ -11,6 +11,7 @@ import reactor.core.publisher.Mono;
 import vip.mate.agent.AgentService;
 import vip.mate.agent.AgentState;
 import vip.mate.agent.BaseAgent;
+import vip.mate.agent.delegation.DelegatedUsageAccumulator;
 import vip.mate.agent.GraphEventPublisher;
 import vip.mate.agent.StructuredStreamCapable;
 import vip.mate.agent.graph.plan.state.PlanStateKeys;
@@ -144,6 +145,10 @@ public class StateGraphPlanExecuteAgent extends BaseAgent implements StructuredS
         AtomicInteger finalCompletionTokens = new AtomicInteger(0);
         AtomicReference<String> finalModelName = new AtomicReference<>("");
         AtomicReference<String> finalProviderId = new AtomicReference<>("");
+        // Root conversation for this turn — used to roll delegated sub-agent
+        // token usage into the turn's _usage_final and to clear the accumulator
+        // on terminal so an errored turn never leaks an entry.
+        final String usageConversationId = (String) inputs.get(MateClawStateKeys.CONVERSATION_ID);
         // 去重：记录上一次已持久化的 step 结果和 thinking，防止 PlanSummaryNode 重复 emit 上一步内容
         AtomicReference<String> lastPersistedStepResult = new AtomicReference<>("");
         AtomicReference<String> lastPersistedStepThinking = new AtomicReference<>("");
@@ -209,10 +214,21 @@ public class StateGraphPlanExecuteAgent extends BaseAgent implements StructuredS
                     return deltas;
                 })
                 .concatWith(Mono.fromSupplier(() -> {
-                    if (finalPromptTokens.get() > 0 || finalCompletionTokens.get() > 0) {
+                    // Roll delegated sub-agent usage (whole sub-tree, keyed by this
+                    // root conversation) into the turn total so the assistant
+                    // message reflects what the orchestrator + all children cost.
+                    DelegatedUsageAccumulator acc = DelegatedUsageAccumulator.getInstance();
+                    DelegatedUsageAccumulator.Drained delegated = acc != null
+                            ? acc.drain(usageConversationId)
+                            : new DelegatedUsageAccumulator.Drained(0, 0);
+                    long promptTokens = finalPromptTokens.get() + delegated.promptTokens();
+                    long completionTokens = finalCompletionTokens.get() + delegated.completionTokens();
+                    if (promptTokens > 0 || completionTokens > 0) {
                         return AgentService.StreamDelta.event("_usage_final", Map.of(
-                                "promptTokens", finalPromptTokens.get(),
-                                "completionTokens", finalCompletionTokens.get(),
+                                "promptTokens", promptTokens,
+                                "completionTokens", completionTokens,
+                                "delegatedPromptTokens", delegated.promptTokens(),
+                                "delegatedCompletionTokens", delegated.completionTokens(),
                                 "runtimeModelName", finalModelName.get(),
                                 "runtimeProviderId", finalProviderId.get()
                         ));
@@ -223,6 +239,13 @@ public class StateGraphPlanExecuteAgent extends BaseAgent implements StructuredS
                 .doOnError(e -> {
                     log.error("[{}] Plan-Execute stream error: {}", agentName, e.getMessage());
                     setState(AgentState.ERROR);
+                })
+                // Leak guard: if the turn ends without emitting _usage_final
+                // (error / cancel), discard any delegated usage left for this
+                // conversation so it can't bleed into a later turn.
+                .doFinally(sig -> {
+                    DelegatedUsageAccumulator acc = DelegatedUsageAccumulator.getInstance();
+                    if (acc != null) acc.clear(usageConversationId);
                 });
     }
 

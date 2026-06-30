@@ -41,6 +41,8 @@ class DelegateAgentToolTest {
     @Mock ConversationService conversationService;
     @Mock AuditEventService auditEventService;
     @Spy SubagentRegistry subagentRegistry = new SubagentRegistry();
+    @Spy vip.mate.agent.delegation.DelegatedUsageAccumulator delegatedUsageAccumulator =
+            new vip.mate.agent.delegation.DelegatedUsageAccumulator();
 
     @InjectMocks DelegateAgentTool delegateAgentTool;
 
