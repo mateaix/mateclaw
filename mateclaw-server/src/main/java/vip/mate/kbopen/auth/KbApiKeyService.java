@@ -229,7 +229,7 @@ public class KbApiKeyService {
         }
         return Set.of(scopes.split(",")).stream()
                 .map(String::trim)
-                .collect(java.util.stream.Collectors.toUnmodifiableSet());
+                .collect(Collectors.toUnmodifiableSet());
     }
 
     /** Return value of {@link #create}. */
