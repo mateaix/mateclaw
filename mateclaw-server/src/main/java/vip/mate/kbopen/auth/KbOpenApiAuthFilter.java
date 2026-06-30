@@ -29,6 +29,15 @@ import java.util.Optional;
  * <p><strong>R2: per-key rate limiting.</strong> After successful auth, the
  * filter checks the sliding-window limiter. Exceeding
  * {@code rateLimitPerMin} returns 429.
+ *
+ * <p><strong>R5 / R7: SSE token fallback is scope-limited.</strong> The
+ * {@code ?token=} query param is accepted <em>only</em> on SSE stream paths
+ * ({@link #isSseStreamPath}), where browser EventSource cannot set an
+ * Authorization header (R7). It is rejected on every other path so the API
+ * key never leaks into access / proxy logs for normal calls (R5). Application
+ * logging here uses {@code getRequestURI()} (no query string), so the key does
+ * not reach app logs — but a reverse proxy may still log the query string, so
+ * keep the fallback as narrow as possible.
  */
 @Slf4j
 @Component
@@ -48,9 +57,12 @@ public class KbOpenApiAuthFilter extends OncePerRequestFilter {
             return;
         }
 
-        String token = extractBearerToken(request);
+        boolean sse = isSseStreamPath(request);
+        String token = extractToken(request, sse);
         if (!StringUtils.hasText(token)) {
-            sendUnauthorized(response, "Missing API key");
+            sendUnauthorized(response, sse
+                    ? "Missing API key (Authorization header or ?token= for EventSource)"
+                    : "Missing API key");
             return;
         }
 
@@ -62,8 +74,12 @@ public class KbOpenApiAuthFilter extends OncePerRequestFilter {
 
         KbApiKeyContext context = authResult.get().context();
 
-        // R2: rate limit check
-        if (!rateLimiter.tryAcquire(context.keyId(), context.rateLimitPerMin(), Instant.now())) {
+        // R2: rate limit check — but NOT on the SSE stream path. EventSource
+        // reconnects/heartbeats would otherwise burn the per-minute window and
+        // can 429 the key's own POST /research start. Rate limiting belongs on
+        // the cost-producing endpoints (start/status/cancel), not the progress
+        // subscription. Per-key concurrency is still enforced upstream.
+        if (!sse && !rateLimiter.tryAcquire(context.keyId(), context.rateLimitPerMin(), Instant.now())) {
             sendTooManyRequests(response, context.rateLimitPerMin());
             return;
         }
@@ -82,14 +98,33 @@ public class KbOpenApiAuthFilter extends OncePerRequestFilter {
         return uri.startsWith("/api/v1/open/kb/");
     }
 
-    private String extractBearerToken(HttpServletRequest request) {
+    /**
+     * SSE progress stream paths — the only place {@code ?token=} is accepted,
+     * because browser EventSource cannot set an Authorization header (R7).
+     * Matched on URI suffix + content type so the fallback tracks whichever
+     * endpoints expose SSE, without hard-coding a single kbId/sessionId.
+     */
+    private boolean isSseStreamPath(HttpServletRequest request) {
+        String uri = request.getRequestURI();
+        return uri.startsWith("/api/v1/open/kb/") && uri.endsWith("/stream");
+    }
+
+    /**
+     * Extract the API key. Header is always accepted; the {@code ?token=}
+     * query param is accepted <em>only</em> on SSE stream paths ({@code sse}),
+     * to keep the key out of access/proxy logs on every other request (R5).
+     */
+    private String extractToken(HttpServletRequest request, boolean sse) {
         String bearer = request.getHeader("Authorization");
         if (StringUtils.hasText(bearer) && bearer.startsWith("Bearer ")) {
             return bearer.substring(7).trim();
         }
-        // TODO: add ?token= SSE fallback once Deep Research SSE endpoint is live.
-        //  EventSource can't set custom headers; for now P0-A has no SSE path so
-        //  query param would leak the key into access / proxy logs (R5).
+        if (sse) {
+            String queryToken = request.getParameter("token");
+            if (StringUtils.hasText(queryToken)) {
+                return queryToken.trim();
+            }
+        }
         return null;
     }
 
