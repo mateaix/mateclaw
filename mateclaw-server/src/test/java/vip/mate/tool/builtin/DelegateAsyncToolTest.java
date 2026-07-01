@@ -69,7 +69,8 @@ class DelegateAsyncToolTest {
     void setUp() {
         tool = new DelegateAgentTool(
                 agentService, agentMapper, streamTracker, conversationService,
-                objectMapper, subagentRegistry, auditEventService, asyncTaskService);
+                objectMapper, subagentRegistry, auditEventService, asyncTaskService,
+                new vip.mate.agent.delegation.DelegatedUsageAccumulator());
         // resolveParentConversationId reads from ToolExecutionContext first;
         // seed it so the async delegation has a parent to attach the task to.
         ToolExecutionContext.set("parent-conv-1", "user-1");
@@ -388,7 +389,7 @@ class DelegateAsyncToolTest {
 
     private ToolContext makeCtx(String requester, String conversationId) {
         ChatOrigin origin = new ChatOrigin(
-                1L, conversationId, requester, null, null, null, null, false, null, null, null, null);
+                1L, conversationId, requester, null, null, null, null, false, null, null, null, null, null);
         Map<String, Object> map = new HashMap<>();
         map.put(ChatOrigin.CTX_KEY, origin);
         return new ToolContext(map);

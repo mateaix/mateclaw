@@ -15,6 +15,7 @@ import vip.mate.wiki.service.HybridRetriever;
 import vip.mate.wiki.service.WikiKnowledgeBaseService;
 import vip.mate.wiki.service.WikiPageService;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -76,7 +77,7 @@ class KbOpenApiControllerTest {
 
         var result = controller.getPage(1L, "test", "summary", null);
 
-        org.assertj.core.api.Assertions.assertThat(result.getData()).isNotNull();
+        assertThat(result.getData()).isNotNull();
     }
 
     @Test

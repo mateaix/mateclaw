@@ -196,6 +196,8 @@ export default {
     downloadFailed: 'Download failed: {reason}',
     regenerate: 'Regenerate',
     replyModel: 'Reply model: {model}',
+    tokenUsageTooltip: 'This turn used {total} tokens ({input} in · {output} out)',
+    tokenUsageTooltipDelegated: 'This turn used {total} tokens ({input} in · {output} out), of which {delegated} came from delegated sub-agents',
     routing: {
       kind: {
         image: 'image',
@@ -459,6 +461,7 @@ export default {
     steps: 'steps',
     viewResult: 'Click to view result',
     delegatedTo: 'Delegated to',
+    queuedSpillHint: 'Queued steps of an in-progress plan — the same plan also shows in In Progress',
     col: {
       pending: 'To Do',
       running: 'In Progress',
@@ -946,6 +949,7 @@ export default {
       discovery: {
         discover: 'Discover Models',
         discovering: 'Discovering...',
+        configureFirst: 'Add an API Key under “Configure” first, then discover all of this provider’s models',
         testConnection: 'Test Connection',
         testing: 'Testing...',
         testModel: 'Test',
@@ -2681,6 +2685,9 @@ export default {
       resetView: 'Reset view',
       fullscreen: 'Fullscreen',
       exitFullscreen: 'Exit fullscreen',
+      searchPlaceholder: 'Search nodes by name…',
+      searchNoMatch: 'No matching node',
+      searchClear: 'Clear',
       linksTo: 'Links to',
       openPage: 'Open page',
       empty: 'No graph data — process some raw materials first',

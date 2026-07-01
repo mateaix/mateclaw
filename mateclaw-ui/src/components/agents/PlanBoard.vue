@@ -73,28 +73,29 @@
               v-for="group in visibleGroups(lane, col.key)"
               :key="group.key"
               class="pb-card"
+              :class="{ 'is-spill': isSpill(group.latest, col.key) }"
+              :title="isSpill(group.latest, col.key) ? t('plans.queuedSpillHint') : undefined"
               @click="openDetail(group.latest)"
             >
               <div class="pb-card__goal">{{ group.goal }}</div>
               <div class="pb-card__foot">
                 <div class="pb-progress">
-                  <div class="pb-progress__bar" :class="`is-${group.latest.status}`" :style="{ width: progressPct(group.latest) + '%' }"></div>
+                  <div class="pb-progress__bar" :class="`is-${barStatus(group.latest, col.key)}`" :style="{ width: progressPct(group.latest) + '%' }"></div>
                 </div>
                 <span class="pb-card__steps">{{ group.latest.completedSteps }}/{{ group.latest.totalSteps }}</span>
                 <span v-if="group.plans.length > 1" class="pb-card__runs" :title="t('plans.runs', { n: group.plans.length })">×{{ group.plans.length }}</span>
               </div>
-              <!-- Sub-task breakdown: surfaces how many steps are still pending /
-                   running, so an in-progress plan no longer hides its queued work. -->
-              <div v-if="showDist(group.latest)" class="pb-card__dist">
-                <span v-if="stepDist(group.latest).running" class="pb-distchip is-running">
-                  {{ stepDist(group.latest).running }} {{ t('plans.col.running') }}
-                </span>
-                <span v-if="stepDist(group.latest).pending" class="pb-distchip is-pending">
-                  {{ stepDist(group.latest).pending }} {{ t('plans.col.pending') }}
-                </span>
-                <span v-if="stepDist(group.latest).completed" class="pb-distchip is-completed">
-                  {{ stepDist(group.latest).completed }} {{ t('plans.col.completed') }}
-                </span>
+              <!-- Sub-task breakdown, scoped to this column: the running step shows
+                   in 执行中 and the queued steps show in 待执行, so each column reflects
+                   the work that actually lives there instead of an empty lane next to
+                   a "N pending" badge. -->
+              <div v-if="columnChips(group.latest, col.key).length" class="pb-card__dist">
+                <span
+                  v-for="chip in columnChips(group.latest, col.key)"
+                  :key="chip.cls"
+                  class="pb-distchip"
+                  :class="chip.cls"
+                >{{ chip.n }} {{ chip.label }}</span>
               </div>
             </article>
 
@@ -243,7 +244,7 @@ function cleanGoal(goal?: string): string {
 function groupsIn(lane: Lane, status: PlanStatus): PlanGroup[] {
   const map = new Map<string, Plan[]>()
   for (const p of lane.plans) {
-    if (p.status !== status) continue
+    if (!belongsToColumn(p, status)) continue
     const key = cleanGoal(p.goal) || String(p.id)
     const arr = map.get(key)
     if (arr) arr.push(p)
@@ -294,10 +295,44 @@ function stepDist(plan: Plan): { pending: number; running: number; completed: nu
   return { pending, running, completed }
 }
 
-// Only worth showing for multi-step plans that are still active; a finished or
-// single-step plan is already fully described by the progress bar.
-function showDist(plan: Plan): boolean {
-  return (plan.totalSteps ?? 0) > 1 && (plan.status === 'running' || plan.status === 'pending')
+// A multi-step plan spans columns: its one running step belongs in 执行中 while
+// its queued steps belong in 待执行. So a running plan that still has queued
+// steps also surfaces in the pending column — otherwise that column sits empty
+// next to a card whose badge claims "N pending", which reads as a bug.
+function belongsToColumn(plan: Plan, status: PlanStatus): boolean {
+  if (status === 'pending') {
+    return plan.status === 'pending' || (plan.status === 'running' && stepDist(plan).pending > 0)
+  }
+  return plan.status === status
+}
+
+// True when this card is the queued-steps mirror of an in-progress plan shown in
+// the pending column (vs. the plan's primary card in 执行中).
+function isSpill(plan: Plan, colKey: PlanStatus): boolean {
+  return colKey === 'pending' && plan.status === 'running'
+}
+
+// The progress bar follows the plan's real status, except the queued mirror in
+// the pending column uses the muted pending tone so it doesn't look "running"
+// while sitting in 待执行.
+function barStatus(plan: Plan, colKey: PlanStatus): PlanStatus {
+  return isSpill(plan, colKey) ? 'pending' : (plan.status as PlanStatus)
+}
+
+// Distribution chips scoped to the column the card is rendered in: the pending
+// column shows only the queued count, the running column shows the active step
+// (and any completed steps). Only multi-step, still-active plans get chips.
+function columnChips(plan: Plan, colKey: PlanStatus): { cls: string; n: number; label: string }[] {
+  if ((plan.totalSteps ?? 0) <= 1) return []
+  if (plan.status !== 'running' && plan.status !== 'pending') return []
+  const d = stepDist(plan)
+  if (colKey === 'pending') {
+    return d.pending ? [{ cls: 'is-pending', n: d.pending, label: t('plans.col.pending') }] : []
+  }
+  const chips: { cls: string; n: number; label: string }[] = []
+  if (d.running) chips.push({ cls: 'is-running', n: d.running, label: t('plans.col.running') })
+  if (d.completed) chips.push({ cls: 'is-completed', n: d.completed, label: t('plans.col.completed') })
+  return chips
 }
 
 function laneLetter(name: string): string {
@@ -553,6 +588,13 @@ onMounted(reload)
 .pb-card:hover {
   border-color: var(--mc-border-strong);
   box-shadow: var(--mc-shadow-soft);
+}
+/* Queued-steps mirror of an in-progress plan (shown in the pending column):
+   dashed + sunken so it reads as a secondary view of a card that also lives in
+   执行中, not a duplicate. */
+.pb-card.is-spill {
+  border-style: dashed;
+  background: var(--mc-bg-sunken);
 }
 .pb-card__goal {
   font-size: 12.5px;

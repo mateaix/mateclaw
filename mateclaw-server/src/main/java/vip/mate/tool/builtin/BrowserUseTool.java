@@ -19,6 +19,7 @@ import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Component;
 import vip.mate.tool.browser.BrowserDiagnosticsService;
 import vip.mate.tool.browser.BrowserLauncher;
+import vip.mate.common.net.SsrfProperties;
 import vip.mate.tool.browser.UrlSafetyChecker;
 
 import java.net.Socket;
@@ -46,13 +47,16 @@ public class BrowserUseTool {
     private final vip.mate.channel.web.ChatStreamTracker streamTracker;
     private final BrowserLauncher launcher;
     private final BrowserDiagnosticsService diagnostics;
+    private final SsrfProperties ssrfProperties;
 
     public BrowserUseTool(vip.mate.channel.web.ChatStreamTracker streamTracker,
                           BrowserLauncher launcher,
-                          BrowserDiagnosticsService diagnostics) {
+                          BrowserDiagnosticsService diagnostics,
+                          SsrfProperties ssrfProperties) {
         this.streamTracker = streamTracker;
         this.launcher = launcher;
         this.diagnostics = diagnostics;
+        this.ssrfProperties = ssrfProperties;
     }
 
     /**
@@ -428,7 +432,7 @@ public class BrowserUseTool {
 
         if (launcher.properties().isSsrfCheckEnabled()) {
             try {
-                UrlSafetyChecker.check(normalizedUrl);
+                UrlSafetyChecker.check(normalizedUrl, ssrfProperties.getSsrfAllowlist());
             } catch (SecurityException se) {
                 log.warn("[BrowserUse] SSRF check rejected url={}: {}", normalizedUrl, se.getMessage());
                 return error(se.getMessage());

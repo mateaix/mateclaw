@@ -205,7 +205,7 @@ public class SkillConsolidationService {
 
     private ToolContext toolContext(String sourceConversationId) {
         ChatOrigin origin = new ChatOrigin(null, sourceConversationId, "", null, null,
-                null, null, false, null, null, null, null);
+                null, null, false, null, null, null, null, null);
         return new ToolContext(Map.of(ChatOrigin.CTX_KEY, origin));
     }
 

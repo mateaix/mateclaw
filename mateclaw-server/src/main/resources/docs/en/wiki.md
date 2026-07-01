@@ -95,6 +95,17 @@ Eager ingest runs in two phases for an order-of-magnitude speedup:
 
 **Resumable**: interrupted mid-import? Hit "Reprocess" and only the unfinished pages re-run; everything already produced stays put. Documents larger than the embedding model's context get mean-pool sub-segmented automatically.
 
+#### Save tokens: a light model for the cheap steps
+
+Digest runs several kinds of LLM step: route, merge generation, enrich, summary, entity extraction. The **route / enrich / summary / entity-extraction** steps are high-volume but lightweight — no need to run them on the same premium model as page merging.
+
+Point them at a cheaper model to cut token spend without touching page-generation quality:
+
+- **System-wide** — set `wiki.lightModelId` (a model id) in system settings; it applies to the cheap steps of every KB.
+- **Per-KB override** — set `wikiLightModelId` in the KB config to override the system-wide value.
+
+Leave both unset and nothing changes (the cheap steps keep using the KB / system default). Precedence: `stepModels.<step>` (pin a step) → light model (cheap steps only) → `wikiDefaultModelId` → system default.
+
 ### Lazy: index now, compile later
 
 The pipeline collapses to four steps:

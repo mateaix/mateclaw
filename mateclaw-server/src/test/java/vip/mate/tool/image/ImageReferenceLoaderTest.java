@@ -5,6 +5,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import vip.mate.common.net.SsrfProperties;
 import vip.mate.workspace.conversation.ConversationService;
 
 import java.io.IOException;
@@ -33,7 +34,7 @@ class ImageReferenceLoaderTest {
 
     @BeforeEach
     void setUp() throws IOException {
-        loader = new ImageReferenceLoader(mock(ConversationService.class));
+        loader = new ImageReferenceLoader(mock(ConversationService.class), new SsrfProperties());
         tmpDir = Files.createTempDirectory("img-ref-loader-test-");
     }
 

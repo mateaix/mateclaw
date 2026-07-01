@@ -12,14 +12,14 @@ import vip.mate.wiki.job.model.WikiProcessingJobEntity;
 import vip.mate.wiki.model.WikiKnowledgeBaseEntity;
 
 /**
- * RFC-051 PR-1a: middle-priority strategy that resolves the KB-level default
- * chat model ({@link WikiKbConfig#getWikiDefaultModelId()}). Sits between the
- * per-step override ({@link KbConfigStepModelStrategy}, Order 1) and the
- * system-wide default ({@link GlobalDefaultStepModelStrategy}, Order 3),
- * yielding the chain prescribed by RFC-051 §10.1:
+ * RFC-051 PR-1a: resolves the KB-level default chat model
+ * ({@link WikiKbConfig#getWikiDefaultModelId()}). Sits below the per-step
+ * override ({@link KbConfigStepModelStrategy}, Order 1) and the cheap-step light
+ * model ({@link WikiLightModelStrategy}, Order 2), and above the system-wide
+ * default ({@link GlobalDefaultStepModelStrategy}, Order 4), yielding the chain:
  *
  * <pre>
- *   stepModels[step] -&gt; wikiDefaultModelId -&gt; system default
+ *   stepModels[step] -&gt; (light model for cheap steps) -&gt; wikiDefaultModelId -&gt; system default
  * </pre>
  *
  * The frontend has long written {@code wikiDefaultModelId} into the KB config
@@ -27,7 +27,7 @@ import vip.mate.wiki.model.WikiKnowledgeBaseEntity;
  */
 @Slf4j
 @Component
-@Order(2)
+@Order(3)
 @RequiredArgsConstructor
 public class KbDefaultModelStrategy implements WikiStepModelStrategy {
 
