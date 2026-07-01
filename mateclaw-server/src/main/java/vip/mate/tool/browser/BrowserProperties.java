@@ -51,8 +51,42 @@ public class BrowserProperties {
     /**
      * Block navigations to loopback, private, link-local and cloud-metadata hosts.
      * Narrow exceptions are configured via {@code mateclaw.security.ssrf-allowlist}.
+     * Only takes effect when {@link #allowPrivateNetwork} is {@code false}.
      */
     private boolean ssrfCheckEnabled = true;
+
+    /**
+     * Permit the browser to reach loopback / private / link-local addresses
+     * (127.0.0.1, 10.x, 192.168.x, 172.16-31.x, fc00::/7, ::1, …). Cloud-metadata
+     * endpoints (169.254.169.254, fd00:ec2::254, …) stay blocked in every mode.
+     *
+     * <p>Scope: browser tool only — webhook / image-download SSRF guards still
+     * enforce strict mode. Turn on for isolated LAN / on-prem deployments where
+     * the agent must drive internal services (e.g. {@code http://192.168.x.x:port})
+     * and has no path to the public internet. Leave off for internet-facing
+     * deployments; the {@code ssrf-allowlist} is the narrower escape hatch there.
+     */
+    private boolean allowPrivateNetwork = false;
+
+    /**
+     * Whether Playwright should ignore HTTPS certificate errors when creating a
+     * browser context. Useful for LAN deployments where internal services use
+     * self-signed certificates. Defaults to {@code false} so the strict CA
+     * validation chain is preserved on internet-facing deployments.
+     *
+     * <p>Effect:
+     * <ul>
+     *   <li>Sets {@code Browser.NewContextOptions.ignoreHTTPSErrors = true} for
+     *       contexts created by {@link BrowserLauncher} via Playwright launch.</li>
+     *   <li>When {@link #allowPrivateNetwork} is also {@code true}, additionally
+     *       passes {@code --ignore-certificate-errors} / {@code --allow-running-insecure-content}
+     *       to the Chromium command line — this covers CDP-attached external browsers
+     *       whose existing contexts cannot be re-configured at the NewContext layer.</li>
+     * </ul>
+     * No effect on contexts pre-existing on a user-managed Chrome (action=connect_cdp
+     * when Chrome already has tabs open) — those keep the Chrome process's own setting.
+     */
+    private boolean ignoreHttpsErrors = false;
 
     /** Viewport width (px) for launched browsers. */
     private int viewportWidth = 1280;

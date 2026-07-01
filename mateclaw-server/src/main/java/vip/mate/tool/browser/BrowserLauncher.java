@@ -336,6 +336,17 @@ public class BrowserLauncher {
     private BrowserType.LaunchOptions baseLaunchOptions(boolean headed) {
         BrowserType.LaunchOptions opts = new BrowserType.LaunchOptions().setHeadless(!headed);
         List<String> args = chromiumLaunchArgs();
+        // When the deployment is LAN-isolated AND the operator opted into ignoring
+        // HTTPS errors, push the flag to the Chromium command line as well. This
+        // covers the EXTERNAL_CDP path where the browser is spawned by us but its
+        // contexts are created without NewContextOptions (so setIgnoreHTTPSErrors
+        // would not apply), and is also a stronger guarantee than the per-context
+        // flag for self-signed LAN CAs. Gated on allowPrivateNetwork so internet-
+        // facing deployments cannot accidentally disable cert validation globally.
+        if (props.isIgnoreHttpsErrors() && props.isAllowPrivateNetwork()) {
+            args.add("--ignore-certificate-errors");
+            args.add("--allow-running-insecure-content");
+        }
         if (!args.isEmpty()) {
             opts.setArgs(args);
         }

@@ -432,7 +432,9 @@ public class BrowserUseTool {
 
         if (launcher.properties().isSsrfCheckEnabled()) {
             try {
-                UrlSafetyChecker.check(normalizedUrl, ssrfProperties.getSsrfAllowlist());
+                UrlSafetyChecker.check(normalizedUrl,
+                        ssrfProperties.getSsrfAllowlist(),
+                        launcher.properties().isAllowPrivateNetwork());
             } catch (SecurityException se) {
                 log.warn("[BrowserUse] SSRF check rejected url={}: {}", normalizedUrl, se.getMessage());
                 return error(se.getMessage());
