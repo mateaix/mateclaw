@@ -5,7 +5,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.TestPropertySource;
@@ -86,7 +86,7 @@ class WebChatAttachmentE2ETest {
     @LocalServerPort private int port;
     @Autowired private JdbcTemplate jdbc;
 
-    @MockBean private AgentService agentService;
+    @MockitoBean private AgentService agentService;
 
     private HttpClient http;
 

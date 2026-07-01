@@ -436,6 +436,7 @@ public class AgentGraphBuilder {
         agent.agentName = entity.getName();
         agent.systemPrompt = enhancedPrompt;
         agent.maxIterations = maxIter;
+        agent.streamIdleTimeoutSeconds = graphObservationProperties.getStreamIdleTimeoutSeconds();
         agent.modelName = runtimeModel.getModelName();
         agent.modelCapabilities = modelCapabilityService.resolve(
                 runtimeModel.getModelName(), runtimeModel.getModalities());

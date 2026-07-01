@@ -26,6 +26,9 @@ import java.util.regex.Pattern;
 @Slf4j
 public final class WorkspacePathGuard {
 
+    private static final boolean IS_WINDOWS =
+            System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT).contains("win");
+
     private WorkspacePathGuard() {}
 
     /**
@@ -204,7 +207,7 @@ public final class WorkspacePathGuard {
      * transition window.
      */
     public static Path validatePath(String rawPath, @Nullable ToolContext ctx) {
-        Path normalized = Paths.get(rawPath).toAbsolutePath().normalize();
+        Path normalized = Paths.get(normalizeGitBashDrivePath(rawPath)).toAbsolutePath().normalize();
 
         String basePath = resolveBasePath(ctx);
         if (basePath == null || basePath.isBlank()) {
@@ -333,7 +336,7 @@ public final class WorkspacePathGuard {
         if (rawPath == null || rawPath.isBlank()) return null;
         Path root = basePathToRoot(basePath);
         if (root == null) return null;
-        Path normalized = Paths.get(rawPath).toAbsolutePath().normalize();
+        Path normalized = Paths.get(normalizeGitBashDrivePath(rawPath)).toAbsolutePath().normalize();
         if (!normalized.startsWith(root) && !isExempt(normalized)) {
             return "Path is outside workspace boundary: " + normalized + ", allowed root: " + root;
         }
@@ -350,6 +353,36 @@ public final class WorkspacePathGuard {
             return Paths.get(basePath).toAbsolutePath().normalize();
         }
         return defaultRoot;
+    }
+
+    /**
+     * On Windows, convert Git Bash / MSYS2 style drive paths to Windows paths.
+     * <p>
+     * Git Bash uses {@code /<drive-letter>/...} to represent
+     * {@code <drive-letter>:\...}. For example {@code /e/work/mateclaw}
+     * → {@code E:\work\mateclaw}. Java's {@link Paths#get} on Windows
+     * interprets {@code /e/work/mateclaw} as a path relative to the
+     * current drive root (e.g. {@code C:\e\work\mateclaw}), which fails
+     * the workspace boundary check.
+     * <p>
+     * On non-Windows, returns the path unchanged.
+     *
+     * @param path a path string that may be in Git Bash drive notation
+     * @return the equivalent Windows path, or the original on non-Windows
+     */
+    private static String normalizeGitBashDrivePath(String path) {
+        if (!IS_WINDOWS || path == null || path.length() < 2) return path;
+        // /e/... → E:\...
+        if (path.charAt(0) == '/' && Character.isLetter(path.charAt(1))) {
+            if (path.length() >= 3 && path.charAt(2) == '/') {
+                return Character.toUpperCase(path.charAt(1)) + ":\\" + path.substring(3);
+            }
+            // /e (bare drive root, no trailing path)
+            if (path.length() == 2) {
+                return Character.toUpperCase(path.charAt(1)) + ":\\";
+            }
+        }
+        return path;
     }
 
     private static void scanShellCommand(String command, @Nullable Path root) {
@@ -398,7 +431,7 @@ public final class WorkspacePathGuard {
             }
             Path normalized;
             try {
-                normalized = Paths.get(candidate).normalize();
+                normalized = Paths.get(normalizeGitBashDrivePath(candidate)).normalize();
             } catch (Exception ex) {
                 // Unparseable as a path — leave it alone, not our concern.
                 continue;

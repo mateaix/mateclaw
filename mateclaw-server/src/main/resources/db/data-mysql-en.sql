@@ -594,6 +594,26 @@ INSERT INTO mate_tool (id, name, display_name, description, tool_type, bean_name
 VALUES (1000000023, 'CodeExecuteTool', 'Code Execute', 'Execute a snippet of code (python, bash, or node) that the agent writes on the fly. Lets a documentation-only skill be acted on by running the code its instructions describe. Dangerous operations trigger approval.', 'builtin', 'codeExecuteTool', '🧑‍💻', TRUE, TRUE, NOW(), NOW(), 0)
 ON DUPLICATE KEY UPDATE name=VALUES(name), display_name=VALUES(display_name), description=VALUES(description), tool_type=VALUES(tool_type), bean_name=VALUES(bean_name), icon=VALUES(icon), enabled=VALUES(enabled), builtin=VALUES(builtin), update_time=VALUES(update_time), deleted=VALUES(deleted);
 
+-- Built-in tool: Apply Patch (unified diff editor with uniqueness check)
+INSERT INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
+VALUES (1000000030, 'ApplyPatchTool', 'Apply Patch', 'Apply a unified diff patch to files. Each hunk context must uniquely match or the entire patch is rejected. Safer than edit_file for multi-location edits.', 'builtin', 'applyPatchTool', '🔧', TRUE, TRUE, NOW(), NOW(), 0)
+ON DUPLICATE KEY UPDATE name=VALUES(name), display_name=VALUES(display_name), description=VALUES(description), tool_type=VALUES(tool_type), bean_name=VALUES(bean_name), icon=VALUES(icon), enabled=VALUES(enabled), builtin=VALUES(builtin), update_time=VALUES(update_time), deleted=VALUES(deleted);
+
+-- Built-in tool: Glob (file name pattern matching, pure Java PathMatcher)
+INSERT INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
+VALUES (1000000031, 'GlobTool', 'Glob', 'Find files by glob pattern (e.g. **/*.java). Pure Java PathMatcher, no shell execution, skips .git/node_modules/target.', 'builtin', 'globTool', '🔍', TRUE, TRUE, NOW(), NOW(), 0)
+ON DUPLICATE KEY UPDATE name=VALUES(name), display_name=VALUES(display_name), description=VALUES(description), tool_type=VALUES(tool_type), bean_name=VALUES(bean_name), icon=VALUES(icon), enabled=VALUES(enabled), builtin=VALUES(builtin), update_time=VALUES(update_time), deleted=VALUES(deleted);
+
+-- Built-in tool: Grep (regex content search, pure Java)
+INSERT INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
+VALUES (1000000032, 'GrepTool', 'Grep', 'Search file contents with regex. Returns matching lines with line numbers. Supports context lines, extension filter, case-insensitive. Pure Java, no shell.', 'builtin', 'grepTool', '🔎', TRUE, TRUE, NOW(), NOW(), 0)
+ON DUPLICATE KEY UPDATE name=VALUES(name), display_name=VALUES(display_name), description=VALUES(description), tool_type=VALUES(tool_type), bean_name=VALUES(bean_name), icon=VALUES(icon), enabled=VALUES(enabled), builtin=VALUES(builtin), update_time=VALUES(update_time), deleted=VALUES(deleted);
+
+-- Built-in tool: Git (git operations, reads safe, writes go through ToolGuard)
+INSERT INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
+VALUES (1000000033, 'GitTool', 'Git', 'Run git commands (status/diff/log/branch/add/commit/push/pull). Read operations safe, write operations trigger approval.', 'builtin', 'gitTool', ' Git', TRUE, TRUE, NOW(), NOW(), 0)
+ON DUPLICATE KEY UPDATE name=VALUES(name), display_name=VALUES(display_name), description=VALUES(description), tool_type=VALUES(tool_type), bean_name=VALUES(bean_name), icon=VALUES(icon), enabled=VALUES(enabled), builtin=VALUES(builtin), update_time=VALUES(update_time), deleted=VALUES(deleted);
+
 -- Example MCP Server: Filesystem (see MateClaw docs mcpServers.filesystem)
 INSERT INTO mate_mcp_server (id, name, description, transport, url, headers_json, command, args_json, env_json, cwd,
     enabled, connect_timeout_seconds, read_timeout_seconds, last_status, last_error,

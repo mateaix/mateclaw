@@ -35,8 +35,8 @@ public class ReadFileTool {
 
     private final vip.mate.i18n.I18nService i18n;
 
-    private static final int DEFAULT_MAX_LINES = 1000;
-    private static final int MAX_OUTPUT_BYTES = 30 * 1024; // 30KB
+    private static final int DEFAULT_MAX_LINES = 2000;
+    private static final int MAX_OUTPUT_BYTES = 100 * 1024; // 100KB
 
     /**
      * 二进制文档扩展名集合 - 这些文件不应使用 read_file 读取

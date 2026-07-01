@@ -178,7 +178,12 @@ public class AcpRuntimeSupport {
         if (name.contains("gemini") || command.contains("gemini") || command.contains("google-genai")) {
             return "GOOGLE_API_KEY";
         }
-        // opencode multi-model — no single canonical env var.
+        // opencode multi-model — it reads OPENAI_API_KEY / ANTHROPIC_API_KEY /
+        // GOOGLE_API_KEY etc. depending on the configured provider. Surface
+        // the most common one; the user can set any of them in env_json.
+        if (name.contains("opencode") || command.contains("opencode")) {
+            return "OPENAI_API_KEY";
+        }
         return null;
     }
 

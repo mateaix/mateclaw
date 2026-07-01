@@ -20,6 +20,7 @@ import vip.mate.agent.context.ConversationWindowManager;
 import vip.mate.agent.graph.state.MateClawStateKeys;
 import vip.mate.workspace.conversation.ConversationService;
 
+import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -50,6 +51,14 @@ import static vip.mate.agent.graph.state.MateClawStateKeys.*;
  */
 @Slf4j
 public class StateGraphReActAgent extends BaseAgent implements StructuredStreamCapable {
+
+    /**
+     * Default idle timeout for the structured stream. Overridden at runtime
+     * by {@link BaseAgent#streamIdleTimeoutSeconds} (configurable via
+     * {@code mate.agent.graph.observation.stream-idle-timeout-seconds}).
+     * If the configured value is {@code <= 0}, the timeout is disabled.
+     */
+    private static final Duration DEFAULT_STREAM_IDLE_TIMEOUT = Duration.ofMinutes(15);
 
     private final CompiledGraph compiledGraph;
     private final org.springframework.ai.chat.model.ChatModel chatModel;
@@ -319,8 +328,18 @@ public class StateGraphReActAgent extends BaseAgent implements StructuredStreamC
                     .doFinally(sig -> {
                         DelegatedUsageAccumulator acc = DelegatedUsageAccumulator.getInstance();
                         if (acc != null) acc.clear(conversationId);
-                    });
-        } catch (Exception e) {
+                    })
+                    // Timeout fallback: emit a user-visible message so the user sees
+                    // feedback instead of a silent stream termination on idle timeout.
+                    .onErrorResume(e -> {
+                        if (e instanceof java.util.concurrent.TimeoutException) {
+                            String msg = "⚠️ Agent execution timed out after " + streamIdleTimeoutSeconds
+                                    + "s of inactivity (no progress). The agent may be stuck. "
+                                    + "Please retry or rephrase the task.";
+                            return Flux.just(new AgentService.StreamDelta(msg, null));
+                        }
+                        return Flux.error(e);
+                    });        } catch (Exception e) {
             setState(AgentState.ERROR);
             return Flux.error(e);
         }
@@ -369,7 +388,8 @@ public class StateGraphReActAgent extends BaseAgent implements StructuredStreamC
             AtomicInteger lastSoftCap = new AtomicInteger(0);
             AtomicBoolean sawLegitimateExit = new AtomicBoolean(false);
 
-            return BaseAgent.routingStartupDelta(inputs).concatWith(compiledGraph.stream(inputs, config)
+            Flux<AgentService.StreamDelta> graphFlux =
+                    BaseAgent.routingStartupDelta(inputs).concatWith(compiledGraph.stream(inputs, config)
                     .flatMapIterable(output -> {
                         List<AgentService.StreamDelta> deltas = new ArrayList<>();
                         // 1. 提取所有累积的事件，只发送新增部分
@@ -466,7 +486,36 @@ public class StateGraphReActAgent extends BaseAgent implements StructuredStreamC
                             ));
                         }
                         return null;
-                    }).flatMapMany(d -> d != null ? Flux.just(d) : Flux.empty())))
+                    }).flatMapMany(d -> d != null ? Flux.just(d) : Flux.empty()))
+                    // Silent-termination fallback: if the graph completed without a
+                    // legitimate exit signal (no FINAL_ANSWER / LIMIT_EXCEEDED /
+                    // FINISH_REASON), emit a user-visible error so the user sees
+                    // feedback instead of a silent empty completion.
+                    .concatWith(Mono.fromSupplier(() -> {
+                        if (!sawLegitimateExit.get()) {
+                            String msg = "⚠️ Agent execution ended unexpectedly at iteration "
+                                    + lastIteration.get() + "/" + lastSoftCap.get()
+                                    + " (no final answer produced). This may indicate a framework-level "
+                                    + "termination. Please retry or rephrase the task.";
+                            log.warn("[{}] Emitting silent-termination fallback message, conv={}",
+                                    agentName, conversationId);
+                            return new AgentService.StreamDelta(msg, null);
+                        }
+                        return null;
+                    }).flatMapMany(d -> d != null ? Flux.just(d) : Flux.empty())));
+
+            // Global idle timeout: if no item is emitted for the configured
+            // duration, terminate the stream. Catches "stuck" scenarios where
+            // the agent hangs without any progress (LLM connection stalls,
+            // tool execution hangs beyond its own timeout, or the framework
+            // silently stops emitting). Default 15 min (3x per-tool timeout).
+            // Set streamIdleTimeoutSeconds <= 0 in application.yml to disable.
+            Duration idleTimeout = streamIdleTimeoutSeconds > 0
+                    ? Duration.ofSeconds(streamIdleTimeoutSeconds)
+                    : DEFAULT_STREAM_IDLE_TIMEOUT;
+            graphFlux = graphFlux.timeout(idleTimeout);
+
+            return graphFlux
                     .doOnComplete(() -> {
                         setState(AgentState.IDLE);
                         if (!sawLegitimateExit.get()) {
@@ -478,7 +527,13 @@ public class StateGraphReActAgent extends BaseAgent implements StructuredStreamC
                         }
                     })
                     .doOnError(e -> {
-                        log.error("[{}] StateGraph structured stream error: {}", agentName, e.getMessage());
+                        if (e instanceof java.util.concurrent.TimeoutException) {
+                            log.error("[{}] StateGraph structured stream IDLE TIMEOUT ({}s) — " +
+                                    "agent stuck without progress, conversationId={}",
+                                    agentName, streamIdleTimeoutSeconds, conversationId);
+                        } else {
+                            log.error("[{}] StateGraph structured stream error: {}", agentName, e.getMessage());
+                        }
                         setState(AgentState.ERROR);
                     })
                     // Leak guard: discard delegated usage if the turn ends without
@@ -486,6 +541,17 @@ public class StateGraphReActAgent extends BaseAgent implements StructuredStreamC
                     .doFinally(sig -> {
                         DelegatedUsageAccumulator acc = DelegatedUsageAccumulator.getInstance();
                         if (acc != null) acc.clear(conversationId);
+                    })
+                    // Timeout fallback: emit a user-visible message so the user sees
+                    // feedback instead of a silent stream termination on idle timeout.
+                    .onErrorResume(e -> {
+                        if (e instanceof java.util.concurrent.TimeoutException) {
+                            String msg = "⚠️ Agent execution timed out after " + streamIdleTimeoutSeconds
+                                    + "s of inactivity (no progress). The agent may be stuck. "
+                                    + "Please retry or rephrase the task.";
+                            return Flux.just(new AgentService.StreamDelta(msg, null));
+                        }
+                        return Flux.error(e);
                     });
         } catch (Exception e) {
             setState(AgentState.ERROR);

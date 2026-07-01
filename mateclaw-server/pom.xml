@@ -434,6 +434,12 @@
                     </execution>
                 </executions>
                 <configuration>
+                    <jvmArguments>
+                        -Dfile.encoding=UTF-8
+                        -Dsun.jnu.encoding=UTF-8
+                        -Dstdout.encoding=UTF-8
+                        -Dstderr.encoding=UTF-8
+                    </jvmArguments>
                     <excludes>
                         <exclude>
                             <groupId>org.projectlombok</groupId>
@@ -466,7 +472,7 @@
                          depending on the JVM's startup hardening, making tests pass on one
                          machine and fail on another. byte-buddy-agent rides in transitively
                          via mockito-core. -->
-                    <argLine>-javaagent:${net.bytebuddy:byte-buddy-agent:jar}</argLine>
+                    <argLine>-javaagent:${net.bytebuddy:byte-buddy-agent:jar} -Dfile.encoding=UTF-8 -Dsun.jnu.encoding=UTF-8</argLine>
                 </configuration>
             </plugin>
         </plugins>

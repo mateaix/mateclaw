@@ -165,11 +165,33 @@ public class SkillScriptExecutionService {
                 command.add(IS_WINDOWS ? "python" : "python3");
             } else if (fileName.endsWith(".sh")) {
                 if (IS_WINDOWS) {
-                    return ScriptResult.error(-1,
-                            "Shell scripts (.sh) are not supported on Windows. " +
-                            "Consider providing a .bat or .ps1 alternative.");
+                    // RFC-090 Phase 7c: detect Git Bash / WSL so .sh
+                    // scripts run on Windows. Search order:
+                    //   1. bash on PATH (Git for Windows adds it)
+                    //   2. <Git>/bin/bash.exe
+                    //   3. <Git>/usr/bin/bash.exe  (usr -> avoid backslash-u)
+                    //   4. <Git (x86)>/bin/bash.exe
+                    //   5. wsl bash (Windows Subsystem for Linux)
+                    String bashExe = findWindowsBash();
+                    if (bashExe == null) {
+                        return ScriptResult.error(-1,
+                                "Shell scripts (.sh) require bash on Windows. " +
+                                "Install Git for Windows (https://git-scm.com) " +
+                                "or enable WSL, then ensure 'bash' is on PATH.");
+                    }
+                    if (bashExe.equals("wsl.exe")) {
+                        // WSL needs the Windows path translated to a
+                        // WSL-style path (/mnt/c/...) and an explicit
+                        // `bash` launcher.
+                        command.add("wsl.exe");
+                        command.add("bash");
+                        command.add(toWslPath(scriptPath));
+                    } else {
+                        command.add(bashExe);
+                    }
+                } else {
+                    command.add("bash");
                 }
-                command.add("bash");
             } else if (fileName.endsWith(".bat") || fileName.endsWith(".cmd")) {
                 if (!IS_WINDOWS) {
                     return ScriptResult.error(-1,
@@ -306,6 +328,86 @@ public class SkillScriptExecutionService {
                 try { Files.deleteIfExists(p); } catch (IOException ignored) {}
             });
         } catch (IOException ignored) {}
+    }
+
+    /**
+     * Find a usable bash executable on Windows. Search order:
+     * <ol>
+     *   <li>{@code bash} on PATH (Git for Windows adds it)</li>
+     *   <li>Common Git for Windows install paths</li>
+     *   <li>{@code wsl bash} (Windows Subsystem for Linux)</li>
+     * </ol>
+     * Returns the executable path / command string, or null if none found.
+     */
+    private static String findWindowsBash() {
+        // 1. bash on PATH
+        String onPath = findOnPath("bash.exe");
+        if (onPath != null) return onPath;
+
+        // 2. Common Git for Windows install paths.
+        // NOTE: avoid backslash-u in source code — javac treats a
+        // backslash followed by 'u' and 4 hex digits as a Unicode escape,
+        // even inside string literals and comments. Forward slashes
+        // work fine with Files.exists on Windows.
+        String[] gitPaths = {
+                "C:/Program Files/Git/bin/bash.exe",
+                "C:/Program Files/Git/usr/bin/bash.exe",
+                "C:/Program Files (x86)/Git/bin/bash.exe",
+                "C:/Program Files (x86)/Git/usr/bin/bash.exe"
+        };
+        for (String p : gitPaths) {
+            if (Files.exists(Path.of(p))) return p;
+        }
+
+        // 3. WSL — check whether wsl.exe exists and bash is available inside
+        if (findOnPath("wsl.exe") != null) {
+            try {
+                Process p = new ProcessBuilder("wsl.exe", "which", "bash")
+                        .redirectErrorStream(true).start();
+                boolean done = p.waitFor(5, TimeUnit.SECONDS);
+                if (done && p.exitValue() == 0) {
+                    return "wsl.exe";
+                }
+            } catch (Exception ignored) {
+                // WSL not available or bash not installed inside
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Look for an executable on the system PATH. Returns the full path
+     * if found, null otherwise.
+     */
+    private static String findOnPath(String exeName) {
+        String path = System.getenv("PATH");
+        if (path == null) return null;
+        for (String dir : path.split(java.io.File.pathSeparator)) {
+            if (dir.isBlank()) continue;
+            Path candidate = Path.of(dir, exeName);
+            if (Files.isExecutable(candidate)) {
+                return candidate.toString();
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Convert a Windows path to a WSL-style path ({@code C:\foo\bar}
+     * → {@code /mnt/c/foo/bar}). Falls back to the original string
+     * if the conversion fails — WSL may still resolve it via its
+     * automatic path translation layer.
+     */
+    private static String toWslPath(Path windowsPath) {
+        String abs = windowsPath.toAbsolutePath().toString().replace('\\', '/');
+        // Match drive letter: C:/...
+        if (abs.length() >= 2 && abs.charAt(1) == ':') {
+            char drive = Character.toLowerCase(abs.charAt(0));
+            String rest = abs.substring(2); // skip "C:"
+            return "/mnt/" + drive + rest;
+        }
+        return abs;
     }
 
     @lombok.Data

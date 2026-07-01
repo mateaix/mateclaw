@@ -291,9 +291,9 @@ mate:
     graph:
       observation:
         # 与 GraphObservationProperties.java 默认值对齐，参考 openclaw token-budget 设计
-        max-single-observation-chars: 16000
-        max-total-observation-chars: 200000
-        large-result-threshold: 32000
+        max-single-observation-chars: 64000
+        max-total-observation-chars: 300000
+        large-result-threshold: 64000
         min-rounds-for-summarize: 25
         head-ratio: 0.4
         truncation-marker: "\n\n...[TRUNCATED: %d chars total, middle omitted. Do NOT infer or fabricate omitted content; retrieve the full data (e.g. read_file) or tell the user the result is incomplete.]...\n\n"
@@ -312,8 +312,8 @@ mate:
     # cap. Per-turn aggregate caps the combined size across one tool turn.
     tool-result:
       enabled: true
-      per-result-threshold-chars: 8000    # aligned with executor hard cap; > this size → spill, ≤ → inline verbatim
-      per-turn-budget-chars: 32000        # headroom for multi-tool turns
+      per-result-threshold-chars: 32000    # aligned with executor hard cap; > this size → spill, ≤ → inline verbatim
+      per-turn-budget-chars: 64000        # headroom for multi-tool turns
       preview-head-chars: 800
       excluded-tool-inline-chars: 2500
       storage-base-dir: ""

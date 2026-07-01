@@ -3,6 +3,7 @@ package vip.mate.agent.graph.edge;
 import com.alibaba.cloud.ai.graph.OverAllState;
 import com.alibaba.cloud.ai.graph.action.EdgeAction;
 import lombok.extern.slf4j.Slf4j;
+import vip.mate.agent.BaseAgent;
 import vip.mate.agent.graph.state.MateClawStateAccessor;
 
 import static vip.mate.agent.graph.state.MateClawStateKeys.*;
@@ -52,10 +53,13 @@ public class ReasoningDispatcher implements EdgeAction {
             return FINAL_ANSWER_NODE;
         }
 
-        // 3. LLM 调用次数超限 — 仅拦截继续循环（工具调用/总结）的路径（maxIterations=0 不限制）
+        // 3. LLM 调用次数超限 — 仅拦截继续循环（工具调用/总结）的路径
+        //    当 maxIterations=0（无限制模式）时，仍以 MAX_ITERATIONS_HARD_CEILING
+        //    作为兜底，防止 agent 无限循环。
         int llmCallCount = accessor.llmCallCount();
         int maxIter = accessor.maxIterations();
-        int llmCallLimit = maxIter > 0 ? maxIter * LLM_CALL_MULTIPLIER : Integer.MAX_VALUE;
+        int effectiveMaxIter = maxIter > 0 ? maxIter : BaseAgent.MAX_ITERATIONS_HARD_CEILING;
+        int llmCallLimit = effectiveMaxIter * LLM_CALL_MULTIPLIER;
         if (llmCallCount >= llmCallLimit) {
             log.warn("[ReasoningDispatcher] LLM call count limit reached ({}/{}), " +
                             "routing to limitExceededNode instead of continuing loop",

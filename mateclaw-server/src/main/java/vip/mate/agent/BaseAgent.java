@@ -71,6 +71,14 @@ public abstract class BaseAgent {
     public static final int MAX_ITERATIONS_HARD_CEILING = 150;
     protected int maxIterations = 150;
 
+    /**
+     * Idle timeout (seconds) for the structured stream. If no NodeOutput is
+     * emitted within this duration, the stream terminates with a timeout
+     * error. Set to 0 to disable. Default 900 (15 minutes). Configurable
+     * via {@code mate.agent.graph.observation.stream-idle-timeout-seconds}.
+     */
+    protected int streamIdleTimeoutSeconds = 900;
+
     /** 工作区活动目录（限制文件工具访问范围，为空不限制） */
     protected String workspaceBasePath;
 

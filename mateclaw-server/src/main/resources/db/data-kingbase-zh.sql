@@ -575,6 +575,26 @@ INSERT INTO mate_tool (id, name, display_name, description, tool_type, bean_name
 VALUES (1000000022, 'PdfRenderTool', 'PDF 渲染', '将 Markdown 渲染为最终交付形态的 .pdf 并返回一次性下载链接。双 backend 自动切换（优先 LibreOffice，不可用时回落到进程内 OpenPDF + Flying Saucer）；通过 YAML frontmatter 控制封面、页眉、页脚。', 'builtin', 'pdfRenderTool', '📄', TRUE, TRUE, NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, display_name=EXCLUDED.display_name, description=EXCLUDED.description, tool_type=EXCLUDED.tool_type, bean_name=EXCLUDED.bean_name, icon=EXCLUDED.icon, enabled=EXCLUDED.enabled, builtin=EXCLUDED.builtin, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
+-- 内置工具：补丁应用（unified diff 编辑，多 hunk 唯一匹配校验）
+INSERT INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
+VALUES (1000000030, 'ApplyPatchTool', '补丁应用', '应用 unified diff 补丁到文件。每个 hunk 的上下文必须唯一匹配，否则整体回滚。比 edit_file 更适合多位置编辑。', 'builtin', 'applyPatchTool', '🔧', TRUE, TRUE, NOW(), NOW(), 0)
+ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, display_name=EXCLUDED.display_name, description=EXCLUDED.description, tool_type=EXCLUDED.tool_type, bean_name=EXCLUDED.bean_name, icon=EXCLUDED.icon, enabled=EXCLUDED.enabled, builtin=EXCLUDED.builtin, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
+
+-- 内置工具：文件搜索（glob 模式匹配，纯 Java PathMatcher）
+INSERT INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
+VALUES (1000000031, 'GlobTool', '文件搜索', '按 glob 模式递归查找文件（如 **/*.java）。纯 Java PathMatcher，不执行 shell，自动跳过 .git/node_modules/target。', 'builtin', 'globTool', '🔍', TRUE, TRUE, NOW(), NOW(), 0)
+ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, display_name=EXCLUDED.display_name, description=EXCLUDED.description, tool_type=EXCLUDED.tool_type, bean_name=EXCLUDED.bean_name, icon=EXCLUDED.icon, enabled=EXCLUDED.enabled, builtin=EXCLUDED.builtin, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
+
+-- 内置工具：内容搜索（正则表达式，纯 Java 实现）
+INSERT INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
+VALUES (1000000032, 'GrepTool', '内容搜索', '按正则表达式递归搜索文件内容，返回匹配行及行号。支持上下文行、扩展名过滤、大小写忽略。纯 Java 实现，不执行 shell。', 'builtin', 'grepTool', '🔎', TRUE, TRUE, NOW(), NOW(), 0)
+ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, display_name=EXCLUDED.display_name, description=EXCLUDED.description, tool_type=EXCLUDED.tool_type, bean_name=EXCLUDED.bean_name, icon=EXCLUDED.icon, enabled=EXCLUDED.enabled, builtin=EXCLUDED.builtin, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
+
+-- 内置工具：Git 操作（只读安全，写操作走 ToolGuard 审批）
+INSERT INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
+VALUES (1000000033, 'GitTool', 'Git 操作', '执行 git 命令（status/diff/log/branch/add/commit/push/pull 等）。只读操作安全，写操作触发审批确认。', 'builtin', 'gitTool', ' Git', TRUE, TRUE, NOW(), NOW(), 0)
+ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, display_name=EXCLUDED.display_name, description=EXCLUDED.description, tool_type=EXCLUDED.tool_type, bean_name=EXCLUDED.bean_name, icon=EXCLUDED.icon, enabled=EXCLUDED.enabled, builtin=EXCLUDED.builtin, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
+
 -- 示例 MCP Server：Filesystem（参考 MateClaw 文档中的 mcpServers.filesystem）
 INSERT INTO mate_mcp_server (
     id, name, description, transport, url, headers_json, command, args_json, env_json, cwd,

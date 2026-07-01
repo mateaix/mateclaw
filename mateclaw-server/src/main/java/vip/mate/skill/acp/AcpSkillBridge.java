@@ -268,11 +268,28 @@ public class AcpSkillBridge {
                 String userPrompt = args.path("prompt").asText("").trim();
                 if (userPrompt.isEmpty()) return errorJson("prompt is required");
                 String cwdHint = args.path("cwd").asText("");
-                String reply = delegationService.prompt(endpointName, userPrompt,
-                        cwdHint == null || cwdHint.isBlank() ? null : cwdHint);
+                // RFC-090 Phase 7c: use the streaming delegation so ACP
+                // session/update events (tool_call_*, plan, current_mode)
+                // are observed — logged here for observability, ready to
+                // wire into the agent SSE relay once the ToolCallback
+                // surface grows a streaming variant.
+                StringBuilder reply = new StringBuilder();
+                delegationService.promptStream(endpointName, userPrompt,
+                        cwdHint == null || cwdHint.isBlank() ? null : cwdHint)
+                        .doOnNext(delta -> {
+                            if (delta.isEvent()) {
+                                log.debug("[ACP stream] endpoint='{}' event={} data={}",
+                                        endpointName, delta.eventType(), delta.eventData());
+                            } else if (delta.content() != null && !delta.content().isEmpty()) {
+                                reply.append(delta.content());
+                            }
+                        })
+                        .doOnError(e -> log.warn("[ACP stream] endpoint='{}' error: {}",
+                                endpointName, e.getMessage()))
+                        .blockLast();
                 JSONObject resp = new JSONObject()
                         .set("endpoint", endpointName)
-                        .set("reply", reply);
+                        .set("reply", reply.toString().trim());
                 return JSONUtil.toJsonStr(resp);
             } catch (Exception e) {
                 log.warn("ACP wrapper '{}' failed: {}", toolName, e.getMessage());

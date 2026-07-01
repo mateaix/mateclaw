@@ -3,6 +3,7 @@ package vip.mate.agent.graph.state;
 import com.alibaba.cloud.ai.graph.OverAllState;
 import org.springframework.ai.chat.messages.Message;
 import vip.mate.agent.GraphEventPublisher;
+import vip.mate.agent.BaseAgent;
 import vip.mate.agent.context.ChatOrigin;
 import vip.mate.agent.graph.NodeStreamingChatHelper;
 
@@ -63,7 +64,8 @@ public final class MateClawStateAccessor {
 
     public boolean isLimitReached() {
         int max = maxIterations();
-        return max > 0 && iterationCount() >= max; // max=0 表示不限制
+        int effectiveMax = max > 0 ? max : BaseAgent.MAX_ITERATIONS_HARD_CEILING;
+        return iterationCount() >= effectiveMax;
     }
 
     // ===== 工具调用 =====

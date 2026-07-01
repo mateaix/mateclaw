@@ -1,0 +1,44 @@
+{
+  "id": "opencode-coding-helper",
+  "name": "OpenCode Coding Helper",
+  "nameZh": "OpenCode 编程助手",
+  "category": "system",
+  "type": "acp",
+  "icon": "🟢",
+  "description": "Delegate coding tasks to OpenCode via ACP. OpenCode is a multi-model coding agent that supports OpenAI, Anthropic, Google, and local models. Requires the opencode endpoint to be enabled in Settings ▸ ACP Endpoints (with opencode CLI installed and configured).",
+  "descriptionZh": "通过 ACP 协议把编码任务委派给 OpenCode。OpenCode 是多模型编码 agent，支持 OpenAI、Anthropic、Google 及本地模型。需先在 Settings ▸ ACP Endpoints 启用 opencode 端点，并安装配置 opencode CLI。",
+  "fields": [
+    {
+      "key": "skill_name",
+      "label": "Skill 标识 (slug)",
+      "type": "text",
+      "required": true,
+      "placeholder": "team-opencode-helper",
+      "hint": "小写英文 + 连字符；最终生成的工具名为 acp_opencode_<slug>_prompt"
+    },
+    {
+      "key": "display_name_zh",
+      "label": "显示名 (中文)",
+      "type": "text",
+      "required": false,
+      "placeholder": "团队 OpenCode 编程助手"
+    },
+    {
+      "key": "system_prefix",
+      "label": "上游 system 前缀",
+      "type": "textarea",
+      "required": false,
+      "default": "你正在为一个 Java 21 + Spring Boot 3.5 + Vue 3 + TypeScript 的 monorepo 工作。所有代码注释用英文，commit message 用中英混合。",
+      "hint": "每次发送给 OpenCode 之前会自动拼到用户输入前面，用来固化项目惯例"
+    },
+    {
+      "key": "cwd_hint",
+      "label": "工作目录提示",
+      "type": "text",
+      "required": false,
+      "placeholder": "/path/to/project (留空使用当前 MateClaw workspace)",
+      "hint": "OpenCode 会用这个路径做 fs 操作的根。指错路径会让 read/write 工具找不到文件。"
+    }
+  ],
+  "skillMd": "---\nname: {{skill_name}}\ndescription: {{display_name_zh}} - 通过 ACP 委派给 OpenCode\ntype: acp\nicon: \"🟢\"\ncategory: system\nversion: 1.0.0\nauthor: skill-template-wizard\nacp:\n  endpoint: opencode\n  system_prefix: |\n    {{system_prefix}}\n  cwd: {{cwd_hint}}\nself-evolution:\n  lessons_enabled: true\n  lessons_max_entries: 30\n---\n\n# {{display_name_zh}}\n\n这是一个 ACP 委派 skill。Agent 会把编码任务转发给 OpenCode coding agent。\n\n## 使用前提\n\n1. Settings ▸ ACP Endpoints 启用 `opencode` 端点（默认 disabled）\n2. 确认本机已安装 opencode CLI（`opencode` 命令可用）\n3. opencode 已配置至少一个模型 provider（OpenAI / Anthropic / Google / 本地模型）\n4. 该 skill 暴露一个工具 `acp_opencode_{{skill_name}}_prompt`，参数 `prompt: string`\n\n## 为什么选 OpenCode\n\n- **多模型支持**：OpenCode 不绑单一厂商——OpenAI、Anthropic、Google、DeepSeek、本地 Ollama 都能用，配合 MateClaw 的多厂商故障转移，编码场景也能故障转移\n- **开源**：Apache 2.0，和 MateClaw 同一许可\n- **ACP 原生**：opencode acp 命令直接启动 ACP server，无需 npx 拉包\n- **轻量**：单二进制，启动快\n\n## 委派粒度建议\n\n- **单 PR 范围**：把 PR 描述 + diff 上下文 + 期望写成一段长 prompt 给 OpenCode\n- **单文件改动**：包含 file path + 关注的代码片段 + 改动意图\n- **探索性分析**：先让 OpenCode 读 / 列目录，根据它的输出再决定下一步\n- **多步任务**：OpenCode 支持内部多轮工具调用，可以一次给复杂任务\n\n## 跟 Claude Code / Codex 的差异\n\n- OpenCode 上下文窗口取决于所选模型，不像 Claude Code 固定 200K\n- OpenCode 更轻量，适合快速迭代\n- OpenCode 的工具调用 trace 走 ACP session/update，MateClaw 会流式 relay 中间步骤\n\n## 流式输出\n\nMateClaw 的 ACP 流式 relay（Phase 7c）会把 OpenCode 的中间步骤（工具调用、计划、模式切换）实时推送到 SSE 流，用户在聊天界面能看到 OpenCode 正在干什么，而不是等最终回复。\n"
+}

@@ -515,7 +515,8 @@ public class PlanGenerationNode implements NodeAction {
                     chatModel, prompt, conversationId, "plan_generation");
 
             // Prompt-too-long handling: compact the conversation window and retry once.
-            if (result.isPromptTooLong() && conversationWindowManager != null) {
+            if (result.isPromptTooLong() && conversationWindowManager != null
+                    && !promptMessages.isEmpty()) {
                 log.warn("[PlanGeneration] Prompt too long, attempting compaction and retry");
                 List<Message> compactedMessages = conversationWindowManager.compactForRetry(
                         promptMessages.subList(1, promptMessages.size()));

@@ -47,7 +47,7 @@ public class ShellExecuteTool {
     private final GeneratedFileCache generatedFileCache;
 
     private static final int DEFAULT_TIMEOUT_SECONDS = 60;
-    private static final int MAX_OUTPUT_BYTES = 10_000;
+    private static final int MAX_OUTPUT_BYTES = 50_000;
     private static final boolean IS_WINDOWS = System.getProperty("os.name", "")
             .toLowerCase(Locale.ROOT).contains("win");
 
@@ -90,6 +90,7 @@ public class ShellExecuteTool {
 
         Path stdoutFile = null;
         Path stderrFile = null;
+        boolean spillHandled = false;
 
         try {
             // 处理命令中的嵌入换行符（LLM 生成的 JSON 解码后可能包含真实换行）
@@ -122,8 +123,10 @@ public class ShellExecuteTool {
                 killProcessTree(process);
                 log.warn("[ShellExecute] Command timed out after {}s: {}", timeout, truncateForLog(command));
                 result.set("exitCode", -1);
-                result.set("stdout", readFileTruncated(stdoutFile, MAX_OUTPUT_BYTES));
-                result.set("stderr", readFileTruncated(stderrFile, MAX_OUTPUT_BYTES));
+                String stdout = readFileTruncated(stdoutFile, MAX_OUTPUT_BYTES);
+                String stderr = readFileTruncated(stderrFile, MAX_OUTPUT_BYTES);
+                attachSpillPaths(result, stdoutFile, stderrFile, stdout, stderr, true);
+                spillHandled = true;
                 result.set("timedOut", true);
                 result.set("message", i18n.msg("tool.shell.error.timeout", timeout));
             } else {
@@ -133,18 +136,17 @@ public class ShellExecuteTool {
                 log.info("[ShellExecute] Command completed: exitCode={}, stdout={}chars, stderr={}chars",
                         exitCode, stdout.length(), stderr.length());
                 result.set("exitCode", exitCode);
-                result.set("stdout", stdout);
-                result.set("stderr", stderr);
+                attachSpillPaths(result, stdoutFile, stderrFile, stdout, stderr, false);
+                spillHandled = true;
                 result.set("timedOut", false);
-                // Surface files the command wrote as one-click downloads (same path
-                // as execute_code). A single newline-joined string, not a JSON array,
-                // so the link-extraction regex captures the clean filename.
                 java.nio.file.Path workingDir = vip.mate.tool.guard.WorkspacePathGuard.getWorkingDirectory(ctx);
                 List<String> fileLinks = WorkspaceArtifactSurfacer.collect(generatedFileCache, workingDir, runStart, ctx);
                 if (!fileLinks.isEmpty()) {
                     result.set("generatedFiles", String.join("\n", fileLinks));
                 }
             }
+
+            return JSONUtil.toJsonPrettyStr(result);
 
         } catch (Exception e) {
             log.error("[ShellExecute] Command execution failed: {}", e.getMessage(), e);
@@ -154,11 +156,78 @@ public class ShellExecuteTool {
             result.set("timedOut", false);
             result.set("error", e.getMessage());
         } finally {
-            deleteQuietly(stdoutFile);
-            deleteQuietly(stderrFile);
+            // Only clean up temp files that attachSpillPaths didn't claim.
+            // If spillHandled is true, attachSpillPaths already deleted
+            // non-truncated files and kept truncated ones (for the agent to
+            // read via read_file). Deleting them here would break the
+            // spill-to-disk pattern. If spillHandled is false (exception
+            // before attachSpillPaths, or attachSpillPaths itself threw),
+            // both temp files are orphans and must be cleaned up.
+            if (!spillHandled) {
+                deleteQuietly(stdoutFile);
+                deleteQuietly(stderrFile);
+            }
         }
 
         return JSONUtil.toJsonPrettyStr(result);
+    }
+
+    /**
+     * Attach stdout/stderr to the result JSON. When the output exceeds
+     * MAX_OUTPUT_BYTES, the full output is preserved in the temp file and
+     * its path is returned so the agent can read_file it in chunks — this
+     * is the spill-to-disk pattern: truncated preview in-context + full
+     * output accessible via read_file.
+     *
+     * <p>Temp files are only kept when the output was truncated; otherwise
+     * they are deleted as before to avoid disk buildup.
+     */
+    private void attachSpillPaths(JSONObject result, Path stdoutFile, Path stderrFile,
+                                    String stdoutPreview, String stderrPreview, boolean timedOut) {
+        long stdoutSize = fileSizeSafe(stdoutFile);
+        long stderrSize = fileSizeSafe(stderrFile);
+        boolean stdoutTruncated = stdoutSize > MAX_OUTPUT_BYTES;
+        boolean stderrTruncated = stderrSize > MAX_OUTPUT_BYTES;
+
+        result.set("stdout", stdoutPreview);
+        result.set("stderr", stderrPreview);
+
+        if (stdoutTruncated) {
+            result.set("stdoutFile", stdoutFile.toString().replace('\\', '/'));
+            result.set("stdoutTruncated", true);
+            result.set("stdoutFullSize", stdoutSize);
+        } else {
+            deleteQuietly(stdoutFile);
+        }
+
+        if (stderrTruncated) {
+            result.set("stderrFile", stderrFile.toString().replace('\\', '/'));
+            result.set("stderrTruncated", true);
+            result.set("stderrFullSize", stderrSize);
+        } else {
+            deleteQuietly(stderrFile);
+        }
+
+        if (stdoutTruncated || stderrTruncated) {
+            JSONObject spill = new JSONObject();
+            if (stdoutTruncated) spill.set("stdoutFile", stdoutFile.toString().replace('\\', '/'));
+            if (stderrTruncated) spill.set("stderrFile", stderrFile.toString().replace('\\', '/'));
+            result.set("spill", spill);
+            result.set("message", "Output exceeded " + (MAX_OUTPUT_BYTES / 1024) + "KB. "
+                    + "Full output written to spill file(s). To process the complete output: "
+                    + "(1) use read_file with the spill file path and offset/limit to page through it, "
+                    + "or (2) use grep to search within the spill file for specific patterns, "
+                    + "or (3) delegate to a subagent to analyze the full output. "
+                    + "Do NOT try to read the entire spill file in one call — use pagination.");
+        }
+    }
+
+    private static long fileSizeSafe(Path file) {
+        try {
+            return file != null && Files.exists(file) ? Files.size(file) : 0;
+        } catch (IOException e) {
+            return 0;
+        }
     }
 
     /**

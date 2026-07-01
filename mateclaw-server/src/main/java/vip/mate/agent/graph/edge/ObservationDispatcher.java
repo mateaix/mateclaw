@@ -3,6 +3,7 @@ package vip.mate.agent.graph.edge;
 import com.alibaba.cloud.ai.graph.OverAllState;
 import com.alibaba.cloud.ai.graph.action.EdgeAction;
 import lombok.extern.slf4j.Slf4j;
+import vip.mate.agent.BaseAgent;
 import vip.mate.agent.graph.state.MateClawStateAccessor;
 
 import static vip.mate.agent.graph.state.MateClawStateKeys.*;
@@ -49,10 +50,20 @@ public class ObservationDispatcher implements EdgeAction {
             return FINAL_ANSWER_NODE;
         }
 
-        // 1. 迭代超限检查（maxIterations=0 表示不限制）
-        if (maxIterations > 0 && currentIteration >= maxIterations) {
-            log.warn("[ObservationDispatcher] Max iterations ({}) reached at iteration {}, " +
-                    "routing to limitExceededNode", maxIterations, currentIteration);
+        // 1. 迭代超限检查
+        //    maxIterations=0 表示用户配置不限制，但仍以 MAX_ITERATIONS_HARD_CEILING
+        //    作为硬性兜底，防止 agent 无限循环卡死。
+        int effectiveMaxIterations = maxIterations > 0
+                ? maxIterations
+                : BaseAgent.MAX_ITERATIONS_HARD_CEILING;
+        if (currentIteration >= effectiveMaxIterations) {
+            if (maxIterations <= 0) {
+                log.warn("[ObservationDispatcher] Unlimited-mode agent hit hard ceiling " +
+                        "({}) at iteration {}, routing to limitExceededNode", effectiveMaxIterations, currentIteration);
+            } else {
+                log.warn("[ObservationDispatcher] Max iterations ({}) reached at iteration {}, " +
+                        "routing to limitExceededNode", effectiveMaxIterations, currentIteration);
+            }
             return LIMIT_EXCEEDED_NODE;
         }
 

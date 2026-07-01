@@ -43,4 +43,14 @@ public class GraphObservationProperties {
 
     /** Minimum chars retained on truncation to avoid losing all information. */
     private int minKeepChars = 2000;
+
+    /**
+     * Idle timeout (seconds) for the structured stream. If no NodeOutput is
+     * emitted within this duration, the stream terminates with a timeout
+     * error. Set to 0 to disable. Default 900 (15 minutes) — 3x the default
+     * per-tool timeout (300s) so legitimate long-running tools never trigger
+     * it. Increase for deployments with slow LLM fallback chains or many
+     * sequential unsafe tools.
+     */
+    private int streamIdleTimeoutSeconds = 900;
 }

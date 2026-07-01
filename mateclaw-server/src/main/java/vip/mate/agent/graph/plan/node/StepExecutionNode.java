@@ -306,7 +306,8 @@ public class StepExecutionNode implements NodeAction {
                         "step_execution[" + stepIndex + "]");
 
                 // PTL 处理：压缩后重试
-                if (result.isPromptTooLong() && conversationWindowManager != null) {
+                if (result.isPromptTooLong() && conversationWindowManager != null
+                        && !messages.isEmpty()) {
                     log.warn("[StepExecution] Prompt too long at step {}, attempting compaction", stepIndex);
                     List<Message> compactedMessages = conversationWindowManager.compactForRetry(
                             messages.subList(1, messages.size()));
