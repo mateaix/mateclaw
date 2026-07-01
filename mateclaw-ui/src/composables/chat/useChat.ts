@@ -1072,14 +1072,29 @@ export function useChat(options: UseChatOptions): UseChatReturn {
   }
 
   /** Mark a subagent (segment or nested node) complete by subagentId. */
+  // Compact "(12s · 3.2k tok)" meta suffix for a completed delegation segment.
+  function delegMetaSuffix(durationMs?: number, promptTokens?: number, completionTokens?: number): string {
+    const parts: string[] = []
+    if (durationMs) parts.push(`${Math.round(durationMs / 1000)}s`)
+    const tok = (promptTokens || 0) + (completionTokens || 0)
+    if (tok > 0) parts.push(`${tok >= 1000 ? (tok / 1000).toFixed(1) + 'k' : tok} tok`)
+    return parts.length ? ` (${parts.join(' · ')})` : ''
+  }
+
   function markDelegComplete(segs: MessageSegment[], subagentId: string | undefined, childConvId: string | undefined,
-                             success: boolean, resultPreview?: string, durationMs?: number): boolean {
+                             success: boolean, resultPreview?: string, durationMs?: number,
+                             promptTokens?: number, completionTokens?: number): boolean {
     const seg = findDelegSegment(segs, subagentId, childConvId)
     if (seg) {
       seg.status = success ? 'completed' : 'error'
       seg.toolSuccess = success
       if (resultPreview) seg.toolResult = resultPreview
-      if (durationMs) seg.toolArgs = (seg.toolArgs || '').trimEnd() + ` (${Math.round(durationMs / 1000)}s)`
+      const suffix = delegMetaSuffix(durationMs, promptTokens, completionTokens)
+      if (suffix) seg.toolArgs = (seg.toolArgs || '').trimEnd() + suffix
+      // Keep tokens as numbers too so the message footer can roll this child
+      // up into the turn total (the suffix above is display-only).
+      if (promptTokens) seg.delegPromptTokens = promptTokens
+      if (completionTokens) seg.delegCompletionTokens = completionTokens
       return true
     }
     if (subagentId) {
@@ -1089,6 +1104,8 @@ export function useChat(options: UseChatOptions): UseChatReturn {
           node.status = success ? 'completed' : 'error'
           if (resultPreview) node.result = resultPreview
           if (durationMs) node.durationMs = durationMs
+          if (promptTokens) node.promptTokens = promptTokens
+          if (completionTokens) node.completionTokens = completionTokens
           return true
         }
       }
@@ -1232,7 +1249,7 @@ export function useChat(options: UseChatOptions): UseChatReturn {
     if (isStaleEvent(data)) return
     if (!currentAssistantId.value) return
     markDelegComplete(currentSegments.value, data.subagentId, data.childConversationId,
-      !!data.success, data.resultPreview, data.durationMs)
+      !!data.success, data.resultPreview, data.durationMs, data.promptTokens, data.completionTokens)
     flushSegmentsToMessage()
   })
 
@@ -1250,7 +1267,7 @@ export function useChat(options: UseChatOptions): UseChatReturn {
             : !!(cr.subagentId && findNode(segs.flatMap(s => s.childTimeline?.children || []), cr.subagentId)?.status === 'running')
           if (stillRunning) {
             markDelegComplete(segs, cr.subagentId, cr.childConversationId, !!cr.success,
-              cr.error || undefined, cr.durationMs)
+              cr.error || undefined, cr.durationMs, cr.promptTokens, cr.completionTokens)
           }
         }
       } else {
@@ -1261,7 +1278,7 @@ export function useChat(options: UseChatOptions): UseChatReturn {
       }
     } else {
       markDelegComplete(segs, data.subagentId, data.childConversationId,
-        !!data.success, data.resultPreview, data.durationMs)
+        !!data.success, data.resultPreview, data.durationMs, data.promptTokens, data.completionTokens)
     }
     flushSegmentsToMessage()
   })

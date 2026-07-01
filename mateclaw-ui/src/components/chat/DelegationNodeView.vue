@@ -42,6 +42,13 @@ const progress = computed(() => {
   return n ? `${n} ${n === 1 ? 'tool' : 'tools'}` : ''
 })
 
+// Compact token cost, shown once the subagent finishes (e.g. "3.2k tok").
+const tokenLabel = computed(() => {
+  const t = (props.node.promptTokens || 0) + (props.node.completionTokens || 0)
+  if (!t) return ''
+  return `${t >= 1000 ? (t / 1000).toFixed(1) + 'k' : t} tok`
+})
+
 function stepStatus(i: number): 'pending' | 'running' | 'completed' {
   const p = plan.value
   if (!p) return 'pending'
@@ -63,6 +70,7 @@ function stepStatus(i: number): 'pending' | 'running' | 'completed' {
       <el-icon class="deleg-node__icon" :size="11"><Connection /></el-icon>
       <span class="deleg-node__name">{{ node.agentName }}</span>
       <span v-if="progress" class="deleg-node__badge">{{ progress }}</span>
+      <span v-if="tokenLabel" class="deleg-node__badge deleg-node__badge--token">{{ tokenLabel }}</span>
       <el-icon v-if="isStalled" class="deleg-node__stale" :title="$t('chat.subagentStalled')" :size="11"><WarningFilled /></el-icon>
       <el-icon
         v-if="hasBody"
@@ -156,6 +164,10 @@ function stepStatus(i: number): 'pending' | 'running' | 'completed' {
   border-radius: 8px;
   padding: 0 6px;
   line-height: 16px;
+}
+.deleg-node__badge--token {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.85;
 }
 .deleg-node__stale {
   flex-shrink: 0;

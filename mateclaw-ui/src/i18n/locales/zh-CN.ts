@@ -196,6 +196,8 @@ export default {
     downloadFailed: '下载失败：{reason}',
     regenerate: '重新生成',
     replyModel: '本条回复模型: {model}',
+    tokenUsageTooltip: '本轮共消耗 {total} tokens（输入 {input} · 输出 {output}）',
+    tokenUsageTooltipDelegated: '本轮共消耗 {total} tokens（输入 {input} · 输出 {output}），其中子 Agent 委派占 {delegated}',
     routing: {
       kind: {
         image: '图片',
@@ -809,6 +811,7 @@ export default {
       discovery: {
         discover: '发现模型',
         discovering: '正在发现...',
+        configureFirst: '请先在「配置」里填入 API Key，再发现该供应商的全部模型',
         testConnection: '测试连接',
         testing: '测试中...',
         testModel: '测试',

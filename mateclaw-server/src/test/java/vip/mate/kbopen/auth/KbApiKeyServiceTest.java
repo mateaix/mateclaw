@@ -12,6 +12,7 @@ import vip.mate.kbopen.auth.repository.KbApiKeyBindingMapper;
 import vip.mate.kbopen.auth.repository.KbApiKeyMapper;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 
@@ -87,7 +88,7 @@ class KbApiKeyServiceTest {
         // authenticate() hashes the plaintext and looks it up — set up the mapper
         // to return the created entity (whose hash matches).
         when(keyMapper.selectOne(any())).thenReturn(created.entity());
-        when(bindingMapper.selectList(any())).thenReturn(java.util.List.of(
+        when(bindingMapper.selectList(any())).thenReturn(List.of(
                 bindingFor(42L, 10L),
                 bindingFor(42L, 20L)));
 
@@ -134,7 +135,7 @@ class KbApiKeyServiceTest {
         KbApiKeyEntity entity = entityWithHash(1L, 1L, "kb:*", plaintext);
         entity.setExpiresAt(LocalDateTime.now().minusDays(1));
         when(keyMapper.selectOne(any())).thenReturn(entity);
-        when(bindingMapper.selectList(any())).thenReturn(java.util.List.of());
+        when(bindingMapper.selectList(any())).thenReturn(List.of());
 
         assertThat(service.authenticate(plaintext)).isEmpty();
     }
@@ -156,7 +157,7 @@ class KbApiKeyServiceTest {
     void wildcardScopeGrantsAll() {
         String plaintext = tokenHashUtil.generate(KbApiKeyService.KEY_PREFIX, 32);
         when(keyMapper.selectOne(any())).thenReturn(entityWithHash(1L, 1L, "kb:*", plaintext));
-        when(bindingMapper.selectList(any())).thenReturn(java.util.List.of(bindingFor(1L, 10L)));
+        when(bindingMapper.selectList(any())).thenReturn(List.of(bindingFor(1L, 10L)));
 
         KbApiKeyContext ctx = service.authenticate(plaintext).get().context();
 
@@ -171,7 +172,7 @@ class KbApiKeyServiceTest {
     void nullScopesDefaultsToWildcard() {
         String plaintext = tokenHashUtil.generate(KbApiKeyService.KEY_PREFIX, 32);
         when(keyMapper.selectOne(any())).thenReturn(entityWithHash(1L, 1L, null, plaintext));
-        when(bindingMapper.selectList(any())).thenReturn(java.util.List.of(bindingFor(1L, 10L)));
+        when(bindingMapper.selectList(any())).thenReturn(List.of(bindingFor(1L, 10L)));
 
         KbApiKeyContext ctx = service.authenticate(plaintext).get().context();
 

@@ -171,6 +171,9 @@ export interface DelegationNode {
   tools?: DelegationToolEntry[]
   result?: string
   durationMs?: number
+  /** Child token usage relayed from delegation_end / delegation_child_complete. */
+  promptTokens?: number
+  completionTokens?: number
   /** Heartbeat watchdog flagged this subagent as making no observable progress. */
   stale?: boolean
   /** Spawned via fire-and-forget delegation: runs detached, result via task_output. */
@@ -211,6 +214,13 @@ export interface MessageSegment {
   toolSuccess?: boolean
   /** LLM-provided tool call id, used to pair tool_call_started ↔ tool_call_completed */
   toolCallId?: string
+  /**
+   * For a top-level delegation segment (toolName starts with "→"): the depth-1
+   * child agent's own token usage, kept as numbers (alongside the human-readable
+   * suffix in toolArgs) so the message footer can roll children up into a turn total.
+   */
+  delegPromptTokens?: number
+  delegCompletionTokens?: number
   /** type=content */
   text?: string
   /** type=phase */

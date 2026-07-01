@@ -196,6 +196,8 @@ export default {
     downloadFailed: 'Download failed: {reason}',
     regenerate: 'Regenerate',
     replyModel: 'Reply model: {model}',
+    tokenUsageTooltip: 'This turn used {total} tokens ({input} in · {output} out)',
+    tokenUsageTooltipDelegated: 'This turn used {total} tokens ({input} in · {output} out), of which {delegated} came from delegated sub-agents',
     routing: {
       kind: {
         image: 'image',
@@ -947,6 +949,7 @@ export default {
       discovery: {
         discover: 'Discover Models',
         discovering: 'Discovering...',
+        configureFirst: 'Add an API Key under “Configure” first, then discover all of this provider’s models',
         testConnection: 'Test Connection',
         testing: 'Testing...',
         testModel: 'Test',
