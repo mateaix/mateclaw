@@ -13,7 +13,9 @@ import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Component;
 import org.springframework.beans.factory.annotation.Value;
 import vip.mate.agent.AgentService;
+import vip.mate.agent.AgentService.ChatResult;
 import vip.mate.agent.context.ChatOrigin;
+import vip.mate.agent.delegation.DelegatedUsageAccumulator;
 import vip.mate.agent.delegation.SubagentRegistry;
 import vip.mate.agent.model.AgentEntity;
 import vip.mate.agent.repository.AgentMapper;
@@ -151,6 +153,7 @@ public class DelegateAgentTool {
     private final SubagentRegistry subagentRegistry;
     private final AuditEventService auditEventService;
     private final AsyncTaskService asyncTaskService;
+    private final DelegatedUsageAccumulator delegatedUsageAccumulator;
 
     /** Max characters of the task description persisted in {@code request_json}.
      *  Anything longer is truncated — full task is still inside the running
@@ -242,6 +245,38 @@ public class DelegateAgentTool {
             return "[错误] 未找到名为「" + agentName + "」的已启用 Agent。" + availableAgentsHint();
         }
 
+        // Execute via the shared single-task core (registry, relay, broadcast,
+        // child run). Returns the structured ChildResult plus the child's
+        // session handle so the parent can follow up on this exact sub-agent.
+        SingleDelegation sd = executeSingleDelegation(target, task, inheritParentContext, ctx);
+        ChildResult result = sd.result();
+
+        String response = result.toToolResponse(target.getName());
+        // Surface the child's session handle so the parent can follow up on this
+        // exact sub-agent (its conversation persists past this call) via
+        // send_to_subagent, instead of re-spawning a fresh, context-less child.
+        if (result.success() && sd.childConversationId() != null) {
+            response += "\n\n[session_id: " + sd.childConversationId()
+                    + " — to follow up with this sub-agent, call send_to_subagent(session_id, message)]";
+        }
+        return response;
+    }
+
+    /** Carrier for a single-task delegation: the structured child result plus
+     *  the child conversation handle (null when spawning was short-circuited). */
+    private record SingleDelegation(ChildResult result, String childConversationId) {}
+
+    /**
+     * Shared execution core for single-task delegation, used by both the
+     * LLM-facing {@link #delegateToAgent} tool and the id-based
+     * {@link #delegateByAgentIdStructured} (per-step plan delegation). Handles
+     * spawn-pause, child conversation creation, optional parent-context
+     * inheritance, sub-agent registry, event relay/broadcast, and the child
+     * run — returning the structured {@link ChildResult} so callers decide how
+     * to format it (tool string vs. plan step bookkeeping).
+     */
+    private SingleDelegation executeSingleDelegation(AgentEntity target, String task,
+            Boolean inheritParentContext, ToolContext ctx) {
         String parentConversationId = resolveParentConversationId();
         // Root (human-facing) conversation at the top of the delegation tree.
         // At depth 0 the immediate parent IS the root; deeper layers carry it
@@ -249,14 +284,15 @@ public class DelegateAgentTool {
         String rootConversationId = DelegationContext.rootConversationId();
         if (rootConversationId == null) rootConversationId = parentConversationId;
         String parentSubagentId = DelegationContext.currentSubagentId();
-        int childDepth = depth + 1;
+        int childDepth = DelegationContext.currentDepth() + 1;
 
         // Spawn-pause: short-circuit before creating child state when either the
         // immediate parent or the root tree is paused, so no conversation rows /
         // relays / registry entries leak.
         if ((parentConversationId != null && subagentRegistry.isSpawnPaused(parentConversationId))
                 || (rootConversationId != null && subagentRegistry.isSpawnPaused(rootConversationId))) {
-            return "[错误] Spawning paused for this conversation; resume via /api/v1/subagents/spawn-pause";
+            return new SingleDelegation(ChildResult.ofError(0, target.getName(),
+                    "Spawning paused for this conversation; resume via /api/v1/subagents/spawn-pause"), null);
         }
 
         String childConversationId = createChildConv(target, parentConversationId);
@@ -275,12 +311,12 @@ public class DelegateAgentTool {
         }
 
         log.info("Agent delegation: depth={}, target={}({}), childConv={}, parentConv={}",
-                depth + 1, target.getName(), target.getId(), childConversationId, parentConversationId);
+                childDepth, target.getName(), target.getId(), childConversationId, parentConversationId);
 
         // Register the live sub-agent first so its stable id rides on every
         // event. Disposable is null in the synchronous single-task path because
-        // the executor blocks on AgentService#chat directly — there is no Flux
-        // subscription to dispose. Interrupts here are best-effort (status flip).
+        // the executor blocks on AgentService#chatWithUsage directly — there is
+        // no Flux subscription to dispose. Interrupts here are best-effort (status flip).
         String subagentId = parentConversationId != null
                 ? subagentRegistry.register(parentConversationId, childConversationId,
                         target.getId(), task, null, parentSubagentId, childDepth, rootConversationId)
@@ -308,7 +344,7 @@ public class DelegateAgentTool {
         ChildResult result;
         try {
             result = runSingleChild(0, target, taskWithContext, parentConversationId, childConversationId,
-                    parentOrigin, rootConversationId, subagentId, childDepth);
+                    parentOrigin, rootConversationId, subagentId, childDepth, true);
         } finally {
             // Cleanup relay + registry regardless of how the child returned
             // (success / exception / interruption) so we never leak entries.
@@ -326,16 +362,7 @@ public class DelegateAgentTool {
             broadcastEnd(rootConversationId, childConversationId, target.getName(), result,
                     subagentId, parentSubagentId, childDepth);
         }
-
-        String response = result.toToolResponse(target.getName());
-        // Surface the child's session handle so the parent can follow up on this
-        // exact sub-agent (its conversation persists past this call) via
-        // send_to_subagent, instead of re-spawning a fresh, context-less child.
-        if (result.success() && childConversationId != null) {
-            response += "\n\n[session_id: " + childConversationId
-                    + " — to follow up with this sub-agent, call send_to_subagent(session_id, message)]";
-        }
-        return response;
+        return new SingleDelegation(result, childConversationId);
     }
 
     /**
@@ -347,12 +374,30 @@ public class DelegateAgentTool {
      * child's reply text, or an error string when the agent is missing/disabled.
      */
     public String delegateByAgentId(Long agentId, String task, ChatOrigin parentOrigin) {
+        ChildResult result = delegateByAgentIdStructured(agentId, task, parentOrigin);
+        return result.toToolResponse(result.agentName());
+    }
+
+    /**
+     * Structured variant of {@link #delegateByAgentId}: runs the same isolated
+     * child execution but returns the full {@link ChildResult} instead of a
+     * formatted string. Used by per-step plan delegation so the plan graph can
+     * branch on {@code success()} / {@code isBlank()} / {@code outcome()} and
+     * read token usage, rather than pattern-matching an error prefix out of a
+     * string. Never throws — agent-resolution and depth-guard failures come
+     * back as {@code outcome="error"} results.
+     */
+    public ChildResult delegateByAgentIdStructured(Long agentId, String task, ChatOrigin parentOrigin) {
         if (agentId == null) {
-            return "[错误] 未指定委派 Agent。";
+            return ChildResult.ofError(0, "?", "未指定委派 Agent。");
         }
         AgentEntity target = agentMapper.selectById(agentId);
         if (target == null || !Boolean.TRUE.equals(target.getEnabled())) {
-            return "[错误] 未找到 id=" + agentId + " 的已启用 Agent。";
+            return ChildResult.ofError(0, "id=" + agentId, "未找到 id=" + agentId + " 的已启用 Agent。");
+        }
+        if (DelegationContext.currentDepth() >= MAX_DELEGATION_DEPTH) {
+            return ChildResult.ofError(0, target.getName(),
+                    "委派层级已达上限（" + MAX_DELEGATION_DEPTH + " 层）");
         }
         ChatOrigin origin = parentOrigin != null ? parentOrigin : ChatOrigin.EMPTY;
         ToolContext ctx = origin.toToolContext();
@@ -372,7 +417,7 @@ public class DelegateAgentTool {
             DelegationContext.enter(parentConvId, Set.of(), parentConvId, null, 0);
         }
         try {
-            return delegateToAgent(target.getName(), task, false, ctx);
+            return executeSingleDelegation(target, task, false, ctx).result();
         } finally {
             if (seedContext) {
                 DelegationContext.exit();
@@ -518,7 +563,7 @@ public class DelegateAgentTool {
         for (PreparedChild p : prepared) {
             CompletableFuture<ChildResult> future = CompletableFuture.supplyAsync(
                     () -> runSingleChild(p.index, p.agent, p.task, parentConversationId, p.childConvId,
-                            parentOriginParallel, rootConvFinal, p.subagentId, childDepth),
+                            parentOriginParallel, rootConvFinal, p.subagentId, childDepth, true),
                     DELEGATION_EXECUTOR);
 
             // Broadcast per-child completion as soon as each child finishes
@@ -543,6 +588,8 @@ public class DelegateAgentTool {
                     payload.put("trimmedLength", r.trimmedLength);
                     payload.put("blank", r.isBlank());
                     payload.put("durationMs", r.durationMs);
+                    payload.put("promptTokens", r.promptTokens);
+                    payload.put("completionTokens", r.completionTokens);
                     payload.put("resultPreview", r.success
                             ? truncate(r.result, 400)
                             : (r.error != null ? r.error : "error"));
@@ -637,6 +684,8 @@ public class DelegateAgentTool {
                 m.put("trimmedLength", r.trimmedLength);
                 m.put("blank", r.isBlank());
                 m.put("durationMs", r.durationMs);
+                m.put("promptTokens", r.promptTokens);
+                m.put("completionTokens", r.completionTokens);
                 // childConversationId + subagentId for stable frontend tree lookup
                 prepared.stream()
                         .filter(p -> p.index == r.taskIndex)
@@ -666,6 +715,8 @@ public class DelegateAgentTool {
         long timeoutCount = results.stream().filter(r -> "timeout".equals(r.outcome)).count();
         long cancelledCount = results.stream().filter(r -> "cancelled".equals(r.outcome)).count();
         long errorCount = results.stream().filter(r -> "error".equals(r.outcome)).count();
+        long tokensInTotal = results.stream().mapToLong(r -> r.promptTokens).sum();
+        long tokensOutTotal = results.stream().mapToLong(r -> r.completionTokens).sum();
 
         StringBuilder sb = new StringBuilder();
 
@@ -680,6 +731,8 @@ public class DelegateAgentTool {
           .append(" cancelled=").append(cancelledCount)
           .append(" error=").append(errorCount)
           .append(" durationMs=").append(totalDurationMs)
+          .append(" tokensIn=").append(tokensInTotal)
+          .append(" tokensOut=").append(tokensOutTotal)
           .append("\n\n");
 
         // Important: this result is from the current execution. Any timeout entries in the
@@ -700,6 +753,8 @@ public class DelegateAgentTool {
               .append(" | contentLength=").append(r.trimmedLength).append("chars")
               .append(" | rawLength=").append(r.rawLength).append("chars")
               .append(" | duration=").append(r.durationMs / 1000).append("s")
+              .append(" | tokensIn=").append(r.promptTokens)
+              .append(" | tokensOut=").append(r.completionTokens)
               .append("\n\n");
 
             switch (r.outcome) {
@@ -816,9 +871,12 @@ public class DelegateAgentTool {
                     currentUser,
                     () -> {
                         try {
+                            // Detached async child: its usage belongs to the later
+                            // task_output retrieval, not the spawning turn, so do not
+                            // roll it into the parent's _usage_final.
                             ChildResult childResult = runSingleChild(0, target, task,
                                     parentConversationId, childConversationId, parentOrigin,
-                                    rootConvAsync, subagentId, childDepth);
+                                    rootConvAsync, subagentId, childDepth, false);
                             return childResult.toToolResponse(target.getName());
                         } finally {
                             subagentRegistry.get(subagentId).ifPresent(rec -> {
@@ -1028,7 +1086,8 @@ public class DelegateAgentTool {
     private ChildResult runSingleChild(int taskIndex, AgentEntity target, String task,
                                         String parentConversationId, String childConversationId,
                                         ChatOrigin parentOrigin,
-                                        String rootConversationId, String subagentId, int childDepth) {
+                                        String rootConversationId, String subagentId, int childDepth,
+                                        boolean accumulateToParent) {
         boolean relayChildEvents = parentConversationId != null && streamTracker.isRunning(parentConversationId);
         if (relayChildEvents) {
             streamTracker.register(childConversationId);
@@ -1048,11 +1107,25 @@ public class DelegateAgentTool {
             ChatOrigin childOrigin = (parentOrigin != null ? parentOrigin : ChatOrigin.EMPTY)
                     .withAgent(target.getId())
                     .withConversationId(childConversationId);
-            String rawResult = agentService.chat(target.getId(), task, childConversationId, childOrigin);
+            // chatWithUsage runs the same StateGraph as chat() (so the child
+            // message is persisted identically) but also surfaces the child's
+            // token usage from the graph's _usage_final event, so the parent can
+            // see what each sub-agent cost.
+            ChatResult chatResult = agentService.chatWithUsage(
+                    target.getId(), task, childConversationId, childOrigin);
             long durationMs = System.currentTimeMillis() - startTime;
+            String rawResult = chatResult.content();
+            // Roll this child's usage up to the root (user-facing) turn so the
+            // parent's _usage_final reflects the whole delegation sub-tree.
+            // Skipped for detached async children, whose result belongs to a
+            // later task_output retrieval, not the spawning turn.
+            if (accumulateToParent) {
+                delegatedUsageAccumulator.add(rootConversationId,
+                        chatResult.promptTokens(), chatResult.completionTokens());
+            }
             // Measure lengths before truncation so ChildResult carries accurate metadata.
             return ChildResult.ofSuccess(taskIndex, target.getName(), rawResult, durationMs,
-                    MAX_RESULT_LENGTH);
+                    MAX_RESULT_LENGTH, chatResult.promptTokens(), chatResult.completionTokens());
         } catch (Exception e) {
             log.error("Child agent failed: taskIndex={}, agent={}, error={}",
                     taskIndex, target.getName(), e.getMessage());
@@ -1079,21 +1152,25 @@ public class DelegateAgentTool {
      * <p>{@code rawLength} and {@code trimmedLength} are measured before truncation and reflect the
      * true content length.
      */
-    private record ChildResult(
+    public record ChildResult(
             int taskIndex, String agentName, boolean success,
             String result, String error, long durationMs,
-            /** "success" | "blank_success" | "timeout" | "error" */
+            /** "success" | "blank_success" | "timeout" | "cancelled" | "error" */
             String outcome,
-            int rawLength, int trimmedLength) {
+            int rawLength, int trimmedLength,
+            /** Child token usage captured from the graph's _usage_final event;
+             *  0 for non-success outcomes (timeout / error / cancelled). */
+            int promptTokens, int completionTokens) {
 
         /** Whether the child returned no usable content (blank_success). */
-        boolean isBlank() { return "blank_success".equals(outcome); }
+        public boolean isBlank() { return "blank_success".equals(outcome); }
 
         /**
          * Factory for a successful child execution.
          * Measures lengths from the raw result before applying the truncation limit.
          */
-        static ChildResult ofSuccess(int idx, String name, String rawResult, long ms, int maxLen) {
+        static ChildResult ofSuccess(int idx, String name, String rawResult, long ms, int maxLen,
+                                     int promptTokens, int completionTokens) {
             String safe = rawResult != null ? rawResult : "";
             String trimmed = safe.trim();
             boolean blank = trimmed.isEmpty();
@@ -1102,7 +1179,8 @@ public class DelegateAgentTool {
                     truncate(safe, maxLen),
                     null, ms,
                     blank ? "blank_success" : "success",
-                    safe.length(), trimmed.length());
+                    safe.length(), trimmed.length(),
+                    Math.max(0, promptTokens), Math.max(0, completionTokens));
         }
 
         /**
@@ -1113,14 +1191,14 @@ public class DelegateAgentTool {
             String msg = err != null ? err : "Unknown error";
             boolean isTimeout = msg.contains("超时") || msg.toLowerCase().contains("timeout");
             return new ChildResult(idx, name, false, null, msg, 0,
-                    isTimeout ? "timeout" : "error", 0, 0);
+                    isTimeout ? "timeout" : "error", 0, 0, 0, 0);
         }
 
         /** Factory for an explicit timeout (parallel window exceeded). */
         static ChildResult ofTimeout(int idx, String name, int timeoutSec) {
             String msg = "超时 (" + timeoutSec + "s)";
             return new ChildResult(idx, name, false, null, msg, (long) timeoutSec * 1000L,
-                    "timeout", 0, 0);
+                    "timeout", 0, 0, 0, 0);
         }
 
         /**
@@ -1130,7 +1208,7 @@ public class DelegateAgentTool {
          */
         static ChildResult ofCancelled(int idx, String name) {
             return new ChildResult(idx, name, false, null,
-                    "已取消（必需子任务失败，触发提前收束）", 0, "cancelled", 0, 0);
+                    "已取消（必需子任务失败，触发提前收束）", 0, "cancelled", 0, 0, 0, 0);
         }
 
         // Legacy shims — kept for callers that pre-date the factory methods
@@ -1140,15 +1218,19 @@ public class DelegateAgentTool {
             String trimmed = safe.trim();
             boolean blank = trimmed.isEmpty();
             return new ChildResult(idx, name, true, safe, null, ms,
-                    blank ? "blank_success" : "success", safe.length(), trimmed.length());
+                    blank ? "blank_success" : "success", safe.length(), trimmed.length(), 0, 0);
         }
         static ChildResult error(int idx, String name, String err) {
             return ofError(idx, name, err);
         }
 
         String toToolResponse(String agentName) {
-            if (success) return "[Agent「" + agentName + "」的回复]\n\n" + (result != null ? result : "");
-            return "[错误] Agent「" + agentName + "」执行失败: " + error;
+            if (!success) return "[错误] Agent「" + agentName + "」执行失败: " + error;
+            String body = "[Agent「" + agentName + "」的回复]\n\n" + (result != null ? result : "");
+            if (promptTokens > 0 || completionTokens > 0) {
+                body += "\n\n[usage: tokensIn=" + promptTokens + " tokensOut=" + completionTokens + "]";
+            }
+            return body;
         }
 
         private static String truncate(String text, int maxLength) {
@@ -1372,6 +1454,8 @@ public class DelegateAgentTool {
         Map<String, Object> ev = delegationPayload(subagentId, parentSubagentId, depth, childConvId, agentName);
         ev.put("success", result.success);
         ev.put("durationMs", result.durationMs);
+        ev.put("promptTokens", result.promptTokens);
+        ev.put("completionTokens", result.completionTokens);
         ev.put("resultPreview",
                 result.success ? truncate(result.result, 200) : (result.error != null ? result.error : ""));
         streamTracker.broadcastObject(rootConvId, "delegation_end", ev);

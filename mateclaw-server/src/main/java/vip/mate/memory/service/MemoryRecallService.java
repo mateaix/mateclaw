@@ -35,6 +35,22 @@ public class MemoryRecallService {
 
     private static final int MAX_QUERY_HASHES = 32;
 
+    /** mate_memory_recall.filename is VARCHAR(256). Bound the value here so an
+     *  over-long section key (path + '#' + H2 heading slug, see #461) can never
+     *  blow past the column. Truncating at the entry point keeps the select /
+     *  insert / update branches below operating on the same value, so the
+     *  dup-key concurrency fallback still matches. */
+    static final int MAX_FILENAME_LENGTH = 255;
+
+    /** Truncate {@code filename} to {@link #MAX_FILENAME_LENGTH}. Package-private
+     *  for direct unit testing. CJK chars live in the BMP, so {@code substring}
+     *  cannot split a surrogate pair. */
+    static String truncateFilename(String filename) {
+        return filename.length() > MAX_FILENAME_LENGTH
+                ? filename.substring(0, MAX_FILENAME_LENGTH)
+                : filename;
+    }
+
     /**
      * 记录一次文件召回
      */
@@ -42,6 +58,9 @@ public class MemoryRecallService {
         if (agentId == null || filename == null || filename.isBlank()) {
             return;
         }
+        // 写库前硬截断：覆盖所有调用路径（含 trackActiveRetrieval 透传的外部 filename），
+        // 防 filename 突破 VARCHAR(256) 导致写入失败（#461）
+        filename = truncateFilename(filename);
 
         // snippet preview 只取前 200 字符（避免对大文件做完整 SHA-256）
         String preview = snippetText != null && snippetText.length() > 200

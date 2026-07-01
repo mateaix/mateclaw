@@ -29,7 +29,12 @@ public class WikiTransformationService {
     private final WikiTransformationMapper transformationMapper;
     private final WikiTransformationRunMapper runMapper;
 
-    /** Templates visible to a KB: pinned to this KB plus workspace-wide ones (kb_id NULL). */
+    /**
+     * Templates visible to a KB: pinned to this KB, plus workspace-wide ones —
+     * either scoped to this workspace ({@code workspace_id = current}) or global
+     * ({@code workspace_id IS NULL}, e.g. the built-in starter pack, visible to
+     * every workspace).
+     */
     public List<WikiTransformationEntity> listForKb(Long kbId, Long workspaceId) {
         if (kbId == null) {
             return List.of();
@@ -38,14 +43,17 @@ public class WikiTransformationService {
                 new LambdaQueryWrapper<WikiTransformationEntity>()
                         .and(w -> w.eq(WikiTransformationEntity::getKbId, kbId)
                                 .or(g -> g.isNull(WikiTransformationEntity::getKbId)
-                                        .eq(WikiTransformationEntity::getWorkspaceId, workspaceId)))
+                                        .and(ws -> ws.eq(WikiTransformationEntity::getWorkspaceId, workspaceId)
+                                                .or().isNull(WikiTransformationEntity::getWorkspaceId))))
                         .orderByDesc(WikiTransformationEntity::getUpdateTime));
     }
 
     public List<WikiTransformationEntity> listByWorkspace(Long workspaceId) {
         return transformationMapper.selectList(
                 new LambdaQueryWrapper<WikiTransformationEntity>()
-                        .eq(WikiTransformationEntity::getWorkspaceId, workspaceId)
+                        // This workspace's own templates plus global ones (workspace_id NULL).
+                        .and(w -> w.eq(WikiTransformationEntity::getWorkspaceId, workspaceId)
+                                .or().isNull(WikiTransformationEntity::getWorkspaceId))
                         .orderByDesc(WikiTransformationEntity::getUpdateTime));
     }
 
@@ -65,7 +73,9 @@ public class WikiTransformationService {
         WikiTransformationEntity global = transformationMapper.selectOne(
                 new LambdaQueryWrapper<WikiTransformationEntity>()
                         .isNull(WikiTransformationEntity::getKbId)
-                        .eq(WikiTransformationEntity::getWorkspaceId, workspaceId)
+                        // This workspace's own template, or a global one (workspace_id NULL).
+                        .and(ws -> ws.eq(WikiTransformationEntity::getWorkspaceId, workspaceId)
+                                .or().isNull(WikiTransformationEntity::getWorkspaceId))
                         .eq(WikiTransformationEntity::getName, name)
                         .last("LIMIT 1"));
         return Optional.ofNullable(global);

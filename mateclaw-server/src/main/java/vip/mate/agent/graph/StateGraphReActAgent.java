@@ -13,6 +13,7 @@ import reactor.core.publisher.Mono;
 import vip.mate.agent.AgentService;
 import vip.mate.agent.AgentState;
 import vip.mate.agent.BaseAgent;
+import vip.mate.agent.delegation.DelegatedUsageAccumulator;
 import vip.mate.agent.GraphEventPublisher;
 import vip.mate.agent.StructuredStreamCapable;
 import vip.mate.agent.context.ConversationWindowManager;
@@ -282,10 +283,18 @@ public class StateGraphReActAgent extends BaseAgent implements StructuredStreamC
                         return deltas;
                     })
                     .concatWith(Mono.fromSupplier(() -> {
-                        if (finalPromptTokens.get() > 0 || finalCompletionTokens.get() > 0) {
+                        DelegatedUsageAccumulator acc = DelegatedUsageAccumulator.getInstance();
+                        DelegatedUsageAccumulator.Drained delegated = acc != null
+                                ? acc.drain(conversationId)
+                                : new DelegatedUsageAccumulator.Drained(0, 0);
+                        long promptTokens = finalPromptTokens.get() + delegated.promptTokens();
+                        long completionTokens = finalCompletionTokens.get() + delegated.completionTokens();
+                        if (promptTokens > 0 || completionTokens > 0) {
                             return AgentService.StreamDelta.event("_usage_final", Map.of(
-                                    "promptTokens", finalPromptTokens.get(),
-                                    "completionTokens", finalCompletionTokens.get(),
+                                    "promptTokens", promptTokens,
+                                    "completionTokens", completionTokens,
+                                    "delegatedPromptTokens", delegated.promptTokens(),
+                                    "delegatedCompletionTokens", delegated.completionTokens(),
                                     "runtimeModelName", finalModelName.get(),
                                     "runtimeProviderId", finalProviderId.get()
                             ));
@@ -304,6 +313,12 @@ public class StateGraphReActAgent extends BaseAgent implements StructuredStreamC
                     .doOnError(e -> {
                         log.error("[{}] StateGraph replay stream error: {}", agentName, e.getMessage());
                         setState(AgentState.ERROR);
+                    })
+                    // Leak guard: discard delegated usage if the turn ends without
+                    // emitting _usage_final (error / cancel).
+                    .doFinally(sig -> {
+                        DelegatedUsageAccumulator acc = DelegatedUsageAccumulator.getInstance();
+                        if (acc != null) acc.clear(conversationId);
                     });
         } catch (Exception e) {
             setState(AgentState.ERROR);
@@ -434,10 +449,18 @@ public class StateGraphReActAgent extends BaseAgent implements StructuredStreamC
                     })
                     // 流正常完成后追加内部 usage 事件
                     .concatWith(Mono.fromSupplier(() -> {
-                        if (finalPromptTokens.get() > 0 || finalCompletionTokens.get() > 0) {
+                        DelegatedUsageAccumulator acc = DelegatedUsageAccumulator.getInstance();
+                        DelegatedUsageAccumulator.Drained delegated = acc != null
+                                ? acc.drain(conversationId)
+                                : new DelegatedUsageAccumulator.Drained(0, 0);
+                        long promptTokens = finalPromptTokens.get() + delegated.promptTokens();
+                        long completionTokens = finalCompletionTokens.get() + delegated.completionTokens();
+                        if (promptTokens > 0 || completionTokens > 0) {
                             return AgentService.StreamDelta.event("_usage_final", Map.of(
-                                    "promptTokens", finalPromptTokens.get(),
-                                    "completionTokens", finalCompletionTokens.get(),
+                                    "promptTokens", promptTokens,
+                                    "completionTokens", completionTokens,
+                                    "delegatedPromptTokens", delegated.promptTokens(),
+                                    "delegatedCompletionTokens", delegated.completionTokens(),
                                     "runtimeModelName", finalModelName.get(),
                                     "runtimeProviderId", finalProviderId.get()
                             ));
@@ -457,6 +480,12 @@ public class StateGraphReActAgent extends BaseAgent implements StructuredStreamC
                     .doOnError(e -> {
                         log.error("[{}] StateGraph structured stream error: {}", agentName, e.getMessage());
                         setState(AgentState.ERROR);
+                    })
+                    // Leak guard: discard delegated usage if the turn ends without
+                    // emitting _usage_final (error / cancel).
+                    .doFinally(sig -> {
+                        DelegatedUsageAccumulator acc = DelegatedUsageAccumulator.getInstance();
+                        if (acc != null) acc.clear(conversationId);
                     });
         } catch (Exception e) {
             setState(AgentState.ERROR);

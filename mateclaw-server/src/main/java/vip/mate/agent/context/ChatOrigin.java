@@ -66,7 +66,16 @@ public record ChatOrigin(
          * can still mint absolute download links. Null for IM/cron origins, which
          * have no request host; those rely on {@code mateclaw.server.public-base-url}.
          */
-        @Nullable String baseUrl
+        @Nullable String baseUrl,
+        /**
+         * Immutable numeric id of the MateClaw user behind this request, when the
+         * requester is an <em>authenticated</em> account (JWT/PAT login via the
+         * web console). Null for non-account origins — webchat visitors, IM
+         * senders, cron — which carry no MateClaw user row. On-behalf-of identity
+         * forwarding uses this to tell "MateClaw authenticated this user" apart
+         * from "this is an external/anonymous identifier" (RFC: identity typing).
+         */
+        @Nullable Long requesterUserId
 ) {
 
     /** Key used when this origin is wrapped into a Spring AI {@link ToolContext}. */
@@ -74,7 +83,7 @@ public record ChatOrigin(
 
     /** Sentinel used by AgentService default overloads where no origin is supplied. */
     public static final ChatOrigin EMPTY =
-            new ChatOrigin(null, null, "", null, null, null, null, false, null, null, null, null);
+            new ChatOrigin(null, null, "", null, null, null, null, false, null, null, null, null, null);
 
     // ---------------- Factories per entry point ----------------
 
@@ -90,9 +99,25 @@ public record ChatOrigin(
                                  @Nullable Long workspaceId,
                                  @Nullable String workspaceBasePath,
                                  @Nullable String baseUrl) {
+        return web(conversationId, requesterId, workspaceId, workspaceBasePath, baseUrl, null);
+    }
+
+    /**
+     * Web-console origin that also carries the authenticated user's immutable
+     * numeric id. Use this overload from the authenticated web entry point so
+     * on-behalf-of identity forwarding can assert "MateClaw authenticated this
+     * user" rather than an external/anonymous identifier.
+     */
+    public static ChatOrigin web(@Nullable String conversationId,
+                                 @Nullable String requesterId,
+                                 @Nullable Long workspaceId,
+                                 @Nullable String workspaceBasePath,
+                                 @Nullable String baseUrl,
+                                 @Nullable Long requesterUserId) {
         return new ChatOrigin(null, conversationId,
                 requesterId != null ? requesterId : "",
-                workspaceId, workspaceBasePath, null, null, false, null, "web", null, baseUrl);
+                workspaceId, workspaceBasePath, null, null, false, null, "web", null, baseUrl,
+                requesterUserId);
     }
 
     public static ChatOrigin cron(@Nullable String conversationId,
@@ -101,7 +126,7 @@ public record ChatOrigin(
                                   @Nullable Long channelId,
                                   @Nullable ChannelTarget target) {
         return new ChatOrigin(null, conversationId, "system",
-                workspaceId, workspaceBasePath, channelId, target, true, null, null, null, null);
+                workspaceId, workspaceBasePath, channelId, target, true, null, null, null, null, null);
     }
 
     // ---------------- Wither-style updates ----------------
@@ -109,27 +134,27 @@ public record ChatOrigin(
     public ChatOrigin withAgent(@Nullable Long newAgentId) {
         return new ChatOrigin(newAgentId, conversationId, requesterId,
                 workspaceId, workspaceBasePath, channelId, channelTarget, cronOrigin,
-                senderName, channelType, chatId, baseUrl);
+                senderName, channelType, chatId, baseUrl, requesterUserId);
     }
 
     public ChatOrigin withWorkspace(@Nullable Long newWorkspaceId,
                                     @Nullable String newWorkspaceBasePath) {
         return new ChatOrigin(agentId, conversationId, requesterId,
                 newWorkspaceId, newWorkspaceBasePath, channelId, channelTarget, cronOrigin,
-                senderName, channelType, chatId, baseUrl);
+                senderName, channelType, chatId, baseUrl, requesterUserId);
     }
 
     public ChatOrigin withConversationId(@Nullable String newConversationId) {
         return new ChatOrigin(agentId, newConversationId, requesterId,
                 workspaceId, workspaceBasePath, channelId, channelTarget, cronOrigin,
-                senderName, channelType, chatId, baseUrl);
+                senderName, channelType, chatId, baseUrl, requesterUserId);
     }
 
     /** Carry a request-derived public base URL (see {@link #baseUrl()}). */
     public ChatOrigin withBaseUrl(@Nullable String newBaseUrl) {
         return new ChatOrigin(agentId, conversationId, requesterId,
                 workspaceId, workspaceBasePath, channelId, channelTarget, cronOrigin,
-                senderName, channelType, chatId, newBaseUrl);
+                senderName, channelType, chatId, newBaseUrl, requesterUserId);
     }
 
     /**
@@ -143,7 +168,7 @@ public record ChatOrigin(
                                   @Nullable String newChatId) {
         return new ChatOrigin(agentId, conversationId, requesterId,
                 workspaceId, workspaceBasePath, channelId, channelTarget, cronOrigin,
-                newSenderName, newChannelType, newChatId, baseUrl);
+                newSenderName, newChannelType, newChatId, baseUrl, requesterUserId);
     }
 
     // ---------------- Spring AI ToolContext interop ----------------

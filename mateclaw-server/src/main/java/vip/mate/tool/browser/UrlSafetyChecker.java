@@ -1,15 +1,20 @@
 package vip.mate.tool.browser;
 
+import vip.mate.common.net.SsrfAllowlist;
+
 import java.net.InetAddress;
 import java.net.URI;
+import java.util.Collection;
+import java.util.List;
 import java.util.Set;
 
 /**
  * SSRF guard — rejects URLs that resolve to loopback, link-local, private, or
- * known cloud-metadata endpoints. Mirrors openfang's {@code check_ssrf} behaviour.
+ * known cloud-metadata endpoints.
  *
  * <p>Call this before passing any user-controlled URL to the browser or to an
- * outbound HTTP client.
+ * outbound HTTP client. An optional allowlist lets administrators reach specific
+ * internal hosts/IPs/CIDR blocks while every other restricted address stays blocked.
  */
 public final class UrlSafetyChecker {
 
@@ -33,6 +38,16 @@ public final class UrlSafetyChecker {
      * Throw {@link SecurityException} if the URL is unsafe. Accepts http:// and https:// only.
      */
     public static void check(String url) {
+        check(url, List.of());
+    }
+
+    /**
+     * Throw {@link SecurityException} if the URL is unsafe.
+     *
+     * @param allowlist hostnames, literal IPs, or IPv4 CIDR blocks that are permitted even
+     *                  when they would otherwise be blocked (loopback, private, metadata, …).
+     */
+    public static void check(String url, Collection<String> allowlist) {
         if (url == null || url.isBlank()) {
             throw new SecurityException("URL is required");
         }
@@ -53,11 +68,18 @@ public final class UrlSafetyChecker {
         String hostname = host.startsWith("[") && host.endsWith("]")
                 ? host.substring(1, host.length() - 1)
                 : host;
+        // An explicit allowlist entry for the literal host short-circuits all checks.
+        if (SsrfAllowlist.matchesHost(hostname, allowlist)) {
+            return;
+        }
         if (BLOCKED_HOSTNAMES.contains(hostname.toLowerCase())) {
             throw new SecurityException("SSRF blocked: " + hostname + " is a restricted hostname");
         }
         try {
             for (InetAddress addr : InetAddress.getAllByName(hostname)) {
+                if (SsrfAllowlist.matchesAddress(addr, allowlist)) {
+                    continue;
+                }
                 if (addr.isLoopbackAddress() || addr.isAnyLocalAddress()
                         || addr.isLinkLocalAddress() || addr.isSiteLocalAddress()
                         || addr.isMulticastAddress() || isMetadataIp(addr)) {
