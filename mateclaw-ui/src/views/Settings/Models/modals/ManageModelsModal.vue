@@ -14,10 +14,16 @@
           {{ t('settings.model.manageTitle') }} · {{ provider.name }}
         </h2>
         <div class="modal-header-actions">
+          <!-- Always visible when the provider supports discovery, so the entry
+               point doesn't silently vanish before an API key is set; disabled
+               with a hint until the provider is configured (discovery hits the
+               live API and needs the key). -->
           <button
-            v-if="provider.supportModelDiscovery && provider.configured"
+            v-if="provider.supportModelDiscovery"
             class="btn-primary discover-btn"
-            :disabled="discovering"
+            :class="{ 'is-discovering': discovering }"
+            :disabled="discovering || !provider.configured"
+            :title="!provider.configured ? t('settings.model.discovery.configureFirst') : ''"
             @click="$emit('discover')"
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -255,7 +261,10 @@ defineEmits<{
 
 .discover-btn { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; padding: 6px 12px; }
 .discover-btn svg { flex-shrink: 0; }
-.discover-btn:disabled svg { animation: spin 1s linear infinite; }
+/* Spin only while actually discovering — not when disabled for a missing key. */
+.discover-btn.is-discovering svg { animation: spin 1s linear infinite; }
+/* Disabled-for-missing-key state reads as inactive (the discovering state keeps full opacity + spinner). */
+.discover-btn:disabled:not(.is-discovering) { opacity: 0.5; cursor: not-allowed; }
 @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
 .discover-panel { margin-bottom: 16px; padding: 14px; border: 1px solid var(--mc-primary-bg); border-radius: 12px; background: var(--mc-primary-bg); }

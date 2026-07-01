@@ -5,6 +5,7 @@ import org.springframework.http.HttpStatusCode;
 import org.springframework.http.MediaType;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
+import vip.mate.common.net.SsrfAllowlist;
 import vip.mate.hook.event.MateHookEvent;
 
 import javax.crypto.Mac;
@@ -41,6 +42,8 @@ public final class HttpAction implements HookAction {
     private final URI url;
     private final String bodyTemplate;    // 可含 {{event.xxx}} 占位
     private final List<String> trustedDomains;
+    /** Hosts/IPs/CIDR blocks permitted through the private-address SSRF block (shared SSRF allowlist). */
+    private final List<String> ssrfAllowlist;
     private final long timeoutMs;
     /** RFC-03 Lane H1 — when set, the rendered body is signed with HMAC-SHA-256
      *  and the resulting hex digest is placed in the header named by
@@ -56,14 +59,23 @@ public final class HttpAction implements HookAction {
         this(restClient, method, url, bodyTemplate, trustedDomains, timeoutMs, null, null);
     }
 
+    /** Constructor without an SSRF allowlist — preserved for existing callers. */
     public HttpAction(RestClient restClient, String method, URI url, String bodyTemplate,
                       List<String> trustedDomains, long timeoutMs,
+                      String hmacSecret, String signatureHeader) {
+        this(restClient, method, url, bodyTemplate, trustedDomains, List.of(), timeoutMs,
+                hmacSecret, signatureHeader);
+    }
+
+    public HttpAction(RestClient restClient, String method, URI url, String bodyTemplate,
+                      List<String> trustedDomains, List<String> ssrfAllowlist, long timeoutMs,
                       String hmacSecret, String signatureHeader) {
         this.restClient = restClient;
         this.method = (method == null) ? "POST" : method.toUpperCase();
         this.url = url;
         this.bodyTemplate = bodyTemplate;
         this.trustedDomains = List.copyOf(trustedDomains == null ? List.of() : trustedDomains);
+        this.ssrfAllowlist = List.copyOf(ssrfAllowlist == null ? List.of() : ssrfAllowlist);
         this.timeoutMs = Math.max(100L, timeoutMs);
         this.hmacSecret = (hmacSecret == null || hmacSecret.isBlank()) ? null : hmacSecret;
         this.signatureHeader = (signatureHeader == null || signatureHeader.isBlank())
@@ -82,7 +94,7 @@ public final class HttpAction implements HookAction {
         if (!isAllowedHost(url.getHost())) {
             throw new IllegalArgumentException("host not in trusted-domains: " + url.getHost());
         }
-        if (isPrivateAddress(url.getHost())) {
+        if (isPrivateAddress(url.getHost()) && !SsrfAllowlist.matchesHost(url.getHost(), ssrfAllowlist)) {
             throw new IllegalArgumentException("private/loopback host is forbidden: " + url.getHost());
         }
         if (!"GET".equals(method) && !"POST".equals(method)) {

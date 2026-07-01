@@ -245,6 +245,12 @@ mateclaw:
     audit:
       enabled: true              # 每次派发写 mate_hook_run
       retain-days: 7
+  security:
+    # Hosts/IPs/CIDR blocks allowed through the SSRF guards (browser, hooks, image
+    # download) even though they are loopback/private/link-local/metadata. Each
+    # entry is a literal hostname, a literal IP, or an IPv4 CIDR block. Keep narrow.
+    # Example: [192.168.100.100, 192.168.100.0/24, internal.corp]
+    ssrf-allowlist: []
   # RFC-014: Anthropic prompt cache 标记
   llm:
     cache:

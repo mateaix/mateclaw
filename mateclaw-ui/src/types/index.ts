@@ -171,6 +171,9 @@ export interface DelegationNode {
   tools?: DelegationToolEntry[]
   result?: string
   durationMs?: number
+  /** Child token usage relayed from delegation_end / delegation_child_complete. */
+  promptTokens?: number
+  completionTokens?: number
   /** Heartbeat watchdog flagged this subagent as making no observable progress. */
   stale?: boolean
   /** Spawned via fire-and-forget delegation: runs detached, result via task_output. */

@@ -65,7 +65,7 @@ class RuntimeContextInjectorModelTest {
     void imOriginHasSenderAndModel() {
         ChatOrigin origin = new ChatOrigin(
                 7L, "feishu:oc_abc", "ou_xyz", 5L, "/data/ws/5",
-                9L, null, false, "Alice", "feishu", "oc_abc", null);
+                9L, null, false, "Alice", "feishu", "oc_abc", null, null);
 
         String ctx = RuntimeContextInjector.buildContextMessage(
                 "/data/ws/5", null, origin, "gpt-4o", "openai");

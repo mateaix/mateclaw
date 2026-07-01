@@ -97,9 +97,12 @@ public class ModelCapabilityService {
         m.put("claude-haiku",  EnumSet.of(Modality.VISION));
 
         // ===== DeepSeek =====
-        // V4 (Apr 2026) is the first DeepSeek line with native multimodal — image + video.
-        // V3 and earlier are text-only (no entry → defaults to text only).
-        m.put("deepseek-v4",   EnumSet.of(Modality.VISION, Modality.VIDEO));
+        // All released DeepSeek chat models (deepseek-chat / deepseek-reasoner /
+        // deepseek-v3.x) are text-only, so there is no entry and they default to
+        // text. Do NOT assume a future line is multimodal here: a wrong vision
+        // assumption makes the router send image_url to a text model, which the
+        // provider rejects with a 400. A genuinely multimodal model should declare
+        // its modalities on the model config instead.
 
         // ===== ByteDance Doubao / Seed =====
         // Seed 2.0 Pro (Feb 2026) handles hour-long videos. Seed1.5-VL also supports video.

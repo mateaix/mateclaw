@@ -379,6 +379,119 @@ API 响应里 `headers_json` 和 `env_json` 的值自动**脱敏**。`args_json`
 
 ---
 
+## 透传用户身份给 MCP server（on-behalf-of）
+
+STDIO MCP server 是**每个配置一个共享子进程**，所有用户共用；env 在子进程启动时一次性注入、之后不可变，STDIO 也没有 HTTP 那种 per-request header 通道。所以**不能用 env 传 per-user 身份**——身份必须随每次工具调用在带内传递。
+
+MateClaw 支持把**认证用户名**注入到每次工具调用的参数里，让 MCP server 代表该用户调用底层 REST 后端。
+
+### 开启（opt-in，按 server）
+
+默认关闭——全量注入会把用户名泄漏给任意第三方 MCP server。用允许清单按 **server 名或 id** 开启：
+
+```yaml
+mateclaw:
+  mcp:
+    identity-forward:
+      servers:
+        - my-internal-api      # mate_mcp_server 里的 server 名
+        - 1000000042           # 或数字 server id
+```
+
+### 数据契约
+
+开启后，MateClaw 在调用该 server 的每个工具时，往参数 JSON 里注入保留字段 **`__mateclaw_user__`**（值=认证用户名）。该值由受信服务端注入、**不经 LLM**；若 LLM 伪造了同名字段会被覆盖，因此模型无法冒充身份。无认证用户时不注入（不伪造身份）。
+
+MCP server 侧读出该字段、剥掉，再连同自己持有的后端 API Key 一起调 REST（如 `X-On-Behalf-Of` header）：
+
+```python
+# FastMCP 示例：MCP server 用 Python 命令行脚本（STDIO）
+import os, httpx
+from mcp.server.fastmcp import FastMCP
+
+mcp = FastMCP("my-internal-api")
+REST_BASE = os.environ["REST_BASE"]          # 后端地址
+API_KEY = os.environ["BACKEND_API_KEY"]      # 服务级 API Key（认证 MCP 服务本身）
+
+@mcp.tool()
+def query_orders(keyword: str, __mateclaw_user__: str | None = None) -> str:
+    if not __mateclaw_user__:
+        raise ValueError("missing injected identity")   # 拒绝无身份调用
+    headers = {
+        "Authorization": f"ApiKey {API_KEY}",            # 服务身份
+        "X-On-Behalf-Of": __mateclaw_user__,             # 代表的用户
+    }
+    r = httpx.get(f"{REST_BASE}/orders", params={"q": keyword}, headers=headers, timeout=30)
+    r.raise_for_status()
+    return r.text
+
+if __name__ == "__main__":
+    mcp.run()   # STDIO
+```
+
+> 工具的入参 schema 若是 `additionalProperties: false`，记得像上面那样把 `__mateclaw_user__` 声明为可选参数，否则严格校验会拒绝。
+
+### 两种信任模型
+
+**① 明文（默认）**：注入明文用户名。适合 REST 在内网、且后端用 API Key 认证 MCP 服务、把转发用户当 on-behalf-of 的场景。后端裸信这个字符串。
+
+**② 签名 token（推荐用于跨信任边界）**：注入一个 MateClaw 用私钥现签的**短时 RS256 JWT**（保留字段换成 **`__mateclaw_token__`**），REST 后端用**公钥验签**——它信任的是签名，而非 MCP 服务/Python/传输。
+
+```yaml
+mateclaw:
+  mcp:
+    identity-forward:
+      servers:
+        - my-internal-api
+      token:
+        enabled: true
+        issuer: mateclaw
+        ttl-seconds: 60                 # 短时，几十秒
+        key-id: mateclaw-mcp-1
+        private-key-pem: ${MCP_IDFWD_PRIVATE_KEY_PEM:}   # PKCS#8 PEM（RS256 私钥）
+        audiences:                      # 可选；默认 aud = server 名
+          my-internal-api: https://api.internal
+```
+
+生成密钥对（私钥配给 MateClaw，公钥配给 REST 后端）：
+
+```bash
+openssl genpkey -algorithm RSA -pkcs8 -out mcp-idfwd-private.pem
+openssl pkey -in mcp-idfwd-private.pem -pubout -out mcp-idfwd-public.pem
+# private-key-pem 用私钥内容（带不带 PEM 头都行，解析时会剥掉）
+```
+
+token 的 claims：`iss`、`sub`=用户、`aud`=该 server、`iat`、`exp`（短）、`jti`。`aud`+短 `exp` 把重放限制在几十秒内、且只对这一个后端。**token 模式开启但没配私钥时 fail-closed**（不签、不注入，后端自然拒绝），不会偷偷退回明文。
+
+> `sub` 携带的是 MateClaw 用户标识（`ChatOrigin.requesterId`）。若后端按不可变数字 id 鉴权，可在签发前把用户名解析成 id（本层刻意不耦合用户存储）。
+
+MCP server（Python）只透传、不验签：
+
+```python
+@mcp.tool()
+def query_orders(keyword: str, __mateclaw_token__: str | None = None) -> str:
+    if not __mateclaw_token__:
+        raise ValueError("missing identity token")
+    headers = {"Authorization": f"Bearer {__mateclaw_token__}"}   # 直接透传给 REST
+    return httpx.get(f"{REST_BASE}/orders", params={"q": keyword}, headers=headers, timeout=30).text
+```
+
+REST 后端验签（伪代码）：
+
+```python
+import jwt  # PyJWT
+claims = jwt.decode(token, public_key_pem, algorithms=["RS256"],
+                    issuer="mateclaw", audience="https://api.internal")
+user = claims["sub"]            # 验签通过才相信
+# → 按 user 做 per-user 授权；验签失败/过期 → 401
+```
+
+> 公钥分发：当前由运维把上面生成的公钥配到 REST 侧（带外）。后续可加一个 JWKS 端点自动分发+轮换。
+>
+> 与 API Key 的关系：可保留 API Key 作"服务/通道认证"（这台 MCP 服务被允许跟后端说话）+ JWT 作"用户断言"，双层更清晰；也可让 JWT 一肩挑。
+
+---
+
 ## 故障排查
 
 ### "命令找不到"（stdio）

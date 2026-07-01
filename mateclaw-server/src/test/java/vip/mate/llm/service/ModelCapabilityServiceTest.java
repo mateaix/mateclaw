@@ -98,17 +98,24 @@ class ModelCapabilityServiceTest {
     }
 
     @Test
-    @DisplayName("DeepSeek V4 / V4-Pro → VIDEO; V3 (text-only) gets nothing")
-    void deepseekV4_supportsVideo() {
-        // DeepSeek V4 (Apr 2026) introduced native multimodal incl. video to the line.
-        // V3 and earlier remain text-only and must NOT match the V4 entry.
-        assertTrue(service.supports("deepseek-v4", null, Modality.VIDEO));
-        assertTrue(service.supports("deepseek-v4-pro", null, Modality.VIDEO));
-        assertTrue(service.supports("deepseek-v4-flash", null, Modality.VIDEO));
-        assertFalse(service.supports("deepseek-v3", null, Modality.VIDEO),
-                "V3 must NOT inherit V4 capabilities — text-only base differs from V4 entirely");
+    @DisplayName("DeepSeek is text-only by default — no speculative vision entry (issue #288)")
+    void deepseek_textOnlyByDefault() {
+        // DeepSeek's released chat models (deepseek-chat / deepseek-reasoner /
+        // deepseek-v3.x) are text-only. A hardcoded deepseek-v4 → vision/video entry
+        // made the router send image_url to a text model, which DeepSeek rejects with
+        // a 400 (and it never fell back to the vision sidecar). Default must be
+        // text-only; a genuinely multimodal model is opted in via the DB modalities
+        // declaration, not assumed here.
+        assertFalse(service.supports("deepseek-v4", null, Modality.VISION),
+                "deepseek must not be assumed vision-capable (issue #288)");
+        assertFalse(service.supports("deepseek-v4", null, Modality.VIDEO));
+        assertFalse(service.supports("deepseek-chat", null, Modality.VISION));
+        assertFalse(service.supports("deepseek-reasoner", null, Modality.VISION));
         assertFalse(service.supports("deepseek-v3.2", null, Modality.VIDEO));
-        assertFalse(service.supports("deepseek-r1", null, Modality.VIDEO));
+        assertEquals(EnumSet.of(Modality.TEXT), service.resolve("deepseek-v4", null));
+        // A real multimodal model can still be declared explicitly via DB modalities.
+        assertTrue(service.supports("deepseek-v4", "[\"vision\"]", Modality.VISION),
+                "an explicit DB declaration must still grant vision when the model truly has it");
     }
 
     @Test

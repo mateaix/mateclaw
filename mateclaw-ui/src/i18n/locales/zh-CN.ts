@@ -459,6 +459,7 @@ export default {
     steps: '步骤',
     viewResult: '点击查看结果',
     delegatedTo: '委派给',
+    queuedSpillHint: '进行中计划的待执行步骤——同一计划也显示在「执行中」列',
     col: {
       pending: '待执行',
       running: '执行中',
@@ -808,6 +809,7 @@ export default {
       discovery: {
         discover: '发现模型',
         discovering: '正在发现...',
+        configureFirst: '请先在「配置」里填入 API Key，再发现该供应商的全部模型',
         testConnection: '测试连接',
         testing: '测试中...',
         testModel: '测试',
@@ -2693,6 +2695,9 @@ export default {
       resetView: '重置视图',
       fullscreen: '全屏',
       exitFullscreen: '退出全屏',
+      searchPlaceholder: '按名称搜索节点…',
+      searchNoMatch: '无匹配节点',
+      searchClear: '清除',
       linksTo: '链接到',
       openPage: '打开页面',
       empty: '暂无图谱数据，请先处理原始材料',

@@ -16,6 +16,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.Spy;
 import vip.mate.agent.AgentService;
+import vip.mate.agent.AgentService.ChatResult;
 import vip.mate.agent.delegation.SubagentRegistry;
 import vip.mate.agent.model.AgentEntity;
 import vip.mate.agent.repository.AgentMapper;
@@ -108,14 +109,14 @@ class DelegateEventSequenceTest {
                 });
 
         // During chat(), simulate the child broadcasting a tool_call_started event
-        when(agentService.chat(eq(100L), eq("summarize the report"), anyString(), any()))
+        when(agentService.chatWithUsage(eq(100L), eq("summarize the report"), anyString(), any()))
                 .thenAnswer(invocation -> {
                     // The relay listener should have been registered by now — fire it
                     BiConsumer<String, String> relay = relayRef.get();
                     assertNotNull(relay, "Relay should be registered before child chat starts");
                     relay.accept("tool_call_started", "{\"name\":\"searchWeb\"}");
                     relay.accept("tool_call_completed", "{\"name\":\"searchWeb\",\"success\":true}");
-                    return "The report shows growth of 15% YoY.";
+                    return ChatResult.contentOnly("The report shows growth of 15% YoY.");
                 });
 
         // Act
@@ -170,8 +171,10 @@ class DelegateEventSequenceTest {
         when(streamTracker.addBatchedEventRelay(anyString(), anyString(), anyInt(), anyLong(), any()))
                 .thenReturn(() -> {});
 
-        when(agentService.chat(eq(101L), anyString(), anyString(), any())).thenReturn("Result A");
-        when(agentService.chat(eq(102L), anyString(), anyString(), any())).thenReturn("Result B");
+        when(agentService.chatWithUsage(eq(101L), anyString(), anyString(), any()))
+                .thenReturn(ChatResult.contentOnly("Result A"));
+        when(agentService.chatWithUsage(eq(102L), anyString(), anyString(), any()))
+                .thenReturn(ChatResult.contentOnly("Result B"));
 
         String json = "[{\"agentName\":\"AgentA\",\"task\":\"task A\"},{\"agentName\":\"AgentB\",\"task\":\"task B\"}]";
 
@@ -203,7 +206,8 @@ class DelegateEventSequenceTest {
         ToolExecutionContext.set("inactive-parent", "admin");
         when(streamTracker.isRunning("inactive-parent")).thenReturn(false);
 
-        when(agentService.chat(eq(200L), anyString(), anyString(), any())).thenReturn("done");
+        when(agentService.chatWithUsage(eq(200L), anyString(), anyString(), any()))
+                .thenReturn(ChatResult.contentOnly("done"));
 
         // Act
         delegateAgentTool.delegateToAgent("QuietAgent", "quiet task", null, null);
@@ -235,7 +239,7 @@ class DelegateEventSequenceTest {
                     return (Runnable) () -> {};
                 });
 
-        when(agentService.chat(eq(300L), anyString(), anyString(), any()))
+        when(agentService.chatWithUsage(eq(300L), anyString(), anyString(), any()))
                 .thenAnswer(invocation -> {
                     BiConsumer<String, String> relay = relayRef.get();
                     // These should produce delegation_progress:
@@ -244,7 +248,7 @@ class DelegateEventSequenceTest {
                     // These should be ignored by the relay filter:
                     relay.accept("heartbeat", "{}");
                     relay.accept("token", "{\"text\":\"hello\"}");
-                    return "filtered result";
+                    return ChatResult.contentOnly("filtered result");
                 });
 
         delegateAgentTool.delegateToAgent("FilterAgent", "filter task", null, null);
@@ -294,18 +298,19 @@ class DelegateEventSequenceTest {
         // ToolExecutionContext to the Child's own conversation. Reproduce that so
         // the grandchild's immediate parent resolves to childConv, while its
         // events must still target rootConv (carried via DelegationContext).
-        when(agentService.chat(eq(100L), anyString(), anyString(), any()))
+        when(agentService.chatWithUsage(eq(100L), anyString(), anyString(), any()))
                 .thenAnswer(inv -> {
                     String childConv = inv.getArgument(2);
                     ToolExecutionContext.set(childConv, "admin");
                     try {
-                        return delegateAgentTool.delegateToAgent("Grandchild", "gtask", null, null);
+                        return ChatResult.contentOnly(
+                                delegateAgentTool.delegateToAgent("Grandchild", "gtask", null, null));
                     } finally {
                         ToolExecutionContext.set(rootConv, "admin");
                     }
                 });
-        when(agentService.chat(eq(200L), anyString(), anyString(), any()))
-                .thenReturn("grandchild done");
+        when(agentService.chatWithUsage(eq(200L), anyString(), anyString(), any()))
+                .thenReturn(ChatResult.contentOnly("grandchild done"));
 
         delegateAgentTool.delegateToAgent("Child", "ctask", null, null);
 
