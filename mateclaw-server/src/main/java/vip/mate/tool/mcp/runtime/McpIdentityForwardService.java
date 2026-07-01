@@ -64,9 +64,21 @@ public class McpIdentityForwardService {
 
     private final McpIdentityForwardProperties properties;
 
-    /** Lazily parsed signing key; {@code null} until first use / when unavailable. */
+    /**
+     * Lazily parsed signing key; {@code null} until first successful parse or
+     * while a parse is pending. Guarded by {@code this} (the parse block) and
+     * safe to read outside the lock because the field is volatile and the
+     * {@link PrivateKey} is published safely after construction.
+     */
     private volatile PrivateKey signingKey;
-    private volatile boolean keyParseAttempted;
+
+    /**
+     * PEM content last handed to the parser. Lets the cache self-heal when the
+     * operator fixes the config (or a config reload pushes a new key) without an
+     * app restart: if the PEM changed since the last attempt we retry instead of
+     * sticking with a permanent null. {@code null} = never attempted.
+     */
+    private volatile String lastAttemptedPem;
 
     public McpIdentityForwardService(McpIdentityForwardProperties properties) {
         this.properties = properties;
@@ -94,10 +106,13 @@ public class McpIdentityForwardService {
      * {@link ResolvedIdentity#NONE} for cron / system / unattributed origins
      * (never assert identity on behalf of a non-user).
      *
-     * <p>Source channel is read from {@link ChatOrigin} (carried on the
-     * {@link ToolContext}); when the context carries no origin it falls back to
-     * the legacy {@link ToolExecutionContext} username (treated as web/authenticated
-     * only if non-blank — preserves the original contract for the ThreadLocal path).
+     * <p>Trust is keyed off {@link ChatOrigin#channelType()}: only the explicit
+     * {@code "web"} channel (built by {@code ChatOrigin.web()}) may resolve to
+     * {@code authenticated} — every other channel is typed as {@code anonymous}
+     * / {@code external}, and an <em>unknown</em> (null/blank) channel resolves
+     * to {@link ResolvedIdentity#NONE} (fail-closed). The ThreadLocal
+     * {@link ToolExecutionContext} username is consulted only inside the web
+     * branch and only when no immutable user id is present.
      */
     ResolvedIdentity classify(ToolContext ctx) {
         ChatOrigin origin = ChatOrigin.from(ctx);
@@ -106,10 +121,19 @@ public class McpIdentityForwardService {
             return ResolvedIdentity.NONE;
         }
         String channel = origin.channelType();
+        // Unknown / unattributed channel: never assert identity. An absent
+        // channelType must NOT be promoted to authenticated — only the explicit
+        // "web" channel (built by ChatOrigin.web()) carries MateClaw's assertion
+        // that a real account backs this request. Treating null/blank as web
+        // would silently stamp an untrusted ThreadLocal value with authenticated
+        // trust, violating the fail-closed contract this service guarantees.
+        if (channel == null || channel.isBlank()) {
+            return ResolvedIdentity.NONE;
+        }
         // Authenticated web account: MateClaw vouches for this user. Prefer the
         // immutable numeric id when available (web-console login); fall back to
         // the username when only the ThreadLocal path supplied identity.
-        if (channel == null || channel.isBlank() || "web".equals(channel)) {
+        if ("web".equals(channel)) {
             if (origin.requesterUserId() != null) {
                 return new ResolvedIdentity(String.valueOf(origin.requesterUserId()),
                         TRUST_AUTHENTICATED, "web");
@@ -180,20 +204,35 @@ public class McpIdentityForwardService {
         }
     }
 
+    /**
+     * Resolve the signing key, parsing it lazily. Self-heals when the configured
+     * PEM changes (e.g. an operator fixes a malformed key or a config reload
+     * pushes a new one) — a prior failed parse is retried on the next call once
+     * {@code private-key-pem} differs from what was last attempted, so recovery
+     * no longer needs an app restart. Stays fail-closed otherwise.
+     */
     private PrivateKey signingKey() {
         PrivateKey k = signingKey;
         if (k != null) {
             return k;
         }
-        if (keyParseAttempted) {
-            return null;   // already tried and failed; don't spam parsing
+        String pem = properties.getToken().getPrivateKeyPem();
+        // Skip only while the PEM is unchanged since the last attempt — that
+        // avoids re-parsing (and re-logging) on every call. A changed PEM clears
+        // the way for a fresh parse, which is the self-healing path.
+        if (lastAttemptedPem != null && lastAttemptedPem.equals(pem)) {
+            return null;
         }
         synchronized (this) {
             if (signingKey != null) {
                 return signingKey;
             }
-            keyParseAttempted = true;
-            String pem = properties.getToken().getPrivateKeyPem();
+            // Re-check under the lock: another thread may have just attempted
+            // the same (unchanged) PEM.
+            if (lastAttemptedPem != null && lastAttemptedPem.equals(pem)) {
+                return null;
+            }
+            lastAttemptedPem = pem;
             if (pem == null || pem.isBlank()) {
                 log.error("[McpIdentity] token mode enabled but mateclaw.mcp.identity-forward.token.private-key-pem is empty; "
                         + "identity tokens will NOT be issued (fail-closed)");

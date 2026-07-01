@@ -129,6 +129,51 @@ class McpIdentityForwardServiceTest {
             assertThat(id.subject()).isEqualTo("alice");
             assertThat(id.trust()).isEqualTo(McpIdentityForwardService.TRUST_AUTHENTICATED);
         }
+
+        // ---- Fail-closed: an unknown / unattributed channel must NEVER be
+        //      promoted to authenticated, even when a stale ThreadLocal username
+        //      is present. This is the regression for the privilege-escalation
+        //      gap where channel==null used to fall into the web branch and
+        //      stamp an untrusted identifier with authenticated trust. ----
+
+        @Test
+        @DisplayName("unknown channelType (null) → NONE, even with a polluted ThreadLocal (no privilege escalation)")
+        void unknownChannelIsFailClosedEvenWithThreadLocal() {
+            // A stale username from a prior request reused this thread.
+            ToolExecutionContext.set("c1", "attacker");
+            // System-style origin built with no channelType (e.g. SkillConsolidation
+            // / SkillReflection internal tasks): requesterId="", channelType=null.
+            ChatOrigin origin = new ChatOrigin(null, "c1", "", 1L, null,
+                    null, null, false, null, null, null, null, null);
+            assertThat(svc(new McpIdentityForwardProperties()).classify(ctx(origin)))
+                    .isEqualTo(McpIdentityForwardService.ResolvedIdentity.NONE);
+        }
+
+        @Test
+        @DisplayName("blank channelType → NONE (fail-closed, not authenticated)")
+        void blankChannelIsFailClosed() {
+            ToolExecutionContext.set("c1", "attacker");
+            ChatOrigin origin = new ChatOrigin(null, "c1", "someone", 1L, null,
+                    null, null, false, null, "  ", null, null, null);
+            assertThat(svc(new McpIdentityForwardProperties()).classify(ctx(origin)))
+                    .isEqualTo(McpIdentityForwardService.ResolvedIdentity.NONE);
+        }
+
+        @Test
+        @DisplayName("unrecognised non-web channel → downgraded to external (never authenticated)")
+        void novelChannelIsDowngradedNotAuthenticated() {
+            // A channel the classifier doesn't recognise is treated as external
+            // (explicit trust downgrade), never as authenticated. The backend sees
+            // an untrusted id and decides for itself — this is the key guarantee:
+            // no unknown channel can ever acquire authenticated trust.
+            ChatOrigin origin = new ChatOrigin(null, "c1", "u1", 1L, null,
+                    null, null, false, null, "future-net", null, null, null);
+            McpIdentityForwardService.ResolvedIdentity id =
+                    svc(new McpIdentityForwardProperties()).classify(ctx(origin));
+            assertThat(id.subject()).isEqualTo("u1");
+            assertThat(id.trust()).isEqualTo(McpIdentityForwardService.TRUST_EXTERNAL);
+            assertThat(id.channelType()).isEqualTo("future-net");
+        }
     }
 
     // ==================== Resolution: plaintext & token modes ====================
@@ -168,6 +213,41 @@ class McpIdentityForwardServiceTest {
         var p = new McpIdentityForwardProperties();
         p.getToken().setEnabled(true);   // no private-key-pem
         assertThat(svc(p).resolve(ctx(origin), "my-api")).isEmpty();
+    }
+
+    @Test
+    @DisplayName("signing key self-heals after a bad PEM is corrected (no restart needed)")
+    void signingKeySelfHealsAfterConfigFix() {
+        KeyPair kp = rsaKeyPair();
+        String goodPem = Base64.getEncoder().encodeToString(kp.getPrivate().getEncoded());
+        ChatOrigin origin = ChatOrigin.web("c1", "alice", 1L, null, null, 42L);
+
+        var p = new McpIdentityForwardProperties();
+        p.getToken().setEnabled(true);
+        p.getToken().setIssuer("mateclaw");
+        p.getToken().setTtlSeconds(60);
+
+        // 1. Malformed key → fail-closed.
+        p.getToken().setPrivateKeyPem("not-a-valid-pem");
+        McpIdentityForwardService service = svc(p);
+        assertThat(service.resolve(ctx(origin), "my-api")).isEmpty();
+
+        // 2. Operator fixes the config (or a reload pushes a good key) → next
+        //    call re-parses and issues a token, without needing an app restart.
+        p.getToken().setPrivateKeyPem(goodPem);
+        Optional<McpIdentityForwardService.Injection> inj = service.resolve(ctx(origin), "my-api");
+        assertThat(inj).isPresent();
+        assertThat(inj.get().key()).isEqualTo(McpIdentityForwardProperties.TOKEN_ARG);
+
+        // The minted token verifies against the matching public key.
+        Claims claims = Jwts.parser()
+                .verifyWith(kp.getPublic())
+                .requireIssuer("mateclaw")
+                .requireAudience("my-api")
+                .build()
+                .parseSignedClaims(inj.get().value())
+                .getPayload();
+        assertThat(claims.getSubject()).isEqualTo("42");
     }
 
     @Test
