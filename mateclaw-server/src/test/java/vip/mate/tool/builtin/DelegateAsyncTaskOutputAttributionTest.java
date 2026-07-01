@@ -66,7 +66,8 @@ class DelegateAsyncTaskOutputAttributionTest {
     void setUp() {
         tool = new DelegateAgentTool(
                 agentService, agentMapper, streamTracker, conversationService,
-                objectMapper, subagentRegistry, auditEventService, asyncTaskService);
+                objectMapper, subagentRegistry, auditEventService, asyncTaskService,
+                new vip.mate.agent.delegation.DelegatedUsageAccumulator());
     }
 
     @AfterEach

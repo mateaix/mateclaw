@@ -1091,6 +1091,10 @@ export function useChat(options: UseChatOptions): UseChatReturn {
       if (resultPreview) seg.toolResult = resultPreview
       const suffix = delegMetaSuffix(durationMs, promptTokens, completionTokens)
       if (suffix) seg.toolArgs = (seg.toolArgs || '').trimEnd() + suffix
+      // Keep tokens as numbers too so the message footer can roll this child
+      // up into the turn total (the suffix above is display-only).
+      if (promptTokens) seg.delegPromptTokens = promptTokens
+      if (completionTokens) seg.delegCompletionTokens = completionTokens
       return true
     }
     if (subagentId) {

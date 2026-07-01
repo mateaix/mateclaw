@@ -69,7 +69,8 @@ class DelegateAsyncToolTest {
     void setUp() {
         tool = new DelegateAgentTool(
                 agentService, agentMapper, streamTracker, conversationService,
-                objectMapper, subagentRegistry, auditEventService, asyncTaskService);
+                objectMapper, subagentRegistry, auditEventService, asyncTaskService,
+                new vip.mate.agent.delegation.DelegatedUsageAccumulator());
         // resolveParentConversationId reads from ToolExecutionContext first;
         // seed it so the async delegation has a parent to attach the task to.
         ToolExecutionContext.set("parent-conv-1", "user-1");

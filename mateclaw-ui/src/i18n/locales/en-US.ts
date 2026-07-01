@@ -196,6 +196,8 @@ export default {
     downloadFailed: 'Download failed: {reason}',
     regenerate: 'Regenerate',
     replyModel: 'Reply model: {model}',
+    tokenUsageTooltip: 'This turn used {total} tokens ({input} in · {output} out)',
+    tokenUsageTooltipDelegated: 'This turn used {total} tokens ({input} in · {output} out), of which {delegated} came from delegated sub-agents',
     routing: {
       kind: {
         image: 'image',

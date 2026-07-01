@@ -15,6 +15,7 @@ import org.springframework.beans.factory.annotation.Value;
 import vip.mate.agent.AgentService;
 import vip.mate.agent.AgentService.ChatResult;
 import vip.mate.agent.context.ChatOrigin;
+import vip.mate.agent.delegation.DelegatedUsageAccumulator;
 import vip.mate.agent.delegation.SubagentRegistry;
 import vip.mate.agent.model.AgentEntity;
 import vip.mate.agent.repository.AgentMapper;
@@ -152,6 +153,7 @@ public class DelegateAgentTool {
     private final SubagentRegistry subagentRegistry;
     private final AuditEventService auditEventService;
     private final AsyncTaskService asyncTaskService;
+    private final DelegatedUsageAccumulator delegatedUsageAccumulator;
 
     /** Max characters of the task description persisted in {@code request_json}.
      *  Anything longer is truncated — full task is still inside the running
@@ -342,7 +344,7 @@ public class DelegateAgentTool {
         ChildResult result;
         try {
             result = runSingleChild(0, target, taskWithContext, parentConversationId, childConversationId,
-                    parentOrigin, rootConversationId, subagentId, childDepth);
+                    parentOrigin, rootConversationId, subagentId, childDepth, true);
         } finally {
             // Cleanup relay + registry regardless of how the child returned
             // (success / exception / interruption) so we never leak entries.
@@ -561,7 +563,7 @@ public class DelegateAgentTool {
         for (PreparedChild p : prepared) {
             CompletableFuture<ChildResult> future = CompletableFuture.supplyAsync(
                     () -> runSingleChild(p.index, p.agent, p.task, parentConversationId, p.childConvId,
-                            parentOriginParallel, rootConvFinal, p.subagentId, childDepth),
+                            parentOriginParallel, rootConvFinal, p.subagentId, childDepth, true),
                     DELEGATION_EXECUTOR);
 
             // Broadcast per-child completion as soon as each child finishes
@@ -869,9 +871,12 @@ public class DelegateAgentTool {
                     currentUser,
                     () -> {
                         try {
+                            // Detached async child: its usage belongs to the later
+                            // task_output retrieval, not the spawning turn, so do not
+                            // roll it into the parent's _usage_final.
                             ChildResult childResult = runSingleChild(0, target, task,
                                     parentConversationId, childConversationId, parentOrigin,
-                                    rootConvAsync, subagentId, childDepth);
+                                    rootConvAsync, subagentId, childDepth, false);
                             return childResult.toToolResponse(target.getName());
                         } finally {
                             subagentRegistry.get(subagentId).ifPresent(rec -> {
@@ -1081,7 +1086,8 @@ public class DelegateAgentTool {
     private ChildResult runSingleChild(int taskIndex, AgentEntity target, String task,
                                         String parentConversationId, String childConversationId,
                                         ChatOrigin parentOrigin,
-                                        String rootConversationId, String subagentId, int childDepth) {
+                                        String rootConversationId, String subagentId, int childDepth,
+                                        boolean accumulateToParent) {
         boolean relayChildEvents = parentConversationId != null && streamTracker.isRunning(parentConversationId);
         if (relayChildEvents) {
             streamTracker.register(childConversationId);
@@ -1109,6 +1115,14 @@ public class DelegateAgentTool {
                     target.getId(), task, childConversationId, childOrigin);
             long durationMs = System.currentTimeMillis() - startTime;
             String rawResult = chatResult.content();
+            // Roll this child's usage up to the root (user-facing) turn so the
+            // parent's _usage_final reflects the whole delegation sub-tree.
+            // Skipped for detached async children, whose result belongs to a
+            // later task_output retrieval, not the spawning turn.
+            if (accumulateToParent) {
+                delegatedUsageAccumulator.add(rootConversationId,
+                        chatResult.promptTokens(), chatResult.completionTokens());
+            }
             // Measure lengths before truncation so ChildResult carries accurate metadata.
             return ChildResult.ofSuccess(taskIndex, target.getName(), rawResult, durationMs,
                     MAX_RESULT_LENGTH, chatResult.promptTokens(), chatResult.completionTokens());

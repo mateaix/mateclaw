@@ -42,7 +42,7 @@ MEMORY.md 与 PROFILE.md 会被**无条件注入每一次对话的系统提示**
 
 字段说明：
 - `should_update`: 布尔值，是否有任何需要更新的内容。如果为 false，其余字段应为 null
-- `daily_entry`: 字符串或 null。要追加到今日 daily note 的内容（markdown 格式，以时间戳开头如 "## HH:mm ..."）
+- `daily_entry`: 字符串或 null。要追加到今日 daily note 的内容（markdown 格式，以时间戳开头如 "## HH:mm 简要事件标题"）。**二级标题（##）保持简短（不超过 30 字），只概括事件主题；事件细节、数字、过程写进标题下方的正文，不要堆进标题——过长的标题会导致下游索引截断。**
 - `memory_update`: 字符串或 null。MEMORY.md 的完整新内容（已合并现有内容，不是增量）。仅当有需要新增或修改的**跨项目稳定**信息时才填写
 - `profile_update`: 字符串或 null。PROFILE.md 的完整新内容（已合并现有内容，不是增量）。仅当用户身份/偏好有显著变化时才填写
 - `structured_entries`: 数组或 null。把适合按条目检索的**具体事实**路由到结构化记忆，每个元素形如 `{"type": "...", "key": "...", "content": "..."}`：

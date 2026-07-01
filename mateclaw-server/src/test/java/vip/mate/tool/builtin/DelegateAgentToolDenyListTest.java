@@ -57,7 +57,8 @@ class DelegateAgentToolDenyListTest {
         vip.mate.task.AsyncTaskService asyncTaskService = mock(vip.mate.task.AsyncTaskService.class);
 
         tool = new DelegateAgentTool(agentService, agentMapper, streamTracker, conversationService,
-                objectMapper, registry, auditEventService, asyncTaskService);
+                objectMapper, registry, auditEventService, asyncTaskService,
+                new vip.mate.agent.delegation.DelegatedUsageAccumulator());
     }
 
     @AfterEach

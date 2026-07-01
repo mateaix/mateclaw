@@ -126,12 +126,20 @@ public class MemoryRecallTracker {
         return count;
     }
 
-    private String sanitizeSectionKey(String heading) {
+    /** Max length of a section slug — keeps the full key (path + '#' + slug)
+     *  well under the mate_memory_recall.filename VARCHAR(256) ceiling even
+     *  when an LLM writes an over-long H2 heading. CJK chars live in the BMP,
+     *  so {@code substring} can never split a surrogate pair here. */
+    static final int MAX_SECTION_SLUG = 200;
+
+    /** Package-private for direct unit testing of the slug/truncation logic. */
+    static String sanitizeSectionKey(String heading) {
         // "## Some Title" -> "some-title"
-        return heading.replaceFirst("^#+\\s*", "")
+        String slug = heading.replaceFirst("^#+\\s*", "")
                 .toLowerCase()
                 .replaceAll("[^a-z0-9\\u4e00-\\u9fff]+", "-")
                 .replaceAll("^-|-$", "");
+        return slug.length() > MAX_SECTION_SLUG ? slug.substring(0, MAX_SECTION_SLUG) : slug;
     }
 
     /**
