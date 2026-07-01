@@ -107,6 +107,15 @@ services:
       #   browsers benefit too). Leave false on internet-facing deployments.
       MATECLAW_BROWSER_ALLOW_PRIVATE_NETWORK: ${PLAYWRIGHT_ALLOW_PRIVATE_NETWORK:-false}
       MATECLAW_BROWSER_IGNORE_HTTPS_ERRORS: ${PLAYWRIGHT_IGNORE_HTTPS_ERRORS:-false}
+      # Playwright action / navigation timeouts (seconds). Increase for slow
+      # LAN or large-page scenarios. Defaults match Playwright's own (30s).
+      MATECLAW_BROWSER_DEFAULT_TIMEOUT_SECONDS: ${PLAYWRIGHT_DEFAULT_TIMEOUT_SECONDS:-30}
+      MATECLAW_BROWSER_DEFAULT_NAVIGATION_TIMEOUT_SECONDS: ${PLAYWRIGHT_NAVIGATION_TIMEOUT_SECONDS:-30}
+      # Hard cap on the textual snapshot returned by action=snapshot. Content
+      # beyond this length is dropped with a truncated:true flag and a hint to
+      # retry with selector. Results > framework spill threshold (~8000 chars)
+      # are further spilt to disk by ToolResultStorage.
+      MATECLAW_BROWSER_SNAPSHOT_MAX_LENGTH: ${PLAYWRIGHT_SNAPSHOT_MAX_LENGTH:-20000}
       # OAuth 模式默认保持 auto：localhost 访问走 LOCAL，IP/域名访问走 DEVICE_CODE。
       # 本机 Docker 若要强制使用 localhost:1455 回调，可在 .env 显式设为 local。
       MATECLAW_OAUTH_OPENAI_DEPLOYMENT_MODE: ${MATECLAW_OAUTH_OPENAI_DEPLOYMENT_MODE:-}

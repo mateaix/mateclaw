@@ -93,5 +93,28 @@ public class BrowserProperties {
 
     /** Viewport height (px) for launched browsers. */
     private int viewportHeight = 800;
+
+    /**
+     * Default Playwright action timeout in seconds. Applies to every
+     * {@code page.click / page.fill / page.waitForLoadState} call after the
+     * browser context is created. Increase for slow LAN / large-page scenarios.
+     */
+    private int defaultTimeoutSeconds = 30;
+
+    /**
+     * Default Playwright navigation timeout in seconds. Applies to
+     * {@code page.navigate} and load-state waits. Increase for slow networks.
+     */
+    private int defaultNavigationTimeoutSeconds = 30;
+
+    /**
+     * Hard cap on the textual snapshot returned by {@code action=snapshot}.
+     * Content beyond this length is dropped with a {@code truncated:true} flag
+     * and a hint suggesting the {@code selector} parameter. Note: results
+     * larger than the framework spill threshold (~8000 chars) are further
+     * spilt to disk by {@code ToolResultStorage}; keep this value reasonable
+     * to avoid forcing every snapshot through the spill-and-preview path.
+     */
+    private int snapshotMaxLength = 20_000;
 }
 
