@@ -1465,8 +1465,24 @@ async function refreshCurrentConversationMessages(conversationId: string) {
 }
 
 async function hydrateStateFromRoute() {
-  const agentId = route.query.agentId ? String(route.query.agentId) : ''
-  const conversationId = String(route.query.conversationId || '')
+  let agentId = route.query.agentId ? String(route.query.agentId) : ''
+  let conversationId = String(route.query.conversationId || '')
+
+  // The URL can outlive its workspace: switching workspaces remounts this view
+  // (via the router-view key) but keeps the query string, so agentId /
+  // conversationId may still point at entities of the previous workspace. An
+  // agentId missing from the workspace-scoped agent list is such a leftover —
+  // drop it so the default-select below picks a real employee instead of the
+  // picker rendering the unresolvable raw id.
+  if (agentId && agents.value.length > 0 && !agents.value.some(a => String(a.id) === agentId)) {
+    agentId = ''
+    // Only follow the paired conversationId when it resolves locally (e.g. a
+    // Sessions-page jump within this workspace); otherwise it is equally stale
+    // and would attach the fallback agent to a foreign conversation.
+    if (!conversations.value.some(conv => conv.conversationId === conversationId)) {
+      conversationId = ''
+    }
+  }
 
   if (agentId && agentId !== String(selectedAgentId.value)) {
     selectedAgentId.value = agentId
