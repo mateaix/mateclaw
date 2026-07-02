@@ -274,8 +274,8 @@ async function toggleTool(tool: Tool) {
 .tools-section-title { font-size: 15px; font-weight: 700; color: var(--mc-text-primary); }
 .tools-section-count { font-size: 12px; font-weight: 600; color: var(--mc-text-secondary); background: var(--mc-bg-muted); padding: 2px 8px; border-radius: 10px; }
 .tools-section-hint { font-size: 12px; color: var(--mc-text-tertiary); }
-.tier-btn { width: auto; padding: 0 10px; font-size: 12px; font-weight: 600; white-space: nowrap; color: var(--mc-text-secondary); }
-.tier-btn:hover { color: var(--mc-primary); border-color: var(--mc-primary); }
+.tier-btn { width: auto; height: 30px; padding: 0 10px; font-size: 12px; font-weight: 600; line-height: 30px; white-space: nowrap; color: var(--mc-text-secondary); }
+.tier-btn:hover { background: var(--mc-bg-sunken); color: var(--mc-primary); border-color: var(--mc-primary); }
 .tier-locked { display: inline-flex; align-items: center; padding: 0 8px; font-size: 11px; color: var(--mc-text-tertiary); cursor: help; }
 .btn-primary { display: flex; align-items: center; gap: 6px; padding: 10px 16px; background: linear-gradient(135deg, var(--mc-primary), var(--mc-primary-hover)); color: white; border: none; border-radius: 14px; font-size: 14px; font-weight: 600; cursor: pointer; box-shadow: var(--mc-shadow-soft); }
 .btn-primary:hover { background: var(--mc-primary-hover); }
