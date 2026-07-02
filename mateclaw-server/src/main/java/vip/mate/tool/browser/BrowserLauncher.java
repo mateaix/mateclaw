@@ -360,7 +360,10 @@ public class BrowserLauncher {
         Browser.NewContextOptions opts = new Browser.NewContextOptions()
                 .setViewportSize(props.getViewportWidth(), props.getViewportHeight())
                 .setLocale("zh-CN");
-        if (props.isIgnoreHttpsErrors()) {
+        // Gate the per-context TLS bypass on allowPrivateNetwork too (matching the
+        // command-line flags above), so ignoring HTTPS errors is scoped to LAN
+        // deployments and never silently disables cert validation for public traffic.
+        if (props.isIgnoreHttpsErrors() && props.isAllowPrivateNetwork()) {
             opts.setIgnoreHTTPSErrors(true);
         }
         BrowserContext context = browser.newContext(opts);

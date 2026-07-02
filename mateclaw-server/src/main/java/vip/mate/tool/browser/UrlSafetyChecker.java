@@ -47,7 +47,7 @@ public final class UrlSafetyChecker {
             "instance-data",
             "169.254.169.254",     // AWS / Azure / GCP IMDS
             "100.100.100.200",     // Alibaba Cloud IMDS
-            "192.0.0.192",         // Azure IMDS alternative
+            "192.0.0.192",         // Oracle Cloud IMDS
             "0.0.0.0",
             "::1"
     );
