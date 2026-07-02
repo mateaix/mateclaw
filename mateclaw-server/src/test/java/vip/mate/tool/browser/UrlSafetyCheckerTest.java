@@ -230,4 +230,37 @@ class UrlSafetyCheckerTest {
         assertThrows(SecurityException.class, () ->
                 UrlSafetyChecker.check("http://metadata.google.internal/", true));
     }
+
+    @Test
+    @DisplayName("An allowlist entry can never open a cloud-metadata endpoint")
+    void allowlistCannotOverrideMetadata() {
+        // Exact-IP allowlist of the metadata address must not let it through.
+        assertThrows(SecurityException.class, () ->
+                UrlSafetyChecker.check("http://169.254.169.254/latest/meta-data/",
+                        List.of("169.254.169.254")));
+        // A CIDR that covers the metadata IP must not let it through either.
+        assertThrows(SecurityException.class, () ->
+                UrlSafetyChecker.check("http://169.254.169.254/", List.of("169.254.0.0/16")));
+        // Allowlisting the metadata hostname must not bypass the block.
+        assertThrows(SecurityException.class, () ->
+                UrlSafetyChecker.check("http://metadata.google.internal/",
+                        List.of("metadata.google.internal")));
+        // Even with private-network mode enabled AND an allowlist entry, metadata stays blocked.
+        assertThrows(SecurityException.class, () ->
+                UrlSafetyChecker.check("http://169.254.169.254/", List.of("169.254.0.0/16"), true));
+        // Alibaba and Oracle metadata IPs are equally non-overridable.
+        assertThrows(SecurityException.class, () ->
+                UrlSafetyChecker.check("http://100.100.100.200/", List.of("100.100.100.200"), true));
+        assertThrows(SecurityException.class, () ->
+                UrlSafetyChecker.check("http://192.0.0.192/", List.of("192.0.0.0/24"), true));
+    }
+
+    @Test
+    @DisplayName("Allowlisting a non-metadata private host still works after the metadata-first reorder")
+    void allowlistStillWorksForNonMetadata() {
+        // Regression guard: making metadata unconditional must not break legitimate
+        // allowlisting of ordinary private hosts.
+        assertDoesNotThrow(() ->
+                UrlSafetyChecker.check("http://192.168.50.10/", List.of("192.168.50.0/24")));
+    }
 }

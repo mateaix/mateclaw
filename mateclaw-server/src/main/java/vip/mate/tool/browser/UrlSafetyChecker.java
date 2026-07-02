@@ -52,6 +52,20 @@ public final class UrlSafetyChecker {
             "::1"
     );
 
+    /**
+     * Subset of {@link #BLOCKED_HOSTNAMES} that are cloud instance-metadata endpoints.
+     * These are blocked unconditionally — even an explicit allowlist entry must never
+     * open a path to instance-metadata credential theft.
+     */
+    private static final Set<String> METADATA_HOSTNAMES = Set.of(
+            "metadata.google.internal",
+            "metadata.aws.internal",
+            "instance-data",
+            "169.254.169.254",
+            "100.100.100.200",
+            "192.0.0.192"
+    );
+
     private UrlSafetyChecker() {}
 
     /**
@@ -113,23 +127,28 @@ public final class UrlSafetyChecker {
         String hostname = host.startsWith("[") && host.endsWith("]")
                 ? host.substring(1, host.length() - 1)
                 : host;
-        // An explicit allowlist entry for the literal host short-circuits all checks.
-        if (SsrfAllowlist.matchesHost(hostname, allowlist)) {
-            return;
+        String lowerHost = hostname.toLowerCase();
+        // Cloud-metadata endpoints are blocked unconditionally — an allowlist entry
+        // must never open a path to instance-metadata credential theft.
+        if (METADATA_HOSTNAMES.contains(lowerHost)) {
+            throw new SecurityException("SSRF blocked: " + hostname + " is a cloud-metadata endpoint");
         }
-        if (BLOCKED_HOSTNAMES.contains(hostname.toLowerCase())) {
+        // An explicit allowlist entry for the literal host bypasses the loopback /
+        // private / restricted-hostname checks below — but never the metadata checks.
+        boolean hostAllowlisted = SsrfAllowlist.matchesHost(hostname, allowlist);
+        if (!hostAllowlisted && BLOCKED_HOSTNAMES.contains(lowerHost)) {
             throw new SecurityException("SSRF blocked: " + hostname + " is a restricted hostname");
         }
         try {
             for (InetAddress addr : InetAddress.getAllByName(hostname)) {
-                if (SsrfAllowlist.matchesAddress(addr, allowlist)) {
-                    continue;
-                }
-                // Cloud-metadata endpoints are blocked in every mode — never exfiltrate
-                // cloud credentials via the browser tool, even in private-network-allow mode.
+                // Cloud-metadata IPs are blocked in every mode and regardless of the
+                // allowlist — never exfiltrate cloud credentials via the browser tool.
                 if (isMetadataIp(addr)) {
                     throw new SecurityException("SSRF blocked: " + hostname
                             + " resolves to cloud-metadata endpoint " + addr.getHostAddress());
+                }
+                if (hostAllowlisted || SsrfAllowlist.matchesAddress(addr, allowlist)) {
+                    continue;
                 }
                 if (allowPrivateNetwork) {
                     // Skip loopback / any-local / link-local / site-local / multicast checks.

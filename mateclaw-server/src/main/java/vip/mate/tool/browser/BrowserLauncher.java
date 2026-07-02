@@ -6,8 +6,10 @@ import com.microsoft.playwright.BrowserType;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.Playwright;
 import com.microsoft.playwright.PlaywrightException;
+import com.microsoft.playwright.Route;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
+import vip.mate.common.net.SsrfProperties;
 import org.springframework.stereotype.Component;
 
 import java.io.BufferedReader;
@@ -40,9 +42,11 @@ public class BrowserLauncher {
             .toLowerCase(Locale.ROOT).contains("mac");
 
     private final BrowserProperties props;
+    private final SsrfProperties ssrfProperties;
 
-    public BrowserLauncher(BrowserProperties props) {
+    public BrowserLauncher(BrowserProperties props, SsrfProperties ssrfProperties) {
         this.props = props;
+        this.ssrfProperties = ssrfProperties;
     }
 
     public BrowserProperties properties() {
@@ -382,6 +386,42 @@ public class BrowserLauncher {
     private void applyContextDefaults(BrowserContext context) {
         context.setDefaultTimeout(props.getDefaultTimeoutSeconds() * 1000L);
         context.setDefaultNavigationTimeout(props.getDefaultNavigationTimeoutSeconds() * 1000L);
+        installSsrfInterceptor(context);
+    }
+
+    /**
+     * Re-run the SSRF guard on every http(s) request the page makes, so redirects,
+     * subresources and script-initiated fetches cannot reach blocked hosts (above
+     * all cloud-metadata endpoints) after the initial navigation URL already passed
+     * the one-shot check in the tool layer. Non-network schemes (data:, blob:,
+     * about:, …) are not SSRF vectors and pass through untouched.
+     */
+    private void installSsrfInterceptor(BrowserContext context) {
+        if (!props.isSsrfCheckEnabled()) {
+            return;
+        }
+        context.route("**/*", (Route route) -> {
+            String reqUrl = route.request().url();
+            String lower = reqUrl == null ? "" : reqUrl.toLowerCase(Locale.ROOT);
+            if (!lower.startsWith("http://") && !lower.startsWith("https://")) {
+                route.resume();
+                return;
+            }
+            try {
+                UrlSafetyChecker.check(reqUrl, ssrfProperties.getSsrfAllowlist(),
+                        props.isAllowPrivateNetwork());
+                route.resume();
+            } catch (SecurityException se) {
+                log.warn("[BrowserLauncher] SSRF interceptor blocked request url={}: {}",
+                        reqUrl, se.getMessage());
+                route.abort();
+            } catch (Exception e) {
+                // Unexpected checker/routing error — the initial navigation URL was
+                // already validated, so let the request proceed rather than wedging
+                // the page on a transient fault.
+                route.resume();
+            }
+        });
     }
 
     public static List<String> chromiumLaunchArgs() {
