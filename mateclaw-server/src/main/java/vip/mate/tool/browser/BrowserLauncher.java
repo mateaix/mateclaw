@@ -126,6 +126,7 @@ public class BrowserLauncher {
                 context = browser.newContext();
                 page = context.newPage();
             }
+            applyContextDefaults(context);
             long elapsed = System.currentTimeMillis() - t0;
             trace.add(Attempt.ok(strategy, "connectOverCDP(" + normalized + ")", elapsed));
             return Result.success(browser, context, page, true, normalized, strategy, trace);
@@ -282,6 +283,7 @@ public class BrowserLauncher {
                     ? browser.newContext()
                     : browser.contexts().get(0);
             Page page = context.pages().isEmpty() ? context.newPage() : context.pages().get(0);
+            applyContextDefaults(context);
             long elapsed = System.currentTimeMillis() - t0;
             trace.add(Attempt.ok(Strategy.EXTERNAL_CDP, browserBin + " + connectOverCDP(" + cdpBase + ")", elapsed));
             // Hand ownership of `proc` and `userDataDir` to the caller — the session that
@@ -336,6 +338,17 @@ public class BrowserLauncher {
     private BrowserType.LaunchOptions baseLaunchOptions(boolean headed) {
         BrowserType.LaunchOptions opts = new BrowserType.LaunchOptions().setHeadless(!headed);
         List<String> args = chromiumLaunchArgs();
+        // When the deployment is LAN-isolated AND the operator opted into ignoring
+        // HTTPS errors, push the flag to the Chromium command line as well. This
+        // covers the EXTERNAL_CDP path where the browser is spawned by us but its
+        // contexts are created without NewContextOptions (so setIgnoreHTTPSErrors
+        // would not apply), and is also a stronger guarantee than the per-context
+        // flag for self-signed LAN CAs. Gated on allowPrivateNetwork so internet-
+        // facing deployments cannot accidentally disable cert validation globally.
+        if (props.isIgnoreHttpsErrors() && props.isAllowPrivateNetwork()) {
+            args.add("--ignore-certificate-errors");
+            args.add("--allow-running-insecure-content");
+        }
         if (!args.isEmpty()) {
             opts.setArgs(args);
         }
@@ -344,12 +357,28 @@ public class BrowserLauncher {
 
     private Result wrapLocalBrowser(Browser browser, Strategy strategy, String desc,
                                     long elapsedMs, List<Attempt> trace) {
-        BrowserContext context = browser.newContext(new Browser.NewContextOptions()
+        Browser.NewContextOptions opts = new Browser.NewContextOptions()
                 .setViewportSize(props.getViewportWidth(), props.getViewportHeight())
-                .setLocale("zh-CN"));
+                .setLocale("zh-CN");
+        if (props.isIgnoreHttpsErrors()) {
+            opts.setIgnoreHTTPSErrors(true);
+        }
+        BrowserContext context = browser.newContext(opts);
+        applyContextDefaults(context);
         Page page = context.newPage();
         trace.add(Attempt.ok(strategy, desc, elapsedMs));
         return Result.success(browser, context, page, false, null, strategy, trace);
+    }
+
+    /**
+     * Apply configurable Playwright timeouts to a freshly acquired context.
+     * Called on every context creation path (wrapLocalBrowser, tryCdp,
+     * tryExternalCdpLaunch) so {@code page.click / page.fill / page.navigate}
+     * inherit the configured limits without per-call boilerplate.
+     */
+    private void applyContextDefaults(BrowserContext context) {
+        context.setDefaultTimeout(props.getDefaultTimeoutSeconds() * 1000L);
+        context.setDefaultNavigationTimeout(props.getDefaultNavigationTimeoutSeconds() * 1000L);
     }
 
     public static List<String> chromiumLaunchArgs() {
