@@ -71,6 +71,13 @@
                   :collapsed="effectiveCollapsed"
                   :title="t('notifications.pendingApprovals', { n: pendingApprovals })"
                 />
+                <NavBadge
+                  v-else-if="item.path === '/wiki' && isAdminRole"
+                  :count="failedWikiJobs"
+                  tone="warning"
+                  :collapsed="effectiveCollapsed"
+                  :title="t('notifications.failedWikiJobs', { n: failedWikiJobs })"
+                />
               </router-link>
             </McTooltip>
           </div>
@@ -281,7 +288,7 @@ function goAutoApproveSettings() {
 // Live view) and `/security` (pending approvals) read from a shared 15s poller
 // so multiple consumers don't multiply HTTP traffic.
 const isAdminRole = computed(() => (localStorage.getItem('role') || 'user') === 'admin')
-const { stuckAgents, pendingApprovals } = useNotificationCenter()
+const { stuckAgents, pendingApprovals, failedWikiJobs } = useNotificationCenter()
 const liveAlertActive = computed(() => isAdminRole.value && stuckAgents.value > 0)
 
 // 移动端状态
@@ -534,6 +541,11 @@ const navGroups = computed(() => [
         icon: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>`,
         requiredCapability: 'manage:security',
       },
+      {
+        path: '/docs',
+        label: t('nav.docs'),
+        icon: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>`,
+      },
     ] as NavItem[]),
   },
 ].filter((group) => group.items.length > 0))
@@ -553,6 +565,9 @@ function isNavItemActive(item: { path: string; label: string }) {
   }
   if (item.path === '/security') {
     return route.path.startsWith('/security')
+  }
+  if (item.path === '/docs') {
+    return route.path.startsWith('/docs')
   }
   return route.path === item.path
 }

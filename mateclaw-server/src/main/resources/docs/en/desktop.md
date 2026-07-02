@@ -50,7 +50,29 @@ The backend picks a **free port dynamically** at startup so you don't collide wi
 - **Local-first data** — everything in a user directory
 - **Dynamic backend port** — no port collisions
 - **UI hot update** — frontend assets can be updated without repackaging the installer
+- **Local / remote dual connection mode** — run the embedded JVM locally, or connect to a centrally deployed remote server
 - Cross-platform (macOS, Windows, Linux)
+
+---
+
+## Connection mode (local / remote)
+
+> For the "a team collaborating against one centrally deployed server" scenario — no need for everyone to run their own local backend.
+
+The desktop reaches its backend in one of two ways:
+
+- **Local (`local`)** — launches the embedded JRE 21 + server JAR and runs a full backend on this machine (default, works out of the box).
+- **Remote (`remote`)** — skips the local backend and connects directly to your centrally deployed remote server; all API / SSE point at it.
+
+**First-run connection chooser.** The first launch (no mode chosen yet) shows a connection chooser; picking "remote" lets you enter the server URL, which is normalized (auto-prefixes `https://`, strips a trailing slash, validates http(s)). The choice is remembered for next time.
+
+**Multi-server & switching.** A successfully connected remote server is recorded in a "recently used" list (de-duped by URL, up to 8). The **"Switch Server"** menu re-opens the chooser anytime to move to another server.
+
+**Self-signed intranet certs.** Self-signed certificates are accepted only for hosts the user **explicitly trusts** — scoped to the active remote address (`trustedCertHosts`), not a blanket bypass; unknown hosts are rejected. This suits the self-signed certs common on enterprise intranets.
+
+**Health check.** Remote mode probes with a short timeout (~15s) since the server should already be up, and reports failures clearly; local mode waits for the embedded backend to come up.
+
+The connection choice is persisted in `connection.json` under the user data directory (see "Data storage" below).
 
 ---
 
@@ -211,7 +233,7 @@ Frontend assets can be **hot-updated independently** — a frontend-only fix doe
 |-----|------|
 | macOS | `~/Library/Application Support/MateClaw/data/` |
 | Windows | `%APPDATA%/MateClaw/data/` |
-| Linux | `~/.local/share/MateClaw/data/` |
+| Linux | `~/.config/MateClaw/data/` |
 
 Logs, workspace files, skill scripts, wiki content all live alongside the database in the same user directory. Back it up before major changes.
 
@@ -257,9 +279,9 @@ The desktop app reads env vars the same way the standalone backend does. But the
 
 1. Installed app bundles JRE — you don't need Java. Dev build from source: verify `java -version` shows 21+.
 2. Check logs:
-   - macOS: `~/Library/Logs/MateClaw/`
+   - macOS: `~/Library/Application Support/MateClaw/logs/`
    - Windows: `%APPDATA%/MateClaw/logs/`
-   - Linux: `~/.local/share/MateClaw/logs/`
+   - Linux: `~/.config/MateClaw/logs/`
 3. Launch from terminal to see console output
 4. Confirm backend port isn't blocked
 

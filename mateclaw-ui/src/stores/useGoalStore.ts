@@ -82,6 +82,16 @@ export const useGoalStore = defineStore('goal', () => {
       activeGoalByConv.value[conversationId] = goal
       return goal
     } catch (e) {
+      // A conversation that isn't persisted/owned yet — a brand-new empty chat
+      // before the first message lands, or a thread owned by another user —
+      // answers 403 (not the owner) / 404 (not found). That just means "no
+      // active goal yet": record the no-goal state silently. Only genuinely
+      // unexpected failures (network / 5xx) are worth a console error.
+      const status = (e as any)?.response?.status ?? (e as any)?.response?.data?.code
+      if (status === 403 || status === 404) {
+        activeGoalByConv.value[conversationId] = null
+        return null
+      }
       console.error('[goal] loadActiveForConversation failed', e)
       return null
     } finally {

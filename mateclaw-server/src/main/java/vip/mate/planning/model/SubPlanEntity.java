@@ -29,6 +29,14 @@ public class SubPlanEntity {
     /** 步骤状态：pending / running / completed / failed */
     private String status;
 
+    /**
+     * Delegated agent id for this step. When non-null, the executor routes this
+     * step to that specialist agent instead of the parent (plan) agent. Null =
+     * run with the parent agent (original behavior). The frontend resolves the
+     * display name from this id via the agent store.
+     */
+    private Long assignedAgentId;
+
     /** 步骤执行结果 */
     @TableField(value = "result", updateStrategy = FieldStrategy.ALWAYS)
     private String result;

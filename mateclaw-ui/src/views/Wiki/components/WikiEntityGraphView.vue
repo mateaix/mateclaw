@@ -1,0 +1,369 @@
+<template>
+  <div class="entity-graph">
+    <div ref="chartEl" class="graph-canvas" />
+
+    <!-- Find a node by name: highlights it (dimming the rest) and opens its panel -->
+    <GraphNodeSearch
+      v-if="nodes.length"
+      class="graph-search"
+      :nodes="searchNodes"
+      @focus="focusEntity"
+      @clear="clearHighlight"
+    />
+
+    <!-- Entity detail panel -->
+    <div v-if="selected" class="entity-panel">
+      <button class="entity-panel__close" @click="selected = null">×</button>
+      <h3 class="entity-panel__title">{{ selected.canonicalName }}</h3>
+      <span class="entity-panel__type" :style="{ background: typeColor(selected.type) }">
+        {{ formatType(selected.type) }}
+      </span>
+      <span class="entity-panel__count">{{ selected.mentionCount || 0 }} {{ t('wiki.graph.mentions') }}</span>
+
+      <p v-if="selected.description" class="entity-panel__desc">{{ selected.description }}</p>
+
+      <div v-if="selected.aliases && selected.aliases.length" class="entity-panel__section">
+        <h4>{{ t('wiki.graph.aliases') }}</h4>
+        <div class="entity-panel__tags">
+          <span v-for="a in selected.aliases" :key="a" class="entity-panel__tag">{{ a }}</span>
+        </div>
+      </div>
+
+      <div v-if="egoEdges.length" class="entity-panel__section">
+        <h4>{{ t('wiki.graph.relations') }}</h4>
+        <ul class="entity-panel__list">
+          <li v-for="(r, i) in egoEdges" :key="i">
+            <span class="entity-panel__pred">{{ r.predicate }}</span>
+            <span class="entity-panel__rel-target">{{ r.label }}</span>
+          </li>
+        </ul>
+      </div>
+
+      <div v-if="egoPages.length" class="entity-panel__section">
+        <h4>{{ t('wiki.graph.mentionedIn') }}</h4>
+        <ul class="entity-panel__list">
+          <li v-for="p in egoPages" :key="p.pageId">
+            <a class="entity-panel__link" @click="emit('open-page', p.slug)">{{ p.title }}</a>
+          </li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- Empty state -->
+    <div v-if="!loading && nodes.length === 0" class="graph-empty">
+      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
+        <circle cx="7" cy="7" r="3"/><circle cx="17" cy="17" r="3"/><line x1="9.5" y1="9.5" x2="14.5" y2="14.5"/>
+      </svg>
+      <p>{{ t('wiki.graph.entityEmpty') }}</p>
+    </div>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { useI18n } from 'vue-i18n'
+import * as echarts from 'echarts/core'
+import { GraphChart } from 'echarts/charts'
+import { TooltipComponent, LegendComponent } from 'echarts/components'
+import { CanvasRenderer } from 'echarts/renderers'
+import { wikiApi } from '@/api'
+import GraphNodeSearch from './GraphNodeSearch.vue'
+
+echarts.use([GraphChart, TooltipComponent, LegendComponent, CanvasRenderer])
+
+const { t, te } = useI18n()
+
+interface EntityNode {
+  id: number | string
+  canonicalName: string
+  type: string
+  description?: string
+  aliases?: string[]
+  salience?: number
+  mentionCount?: number
+}
+interface EntityEdge {
+  id?: number | string
+  subjectEntityId: number | string
+  predicate: string
+  objectEntityId: number | string
+}
+
+const props = defineProps<{ kbId: number | string | null; isFullscreen?: boolean }>()
+const emit = defineEmits<{
+  (e: 'open-page', slug: string): void
+  (e: 'stats', v: { nodes: number; edges: number }): void
+}>()
+
+const chartEl = ref<HTMLDivElement | null>(null)
+let chart: echarts.ECharts | null = null
+
+const nodes = ref<EntityNode[]>([])
+const edges = ref<EntityEdge[]>([])
+const loading = ref(false)
+const selected = ref<EntityNode | null>(null)
+const egoEdges = ref<{ predicate: string; label: string }[]>([])
+const egoPages = ref<{ pageId: number | string; slug: string; title: string }[]>([])
+
+// Earthy categorical palette tuned to the warm terracotta + teal app theme
+// (see main.css design tokens). Each common entity type gets a fixed, mutually
+// contrasting hue — person (terracotta) vs product (denim) reads as a clear
+// warm/cool split rather than the near-identical blues used before. All hues
+// sit at mid lightness so they stay legible on both the light and dark canvas.
+const ENTITY_TYPE_COLORS: Record<string, string> = {
+  person: '#D97757',       // terracotta (theme primary)
+  organization: '#2F8F83', // teal (theme accent)
+  location: '#E0A030',     // goldenrod
+  place: '#E0A030',
+  event: '#9B5E8E',        // plum
+  product: '#5B7DB1',      // denim blue
+  concept: '#6B9A55',      // sage
+  technology: '#4FA39B',   // aqua
+  term: '#C0533F',         // brick
+  other: '#9C8576',        // warm taupe
+}
+// Stable fallback palette (same earthy family) for user-defined types.
+const FALLBACK_PALETTE = ['#C08A4E', '#B06E7C', '#8B934A', '#A07B5C', '#5B7DB1', '#9B5E8E', '#4FA39B', '#C0533F']
+function typeColor(type: string): string {
+  const key = (type || 'other').toLowerCase()
+  const fixed = ENTITY_TYPE_COLORS[key]
+  if (fixed) return fixed
+  let h = 0
+  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0
+  return FALLBACK_PALETTE[h % FALLBACK_PALETTE.length]
+}
+// Resolve a CSS custom property to its computed value so ECharts (canvas, which
+// can't read CSS vars) picks up the active light/dark theme color.
+function cssVar(name: string, fallback: string): string {
+  if (typeof document === 'undefined') return fallback
+  const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim()
+  return v || fallback
+}
+// Localized label for an entity type, fallback to capitalized raw key.
+function formatType(type: string): string {
+  const key = (type || '').toLowerCase()
+  if (!key) return ''
+  const i18nKey = `wiki.entityTypes.${key}`
+  if (te(i18nKey)) return t(i18nKey)
+  return key.charAt(0).toUpperCase() + key.slice(1)
+}
+
+async function load() {
+  if (props.kbId == null) return
+  loading.value = true
+  try {
+    // The axios response interceptor returns the raw body for non-enveloped
+    // responses, so `res` is already { center, nodes, edges, pages }.
+    const res: any = await wikiApi.getEntityGraph(props.kbId, 150)
+    nodes.value = res?.nodes || []
+    edges.value = res?.edges || []
+    emit('stats', { nodes: nodes.value.length, edges: edges.value.length })
+    renderChart()
+  } finally {
+    loading.value = false
+  }
+}
+
+function buildOption() {
+  // Keep IDs as strings throughout — backend issues Snowflake IDs that lose
+  // precision if coerced to Number.
+  const idSet = new Set(nodes.value.map(n => String(n.id)))
+
+  // Distinct entity types present → ECharts categories. The category index
+  // drives each node's color and powers the legend: clicking a type in the
+  // legend filters its nodes (and their edges) in or out of the graph.
+  const types: string[] = []
+  for (const n of nodes.value) {
+    const tp = (n.type || 'other').toLowerCase()
+    if (!types.includes(tp)) types.push(tp)
+  }
+  types.sort()
+  const typeIndex = new Map(types.map((tp, i) => [tp, i]))
+  const categories = types.map(tp => ({
+    name: formatType(tp),
+    itemStyle: { color: typeColor(tp) },
+  }))
+
+  const labelColor = cssVar('--mc-text-secondary', '#665245')
+  const legendColor = cssVar('--mc-text-tertiary', '#9b7d6c')
+  const nodeList = nodes.value.map(n => {
+    const size = Math.max(12, Math.min(46, 12 + (n.mentionCount || 0) * 3))
+    return {
+      id: String(n.id),
+      name: n.canonicalName,
+      symbolSize: size,
+      category: typeIndex.get((n.type || 'other').toLowerCase()) ?? 0,
+      // Always show the entity name (not just on hover); larger/more-mentioned
+      // nodes get a slightly bigger label so hubs stand out.
+      label: { show: true, position: 'right' as const, fontSize: size > 26 ? 12 : 10, color: labelColor, distance: 5 },
+    }
+  })
+  const edgeList = edges.value
+    .filter(e => idSet.has(String(e.subjectEntityId)) && idSet.has(String(e.objectEntityId)))
+    .map(e => ({
+      source: String(e.subjectEntityId),
+      target: String(e.objectEntityId),
+      value: e.predicate,
+      lineStyle: { color: 'rgba(150,150,150,0.3)', width: 1 },
+    }))
+
+  return {
+    backgroundColor: 'transparent',
+    legend: [{
+      top: 8,
+      left: 'center',
+      type: 'scroll',
+      itemWidth: 10,
+      itemHeight: 10,
+      itemGap: 12,
+      icon: 'circle',
+      textStyle: { fontSize: 11, color: legendColor },
+      data: categories.map(c => c.name),
+    }],
+    tooltip: {
+      trigger: 'item',
+      formatter: (params: any) => {
+        if (params.dataType === 'edge') return params.data.value || ''
+        const node = nodes.value.find(n => String(n.id) === String(params.data.id))
+        if (!node) return ''
+        const desc = (node.description || '').substring(0, 80)
+        return `<div style="max-width:220px;white-space:normal"><strong>${node.canonicalName}</strong>`
+          + `<small style="color:#999;display:block">${formatType(node.type)}</small>`
+          + (desc ? `<span style="font-size:11px">${desc}</span>` : '') + '</div>'
+      },
+    },
+    series: [{
+      type: 'graph',
+      layout: 'force',
+      categories,
+      data: nodeList,
+      links: edgeList,
+      roam: true,
+      force: { repulsion: 240, gravity: 0.05, edgeLength: [70, 200], friction: 0.55 },
+      emphasis: { focus: 'adjacency', lineStyle: { width: 2 } },
+      lineStyle: { color: 'rgba(150,150,150,0.3)', curveness: 0.1 },
+      edgeSymbol: ['none', 'arrow'],
+      edgeSymbolSize: 6,
+    }],
+  }
+}
+
+function renderChart() {
+  if (!chartEl.value) return
+  if (!chart) {
+    chart = echarts.init(chartEl.value, undefined, { renderer: 'canvas' })
+    chart.on('click', (params: any) => {
+      if (params.dataType === 'node') {
+        const node = nodes.value.find(n => String(n.id) === String(params.data.id))
+        if (node) openEntity(node)
+      }
+    })
+  }
+  chart.setOption(buildOption(), { notMerge: true, lazyUpdate: true })
+}
+
+// Candidates for the node search box: name + type label + category color.
+const searchNodes = computed(() =>
+  nodes.value.map(n => ({
+    id: String(n.id),
+    name: n.canonicalName,
+    type: formatType(n.type),
+    color: typeColor(n.type),
+  })),
+)
+
+// Search hit: open the entity's panel and emphasize its node (focus:'adjacency'
+// dims everything else so the match stands out even in a dense graph).
+function focusEntity(id: string) {
+  const node = nodes.value.find(n => String(n.id) === String(id))
+  if (!node) return
+  openEntity(node)
+  if (!chart) return
+  const idx = nodes.value.findIndex(n => String(n.id) === String(id))
+  chart.dispatchAction({ type: 'downplay', seriesIndex: 0 })
+  if (idx >= 0) chart.dispatchAction({ type: 'highlight', seriesIndex: 0, dataIndex: idx })
+}
+
+function clearHighlight() {
+  chart?.dispatchAction({ type: 'downplay', seriesIndex: 0 })
+}
+
+async function openEntity(node: EntityNode) {
+  selected.value = node
+  egoEdges.value = []
+  egoPages.value = []
+  if (props.kbId == null) return
+  try {
+    const res: any = await wikiApi.getEntityEgo(props.kbId, node.id, 50)
+    const data = res || {}
+    const nodeById = new Map<string, string>()
+    for (const n of data.nodes || []) nodeById.set(String(n.id), n.canonicalName)
+    nodeById.set(String(node.id), node.canonicalName)
+    egoEdges.value = (data.edges || []).map((e: any) => {
+      const otherId = String(e.subjectEntityId) === String(node.id) ? e.objectEntityId : e.subjectEntityId
+      return { predicate: e.predicate, label: nodeById.get(String(otherId)) || '' }
+    })
+    egoPages.value = data.pages || []
+  } catch {
+    /* panel still shows the basic entity info */
+  }
+}
+
+const resizeObserver = new ResizeObserver(() => chart?.resize())
+
+onMounted(async () => {
+  await nextTick()
+  if (chartEl.value) resizeObserver.observe(chartEl.value)
+  load()
+})
+
+onBeforeUnmount(() => {
+  resizeObserver.disconnect()
+  chart?.dispose()
+  chart = null
+})
+
+watch(() => props.kbId, () => { selected.value = null; load() })
+watch(() => props.isFullscreen, () => nextTick(() => chart?.resize()))
+
+defineExpose({ reload: load })
+</script>
+
+<style scoped>
+.entity-graph { position: relative; flex: 1; min-height: 0; width: 100%; display: flex; }
+.graph-canvas { flex: 1; min-height: 0; width: 100%; }
+/* Search sits top-left; the legend is top-center, the detail panel top-right. */
+.graph-search { position: absolute; top: 12px; left: 12px; z-index: 5; }
+
+.graph-empty {
+  position: absolute; inset: 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 12px;
+  color: var(--mc-text-tertiary); pointer-events: none;
+}
+.graph-empty p { font-size: 14px; max-width: 320px; text-align: center; }
+
+.entity-panel {
+  position: absolute; top: 12px; right: 12px; width: 280px; max-height: calc(100% - 24px);
+  overflow-y: auto; padding: 16px; border-radius: 10px;
+  background: var(--mc-bg-elevated, #fff); border: 1px solid var(--mc-border, #e5e7eb);
+  box-shadow: 0 4px 20px rgba(0,0,0,0.12);
+}
+.entity-panel__close {
+  position: absolute; top: 8px; right: 10px; border: none; background: none;
+  font-size: 20px; line-height: 1; cursor: pointer; color: var(--mc-text-tertiary);
+}
+.entity-panel__title { margin: 0 20px 8px 0; font-size: 15px; font-weight: 600; }
+.entity-panel__type { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; color: #fff; }
+.entity-panel__count { margin-left: 8px; font-size: 11px; color: var(--mc-text-tertiary); }
+.entity-panel__desc { margin: 10px 0 0; font-size: 12px; line-height: 1.5; color: var(--mc-text-secondary); }
+.entity-panel__section { margin-top: 14px; }
+.entity-panel__section h4 { margin: 0 0 6px; font-size: 11px; text-transform: uppercase; color: var(--mc-text-tertiary); }
+.entity-panel__tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.entity-panel__tag { padding: 1px 6px; border-radius: 6px; font-size: 11px; background: var(--mc-bg-subtle, #f3f4f6); }
+.entity-panel__list { margin: 0; padding: 0; list-style: none; font-size: 12px; }
+.entity-panel__list li { padding: 2px 0; }
+.entity-panel__pred { color: var(--mc-text-tertiary); margin-right: 6px; }
+.entity-panel__rel-target { font-weight: 500; }
+.entity-panel__link { color: var(--mc-primary, #5b8ff9); cursor: pointer; }
+.entity-panel__link:hover { text-decoration: underline; }
+</style>

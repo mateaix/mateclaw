@@ -328,11 +328,27 @@ public class MemorySummarizationService {
      * (TEAM) file when there is no real owner (cron / system).
      */
     private void saveMemory(Long agentId, String filename, String content, String ownerKey) {
+        content = capAlwaysOnFile(filename, content);
         if (isPersonal(ownerKey)) {
             workspaceFileService.saveMemoryFile(agentId, filename, content, ownerKey);
         } else {
             workspaceFileService.saveFile(agentId, filename, content);
         }
+    }
+
+    /**
+     * Enforce the deterministic size ceiling on the always-on profile/memory files
+     * so they cannot grow the per-turn system prompt without bound. Daily notes and
+     * other files (only recalled on demand) are left untouched.
+     */
+    private String capAlwaysOnFile(String filename, String content) {
+        if ("PROFILE.md".equals(filename)) {
+            return AlwaysOnFileBudget.enforce(content, properties.getProfileMaxChars());
+        }
+        if ("MEMORY.md".equals(filename)) {
+            return AlwaysOnFileBudget.enforce(content, properties.getMemoryMdMaxChars());
+        }
+        return content;
     }
 
     /** A real, isolatable owner — i.e. not null/blank and not the system bucket. */

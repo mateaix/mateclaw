@@ -2,23 +2,43 @@
   <div ref="graphViewEl" class="graph-view" :class="{ 'graph-view--fullscreen': isFullscreen }">
     <!-- Toolbar sub-component -->
     <WikiGraphToolbar
-      :node-count="nodes.length"
-      :edge-count="edges.length"
+      :node-count="graphMode === 'entities' ? entityStats.nodes : nodes.length"
+      :edge-count="graphMode === 'entities' ? entityStats.edges : edges.length"
       :orphan-count="orphanCount"
       v-model:show-orphans="showOrphans"
       v-model:type-filter="typeFilter"
+      v-model:mode="graphMode"
       :available-types="availableTypes"
       :is-fullscreen="isFullscreen"
       @reset="resetChart"
       @toggle-fullscreen="toggleFullscreen"
     />
 
-    <!-- ECharts canvas -->
-    <div ref="chartEl" class="graph-canvas" />
+    <!-- Entity-level knowledge graph -->
+    <WikiEntityGraphView
+      v-if="graphMode === 'entities'"
+      :kb-id="kbId"
+      :is-fullscreen="isFullscreen"
+      @open-page="emit('open-page', $event)"
+      @stats="entityStats = $event"
+    />
+
+    <!-- Page-level graph (ECharts canvas) -->
+    <div v-show="graphMode === 'pages'" class="graph-canvas-wrap">
+      <!-- Find a node by name: highlights it (dimming the rest) and opens its panel -->
+      <GraphNodeSearch
+        v-if="nodes.length"
+        class="graph-search"
+        :nodes="pageSearchNodes"
+        @focus="focusPageNode"
+        @clear="clearHighlight"
+      />
+      <div ref="chartEl" class="graph-canvas" />
+    </div>
 
     <!-- Node detail panel sub-component -->
     <WikiGraphNodePanel
-      v-if="selectedNode"
+      v-if="graphMode === 'pages' && selectedNode"
       :page="selectedNode"
       :linked-pages="selectedNodeLinks"
       @close="selectedNode = null"
@@ -26,7 +46,7 @@
     />
 
     <!-- Empty state -->
-    <div v-if="nodes.length === 0" class="graph-empty">
+    <div v-if="graphMode === 'pages' && nodes.length === 0" class="graph-empty">
       <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
         <circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/>
         <line x1="5" y1="5" x2="19" y2="19" stroke-width="0.5"/>
@@ -47,6 +67,8 @@ import type { WikiPage } from '@/stores/useWikiStore'
 import { useWikiPageType } from '@/composables/useWikiPageType'
 import WikiGraphToolbar from './WikiGraphToolbar.vue'
 import WikiGraphNodePanel from './WikiGraphNodePanel.vue'
+import WikiEntityGraphView from './WikiEntityGraphView.vue'
+import GraphNodeSearch from './GraphNodeSearch.vue'
 
 echarts.use([GraphChart, TooltipComponent, LegendComponent, CanvasRenderer])
 
@@ -64,6 +86,25 @@ const showOrphans = ref(true)
 const typeFilter = ref('')
 const selectedNode = ref<WikiPage | null>(null)
 
+// 'pages' = page-link graph (default); 'entities' = named-entity graph.
+const graphMode = ref<'pages' | 'entities'>('pages')
+const entityStats = ref<{ nodes: number; edges: number }>({ nodes: 0, edges: 0 })
+
+// KB id for entity-graph fetches — every page carries its kbId; keep it a
+// string to avoid Snowflake precision loss.
+const kbId = computed<string | number | null>(() => {
+  const id = props.pages[0]?.kbId
+  return id != null ? id : null
+})
+
+
+// Resolve a CSS custom property to its computed value so ECharts (canvas, which
+// can't read CSS vars) renders labels in the active light/dark theme color.
+function cssVar(name: string, fallback: string): string {
+  if (typeof document === 'undefined') return fallback
+  const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim()
+  return v || fallback
+}
 
 // Parse outgoing links JSON string → slug[]
 function parseLinks(outgoingLinks: string | null | undefined): string[] {
@@ -186,7 +227,33 @@ const selectedNodeLinks = computed(() => {
     .filter(Boolean) as WikiPage[]
 })
 
+// Candidates for the node search box: page title + type label + node color.
+const pageSearchNodes = computed(() =>
+  nodes.value.map(p => ({
+    id: p.slug,
+    name: p.title,
+    type: formatPageTypeLabel(p.pageType || 'other'),
+    color: typeColor(p.pageType),
+  })),
+)
+
+// Search hit: select the page (opens its panel) and emphasize its node —
+// focus:'adjacency' dims the rest so the match is easy to spot.
+function focusPageNode(slug: string) {
+  const page = slugToPage.value.get(slug)
+  if (page) selectedNode.value = page
+  if (!chart) return
+  const idx = nodes.value.findIndex(p => p.slug === slug)
+  chart.dispatchAction({ type: 'downplay', seriesIndex: 0 })
+  if (idx >= 0) chart.dispatchAction({ type: 'highlight', seriesIndex: 0, dataIndex: idx })
+}
+
+function clearHighlight() {
+  chart?.dispatchAction({ type: 'downplay', seriesIndex: 0 })
+}
+
 function buildOption() {
+  const labelColor = cssVar('--mc-text-secondary', '#665245')
   const nodeSet = new Set(nodes.value.map(p => p.slug))
   const nodeList = nodes.value.map(p => {
     const outDeg = parseLinks(p.outgoingLinks).filter(l => {
@@ -205,7 +272,7 @@ function buildOption() {
         show: size > 22,
         position: 'right' as const,
         fontSize: 10,
-        color: 'var(--mc-text-secondary)',
+        color: labelColor,
         distance: 4,
       },
       // Do NOT embed Vue reactive proxies here — ECharts normalizes data and strips them.
@@ -340,6 +407,14 @@ onBeforeUnmount(() => {
 watch([nodes, edges], () => {
   scheduleRender()
 })
+
+// Returning to the page graph: the canvas was hidden (v-show), so let the DOM
+// settle then tell ECharts to re-measure.
+watch(graphMode, (mode) => {
+  if (mode === 'pages') {
+    nextTick(() => chart?.resize())
+  }
+})
 </script>
 
 <style scoped>
@@ -364,10 +439,23 @@ watch([nodes, edges], () => {
   background: var(--mc-bg-base, #1a1a1a);
 }
 
+.graph-canvas-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
 .graph-canvas {
   flex: 1;
   min-height: 0;
   width: 100%;
+}
+/* Search overlay anchored to the canvas top-left, clear of the detail panel. */
+.graph-search {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 5;
 }
 
 .graph-empty {

@@ -32,6 +32,18 @@ public class ObservationNode implements NodeAction {
     private final ObservationProcessor observationProcessor;
     private final vip.mate.channel.web.ChatStreamTracker streamTracker;
 
+    /**
+     * Progressive-disclosure meta-tools that perform setup, not real work. A
+     * round whose entire batch is one of these is refunded its iteration (see
+     * {@link MateClawStateKeys#ITERATION_REFUND_COUNT}). Mirrors the authoritative
+     * set in {@code DefaultToolDisclosureService.ALWAYS_CORE}.
+     */
+    private static final java.util.Set<String> DISCLOSURE_TOOLS =
+            java.util.Set.of("load_skill", "enable_tool");
+
+    /** Per-run cap on iteration refunds — keeps a load-skill-only model from looping forever. */
+    private static final int MAX_ITERATION_REFUNDS_PER_RUN = 3;
+
     public ObservationNode(ObservationProcessor observationProcessor) {
         this(observationProcessor, null);
     }
@@ -56,13 +68,28 @@ public class ObservationNode implements NodeAction {
 
         int currentIteration = accessor.iterationCount();
         int maxIterations = accessor.maxIterations();
-        int nextIteration = currentIteration + 1;
-
-        log.info("[ObservationNode] Iteration {}/{}", nextIteration, maxIterations);
 
         // 提取最新的工具结果并处理
         List<ToolResponseMessage.ToolResponse> toolResults =
                 state.<List<ToolResponseMessage.ToolResponse>>value(TOOL_RESULTS).orElse(List.of());
+
+        // Iteration refund: a round whose entire batch was progressive-disclosure
+        // setup (load_skill / enable_tool) did no real work, so don't charge it an
+        // iteration — otherwise a tight budget loses a step to the load-then-use
+        // two-step. Bounded by MAX_ITERATION_REFUNDS_PER_RUN so a model that only
+        // ever loads skills can't dodge the budget forever.
+        int refundCount = accessor.iterationRefundCount();
+        boolean setupOnlyRound = !toolResults.isEmpty()
+                && toolResults.stream().allMatch(tr -> DISCLOSURE_TOOLS.contains(tr.name()));
+        boolean refundIteration = setupOnlyRound && refundCount < MAX_ITERATION_REFUNDS_PER_RUN;
+        int nextIteration = refundIteration ? currentIteration : currentIteration + 1;
+
+        if (refundIteration) {
+            log.info("[ObservationNode] Iteration refunded (setup-only round, refunds {}/{}); staying at {}/{}",
+                    refundCount + 1, MAX_ITERATION_REFUNDS_PER_RUN, nextIteration, maxIterations);
+        } else {
+            log.info("[ObservationNode] Iteration {}/{}", nextIteration, maxIterations);
+        }
 
         // 将每个工具结果通过 ObservationProcessor 标准化和截断
         List<String> processedObservations = toolResults.stream()
@@ -120,6 +147,10 @@ public class ObservationNode implements NodeAction {
                 .put(OBSERVATION_HISTORY, updatedHistory)
                 .shouldSummarize(shouldSummarize)
                 .toolCallCount(newToolCallCount);
+
+        if (refundIteration) {
+            builder.iterationRefundCount(refundCount + 1);
+        }
 
         // Close out the iteration we just observed. We use currentIteration
         // (not nextIteration) so the index pairs with whatever

@@ -13,7 +13,7 @@ spring:
     # treat the connection as utf8mb4, force the connection collation via
     # connectionCollation=utf8mb4_unicode_ci — that is what prevents the
     # `Data truncation: Incorrect string value` errors on emoji/CJK ext.
-    url: jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:3306}/${DB_NAME:mateclaw}?createDatabaseIfNotExist=true&useUnicode=true&characterEncoding=UTF-8&connectionCollation=utf8mb4_unicode_ci&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+    url: jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:3306}/${DB_NAME:mateclaw}?createDatabaseIfNotExist=true&useUnicode=true&characterEncoding=UTF-8&connectionCollation=utf8mb4_unicode_ci&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&connectTimeout=10000&socketTimeout=30000
     driver-class-name: com.mysql.cj.jdbc.Driver
     username: ${DB_USERNAME:root}
     password: ${DB_PASSWORD:mateclaw123}
@@ -44,3 +44,11 @@ mate:
     allowed-source-roots: ${MATE_WIKI_ALLOWED_SOURCE_ROOTS:}
     watcher-enabled: ${MATE_WIKI_WATCHER_ENABLED:false}
     watcher-interval-ms: ${MATE_WIKI_WATCHER_INTERVAL_MS:300000}
+
+# Production hardening: lock down the Swagger UI / OpenAPI document so it is not
+# anonymously browsable. Requires a global admin (ROLE_ADMIN); SecurityConfig
+# enforces it. Set MATECLAW_OPENAPI_EXPOSE_UI=true to re-open it for an
+# internal/staging host.
+mateclaw:
+  openapi:
+    expose-ui: ${MATECLAW_OPENAPI_EXPOSE_UI:false}

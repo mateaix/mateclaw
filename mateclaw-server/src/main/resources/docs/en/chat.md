@@ -21,6 +21,8 @@ Segments arrive progressively. They persist to the database in real time — mea
 
 This used to not be true. Now it is.
 
+References in the reply are live too: `[[slug]]` wikilinks and the `[1]` / `[2]` **source citation markers** that appear when the agent answers from a knowledge base are all clickable — each one navigates directly to the corresponding wiki page. Every line of the "Sources:" list at the end of a reply is also fully clickable. See [LLM Wiki · Click-through from chat](./wiki#click-through-from-chat).
+
 ---
 
 ## The task list, for plans that take time
@@ -35,6 +37,17 @@ When you ask something that triggers **Plan-and-Execute**, a persistent task lis
 The task list survives page refresh. It survives navigating away and coming back. It survives Plan generation failures. If a plan blows up mid-flight, you see *which* step blew up and why — not a blank spinner that never resolves.
 
 Use Plan-and-Execute when the task needs several ordered steps and you want to watch the work happen. Use ReAct for everything smaller.
+
+---
+
+## Run Overview: see the whole long task at a glance
+
+Long tasks (multi-step plans, multi-agent collaboration) used to mean scrolling up and down the message stream to track progress. The chat view now has an always-on **Run Overview** rail on the right that assembles the data the backend already streams into one place — no scrolling back:
+
+- **Plan progress** — in Plan mode, live per-step status (pending / running / completed) and a progress count, with expandable step results. A "planning…" placeholder shows before the plan streams in, so the rail doesn't flicker.
+- **Live sub-agent status** — delegated sub-agents render as a live **tree**: name, tools called, running / completed / error / stalled state; multi-level delegation expands layer by layer.
+
+The rail **collapses to a badged strip**; below 1280px it degrades to a **floating drawer** so it never squeezes the conversation column. It's pure frontend with zero new endpoints, reusing the existing SSE event stream — so the delegation tree still appears inline in the message too; the rail just lifts the "current / active" overview into a persistent place.
 
 ---
 
@@ -95,7 +108,7 @@ Files a worker generates via tools (documents / images / audio…) are now **per
 ### Primary model can't see images? "Multimodal sidecar" routing
 
 ::: tip Added in 1.3.0
-When the agent's primary model is text-only (e.g. `deepseek-chat`, `kimi-k2`), uploading an image no longer breaks. The runtime auto-routes through a sidecar. See [issue #87](https://github.com/matevip/mateclaw/issues/87).
+When the agent's primary model is text-only (e.g. `deepseek-chat`, `kimi-k2`), uploading an image no longer breaks. The runtime auto-routes through a sidecar. See [issue #87](https://github.com/mateaix/mateclaw/issues/87).
 :::
 
 How it works:
@@ -180,7 +193,7 @@ The segment representation is what powers the progressive display. It also makes
 ### Per-conversation model selection
 
 ::: tip Added in 1.4.0
-The model selector in the chat header now binds a model **to the conversation**, not as a global switch. See [issue #150](https://github.com/matevip/mateclaw/issues/150).
+The model selector in the chat header now binds a model **to the conversation**, not as a global switch. See [issue #150](https://github.com/mateaix/mateclaw/issues/150).
 :::
 
 Switching the model in the header affects **only this conversation**: the choice is stored on the conversation and takes effect starting with the **next message**. A conversation you never set explicitly falls back to the workspace default model. The runtime model indicator stays in sync with whatever is pinned on the conversation — what you see is what the next turn actually uses.
@@ -190,7 +203,7 @@ This isolation also makes model config more robust: **a single bad model id no l
 ### Conversation list management
 
 ::: tip Added in 1.4.0
-The conversation sidebar grew from a plain history list into an actionable operations panel. See [issue #144](https://github.com/matevip/mateclaw/issues/144).
+The conversation sidebar grew from a plain history list into an actionable operations panel. See [issue #144](https://github.com/mateaix/mateclaw/issues/144).
 :::
 
 - **Pin / unpin** — from each row's `⋮` overflow menu. Important threads stay at the top in a "Pinned" group.

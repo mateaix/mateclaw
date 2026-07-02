@@ -125,6 +125,16 @@ public class MultimodalRouter {
     }
 
     /**
+     * Resolve the configured default vision model, or {@code null} if none is set
+     * or the referenced model is missing/disabled. Exposed so tools (e.g. an
+     * on-demand image-analysis tool) can reuse the exact same model the automatic
+     * sidecar uses, keeping behaviour consistent across the auto and tool paths.
+     */
+    public ModelConfigEntity resolveVisionSidecar() {
+        return resolveSidecar(Modality.VISION);
+    }
+
+    /**
      * Resolve the configured sidecar model for a modality. Returns null only when:
      *   - the setting is empty / blank;
      *   - the referenced row no longer exists or has been disabled.

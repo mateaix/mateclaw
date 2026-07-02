@@ -19,6 +19,8 @@ import vip.mate.skill.runtime.SkillRuntimeService;
 import vip.mate.skill.runtime.SkillScriptExecutionService;
 import vip.mate.skill.runtime.model.ResolvedSkill;
 import vip.mate.skill.secret.SkillSecretService;
+import vip.mate.tool.document.GeneratedFileCache;
+import vip.mate.tool.document.WorkspaceArtifactSurfacer;
 import vip.mate.tool.guard.WorkspacePathGuard;
 
 import java.nio.file.Files;
@@ -58,6 +60,7 @@ public class CodeExecuteTool {
     private final SkillScriptExecutionService executionService;
     private final SkillSecretService skillSecretService;
     private final ObjectMapper objectMapper;
+    private final GeneratedFileCache generatedFileCache;
 
     @Lazy
     @Autowired
@@ -79,7 +82,9 @@ public class CodeExecuteTool {
                 a JSON array for multiple args, or plain text for a single argument.
         - timeoutSeconds: optional, default 30, max 300.
 
-        Returns: JSON with exitCode, stdout, stderr.
+        Returns: JSON with exitCode, stdout, stderr, and (when the run wrote files)
+        a generatedFiles array of [name](url) download links. When present, echo
+        those links in your reply so the user can download the files you produced.
 
         Security: dangerous operations trigger security approval. The server's own
         secret environment variables are not exposed to the code.
@@ -149,10 +154,15 @@ public class CodeExecuteTool {
         Long timeout = timeoutSeconds != null ? timeoutSeconds.longValue() : null;
         List<String> argList = normalizeArgs(args);
 
+        long runStart = System.currentTimeMillis();
         try {
             SkillScriptExecutionService.ScriptResult result =
                     executionService.executeCode(language, code, workingDir, argList, envVars, timeout);
-            return formatResult(result);
+            // Surface any files the run wrote as one-click downloads so the user can
+            // grab generated artifacts (xlsx / csv / images / …) without the model
+            // having to call send_file or echo a server path.
+            List<String> fileLinks = WorkspaceArtifactSurfacer.collect(generatedFileCache, workingDir, runStart, ctx);
+            return formatResult(result, fileLinks);
         } catch (Exception e) {
             log.error("[CodeExecute] Execution failed: {}", e.getMessage());
             return formatError("Execution failed: " + e.getMessage());
@@ -193,12 +203,20 @@ public class CodeExecuteTool {
         return List.of(trimmed);
     }
 
-    private String formatResult(SkillScriptExecutionService.ScriptResult result) {
+    String formatResult(SkillScriptExecutionService.ScriptResult result, List<String> fileLinks) {
+        // generatedFiles carries [name](url) markdown so the chat layer surfaces the
+        // artifacts as one-click downloads, and the model can echo them to the user.
+        // It's a single JSON *string* (links joined by newlines), not an array — a
+        // JSON array's own '[' sits adjacent to the markdown '[' and the link-
+        // extraction regex would then capture '"[name' as the filename.
+        String filesField = (fileLinks == null || fileLinks.isEmpty()) ? "" :
+                ",\n  \"generatedFiles\": " + jsonEscape(String.join("\n", fileLinks));
         return String.format(
-            "{\n  \"exitCode\": %d,\n  \"stdout\": %s,\n  \"stderr\": %s\n}",
+            "{\n  \"exitCode\": %d,\n  \"stdout\": %s,\n  \"stderr\": %s%s\n}",
             result.getExitCode(),
             jsonEscape(result.getStdout()),
-            jsonEscape(result.getStderr())
+            jsonEscape(result.getStderr()),
+            filesField
         );
     }
 

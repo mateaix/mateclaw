@@ -1,6 +1,6 @@
 # FAQ
 
-Common questions and real answers. If your question isn't here, check the relevant feature page or open a [GitHub issue](https://github.com/matevip/mateclaw/issues).
+Common questions and real answers. If your question isn't here, check the relevant feature page or open a [GitHub issue](https://github.com/mateaix/mateclaw/issues).
 
 ---
 
@@ -226,7 +226,7 @@ You want an **allow rule**, not a blanket approval. `Settings → Security & App
 
 ### How long do pending approvals stay pending?
 
-Default 10 minutes, then they expire and become `rejected`. Configure with `mateclaw.tool.guard.approval-timeout-seconds`.
+Default 30 minutes, after which they expire and become `timeout` (the agent treats it as a denial). The timeout is set in the Tool Guard config on the admin Security page, not in application.yml.
 
 ---
 
@@ -322,7 +322,7 @@ Try launching from a terminal. On Windows, right-click → Unblock. On macOS, al
 
 ### How do I update the desktop app?
 
-**Auto-updates** via electron-updater. On startup, checks GitHub Releases and prompts you when a new version is available. Manual download also available from [Releases](https://github.com/matevip/mateclaw/releases).
+**Auto-updates** via electron-updater. On startup, checks GitHub Releases and prompts you when a new version is available. Manual download also available from [Releases](https://github.com/mateaix/mateclaw/releases).
 
 ---
 
@@ -419,4 +419,4 @@ Stored in `localStorage`. Clearing browser data wipes it.
 - [Quick Start](./quickstart) — setup walkthrough
 - [Configuration](./config) — full configuration reference
 - [Contributing](./contributing) — how to report bugs and request features
-- [GitHub Issues](https://github.com/matevip/mateclaw/issues) — when the docs don't answer your question
+- [GitHub Issues](https://github.com/mateaix/mateclaw/issues) — when the docs don't answer your question

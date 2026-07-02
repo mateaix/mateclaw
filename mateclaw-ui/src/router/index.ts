@@ -40,13 +40,22 @@ const router = createRouter({
           meta: { title: 'Agents', requiredCapability: 'manage:agents' },
         },
         {
+          path: 'agents/create',
+          name: 'AgentCreateWizard',
+          component: () => import('@/views/AgentCreateWizard.vue'),
+          meta: { title: 'Create Agent', requiredCapability: 'manage:agents' },
+        },
+        {
           // Live runtime view folded into the Agents page as a sub-view.
           // Kept as a redirect so old links / bookmarks still resolve.
           path: 'backstage',
           redirect: { path: '/agents', query: { view: 'live' } },
         },
         {
-          path: 'wiki',
+          // Optional :kbId path param so an open knowledge base survives a
+          // manual page refresh (without it, reload drops back to the library
+          // list). The legacy ?kbId=&slug= query form still resolves here too.
+          path: 'wiki/:kbId?',
           name: 'Wiki',
           component: () => import('@/views/Wiki/index.vue'),
           meta: { title: 'Wiki', requiredCapability: 'view:wiki' },
@@ -62,6 +71,14 @@ const router = createRouter({
           name: 'Memory',
           component: () => import('@/views/Memory/index.vue'),
           meta: { title: 'Memory', requiredCapability: 'view:memory' },
+        },
+        {
+          // 内置帮助文档查看器。:slug? 让刷新 / 收藏能恢复当前文档。
+          // 不加 requiredCapability —— 所有登录用户可见。
+          path: 'docs/:slug?',
+          name: 'Docs',
+          component: () => import('@/views/Docs/index.vue'),
+          meta: { title: 'Docs' },
         },
         // ==================== Connect ====================
         {

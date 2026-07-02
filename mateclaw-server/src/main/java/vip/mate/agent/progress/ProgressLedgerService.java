@@ -14,6 +14,7 @@ import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Loader / writer for the per-conversation progress ledger persisted as a
@@ -38,7 +39,7 @@ public class ProgressLedgerService {
             new TypeReference<>() {};
 
     /**
-     * Per-conversation mutex for the load-mutate-save sequence inside
+     * Per-conversation lock for the load-mutate-save sequence inside
      * {@link #upsert}. Without this guard, a single agent turn that issues
      * N parallel {@code progress_update} tool calls (observed: 12 calls in
      * one batch when the model pre-registered every step at task start)
@@ -46,13 +47,26 @@ public class ProgressLedgerService {
      * the whole point of the ledger. Different conversations stay
      * uncontended; only intra-conversation writes serialise.
      *
+     * <p>Must be a {@link ReentrantLock}, not an intrinsic {@code synchronized}
+     * monitor. Tool calls execute on virtual threads, and the critical section
+     * spans blocking JDBC I/O (load + persist). A virtual thread that blocks —
+     * whether on the DB call or while waiting to enter the lock — pins its
+     * carrier when the lock is an intrinsic monitor. A turn that fires dozens
+     * of parallel {@code progress_update} calls on the same conversation then
+     * pins every carrier in the pool at once: the holder cannot be rescheduled
+     * to release its connection and exit, JDBC connections are held past the
+     * leak-detection threshold, and the whole server stops servicing requests.
+     * {@code ReentrantLock} parks via {@code LockSupport}, which unmounts the
+     * virtual thread and frees the carrier, so contention costs a park instead
+     * of a pinned platform thread.
+     *
      * <p>Entries are computed on demand and never explicitly removed; even
      * with thousands of long-running conversations the map stays bounded by
-     * the active conversation set, and any leak is a {@code Object} per
-     * conversation id — small enough to ignore relative to the rest of the
-     * per-conv state already held in memory.
+     * the active conversation set, and any leak is one lock per conversation
+     * id — small enough to ignore relative to the rest of the per-conv state
+     * already held in memory.
      */
-    private final ConcurrentHashMap<String, Object> upsertLocks = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, ReentrantLock> upsertLocks = new ConcurrentHashMap<>();
 
     private final ConversationMapper conversationMapper;
     private final ObjectMapper objectMapper;
@@ -116,8 +130,9 @@ public class ProgressLedgerService {
         // last save() drops the other's entry. Observed in production: a
         // 12-entry pre-registration collapsed to 8 because four sibling
         // tool calls landed in the same window.
-        Object mutex = upsertLocks.computeIfAbsent(conversationId, k -> new Object());
-        synchronized (mutex) {
+        ReentrantLock lock = upsertLocks.computeIfAbsent(conversationId, k -> new ReentrantLock());
+        lock.lock();
+        try {
             ProgressLedger ledger = load(conversationId);
             Map<String, ProgressEntry> map = ledger.asMap();
             ProgressEntry existing = map.get(key);
@@ -127,6 +142,8 @@ public class ProgressLedgerService {
             map.put(key, new ProgressEntry(key, effectiveLabel, status, note, Instant.now()));
             persist(conversationId, map);
             return new ProgressLedger(map);
+        } finally {
+            lock.unlock();
         }
     }
 

@@ -39,6 +39,7 @@ import vip.mate.llm.model.ModelConfigEntity;
 import vip.mate.llm.model.ModelFamily;
 import vip.mate.llm.model.ModelProtocol;
 import vip.mate.llm.model.ModelProviderEntity;
+import vip.mate.llm.routing.ProviderModelRef;
 import vip.mate.llm.routing.ProviderRouter;
 import vip.mate.llm.service.ModelConfigService;
 import vip.mate.llm.service.ModelProviderService;
@@ -155,6 +156,30 @@ public class AgentGraphBuilder {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     public void setAuditEventService(vip.mate.audit.service.AuditEventService s) {
         this.auditEventService = s;
+    }
+
+    /**
+     * Optional per-step delegation dependencies for the Plan-Execute graph.
+     * Setter injection (like {@link #auditEventService}) breaks the
+     * {@code AgentService ⇆ AgentGraphBuilder} construction cycle. Null when not
+     * wired (legacy / test) — per-step delegation is then simply disabled.
+     */
+    private AgentService agentService;
+
+    // @Lazy on the injection point: inject a lazy-resolution proxy so the
+    // AgentService ⇆ AgentGraphBuilder cycle is broken at bean-creation time
+    // (the real bean is resolved on first use, when the graph is built).
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setAgentService(@org.springframework.context.annotation.Lazy AgentService agentService) {
+        this.agentService = agentService;
+    }
+
+    private vip.mate.tool.builtin.DelegateAgentTool delegateAgentTool;
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setDelegateAgentTool(
+            @org.springframework.context.annotation.Lazy vip.mate.tool.builtin.DelegateAgentTool delegateAgentTool) {
+        this.delegateAgentTool = delegateAgentTool;
     }
 
     /**
@@ -554,8 +579,11 @@ public class AgentGraphBuilder {
             if (auditEventService != null) {
                 executor.setAuditEventService(auditEventService);
             }
-            PlanGenerationNode planGenerationNode = new PlanGenerationNode(chatModel, planningService, streamingHelper, conversationWindowManager, toolSet);
+            PlanGenerationNode planGenerationNode = new PlanGenerationNode(chatModel, planningService, streamingHelper, conversationWindowManager, toolSet, goalService, goalProperties, agentService);
             StepExecutionNode stepExecutionNode = new StepExecutionNode(chatModel, toolSet, executor, planningService, streamTracker, reasoningEffort, streamingHelper, conversationWindowManager, skillCatalogRenderer);
+            // Per-step delegation: route a step assigned to a specialist agent
+            // through DelegateAgentTool (null when delegation deps aren't wired).
+            stepExecutionNode.setDelegateAgentTool(delegateAgentTool);
             PlanSummaryNode planSummaryNode = new PlanSummaryNode(chatModel, planningService, streamingHelper);
             DirectAnswerNode directAnswerNode = new DirectAnswerNode();
 
@@ -579,6 +607,7 @@ public class AgentGraphBuilder {
                     .addStrategy(PlanStateKeys.CURRENT_STEP_TITLE, KeyStrategy.REPLACE)
                     .addStrategy(PlanStateKeys.CURRENT_STEP_RESULT, KeyStrategy.REPLACE)
                     .addStrategy(PlanStateKeys.COMPLETED_RESULTS, KeyStrategy.APPEND)
+                    .addStrategy(PlanStateKeys.PLAN_REPLAN_COUNT, KeyStrategy.REPLACE)
                     .addStrategy(PlanStateKeys.FINAL_SUMMARY, KeyStrategy.REPLACE)
                     .addStrategy(PlanStateKeys.DIRECT_ANSWER, KeyStrategy.REPLACE)
                     // 工作上下文（REPLACE 策略，每次重新生成）
@@ -643,6 +672,7 @@ public class AgentGraphBuilder {
                     .addStrategy(MateClawStateKeys.GOAL_EVALUATED_THIS_RUN, KeyStrategy.REPLACE)
                     .addStrategy(MateClawStateKeys.GOAL_FOLLOWUP_COUNT, KeyStrategy.REPLACE)
                     .addStrategy(MateClawStateKeys.GOAL_ACCOUNTED_LLM_CALL_COUNT, KeyStrategy.REPLACE)
+                    .addStrategy(MateClawStateKeys.GOAL_HARD_CONTINUATION_COUNT, KeyStrategy.REPLACE)
                     // Skill progressive disclosure — pinned skills loaded this
                     // run. Registered in BOTH graphs so the read-merge-write in
                     // ActionNode is not dropped on multi-node merges.
@@ -657,6 +687,7 @@ public class AgentGraphBuilder {
             //   ├→ DIRECT_ANSWER_NODE → END
             //   └→ STEP_EXECUTION → (StepProgressDispatcher)
             //       ├→ STEP_EXECUTION (loop)
+            //       ├→ PLAN_GENERATION (re-plan on step failure, bounded by PLAN_REPLAN_COUNT)
             //       └→ PLAN_SUMMARY → (active goal?)
             //                          ├→ GOAL_EVALUATION → (followup?)
             //                          │                     ├→ PLAN_GENERATION (re-plan)
@@ -690,11 +721,18 @@ public class AgentGraphBuilder {
                             Map.of(
                                     PlanStateKeys.STEP_EXECUTION_NODE, PlanStateKeys.STEP_EXECUTION_NODE,
                                     PlanStateKeys.PLAN_SUMMARY_NODE, PlanStateKeys.PLAN_SUMMARY_NODE,
+                                    // Step-failure recovery: re-plan the remaining work
+                                    // (StepProgressDispatcher returns this on phase=plan_replan).
+                                    PlanStateKeys.PLAN_GENERATION_NODE, PlanStateKeys.PLAN_GENERATION_NODE,
                                     StateGraph.END, StateGraph.END))
                     .addConditionalEdges(PlanStateKeys.PLAN_SUMMARY_NODE,
                             AsyncEdgeAction.edge_async(state -> {
                                 MateClawStateAccessor a = new MateClawStateAccessor(state);
-                                boolean hasGoal = a.hasActiveGoal();
+                                // Same-turn activation: fall back to a DB lookup (gated on the
+                                // feature flag) so a goal the agent set THIS turn is evaluated now,
+                                // not only from the next message. See GoalEvaluationNode.resolveActiveGoal.
+                                boolean hasGoal = goalProperties.isEnabled()
+                                        && GoalEvaluationNode.resolveActiveGoal(state, goalService).isPresent();
                                 boolean already = a.goalEvaluatedThisRun();
                                 return (hasGoal && !already)
                                         ? MateClawStateKeys.GOAL_EVALUATION_NODE
@@ -719,7 +757,11 @@ public class AgentGraphBuilder {
                     .addConditionalEdges(PlanStateKeys.DIRECT_ANSWER_NODE,
                             AsyncEdgeAction.edge_async(state -> {
                                 MateClawStateAccessor a = new MateClawStateAccessor(state);
-                                boolean hasGoal = a.hasActiveGoal();
+                                // Same-turn activation: fall back to a DB lookup (gated on the
+                                // feature flag) so a goal the agent set THIS turn is evaluated now,
+                                // not only from the next message. See GoalEvaluationNode.resolveActiveGoal.
+                                boolean hasGoal = goalProperties.isEnabled()
+                                        && GoalEvaluationNode.resolveActiveGoal(state, goalService).isPresent();
                                 boolean already = a.goalEvaluatedThisRun();
                                 return (hasGoal && !already)
                                         ? MateClawStateKeys.GOAL_EVALUATION_NODE
@@ -756,9 +798,17 @@ public class AgentGraphBuilder {
      * and tool-result chunking. Decoupled from the per-agent value so a small
      * {@code max_iterations} can never accidentally re-introduce the silent
      * killer.
+     * <p>
+     * The base segment budget is further multiplied to cover goal-driven "hard
+     * continuations" — each grants a fresh full iteration budget after a
+     * max-iterations turn (see {@code GoalEvaluationNode}). One run can perform
+     * up to {@link vip.mate.goal.config.GoalProperties#MAX_HARD_CONTINUATIONS_CEILING} of them, so
+     * the ceiling is sized for {@code (1 + CEILING)} segments to keep the
+     * recursion guard from tripping before the soft caps do.
      */
     private static int frameworkRecursionLimit() {
-        return (BaseAgent.MAX_ITERATIONS_HARD_CEILING + 5) * 4 + 100;
+        int perSegment = (BaseAgent.MAX_ITERATIONS_HARD_CEILING + 5) * 4;
+        return perSegment * (1 + vip.mate.goal.config.GoalProperties.MAX_HARD_CONTINUATIONS_CEILING) + 100;
     }
 
     CompiledGraph buildReActGraph(AgentToolSet toolSet, ChatModel chatModel, int maxIterations, String reasoningEffort) {
@@ -826,6 +876,7 @@ public class AgentGraphBuilder {
                     .addStrategy(MateClawStateKeys.MESSAGES, KeyStrategy.APPEND)
                     // 迭代控制
                     .addStrategy(MateClawStateKeys.CURRENT_ITERATION, KeyStrategy.REPLACE)
+                    .addStrategy(MateClawStateKeys.ITERATION_REFUND_COUNT, KeyStrategy.REPLACE)
                     .addStrategy(MateClawStateKeys.MAX_ITERATIONS, KeyStrategy.REPLACE)
                     // 工具调用
                     .addStrategy(MateClawStateKeys.TOOL_CALLS, KeyStrategy.REPLACE)
@@ -907,6 +958,7 @@ public class AgentGraphBuilder {
                     .addStrategy(MateClawStateKeys.GOAL_EVALUATED_THIS_RUN, KeyStrategy.REPLACE)
                     .addStrategy(MateClawStateKeys.GOAL_FOLLOWUP_COUNT, KeyStrategy.REPLACE)
                     .addStrategy(MateClawStateKeys.GOAL_ACCOUNTED_LLM_CALL_COUNT, KeyStrategy.REPLACE)
+                    .addStrategy(MateClawStateKeys.GOAL_HARD_CONTINUATION_COUNT, KeyStrategy.REPLACE)
                     // Skill progressive disclosure — pinned skills loaded this
                     // run. Registered in BOTH graphs so the read-merge-write in
                     // ActionNode is not dropped on multi-node merges.
@@ -956,7 +1008,11 @@ public class AgentGraphBuilder {
                     .addConditionalEdges(MateClawStateKeys.FINAL_ANSWER_NODE,
                             AsyncEdgeAction.edge_async(state -> {
                                 MateClawStateAccessor a = new MateClawStateAccessor(state);
-                                boolean hasGoal = a.hasActiveGoal();
+                                // Same-turn activation: fall back to a DB lookup (gated on the
+                                // feature flag) so a goal the agent set THIS turn is evaluated now,
+                                // not only from the next message. See GoalEvaluationNode.resolveActiveGoal.
+                                boolean hasGoal = goalProperties.isEnabled()
+                                        && GoalEvaluationNode.resolveActiveGoal(state, goalService).isPresent();
                                 boolean already = a.goalEvaluatedThisRun();
                                 return (hasGoal && !already)
                                         ? MateClawStateKeys.GOAL_EVALUATION_NODE
@@ -1129,66 +1185,99 @@ public class AgentGraphBuilder {
         String primaryProviderId = primaryModelConfig != null ? primaryModelConfig.getProvider() : null;
         String primaryModelName = primaryModelConfig != null ? primaryModelConfig.getModelName() : null;
 
-        // RFC-009 PR-3: bias by agent preferences (if any). Listed providers win
-        // their declared order; everything else keeps the global priority order.
-        List<String> preferred = agentId == null
-                ? java.util.Collections.emptyList()
-                : agentBindingService.getPreferredProviderIds(agentId);
-        if (!preferred.isEmpty()) {
-            providers = reorderByPreferences(providers, preferred);
-            log.debug("[LlmFailover] agent={} preferences={} -> chain head reordered", agentId, preferred);
-        }
-
-        // RFC-090 §9.2 调整 C — second-pass reorder: lift providers
-        // that satisfy the bound-skill capability set (vision / video /
-        // audio) ahead of those that don't. Stable otherwise so the
-        // user-preferred order still wins among capable providers.
+        // RFC-090 §9.2 调整 C — lift providers that satisfy the bound-skill
+        // capability set (vision / video / audio) ahead of those that don't.
+        // Run before planning so the non-preferred tail inherits this order;
+        // the explicit preferred-model head keeps the user's declared order.
         try {
             providers = new ArrayList<>(providerRouter.reorderForCapabilities(agentId, providers));
         } catch (Exception e) {
             log.debug("[ProviderRouter] chain reorder failed: {}", e.getMessage());
         }
 
+        // Preferred-model chain: explicit (provider, model) entries lead in the
+        // user's order — the same provider may repeat with different models —
+        // then every non-preferred provider follows with its default model.
+        List<ProviderModelRef> preferred = agentId == null
+                ? java.util.Collections.emptyList()
+                : agentBindingService.getPreferredProviderModels(agentId);
+        List<String> globalProviderIds = providers.stream()
+                .map(ModelProviderEntity::getProviderId)
+                .toList();
+        List<ProviderModelRef> plan = planFallbackOrder(preferred, globalProviderIds);
+        if (!preferred.isEmpty()) {
+            log.debug("[LlmFailover] agent={} preferred-model chain={} -> plan={}", agentId, preferred, plan);
+        }
+
+        // Dedup by exact (provider, model) — seeded with the primary so we never
+        // rebuild the primary call, but OTHER models of the primary provider are
+        // still legitimate fallback entries.
         List<vip.mate.llm.failover.FallbackEntry> chain = new ArrayList<>();
-        for (ModelProviderEntity p : providers) {
-            // Don't put the primary provider's row into the fallback chain — same-instance
-            // skipping is also done in the runtime walker, but excluding here saves building
-            // a duplicate ChatModel at agent-build time.
-            if (primaryProviderId != null && primaryProviderId.equals(p.getProviderId())) {
-                log.debug("[LlmFailover] skipping primary provider {} in fallback chain", primaryProviderId);
-                continue;
-            }
-            // RFC-009 Phase 4: skip providers known-bad at build time. The runtime walker in
-            // NodeStreamingChatHelper re-checks pool membership per request, so a provider
-            // that re-enters the pool later still gets used (the graph is rebuilt on
+        Set<String> seen = new java.util.HashSet<>();
+        if (primaryProviderId != null && primaryModelName != null) {
+            seen.add(primaryProviderId + "::" + primaryModelName);
+        }
+        for (ProviderModelRef ref : plan) {
+            String pid = ref.providerId();
+            // RFC-009 Phase 4: skip providers known-bad at build time. The runtime
+            // walker re-checks pool membership per request, so a provider that
+            // re-enters the pool later still gets used (graph rebuilt on
             // ModelConfigChangedEvent).
-            if (providerPool != null && !providerPool.contains(p.getProviderId())) {
-                log.debug("[LlmFailover] skipping provider {} — not in available pool",
-                        p.getProviderId());
+            if (providerPool != null && !providerPool.contains(pid)) {
+                log.debug("[LlmFailover] skipping provider {} — not in available pool", pid);
                 continue;
             }
-            ModelConfigEntity fallbackConfig = pickFallbackModel(p.getProviderId());
+            ModelConfigEntity fallbackConfig = resolveChainModel(ref);
             if (fallbackConfig == null) {
-                log.debug("[LlmFailover] skipping provider {} — no enabled chat model",
-                        p.getProviderId());
+                log.debug("[LlmFailover] skipping {} — no usable chat model", pid);
                 continue;
             }
-            if (primaryModelName != null && primaryModelName.equals(fallbackConfig.getModelName())) {
-                // Same model name picked for a different provider — exact same call, skip.
+            String key = pid + "::" + fallbackConfig.getModelName();
+            if (!seen.add(key)) {
+                // Exact (provider, model) already queued or equal to the primary.
                 continue;
             }
             try {
                 ChatModel m = buildRuntimeChatModel(fallbackConfig, RetryTemplate.builder().maxAttempts(1).build());
-                chain.add(new vip.mate.llm.failover.FallbackEntry(p.getProviderId(), m));
-                log.info("[LlmFailover] chain[{}] = {}/{} (priority={})",
-                        chain.size(), p.getProviderId(), fallbackConfig.getModelName(),
-                        p.getFallbackPriority());
+                chain.add(new vip.mate.llm.failover.FallbackEntry(pid, m));
+                log.info("[LlmFailover] chain[{}] = {}/{}", chain.size(), pid, fallbackConfig.getModelName());
             } catch (Exception e) {
-                log.warn("[LlmFailover] skipping provider {} — chat model build failed: {}",
-                        p.getProviderId(), e.getMessage());
+                log.warn("[LlmFailover] skipping provider {} — chat model build failed: {}", pid, e.getMessage());
             }
         }
         return chain;
+    }
+
+    /**
+     * Resolve a planned chain entry to a concrete chat model. A pinned model
+     * ({@code modelId != null}) is used when it still exists and is enabled;
+     * otherwise we fall back to the provider's default chat model so a deleted
+     * or disabled pin keeps the provider in the chain.
+     */
+    private ModelConfigEntity resolveChainModel(ProviderModelRef ref) {
+        if (ref.modelId() != null) {
+            try {
+                ModelConfigEntity m = modelConfigService.getModel(ref.modelId());
+                // Honour the pin only when it is a usable chat model that actually
+                // belongs to this entry's provider. The FallbackEntry is keyed by
+                // ref.providerId() for cooldown/pool, so a model from a different
+                // provider would mis-key the chain; an embedding model would never
+                // serve as a chat fallback. Either case falls back to the
+                // provider's default chat model.
+                if (m != null && Boolean.TRUE.equals(m.getEnabled())
+                        && ref.providerId().equals(m.getProvider())
+                        && (m.getModelType() == null || "chat".equals(m.getModelType()))) {
+                    return m;
+                }
+                log.info("[LlmFailover] pinned model {} for provider {} not usable "
+                                + "(disabled / wrong provider / non-chat), using provider default",
+                        ref.modelId(), ref.providerId());
+            } catch (Exception e) {
+                log.info("[LlmFailover] pinned model {} for provider {} unresolved ({}), using provider default",
+                        ref.modelId(), ref.providerId(), e.getMessage());
+            }
+        }
+        return pickFallbackModel(ref.providerId());
     }
 
     /**
@@ -1220,33 +1309,40 @@ public class AgentGraphBuilder {
     }
 
     /**
-     * Reorder a provider list by an agent's preference list. Listed provider
-     * ids come first in their preference order; any provider not in the
-     * preference list keeps its original position relative to other unlisted
-     * providers (stable partition). Preference entries that don't match any
-     * actual provider are silently dropped.
+     * Plan the fallback order as a list of (provider, model) refs.
+     *
+     * <p>Head: the agent's explicit preference entries in declared order,
+     * model-granular — the same provider may appear more than once with
+     * different models. Exact (provider, model) duplicates are dropped.
+     *
+     * <p>Tail: every provider not named in the preferences, in the supplied
+     * global order, each using its default model ({@code modelId == null}).
+     *
+     * <p>Preference entries with a blank provider id are ignored. Package-private
+     * for unit testing — see {@code AgentGraphBuilderPreferenceTest}.
      */
-    /** Package-private for unit testing — see {@code AgentGraphBuilderPreferenceTest}. */
-    static List<ModelProviderEntity> reorderByPreferences(List<ModelProviderEntity> providers,
-                                                          List<String> preferredOrder) {
-        Map<String, ModelProviderEntity> byId = new java.util.LinkedHashMap<>();
-        for (ModelProviderEntity p : providers) {
-            byId.put(p.getProviderId(), p);
-        }
-        List<ModelProviderEntity> reordered = new ArrayList<>(providers.size());
-        Set<String> placed = new java.util.HashSet<>();
-        for (String prefId : preferredOrder) {
-            ModelProviderEntity p = byId.get(prefId);
-            if (p != null && placed.add(prefId)) {
-                reordered.add(p);
+    static List<ProviderModelRef> planFallbackOrder(List<ProviderModelRef> preferred,
+                                                    List<String> globalProviderIds) {
+        List<ProviderModelRef> plan = new ArrayList<>();
+        Set<String> headEntryKeys = new java.util.HashSet<>();
+        Set<String> headProviderIds = new java.util.HashSet<>();
+        if (preferred != null) {
+            for (ProviderModelRef ref : preferred) {
+                if (ref == null || ref.providerId() == null || ref.providerId().isBlank()) continue;
+                String key = ref.providerId() + "::" + (ref.modelId() == null ? "" : ref.modelId());
+                if (!headEntryKeys.add(key)) continue; // exact (provider, model) dup
+                plan.add(ref);
+                headProviderIds.add(ref.providerId());
             }
         }
-        for (ModelProviderEntity p : providers) {
-            if (placed.add(p.getProviderId())) {
-                reordered.add(p);
+        if (globalProviderIds != null) {
+            for (String pid : globalProviderIds) {
+                if (pid == null || pid.isBlank()) continue;
+                if (headProviderIds.contains(pid)) continue; // already led by an explicit entry
+                plan.add(new ProviderModelRef(pid, null));
             }
         }
-        return reordered;
+        return plan;
     }
 
     /**
@@ -1272,7 +1368,7 @@ public class AgentGraphBuilder {
      * @throws IllegalArgumentException when an absolute override escapes the
      *         workspace root
      */
-    static String resolveAgentBasePath(String agentOverride, String workspaceBase) {
+    public static String resolveAgentBasePath(String agentOverride, String workspaceBase) {
         boolean hasOverride = agentOverride != null && !agentOverride.isBlank();
         boolean hasWorkspace = workspaceBase != null && !workspaceBase.isBlank();
         if (!hasOverride) {
@@ -1292,6 +1388,15 @@ public class AgentGraphBuilder {
             return agentOverride;
         }
         if (hasWorkspace) {
+            // Relative override resolves under the workspace root; reject any value
+            // that escapes it via "../" so attachment/media/tool I/O stays contained.
+            Path wsRoot = Paths.get(workspaceBase).toAbsolutePath().normalize();
+            Path resolved = wsRoot.resolve(agentOverride).normalize();
+            if (!resolved.startsWith(wsRoot)) {
+                throw new IllegalArgumentException(
+                        "Agent workspaceBasePath override must stay inside the workspace root: "
+                                + resolved + " escapes " + wsRoot);
+            }
             return Paths.get(workspaceBase).resolve(agentOverride).toString();
         }
         return agentOverride;
@@ -1425,10 +1530,11 @@ public class AgentGraphBuilder {
                 adopting a KB article as the user's project.
 
                 ## Session Search
-                - `session_search(agentId, currentConversationId, mode, query, limit)` — search conversation history
+                - `session_search(agentId, mode, query, limit)` — search conversation history
                 - mode="recent": list recent conversations (titles, times, message counts)
                 - mode="search": keyword full-text search across past messages
                 - Use this to recall previous discussions, look up past decisions, or find context from earlier conversations
+                - Only completed sessions (not currently running) are included in results
 
                 ## Tool Usage Guidelines
                 When you have available tools, use them to access local system information, files, or execute commands.

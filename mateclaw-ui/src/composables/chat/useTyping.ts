@@ -1,6 +1,6 @@
 /**
  * 打字机效果 Composable
- * 参考 @agentscope-ai/chat 的实现，提供流畅的逐字显示效果
+ * 提供流畅的逐字打字显示效果
  */
 import { ref, computed, watch, nextTick } from 'vue'
 

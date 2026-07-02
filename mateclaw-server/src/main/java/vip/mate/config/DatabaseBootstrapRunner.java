@@ -38,8 +38,17 @@ public class DatabaseBootstrapRunner implements ApplicationRunner {
     private final DataSource dataSource;
     private final JdbcTemplate jdbcTemplate;
 
-    /** Cached flag: true when running on MySQL/MariaDB, false for H2. */
+    /** Cached flag: true when running on MySQL/MariaDB, false for H2/Kingbase. */
     private volatile Boolean isMySQL;
+
+    /** Cached flag: true when running on KingbaseES. */
+    private volatile Boolean isKingbase;
+
+    /** Cached flag: true when running on PostgreSQL. */
+    private volatile Boolean isPostgres;
+
+     /** Cached human-readable label of the connected database, e.g. "MySQL" / "H2" / "PostgreSQL". */
+    private volatile String databaseLabel;
 
     /**
      * When true, wait for Desktop splash screen to call /setup/init with chosen language.
@@ -111,6 +120,10 @@ public class DatabaseBootstrapRunner implements ApplicationRunner {
             String scriptName;
             if (isMySQL()) {
                 scriptName = "en-US".equals(locale) ? "db/data-mysql-en.sql" : "db/data-mysql-zh.sql";
+            } else if (isKingbase() || isPostgres()) {
+                // PostgreSQL-family seed (covers both PostgreSQL and KingbaseES,
+                // which share the same ON CONFLICT / SERIAL-free DDL dialect).
+                scriptName = "en-US".equals(locale) ? "db/data-kingbase-en.sql" : "db/data-kingbase-zh.sql";
             } else {
                 scriptName = "en-US".equals(locale) ? "db/data-en.sql" : "db/data-zh.sql";
             }
@@ -140,6 +153,57 @@ public class DatabaseBootstrapRunner implements ApplicationRunner {
         }
     }
 
+    /**
+     * Friendly product name of the currently connected database, e.g. {@code "MySQL"},
+     * {@code "PostgreSQL"}, {@code "H2"} or {@code "KingbaseES"}. Read once from JDBC
+     * metadata and cached — the connected database never changes at runtime.
+     *
+     * @return the product name, or {@code "Unknown"} if metadata is unavailable.
+     */
+    public String getDatabaseLabel() {
+        if (databaseLabel == null) {
+            try (Connection connection = dataSource.getConnection()) {
+                databaseLabel = normalizeDatabaseLabel(connection.getMetaData().getDatabaseProductName());
+            } catch (Exception e) {
+                log.debug("Failed to read database product name: {}", e.getMessage());
+                databaseLabel = "Unknown";
+            }
+        }
+        return databaseLabel;
+    }
+
+    /**
+     * Maps a raw JDBC product name to a clean, canonical label. Some drivers append
+     * version noise to the product name (e.g. KingbaseES reports "KingbaseES V008R006");
+     * collapsing on a keyword keeps the displayed label stable across driver versions
+     * and consistent with the dialect this runner detects for DDL.
+     *
+     * @return a canonical label, or {@code "Unknown"} when the product name is absent.
+     */
+    static String normalizeDatabaseLabel(String product) {
+        if (product == null || product.isBlank()) {
+            return "Unknown";
+        }
+        String lower = product.toLowerCase();
+        if (lower.contains("kingbase")) {
+            // KingbaseES is the product name; show the vendor's Chinese brand name.
+            return "人大金仓";
+        }
+        if (lower.contains("mariadb")) {
+            return "MariaDB";
+        }
+        if (lower.contains("mysql")) {
+            return "MySQL";
+        }
+        if (lower.contains("postgresql")) {
+            return "PostgreSQL";
+        }
+        if (lower.contains("h2")) {
+            return "H2";
+        }
+        return product.trim();
+    }
+
     private boolean tableExists(String tableName) throws Exception {
         try (Connection connection = dataSource.getConnection()) {
             DatabaseMetaData metaData = connection.getMetaData();
@@ -159,13 +223,41 @@ public class DatabaseBootstrapRunner implements ApplicationRunner {
             try (Connection connection = dataSource.getConnection()) {
                 String dbProduct = connection.getMetaData().getDatabaseProductName().toLowerCase();
                 isMySQL = dbProduct.contains("mysql") || dbProduct.contains("mariadb");
-                log.info("Detected database: {} (MySQL mode: {})", dbProduct, isMySQL);
+                isKingbase = dbProduct.contains("kingbase");
+                // KingbaseES reports its own product name ("KingbaseES"), so the
+                // postgres check stays mutually exclusive with the kingbase one.
+                isPostgres = dbProduct.contains("postgresql") && !isKingbase;
+                if (isKingbase) {
+                    log.info("Detected database: {} (KingbaseES mode)", dbProduct);
+                } else if (isPostgres) {
+                    log.info("Detected database: {} (PostgreSQL mode)", dbProduct);
+                } else {
+                    log.info("Detected database: {} (MySQL mode: {})", dbProduct, isMySQL);
+                }
             } catch (Exception e) {
                 log.warn("Failed to detect database type, falling back to H2 mode", e);
                 isMySQL = false;
+                isKingbase = false;
+                isPostgres = false;
             }
         }
         return isMySQL;
+    }
+
+    private boolean isKingbase() {
+        if (isKingbase == null) {
+            // Trigger detection
+            isMySQL();
+        }
+        return isKingbase != null && isKingbase;
+    }
+
+    private boolean isPostgres() {
+        if (isPostgres == null) {
+            // Trigger detection
+            isMySQL();
+        }
+        return isPostgres != null && isPostgres;
     }
 
     private void runScript(String path) {

@@ -4,8 +4,9 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * Read access to an agent's skill / provider bindings, as needed by
- * {@link ProviderRouter} for capability-aware routing.
+ * Read access to an agent's skill / provider / wiki-kb bindings, as needed by
+ * {@link ProviderRouter} for capability-aware routing and by webchat
+ * endpoints that need to enumerate an agent's visible catalog.
  *
  * <p>Declared in the {@code llm} layer so the routing code depends only on
  * this abstraction. The {@code agent} layer supplies the implementation,
@@ -20,7 +21,21 @@ public interface AgentBindingResolver {
     Set<Long> getBoundSkillIds(Long agentId);
 
     /**
-     * Provider ids the agent prefers, in priority order; empty when none.
+     * Ordered preferred-model chain for the agent: each entry is a provider
+     * plus an optional pinned model ({@code modelId == null} = the provider's
+     * default chat model). The same provider may repeat with different models,
+     * so an agent can express a chain like {@code A/modelX → A/modelY →
+     * B/modelZ}. Empty when the agent has no preferences.
      */
-    List<String> getPreferredProviderIds(Long agentId);
+    List<ProviderModelRef> getPreferredProviderModels(Long agentId);
+
+    /**
+     * Wiki knowledge-base ids bound to the agent, or {@code null} when the
+     * agent has no explicit KB scope (meaning "workspace-wide — every KB
+     * in the agent's workspace is visible"). Mirrors the three-state
+     * contract of {@link #getBoundSkillIds}: {@code null} = inherit
+     * default, {@code Set.of()} = explicitly scoped to nothing, non-empty
+     * = the explicit allowlist.
+     */
+    Set<Long> getBoundKbIds(Long agentId);
 }

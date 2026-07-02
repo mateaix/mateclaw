@@ -10,19 +10,30 @@ import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.converter.BeanOutputConverter;
+import org.springframework.util.StringUtils;
+import vip.mate.agent.AgentService;
 import vip.mate.agent.AgentToolSet;
 import vip.mate.agent.GraphEventPublisher;
+import vip.mate.agent.model.AgentEntity;
 import vip.mate.agent.graph.NodeStreamingChatHelper;
 import vip.mate.agent.graph.plan.state.PlanStateAccessor;
 import vip.mate.agent.graph.plan.state.PlanStateKeys;
 import vip.mate.agent.graph.state.MateClawStateKeys;
+import vip.mate.agent.context.ChatOrigin;
 import vip.mate.agent.context.ConversationWindowManager;
 import vip.mate.agent.context.RuntimeContextInjector;
+import vip.mate.goal.config.GoalProperties;
+import vip.mate.goal.model.GoalCreateRequest;
+import vip.mate.goal.model.GoalCriterion;
+import vip.mate.goal.model.GoalEntity;
+import vip.mate.goal.service.GoalService;
 import vip.mate.planning.service.PlanningService;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
@@ -52,6 +63,17 @@ public class PlanGenerationNode implements NodeAction {
     private final NodeStreamingChatHelper streamingHelper;
     private final ConversationWindowManager conversationWindowManager;
     private final AgentToolSet toolSet;
+    /** Optional — auto-derive a goal from the plan. Null disables the feature (legacy/test). */
+    private final GoalService goalService;
+    private final GoalProperties goalProperties;
+    /** Optional — advertise delegatable specialist agents to the planner and
+     *  resolve per-step assignments. Null disables per-step delegation (legacy/test). */
+    private final AgentService agentService;
+
+    /** Plan steps below this size are trivial tool tasks, not goal-worthy. */
+    private static final int MIN_STEPS_FOR_AUTO_GOAL = 2;
+    /** Cap the auto-derived goal title; the full request rides in the description. */
+    private static final int AUTO_GOAL_TITLE_MAX = 80;
 
     /**
      * Structured triage result — field names use @JsonProperty to match the
@@ -61,7 +83,12 @@ public class PlanGenerationNode implements NodeAction {
             @JsonProperty("needs_planning") boolean needsPlanning,
             @JsonProperty("direct_answer")  String directAnswer,
             @JsonProperty("plan_type")      String planType,
-            @JsonProperty("steps")          List<String> steps
+            @JsonProperty("steps")          List<String> steps,
+            // Optional per-step delegation: agent names parallel to steps (same
+            // order). An empty string / missing entry means "run with the parent
+            // agent". Only populated when delegatable specialist agents are
+            // advertised to the planner; absent for backward compatibility.
+            @JsonProperty("step_agents")    List<String> stepAgents
     ) {}
 
     private static final String PLANNING_PROMPT = """
@@ -164,15 +191,78 @@ public class PlanGenerationNode implements NodeAction {
         return goal;
     }
 
+    /** Whole injected long-term-memory recall block (any casing). */
+    private static final Pattern MEMORY_CONTEXT_BLOCK =
+            Pattern.compile("(?is)<\\s*memory-context\\s*>.*?</\\s*memory-context\\s*>");
+    /** Stray open/close memory-context fence tags left after block removal. */
+    private static final Pattern MEMORY_CONTEXT_TAG =
+            Pattern.compile("(?i)</?\\s*memory-context\\s*>");
+    /** Marker that introduces the real instruction inside a scheduled-run wrapper. */
+    private static final String CRON_TASK_MARKER = "[任务指令]";
+    /** Suffix appended by a goal-driven re-plan pass; not part of the user's ask. */
+    private static final String FOLLOWUP_MARKER = "[Follow-up guidance]";
+
+    /**
+     * Recovers the user's actual request from the fully-assembled agent prompt so
+     * the persisted/displayed plan goal reads as the task itself, not the
+     * framework scaffolding wrapped around it. The graph receives the goal already
+     * enriched — a {@code <memory-context>…</memory-context>} recall block is
+     * prepended for every turn, scheduled runs add a wrapper whose real payload
+     * sits after {@code [任务指令]}, and a re-plan pass appends a
+     * {@code [Follow-up guidance]} block. Persisting that verbatim left the Plan
+     * board showing "&lt;memory-context&gt; The following is what you…" instead of
+     * the user's goal. Strips, in order: the recall block, the scheduled-run
+     * preamble (keeping only the instruction body), and the follow-up suffix.
+     * Falls back to the raw goal if scrubbing would leave nothing.
+     */
+    static String displayGoal(String goal) {
+        if (goal == null || goal.isBlank()) {
+            return goal == null ? "" : goal;
+        }
+        String s = MEMORY_CONTEXT_BLOCK.matcher(goal).replaceAll("");
+        s = MEMORY_CONTEXT_TAG.matcher(s).replaceAll("");
+        int task = s.lastIndexOf(CRON_TASK_MARKER);
+        if (task >= 0) {
+            s = s.substring(task + CRON_TASK_MARKER.length());
+        }
+        int followup = s.indexOf(FOLLOWUP_MARKER);
+        if (followup >= 0) {
+            s = s.substring(0, followup);
+        }
+        s = s.strip();
+        return s.isEmpty() ? goal.strip() : s;
+    }
+
     public PlanGenerationNode(ChatModel chatModel, PlanningService planningService,
                               NodeStreamingChatHelper streamingHelper,
                               ConversationWindowManager conversationWindowManager,
                               AgentToolSet toolSet) {
+        this(chatModel, planningService, streamingHelper, conversationWindowManager, toolSet, null, null);
+    }
+
+    public PlanGenerationNode(ChatModel chatModel, PlanningService planningService,
+                              NodeStreamingChatHelper streamingHelper,
+                              ConversationWindowManager conversationWindowManager,
+                              AgentToolSet toolSet,
+                              GoalService goalService, GoalProperties goalProperties) {
+        this(chatModel, planningService, streamingHelper, conversationWindowManager, toolSet,
+                goalService, goalProperties, null);
+    }
+
+    public PlanGenerationNode(ChatModel chatModel, PlanningService planningService,
+                              NodeStreamingChatHelper streamingHelper,
+                              ConversationWindowManager conversationWindowManager,
+                              AgentToolSet toolSet,
+                              GoalService goalService, GoalProperties goalProperties,
+                              AgentService agentService) {
         this.chatModel = chatModel;
         this.planningService = planningService;
         this.streamingHelper = streamingHelper;
         this.conversationWindowManager = conversationWindowManager;
         this.toolSet = toolSet;
+        this.goalService = goalService;
+        this.goalProperties = goalProperties;
+        this.agentService = agentService;
     }
 
     /**
@@ -180,7 +270,119 @@ public class PlanGenerationNode implements NodeAction {
      */
     @Deprecated
     public PlanGenerationNode(ChatModel chatModel, PlanningService planningService) {
-        this(chatModel, planningService, null, null, null);
+        this(chatModel, planningService, null, null, null, null, null);
+    }
+
+    /**
+     * Auto-derive a goal from a freshly-generated multi-step plan so the
+     * Plan-Execute path engages the goal subsystem (the planner / step executor
+     * never call {@code setGoal} themselves). The plan steps become the goal's
+     * acceptance criteria — the plan IS the decomposition — so the first
+     * evaluation skips the bootstrap round and judges those criteria directly.
+     *
+     * <p>Returns the created goal (to inject into {@code ACTIVE_GOAL} so THIS
+     * run's GoalEvaluationNode picks it up) or {@code null} when not applicable:
+     * feature off, fewer than {@link #MIN_STEPS_FOR_AUTO_GOAL} steps, no channel
+     * context, or the conversation already has an active goal. Best-effort —
+     * any failure is swallowed so planning is never blocked by goal bookkeeping.
+     */
+    GoalEntity maybeAutoCreateGoal(PlanStateAccessor accessor, List<String> steps) {
+        if (goalService == null || goalProperties == null
+                || !goalProperties.isEnabled() || !goalProperties.isAutoGoalFromPlan()) {
+            return null;
+        }
+        if (steps == null || steps.size() < MIN_STEPS_FOR_AUTO_GOAL) {
+            return null;
+        }
+        ChatOrigin origin = accessor.chatOrigin();
+        String convId = origin.conversationId();
+        if (convId == null || convId.isBlank() || origin.agentId() == null) {
+            return null;
+        }
+        try {
+            if (goalService.findActiveByConversation(convId) != null) {
+                return null; // respect an existing goal (incl. re-plan passes)
+            }
+            String request = displayGoal(accessor.goal());
+            GoalCreateRequest req = new GoalCreateRequest();
+            req.setConversationId(convId);
+            req.setAgentId(origin.agentId());
+            req.setWorkspaceId(origin.workspaceId() != null ? origin.workspaceId() : 1L);
+            req.setTitle(request.isEmpty() ? "多步任务"
+                    : request.length() > AUTO_GOAL_TITLE_MAX
+                        ? request.substring(0, AUTO_GOAL_TITLE_MAX) : request);
+            req.setDescription(request);
+            List<GoalCriterion> criteria = steps.stream()
+                    .filter(s -> s != null && !s.isBlank())
+                    .map(s -> new GoalCriterion("", s.strip(), false, ""))
+                    .collect(Collectors.toList());
+            if (!criteria.isEmpty()) {
+                req.setCriteria(criteria);
+            }
+            String username = origin.requesterId() != null && !origin.requesterId().isBlank()
+                    ? origin.requesterId() : "system";
+            GoalEntity created = goalService.create(req, username);
+            log.info("[PlanGeneration] Auto-derived goal {} from plan ({} criteria) for conversation {}",
+                    created.getId(), criteria.size(), convId);
+            return created;
+        } catch (Exception e) {
+            log.warn("[PlanGeneration] Auto-goal-from-plan skipped (non-fatal): {}", e.toString());
+            return null;
+        }
+    }
+
+    /**
+     * Enabled agents in the given workspace, excluding the parent (plan) agent
+     * itself — these are the agents a step can be delegated to. Empty when
+     * delegation is unavailable (no {@link AgentService}) or no peers exist.
+     */
+    private List<AgentEntity> listDelegatableAgents(Long workspaceId, String parentAgentId) {
+        if (agentService == null || workspaceId == null) {
+            return List.of();
+        }
+        try {
+            return agentService.listAgentsByWorkspace(workspaceId, true).stream()
+                    .filter(a -> a.getId() != null && !String.valueOf(a.getId()).equals(parentAgentId))
+                    .collect(Collectors.toList());
+        } catch (Exception e) {
+            log.warn("[PlanGeneration] Failed to list delegatable agents (non-fatal): {}", e.toString());
+            return List.of();
+        }
+    }
+
+    /**
+     * Map the planner's {@code step_agents} (agent names, parallel to steps) to
+     * agent ids. Returns {@code null} when nothing is delegated so {@code createPlan}
+     * stays on the legacy path. Names are matched case-insensitively against the
+     * delegatable agents; blank / unknown / parent-agent names resolve to {@code null}
+     * (that step runs with the parent agent).
+     */
+    private List<Long> resolveStepAgents(List<String> steps, List<String> stepAgents,
+                                         Long workspaceId, String parentAgentId) {
+        if (stepAgents == null || stepAgents.isEmpty() || steps == null || steps.isEmpty()) {
+            return null;
+        }
+        List<AgentEntity> delegatable = listDelegatableAgents(workspaceId, parentAgentId);
+        if (delegatable.isEmpty()) {
+            return null;
+        }
+        Map<String, Long> byName = new HashMap<>();
+        for (AgentEntity a : delegatable) {
+            if (a.getName() != null) {
+                byName.put(a.getName().trim().toLowerCase(), a.getId());
+            }
+        }
+        List<Long> ids = new ArrayList<>();
+        boolean any = false;
+        for (int i = 0; i < steps.size(); i++) {
+            String name = i < stepAgents.size() ? stepAgents.get(i) : null;
+            Long id = (name == null || name.isBlank()) ? null : byName.get(name.trim().toLowerCase());
+            if (id != null) {
+                any = true;
+            }
+            ids.add(id);
+        }
+        return any ? ids : null;
     }
 
     @Override
@@ -202,13 +404,23 @@ public class PlanGenerationNode implements NodeAction {
         }
 
         String systemPrompt = accessor.systemPrompt();
-        String agentId = state.value(MateClawStateKeys.TRACE_ID, "unknown");
+        // Persist plans under the real agent id (the same key StepExecutionNode
+        // reads), NOT the per-run trace id — otherwise mate_plan.agent_id holds a
+        // random trace string and listByAgent never matches, leaving the Plan
+        // board permanently empty even after plans are generated.
+        String agentId = state.value(MateClawStateKeys.AGENT_ID, "");
         String conversationId = accessor.conversationId();
 
-        log.info("[PlanGeneration] Evaluating goal: {}", goal.length() > 100 ? goal.substring(0, 100) + "..." : goal);
+        // The graph's goal carries framework scaffolding (memory recall block,
+        // scheduled-run wrapper, follow-up suffix). Persist and display the
+        // scrubbed user request so the Plan board shows the actual task; the raw
+        // goal still feeds the triage LLM below.
+        String persistGoal = displayGoal(goal);
+
+        log.info("[PlanGeneration] Evaluating goal: {}", persistGoal.length() > 100 ? persistGoal.substring(0, 100) + "..." : persistGoal);
 
         List<GraphEventPublisher.GraphEvent> events = new ArrayList<>();
-        events.add(GraphEventPublisher.phase("planning", Map.of("goal", goal)));
+        events.add(GraphEventPublisher.phase("planning", Map.of("goal", persistGoal)));
 
         // Replay path: plan is already in state (injected by chatWithReplayStream); skip LLM.
         Long existingPlanId = state.<Long>value(PlanStateKeys.PLAN_ID).orElse(null);
@@ -253,6 +465,24 @@ public class PlanGenerationNode implements NodeAction {
                 promptMessages.add(new UserMessage(
                         "可用工具：" + toolNames
                                 + "\n单次工具调用应归为单步（B），不要拆成多步。"));
+            }
+
+            // Advertise delegatable specialist agents so the planner can assign a
+            // multi-step plan's step to a dedicated agent (e.g. a test step to a
+            // QA agent, a UI step to a frontend agent). Only fills the step's
+            // step_agents slot; unassigned steps stay with the parent agent.
+            // Skipped entirely when no peer agents exist in the workspace.
+            List<AgentEntity> delegatable = listDelegatableAgents(chatOrigin.workspaceId(), agentId);
+            if (!delegatable.isEmpty()) {
+                String agentLines = delegatable.stream()
+                        .map(a -> "- " + a.getName()
+                                + (StringUtils.hasText(a.getDescription()) ? "：" + a.getDescription() : ""))
+                        .collect(Collectors.joining("\n"));
+                promptMessages.add(new UserMessage(
+                        "可委派的专职 Agent（仅当某步骤明显属于其专长时才指派，否则该步骤留空、由你自己执行）：\n"
+                                + agentLines
+                                + "\n若要委派，在 step_agents 数组对应位置填写 Agent 名称（与 steps 同序、等长）；"
+                                + "不委派的步骤填空字符串。多数步骤通常不需要委派。"));
             }
 
             // Inject working context (rolling conversation summary) so triage respects
@@ -327,8 +557,8 @@ public class PlanGenerationNode implements NodeAction {
                     log.warn("[PlanGeneration] Evidence gate overrode direct-answer route; "
                             + "downgrading to single-step plan so tools can execute (goal: {})",
                             goal.length() > 60 ? goal.substring(0, 60) + "..." : goal);
-                    List<String> gatedSteps = List.of(goal);
-                    var gatedPlan = planningService.createPlan(agentId, goal, gatedSteps);
+                    List<String> gatedSteps = List.of(persistGoal);
+                    var gatedPlan = planningService.createPlan(agentId, conversationId, persistGoal, gatedSteps);
                     events.add(GraphEventPublisher.planCreated(gatedPlan.getId(), gatedSteps));
                     return PlanStateAccessor.output()
                             .needsPlanning(true)
@@ -366,16 +596,37 @@ public class PlanGenerationNode implements NodeAction {
                 // can still reach the tools. (Previous behavior dropped back to
                 // direct_answer, which silently stripped tool capability.)
                 log.warn("[PlanGeneration] needs_planning=true with empty steps; falling back to single-step plan");
-                steps = List.of(goal);
+                steps = List.of(persistGoal);
             }
 
-            var plan = planningService.createPlan(agentId, goal, steps);
-            log.info("[PlanGeneration] Plan created: id={}, steps={} ({})",
-                    plan.getId(), steps.size(), steps.size() == 1 ? "single-step" : "multi-step");
+            // Resolve any per-step agent delegation the planner asked for. Null
+            // when nothing is delegated, keeping createPlan on the legacy path.
+            List<Long> stepAgentIds = resolveStepAgents(steps,
+                    triage != null ? triage.stepAgents() : null,
+                    chatOrigin.workspaceId(), agentId);
+            var plan = planningService.createPlan(agentId, conversationId, persistGoal, steps, stepAgentIds);
+            log.info("[PlanGeneration] Plan created: id={}, steps={} ({}){}",
+                    plan.getId(), steps.size(), steps.size() == 1 ? "single-step" : "multi-step",
+                    stepAgentIds != null ? ", per-step delegation=" + stepAgentIds : "");
 
             events.add(GraphEventPublisher.planCreated(plan.getId(), steps));
 
-            return PlanStateAccessor.output()
+            // Auto-derive a goal from a genuine multi-step plan so the
+            // Plan-Execute path engages the goal subsystem. Injected into
+            // ACTIVE_GOAL so this same run's GoalEvaluationNode evaluates it.
+            GoalEntity autoGoal = maybeAutoCreateGoal(accessor, steps);
+            if (autoGoal != null && goalService != null) {
+                // Surface it to the UI exactly like the setGoal tool does
+                // ({goalId, conversationId, goal}) so the goal panel hydrates
+                // even though the user never called setGoal. Same SSE event the
+                // frontend goal store already listens for.
+                events.add(new GraphEventPublisher.GraphEvent("goal_created", Map.of(
+                        "goalId", String.valueOf(autoGoal.getId()),
+                        "conversationId", conversationId,
+                        "goal", goalService.toResponse(autoGoal)), System.currentTimeMillis()));
+            }
+
+            PlanStateAccessor.OutputBuilder planOut = PlanStateAccessor.output()
                     .needsPlanning(true)
                     .planId(plan.getId())
                     .planSteps(steps)
@@ -385,8 +636,11 @@ public class PlanGenerationNode implements NodeAction {
                     .contentStreamed(true)
                     .thinkingStreamed(!result.thinking().isEmpty())
                     .mergeUsage(state, result)
-                    .events(events)
-                    .build();
+                    .events(events);
+            if (autoGoal != null) {
+                planOut.put(MateClawStateKeys.ACTIVE_GOAL, autoGoal);
+            }
+            return planOut.build();
 
         } catch (Exception e) {
             log.error("[PlanGeneration] Triage failed, falling back to single-step plan: {}", e.getMessage(), e);
@@ -395,12 +649,12 @@ public class PlanGenerationNode implements NodeAction {
             // answer. This preserves tool access on the failure path; the previous
             // "direct answer" fallback silently degraded tool-requiring tasks.
             try {
-                var plan = planningService.createPlan(agentId, goal, List.of(goal));
-                events.add(GraphEventPublisher.planCreated(plan.getId(), List.of(goal)));
+                var plan = planningService.createPlan(agentId, conversationId, persistGoal, List.of(persistGoal));
+                events.add(GraphEventPublisher.planCreated(plan.getId(), List.of(persistGoal)));
                 return PlanStateAccessor.output()
                         .needsPlanning(true)
                         .planId(plan.getId())
-                        .planSteps(List.of(goal))
+                        .planSteps(List.of(persistGoal))
                         .planValid(true)
                         .currentStepIndex(0)
                         .currentPhase("plan_generated")

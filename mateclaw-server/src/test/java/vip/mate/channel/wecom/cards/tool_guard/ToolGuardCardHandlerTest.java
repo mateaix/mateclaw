@@ -7,7 +7,9 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
 import vip.mate.approval.ApprovalService;
+import vip.mate.approval.ApprovalWorkflowService;
 import vip.mate.approval.PendingApproval;
+import vip.mate.approval.ResolveOutcome;
 import vip.mate.channel.ChannelMessage;
 import vip.mate.channel.wecom.WeComChannelAdapter;
 
@@ -32,6 +34,7 @@ import static org.mockito.Mockito.*;
 class ToolGuardCardHandlerTest {
 
     private ApprovalService approvalService;
+    private ApprovalWorkflowService approvalWorkflowService;
     private WeComChannelAdapter adapter;
     private ToolGuardButtonKey buttonKey;
     private ToolGuardCardHandler handler;
@@ -39,9 +42,10 @@ class ToolGuardCardHandlerTest {
     @BeforeEach
     void setUp() {
         approvalService = Mockito.mock(ApprovalService.class);
+        approvalWorkflowService = Mockito.mock(ApprovalWorkflowService.class);
         adapter = Mockito.mock(WeComChannelAdapter.class);
         buttonKey = new ToolGuardButtonKey(new ObjectMapper());
-        handler = new ToolGuardCardHandler(approvalService, buttonKey);
+        handler = new ToolGuardCardHandler(approvalService, approvalWorkflowService, buttonKey);
     }
 
     @Test
@@ -154,6 +158,68 @@ class ToolGuardCardHandlerTest {
 
         verify(adapter, never()).updateTemplateCard(anyString(), any());
         verify(adapter, never()).injectSyntheticMessage(any(ChannelMessage.class));
+    }
+
+    // ---- workflow-scoped (wf-) approval branch (ISSUE #413 P2-B3) ----
+
+    @Test
+    @DisplayName("wf- approval: card click resolves inline (no synthetic /approve injection)")
+    void workflowApprovalResolvesInline() {
+        // A workflow-scoped approval has userId=null (system-initiated) and a
+        // wf- pendingId. Before P2-B3 the identity check (requester==clicker)
+        // rejected every click — wf- approvals could only be resolved from the
+        // admin console. Now any audience member may resolve, and the handler
+        // calls resolve() directly (the synthetic injection is a dead end for
+        // wf- ids since their conversationId is workflow:run:{runId}).
+        PendingApproval wfPending = new PendingApproval(
+                "wf-abc123def456", "workflow:run:42", null,
+                "workflow:manager", "{}", "await manager approval");
+        when(approvalService.getPending("wf-abc123def456")).thenReturn(Optional.of(wfPending));
+        when(approvalWorkflowService.resolve("wf-abc123def456", "carol", "approved"))
+                .thenReturn(new ResolveOutcome(
+                        "wf-abc123def456", "workflow:run:42", "workflow:manager",
+                        "approved", null, true, 0));
+
+        Map<String, Object> frame = inboundFrame("evt_req_wf1", buttonKey.encode(
+                ToolGuardButtonKey.Action.APPROVE, "wf-abc123def456", "workflow:manager", "MEDIUM"));
+        handler.handle(adapter, frame, tce(frame), fromBlock("carol"));
+
+        // resolve() was called inline — ApprovalResumeBridge resumes the run.
+        verify(approvalWorkflowService, times(1)).resolve("wf-abc123def456", "carol", "approved");
+        // The synthetic /approve injection is NOT used for wf- approvals.
+        verify(adapter, never()).injectSyntheticMessage(any(ChannelMessage.class));
+        // A resolved card was rendered.
+        verify(adapter, times(1)).updateTemplateCard(eq("evt_req_wf1"), any());
+    }
+
+    @Test
+    @DisplayName("wf- approval already resolved: renders 'expired' card, no resolve call")
+    void workflowApprovalAlreadyResolved() {
+        PendingApproval wfPending = new PendingApproval(
+                "wf-alreadydone", "workflow:run:43", null,
+                "workflow:manager", "{}", "await manager approval");
+        when(approvalService.getPending("wf-alreadydone")).thenReturn(Optional.of(wfPending));
+        // dbSynced=false means the row was already terminal (approved/denied
+        // via another path). The handler renders 'expired' and does not treat
+        // it as an error.
+        when(approvalWorkflowService.resolve(eq("wf-alreadydone"), anyString(), anyString()))
+                .thenReturn(new ResolveOutcome(
+                        "wf-alreadydone", null, null,
+                        "already_resolved", null, false, 0));
+
+        Map<String, Object> frame = inboundFrame("evt_req_wf2", buttonKey.encode(
+                ToolGuardButtonKey.Action.DENY, "wf-alreadydone", "workflow:manager", "LOW"));
+        handler.handle(adapter, frame, tce(frame), fromBlock("dave"));
+
+        verify(approvalWorkflowService, times(1)).resolve(eq("wf-alreadydone"), eq("dave"), eq("denied"));
+        verify(adapter, never()).injectSyntheticMessage(any(ChannelMessage.class));
+        // 'expired' card was rendered (title mentions 过期).
+        ArgumentCaptor<Map<String, Object>> cardCaptor = cardArgCaptor();
+        verify(adapter, times(1)).updateTemplateCard(eq("evt_req_wf2"), cardCaptor.capture());
+        @SuppressWarnings("unchecked")
+        Map<String, Object> mainTitle = (Map<String, Object>) cardCaptor.getValue().get("main_title");
+        assertTrue(((String) mainTitle.get("title")).contains("过期"),
+                "already-resolved wf- should show expired card; got: " + mainTitle.get("title"));
     }
 
     // ---- helpers ----

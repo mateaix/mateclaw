@@ -2,6 +2,10 @@
   <div class="mc-page-shell wiki-shell">
     <div class="mc-page-frame wiki-frame">
       <div class="mc-page-inner wiki-inner">
+        <WikiFailureCenter
+          v-if="!store.currentKB && isAdmin"
+          @open="openFromFailureCenter"
+        />
         <WikiLibrary
           v-if="!store.currentKB"
           :kbs="store.knowledgeBases"
@@ -40,7 +44,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, watch, onMounted } from 'vue'
+import { ref, reactive, watch, onMounted, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { useWikiStore, type WikiKB } from '@/stores/useWikiStore'
@@ -49,12 +53,17 @@ import { mcConfirm } from '@/components/common/useConfirm'
 import { mcToast } from '@/composables/useMcToast'
 import WikiLibrary from './components/WikiLibrary.vue'
 import WikiWorkspace from './components/WikiWorkspace.vue'
+import WikiFailureCenter from './components/WikiFailureCenter.vue'
 
 const route = useRoute()
 const router = useRouter()
 
 const { t } = useI18n()
 const store = useWikiStore()
+
+// The cross-KB failure center spans every workspace, so it is admin-only —
+// mirrors the gate on the backing endpoint.
+const isAdmin = computed(() => (localStorage.getItem('role') || 'user') === 'admin')
 
 interface KBStats {
   pageCount: number
@@ -84,6 +93,12 @@ const newKBDesc = ref('')
 
 async function enterKB(id: number) {
   await store.selectKB(id, 'browse')
+}
+
+// The failure center emits a Snowflake kbId as a string — keep it a string end
+// to end (snowflake-precision-ok) and let the store cast satisfy its signature.
+async function openFromFailureCenter(kbId: string) {
+  await store.selectKB(kbId as unknown as number, 'browse')
 }
 
 async function enterKBManage(id: number) {
@@ -117,47 +132,90 @@ async function handleDeleteKB(kb: WikiKB) {
   }
 }
 
-async function consumeQueryNavigation() {
-  // Global wikilink click delegator (see App.vue) pushes us with
-  // ?kbId=X&slug=Y on click. Honour both: enter the KB then surface
-  // the page directly. Strips the query immediately so a manual reload
-  // doesn't keep re-opening the same page.
-  //
-  // **Snowflake precision** (per CLAUDE.md): the kbId is a 19-digit
-  // Snowflake that exceeds Number.MAX_SAFE_INTEGER. NEVER coerce via
-  // Number()/parseInt() — that truncates the last 2-3 digits and turns
-  // a real lookup into a silent "KB not found". Keep the string and
-  // pass it through to the store; the store / api layer treats kbId as
-  // an opaque token interpolated into the request URL.
-  const kbIdRaw = route.query.kbId
-  const slugRaw = route.query.slug
-  if (typeof kbIdRaw !== 'string' || !kbIdRaw) return
-  if (typeof slugRaw !== 'string' || !slugRaw) return
-  // Cast to number ONLY to satisfy the store's type signature — the
-  // runtime value stays a string under the hood. TypeScript can't
-  // express "number-or-Snowflake-string" without widening every signature,
-  // so the cast is the localised, documented escape hatch.
-  // snowflake-precision-ok: kbIdRaw is the URL-encoded string from the
-  // global click delegator; never passed through Number()/parseInt().
-  const kbId = kbIdRaw as unknown as number
-  await store.selectKB(kbId)
-  try {
-    await store.loadPage(kbId, slugRaw)
-  } catch (e) {
-    console.warn('[Wiki] auto-open page failed', e)
-  }
-  // Drop the query so back-button + reload behave sanely.
-  router.replace({ name: 'Wiki' })
+// ---- URL ↔ store sync --------------------------------------------------
+// The open KB (and the open page within it) live in the route so a manual
+// refresh restores exactly where you were instead of dropping back to the
+// library list. Canonical shape: /wiki/:kbId?view=manage&slug=<page>.
+//
+// The store stays the source of truth for the rendered view; we mirror it
+// into the URL (syncUrlFromStore) and seed it from the URL on first load and
+// on browser back/forward (syncStoreFromUrl). A single `syncing` latch keeps
+// the two watchers from ping-ponging.
+//
+// **Snowflake precision** (per CLAUDE.md): kbId is a 19-digit Snowflake that
+// exceeds Number.MAX_SAFE_INTEGER. NEVER Number()/parseInt() it — that
+// truncates the id into a silent "KB not found". It stays a string and is
+// passed opaquely to the store / API; the `as unknown as number` casts only
+// satisfy the store's numeric type signature — the runtime value is the string.
+let syncing = false
+
+function routeKbId(): string | null {
+  // Accept the canonical path param and the legacy ?kbId= query that the
+  // global wikilink delegator still pushes (App.vue → useGlobalWikilinkClick).
+  const fromParam = route.params.kbId
+  if (typeof fromParam === 'string' && fromParam) return fromParam
+  const fromQuery = route.query.kbId
+  if (typeof fromQuery === 'string' && fromQuery) return fromQuery
+  return null
 }
+
+async function syncStoreFromUrl() {
+  if (syncing) return
+  syncing = true
+  try {
+    const kbId = routeKbId()
+    const mode = route.query.view === 'manage' ? 'manage' : 'browse'
+    const slug = typeof route.query.slug === 'string' ? route.query.slug : ''
+    if (kbId) {
+      if (String(store.currentKB?.id ?? '') !== kbId) {
+        // snowflake-precision-ok: kbId is the raw route string, never coerced.
+        await store.selectKB(kbId as unknown as number, mode)
+      } else if (store.workspaceMode !== mode) {
+        store.setWorkspaceMode(mode)
+      }
+      if (slug && store.currentPage?.slug !== slug) {
+        // snowflake-precision-ok: kbId stays a string end to end.
+        try { await store.loadPage(kbId as unknown as number, slug) }
+        catch (e) { console.warn('[Wiki] open page from url failed', e) }
+      }
+    } else if (store.currentKB) {
+      store.backToLibrary()
+    }
+  } finally {
+    syncing = false
+  }
+}
+
+function syncUrlFromStore() {
+  if (syncing) return
+  const kb = store.currentKB
+  const params: Record<string, string> = kb ? { kbId: String(kb.id) } : {}
+  const query: Record<string, string> = {}
+  if (kb) {
+    if (store.workspaceMode === 'manage') query.view = 'manage'
+    if (store.currentPage?.slug) query.slug = store.currentPage.slug
+  }
+  const sameKb = String(route.params.kbId ?? '') === (params.kbId ?? '')
+  const sameView = (route.query.view ?? '') === (query.view ?? '')
+  const sameSlug = (route.query.slug ?? '') === (query.slug ?? '')
+  // Collapse the legacy ?kbId= query into the canonical path-param form.
+  const legacyQuery = route.query.kbId != null
+  if (sameKb && sameView && sameSlug && !legacyQuery) return
+  router.replace({ name: 'Wiki', params, query })
+}
+
+watch(
+  () => [store.currentKB?.id, store.workspaceMode, store.currentPage?.slug],
+  syncUrlFromStore,
+)
+
+watch(() => route.fullPath, () => { syncStoreFromUrl() })
 
 onMounted(async () => {
   await store.fetchKnowledgeBases()
-  await consumeQueryNavigation()
+  await syncStoreFromUrl()
+  syncUrlFromStore()
 })
-
-// Re-consume the query when a click delegator navigates while we're
-// already on /wiki (route.path unchanged, query changed).
-watch(() => route.query, () => { consumeQueryNavigation() })
 </script>
 
 <style scoped>

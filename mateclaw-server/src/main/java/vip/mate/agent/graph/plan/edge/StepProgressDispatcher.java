@@ -30,6 +30,12 @@ public class StepProgressDispatcher implements EdgeAction {
         if ("awaiting_approval".equals(currentPhase) || "plan_aborted".equals(currentPhase)) {
             return StateGraph.END;
         }
+        // Step-failure recovery: a failed step requested a re-plan of the
+        // remaining work. Route back to PlanGeneration instead of aborting;
+        // PLAN_REPLAN_COUNT (set by StepExecutionNode) bounds the loop.
+        if ("plan_replan".equals(currentPhase)) {
+            return PlanStateKeys.PLAN_GENERATION_NODE;
+        }
 
         int currentIndex = state.value(PlanStateKeys.CURRENT_STEP_INDEX, 0);
         List<String> steps = state.<List<String>>value(PlanStateKeys.PLAN_STEPS).orElse(List.of());

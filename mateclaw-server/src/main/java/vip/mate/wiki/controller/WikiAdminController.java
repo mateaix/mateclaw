@@ -6,15 +6,25 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.GrantedAuthority;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import vip.mate.common.result.R;
+import vip.mate.exception.MateClawException;
+import vip.mate.wiki.dto.WikiFailureItem;
 import vip.mate.wiki.job.WikiChunkTokenBackfillJob;
 import vip.mate.wiki.service.WikiOverviewService;
+import vip.mate.wiki.service.WikiPageService;
+import vip.mate.wiki.service.WikiRawMaterialService;
 import vip.mate.wiki.service.WikiScaffoldService;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import vip.mate.workspace.core.annotation.RequireWorkspaceRole;
 
@@ -34,6 +44,8 @@ import vip.mate.workspace.core.annotation.RequireWorkspaceRole;
 public class WikiAdminController {
 
     private final WikiScaffoldService scaffoldService;
+    private final WikiPageService pageService;
+    private final WikiRawMaterialService rawService;
 
     /** Optional so the controller can boot in environments where the rebuilder isn't wired (e.g. minimal tests). */
     @Autowired(required = false)
@@ -80,5 +92,51 @@ public class WikiAdminController {
         body.put("pendingAfter", afterPending);
         body.put("filledThisBatch", Math.max(0, beforePending - afterPending));
         return ResponseEntity.ok(body);
+    }
+
+    @Operation(summary = "Merge duplicate pages that share a canonical title",
+               description = "Heals duplicate rows produced before title-based dedup existed (one concept "
+                       + "stored under several LLM-minted slugs). Defaults to a dry run that only reports "
+                       + "what would change. Set dryRun=false to apply. concatenate=true (default) appends each "
+                       + "loser's body to the winner so no content is lost; concatenate=false keeps only the "
+                       + "winner's body. Protected (system/locked) pages always win and are never deleted.")
+    @PostMapping("/kb/{kbId}/merge-duplicate-titles")
+    @RequireWorkspaceRole("admin")
+    public ResponseEntity<Map<String, Object>> mergeDuplicateTitles(
+            @PathVariable Long kbId,
+            @RequestParam(defaultValue = "true") boolean dryRun,
+            @RequestParam(defaultValue = "true") boolean concatenate) {
+        Map<String, Object> report = pageService.mergeDuplicateTitles(kbId, dryRun, concatenate);
+        return ResponseEntity.ok(report);
+    }
+
+    /**
+     * Centralized, cross-knowledge-base list of materials needing operator
+     * attention (failed / partial / completed-but-degraded). Lets an admin
+     * triage background ingest problems without opening each KB in turn —
+     * the count behind the sidebar attention badge resolves here.
+     *
+     * <p>Platform-admin only: it deliberately spans every workspace, so it is
+     * gated on {@code ROLE_ADMIN} rather than a per-workspace role.
+     */
+    @Operation(summary = "跨知识库列出需要关注的处理失败/降级材料（管理员）")
+    @GetMapping("/failures")
+    public R<List<WikiFailureItem>> listFailures(
+            @RequestParam(defaultValue = "100") int limit,
+            Authentication auth) {
+        requireAdmin(auth);
+        return R.ok(rawService.listFailures(limit));
+    }
+
+    private void requireAdmin(Authentication auth) {
+        if (auth == null) {
+            throw new MateClawException(401, "authentication required");
+        }
+        boolean admin = auth.getAuthorities().stream()
+                .map(GrantedAuthority::getAuthority)
+                .anyMatch("ROLE_ADMIN"::equals);
+        if (!admin) {
+            throw new MateClawException(403, "admin only");
+        }
     }
 }

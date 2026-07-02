@@ -120,6 +120,14 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
     JAVA_TOOL_OPTIONS="-Duser.timezone=Asia/Shanghai -Dsun.jnu.encoding=UTF-8" \
     PIP_INDEX_URL=https://pypi.org/simple \
     PIP_TRUSTED_HOST=pypi.org
+
+# Default DB profile, overridable by the SPRING_PROFILES_ACTIVE env var
+# (compose sets it explicitly: mysql / postgres / kingbase). It must be an ENV,
+# not a -D system property on the ENTRYPOINT: a hardcoded
+# -Dspring.profiles.active outranks the SPRING_PROFILES_ACTIVE env var and would
+# silently pin the profile regardless of what compose passes.
+ENV SPRING_PROFILES_ACTIVE=mysql
+
 COPY --from=builder /build/mateclaw-server/target/*.jar app.jar
 
 # Copy GitHub webhook sync script and startup entrypoint

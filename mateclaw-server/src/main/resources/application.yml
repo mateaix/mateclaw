@@ -19,7 +19,7 @@ spring:
   profiles:
     active: dev
 
-  # 数据源（默认 H2，生产切换为 mysql profile）
+  # 数据源（默认 H2，生产切换为 mysql 或 kingbase profile）
   datasource:
     url: jdbc:h2:file:./data/mateclaw;MODE=MySQL;DATABASE_TO_LOWER=TRUE;CASE_INSENSITIVE_IDENTIFIERS=TRUE
     driver-class-name: org.h2.Driver
@@ -116,11 +116,16 @@ mybatis-plus:
     log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
 
 # SpringDoc OpenAPI
+# 注意：/swagger-ui*、/v3/api-docs*、/webjars/** 落在 SecurityConfig 的
+# .anyRequest().permitAll()，即 Swagger UI 当前公开可访问。如生产需要收口，
+# 在 SecurityConfig 加显式规则（不要在此处配）。
 springdoc:
   api-docs:
     path: /v3/api-docs
   swagger-ui:
     path: /swagger-ui.html
+  # 把单个嵌套 query 参数对象（如分页 wrapper）拍平成独立字段，减少 schema 噪音
+  default-flat-param-object: true
 
 # MateClaw 自定义配置
 mateclaw:
@@ -131,9 +136,38 @@ mateclaw:
     # Set this when agents deliver download links to channels/clients that cannot
     # resolve a relative URL (IM messages, copied links, external downloads).
     public-base-url: ${MATECLAW_PUBLIC_BASE_URL:}
+  openapi:
+    # SpringDoc OpenAPI 元信息（驱动 /swagger-ui.html 与 /v3/api-docs）。
+    # server-url 留空时由 SpringDoc 从请求 host 推导，避免 Try it out 打到错误地址。
+    # 生产若需固定，通过 MATECLAW_OPENAPI_SERVER_URL 覆盖（如 https://mate.example.com）。
+    title: ${MATECLAW_OPENAPI_TITLE:MateClaw REST API}
+    version: ${MATECLAW_OPENAPI_VERSION:1.0}
+    server-url: ${MATECLAW_OPENAPI_SERVER_URL:}
+    # description 留空则使用 OpenApiConfig 中的内置默认描述
+    description: ${MATECLAW_OPENAPI_DESCRIPTION:}
+    # 是否公开 Swagger UI / OpenAPI 文档路径（/swagger-ui*、/v3/api-docs*、/webjars/**）。
+    # true  = 任何人可浏览（本地开发 / 内网默认）；
+    # false = 需要全局管理员（ROLE_ADMIN）才能访问，由 SecurityConfig 强制。
+    # 生产数据库 profile（mysql/kingbase/postgres）默认覆盖为 false。
+    expose-ui: ${MATECLAW_OPENAPI_EXPOSE_UI:true}
   jwt:
     secret: ${JWT_SECRET:MateClaw-JWT-Secret-Key-2024-Please-Change-In-Production}
     expiration: 86400000
+  sso:
+    # 全局开关（默认关闭，不影响现有部署）
+    enabled: ${SSO_ENABLED:false}
+    # 「仅允许绑定已有账号」模式（false = 允许自动创建新用户）
+    link-only: ${SSO_LINK_ONLY:false}
+    # 新建 SSO 用户的默认角色
+    default-role: ${SSO_DEFAULT_ROLE:user}
+    feishu:
+      enabled: ${SSO_FEISHU_ENABLED:false}
+      app-id: ${SSO_FEISHU_APP_ID:}
+      app-secret: ${SSO_FEISHU_APP_SECRET:}
+      # 国际版切换: feishu (国内) / lark (国际版 Lark)
+      domain: ${SSO_FEISHU_DOMAIN:feishu}
+      # SSO 回调地址，通常 https://your-domain/login?sso=callback
+      redirect-uri: ${SSO_FEISHU_REDIRECT_URI:}
   # 搜索配置已迁移至数据库（mate_system_setting 表），通过 UI 系统设置管理
   # MCP server 配置已迁移至数据库（mate_mcp_server 表），通过 UI 管理
   mcp:
@@ -155,6 +189,15 @@ mateclaw:
       # unconstrained behaviour for unconfigured conversations.
       enabled: ${MATECLAW_WORKSPACE_SANDBOX_ENABLED:true}
       root: ${MATECLAW_WORKSPACE_SANDBOX_ROOT:${user.dir}/data/workspace}
+  chat:
+    upload:
+      # Root directory for conversation chat attachments when neither the active
+      # agent nor its workspace configures a base path. Attachments resolve to
+      # {baseDir}/{conversationId}/{storedName}. When a workspace/agent base path
+      # IS configured, attachments land under {basePath}/chat-uploads/{convId}/
+      # instead; reads and cleanup still check this default dir so legacy uploads
+      # remain resolvable. Defaults to the legacy location for zero-config parity.
+      base-dir: ${MATECLAW_CHAT_UPLOAD_BASE_DIR:data/chat-uploads}
   skill:
     workspace:
       # Skill workspace root. Override with MATECLAW_SKILL_WORKSPACE_ROOT to
@@ -202,6 +245,12 @@ mateclaw:
     audit:
       enabled: true              # 每次派发写 mate_hook_run
       retain-days: 7
+  security:
+    # Hosts/IPs/CIDR blocks allowed through the SSRF guards (browser, hooks, image
+    # download) even though they are loopback/private/link-local/metadata. Each
+    # entry is a literal hostname, a literal IP, or an IPv4 CIDR block. Keep narrow.
+    # Example: [192.168.100.100, 192.168.100.0/24, internal.corp]
+    ssrf-allowlist: []
   # RFC-014: Anthropic prompt cache 标记
   llm:
     cache:
@@ -325,3 +374,14 @@ mate:
       contradiction-check-enabled: false       # experimental simple detection, enable after LLM batch impl
       trust-half-life-days: 60
       forget-enabled: true
+    # Always-on injection budget — bounds the per-turn size of the user/feedback structured block
+    system-block-max-chars: 4000               # char cap on the always-on block; over budget drops oldest by Updated date (LRU); 0 = unlimited
+    system-block-max-entries-per-type: 40       # max entries injected per type (user/feedback); 0 = unlimited
+    # Structured-memory consolidation — separate maintenance task; LLM merges duplicate/stale user/feedback entries (shared + per-owner) to curb storage growth
+    structured-consolidation-enabled: true            # off = injection cap only, no storage-side merge
+    structured-consolidation-min-entries: 8            # buckets with fewer entries skip the LLM call to save cost
+    structured-consolidation-cron: "0 30 3 * * ?"     # own schedule, decoupled from dreaming-enabled / dreaming-cron
+    structured-consolidation-max-owners-per-run: 50    # cap LLM cost per agent per run; remaining owners picked up next run; 0 = unlimited
+    # Always-on file ceilings — deterministic backstop so PROFILE.md / MEMORY.md (LLM-rewritten) cannot grow per-turn context without bound
+    profile-max-chars: 4000                            # PROFILE.md hard cap; truncates at a section boundary if the rewrite overruns; 0 = unlimited
+    memory-md-max-chars: 8000                          # MEMORY.md hard cap; 0 = unlimited

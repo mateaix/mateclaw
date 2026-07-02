@@ -73,11 +73,10 @@ MateClaw 实现了滑动窗口 token 续签。当 token 剩余有效期低于 `r
 
 ```yaml
 mateclaw:
-  auth:
-    jwt:
-      secret: your-secret-key-must-be-at-least-32-characters-long
-      expiration: 86400000    # 24 小时，毫秒
-      sliding-window: true
+  jwt:
+    secret: your-secret-key-must-be-at-least-32-characters-long
+    expiration: 86400000          # token 有效期（毫秒，默认 24 小时）
+    renewal-threshold: 7200000    # 剩余有效期低于此值（毫秒）触发滑动续期
 ```
 
 ::: warning
@@ -267,7 +266,7 @@ POST /api/v1/chat/stream，消息为 /approve 或 /deny
 | `tool_name` | 要调的工具 |
 | `tool_args` | 实际参数的 JSON |
 | `rule_id` | 触发审批的规则 |
-| `status` | `pending` / `approved` / `rejected` / `expired` |
+| `status` | `pending` / `approved` / `denied` / `consumed` / `timeout` / `superseded` |
 | `requested_at` | 审批被创建的时间 |
 | `resolved_at` | 用户决定的时间 |
 | `resolved_by` | 谁决定的 |
@@ -279,7 +278,7 @@ POST /api/v1/chat/stream，消息为 /approve 或 /deny
 
 ### 超时
 
-Pending approval 在一个可配置的超时后过期（默认 10 分钟）。过期的审批变成 `rejected`，Agent 把这个过期当作用户的拒绝一样对待。
+Pending approval 在一个可配置的超时后过期（默认 30 分钟）。过期的审批变成 `timeout`，Agent 把这个过期当作用户的拒绝一样对待。
 
 ### 通知
 
@@ -348,20 +347,14 @@ File Guard 是文件系统级的访问控制。它坐在读写文件的任何工
 
 ### 配置
 
+允许 / 禁止路径规则存在数据库，从管理台「安全」页或 `GET` / `PUT /api/v1/security/guard/config/file-guard` 管理——**不在 application.yml**。application.yml 里只有一项：会话没有 per-workspace base path 时，文件 / Shell 工具被限制其中的**全局兜底沙箱根**：
+
 ```yaml
 mateclaw:
-  security:
-    file-guard:
-      enabled: true
-      allowed-paths:
-        - "${user.dir}/workspace"
-        - "${java.io.tmpdir}/mateclaw"
-      denied-paths:
-        - "/etc"
-        - "/usr"
-        - "${user.home}/.ssh"
-        - "${user.home}/.config"
-        - "${user.home}/.env"
+  workspace:
+    sandbox:
+      enabled: true                    # 设 false 恢复旧的不受限行为
+      root: ${user.dir}/data/workspace # 兜底沙箱根，启动时自动创建
 ```
 
 可视化编辑器在 `设置 → 安全与审批 → File Guard`。
@@ -516,6 +509,45 @@ server {
 }
 ```
 
+### 出站请求防护（SSRF）
+
+凡是 Agent 能驱动的**对外 HTTP 请求**，都默认带 SSRF 防护，避免被诱导去探测内网或云厂商元数据端点。覆盖三条出站路径：
+
+| 出站路径 | 触发方 | 默认行为 |
+|----------|--------|----------|
+| **浏览器工具** | `browser_use` 的 `open` 动作 | 解析目标主机，命中受限地址即拒绝 |
+| **Hook Webhook** | Hook 动作的 HTTP 调用 | 主机须在 `trusted-domains` 内，且不得是私网地址 |
+| **图片下载** | 图片工具按 URL 拉取素材 | 命中私网/回环主机即拒绝 |
+
+默认拦截的地址类别：回环（`127.0.0.0/8`、`::1`）、私网（`10/8`、`172.16/12`、`192.168/16`）、链路本地（`169.254/16`、`fe80::/10`）、任意本地地址、组播，以及云厂商元数据端点（`169.254.169.254`、`100.100.100.200`、`192.0.0.192` 等）。
+
+#### 放行内网地址：`mateclaw.security.ssrf-allowlist`
+
+需要让 Agent 访问某个内网服务时，把它加进统一白名单。**一处配置，三条出站路径同时生效。** 每个条目是以下三种之一：
+
+| 形态 | 例子 | 说明 |
+|------|------|------|
+| 字面主机名 | `internal.corp` | 大小写不敏感的精确匹配 |
+| 字面 IP | `192.168.100.100` | 精确匹配该地址 |
+| IPv4 CIDR 段 | `192.168.100.0/24` | 匹配该网段内的所有 IP |
+
+```yaml
+mateclaw:
+  security:
+    ssrf-allowlist:
+      - 192.168.100.100      # 单个内网地址
+      - 192.168.100.0/24     # 整段内网
+      - internal.corp        # 内网主机名
+```
+
+放行规则**只放开列出的条目**：白名单里写 `192.168.100.0/24` 不会连带放开 `192.168.200.x`，写 `192.168.100.100` 也不会放开同段的其它 IP。改完需重启后台生效。
+
+::: warning 保持最小化
+白名单条目**可以重新放开云厂商元数据端点**（如 `169.254.169.254`）。一旦放开，被攻陷的 Agent 可能借此窃取云凭据。只加确实需要的内网地址，**永远不要**用宽 CIDR（如 `0.0.0.0/0`、`10.0.0.0/8`）一把放开。
+:::
+
+浏览器工具另有一个总开关 `mateclaw.browser.ssrf-check-enabled`（默认 `true`）。把它设为 `false` 会**整体关闭**浏览器路径的 SSRF 校验——连元数据端点一起放开，不推荐；优先用上面的白名单做精确放行。
+
 ---
 
 ## 安全最佳实践
@@ -534,41 +566,34 @@ server {
 
 ## 安全配置参考
 
+application.yml 里有**三块**安全相关配置——JWT、文件沙箱，以及出站请求白名单：
+
 ```yaml
 mateclaw:
-  auth:
-    jwt:
-      secret: ${JWT_SECRET:your-secret-key-at-least-32-chars}
-      expiration: 86400
-      sliding-window-ratio: 0.5
+  jwt:
+    secret: ${JWT_SECRET:your-secret-key-at-least-32-chars}
+    expiration: 86400000          # token 有效期（毫秒）
+    renewal-threshold: 7200000    # 剩余有效期低于此值时滑动续期（毫秒）
 
-  tool:
-    guard:
+  # 文件 / Shell 工具的全局兜底沙箱：会话没有 per-workspace base path 时，
+  # 所有文件 / Shell 操作被限制在这个根目录内（fail-closed 默认）
+  workspace:
+    sandbox:
       enabled: true
-      default-policy: require_approval
-      approval-timeout-seconds: 600
-      notifications:
-        email-enabled: false
-        dingtalk-enabled: false
+      root: ${user.dir}/data/workspace
 
+  # 出站请求 SSRF 白名单：放行特定内网主机/IP/CIDR，浏览器、Hook、
+  # 图片下载三条出站路径共用。留空表示按默认策略拦截全部私网地址。
   security:
-    file-guard:
-      enabled: true
-      allowed-paths:
-        - "${user.dir}/workspace"
-      denied-paths:
-        - "/etc"
-        - "${user.home}/.ssh"
-
-    audit-log:
-      enabled: true
-      retention-days: 90
-
-    skill:
-      security-scan:
-        enabled: true
-        block-critical: true
+    ssrf-allowlist: []            # 例：[192.168.100.100, 192.168.100.0/24]
 ```
+
+**其余安全配置不走 application.yml，而是存在数据库、从管理台「安全」页（或 `/api/v1/security/guard/*`）管理**：
+
+- **Tool Guard** 的开关、默认策略、规则、审批超时（默认 30 分钟）、通知渠道 → `mate_tool_guard_config` / `mate_tool_guard_rule`
+- **File Guard** 的允许 / 禁止路径规则 → `GET` / `PUT /api/v1/security/guard/config/file-guard`
+- **审计日志**默认常开，逐条写入 `mate_tool_guard_audit_log`，可导出 CSV
+- **技能安全扫描**的发现落在技能安装流程里，CRITICAL 发现默认拦截
 
 ---
 

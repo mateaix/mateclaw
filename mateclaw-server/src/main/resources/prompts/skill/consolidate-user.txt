@@ -1,0 +1,6 @@
+## Agent-created skill catalog
+Each entry shows the skill name, its description, and a truncated body.
+
+{skills}
+
+Find groups of near-duplicate skills worth merging into a broader umbrella, following the rules. Output ONLY the JSON array.

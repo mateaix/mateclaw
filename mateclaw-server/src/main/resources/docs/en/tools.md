@@ -6,7 +6,7 @@ Left to its own devices, a language model is a pattern-matcher wrapped in text. 
 
 Tools are how MateClaw fixes this. Each tool is a concrete operation the agent is allowed to invoke — read a file, search the web, execute a shell command, extract text from a PDF, delegate to another agent. When the agent decides it needs one, it emits a **tool call**, the runtime executes it, and the result comes back as an **observation**.
 
-Fourteen tools ship built-in. Unlimited more can be added through MCP servers, custom skill scripts, or your own `@Tool`-annotated Spring beans.
+Twenty tools ship built-in. Unlimited more can be added through MCP servers, custom skill scripts, or your own `@Tool`-annotated Spring beans.
 
 ---
 
@@ -319,10 +319,8 @@ curl http://localhost:18088/api/v1/tools \
   -H "Authorization: Bearer YOUR_JWT_TOKEN"
 
 # Enable / disable
-curl -X PUT http://localhost:18088/api/v1/tools/1 \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer YOUR_JWT_TOKEN" \
-  -d '{"enabled": false}'
+curl -X PUT "http://localhost:18088/api/v1/tools/1/toggle?enabled=false" \
+  -H "Authorization: Bearer YOUR_JWT_TOKEN"
 
 # Set disclosure tier for a builtin or channel tool
 curl -X PUT http://localhost:18088/api/v1/tools/1/disclosure-tier \

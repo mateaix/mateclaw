@@ -17,6 +17,8 @@ import vip.mate.approval.MetadataDecision;
 import vip.mate.agent.repository.AgentMapper;
 import vip.mate.approval.model.ToolApprovalEntity;
 import vip.mate.approval.repository.ToolApprovalMapper;
+import vip.mate.auth.model.UserEntity;
+import vip.mate.auth.service.AuthService;
 import vip.mate.channel.model.ChannelSessionEntity;
 import vip.mate.channel.repository.ChannelSessionMapper;
 import vip.mate.task.model.AsyncTaskEntity;
@@ -29,12 +31,13 @@ import vip.mate.workspace.conversation.repository.ConversationMapper;
 import vip.mate.workspace.conversation.repository.MessageMapper;
 import vip.mate.workspace.conversation.vo.ConversationVO;
 import vip.mate.workspace.conversation.vo.MessageVO;
+import vip.mate.workspace.core.service.ChatUploadLocationResolver;
+import vip.mate.workspace.core.service.WorkspaceService;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -62,6 +65,17 @@ public class ConversationService {
 
     public static final String SYSTEM_USER = "system";
 
+    /**
+     * Owner prefix for webchat conversations, written as {@code webchat:<visitorId>}
+     * (see {@code WebChatController#webchatUsername}). These rows are owned by an
+     * external visitor principal rather than a MateClaw account, so the admin
+     * console treats them like {@link #SYSTEM_USER} rows — visible to / manageable
+     * by any authenticated user in the workspace. The visitor-facing self-service
+     * endpoints keep isolating by the exact owner plus a signed visitor token, so
+     * surfacing these rows to the console does not widen a visitor's own access.
+     */
+    static final String WEBCHAT_OWNER_PREFIX = "webchat:";
+
     private final ConversationMapper conversationMapper;
     private final MessageMapper messageMapper;
     private final AgentMapper agentMapper;
@@ -70,6 +84,16 @@ public class ConversationService {
     private final AsyncTaskMapper asyncTaskMapper;
     private final ChannelSessionMapper channelSessionMapper;
     private final ApplicationEventPublisher eventPublisher;
+    private final AuthService authService;
+    private final WorkspaceService workspaceService;
+
+    /**
+     * Resolves the workspace/agent-aware chat-upload directory. The resolver
+     * injects {@code AgentService} lazily, which breaks the would-be cycle
+     * (agentService → agentGraphBuilder → this → resolver → agentService), so a
+     * plain constructor injection here is sufficient.
+     */
+    private final ChatUploadLocationResolver chatUploadLocationResolver;
 
     /**
      * Optional spill store. Injected via a setter so the existing @RequiredArgsConstructor
@@ -97,17 +121,44 @@ public class ConversationService {
     /**
      * Workspace-scoped variant of {@link #listConversations(String)}.
      *
+     * <p>Strict ownership: only the user's own + {@code system} rows. Used by
+     * callers that must not see other principals' conversations — notably the
+     * webchat visitor self-service path, which scopes to one visitor.
+     *
      * <p>获取用户的会话列表（按工作区过滤）。
      */
     public List<ConversationVO> listConversations(String username, Long workspaceId) {
+        return listConversations(username, workspaceId, false);
+    }
+
+    /**
+     * Admin-console variant. When {@code includeChannelPrincipals} is true, also
+     * returns conversations owned by external channel principals
+     * ({@code webchat:<visitorId>}) so the console surfaces webchat threads
+     * alongside the user's own + {@code system} rows — the same way IM-channel
+     * ({@code system}-owned) conversations already appear. The visitor-facing
+     * webchat endpoints keep using the strict overload, so this does not widen a
+     * visitor's own access.
+     *
+     * <p>控制台变体：includeChannelPrincipals 为 true 时额外纳入 webchat 访客会话。
+     */
+    public List<ConversationVO> listConversations(String username, Long workspaceId,
+                                                  boolean includeChannelPrincipals) {
         // Return both the current user's conversations AND those created by
         // scheduled jobs (owner=system). Child conversations spawned by
         // delegation are excluded — they don't belong in the sidebar.
         //
         // 同时返回当前用户的会话和定时任务（system）产生的会话；
         // 排除子会话（委派产生的子会话不在侧边栏显示）。
+        //
+        // External channel principals (webchat) are only surfaced to global
+        // admins: per isConversationOwner they are the only ones who can open a
+        // webchat-owned conversation, so listing them to anyone else would show
+        // rows the caller would then 403 on (issue #344 alignment).
+        boolean includeWebchat = includeChannelPrincipals && isGlobalAdmin(username);
         LambdaQueryWrapper<ConversationEntity> wrapper = new LambdaQueryWrapper<ConversationEntity>()
-                .in(ConversationEntity::getUsername, username, SYSTEM_USER)
+                .and(w -> applyOwnerScope(w, username, includeWebchat))
+                .and(this::applyMalformedIdGuard)
                 .isNull(ConversationEntity::getParentConversationId)
                 .orderByDesc(ConversationEntity::getPinned)
                 .orderByDesc(ConversationEntity::getLastActiveTime);
@@ -148,6 +199,52 @@ public class ConversationService {
     }
 
     /**
+     * Apply the owner-scope predicate onto a (nested) wrapper: always the user's
+     * own + {@link #SYSTEM_USER} rows; when {@code includeChannelPrincipals} is
+     * true, also external channel-principal rows ({@code webchat:%}). Kept as one
+     * helper so the list and page queries stay in lockstep.
+     */
+    private void applyOwnerScope(LambdaQueryWrapper<ConversationEntity> w,
+                                 String username, boolean includeChannelPrincipals) {
+        w.in(ConversationEntity::getUsername, username, SYSTEM_USER);
+        if (includeChannelPrincipals) {
+            w.or().likeRight(ConversationEntity::getUsername, WEBCHAT_OWNER_PREFIX);
+        }
+    }
+
+    /**
+     * Exclude rows whose conversationId ends in ":" — malformed (e.g.
+     * {@code webchat:<key8>:} with empty visitorId, from older versions).
+     * Showing them in the console surfaces threads that 500/403 on open
+     * because the trailing ":" makes some reverse proxies strip the path
+     * tail (issue #369).
+     *
+     * <p>Uses {@code notLikeLeft} rather than {@code notLike(...,"%:")}: the
+     * latter auto-wraps the value with extra {@code %} on both sides AND
+     * escapes the user-supplied {@code %}, producing a {@code %%:%} pattern
+     * that matches <em>any id containing a colon</em> — silently filtering
+     * out every {@code webchat:…}, {@code feishu:…}, {@code cron:…}
+     * conversation from the list. {@code notLikeLeft} only prepends the
+     * wildcard, giving the intended {@code NOT LIKE '%:'} ("does not end
+     * with a colon").
+     */
+    private void applyMalformedIdGuard(LambdaQueryWrapper<ConversationEntity> w) {
+        w.notLikeLeft(ConversationEntity::getConversationId, ":");
+    }
+
+    /**
+     * Whether the user is a global admin (role=admin), resolved from the DB —
+     * never from client-controlled data. Gates webchat row visibility in the
+     * admin-console list/page: {@link #isConversationOwner} only lets a global
+     * admin open a webchat-owned conversation, so only admins should see those
+     * rows — otherwise the console lists threads it would then 403 on.
+     */
+    private boolean isGlobalAdmin(String username) {
+        UserEntity u = authService.findByUsername(username);
+        return u != null && "admin".equalsIgnoreCase(u.getRole());
+    }
+
+    /**
      * Paginated variant used by the Sessions admin page.
      *
      * <p>Mirrors {@link #listConversations(String, Long)}'s filtering (current
@@ -166,8 +263,12 @@ public class ConversationService {
         com.baomidou.mybatisplus.extension.plugins.pagination.Page<ConversationEntity> pager =
                 new com.baomidou.mybatisplus.extension.plugins.pagination.Page<>(page, size);
 
+        // Admin Sessions page surfaces channel conversations too, but only to
+        // global admins — they are the only ones who can open a webchat-owned
+        // conversation (issue #344), so non-admins must not see those rows.
         LambdaQueryWrapper<ConversationEntity> wrapper = new LambdaQueryWrapper<ConversationEntity>()
-                .in(ConversationEntity::getUsername, username, SYSTEM_USER)
+                .and(w -> applyOwnerScope(w, username, isGlobalAdmin(username)))
+                .and(this::applyMalformedIdGuard)
                 .isNull(ConversationEntity::getParentConversationId)
                 .orderByDesc(ConversationEntity::getPinned)
                 .orderByDesc(ConversationEntity::getLastActiveTime);
@@ -251,6 +352,72 @@ public class ConversationService {
             throw new IllegalArgumentException("无权操作该会话");
         }
         return conv;
+    }
+
+    /**
+     * WebChat get-or-create that also records the thread's {@code sessionId} on
+     * insert, so the visitor's /sessions listing can recover it even when the
+     * conversationId hashes (long visitorId + sessionId). The session id is
+     * written only when the row is first created; an existing row is left as-is.
+     */
+    @Transactional
+    public ConversationEntity getOrCreateWebchatConversation(String conversationId, Long agentId,
+                                                             String username, Long workspaceId,
+                                                             String sessionId) {
+        return getOrCreateWebchatConversation(conversationId, agentId, username, workspaceId, sessionId, null);
+    }
+
+    /**
+     * WebChat get-or-create with an optional caller-supplied title.
+     * <p>
+     * When the row is freshly inserted and {@code title} is non-blank, it
+     * overrides the default {@code "新对话"}; otherwise the default is kept and
+     * {@link #saveMessage} will still derive a title from the first user
+     * message. An existing row is never rewritten — neither {@code sessionId}
+     * nor {@code title} are clobbered, so a session created via
+     * {@code POST /sessions} with a caller-supplied title keeps that title
+     * when the first {@code /stream} message later lands.
+     */
+    @Transactional
+    public ConversationEntity getOrCreateWebchatConversation(String conversationId, Long agentId,
+                                                             String username, Long workspaceId,
+                                                             String sessionId, String title) {
+        boolean existed = conversationMapper.selectOne(new LambdaQueryWrapper<ConversationEntity>()
+                .eq(ConversationEntity::getConversationId, conversationId)) != null;
+        ConversationEntity conv = getOrCreateConversation(conversationId, agentId, username, workspaceId);
+        if (!existed) {
+            boolean dirty = false;
+            if (sessionId != null && !sessionId.isBlank() && conv.getWebchatSessionId() == null) {
+                conv.setWebchatSessionId(sessionId);
+                dirty = true;
+            }
+            if (title != null && !title.isBlank()) {
+                conv.setTitle(title.trim());
+                dirty = true;
+            }
+            if (dirty) {
+                conversationMapper.updateById(conv);
+            }
+        }
+        return conv;
+    }
+
+    /**
+     * List a webchat visitor's own conversations (top-level threads), ordered
+     * pinned-desc then last-active-desc.
+     * <p>
+     * Scoped to {@code username = owner} only — unlike {@link #listConversations}
+     * it does <b>not</b> pull in {@code system} rows, so a visitor's /sessions
+     * call doesn't load every IM/cron conversation in the database just to list
+     * its own handful of threads. The caller still applies the channel-prefix
+     * filter (literal {@code startsWith}, wildcard-safe) to isolate the channel.
+     */
+    public List<ConversationEntity> listWebchatConversations(String username) {
+        return conversationMapper.selectList(new LambdaQueryWrapper<ConversationEntity>()
+                .eq(ConversationEntity::getUsername, username)
+                .isNull(ConversationEntity::getParentConversationId)
+                .orderByDesc(ConversationEntity::getPinned)
+                .orderByDesc(ConversationEntity::getLastActiveTime));
     }
 
     /**
@@ -523,6 +690,21 @@ public class ConversationService {
     }
 
     /**
+     * Archive or unarchive a conversation (webchat soft-close). Mirrors
+     * {@link #setPinned}: archived threads stay on disk (history preserved,
+     * addressable, downloadable) but are excluded from default listings; the
+     * caller opts back in via {@code includeArchived=true}.
+     */
+    public void setArchived(String conversationId, boolean archived) {
+        ConversationEntity conv = conversationMapper.selectOne(new LambdaQueryWrapper<ConversationEntity>()
+                .eq(ConversationEntity::getConversationId, conversationId));
+        if (conv != null) {
+            conv.setArchived(archived ? 1 : 0);
+            conversationMapper.updateById(conv);
+        }
+    }
+
+    /**
      * Update a conversation's stream status ({@code running} / {@code idle}).
      *
      * <p>更新会话的流状态（running / idle）。
@@ -597,6 +779,30 @@ public class ConversationService {
         ConversationEntity conv = conversationMapper.selectOne(new LambdaQueryWrapper<ConversationEntity>()
                 .eq(ConversationEntity::getConversationId, conversationId));
         return conv != null ? conv.getLastMessage() : null;
+    }
+
+    /**
+     * Find the most recent message of a given role in a conversation.
+     * Used by the webchat regenerate flow to find the seed user message and
+     * locate the assistant reply to delete. Returns null if no match.
+     */
+    public MessageEntity findLastMessageByRole(String conversationId, String role) {
+        List<MessageEntity> msgs = messageMapper.selectList(new LambdaQueryWrapper<MessageEntity>()
+                .eq(MessageEntity::getConversationId, conversationId)
+                .eq(MessageEntity::getRole, role)
+                .orderByDesc(MessageEntity::getId)
+                .last("LIMIT 1"));
+        return msgs.isEmpty() ? null : msgs.get(0);
+    }
+
+    /**
+     * Delete a single message by its primary key. Used by the webchat
+     * regenerate flow to drop the last assistant reply before re-running.
+     * Does NOT touch the conversation's messageCount counter — that is
+     * rewritten when the new assistant message is persisted by saveMessage.
+     */
+    public void deleteMessageById(Long messageId) {
+        messageMapper.deleteById(messageId);
     }
 
     /**
@@ -808,6 +1014,36 @@ public class ConversationService {
     }
 
     /**
+     * External-facing message views for untrusted callers (webchat visitors).
+     * Strips the server-side absolute file path from both the structured parts
+     * ({@code path} nulled) and the rendered text, so the server filesystem
+     * layout is never disclosed. Visitors still get {@code fileUrl} / {@code
+     * fileName} / {@code contentType} to render and download attachments.
+     */
+    public List<MessageVO> listMessageViewsExternal(String conversationId) {
+        return toExternalMessageViews(listMessages(conversationId));
+    }
+
+    /**
+     * Map already-loaded message entities to external (path-stripped) views.
+     * Shared by the full-list and paginated webchat paths so sanitization stays
+     * in one place.
+     */
+    public List<MessageVO> toExternalMessageViews(List<MessageEntity> messages) {
+        return messages.stream()
+                .map(message -> {
+                    List<MessageContentPart> parts = parseMessageParts(message);
+                    parts.forEach(p -> {
+                        if (p != null) {
+                            p.setPath(null);
+                        }
+                    });
+                    return MessageVO.from(message, parts, renderMessageContent(message, false));
+                })
+                .toList();
+    }
+
+    /**
      * Delete a conversation and cascade-clean every row that referenced it.
      * <p>
      * Tables cleaned in the same transaction:
@@ -936,6 +1172,16 @@ public class ConversationService {
     }
 
     public String renderMessageContent(MessageEntity message) {
+        return renderMessageContent(message, true);
+    }
+
+    /**
+     * Render variant whose {@code includePath} controls whether the server-side
+     * file path is embedded in the text. Internal/LLM rendering keeps it (tools
+     * resolve files by path); external rendering (webchat visitors) drops it so
+     * the server filesystem layout is not disclosed to untrusted callers.
+     */
+    public String renderMessageContent(MessageEntity message, boolean includePath) {
         List<MessageContentPart> parts = parseMessageParts(message);
         if (parts.isEmpty()) {
             return message.getContent() != null ? message.getContent() : "";
@@ -949,8 +1195,8 @@ public class ConversationService {
             switch (part.getType()) {
                 case "text" -> appendSegment(text, part.getText());
                 case "thinking", "tool_call", "parse_error" -> { /* skip — frontend reads these from contentParts directly */ }
-                case "file" -> appendSegment(text, renderFilePart(part));
-                case "image", "video", "audio", "model3d" -> appendSegment(text, renderMediaPart(part));
+                case "file" -> appendSegment(text, renderFilePart(part, includePath));
+                case "image", "video", "audio", "model3d" -> appendSegment(text, renderMediaPart(part, includePath));
                 default -> appendSegment(text, part.getText());
             }
         }
@@ -1000,10 +1246,10 @@ public class ConversationService {
      * picks (read_file / extract_document_text / detect_file_type / …) can be called
      * with a path that resolves directly, instead of relying on per-tool fallbacks.
      */
-    private String renderFilePart(MessageContentPart part) {
+    private String renderFilePart(MessageContentPart part, boolean includePath) {
         String name = safe(part.getFileName());
         String path = safe(part.getPath());
-        if (path.isBlank()) {
+        if (!includePath || path.isBlank()) {
             return "[附件] " + name;
         }
         return "[附件] " + name + "（路径: " + path + "）";
@@ -1020,7 +1266,7 @@ public class ConversationService {
      * already uploaded. The path lets file-reading tools ({@code read_file},
      * {@code extract_document_text}, {@code detect_file_type}) work as a fallback.
      */
-    private String renderMediaPart(MessageContentPart part) {
+    private String renderMediaPart(MessageContentPart part, boolean includePath) {
         String label = switch (part.getType()) {
             case "image" -> "[图片]";
             case "video" -> "[视频]";
@@ -1033,10 +1279,38 @@ public class ConversationService {
             name = "未命名";
         }
         String path = safe(part.getPath());
-        if (path.isBlank()) {
-            return label + " " + name;
+        StringBuilder rendered = new StringBuilder(label).append(' ').append(name);
+        if (includePath && !path.isBlank()) {
+            rendered.append("（路径: ").append(path).append("）");
         }
-        return label + " " + name + "（路径: " + path + "）";
+        // A persisted caption (vision sidecar output) carries the image content
+        // into later turns: history user messages replay as text only, so without
+        // this the model would lose all knowledge of the attachment after turn 1.
+        String caption = safe(part.getCaption());
+        if (!caption.isBlank()) {
+            rendered.append("\n[图片内容] ").append(caption.trim());
+        }
+        return rendered.toString();
+    }
+
+    /**
+     * Overwrite a message's {@code content_parts} with an updated list — used by
+     * the vision sidecar to persist generated captions back onto image parts so
+     * later turns retain the image description (history replay is text-only).
+     * Best-effort: a serialization or DB failure is logged, not propagated, so
+     * the in-flight chat turn is never broken by a caption write.
+     */
+    public void updateMessageParts(MessageEntity message, List<MessageContentPart> parts) {
+        if (message == null || message.getId() == null || parts == null || parts.isEmpty()) {
+            return;
+        }
+        try {
+            message.setContentParts(serializeParts(parts));
+            messageMapper.updateById(message);
+        } catch (Exception e) {
+            log.warn("Failed to persist updated content_parts for message {}: {}",
+                    message.getId(), e.getMessage());
+        }
     }
 
     private void appendSegment(StringBuilder builder, String text) {
@@ -1296,12 +1570,37 @@ public class ConversationService {
     }
 
     /**
-     * Check whether a user owns the conversation, treating system-owned
-     * rows (e.g. from scheduled jobs / IM channels) as visible to every
-     * authenticated user.
+     * Check whether a user owns the conversation. Direct owners always pass;
+     * shared rows (system / IM / {@code webchat:<visitorId>} principals) are
+     * additionally gated by the requester's membership in the conversation's
+     * workspace, so they are not reachable cross-workspace by id.
      *
-     * <p>校验用户是否拥有该会话。定时任务产生的会话（username = system）
-     * 对所有登录用户可见。
+     * <p><b>Cross-workspace guard (issue #344).</b> The legacy contract let any
+     * logged-in user reach a system / IM / webchat-owned conversation by id —
+     * the list endpoints filtered by {@code workspaceId} but the direct-access
+     * endpoints did not. Under a multi-tenant model where workspaces are
+     * untrusted isolation boundaries, that asymmetry is a cross-workspace
+     * authorization gap. This method now also requires, for shared (non-direct)
+     * conversations, that the requester actually be a member of the
+     * conversation's workspace.
+     *
+     * <p>校验用户是否拥有该会话。直属会话直接放行;共享会话(system / IM / webchat)
+     * 额外要求请求者是该会话所属 workspace 的成员。
+     *
+     * <p>分支:
+     * <ul>
+     *   <li>会话不存在 → false</li>
+     *   <li>请求者是该会话的直属 owner → true(自己的会话,workspace 隐式一致)</li>
+     *   <li>会话无 workspace_id(老数据)→ 仅看是否 system owner(维持旧行为,避免回归)</li>
+     *   <li>请求者用户记录不存在(permitAll 端点的匿名重连)→ 仅看是否 system owner(维持旧行为)</li>
+     *   <li>请求者是全局 admin(user.role=admin)→ true(横切覆盖,与具体 workspace 无关)</li>
+     *   <li>请求者非该会话 workspace 的成员 → false</li>
+     *   <li>否则 → system owner 检查(共享会话对本 workspace 成员可见)</li>
+     * </ul>
+     *
+     * <p>调用方签名不变;调用方若需在不查 DB 的情况下做 admin 例外,可在外层先短路,
+     * 但通常让本方法统一处理以避免散落的 admin 例外逻辑。注意:本方法不读
+     * {@code X-Workspace-Id} header —— 该 header 客户端可伪造,以 DB 中的成员关系为准。
      */
     public boolean isConversationOwner(String conversationId, String username) {
         ConversationEntity conv = conversationMapper.selectOne(
@@ -1310,7 +1609,28 @@ public class ConversationService {
         if (conv == null) {
             return false;
         }
-        return username.equals(conv.getUsername()) || SYSTEM_USER.equals(conv.getUsername());
+        // 直属 owner 一律放行:会话由该用户创建,workspace 自然一致,无需再做成员校验。
+        if (username != null && username.equals(conv.getUsername())) {
+            return true;
+        }
+        // 共享会话(system / IM / webchat owner)以下收紧。
+        Long convWorkspaceId = conv.getWorkspaceId();
+        UserEntity requester = authService.findByUsername(username);
+        // 老数据无 workspace_id,或请求者为匿名(permitAll 端点重连场景):维持旧行为,
+        // 仅 system owner 可见。避免数据迁移未完成或匿名流式场景下回归。
+        if (convWorkspaceId == null || requester == null) {
+            return SYSTEM_USER.equals(conv.getUsername());
+        }
+        // 全局 admin 横切放行,覆盖所有 workspace。
+        if ("admin".equalsIgnoreCase(requester.getRole())) {
+            return true;
+        }
+        // #344 的核心守卫:必须是该会话所属 workspace 的成员(viewer 或更高)。
+        // 不读 X-Workspace-Id header —— 客户端可伪造;以 DB 成员关系为准。
+        if (!workspaceService.hasPermissionCached(convWorkspaceId, requester.getId(), "viewer")) {
+            return false;
+        }
+        return SYSTEM_USER.equals(conv.getUsername());
     }
 
     /**
@@ -1344,38 +1664,52 @@ public class ConversationService {
         return conv != null ? conv.getStreamStatus() : null;
     }
 
-    private static final Path UPLOAD_ROOT = Paths.get("data", "chat-uploads");
-
     /**
-     * 清理会话关联的附件文件
+     * Clean up the attachment files associated with a conversation.
+     * <p>
+     * Walks every candidate upload root (the workspace/agent-aware root plus the
+     * default root) and deletes that conversation's attachment directory under
+     * each, so attachments are removed whether they landed in the new workspace
+     * directory or the pre-migration default directory.
      */
     public void cleanAttachmentFiles(String conversationId) {
-        Path dir;
-        try {
-            dir = UPLOAD_ROOT.resolve(conversationId);
-        } catch (InvalidPathException e) {
-            // Conversation id contains characters illegal on this filesystem
-            // (e.g. ':' in cron:<jobId> on Windows). No attachments could
-            // ever have been written under such an id on this OS, so there
-            // is nothing to clean.
-            log.debug("Skipping attachment cleanup for non-path-safe conversation id: {}", conversationId);
+        if (conversationId == null || conversationId.isBlank()) {
+            // A blank id would resolve to the upload root itself and wipe every
+            // conversation's attachments — never walk/delete a bare root.
             return;
         }
-        if (!Files.exists(dir)) {
-            return;
+        boolean cleanedAny = false;
+        for (Path root : chatUploadLocationResolver.resolveCandidateUploadRoots(conversationId)) {
+            Path dir;
+            try {
+                dir = root.resolve(conversationId);
+            } catch (InvalidPathException e) {
+                // Conversation id contains characters illegal on this filesystem
+                // (e.g. ':' in cron:<jobId> on Windows). No attachments could
+                // ever have been written under such an id on this OS, so there
+                // is nothing to clean.
+                log.debug("Skipping attachment cleanup for non-path-safe conversation id: {}", conversationId);
+                return;
+            }
+            if (!Files.exists(dir)) {
+                continue;
+            }
+            try (Stream<Path> walk = Files.walk(dir)) {
+                walk.sorted(Comparator.reverseOrder())
+                        .forEach(p -> {
+                            try {
+                                Files.deleteIfExists(p);
+                            } catch (IOException e) {
+                                log.warn("Failed to delete attachment file: {}", p, e);
+                            }
+                        });
+                cleanedAny = true;
+            } catch (IOException e) {
+                log.warn("Failed to walk attachment directory for conversation: {}", conversationId, e);
+            }
         }
-        try (Stream<Path> walk = Files.walk(dir)) {
-            walk.sorted(Comparator.reverseOrder())
-                    .forEach(p -> {
-                        try {
-                            Files.deleteIfExists(p);
-                        } catch (IOException e) {
-                            log.warn("Failed to delete attachment file: {}", p, e);
-                        }
-                    });
+        if (cleanedAny) {
             log.info("Cleaned attachment files for conversation: {}", conversationId);
-        } catch (IOException e) {
-            log.warn("Failed to walk attachment directory for conversation: {}", conversationId, e);
         }
     }
 }

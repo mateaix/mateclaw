@@ -42,6 +42,18 @@ public class MediaCaptionService {
     private final RetryTemplate retryTemplate;
 
     public CaptionResult caption(ModelConfigEntity visionModel, MessageContentPart imagePart, Locale locale) {
+        return caption(visionModel, imagePart, locale, null);
+    }
+
+    /**
+     * Caption an image, optionally tailored to a user question. When
+     * {@code userQuestion} is non-blank the vision model is asked to answer it
+     * directly (in addition to describing the image), so multi-turn follow-ups
+     * get an answer rather than a generic description. When blank, falls back to
+     * the factual full-description prompt.
+     */
+    public CaptionResult caption(ModelConfigEntity visionModel, MessageContentPart imagePart, Locale locale,
+                                 String userQuestion) {
         if (visionModel == null || imagePart == null) {
             return CaptionResult.failure(0, new IllegalArgumentException("vision model or image part is null"));
         }
@@ -59,7 +71,7 @@ public class MediaCaptionService {
             ChatModel chatModel = chatModelFactory.buildFor(visionModel, retryTemplate);
             ChatClient client = ChatClient.create(chatModel);
             UserMessage userMessage = UserMessage.builder()
-                    .text(buildPrompt(locale, imagePart.getFileName()))
+                    .text(buildPrompt(locale, imagePart.getFileName(), userQuestion))
                     .media(List.of(new Media(MimeType.valueOf(contentType), new FileSystemResource(mediaPath))))
                     .build();
             String description = client.prompt()
@@ -87,9 +99,27 @@ public class MediaCaptionService {
      * (matches the primary user base) but switches to English so vision-model output
      * matches the chat language and avoids polluting English-only contexts.
      */
-    private String buildPrompt(Locale locale, String fileName) {
+    private String buildPrompt(Locale locale, String fileName, String userQuestion) {
         boolean english = locale != null && Locale.ENGLISH.getLanguage().equalsIgnoreCase(locale.getLanguage());
         String fileHint = (fileName == null || fileName.isBlank()) ? "" : " (" + fileName + ")";
+        boolean hasQuestion = userQuestion != null && !userQuestion.isBlank();
+
+        if (hasQuestion) {
+            String question = userQuestion.trim();
+            // Question-aware: extract everything relevant to the user's ask, then
+            // answer it. Answering in the question's own language keeps the caption
+            // consistent with the chat regardless of the configured locale.
+            if (english) {
+                return "Look at this image" + fileHint + " and answer the user's question. "
+                        + "First note any details relevant to the question (objects, scene, visible text/OCR, "
+                        + "numbers, layout), then answer directly. Reply in the same language as the question. "
+                        + "Question: " + question;
+            }
+            return "请仔细查看这张图片" + fileHint + "，并回答用户的问题。"
+                    + "先指出与问题相关的细节（物体、场景、画面文字/OCR、数字、排版等），再直接作答。"
+                    + "用与问题相同的语言回复。问题：" + question;
+        }
+
         if (english) {
             return "Describe this image" + fileHint
                     + " concisely: list the main objects, scene, any visible text (OCR), "

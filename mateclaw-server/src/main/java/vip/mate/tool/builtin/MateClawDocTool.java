@@ -2,19 +2,12 @@ package vip.mate.tool.builtin;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonPropertyDescription;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.tool.annotation.Tool;
-import org.springframework.core.io.ClassPathResource;
-import org.springframework.core.io.Resource;
-import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
 import org.springframework.stereotype.Component;
 
-import java.io.IOException;
-import java.io.InputStream;
-import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
 import java.util.List;
-import java.util.regex.Pattern;
 
 /**
  * MateClaw 项目文档读取工具
@@ -22,10 +15,10 @@ import java.util.regex.Pattern;
  */
 @Slf4j
 @Component
+@RequiredArgsConstructor
 public class MateClawDocTool {
 
-    private static final Pattern VALID_PATH = Pattern.compile("^(zh|en)/[a-z0-9_-]+\\.md$");
-    private static final String DOCS_BASE = "docs/";
+    private final MateClawDocService docService;
 
     @Tool(description = """
         Read MateClaw project documentation.
@@ -50,100 +43,34 @@ public class MateClawDocTool {
         if ("list".equalsIgnoreCase(action)) {
             return listDocs();
         } else if ("read".equalsIgnoreCase(action)) {
-            return readDoc(path);
+            return docService.readRawForTool(path);
         } else {
             return "Error: Unknown action '" + action + "'. Use 'list' or 'read'.";
         }
     }
 
     private String listDocs() {
-        try {
-            PathMatchingResourcePatternResolver resolver = new PathMatchingResourcePatternResolver();
-            List<String> zhDocs = new ArrayList<>();
-            List<String> enDocs = new ArrayList<>();
+        StringBuilder sb = new StringBuilder();
+        sb.append("MateClaw Documentation\n\n");
 
-            // Scan zh/ docs
-            try {
-                Resource[] zhResources = resolver.getResources("classpath:docs/zh/*.md");
-                for (Resource r : zhResources) {
-                    String filename = r.getFilename();
-                    if (filename != null) {
-                        zhDocs.add(filename);
-                    }
-                }
-            } catch (IOException e) {
-                log.debug("No zh docs found: {}", e.getMessage());
-            }
+        sb.append("## 中文文档 (zh/)\n");
+        appendGroup(sb, "zh");
 
-            // Scan en/ docs
-            try {
-                Resource[] enResources = resolver.getResources("classpath:docs/en/*.md");
-                for (Resource r : enResources) {
-                    String filename = r.getFilename();
-                    if (filename != null) {
-                        enDocs.add(filename);
-                    }
-                }
-            } catch (IOException e) {
-                log.debug("No en docs found: {}", e.getMessage());
-            }
+        sb.append("\n## English Docs (en/)\n");
+        appendGroup(sb, "en");
 
-            StringBuilder sb = new StringBuilder();
-            sb.append("MateClaw Documentation\n\n");
-
-            sb.append("## 中文文档 (zh/)\n");
-            if (zhDocs.isEmpty()) {
-                sb.append("  (none)\n");
-            } else {
-                zhDocs.sort(String::compareTo);
-                for (String doc : zhDocs) {
-                    sb.append("  - zh/").append(doc).append("\n");
-                }
-            }
-
-            sb.append("\n## English Docs (en/)\n");
-            if (enDocs.isEmpty()) {
-                sb.append("  (none)\n");
-            } else {
-                enDocs.sort(String::compareTo);
-                for (String doc : enDocs) {
-                    sb.append("  - en/").append(doc).append("\n");
-                }
-            }
-
-            sb.append("\nUse readMateClawDoc(action=\"read\", path=\"zh/config.md\") to read a specific doc.");
-            return sb.toString();
-
-        } catch (Exception e) {
-            log.error("Failed to list docs: {}", e.getMessage());
-            return "Error: Failed to list documentation files: " + e.getMessage();
-        }
+        sb.append("\nUse readMateClawDoc(action=\"read\", path=\"zh/config.md\") to read a specific doc.");
+        return sb.toString();
     }
 
-    private String readDoc(String path) {
-        if (path == null || path.isBlank()) {
-            return "Error: 'path' is required when action='read'. Example: 'zh/config.md'";
+    private void appendGroup(StringBuilder sb, String lang) {
+        List<MateClawDocService.DocMeta> docs = docService.list(lang);
+        if (docs.isEmpty()) {
+            sb.append("  (none)\n");
+            return;
         }
-
-        // Security: validate path format
-        if (!VALID_PATH.matcher(path).matches()) {
-            return "Error: Invalid path format. Expected pattern: (zh|en)/<topic>.md, e.g. 'zh/config.md'";
-        }
-
-        try {
-            ClassPathResource resource = new ClassPathResource(DOCS_BASE + path);
-            if (!resource.exists()) {
-                return "Error: Document not found: " + path;
-            }
-
-            try (InputStream is = resource.getInputStream()) {
-                String content = new String(is.readAllBytes(), StandardCharsets.UTF_8);
-                log.info("Read doc {}: {} bytes", path, content.length());
-                return content;
-            }
-        } catch (IOException e) {
-            log.error("Failed to read doc {}: {}", path, e.getMessage());
-            return "Error: Failed to read document: " + e.getMessage();
+        for (MateClawDocService.DocMeta doc : docs) {
+            sb.append("  - ").append(lang).append('/').append(doc.slug()).append(".md\n");
         }
     }
 }

@@ -10,6 +10,8 @@
 
 | 版本 | 日期 | 亮点 |
 |------|------|------|
+| [v1.7.0](./releases/1.7.0) | 2026-06-25 | 审批体系打通三条链路（工作流审批渠道通知 + resolve→resume 桥接 · WebChat/API-Key 渠道审批 resolve+replay · 飞书/企微卡片点击 resolve 工作流审批） · 长任务「运行总览」侧栏（计划进度 + 子 Agent 实时状态 · 窄屏抽屉） · 运营数据一键导出（Dashboard 9 表 Excel + CLI 命令行 + 项目级 CLI 框架） · 桌面端远程 Server 连接 + `mateclaw-desktop` 源码开源 · OpenAPI/Swagger 可调试 · 聊天回到底部浮动按钮 |
+| [v1.6.0](./releases/1.6.0) | 2026-06-22 | 跑在国产数据库上 —— KingbaseES(人大金仓)+ PostgreSQL（共用一套 PostgreSQL 家族迁移树 · 按需金仓驱动 · Docker 最小权限角色） · 新感官与双手（图片跨轮次留在上下文 + `image_analyze` · `execute_code` 运行员工编写的代码） · 你来塑造员工（AGENTS.md 编辑器 + About You 身份 + 运行时模型身份 + KB 范围绑定 + 花名册标签） · Wiki Sources 标签（素材与监听合并、按 KB 自动同步、多路径/glob、pageType 表单编辑器） · 全局出站 HTTP/SOCKS 代理 · 确定性 Markdown 回答 · Claude Fable 5 |
 | [v1.5.0](./releases/1.5.0) | 2026-06-04 | 目标长出清单——从"打个分"到"逐条勾"（checklist + Evaluator SPI + 确定性完成判定） · Wiki 学会自维护（`[[wikilink]]` 互联 + 改名/删页级联修链 + 坏链体检 · 事实/经验分层 + 失效传播 · pageType 档案与 per-agent 权限 · 处理流水线 · 本地目录知识源定时增量同步） · 记忆按主人隔离（owner_key + 个人/团队/全局可见性 + 第三方 endUserId 透传） · 每个员工绑主知识库 · 偏好提供商决定主模型 + Claude Opus 4.8 |
 | [v1.4.0](./releases/1.4.0) | 2026-05-23 | 持久化目标——员工锁住目标自己跟到完成 · 子员工委派变成一棵树（递归 3 层 + 异步 + 数字员工构建器） · 渐进式工具/技能披露（`enable_tool` + `load_skill`） · 工作空间 RBAC（四级角色 + 能力门禁） · 飞书做成一等公民（互动/审批/流式卡片 + 语音/文件音视频 + 渠道原生工具） |
 | [v1.3.0](./releases/1.3.0) | 2026-05-13 | 工作流元年——7 种 step mode 把员工组装成业务流程 · 触发器 6 种 pattern 让事件自动启动流程 · Wiki 从搜索索引升级为处理流水线（用户模板 + 跨材料聚合 + reverse-citation） · MCP per-agent 工具绑定 + 多模态旁路路由 · 4 个 JVM 原生文档生成工具 + 图像编辑 |

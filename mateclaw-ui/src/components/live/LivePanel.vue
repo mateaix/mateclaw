@@ -15,7 +15,7 @@
         <span>{{ autoRefresh ? t('live.actions.live') : t('live.actions.paused') }}</span>
       </button>
 
-      <div v-if="showFilterRow" class="filter-row">
+      <div v-if="showFilterRow && layout === 'grid'" class="filter-row">
         <button
           v-for="opt in filterOptions"
           :key="opt.key"
@@ -29,6 +29,27 @@
       </div>
 
       <div class="toolbar-spacer"></div>
+
+      <div class="layout-toggle" role="group">
+        <button
+          class="layout-seg"
+          :class="{ 'is-active': layout === 'grid' }"
+          :title="t('live.layout.gridHint')"
+          @click="setLayout('grid')"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg>
+          <span>{{ t('live.layout.grid') }}</span>
+        </button>
+        <button
+          class="layout-seg"
+          :class="{ 'is-active': layout === 'board' }"
+          :title="t('live.layout.boardHint')"
+          @click="setLayout('board')"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="6" height="18" rx="1"/><rect x="10" y="3" width="6" height="11" rx="1"/><rect x="17" y="3" width="4" height="7" rx="1"/></svg>
+          <span>{{ t('live.layout.board') }}</span>
+        </button>
+      </div>
 
       <button
         v-if="(snapshot?.summary?.stuck ?? 0) > 0"
@@ -50,6 +71,19 @@
         <el-skeleton :rows="2" animated />
       </div>
     </div>
+
+    <!-- Lifecycle board: runs + goals across status columns -->
+    <LiveBoard
+      v-else-if="layout === 'board'"
+      :runs="snapshot?.runs ?? []"
+      :summary="snapshot?.summary ?? null"
+      :goal-by-conv="goalByConv"
+      :done-goals="doneGoals"
+      :failed-goals="failedGoals"
+      @open="openDetail"
+      @stop="confirmStop"
+      @recycle="confirmRecycle"
+    />
 
     <!-- Empty: nothing to see -->
     <div v-else-if="snapshot && snapshot.runs.length === 0" class="empty-still">
@@ -158,9 +192,10 @@ import { useI18n } from 'vue-i18n'
 import { mcToast } from '@/composables/useMcToast'
 import SkillIcon from '@/components/common/SkillIcon.vue'
 import LiveFocusPanel from '@/components/live/LiveFocusPanel.vue'
+import LiveBoard from '@/components/live/LiveBoard.vue'
 import { useLiveAgent } from '@/composables/useLiveAgent'
 import { mcConfirm } from '@/components/common/useConfirm'
-import { liveApi, type LiveSnapshot, type LiveRunCard, type LiveSubagentCard } from '@/api'
+import { liveApi, goalApi, type LiveSnapshot, type LiveRunCard, type LiveSubagentCard, type Goal } from '@/api'
 
 const { t } = useI18n()
 const {
@@ -181,6 +216,42 @@ const drawerOpen = ref(false)
 const detail = ref<LiveRunCard | null>(null)
 const activeFilter = ref<FilterKey>('all')
 let timer: ReturnType<typeof setInterval> | null = null
+
+// ===== Lifecycle board mode =====
+// Same snapshot, laid out across run/goal lifecycle columns. Goals are fetched
+// lazily (only once the board is shown) and refreshed alongside the snapshot.
+const layout = ref<'grid' | 'board'>('grid')
+const goalsActive = ref<Goal[]>([])
+const doneGoals = ref<Goal[]>([])
+const failedGoals = ref<Goal[]>([])
+
+const goalByConv = computed<Record<string, Goal>>(() => {
+  const map: Record<string, Goal> = {}
+  for (const g of goalsActive.value) map[g.conversationId] = g
+  return map
+})
+
+function setLayout(next: 'grid' | 'board') {
+  if (layout.value === next) return
+  layout.value = next
+  if (next === 'board') loadGoals()
+}
+
+async function loadGoals() {
+  // Best-effort: the board still renders its run columns without goals.
+  try {
+    const [active, done, failed] = await Promise.all([
+      goalApi.list({ status: 'active', limit: 100 }),
+      goalApi.list({ status: 'completed', limit: 50 }),
+      goalApi.list({ status: 'exhausted', limit: 50 }),
+    ])
+    goalsActive.value = ((active as any)?.data ?? []) as Goal[]
+    doneGoals.value = ((done as any)?.data ?? []) as Goal[]
+    failedGoals.value = ((failed as any)?.data ?? []) as Goal[]
+  } catch {
+    /* leave whatever we had; columns degrade to empty */
+  }
+}
 
 function isWorking(r: LiveRunCard): boolean {
   return !r.stuckReason && !r.orphan
@@ -347,6 +418,8 @@ async function refresh() {
       const fresh = snapshot.value.runs.find(r => r.conversationId === detail.value!.conversationId)
       if (fresh) detail.value = fresh
     }
+    // Keep the board's goal columns fresh on the same cadence as the snapshot.
+    if (layout.value === 'board') loadGoals()
   } catch (e: any) {
     if (isInitialLoading.value) mcToast.error(e?.message || t('live.errors.loadFailed'))
   } finally {
@@ -467,6 +540,43 @@ onBeforeUnmount(() => {
 .toolbar-spacer {
   flex: 1;
   min-width: 0;
+}
+
+/* ===== Grid / board layout toggle ===== */
+.layout-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 999px;
+  border: 1px solid var(--mc-border-light);
+  background: var(--mc-bg-muted);
+}
+
+.layout-seg {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: none;
+  background: transparent;
+  color: var(--mc-text-tertiary);
+  font-size: 12.5px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.18s ease, color 0.18s ease;
+}
+
+.layout-seg:hover {
+  color: var(--mc-text-primary);
+}
+
+.layout-seg.is-active {
+  background: var(--mc-bg-elevated);
+  color: var(--mc-text-primary);
+  box-shadow: var(--mc-shadow-soft);
 }
 
 /* ===== Filter chip row (kanban-inspired, soft) ===== */

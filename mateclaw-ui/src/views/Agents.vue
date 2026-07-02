@@ -30,7 +30,18 @@
                   :class="{ warn: liveStuck > 0 }"
                 >{{ liveRunning }}</span>
               </button>
+              <button
+                class="view-seg"
+                :class="{ 'is-active': view === 'plans' }"
+                @click="setView('plans')"
+              >{{ t('agents.views.plans') }}</button>
             </div>
+            <button class="btn-secondary" style="display:inline-flex;align-items:center;gap:6px;" @click="router.push('/agents/create')">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 3l1.9 4.6L18.5 9.5l-4.6 1.9L12 16l-1.9-4.6L5.5 9.5l4.6-1.9z"/>
+              </svg>
+              {{ t('agents.wizard.entry') }}
+            </button>
             <button class="btn-primary" @click="openCreateModal">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
@@ -156,7 +167,10 @@
         </template>
 
         <!-- Live: what the team is doing right now -->
-        <LivePanel v-else />
+        <LivePanel v-else-if="view === 'live'" />
+
+        <!-- Plans: the team's plans as a step board -->
+        <PlanBoard v-else-if="view === 'plans'" />
       </div>
     </div>
     
@@ -246,11 +260,12 @@
             </button>
             <button v-if="editingAgent" class="modal-tab" :class="{ active: modalTab === 'providers' }" @click="modalTab = 'providers'">
               {{ t('agents.tabs.providers', 'Providers') }}
-              <span v-if="selectedProviderIds.length" class="tab-badge">{{ selectedProviderIds.length }}</span>
+              <span v-if="selectedProviderPrefs.length" class="tab-badge">{{ selectedProviderPrefs.length }}</span>
             </button>
             <button v-if="editingAgent" class="modal-tab" :class="{ active: modalTab === 'wiki' }" @click="modalTab = 'wiki'">
               {{ t('agents.tabs.wiki', 'Wiki') }}
-              <span v-if="selectedKbIds.length" class="tab-badge">{{ selectedKbIds.length }}</span>
+              <span v-if="form.wikiDisabled" class="tab-badge tab-badge--off">{{ t('agents.binding.disableAllWikiBadge') }}</span>
+              <span v-else-if="selectedKbIds.length" class="tab-badge">{{ selectedKbIds.length }}</span>
             </button>
           </div>
 
@@ -578,34 +593,39 @@
             </details>
           </div>
 
-          <!-- Providers Tab (RFC-009 PR-3) -->
+          <!-- Providers Tab — preferred-model chain (provider + model) -->
           <div v-if="modalTab === 'providers'" class="binding-tab">
             <p class="binding-hint">{{ t('agents.binding.providersHint') }}</p>
-            <!-- Picked: ordered list with up/down/remove controls -->
-            <div v-if="selectedProviderIds.length" class="provider-pref-list">
+            <!-- Picked: ordered (provider, model) entries with up/down/remove -->
+            <div v-if="selectedProviderPrefs.length" class="provider-pref-list">
               <div
-                v-for="(pid, idx) in selectedProviderIds"
-                :key="pid"
+                v-for="(pref, idx) in selectedProviderPrefs"
+                :key="idx"
                 class="provider-pref-item"
               >
                 <span class="provider-pref-rank">{{ idx + 1 }}</span>
-                <span class="provider-pref-name">{{ providerNameById(pid) }}</span>
-                <span class="provider-pref-id">{{ pid }}</span>
-                <button class="provider-pref-btn" :disabled="idx === 0" @click="moveProvider(idx, -1)">↑</button>
-                <button class="provider-pref-btn" :disabled="idx === selectedProviderIds.length - 1" @click="moveProvider(idx, 1)">↓</button>
-                <button class="provider-pref-btn danger" @click="removeProvider(idx)">✕</button>
+                <span class="provider-pref-name">{{ providerNameById(pref.providerId) }}</span>
+                <select class="provider-pref-model" v-model="pref.modelId">
+                  <option :value="null">{{ t('agents.binding.providerDefaultModel') }}</option>
+                  <option v-for="m in modelsForProvider(pref.providerId)" :key="m.id" :value="m.id">
+                    {{ m.modelName }}
+                  </option>
+                </select>
+                <button class="provider-pref-btn" :disabled="idx === 0" @click="moveProviderEntry(idx, -1)">↑</button>
+                <button class="provider-pref-btn" :disabled="idx === selectedProviderPrefs.length - 1" @click="moveProviderEntry(idx, 1)">↓</button>
+                <button class="provider-pref-btn danger" @click="removeProviderEntry(idx)">✕</button>
               </div>
             </div>
             <div v-else class="binding-empty">{{ t('agents.binding.noProviderPreferences') }}</div>
 
-            <!-- Unpicked: click to append -->
-            <div v-if="unpickedProviders.length" class="provider-pref-pool">
+            <!-- Pool: click to append an entry (same provider may repeat) -->
+            <div v-if="availableProviders.length" class="provider-pref-pool">
               <p class="binding-hint" style="margin-top: 14px">{{ t('agents.binding.providersAddHint') }}</p>
               <button
-                v-for="p in unpickedProviders"
+                v-for="p in availableProviders"
                 :key="p.id"
                 class="provider-pref-add-btn"
-                @click="addProvider(p.id)"
+                @click="addProviderEntry(p.id)"
               >+ {{ p.name }}</button>
             </div>
           </div>
@@ -616,24 +636,46 @@
               <span class="binding-intro__kicker">{{ t('agents.binding.wikiKicker') }}</span>
               <p class="binding-intro__tagline">{{ t('agents.binding.wikiTagline') }}</p>
             </div>
+            <!-- Issue #304: explicit "no KBs" toggle. Empty selection alone
+                 falls through to "inherit workspace-wide" (every KB visible,
+                 context bloat for agents that don't need a KB), so an operator
+                 who wants zero KBs needs this dedicated bit — mirrors the
+                 skills_disabled / tools_disabled pattern. -->
+            <div class="binding-disable-row">
+              <label class="binding-disable-label">
+                <input type="checkbox" v-model="form.wikiDisabled" class="binding-disable-checkbox" />
+                <span class="binding-disable-text">
+                  <strong>{{ t('agents.binding.disableAllWiki') }}</strong>
+                  <span class="binding-disable-hint">{{ t('agents.binding.disableAllWikiHint') }}</span>
+                </span>
+              </label>
+            </div>
             <p class="binding-hint">{{ t('agents.binding.wikiHint') }}</p>
             <div v-if="availableKBs.length === 0" class="binding-empty">{{ t('agents.binding.noKBs') }}</div>
             <template v-else>
-              <p class="binding-hint" :class="{ 'binding-hint--warn': selectedKbIds.length > 0 }">
-                {{ selectedKbIds.length === 0 ? t('agents.binding.wikiScopeAll') : t('agents.binding.wikiScopeLimited', { count: selectedKbIds.length }) }}
+              <p class="binding-hint" :class="{ 'binding-hint--warn': !form.wikiDisabled && selectedKbIds.length > 0 }">
+                <template v-if="form.wikiDisabled">{{ t('agents.binding.wikiScopeNone') }}</template>
+                <template v-else>{{ selectedKbIds.length === 0 ? t('agents.binding.wikiScopeAll') : t('agents.binding.wikiScopeLimited', { count: selectedKbIds.length }) }}</template>
               </p>
-              <div class="binding-list">
+              <div class="binding-list" :class="{ 'binding-list--disabled': form.wikiDisabled }">
                 <label
                   v-for="kb in availableKBs"
                   :key="kb.id"
                   class="binding-item"
-                  :class="{ selected: isKbInScope(kb.id) }"
+                  :class="{
+                    selected: !form.wikiDisabled && isKbInScope(kb.id),
+                    'binding-item--inert': form.wikiDisabled,
+                  }"
                 >
+                  <!-- Manual :checked (not v-model) so flipping the toggle
+                       back on restores the previous picks in one click. Same
+                       inert-checkbox trick the skills picker uses (issue #184). -->
                   <input
                     type="checkbox"
                     class="binding-checkbox"
-                    :checked="isKbInScope(kb.id)"
+                    :checked="!form.wikiDisabled && isKbInScope(kb.id)"
                     @change="toggleKbScope(kb.id)"
+                    :disabled="form.wikiDisabled"
                   />
                   <span class="binding-icon">📚</span>
                   <div class="binding-info">
@@ -644,7 +686,8 @@
                   <button
                     type="button"
                     class="kb-primary-toggle"
-                    :class="{ 'kb-primary-toggle--active': selectedKBId === String(kb.id) }"
+                    :class="{ 'kb-primary-toggle--active': !form.wikiDisabled && selectedKBId === String(kb.id) }"
+                    :disabled="form.wikiDisabled"
                     :title="t('agents.binding.wikiSetPrimary')"
                     @click.prevent.stop="setPrimaryKb(kb.id)"
                   >{{ selectedKBId === String(kb.id) ? t('agents.binding.wikiPrimary') : t('agents.binding.wikiSetPrimary') }}</button>
@@ -677,6 +720,7 @@ import type { Agent } from '@/types/index'
 import SkillIcon from '@/components/common/SkillIcon.vue'
 import SkillIconPicker from '@/components/common/SkillIconPicker.vue'
 import LivePanel from '@/components/live/LivePanel.vue'
+import PlanBoard from '@/components/agents/PlanBoard.vue'
 import AgentGuideEditor from './Agents/components/AgentGuideEditor.vue'
 import {
   emptyProfile,
@@ -897,12 +941,16 @@ function setPrimaryKb(id: string | number) {
   }
   selectedKBId.value = sid
 }
-// RFC-009 PR-3: per-agent provider preference order
+// Per-agent preferred-model chain. Each entry is a provider plus an optional
+// pinned model (modelId null = the provider's default model). The same provider
+// may appear more than once with different models. modelId is a string to keep
+// Snowflake precision (Long is serialised as a string by the backend).
 const availableProviders = ref<{ id: string; name: string }[]>([])
-const selectedProviderIds = ref<string[]>([])
+const selectedProviderPrefs = ref<Array<{ providerId: string; modelId: string | null }>>([])
 // RFC-03 Lane G1: per-Agent model override picker — populated from the
 // global enabled-models list, blank value means "fall back to default".
-const availableModels = ref<Array<{ id: number; name: string; provider: string; modelName: string }>>([])
+// id is a string (Snowflake serialised as string).
+const availableModels = ref<Array<{ id: string; name: string; provider: string; modelName: string }>>([])
 
 // Template selector state
 const showTemplateSelector = ref(false)
@@ -939,6 +987,10 @@ const defaultForm = (): Partial<Agent> & { name: string; defaultThinkingLevel: s
   // "zero rows = inherit global default" contract for newly-created agents.
   skillsDisabled: false,
   toolsDisabled: false,
+  // Issue #304 — same contract for the wiki/knowledge-base picker. Empty
+  // selection alone would fall through to "inherit workspace-wide", so an
+  // operator who wants zero KBs in the context needs this dedicated bit.
+  wikiDisabled: false,
 })
 
 const form = ref(defaultForm())
@@ -1099,16 +1151,19 @@ const filteredAgents = computed(() => {
 // Roster ↔ Live view switch — admin only. The running/stuck counts feed the
 // segmented control's pulse + badge so you know whether Live is worth a look.
 const isAdminRole = computed(() => (localStorage.getItem('role') || 'user') === 'admin')
-const view = ref<'roster' | 'live'>(
-  route.query.view === 'live' && isAdminRole.value ? 'live' : 'roster',
+type AgentView = 'roster' | 'live' | 'plans'
+const view = ref<AgentView>(
+  isAdminRole.value && (route.query.view === 'live' || route.query.view === 'plans')
+    ? (route.query.view as AgentView)
+    : 'roster',
 )
 const liveRunning = ref(0)
 const liveStuck = ref(0)
 let livePollTimer: ReturnType<typeof setInterval> | null = null
 
-function setView(next: 'roster' | 'live') {
+function setView(next: AgentView) {
   view.value = next
-  router.replace({ query: next === 'live' ? { view: 'live' } : {} })
+  router.replace({ query: next === 'roster' ? {} : { view: next } })
 }
 
 async function refreshLiveCounts() {
@@ -1179,36 +1234,37 @@ function openBlankCreateModal() {
   toolBindingSearch.value = ''
   selectedSkillIds.value = []
   selectedToolNames.value = []
-  selectedProviderIds.value = []
+  selectedProviderPrefs.value = []
   availableKBs.value = []
   selectedKBId.value = null
   selectedKbIds.value = []
   showModal.value = true
 }
 
-// RFC-009 PR-3: provider preference helpers
-const unpickedProviders = computed(() =>
-  availableProviders.value.filter(p => !selectedProviderIds.value.includes(p.id))
-)
-
+// Preferred-model chain helpers
 function providerNameById(id: string): string {
   return availableProviders.value.find(p => p.id === id)?.name || id
 }
 
-function addProvider(id: string) {
-  if (!selectedProviderIds.value.includes(id)) {
-    selectedProviderIds.value.push(id)
-  }
+// Enabled models offered by a given provider, for that entry's model dropdown.
+function modelsForProvider(providerId: string) {
+  return availableModels.value.filter(m => m.provider === providerId)
 }
 
-function removeProvider(idx: number) {
-  selectedProviderIds.value.splice(idx, 1)
+// Append a new chain entry (defaults to the provider's default model). The same
+// provider may appear more than once, so we never dedup here.
+function addProviderEntry(providerId: string) {
+  selectedProviderPrefs.value.push({ providerId, modelId: null })
 }
 
-function moveProvider(idx: number, dir: -1 | 1) {
+function removeProviderEntry(idx: number) {
+  selectedProviderPrefs.value.splice(idx, 1)
+}
+
+function moveProviderEntry(idx: number, dir: -1 | 1) {
   const next = idx + dir
-  if (next < 0 || next >= selectedProviderIds.value.length) return
-  const arr = selectedProviderIds.value
+  if (next < 0 || next >= selectedProviderPrefs.value.length) return
+  const arr = selectedProviderPrefs.value
   ;[arr[idx], arr[next]] = [arr[next], arr[idx]]
 }
 
@@ -1253,6 +1309,7 @@ async function openEditModal(agent: Agent) {
     primaryKbId: agent.primaryKbId != null ? String(agent.primaryKbId) : null,
     skillsDisabled: agent.skillsDisabled === true,
     toolsDisabled: agent.toolsDisabled === true,
+    wikiDisabled: (agent as any).wikiDisabled === true,
   }
   tagInput.value = ''
   recentlyRemovedTag.value = null
@@ -1290,9 +1347,14 @@ async function openEditModal(agent: Agent) {
     selectedToolNames.value = ((boundToolsRes as any).data || [])
       .filter((b: any) => b.enabled)
       .map((b: any) => b.toolName)
-    selectedProviderIds.value = ((providerPrefsRes as any).data || [])
+    selectedProviderPrefs.value = ((providerPrefsRes as any).data || [])
       .filter((b: any) => b.enabled)
-      .map((b: any) => b.providerId)
+      .map((b: any) => ({
+        providerId: b.providerId,
+        // modelId arrives as a string (Long→String) or null; normalise to keep
+        // the dropdown's option values type-aligned.
+        modelId: b.modelId != null ? String(b.modelId) : null,
+      }))
   } catch {
     mcToast.error(t('agents.messages.loadFailed'))
   }
@@ -1370,10 +1432,13 @@ async function saveAgent() {
       try {
         await agentBindingApi.setSkills(agentId, skillIdsToSave)
         await agentBindingApi.setTools(agentId, toolNamesToSave)
-        await agentBindingApi.setProviderPreferences(agentId, selectedProviderIds.value)
-        // KB access scope. Empty = unrestricted (workspace-wide). Sent as
-        // strings per the Snowflake-precision contract.
-        await agentBindingApi.setKbs(agentId, selectedKbIds.value)
+        await agentBindingApi.setProviderPreferences(agentId, selectedProviderPrefs.value)
+        // KB access scope. Issue #304: when wiki_disabled is on the agent
+        // sees zero KBs regardless of the binding list, so clear the save
+        // payload — same pattern as skills/tools above. Empty save leaves
+        // the wiki_disabled flag untouched (the toggle owns the bit).
+        const kbIdsToSave = form.value.wikiDisabled ? [] : selectedKbIds.value
+        await agentBindingApi.setKbs(agentId, kbIdsToSave)
       } catch (bindingError: any) {
         mcToast.error(bindingError?.message || t('agents.messages.saveFailed'))
         // Pull the authoritative server state back into the editing form so
@@ -1881,8 +1946,12 @@ html.dark .seg-count.warn {
   display: inline-flex; align-items: center; justify-content: center;
   background: var(--mc-primary); color: white; font-size: 11px; font-weight: 700; flex-shrink: 0;
 }
-.provider-pref-name { font-size: 14px; color: var(--mc-text-primary); flex: 1; }
-.provider-pref-id { font-size: 12px; color: var(--mc-text-tertiary); font-family: ui-monospace, monospace; }
+.provider-pref-name { font-size: 14px; color: var(--mc-text-primary); flex: 0 0 auto; min-width: 96px; }
+.provider-pref-model {
+  flex: 1; min-width: 0; height: 28px; padding: 0 8px;
+  border: 1px solid var(--mc-border-light); border-radius: 6px;
+  background: var(--mc-bg); color: var(--mc-text-primary); font-size: 13px; cursor: pointer;
+}
 .provider-pref-btn {
   border: 1px solid var(--mc-border-light); background: var(--mc-bg);
   width: 26px; height: 26px; border-radius: 6px; cursor: pointer;

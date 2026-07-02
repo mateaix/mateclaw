@@ -31,6 +31,16 @@ public class WikiKbConfig {
      */
     private Long wikiDefaultModelId;
 
+    /**
+     * KB-level lightweight chat model for the cheap, high-volume steps
+     * (route / enrich / summary / entity extraction). When set, those steps
+     * run on this cheaper model instead of the KB/system default, cutting token
+     * spend without touching page generation quality. {@code null} falls back to
+     * the system-level light model, then to normal routing. Strong steps
+     * (create_page / merge_page) ignore this field.
+     */
+    private Long wikiLightModelId;
+
     /** Per-step model overrides: "heavy_ingest.create_page" → modelId */
     private Map<String, Long> stepModels;
 
@@ -57,4 +67,21 @@ public class WikiKbConfig {
      * pageType to be granted explicitly per agent.
      */
     private String defaultReadPolicy;
+
+    /**
+     * Opt-in for entity-level knowledge graph extraction on this KB. When
+     * {@code true}, an extraction pass runs after ingest/embedding to pull
+     * named entities (person, organization, location, ...) and their
+     * relations from source chunks into the {@code mate_wiki_entity*} tables.
+     * {@code null} or {@code false} keeps the legacy behaviour (page graph
+     * only). Off by default because extraction adds LLM calls per chunk.
+     */
+    private Boolean entityExtractionEnabled;
+
+    /**
+     * Optional whitelist of entity types to extract, e.g.
+     * {@code ["person","organization","location"]}. {@code null} or empty
+     * lets the extractor use its built-in default type set.
+     */
+    private List<String> entityTypes;
 }

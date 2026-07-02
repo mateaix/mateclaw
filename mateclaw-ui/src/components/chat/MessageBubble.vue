@@ -408,6 +408,23 @@
             class="action-model"
             :title="replyModelTitle"
           >{{ replyModel }}</span>
+          <!-- Turn token total (assistant only): own usage + delegated sub-agents -->
+          <span
+            v-if="role === 'assistant' && tokenUsage"
+            class="action-tokens"
+            :title="tokenUsage.delegated > 0
+              ? $t('chat.tokenUsageTooltipDelegated', {
+                  total: tokenUsage.total.toLocaleString(),
+                  input: tokenUsage.input.toLocaleString(),
+                  output: tokenUsage.output.toLocaleString(),
+                  delegated: tokenUsage.delegated.toLocaleString(),
+                })
+              : $t('chat.tokenUsageTooltip', {
+                  total: tokenUsage.total.toLocaleString(),
+                  input: tokenUsage.input.toLocaleString(),
+                  output: tokenUsage.output.toLocaleString(),
+                })"
+          >Σ {{ fmtTokens(tokenUsage.total) }} tok</span>
           <!-- Multimodal sidecar routing badge (assistant only, when sidecar fired) -->
           <span
             v-if="role === 'assistant' && routingBadge"
@@ -440,7 +457,7 @@ import {
   VideoPause,
   WarningFilled,
 } from '@element-plus/icons-vue'
-import { useMarkdownRenderer } from '@/composables/useMarkdownRenderer'
+import { useStreamingMarkdown } from '@/composables/useStreamingMarkdown'
 import { useAuthenticatedAttachment } from '@/composables/useAuthenticatedAttachment'
 import { useToolLabel } from '@/composables/useToolLabel'
 import { http } from '@/api'
@@ -457,10 +474,9 @@ import { storeToRefs } from 'pinia'
 import PlanStepsPanel from './PlanStepsPanel.vue'
 import UserMessageContent from './UserMessageContent.vue'
 import type { BrowserAction } from './BrowserTimeline.vue'
-import type { Message, MessageSegment, ChatAttachment, ToolCallMeta, PlanMeta } from '@/types'
+import type { Message, MessageSegment, ChatAttachment, ToolCallMeta, PlanMeta, DelegationNode } from '@/types'
 import type { ChatErrorInfo } from '@/types/chatError'
 
-const { renderMarkdown } = useMarkdownRenderer()
 const { t, locale } = useI18n()
 const { getToolLabel } = useToolLabel()
 const { blobUrls, loadAllImages, loadAllVideos, loadAllAudios, loadAllModels, downloadFile, openImage, getDisplayUrl, revokeAll } = useAuthenticatedAttachment()
@@ -614,10 +630,12 @@ const toggleThinking = () => {
   emit('toggle-thinking', localThinkingExpanded.value)
 }
 
-const renderedThinkingContent = computed(() => {
-  if (!thinkingContent.value) return ''
-  return renderMarkdown(thinkingContent.value)
-})
+// Throttle thinking + main-content markdown while the turn streams; both render
+// once at full fidelity when generation stops.
+const { html: renderedThinkingContent } = useStreamingMarkdown(
+  () => thinkingContent.value,
+  () => isGenerating.value,
+)
 
 // --- 主内容 ---
 const isApprovalPlaceholder = (text: string) => {
@@ -643,10 +661,10 @@ const parseErrorText = computed(() => {
   return errorPart?.text || ''
 })
 
-const renderedContent = computed(() => {
-  if (!displayContent.value) return ''
-  return renderMarkdown(displayContent.value)
-})
+const { html: renderedContent } = useStreamingMarkdown(
+  () => displayContent.value,
+  () => isGenerating.value,
+)
 
 const showLoadingIndicator = computed(() => {
   return isGenerating.value && !displayContent.value
@@ -1001,6 +1019,46 @@ const useSegmentedView = computed(() =>
 )
 
 /**
+ * Total token consumption for this assistant turn, rolled up the way a
+ * multi-agent orchestrator should report it: the parent message's own usage
+ * PLUS every delegated sub-agent's usage (depth-1 delegation segments and
+ * their nested children). Returns null when nothing is known yet.
+ */
+const tokenUsage = computed(() => {
+  const m = props.message
+  if (m.role !== 'assistant') return null
+  // Total comes solely from the message usage, which the backend already rolls
+  // delegated sub-agent tokens into (so live and reloaded values match and there
+  // is no double counting against the segment sum below).
+  const input = m.promptTokens || 0
+  const output = m.completionTokens || 0
+  const total = input + output
+  if (total <= 0) return null
+  // Informational breakdown for the tooltip: how much of that total came from
+  // delegated sub-agents. Derived from the delegation segments, so it is present
+  // live and degrades to 0 after reload (the segments are not persisted).
+  let delegated = 0
+  const addNodes = (nodes?: DelegationNode[]) => {
+    if (!nodes) return
+    for (const n of nodes) {
+      delegated += (n.promptTokens || 0) + (n.completionTokens || 0)
+      addNodes(n.children)
+    }
+  }
+  for (const s of segments.value) {
+    if (s.type !== 'tool_call') continue
+    delegated += (s.delegPromptTokens || 0) + (s.delegCompletionTokens || 0)
+    addNodes(s.childTimeline?.children)
+  }
+  return { input, output, total, delegated: Math.min(delegated, total) }
+})
+
+/** Compact token count, e.g. 67890 → "67.9k". */
+function fmtTokens(n: number): string {
+  return n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n)
+}
+
+/**
  * Group segments by iterationIndex so each ReAct iteration renders as its own
  * thinking/tool-calls/content cluster. Falls back to a single ungrouped bucket
  * for legacy messages (no iterationIndex tagged) so historical conversations
@@ -1177,7 +1235,11 @@ const executionPhaseLabel = computed(() => {
   }
   if (planMeta.value) {
     const done = planMeta.value.stepResults?.filter(r => r?.status === 'completed').length || 0
-    return `Plan-Execute (${done}/${planMeta.value.steps.length})`
+    // Guard steps: a plan payload can arrive with steps undefined (mid-stream /
+    // malformed metadata). An unguarded .length here throws during render, which
+    // blanks the whole message subtree until a full remount (page refresh) — the
+    // "chat goes blank on switch, refresh fixes it" bug. Mirror the ?. used below.
+    return `Plan-Execute (${done}/${planMeta.value.steps?.length ?? 0})`
   }
   if (toolCallsMeta.value.length) {
     const done = toolCallsMeta.value.filter(t => t.status === 'completed').length
@@ -1758,6 +1820,18 @@ watch(isGenerating, (generating) => {
 .action-model {
   font-size: 11px;
   color: var(--mc-text-secondary, #64748b);
+  margin-left: 4px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--mc-fill-2, rgba(100, 116, 139, 0.08));
+  font-family: var(--mc-mono-font, ui-monospace, "SF Mono", Menlo, monospace);
+  user-select: text;
+  white-space: nowrap;
+}
+
+.action-tokens {
+  font-size: 11px;
+  color: var(--mc-text-tertiary, #94a3b8);
   margin-left: 4px;
   padding: 1px 6px;
   border-radius: 4px;

@@ -159,6 +159,10 @@ class LaneDPerformanceFixesTest {
             });
 
             var helper = helper(model);
+            // Shrink backoff to ~1ms so the test doesn't sleep through the real
+            // 3s/6s exponential backoff; a huge time budget keeps the retry-count
+            // logic (not the wall-clock cap) the thing under test.
+            helper.setRetryTimingForTest(1, 1, Long.MAX_VALUE);
             var result = helper.streamCall(model, smallPrompt(), "conv-d2a", "reasoning");
 
             // With MAX_RETRIES_RATE_LIMIT=2, attempts are: 0, 1, 2 = 3 total calls
@@ -179,6 +183,13 @@ class LaneDPerformanceFixesTest {
             });
 
             var helper = helper(model);
+            // Shrink backoff to ~1ms and lift the wall-clock budget so the full
+            // MAX_RETRIES path runs to completion. Without this, the real timing
+            // (exponential backoff capped at 60s vs a 3-minute total budget) cuts
+            // the loop off at ~8 calls after running for ~4 minutes — this test
+            // is about the retry COUNT, not the time budget (covered separately by
+            // serverErrorTimeBudgetCapsRetries).
+            helper.setRetryTimingForTest(1, 1, Long.MAX_VALUE);
             var result = helper.streamCall(model, smallPrompt(), "conv-d2b", "reasoning");
 
             // SERVER_ERROR should use the full MAX_RETRIES budget, NOT the reduced
@@ -192,6 +203,32 @@ class LaneDPerformanceFixesTest {
             assertEquals(expectedCalls, callCount.get(),
                     "SERVER_ERROR should try " + expectedCalls + " times total " +
                     "(attempt 0 through " + NodeStreamingChatHelper.MAX_RETRIES + ")");
+        }
+
+        @Test
+        @DisplayName("SERVER_ERROR stops early when the total-time budget is exhausted")
+        void serverErrorTimeBudgetCapsRetries() {
+            AtomicInteger callCount = new AtomicInteger(0);
+            ChatModel model = mock(ChatModel.class);
+            when(model.stream(any(Prompt.class))).thenAnswer(inv -> {
+                callCount.incrementAndGet();
+                return Flux.error(new RuntimeException("500 Internal Server Error"));
+            });
+
+            var helper = helper(model);
+            // 50ms backoff but only a 10ms total budget: the wall-clock cap — not
+            // MAX_RETRIES — bounds a sustained server-error loop. The loop should
+            // bail after the first backoff pushes elapsed time past the budget,
+            // well before the full MAX_RETRIES would be consumed.
+            helper.setRetryTimingForTest(50, 50, 10);
+            var result = helper.streamCall(model, smallPrompt(), "conv-d2d", "reasoning");
+
+            assertTrue(callCount.get() >= 1, "At least the initial attempt should run");
+            assertTrue(callCount.get() < NodeStreamingChatHelper.MAX_RETRIES + 1,
+                    "Time budget should cut SERVER_ERROR retries short of the full " +
+                    "MAX_RETRIES budget, but got " + callCount.get());
+            assertNotEquals(NodeStreamingChatHelper.ErrorType.NONE, result.errorType(),
+                    "Result should be an error after the time budget is exhausted");
         }
 
         @Test

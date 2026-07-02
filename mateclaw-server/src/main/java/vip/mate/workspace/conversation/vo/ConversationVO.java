@@ -66,8 +66,10 @@ public class ConversationVO extends ConversationEntity {
         vo.setLastActiveTime(entity.getLastActiveTime());
         vo.setWorkspaceId(entity.getWorkspaceId());
         vo.setPinned(entity.getPinned() != null ? entity.getPinned() : 0);
+        vo.setArchived(entity.getArchived() != null ? entity.getArchived() : 0);
         vo.setModelProvider(entity.getModelProvider());
         vo.setModelName(entity.getModelName());
+        vo.setWebchatSessionId(entity.getWebchatSessionId());
         vo.setCreateTime(entity.getCreateTime());
         vo.setUpdateTime(entity.getUpdateTime());
         // 补充关联字段

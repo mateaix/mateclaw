@@ -4,9 +4,11 @@ import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.stereotype.Component;
+import vip.mate.agent.context.ChatOrigin;
 
 import java.util.List;
 import java.util.Map;
@@ -33,13 +35,14 @@ public class SessionSearchTool {
             - "recent"：列出最近的会话（标题、时间、消息数），不需要 query 参数
             - "search"：按关键词全文搜索消息内容，返回匹配的消息片段
             适用于回忆之前讨论过的话题、查找历史决策、检索之前的上下文。
+            注意：只会搜索已完成的会话，不会返回当前正在运行中的其他会话内容。
             """)
     public String session_search(
             @ToolParam(description = "当前 Agent 的 ID") Long agentId,
-            @ToolParam(description = "当前会话 ID（用于排除当前会话）") String currentConversationId,
             @ToolParam(description = "搜索模式：recent 或 search") String mode,
             @ToolParam(description = "搜索关键词（mode=search 时必填）", required = false) String query,
-            @ToolParam(description = "返回结果数量上限，默认 10", required = false) Integer limit) {
+            @ToolParam(description = "返回结果数量上限，默认 10", required = false) Integer limit,
+            ToolContext toolContext) {
 
         if (agentId == null) {
             return error("agentId 不能为空");
@@ -48,11 +51,21 @@ public class SessionSearchTool {
             mode = "recent";
         }
 
+        // Read the current conversation id from the ToolContext rather than trusting
+        // the LLM to pass it, so concurrent sessions of the same agent stay isolated.
+        String currentConversationId = "";
+        if (toolContext != null) {
+            String fromOrigin = ChatOrigin.from(toolContext).conversationId();
+            if (fromOrigin != null && !fromOrigin.isEmpty()) {
+                currentConversationId = fromOrigin;
+            }
+        }
+
         int effectiveLimit = limit != null && limit > 0 ? limit : 10;
 
         try {
             if ("recent".equalsIgnoreCase(mode.trim())) {
-                return handleRecent(agentId, effectiveLimit);
+                return handleRecent(agentId, currentConversationId, effectiveLimit);
             } else if ("search".equalsIgnoreCase(mode.trim())) {
                 if (query == null || query.isBlank()) {
                     return error("mode=search 时 query 不能为空");
@@ -67,8 +80,8 @@ public class SessionSearchTool {
         }
     }
 
-    private String handleRecent(Long agentId, int limit) {
-        List<Map<String, Object>> sessions = sessionSearchService.listRecent(agentId, limit);
+    private String handleRecent(Long agentId, String currentConversationId, int limit) {
+        List<Map<String, Object>> sessions = sessionSearchService.listRecent(agentId, currentConversationId, limit);
 
         JSONObject result = new JSONObject();
         result.set("mode", "recent");

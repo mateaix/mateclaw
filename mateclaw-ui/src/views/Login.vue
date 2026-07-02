@@ -51,20 +51,53 @@
         </button>
       </form>
 
+      <!-- SSO providers (rendered only when the backend reports enabled providers) -->
+      <template v-if="ssoProviders.length > 0">
+        <div class="sso-divider">或使用</div>
+        <div class="sso-buttons">
+          <button
+            v-for="p in ssoProviders"
+            :key="p.id"
+            type="button"
+            class="sso-btn"
+            :disabled="loading"
+            @click="handleSsoLogin(p.id)"
+          >
+            {{ p.displayName }} 登录
+          </button>
+        </div>
+      </template>
+
+      <!-- SSO bind dialog (link-only mode: user must bind to an existing account) -->
+      <div v-if="bindDialog.visible" class="bind-dialog">
+        <div class="bind-dialog-content">
+          <h3 class="bind-title">首次使用 {{ bindDialog.provider }} 登录</h3>
+          <p class="bind-desc">请绑定你的 MateClaw 账号</p>
+          <input v-model="bindDialog.username" type="text" class="form-input" placeholder="MateClaw 用户名" autocomplete="username" />
+          <input v-model="bindDialog.password" type="password" class="form-input" placeholder="MateClaw 密码" autocomplete="current-password" />
+          <div v-if="bindDialog.error" class="error-msg">{{ bindDialog.error }}</div>
+          <button class="login-btn" :disabled="loading" @click="handleBind">绑定</button>
+          <button class="bind-cancel" @click="cancelBind">取消</button>
+        </div>
+      </div>
+
       <p class="login-hint" v-html="t('login.hint')"></p>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { reactive, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { reactive, ref, onMounted } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { authApi } from '@/api/index'
+import { authApi, ssoApi } from '@/api/index'
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore'
 import { useSystemSettingsStore } from '@/stores/useSystemSettingsStore'
 
+interface SsoProvider { id: string; displayName: string }
+
 const router = useRouter()
+const route = useRoute()
 const { t } = useI18n()
 const workspaceStore = useWorkspaceStore()
 const systemSettingsStore = useSystemSettingsStore()
@@ -73,6 +106,49 @@ const showPassword = ref(false)
 const errorMsg = ref('')
 const form = reactive({ username: '', password: '' })
 
+const ssoProviders = ref<SsoProvider[]>([])
+
+const bindDialog = reactive({
+  visible: false,
+  bindToken: '',
+  provider: '',
+  username: '',
+  password: '',
+  error: '',
+})
+
+// Load enabled SSO providers on mount so the button only shows when configured.
+onMounted(async () => {
+  try {
+    const res: any = await ssoApi.providers()
+    ssoProviders.value = (res.data || res) as SsoProvider[]
+  } catch {
+    // SSO not enabled or unreachable — password login still works.
+  }
+
+  // Detect SSO callback: /login?sso=callback&code=xxx&provider=feishu
+  const query = route.query
+  if (query.sso === 'callback' && query.code && query.provider) {
+    await handleSsoCallback(String(query.provider), String(query.code), String(query.state || ''))
+  }
+})
+
+/** Shared login-success flow: write localStorage + navigate. */
+async function applyLogin(data: { token: string; id: string | number; username: string; role: string }) {
+  localStorage.setItem('token', data.token)
+  localStorage.setItem('userId', String(data.id || '1'))
+  localStorage.setItem('username', data.username)
+  localStorage.setItem('role', data.role || 'user')
+  systemSettingsStore.load()
+  try {
+    await workspaceStore.fetchWorkspaces()
+  } catch {
+    /* default-deny is fine; router guard will still steer */
+  }
+  const target = workspaceStore.can('view:dashboard') ? '/dashboard' : '/chat'
+  router.push(target)
+}
+
 async function handleLogin() {
   if (!form.username || !form.password) return
   loading.value = true
@@ -80,29 +156,81 @@ async function handleLogin() {
   try {
     const res: any = await authApi.login(form)
     const data = res.data || res
-    localStorage.setItem('token', data.token)
-    localStorage.setItem('userId', String(data.id || '1'))
-    localStorage.setItem('username', data.username || form.username)
-    localStorage.setItem('role', data.role || 'user')
-    // Now authenticated — load runtime settings (streamEnabled / debugMode) so
-    // the saved preferences take effect on the first turn. The app-boot load()
-    // runs before login and 401s, so without this the chat would fall back to
-    // defaults until the user opened the Settings page.
-    systemSettingsStore.load()
-    // Resolve capabilities before deciding the landing route so a viewer
-    // lands on /chat (their only capability) and member+ on /dashboard.
-    try {
-      await workspaceStore.fetchWorkspaces()
-    } catch {
-      /* default-deny is fine; router guard will still steer */
-    }
-    const target = workspaceStore.can('view:dashboard') ? '/dashboard' : '/chat'
-    router.push(target)
+    await applyLogin(data)
   } catch (e: any) {
     errorMsg.value = typeof e === 'string' ? e : t('login.failed')
   } finally {
     loading.value = false
   }
+}
+
+/** Redirect to the IdP authorization page. */
+async function handleSsoLogin(providerId: string) {
+  loading.value = true
+  errorMsg.value = ''
+  try {
+    const res: any = await ssoApi.authorize(providerId)
+    const data = res.data || res
+    if (data.authorizeUrl) {
+      window.location.href = data.authorizeUrl
+    }
+  } catch (e: any) {
+    errorMsg.value = typeof e === 'string' ? e : 'SSO 授权失败'
+    loading.value = false
+  }
+}
+
+/** Handle the OAuth2 callback (code → JWT). */
+async function handleSsoCallback(provider: string, code: string, state: string) {
+  loading.value = true
+  errorMsg.value = ''
+  try {
+    const res: any = await ssoApi.callback(provider, code, state)
+    const data = res.data || res
+
+    // link-only mode: backend returns { bindRequired: true, bindToken, provider, displayName }
+    if (data.bindRequired) {
+      bindDialog.visible = true
+      bindDialog.bindToken = data.bindToken || ''
+      bindDialog.provider = data.provider || provider
+      bindDialog.error = ''
+      return
+    }
+
+    // Success: loginResponse carries the JWT
+    await applyLogin(data.loginResponse)
+    // Clean the query params so a refresh doesn't replay the callback.
+    router.replace({ path: '/login' })
+  } catch (e: any) {
+    errorMsg.value = typeof e === 'string' ? e : 'SSO 登录失败'
+  } finally {
+    loading.value = false
+  }
+}
+
+/** Submit the bind form (link-only mode). */
+async function handleBind() {
+  if (!bindDialog.username || !bindDialog.password) return
+  loading.value = true
+  bindDialog.error = ''
+  try {
+    const res: any = await ssoApi.bind(bindDialog.bindToken, bindDialog.username, bindDialog.password)
+    const data = res.data || res
+    bindDialog.visible = false
+    await applyLogin(data)
+  } catch (e: any) {
+    bindDialog.error = typeof e === 'string' ? e : '绑定失败，请检查用户名和密码'
+  } finally {
+    loading.value = false
+  }
+}
+
+function cancelBind() {
+  bindDialog.visible = false
+  bindDialog.bindToken = ''
+  bindDialog.username = ''
+  bindDialog.password = ''
+  bindDialog.error = ''
 }
 </script>
 
@@ -250,6 +378,82 @@ html.dark .login-page {
 .login-btn:disabled {
   opacity: 0.7;
   cursor: not-allowed;
+}
+
+/* SSO buttons */
+.sso-divider {
+  text-align: center;
+  font-size: 12px;
+  color: var(--mc-text-tertiary);
+  margin: 4px 0;
+  position: relative;
+}
+.sso-divider::before,
+.sso-divider::after {
+  content: '';
+  display: inline-block;
+  width: 30%;
+  height: 1px;
+  background: var(--mc-border);
+  vertical-align: middle;
+  margin: 0 8px;
+}
+.sso-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+}
+.sso-btn {
+  width: 100%;
+  padding: 11px;
+  background: var(--mc-bg-elevated);
+  color: var(--mc-text-primary);
+  border: 1.5px solid var(--mc-border);
+  border-radius: 12px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+  height: 44px;
+}
+.sso-btn:hover:not(:disabled) {
+  border-color: var(--mc-primary);
+  color: var(--mc-primary);
+}
+.sso-btn:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+/* Bind dialog */
+.bind-dialog {
+  width: 100%;
+}
+.bind-dialog-content {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.bind-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--mc-text-primary);
+  margin: 0;
+}
+.bind-desc {
+  font-size: 13px;
+  color: var(--mc-text-tertiary);
+  margin: 0;
+}
+.bind-cancel {
+  width: 100%;
+  padding: 8px;
+  background: none;
+  color: var(--mc-text-tertiary);
+  border: none;
+  font-size: 13px;
+  cursor: pointer;
 }
 
 /* Loading */

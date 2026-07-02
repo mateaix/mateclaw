@@ -68,7 +68,8 @@ class WikiProcessingFallbackTest {
                 om,
                 mock(WikiProgressBus.class),
                 mock(WikiCitationService.class),
-                mock(ApplicationEventPublisher.class));
+                mock(ApplicationEventPublisher.class),
+                mock(WikiEntityExtractionService.class));
 
         // Inject the optional fields via reflection — Spring would do this
         // post-construction in production, but the test instantiates directly.

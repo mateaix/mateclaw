@@ -1,7 +1,9 @@
 package vip.mate.wiki.service;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -10,24 +12,49 @@ import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.converter.BeanOutputConverter;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.context.annotation.Lazy;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.retry.support.RetryTemplate;
 import org.springframework.stereotype.Service;
 import vip.mate.agent.AgentGraphBuilder;
 import vip.mate.agent.prompt.PromptLoader;
+import vip.mate.llm.failover.ProviderHealthTracker;
 import vip.mate.llm.model.ModelConfigEntity;
 import vip.mate.llm.service.ModelConfigService;
+import vip.mate.llm.service.ModelProviderService;
 import vip.mate.wiki.WikiProperties;
+import vip.mate.wiki.dto.RouteResult;
+import vip.mate.wiki.dto.RoutedPageMeta;
 import vip.mate.wiki.dto.WikiChunkDraft;
+import vip.mate.wiki.event.WikiFactPageUpdatedEvent;
+import vip.mate.wiki.event.WikiKbDirtyEvent;
+import vip.mate.wiki.event.WikiPageCreatedEvent;
 import vip.mate.wiki.event.WikiProcessingEvent;
+import vip.mate.wiki.job.WikiEmbeddingProviderFailingException;
+import vip.mate.wiki.job.WikiJobStage;
+import vip.mate.wiki.job.WikiJobStep;
 import vip.mate.wiki.job.WikiKbConfig;
 import vip.mate.wiki.job.WikiKbConfigParser;
+import vip.mate.wiki.job.WikiModelRoutingService;
+import vip.mate.wiki.job.WikiProcessingJobService;
 import vip.mate.wiki.model.WikiKnowledgeBaseEntity;
 import vip.mate.wiki.model.WikiPageEntity;
 import vip.mate.wiki.model.WikiRawMaterialEntity;
+import vip.mate.wiki.profile.WikiMetadataValidator;
+import vip.mate.wiki.profile.WikiPageTypeDef;
+import vip.mate.wiki.profile.WikiPageTypeProfile;
+import vip.mate.wiki.profile.WikiPageTypeProfileService;
 import vip.mate.wiki.sse.WikiProgressBus;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
@@ -60,23 +87,24 @@ public class WikiProcessingService {
     private final ObjectMapper objectMapper;
     private final WikiProgressBus progressBus;
     private final WikiCitationService citationService;
-    private final org.springframework.context.ApplicationEventPublisher eventPublisher;
+    private final ApplicationEventPublisher eventPublisher;
+    private final WikiEntityExtractionService entityExtractionService;
 
     /**
      * Optional KB pageType profile. Field-injected (not a constructor arg) so
      * existing instantiations are unaffected; when absent the batch-create
      * prompt falls back to the legacy hardcoded pageType enum.
      */
-    @org.springframework.beans.factory.annotation.Autowired(required = false)
-    private vip.mate.wiki.profile.WikiPageTypeProfileService pageTypeProfileService;
+    @Autowired(required = false)
+    private WikiPageTypeProfileService pageTypeProfileService;
 
     /** Optional metadata validator, paired with {@link #pageTypeProfileService}. */
-    @org.springframework.beans.factory.annotation.Autowired(required = false)
-    private vip.mate.wiki.profile.WikiMetadataValidator metadataValidator;
+    @Autowired(required = false)
+    private WikiMetadataValidator metadataValidator;
 
     /** Optional dependency/stale engine for layered-knowledge wiring. */
-    @org.springframework.beans.factory.annotation.Autowired(required = false)
-    private vip.mate.wiki.service.WikiDependencyService dependencyService;
+    @Autowired(required = false)
+    private WikiDependencyService dependencyService;
 
     /**
      * Read-the-failover-chain handle. Optional so the existing constructors and
@@ -84,8 +112,8 @@ public class WikiProcessingService {
      * fallback hop iterates {@code listEnabledModels} in DB order — same
      * behavior as before this PR.
      */
-    @org.springframework.beans.factory.annotation.Autowired(required = false)
-    private vip.mate.llm.service.ModelProviderService modelProviderService;
+    @Autowired(required = false)
+    private ModelProviderService modelProviderService;
 
     /**
      * Per-provider failure counter / cooldown bookkeeping. Optional for the
@@ -94,12 +122,12 @@ public class WikiProcessingService {
      * successful call we clear the failure counter for the provider that
      * actually responded.
      */
-    @org.springframework.beans.factory.annotation.Autowired(required = false)
-    private vip.mate.llm.failover.ProviderHealthTracker providerHealthTracker;
+    @Autowired(required = false)
+    private ProviderHealthTracker providerHealthTracker;
 
-    @org.springframework.beans.factory.annotation.Autowired(required = false)
-    @org.springframework.context.annotation.Lazy
-    private vip.mate.wiki.job.WikiProcessingJobService wikiJobService;
+    @Autowired(required = false)
+    @Lazy
+    private WikiProcessingJobService wikiJobService;
 
     /**
      * RFC-051 PR-1c: optional preprocessor that fills chunk metadata
@@ -107,7 +135,7 @@ public class WikiProcessingService {
      * Marked optional so unit tests that construct this service directly
      * (without Spring) can opt out without exploding.
      */
-    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    @Autowired(required = false)
     private DocumentPreprocessService preprocessService;
 
     /**
@@ -115,8 +143,17 @@ public class WikiProcessingService {
      * the KB before each ingest. Optional so the older lazy-only unit tests
      * don't need to wire it.
      */
-    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    @Autowired(required = false)
     private WikiScaffoldService scaffoldService;
+
+    /**
+     * Recomputes broken links once a raw material finishes processing. Optional
+     * (field-injected) so unit tests that construct this service directly
+     * without Spring don't need to supply it — when absent, the post-ingestion
+     * auto-scan is simply skipped.
+     */
+    @Autowired(required = false)
+    private WikiLintJobService lintJobService;
 
     /**
      * RFC-051 PR-3: optional model routing service. When wired, route /
@@ -124,14 +161,14 @@ public class WikiProcessingService {
      * routing chain (stepModels[step] -&gt; wikiDefaultModelId -&gt; system
      * default) for a model rather than always pulling the system default.
      */
-    @org.springframework.beans.factory.annotation.Autowired(required = false)
-    private vip.mate.wiki.job.WikiModelRoutingService modelRoutingService;
+    @Autowired(required = false)
+    private WikiModelRoutingService modelRoutingService;
 
     /** RFC-051 PR-2b/2c: optional overview rebuilder + log appender. */
-    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    @Autowired(required = false)
     private WikiOverviewService overviewService;
 
-    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    @Autowired(required = false)
     private WikiLogService logService;
 
     /**
@@ -139,8 +176,8 @@ public class WikiProcessingService {
      * of the KB's apply-default transformation templates. Missing in the
      * legacy unit tests that wire this service directly.
      */
-    @org.springframework.beans.factory.annotation.Autowired(required = false)
-    @org.springframework.context.annotation.Lazy
+    @Autowired(required = false)
+    @Lazy
     private WikiTransformationExecutor transformationExecutor;
 
     /** Parallel chunk / material processing executor (JDK 21 virtual threads) */
@@ -169,6 +206,17 @@ public class WikiProcessingService {
          */
         final ConcurrentHashMap<String, String> slugClaims = new ConcurrentHashMap<>();
         /**
+         * Per-run title claim table: canonical title → the actual slug of the first
+         * page that claimed that concept this run.
+         * <p>
+         * Title is the stable concept identity (the slug is LLM-generated and drifts),
+         * so this closes the parallel-create race that {@link #slugClaims} cannot:
+         * two phase-B pages with the same title but different slugs would both miss
+         * the DB lookup and insert two rows. The first to {@link ConcurrentHashMap#computeIfAbsent}
+         * wins; later creates redirect their content into the winner page.
+         */
+        final ConcurrentHashMap<String, String> titleClaims = new ConcurrentHashMap<>();
+        /**
          * Per-run merge dedup set: slugs that have already been successfully merged during
          * this raw material processing run. Prevents the same page from being merged N times
          * (once per chunk) when the document repeatedly references the same concept.
@@ -183,7 +231,7 @@ public class WikiProcessingService {
 
     /** KBs with a reclassify pass currently running, used to reject concurrent
      *  re-triggers (which would double LLM spend and race page-type writes). */
-    private final java.util.Set<Long> reclassifyInFlight = ConcurrentHashMap.newKeySet();
+    private final Set<Long> reclassifyInFlight = ConcurrentHashMap.newKeySet();
 
     /**
      * Process one raw material.
@@ -252,7 +300,7 @@ public class WikiProcessingService {
             try {
                 var job = wikiJobService.createHeavyIngest(kb.getId(), rawId);
                 jobId = job.getId();
-                wikiJobService.transition(jobId, vip.mate.wiki.job.WikiJobStage.ROUTING);
+                wikiJobService.transition(jobId, WikiJobStage.ROUTING);
             } catch (Exception e) {
                 log.warn("[Wiki] Failed to create heavy ingest job record for raw={}: {}", rawId, e.getMessage());
             }
@@ -264,14 +312,16 @@ public class WikiProcessingService {
 
         // RFC-012 M3：广播 raw.started（前端切到 indeterminate 进度条）
         progressBus.broadcast(kb.getId(), WikiProgressBus.EVENT_RAW_STARTED,
-                java.util.Map.of("rawId", rawId, "phase", "route"));
+                Map.of("rawId", rawId, "phase", "route"));
 
         try {
             // Phase 1: 获取文本内容
             String textContent = rawService.getTextContent(raw);
             if (textContent == null || textContent.isBlank()) {
-                rawService.updateProcessingStatus(rawId, "failed", "No text content available");
+                rawService.updateProcessingStatus(rawId, "failed", "NO_CONTENT", "No text content available");
                 kbService.updateStatus(kb.getId(), "active");
+                progressBus.broadcast(kb.getId(), WikiProgressBus.EVENT_RAW_FAILED,
+                        Map.of("rawId", rawId, "error", "No text content available", "errorCode", "NO_CONTENT"));
                 return;
             }
 
@@ -303,7 +353,7 @@ public class WikiProcessingService {
 
             // Transition job to phase_a (chunk processing begins)
             if (wikiJobService != null && jobId != null) {
-                try { wikiJobService.transition(jobId, vip.mate.wiki.job.WikiJobStage.PHASE_A_RUNNING); } catch (Exception ignored) {}
+                try { wikiJobService.transition(jobId, WikiJobStage.PHASE_A_RUNNING); } catch (Exception ignored) {}
             }
 
             // Phase 3: LLM 消化
@@ -334,6 +384,10 @@ public class WikiProcessingService {
 
             String finalStatus;
             String finalDetail = null;
+            // Structured failure code (null unless finalStatus becomes "failed"),
+            // carried into both the persisted row and the RAW_FAILED SSE event so
+            // the UI can localize the failure instead of echoing raw English text.
+            String finalErrorCode = null;
             // Cancellation takes precedence over the normal terminal-state logic:
             // chunks that observed the cancel flag returned early as "failed", but
             // those aren't real failures — the user asked to stop. Surface that
@@ -360,9 +414,10 @@ public class WikiProcessingService {
                     log.info("[Wiki] Eager produced 0 pages but {} chunks indexed; marking partial for raw={}",
                             totalChunks, rawId);
                 } else {
-                    rawService.updateProcessingStatus(rawId, "failed", "No pages generated from LLM response");
-                    finalStatus = "failed";
+                    finalErrorCode = "EMPTY_RESULT";
                     finalDetail = "No pages generated from LLM response";
+                    rawService.updateProcessingStatus(rawId, "failed", finalErrorCode, finalDetail);
+                    finalStatus = "failed";
                 }
             } else if (failedChunks > 0 || failedPages > 0) {
                 // 部分成功：chunk 整体失败 或 chunk 内有 page 失败
@@ -396,10 +451,12 @@ public class WikiProcessingService {
             // RFC-012 M3：广播终态
             if ("failed".equals(finalStatus)) {
                 progressBus.broadcast(kb.getId(), WikiProgressBus.EVENT_RAW_FAILED,
-                        java.util.Map.of("rawId", rawId, "error", finalDetail == null ? "" : finalDetail));
+                        Map.of("rawId", rawId,
+                                "error", finalDetail == null ? "" : finalDetail,
+                                "errorCode", finalErrorCode == null ? "UNKNOWN" : finalErrorCode));
             } else {
                 progressBus.broadcast(kb.getId(), WikiProgressBus.EVENT_RAW_COMPLETED,
-                        java.util.Map.of(
+                        Map.of(
                                 "rawId", rawId,
                                 "status", finalStatus,
                                 "totalPages", totalPages,
@@ -410,10 +467,10 @@ public class WikiProcessingService {
             if (wikiJobService != null && jobId != null) {
                 try {
                     var terminalStage = switch (finalStatus) {
-                        case "failed" -> vip.mate.wiki.job.WikiJobStage.FAILED;
-                        case "partial" -> vip.mate.wiki.job.WikiJobStage.PARTIAL;
-                        case "cancelled" -> vip.mate.wiki.job.WikiJobStage.CANCELLED;
-                        default -> vip.mate.wiki.job.WikiJobStage.COMPLETED;
+                        case "failed" -> WikiJobStage.FAILED;
+                        case "partial" -> WikiJobStage.PARTIAL;
+                        case "cancelled" -> WikiJobStage.CANCELLED;
+                        default -> WikiJobStage.COMPLETED;
                     };
                     wikiJobService.transition(jobId, terminalStage);
                 } catch (Exception ignored) {}
@@ -440,7 +497,7 @@ public class WikiProcessingService {
             // schedule (debounced) an LLM-generated overview narrative refresh.
             // Stats rebuild above is sync; narrative regen runs after-commit.
             if (nonTerminalSideEffects) {
-                eventPublisher.publishEvent(new vip.mate.wiki.event.WikiKbDirtyEvent(this, kb.getId()));
+                eventPublisher.publishEvent(new WikiKbDirtyEvent(this, kb.getId()));
             }
 
             // Run apply-default transformation templates against the newly
@@ -469,20 +526,44 @@ public class WikiProcessingService {
             // every pending chunk and produce more "all chunks failed" noise.
             if (totalChunks > 0 && !"cancelled".equals(finalStatus)) {
                 final Long fKbId = kb.getId();
+                final Long fRawId = rawId;
                 WIKI_EXECUTOR.submit(() -> {
                     try {
                         int embedded = embeddingService.embedMissingChunks(fKbId);
                         if (embedded > 0) {
                             log.info("[Wiki] Async embedding completed: kbId={}, embedded={}", fKbId, embedded);
                         }
-                    } catch (vip.mate.wiki.job.WikiEmbeddingProviderFailingException ex) {
+                    } catch (WikiEmbeddingProviderFailingException ex) {
                         // Circuit-breaker tripped — the provider has consistently failed.
                         // The exception's own log line in WikiEmbeddingService is enough;
                         // emit a calmer notice here instead of a generic failure log.
                         log.warn("[Wiki] Async embedding aborted by circuit-breaker for kbId={}: {}",
                                 fKbId, ex.getMessage());
+                        surfaceWarning(fKbId, fRawId, "EMBEDDING_FAILED", ex.getMessage());
                     } catch (Exception ex) {
                         log.warn("[Wiki] Async embedding failed for kbId={}: {}", fKbId, ex.getMessage());
+                        surfaceWarning(fKbId, fRawId, "EMBEDDING_FAILED", ex.getMessage());
+                    }
+                });
+            }
+
+            // Entity-level knowledge graph extraction — opt-in per KB. Runs as a
+            // separate async pass so it never blocks (or fails) the ingest pipeline;
+            // its inputs (chunks, citations) are already committed at this point.
+            if (totalChunks > 0 && !"cancelled".equals(finalStatus)
+                    && isEntityExtractionEnabled(kb)) {
+                final Long fKbId = kb.getId();
+                final Long fRawId = rawId;
+                WIKI_EXECUTOR.submit(() -> {
+                    try {
+                        int count = entityExtractionService.extractForRaw(fKbId, fRawId);
+                        if (count > 0) {
+                            log.info("[Wiki] Async entity extraction completed: kbId={}, rawId={}, entities={}",
+                                    fKbId, fRawId, count);
+                        }
+                    } catch (Exception ex) {
+                        log.warn("[Wiki] Async entity extraction failed for kbId={}: {}", fKbId, ex.getMessage());
+                        surfaceWarning(fKbId, fRawId, "ENTITY_EXTRACTION_FAILED", ex.getMessage());
                     }
                 });
             }
@@ -494,6 +575,7 @@ public class WikiProcessingService {
             // checkpoint rejected between chunks).
             boolean cancelled = rawService.isCancelRequested(rawId);
             String terminalStatus = cancelled ? "cancelled" : "failed";
+            String errorCode = cancelled ? null : classifyErrorCode(e);
             String detail = cancelled
                     ? "Cancelled by user (interrupted: " + (e.getMessage() == null ? "unknown" : e.getMessage()) + ")"
                     : e.getMessage();
@@ -502,13 +584,13 @@ public class WikiProcessingService {
             } else {
                 log.error("[Wiki] Processing failed for raw={}: {}", rawId, e.getMessage(), e);
             }
-            rawService.updateProcessingStatus(rawId, terminalStatus, detail);
+            rawService.updateProcessingStatus(rawId, terminalStatus, errorCode, detail);
             kbService.updateStatus(kb.getId(), "active");
             if (wikiJobService != null && jobId != null) {
                 try {
                     wikiJobService.transition(jobId, cancelled
-                            ? vip.mate.wiki.job.WikiJobStage.CANCELLED
-                            : vip.mate.wiki.job.WikiJobStage.FAILED);
+                            ? WikiJobStage.CANCELLED
+                            : WikiJobStage.FAILED);
                 } catch (Exception ignored) {}
             }
             // Broadcast: cancelled rows reuse the COMPLETED event with status="cancelled"
@@ -516,16 +598,53 @@ public class WikiProcessingService {
             // go through RAW_FAILED (which the UI surfaces as a red banner).
             if (cancelled) {
                 progressBus.broadcast(kb.getId(), WikiProgressBus.EVENT_RAW_COMPLETED,
-                        java.util.Map.of("rawId", rawId, "status", "cancelled"));
+                        Map.of("rawId", rawId, "status", "cancelled"));
             } else {
                 progressBus.broadcast(kb.getId(), WikiProgressBus.EVENT_RAW_FAILED,
-                        java.util.Map.of("rawId", rawId, "error", e.getMessage() == null ? "unknown" : e.getMessage()));
+                        Map.of("rawId", rawId,
+                                "error", e.getMessage() == null ? "unknown" : e.getMessage(),
+                                "errorCode", errorCode == null ? "UNKNOWN" : errorCode));
             }
         } finally {
             // RFC-012 M2 v2 UI v2：写入最终进度并清理共享计数器
             ProgressCounter pc = progressCounters.remove(rawId);
             if (pc != null) {
                 rawService.updateProgress(rawId, "done", pc.done.get(), pc.total.get());
+                // Once every material in the KB has settled, reconcile links and
+                // recompute broken_links. Gating on "no unsettled raws" avoids
+                // two hazards of doing this per-material mid-batch: (1) demoting a
+                // [[concept]] link before a later material creates that page, and
+                // (2) recording a link to a later-created page as broken. The last
+                // material to finish runs both; earlier completions skip. Both
+                // steps are idempotent, so a rare concurrent double-run is benign.
+                boolean kbSettled;
+                try {
+                    kbSettled = rawService.listByKbId(kb.getId()).stream()
+                            .noneMatch(r -> "pending".equals(r.getProcessingStatus())
+                                    || "processing".equals(r.getProcessingStatus()));
+                } catch (RuntimeException e) {
+                    kbSettled = true; // best-effort: prefer reconciling over skipping
+                }
+                if (kbSettled) {
+                    try {
+                        // Redirect alias-covered links to their covering page and
+                        // demote the genuinely uncovered ones to plain text before
+                        // the scan, so freshly imported content doesn't surface
+                        // dangling links to concepts that were merged away.
+                        pageService.reconcileKbLinks(kb.getId());
+                    } catch (RuntimeException reconErr) {
+                        log.warn("[Wiki] post-ingestion link reconciliation failed for kbId={}: {}",
+                                kb.getId(), reconErr.toString());
+                    }
+                    if (lintJobService != null) {
+                        try {
+                            lintJobService.startOrGetRunning(kb.getId());
+                        } catch (RuntimeException scanErr) {
+                            log.warn("[Wiki] post-ingestion broken-link scan trigger failed for kbId={}: {}",
+                                    kb.getId(), scanErr.toString());
+                        }
+                    }
+                }
             }
         }
     }
@@ -610,7 +729,7 @@ public class WikiProcessingService {
             if (modelId != null && modelRoutingService != null) {
                 chatModel = modelRoutingService.buildChatModel(modelId);
             } else {
-                chatModel = resolveChatModel(kbId, vip.mate.wiki.job.WikiJobStep.CREATE_PAGE).chatModel;
+                chatModel = resolveChatModel(kbId, WikiJobStep.CREATE_PAGE).chatModel;
             }
             systemPrompt = PromptLoader.loadPrompt("wiki/classify-page-system")
                     .replace("{allowed_page_types}", pageTypeProfileService.describeForPrompt(kbId));
@@ -659,13 +778,13 @@ public class WikiProcessingService {
                             page.getId(), kbId, e.getMessage());
                 } finally {
                     progressBus.broadcast(kbId, WikiProgressBus.EVENT_CHUNK_DONE,
-                            java.util.Map.of("kind", "reclassify", "done", done, "total", total));
+                            Map.of("kind", "reclassify", "done", done, "total", total));
                 }
             }
             log.info("[Wiki] reclassifyKB done kbId={} pages={} changed={} failed={}",
                     kbId, total, changed, failed);
             progressBus.broadcast(kbId, WikiProgressBus.EVENT_RAW_COMPLETED,
-                    java.util.Map.of("kind", "reclassify", "done", total, "total", total,
+                    Map.of("kind", "reclassify", "done", total, "total", total,
                             "changed", changed, "failed", failed));
             } finally {
                 reclassifyInFlight.remove(kbId);
@@ -895,7 +1014,7 @@ public class WikiProcessingService {
         ));
         if (isAborted(raw.getId(), "single-chunk legacy")) return 0;
         String llmResponse = callLlmWithResilientRetry(prompt, "chunk of raw=" + raw.getId(),
-                kb.getId(), vip.mate.wiki.job.WikiJobStep.CREATE_PAGE);
+                kb.getId(), WikiJobStep.CREATE_PAGE);
 
         return applyLlmResponse(kb.getId(), raw.getId(), llmResponse);
     }
@@ -949,9 +1068,9 @@ public class WikiProcessingService {
         // LLM produces strict RouteResult JSON. KB config wins; falls back to global
         // mate.wiki.use-structured-route default when the KB hasn't expressed a preference.
         boolean useStructured = resolveStructuredRouteFlag(kb);
-        org.springframework.ai.converter.BeanOutputConverter<vip.mate.wiki.dto.RouteResult> routeConverter =
+        BeanOutputConverter<RouteResult> routeConverter =
                 useStructured
-                        ? new org.springframework.ai.converter.BeanOutputConverter<>(vip.mate.wiki.dto.RouteResult.class)
+                        ? new BeanOutputConverter<>(RouteResult.class)
                         : null;
         if (routeConverter != null) {
             routeUser = routeUser + "\n\n" + routeConverter.getFormat();
@@ -963,7 +1082,7 @@ public class WikiProcessingService {
         ));
         if (isAborted(rawId, "route phase")) return 0;
         String routeResponse = callLlmWithResilientRetry(routePrompt, "route chunk of raw=" + rawId,
-                kbId, vip.mate.wiki.job.WikiJobStep.ROUTE);
+                kbId, WikiJobStep.ROUTE);
 
         // RFC-012 follow-up #3：phase B 现在并行执行，计数必须是 atomic
         AtomicInteger created = new AtomicInteger(0);
@@ -976,12 +1095,12 @@ public class WikiProcessingService {
         boolean structuredOk = false;
         if (routeConverter != null) {
             try {
-                vip.mate.wiki.dto.RouteResult bound = routeConverter.convert(routeResponse);
+                RouteResult bound = routeConverter.convert(routeResponse);
                 if (bound != null) {
-                    for (vip.mate.wiki.dto.RoutedPageMeta meta : bound.create()) {
+                    for (RoutedPageMeta meta : bound.create()) {
                         if (meta == null || meta.slug() == null || meta.slug().isBlank()
                                 || meta.title() == null || meta.title().isBlank()) continue;
-                        com.fasterxml.jackson.databind.node.ObjectNode node = objectMapper.createObjectNode();
+                        ObjectNode node = objectMapper.createObjectNode();
                         node.put("slug", meta.slug());
                         node.put("title", meta.title());
                         if (meta.summary() != null) node.put("summary", meta.summary());
@@ -1024,7 +1143,7 @@ public class WikiProcessingService {
                 ));
                 String retryResponse = callLlmWithResilientRetry(retryPrompt,
                         "route chunk RETRY of raw=" + rawId,
-                        kbId, vip.mate.wiki.job.WikiJobStep.ROUTE);
+                        kbId, WikiJobStep.ROUTE);
                 routeJson = parseJsonResponse(retryResponse);
                 if (routeJson == null) {
                     log.warn("[Wiki] Route phase: failed to parse JSON for kbId={}, rawId={}, responseLen={}, first200={}",
@@ -1057,7 +1176,7 @@ public class WikiProcessingService {
         // so no content is silently dropped (mirrors llm_wiki source-summary guarantee).
         if (totalPlanned == 0 && textContent.length() >= properties.getChunkFallbackMinChars()) {
             String overviewSlug = WikiPageService.toSlug(rawTitle) + "-overview";
-            com.fasterxml.jackson.databind.node.ObjectNode fallbackMeta =
+            ObjectNode fallbackMeta =
                     objectMapper.createObjectNode();
             fallbackMeta.put("slug", overviewSlug);
             fallbackMeta.put("title", rawTitle + " 概述");
@@ -1078,7 +1197,7 @@ public class WikiProcessingService {
                 log.info("[Wiki] Progress: switching to phase-b for raw={}", rawId);
                 // RFC-012 M3：route 完成、phase-b 启动 → 通知前端确定进度（可显示 0/N）
                 progressBus.broadcast(kbId, WikiProgressBus.EVENT_ROUTE_DONE,
-                        java.util.Map.of(
+                        Map.of(
                                 "rawId", rawId,
                                 "phase", "phase-b",
                                 "done", pc.done.get(),
@@ -1140,7 +1259,7 @@ public class WikiProcessingService {
                         if (!ok) pc.failed.incrementAndGet();
                         rawService.updateProgress(rawId, "phase-b", d, pc.total.get());
                         progressBus.broadcast(kbId, WikiProgressBus.EVENT_CHUNK_DONE,
-                                java.util.Map.of(
+                                Map.of(
                                         "rawId", rawId,
                                         "kind", "merge",
                                         "ok", ok,
@@ -1233,7 +1352,7 @@ public class WikiProcessingService {
             String batchResponse = callLlmWithResilientRetry(batchPrompt,
                     "batch-create " + subBatch.size() + " pages of raw=" + rawId
                     + " subBatch=" + (bStart / batchSize + 1),
-                    kbId, vip.mate.wiki.job.WikiJobStep.CREATE_PAGE);
+                    kbId, WikiJobStep.CREATE_PAGE);
 
             List<WikiBatchCreateParser.ParsedPage> parsedPages = batchParser.parse(batchResponse);
 
@@ -1273,7 +1392,7 @@ public class WikiProcessingService {
                         pc.failed.incrementAndGet();
                         rawService.updateProgress(rawId, "phase-b", d, pc.total.get());
                         progressBus.broadcast(kbId, WikiProgressBus.EVENT_CHUNK_DONE,
-                                java.util.Map.of("rawId", rawId, "kind", "create",
+                                Map.of("rawId", rawId, "kind", "create",
                                         "ok", false, "done", d, "total", pc.total.get()));
                     }
                     continue;
@@ -1292,6 +1411,17 @@ public class WikiProcessingService {
                 }
                 JsonNode metadataNode = pageJson.path("metadata");
                 JsonNode dependsOnNode = pageJson.path("depends_on");
+                // Alternate concept names this page covers (composite / 辨析
+                // pages list the fine-grained concepts they absorbed) — used by
+                // the post-ingestion reconciler to redirect [[concept]] links.
+                List<String> pageAliases = new ArrayList<>();
+                JsonNode aliasesNode = pageJson.path("aliases");
+                if (aliasesNode.isArray()) {
+                    for (JsonNode a : aliasesNode) {
+                        String s = a.asText("").trim();
+                        if (!s.isEmpty()) pageAliases.add(s);
+                    }
+                }
                 if (content.isBlank()) {
                     log.info("[Wiki] BatchCreate: blank content for slug='{}', retrying individually", slug);
                     final String blankSlug = slug;
@@ -1311,7 +1441,7 @@ public class WikiProcessingService {
                         pc.failed.incrementAndGet();
                         rawService.updateProgress(rawId, "phase-b", d, pc.total.get());
                         progressBus.broadcast(kbId, WikiProgressBus.EVENT_CHUNK_DONE,
-                                java.util.Map.of("rawId", rawId, "kind", "create-retry",
+                                Map.of("rawId", rawId, "kind", "create-retry",
                                         "ok", false, "done", d, "total", pc.total.get()));
                     }
                     continue;
@@ -1321,6 +1451,13 @@ public class WikiProcessingService {
                 boolean ok = false;
                 try {
                     wasCreated = savePageContent(kb, raw, slug, title, content, pageSummary, pageType, metadataNode, dependsOnNode);
+                    if (!pageAliases.isEmpty()) {
+                        try {
+                            pageService.mergeAliasesByTitle(kbId, title, pageAliases);
+                        } catch (RuntimeException aliasErr) {
+                            log.warn("[Wiki] Failed to persist aliases for title='{}': {}", title, aliasErr.toString());
+                        }
+                    }
                     if (wasCreated) {
                         created.incrementAndGet();
                         totalCreated++;
@@ -1349,7 +1486,7 @@ public class WikiProcessingService {
                     if (!ok) pc.failed.incrementAndGet();
                     rawService.updateProgress(rawId, "phase-b", d, pc.total.get());
                     progressBus.broadcast(kbId, WikiProgressBus.EVENT_CHUNK_DONE,
-                            java.util.Map.of(
+                            Map.of(
                                     "rawId", rawId,
                                     "kind", "create",
                                     "ok", ok,
@@ -1360,7 +1497,7 @@ public class WikiProcessingService {
 
             // Retry any pages that LLM omitted from the batch response
             int subBatchNum = bStart / batchSize + 1;
-            java.util.Set<String> returnedSlugs = new java.util.HashSet<>();
+            Set<String> returnedSlugs = new HashSet<>();
             for (WikiBatchCreateParser.ParsedPage pp : parsedPages) {
                 returnedSlugs.add(pp.slug());
             }
@@ -1408,7 +1545,7 @@ public class WikiProcessingService {
         ));
         if (isAborted(raw.getId(), "retry-create slug=" + slug)) return null;
         return callLlmWithResilientRetry(prompt, "retry-create slug=" + slug + " of raw=" + raw.getId(),
-                kb.getId(), vip.mate.wiki.job.WikiJobStep.CREATE_PAGE);
+                kb.getId(), WikiJobStep.CREATE_PAGE);
     }
 
     /**
@@ -1499,7 +1636,7 @@ public class WikiProcessingService {
             if (delta < 0) pc.failed.incrementAndGet();
             rawService.updateProgress(rawId, "phase-b", d, pc.total.get());
             progressBus.broadcast(kbId, WikiProgressBus.EVENT_CHUNK_DONE,
-                    java.util.Map.of("rawId", rawId, "kind", "create-retry",
+                    Map.of("rawId", rawId, "kind", "create-retry",
                             "ok", delta >= 0, "done", d, "total", pc.total.get()));
         }
         return delta;
@@ -1535,10 +1672,42 @@ public class WikiProcessingService {
         Long kbId = kb.getId();
         Long rawId = raw.getId();
 
+        // Derive the slug deterministically from the title rather than trusting
+        // the model-supplied one. A model-minted slug romanizes inconsistently
+        // across runs (the same concept lands under different spellings) and
+        // forces every [[...]] reference to guess a transliteration that often
+        // misses — surfacing as broken links on a freshly imported KB. Title is
+        // already the canonical concept identity used for dedup below, so keying
+        // the slug off it keeps the stored slug and the human-meaningful title
+        // from ever drifting apart, and makes [[Title]] references resolve. Falls
+        // back to the supplied slug only when the title yields no usable slug.
+        if (title != null && !title.isBlank()) {
+            String derivedSlug = WikiPageService.toSlug(title);
+            if (derivedSlug != null && !derivedSlug.isBlank()) {
+                slug = derivedSlug;
+            }
+        }
+
         // Refuse to materialize a page, or merge into an existing one, for a
         // raw the user just deleted. This prevents pages whose source_raw_ids
         // point at a tombstoned row.
         if (isAborted(rawId, "savePageContent slug=" + slug)) return false;
+
+        // Fallback 0a: canonical-title match — title is the stable concept identity.
+        // The LLM-generated slug drifts across runs and romanizations, so the same
+        // concept otherwise lands as many rows under different slugs (the duplicate
+        // explosion this guards against). If a page with the same canonical title
+        // already exists under a different slug, merge into it instead of creating.
+        WikiPageEntity existingByTitle = pageService.findByCanonicalTitle(kbId, title);
+        if (existingByTitle != null && !existingByTitle.getSlug().equals(slug)) {
+            String actualSlug = existingByTitle.getSlug();
+            pageService.updatePageByAi(kbId, actualSlug, content, pageSummary, rawId);
+            pageService.mergeSourceLineage(existingByTitle.getId(), rawId, raw.getTitle());
+            afterPagePersisted(existingByTitle.getId(), kbId, pageType, metadataNode, dependsOnNode, true);
+            log.info("[Wiki] Phase B create slug='{}' title='{}' canonical-title-matches existing '{}', updated",
+                    slug, title, actualSlug);
+            return false;
+        }
 
         // Fallback 0: cross-spelling canonical match (DB has same concept under different slug)
         WikiPageEntity existingByCanonical = pageService.findByCanonicalSlug(kbId, slug);
@@ -1552,8 +1721,34 @@ public class WikiProcessingService {
             return false;
         }
 
-        // Fallback 0.5: in-flight slug-claim arbitration across parallel chunks
+        // Fallback 0.25: in-flight title-claim arbitration across parallel pages.
+        // Closes the race that findByCanonicalTitle cannot: two parallel phase-B
+        // creates with the same title but different slugs can both miss the DB
+        // lookup (the row isn't committed yet) and insert two rows — title has no
+        // DB unique constraint, so DuplicateKey won't catch it. The first to claim
+        // the canonical title wins; losers redirect their content into the winner.
         ProgressCounter pcLocal = progressCounters.get(rawId);
+        String canonicalTitle = WikiPageService.canonicalTitle(title);
+        if (pcLocal != null && !canonicalTitle.isEmpty()) {
+            final String claimingSlug = slug;
+            String winnerSlug = pcLocal.titleClaims.computeIfAbsent(canonicalTitle, k -> claimingSlug);
+            if (!winnerSlug.equals(slug)) {
+                WikiPageEntity winner = pageService.getBySlug(kbId, winnerSlug);
+                if (winner != null) {
+                    pageService.updatePageByAi(kbId, winnerSlug, content, pageSummary, rawId);
+                    pageService.mergeSourceLineage(winner.getId(), rawId, raw.getTitle());
+                    afterPagePersisted(winner.getId(), kbId, pageType, metadataNode, dependsOnNode, true);
+                    log.info("[Wiki] Phase B create slug='{}' title='{}' lost title-claim race to '{}', updated",
+                            slug, title, winnerSlug);
+                    return false;
+                }
+                log.info("[Wiki] Phase B create slug='{}' redirects to in-flight title winner '{}'",
+                        slug, winnerSlug);
+                slug = winnerSlug;
+            }
+        }
+
+        // Fallback 0.5: in-flight slug-claim arbitration across parallel chunks
         String canonical = WikiPageService.canonicalSlug(slug);
         if (pcLocal != null && !canonical.isEmpty()) {
             final String routedSlug = slug;
@@ -1592,7 +1787,7 @@ public class WikiProcessingService {
             log.info("[Wiki] Phase B create page slug='{}' done (created)", slug);
             citationService.buildCitationsAsync(created.getId(), kbId);
             return true;
-        } catch (org.springframework.dao.DuplicateKeyException e) {
+        } catch (DuplicateKeyException e) {
             // Fallback 2: concurrent INSERT race — degrade to update
             pageService.updatePageByAi(kbId, slug, content, pageSummary, rawId);
             WikiPageEntity raced = pageService.getBySlug(kbId, slug);
@@ -1625,13 +1820,13 @@ public class WikiProcessingService {
         // transactions), so the count is accurate. Idempotent + dedup-guarded
         // downstream, so firing on update paths is safe.
         if (eventPublisher != null && pageType != null && !pageType.isBlank()) {
-            eventPublisher.publishEvent(new vip.mate.wiki.event.WikiPageCreatedEvent(kbId, pageType, pageId));
+            eventPublisher.publishEvent(new WikiPageCreatedEvent(kbId, pageType, pageId));
         }
         // When an existing fact page is updated, propagate staleness to the
         // experience pages depending on it (async, off the ingest thread).
         if (isUpdate && eventPublisher != null && dependencyService != null
                 && pageTypeProfileService != null && !pageTypeProfileService.isExperience(kbId, pageType)) {
-            eventPublisher.publishEvent(new vip.mate.wiki.event.WikiFactPageUpdatedEvent(
+            eventPublisher.publishEvent(new WikiFactPageUpdatedEvent(
                     kbId, pageId, "fact page updated during ingest"));
         }
     }
@@ -1661,7 +1856,7 @@ public class WikiProcessingService {
         if (!pageTypeProfileService.isExperience(kbId, pageType)) {
             return; // only experience pages declare fact dependencies
         }
-        java.util.List<Long> depIds = new java.util.ArrayList<>();
+        List<Long> depIds = new ArrayList<>();
         for (JsonNode n : dependsOnNode) {
             String slug = n.asText("");
             if (slug.isBlank()) continue;
@@ -1671,7 +1866,7 @@ public class WikiProcessingService {
             }
         }
         try {
-            java.util.List<String> rejected = dependencyService.setDependencies(kbId, pageId, depIds);
+            List<String> rejected = dependencyService.setDependencies(kbId, pageId, depIds);
             if (!rejected.isEmpty()) {
                 log.warn("[Wiki] page {} dependency warnings: {}", pageId, rejected);
             }
@@ -1722,11 +1917,11 @@ public class WikiProcessingService {
             return;
         }
         try {
-            vip.mate.wiki.profile.WikiPageTypeProfile profile = pageTypeProfileService.resolveProfile(kbId);
-            vip.mate.wiki.profile.WikiPageTypeDef def = profile.get(pageType);
+            WikiPageTypeProfile profile = pageTypeProfileService.resolveProfile(kbId);
+            WikiPageTypeDef def = profile.get(pageType);
             @SuppressWarnings("unchecked")
-            java.util.Map<String, Object> raw = objectMapper.convertValue(metadataNode, java.util.Map.class);
-            vip.mate.wiki.profile.WikiMetadataValidator.ValidationResult result =
+            Map<String, Object> raw = objectMapper.convertValue(metadataNode, Map.class);
+            WikiMetadataValidator.ValidationResult result =
                     metadataValidator.validate(def, raw, profile.isAllowAdditionalFields(), "create");
             String metadataJson = objectMapper.writeValueAsString(result.getCleaned());
             String validationJson = result.getWarnings().isEmpty()
@@ -1794,7 +1989,7 @@ public class WikiProcessingService {
         if (isAborted(rawId, "merge slug=" + slug)) return false;
         String response = callLlmWithResilientRetry(prompt,
                 "merge page slug=" + slug + " of raw=" + rawId,
-                kbId, vip.mate.wiki.job.WikiJobStep.MERGE_PAGE);
+                kbId, WikiJobStep.MERGE_PAGE);
         JsonNode mergeJson = parseJsonResponse(response);
         if (mergeJson == null) {
             log.warn("[Wiki] Phase B merge page slug='{}' returned unparseable JSON, skipping", slug);
@@ -1922,7 +2117,7 @@ public class WikiProcessingService {
         try {
             if (isAborted(raw.getId(), "doc analysis")) return "";
             String response = callLlmWithResilientRetry(prompt, "analyze doc raw=" + raw.getId(),
-                    kb.getId(), vip.mate.wiki.job.WikiJobStep.ROUTE);
+                    kb.getId(), WikiJobStep.ROUTE);
             JsonNode json = parseJsonResponse(response);
             if (json != null) {
                 // Validate related_pages against the active KB slug set BEFORE
@@ -1989,7 +2184,7 @@ public class WikiProcessingService {
         JsonNode relatedNode = analysisJson.path("related_pages");
         if (!relatedNode.isArray() || relatedNode.size() == 0) return analysisJson;
 
-        java.util.Set<String> activeSlugs;
+        Set<String> activeSlugs;
         try {
             activeSlugs = linkService.lowercaseSlugSet(pageService.listSummaries(kbId));
         } catch (RuntimeException e) {
@@ -2003,12 +2198,12 @@ public class WikiProcessingService {
             return result;
         }
 
-        com.fasterxml.jackson.databind.node.ArrayNode keptArray = objectMapper.createArrayNode();
-        java.util.List<String> dropped = new java.util.ArrayList<>();
+        ArrayNode keptArray = objectMapper.createArrayNode();
+        List<String> dropped = new ArrayList<>();
         for (JsonNode el : relatedNode) {
             String slug = el.asText("").trim();
             if (slug.isEmpty()) continue;
-            if (activeSlugs.contains(slug.toLowerCase(java.util.Locale.ROOT))) {
+            if (activeSlugs.contains(slug.toLowerCase(Locale.ROOT))) {
                 keptArray.add(slug);
             } else {
                 dropped.add(slug);
@@ -2048,20 +2243,59 @@ public class WikiProcessingService {
             return "（暂无已有页面）";
         }
 
+        // The index is injected verbatim into the route / batch-create prompts, so
+        // it must stay bounded — otherwise it grows linearly with the KB and
+        // overflows the model context window. Cap by both page count and chars;
+        // truncation is safe because savePageContent dedups by canonical title at
+        // persist time, so an omitted page is merged-on-save rather than duplicated.
+        int maxChars = Math.max(0, properties.getExistingPagesIndexMaxChars());
+        int maxPages = Math.max(0, properties.getExistingPagesIndexMaxPages());
+
+        // List manually-edited pages first so user-curated entries are never the
+        // ones dropped when a cap is hit. Title order within each group is
+        // preserved (listSummaries already sorts by title).
+        List<WikiPageEntity> ordered = new ArrayList<>(summaries.size());
+        for (WikiPageEntity p : summaries) {
+            if ("manual".equals(p.getLastUpdatedBy())) ordered.add(p);
+        }
+        for (WikiPageEntity p : summaries) {
+            if (!"manual".equals(p.getLastUpdatedBy())) ordered.add(p);
+        }
+
         StringBuilder sb = new StringBuilder();
-        for (WikiPageEntity page : summaries) {
-            sb.append("- [[").append(page.getSlug()).append("]]");
+        int listed = 0;
+        for (WikiPageEntity page : ordered) {
+            StringBuilder row = new StringBuilder();
+            row.append("- [[").append(page.getSlug()).append("]]");
             if (page.getTitle() != null && !page.getTitle().isBlank()) {
-                sb.append(" — ").append(page.getTitle());
+                row.append(" — ").append(page.getTitle());
             }
             if ("manual".equals(page.getLastUpdatedBy())) {
-                sb.append(" (手动编辑)");
+                row.append(" (手动编辑)");
             }
             String summary = page.getSummary();
             if (summary != null && !summary.isBlank()) {
-                sb.append(" — ").append(summary);
+                row.append(" — ").append(summary);
             }
-            sb.append("\n");
+            row.append("\n");
+
+            // Stop before exceeding either cap, but always emit at least one row.
+            boolean overPageCap = maxPages > 0 && listed >= maxPages;
+            boolean overCharCap = maxChars > 0 && listed > 0 && sb.length() + row.length() > maxChars;
+            if (overPageCap || overCharCap) {
+                break;
+            }
+            sb.append(row);
+            listed++;
+        }
+
+        int omitted = ordered.size() - listed;
+        if (omitted > 0) {
+            sb.append("- …（已省略 ").append(omitted)
+              .append(" 个页面：已有页面过多，索引已截断。若材料涉及未列出的概念，按新建处理即可，")
+              .append("系统会在落库时按标题自动归并到既有页面）\n");
+            log.info("[Wiki] existing-pages index truncated for kbId={}: listed={} omitted={} chars={}",
+                    kbId, listed, omitted, sb.length());
         }
         return sb.toString().trim();
     }
@@ -2087,7 +2321,7 @@ public class WikiProcessingService {
      * is available. Falls back to the system default on any lookup failure
      * so a misconfigured KB never blocks ingest.
      */
-    private ChatModel buildChatModelFor(Long kbId, vip.mate.wiki.job.WikiJobStep step) {
+    private ChatModel buildChatModelFor(Long kbId, WikiJobStep step) {
         if (modelRoutingService != null && kbId != null && step != null) {
             try {
                 Long modelId = modelRoutingService.selectModelId(kbId, "heavy_ingest", step);
@@ -2125,7 +2359,7 @@ public class WikiProcessingService {
      * pick the routed chat model; passing {@code null} for either reproduces
      * the legacy behavior (system default model).
      */
-    private String callLlmWithResilientRetry(Prompt prompt, String ctx, Long kbId, vip.mate.wiki.job.WikiJobStep step) {
+    private String callLlmWithResilientRetry(Prompt prompt, String ctx, Long kbId, WikiJobStep step) {
         long backoffMs = 1000;
         final long maxBackoffMs = 60_000;
         final int maxAttempts = Math.max(1, properties.getLlmMaxAttempts());
@@ -2264,7 +2498,7 @@ public class WikiProcessingService {
     /** Pair of modelId + built ChatModel — null modelId means we used the system default. */
     private record ResolvedChatModel(Long modelId, ChatModel chatModel) {}
 
-    private ResolvedChatModel resolveChatModel(Long kbId, vip.mate.wiki.job.WikiJobStep step) {
+    private ResolvedChatModel resolveChatModel(Long kbId, WikiJobStep step) {
         if (modelRoutingService != null && kbId != null && step != null) {
             try {
                 Long modelId = modelRoutingService.selectModelId(kbId, "heavy_ingest", step);
@@ -2296,7 +2530,7 @@ public class WikiProcessingService {
      * stable, never random.
      *
      * <p>Skips providers currently in cooldown ({@link
-     * vip.mate.llm.failover.ProviderHealthTracker}) so a flapping provider
+     * ProviderHealthTracker}) so a flapping provider
      * doesn't keep getting tried while we wait for it to recover.
      */
     private ResolvedChatModel pickFallbackChatModel(Long failedModelId) {
@@ -2487,6 +2721,24 @@ public class WikiProcessingService {
         TransientLlmException(String msg) { super(msg); }
     }
 
+    /**
+     * Persist a non-blocking warning on a completed material whose async sub-step
+     * (embedding / entity extraction) failed, and push it live so the UI can flag
+     * the degradation without a reload. Best-effort: a warning must never escalate
+     * into a pipeline failure, so any bookkeeping error here is swallowed.
+     */
+    private void surfaceWarning(Long kbId, Long rawId, String warningCode, String warningMessage) {
+        try {
+            rawService.recordWarning(rawId, warningCode, warningMessage);
+            progressBus.broadcast(kbId, WikiProgressBus.EVENT_RAW_WARNING,
+                    Map.of("rawId", rawId,
+                            "warningCode", warningCode,
+                            "warning", warningMessage == null ? "" : warningMessage));
+        } catch (Exception ex) {
+            log.warn("[Wiki] Failed to record warning for raw={}: {}", rawId, ex.getMessage());
+        }
+    }
+
     // ==================== RFC-030: Error classification ====================
 
     /**
@@ -2588,8 +2840,8 @@ public class WikiProcessingService {
         ));
         if (isAborted(raw.getId(), "repair page=" + page.getSlug())) return;
         String response = callLlmWithResilientRetry(prompt, "repair page=" + page.getSlug(),
-                kb.getId(), vip.mate.wiki.job.WikiJobStep.MERGE_PAGE);
-        com.fasterxml.jackson.databind.JsonNode pageJson = parseJsonResponse(response);
+                kb.getId(), WikiJobStep.MERGE_PAGE);
+        JsonNode pageJson = parseJsonResponse(response);
         if (pageJson == null) return;
 
         String content = pageJson.path("content").asText("");
@@ -2603,7 +2855,7 @@ public class WikiProcessingService {
     private List<Long> parseSourceRawIds(String json) {
         if (json == null || json.isBlank()) return List.of();
         try {
-            return objectMapper.readValue(json, new com.fasterxml.jackson.core.type.TypeReference<List<Long>>() {});
+            return objectMapper.readValue(json, new TypeReference<List<Long>>() {});
         } catch (Exception e) {
             return List.of();
         }
@@ -2674,6 +2926,17 @@ public class WikiProcessingService {
     }
 
     /**
+     * Read the {@code entityExtractionEnabled} opt-in from KB config. Defaults
+     * to {@code false} on any parse error or missing field — extraction is an
+     * opt-in cost and must never be turned on implicitly.
+     */
+    private boolean isEntityExtractionEnabled(WikiKnowledgeBaseEntity kb) {
+        if (kb == null || kb.getConfigContent() == null) return false;
+        WikiKbConfig config = WikiKbConfigParser.parse(objectMapper, kb.getConfigContent());
+        return config != null && Boolean.TRUE.equals(config.getEntityExtractionEnabled());
+    }
+
+    /**
      * Returns {@code true} when the caller should bail out of an in-flight
      * processing path because the raw material has been deleted.
      * <p>
@@ -2741,15 +3004,15 @@ public class WikiProcessingService {
 
         rawService.updateProgress(rawId, "lazy", 0, 0);
         progressBus.broadcast(kbId, WikiProgressBus.EVENT_RAW_STARTED,
-                java.util.Map.of("rawId", rawId, "phase", "lazy"));
+                Map.of("rawId", rawId, "phase", "lazy"));
 
         try {
             String textContent = rawService.getTextContent(raw);
             if (textContent == null || textContent.isBlank()) {
-                rawService.updateProcessingStatus(rawId, "failed", "No text content available");
+                rawService.updateProcessingStatus(rawId, "failed", "NO_CONTENT", "No text content available");
                 kbService.updateStatus(kbId, "active");
                 progressBus.broadcast(kbId, WikiProgressBus.EVENT_RAW_FAILED,
-                        java.util.Map.of("rawId", rawId, "error", "No text content available"));
+                        Map.of("rawId", rawId, "error", "No text content available", "errorCode", "NO_CONTENT"));
                 return;
             }
 
@@ -2781,17 +3044,20 @@ public class WikiProcessingService {
             // Async embedding — mirror the eager path so a slow embedding model
             // does not block the raw from reaching completed.
             final Long fKbId = kbId;
+            final Long fRawId = rawId;
             WIKI_EXECUTOR.submit(() -> {
                 try {
                     int embedded = embeddingService.embedMissingChunks(fKbId);
                     if (embedded > 0) {
                         log.info("[Wiki] Lazy async embedding completed: kbId={}, embedded={}", fKbId, embedded);
                     }
-                } catch (vip.mate.wiki.job.WikiEmbeddingProviderFailingException ex) {
+                } catch (WikiEmbeddingProviderFailingException ex) {
                     log.warn("[Wiki] Lazy async embedding aborted by circuit-breaker for kbId={}: {}",
                             fKbId, ex.getMessage());
+                    surfaceWarning(fKbId, fRawId, "EMBEDDING_FAILED", ex.getMessage());
                 } catch (Exception ex) {
                     log.warn("[Wiki] Lazy async embedding failed for kbId={}: {}", fKbId, ex.getMessage());
+                    surfaceWarning(fKbId, fRawId, "EMBEDDING_FAILED", ex.getMessage());
                 }
             });
 
@@ -2805,7 +3071,7 @@ public class WikiProcessingService {
             kbService.updateStatus(kbId, "active");
 
             progressBus.broadcast(kbId, WikiProgressBus.EVENT_RAW_COMPLETED,
-                    java.util.Map.of(
+                    Map.of(
                             "rawId", rawId,
                             "status", "completed",
                             "totalPages", 0,
@@ -2823,17 +3089,19 @@ public class WikiProcessingService {
             // RFC-051 PR-2b: refresh overview stats.
             if (overviewService != null) overviewService.rebuild(kbId);
             // Tier 2: dirty event drives the LLM-narrated overview section.
-            eventPublisher.publishEvent(new vip.mate.wiki.event.WikiKbDirtyEvent(this, kbId));
+            eventPublisher.publishEvent(new WikiKbDirtyEvent(this, kbId));
 
             log.info("[Wiki] Lazy processing completed for raw={}, kbId={}, chunks={}",
                     rawId, kbId, totalChunks);
         } catch (Exception e) {
             log.error("[Wiki] Lazy processing failed for raw={}: {}", rawId, e.getMessage(), e);
-            rawService.updateProcessingStatus(rawId, "failed", e.getMessage());
+            String errorCode = classifyErrorCode(e);
+            rawService.updateProcessingStatus(rawId, "failed", errorCode, e.getMessage());
             kbService.updateStatus(kbId, "active");
             progressBus.broadcast(kbId, WikiProgressBus.EVENT_RAW_FAILED,
-                    java.util.Map.of("rawId", rawId,
-                            "error", e.getMessage() == null ? "unknown" : e.getMessage()));
+                    Map.of("rawId", rawId,
+                            "error", e.getMessage() == null ? "unknown" : e.getMessage(),
+                            "errorCode", errorCode == null ? "UNKNOWN" : errorCode));
         }
     }
 }

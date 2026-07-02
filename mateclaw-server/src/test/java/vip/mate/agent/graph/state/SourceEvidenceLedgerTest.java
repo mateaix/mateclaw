@@ -149,4 +149,166 @@ class SourceEvidenceLedgerTest {
         assertFalse(validation.valid());
         assertTrue(validation.unsupportedReferences().contains("RandomMadeUpService"));
     }
+
+    @Test
+    @DisplayName("records wiki semantic chunks as numbered citations")
+    void recordsWikiSemanticChunksAsCitations() {
+        SourceEvidenceLedger ledger = SourceEvidenceLedger.fromToolResponses(List.of(
+                new ToolResponseMessage.ToolResponse("c1", "wiki_semantic_search", """
+                        {
+                          "kbId": 7,
+                          "query": "install",
+                          "matchCount": 2,
+                          "chunks": [
+                            {"index":1,"chunkId":101,"rawTitle":"Install Guide","section":"Linux","pageNumber":12,"snippet":"Use the package manager."},
+                            {"index":2,"chunkId":102,"rawTitle":"FAQ","snippet":"Restart after install."}
+                          ]
+                        }
+                        """)));
+
+        assertTrue(ledger.hasWikiEvidence());
+        assertTrue(ledger.hasWikiCitationIndex(1));
+        assertTrue(ledger.hasWikiCitationIndex(2));
+        assertFalse(ledger.hasWikiCitationIndex(3));
+    }
+
+    @Test
+    @DisplayName("rejects wiki answers without real numbered citations")
+    void rejectsWikiAnswerWithoutRealCitations() {
+        SourceEvidenceLedger ledger = SourceEvidenceLedger.fromToolResponses(List.of(
+                new ToolResponseMessage.ToolResponse("c1", "wiki_semantic_search", """
+                        {"chunks":[{"index":1,"chunkId":101,"rawTitle":"Install Guide","snippet":"Use the package manager."}]}
+                        """)));
+
+        SourceEvidenceLedger.Validation noMarker = ledger.validateAnswer("Use the package manager.");
+        assertFalse(noMarker.valid());
+        assertTrue(noMarker.unsupportedReferences().contains("missing wiki citation [n]"));
+
+        SourceEvidenceLedger.Validation unsupportedMarker = ledger.validateAnswer("""
+                Use the package manager [2].
+
+                来源：
+                [2] Install Guide
+                """);
+        assertFalse(unsupportedMarker.valid());
+        assertTrue(unsupportedMarker.unsupportedReferences().contains("wiki citation [2]"));
+    }
+
+    @Test
+    @DisplayName("requires wiki source table rows to match retrieved source titles")
+    void requiresWikiSourceTableToMatchTitles() {
+        SourceEvidenceLedger ledger = SourceEvidenceLedger.fromToolResponses(List.of(
+                new ToolResponseMessage.ToolResponse("c1", "wiki_semantic_search", """
+                        {"chunks":[{"index":1,"chunkId":101,"rawTitle":"Install Guide","section":"Linux","pageNumber":12,"snippet":"Use the package manager."}]}
+                        """)));
+
+        SourceEvidenceLedger.Validation fabricatedTitle = ledger.validateAnswer("""
+                Use the package manager [1].
+
+                来源：
+                [1] Made Up Manual
+                """);
+        assertFalse(fabricatedTitle.valid());
+        assertTrue(fabricatedTitle.unsupportedReferences().contains("wiki source title for [1]"));
+
+        SourceEvidenceLedger.Validation valid = ledger.validateAnswer("""
+                Use the package manager [1].
+
+                来源：
+                [1] Install Guide - Linux - page 12
+                """);
+        assertTrue(valid.valid());
+    }
+
+    @Test
+    @DisplayName("renders missing wiki source table for cited chunks")
+    void rendersWikiSourceTable() {
+        SourceEvidenceLedger ledger = SourceEvidenceLedger.fromToolResponses(List.of(
+                new ToolResponseMessage.ToolResponse("c1", "wiki_semantic_search", """
+                        {"chunks":[{"index":1,"chunkId":101,"rawTitle":"Install Guide","section":"Linux","pageNumber":12,"snippet":"Use the package manager."}]}
+                        """)));
+
+        String rendered = ledger.appendWikiSourceTable("Use the package manager [1].");
+
+        assertTrue(rendered.contains("来源："));
+        assertTrue(rendered.contains("[1] Install Guide - Linux - page 12"));
+        assertTrue(ledger.validateAnswer(rendered).valid());
+    }
+
+    @Test
+    @DisplayName("normalizes non-canonical source lines to standard format")
+    void normalizesNonCanonicalSourceLines() {
+        SourceEvidenceLedger ledger = SourceEvidenceLedger.fromToolResponses(List.of(
+                new ToolResponseMessage.ToolResponse("c1", "wiki_semantic_search", """
+                        {"chunks":[{"index":1,"chunkId":101,"rawTitle":"Install Guide","section":"Linux","pageNumber":12,"snippet":"Use the package manager."}]}
+                        """)));
+
+        String rendered = ledger.appendWikiSourceTable("""
+                Use the package manager [1].
+
+                来源：
+                [1] Install Guide（参考文档）
+                """);
+
+        assertTrue(rendered.contains("[1] Install Guide - Linux - page 12"),
+                "non-canonical source line should be normalized: " + rendered);
+        assertFalse(rendered.contains("（参考文档）"),
+                "non-canonical text must be removed: " + rendered);
+        assertTrue(ledger.validateAnswer(rendered).valid());
+    }
+
+    @Test
+    @DisplayName("canonical source line is left unchanged (idempotent)")
+    void canonicalSourceLineUnchanged() {
+        SourceEvidenceLedger ledger = SourceEvidenceLedger.fromToolResponses(List.of(
+                new ToolResponseMessage.ToolResponse("c1", "wiki_semantic_search", """
+                        {"chunks":[{"index":1,"chunkId":101,"rawTitle":"Install Guide","section":"Linux","pageNumber":12,"snippet":"Use the package manager."}]}
+                        """)));
+
+        String canonical = """
+                Use the package manager [1].
+
+                来源：
+                [1] Install Guide - Linux - page 12
+                """;
+
+        String rendered = ledger.appendWikiSourceTable(canonical);
+        assertEquals(canonical, rendered);
+    }
+
+    @Test
+    @DisplayName("inserts 来源： header when source lines exist without one")
+    void insertsSourceHeaderWhenMissing() {
+        SourceEvidenceLedger ledger = SourceEvidenceLedger.fromToolResponses(List.of(
+                new ToolResponseMessage.ToolResponse("c1", "wiki_semantic_search", """
+                        {"chunks":[{"index":1,"chunkId":101,"rawTitle":"MAST-Data数据集","section":"","pageNumber":null,"snippet":"..."}]}
+                        """)));
+
+        String rendered = ledger.appendWikiSourceTable("""
+                根据数据集 [1] 的描述。
+
+                [1] MAST-Data数据集
+                """);
+
+        assertTrue(rendered.contains("来源："),
+                "来源： header must be present: " + rendered);
+        assertTrue(rendered.contains("[1] MAST-Data数据集"),
+                "source line content must be preserved: " + rendered);
+        assertTrue(ledger.validateAnswer(rendered).valid());
+    }
+
+    @Test
+    @DisplayName("non-wiki tool JSON with a top-level title does not create wiki citations")
+    void nonWikiToolWithTitleDoesNotForceCitations() {
+        // getGoalStatus returns a top-level "title" field; it must not be mined as a
+        // wiki citation, otherwise a final answer with no [n] markers would be wrongly
+        // flagged EVIDENCE_INSUFFICIENT.
+        SourceEvidenceLedger ledger = SourceEvidenceLedger.fromToolResponses(List.of(
+                new ToolResponseMessage.ToolResponse("c1", "getGoalStatus", """
+                        {"active":true,"goalId":"42","title":"Ship the release","status":"in_progress"}
+                        """)));
+
+        assertFalse(ledger.hasWikiEvidence());
+        assertTrue(ledger.validateAnswer("The release is on track.").valid());
+    }
 }

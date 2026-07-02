@@ -652,6 +652,8 @@ public class SkillService {
         catalog.append("When using a skill and finding it outdated, incomplete, or wrong, ");
         catalog.append("patch it immediately with `skill_manage(action='patch')` — don't wait to be asked. ");
         catalog.append("Skills that aren't maintained become liabilities.\n\n");
+        catalog.append("Keep SKILL.md lean: move bulky reference material or re-runnable scripts into ");
+        catalog.append("`skill_manage(action='write_file')` under references/ or scripts/.\n\n");
 
         // --- 第一层：技能目录（始终注入，消耗很少的 token） ---
         catalog.append("## Available Skills\n");

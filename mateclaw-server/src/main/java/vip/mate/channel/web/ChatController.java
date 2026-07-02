@@ -30,7 +30,6 @@ import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.io.IOException;
 import reactor.core.Disposable;
 
@@ -38,6 +37,8 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -62,7 +63,7 @@ public class ChatController {
     private final ObjectMapper objectMapper;
     private final ConversationCompletionPublisher completionPublisher;
     private final vip.mate.memory.identity.MemoryOwnerResolver memoryOwnerResolver;
-    private final Path uploadRoot = Paths.get("data", "chat-uploads");
+    private final vip.mate.workspace.core.service.ChatUploadLocationResolver uploadLocationResolver;
 
     // 使用虚拟线程池处理 SSE（Java 17+ 兼容，Java 21 可用 Executors.newVirtualThreadPerTaskExecutor()）
     private final ExecutorService sseExecutor = Executors.newCachedThreadPool();
@@ -1075,7 +1076,9 @@ public class ChatController {
             Authentication auth) throws IOException {
 
         String username = auth != null ? auth.getName() : "anonymous";
-        // 校验会话归属（会话可能尚未创建，此时允许上传——后续 stream/chat 会创建并绑定用户）
+        // 校验会话归属（会话可能尚未创建，此时允许上传——后续 stream/chat 会创建并绑定用户）。
+        // 注意：会话尚不存在时，附件暂存到默认目录（resolveUploadRoot 查不到会话即回退）；
+        // 会话创建后读取走双重查找，仍能命中。
         if (conversationService.conversationExists(conversationId)
                 && !conversationService.isConversationOwner(conversationId, username)) {
             return R.fail(403, "无权操作该会话");
@@ -1087,6 +1090,7 @@ public class ChatController {
         String originalFilename = file.getOriginalFilename() != null ? file.getOriginalFilename() : "file";
         String safeFilename = Path.of(originalFilename).getFileName().toString().replaceAll("[^a-zA-Z0-9._-]", "_");
         String storedName = System.currentTimeMillis() + "_" + safeFilename;
+        Path uploadRoot = uploadLocationResolver.resolveUploadRoot(conversationId);
         Path conversationDir = uploadRoot.resolve(conversationId);
         Files.createDirectories(conversationDir);
         Path target = conversationDir.resolve(storedName);
@@ -1119,8 +1123,20 @@ public class ChatController {
             return ResponseEntity.status(403).build();
         }
 
-        Path filePath = uploadRoot.resolve(conversationId).resolve(storedName).normalize();
-        if (!Files.exists(filePath) || !filePath.startsWith(uploadRoot.resolve(conversationId).normalize())) {
+        // Check every candidate root (workspace-scoped dir + legacy default dir)
+        // so attachments written before the workspace-aware relocation, and the
+        // current workspace-scoped ones, are both servable. Each candidate keeps
+        // its own startsWith traversal guard.
+        Path filePath = null;
+        for (Path root : uploadLocationResolver.resolveCandidateUploadRoots(conversationId)) {
+            Path conversationDir = root.resolve(conversationId).normalize();
+            Path candidate = conversationDir.resolve(storedName).normalize();
+            if (Files.exists(candidate) && candidate.startsWith(conversationDir)) {
+                filePath = candidate;
+                break;
+            }
+        }
+        if (filePath == null) {
             return ResponseEntity.notFound().build();
         }
 
@@ -1717,6 +1733,11 @@ public class ChatController {
                 || lower.contains("client abort") || lower.contains("closed");
     }
 
+    /** Markdown link pointing at a generated-file download URL. Used by the
+     *  StreamAccumulator to surface generated artifacts in the run-overview rail. */
+    private static final Pattern GENERATED_FILE_LINK_PATTERN =
+            Pattern.compile("\\[([^\\]]+)\\]\\(((?:https?://[^/\\s)\\]]+)?/api/v1/files/generated/[A-Za-z0-9-]+)\\)");
+
     /**
      * 流式累积器 — 收集 StreamDelta 事件，持久化到 DB。
      * <p>
@@ -1739,6 +1760,8 @@ public class ChatController {
         private final List<Map<String, Object>> planStepResults = new ArrayList<>();
         /** RFC-052: tool names whose returnDirect output was folded into the assistant message */
         private final List<String> directToolNames = new ArrayList<>();
+        /** Generated file artifacts extracted from tool results — surfaced in the run-overview rail. */
+        private final List<Map<String, Object>> generatedFiles = new ArrayList<>();
         private int segCounter = 0;
         private int promptTokens = 0;
         private int completionTokens = 0;
@@ -2010,6 +2033,30 @@ public class ChatController {
                         break;
                     }
                 }
+                // Extract generated-file links from the tool result so the
+                // run-overview rail can surface artifacts without re-scanning
+                // segments on the frontend.
+                extractGeneratedFiles(String.valueOf(data.getOrDefault("result", "")), toolName);
+            }
+        }
+
+        /** Scan a tool result for markdown links pointing at generated-file
+         *  download URLs and collect them into {@link #generatedFiles}.
+         *  De-duplicates by URL so a link echoed in later tool results doesn't
+         *  produce duplicate entries in the run-overview rail. */
+        private void extractGeneratedFiles(String result, String toolName) {
+            if (result == null || result.isBlank()) return;
+            Matcher m = GENERATED_FILE_LINK_PATTERN.matcher(result);
+            while (m.find()) {
+                String url = m.group(2);
+                boolean dup = generatedFiles.stream()
+                        .anyMatch(f -> url.equals(String.valueOf(f.get("url"))));
+                if (dup) continue;
+                Map<String, Object> file = new LinkedHashMap<>();
+                file.put("filename", m.group(1));
+                file.put("url", url);
+                file.put("toolName", toolName);
+                generatedFiles.add(file);
             }
         }
 
@@ -2132,6 +2179,9 @@ public class ChatController {
                     // (assembled by FinalAnswerNode). UI uses this to badge
                     // historical messages as "data returned directly by tool".
                     metadata.put("directToolNames", directToolNames);
+                }
+                if (!generatedFiles.isEmpty()) {
+                    metadata.put("generatedFiles", generatedFiles);
                 }
                 if (!finishReason.isEmpty()) {
                     // Surface graph FinishReason so MemorySummarizationGate and

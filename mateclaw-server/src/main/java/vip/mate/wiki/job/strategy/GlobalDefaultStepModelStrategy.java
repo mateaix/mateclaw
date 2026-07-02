@@ -9,12 +9,13 @@ import vip.mate.wiki.job.model.WikiProcessingJobEntity;
 import vip.mate.wiki.model.WikiKnowledgeBaseEntity;
 
 /**
- * RFC-030: Final fallback strategy — uses the system default model.
- * Cheap steps (ROUTE, ENRICH, SUMMARY) prefer a lighter/cheaper model;
- * strong steps (CREATE_PAGE, MERGE_PAGE) use the default model.
+ * Final fallback strategy — uses the system default model for every step.
+ * Cheap steps that want a lighter model are handled earlier by
+ * {@link WikiLightModelStrategy} (Order 2) when a light model is configured;
+ * this strategy is the last resort and keeps all steps on the system default.
  */
 @Component
-@Order(3)
+@Order(4)
 @RequiredArgsConstructor
 public class GlobalDefaultStepModelStrategy implements WikiStepModelStrategy {
 
@@ -25,9 +26,6 @@ public class GlobalDefaultStepModelStrategy implements WikiStepModelStrategy {
 
     @Override
     public Long selectModelId(WikiProcessingJobEntity job, WikiKnowledgeBaseEntity kb, WikiJobStep step) {
-        // RFC-030: cheap steps (ROUTE, ENRICH, SUMMARY) should ideally use a lighter model,
-        // but ModelConfigService has no "cheapest chat model" concept yet.
-        // When per-step pricing metadata is added, this switch can differentiate.
         return modelConfigService.getDefaultModel().getId();
     }
 }

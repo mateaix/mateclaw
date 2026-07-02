@@ -16,7 +16,7 @@ Everything else in MateClaw is static the moment you configure it. Agents, tools
 ::: tip Your AI dreams about you while you sleep
 That's not a marketing line. It's literal code in the `memory/dreaming/` package.
 
-Every night at 2 AM (default; configurable) a scheduled job runs — its name is **Dreaming**. It walks every agent's conversation trail from the day, consolidates scattered signals into a coherent understanding of you, filters out one-offs and contradictions and stale facts, promotes recurring patterns into `MEMORY.md`, and appends "what it saw, what it concluded, what it rewrote" to `DREAMS.md` — a human-readable audit trail of how memory got to where it is today.
+Every night at 3 AM (default; configurable) a scheduled job runs — its name is **Dreaming**. It walks every agent's conversation trail from the day, consolidates scattered signals into a coherent understanding of you, filters out one-offs and contradictions and stale facts, promotes recurring patterns into `MEMORY.md`, and appends "what it saw, what it concluded, what it rewrote" to `DREAMS.md` — a human-readable audit trail of how memory got to where it is today.
 
 When you open MateClaw the next morning, it **picks up where yesterday left off** — not from zero.
 
@@ -45,7 +45,7 @@ This page covers the four layers that make up memory, the files the system write
   │     Updated: asynchronously, after each meaningful chat      │
   └────────────────────────────────────────────────────────────┘
                             │
-                            ▼ (daily at 2:00 AM, configurable)
+                            ▼ (daily at 3:00 AM, configurable)
   ┌────────────────────────────────────────────────────────────┐
   │  3. Nightly consolidation (Dreaming)                         │
   │     Scans recent daily notes, finds recurring patterns,      │
@@ -157,7 +157,7 @@ From v1.3.0, the [workflow](./workflow) `write_memory` step can write the run's 
 
 ### Daily notes
 
-Conversation highlights archived by date, in append mode — multiple conversations in one day concatenate into the same file. Not injected into the system prompt (`enabled=false`). They exist so the consolidator has something to scan at 2 AM.
+Conversation highlights archived by date, in append mode — multiple conversations in one day concatenate into the same file. Not injected into the system prompt (`enabled=false`). They exist so the consolidator has something to scan at 3 AM.
 
 ---
 
@@ -197,7 +197,7 @@ Only files with `enabled=true` are included.
 
 Three-stage defense:
 
-**Stage 1 — proactive compression.** When estimated total exceeds 75% of the budget (default window 128k tokens), the system calls the LLM to summarize earlier turns. The most recent 2 turns (4 messages) survive verbatim. The summary is cached for 30 minutes.
+**Stage 1 — proactive compression.** When estimated total exceeds 75% of the budget (default window 128k tokens), the system calls the LLM to summarize earlier turns. The tail is retained dynamically based on a token budget, with a floor controlled by `preserve-recent-pairs` and `protect-last-min-messages` (whichever is larger; defaults to at least 10 messages). The summary is cached for 30 minutes.
 
 **Stage 2 — emergency recovery.** If the LLM still returns context-too-large, the system stops calling the LLM. It discards older messages, keeps the last 2 turns, and retries once.
 
@@ -281,7 +281,7 @@ The third layer runs on a schedule. Its job is to watch daily notes pile up and 
 
 ### Trigger methods
 
-- **Automatic** — every agent has a row in the system's scheduled jobs, set to run nightly at 2 AM
+- **Automatic** — every agent has a row in the system's scheduled jobs, set to run nightly at 3 AM
 - **Manual** — `POST /api/v1/memory/{agentId}/emergence`
 
 ### Why it's not recursive
@@ -327,17 +327,69 @@ What it does:
 - **Monthly archive** — old reports roll into a compressed monthly archive, browsable in the timeline
 - **Memory Browser** — timeline, facts, contradictions, diff viewer, and a trust bar across the top
 
-Enable in `application.yml`:
+Enable in `application.yml` (these flags all live under `mate.memory`, grouped by phase):
 
 ```yaml
-mateclaw:
+mate:
   memory:
-    dream-v2:
-      enabled: true
-      fact-projection: true
-      contradictions: true
-      morning-card: true
+    # Phase 1: turn-by-turn lifecycle bus
+    lifecycle-mediator-enabled: true
+    dream:
+      focused-enabled: true        # focused dream endpoint
+      archive-enabled: true        # monthly archive rotation
+      archive-keep-days: 30
+      max-candidates-per-dream: 100
+    # Phase 2: SOUL auto-evolution
+    soul-update-interval: 20       # one SOUL.md rewrite every 20 writes (0 = off)
+    # Phase 3: fact projection
+    fact:
+      projection-enabled: true
+      projection-rebuild-cron: "0 */30 * * * ?"
+      contradiction-check-enabled: false   # contradiction detection (experimental, off by default)
+      trust-half-life-days: 60
+      forget-enabled: true         # the "Forget" button in the UI
 ```
+
+> The morning card is an endpoint (`GET /api/v1/memory/{agentId}/dream/morning-card`), not a standalone flag — it has data as long as the fact-projection + dream lifecycle is on.
+
+---
+
+## Bounding always-on memory size
+
+::: tip New
+The memory that gets injected into the system prompt on every turn — `user` / `feedback` structured entries, `PROFILE.md`, `MEMORY.md` — has a silent problem: **it only ever grows**. As entries accumulate, each round's token cost climbs steadily. This group of mechanisms puts deterministic size limits on always-on memory.
+:::
+
+Three layers, each covering a different stage:
+
+### Injection budget (truncate at inject time, disk untouched)
+
+When `user` / `feedback` structured entries are injected into the system prompt they are sorted by their `Updated:` date (LRU) and only the most recent N are kept. Entries beyond the limit are **discarded at inject time** — the on-disk file is not modified — and the block footer discloses how many were omitted.
+
+- `mate.memory.system-block-max-chars` (default `4000`): character cap for the always-on structured block; when exceeded, entries are dropped oldest-first. `0` = unlimited.
+- `mate.memory.system-block-max-entries-per-type` (default `40`): maximum entries injected per type (`user` / `feedback`). `0` = unlimited.
+
+### Nightly consolidation (shrink files at the storage layer)
+
+The injection budget truncates at inject time, but the on-disk files keep growing. **Consolidation** compacts them at the storage layer: a nightly job (default 03:30, on its own schedule independent of [Dreaming](#consolidation-and-dreaming)) walks each agent's shared bucket and all per-owner buckets, and when entry count exceeds the threshold it calls the LLM to merge near-duplicate or stale entries and writes the result back.
+
+One **safety invariant**: the entry count after consolidation can only decrease — if the model hallucinates additional entries, that write is skipped entirely.
+
+- `mate.memory.structured-consolidation-enabled` (default `true`): when off, only the injection budget applies — no storage-side merging.
+- `mate.memory.structured-consolidation-min-entries` (default `8`): buckets with fewer entries than this skip the LLM call to save cost.
+- `mate.memory.structured-consolidation-cron` (default `"0 30 3 * * ?"`): independent schedule; does not affect Dreaming.
+- `mate.memory.structured-consolidation-max-owners-per-run` (default `50`): maximum owner buckets processed per agent per run; the rest are deferred to the next run. `0` = unlimited.
+
+Manual trigger: `POST /api/v1/memory/{agentId}/structured-consolidation` — returns stats including `ownersConsolidated`, `updated`, `entriesBefore`, and `entriesAfter`.
+
+> Don't confuse this with [Dreaming](#consolidation-and-dreaming): Dreaming merges daily notes into `MEMORY.md` (promoting what matters); consolidation deduplicates and trims `user` / `feedback` structured entries. Two different jobs, two different schedules.
+
+### File ceiling (deterministic hard cap at rewrite time)
+
+`PROFILE.md` and `MEMORY.md` are fully rewritten by the LLM. The prompt asks for conciseness, but there is no hard constraint, so files can still grow unbounded. The file ceiling is the **deterministic fallback at write time**: if the content exceeds the budget it is truncated at the last `##` section boundary that still fits (preserving the head of the file), and a truncation marker is appended.
+
+- `mate.memory.profile-max-chars` (default `4000`): hard character cap for PROFILE.md. `0` = unlimited.
+- `mate.memory.memory-md-max-chars` (default `8000`): hard character cap for MEMORY.md. `0` = unlimited.
 
 ---
 
@@ -470,6 +522,19 @@ mate:
     # PERSONAL memory and recall filters by owner_key. Set false for the old shared behavior (all writes
     # to TEAM). The bare Java-property default is false.
     lifecycle-mediator-enabled: true
+
+    # --- always-on memory size bounds ---
+    # Injection budget: always-on user/feedback structured block (LRU truncation at inject time, 0 = unlimited)
+    system-block-max-chars: 4000
+    system-block-max-entries-per-type: 40
+    # Nightly consolidation: merge/deduplicate user/feedback entries at the storage layer (independent of dreaming)
+    structured-consolidation-enabled: true
+    structured-consolidation-min-entries: 8
+    structured-consolidation-cron: "0 30 3 * * ?"
+    structured-consolidation-max-owners-per-run: 50
+    # File ceiling: hard cap applied when PROFILE.md / MEMORY.md are rewritten (section boundary, 0 = unlimited)
+    profile-max-chars: 4000
+    memory-md-max-chars: 8000
 ```
 
 Prefix: `mate.memory`.
@@ -495,6 +560,7 @@ mate:
 |--------|------|---------|
 | POST | `/api/v1/memory/{agentId}/emergence` | Manually trigger consolidation |
 | POST | `/api/v1/memory/{agentId}/summarize/{conversationId}` | Manually trigger extraction |
+| POST | `/api/v1/memory/{agentId}/structured-consolidation` | Manually trigger user/feedback structured-entry consolidation |
 | GET | `/api/v1/memory/{agentId}/dreaming/status` | Last run, next run, latest DREAMS.md entry |
 
 ---

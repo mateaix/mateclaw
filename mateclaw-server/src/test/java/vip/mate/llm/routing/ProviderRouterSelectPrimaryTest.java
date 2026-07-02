@@ -46,6 +46,12 @@ class ProviderRouterSelectPrimaryTest {
         return m;
     }
 
+    private static ModelConfigEntity model(String provider, String name, boolean enabled) {
+        ModelConfigEntity m = model(provider, name);
+        m.setEnabled(enabled);
+        return m;
+    }
+
     private void stubNoCapabilities() {
         when(bindingService.getBoundSkillIds(AGENT_ID)).thenReturn(Set.of());
     }
@@ -82,7 +88,7 @@ class ProviderRouterSelectPrimaryTest {
     @DisplayName("1. Preferred provider wins when no capability requirements")
     void preferredWinsWithoutCapabilities() {
         stubNoCapabilities();
-        when(bindingService.getPreferredProviderIds(AGENT_ID)).thenReturn(List.of("deepseek"));
+        when(bindingService.getPreferredProviderModels(AGENT_ID)).thenReturn(List.of(new ProviderModelRef("deepseek", null)));
         stubConfiguredProvider("deepseek", model("deepseek", "deepseek-chat"));
 
         ModelConfigEntity global = model("openai", "gpt-4o");
@@ -97,7 +103,7 @@ class ProviderRouterSelectPrimaryTest {
     @DisplayName("2. Preferred provider satisfying the required capability wins in pass 1")
     void preferredSatisfyingCapabilityWins() {
         bindSkillRequiring("vision");
-        when(bindingService.getPreferredProviderIds(AGENT_ID)).thenReturn(List.of("deepseek"));
+        when(bindingService.getPreferredProviderModels(AGENT_ID)).thenReturn(List.of(new ProviderModelRef("deepseek", null)));
         stubConfiguredProvider("deepseek", model("deepseek", "deepseek-vl"));
         when(capabilityService.resolve(eq("deepseek-vl"), any()))
                 .thenReturn(EnumSet.of(Modality.VISION));
@@ -114,7 +120,7 @@ class ProviderRouterSelectPrimaryTest {
     @DisplayName("3. No preferred providers → global default")
     void noPreferredFallsBackToGlobal() {
         stubNoCapabilities();
-        when(bindingService.getPreferredProviderIds(AGENT_ID)).thenReturn(List.of());
+        when(bindingService.getPreferredProviderModels(AGENT_ID)).thenReturn(List.of());
 
         ModelConfigEntity global = model("openai", "gpt-4o");
         ModelConfigEntity result = router.selectPrimary(AGENT_ID, global);
@@ -128,7 +134,8 @@ class ProviderRouterSelectPrimaryTest {
     @DisplayName("4. Unconfigured first preferred is skipped → second preferred wins")
     void firstPreferredUnavailableSecondWins() {
         stubNoCapabilities();
-        when(bindingService.getPreferredProviderIds(AGENT_ID)).thenReturn(List.of("deepseek", "dashscope"));
+        when(bindingService.getPreferredProviderModels(AGENT_ID))
+                .thenReturn(List.of(new ProviderModelRef("deepseek", null), new ProviderModelRef("dashscope", null)));
         // deepseek has no usable credentials → must be skipped, not selected
         // and then bounced to the global default.
         when(modelProviderService.isProviderConfigured("deepseek")).thenReturn(false);
@@ -146,7 +153,7 @@ class ProviderRouterSelectPrimaryTest {
     @DisplayName("5. All preferred unconfigured → global default")
     void allPreferredUnavailableFallsBackToGlobal() {
         stubNoCapabilities();
-        when(bindingService.getPreferredProviderIds(AGENT_ID)).thenReturn(List.of("deepseek"));
+        when(bindingService.getPreferredProviderModels(AGENT_ID)).thenReturn(List.of(new ProviderModelRef("deepseek", null)));
         when(modelProviderService.isProviderConfigured("deepseek")).thenReturn(false);
 
         ModelConfigEntity global = model("openai", "gpt-4o");
@@ -168,7 +175,7 @@ class ProviderRouterSelectPrimaryTest {
     @DisplayName("7. Both preferred and global null → returns null")
     void allNullReturnsNull() {
         stubNoCapabilities();
-        when(bindingService.getPreferredProviderIds(AGENT_ID)).thenReturn(List.of());
+        when(bindingService.getPreferredProviderModels(AGENT_ID)).thenReturn(List.of());
 
         ModelConfigEntity result = router.selectPrimary(AGENT_ID, null);
         assertNull(result);
@@ -178,7 +185,7 @@ class ProviderRouterSelectPrimaryTest {
     @DisplayName("8. Preferred misses required capability but global satisfies → global wins in pass 1")
     void preferredMissesCapabilityGlobalSatisfies() {
         bindSkillRequiring("vision");
-        when(bindingService.getPreferredProviderIds(AGENT_ID)).thenReturn(List.of("deepseek"));
+        when(bindingService.getPreferredProviderModels(AGENT_ID)).thenReturn(List.of(new ProviderModelRef("deepseek", null)));
         stubConfiguredProvider("deepseek", model("deepseek", "deepseek-chat"));
         when(capabilityService.resolve(eq("deepseek-chat"), any()))
                 .thenReturn(EnumSet.noneOf(Modality.class));
@@ -198,7 +205,7 @@ class ProviderRouterSelectPrimaryTest {
     @DisplayName("9. Configured preferred provider without a system-default model still resolves")
     void preferredResolvesViaPerProviderFallback() {
         stubNoCapabilities();
-        when(bindingService.getPreferredProviderIds(AGENT_ID)).thenReturn(List.of("deepseek"));
+        when(bindingService.getPreferredProviderModels(AGENT_ID)).thenReturn(List.of(new ProviderModelRef("deepseek", null)));
         // getPrimaryChatModelByProvider encapsulates the system-default →
         // first-enabled-chat fallback, so a preferred provider that does not
         // hold the single global default still contributes a primary model.
@@ -210,5 +217,95 @@ class ProviderRouterSelectPrimaryTest {
         assertNotNull(result);
         assertEquals("deepseek", result.getProvider());
         assertEquals("deepseek-chat", result.getModelName());
+    }
+
+    @Test
+    @DisplayName("10. Pinned model on a configured provider is honoured verbatim")
+    void pinnedModelWins() {
+        stubNoCapabilities();
+        when(bindingService.getPreferredProviderModels(AGENT_ID))
+                .thenReturn(List.of(new ProviderModelRef("dashscope", 77L)));
+        when(modelProviderService.isProviderConfigured("dashscope")).thenReturn(true);
+        when(modelConfigService.getModel(77L)).thenReturn(model("dashscope", "qwen-vl-max", true));
+
+        ModelConfigEntity result = router.selectPrimary(AGENT_ID, model("openai", "gpt-4o"));
+
+        assertNotNull(result);
+        assertEquals("dashscope", result.getProvider());
+        assertEquals("qwen-vl-max", result.getModelName());
+        // provider-default lookup must NOT be consulted when a live pin resolves
+        verify(modelConfigService, never()).getPrimaryChatModelByProvider("dashscope");
+    }
+
+    @Test
+    @DisplayName("11. Same provider pinned to two models: first entry wins as primary")
+    void sameProviderTwoModelsFirstWins() {
+        stubNoCapabilities();
+        when(bindingService.getPreferredProviderModels(AGENT_ID))
+                .thenReturn(List.of(new ProviderModelRef("dashscope", 1L), new ProviderModelRef("dashscope", 2L)));
+        when(modelProviderService.isProviderConfigured("dashscope")).thenReturn(true);
+        when(modelConfigService.getModel(1L)).thenReturn(model("dashscope", "qwen-max", true));
+
+        ModelConfigEntity result = router.selectPrimary(AGENT_ID, model("openai", "gpt-4o"));
+
+        assertNotNull(result);
+        assertEquals("qwen-max", result.getModelName());
+    }
+
+    @Test
+    @DisplayName("12. Disabled pinned model falls back to the provider's default")
+    void pinnedModelDisabledFallsBackToProviderDefault() {
+        stubNoCapabilities();
+        when(bindingService.getPreferredProviderModels(AGENT_ID))
+                .thenReturn(List.of(new ProviderModelRef("dashscope", 99L)));
+        when(modelProviderService.isProviderConfigured("dashscope")).thenReturn(true);
+        when(modelConfigService.getModel(99L)).thenReturn(model("dashscope", "qwen-old", false));
+        when(modelConfigService.getPrimaryChatModelByProvider("dashscope"))
+                .thenReturn(model("dashscope", "qwen-max"));
+
+        ModelConfigEntity result = router.selectPrimary(AGENT_ID, model("openai", "gpt-4o"));
+
+        assertNotNull(result);
+        assertEquals("dashscope", result.getProvider());
+        assertEquals("qwen-max", result.getModelName());
+    }
+
+    @Test
+    @DisplayName("13. Pinned model that belongs to a different provider falls back to the provider default")
+    void pinnedModelWrongProviderFallsBack() {
+        stubNoCapabilities();
+        when(bindingService.getPreferredProviderModels(AGENT_ID))
+                .thenReturn(List.of(new ProviderModelRef("dashscope", 88L)));
+        when(modelProviderService.isProviderConfigured("dashscope")).thenReturn(true);
+        // The pinned id resolves to a model owned by ANOTHER provider — must not
+        // be used under dashscope's cooldown/credentials.
+        when(modelConfigService.getModel(88L)).thenReturn(model("openai", "gpt-4o", true));
+        when(modelConfigService.getPrimaryChatModelByProvider("dashscope"))
+                .thenReturn(model("dashscope", "qwen-max"));
+
+        ModelConfigEntity result = router.selectPrimary(AGENT_ID, model("anthropic", "claude"));
+
+        assertNotNull(result);
+        assertEquals("dashscope", result.getProvider());
+        assertEquals("qwen-max", result.getModelName());
+    }
+
+    @Test
+    @DisplayName("14. Pinned non-chat (embedding) model falls back to the provider default")
+    void pinnedNonChatModelFallsBack() {
+        stubNoCapabilities();
+        when(bindingService.getPreferredProviderModels(AGENT_ID))
+                .thenReturn(List.of(new ProviderModelRef("dashscope", 55L)));
+        when(modelProviderService.isProviderConfigured("dashscope")).thenReturn(true);
+        ModelConfigEntity embedding = model("dashscope", "text-embedding-v3", true);
+        embedding.setModelType("embedding");
+        when(modelConfigService.getModel(55L)).thenReturn(embedding);
+        when(modelConfigService.getPrimaryChatModelByProvider("dashscope"))
+                .thenReturn(model("dashscope", "qwen-max"));
+
+        ModelConfigEntity result = router.selectPrimary(AGENT_ID, model("openai", "gpt-4o"));
+
+        assertNotNull(result);
+        assertEquals("qwen-max", result.getModelName());
     }
 }
