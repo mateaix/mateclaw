@@ -1,5 +1,6 @@
 package vip.mate.tool.browser;
 
+import com.microsoft.playwright.APIResponse;
 import com.microsoft.playwright.Browser;
 import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.BrowserType;
@@ -10,6 +11,8 @@ import com.microsoft.playwright.Route;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import vip.mate.common.net.SsrfProperties;
+
+import java.net.URI;
 import org.springframework.stereotype.Component;
 
 import java.io.BufferedReader;
@@ -390,11 +393,17 @@ public class BrowserLauncher {
     }
 
     /**
-     * Re-run the SSRF guard on every http(s) request the page makes, so redirects,
-     * subresources and script-initiated fetches cannot reach blocked hosts (above
-     * all cloud-metadata endpoints) after the initial navigation URL already passed
-     * the one-shot check in the tool layer. Non-network schemes (data:, blob:,
-     * about:, …) are not SSRF vectors and pass through untouched.
+     * Re-run the SSRF guard on every http(s) request the page makes, so subresources,
+     * script-initiated fetches AND server-side redirect targets cannot reach blocked
+     * hosts (above all cloud-metadata endpoints) after the initial navigation URL
+     * already passed the one-shot check in the tool layer.
+     * <p>
+     * Redirects need special handling: Playwright follows 3xx responses internally on
+     * {@code route.resume()} without re-invoking this handler, so a public page that
+     * 302s to a metadata IP would slip through. For navigation requests we therefore
+     * fetch with {@code maxRedirects=0} and validate the {@code Location} of every hop
+     * before fulfilling, so each redirect target is checked. Non-network schemes
+     * (data:, blob:, about:, …) are not SSRF vectors and pass through untouched.
      */
     private void installSsrfInterceptor(BrowserContext context) {
         if (!props.isSsrfCheckEnabled()) {
@@ -407,19 +416,54 @@ public class BrowserLauncher {
                 route.resume();
                 return;
             }
+            // 1. Validate the request URL itself (covers subresources and fetches,
+            //    which are each delivered to this handler as their own request).
             try {
                 UrlSafetyChecker.check(reqUrl, ssrfProperties.getSsrfAllowlist(),
                         props.isAllowPrivateNetwork());
-                route.resume();
             } catch (SecurityException se) {
                 log.warn("[BrowserLauncher] SSRF interceptor blocked request url={}: {}",
                         reqUrl, se.getMessage());
                 route.abort();
+                return;
             } catch (Exception e) {
-                // Unexpected checker/routing error — the initial navigation URL was
-                // already validated, so let the request proceed rather than wedging
-                // the page on a transient fault.
                 route.resume();
+                return;
+            }
+            // 2. Non-navigation requests carry no auto-followed redirect chain, so the
+            //    URL check above is sufficient — resume normally.
+            if (!route.request().isNavigationRequest()) {
+                route.resume();
+                return;
+            }
+            // 3. Navigation requests: follow redirects manually so each hop is checked.
+            try {
+                APIResponse resp = route.fetch(new Route.FetchOptions().setMaxRedirects(0));
+                int status = resp.status();
+                if (status >= 300 && status < 400) {
+                    String location = resp.headers().get("location");
+                    if (location != null && !location.isBlank()) {
+                        String target = URI.create(reqUrl).resolve(location.trim()).toString();
+                        UrlSafetyChecker.check(target, ssrfProperties.getSsrfAllowlist(),
+                                props.isAllowPrivateNetwork());
+                    }
+                }
+                // Hand the (possibly-3xx) response back; the browser follows any safe
+                // redirect, whose next hop re-enters this handler and is re-validated.
+                route.fulfill(new Route.FulfillOptions().setResponse(resp));
+            } catch (SecurityException se) {
+                log.warn("[BrowserLauncher] SSRF interceptor blocked redirect from url={}: {}",
+                        reqUrl, se.getMessage());
+                route.abort();
+            } catch (Exception e) {
+                // Manual fetch/proxy failed (network, unsupported response, …). The
+                // request URL itself already passed the check, so fall back to normal
+                // handling rather than wedging the page.
+                try {
+                    route.resume();
+                } catch (Exception ignore) {
+                    // route may already be consumed by the failed fetch; nothing to do.
+                }
             }
         });
     }
