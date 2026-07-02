@@ -12,16 +12,16 @@
         @drop.prevent="handleDrop"
       >
         <!-- Spinner while uploading -->
-        <svg v-if="uploadingFiles.length > 0" class="upload-spinner" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+        <svg v-if="uploadingFiles.length > 0" class="upload-spinner" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
           <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
         </svg>
         <!-- Arrow-up icon in drag-over state -->
-        <svg v-else-if="isDragging" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+        <svg v-else-if="isDragging" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
           <polyline points="17 8 12 3 7 8"/>
           <line x1="12" y1="3" x2="12" y2="21"/>
         </svg>
         <!-- Default upload icon -->
-        <svg v-else width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+        <svg v-else width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
           <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
           <polyline points="17 8 12 3 7 8"/>
           <line x1="12" y1="3" x2="12" y2="15"/>
@@ -44,35 +44,7 @@
       </button>
     </div>
 
-    <!-- Directory scan -->
-    <div v-if="canManageWiki" class="dir-scan-row">
-      <div class="dir-input-wrap">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
-        </svg>
-        <input
-          v-model="dirPath"
-          type="text"
-          class="dir-input"
-          :placeholder="t('wiki.dirPlaceholder')"
-          @keyup.enter="handleScanDir"
-        />
-      </div>
-      <button class="btn-secondary" @click="handleScanDir" :disabled="scanning || !dirPath.trim()">
-        <svg v-if="!scanning" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
-        </svg>
-        {{ scanning ? t('wiki.scanning') : t('wiki.scan') }}
-      </button>
-    </div>
-    <div v-if="scanResult" class="scan-result">
-      {{ t('wiki.scanResult', { scanned: scanResult.scanned, added: scanResult.added, skipped: scanResult.skipped }) }}
-      <div v-if="scanResult.errors?.length" class="scan-errors">
-        <span v-for="(err, i) in scanResult.errors" :key="i" class="scan-error-item">{{ err }}</span>
-      </div>
-    </div>
-
-    <!-- Auto-sync (per-KB source watcher): periodically scans the directory above -->
+    <!-- Auto-sync (per-KB source watcher): periodically scans the configured directory -->
     <div v-if="canManageWiki" class="auto-sync-row">
       <label class="auto-sync-toggle" :class="{ disabled: !watcher.globalEnabled || watcher.busy }">
         <input
@@ -92,6 +64,75 @@
       </span>
     </div>
 
+    <!-- ── Phase 1: Search & Filter Bar ──────────────────────────────────── -->
+    <div class="filter-bar">
+      <div class="search-input-wrap">
+        <span class="search-icon">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        </span>
+        <input
+          v-model="keyword"
+          class="search-input"
+          :placeholder="t('wiki.searchPages')"
+        />
+      </div>
+      <div class="filter-sep"></div>
+      <div class="filter-group">
+        <span class="filter-label">{{ t('wiki.sources.sourceType') }}</span>
+        <select v-model="sourceTypeFilter" class="select-filter">
+          <option value="all">{{ t('wiki.sources.allTypes') }}</option>
+          <option v-for="st in distinctSourceTypes" :key="st" :value="st">
+            {{ sourceTypeLabel(st) }}
+          </option>
+        </select>
+      </div>
+      <div class="filter-sep"></div>
+      <div class="filter-group">
+        <span class="filter-label">{{ t('wiki.sources.sortLabel') }}</span>
+        <select v-model="sortKey" class="select-filter">
+          <option value="name">{{ t('wiki.sources.sortName') }}</option>
+          <option value="date">{{ t('wiki.sources.sortDate') }}</option>
+          <option value="size">{{ t('wiki.sources.sortSize') }}</option>
+          <option value="status">{{ t('wiki.sources.sortStatus') }}</option>
+        </select>
+        <button
+          type="button"
+          class="sort-dir-btn"
+          :title="t(sortDir === 'asc' ? 'wiki.sources.sortAsc' : 'wiki.sources.sortDesc')"
+          @click="sortDir = sortDir === 'asc' ? 'desc' : 'asc'"
+        >{{ sortDir === 'asc' ? '↑' : '↓' }}</button>
+      </div>
+      <div class="filter-sep"></div>
+      <div class="filter-chips">
+        <span
+          class="chip"
+          :class="{ active: statusFilter === 'all' }"
+          @click="statusFilter = 'all'"
+        >{{ t('wiki.sources.all') }} {{ filteredCounts.all }}</span>
+        <span
+          class="chip green"
+          :class="{ active: statusFilter === 'completed' }"
+          @click="statusFilter = 'completed'"
+        >✓ {{ t('wiki.status.completed') }} {{ filteredCounts.completed }}</span>
+        <span
+          class="chip blue"
+          :class="{ active: statusFilter === 'processing' }"
+          @click="statusFilter = 'processing'"
+        >⟳ {{ t('wiki.status.processing') }} {{ filteredCounts.processing }}</span>
+        <span
+          class="chip yellow"
+          :class="{ active: statusFilter === 'pending' }"
+          @click="statusFilter = 'pending'"
+        >· {{ t('wiki.status.pending') }} {{ filteredCounts.pending }}</span>
+        <span
+          class="chip red"
+          :class="{ active: statusFilter === 'failed' }"
+          @click="statusFilter = 'failed'"
+        >✕ {{ t('wiki.status.failed') }} {{ filteredCounts.failed }}</span>
+      </div>
+      <span class="results-count">{{ t('wiki.sources.showingCount', { count: filteredMaterials.length }) }}</span>
+    </div>
+
     <!-- Raw materials list -->
     <div class="raw-list">
       <h4 class="raw-list-title">
@@ -99,6 +140,54 @@
       </h4>
       <div v-if="store.rawMaterials.length === 0 && uploadingFiles.length === 0" class="empty-hint">
         {{ t('wiki.noRawMaterials') }}
+      </div>
+
+      <!-- ── Phase 3: Batch action bar ────────────────────────────────────── -->
+      <div v-if="canManageWiki && selectedCount > 0" class="batch-bar">
+        <span class="batch-count">{{ t('wiki.sources.selectedCount', { count: selectedCount }) }}</span>
+        <div class="batch-sep"></div>
+        <div class="batch-actions">
+          <button class="batch-btn" @click="batchReprocess">⟳ {{ t('wiki.sources.batchReprocess') }}</button>
+          <button class="batch-btn" @click="batchDownload">⬇ {{ t('wiki.sources.batchDownload') }}</button>
+          <button class="batch-btn danger" @click="batchDelete">🗑 {{ t('wiki.sources.batchDelete') }}</button>
+        </div>
+        <span class="clear-sel" @click="clearSelection">{{ t('wiki.sources.clearSelection') }}</span>
+      </div>
+
+      <!-- ── Phase 6: Error file partition ────────────────────────────────── -->
+      <div v-if="failedMaterials.length > 0" class="error-section">
+        <div class="error-section-header" @click="errorSectionOpen = !errorSectionOpen">
+          <span class="group-chevron" :class="{ open: errorSectionOpen }">▶</span>
+          <span class="error-icon">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+          </span>
+          <span class="error-title">{{ t('wiki.errorSection.title') }}</span>
+          <span class="error-count">{{ failedMaterials.length }}</span>
+          <span class="error-hint-text">{{ t('wiki.errorSection.hint') }}</span>
+          <div v-if="canManageWiki" class="error-actions-bar" @click.stop>
+            <button class="error-bar-btn" @click="retryAllErrors">⟳ {{ t('wiki.errorSection.retryAll') }}</button>
+            <button class="error-bar-btn danger" @click="clearAllErrors">🗑 {{ t('wiki.errorSection.clearAll') }}</button>
+          </div>
+        </div>
+        <div v-show="errorSectionOpen" class="error-body">
+          <div v-for="raw in failedMaterials" :key="raw.id" class="error-item">
+            <span class="error-file-emoji">📄</span>
+            <div class="error-file-info">
+              <div class="error-file-name">
+                <span class="error-file-title clickable" :title="raw.title" @click="openPreview(raw)">{{ raw.title }}</span>
+                <span v-if="raw.sourceType" class="error-tag">{{ sourceTypeLabel(raw.sourceType) }}</span>
+              </div>
+              <div class="error-msg">{{ raw.errorMessage || friendlyError(raw) }}</div>
+            </div>
+            <div v-if="canManageWiki" class="error-actions">
+              <button class="error-item-btn" @click="openPreview(raw)">👁 {{ t('wiki.errorSection.preview') }}</button>
+              <button class="error-item-btn" @click="reprocess(raw.id)">⟳ {{ t('wiki.errorSection.retry') }}</button>
+              <button class="btn-icon btn-icon-danger" :title="t('common.delete')" @click="deleteRaw(raw.id)">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
 
       <!-- Optimistic uploading items shown at the top -->
@@ -148,16 +237,65 @@
         </div>
       </div>
 
-      <div
-        v-for="raw in store.rawMaterials"
-        :key="raw.id"
-        class="raw-item"
-        :class="{ 'raw-item--active': store.selectedRawId === raw.id }"
-        @click="toggleRawFilter(raw.id)"
-      >
+      <!-- No filter match -->
+      <div v-if="store.rawMaterials.length > 0 && filteredMaterials.length === 0" class="empty-hint">
+        {{ t('wiki.sources.noMatch') }}
+      </div>
+
+      <!-- ── Phase 2: grouped by source type ──────────────────────────────── -->
+      <div v-for="group in groupedMaterials" :key="group.key" class="file-group">
+        <div class="group-header" @click="toggleGroup(group.key)">
+          <span class="group-chevron" :class="{ open: !isGroupCollapsed(group.key) }">▶</span>
+          <span
+            v-if="canManageWiki"
+            class="group-checkbox"
+            :class="{ checked: groupSelectState(group.items) === 'all', partial: groupSelectState(group.items) === 'partial' }"
+            @click.stop="toggleGroupSelect(group.items)"
+          >
+            <svg width="10" height="8" viewBox="0 0 10 8"><path d="M1 4L3.5 6.5L9 1" stroke="white" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg>
+          </span>
+          <span class="group-alias">{{ group.label }}</span>
+          <div class="group-stats">
+            <span class="stat-pill total">{{ group.counts.total }}</span>
+            <span v-if="group.counts.completed" class="stat-pill ok">✓ {{ group.counts.completed }}</span>
+            <span v-if="group.counts.processing" class="stat-pill processing">⟳ {{ group.counts.processing }}</span>
+            <span v-if="group.counts.pending" class="stat-pill pending">· {{ group.counts.pending }}</span>
+            <span v-if="group.counts.failed" class="stat-pill err">✕ {{ group.counts.failed }}</span>
+          </div>
+          <span v-if="scheduleText(group.key)" class="group-schedule" :title="t('wiki.pathConfig.schedule')">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+            </svg>
+            {{ scheduleText(group.key) }}
+          </span>
+          <div v-if="canManageWiki" class="group-actions" @click.stop>
+            <button class="btn-icon group-cfg-btn" :title="t('wiki.pathConfig.title')" @click="openConfig(group)">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="3"/>
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+        <div v-show="!isGroupCollapsed(group.key)" class="group-body">
+          <div
+            v-for="raw in group.items"
+            :key="raw.id"
+            class="raw-item"
+            :class="{ 'raw-item--active': store.selectedRawId === raw.id }"
+            @click="toggleRawFilter(raw.id)"
+          >
         <div class="raw-item-row">
+          <span
+            v-if="canManageWiki"
+            class="row-checkbox"
+            :class="{ checked: isSelected(raw.id) }"
+            @click.stop="toggleRowSelect(raw.id)"
+          >
+            <svg width="10" height="8" viewBox="0 0 10 8"><path d="M1 4L3.5 6.5L9 1" stroke="white" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg>
+          </span>
           <div class="raw-item-info">
-            <span class="raw-item-title">{{ raw.title }}</span>
+            <span class="raw-item-title clickable" :title="raw.title" @click.stop="openPreview(raw)">{{ raw.title }}</span>
             <span class="raw-item-type">{{ raw.sourceType }}</span>
           </div>
           <div class="raw-item-meta">
@@ -277,6 +415,22 @@
               : t('wiki.progress.preparing') }}
           </span>
         </div>
+          </div>
+          <div class="group-footer">
+            <span>{{ t('wiki.sources.groupCount', { count: group.items.length }) }}</span>
+            <span v-if="group.lastTime" class="group-footer-time">
+              {{ t('wiki.sources.lastScan', { time: formatScanTime(group.lastTime) }) }}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Phase 4: Add new scan path ───────────────────────────────────── -->
+      <div v-if="canManageWiki" class="add-path-card" @click="openAddPath">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+        </svg>
+        {{ t('wiki.pathConfig.addCard') }}
       </div>
     </div>
 
@@ -309,6 +463,128 @@
         </div>
       </div>
     </div>
+
+    <!-- ── Phase 4: Path config / add path modal ──────────────────────────── -->
+    <div v-if="pathModalOpen" class="modal-overlay" @click.self="pathModalOpen = false">
+      <div class="modal-content path-modal">
+        <h3 class="modal-title">
+          {{ pathModalMode === 'add'
+            ? t('wiki.pathConfig.addTitle')
+            : t('wiki.pathConfig.titleWith', { name: configForm.alias || t('wiki.pathConfig.title') }) }}
+        </h3>
+        <p class="frontend-only-hint">⚠ {{ t('wiki.pathConfig.frontendOnlyHint') }}</p>
+
+        <div class="form-group">
+          <label>{{ t('wiki.pathConfig.alias') }}</label>
+          <input v-model="configForm.alias" class="form-input" :placeholder="t('wiki.pathConfig.aliasPlaceholder')" />
+          <span class="form-hint">{{ t('wiki.pathConfig.aliasHint') }}</span>
+        </div>
+        <div class="form-group">
+          <label>{{ t('wiki.pathConfig.path') }}</label>
+          <input v-model="configForm.path" class="form-input" :placeholder="t('wiki.pathConfig.pathPlaceholder')" />
+          <span class="form-hint">{{ t('wiki.pathConfig.pathHint') }}</span>
+        </div>
+        <div class="form-group">
+          <label>{{ t('wiki.pathConfig.fileFilter') }}</label>
+          <input v-model="configForm.fileFilter" class="form-input" :placeholder="t('wiki.pathConfig.fileFilterPlaceholder')" />
+        </div>
+        <div class="form-group">
+          <label>{{ t('wiki.pathConfig.schedule') }}</label>
+          <div class="schedule-config-row">
+            <label class="toggle-switch">
+              <input type="checkbox" v-model="configForm.scheduleEnabled" />
+              <span class="toggle-track"></span>
+              <span class="toggle-thumb"></span>
+            </label>
+            <span class="schedule-state" :class="{ on: configForm.scheduleEnabled }">
+              {{ configForm.scheduleEnabled ? t('wiki.pathConfig.scheduleOn') : t('wiki.pathConfig.scheduleOff') }}
+            </span>
+          </div>
+          <select v-if="configForm.scheduleEnabled" v-model="configForm.cron" class="select-filter cron-select">
+            <option v-for="c in CRON_OPTIONS" :key="c" :value="c">{{ cronLabel(c) }}</option>
+          </select>
+          <input
+            v-if="configForm.scheduleEnabled && configForm.cron === 'custom'"
+            v-model="configForm.customCron"
+            class="form-input cron-custom-input"
+            :placeholder="t('wiki.pathConfig.cronCustomPlaceholder')"
+          />
+        </div>
+        <div class="form-group">
+          <label>{{ t('wiki.pathConfig.scanMode') }}</label>
+          <div class="mode-selector">
+            <label class="mode-option" :class="{ selected: configForm.scanMode === 'incr' }">
+              <input type="radio" value="incr" v-model="configForm.scanMode" />
+              <span class="mode-option-text">
+                <span class="mode-option-title">{{ t('wiki.pathConfig.modeIncr') }}</span>
+                <span class="mode-option-hint">{{ t('wiki.pathConfig.modeIncrHint') }}</span>
+              </span>
+            </label>
+            <label class="mode-option" :class="{ selected: configForm.scanMode === 'full' }">
+              <input type="radio" value="full" v-model="configForm.scanMode" />
+              <span class="mode-option-text">
+                <span class="mode-option-title">{{ t('wiki.pathConfig.modeFull') }}</span>
+                <span class="mode-option-hint">{{ t('wiki.pathConfig.modeFullHint') }}</span>
+              </span>
+            </label>
+          </div>
+        </div>
+
+        <div class="modal-actions path-modal-actions">
+          <button
+            v-if="pathModalMode === 'edit' && configEditingIsCustom"
+            class="btn-remove-path"
+            @click="removePath"
+          >{{ t('wiki.pathConfig.removePath') }}</button>
+          <div class="path-modal-actions-right">
+            <button class="btn-secondary" @click="pathModalOpen = false">{{ t('common.cancel') }}</button>
+            <button class="btn-primary" @click="pathModalMode === 'add' ? confirmAddPath() : saveConfig()">
+              {{ pathModalMode === 'add' ? t('wiki.pathConfig.addConfirm') : t('wiki.pathConfig.save') }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Phase 5: File preview modal ────────────────────────────────────── -->
+    <div v-if="previewOpen && previewRaw" class="modal-overlay" @click.self="previewOpen = false">
+      <div class="modal-content preview-modal">
+        <div class="preview-header">
+          <span class="preview-title" :title="previewRaw.title">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+            {{ previewRaw.title }}
+          </span>
+          <div class="preview-header-actions">
+            <button class="btn-secondary preview-dl-btn" @click="downloadRaw(previewRaw)">
+              <el-icon :size="13"><Download /></el-icon>
+              {{ t('wiki.preview.download') }}
+            </button>
+            <button class="btn-icon" :title="t('wiki.preview.close')" @click="previewOpen = false">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+          </div>
+        </div>
+        <div class="preview-meta">
+          <span class="preview-meta-item">{{ t('wiki.preview.group') }}: {{ groupLabel(previewRaw.sourceType || UNGROUPED_KEY) }}</span>
+          <span class="preview-meta-item">{{ t('wiki.preview.size') }}: {{ formatSize(previewRaw.fileSize) }}</span>
+          <span class="preview-meta-item">{{ t('wiki.preview.scanTime') }}: {{ formatScanTime(previewRaw.createTime) || '—' }}</span>
+          <span class="status-badge" :class="previewRaw.processingStatus">{{ t(`wiki.status.${previewRaw.processingStatus}`) }}</span>
+          <span v-if="previewRaw.pageCount != null && previewRaw.pageCount > 0" class="preview-meta-item">
+            {{ t('wiki.preview.pages', { count: previewRaw.pageCount }) }}
+          </span>
+        </div>
+        <div class="preview-body">
+          <div v-if="previewIsBinary" class="preview-placeholder">{{ t('wiki.preview.binaryHint') }}</div>
+          <div v-else-if="previewLoading" class="preview-placeholder">{{ t('wiki.preview.loading') }}</div>
+          <div v-else-if="previewError" class="preview-placeholder">{{ t('wiki.preview.loadFailed') }}</div>
+          <pre v-else-if="previewText" class="preview-content">{{ previewText }}</pre>
+          <div v-else class="preview-placeholder">{{ t('wiki.preview.empty') }}</div>
+        </div>
+        <div class="modal-actions">
+          <button class="btn-secondary" @click="previewOpen = false">{{ t('wiki.preview.close') }}</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -321,6 +597,7 @@ import { Download } from '@element-plus/icons-vue'
 import { useWikiStore } from '@/stores/useWikiStore'
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore'
 import { wikiApi } from '@/api/index'
+import { mcConfirm } from '@/components/common/useConfirm'
 import JobStageBar from './JobStageBar.vue'
 import type { WikiProcessingJob } from '@/composables/useWikiJobPoller'
 
@@ -332,6 +609,450 @@ const workspace = useWorkspaceStore()
 // Viewers can still see the material list but get no write controls.
 const canManageWiki = computed(() => workspace.can('manage:wiki'))
 const fileInput = ref<HTMLInputElement | null>(null)
+
+// ── Phase 1: Search & Filter Bar ─────────────────────────────────────────
+const keyword = ref('')
+const sourceTypeFilter = ref('all')
+const sortKey = ref('name')
+const sortDir = ref<'asc' | 'desc'>('asc')
+const statusFilter = ref('all')
+
+/** Unique sourceType values from all materials, sorted, for the dropdown. */
+const distinctSourceTypes = computed(() => {
+  const set = new Set<string>()
+  for (const r of store.rawMaterials) {
+    if (r.sourceType) set.add(r.sourceType)
+  }
+  return Array.from(set).sort()
+})
+
+/** Map a raw sourceType value to a human-readable label. */
+function sourceTypeLabel(st: string): string {
+  const key = `wiki.sourceType.${st}`
+  const label = t(key)
+  return label !== key ? label : st
+}
+
+/** Count of materials per status (before filtering by keyword/sourceType). */
+const filteredCounts = computed(() => {
+  const counts = { all: 0, completed: 0, processing: 0, pending: 0, failed: 0 }
+  for (const r of store.rawMaterials) {
+    counts.all++
+    if (r.processingStatus === 'completed' || r.processingStatus === 'partial') counts.completed++
+    else if (r.processingStatus === 'processing') counts.processing++
+    else if (r.processingStatus === 'pending') counts.pending++
+    else if (r.processingStatus === 'failed' || r.processingStatus === 'cancelled') counts.failed++
+  }
+  return counts
+})
+
+/** Client-side filtered + sorted materials. */
+const filteredMaterials = computed(() => {
+  let list = store.rawMaterials
+
+  // Keyword filter
+  const kw = keyword.value.trim().toLowerCase()
+  if (kw) {
+    list = list.filter(r => r.title.toLowerCase().includes(kw))
+  }
+
+  // Source type filter
+  if (sourceTypeFilter.value !== 'all') {
+    list = list.filter(r => r.sourceType === sourceTypeFilter.value)
+  }
+
+  // Status filter
+  const sf = statusFilter.value
+  if (sf !== 'all') {
+    if (sf === 'completed') {
+      list = list.filter(r => r.processingStatus === 'completed' || r.processingStatus === 'partial')
+    } else if (sf === 'failed') {
+      list = list.filter(r => r.processingStatus === 'failed' || r.processingStatus === 'cancelled')
+    } else {
+      list = list.filter(r => r.processingStatus === sf)
+    }
+  }
+
+  // Sort (ascending base comparators; reverse for descending)
+  const sorted = [...list]
+  switch (sortKey.value) {
+    case 'name':
+      sorted.sort((a, b) => a.title.localeCompare(b.title, 'zh-CN'))
+      break
+    case 'date':
+      sorted.sort((a, b) => (a.createTime || '').localeCompare(b.createTime || ''))
+      break
+    case 'size':
+      sorted.sort((a, b) => (a.fileSize || 0) - (b.fileSize || 0))
+      break
+    case 'status': {
+      const order: Record<string, number> = { processing: 0, pending: 1, partial: 2, completed: 3, failed: 4, cancelled: 5 }
+      sorted.sort((a, b) => (order[a.processingStatus] ?? 99) - (order[b.processingStatus] ?? 99))
+      break
+    }
+  }
+  if (sortDir.value === 'desc') sorted.reverse()
+
+  return sorted
+})
+
+// ── Phase 2: Grouping by sourceType ──────────────────────────────────────
+type RawItem = (typeof store.rawMaterials)[number]
+
+const UNGROUPED_KEY = '__ungrouped__'
+// Fixed display order for known source types; unknown types sort after these,
+// and the ungrouped bucket always sinks to the bottom.
+const GROUP_ORDER = ['UPLOAD', 'TEXT', 'SCAN']
+
+// Collapsed group keys. The ungrouped bucket now holds all manual materials, so
+// it starts expanded.
+const collapsedGroups = ref(new Set<string>())
+
+function isGroupCollapsed(key: string): boolean {
+  return collapsedGroups.value.has(key)
+}
+function toggleGroup(key: string) {
+  const next = new Set(collapsedGroups.value)
+  if (next.has(key)) next.delete(key)
+  else next.add(key)
+  collapsedGroups.value = next
+}
+
+function groupLabel(key: string): string {
+  const alias = pathConfigs.value[key]?.alias
+  if (alias) return alias
+  if (key === UNGROUPED_KEY) return t('wiki.sources.ungrouped')
+  if (key.startsWith('custom:')) return t('wiki.pathConfig.untitledPath')
+  return sourceTypeLabel(key)
+}
+
+function formatScanTime(s: string): string {
+  return s ? s.replace('T', ' ').slice(0, 16) : ''
+}
+
+/** Group filtered+sorted materials by sourceType, preserving the active sort. */
+const groupedMaterials = computed(() => {
+  const map = new Map<string, RawItem[]>()
+  for (const raw of filteredMaterials.value) {
+    // Manual uploads/pasted text all land in one "未分组文档" bucket regardless of
+    // file type; only user-created scan-path groups get their own group.
+    const key = UNGROUPED_KEY
+    const bucket = map.get(key)
+    if (bucket) bucket.push(raw)
+    else map.set(key, [raw])
+  }
+
+  // Frontend-only custom scan paths render as (possibly empty) groups.
+  for (const ck of customGroupKeys.value) {
+    if (!map.has(ck)) map.set(ck, [])
+  }
+
+  const rank = (k: string) => {
+    const i = GROUP_ORDER.indexOf(k)
+    if (i !== -1) return i
+    return k === UNGROUPED_KEY ? 999 : 500
+  }
+  const keys = Array.from(map.keys()).sort((a, b) => {
+    const ra = rank(a)
+    const rb = rank(b)
+    return ra !== rb ? ra - rb : a.localeCompare(b)
+  })
+
+  return keys.map(key => {
+    const items = map.get(key)!
+    const counts = { total: items.length, completed: 0, processing: 0, pending: 0, failed: 0 }
+    let lastTime = ''
+    for (const r of items) {
+      if (r.processingStatus === 'completed' || r.processingStatus === 'partial') counts.completed++
+      else if (r.processingStatus === 'processing') counts.processing++
+      else if (r.processingStatus === 'pending') counts.pending++
+      else if (r.processingStatus === 'failed' || r.processingStatus === 'cancelled') counts.failed++
+      if (r.createTime && r.createTime > lastTime) lastTime = r.createTime
+    }
+    return { key, label: groupLabel(key), items, counts, lastTime }
+  })
+})
+
+// ── Phase 3: Multi-select & batch actions ────────────────────────────────
+const selectedIds = ref(new Set<number>())
+const selectedCount = computed(() => selectedIds.value.size)
+
+function isSelected(id: number): boolean {
+  return selectedIds.value.has(id)
+}
+function toggleRowSelect(id: number) {
+  const next = new Set(selectedIds.value)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  selectedIds.value = next
+}
+function clearSelection() {
+  if (selectedIds.value.size) selectedIds.value = new Set()
+}
+
+// Tri-state for a group's select-all checkbox.
+function groupSelectState(items: RawItem[]): 'all' | 'partial' | 'none' {
+  let sel = 0
+  for (const r of items) if (selectedIds.value.has(r.id)) sel++
+  if (sel === 0) return 'none'
+  return sel === items.length ? 'all' : 'partial'
+}
+function toggleGroupSelect(items: RawItem[]) {
+  const next = new Set(selectedIds.value)
+  const allSelected = items.every(r => next.has(r.id))
+  for (const r of items) {
+    if (allSelected) next.delete(r.id)
+    else next.add(r.id)
+  }
+  selectedIds.value = next
+}
+
+// Keep the selection in sync with what's visible: when filters hide rows or a
+// material is deleted, drop those ids so the count never lies.
+watch(filteredMaterials, (list) => {
+  if (selectedIds.value.size === 0) return
+  const visible = new Set(list.map(r => r.id))
+  const next = new Set<number>()
+  for (const id of selectedIds.value) if (visible.has(id)) next.add(id)
+  if (next.size !== selectedIds.value.size) selectedIds.value = next
+})
+
+const selectedRaws = computed(() => store.rawMaterials.filter(r => selectedIds.value.has(r.id)))
+
+async function batchReprocess() {
+  const ids = selectedRaws.value
+    .filter(r => r.processingStatus !== 'processing' && r.processingStatus !== 'uploading')
+    .map(r => r.id)
+  for (const id of ids) {
+    try { await reprocess(id) } catch { /* skip failures, continue the batch */ }
+  }
+  clearSelection()
+}
+
+async function batchDownload() {
+  for (const r of selectedRaws.value) {
+    if (r.processingStatus === 'uploading') continue
+    await downloadRaw(r)
+  }
+}
+
+async function batchDelete() {
+  const count = selectedIds.value.size
+  if (count === 0 || !store.currentKB) return
+  const ok = await mcConfirm({
+    title: t('wiki.sources.batchDelete'),
+    message: t('wiki.sources.batchDeleteConfirm', { count }),
+    tone: 'danger',
+  })
+  if (!ok) return
+  const kbId = store.currentKB.id
+  for (const id of Array.from(selectedIds.value)) {
+    try { await wikiApi.deleteRaw(kbId, id) } catch { /* skip failures, continue the batch */ }
+  }
+  clearSelection()
+  await store.fetchRawMaterials(kbId)
+}
+
+// ── Phase 4: Per-group path config (frontend-only, localStorage) ──────────
+// NOTE: the backend currently has no multi-path / per-path schedule / scan-mode
+// API. This config is persisted in localStorage as a UI-first prototype; only
+// alias and grouping affect what the user sees today. Wire to a real API later.
+type ScanMode = 'incr' | 'full'
+interface PathConfig {
+  alias: string
+  path: string
+  fileFilter: string
+  scheduleEnabled: boolean
+  cron: string
+  customCron: string
+  scanMode: ScanMode
+}
+
+const CRON_OPTIONS = ['hourly', 'daily02', 'daily06', 'daily10', 'daily22', 'weekly1', 'custom']
+function defaultConfig(): PathConfig {
+  return { alias: '', path: '', fileFilter: '', scheduleEnabled: false, cron: 'daily02', customCron: '', scanMode: 'incr' }
+}
+function cronLabel(v: string): string {
+  return t(`wiki.pathConfig.cron_${v}`)
+}
+
+/** Human-readable schedule summary for a group's header chip; '' when off. */
+function scheduleText(key: string): string {
+  const cfg = pathConfigs.value[key]
+  if (!cfg?.scheduleEnabled) return ''
+  if (cfg.cron === 'custom') return cfg.customCron || t('wiki.pathConfig.cron_custom')
+  return cronLabel(cfg.cron)
+}
+
+const pathConfigs = ref<Record<string, PathConfig>>({})
+const customGroupKeys = ref<string[]>([])
+
+function pathStorageKey(kbId: number): string {
+  return `wiki:rawcfg:${kbId}`
+}
+function loadPathConfigs(kbId: number) {
+  pathConfigs.value = {}
+  customGroupKeys.value = []
+  try {
+    const raw = localStorage.getItem(pathStorageKey(kbId))
+    if (raw) {
+      const data = JSON.parse(raw)
+      pathConfigs.value = data.configs || {}
+      customGroupKeys.value = data.custom || []
+    }
+  } catch { /* ignore corrupt cache */ }
+}
+function savePathConfigs() {
+  if (!store.currentKB) return
+  try {
+    localStorage.setItem(pathStorageKey(store.currentKB.id), JSON.stringify({
+      configs: pathConfigs.value,
+      custom: customGroupKeys.value,
+    }))
+  } catch { /* ignore quota errors */ }
+}
+
+const pathModalOpen = ref(false)
+const pathModalMode = ref<'edit' | 'add'>('edit')
+const configForm = ref<PathConfig>(defaultConfig())
+const configEditingKey = ref<string | null>(null)
+const configEditingIsCustom = ref(false)
+
+function openConfig(group: { key: string; label: string }) {
+  const key = group.key
+  configEditingKey.value = key
+  configEditingIsCustom.value = key.startsWith('custom:')
+  pathModalMode.value = 'edit'
+  const stored = pathConfigs.value[key]
+  const base = defaultConfig()
+  base.alias = stored?.alias || (key.startsWith('custom:') ? '' : group.label)
+  base.path = stored?.path || (key === 'SCAN' ? (store.currentKB?.sourceDirectory || '') : '')
+  base.fileFilter = stored?.fileFilter || ''
+  base.scheduleEnabled = stored?.scheduleEnabled ?? false
+  base.cron = stored?.cron || 'daily02'
+  base.customCron = stored?.customCron || ''
+  base.scanMode = stored?.scanMode || 'incr'
+  configForm.value = base
+  pathModalOpen.value = true
+}
+function openAddPath() {
+  configEditingKey.value = null
+  configEditingIsCustom.value = false
+  pathModalMode.value = 'add'
+  configForm.value = defaultConfig()
+  pathModalOpen.value = true
+}
+function saveConfig() {
+  const key = configEditingKey.value
+  if (!key) return
+  pathConfigs.value = { ...pathConfigs.value, [key]: { ...configForm.value } }
+  savePathConfigs()
+  pathModalOpen.value = false
+}
+function confirmAddPath() {
+  const key = `custom:${Date.now()}`
+  customGroupKeys.value = [...customGroupKeys.value, key]
+  pathConfigs.value = { ...pathConfigs.value, [key]: { ...configForm.value } }
+  savePathConfigs()
+  pathModalOpen.value = false
+}
+async function removePath() {
+  const key = configEditingKey.value
+  if (!key) return
+  const ok = await mcConfirm({
+    title: t('wiki.pathConfig.removePath'),
+    message: t('wiki.pathConfig.removeConfirm'),
+    tone: 'danger',
+  })
+  if (!ok) return
+  const cfgs = { ...pathConfigs.value }
+  delete cfgs[key]
+  pathConfigs.value = cfgs
+  if (key.startsWith('custom:')) {
+    customGroupKeys.value = customGroupKeys.value.filter(k => k !== key)
+  }
+  savePathConfigs()
+  pathModalOpen.value = false
+}
+
+// ── Phase 5: File preview modal ───────────────────────────────────────────
+// Text-like extensions are fetched and rendered inline; everything else shows
+// a "download to view" hint. Pasted text (sourceType TEXT) is always text.
+const TEXT_EXTENSIONS = new Set(['txt', 'md', 'markdown', 'csv', 'tsv', 'html', 'htm', 'json', 'log', 'xml', 'yaml', 'yml'])
+
+const previewOpen = ref(false)
+const previewRaw = ref<RawItem | null>(null)
+const previewLoading = ref(false)
+const previewText = ref('')
+const previewIsBinary = ref(false)
+const previewError = ref(false)
+
+function formatSize(bytes?: number): string {
+  if (!bytes || bytes <= 0) return '—'
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+function extOf(title: string): string {
+  const i = title.lastIndexOf('.')
+  return i >= 0 ? title.slice(i + 1).toLowerCase() : ''
+}
+
+function isTextLike(raw: RawItem): boolean {
+  if (raw.sourceType === 'TEXT') return true
+  return TEXT_EXTENSIONS.has(extOf(raw.title))
+}
+
+async function openPreview(raw: RawItem) {
+  previewRaw.value = raw
+  previewText.value = ''
+  previewError.value = false
+  previewOpen.value = true
+  if (!isTextLike(raw)) {
+    previewIsBinary.value = true
+    return
+  }
+  previewIsBinary.value = false
+  if (!store.currentKB) return
+  previewLoading.value = true
+  try {
+    const blob = (await wikiApi.downloadRaw(store.currentKB.id, raw.id)) as unknown as Blob
+    previewText.value = await blob.text()
+  } catch {
+    previewError.value = true
+  } finally {
+    previewLoading.value = false
+  }
+}
+
+// ── Phase 6: Error file partition ─────────────────────────────────────────
+// Failed materials are surfaced in a dedicated red-themed section for triage,
+// in addition to appearing in their normal source group.
+const failedMaterials = computed(() => store.rawMaterials.filter(r => r.processingStatus === 'failed'))
+const errorSectionOpen = ref(false)
+
+async function retryAllErrors() {
+  for (const r of failedMaterials.value) {
+    try { await reprocess(r.id) } catch { /* skip failures, continue the batch */ }
+  }
+}
+
+async function clearAllErrors() {
+  const ids = failedMaterials.value.map(r => r.id)
+  if (ids.length === 0 || !store.currentKB) return
+  const ok = await mcConfirm({
+    title: t('wiki.errorSection.clearAll'),
+    message: t('wiki.errorSection.clearConfirm', { count: ids.length }),
+    tone: 'danger',
+  })
+  if (!ok) return
+  const kbId = store.currentKB.id
+  for (const id of ids) {
+    try { await wikiApi.deleteRaw(kbId, id) } catch { /* skip failures, continue the batch */ }
+  }
+  await store.fetchRawMaterials(kbId)
+}
 
 // Map a structured backend errorCode to a localized, user-friendly hint.
 // Falls back to the raw backend message, then to a generic failure label, so
@@ -576,9 +1297,6 @@ async function handleLocalRepair(rawId: number) {
 const showAddText = ref(false)
 const textTitle = ref('')
 const textContent = ref('')
-const dirPath = ref(store.currentKB?.sourceDirectory || '')
-const scanning = ref(false)
-const scanResult = ref<{ scanned: number; added: number; skipped: number; errors?: string[] } | null>(null)
 
 // ─── Per-KB auto-sync (source watcher) ────────────────────────────────────────
 // Auto-sync periodically scans the directory above. It runs only when the
@@ -617,8 +1335,8 @@ async function toggleWatcher(next: boolean) {
 }
 watch(() => store.currentKB?.id, (id) => {
   if (id) {
-    dirPath.value = store.currentKB?.sourceDirectory || ''
     void loadWatcher(id as number)
+    loadPathConfigs(id as number)
   }
 }, { immediate: true })
 
@@ -791,24 +1509,6 @@ function toggleRawFilter(rawId: number) {
     store.filterPagesByRaw(kbId, rawId)
   }
 }
-
-async function handleScanDir() {
-  if (!store.currentKB || !dirPath.value.trim()) return
-  scanning.value = true
-  scanResult.value = null
-  try {
-    // Save directory path first
-    await wikiApi.setSourceDirectory(store.currentKB.id, dirPath.value.trim())
-    // Trigger scan
-    const result = await store.scanDirectory(store.currentKB.id)
-    scanResult.value = result
-  } catch (e: any) {
-    const msg = e?.response?.data?.message || e?.message || t('wiki.scanFailed')
-    mcToast.error(msg)
-  } finally {
-    scanning.value = false
-  }
-}
 </script>
 
 <style scoped>
@@ -826,8 +1526,6 @@ async function handleScanDir() {
 .btn-secondary:hover { background: var(--mc-bg-sunken); }
 
 /* Directory scan */
-.dir-scan-row { display: flex; gap: 10px; align-items: center; }
-
 /* Auto-sync (per-KB source watcher) */
 .auto-sync-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: -4px; }
 .auto-sync-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--mc-text-secondary); cursor: pointer; }
@@ -835,13 +1533,6 @@ async function handleScanDir() {
 .auto-sync-toggle input { cursor: inherit; }
 .auto-sync-meta { font-size: 12px; color: var(--mc-text-tertiary); font-variant-numeric: tabular-nums; }
 .auto-sync-hint { font-size: 12px; color: var(--mc-text-tertiary); }
-.dir-input-wrap { flex: 1; display: flex; align-items: center; gap: 8px; padding: 8px 12px; border: 1px solid var(--mc-border); border-radius: 12px; background: var(--mc-bg-elevated); color: var(--mc-text-tertiary); }
-.dir-input-wrap:focus-within { border-color: var(--mc-primary); box-shadow: 0 0 0 2px rgba(217,119,87,0.1); }
-.dir-input { flex: 1; border: none; background: transparent; font-size: 13px; color: var(--mc-text-primary); outline: none; }
-.dir-input::placeholder { color: var(--mc-text-tertiary); }
-.scan-result { font-size: 12px; color: var(--mc-text-secondary); padding: 8px 10px; background: rgba(90,138,90,0.1); border-radius: 10px; }
-.scan-errors { margin-top: 6px; display: flex; flex-direction: column; gap: 2px; }
-.scan-error-item { color: var(--mc-danger); font-size: 11px; }
 
 /* Upload row: zone + add text side by side */
 .upload-row { display: flex; gap: 12px; align-items: stretch; }
@@ -849,7 +1540,7 @@ async function handleScanDir() {
   flex: 1;
   border: 1px dashed var(--mc-border);
   border-radius: 16px;
-  padding: 18px 20px;
+  padding: 10px 16px;
   cursor: pointer;
   transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
   display: flex;
@@ -887,8 +1578,335 @@ async function handleScanDir() {
   to   { transform: rotate(360deg); }
 }
 
+/* ── Phase 1: Filter Bar ───────────────────────────────────────────────── */
+.filter-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 8px 10px;
+  background: var(--mc-bg-elevated);
+  border: 1px solid var(--mc-border-light);
+  border-radius: 14px;
+}
+
+.search-input-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 160px;
+  flex: 1;
+}
+.search-icon {
+  color: var(--mc-text-tertiary);
+  flex-shrink: 0;
+  display: flex;
+}
+.search-input {
+  flex: 1;
+  border: none;
+  background: transparent;
+  font-size: 13px;
+  color: var(--mc-text-primary);
+  outline: none;
+  font-family: inherit;
+}
+.search-input::placeholder { color: var(--mc-text-tertiary); }
+
+.filter-sep { width: 1px; height: 24px; background: var(--mc-border-light); flex-shrink: 0; }
+
+.filter-group { display: flex; align-items: center; gap: 6px; }
+.filter-label { font-size: 11px; color: var(--mc-text-tertiary); white-space: nowrap; }
+
+.select-filter {
+  padding: 4px 24px 4px 8px;
+  border: 1px solid var(--mc-border-light);
+  border-radius: 8px;
+  font-size: 12px;
+  color: var(--mc-text-primary);
+  background: var(--mc-bg-sunken);
+  cursor: pointer;
+  outline: none;
+  appearance: auto;
+  font-family: inherit;
+}
+.select-filter:focus { border-color: var(--mc-primary); }
+
+.sort-dir-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--mc-border-light);
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--mc-text-secondary);
+  background: var(--mc-bg-sunken);
+  cursor: pointer;
+  outline: none;
+  flex-shrink: 0;
+}
+.sort-dir-btn:hover { border-color: var(--mc-primary); color: var(--mc-primary); }
+
+.filter-chips { display: flex; gap: 6px; flex-wrap: wrap; }
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  border: 1px solid var(--mc-border-light);
+  border-radius: 9999px;
+  font-size: 11px;
+  color: var(--mc-text-secondary);
+  background: transparent;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+.chip:hover { border-color: var(--mc-primary); color: var(--mc-primary); }
+.chip.active { background: var(--mc-primary-bg); border-color: var(--mc-primary); color: var(--mc-primary); font-weight: 500; }
+.chip.green { color: var(--mc-success); border-color: rgba(90,138,90,0.3); }
+.chip.green.active { background: var(--mc-success-bg, rgba(90,138,90,0.1)); border-color: var(--mc-success); color: var(--mc-success); }
+.chip.blue { color: var(--mc-info); border-color: rgba(59,130,246,0.3); }
+.chip.blue.active { background: var(--mc-info-bg, rgba(59,130,246,0.1)); border-color: var(--mc-info); color: var(--mc-info); }
+.chip.yellow { color: var(--mc-warning, #d98e00); border-color: rgba(245,158,11,0.3); }
+.chip.yellow.active { background: var(--mc-warning-bg, rgba(245,158,11,0.1)); border-color: var(--mc-warning, #d98e00); color: var(--mc-warning, #d98e00); }
+.chip.red { color: var(--mc-danger); border-color: rgba(192,57,43,0.3); }
+.chip.red.active { background: var(--mc-danger-bg); border-color: var(--mc-danger); color: var(--mc-danger); }
+
+.results-count { font-size: 11px; color: var(--mc-text-tertiary); white-space: nowrap; margin-left: auto; }
+
+/* ── Phase 3: Batch action bar & checkboxes ────────────────────────────── */
+.batch-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  background: linear-gradient(135deg, var(--mc-primary-bg), rgba(217, 119, 87, 0.06));
+  border: 1px solid rgba(217, 119, 87, 0.35);
+  border-radius: 14px;
+}
+.batch-count { font-weight: 600; font-size: 13px; color: var(--mc-primary); white-space: nowrap; }
+.batch-sep { width: 1px; height: 20px; background: rgba(217, 119, 87, 0.25); flex-shrink: 0; }
+.batch-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.batch-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 12px;
+  border: 1px solid var(--mc-border-light);
+  border-radius: 8px;
+  background: var(--mc-bg-elevated);
+  color: var(--mc-text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s;
+}
+.batch-btn:hover { border-color: var(--mc-primary); color: var(--mc-primary); background: var(--mc-primary-bg); }
+.batch-btn.danger:hover { border-color: var(--mc-danger); color: var(--mc-danger); background: var(--mc-danger-bg); }
+.clear-sel { margin-left: auto; padding: 4px 8px; font-size: 12px; color: var(--mc-text-tertiary); border-radius: 4px; cursor: pointer; white-space: nowrap; transition: all 0.15s; }
+.clear-sel:hover { color: var(--mc-text-primary); background: var(--mc-bg-sunken); }
+
+.row-checkbox,
+.group-checkbox {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  border: 1.5px solid var(--mc-border);
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s;
+}
+.row-checkbox.checked,
+.group-checkbox.checked { background: var(--mc-primary); border-color: var(--mc-primary); }
+.row-checkbox svg,
+.group-checkbox svg { display: none; }
+.row-checkbox.checked svg,
+.group-checkbox.checked svg { display: block; }
+.group-checkbox.partial { border-color: var(--mc-primary); }
+.group-checkbox.partial::after { content: ''; width: 8px; height: 2px; border-radius: 1px; background: var(--mc-primary); }
+
+/* ── Phase 2: File groups ──────────────────────────────────────────────── */
+.file-group {
+  background: var(--mc-bg-elevated);
+  border: 1px solid var(--mc-border-light);
+  border-radius: 14px;
+  overflow: hidden;
+  transition: box-shadow 0.15s;
+}
+.group-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.12s;
+}
+.group-header:hover { background: var(--mc-bg-sunken); }
+.group-chevron {
+  flex-shrink: 0;
+  width: 12px;
+  text-align: center;
+  font-size: 10px;
+  color: var(--mc-text-tertiary);
+  transition: transform 0.2s;
+}
+.group-chevron.open { transform: rotate(90deg); }
+.group-alias { flex: 1; min-width: 0; font-weight: 600; font-size: 13px; color: var(--mc-text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.group-stats { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.stat-pill { padding: 2px 7px; border-radius: 10px; font-size: 10px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.stat-pill.total { background: var(--mc-bg-sunken); color: var(--mc-text-tertiary); }
+.stat-pill.ok { background: rgba(90, 138, 90, 0.15); color: var(--mc-success); }
+.stat-pill.processing { background: var(--mc-primary-bg); color: var(--mc-primary); }
+.stat-pill.pending { background: rgba(245, 158, 11, 0.12); color: var(--mc-warning, #d98e00); }
+.stat-pill.err { background: var(--mc-danger-bg); color: var(--mc-danger); }
+.group-body { display: flex; flex-direction: column; gap: 8px; padding: 8px 12px 10px; }
+.group-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; padding: 4px 2px 0; font-size: 11px; color: var(--mc-text-tertiary); }
+.group-footer-time { font-variant-numeric: tabular-nums; }
+.group-actions { display: flex; gap: 4px; flex-shrink: 0; }
+.group-cfg-btn { width: 26px; height: 26px; }
+.group-schedule {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--mc-success);
+  background: rgba(90, 138, 90, 0.12);
+}
+.group-schedule svg { flex-shrink: 0; }
+
+/* ── Phase 4: Path config modal ────────────────────────────────────────── */
+.add-path-card {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 14px;
+  border: 1.5px dashed var(--mc-border);
+  border-radius: 14px;
+  background: transparent;
+  color: var(--mc-text-tertiary);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.add-path-card:hover { border-color: var(--mc-primary); color: var(--mc-primary); background: var(--mc-primary-bg); }
+
+.path-modal { max-width: 560px; }
+.frontend-only-hint {
+  margin: 0 0 16px;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--mc-warning, #d98e00);
+  background: rgba(245, 158, 11, 0.1);
+  border-radius: 8px;
+}
+.form-hint { display: block; margin-top: 4px; font-size: 11px; color: var(--mc-text-tertiary); }
+.schedule-config-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  background: var(--mc-bg-muted);
+  border: 1px solid var(--mc-border-light);
+  border-radius: 8px;
+}
+.toggle-switch { position: relative; display: inline-block; width: 32px; height: 18px; flex-shrink: 0; cursor: pointer; }
+.toggle-switch input { display: none; }
+.toggle-track { position: absolute; inset: 0; background: var(--mc-border); border-radius: 9px; transition: background 0.2s; }
+.toggle-switch input:checked + .toggle-track { background: var(--mc-primary); }
+.toggle-thumb { position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; background: #fff; border-radius: 50%; box-shadow: 0 1px 3px rgba(0,0,0,0.15); transition: transform 0.2s; }
+.toggle-switch input:checked ~ .toggle-thumb { transform: translateX(14px); }
+.schedule-state { font-size: 12px; color: var(--mc-text-tertiary); }
+.schedule-state.on { color: var(--mc-success); font-weight: 600; }
+.cron-select { width: 100%; margin-top: 8px; }
+.cron-custom-input { margin-top: 8px; font-family: var(--mc-font-mono, monospace); }
+.mode-selector { display: flex; gap: 10px; }
+.mode-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  padding: 10px 14px;
+  border: 1.5px solid var(--mc-border-light);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.mode-option:hover { background: var(--mc-bg-sunken); }
+.mode-option.selected { border-color: var(--mc-primary); background: var(--mc-primary-bg); }
+.mode-option input[type="radio"] { accent-color: var(--mc-primary); }
+.mode-option-text { display: flex; flex-direction: column; gap: 2px; }
+.mode-option-title { font-size: 12px; font-weight: 600; color: var(--mc-text-primary); }
+.mode-option-hint { font-size: 11px; color: var(--mc-text-tertiary); }
+.path-modal-actions { justify-content: space-between; }
+.path-modal-actions-right { display: flex; gap: 10px; margin-left: auto; }
+.btn-remove-path {
+  padding: 8px 14px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--mc-danger);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.btn-remove-path:hover { background: var(--mc-danger-bg); border-color: var(--mc-danger); }
+
+/* Phase 5: file preview modal */
+.preview-modal { width: 720px; max-width: 92vw; }
+.preview-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+.preview-title { display: inline-flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 600; color: var(--mc-text-primary); min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.preview-title svg { flex-shrink: 0; color: var(--mc-text-tertiary); }
+.preview-header-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.preview-dl-btn { display: inline-flex; align-items: center; gap: 5px; padding: 6px 12px; font-size: 12px; }
+.preview-meta { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; margin-bottom: 14px; }
+.preview-meta-item { font-size: 12px; color: var(--mc-text-tertiary); }
+.preview-body { margin-bottom: 16px; }
+.preview-content { margin: 0; background: var(--mc-bg-muted); border: 1px solid var(--mc-border-light); border-radius: 8px; padding: 16px; font-family: var(--mc-font-mono, monospace); font-size: 12px; color: var(--mc-text-secondary); max-height: 400px; overflow-y: auto; white-space: pre-wrap; word-break: break-word; line-height: 1.7; }
+.preview-placeholder { background: var(--mc-bg-muted); border: 1px solid var(--mc-border-light); border-radius: 8px; padding: 32px 16px; text-align: center; font-size: 13px; color: var(--mc-text-tertiary); }
+
+/* Phase 6: error file partition */
+.error-section { background: var(--mc-danger-bg); border: 1px solid var(--mc-danger); border-radius: 14px; overflow: hidden; }
+.error-section-header { display: flex; align-items: center; gap: 10px; padding: 12px 14px; cursor: pointer; user-select: none; }
+.error-icon { color: var(--mc-danger); display: inline-flex; flex-shrink: 0; }
+.error-title { font-weight: 600; color: var(--mc-danger); font-size: 13px; }
+.error-count { padding: 1px 8px; border-radius: 9999px; background: var(--mc-danger); color: #fff; font-size: 11px; font-weight: 700; }
+.error-hint-text { margin-left: 4px; font-size: 11px; color: var(--mc-text-tertiary); }
+.error-actions-bar { display: flex; gap: 8px; flex-shrink: 0; margin-left: auto; }
+.error-bar-btn { padding: 4px 10px; border: 1px solid var(--mc-danger); border-radius: 8px; background: transparent; color: var(--mc-danger); font-size: 11px; cursor: pointer; transition: all 0.15s; }
+.error-bar-btn:hover { background: var(--mc-danger); color: #fff; }
+.error-bar-btn.danger { font-weight: 600; }
+.error-body { border-top: 1px solid var(--mc-danger); }
+.error-item { display: flex; align-items: flex-start; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--mc-border-light); }
+.error-item:last-child { border-bottom: none; }
+.error-file-emoji { font-size: 16px; flex-shrink: 0; line-height: 1.4; }
+.error-file-info { flex: 1; min-width: 0; }
+.error-file-name { font-size: 12px; color: var(--mc-text-primary); display: flex; align-items: center; gap: 6px; }
+.error-file-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.error-file-title.clickable { cursor: pointer; }
+.error-file-title.clickable:hover { color: var(--mc-primary); text-decoration: underline; text-underline-offset: 2px; }
+.error-tag { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 10px; font-weight: 600; background: var(--mc-danger); color: #fff; flex-shrink: 0; }
+.error-msg { font-size: 11px; color: var(--mc-text-tertiary); font-family: var(--mc-font-mono, monospace); margin-top: 3px; word-break: break-word; }
+.error-actions { display: flex; gap: 6px; flex-shrink: 0; align-items: center; }
+.error-item-btn { padding: 3px 8px; border: 1px solid var(--mc-border); border-radius: 7px; background: var(--mc-bg-elevated); color: var(--mc-text-secondary); font-size: 11px; cursor: pointer; transition: all 0.15s; }
+.error-item-btn:hover { border-color: var(--mc-primary); color: var(--mc-primary); }
+
 /* Raw list */
-.raw-list { display: flex; flex-direction: column; gap: 8px; padding-top: 4px; }
+.raw-list { display: flex; flex-direction: column; gap: 12px; padding-top: 4px; }
 .raw-list-title { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--mc-text-tertiary); margin-bottom: 4px; }
 .empty-hint { text-align: center; padding: 24px 0; font-size: 14px; color: var(--mc-text-tertiary); }
 
@@ -901,6 +1919,8 @@ async function handleScanDir() {
 
 .raw-item-info { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
 .raw-item-title { font-weight: 500; color: var(--mc-text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.raw-item-title.clickable { cursor: pointer; }
+.raw-item-title.clickable:hover { color: var(--mc-primary); text-decoration: underline; text-underline-offset: 2px; }
 .raw-item-type { font-size: 10px; padding: 2px 6px; background: var(--mc-bg-sunken); border-radius: 4px; text-transform: uppercase; color: var(--mc-text-tertiary); letter-spacing: 0.02em; }
 .raw-item-meta { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 .raw-item-actions { display: flex; gap: 4px; flex-shrink: 0; }
@@ -964,13 +1984,15 @@ async function handleScanDir() {
 .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
 
 @media (max-width: 768px) {
-  .upload-row,
-  .dir-scan-row {
+  .filter-bar { flex-direction: column; align-items: stretch; }
+  .search-input-wrap { min-width: 0; }
+  .filter-sep { display: none; }
+
+  .upload-row {
     flex-direction: column;
   }
 
   .add-text-btn,
-  .dir-scan-row > .btn-secondary,
   .process-btn {
     width: 100%;
     justify-content: center;
