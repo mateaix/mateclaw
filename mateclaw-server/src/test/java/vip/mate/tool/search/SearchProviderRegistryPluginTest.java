@@ -5,6 +5,8 @@ import org.junit.jupiter.api.Test;
 import vip.mate.system.model.SystemSettingsDTO;
 
 import java.util.List;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -135,9 +137,9 @@ class SearchProviderRegistryPluginTest {
         // the registration lock, two threads registering "Foo"/"foo" could both
         // pass the pre-check and land in different map keys.
         for (int round = 0; round < 20; round++) {
-            SearchProviderRegistry registry = new SearchProviderRegistry(java.util.List.of());
-            var barrier = new java.util.concurrent.CyclicBarrier(2);
-            var successes = new java.util.concurrent.atomic.AtomicInteger();
+            SearchProviderRegistry registry = new SearchProviderRegistry(List.of());
+            var barrier = new CyclicBarrier(2);
+            var successes = new AtomicInteger();
             Runnable register = () -> {
                 String id = Thread.currentThread().getName().endsWith("-a") ? "Race-Search" : "race-search";
                 try {

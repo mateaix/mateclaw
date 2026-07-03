@@ -27,6 +27,7 @@ import java.util.Optional;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -111,7 +112,7 @@ class PluginManagerUpdateConfigTest {
         manager.updateConfig(PLUGIN_NAME, Map.of("baseUrl", "https://new.example.com"));
 
         ArgumentCaptor<PluginEntity> captor = ArgumentCaptor.forClass(PluginEntity.class);
-        org.mockito.Mockito.verify(pluginMapper).updateById(captor.capture());
+        verify(pluginMapper).updateById(captor.capture());
 
         Map<String, Object> persisted = objectMapper.readValue(captor.getValue().getConfigJson(), Map.class);
         assertEquals("https://new.example.com", persisted.get("baseUrl"));
@@ -127,7 +128,7 @@ class PluginManagerUpdateConfigTest {
         manager.updateConfig(PLUGIN_NAME, Map.of("apiKey", "newSecret456"));
 
         ArgumentCaptor<PluginEntity> captor = ArgumentCaptor.forClass(PluginEntity.class);
-        org.mockito.Mockito.verify(pluginMapper).updateById(captor.capture());
+        verify(pluginMapper).updateById(captor.capture());
 
         Map<String, Object> persisted = objectMapper.readValue(captor.getValue().getConfigJson(), Map.class);
         assertEquals("newSecret456", persisted.get("apiKey"));

@@ -10,6 +10,7 @@ import vip.mate.tool.search.SearchQuery;
 import vip.mate.tool.search.SearchResult;
 
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -106,7 +107,7 @@ class PluginSearchBridgeTest {
     @Test
     @DisplayName("metadata is snapshotted at construction — plugin code never runs on sort/catalog reads")
     void metadataSnapshottedAtConstruction() {
-        java.util.concurrent.atomic.AtomicInteger metadataCalls = new java.util.concurrent.atomic.AtomicInteger();
+        AtomicInteger metadataCalls = new AtomicInteger();
         PluginSearchProvider delegate = new PluginSearchProvider() {
             @Override public String id() { metadataCalls.incrementAndGet(); return "snap-search"; }
             @Override public String label() { metadataCalls.incrementAndGet(); return "Snap Search"; }

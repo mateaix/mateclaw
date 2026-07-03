@@ -52,8 +52,23 @@ export function resolveSourceLabelKey(source: string | null): string {
  * fails: the built-in config forms (which bind to plain SystemSettings fields and
  * never depended on the catalog) stay reachable instead of the whole search section
  * silently vanishing. `available` is unknown in this mode — callers should hide
- * status badges rather than show a guessed state. Ids/labels/order mirror the
- * backend's built-in providers (autoDetectOrder 50/100/300/400).
+ * status badges rather than show a guessed state.
+ *
+ * ⚠ DRIFT COUPLING — these entries are a hand-maintained mirror of the backend's
+ * built-in providers and MUST be kept in sync when the backend changes them:
+ *   - Source of truth: mateclaw-server/.../tool/search/*SearchProvider.java
+ *     (id() + autoDetectOrder()).
+ *   - id/label/requiresCredential must match each provider exactly.
+ *   - Order must match ascending autoDetectOrder (searxng=50, duckduckgo=100,
+ *     serper=300, tavily=400 today), because resolveDefaultExpandedId() falls
+ *     back to providers[0] and the UI's default-expanded card should be the
+ *     highest-priority keyless one.
+ *   - If a built-in is added/removed/renamed, update BOTH this list AND the
+ *     <template v-if="entry.id === '...'"> form blocks in Settings/System/index.vue.
+ * These ids are NOT a stable public contract — they are internal keys that have
+ * just never changed. There is a matching unit test (builtinFallbackCatalog)
+ * that pins the current set, so an accidental local edit will fail tests; it
+ * cannot catch a backend-only change, hence this comment.
  */
 export function builtinFallbackCatalog(): SearchProviderCatalog {
   return {
