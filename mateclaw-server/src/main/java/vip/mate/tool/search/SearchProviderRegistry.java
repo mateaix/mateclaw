@@ -78,7 +78,10 @@ public class SearchProviderRegistry {
         return builtin != null ? builtin : pluginProviders.get(id);
     }
 
-    /** 获取按 autoDetectOrder 排序的全部 provider（内置 + 插件） */
+    /**
+     * 获取按 autoDetectOrder 排序的全部 provider（内置 + 插件）。
+     * <p>有插件注册时每次调用重新合并排序——provider 总数 &lt;10，无需缓存。
+     */
     public List<SearchProvider> allSorted() {
         if (pluginProviders.isEmpty()) {
             return sortedProviders;

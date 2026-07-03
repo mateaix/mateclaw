@@ -83,6 +83,17 @@ class SearchProviderRegistryPluginTest {
     }
 
     @Test
+    @DisplayName("blank or null plugin id is rejected")
+    void blankIdRejected() {
+        SearchProviderRegistry registry = registryWithBuiltins();
+
+        assertThrows(IllegalArgumentException.class,
+                () -> registry.registerPluginProvider(stub("  ", 500, true, true)));
+        assertThrows(IllegalArgumentException.class,
+                () -> registry.registerPluginProvider(stub(null, 500, true, true)));
+    }
+
+    @Test
     @DisplayName("resolve honours an explicitly configured plugin provider")
     void resolvePicksConfiguredPluginProvider() {
         SearchProviderRegistry registry = registryWithBuiltins();
