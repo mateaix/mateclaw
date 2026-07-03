@@ -35,6 +35,13 @@ public class SearchProviderRegistry {
     /** 插件注册的 provider（运行时可变），与 Spring 注入的内置 provider 合并成完整视图 */
     private final ConcurrentHashMap<String, SearchProvider> pluginProviders = new ConcurrentHashMap<>();
 
+    /**
+     * 注册写锁：大小写不敏感的冲突检测是"先检查后插入"，两个并发注册大小写变体
+     * （"Foo"/"foo"）可能双双通过检查后各自落入不同 key——写路径必须原子化。
+     * 读路径（getById/allSorted/resolve）仍走无锁的 ConcurrentHashMap。
+     */
+    private final Object registrationLock = new Object();
+
     public SearchProviderRegistry(List<SearchProvider> providers) {
         this.sortedProviders = providers.stream()
                 .sorted(Comparator.comparingInt(SearchProvider::autoDetectOrder))
@@ -63,14 +70,16 @@ public class SearchProviderRegistry {
             throw new IllegalArgumentException(
                     "Search provider id must not contain leading/trailing whitespace: '" + id + "'");
         }
-        if (containsIgnoreCase(providerMap.keySet(), id)) {
-            throw new IllegalArgumentException(
-                    "Search provider id conflicts with a built-in provider: " + id);
-        }
-        if (containsIgnoreCase(pluginProviders.keySet(), id)
-                || pluginProviders.putIfAbsent(id, provider) != null) {
-            throw new IllegalArgumentException(
-                    "Search provider id already registered by another plugin: " + id);
+        synchronized (registrationLock) {
+            if (containsIgnoreCase(providerMap.keySet(), id)) {
+                throw new IllegalArgumentException(
+                        "Search provider id conflicts with a built-in provider: " + id);
+            }
+            if (containsIgnoreCase(pluginProviders.keySet(), id)) {
+                throw new IllegalArgumentException(
+                        "Search provider id already registered by another plugin: " + id);
+            }
+            pluginProviders.put(id, provider);
         }
         log.info("插件搜索提供商已注册: {} (order={})", id, provider.autoDetectOrder());
     }

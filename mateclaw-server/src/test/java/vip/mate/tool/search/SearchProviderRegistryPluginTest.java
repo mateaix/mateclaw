@@ -128,6 +128,41 @@ class SearchProviderRegistryPluginTest {
     }
 
     @Test
+    @DisplayName("concurrent registration of case-variants admits exactly one (no TOCTOU bypass)")
+    void concurrentCaseVariantRegistrationAdmitsExactlyOne() throws Exception {
+        // Plugins may call registerSearchProvider from arbitrary threads, so the
+        // case-insensitive conflict check must be atomic with the insert: without
+        // the registration lock, two threads registering "Foo"/"foo" could both
+        // pass the pre-check and land in different map keys.
+        for (int round = 0; round < 20; round++) {
+            SearchProviderRegistry registry = new SearchProviderRegistry(java.util.List.of());
+            var barrier = new java.util.concurrent.CyclicBarrier(2);
+            var successes = new java.util.concurrent.atomic.AtomicInteger();
+            Runnable register = () -> {
+                String id = Thread.currentThread().getName().endsWith("-a") ? "Race-Search" : "race-search";
+                try {
+                    barrier.await();
+                    registry.registerPluginProvider(stub(id, 500, true, true));
+                    successes.incrementAndGet();
+                } catch (IllegalArgumentException expected) {
+                    // the loser — expected
+                } catch (Exception e) {
+                    throw new IllegalStateException(e);
+                }
+            };
+            Thread t1 = new Thread(register, "race-" + round + "-a");
+            Thread t2 = new Thread(register, "race-" + round + "-b");
+            t1.start();
+            t2.start();
+            t1.join();
+            t2.join();
+
+            assertEquals(1, successes.get(),
+                    "exactly one of the case-variant registrations may win (round " + round + ")");
+        }
+    }
+
+    @Test
     @DisplayName("isPluginProvider distinguishes built-in ids from plugin-registered ids")
     void isPluginProviderDistinguishesSource() {
         SearchProviderRegistry registry = registryWithBuiltins();

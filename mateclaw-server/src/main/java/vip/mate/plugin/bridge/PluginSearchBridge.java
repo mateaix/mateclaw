@@ -1,5 +1,6 @@
 package vip.mate.plugin.bridge;
 
+import lombok.extern.slf4j.Slf4j;
 import vip.mate.plugin.api.search.PluginSearchProvider;
 import vip.mate.plugin.api.search.PluginSearchQuery;
 import vip.mate.plugin.api.search.PluginSearchResult;
@@ -18,40 +19,64 @@ import java.util.List;
  * The platform-side {@link SystemSettingsDTO} is intentionally ignored — plugin
  * providers read their own config via {@code PluginContext#getConfig}, keeping
  * the SDK free of server types.
+ * <p>
+ * Fault isolation: {@code search()} may throw (the caller's provider-fallback
+ * chain handles that), but everything consulted on unguarded paths is insulated
+ * from plugin code here — metadata ({@code id/label/requiresCredential/autoDetectOrder})
+ * is snapshotted once at registration time (where a throw is caught and rolled
+ * back by the plugin loader), because it is later read inside {@code allSorted()}'s
+ * sort comparator and the settings catalog with no per-provider guard; and
+ * {@code isAvailable()} degrades to {@code false} on any plugin exception, because
+ * it runs inside {@code resolve()} on every web_search call — a throwing
+ * availability check must not take every other provider down with it.
  *
  * @author MateClaw Team
  */
+@Slf4j
 public class PluginSearchBridge implements SearchProvider {
 
     private final PluginSearchProvider delegate;
+    private final String id;
+    private final String label;
+    private final boolean requiresCredential;
+    private final int autoDetectOrder;
 
     public PluginSearchBridge(PluginSearchProvider delegate) {
         this.delegate = delegate;
+        this.id = delegate.id();
+        this.label = delegate.label();
+        this.requiresCredential = delegate.requiresCredential();
+        this.autoDetectOrder = delegate.autoDetectOrder();
     }
 
     @Override
     public String id() {
-        return delegate.id();
+        return id;
     }
 
     @Override
     public String label() {
-        return delegate.label();
+        return label;
     }
 
     @Override
     public boolean requiresCredential() {
-        return delegate.requiresCredential();
+        return requiresCredential;
     }
 
     @Override
     public int autoDetectOrder() {
-        return delegate.autoDetectOrder();
+        return autoDetectOrder;
     }
 
     @Override
     public boolean isAvailable(SystemSettingsDTO config) {
-        return delegate.isAvailable();
+        try {
+            return delegate.isAvailable();
+        } catch (Exception e) {
+            log.warn("插件搜索提供商 {} 的 isAvailable() 抛出异常，按不可用处理: {}", id, e.getMessage());
+            return false;
+        }
     }
 
     @Override
@@ -79,7 +104,7 @@ public class PluginSearchBridge implements SearchProvider {
                     .snippet(r.snippet())
                     .source(r.source())
                     .date(r.date())
-                    .providerId(delegate.id())
+                    .providerId(id)
                     .build());
         }
         return results;
