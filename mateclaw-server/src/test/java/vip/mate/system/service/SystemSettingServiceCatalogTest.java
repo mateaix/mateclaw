@@ -98,6 +98,33 @@ class SystemSettingServiceCatalogTest {
     }
 
     @Test
+    @DisplayName("mixed catalog: builtin and plugin providers both appear, correctly labeled and ordered")
+    void mixedBuiltinAndPluginCatalog() {
+        SearchProviderRegistry registry = new SearchProviderRegistry(List.of(
+                stub("serper", 300, true, true),
+                stub("duckduckgo", 100, false, true)));
+        registry.registerPluginProvider(stub("my-search", 200, true, true));
+        when(pluginManager.getPluginNameForSearchProvider("my-search")).thenReturn("my-plugin");
+        service = new SystemSettingService(mapper, registry, pluginManager);
+
+        SearchProviderCatalogResponse catalog = service.getSearchProviderCatalog();
+
+        assertEquals(3, catalog.providers().size());
+        // Sorted by autoDetectOrder ascending: duckduckgo(100), my-search(200), serper(300)
+        assertEquals("duckduckgo", catalog.providers().get(0).id());
+        assertTrue(catalog.providers().get(0).builtin());
+        assertNull(catalog.providers().get(0).pluginName());
+
+        assertEquals("my-search", catalog.providers().get(1).id());
+        assertFalse(catalog.providers().get(1).builtin());
+        assertEquals("my-plugin", catalog.providers().get(1).pluginName());
+
+        assertEquals("serper", catalog.providers().get(2).id());
+        assertTrue(catalog.providers().get(2).builtin());
+        assertNull(catalog.providers().get(2).pluginName());
+    }
+
+    @Test
     @DisplayName("surfaces the resolved provider id and source alongside the catalog")
     void resolvedSurfaced() {
         SearchProviderRegistry registry = new SearchProviderRegistry(List.of(stub("duckduckgo", 100, false, true)));
