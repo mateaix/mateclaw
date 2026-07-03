@@ -926,9 +926,18 @@ public class AgentGraphBuilder {
             // capability from reasoningEffort == null.
             boolean supportsReasoningEffort = primaryModelConfig != null
                     && ModelFamily.detect(primaryModelConfig.getModelName()).supportsReasoningEffort();
+            // Honor the model's configured output cap. Passing 0 here made the
+            // node fall back to its 16384 default, so the user-configured
+            // maxTokens never took effect and strict local servers (vLLM's
+            // max_model_len pre-check) rejected the request outright.
+            int configuredMaxOutputTokens = (primaryModelConfig != null
+                    && primaryModelConfig.getMaxTokens() != null
+                    && primaryModelConfig.getMaxTokens() > 0)
+                    ? primaryModelConfig.getMaxTokens() : 0;
             ReasoningNode reasoningNode = new ReasoningNode(chatModel, toolSet, reasoningEffort,
                     supportsReasoningEffort,
-                    streamingHelper, conversationWindowManager, streamTracker, 0, wikiContextService,
+                    streamingHelper, conversationWindowManager, streamTracker,
+                    configuredMaxOutputTokens, wikiContextService,
                     skillCatalogRenderer, toolDisclosureService, progressLedgerService);
             reasoningNode.setPrefixBudgetPlan(prefixBudgetPlan);
             reasoningNode.setAutoDemotedTools(autoDemotedTools);

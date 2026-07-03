@@ -376,6 +376,27 @@ public class ReasoningNode implements NodeAction {
         this.autoDemotedTools = autoDemotedTools == null ? Set.of() : autoDemotedTools;
     }
 
+    /** Floor for the window-aware output clamp — an answer needs at least this much room. */
+    private static final int MIN_CLAMPED_OUTPUT_TOKENS = 512;
+
+    /**
+     * Output cap actually sent to the provider. Strict local servers (vLLM)
+     * statically reject {@code max_tokens >= max_model_len}, so when the
+     * effective context window is known and smaller than the configured /
+     * default output cap, clamp to half the window (leaving the other half
+     * for the prompt). No-op when the window is unknown or already larger.
+     */
+    int effectiveMaxOutputTokens() {
+        int window = (prefixBudgetPlan != null) ? prefixBudgetPlan.effectiveMaxTokens() : 0;
+        if (window > 0 && maxOutputTokens >= window) {
+            int clamped = Math.max(MIN_CLAMPED_OUTPUT_TOKENS, window / 2);
+            log.info("[ReasoningNode] max_tokens {} ≥ 模型窗口 {},钳制为 {}(窗口一半)以避免服务端拒绝",
+                    maxOutputTokens, window, clamped);
+            return clamped;
+        }
+        return maxOutputTokens;
+    }
+
     public ReasoningNode(ChatModel chatModel, AgentToolSet toolSet, String reasoningEffort,
                          NodeStreamingChatHelper streamingHelper,
                          ConversationWindowManager conversationWindowManager,
@@ -1234,11 +1255,11 @@ public class ReasoningNode implements NodeAction {
                     default -> 16384;
                 };
                 builder.thinking(org.springframework.ai.anthropic.api.AnthropicApi.ThinkingType.ENABLED, budgetTokens);
-                builder.maxTokens(budgetTokens + maxOutputTokens);
+                builder.maxTokens(budgetTokens + effectiveMaxOutputTokens());
                 builder.temperature(1.0);
                 log.info("[ReasoningNode] Anthropic extended thinking enabled: model={}, budget={}", currentModel, budgetTokens);
             } else {
-                builder.maxTokens(maxOutputTokens);
+                builder.maxTokens(effectiveMaxOutputTokens());
                 if (thinkingOn && !isClaudeModel) {
                     log.debug("[ReasoningNode] Anthropic protocol model {} does not support thinking, skipping", currentModel);
                 }
@@ -1253,7 +1274,7 @@ public class ReasoningNode implements NodeAction {
         // DashScope rejects max_tokens above its 8192 ceiling with a 400 that
         // the failover layer misreads as "model not found"; clamp so a
         // DashScope-backed model never overflows the provider limit.
-        int effectiveMaxTokens = maxOutputTokens;
+        int effectiveMaxTokens = effectiveMaxOutputTokens();
         if (chatModel instanceof com.alibaba.cloud.ai.dashscope.chat.DashScopeChatModel
                 && effectiveMaxTokens > DASHSCOPE_MAX_OUTPUT_TOKENS) {
             log.debug("[ReasoningNode] Clamping max_tokens {} -> {} for DashScope-backed model",
