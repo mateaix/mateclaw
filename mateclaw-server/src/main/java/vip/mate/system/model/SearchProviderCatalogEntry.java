@@ -1,7 +1,7 @@
 package vip.mate.system.model;
 
 /**
- * One row in the search-provider catalog exposed to the settings UI (issue #477).
+ * One row in the search-provider catalog exposed to the settings UI.
  *
  * @param id                 provider id (matches {@code SearchProvider.id()})
  * @param label              display label

@@ -8,6 +8,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -47,22 +48,35 @@ public class SearchProviderRegistry {
     /**
      * 注册一个插件提供的 provider。
      *
-     * @throws IllegalArgumentException id 为空，或与内置/已注册插件 provider 冲突
+     * <p>id 规则：不允许为空或含首尾空白（拒绝而非 trim——注册键必须与
+     * {@code provider.id()} 完全一致，反注册才能对得上）；存储与查找大小写敏感，
+     * 但冲突检测大小写不敏感，防止 "Serper" 这类变体在 UI 上与内置 "serper" 混淆。
+     *
+     * @throws IllegalArgumentException id 为空、含首尾空白，或与内置/已注册插件 provider 冲突
      */
     public void registerPluginProvider(SearchProvider provider) {
         String id = provider.id();
         if (id == null || id.isBlank()) {
             throw new IllegalArgumentException("Search provider id must not be blank");
         }
-        if (providerMap.containsKey(id)) {
+        if (!id.equals(id.trim())) {
+            throw new IllegalArgumentException(
+                    "Search provider id must not contain leading/trailing whitespace: '" + id + "'");
+        }
+        if (containsIgnoreCase(providerMap.keySet(), id)) {
             throw new IllegalArgumentException(
                     "Search provider id conflicts with a built-in provider: " + id);
         }
-        if (pluginProviders.putIfAbsent(id, provider) != null) {
+        if (containsIgnoreCase(pluginProviders.keySet(), id)
+                || pluginProviders.putIfAbsent(id, provider) != null) {
             throw new IllegalArgumentException(
                     "Search provider id already registered by another plugin: " + id);
         }
         log.info("插件搜索提供商已注册: {} (order={})", id, provider.autoDetectOrder());
+    }
+
+    private static boolean containsIgnoreCase(Set<String> ids, String candidate) {
+        return ids.stream().anyMatch(existing -> existing.equalsIgnoreCase(candidate));
     }
 
     /** 反注册插件 provider（disable / rollback 路径调用；id 不存在时静默） */

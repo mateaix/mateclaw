@@ -419,7 +419,7 @@ public class PluginManager {
     }
 
     /**
-     * 反查某个 search provider id 是由哪个已加载插件注册的（issue #477，供设置页 catalog 用）。
+     * 反查某个 search provider id 是由哪个已加载插件注册的（供设置页 catalog 用）。
      *
      * @return 插件名（manifest 的 name），找不到返回 {@code null}
      */
@@ -441,7 +441,7 @@ public class PluginManager {
      * to "resubmit unchanged"; omission is the only privacy-safe way to say "leave this
      * as-is". If we treated the incoming map as the complete new config, every omitted
      * field — including previously-configured secrets — would be silently deleted on
-     * every save. See issue #477.
+     * every save.
      */
     @SuppressWarnings("unchecked")
     public void updateConfig(String name, Map<String, Object> config) {

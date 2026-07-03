@@ -8,7 +8,7 @@ import org.springframework.boot.test.context.SpringBootTest;
  * only surface when Spring actually constructs the full application context —
  * invisible to Mockito-based unit tests, which never build the real bean graph.
  * <p>
- * This test class did not exist before issue #477: a circular dependency
+ * Added after a regression slipped through the unit suite: a circular dependency
  * (SystemSettingService → PluginManager → ToolRegistry → I18nService →
  * SystemSettingService) was introduced and went undetected by the full
  * per-class unit test suite until a manual {@code spring-boot:run} smoke check.

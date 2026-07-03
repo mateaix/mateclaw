@@ -96,6 +96,38 @@ class SearchProviderRegistryPluginTest {
     }
 
     @Test
+    @DisplayName("id with leading/trailing whitespace is rejected, not trimmed")
+    void paddedIdRejected() {
+        SearchProviderRegistry registry = registryWithBuiltins();
+
+        assertThrows(IllegalArgumentException.class,
+                () -> registry.registerPluginProvider(stub(" my-search", 500, true, true)));
+        assertThrows(IllegalArgumentException.class,
+                () -> registry.registerPluginProvider(stub("my-search ", 500, true, true)));
+    }
+
+    @Test
+    @DisplayName("case-variant of a built-in id is rejected (no visual spoofing)")
+    void caseVariantOfBuiltinRejected() {
+        SearchProviderRegistry registry = registryWithBuiltins();
+
+        assertThrows(IllegalArgumentException.class,
+                () -> registry.registerPluginProvider(stub("Serper", 500, true, true)));
+        assertThrows(IllegalArgumentException.class,
+                () -> registry.registerPluginProvider(stub("DUCKDUCKGO", 500, true, true)));
+    }
+
+    @Test
+    @DisplayName("case-variant of an already-registered plugin id is rejected")
+    void caseVariantOfPluginIdRejected() {
+        SearchProviderRegistry registry = registryWithBuiltins();
+        registry.registerPluginProvider(stub("my-search", 500, true, true));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> registry.registerPluginProvider(stub("My-Search", 501, true, true)));
+    }
+
+    @Test
     @DisplayName("isPluginProvider distinguishes built-in ids from plugin-registered ids")
     void isPluginProviderDistinguishesSource() {
         SearchProviderRegistry registry = registryWithBuiltins();

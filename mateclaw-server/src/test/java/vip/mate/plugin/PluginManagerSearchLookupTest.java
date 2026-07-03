@@ -27,7 +27,7 @@ import static org.mockito.Mockito.mock;
 /**
  * PluginManager#getPluginNameForSearchProvider: reverse-lookup which loaded
  * plugin registered a given search provider id, used by the settings catalog
- * endpoint to show "managed by plugin X" (issue #477).
+ * endpoint to show "managed by plugin X".
  */
 class PluginManagerSearchLookupTest {
 

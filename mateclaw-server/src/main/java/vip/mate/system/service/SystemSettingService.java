@@ -88,7 +88,7 @@ public class SystemSettingService {
     /**
      * {@code PluginManager} is injected lazily because the bean graph is
      * cyclic: {@code pluginManager → toolRegistry → i18nService →
-     * systemSettingService} (issue #477). It is only consulted from
+     * systemSettingService}. It is only consulted from
      * {@link #toEntry} at request time (never at construction), so a lazy
      * proxy is safe and breaks the cycle cleanly. Note: {@code @Lazy} must be
      * applied via an explicit constructor (not {@code @RequiredArgsConstructor})
@@ -237,7 +237,7 @@ public class SystemSettingService {
 
     /**
      * 搜索 provider catalog：内置 + 插件注册的全部 provider，标注是否可用、
-     * 属于哪个插件，以及当前实际会被 resolve() 选中的是哪一个（issue #477）。
+     * 属于哪个插件，以及当前实际会被 resolve() 选中的是哪一个。
      */
     public SearchProviderCatalogResponse getSearchProviderCatalog() {
         SystemSettingsDTO config = getSearchSettings();

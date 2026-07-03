@@ -34,7 +34,7 @@ import static org.mockito.Mockito.when;
  * stored config, not overwrite it wholesale — the new Plugins.vue config dialog
  * intentionally omits unchanged secret fields (it never receives plaintext secrets
  * back from the backend to resubmit them), so "omitted" must mean "keep the old
- * value", not "delete it". See issue #477.
+ * value", not "delete it".
  */
 class PluginManagerUpdateConfigTest {
 

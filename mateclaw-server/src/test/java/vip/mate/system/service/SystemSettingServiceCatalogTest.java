@@ -31,7 +31,7 @@ import static org.mockito.Mockito.when;
 /**
  * SystemSettingService#getSearchProviderCatalog: aggregates SearchProviderRegistry
  * (builtin + plugin providers) with PluginManager (owning-plugin lookup) into the
- * catalog payload the settings UI renders (issue #477).
+ * catalog payload the settings UI renders.
  */
 @ExtendWith(MockitoExtension.class)
 class SystemSettingServiceCatalogTest {
