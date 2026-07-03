@@ -75,6 +75,7 @@
                     v-if="!seg.superseded || isSupersededExpanded(seg.id)"
                     :segment="seg"
                     :show-cursor="showCursor && seg.status === 'running'"
+                    :generated-file-names="generatedFileNames"
                     :class="{ 'content-segment--superseded': seg.superseded }"
                   />
                 </template>
@@ -535,6 +536,7 @@ import {
   WarningFilled,
 } from '@element-plus/icons-vue'
 import { useStreamingMarkdown } from '@/composables/useStreamingMarkdown'
+import { buildGeneratedFileNameMap, linkifyGeneratedFileUrls } from '@/utils/generatedFileLinks'
 import { useAuthenticatedAttachment } from '@/composables/useAuthenticatedAttachment'
 import { useToolLabel } from '@/composables/useToolLabel'
 import { http } from '@/api'
@@ -729,8 +731,15 @@ const displayContent = computed(() => {
   if (text && isApprovalPlaceholder(text)) return ''
   // 有错误卡片时隐藏 [错误] 原始文本，避免重复展示
   if (status.value === 'failed' && errorInfo.value && text.startsWith('[错误]')) return ''
-  return text
+  return linkifyGeneratedFileUrls(text, generatedFileNames.value)
 })
+
+// id → filename map for generated-file downloads, sourced from the metadata
+// the server builds out of tool results. Used to rewrite bare download URLs
+// the model echoed as plain text into [name](url) links (the persisted copy
+// is rewritten server-side; this covers the live-streamed bubble).
+const generatedFileNames = computed(() =>
+  buildGeneratedFileNameMap((props.message.metadata as any)?.generatedFiles))
 
 // --- parse_error detection ---
 const parseErrorText = computed(() => {
