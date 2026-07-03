@@ -1,0 +1,24 @@
+{
+  "name": "mateclaw-plugin-search-demo",
+  "version": "1.0.0",
+  "type": "search",
+  "displayName": "Demo Search Provider",
+  "description": "Registers a custom web-search provider backed by a configurable JSON search endpoint.",
+  "entrypoint": "vip.mate.plugin.sample.search.SimpleSearchPlugin",
+  "minPlatformVersion": "1.1.0",
+  "author": "MateClaw Team",
+  "config": {
+    "baseUrl": {
+      "type": "string",
+      "required": true,
+      "secret": false,
+      "description": "Search endpoint returning {\"results\":[{\"title\",\"url\",\"snippet\"}]}"
+    },
+    "apiKey": {
+      "type": "string",
+      "required": false,
+      "secret": true,
+      "description": "Optional bearer token sent as Authorization header"
+    }
+  }
+}

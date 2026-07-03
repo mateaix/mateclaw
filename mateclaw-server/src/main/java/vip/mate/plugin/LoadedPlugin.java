@@ -29,6 +29,9 @@ public class LoadedPlugin {
     /** Channel types registered by this plugin */
     private final List<String> registeredChannels = new ArrayList<>();
 
+    /** Search provider ids registered by this plugin */
+    private final List<String> registeredSearchProviders = new ArrayList<>();
+
     /** Provider ID registered by this plugin (null if none) */
     private String registeredProvider;
 

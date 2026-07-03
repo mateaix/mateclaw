@@ -17,6 +17,7 @@
         <module>mateclaw-plugin-api</module>
         <module>mateclaw-server</module>
         <module>mateclaw-plugin-sample</module>
+        <module>mateclaw-plugin-search-sample</module>
     </modules>
 
     <properties>

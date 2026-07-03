@@ -12,9 +12,12 @@ import vip.mate.plugin.api.PluginException;
 import vip.mate.plugin.api.PluginManifest;
 import vip.mate.plugin.api.channel.PluginChannelAdapter;
 import vip.mate.plugin.api.memory.PluginMemoryProvider;
+import vip.mate.plugin.api.search.PluginSearchProvider;
 import vip.mate.plugin.bridge.PluginChannelBridge;
 import vip.mate.plugin.bridge.PluginMemoryBridge;
+import vip.mate.plugin.bridge.PluginSearchBridge;
 import vip.mate.tool.ToolRegistry;
+import vip.mate.tool.search.SearchProviderRegistry;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -35,6 +38,7 @@ public class PluginContextImpl implements PluginContext {
     private final ChannelManager channelManager;
     private final MemoryManager memoryManager;
     private final ModelProviderService modelProviderService;
+    private final SearchProviderRegistry searchProviderRegistry;
     private final Map<String, Object> configMap;
     private final Logger logger;
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -45,6 +49,7 @@ public class PluginContextImpl implements PluginContext {
                              ChannelManager channelManager,
                              MemoryManager memoryManager,
                              ModelProviderService modelProviderService,
+                             SearchProviderRegistry searchProviderRegistry,
                              String configJson) {
         this.loadedPlugin = loadedPlugin;
         this.manifest = manifest;
@@ -52,6 +57,7 @@ public class PluginContextImpl implements PluginContext {
         this.channelManager = channelManager;
         this.memoryManager = memoryManager;
         this.modelProviderService = modelProviderService;
+        this.searchProviderRegistry = searchProviderRegistry;
         this.logger = LoggerFactory.getLogger("plugin." + manifest.getName());
         this.configMap = parseConfig(configJson);
     }
@@ -103,6 +109,19 @@ public class PluginContextImpl implements PluginContext {
         PluginMemoryBridge bridge = new PluginMemoryBridge(provider);
         memoryManager.registerPluginProvider(bridge);
         loadedPlugin.setRegisteredMemoryProvider(provider.id());
+    }
+
+    @Override
+    public void registerSearchProvider(PluginSearchProvider provider) {
+        if (provider == null || provider.id() == null || provider.id().isBlank()) {
+            throw new PluginException("Search provider id must not be blank");
+        }
+        try {
+            searchProviderRegistry.registerPluginProvider(new PluginSearchBridge(provider));
+        } catch (IllegalArgumentException e) {
+            throw new PluginException(e.getMessage(), e);
+        }
+        loadedPlugin.getRegisteredSearchProviders().add(provider.id());
     }
 
     @Override

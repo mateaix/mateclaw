@@ -248,6 +248,27 @@ Implement `vip.mate.memory.spi.MemoryProvider` to plug in a custom memory backen
 
 Connect external tool servers over stdio, streamable_http, or sse. Their tools appear in the tool registry automatically — Agent code doesn't know they're external. See [MCP](./mcp).
 
+### Standalone-jar plugins (`mateclaw-plugin-api`)
+
+All of the above require your code to be compiled into `mateclaw-server` itself. If you want to extend capabilities by dropping in an independent jar — no core source changes — use the `mateclaw-plugin-api` SDK: implement `MateClawPlugin`, declare `type` and a `config` schema in `mateclaw-plugin.json`, package it, and drop it into a workspace `plugins/` directory or the user-level `~/.mateclaw/plugins/`. `PluginManager` loads it at startup in an isolated `URLClassLoader` and supports runtime enable/disable. Five `PluginType`s are currently supported: `TOOL`, `PROVIDER` (LLM), `CHANNEL`, `MEMORY`, and `SEARCH` (a search source for the `web_search` tool, `1.7.0+`).
+
+```java
+public class MySearchPlugin implements MateClawPlugin {
+    @Override
+    public void onLoad(PluginContext context) {
+        context.registerSearchProvider(new MySearchProvider(context));
+    }
+    @Override public void onEnable() {}
+    @Override public void onDisable() {}
+}
+
+class MySearchProvider implements PluginSearchProvider {
+    // id() / label() / isAvailable() / search(PluginSearchQuery) — see the mateclaw-plugin-search-sample module
+}
+```
+
+Reference implementations: `mateclaw-plugin-sample` (TOOL) and `mateclaw-plugin-search-sample` (SEARCH).
+
 ### Skill packages
 
 Bundle instructions + tools + optional scripts in a `SKILL.md`. Upload via the UI or API. Agents can invoke them at runtime. See [Skills](./skills).

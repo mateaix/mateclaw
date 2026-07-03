@@ -19,6 +19,7 @@ import vip.mate.plugin.model.PluginEntity;
 import vip.mate.plugin.model.PluginInfo;
 import vip.mate.plugin.repository.PluginMapper;
 import vip.mate.tool.ToolRegistry;
+import vip.mate.tool.search.SearchProviderRegistry;
 import vip.mate.workspace.core.model.WorkspaceEntity;
 import vip.mate.workspace.core.service.WorkspaceService;
 
@@ -57,6 +58,7 @@ public class PluginManager {
     private final ChannelManager channelManager;
     private final MemoryManager memoryManager;
     private final ModelProviderService modelProviderService;
+    private final SearchProviderRegistry searchProviderRegistry;
     private final Optional<WorkspaceService> workspaceService;
 
     private final Map<String, LoadedPlugin> plugins = new ConcurrentHashMap<>();
@@ -211,6 +213,7 @@ public class PluginManager {
             PluginContextImpl context = new PluginContextImpl(
                     loadedPlugin, manifest,
                     toolRegistry, channelManager, memoryManager, modelProviderService,
+                    searchProviderRegistry,
                     configJson
             );
             loadedPlugin.setContext(context);
@@ -261,6 +264,9 @@ public class PluginManager {
         if (loaded.getRegisteredProvider() != null) {
             try { modelProviderService.unregisterPluginChatModel(loaded.getRegisteredProvider()); } catch (Exception e) { /* best effort */ }
         }
+        for (String searchId : loaded.getRegisteredSearchProviders()) {
+            try { searchProviderRegistry.unregisterPluginProvider(searchId); } catch (Exception e) { /* best effort */ }
+        }
     }
 
     /**
@@ -300,14 +306,20 @@ public class PluginManager {
             providerRemoved = loaded.getRegisteredProvider();
         }
 
+        for (String searchId : loaded.getRegisteredSearchProviders()) {
+            searchProviderRegistry.unregisterPluginProvider(searchId);
+        }
+        int searchRemoved = loaded.getRegisteredSearchProviders().size();
+
         loaded.setEnabled(false);
         plugins.remove(name);
         updateStatus(name, false, "DISABLED", null);
 
-        log.info("Plugin disabled: {} (tools={}, channels={}, provider={}, memory={})",
+        log.info("Plugin disabled: {} (tools={}, channels={}, provider={}, memory={}, search={})",
                 name, toolsRemoved, channelsRemoved,
                 providerRemoved != null ? providerRemoved : "none",
-                memoryRemoved != null ? memoryRemoved : "none");
+                memoryRemoved != null ? memoryRemoved : "none",
+                searchRemoved);
     }
 
     /**
@@ -365,6 +377,7 @@ public class PluginManager {
                     .registeredChannels(List.copyOf(loaded.getRegisteredChannels()))
                     .registeredProvider(loaded.getRegisteredProvider())
                     .registeredMemoryProvider(loaded.getRegisteredMemoryProvider())
+                    .registeredSearchProviders(List.copyOf(loaded.getRegisteredSearchProviders()))
                     .configSchema(buildConfigSchema(m))
                     .currentConfig(buildRedactedConfig(loaded))
                     .build());
@@ -387,6 +400,7 @@ public class PluginManager {
                         .jarPath(entity.getJarPath())
                         .registeredTools(List.of())
                         .registeredChannels(List.of())
+                        .registeredSearchProviders(List.of())
                         .build());
             }
         }

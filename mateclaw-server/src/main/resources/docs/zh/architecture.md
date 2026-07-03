@@ -248,6 +248,27 @@ public interface ChannelAdapter {
 
 通过 stdio、streamable_http、sse 连接外部工具服务。它们的工具自动出现在工具注册表里——Agent 代码**不知道它们是外部的**。见 [MCP 协议](./mcp)。
 
+### 独立 jar 插件（`mateclaw-plugin-api`）
+
+以上都要求代码编译进 `mateclaw-server` 本体。如果你想**不碰核心源码**、丢一个独立 jar 就扩展能力，用 `mateclaw-plugin-api` SDK：实现 `MateClawPlugin`，在 `mateclaw-plugin.json` 里声明 `type` 与 `config` schema，打包后放进工作区 `plugins/` 或用户级 `~/.mateclaw/plugins/`，`PluginManager` 用隔离的 `URLClassLoader` 在启动时加载，支持运行时 enable/disable。当前支持 5 种 `PluginType`：`TOOL`、`PROVIDER`（LLM）、`CHANNEL`、`MEMORY`、`SEARCH`（`web_search` 工具的搜索源，`1.7.0+`）。
+
+```java
+public class MySearchPlugin implements MateClawPlugin {
+    @Override
+    public void onLoad(PluginContext context) {
+        context.registerSearchProvider(new MySearchProvider(context));
+    }
+    @Override public void onEnable() {}
+    @Override public void onDisable() {}
+}
+
+class MySearchProvider implements PluginSearchProvider {
+    // id() / label() / isAvailable() / search(PluginSearchQuery) — 详见 mateclaw-plugin-search-sample 模块
+}
+```
+
+参考实现见 `mateclaw-plugin-sample`（TOOL）与 `mateclaw-plugin-search-sample`（SEARCH）。
+
 ### 技能包
 
 把指令 + 工具 + 可选脚本打包进一个 `SKILL.md`。通过 UI 或 API 上传。Agent 在运行时可以调用它们。见 [技能系统](./skills)。
