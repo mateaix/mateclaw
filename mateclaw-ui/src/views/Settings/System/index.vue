@@ -78,6 +78,12 @@
         </div>
       </div>
 
+      <div v-if="catalogError" class="setting-item">
+        <div class="setting-info">
+          <div class="setting-hint catalog-error-hint">⚠ {{ t('settings.searchCatalogError') }}</div>
+        </div>
+      </div>
+
       <div v-if="providerCatalog.resolvedId" class="setting-item">
         <div class="setting-info">
           <div class="setting-hint">
@@ -104,7 +110,8 @@
       <div v-for="entry in providerCatalog.providers" :key="entry.id" class="provider-card">
         <button type="button" class="provider-card-header" @click="toggleExpanded(entry.id)">
           <span class="provider-card-name">{{ entry.label }}</span>
-          <span class="provider-card-badges">
+          <!-- In catalog-fallback mode availability is unknown — hide badges rather than guess -->
+          <span v-if="!catalogError" class="provider-card-badges">
             <span v-if="entry.id === providerCatalog.resolvedId" class="badge badge-active">{{ t('settings.searchStatusActive') }}</span>
             <span v-else-if="!entry.requiresCredential" class="badge">{{ t('settings.searchStatusNoCredential') }}</span>
             <span v-else-if="entry.available" class="badge badge-ok">{{ t('settings.searchStatusConfigured') }}</span>
@@ -237,7 +244,7 @@ import { useI18n } from 'vue-i18n'
 import { settingsApi } from '@/api'
 import { applyLocale } from '@/i18n'
 import { useSystemSettingsStore } from '@/stores/useSystemSettingsStore'
-import { buildProviderOptions, resolveDefaultExpandedId, resolveSourceLabelKey } from '@/composables/useSearchProviderCatalog'
+import { buildProviderOptions, builtinFallbackCatalog, resolveDefaultExpandedId, resolveSourceLabelKey } from '@/composables/useSearchProviderCatalog'
 import type { SystemSettings, SearchProviderCatalog } from '@/types'
 
 const { t } = useI18n()
@@ -250,8 +257,13 @@ const tavilyApiKeyInput = ref('')
 
 const providerCatalog = ref<SearchProviderCatalog>({ providers: [], resolvedId: null, resolvedSource: null })
 const expandedProviderId = ref<string | null>(null)
+const catalogError = ref(false)
 
-const providerOptions = computed(() => buildProviderOptions(providerCatalog.value, t('settings.fields.searchProviderAuto')))
+// Pass the saved provider id so it stays selectable even when the catalog
+// doesn't contain it (fetch failure / owning plugin disabled) — otherwise the
+// select renders blank and a save would silently rewrite the value to ''.
+const providerOptions = computed(() =>
+  buildProviderOptions(providerCatalog.value, t('settings.fields.searchProviderAuto'), settings.searchProvider))
 
 function isExpanded(id: string) {
   return expandedProviderId.value === id
@@ -261,9 +273,19 @@ function toggleExpanded(id: string) {
 }
 
 async function loadProviderCatalog() {
-  const res: any = await settingsApi.getSearchProviders()
-  providerCatalog.value = res.data || { providers: [], resolvedId: null, resolvedSource: null }
-  expandedProviderId.value = resolveDefaultExpandedId(providerCatalog.value)
+  try {
+    const res: any = await settingsApi.getSearchProviders()
+    providerCatalog.value = res.data || { providers: [], resolvedId: null, resolvedSource: null }
+    catalogError.value = false
+    expandedProviderId.value = resolveDefaultExpandedId(providerCatalog.value)
+  } catch {
+    // Catalog outage must not hide the search config: fall back to the four
+    // built-in providers (their forms bind to plain settings fields and never
+    // needed the catalog) and surface a visible warning instead.
+    catalogError.value = true
+    providerCatalog.value = builtinFallbackCatalog()
+    expandedProviderId.value = null
+  }
 }
 
 const settings = reactive<SystemSettings>({
@@ -362,6 +384,7 @@ function showSavedTip(message: string) {
 .badge-warn { background: rgba(234, 179, 8, 0.15); color: rgb(161, 98, 7); }
 .provider-card-chevron { color: var(--mc-text-secondary); }
 .provider-card-body { padding: 4px 16px 16px; }
+.catalog-error-hint { color: rgb(161, 98, 7); }
 
 @media (max-width: 900px) {
   .setting-item { flex-direction: column; }

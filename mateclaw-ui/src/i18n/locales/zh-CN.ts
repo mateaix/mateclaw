@@ -982,6 +982,7 @@ export default {
     },
     searchTitle: '搜索服务',
     searchDesc: '配置内置搜索工具的提供商与 API 凭证',
+    searchCatalogError: '无法加载搜索提供商目录，仅显示内置提供商配置；插件提供商与状态信息暂不可用。',
     searchResolvedLabel: '当前实际生效',
     searchResolvedSource: {
       configured: '手动指定',

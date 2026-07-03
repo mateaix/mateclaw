@@ -1108,6 +1108,7 @@ export default {
     },
     searchTitle: 'Search Service',
     searchDesc: 'Configure the built-in search tool provider and API credentials',
+    searchCatalogError: 'Failed to load the search provider catalog — showing built-in provider configuration only; plugin providers and status info are unavailable.',
     searchResolvedLabel: 'Currently active',
     searchResolvedSource: {
       configured: 'manually configured',

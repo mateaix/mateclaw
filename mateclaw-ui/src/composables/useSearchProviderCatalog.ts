@@ -5,11 +5,26 @@ export interface ProviderOption {
   label: string
 }
 
-/** Turns a catalog into <select> options, with a synthetic "auto" option prepended (value ''). */
-export function buildProviderOptions(catalog: SearchProviderCatalog, autoLabel: string): ProviderOption[] {
+/**
+ * Turns a catalog into <select> options, with a synthetic "auto" option prepended (value '').
+ *
+ * When `currentId` (the currently-saved provider id) is set but missing from the
+ * catalog — catalog fetch failed, or the owning plugin was disabled — an option for
+ * it is appended so the <select> still shows the real stored value. Without it the
+ * dropdown would render blank and a subsequent save would silently rewrite the
+ * setting to '' (auto) even though the admin never chose to change it.
+ */
+export function buildProviderOptions(
+  catalog: SearchProviderCatalog,
+  autoLabel: string,
+  currentId?: string | null,
+): ProviderOption[] {
   const options: ProviderOption[] = [{ value: '', label: autoLabel }]
   for (const entry of catalog.providers) {
     options.push({ value: entry.id, label: entry.label })
+  }
+  if (currentId && !options.some((opt) => opt.value === currentId)) {
+    options.push({ value: currentId, label: currentId })
   }
   return options
 }
@@ -30,4 +45,25 @@ export function resolveSourceLabelKey(source: string | null): string {
   if (source === 'configured') return 'configured'
   if (source === 'auto-detect') return 'autoDetect'
   return 'keylessFallback'
+}
+
+/**
+ * Static stand-in for the four built-in providers, used when the catalog endpoint
+ * fails: the built-in config forms (which bind to plain SystemSettings fields and
+ * never depended on the catalog) stay reachable instead of the whole search section
+ * silently vanishing. `available` is unknown in this mode — callers should hide
+ * status badges rather than show a guessed state. Ids/labels/order mirror the
+ * backend's built-in providers (autoDetectOrder 50/100/300/400).
+ */
+export function builtinFallbackCatalog(): SearchProviderCatalog {
+  return {
+    providers: [
+      { id: 'searxng', label: 'SearXNG', builtin: true, requiresCredential: false, available: false, pluginName: null },
+      { id: 'duckduckgo', label: 'DuckDuckGo', builtin: true, requiresCredential: false, available: false, pluginName: null },
+      { id: 'serper', label: 'Serper (Google)', builtin: true, requiresCredential: true, available: false, pluginName: null },
+      { id: 'tavily', label: 'Tavily', builtin: true, requiresCredential: true, available: false, pluginName: null },
+    ],
+    resolvedId: null,
+    resolvedSource: null,
+  }
 }

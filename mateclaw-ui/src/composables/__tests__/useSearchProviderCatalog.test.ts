@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { buildProviderOptions, resolveDefaultExpandedId, resolveSourceLabelKey } from '../useSearchProviderCatalog'
+import {
+  buildProviderOptions,
+  builtinFallbackCatalog,
+  resolveDefaultExpandedId,
+  resolveSourceLabelKey,
+} from '../useSearchProviderCatalog'
 import type { SearchProviderCatalog } from '@/types'
 
 const catalog: SearchProviderCatalog = {
@@ -31,6 +36,31 @@ describe('buildProviderOptions', () => {
   it('returns just the auto option when the catalog is empty', () => {
     const options = buildProviderOptions({ providers: [], resolvedId: null, resolvedSource: null }, 'auto-label')
     expect(options).toEqual([{ value: '', label: 'auto-label' }])
+  })
+
+  it('appends the saved provider id when it is missing from the catalog', () => {
+    const options = buildProviderOptions(catalog, 'auto-label', 'vanished-plugin-search')
+    expect(options[options.length - 1]).toEqual({ value: 'vanished-plugin-search', label: 'vanished-plugin-search' })
+  })
+
+  it('does not duplicate the saved provider id when it is already in the catalog', () => {
+    const options = buildProviderOptions(catalog, 'auto-label', 'serper')
+    expect(options.filter((o) => o.value === 'serper')).toHaveLength(1)
+  })
+
+  it('does not append anything for an empty or null saved value', () => {
+    expect(buildProviderOptions(catalog, 'auto-label', '')).toHaveLength(4)
+    expect(buildProviderOptions(catalog, 'auto-label', null)).toHaveLength(4)
+  })
+})
+
+describe('builtinFallbackCatalog', () => {
+  it('contains exactly the four built-in providers, all marked builtin with no resolution', () => {
+    const fallback = builtinFallbackCatalog()
+    expect(fallback.providers.map((p) => p.id)).toEqual(['searxng', 'duckduckgo', 'serper', 'tavily'])
+    expect(fallback.providers.every((p) => p.builtin && p.pluginName === null)).toBe(true)
+    expect(fallback.resolvedId).toBeNull()
+    expect(fallback.resolvedSource).toBeNull()
   })
 })
 
