@@ -323,6 +323,19 @@ public class PluginManager {
     }
 
     /**
+     * 反查某个 search provider id 是由哪个已加载插件注册的（issue #477，供设置页 catalog 用）。
+     *
+     * @return 插件名（manifest 的 name），找不到返回 {@code null}
+     */
+    public String getPluginNameForSearchProvider(String searchProviderId) {
+        return plugins.values().stream()
+                .filter(p -> p.getRegisteredSearchProviders().contains(searchProviderId))
+                .map(p -> p.getManifest().getName())
+                .findFirst()
+                .orElse(null);
+    }
+
+    /**
      * Enable a previously disabled plugin.
      * Validates JAR still exists before re-loading.
      */
