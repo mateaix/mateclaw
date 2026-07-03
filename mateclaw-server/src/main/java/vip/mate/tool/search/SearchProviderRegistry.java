@@ -72,6 +72,11 @@ public class SearchProviderRegistry {
         }
     }
 
+    /** 判断某个 id 是否由插件注册（而非内置 Spring bean） */
+    public boolean isPluginProvider(String id) {
+        return pluginProviders.containsKey(id);
+    }
+
     /** 按 ID 获取指定 provider（内置优先，其次插件注册区） */
     public SearchProvider getById(String id) {
         SearchProvider builtin = providerMap.get(id);

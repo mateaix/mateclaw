@@ -7,9 +7,11 @@ import vip.mate.system.model.SystemSettingsDTO;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Plugin-provider mutability of {@link SearchProviderRegistry}:
@@ -91,6 +93,18 @@ class SearchProviderRegistryPluginTest {
                 () -> registry.registerPluginProvider(stub("  ", 500, true, true)));
         assertThrows(IllegalArgumentException.class,
                 () -> registry.registerPluginProvider(stub(null, 500, true, true)));
+    }
+
+    @Test
+    @DisplayName("isPluginProvider distinguishes built-in ids from plugin-registered ids")
+    void isPluginProviderDistinguishesSource() {
+        SearchProviderRegistry registry = registryWithBuiltins();
+        registry.registerPluginProvider(stub("my-search", 500, true, true));
+
+        assertTrue(registry.isPluginProvider("my-search"));
+        assertFalse(registry.isPluginProvider("serper"));
+        assertFalse(registry.isPluginProvider("duckduckgo"));
+        assertFalse(registry.isPluginProvider("does-not-exist"));
     }
 
     @Test
