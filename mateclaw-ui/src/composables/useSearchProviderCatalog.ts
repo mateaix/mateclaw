@@ -19,3 +19,15 @@ export function resolveDefaultExpandedId(catalog: SearchProviderCatalog): string
   if (catalog.resolvedId) return catalog.resolvedId
   return catalog.providers.length > 0 ? catalog.providers[0].id : null
 }
+
+/**
+ * Maps the backend's resolvedSource value to the i18n key suffix used under
+ * settings.searchResolvedSource.*. Falls back to 'keylessFallback' for any
+ * unrecognized or null value — but that fallback is now a named, visible
+ * decision here rather than an implicit template ternary.
+ */
+export function resolveSourceLabelKey(source: string | null): string {
+  if (source === 'configured') return 'configured'
+  if (source === 'auto-detect') return 'autoDetect'
+  return 'keylessFallback'
+}

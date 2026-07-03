@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildProviderOptions, resolveDefaultExpandedId } from '../useSearchProviderCatalog'
+import { buildProviderOptions, resolveDefaultExpandedId, resolveSourceLabelKey } from '../useSearchProviderCatalog'
 import type { SearchProviderCatalog } from '@/types'
 
 const catalog: SearchProviderCatalog = {
@@ -46,5 +46,24 @@ describe('resolveDefaultExpandedId', () => {
 
   it('returns null when the catalog has no providers at all', () => {
     expect(resolveDefaultExpandedId({ providers: [], resolvedId: null, resolvedSource: null })).toBeNull()
+  })
+})
+
+describe('resolveSourceLabelKey', () => {
+  it('maps "configured" to "configured"', () => {
+    expect(resolveSourceLabelKey('configured')).toBe('configured')
+  })
+
+  it('maps "auto-detect" to "autoDetect"', () => {
+    expect(resolveSourceLabelKey('auto-detect')).toBe('autoDetect')
+  })
+
+  it('falls back to "keylessFallback" for "keyless-fallback"', () => {
+    expect(resolveSourceLabelKey('keyless-fallback')).toBe('keylessFallback')
+  })
+
+  it('falls back to "keylessFallback" for null or unrecognized values', () => {
+    expect(resolveSourceLabelKey(null)).toBe('keylessFallback')
+    expect(resolveSourceLabelKey('something-new')).toBe('keylessFallback')
   })
 })

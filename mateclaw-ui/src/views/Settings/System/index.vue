@@ -83,7 +83,7 @@
           <div class="setting-hint">
             ✓ {{ t('settings.searchResolvedLabel') }}:
             {{ providerCatalog.providers.find(p => p.id === providerCatalog.resolvedId)?.label }}
-            （{{ t('settings.searchResolvedSource.' + (providerCatalog.resolvedSource === 'configured' ? 'configured' : providerCatalog.resolvedSource === 'auto-detect' ? 'autoDetect' : 'keylessFallback')) }}）
+            （{{ t('settings.searchResolvedSource.' + (resolveSourceLabelKey(providerCatalog.resolvedSource))) }}）
           </div>
         </div>
       </div>
@@ -102,7 +102,7 @@
       </div>
 
       <div v-for="entry in providerCatalog.providers" :key="entry.id" class="provider-card">
-        <div class="provider-card-header" @click="toggleExpanded(entry.id)">
+        <button type="button" class="provider-card-header" @click="toggleExpanded(entry.id)">
           <span class="provider-card-name">{{ entry.label }}</span>
           <span class="provider-card-badges">
             <span v-if="entry.id === providerCatalog.resolvedId" class="badge badge-active">{{ t('settings.searchStatusActive') }}</span>
@@ -111,13 +111,13 @@
             <span v-else class="badge badge-warn">{{ t('settings.searchStatusNotConfigured') }}</span>
           </span>
           <span class="provider-card-chevron">{{ isExpanded(entry.id) ? '▾' : '▸' }}</span>
-        </div>
+        </button>
 
         <div v-if="isExpanded(entry.id)" class="provider-card-body">
           <!-- Plugin-provided entry: no form here, point to the plugin page instead -->
           <p v-if="!entry.builtin" class="setting-hint">
             {{ t('settings.searchPluginManaged', { plugin: entry.pluginName }) }}
-            <a href="#" @click.prevent="goToPlugins">{{ t('settings.searchGoToPlugins') }}</a>
+            <router-link to="/plugins">{{ t('settings.searchGoToPlugins') }}</router-link>
           </p>
 
           <!-- Built-in providers: same fields/logic as before, keyed by id -->
@@ -234,15 +234,13 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useRouter } from 'vue-router'
 import { settingsApi } from '@/api'
 import { applyLocale } from '@/i18n'
 import { useSystemSettingsStore } from '@/stores/useSystemSettingsStore'
-import { buildProviderOptions, resolveDefaultExpandedId } from '@/composables/useSearchProviderCatalog'
+import { buildProviderOptions, resolveDefaultExpandedId, resolveSourceLabelKey } from '@/composables/useSearchProviderCatalog'
 import type { SystemSettings, SearchProviderCatalog } from '@/types'
 
 const { t } = useI18n()
-const router = useRouter()
 const systemSettingsStore = useSystemSettingsStore()
 const savedTip = ref('')
 
@@ -260,9 +258,6 @@ function isExpanded(id: string) {
 }
 function toggleExpanded(id: string) {
   expandedProviderId.value = isExpanded(id) ? null : id
-}
-function goToPlugins() {
-  router.push('/plugins')
 }
 
 async function loadProviderCatalog() {
@@ -285,8 +280,7 @@ const settings = reactive<SystemSettings>({
 })
 
 onMounted(async () => {
-  await loadSettings()
-  await loadProviderCatalog()
+  await Promise.all([loadSettings(), loadProviderCatalog()])
 })
 
 async function loadSettings() {
@@ -359,7 +353,7 @@ function showSavedTip(message: string) {
 .save-tip { position: fixed; right: 24px; bottom: 24px; background: var(--mc-text-primary); color: var(--mc-text-inverse); padding: 10px 14px; border-radius: 10px; box-shadow: 0 10px 30px rgba(124, 63, 30, 0.22); }
 
 .provider-card { border: 1px solid var(--mc-border); border-radius: 12px; margin-bottom: 12px; overflow: hidden; }
-.provider-card-header { display: flex; align-items: center; gap: 10px; padding: 12px 16px; cursor: pointer; background: var(--mc-bg-elevated); }
+.provider-card-header { display: flex; align-items: center; gap: 10px; width: 100%; padding: 12px 16px; border: none; background: var(--mc-bg-elevated); color: inherit; font: inherit; text-align: left; cursor: pointer; }
 .provider-card-name { font-weight: 600; flex: 1; }
 .provider-card-badges { display: flex; gap: 6px; }
 .badge { font-size: 12px; padding: 2px 8px; border-radius: 999px; background: var(--mc-bg-sunken); color: var(--mc-text-secondary); }
