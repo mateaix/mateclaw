@@ -1,7 +1,7 @@
 package vip.mate.system.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import lombok.RequiredArgsConstructor;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 import vip.mate.plugin.PluginManager;
 import vip.mate.system.model.SearchProviderCatalogEntry;
@@ -15,7 +15,6 @@ import vip.mate.tool.search.SearchProviderRegistry;
 import java.util.List;
 
 @Service
-@RequiredArgsConstructor
 public class SystemSettingService {
 
     private static final String LANGUAGE_KEY = "language";
@@ -85,7 +84,28 @@ public class SystemSettingService {
 
     private final SystemSettingMapper systemSettingMapper;
     private final SearchProviderRegistry searchProviderRegistry;
+
+    /**
+     * {@code PluginManager} is injected lazily because the bean graph is
+     * cyclic: {@code pluginManager → toolRegistry → i18nService →
+     * systemSettingService} (issue #477). It is only consulted from
+     * {@link #toEntry} at request time (never at construction), so a lazy
+     * proxy is safe and breaks the cycle cleanly. Note: {@code @Lazy} must be
+     * applied via an explicit constructor (not {@code @RequiredArgsConstructor})
+     * — Lombok does not copy field-level annotations onto the generated
+     * constructor parameter, so a Lombok-only {@code @Lazy} silently has no
+     * effect and Spring still resolves the bean eagerly.
+     */
+    @Lazy
     private final PluginManager pluginManager;
+
+    public SystemSettingService(SystemSettingMapper systemSettingMapper,
+                                 SearchProviderRegistry searchProviderRegistry,
+                                 @Lazy PluginManager pluginManager) {
+        this.systemSettingMapper = systemSettingMapper;
+        this.searchProviderRegistry = searchProviderRegistry;
+        this.pluginManager = pluginManager;
+    }
 
     /**
      * Resolve the SearXNG base URL: DB value takes priority; fall back to the
