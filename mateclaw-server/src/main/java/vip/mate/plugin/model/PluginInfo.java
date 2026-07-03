@@ -38,6 +38,9 @@ public class PluginInfo {
     /** Memory provider ID registered by this plugin (null if none) */
     private String registeredMemoryProvider;
 
+    /** Search provider ids registered by this plugin */
+    private List<String> registeredSearchProviders;
+
     /** Plugin config schema (from manifest) */
     private Map<String, Object> configSchema;
 
