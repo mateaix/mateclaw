@@ -155,4 +155,29 @@ class PluginManagerUpdateConfigTest {
         assertThrows(PluginException.class, () ->
                 manager.updateConfig(PLUGIN_NAME, Map.of("baseUrl", "https://only-this-changed.com")));
     }
+
+    @Test
+    @DisplayName("running plugin's context sees the new config immediately after save (no restart needed)")
+    void runningPluginContextIsRefreshedAfterSave() throws Exception {
+        PluginManager manager = manager();
+        LoadedPlugin loaded = loadedPluginWithRequiredField(PLUGIN_NAME, "apiKey");
+        PluginContextImpl context = new PluginContextImpl(
+                loaded, loaded.getManifest(),
+                mock(ToolRegistry.class), mock(ChannelManager.class),
+                mock(MemoryManager.class), mock(ModelProviderService.class),
+                new SearchProviderRegistry(List.of()),
+                ORIGINAL_CONFIG_JSON);
+        loaded.setContext(context);
+        seedPlugins(manager, loaded);
+        when(pluginMapper.selectOne(any())).thenReturn(fixtureEntity(ORIGINAL_CONFIG_JSON));
+
+        assertEquals("https://example.com", context.getConfig("baseUrl", String.class));
+
+        manager.updateConfig(PLUGIN_NAME, Map.of("baseUrl", "https://new.example.com"));
+
+        assertEquals("https://new.example.com", context.getConfig("baseUrl", String.class),
+                "getConfig must serve the saved value without a disable/enable cycle");
+        assertEquals("secret123", context.getConfig("apiKey", String.class),
+                "omitted secret must survive the refresh via merge semantics");
+    }
 }

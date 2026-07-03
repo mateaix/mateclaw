@@ -489,8 +489,17 @@ public class PluginManager {
         }
 
         try {
-            entity.setConfigJson(objectMapper.writeValueAsString(mergedConfig));
+            String mergedJson = objectMapper.writeValueAsString(mergedConfig);
+            entity.setConfigJson(mergedJson);
             pluginMapper.updateById(entity);
+            // Push the new values into the RUNNING plugin's context too — configMap is
+            // parsed once at load time, so without this refresh the plugin would keep
+            // serving stale values from getConfig() until a disable/enable cycle,
+            // making the config dialog's "save" silently ineffective.
+            if (loaded != null && loaded.getContext() != null) {
+                loaded.getContext().refreshConfig(mergedJson);
+                log.info("Plugin config refreshed in running instance: {}", name);
+            }
             log.info("Plugin config updated: {}", name);
         } catch (PluginException e) {
             throw e;
