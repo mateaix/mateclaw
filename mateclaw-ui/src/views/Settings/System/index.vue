@@ -73,9 +73,18 @@
         </div>
         <div class="setting-control">
           <select v-model="settings.searchProvider" class="form-input" :disabled="!settings.searchEnabled">
-            <option value="serper">Serper (Google)</option>
-            <option value="tavily">Tavily</option>
+            <option v-for="opt in providerOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
           </select>
+        </div>
+      </div>
+
+      <div v-if="providerCatalog.resolvedId" class="setting-item">
+        <div class="setting-info">
+          <div class="setting-hint">
+            ✓ {{ t('settings.searchResolvedLabel') }}:
+            {{ providerCatalog.providers.find(p => p.id === providerCatalog.resolvedId)?.label }}
+            （{{ t('settings.searchResolvedSource.' + (providerCatalog.resolvedSource === 'configured' ? 'configured' : providerCatalog.resolvedSource === 'auto-detect' ? 'autoDetect' : 'keylessFallback')) }}）
+          </div>
         </div>
       </div>
 
@@ -92,101 +101,123 @@
         </div>
       </div>
 
-      <!-- Serper 配置 -->
-      <div class="setting-item setting-item-vertical">
-        <div class="setting-info">
-          <div class="setting-label">{{ t('settings.fields.serperApiKey') }}</div>
-          <div class="setting-hint">{{ t('settings.hints.serperApiKey') }}</div>
+      <div v-for="entry in providerCatalog.providers" :key="entry.id" class="provider-card">
+        <div class="provider-card-header" @click="toggleExpanded(entry.id)">
+          <span class="provider-card-name">{{ entry.label }}</span>
+          <span class="provider-card-badges">
+            <span v-if="entry.id === providerCatalog.resolvedId" class="badge badge-active">{{ t('settings.searchStatusActive') }}</span>
+            <span v-else-if="!entry.requiresCredential" class="badge">{{ t('settings.searchStatusNoCredential') }}</span>
+            <span v-else-if="entry.available" class="badge badge-ok">{{ t('settings.searchStatusConfigured') }}</span>
+            <span v-else class="badge badge-warn">{{ t('settings.searchStatusNotConfigured') }}</span>
+          </span>
+          <span class="provider-card-chevron">{{ isExpanded(entry.id) ? '▾' : '▸' }}</span>
         </div>
-        <div class="setting-control-full">
-          <input
-            v-model="serperApiKeyInput"
-            type="password"
-            class="form-input"
-            :placeholder="settings.serperApiKeyMasked || t('settings.model.apiKeyInput')"
-            :disabled="!settings.searchEnabled"
-            autocomplete="off"
-          />
-        </div>
-      </div>
 
-      <div class="setting-item setting-item-vertical">
-        <div class="setting-info">
-          <div class="setting-label">{{ t('settings.fields.serperBaseUrl') }}</div>
-          <div class="setting-hint">{{ t('settings.hints.serperBaseUrl') }}</div>
-        </div>
-        <div class="setting-control-full">
-          <input
-            v-model="settings.serperBaseUrl"
-            type="text"
-            class="form-input"
-            placeholder="https://google.serper.dev/search"
-            :disabled="!settings.searchEnabled"
-          />
-        </div>
-      </div>
+        <div v-if="isExpanded(entry.id)" class="provider-card-body">
+          <!-- Plugin-provided entry: no form here, point to the plugin page instead -->
+          <p v-if="!entry.builtin" class="setting-hint">
+            {{ t('settings.searchPluginManaged', { plugin: entry.pluginName }) }}
+            <a href="#" @click.prevent="goToPlugins">{{ t('settings.searchGoToPlugins') }}</a>
+          </p>
 
-      <!-- Tavily 配置 -->
-      <div class="setting-item setting-item-vertical">
-        <div class="setting-info">
-          <div class="setting-label">{{ t('settings.fields.tavilyApiKey') }}</div>
-          <div class="setting-hint">{{ t('settings.hints.tavilyApiKey') }}</div>
-        </div>
-        <div class="setting-control-full">
-          <input
-            v-model="tavilyApiKeyInput"
-            type="password"
-            class="form-input"
-            :placeholder="settings.tavilyApiKeyMasked || t('settings.model.apiKeyInput')"
-            :disabled="!settings.searchEnabled"
-            autocomplete="off"
-          />
-        </div>
-      </div>
-
-      <div class="setting-item setting-item-vertical">
-        <div class="setting-info">
-          <div class="setting-label">{{ t('settings.fields.tavilyBaseUrl') }}</div>
-          <div class="setting-hint">{{ t('settings.hints.tavilyBaseUrl') }}</div>
-        </div>
-        <div class="setting-control-full">
-          <input
-            v-model="settings.tavilyBaseUrl"
-            type="text"
-            class="form-input"
-            placeholder="https://api.tavily.com/search"
-            :disabled="!settings.searchEnabled"
-          />
-        </div>
-      </div>
-
-      <!-- Keyless Provider 配置 -->
-      <div class="setting-item">
-        <div class="setting-info">
-          <div class="setting-label">{{ t('settings.fields.duckduckgoEnabled') }}</div>
-          <div class="setting-hint">{{ t('settings.hints.duckduckgoEnabled') }}</div>
-        </div>
-        <div class="setting-control">
-          <label class="toggle-switch">
-            <input v-model="settings.duckduckgoEnabled" type="checkbox" :disabled="!settings.searchEnabled" />
-            <span class="toggle-slider"></span>
-          </label>
-        </div>
-      </div>
-
-      <div class="setting-item setting-item-vertical">
-        <div class="setting-info">
-          <div class="setting-label">{{ t('settings.fields.searxngBaseUrl') }}</div>
-          <div class="setting-hint">{{ t('settings.hints.searxngBaseUrl') }}</div>
-        </div>
-        <div class="setting-control-full">
-          <input
-            v-model="settings.searxngBaseUrl"
-            type="text"
-            class="form-input"
-            placeholder="http://searxng:8080"
-            :disabled="!settings.searchEnabled"
-          />
+          <!-- Built-in providers: same fields/logic as before, keyed by id -->
+          <template v-if="entry.id === 'serper'">
+            <div class="setting-item setting-item-vertical">
+              <div class="setting-info">
+                <div class="setting-label">{{ t('settings.fields.serperApiKey') }}</div>
+                <div class="setting-hint">{{ t('settings.hints.serperApiKey') }}</div>
+              </div>
+              <div class="setting-control-full">
+                <input
+                  v-model="serperApiKeyInput"
+                  type="password"
+                  class="form-input"
+                  :placeholder="settings.serperApiKeyMasked || t('settings.model.apiKeyInput')"
+                  :disabled="!settings.searchEnabled"
+                  autocomplete="off"
+                />
+              </div>
+            </div>
+            <div class="setting-item setting-item-vertical">
+              <div class="setting-info">
+                <div class="setting-label">{{ t('settings.fields.serperBaseUrl') }}</div>
+                <div class="setting-hint">{{ t('settings.hints.serperBaseUrl') }}</div>
+              </div>
+              <div class="setting-control-full">
+                <input
+                  v-model="settings.serperBaseUrl"
+                  type="text"
+                  class="form-input"
+                  placeholder="https://google.serper.dev/search"
+                  :disabled="!settings.searchEnabled"
+                />
+              </div>
+            </div>
+          </template>
+          <template v-else-if="entry.id === 'tavily'">
+            <div class="setting-item setting-item-vertical">
+              <div class="setting-info">
+                <div class="setting-label">{{ t('settings.fields.tavilyApiKey') }}</div>
+                <div class="setting-hint">{{ t('settings.hints.tavilyApiKey') }}</div>
+              </div>
+              <div class="setting-control-full">
+                <input
+                  v-model="tavilyApiKeyInput"
+                  type="password"
+                  class="form-input"
+                  :placeholder="settings.tavilyApiKeyMasked || t('settings.model.apiKeyInput')"
+                  :disabled="!settings.searchEnabled"
+                  autocomplete="off"
+                />
+              </div>
+            </div>
+            <div class="setting-item setting-item-vertical">
+              <div class="setting-info">
+                <div class="setting-label">{{ t('settings.fields.tavilyBaseUrl') }}</div>
+                <div class="setting-hint">{{ t('settings.hints.tavilyBaseUrl') }}</div>
+              </div>
+              <div class="setting-control-full">
+                <input
+                  v-model="settings.tavilyBaseUrl"
+                  type="text"
+                  class="form-input"
+                  placeholder="https://api.tavily.com/search"
+                  :disabled="!settings.searchEnabled"
+                />
+              </div>
+            </div>
+          </template>
+          <template v-else-if="entry.id === 'duckduckgo'">
+            <div class="setting-item">
+              <div class="setting-info">
+                <div class="setting-label">{{ t('settings.fields.duckduckgoEnabled') }}</div>
+                <div class="setting-hint">{{ t('settings.hints.duckduckgoEnabled') }}</div>
+              </div>
+              <div class="setting-control">
+                <label class="toggle-switch">
+                  <input v-model="settings.duckduckgoEnabled" type="checkbox" :disabled="!settings.searchEnabled" />
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+            </div>
+          </template>
+          <template v-else-if="entry.id === 'searxng'">
+            <div class="setting-item setting-item-vertical">
+              <div class="setting-info">
+                <div class="setting-label">{{ t('settings.fields.searxngBaseUrl') }}</div>
+                <div class="setting-hint">{{ t('settings.hints.searxngBaseUrl') }}</div>
+              </div>
+              <div class="setting-control-full">
+                <input
+                  v-model="settings.searxngBaseUrl"
+                  type="text"
+                  class="form-input"
+                  placeholder="http://searxng:8080"
+                  :disabled="!settings.searchEnabled"
+                />
+              </div>
+            </div>
+          </template>
         </div>
       </div>
     </div>
@@ -201,20 +232,44 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { onMounted, reactive, ref, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useRouter } from 'vue-router'
 import { settingsApi } from '@/api'
 import { applyLocale } from '@/i18n'
 import { useSystemSettingsStore } from '@/stores/useSystemSettingsStore'
-import type { SystemSettings } from '@/types'
+import { buildProviderOptions, resolveDefaultExpandedId } from '@/composables/useSearchProviderCatalog'
+import type { SystemSettings, SearchProviderCatalog } from '@/types'
 
 const { t } = useI18n()
+const router = useRouter()
 const systemSettingsStore = useSystemSettingsStore()
 const savedTip = ref('')
 
 // API Key 独立管理，不回显明文
 const serperApiKeyInput = ref('')
 const tavilyApiKeyInput = ref('')
+
+const providerCatalog = ref<SearchProviderCatalog>({ providers: [], resolvedId: null, resolvedSource: null })
+const expandedProviderId = ref<string | null>(null)
+
+const providerOptions = computed(() => buildProviderOptions(providerCatalog.value, t('settings.fields.searchProviderAuto')))
+
+function isExpanded(id: string) {
+  return expandedProviderId.value === id
+}
+function toggleExpanded(id: string) {
+  expandedProviderId.value = isExpanded(id) ? null : id
+}
+function goToPlugins() {
+  router.push('/plugins')
+}
+
+async function loadProviderCatalog() {
+  const res: any = await settingsApi.getSearchProviders()
+  providerCatalog.value = res.data || { providers: [], resolvedId: null, resolvedSource: null }
+  expandedProviderId.value = resolveDefaultExpandedId(providerCatalog.value)
+}
 
 const settings = reactive<SystemSettings>({
   language: 'zh-CN',
@@ -231,6 +286,7 @@ const settings = reactive<SystemSettings>({
 
 onMounted(async () => {
   await loadSettings()
+  await loadProviderCatalog()
 })
 
 async function loadSettings() {
@@ -301,6 +357,17 @@ function showSavedTip(message: string) {
 .btn-secondary:hover { background: var(--mc-bg-sunken); }
 
 .save-tip { position: fixed; right: 24px; bottom: 24px; background: var(--mc-text-primary); color: var(--mc-text-inverse); padding: 10px 14px; border-radius: 10px; box-shadow: 0 10px 30px rgba(124, 63, 30, 0.22); }
+
+.provider-card { border: 1px solid var(--mc-border); border-radius: 12px; margin-bottom: 12px; overflow: hidden; }
+.provider-card-header { display: flex; align-items: center; gap: 10px; padding: 12px 16px; cursor: pointer; background: var(--mc-bg-elevated); }
+.provider-card-name { font-weight: 600; flex: 1; }
+.provider-card-badges { display: flex; gap: 6px; }
+.badge { font-size: 12px; padding: 2px 8px; border-radius: 999px; background: var(--mc-bg-sunken); color: var(--mc-text-secondary); }
+.badge-active { background: var(--mc-primary); color: white; }
+.badge-ok { background: rgba(34, 197, 94, 0.15); color: rgb(22, 163, 74); }
+.badge-warn { background: rgba(234, 179, 8, 0.15); color: rgb(161, 98, 7); }
+.provider-card-chevron { color: var(--mc-text-secondary); }
+.provider-card-body { padding: 4px 16px 16px; }
 
 @media (max-width: 900px) {
   .setting-item { flex-direction: column; }

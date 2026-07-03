@@ -870,6 +870,7 @@ export default {
       tavilyBaseUrl: 'Tavily 接口地址',
       duckduckgoEnabled: 'DuckDuckGo（免 Key）',
       searxngBaseUrl: 'SearXNG 地址',
+      searchProviderAuto: '自动选择（推荐）',
       // STT 语音识别
       sttEnabled: '启用语音识别',
       sttProvider: '首选 STT 提供商',
@@ -924,6 +925,7 @@ export default {
       tavilyBaseUrl: '通常无需修改，除非使用自定义代理地址。',
       duckduckgoEnabled: '免费搜索兜底，无需 API Key。默认开启，作为零配置下的搜索降级方案。',
       searxngBaseUrl: '自部署 SearXNG 实例地址。Docker 部署时自动配置。',
+      searchProviderAuto: '让系统按优先级自动挑选一个已配置好的 provider。',
       // STT 语音识别
       sttEnabled: '开启后支持语音消息转文字。OpenAI Whisper 和 DashScope Paraformer 均复用已有 Key。',
       sttProvider: '选择首选 STT 提供商，auto 模式自动选择可用的提供商。',
@@ -980,6 +982,18 @@ export default {
     },
     searchTitle: '搜索服务',
     searchDesc: '配置内置搜索工具的提供商与 API 凭证',
+    searchResolvedLabel: '当前实际生效',
+    searchResolvedSource: {
+      configured: '手动指定',
+      autoDetect: '自动探测',
+      keylessFallback: '免 Key 兜底',
+    },
+    searchStatusConfigured: '已配置',
+    searchStatusNotConfigured: '未配置',
+    searchStatusActive: '生效中',
+    searchStatusNoCredential: '无需配置',
+    searchPluginManaged: '该 Provider 由插件「{plugin}」提供，请在插件页配置',
+    searchGoToPlugins: '前往插件页 →',
     proxyTitle: '网络代理',
     proxyDesc: '为所有出站请求（LLM API、网页搜索、频道桥接等）配置全局 HTTP / SOCKS 代理。适用于无法直连海外 API、或要求统一出口的网络环境。',
     proxy: {
