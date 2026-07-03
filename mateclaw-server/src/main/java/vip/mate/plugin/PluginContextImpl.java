@@ -119,7 +119,7 @@ public class PluginContextImpl implements PluginContext {
         try {
             searchProviderRegistry.registerPluginProvider(new PluginSearchBridge(provider));
         } catch (IllegalArgumentException e) {
-            throw new PluginException(e.getMessage());
+            throw new PluginException(e.getMessage(), e);
         }
         loadedPlugin.getRegisteredSearchProviders().add(provider.id());
     }
