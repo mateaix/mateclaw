@@ -83,6 +83,17 @@ class PluginManagerSearchLookupTest {
     }
 
     @Test
+    @DisplayName("discriminates between multiple loaded plugins, returning only the one that owns the id")
+    void discriminatesAmongMultiplePlugins() throws Exception {
+        PluginManager manager = manager();
+        seedPlugins(manager,
+                loadedPluginWithSearchIds("plugin-a", "other-search"),
+                loadedPluginWithSearchIds("plugin-b", "my-search"));
+
+        assertEquals("plugin-b", manager.getPluginNameForSearchProvider("my-search"));
+    }
+
+    @Test
     @DisplayName("returns null when no loaded plugin registered that id")
     void returnsNullWhenNotFound() throws Exception {
         PluginManager manager = manager();
