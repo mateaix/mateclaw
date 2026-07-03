@@ -25,6 +25,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 
 /**
  * 节点级流式 LLM 调用辅助
@@ -160,6 +161,19 @@ public class NodeStreamingChatHelper {
         this.healthTracker = healthTracker;
         this.primaryProviderId = primaryProviderId;
         this.providerPool = providerPool;
+    }
+
+    /**
+     * Optional hook fired with the raw error chain whenever the PRIMARY model
+     * rejects a call for exceeding its context window. Lets the caller feed
+     * the server-reported limit back into the context-window resolver so the
+     * next turn budgets against the model's true window. Fallback-model
+     * rejections are not reported — they belong to a different model.
+     */
+    private Consumer<String> contextLimitObserver;
+
+    public void setContextLimitObserver(Consumer<String> observer) {
+        this.contextLimitObserver = observer;
     }
 
     private static List<vip.mate.llm.failover.FallbackEntry> wrap(ChatModel m) {
@@ -641,7 +655,7 @@ public class NodeStreamingChatHelper {
             }
             llmCallCount++;
             if (attempt > 0) retryCount++;
-            lastResult = doStreamCall(chatModel, prompt, conversationId, phase, broadcast, attempt);
+            lastResult = doStreamCall(chatModel, prompt, conversationId, phase, broadcast, attempt, true);
             if (lastResult != null) {
                 // PTL: 不重试，直接返回给上层 Node 处理
                 if (lastResult.errorType() == ErrorType.PROMPT_TOO_LONG) {
@@ -783,7 +797,7 @@ public class NodeStreamingChatHelper {
             failoverCount++;
             llmCallCount++;
             StreamResult fallbackResult = doStreamCall(fallback, prompt, conversationId,
-                    phase + "_fallback_" + (i + 1), broadcast, 0);
+                    phase + "_fallback_" + (i + 1), broadcast, 0, false);
             // Accept only fully successful fallbacks. Non-successful results (auth
             // error, client error, still-rate-limited) propagate to the next
             // fallback instead of being surfaced as the final result.
@@ -830,7 +844,7 @@ public class NodeStreamingChatHelper {
      */
     private StreamResult doStreamCall(ChatModel chatModel, Prompt prompt,
                                        String conversationId, String phase,
-                                       boolean broadcast, int attempt) {
+                                       boolean broadcast, int attempt, boolean primaryCall) {
         // Collapse every SystemMessage in the prompt into a single SystemMessage
         // at index 0. Some OpenAI-compatible providers (LM Studio's built-in
         // server, certain strict vLLM / SGLang deployments) reject 400
@@ -883,7 +897,7 @@ public class NodeStreamingChatHelper {
         }
 
         try {
-            return doStreamCallInner(chatModel, outbound, conversationId, phase, broadcast, attempt);
+            return doStreamCallInner(chatModel, outbound, conversationId, phase, broadcast, attempt, primaryCall);
         } finally {
             // Idempotent: if consumer already took the entry, discard is a no-op.
             if (relayToken != null) {
@@ -915,7 +929,7 @@ public class NodeStreamingChatHelper {
 
     private StreamResult doStreamCallInner(ChatModel chatModel, Prompt prompt,
                                             String conversationId, String phase,
-                                            boolean broadcast, int attempt) {
+                                            boolean broadcast, int attempt, boolean primaryCall) {
         if (attempt > 0) {
             long delay = Math.min(backoffBaseMs * (1L << (attempt - 1)), backoffCapMs);
             // 加入 jitter 防止雷群效应
@@ -1246,6 +1260,17 @@ public class NodeStreamingChatHelper {
             if (errorType == ErrorType.PROMPT_TOO_LONG) {
                 log.warn("[{}] Prompt too long error, returning to node for compaction: {}",
                         phase, error.getMessage());
+                // Teach the context-window resolver the server-reported limit so
+                // the next turn budgets against the model's true window. Raw
+                // chain (incl. response body) — the friendly text may drop the
+                // numbers. Primary model only; fallbacks are different models.
+                if (primaryCall && contextLimitObserver != null) {
+                    try {
+                        contextLimitObserver.accept(extractFullErrorChain(error));
+                    } catch (Exception observerError) {
+                        log.debug("context-limit observer failed: {}", observerError.getMessage());
+                    }
+                }
                 return buildErrorResultWithType("Prompt 过长: " + extractUserFriendlyError(error),
                         conversationId, phase, errorType);
             }

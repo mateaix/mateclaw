@@ -39,6 +39,7 @@ import vip.mate.llm.model.ModelConfigEntity;
 import vip.mate.llm.model.ModelFamily;
 import vip.mate.llm.model.ModelProtocol;
 import vip.mate.llm.model.ModelProviderEntity;
+import vip.mate.llm.probe.ModelContextWindowResolver;
 import vip.mate.llm.routing.ProviderModelRef;
 import vip.mate.llm.routing.ProviderRouter;
 import vip.mate.llm.service.ModelConfigService;
@@ -97,6 +98,7 @@ public class AgentGraphBuilder {
     private final ConversationService conversationService;
     private final ModelConfigService modelConfigService;
     private final ModelProviderService modelProviderService;
+    private final ModelContextWindowResolver contextWindowResolver;
     private final vip.mate.llm.service.ModelCapabilityService modelCapabilityService;
     private final ProviderRouter providerRouter;
     private final PlanningService planningService;
@@ -354,6 +356,12 @@ public class AgentGraphBuilder {
 
         ModelProtocol protocol = ModelProtocol.fromChatModel(provider.getChatModel());
 
+        // Effective context window: explicit config > local-server probe > null
+        // (downstream keeps its global-default fallback). Without probing, a
+        // local 8k/16k model with maxInputTokens unset budgets against the
+        // 128k global default and the first oversized request fails outright.
+        Integer effectiveMaxInputTokens = contextWindowResolver.resolveMaxInputTokens(provider, runtimeModel);
+
         // 内置搜索检测（DashScope / Kimi），但不再移除 WebSearchTool — 两者协同而非互斥
         boolean builtinSearchEnabled = false;
         Map<String, Object> providerKwargs = modelProviderService.readProviderGenerateKwargs(provider);
@@ -395,7 +403,7 @@ public class AgentGraphBuilder {
         // turn by the reasoning / step-execution nodes with the skills loaded
         // so far this run so load_skill pins float to the top of the catalog.
         SkillCatalogRenderer skillCatalogRenderer = buildSkillCatalogRenderer(
-                entity, boundTools, runtimeModel.getMaxInputTokens());
+                entity, boundTools, effectiveMaxInputTokens);
 
         // Extension-tool catalog — only for ReAct. The dynamic tool split runs
         // in ReasoningNode; Plan-Execute keeps advertising every tool (it has no
@@ -404,7 +412,7 @@ public class AgentGraphBuilder {
         boolean isPlanExecute = "plan_execute".equals(entity.getAgentType());
         if (!isPlanExecute) {
             String extensionCatalog = toolDisclosureService.renderExtensionCatalog(
-                    toolSet, runtimeModel.getMaxInputTokens());
+                    toolSet, effectiveMaxInputTokens);
             if (extensionCatalog != null && !extensionCatalog.isBlank()) {
                 enhancedPrompt = enhancedPrompt + extensionCatalog;
             }
@@ -452,7 +460,7 @@ public class AgentGraphBuilder {
         agent.userLocale = resolveLocale();
         agent.temperature = runtimeModel.getTemperature();
         agent.maxTokens = runtimeModel.getMaxTokens();
-        agent.maxInputTokens = runtimeModel.getMaxInputTokens();
+        agent.maxInputTokens = effectiveMaxInputTokens;
         agent.topP = runtimeModel.getTopP();
         agent.toolCallingEnabled = toolCallingEnabled;
 
@@ -566,6 +574,14 @@ public class AgentGraphBuilder {
                     streamTracker, fallbackChain, llmCacheMetricsAggregator, providerHealthTracker,
                     primaryModelConfig != null ? primaryModelConfig.getProvider() : null,
                     providerPool);
+            if (primaryModelConfig != null) {
+                // Feed "prompt too long" rejections back into the window resolver
+                // so the next turn budgets against the server-reported limit.
+                streamingHelper.setContextLimitObserver(errorMessage ->
+                        contextWindowResolver.noteContextLimitError(
+                                primaryModelConfig.getProvider(),
+                                primaryModelConfig.getModelName(), errorMessage));
+            }
             ToolExecutionExecutor executor = new ToolExecutionExecutor(
                     toolSet, toolGuardService, approvalService, streamTracker,
                     toolTimeoutProperties, toolResultStorage, toolConcurrencyRegistry,
@@ -839,6 +855,14 @@ public class AgentGraphBuilder {
                     streamTracker, fallbackChain, llmCacheMetricsAggregator, providerHealthTracker,
                     primaryModelConfig != null ? primaryModelConfig.getProvider() : null,
                     providerPool);
+            if (primaryModelConfig != null) {
+                // Feed "prompt too long" rejections back into the window resolver
+                // so the next turn budgets against the server-reported limit.
+                streamingHelper.setContextLimitObserver(errorMessage ->
+                        contextWindowResolver.noteContextLimitError(
+                                primaryModelConfig.getProvider(),
+                                primaryModelConfig.getModelName(), errorMessage));
+            }
             ToolExecutionExecutor executor = new ToolExecutionExecutor(
                     toolSet, toolGuardService, approvalService, streamTracker,
                     toolTimeoutProperties, toolResultStorage, toolConcurrencyRegistry,
