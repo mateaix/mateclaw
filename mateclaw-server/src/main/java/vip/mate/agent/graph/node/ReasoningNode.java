@@ -749,6 +749,27 @@ public class ReasoningNode implements NodeAction {
 
         Prompt prompt = new Prompt(promptMessages, options);
 
+        // Prefix accounting: how much of the window the never-trimmed prefix
+        // (system prompt + runtime context + wiki + skill catalog + ledger)
+        // and the advertised tool schemas consume. Logged on the turn's first
+        // call so a small-window overflow is diagnosable per block instead of
+        // surfacing as an opaque provider 400.
+        int prefixEstimateTokens = TokenEstimator.estimateTokens(nonHistoryPrefix);
+        int toolSchemaEstimateTokens = TokenEstimator.estimateToolsTokens(activeCallbacks);
+        if (accessor.llmCallCount() == 0) {
+            log.info("[ReasoningNode] Prefix accounting conv={}: window={} tokens, prefix={} "
+                            + "(system+context+wiki+skills+ledger), toolSchemas={}, history={}",
+                    conversationId, loopContextWindowTokens(), prefixEstimateTokens,
+                    toolSchemaEstimateTokens, TokenEstimator.estimateTokens(messages));
+        }
+        // The prefix cannot be compacted (history compaction is the only lever),
+        // so a prefix that alone exceeds the window makes the request doomed —
+        // fail fast with the same PROMPT_TOO_LONG shape a provider rejection
+        // would produce instead of sending it. Gated on budgeting being active
+        // (an estimation false-positive must not block requests otherwise).
+        boolean prefixOverflow = prefixBudgetPlan != null && prefixBudgetPlan.enabled()
+                && prefixEstimateTokens + toolSchemaEstimateTokens > prefixBudgetPlan.effectiveMaxTokens();
+
         // ======= LLM 调用区域 =======
         // nextLlmCallCount 在首次 streamCall 之前计算。
         // 所有退出路径（正常、stopped、fatal error、CancellationException）都必须写回此值。
@@ -778,7 +799,19 @@ public class ReasoningNode implements NodeAction {
 
         NodeStreamingChatHelper.StreamResult result;
         try {
-            result = streamingHelper.streamCall(chatModel, prompt, conversationId, "reasoning");
+            if (prefixOverflow) {
+                String overflowMessage = "Prompt 前缀估算 " + (prefixEstimateTokens + toolSchemaEstimateTokens)
+                        + " tokens(注入块 " + prefixEstimateTokens + " + 工具 schema " + toolSchemaEstimateTokens
+                        + ")已超过模型上下文窗口 " + prefixBudgetPlan.effectiveMaxTokens()
+                        + " tokens,历史压缩无法解决——请精简 Agent 身份 prompt、减少绑定工具/技能,"
+                        + "或换用更大窗口的模型";
+                log.error("[ReasoningNode] {}", overflowMessage);
+                result = new NodeStreamingChatHelper.StreamResult(null, null, null, List.of(), false,
+                        0, 0, false, overflowMessage,
+                        NodeStreamingChatHelper.ErrorType.PROMPT_TOO_LONG, false, 0, 0, 0);
+            } else {
+                result = streamingHelper.streamCall(chatModel, prompt, conversationId, "reasoning");
+            }
 
             // PTL 处理：结构化压缩后重试。复用 nonHistoryPrefix 保证重试
             // Prompt 仍带 wiki / runtime context；早期的 tail-only 路径会把

@@ -3,6 +3,7 @@ package vip.mate.agent.context;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.ToolResponseMessage;
@@ -117,6 +118,18 @@ public class ConversationWindowManager {
     private final ConversationWindowProperties properties;
     private final MemoryManager memoryManager;
     private final ConversationService conversationService;
+
+    /**
+     * Optional — adaptive compaction trigger for small context windows.
+     * Setter-injected so the many direct test constructions keep the plain
+     * configured ratio (null → previous behavior).
+     */
+    private PrefixBudgetPlanner prefixBudgetPlanner;
+
+    @Autowired(required = false)
+    public void setPrefixBudgetPlanner(PrefixBudgetPlanner prefixBudgetPlanner) {
+        this.prefixBudgetPlanner = prefixBudgetPlanner;
+    }
 
     /**
      * Optional spill store, injected via setter so unit tests and the two
@@ -251,7 +264,12 @@ public class ConversationWindowManager {
 
         int effectiveMax = (maxInputTokens != null && maxInputTokens > 0)
                 ? maxInputTokens : properties.getDefaultMaxInputTokens();
-        int triggerThreshold = (int) (effectiveMax * properties.getCompactTriggerRatio());
+        // Small windows compact later (higher trigger ratio): summarizing at
+        // 75% of an 8k window throws away room it cannot afford to lose.
+        double triggerRatio = prefixBudgetPlanner != null
+                ? prefixBudgetPlanner.compactTriggerRatioFor(effectiveMax, properties.getCompactTriggerRatio())
+                : properties.getCompactTriggerRatio();
+        int triggerThreshold = (int) (effectiveMax * triggerRatio);
 
         int systemTokens = TokenEstimator.estimateTokens(systemPrompt);
         int currentMsgTokens = TokenEstimator.estimateTokens(currentUserMessage) + TokenEstimator.PER_MESSAGE_OVERHEAD;

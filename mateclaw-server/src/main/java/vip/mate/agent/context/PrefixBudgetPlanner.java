@@ -30,6 +30,9 @@ import vip.mate.config.PrefixBudgetProperties;
 @EnableConfigurationProperties(PrefixBudgetProperties.class)
 public class PrefixBudgetPlanner {
 
+    /** COMPACT-profile ceiling for the wiki relevance injection (~one page). */
+    static final int COMPACT_WIKI_TOKEN_CAP = 2000;
+
     private final PrefixBudgetProperties properties;
     private final ConversationWindowProperties windowProperties;
 
@@ -66,10 +69,21 @@ public class PrefixBudgetPlanner {
             sum = 1.0;
         }
 
+        // Profile-specific wiki clamps: knowledge-base reference pages are the
+        // most dispensable block on a small window — the wiki tools stay
+        // callable, only the automatic pre-injection shrinks. COMPACT caps it
+        // at roughly one page; MINIMAL disables it outright.
+        int wikiTokens = (int) (injectionBudget * shares.getWiki() / sum);
+        wikiTokens = switch (profile) {
+            case NORMAL -> wikiTokens;
+            case COMPACT -> Math.min(wikiTokens, COMPACT_WIKI_TOKEN_CAP);
+            case MINIMAL -> 0;
+        };
+
         PrefixBudgetPlan plan = new PrefixBudgetPlan(
                 true, effectiveMax, profile, injectionBudget,
                 (int) (injectionBudget * shares.getMemory() / sum),
-                (int) (injectionBudget * shares.getWiki() / sum),
+                wikiTokens,
                 (int) (injectionBudget * shares.getSkill() / sum),
                 (int) (injectionBudget * shares.getExtensionCatalog() / sum),
                 (int) (injectionBudget * shares.getLedger() / sum),

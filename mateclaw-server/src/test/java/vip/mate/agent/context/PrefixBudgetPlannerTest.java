@@ -44,11 +44,35 @@ class PrefixBudgetPlannerTest {
     }
 
     @Test
-    @DisplayName("4k window → MINIMAL profile")
+    @DisplayName("4k window → MINIMAL profile, wiki injection disabled outright")
     void minimalProfile() {
         PrefixBudgetPlan plan = planner.plan(4096, 500, 500);
         assertEquals(PrefixBudgetPlan.Profile.MINIMAL, plan.profile());
         assertEquals(Math.max(0, (int) (4096 * 0.15) - 1000), plan.injectionBudgetTokens());
+        assertEquals(0, plan.wikiTokens());
+    }
+
+    @Test
+    @DisplayName("COMPACT profile caps the wiki injection at roughly one page")
+    void compactCapsWiki() {
+        properties.getShares().setWiki(1.0);
+        properties.getShares().setMemory(0.0);
+        properties.getShares().setSkill(0.0);
+        properties.getShares().setExtensionCatalog(0.0);
+        properties.getShares().setLedger(0.0);
+        PrefixBudgetPlan plan = planner.plan(20000, 0, 0);
+        assertEquals(PrefixBudgetPlan.Profile.COMPACT, plan.profile());
+        assertTrue(plan.injectionBudgetTokens() > PrefixBudgetPlanner.COMPACT_WIKI_TOKEN_CAP);
+        assertEquals(PrefixBudgetPlanner.COMPACT_WIKI_TOKEN_CAP, plan.wikiTokens());
+    }
+
+    @Test
+    @DisplayName("plan carries an independent tool-schema budget from toolSchemaRatio")
+    void toolSchemaBudget() {
+        PrefixBudgetPlan plan = planner.plan(16384, 0, 0);
+        assertEquals((int) (16384 * 0.25), plan.toolSchemaBudgetTokens());
+        properties.setEnabled(false);
+        assertEquals(Integer.MAX_VALUE, planner.plan(16384, 0, 0).toolSchemaBudgetTokens());
     }
 
     @Test
