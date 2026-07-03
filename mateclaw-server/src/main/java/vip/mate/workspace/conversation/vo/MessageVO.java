@@ -41,6 +41,15 @@ public class MessageVO {
     /** Completion tokens 消耗 */
     private Integer completionTokens;
 
+    /** Prompt cache 命中 tokens（provider 未上报时为 0） */
+    private Integer cacheReadTokens;
+
+    /** Prompt cache 写入 tokens（provider 未上报时为 0） */
+    private Integer cacheWriteTokens;
+
+    /** 思考（reasoning）阶段消耗的 completion tokens（provider 未上报时为 0） */
+    private Integer reasoningTokens;
+
     /** Model name actually used to produce this message (e.g. "deepseek-chat"). */
     private String runtimeModel;
 
@@ -65,6 +74,9 @@ public class MessageVO {
         vo.setMetadata(parseMetadataToObject(entity.getMetadata()));
         vo.setPromptTokens(entity.getPromptTokens());
         vo.setCompletionTokens(entity.getCompletionTokens());
+        vo.setCacheReadTokens(entity.getCacheReadTokens());
+        vo.setCacheWriteTokens(entity.getCacheWriteTokens());
+        vo.setReasoningTokens(entity.getReasoningTokens());
         vo.setRuntimeModel(entity.getRuntimeModel());
         vo.setRuntimeProvider(entity.getRuntimeProvider());
         vo.setCreateTime(entity.getCreateTime());

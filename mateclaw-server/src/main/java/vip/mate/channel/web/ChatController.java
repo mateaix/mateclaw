@@ -357,6 +357,9 @@ public class ChatController {
                                                 persistStatus,
                                                 accumulator.getPromptTokens(),
                                                 accumulator.getCompletionTokens(),
+                                                accumulator.getCacheReadTokens(),
+                                                accumulator.getCacheWriteTokens(),
+                                                accumulator.getReasoningTokens(),
                                                 accumulator.getRuntimeModelName(),
                                                 accumulator.getRuntimeProviderId(),
                                                 accumulator.toMetadataJson());  // includes toolCalls metadata
@@ -436,6 +439,9 @@ public class ChatController {
                                                 errStatus,
                                                 accumulator.getPromptTokens(),
                                                 accumulator.getCompletionTokens(),
+                                                accumulator.getCacheReadTokens(),
+                                                accumulator.getCacheWriteTokens(),
+                                                accumulator.getReasoningTokens(),
                                                 accumulator.getRuntimeModelName(),
                                                 accumulator.getRuntimeProviderId(),
                                                 accumulator.toMetadataJson());
@@ -629,6 +635,9 @@ public class ChatController {
                                             persistStatus,
                                             accumulator.getPromptTokens(),
                                             accumulator.getCompletionTokens(),
+                                            accumulator.getCacheReadTokens(),
+                                            accumulator.getCacheWriteTokens(),
+                                            accumulator.getReasoningTokens(),
                                             accumulator.getRuntimeModelName(),
                                             accumulator.getRuntimeProviderId(),
                                             accumulator.toMetadataJson());
@@ -747,6 +756,9 @@ public class ChatController {
                                             status,
                                             accumulator.getPromptTokens(),
                                             accumulator.getCompletionTokens(),
+                                            accumulator.getCacheReadTokens(),
+                                            accumulator.getCacheWriteTokens(),
+                                            accumulator.getReasoningTokens(),
                                             accumulator.getRuntimeModelName(),
                                             accumulator.getRuntimeProviderId(),
                                             accumulator.toMetadataJson());
@@ -849,6 +861,9 @@ public class ChatController {
                                             status,
                                             accumulator.getPromptTokens(),
                                             accumulator.getCompletionTokens(),
+                                            accumulator.getCacheReadTokens(),
+                                            accumulator.getCacheWriteTokens(),
+                                            accumulator.getReasoningTokens(),
                                             accumulator.getRuntimeModelName(),
                                             accumulator.getRuntimeProviderId(),
                                             accumulator.toMetadataJson());
@@ -1375,6 +1390,9 @@ public class ChatController {
                                     persistStatus,
                                     accumulator.getPromptTokens(),
                                     accumulator.getCompletionTokens(),
+                                    accumulator.getCacheReadTokens(),
+                                    accumulator.getCacheWriteTokens(),
+                                    accumulator.getReasoningTokens(),
                                     accumulator.getRuntimeModelName(),
                                     accumulator.getRuntimeProviderId(),
                                     accumulator.toMetadataJson());
@@ -1427,6 +1445,9 @@ public class ChatController {
                                     "failed",
                                     accumulator.getPromptTokens(),
                                     accumulator.getCompletionTokens(),
+                                    accumulator.getCacheReadTokens(),
+                                    accumulator.getCacheWriteTokens(),
+                                    accumulator.getReasoningTokens(),
                                     accumulator.getRuntimeModelName(),
                                     accumulator.getRuntimeProviderId(),
                                     accumulator.toMetadataJson());
@@ -1550,6 +1571,9 @@ public class ChatController {
                 emptyAssistantPlaceholder(status), null, status,
                 accumulator.getPromptTokens(),
                 accumulator.getCompletionTokens(),
+                accumulator.getCacheReadTokens(),
+                accumulator.getCacheWriteTokens(),
+                accumulator.getReasoningTokens(),
                 accumulator.getRuntimeModelName(),
                 accumulator.getRuntimeProviderId(),
                 accumulator.toMetadataJson());
@@ -1597,6 +1621,19 @@ public class ChatController {
         }
         if (promptTokens > 0) payload.put("promptTokens", promptTokens);
         if (completionTokens > 0) payload.put("completionTokens", completionTokens);
+        // Cache / reasoning detail rides on the persisted row so the live bubble
+        // can render the usage breakdown without waiting for a history reload.
+        if (savedAssistant != null) {
+            if (savedAssistant.getCacheReadTokens() != null && savedAssistant.getCacheReadTokens() > 0) {
+                payload.put("cacheReadTokens", savedAssistant.getCacheReadTokens());
+            }
+            if (savedAssistant.getCacheWriteTokens() != null && savedAssistant.getCacheWriteTokens() > 0) {
+                payload.put("cacheWriteTokens", savedAssistant.getCacheWriteTokens());
+            }
+            if (savedAssistant.getReasoningTokens() != null && savedAssistant.getReasoningTokens() > 0) {
+                payload.put("reasoningTokens", savedAssistant.getReasoningTokens());
+            }
+        }
         payload.put("persisted", persisted);
         if (messageCount != null) payload.put("messageCount", messageCount);
         return payload;
@@ -1651,6 +1688,9 @@ public class ChatController {
                     status,
                     accumulator.getPromptTokens(),
                     accumulator.getCompletionTokens(),
+                    accumulator.getCacheReadTokens(),
+                    accumulator.getCacheWriteTokens(),
+                    accumulator.getReasoningTokens(),
                     accumulator.getRuntimeModelName(),
                     accumulator.getRuntimeProviderId(),
                     accumulator.toMetadataJson());
@@ -1806,6 +1846,9 @@ public class ChatController {
         private int segCounter = 0;
         private int promptTokens = 0;
         private int completionTokens = 0;
+        private int cacheReadTokens = 0;
+        private int cacheWriteTokens = 0;
+        private int reasoningTokens = 0;
         private String runtimeModelName = "";
         private String runtimeProviderId = "";
         private boolean awaitingApproval = false;
@@ -1852,6 +1895,9 @@ public class ChatController {
                     Map<String, Object> data = delta.eventData();
                     promptTokens = ((Number) data.getOrDefault("promptTokens", 0)).intValue();
                     completionTokens = ((Number) data.getOrDefault("completionTokens", 0)).intValue();
+                    cacheReadTokens = ((Number) data.getOrDefault("cacheReadTokens", 0)).intValue();
+                    cacheWriteTokens = ((Number) data.getOrDefault("cacheWriteTokens", 0)).intValue();
+                    reasoningTokens = ((Number) data.getOrDefault("reasoningTokens", 0)).intValue();
                     runtimeModelName = String.valueOf(data.getOrDefault("runtimeModelName", ""));
                     runtimeProviderId = String.valueOf(data.getOrDefault("runtimeProviderId", ""));
                     return;
@@ -2140,6 +2186,9 @@ public class ChatController {
         String getThinking() { return thinking.toString().trim(); }
         int getPromptTokens() { return promptTokens; }
         int getCompletionTokens() { return completionTokens; }
+        int getCacheReadTokens() { return cacheReadTokens; }
+        int getCacheWriteTokens() { return cacheWriteTokens; }
+        int getReasoningTokens() { return reasoningTokens; }
         String getRuntimeModelName() { return runtimeModelName; }
         String getRuntimeProviderId() { return runtimeProviderId; }
         String getCurrentPhase() { return currentPhase; }

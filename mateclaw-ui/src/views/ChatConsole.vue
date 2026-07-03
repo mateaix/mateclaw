@@ -2073,6 +2073,9 @@ function normalizeMessage(raw: Message, preserveGeneratingStatus?: boolean): Mes
   // 保留后端返回的 token 字段（MessageVO 新增）
   if ((raw as any).promptTokens) msg.promptTokens = (raw as any).promptTokens
   if ((raw as any).completionTokens) msg.completionTokens = (raw as any).completionTokens
+  if ((raw as any).cacheReadTokens) msg.cacheReadTokens = (raw as any).cacheReadTokens
+  if ((raw as any).cacheWriteTokens) msg.cacheWriteTokens = (raw as any).cacheWriteTokens
+  if ((raw as any).reasoningTokens) msg.reasoningTokens = (raw as any).reasoningTokens
   if ((raw as any).runtimeModel) msg.runtimeModel = (raw as any).runtimeModel
   if ((raw as any).runtimeProvider) msg.runtimeProvider = (raw as any).runtimeProvider
 

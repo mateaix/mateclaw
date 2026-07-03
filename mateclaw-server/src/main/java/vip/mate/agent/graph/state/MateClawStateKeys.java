@@ -155,6 +155,12 @@ public final class MateClawStateKeys {
     // ===== Token Usage 累计（REPLACE 策略，节点内累加后写回）=====
     public static final String PROMPT_TOKENS = "prompt_tokens";
     public static final String COMPLETION_TOKENS = "completion_tokens";
+    /** Prompt cache 命中 tokens 累计（provider 未上报时保持 0） */
+    public static final String CACHE_READ_TOKENS = "cache_read_tokens";
+    /** Prompt cache 写入 tokens 累计（provider 未上报时保持 0） */
+    public static final String CACHE_WRITE_TOKENS = "cache_write_tokens";
+    /** 思考（reasoning）tokens 累计（provider 未上报时保持 0） */
+    public static final String REASONING_TOKENS = "reasoning_tokens";
 
     // ===== 运行时模型快照（REPLACE 策略，buildInitialState 注入）=====
     public static final String RUNTIME_MODEL_NAME = "runtime_model_name";

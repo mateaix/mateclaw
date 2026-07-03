@@ -111,6 +111,9 @@ export interface Message {
   // Token 统计
   promptTokens?: number
   completionTokens?: number
+  cacheReadTokens?: number
+  cacheWriteTokens?: number
+  reasoningTokens?: number
   // Runtime model attribution (assistant messages): the model that actually produced this reply
   runtimeModel?: string
   runtimeProvider?: string

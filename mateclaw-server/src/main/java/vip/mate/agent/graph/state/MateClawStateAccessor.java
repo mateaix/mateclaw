@@ -537,6 +537,12 @@ public final class MateClawStateAccessor {
             int existingCompletion = currentState.value(COMPLETION_TOKENS, 0);
             map.put(PROMPT_TOKENS, existingPrompt + result.promptTokens());
             map.put(COMPLETION_TOKENS, existingCompletion + result.completionTokens());
+            map.put(CACHE_READ_TOKENS,
+                    currentState.value(CACHE_READ_TOKENS, 0) + result.cacheReadTokens());
+            map.put(CACHE_WRITE_TOKENS,
+                    currentState.value(CACHE_WRITE_TOKENS, 0) + result.cacheWriteTokens());
+            map.put(REASONING_TOKENS,
+                    currentState.value(REASONING_TOKENS, 0) + result.reasoningTokens());
             return this;
         }
 

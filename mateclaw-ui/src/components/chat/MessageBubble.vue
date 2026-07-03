@@ -408,23 +408,100 @@
             class="action-model"
             :title="replyModelTitle"
           >{{ replyModel }}</span>
-          <!-- Turn token total (assistant only): own usage + delegated sub-agents -->
-          <span
+          <!-- Turn token total (assistant only): own usage + delegated sub-agents.
+               Click opens the per-turn consumption breakdown panel (cache hit/miss/write,
+               reasoning vs reply, cache hit rate). -->
+          <el-popover
             v-if="role === 'assistant' && tokenUsage"
-            class="action-tokens"
-            :title="tokenUsage.delegated > 0
-              ? $t('chat.tokenUsageTooltipDelegated', {
-                  total: tokenUsage.total.toLocaleString(),
-                  input: tokenUsage.input.toLocaleString(),
-                  output: tokenUsage.output.toLocaleString(),
-                  delegated: tokenUsage.delegated.toLocaleString(),
-                })
-              : $t('chat.tokenUsageTooltip', {
-                  total: tokenUsage.total.toLocaleString(),
-                  input: tokenUsage.input.toLocaleString(),
-                  output: tokenUsage.output.toLocaleString(),
-                })"
-          >Σ {{ fmtTokens(tokenUsage.total) }} tok</span>
+            placement="top-end"
+            trigger="click"
+            :width="288"
+            popper-class="mc-usage-popover"
+          >
+            <template #reference>
+              <button
+                class="action-tokens usage-trigger"
+                type="button"
+                :title="tokenUsage.delegated > 0
+                  ? $t('chat.tokenUsageTooltipDelegated', {
+                      total: tokenUsage.total.toLocaleString(),
+                      input: tokenUsage.input.toLocaleString(),
+                      output: tokenUsage.output.toLocaleString(),
+                      delegated: tokenUsage.delegated.toLocaleString(),
+                    })
+                  : $t('chat.tokenUsageTooltip', {
+                      total: tokenUsage.total.toLocaleString(),
+                      input: tokenUsage.input.toLocaleString(),
+                      output: tokenUsage.output.toLocaleString(),
+                    })"
+              >Σ {{ fmtTokens(tokenUsage.total) }} tok</button>
+            </template>
+            <div class="mc-usage-panel">
+              <div class="mc-usage-header">
+                <span class="mc-usage-title">{{ $t('chat.usageDetail.title') }}</span>
+                <span class="mc-usage-total-label">{{ $t('chat.usageDetail.total') }}</span>
+                <span class="mc-usage-total">{{ tokenUsage.total.toLocaleString() }}</span>
+              </div>
+              <div class="mc-usage-row mc-usage-row-main">
+                <i class="mc-usage-dot mc-dot-input"></i>
+                <span class="mc-usage-label">{{ $t('chat.usageDetail.input') }}</span>
+                <span class="mc-usage-value">{{ tokenUsage.input.toLocaleString() }}</span>
+              </div>
+              <template v-if="tokenUsage.hasCacheData">
+                <div class="mc-usage-row mc-usage-row-sub">
+                  <i class="mc-usage-dot mc-dot-hit"></i>
+                  <span class="mc-usage-label">{{ $t('chat.usageDetail.cacheHit') }}</span>
+                  <span class="mc-usage-value">{{ tokenUsage.cacheRead.toLocaleString() }}</span>
+                </div>
+                <div class="mc-usage-row mc-usage-row-sub">
+                  <i class="mc-usage-dot mc-dot-miss"></i>
+                  <span class="mc-usage-label">{{ $t('chat.usageDetail.cacheMiss') }}</span>
+                  <span class="mc-usage-value">{{ tokenUsage.cacheMiss.toLocaleString() }}</span>
+                </div>
+                <div class="mc-usage-row mc-usage-row-sub">
+                  <i class="mc-usage-dot mc-dot-write"></i>
+                  <span class="mc-usage-label">{{ $t('chat.usageDetail.cacheWrite') }}</span>
+                  <span class="mc-usage-value">{{ tokenUsage.cacheWrite.toLocaleString() }}</span>
+                </div>
+              </template>
+              <div class="mc-usage-divider"></div>
+              <div class="mc-usage-row mc-usage-row-main">
+                <i class="mc-usage-dot mc-dot-output"></i>
+                <span class="mc-usage-label">{{ $t('chat.usageDetail.output') }}</span>
+                <span class="mc-usage-value">{{ tokenUsage.output.toLocaleString() }}</span>
+              </div>
+              <div class="mc-usage-row mc-usage-row-sub">
+                <span class="mc-usage-label mc-usage-label-indent">{{ $t('chat.usageDetail.reasoning') }}</span>
+                <span class="mc-usage-value">{{ tokenUsage.reasoning.toLocaleString() }}</span>
+              </div>
+              <div class="mc-usage-row mc-usage-row-sub">
+                <span class="mc-usage-label mc-usage-label-indent">{{ $t('chat.usageDetail.reply') }}</span>
+                <span class="mc-usage-value">{{ tokenUsage.reply.toLocaleString() }}</span>
+              </div>
+              <div v-if="tokenUsage.delegated > 0" class="mc-usage-row mc-usage-row-sub">
+                <span class="mc-usage-label mc-usage-label-indent">{{ $t('chat.usageDetail.delegated') }}</span>
+                <span class="mc-usage-value">{{ tokenUsage.delegated.toLocaleString() }}</span>
+              </div>
+              <template v-if="tokenUsage.hasCacheData">
+                <div class="mc-usage-divider"></div>
+                <div class="mc-usage-row mc-usage-row-main">
+                  <span class="mc-usage-hit-icon">⚡</span>
+                  <span class="mc-usage-label">{{ $t('chat.usageDetail.hitRate') }}</span>
+                  <span class="mc-usage-value mc-usage-hit-rate">{{ (tokenUsage.hitRate * 100).toFixed(1) }}%</span>
+                </div>
+                <div class="mc-usage-bar">
+                  <i class="mc-bar-hit" :style="{ width: usageBarPct(tokenUsage.cacheRead) }"></i>
+                  <i class="mc-bar-write" :style="{ width: usageBarPct(tokenUsage.cacheWrite) }"></i>
+                  <i class="mc-bar-miss" :style="{ width: usageBarPct(tokenUsage.cacheMiss) }"></i>
+                </div>
+                <div class="mc-usage-legend">
+                  <span><i class="mc-usage-dot mc-dot-hit"></i>{{ $t('chat.usageDetail.legendHit') }}</span>
+                  <span><i class="mc-usage-dot mc-dot-write"></i>{{ $t('chat.usageDetail.legendWrite') }}</span>
+                  <span><i class="mc-usage-dot mc-dot-miss"></i>{{ $t('chat.usageDetail.legendMiss') }}</span>
+                </div>
+              </template>
+            </div>
+          </el-popover>
           <!-- Multimodal sidecar routing badge (assistant only, when sidecar fired) -->
           <span
             v-if="role === 'assistant' && routingBadge"
@@ -1027,13 +1104,25 @@ const useSegmentedView = computed(() =>
 const tokenUsage = computed(() => {
   const m = props.message
   if (m.role !== 'assistant') return null
-  // Total comes solely from the message usage, which the backend already rolls
+  // Base usage comes from the message, which the backend already rolls
   // delegated sub-agent tokens into (so live and reloaded values match and there
   // is no double counting against the segment sum below).
-  const input = m.promptTokens || 0
+  const prompt = m.promptTokens || 0
   const output = m.completionTokens || 0
+  if (prompt + output <= 0) return null
+  const cacheRead = m.cacheReadTokens || 0
+  const cacheWrite = m.cacheWriteTokens || 0
+  const reasoning = m.reasoningTokens || 0
+  // Provider accounting differs: the native Anthropic API reports input_tokens
+  // EXCLUDING the cache read/write segments (additive), while OpenAI-compatible
+  // and DashScope responses report prompt_tokens INCLUDING cached hits.
+  const additive = (m.runtimeProvider || '').toLowerCase().includes('anthropic')
+  const input = additive ? prompt + cacheRead + cacheWrite : prompt
+  const cacheMiss = Math.max(0, input - cacheRead - cacheWrite)
+  const reply = Math.max(0, output - reasoning)
+  const hitRate = input > 0 ? cacheRead / input : 0
+  const hasCacheData = cacheRead > 0 || cacheWrite > 0
   const total = input + output
-  if (total <= 0) return null
   // Informational breakdown for the tooltip: how much of that total came from
   // delegated sub-agents. Derived from the delegation segments, so it is present
   // live and degrades to 0 after reload (the segments are not persisted).
@@ -1050,8 +1139,18 @@ const tokenUsage = computed(() => {
     delegated += (s.delegPromptTokens || 0) + (s.delegCompletionTokens || 0)
     addNodes(s.childTimeline?.children)
   }
-  return { input, output, total, delegated: Math.min(delegated, total) }
+  return {
+    input, output, total, delegated: Math.min(delegated, total),
+    cacheRead, cacheWrite, cacheMiss, reasoning, reply, hitRate, hasCacheData,
+  }
 })
+
+/** Width of a cache-bar segment as a percentage of total input tokens. */
+function usageBarPct(part: number): string {
+  const u = tokenUsage.value
+  if (!u || u.input <= 0) return '0%'
+  return (part / u.input * 100).toFixed(2) + '%'
+}
 
 /** Compact token count, e.g. 67890 → "67.9k". */
 function fmtTokens(n: number): string {
@@ -1841,6 +1940,17 @@ watch(isGenerating, (generating) => {
   white-space: nowrap;
 }
 
+/* The token chip is a popover trigger button — keep the chip look, add affordance. */
+.usage-trigger {
+  border: none;
+  cursor: pointer;
+  line-height: inherit;
+}
+.usage-trigger:hover {
+  color: var(--mc-text-secondary, #64748b);
+  background: var(--mc-fill-3, rgba(100, 116, 139, 0.14));
+}
+
 .action-routing {
   font-size: 11px;
   color: var(--mc-primary, #d96d46);
@@ -2591,5 +2701,110 @@ watch(isGenerating, (generating) => {
   .error-card {
     max-width: 100%;
   }
+}
+</style>
+
+<!-- Unscoped: the usage popover renders into <body> via Element Plus popper,
+     so scoped selectors can't reach it. Classes are mc-usage-* prefixed. -->
+<style>
+.mc-usage-popover.el-popover {
+  padding: 12px 14px;
+}
+.mc-usage-panel {
+  font-size: 12px;
+  color: var(--mc-text-secondary, #64748b);
+}
+.mc-usage-header {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.mc-usage-title {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--mc-text-primary, #1e293b);
+  flex: 1;
+}
+.mc-usage-total-label {
+  color: var(--mc-text-tertiary, #94a3b8);
+}
+.mc-usage-total {
+  font-weight: 700;
+  font-family: var(--mc-mono-font, ui-monospace, "SF Mono", Menlo, monospace);
+  color: var(--mc-text-primary, #1e293b);
+}
+.mc-usage-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+}
+.mc-usage-row-main .mc-usage-label {
+  color: var(--mc-text-primary, #1e293b);
+  font-weight: 500;
+}
+.mc-usage-row-sub {
+  padding-left: 14px;
+}
+.mc-usage-label {
+  flex: 1;
+}
+.mc-usage-label-indent {
+  padding-left: 14px;
+}
+.mc-usage-value {
+  font-family: var(--mc-mono-font, ui-monospace, "SF Mono", Menlo, monospace);
+  color: var(--mc-text-primary, #1e293b);
+}
+.mc-usage-divider {
+  border-top: 1px dashed var(--mc-border-2, #e2e8f0);
+  margin: 6px 0;
+}
+.mc-usage-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  flex: none;
+  display: inline-block;
+}
+.mc-dot-input  { background: #3b82f6; }
+.mc-dot-output { background: #a855f7; }
+.mc-dot-hit    { background: #10b981; }
+.mc-dot-miss   { background: #f43f5e; }
+.mc-dot-write  { background: #eab308; }
+.mc-usage-hit-icon {
+  flex: none;
+  font-size: 11px;
+}
+.mc-usage-hit-rate {
+  color: #10b981;
+  font-weight: 700;
+}
+.mc-usage-bar {
+  display: flex;
+  height: 6px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--mc-fill-2, rgba(100, 116, 139, 0.08));
+  margin: 6px 0 6px;
+}
+.mc-usage-bar i {
+  display: block;
+  height: 100%;
+}
+.mc-bar-hit   { background: #10b981; }
+.mc-bar-write { background: #eab308; }
+.mc-bar-miss  { background: #f43f5e; }
+.mc-usage-legend {
+  display: flex;
+  gap: 12px;
+  font-size: 11px;
+  color: var(--mc-text-tertiary, #94a3b8);
+}
+.mc-usage-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 </style>

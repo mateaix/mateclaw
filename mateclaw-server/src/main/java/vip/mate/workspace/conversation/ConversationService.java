@@ -609,6 +609,16 @@ public class ConversationService {
             List<MessageContentPart> parts, String status,
             int promptTokens, int completionTokens,
             String runtimeModel, String runtimeProvider, String metadata) {
+        return saveMessage(conversationId, role, content, parts, status,
+                promptTokens, completionTokens, 0, 0, 0, runtimeModel, runtimeProvider, metadata);
+    }
+
+    @Transactional
+    public MessageEntity saveMessage(String conversationId, String role, String content,
+            List<MessageContentPart> parts, String status,
+            int promptTokens, int completionTokens,
+            int cacheReadTokens, int cacheWriteTokens, int reasoningTokens,
+            String runtimeModel, String runtimeProvider, String metadata) {
         MessageEntity message = new MessageEntity();
         message.setConversationId(conversationId);
         message.setRole(role);
@@ -618,6 +628,9 @@ public class ConversationService {
         message.setTokenUsage(promptTokens + completionTokens);
         message.setPromptTokens(promptTokens);
         message.setCompletionTokens(completionTokens);
+        message.setCacheReadTokens(cacheReadTokens);
+        message.setCacheWriteTokens(cacheWriteTokens);
+        message.setReasoningTokens(reasoningTokens);
         message.setRuntimeModel(runtimeModel);
         message.setRuntimeProvider(runtimeProvider);
         message.setMetadata(metadata != null ? metadata : "{}");  // Initialize as empty JSON object / 初始化为空对象

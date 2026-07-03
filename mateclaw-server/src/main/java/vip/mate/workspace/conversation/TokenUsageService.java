@@ -72,6 +72,9 @@ public class TokenUsageService {
         wrapper.select(
                 MessageEntity::getPromptTokens,
                 MessageEntity::getCompletionTokens,
+                MessageEntity::getCacheReadTokens,
+                MessageEntity::getCacheWriteTokens,
+                MessageEntity::getReasoningTokens,
                 MessageEntity::getRuntimeModel,
                 MessageEntity::getRuntimeProvider,
                 MessageEntity::getCreateTime
@@ -87,6 +90,9 @@ public class TokenUsageService {
 
         long totalPrompt = 0;
         long totalCompletion = 0;
+        long totalCacheRead = 0;
+        long totalCacheWrite = 0;
+        long totalReasoning = 0;
 
         // 按模型聚合
         Map<String, long[]> modelMap = new LinkedHashMap<>();
@@ -100,6 +106,9 @@ public class TokenUsageService {
             int completion = msg.getCompletionTokens() != null ? msg.getCompletionTokens() : 0;
             totalPrompt += prompt;
             totalCompletion += completion;
+            totalCacheRead += msg.getCacheReadTokens() != null ? msg.getCacheReadTokens() : 0;
+            totalCacheWrite += msg.getCacheWriteTokens() != null ? msg.getCacheWriteTokens() : 0;
+            totalReasoning += msg.getReasoningTokens() != null ? msg.getReasoningTokens() : 0;
 
             // 模型维度
             String model = msg.getRuntimeModel() != null ? msg.getRuntimeModel() : "unknown";
@@ -124,6 +133,9 @@ public class TokenUsageService {
 
         vo.setTotalPromptTokens(totalPrompt);
         vo.setTotalCompletionTokens(totalCompletion);
+        vo.setTotalCacheReadTokens(totalCacheRead);
+        vo.setTotalCacheWriteTokens(totalCacheWrite);
+        vo.setTotalReasoningTokens(totalReasoning);
         vo.setTotalMessages(messages.size());
 
         // 转换 byModel
