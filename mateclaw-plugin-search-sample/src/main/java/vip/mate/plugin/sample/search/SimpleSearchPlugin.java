@@ -1,5 +1,6 @@
 package vip.mate.plugin.sample.search;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -80,6 +81,8 @@ public class SimpleSearchPlugin implements MateClawPlugin {
             String baseUrl = context.getConfig("baseUrl", String.class);
             String apiKey = context.getConfig("apiKey", String.class);
 
+            // Minimal demo: only q/count are wired. query.freshness() and query.language()
+            // are also available — see the built-in SearXNGSearchProvider for how to map them.
             String url = baseUrl + (baseUrl.contains("?") ? "&" : "?")
                     + "q=" + URLEncoder.encode(query.query(), StandardCharsets.UTF_8)
                     + "&count=" + query.count();
@@ -104,7 +107,7 @@ public class SimpleSearchPlugin implements MateClawPlugin {
             }
         }
 
-        private List<PluginSearchResult> parse(String body) throws Exception {
+        private List<PluginSearchResult> parse(String body) throws JsonProcessingException {
             List<PluginSearchResult> results = new ArrayList<>();
             JsonNode items = objectMapper.readTree(body).path("results");
             for (JsonNode item : items) {
