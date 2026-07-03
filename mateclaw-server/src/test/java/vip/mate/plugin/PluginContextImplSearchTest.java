@@ -29,7 +29,7 @@ import static org.mockito.Mockito.mock;
 /**
  * PluginContextImpl#registerSearchProvider: wraps the plugin SPI in a bridge,
  * registers it into SearchProviderRegistry, and records the id on LoadedPlugin
- * so disable/rollback can unregister it (issue #477).
+ * so disable/rollback can unregister it.
  */
 class PluginContextImplSearchTest {
 

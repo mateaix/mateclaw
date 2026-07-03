@@ -12,7 +12,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
- * Plugin-provider mutability of {@link SearchProviderRegistry} (issue #477):
+ * Plugin-provider mutability of {@link SearchProviderRegistry}:
  * plugin JARs register/unregister providers at runtime; the registry must merge
  * them with the Spring-injected built-ins and reject id conflicts.
  */

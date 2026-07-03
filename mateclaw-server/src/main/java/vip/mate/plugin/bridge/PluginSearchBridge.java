@@ -13,7 +13,7 @@ import java.util.List;
 
 /**
  * Bridge that wraps a plugin's {@link PluginSearchProvider} into the platform's
- * internal {@link SearchProvider} interface (issue #477).
+ * internal {@link SearchProvider} interface.
  * <p>
  * The platform-side {@link SystemSettingsDTO} is intentionally ignored — plugin
  * providers read their own config via {@code PluginContext#getConfig}, keeping

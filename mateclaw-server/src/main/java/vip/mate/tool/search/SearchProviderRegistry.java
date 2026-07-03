@@ -15,7 +15,7 @@ import java.util.stream.Collectors;
 /**
  * 搜索提供商注册表 — 收集所有 {@link SearchProvider} 实现，提供优先级排序与自动探测
  *
- * <p>借鉴 openclaw 的 provider auto-detect 机制：
+ * <p>provider 自动探测机制：
  * <ol>
  *   <li>用户显式配置的 primary provider → 直接使用</li>
  *   <li>按 autoDetectOrder 遍历，优先选有 credential 的 provider</li>
@@ -45,7 +45,7 @@ public class SearchProviderRegistry {
     }
 
     /**
-     * 注册一个插件提供的 provider（issue #477）。
+     * 注册一个插件提供的 provider。
      *
      * @throws IllegalArgumentException id 为空，或与内置/已注册插件 provider 冲突
      */
@@ -95,7 +95,7 @@ public class SearchProviderRegistry {
     /**
      * 根据当前配置，解析应使用的 provider。
      *
-     * <p>解析策略（借鉴 openclaw resolveWebSearchProviderId）：
+     * <p>解析策略：
      * <ol>
      *   <li>如果用户配置了 primary provider 且该 provider 可用 → 选中</li>
      *   <li>否则按 autoDetectOrder 遍历，跳过 keyless，先找有 credential 的</li>
