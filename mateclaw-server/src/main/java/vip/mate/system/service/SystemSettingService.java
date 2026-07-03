@@ -3,9 +3,16 @@ package vip.mate.system.service;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
+import vip.mate.plugin.PluginManager;
+import vip.mate.system.model.SearchProviderCatalogEntry;
+import vip.mate.system.model.SearchProviderCatalogResponse;
 import vip.mate.system.model.SystemSettingEntity;
 import vip.mate.system.model.SystemSettingsDTO;
 import vip.mate.system.repository.SystemSettingMapper;
+import vip.mate.tool.search.SearchProvider;
+import vip.mate.tool.search.SearchProviderRegistry;
+
+import java.util.List;
 
 @Service
 @RequiredArgsConstructor
@@ -77,6 +84,8 @@ public class SystemSettingService {
     private static final String MINIMAX_REGION_KEY = "minimaxRegion";
 
     private final SystemSettingMapper systemSettingMapper;
+    private final SearchProviderRegistry searchProviderRegistry;
+    private final PluginManager pluginManager;
 
     /**
      * Resolve the SearXNG base URL: DB value takes priority; fall back to the
@@ -204,6 +213,37 @@ public class SystemSettingService {
         dto.setDuckduckgoEnabled(Boolean.parseBoolean(getValue(DUCKDUCKGO_ENABLED_KEY, "true")));
         dto.setSearxngBaseUrl(resolveSearxngBaseUrl());
         return dto;
+    }
+
+    /**
+     * 搜索 provider catalog：内置 + 插件注册的全部 provider，标注是否可用、
+     * 属于哪个插件，以及当前实际会被 resolve() 选中的是哪一个（issue #477）。
+     */
+    public SearchProviderCatalogResponse getSearchProviderCatalog() {
+        SystemSettingsDTO config = getSearchSettings();
+
+        List<SearchProviderCatalogEntry> entries = searchProviderRegistry.allSorted().stream()
+                .map(p -> toEntry(p, config))
+                .toList();
+
+        SearchProviderRegistry.ResolvedProvider resolved = searchProviderRegistry.resolve(config);
+        String resolvedId = resolved != null ? resolved.provider().id() : null;
+        String resolvedSource = resolved != null ? resolved.source() : null;
+
+        return new SearchProviderCatalogResponse(entries, resolvedId, resolvedSource);
+    }
+
+    private SearchProviderCatalogEntry toEntry(SearchProvider provider, SystemSettingsDTO config) {
+        boolean builtin = !searchProviderRegistry.isPluginProvider(provider.id());
+        String pluginName = builtin ? null : pluginManager.getPluginNameForSearchProvider(provider.id());
+        return new SearchProviderCatalogEntry(
+                provider.id(),
+                provider.label(),
+                builtin,
+                provider.requiresCredential(),
+                provider.isAvailable(config),
+                pluginName
+        );
     }
 
     public SystemSettingsDTO saveSettings(SystemSettingsDTO dto) {
