@@ -1028,6 +1028,33 @@ public class ConversationWindowManager {
     }
 
     /**
+     * One-line informative summary for a cleared tool result: tool name,
+     * original size, and the first line as a gist. Far more useful to the
+     * model than a bare "removed" marker — it can decide whether re-running
+     * the tool is worth it without guessing what the output was.
+     */
+    static String buildInformativeCleared(String toolName, String body) {
+        String safeName = (toolName == null || toolName.isBlank()) ? "tool" : toolName;
+        int length = body == null ? 0 : body.length();
+        String gist = "";
+        if (body != null) {
+            for (String line : body.split("\n", 8)) {
+                String candidate = line.strip();
+                if (!candidate.isEmpty()) {
+                    gist = candidate.length() > 80 ? candidate.substring(0, 80) + "…" : candidate;
+                    break;
+                }
+            }
+        }
+        StringBuilder sb = new StringBuilder("[").append(safeName)
+                .append(" → ").append(length).append(" chars, cleared to save context");
+        if (!gist.isEmpty()) {
+            sb.append("; began: \"").append(gist).append('"');
+        }
+        return sb.append("; call the tool again if the result is still needed]").toString();
+    }
+
+    /**
      * Phase 1 - Soft trim：对工具结果做 head+tail 裁剪（保留首尾各 200 字符）。
      * <p>Spill-marker responses are left untouched so their on-disk pointer
      * survives intact across compaction.
@@ -1081,7 +1108,8 @@ public class ConversationWindowManager {
                         replaced.add(r);
                         continue;
                     }
-                    replaced.add(new ToolResponseMessage.ToolResponse(r.id(), r.name(), "[tool result removed]"));
+                    replaced.add(new ToolResponseMessage.ToolResponse(r.id(), r.name(),
+                            buildInformativeCleared(r.name(), r.responseData())));
                     changed = true;
                 }
                 if (changed) {
