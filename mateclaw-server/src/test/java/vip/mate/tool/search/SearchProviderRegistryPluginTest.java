@@ -5,11 +5,15 @@ import org.junit.jupiter.api.Test;
 import vip.mate.system.model.SystemSettingsDTO;
 
 import java.util.List;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Plugin-provider mutability of {@link SearchProviderRegistry}:
@@ -91,6 +95,85 @@ class SearchProviderRegistryPluginTest {
                 () -> registry.registerPluginProvider(stub("  ", 500, true, true)));
         assertThrows(IllegalArgumentException.class,
                 () -> registry.registerPluginProvider(stub(null, 500, true, true)));
+    }
+
+    @Test
+    @DisplayName("id with leading/trailing whitespace is rejected, not trimmed")
+    void paddedIdRejected() {
+        SearchProviderRegistry registry = registryWithBuiltins();
+
+        assertThrows(IllegalArgumentException.class,
+                () -> registry.registerPluginProvider(stub(" my-search", 500, true, true)));
+        assertThrows(IllegalArgumentException.class,
+                () -> registry.registerPluginProvider(stub("my-search ", 500, true, true)));
+    }
+
+    @Test
+    @DisplayName("case-variant of a built-in id is rejected (no visual spoofing)")
+    void caseVariantOfBuiltinRejected() {
+        SearchProviderRegistry registry = registryWithBuiltins();
+
+        assertThrows(IllegalArgumentException.class,
+                () -> registry.registerPluginProvider(stub("Serper", 500, true, true)));
+        assertThrows(IllegalArgumentException.class,
+                () -> registry.registerPluginProvider(stub("DUCKDUCKGO", 500, true, true)));
+    }
+
+    @Test
+    @DisplayName("case-variant of an already-registered plugin id is rejected")
+    void caseVariantOfPluginIdRejected() {
+        SearchProviderRegistry registry = registryWithBuiltins();
+        registry.registerPluginProvider(stub("my-search", 500, true, true));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> registry.registerPluginProvider(stub("My-Search", 501, true, true)));
+    }
+
+    @Test
+    @DisplayName("concurrent registration of case-variants admits exactly one (no TOCTOU bypass)")
+    void concurrentCaseVariantRegistrationAdmitsExactlyOne() throws Exception {
+        // Plugins may call registerSearchProvider from arbitrary threads, so the
+        // case-insensitive conflict check must be atomic with the insert: without
+        // the registration lock, two threads registering "Foo"/"foo" could both
+        // pass the pre-check and land in different map keys.
+        for (int round = 0; round < 20; round++) {
+            SearchProviderRegistry registry = new SearchProviderRegistry(List.of());
+            var barrier = new CyclicBarrier(2);
+            var successes = new AtomicInteger();
+            Runnable register = () -> {
+                String id = Thread.currentThread().getName().endsWith("-a") ? "Race-Search" : "race-search";
+                try {
+                    barrier.await();
+                    registry.registerPluginProvider(stub(id, 500, true, true));
+                    successes.incrementAndGet();
+                } catch (IllegalArgumentException expected) {
+                    // the loser — expected
+                } catch (Exception e) {
+                    throw new IllegalStateException(e);
+                }
+            };
+            Thread t1 = new Thread(register, "race-" + round + "-a");
+            Thread t2 = new Thread(register, "race-" + round + "-b");
+            t1.start();
+            t2.start();
+            t1.join();
+            t2.join();
+
+            assertEquals(1, successes.get(),
+                    "exactly one of the case-variant registrations may win (round " + round + ")");
+        }
+    }
+
+    @Test
+    @DisplayName("isPluginProvider distinguishes built-in ids from plugin-registered ids")
+    void isPluginProviderDistinguishesSource() {
+        SearchProviderRegistry registry = registryWithBuiltins();
+        registry.registerPluginProvider(stub("my-search", 500, true, true));
+
+        assertTrue(registry.isPluginProvider("my-search"));
+        assertFalse(registry.isPluginProvider("serper"));
+        assertFalse(registry.isPluginProvider("duckduckgo"));
+        assertFalse(registry.isPluginProvider("does-not-exist"));
     }
 
     @Test

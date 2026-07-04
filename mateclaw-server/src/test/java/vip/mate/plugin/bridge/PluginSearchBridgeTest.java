@@ -10,9 +10,11 @@ import vip.mate.tool.search.SearchQuery;
 import vip.mate.tool.search.SearchResult;
 
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -100,6 +102,50 @@ class PluginSearchBridgeTest {
         }));
         assertThrows(IllegalStateException.class,
                 () -> bridge.search(SearchQuery.of("kw"), new SystemSettingsDTO()));
+    }
+
+    @Test
+    @DisplayName("metadata is snapshotted at construction — plugin code never runs on sort/catalog reads")
+    void metadataSnapshottedAtConstruction() {
+        AtomicInteger metadataCalls = new AtomicInteger();
+        PluginSearchProvider delegate = new PluginSearchProvider() {
+            @Override public String id() { metadataCalls.incrementAndGet(); return "snap-search"; }
+            @Override public String label() { metadataCalls.incrementAndGet(); return "Snap Search"; }
+            @Override public boolean requiresCredential() { metadataCalls.incrementAndGet(); return true; }
+            @Override public int autoDetectOrder() { metadataCalls.incrementAndGet(); return 500; }
+            @Override public boolean isAvailable() { return true; }
+            @Override public List<PluginSearchResult> search(PluginSearchQuery query) { return List.of(); }
+        };
+
+        PluginSearchBridge bridge = new PluginSearchBridge(delegate);
+        int callsAfterConstruction = metadataCalls.get();
+
+        // Repeated reads (what resolve()'s sort comparator and the catalog do) must
+        // serve the snapshot, not re-enter plugin code.
+        for (int i = 0; i < 3; i++) {
+            assertEquals("snap-search", bridge.id());
+            assertEquals("Snap Search", bridge.label());
+            assertTrue(bridge.requiresCredential());
+            assertEquals(500, bridge.autoDetectOrder());
+        }
+        assertEquals(callsAfterConstruction, metadataCalls.get(),
+                "metadata getters must not invoke plugin code after construction");
+    }
+
+    @Test
+    @DisplayName("a throwing isAvailable() degrades to unavailable instead of breaking resolve()")
+    void throwingIsAvailableDegradesToFalse() {
+        PluginSearchProvider delegate = new PluginSearchProvider() {
+            @Override public String id() { return "broken-search"; }
+            @Override public String label() { return "Broken Search"; }
+            @Override public boolean isAvailable() { throw new IllegalStateException("availability boom"); }
+            @Override public List<PluginSearchResult> search(PluginSearchQuery query) { return List.of(); }
+        };
+
+        PluginSearchBridge bridge = new PluginSearchBridge(delegate);
+
+        assertFalse(bridge.isAvailable(new SystemSettingsDTO()),
+                "isAvailable runs inside resolve() on every web_search call with no per-provider guard — a plugin exception must degrade to false, not propagate");
     }
 
     // ---- helpers ----

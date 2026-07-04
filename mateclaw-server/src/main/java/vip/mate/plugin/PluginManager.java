@@ -419,13 +419,48 @@ public class PluginManager {
     }
 
     /**
-     * Update a plugin's configuration.
+     * 反查某个 search provider id 是由哪个已加载插件注册的（供设置页 catalog 用）。
+     *
+     * @return 插件名（manifest 的 name），找不到返回 {@code null}
      */
+    public String getPluginNameForSearchProvider(String searchProviderId) {
+        return plugins.values().stream()
+                .filter(p -> p.getRegisteredSearchProviders().contains(searchProviderId))
+                .map(p -> p.getManifest().getName())
+                .findFirst()
+                .orElse(null);
+    }
+
+    /**
+     * Update a plugin's configuration.
+     * <p>
+     * Merges the incoming (possibly partial) {@code config} over the existing stored
+     * config rather than replacing it wholesale. The plugin config dialog intentionally
+     * omits unchanged secret fields from its save payload — the frontend never receives
+     * plaintext secret values back from the backend (they're redacted), so it has no way
+     * to "resubmit unchanged"; omission is the only privacy-safe way to say "leave this
+     * as-is". If we treated the incoming map as the complete new config, every omitted
+     * field — including previously-configured secrets — would be silently deleted on
+     * every save.
+     */
+    @SuppressWarnings("unchecked")
     public void updateConfig(String name, Map<String, Object> config) {
         PluginEntity entity = findByName(name);
         if (entity == null) {
             throw new PluginException("Plugin not found: " + name);
         }
+
+        // Parse the existing stored config so omitted keys can be carried forward.
+        Map<String, Object> mergedConfig = new LinkedHashMap<>();
+        try {
+            if (entity.getConfigJson() != null && !entity.getConfigJson().isBlank()) {
+                mergedConfig.putAll(objectMapper.readValue(entity.getConfigJson(), Map.class));
+            }
+        } catch (Exception e) {
+            log.warn("Plugin {} has unparsable stored config, discarding it: {}", name, e.getMessage());
+        }
+        // Incoming values win for provided keys; everything else survives from the old config.
+        mergedConfig.putAll(config);
 
         // Validate config keys against manifest if plugin is loaded
         LoadedPlugin loaded = plugins.get(name);
@@ -436,17 +471,35 @@ public class PluginManager {
                     log.warn("Plugin {} config: unknown key '{}' (not in manifest schema)", name, key);
                 }
             }
-            // Check required fields
+            // Check required fields against the MERGED result — a required field that was
+            // already configured and is simply omitted from this save must not be treated
+            // as missing. Blank strings count as "not actually set", consistent with how
+            // SystemSettingService treats blank secret values as absent.
             for (Map.Entry<String, PluginManifest.ConfigField> schemaEntry : schema.entrySet()) {
-                if (schemaEntry.getValue().isRequired() && !config.containsKey(schemaEntry.getKey())) {
-                    throw new PluginException("Missing required config field: " + schemaEntry.getKey());
+                if (schemaEntry.getValue().isRequired()) {
+                    Object value = mergedConfig.get(schemaEntry.getKey());
+                    boolean missing = !mergedConfig.containsKey(schemaEntry.getKey())
+                            || value == null
+                            || (value instanceof String s && s.isBlank());
+                    if (missing) {
+                        throw new PluginException("Missing required config field: " + schemaEntry.getKey());
+                    }
                 }
             }
         }
 
         try {
-            entity.setConfigJson(objectMapper.writeValueAsString(config));
+            String mergedJson = objectMapper.writeValueAsString(mergedConfig);
+            entity.setConfigJson(mergedJson);
             pluginMapper.updateById(entity);
+            // Push the new values into the RUNNING plugin's context too — configMap is
+            // parsed once at load time, so without this refresh the plugin would keep
+            // serving stale values from getConfig() until a disable/enable cycle,
+            // making the config dialog's "save" silently ineffective.
+            if (loaded != null && loaded.getContext() != null) {
+                loaded.getContext().refreshConfig(mergedJson);
+                log.info("Plugin config refreshed in running instance: {}", name);
+            }
             log.info("Plugin config updated: {}", name);
         } catch (PluginException e) {
             throw e;

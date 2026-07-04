@@ -39,7 +39,13 @@ public class PluginContextImpl implements PluginContext {
     private final MemoryManager memoryManager;
     private final ModelProviderService modelProviderService;
     private final SearchProviderRegistry searchProviderRegistry;
-    private final Map<String, Object> configMap;
+    /**
+     * Live config view: replaced wholesale by {@link #refreshConfig} when an admin
+     * saves new values, so {@link #getConfig} reflects updates without a plugin
+     * restart. Volatile reference to an immutable map — readers either see the old
+     * snapshot or the new one, never a torn state.
+     */
+    private volatile Map<String, Object> configMap;
     private final Logger logger;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
@@ -59,6 +65,15 @@ public class PluginContextImpl implements PluginContext {
         this.modelProviderService = modelProviderService;
         this.searchProviderRegistry = searchProviderRegistry;
         this.logger = LoggerFactory.getLogger("plugin." + manifest.getName());
+        this.configMap = parseConfig(configJson);
+    }
+
+    /**
+     * Re-parse and swap the live config after {@code PluginManager.updateConfig}
+     * persists new values, so the running plugin's {@code getConfig} calls pick up
+     * the change immediately instead of serving load-time values until a restart.
+     */
+    void refreshConfig(String configJson) {
         this.configMap = parseConfig(configJson);
     }
 

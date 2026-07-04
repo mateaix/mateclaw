@@ -830,6 +830,21 @@ export interface SystemSettings {
   klingSecretKeyMasked?: string
 }
 
+export interface SearchProviderCatalogEntry {
+  id: string
+  label: string
+  builtin: boolean
+  requiresCredential: boolean
+  available: boolean
+  pluginName: string | null
+}
+
+export interface SearchProviderCatalog {
+  providers: SearchProviderCatalogEntry[]
+  resolvedId: string | null
+  resolvedSource: string | null
+}
+
 export interface ProviderModelInfo {
   id: string
   name: string

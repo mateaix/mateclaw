@@ -8,6 +8,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -34,6 +35,13 @@ public class SearchProviderRegistry {
     /** 插件注册的 provider（运行时可变），与 Spring 注入的内置 provider 合并成完整视图 */
     private final ConcurrentHashMap<String, SearchProvider> pluginProviders = new ConcurrentHashMap<>();
 
+    /**
+     * 注册写锁：大小写不敏感的冲突检测是"先检查后插入"，两个并发注册大小写变体
+     * （"Foo"/"foo"）可能双双通过检查后各自落入不同 key——写路径必须原子化。
+     * 读路径（getById/allSorted/resolve）仍走无锁的 ConcurrentHashMap。
+     */
+    private final Object registrationLock = new Object();
+
     public SearchProviderRegistry(List<SearchProvider> providers) {
         this.sortedProviders = providers.stream()
                 .sorted(Comparator.comparingInt(SearchProvider::autoDetectOrder))
@@ -47,22 +55,37 @@ public class SearchProviderRegistry {
     /**
      * 注册一个插件提供的 provider。
      *
-     * @throws IllegalArgumentException id 为空，或与内置/已注册插件 provider 冲突
+     * <p>id 规则：不允许为空或含首尾空白（拒绝而非 trim——注册键必须与
+     * {@code provider.id()} 完全一致，反注册才能对得上）；存储与查找大小写敏感，
+     * 但冲突检测大小写不敏感，防止 "Serper" 这类变体在 UI 上与内置 "serper" 混淆。
+     *
+     * @throws IllegalArgumentException id 为空、含首尾空白，或与内置/已注册插件 provider 冲突
      */
     public void registerPluginProvider(SearchProvider provider) {
         String id = provider.id();
         if (id == null || id.isBlank()) {
             throw new IllegalArgumentException("Search provider id must not be blank");
         }
-        if (providerMap.containsKey(id)) {
+        if (!id.equals(id.trim())) {
             throw new IllegalArgumentException(
-                    "Search provider id conflicts with a built-in provider: " + id);
+                    "Search provider id must not contain leading/trailing whitespace: '" + id + "'");
         }
-        if (pluginProviders.putIfAbsent(id, provider) != null) {
-            throw new IllegalArgumentException(
-                    "Search provider id already registered by another plugin: " + id);
+        synchronized (registrationLock) {
+            if (containsIgnoreCase(providerMap.keySet(), id)) {
+                throw new IllegalArgumentException(
+                        "Search provider id conflicts with a built-in provider: " + id);
+            }
+            if (containsIgnoreCase(pluginProviders.keySet(), id)) {
+                throw new IllegalArgumentException(
+                        "Search provider id already registered by another plugin: " + id);
+            }
+            pluginProviders.put(id, provider);
         }
         log.info("插件搜索提供商已注册: {} (order={})", id, provider.autoDetectOrder());
+    }
+
+    private static boolean containsIgnoreCase(Set<String> ids, String candidate) {
+        return ids.stream().anyMatch(existing -> existing.equalsIgnoreCase(candidate));
     }
 
     /** 反注册插件 provider（disable / rollback 路径调用；id 不存在时静默） */
@@ -70,6 +93,11 @@ public class SearchProviderRegistry {
         if (pluginProviders.remove(id) != null) {
             log.info("插件搜索提供商已反注册: {}", id);
         }
+    }
+
+    /** 判断某个 id 是否由插件注册（而非内置 Spring bean） */
+    public boolean isPluginProvider(String id) {
+        return pluginProviders.containsKey(id);
     }
 
     /** 按 ID 获取指定 provider（内置优先，其次插件注册区） */
