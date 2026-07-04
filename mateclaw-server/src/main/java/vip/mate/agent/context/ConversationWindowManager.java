@@ -96,16 +96,31 @@ public class ConversationWindowManager {
 
     /**
      * Tool names whose results must never be compacted into a one-line
-     * summary. Sub-agent delegations are irreplaceable: the child runs an
+     * summary.
+     *
+     * <p>Sub-agent delegations are irreplaceable: the child runs an
      * independent LLM session that the parent cannot reproduce, so dropping
      * earlier batches forces the parent to re-dispatch the same children to
-     * recover what was lost. Every other tool (read_file, shell, search,
-     * memory) can be re-invoked cheaply if the parent decides it needs
-     * the data again.
+     * recover what was lost.
+     *
+     * <p>{@code load_skill} returns the SKILL.md content at load time —
+     * a snapshot of the skill's constraints, flow, and script entrypoints.
+     * The skill author may update SKILL.md between the original load and a
+     * hypothetical re-load, so re-invoking {@code load_skill} does NOT
+     * guarantee recovering the same instructions the agent started with.
+     * Dropping the original also forces the agent to either re-load (token
+     * expensive for 50KB+ skills) or operate without constraints — the
+     * root cause of the "skill constraint forgetting" bug. Pinning the
+     * original ToolResponseMessage keeps the agent's understanding of the
+     * task's rules stable across context-window trims.
+     *
+     * <p>Every other tool (read_file, shell, search, memory) can be
+     * re-invoked cheaply if the parent decides it needs the data again.
      */
     private static final java.util.Set<String> PRUNE_EXEMPT_TOOLS = java.util.Set.of(
             "delegateToAgent",
-            "delegateParallel"
+            "delegateParallel",
+            "load_skill"
     );
 
     // ==================== 冷却机制 ====================
