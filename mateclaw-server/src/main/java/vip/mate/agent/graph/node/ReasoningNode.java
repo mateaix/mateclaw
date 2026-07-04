@@ -22,6 +22,7 @@ import vip.mate.llm.chatmodel.ThinkingLevelHolder;
 import vip.mate.agent.graph.NodeStreamingChatHelper;
 import vip.mate.agent.context.ConversationWindowManager;
 import vip.mate.agent.context.LoopBudgetConfig;
+import vip.mate.agent.context.PrefixBudgetPlan;
 import vip.mate.agent.context.LoopMessageBudgeter;
 import vip.mate.agent.context.RuntimeContextInjector;
 import vip.mate.agent.context.TokenEstimator;
@@ -350,6 +351,52 @@ public class ReasoningNode implements NodeAction {
      */
     private final vip.mate.agent.progress.ProgressLedgerService progressLedgerService;
 
+    /**
+     * Token budget for the optional prefix injection blocks, computed at
+     * agent-build time against the model's effective context window. Null
+     * when the graph was assembled without budgeting (tests, legacy paths) —
+     * all injection sites then keep their previous absolute-cap behavior.
+     */
+    private PrefixBudgetPlan prefixBudgetPlan;
+
+    public void setPrefixBudgetPlan(PrefixBudgetPlan prefixBudgetPlan) {
+        this.prefixBudgetPlan = prefixBudgetPlan;
+    }
+
+    /**
+     * Core-tier tools auto-demoted to the extension catalog because the
+     * advertised schemas exceeded the window's tool-schema budget. Decided
+     * once at agent-build time (kept stable for prompt caching); the baked
+     * extension catalog lists them so {@code enable_tool} can surface any of
+     * them back.
+     */
+    private Set<String> autoDemotedTools = Set.of();
+
+    public void setAutoDemotedTools(Set<String> autoDemotedTools) {
+        this.autoDemotedTools = autoDemotedTools == null ? Set.of() : autoDemotedTools;
+    }
+
+    /** Floor for the window-aware output clamp — an answer needs at least this much room. */
+    private static final int MIN_CLAMPED_OUTPUT_TOKENS = 512;
+
+    /**
+     * Output cap actually sent to the provider. Strict local servers (vLLM)
+     * statically reject {@code max_tokens >= max_model_len}, so when the
+     * effective context window is known and smaller than the configured /
+     * default output cap, clamp to half the window (leaving the other half
+     * for the prompt). No-op when the window is unknown or already larger.
+     */
+    int effectiveMaxOutputTokens() {
+        int window = (prefixBudgetPlan != null) ? prefixBudgetPlan.effectiveMaxTokens() : 0;
+        if (window > 0 && maxOutputTokens >= window) {
+            int clamped = Math.max(MIN_CLAMPED_OUTPUT_TOKENS, window / 2);
+            log.info("[ReasoningNode] max_tokens {} ≥ 模型窗口 {},钳制为 {}(窗口一半)以避免服务端拒绝",
+                    maxOutputTokens, window, clamped);
+            return clamped;
+        }
+        return maxOutputTokens;
+    }
+
     public ReasoningNode(ChatModel chatModel, AgentToolSet toolSet, String reasoningEffort,
                          NodeStreamingChatHelper streamingHelper,
                          ConversationWindowManager conversationWindowManager,
@@ -470,6 +517,12 @@ public class ReasoningNode implements NodeAction {
      * otherwise the documented fallback.
      */
     private int loopContextWindowTokens() {
+        // Per-model effective window (explicit config or probed) beats the
+        // global default — the loop budgeter is otherwise blind to small
+        // local models and never trims for them.
+        if (prefixBudgetPlan != null && prefixBudgetPlan.effectiveMaxTokens() > 0) {
+            return prefixBudgetPlan.effectiveMaxTokens();
+        }
         if (conversationWindowManager != null) {
             int v = conversationWindowManager.getDefaultMaxInputTokens();
             if (v > 0) return v;
@@ -709,12 +762,34 @@ public class ReasoningNode implements NodeAction {
         // so an enable_tool call earlier in this loop takes effect immediately.
         // Falls back to the full tool set when no disclosure service is wired.
         List<ToolCallback> activeCallbacks = (toolDisclosureService != null && toolSet != null)
-                ? toolDisclosureService.split(toolSet, accessor.enabledExtensionTools()).activeCallbacks()
+                ? toolDisclosureService.split(toolSet, accessor.enabledExtensionTools(), autoDemotedTools)
+                        .activeCallbacks()
                 : toolCallbacks;
 
         ChatOptions options = buildChatOptions(effectiveReasoning, activeCallbacks);
 
         Prompt prompt = new Prompt(promptMessages, options);
+
+        // Prefix accounting: how much of the window the never-trimmed prefix
+        // (system prompt + runtime context + wiki + skill catalog + ledger)
+        // and the advertised tool schemas consume. Logged on the turn's first
+        // call so a small-window overflow is diagnosable per block instead of
+        // surfacing as an opaque provider 400.
+        int prefixEstimateTokens = TokenEstimator.estimateTokens(nonHistoryPrefix);
+        int toolSchemaEstimateTokens = TokenEstimator.estimateToolsTokens(activeCallbacks);
+        if (accessor.llmCallCount() == 0) {
+            log.info("[ReasoningNode] Prefix accounting conv={}: window={} tokens, prefix={} "
+                            + "(system+context+wiki+skills+ledger), toolSchemas={}, history={}",
+                    conversationId, loopContextWindowTokens(), prefixEstimateTokens,
+                    toolSchemaEstimateTokens, TokenEstimator.estimateTokens(messages));
+        }
+        // The prefix cannot be compacted (history compaction is the only lever),
+        // so a prefix that alone exceeds the window makes the request doomed —
+        // fail fast with the same PROMPT_TOO_LONG shape a provider rejection
+        // would produce instead of sending it. Gated on budgeting being active
+        // (an estimation false-positive must not block requests otherwise).
+        boolean prefixOverflow = prefixBudgetPlan != null && prefixBudgetPlan.enabled()
+                && prefixEstimateTokens + toolSchemaEstimateTokens > prefixBudgetPlan.effectiveMaxTokens();
 
         // ======= LLM 调用区域 =======
         // nextLlmCallCount 在首次 streamCall 之前计算。
@@ -745,7 +820,19 @@ public class ReasoningNode implements NodeAction {
 
         NodeStreamingChatHelper.StreamResult result;
         try {
-            result = streamingHelper.streamCall(chatModel, prompt, conversationId, "reasoning");
+            if (prefixOverflow) {
+                String overflowMessage = "Prompt 前缀估算 " + (prefixEstimateTokens + toolSchemaEstimateTokens)
+                        + " tokens(注入块 " + prefixEstimateTokens + " + 工具 schema " + toolSchemaEstimateTokens
+                        + ")已超过模型上下文窗口 " + prefixBudgetPlan.effectiveMaxTokens()
+                        + " tokens,历史压缩无法解决——请精简 Agent 身份 prompt、减少绑定工具/技能,"
+                        + "或换用更大窗口的模型";
+                log.error("[ReasoningNode] {}", overflowMessage);
+                result = new NodeStreamingChatHelper.StreamResult(null, null, null, List.of(), false,
+                        0, 0, false, overflowMessage,
+                        NodeStreamingChatHelper.ErrorType.PROMPT_TOO_LONG, false, 0, 0, 0);
+            } else {
+                result = streamingHelper.streamCall(chatModel, prompt, conversationId, "reasoning");
+            }
 
             // PTL 处理：结构化压缩后重试。复用 nonHistoryPrefix 保证重试
             // Prompt 仍带 wiki / runtime context；早期的 tail-only 路径会把
@@ -1119,7 +1206,9 @@ public class ReasoningNode implements NodeAction {
         if (!projectRecalled && wikiContextService != null && agentIdStr != null && !agentIdStr.isEmpty()) {
             try {
                 Long parsedAgentId = Long.parseLong(agentIdStr);
-                String wikiRelevant = wikiContextService.buildRelevantContext(parsedAgentId, userMsg);
+                Integer wikiBudgetTokens = (prefixBudgetPlan != null && prefixBudgetPlan.enabled())
+                        ? prefixBudgetPlan.wikiTokens() : null;
+                String wikiRelevant = wikiContextService.buildRelevantContext(parsedAgentId, userMsg, wikiBudgetTokens);
                 if (wikiRelevant != null && !wikiRelevant.isBlank()) {
                     prefix.add(new UserMessage(wikiRelevant));
                 }
@@ -1166,11 +1255,11 @@ public class ReasoningNode implements NodeAction {
                     default -> 16384;
                 };
                 builder.thinking(org.springframework.ai.anthropic.api.AnthropicApi.ThinkingType.ENABLED, budgetTokens);
-                builder.maxTokens(budgetTokens + maxOutputTokens);
+                builder.maxTokens(budgetTokens + effectiveMaxOutputTokens());
                 builder.temperature(1.0);
                 log.info("[ReasoningNode] Anthropic extended thinking enabled: model={}, budget={}", currentModel, budgetTokens);
             } else {
-                builder.maxTokens(maxOutputTokens);
+                builder.maxTokens(effectiveMaxOutputTokens());
                 if (thinkingOn && !isClaudeModel) {
                     log.debug("[ReasoningNode] Anthropic protocol model {} does not support thinking, skipping", currentModel);
                 }
@@ -1185,7 +1274,7 @@ public class ReasoningNode implements NodeAction {
         // DashScope rejects max_tokens above its 8192 ceiling with a 400 that
         // the failover layer misreads as "model not found"; clamp so a
         // DashScope-backed model never overflows the provider limit.
-        int effectiveMaxTokens = maxOutputTokens;
+        int effectiveMaxTokens = effectiveMaxOutputTokens();
         if (chatModel instanceof com.alibaba.cloud.ai.dashscope.chat.DashScopeChatModel
                 && effectiveMaxTokens > DASHSCOPE_MAX_OUTPUT_TOKENS) {
             log.debug("[ReasoningNode] Clamping max_tokens {} -> {} for DashScope-backed model",

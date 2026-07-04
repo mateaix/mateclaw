@@ -57,6 +57,18 @@
               <div class="card-kicker">{{ t('tokenUsage.assistantMessages') }}</div>
               <div class="card-value">{{ formatNumber(data.totalMessages) }}</div>
             </div>
+            <div v-if="(data.totalCacheReadTokens || 0) + (data.totalCacheWriteTokens || 0) > 0" class="summary-card">
+              <div class="card-kicker">{{ t('tokenUsage.cacheReadTokens') }}</div>
+              <div class="card-value">{{ formatNumber(data.totalCacheReadTokens) }}</div>
+            </div>
+            <div v-if="(data.totalCacheReadTokens || 0) + (data.totalCacheWriteTokens || 0) > 0" class="summary-card">
+              <div class="card-kicker">{{ t('tokenUsage.cacheWriteTokens') }}</div>
+              <div class="card-value">{{ formatNumber(data.totalCacheWriteTokens) }}</div>
+            </div>
+            <div v-if="(data.totalReasoningTokens || 0) > 0" class="summary-card">
+              <div class="card-kicker">{{ t('tokenUsage.reasoningTokens') }}</div>
+              <div class="card-value">{{ formatNumber(data.totalReasoningTokens) }}</div>
+            </div>
           </div>
 
           <div v-if="data.totalMessages === 0" class="empty-state">

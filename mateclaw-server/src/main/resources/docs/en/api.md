@@ -2,6 +2,8 @@
 
 This page is source-aligned with the Spring MVC controllers under `mateclaw-server/src/main/java`. The route inventory below was rebuilt from controller annotations; when it conflicts with an older feature page, this page and the source code are the contract.
 
+> Want a machine-readable OpenAPI doc (import into Postman / Apifox, online debugging)? See the [OpenAPI / Swagger guide](./openapi.md) — visit `/swagger-ui.html` on your deployment.
+
 ## Contract
 
 All application REST endpoints use the `/api/v1` prefix unless explicitly noted. Most JSON responses use the project envelope:
@@ -33,6 +35,119 @@ Authorization: Bearer <token>
 Public routes from `SecurityConfig` include login, first-run setup, webhook/webchat callbacks, chat stream/stop routes, agent stream route, talk WebSocket, `GET /api/v1/settings/language`, and `/api/v1/files/generated/**` one-time generated-file downloads. Role annotations such as `@RequireWorkspaceRole` and `@RequireGlobalAdmin` still apply after authentication.
 
 Workspace-scoped APIs usually accept `X-Workspace-Id`. If omitted, many handlers fall back to workspace `1` for desktop/local compatibility.
+
+## Conventions
+
+Structural contracts shared by every endpoint. Read this section first, then the flagship endpoint examples and the full route inventory below will line up.
+
+### Response envelope `R<T>`
+
+Source: `vip.mate.common.result.R` (`R.java`). Three fields:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `code` | `int` | Status code. `200` = success; see "Status codes" below |
+| `msg` | `string` | Message. **Note: `msg`, not `message`** |
+| `data` | `T` | Payload; `null` on failure |
+
+Success example:
+
+```json
+{ "code": 200, "msg": "success", "data": { "id": "1", "name": "Agent A" } }
+```
+
+Failure example:
+
+```json
+{ "code": 401, "msg": "Token expired or invalid", "data": null }
+```
+
+**HTTP status mirrors `code`**: `RHttpStatusAdvice` (`ResponseBodyAdvice`) sets the HTTP status to `HttpStatus.resolve(code)` whenever `code != 200`. So business code `401` → HTTP 401, `404` → HTTP 404. Business codes that are not valid HTTP statuses (e.g. `1001`, `2001`) fall back to HTTP `500`.
+
+### Status codes
+
+Source: `vip.mate.common.result.ResultCode`. Two categories:
+
+| Code | Meaning | Maps to HTTP status directly? |
+|---|---|---|
+| `200` | Success | Yes |
+| `400` | Param error | Yes |
+| `401` | Unauthorized | Yes |
+| `403` | Forbidden | Yes |
+| `404` | Not found | Yes |
+| `500` | System error | Yes |
+| `1001` | Agent not found | No (HTTP 500) |
+| `1002` | Agent busy | No (HTTP 500) |
+| `2001` | LLM error | No (HTTP 500) |
+| `3001` | Tool not found | No (HTTP 500) |
+| `4001` | Channel error | No (HTTP 500) |
+
+### Error model
+
+Errors are handled centrally by `GlobalExceptionHandler` (`@RestControllerAdvice`):
+
+| HTTP | Trigger | Body |
+|---|---|---|
+| 400 | `@Valid` / `BindException` validation failure | `{code:400, msg:"field: defaultMessage"}` — only the **first** field error is returned |
+| 400 | `MethodArgumentTypeMismatchException` (e.g. non-numeric `/{id}`) | `{code:400, msg:"Invalid value for parameter 'X': expected Long"}` |
+| 401 | Unauthenticated / invalid token (`SecurityConfig` `authenticationEntryPoint`) | `{code:401, msg:"Token expired or invalid"}` |
+| 403 | Insufficient workspace role (`WorkspaceAccessInterceptor` writes the response directly) | `{code:403, msg:"...", data:null}` |
+| 404 | No route match (`NoResourceFoundException`) | `{code:404, msg:"Resource not found"}` |
+| 405 | Method not supported (`HttpRequestMethodNotSupportedException`) | `{code:405, msg:"Method not allowed"}` |
+| 409 | Confirmation required (`ConfirmRequiredException`) | **Breaks the envelope**: `{code, message, boundAgents}` (field is `message`, **not** `msg`) — the only non-`R` response in the API |
+| 500 | Catch-all (`Exception`) | `{code:500, msg:"Internal server error"}` — stack trace is not leaked |
+| 503 | Async timeout (non-SSE) | `{code:503, msg:"Request timeout, please try again"}` |
+
+> SSE endpoints (`/chat/stream`, etc.) do **not** emit a JSON envelope on error; they send an SSE `error` event instead: `event: error` / `data: {"message":"..."}`. See the [WebChat guide](./webchat.md#sse-event-protocol).
+
+### Pagination
+
+Paginated endpoints return `R<IPage<T>>` directly — the MyBatis Plus `Page` serialization:
+
+```json
+{
+  "code": 200,
+  "data": {
+    "records": [ /* current page rows */ ],
+    "total": 128,
+    "size": 20,
+    "current": 1,
+    "pages": 7
+  }
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `records` | Current page rows (**field name is `records`**, not `list`/`items`) |
+| `total` | Total record count |
+| `size` | Page size |
+| `current` | Current page number, 1-based |
+| `pages` | Total page count |
+
+Common query params: `page` (default 1), `size` (default 20). Examples: `GET /api/v1/audit/events`, `GET /api/v1/conversations/page`.
+
+### ID & type conventions
+
+- **Snowflake `Long` serialized as JSON string**: all backend PKs are `Long`, but Jackson serializes them as strings. Clients (especially JS) should **treat IDs as strings end-to-end** to avoid `Number.MAX_SAFE_INTEGER` precision loss.
+- **Password is write-only**: `UserEntity.password` is annotated `@JsonProperty(access = WRITE_ONLY)` — accepted on login/create, never present in any response.
+
+### Auth model
+
+`JwtAuthFilter` supports three token forms, all via the `Authorization` header:
+
+1. **JWT**: `Authorization: Bearer <jwt>`. Starts with `eyJ` (base64 header). The `token` field returned by login is exactly this.
+2. **Personal Access Token (PAT)**: `Authorization: Bearer <pat>`. Prefixed with `mc_`, for headless / CI / SDK use. The plaintext is returned **only once** at `POST /api/v1/auth/tokens` creation; only the hash is stored afterwards. The filter dispatches by the `mc_` prefix to the PAT verification path.
+3. **SSE `?token=` query param**: the native browser `EventSource` cannot set custom headers, so SSE streaming endpoints additionally accept `?token=<token>` (JWT or PAT).
+
+**Sliding renewal**: when a JWT is near expiry (default < 2h remaining), the response header returns a fresh token — `X-New-Token: <newJwt>` (with `Access-Control-Expose-Headers: X-New-Token`). Clients should watch for and replace the locally stored token. JWT TTL defaults to 24h (`mateclaw.jwt.expiration=86400000`).
+
+### How `X-Workspace-Id` works
+
+- **No ThreadLocal / request-context holder.** The workspace id is consumed two ways:
+  1. **RBAC enforcement**: `WorkspaceAccessInterceptor` reads `X-Workspace-Id` for methods annotated `@RequireWorkspaceRole` (roles owner > admin > member > viewer) or `@RequireGlobalAdmin`, falling back to workspace `1` when absent/unparseable. Insufficient permission writes a 403 JSON response directly.
+  2. **Business reads**: many controllers take it via `@RequestHeader(value="X-Workspace-Id", required=false) Long workspaceId` for query scoping, also defaulting to `1`.
+- So workspace isolation is enforced by "interceptor auth + controller self-read" together; clients should pass `X-Workspace-Id` explicitly for workspace-scoped calls.
 
 ## Frequently Used APIs
 
@@ -71,6 +186,217 @@ Image, video, music, and 3D generation are agent tools (`image_generate`, `video
 ### Non-REST Endpoint
 
 `/api/v1/talk/ws` is registered by `WebSocketConfig` for Talk Mode. It is intentionally listed in `SecurityConfig` as a public WebSocket route, but it is not counted in the controller route inventory below.
+
+## Flagship Endpoint Reference
+
+Full request/response reference for the most-used endpoints. Every field maps 1:1 to the source DTO. The 406-row route inventory further down is the complete index; this section is the human-readable walkthrough for high-traffic endpoints.
+
+### Login: `POST /api/v1/auth/login`
+
+Public endpoint (no auth required). Exchanges credentials for a JWT.
+
+**Request body** `LoginRequest` (`AuthController.java`):
+
+| Field | Type | Description |
+|---|---|---|
+| `username` | string | Username |
+| `password` | string | Password |
+
+**Response** `R<LoginResponse>`:
+
+```json
+{
+  "code": 200,
+  "data": {
+    "id": "1",
+    "token": "eyJhbGciOi...",
+    "username": "admin",
+    "nickname": "Admin",
+    "role": "admin"
+  }
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | string | User ID (Snowflake, as a string) |
+| `token` | string | **JWT** — send as `Authorization: Bearer <token>` on subsequent requests. There is no separate expiry field; expiry lives in the JWT's `exp` claim |
+| `username` | string | Username |
+| `nickname` | string | Display name |
+| `role` | string | `admin` or `user` |
+
+**Errors**: wrong username/password → HTTP 401, `{code:401, msg:"..."}`.
+
+```bash
+curl -X POST http://localhost:18088/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"admin123"}'
+```
+
+### Streaming chat: `POST /api/v1/chat/stream`
+
+> Public endpoint (`SecurityConfig` permits `/api/v1/chat/stream`), but in practice you still need a token to resolve the user and permissions — pass `?token=` or the `Authorization` header.
+
+Returns `text/event-stream`; **not** the JSON envelope. The SSE event protocol (`meta` / `content_delta` / `done` / `error`, etc.) is documented in the [WebChat guide](./webchat.md#sse-event-protocol).
+
+**Request body** `ChatController.ChatStreamRequest` (`ChatController.java:1211`):
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `agentId` | string | — | Required, target Agent ID |
+| `message` | string | — | This turn's user message (mutually exclusive with `contentParts`) |
+| `contentParts` | array | — | Multimodal message parts (text + image); mutually exclusive with `message` |
+| `conversationId` | string | `"default"` | Conversation ID; for a new conversation use a client-generated unique string |
+| `reconnect` | boolean | — | `true` = reconnect to an in-flight stream, send no new message |
+| `lastEventId` | string | — | Only meaningful with `reconnect=true`: skip events with id ≤ this value to avoid duplicate replay |
+| `thinkingLevel` | string | null | Reasoning depth: `off` / `low` / `medium` / `high` / `max`; null follows the Agent default |
+| `modelProvider` | string | null | Per-conversation provider override (paired with `modelName`) |
+| `modelName` | string | null | Per-conversation model-name override |
+| `endUserId` | string | null | Third-party end-user ID, isolates memory when one MateClaw account fronts many end-users |
+
+The native browser `EventSource` cannot send a POST body — use `fetch()` with a streaming reader.
+
+```bash
+curl -N -X POST "http://localhost:18088/api/v1/chat/stream?token=$TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Accept: text/event-stream" \
+  -d '{"agentId":"1","message":"Hello","conversationId":"conv-abc123"}'
+```
+
+Related endpoints: `POST /api/v1/chat/{conversationId}/stop` (stop generation), `POST /api/v1/chat/{conversationId}/interrupt` (queue a follow-up without interrupting the current stream).
+
+### Agent management
+
+Mounted at `/api/v1/agents`, `@Tag("Agent管理")`. Every method requires `@RequireWorkspaceRole` (at least `viewer`; writes need `member`).
+
+**List** `GET /api/v1/agents?enabled=true` — request header `X-Workspace-Id`; returns `R<List<AgentEntity>>`.
+
+**Create** `POST /api/v1/agents` — request body is an `AgentEntity` (key fields below); the backend force-injects `workspaceId` and `creatorUserId`. Returns the full created entity.
+
+Key `AgentEntity` fields (`AgentEntity.java`):
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | string | Agent ID (ignored on create, assigned by the backend) |
+| `name` | string | Name |
+| `description` | string | Description |
+| `agentType` | string | `react` or `plan_execute` |
+| `systemPrompt` | string | System prompt |
+| `modelName` | string | Per-Agent model override (model name); empty = global default |
+| `maxIterations` | int | Max iterations |
+| `enabled` | boolean | Enabled flag |
+| `icon` | string | Icon (emoji or URL) |
+| `tags` | string | Tags (comma-separated) |
+| `defaultThinkingLevel` | string | Default reasoning depth |
+| `primaryKbId` | string | Primary knowledge base ID |
+| `skillsDisabled` | boolean | Explicitly disable all skills |
+| `toolsDisabled` | boolean | Explicitly disable all non-system tools |
+
+**Delete** `DELETE /api/v1/agents/{id}` — three-way auth: system admin / workspace admin+ / the creator. Otherwise 403.
+
+```bash
+# List
+curl http://localhost:18088/api/v1/agents?enabled=true \
+  -H "Authorization: Bearer $TOKEN" -H "X-Workspace-Id: 1"
+
+# Create
+curl -X POST http://localhost:18088/api/v1/agents \
+  -H "Authorization: Bearer $TOKEN" -H "X-Workspace-Id: 1" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Support Agent","agentType":"react","systemPrompt":"You are a support agent","enabled":true}'
+```
+
+> The same tree also has `GET /api/v1/agents/{id}/chat/stream` (a GET form of SSE, coexisting with the POST `/chat/stream` above), `POST /api/v1/agents/{id}/chat` (synchronous chat), and `POST /api/v1/agents/{id}/execute` (Plan-Execute).
+
+### Conversation management
+
+Mounted at `/api/v1/conversations`, `@Tag("会话管理")`. Isolated per logged-in user (JWT principal).
+
+**List** `GET /api/v1/conversations` — returns `R<List<ConversationVO>>`. `ConversationVO` adds display fields on top of the conversation entity:
+
+| Field | Description |
+|---|---|
+| `conversationId` | Conversation ID (a string, not a Snowflake) |
+| `title` | Title |
+| `agentId` / `agentName` / `agentIcon` | Associated Agent |
+| `username` | Owning user |
+| `messageCount` | Message count |
+| `lastMessage` / `lastActiveTime` | Last message and time |
+| `pinned` / `archived` | Pinned / archived (0/1) |
+| `modelProvider` / `modelName` | Per-conversation model override |
+| `status` | `active` (active within 24h) / `closed` |
+| `streamStatus` | `idle` / `running` |
+| `source` | Source channel: `web` / `feishu` / `dingtalk` / `telegram` / `discord` / `wecom` / `qq` / `weixin` / `cron` |
+
+**Paginated** `GET /api/v1/conversations/page?page=1&size=20&keyword=xxx` — returns `R<IPage<ConversationVO>>` (pagination shape in "Conventions").
+
+**Message history** `GET /api/v1/conversations/{conversationId}/messages` — supports three modes:
+- No `limit`: returns all messages (`R<List<MessageVO>>`, backward compatible).
+- With `limit`: returns the latest `limit` messages + a `hasMore` flag: `R<{messages: MessageVO[], hasMore: boolean}>`.
+- With `beforeId` + `limit`: pull up to load earlier messages.
+
+Key `MessageVO` fields: `id`, `role`, `content`, `toolName`, `status`, `metadata` (object, contains toolCalls etc.), `promptTokens` / `completionTokens`, `runtimeModel` / `runtimeProvider`, `contentParts`, `createTime`.
+
+**Per-conversation ops**: `PUT .../title` (rename), `PUT .../pin` (`{pinned:bool}`), `PUT .../model` (switch model `{modelProvider, modelName}`), `DELETE .../messages` (clear messages, keep the conversation), `DELETE .../{conversationId}` (delete conversation), `POST /batch-delete` (`{conversationIds: [...]}`), `GET .../status` (stream status `{streamStatus}`).
+
+> Every op first checks `isConversationOwner(conversationId, username)`; non-owners get 403.
+
+### Model configuration
+
+Mounted at `/api/v1/models`, `@Tag("模型配置管理")`. `GET /` and `GET /catalog` require `@RequireGlobalAdmin` (they include sensitive info like API keys); `/enabled`, `/default`, `/active` only need `viewer`.
+
+- `GET /api/v1/models` — enabled provider list (`R<List<ProviderInfoDTO>>`, includes keys, admin only).
+- `GET /api/v1/models/enabled` — enabled model list (`R<List<ModelConfigEntity>>`, no keys).
+- `GET /api/v1/models/default` — global default model (`R<ModelConfigEntity>`).
+- `GET /api/v1/models/active` — current active model `{activeLlm: {provider, modelName}}`.
+- `PUT /api/v1/models/active` — set the active model.
+
+### Audit events (pagination example)
+
+`GET /api/v1/audit/events` — `@RequireWorkspaceRole("admin")`, returns `R<IPage<AuditEventEntity>>`. The canonical example of "pagination + workspace header".
+
+| Query param | Default | Description |
+|---|---|---|
+| `action` | — | Action filter (e.g. `CREATE` / `UPDATE` / `DELETE`) |
+| `resourceType` | — | Resource type filter (e.g. `AGENT`) |
+| `startTime` | — | ISO 8601 start time |
+| `endTime` | — | ISO 8601 end time |
+| `page` | 1 | Page number |
+| `size` | 20 | Page size |
+
+```bash
+curl "http://localhost:18088/api/v1/audit/events?page=1&size=20&resourceType=AGENT" \
+  -H "Authorization: Bearer $TOKEN" -H "X-Workspace-Id: 1"
+```
+
+### Change password: `PUT /api/v1/auth/users/{id}/password`
+
+Three things to note (they differ from intuition):
+
+1. Params go via **`@RequestParam`, not a request body**: both `oldPassword` and `newPassword` are query params.
+2. The `{id}` in the path is **informational only**: the user actually operated on is resolved from the JWT principal (`auth.getName()`); a user can only change their own password.
+3. Requires login (not `@RequireGlobalAdmin`).
+
+```bash
+curl -X PUT "http://localhost:18088/api/v1/auth/users/1/password?oldPassword=admin123&newPassword=newPass456" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+### Personal Access Token
+
+Mounted at `/api/v1/auth/tokens`, `@Tag("Personal Access Tokens")`. For headless / CI / SDK use.
+
+- `GET /api/v1/auth/tokens` — list my PATs (metadata only; **plaintext is never returned**).
+- `POST /api/v1/auth/tokens` — create a PAT: **the plaintext appears only in this response**, afterwards only the SHA-256 hash is stored and cannot be recovered. Save it immediately.
+- `DELETE /api/v1/auth/tokens/{id}` — soft-delete revoke; subsequent auth with this token fails.
+
+A created PAT (`mc_` prefix) goes straight into `Authorization: Bearer mc_...`; `JwtAuthFilter` dispatches by prefix to the PAT verification path, behaving identically to a JWT.
+
+### Tool approval (important clarification)
+
+There is **no** standalone approval REST endpoint like `POST /api/v1/approvals/{id}/resolve`. Web-side approve / deny happens by sending `/approve` or `/deny` in the waiting conversation, going through the chat-stream replay flow. The read-only "hydration" endpoint after a page refresh is `GET /api/v1/chat/{conversationId}/pending-approvals`. Auto-approval policies are managed under `/api/v1/approval/grants`.
+
+> Dangerous operations requiring a second confirmation raise `ConfirmRequiredException` — returning **HTTP 409** and **breaking the `R` envelope**: `{code, message, boundAgents}` (the field is `message`, not `msg`). Clients should branch on the 409 status and render a confirmation dialog.
 
 ## Source-Aligned Route Inventory
 
@@ -442,6 +768,7 @@ Total routes extracted: 406.
 | Method | Path | Purpose / handler |
 |---|---|---|
 | `POST` | `/api/v1/wiki/admin/backfill-tokens` | `Force-run the token-count backfill batch now` |
+| `GET` | `/api/v1/wiki/admin/failures` | `Cross-KB list of materials needing attention (failed/partial/degraded) — admin` |
 | `POST` | `/api/v1/wiki/admin/kb/{kbId}/rebuild-overview` | `Ensure overview/log scaffold + rebuild overview stats now` |
 | `GET` | `/api/v1/wiki/chunks/{chunkId}/pages` | `Pages By Chunk Id` |
 | `DELETE` | `/api/v1/wiki/hot-cache/{kbId}` | `Soft-delete the hot cache row` |

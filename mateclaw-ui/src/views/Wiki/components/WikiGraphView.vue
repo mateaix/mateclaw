@@ -24,7 +24,17 @@
     />
 
     <!-- Page-level graph (ECharts canvas) -->
-    <div v-show="graphMode === 'pages'" ref="chartEl" class="graph-canvas" />
+    <div v-show="graphMode === 'pages'" class="graph-canvas-wrap">
+      <!-- Find a node by name: highlights it (dimming the rest) and opens its panel -->
+      <GraphNodeSearch
+        v-if="nodes.length"
+        class="graph-search"
+        :nodes="pageSearchNodes"
+        @focus="focusPageNode"
+        @clear="clearHighlight"
+      />
+      <div ref="chartEl" class="graph-canvas" />
+    </div>
 
     <!-- Node detail panel sub-component -->
     <WikiGraphNodePanel
@@ -58,6 +68,7 @@ import { useWikiPageType } from '@/composables/useWikiPageType'
 import WikiGraphToolbar from './WikiGraphToolbar.vue'
 import WikiGraphNodePanel from './WikiGraphNodePanel.vue'
 import WikiEntityGraphView from './WikiEntityGraphView.vue'
+import GraphNodeSearch from './GraphNodeSearch.vue'
 
 echarts.use([GraphChart, TooltipComponent, LegendComponent, CanvasRenderer])
 
@@ -215,6 +226,31 @@ const selectedNodeLinks = computed(() => {
     })
     .filter(Boolean) as WikiPage[]
 })
+
+// Candidates for the node search box: page title + type label + node color.
+const pageSearchNodes = computed(() =>
+  nodes.value.map(p => ({
+    id: p.slug,
+    name: p.title,
+    type: formatPageTypeLabel(p.pageType || 'other'),
+    color: typeColor(p.pageType),
+  })),
+)
+
+// Search hit: select the page (opens its panel) and emphasize its node —
+// focus:'adjacency' dims the rest so the match is easy to spot.
+function focusPageNode(slug: string) {
+  const page = slugToPage.value.get(slug)
+  if (page) selectedNode.value = page
+  if (!chart) return
+  const idx = nodes.value.findIndex(p => p.slug === slug)
+  chart.dispatchAction({ type: 'downplay', seriesIndex: 0 })
+  if (idx >= 0) chart.dispatchAction({ type: 'highlight', seriesIndex: 0, dataIndex: idx })
+}
+
+function clearHighlight() {
+  chart?.dispatchAction({ type: 'downplay', seriesIndex: 0 })
+}
 
 function buildOption() {
   const labelColor = cssVar('--mc-text-secondary', '#665245')
@@ -403,10 +439,23 @@ watch(graphMode, (mode) => {
   background: var(--mc-bg-base, #1a1a1a);
 }
 
+.graph-canvas-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
 .graph-canvas {
   flex: 1;
   min-height: 0;
   width: 100%;
+}
+/* Search overlay anchored to the canvas top-left, clear of the detail panel. */
+.graph-search {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 5;
 }
 
 .graph-empty {

@@ -38,7 +38,12 @@ import vip.mate.llm.chatmodel.ReasoningEffortResolver;
 import vip.mate.llm.model.ModelConfigEntity;
 import vip.mate.llm.model.ModelFamily;
 import vip.mate.llm.model.ModelProtocol;
+import vip.mate.agent.context.PrefixBudgetPlan;
+import vip.mate.agent.context.PrefixBudgetPlanner;
+import vip.mate.agent.context.TokenEstimator;
 import vip.mate.llm.model.ModelProviderEntity;
+import vip.mate.llm.probe.ModelContextWindowResolver;
+import vip.mate.llm.routing.ProviderModelRef;
 import vip.mate.llm.routing.ProviderRouter;
 import vip.mate.llm.service.ModelConfigService;
 import vip.mate.llm.service.ModelProviderService;
@@ -47,6 +52,7 @@ import vip.mate.skill.runtime.SkillCatalogRenderer;
 import vip.mate.skill.service.SkillService;
 import vip.mate.system.service.SystemSettingService;
 import vip.mate.tool.ToolRegistry;
+import vip.mate.tool.disclosure.ToolUsageRecencyTracker;
 import vip.mate.memory.spi.MemoryManager;
 import vip.mate.workspace.document.WorkspaceFileService;
 import vip.mate.tool.guard.service.ToolGuardService;
@@ -96,6 +102,9 @@ public class AgentGraphBuilder {
     private final ConversationService conversationService;
     private final ModelConfigService modelConfigService;
     private final ModelProviderService modelProviderService;
+    private final ModelContextWindowResolver contextWindowResolver;
+    private final PrefixBudgetPlanner prefixBudgetPlanner;
+    private final ToolUsageRecencyTracker toolUsageRecencyTracker;
     private final vip.mate.llm.service.ModelCapabilityService modelCapabilityService;
     private final ProviderRouter providerRouter;
     private final PlanningService planningService;
@@ -353,6 +362,12 @@ public class AgentGraphBuilder {
 
         ModelProtocol protocol = ModelProtocol.fromChatModel(provider.getChatModel());
 
+        // Effective context window: explicit config > local-server probe > null
+        // (downstream keeps its global-default fallback). Without probing, a
+        // local 8k/16k model with maxInputTokens unset budgets against the
+        // 128k global default and the first oversized request fails outright.
+        Integer effectiveMaxInputTokens = contextWindowResolver.resolveMaxInputTokens(provider, runtimeModel);
+
         // 内置搜索检测（DashScope / Kimi），但不再移除 WebSearchTool — 两者协同而非互斥
         boolean builtinSearchEnabled = false;
         Map<String, Object> providerKwargs = modelProviderService.readProviderGenerateKwargs(provider);
@@ -387,23 +402,45 @@ public class AgentGraphBuilder {
             }
         }
 
-        String enhancedPrompt = buildEnhancedPrompt(entity, builtinSearchEnabled);
+        // Prefix injection budget: optional blocks (memory / wiki / skill
+        // catalog / extension catalog / ledger) share a token budget scaled
+        // to the model's effective window. The agent's own prompt and the
+        // tool schemas are never truncated — they are subtracted from the
+        // budget so the optional blocks absorb the squeeze.
+        int basePromptTokens = TokenEstimator.estimateTokens(entity.getSystemPrompt());
+        int toolSchemaTokens = TokenEstimator.estimateToolsTokens(toolSet.callbacks());
+        PrefixBudgetPlan prefixBudgetPlan = prefixBudgetPlanner.plan(
+                effectiveMaxInputTokens, basePromptTokens, toolSchemaTokens);
+        if (basePromptTokens > prefixBudgetPlan.effectiveMaxTokens() / 2) {
+            log.warn("Agent {} 的身份 prompt 约 {} tokens,已超过模型有效窗口 {} 的一半——"
+                            + "系统不会截断用户自写的身份 prompt,请自行精简,否则小上下文模型可能无法响应",
+                    entity.getId(), basePromptTokens, prefixBudgetPlan.effectiveMaxTokens());
+        }
+
+        String enhancedPrompt = buildEnhancedPrompt(entity, builtinSearchEnabled, prefixBudgetPlan.memoryTokens());
 
         // Runtime skill-catalog renderer — captures this agent's bound skills,
         // effective tool allowlist, model window and workspace; invoked each
         // turn by the reasoning / step-execution nodes with the skills loaded
         // so far this run so load_skill pins float to the top of the catalog.
         SkillCatalogRenderer skillCatalogRenderer = buildSkillCatalogRenderer(
-                entity, boundTools, runtimeModel.getMaxInputTokens());
+                entity, boundTools, effectiveMaxInputTokens);
 
         // Extension-tool catalog — only for ReAct. The dynamic tool split runs
         // in ReasoningNode; Plan-Execute keeps advertising every tool (it has no
         // action node to record enable_tool), so baking the catalog there would
         // describe an enable_tool flow that can never take effect.
+        // Auto-demotion is likewise ReAct-only: hiding a tool from Plan-Execute
+        // would remove it with no enable_tool path to recover it.
         boolean isPlanExecute = "plan_execute".equals(entity.getAgentType());
+        Set<String> autoDemotedTools = Set.of();
         if (!isPlanExecute) {
+            if (prefixBudgetPlan.enabled()) {
+                autoDemotedTools = toolDisclosureService.computeAutoDemotions(
+                        toolSet, prefixBudgetPlan.toolSchemaBudgetTokens());
+            }
             String extensionCatalog = toolDisclosureService.renderExtensionCatalog(
-                    toolSet, runtimeModel.getMaxInputTokens());
+                    toolSet, effectiveMaxInputTokens, autoDemotedTools);
             if (extensionCatalog != null && !extensionCatalog.isBlank()) {
                 enhancedPrompt = enhancedPrompt + extensionCatalog;
             }
@@ -423,7 +460,8 @@ public class AgentGraphBuilder {
             log.info("Built StateGraph Plan-Execute agent: {} (maxIterations={}, tools={}, protocol={})",
                     entity.getName(), maxIter, toolSet.size(), protocol.getId());
         } else {
-            agent = buildReActAgent(toolSet, runtimeModel, maxIter, entity.getId(), skillCatalogRenderer);
+            agent = buildReActAgent(toolSet, runtimeModel, maxIter, entity.getId(), skillCatalogRenderer,
+                    prefixBudgetPlan, autoDemotedTools);
             // StateGraph 路径下工具调用由 ActionNode 控制，始终启用
             toolCallingEnabled = true;
             log.info("Built StateGraph ReAct agent: {} (maxIterations={}, tools={}, protocol={})",
@@ -451,7 +489,7 @@ public class AgentGraphBuilder {
         agent.userLocale = resolveLocale();
         agent.temperature = runtimeModel.getTemperature();
         agent.maxTokens = runtimeModel.getMaxTokens();
-        agent.maxInputTokens = runtimeModel.getMaxInputTokens();
+        agent.maxInputTokens = effectiveMaxInputTokens;
         agent.topP = runtimeModel.getTopP();
         agent.toolCallingEnabled = toolCallingEnabled;
 
@@ -510,11 +548,17 @@ public class AgentGraphBuilder {
 
     StateGraphReActAgent buildReActAgent(AgentToolSet toolSet, ModelConfigEntity runtimeModel,
                                          int maxIter, Long agentId, SkillCatalogRenderer skillCatalogRenderer) {
+        return buildReActAgent(toolSet, runtimeModel, maxIter, agentId, skillCatalogRenderer, null, Set.of());
+    }
+
+    StateGraphReActAgent buildReActAgent(AgentToolSet toolSet, ModelConfigEntity runtimeModel,
+                                         int maxIter, Long agentId, SkillCatalogRenderer skillCatalogRenderer,
+                                         PrefixBudgetPlan prefixBudgetPlan, Set<String> autoDemotedTools) {
         ChatModel chatModel = buildRuntimeChatModel(runtimeModel);
         ChatClient chatClient = ChatClient.create(chatModel);
         String reasoningEffort = resolveReasoningEffortForModel(runtimeModel);
         CompiledGraph compiledGraph = buildReActGraph(toolSet, chatModel, maxIter, reasoningEffort,
-                runtimeModel, agentId, skillCatalogRenderer);
+                runtimeModel, agentId, skillCatalogRenderer, prefixBudgetPlan, autoDemotedTools);
         return new StateGraphReActAgent(chatClient, conversationService, compiledGraph,
                 chatModel, conversationWindowManager, toolSet);
     }
@@ -565,6 +609,14 @@ public class AgentGraphBuilder {
                     streamTracker, fallbackChain, llmCacheMetricsAggregator, providerHealthTracker,
                     primaryModelConfig != null ? primaryModelConfig.getProvider() : null,
                     providerPool);
+            if (primaryModelConfig != null) {
+                // Feed "prompt too long" rejections back into the window resolver
+                // so the next turn budgets against the server-reported limit.
+                streamingHelper.setContextLimitObserver(errorMessage ->
+                        contextWindowResolver.noteContextLimitError(
+                                primaryModelConfig.getProvider(),
+                                primaryModelConfig.getModelName(), errorMessage));
+            }
             ToolExecutionExecutor executor = new ToolExecutionExecutor(
                     toolSet, toolGuardService, approvalService, streamTracker,
                     toolTimeoutProperties, toolResultStorage, toolConcurrencyRegistry,
@@ -573,6 +625,7 @@ public class AgentGraphBuilder {
             // LLM mis-calls a skill name as a tool, the response tells it
             // the right invocation pattern instead of a dead-end error.
             executor.setSkillRuntimeService(skillRuntimeService);
+            executor.setUsageRecencyTracker(toolUsageRecencyTracker);
             // Optional: route child-agent denied-tool audit events through
             // the audit pipeline. Null when audit is not wired (legacy / test).
             if (auditEventService != null) {
@@ -647,6 +700,9 @@ public class AgentGraphBuilder {
                     // Token Usage
                     .addStrategy(MateClawStateKeys.PROMPT_TOKENS, KeyStrategy.REPLACE)
                     .addStrategy(MateClawStateKeys.COMPLETION_TOKENS, KeyStrategy.REPLACE)
+                    .addStrategy(MateClawStateKeys.CACHE_READ_TOKENS, KeyStrategy.REPLACE)
+                    .addStrategy(MateClawStateKeys.CACHE_WRITE_TOKENS, KeyStrategy.REPLACE)
+                    .addStrategy(MateClawStateKeys.REASONING_TOKENS, KeyStrategy.REPLACE)
                     .addStrategy(MateClawStateKeys.LLM_CALL_COUNT, KeyStrategy.REPLACE)
                     .addStrategy(MateClawStateKeys.RUNTIME_MODEL_NAME, KeyStrategy.REPLACE)
                     .addStrategy(MateClawStateKeys.RUNTIME_PROVIDER_ID, KeyStrategy.REPLACE)
@@ -829,12 +885,28 @@ public class AgentGraphBuilder {
     CompiledGraph buildReActGraph(AgentToolSet toolSet, ChatModel chatModel, int maxIterations,
                                    String reasoningEffort, ModelConfigEntity primaryModelConfig,
                                    Long agentId, SkillCatalogRenderer skillCatalogRenderer) {
+        return buildReActGraph(toolSet, chatModel, maxIterations, reasoningEffort,
+                primaryModelConfig, agentId, skillCatalogRenderer, null, Set.of());
+    }
+
+    CompiledGraph buildReActGraph(AgentToolSet toolSet, ChatModel chatModel, int maxIterations,
+                                   String reasoningEffort, ModelConfigEntity primaryModelConfig,
+                                   Long agentId, SkillCatalogRenderer skillCatalogRenderer,
+                                   PrefixBudgetPlan prefixBudgetPlan, Set<String> autoDemotedTools) {
         try {
             List<vip.mate.llm.failover.FallbackEntry> fallbackChain = buildFallbackChain(primaryModelConfig, agentId);
             NodeStreamingChatHelper streamingHelper = new NodeStreamingChatHelper(
                     streamTracker, fallbackChain, llmCacheMetricsAggregator, providerHealthTracker,
                     primaryModelConfig != null ? primaryModelConfig.getProvider() : null,
                     providerPool);
+            if (primaryModelConfig != null) {
+                // Feed "prompt too long" rejections back into the window resolver
+                // so the next turn budgets against the server-reported limit.
+                streamingHelper.setContextLimitObserver(errorMessage ->
+                        contextWindowResolver.noteContextLimitError(
+                                primaryModelConfig.getProvider(),
+                                primaryModelConfig.getModelName(), errorMessage));
+            }
             ToolExecutionExecutor executor = new ToolExecutionExecutor(
                     toolSet, toolGuardService, approvalService, streamTracker,
                     toolTimeoutProperties, toolResultStorage, toolConcurrencyRegistry,
@@ -843,6 +915,7 @@ public class AgentGraphBuilder {
             // LLM mis-calls a skill name as a tool, the response tells it
             // the right invocation pattern instead of a dead-end error.
             executor.setSkillRuntimeService(skillRuntimeService);
+            executor.setUsageRecencyTracker(toolUsageRecencyTracker);
             // Optional: route child-agent denied-tool audit events through
             // the audit pipeline. Null when audit is not wired (legacy / test).
             if (auditEventService != null) {
@@ -853,10 +926,21 @@ public class AgentGraphBuilder {
             // capability from reasoningEffort == null.
             boolean supportsReasoningEffort = primaryModelConfig != null
                     && ModelFamily.detect(primaryModelConfig.getModelName()).supportsReasoningEffort();
+            // Honor the model's configured output cap. Passing 0 here made the
+            // node fall back to its 16384 default, so the user-configured
+            // maxTokens never took effect and strict local servers (vLLM's
+            // max_model_len pre-check) rejected the request outright.
+            int configuredMaxOutputTokens = (primaryModelConfig != null
+                    && primaryModelConfig.getMaxTokens() != null
+                    && primaryModelConfig.getMaxTokens() > 0)
+                    ? primaryModelConfig.getMaxTokens() : 0;
             ReasoningNode reasoningNode = new ReasoningNode(chatModel, toolSet, reasoningEffort,
                     supportsReasoningEffort,
-                    streamingHelper, conversationWindowManager, streamTracker, 0, wikiContextService,
+                    streamingHelper, conversationWindowManager, streamTracker,
+                    configuredMaxOutputTokens, wikiContextService,
                     skillCatalogRenderer, toolDisclosureService, progressLedgerService);
+            reasoningNode.setPrefixBudgetPlan(prefixBudgetPlan);
+            reasoningNode.setAutoDemotedTools(autoDemotedTools);
             ActionNode actionNode = new ActionNode(executor, streamTracker);
             ObservationProcessor observationProcessor = new ObservationProcessor(graphObservationProperties);
             ObservationNode observationNode = new ObservationNode(observationProcessor, streamTracker);
@@ -935,6 +1019,9 @@ public class AgentGraphBuilder {
                     // Token Usage
                     .addStrategy(MateClawStateKeys.PROMPT_TOKENS, KeyStrategy.REPLACE)
                     .addStrategy(MateClawStateKeys.COMPLETION_TOKENS, KeyStrategy.REPLACE)
+                    .addStrategy(MateClawStateKeys.CACHE_READ_TOKENS, KeyStrategy.REPLACE)
+                    .addStrategy(MateClawStateKeys.CACHE_WRITE_TOKENS, KeyStrategy.REPLACE)
+                    .addStrategy(MateClawStateKeys.REASONING_TOKENS, KeyStrategy.REPLACE)
                     .addStrategy(MateClawStateKeys.RUNTIME_MODEL_NAME, KeyStrategy.REPLACE)
                     .addStrategy(MateClawStateKeys.RUNTIME_PROVIDER_ID, KeyStrategy.REPLACE)
                     // SourceEvidenceLedger: ActionNode 把每轮 ToolResponse 抽取出的
@@ -1184,66 +1271,99 @@ public class AgentGraphBuilder {
         String primaryProviderId = primaryModelConfig != null ? primaryModelConfig.getProvider() : null;
         String primaryModelName = primaryModelConfig != null ? primaryModelConfig.getModelName() : null;
 
-        // RFC-009 PR-3: bias by agent preferences (if any). Listed providers win
-        // their declared order; everything else keeps the global priority order.
-        List<String> preferred = agentId == null
-                ? java.util.Collections.emptyList()
-                : agentBindingService.getPreferredProviderIds(agentId);
-        if (!preferred.isEmpty()) {
-            providers = reorderByPreferences(providers, preferred);
-            log.debug("[LlmFailover] agent={} preferences={} -> chain head reordered", agentId, preferred);
-        }
-
-        // RFC-090 §9.2 调整 C — second-pass reorder: lift providers
-        // that satisfy the bound-skill capability set (vision / video /
-        // audio) ahead of those that don't. Stable otherwise so the
-        // user-preferred order still wins among capable providers.
+        // RFC-090 §9.2 调整 C — lift providers that satisfy the bound-skill
+        // capability set (vision / video / audio) ahead of those that don't.
+        // Run before planning so the non-preferred tail inherits this order;
+        // the explicit preferred-model head keeps the user's declared order.
         try {
             providers = new ArrayList<>(providerRouter.reorderForCapabilities(agentId, providers));
         } catch (Exception e) {
             log.debug("[ProviderRouter] chain reorder failed: {}", e.getMessage());
         }
 
+        // Preferred-model chain: explicit (provider, model) entries lead in the
+        // user's order — the same provider may repeat with different models —
+        // then every non-preferred provider follows with its default model.
+        List<ProviderModelRef> preferred = agentId == null
+                ? java.util.Collections.emptyList()
+                : agentBindingService.getPreferredProviderModels(agentId);
+        List<String> globalProviderIds = providers.stream()
+                .map(ModelProviderEntity::getProviderId)
+                .toList();
+        List<ProviderModelRef> plan = planFallbackOrder(preferred, globalProviderIds);
+        if (!preferred.isEmpty()) {
+            log.debug("[LlmFailover] agent={} preferred-model chain={} -> plan={}", agentId, preferred, plan);
+        }
+
+        // Dedup by exact (provider, model) — seeded with the primary so we never
+        // rebuild the primary call, but OTHER models of the primary provider are
+        // still legitimate fallback entries.
         List<vip.mate.llm.failover.FallbackEntry> chain = new ArrayList<>();
-        for (ModelProviderEntity p : providers) {
-            // Don't put the primary provider's row into the fallback chain — same-instance
-            // skipping is also done in the runtime walker, but excluding here saves building
-            // a duplicate ChatModel at agent-build time.
-            if (primaryProviderId != null && primaryProviderId.equals(p.getProviderId())) {
-                log.debug("[LlmFailover] skipping primary provider {} in fallback chain", primaryProviderId);
-                continue;
-            }
-            // RFC-009 Phase 4: skip providers known-bad at build time. The runtime walker in
-            // NodeStreamingChatHelper re-checks pool membership per request, so a provider
-            // that re-enters the pool later still gets used (the graph is rebuilt on
+        Set<String> seen = new java.util.HashSet<>();
+        if (primaryProviderId != null && primaryModelName != null) {
+            seen.add(primaryProviderId + "::" + primaryModelName);
+        }
+        for (ProviderModelRef ref : plan) {
+            String pid = ref.providerId();
+            // RFC-009 Phase 4: skip providers known-bad at build time. The runtime
+            // walker re-checks pool membership per request, so a provider that
+            // re-enters the pool later still gets used (graph rebuilt on
             // ModelConfigChangedEvent).
-            if (providerPool != null && !providerPool.contains(p.getProviderId())) {
-                log.debug("[LlmFailover] skipping provider {} — not in available pool",
-                        p.getProviderId());
+            if (providerPool != null && !providerPool.contains(pid)) {
+                log.debug("[LlmFailover] skipping provider {} — not in available pool", pid);
                 continue;
             }
-            ModelConfigEntity fallbackConfig = pickFallbackModel(p.getProviderId());
+            ModelConfigEntity fallbackConfig = resolveChainModel(ref);
             if (fallbackConfig == null) {
-                log.debug("[LlmFailover] skipping provider {} — no enabled chat model",
-                        p.getProviderId());
+                log.debug("[LlmFailover] skipping {} — no usable chat model", pid);
                 continue;
             }
-            if (primaryModelName != null && primaryModelName.equals(fallbackConfig.getModelName())) {
-                // Same model name picked for a different provider — exact same call, skip.
+            String key = pid + "::" + fallbackConfig.getModelName();
+            if (!seen.add(key)) {
+                // Exact (provider, model) already queued or equal to the primary.
                 continue;
             }
             try {
                 ChatModel m = buildRuntimeChatModel(fallbackConfig, RetryTemplate.builder().maxAttempts(1).build());
-                chain.add(new vip.mate.llm.failover.FallbackEntry(p.getProviderId(), m));
-                log.info("[LlmFailover] chain[{}] = {}/{} (priority={})",
-                        chain.size(), p.getProviderId(), fallbackConfig.getModelName(),
-                        p.getFallbackPriority());
+                chain.add(new vip.mate.llm.failover.FallbackEntry(pid, m));
+                log.info("[LlmFailover] chain[{}] = {}/{}", chain.size(), pid, fallbackConfig.getModelName());
             } catch (Exception e) {
-                log.warn("[LlmFailover] skipping provider {} — chat model build failed: {}",
-                        p.getProviderId(), e.getMessage());
+                log.warn("[LlmFailover] skipping provider {} — chat model build failed: {}", pid, e.getMessage());
             }
         }
         return chain;
+    }
+
+    /**
+     * Resolve a planned chain entry to a concrete chat model. A pinned model
+     * ({@code modelId != null}) is used when it still exists and is enabled;
+     * otherwise we fall back to the provider's default chat model so a deleted
+     * or disabled pin keeps the provider in the chain.
+     */
+    private ModelConfigEntity resolveChainModel(ProviderModelRef ref) {
+        if (ref.modelId() != null) {
+            try {
+                ModelConfigEntity m = modelConfigService.getModel(ref.modelId());
+                // Honour the pin only when it is a usable chat model that actually
+                // belongs to this entry's provider. The FallbackEntry is keyed by
+                // ref.providerId() for cooldown/pool, so a model from a different
+                // provider would mis-key the chain; an embedding model would never
+                // serve as a chat fallback. Either case falls back to the
+                // provider's default chat model.
+                if (m != null && Boolean.TRUE.equals(m.getEnabled())
+                        && ref.providerId().equals(m.getProvider())
+                        && (m.getModelType() == null || "chat".equals(m.getModelType()))) {
+                    return m;
+                }
+                log.info("[LlmFailover] pinned model {} for provider {} not usable "
+                                + "(disabled / wrong provider / non-chat), using provider default",
+                        ref.modelId(), ref.providerId());
+            } catch (Exception e) {
+                log.info("[LlmFailover] pinned model {} for provider {} unresolved ({}), using provider default",
+                        ref.modelId(), ref.providerId(), e.getMessage());
+            }
+        }
+        return pickFallbackModel(ref.providerId());
     }
 
     /**
@@ -1275,33 +1395,40 @@ public class AgentGraphBuilder {
     }
 
     /**
-     * Reorder a provider list by an agent's preference list. Listed provider
-     * ids come first in their preference order; any provider not in the
-     * preference list keeps its original position relative to other unlisted
-     * providers (stable partition). Preference entries that don't match any
-     * actual provider are silently dropped.
+     * Plan the fallback order as a list of (provider, model) refs.
+     *
+     * <p>Head: the agent's explicit preference entries in declared order,
+     * model-granular — the same provider may appear more than once with
+     * different models. Exact (provider, model) duplicates are dropped.
+     *
+     * <p>Tail: every provider not named in the preferences, in the supplied
+     * global order, each using its default model ({@code modelId == null}).
+     *
+     * <p>Preference entries with a blank provider id are ignored. Package-private
+     * for unit testing — see {@code AgentGraphBuilderPreferenceTest}.
      */
-    /** Package-private for unit testing — see {@code AgentGraphBuilderPreferenceTest}. */
-    static List<ModelProviderEntity> reorderByPreferences(List<ModelProviderEntity> providers,
-                                                          List<String> preferredOrder) {
-        Map<String, ModelProviderEntity> byId = new java.util.LinkedHashMap<>();
-        for (ModelProviderEntity p : providers) {
-            byId.put(p.getProviderId(), p);
-        }
-        List<ModelProviderEntity> reordered = new ArrayList<>(providers.size());
-        Set<String> placed = new java.util.HashSet<>();
-        for (String prefId : preferredOrder) {
-            ModelProviderEntity p = byId.get(prefId);
-            if (p != null && placed.add(prefId)) {
-                reordered.add(p);
+    static List<ProviderModelRef> planFallbackOrder(List<ProviderModelRef> preferred,
+                                                    List<String> globalProviderIds) {
+        List<ProviderModelRef> plan = new ArrayList<>();
+        Set<String> headEntryKeys = new java.util.HashSet<>();
+        Set<String> headProviderIds = new java.util.HashSet<>();
+        if (preferred != null) {
+            for (ProviderModelRef ref : preferred) {
+                if (ref == null || ref.providerId() == null || ref.providerId().isBlank()) continue;
+                String key = ref.providerId() + "::" + (ref.modelId() == null ? "" : ref.modelId());
+                if (!headEntryKeys.add(key)) continue; // exact (provider, model) dup
+                plan.add(ref);
+                headProviderIds.add(ref.providerId());
             }
         }
-        for (ModelProviderEntity p : providers) {
-            if (placed.add(p.getProviderId())) {
-                reordered.add(p);
+        if (globalProviderIds != null) {
+            for (String pid : globalProviderIds) {
+                if (pid == null || pid.isBlank()) continue;
+                if (headProviderIds.contains(pid)) continue; // already led by an explicit entry
+                plan.add(new ProviderModelRef(pid, null));
             }
         }
-        return reordered;
+        return plan;
     }
 
     /**
@@ -1327,7 +1454,7 @@ public class AgentGraphBuilder {
      * @throws IllegalArgumentException when an absolute override escapes the
      *         workspace root
      */
-    static String resolveAgentBasePath(String agentOverride, String workspaceBase) {
+    public static String resolveAgentBasePath(String agentOverride, String workspaceBase) {
         boolean hasOverride = agentOverride != null && !agentOverride.isBlank();
         boolean hasWorkspace = workspaceBase != null && !workspaceBase.isBlank();
         if (!hasOverride) {
@@ -1347,6 +1474,15 @@ public class AgentGraphBuilder {
             return agentOverride;
         }
         if (hasWorkspace) {
+            // Relative override resolves under the workspace root; reject any value
+            // that escapes it via "../" so attachment/media/tool I/O stays contained.
+            Path wsRoot = Paths.get(workspaceBase).toAbsolutePath().normalize();
+            Path resolved = wsRoot.resolve(agentOverride).normalize();
+            if (!resolved.startsWith(wsRoot)) {
+                throw new IllegalArgumentException(
+                        "Agent workspaceBasePath override must stay inside the workspace root: "
+                                + resolved + " escapes " + wsRoot);
+            }
             return Paths.get(workspaceBase).resolve(agentOverride).toString();
         }
         return agentOverride;
@@ -1393,6 +1529,10 @@ public class AgentGraphBuilder {
             """;
 
     private String buildEnhancedPrompt(AgentEntity entity, boolean builtinSearchEnabled) {
+        return buildEnhancedPrompt(entity, builtinSearchEnabled, Integer.MAX_VALUE);
+    }
+
+    private String buildEnhancedPrompt(AgentEntity entity, boolean builtinSearchEnabled, int memoryBudgetTokens) {
         // The agent's own systemPrompt encodes its identity (role / goal /
         // backstory). The memory block from workspace files (AGENTS.md, SOUL.md,
         // PROFILE.md, MEMORY.md, ...) augments that identity with durable
@@ -1401,7 +1541,7 @@ public class AgentGraphBuilder {
         // dropped the identity prompt, so editor-side identity changes never
         // reached runtime if the agent had any workspace files.
         String identityPrompt = entity.getSystemPrompt() != null ? entity.getSystemPrompt().trim() : "";
-        String memoryPrompt = memoryManager.buildSystemPromptBlock(entity.getId());
+        String memoryPrompt = memoryManager.buildSystemPromptBlock(entity.getId(), memoryBudgetTokens);
         StringBuilder basePromptBuilder = new StringBuilder();
         if (!identityPrompt.isEmpty()) {
             basePromptBuilder.append(identityPrompt);
@@ -1480,10 +1620,11 @@ public class AgentGraphBuilder {
                 adopting a KB article as the user's project.
 
                 ## Session Search
-                - `session_search(agentId, currentConversationId, mode, query, limit)` — search conversation history
+                - `session_search(agentId, mode, query, limit)` — search conversation history
                 - mode="recent": list recent conversations (titles, times, message counts)
                 - mode="search": keyword full-text search across past messages
                 - Use this to recall previous discussions, look up past decisions, or find context from earlier conversations
+                - Only completed sessions (not currently running) are included in results
 
                 ## Tool Usage Guidelines
                 When you have available tools, use them to access local system information, files, or execute commands.

@@ -272,7 +272,7 @@ Restart MateClaw. Auto-discovered, added, enabled.
 
 No `EMBEDDING_API_KEY` env vars. Embedding models are regular rows in `mate_model_config` with `model_type='embedding'`. They show up alongside chat models in `Settings → Models`. Knowledge bases pick their embedding model from a dropdown.
 
-::: tip New in 1.4.0 ([issue #79](https://github.com/matevip/mateclaw/issues/79))
+::: tip New in 1.4.0 ([issue #79](https://github.com/mateaix/mateclaw/issues/79))
 **Embedding models from any provider.** In the embedding section of `Settings → Models`, configure an embedding model from any provider — it **reuses that provider's API key**, so there's no separate `EMBEDDING_API_KEY`. Each knowledge base picks its embedding model from a dropdown. Keyless local proxies use a no-op placeholder key; the protocol is resolved from the provider's chat-model / protocol setting, so you never hand-enter it.
 :::
 
@@ -299,7 +299,7 @@ System prompts, agent personas, tool definitions — automatically marked with `
 
 **Multi-round tool calls + thinking**: thinking-capable models (DeepSeek-Reasoner / GPT-5 / Kimi K2.5 / Xiaomi MiMo) correctly round-trip historical `reasoning_content` during ReAct multi-round tool calls. Cross-user-turn history is cleared at the boundary, in-turn history is preserved — matching DeepSeek's "pass back within a turn, reset across turns" contract.
 
-**Xiaomi MiMo thinking-mode multi-turn fix** ([issue #189](https://github.com/matevip/mateclaw/issues/189)): MiMo's `reasoning_content` is now kept correctly across turns in thinking mode, instead of being lost on subsequent turns.
+**Xiaomi MiMo thinking-mode multi-turn fix** ([issue #189](https://github.com/mateaix/mateclaw/issues/189)): MiMo's `reasoning_content` is now kept correctly across turns in thinking mode, instead of being lost on subsequent turns.
 
 ---
 
@@ -323,7 +323,7 @@ Takes effect **immediately** — no restart. Next message uses the new model. In
 Per-agent override supported: bind a specific agent to a specific model config.
 
 ::: tip New in 1.4.0
-- **Per-conversation model selection** ([issue #150](https://github.com/matevip/mateclaw/issues/150)): in the chat UI you can switch the model for **just the current conversation**, without touching the global active model or any other conversation. See [Chat & Messaging](./chat).
+- **Per-conversation model selection** ([issue #150](https://github.com/mateaix/mateclaw/issues/150)): in the chat UI you can switch the model for **just the current conversation**, without touching the global active model or any other conversation. See [Chat & Messaging](./chat).
 - **A single bad model id no longer evicts the whole provider**: when discovery / probing hits one invalid model identifier, only that model is skipped — the rest of the provider's models stay available.
 :::
 
@@ -345,7 +345,7 @@ Use it whenever you add a new provider or suspect a stale key.
 ## Multimodal sidecar (system-wide)
 
 ::: tip Added in 1.3.0
-Lets a text-only primary model still answer questions about uploaded images. See [issue #87](https://github.com/matevip/mateclaw/issues/87).
+Lets a text-only primary model still answer questions about uploaded images. See [issue #87](https://github.com/mateaix/mateclaw/issues/87).
 :::
 
 Entry point: **Settings → Models → Multimodal sidecar**. Two independent cards:
@@ -362,7 +362,7 @@ The setting stores `mate_model_config.id` rather than `model_name` — the same 
 
 The dropdown only lists models that **actually support the relevant modality** — filtered by `ModelCapabilityService.supports(...)` on the backend; disabled providers or models without a declared vision capability never appear. Each card has its own Save button, independent of the other.
 
-When does it fire? `MultimodalRouter` ([source](https://github.com/matevip/mateclaw/blob/main/mateclaw-server/src/main/java/vip/mate/llm/routing/MultimodalRouter.java)) decides per turn:
+When does it fire? `MultimodalRouter` ([source](https://github.com/mateaix/mateclaw/blob/main/mateclaw-server/src/main/java/vip/mate/llm/routing/MultimodalRouter.java)) decides per turn:
 
 - Primary already supports vision → no routing (native multimodal path)
 - Primary lacks vision + vision sidecar configured → SIDECAR strategy, captions to text

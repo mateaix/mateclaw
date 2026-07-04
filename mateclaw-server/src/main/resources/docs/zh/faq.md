@@ -1,6 +1,6 @@
 # 常见问题（FAQ）
 
-常见问题 + 真答案。你的问题不在这里就看对应的功能页，或者去 [GitHub issue](https://github.com/matevip/mateclaw/issues) 开一个。
+常见问题 + 真答案。你的问题不在这里就看对应的功能页，或者去 [GitHub issue](https://github.com/mateaix/mateclaw/issues) 开一个。
 
 ---
 
@@ -322,7 +322,7 @@ docker exec mateclaw-mysql mysqldump -u root -p${MYSQL_ROOT_PASSWORD} mateclaw >
 
 ### 怎么更新桌面 app？
 
-**自动更新**通过 electron-updater。启动时检查 GitHub Releases 并弹提示。也可以手动从 [Releases](https://github.com/matevip/mateclaw/releases) 下载。
+**自动更新**通过 electron-updater。启动时检查 GitHub Releases 并弹提示。也可以手动从 [Releases](https://github.com/mateaix/mateclaw/releases) 下载。
 
 ---
 
@@ -419,4 +419,4 @@ ls ../mateclaw-server/src/main/resources/static/
 - [快速开始](./quickstart)——搭建 walkthrough
 - [配置说明](./config)——完整配置参考
 - [贡献指南](./contributing)——怎么报 bug 和提功能请求
-- [GitHub Issues](https://github.com/matevip/mateclaw/issues)——文档没答案的时候去这里
+- [GitHub Issues](https://github.com/mateaix/mateclaw/issues)——文档没答案的时候去这里

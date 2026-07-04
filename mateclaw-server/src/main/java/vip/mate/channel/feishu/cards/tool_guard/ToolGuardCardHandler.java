@@ -9,7 +9,9 @@ import com.lark.oapi.event.cardcallback.model.P2CardActionTriggerData;
 import com.lark.oapi.event.cardcallback.model.P2CardActionTriggerResponse;
 import lombok.extern.slf4j.Slf4j;
 import vip.mate.approval.ApprovalService;
+import vip.mate.approval.ApprovalWorkflowService;
 import vip.mate.approval.PendingApproval;
+import vip.mate.approval.ResolveOutcome;
 import vip.mate.channel.ChannelMessage;
 import vip.mate.channel.feishu.FeishuChannelAdapter;
 import vip.mate.channel.feishu.cards.FeishuCardHandler;
@@ -59,11 +61,23 @@ import java.util.Optional;
 public class ToolGuardCardHandler implements FeishuCardHandler {
 
     private final ApprovalService approvalService;
+    /**
+     * ISSUE #413 P2-B3: needed to resolve workflow-scoped approvals
+     * ({@code wf-} pendingIds) directly from the card click. Workflow
+     * approvals cannot go through the synthetic /approve injection
+     * (their conversationId is {@code workflow:run:{runId}}, which no
+     * IM conversation matches), so the handler resolves them inline —
+     * mirroring the Web / WebChat path. May be null in narrow test
+     * contexts (wf- approvals then fall back to the admin console).
+     */
+    private final ApprovalWorkflowService approvalWorkflowService;
     private final ToolGuardButtonValue buttonValue;
 
     public ToolGuardCardHandler(ApprovalService approvalService,
+                                 ApprovalWorkflowService approvalWorkflowService,
                                  ToolGuardButtonValue buttonValue) {
         this.approvalService = approvalService;
+        this.approvalWorkflowService = approvalWorkflowService;
         this.buttonValue = buttonValue;
     }
 
@@ -101,6 +115,19 @@ public class ToolGuardCardHandler implements FeishuCardHandler {
         PendingApproval pending = opt.get();
 
         // ---- 3. Identity check (fail-closed)
+        // Workflow-scoped approvals (wf- prefix, ISSUE #413 P2-B3) have no
+        // human requester — the userId is null because the run is system-
+        // initiated. Their approval cards are only ever pushed to the
+        // channels declared in await_approval's approverChannels, so any
+        // member of that audience is a legitimate approver; we skip the
+        // requester==clicker guard and resolve inline (the synthetic /approve
+        // injection is a dead end for wf- ids: their conversationId is
+        // workflow:run:{runId}, which no IM conversation matches, so the
+        // router's findPendingByConversation would miss it).
+        if (pendingId.startsWith("wf-")) {
+            return handleWorkflowApproval(pendingId, decoded.toolName(), act, clickerOpenId);
+        }
+
         // Agent/cron ("system") or unattributed (null) approvals have no human
         // requester to match the clicker against. A guarded-tool card landing in
         // a group chat would otherwise let ANY member click Approve and run the
@@ -140,6 +167,54 @@ public class ToolGuardCardHandler implements FeishuCardHandler {
 
         // ---- 5. Build the resolved-state response
         return buildResolvedResponse(decoded.toolName(), act, clickerOpenId);
+    }
+
+    // ------------------------------------------------------------------
+    // Workflow-scoped approval (ISSUE #413 P2-B3)
+    // ------------------------------------------------------------------
+
+    /**
+     * Resolve a {@code wf-} workflow approval directly from the card click,
+     * bypassing the synthetic /approve injection. Workflow approvals live
+     * under a synthetic {@code workflow:run:{runId}} conversationId that no
+     * IM conversation matches, so the router path is a dead end. Instead we
+     * resolve inline (mirroring the Web / WebChat path); the
+     * {@link vip.mate.workflow.runtime.ApprovalResumeBridge} then picks up
+     * the {@code WorkflowApprovalResolvedEvent} published inside
+     * {@code ApprovalWorkflowService.resolve} and resumes the paused run.
+     *
+     * <p>No tool-call replay is needed — a workflow {@code await_approval}
+     * step is a declarative gate, not a tool invocation; resume simply
+     * advances to the next step.
+     *
+     * <p>Identity: any audience member may resolve. The card only reaches
+     * the channels declared in {@code await_approval.approverChannels}
+     * (pushed by {@code AwaitApprovalStepAdapter}'s notify step), so whoever
+     * can see it is a designated approver.
+     */
+    private P2CardActionTriggerResponse handleWorkflowApproval(String pendingId, String toolName,
+                                                                ToolGuardButtonValue.Action act,
+                                                                String clickerOpenId) {
+        if (approvalWorkflowService == null) {
+            log.warn("[feishu-toolguard] ApprovalWorkflowService unavailable, cannot resolve wf- {} "
+                    + "(use the admin console)", pendingId);
+            return buildErrorResponse("⚠️ 工作流审批需在管理端处理");
+        }
+        String decision = act == ToolGuardButtonValue.Action.APPROVE ? "approved" : "denied";
+        try {
+            ResolveOutcome outcome = approvalWorkflowService.resolve(pendingId, clickerOpenId, decision);
+            if (!outcome.dbSynced()) {
+                // already resolved / superseded — not an error, but tell the clicker.
+                log.info("[feishu-toolguard] wf- {} already resolved: {}", pendingId, outcome.decision());
+                return buildExpiredResponse(toolName);
+            }
+            log.info("[feishu-toolguard] Resolved wf- {} as {} by {} (run resume delegated to bridge)",
+                    pendingId, decision, abbrev(clickerOpenId));
+            return buildResolvedResponse(toolName, act, clickerOpenId);
+        } catch (Exception e) {
+            log.error("[feishu-toolguard] Failed to resolve wf- {}: {}", pendingId, e.getMessage(), e);
+            return buildErrorResponse("⚠️ 工作流审批未生效，请重试或在管理端处理");
+        }
     }
 
     // ------------------------------------------------------------------

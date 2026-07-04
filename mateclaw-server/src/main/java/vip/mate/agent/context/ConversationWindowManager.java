@@ -3,6 +3,7 @@ package vip.mate.agent.context;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.ToolResponseMessage;
@@ -117,6 +118,18 @@ public class ConversationWindowManager {
     private final ConversationWindowProperties properties;
     private final MemoryManager memoryManager;
     private final ConversationService conversationService;
+
+    /**
+     * Optional — adaptive compaction trigger for small context windows.
+     * Setter-injected so the many direct test constructions keep the plain
+     * configured ratio (null → previous behavior).
+     */
+    private PrefixBudgetPlanner prefixBudgetPlanner;
+
+    @Autowired(required = false)
+    public void setPrefixBudgetPlanner(PrefixBudgetPlanner prefixBudgetPlanner) {
+        this.prefixBudgetPlanner = prefixBudgetPlanner;
+    }
 
     /**
      * Optional spill store, injected via setter so unit tests and the two
@@ -251,7 +264,12 @@ public class ConversationWindowManager {
 
         int effectiveMax = (maxInputTokens != null && maxInputTokens > 0)
                 ? maxInputTokens : properties.getDefaultMaxInputTokens();
-        int triggerThreshold = (int) (effectiveMax * properties.getCompactTriggerRatio());
+        // Small windows compact later (higher trigger ratio): summarizing at
+        // 75% of an 8k window throws away room it cannot afford to lose.
+        double triggerRatio = prefixBudgetPlanner != null
+                ? prefixBudgetPlanner.compactTriggerRatioFor(effectiveMax, properties.getCompactTriggerRatio())
+                : properties.getCompactTriggerRatio();
+        int triggerThreshold = (int) (effectiveMax * triggerRatio);
 
         int systemTokens = TokenEstimator.estimateTokens(systemPrompt);
         int currentMsgTokens = TokenEstimator.estimateTokens(currentUserMessage) + TokenEstimator.PER_MESSAGE_OVERHEAD;
@@ -1010,6 +1028,33 @@ public class ConversationWindowManager {
     }
 
     /**
+     * One-line informative summary for a cleared tool result: tool name,
+     * original size, and the first line as a gist. Far more useful to the
+     * model than a bare "removed" marker — it can decide whether re-running
+     * the tool is worth it without guessing what the output was.
+     */
+    static String buildInformativeCleared(String toolName, String body) {
+        String safeName = (toolName == null || toolName.isBlank()) ? "tool" : toolName;
+        int length = body == null ? 0 : body.length();
+        String gist = "";
+        if (body != null) {
+            for (String line : body.split("\n", 8)) {
+                String candidate = line.strip();
+                if (!candidate.isEmpty()) {
+                    gist = candidate.length() > 80 ? candidate.substring(0, 80) + "…" : candidate;
+                    break;
+                }
+            }
+        }
+        StringBuilder sb = new StringBuilder("[").append(safeName)
+                .append(" → ").append(length).append(" chars, cleared to save context");
+        if (!gist.isEmpty()) {
+            sb.append("; began: \"").append(gist).append('"');
+        }
+        return sb.append("; call the tool again if the result is still needed]").toString();
+    }
+
+    /**
      * Phase 1 - Soft trim：对工具结果做 head+tail 裁剪（保留首尾各 200 字符）。
      * <p>Spill-marker responses are left untouched so their on-disk pointer
      * survives intact across compaction.
@@ -1063,7 +1108,8 @@ public class ConversationWindowManager {
                         replaced.add(r);
                         continue;
                     }
-                    replaced.add(new ToolResponseMessage.ToolResponse(r.id(), r.name(), "[tool result removed]"));
+                    replaced.add(new ToolResponseMessage.ToolResponse(r.id(), r.name(),
+                            buildInformativeCleared(r.name(), r.responseData())));
                     changed = true;
                 }
                 if (changed) {

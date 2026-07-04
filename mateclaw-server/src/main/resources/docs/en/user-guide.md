@@ -186,7 +186,7 @@ Create a role-specific agent → install skills → connect MCP servers → conf
 | Model call fails | Wrong API key or network issue. Go back to Settings |
 | UI is blank | Ctrl+Shift+R to hard-refresh |
 | Ollama says "does not support tools" | Switch to a function-calling model (qwen3, llama3.1:8b+) |
-| Still broken | [GitHub Issues](https://github.com/matevip/mateclaw/issues) with the tail of `app.log` |
+| Still broken | [GitHub Issues](https://github.com/mateaix/mateclaw/issues) with the tail of `app.log` |
 
 ---
 

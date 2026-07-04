@@ -7,6 +7,7 @@ import org.springframework.ai.chat.messages.ToolResponseMessage;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.ToolCallback;
 import vip.mate.tool.builtin.ToolExecutionContext;
+import vip.mate.tool.disclosure.ToolUsageRecencyTracker;
 import vip.mate.agent.AgentToolSet;
 import vip.mate.agent.GraphEventPublisher;
 import vip.mate.agent.context.ChatOrigin;
@@ -250,6 +251,13 @@ public class ToolExecutionExecutor {
      * the safety net falls through to the original error string.
      */
     private vip.mate.skill.runtime.SkillRuntimeService skillRuntimeService;
+
+    /** Optional recency feed for budget-driven tool-disclosure demotion. */
+    private ToolUsageRecencyTracker usageRecencyTracker;
+
+    public void setUsageRecencyTracker(ToolUsageRecencyTracker tracker) {
+        this.usageRecencyTracker = tracker;
+    }
 
     public void setSkillRuntimeService(vip.mate.skill.runtime.SkillRuntimeService s) {
         this.skillRuntimeService = s;
@@ -883,6 +891,12 @@ public class ToolExecutionExecutor {
                 result = pc.callback.call(pc.arguments, toolContext);
             } finally {
                 ToolExecutionContext.clear();
+            }
+
+            // Recency feed for budget-driven disclosure demotion: recently used
+            // tools keep their advertised schema, never-used ones demote first.
+            if (usageRecencyTracker != null) {
+                usageRecencyTracker.recordUse(toolName);
             }
 
             int rawLen = result != null ? result.length() : 0;

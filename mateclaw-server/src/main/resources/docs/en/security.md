@@ -509,6 +509,45 @@ server {
 }
 ```
 
+### Outbound request protection (SSRF)
+
+Every **outbound HTTP request an agent can drive** carries SSRF protection by default, so a manipulated agent can't be steered into probing your internal network or a cloud metadata endpoint. Three outbound paths are covered:
+
+| Outbound path | Triggered by | Default behaviour |
+|---------------|--------------|-------------------|
+| **Browser tool** | the `open` action of `browser_use` | resolves the target host and rejects restricted addresses |
+| **Hook webhook** | the HTTP call of a hook action | host must be in `trusted-domains` AND must not be a private address |
+| **Image download** | the image tool fetching a URL reference | rejects private / loopback hosts |
+
+Address classes blocked by default: loopback (`127.0.0.0/8`, `::1`), private (`10/8`, `172.16/12`, `192.168/16`), link-local (`169.254/16`, `fe80::/10`), any-local, multicast, and cloud metadata endpoints (`169.254.169.254`, `100.100.100.200`, `192.0.0.192`, …).
+
+#### Allowing internal addresses: `mateclaw.security.ssrf-allowlist`
+
+When an agent legitimately needs to reach an internal service, add it to the shared allowlist. **One setting, applied across all three outbound paths.** Each entry is one of:
+
+| Form | Example | Meaning |
+|------|---------|---------|
+| Literal hostname | `internal.corp` | case-insensitive exact match |
+| Literal IP | `192.168.100.100` | matches that exact address |
+| IPv4 CIDR block | `192.168.100.0/24` | matches every IP in the range |
+
+```yaml
+mateclaw:
+  security:
+    ssrf-allowlist:
+      - 192.168.100.100      # a single internal address
+      - 192.168.100.0/24     # a whole internal subnet
+      - internal.corp        # an internal hostname
+```
+
+The allowlist opens **only the entries you list**: `192.168.100.0/24` does not also open `192.168.200.x`, and `192.168.100.100` does not open sibling IPs in the same subnet. Changes require a backend restart.
+
+::: warning Keep it narrow
+Allowlist entries **can re-expose cloud metadata endpoints** (e.g. `169.254.169.254`). Once exposed, a compromised agent could use one to steal cloud credentials. Add only the internal addresses you actually need, and **never** open things up with a broad CIDR such as `0.0.0.0/0` or `10.0.0.0/8`.
+:::
+
+The browser tool also has a master switch `mateclaw.browser.ssrf-check-enabled` (default `true`). Setting it to `false` **disables the SSRF check entirely** for the browser path — including the metadata endpoints — and is discouraged; prefer the allowlist above for precise exceptions.
+
 ---
 
 ## Security best practices
@@ -527,7 +566,7 @@ server {
 
 ## Security configuration reference
 
-application.yml carries **only two** security-related blocks — JWT and the filesystem sandbox:
+application.yml carries **three** security-related blocks — JWT, the filesystem sandbox, and the outbound request allowlist:
 
 ```yaml
 mateclaw:
@@ -543,6 +582,12 @@ mateclaw:
     sandbox:
       enabled: true
       root: ${user.dir}/data/workspace
+
+  # Outbound SSRF allowlist: permit specific internal hosts/IPs/CIDR blocks,
+  # shared by the browser, hook, and image-download outbound paths. Empty means
+  # every private address is blocked by the default policy.
+  security:
+    ssrf-allowlist: []            # e.g. [192.168.100.100, 192.168.100.0/24]
 ```
 
 **Everything else is managed in the database — from the admin Security page (or `/api/v1/security/guard/*`), not application.yml:**

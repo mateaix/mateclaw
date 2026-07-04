@@ -8,7 +8,7 @@ Docker 和源码启动在 [配置说明](./config) 和 [贡献指南](./contribu
 
 ## 1. 下载
 
-去 [GitHub Releases](https://github.com/matevip/mateclaw/releases) 拿最新安装包。
+去 [GitHub Releases](https://github.com/mateaix/mateclaw/releases) 拿最新安装包。
 
 - **Windows**——`MateClaw-Setup-x.y.z.exe`
 - **macOS**——`MateClaw-x.y.z.dmg`
@@ -71,7 +71,7 @@ Docker 和源码启动在 [配置说明](./config) 和 [贡献指南](./contribu
 - **后端起不来**——看日志文件（macOS：`~/Library/Application Support/MateClaw/logs/mateclaw.log`；Windows：`%APPDATA%\MateClaw\logs\mateclaw.log`）。桌面端后端使用动态端口，端口冲突会在日志里明确报出。
 - **模型调用报错**——API Key 填错了，或者网络不通。回设置里检查，或者换一家试试。
 - **界面白屏**——Ctrl/Cmd + Shift + R 强刷。Electron 的缓存比较顽固。
-- **还是不行**——去 [GitHub Issues](https://github.com/matevip/mateclaw/issues) 开一个 Issue，把 `app.log` 的尾巴贴上。我们真的会看。
+- **还是不行**——去 [GitHub Issues](https://github.com/mateaix/mateclaw/issues) 开一个 Issue，把 `app.log` 的尾巴贴上。我们真的会看。
 
 ---
 

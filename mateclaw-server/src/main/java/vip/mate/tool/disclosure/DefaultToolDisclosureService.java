@@ -6,6 +6,7 @@ import org.springframework.ai.tool.ToolCallback;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import vip.mate.agent.AgentToolSet;
+import vip.mate.agent.context.TokenEstimator;
 import vip.mate.tool.ToolRegistry;
 import vip.mate.tool.mcp.model.McpServerEntity;
 import vip.mate.tool.mcp.service.McpServerService;
@@ -15,6 +16,7 @@ import vip.mate.tool.service.AvailableToolService;
 import vip.mate.tool.service.ToolService;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -53,6 +55,7 @@ public class DefaultToolDisclosureService implements ToolDisclosureService {
     private final McpServerService mcpServerService;
     private final AvailableToolService availableToolService;
     private final ToolRegistry toolRegistry;
+    private final ToolUsageRecencyTracker usageRecencyTracker;
 
     @Value("${mateclaw.tools.disclosure.mode:progressive}")
     private String disclosureMode;
@@ -97,17 +100,25 @@ public class DefaultToolDisclosureService implements ToolDisclosureService {
 
     @Override
     public ToolDisclosureSplit split(AgentToolSet baseSet, Set<String> enabledExtensions) {
+        return split(baseSet, enabledExtensions, Set.of());
+    }
+
+    @Override
+    public ToolDisclosureSplit split(AgentToolSet baseSet, Set<String> enabledExtensions,
+                                     Set<String> autoDemoted) {
         List<ToolCallback> all = baseSet == null ? List.of() : baseSet.callbacks();
         if (legacyMode()) {
             return new ToolDisclosureSplit(all, List.of());
         }
         Set<String> enabled = enabledExtensions == null ? Set.of() : enabledExtensions;
+        Set<String> demoted = autoDemoted == null ? Set.of() : autoDemoted;
         List<ToolCallback> active = new ArrayList<>(all.size());
         List<ToolCallback> extensionCatalog = new ArrayList<>();
         for (ToolCallback cb : all) {
-            if (resolveTier(cb) == DisclosureTier.EXTENSION) {
+            String name = cb.getToolDefinition().name();
+            if (resolveTier(cb) == DisclosureTier.EXTENSION || demoted.contains(name)) {
                 extensionCatalog.add(cb);
-                if (enabled.contains(cb.getToolDefinition().name())) {
+                if (enabled.contains(name)) {
                     active.add(cb);
                 }
             } else {
@@ -117,12 +128,79 @@ public class DefaultToolDisclosureService implements ToolDisclosureService {
         return new ToolDisclosureSplit(active, extensionCatalog);
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Protection set: {@link #ALWAYS_CORE} meta-tools and builtin tools
+     * with an explicit {@code disclosure_tier = core} row. MCP tools remain
+     * demotable — the server-level tier cannot distinguish an explicit core
+     * choice from the default, and MCP schemas are typically the heaviest
+     * part of the advertisement.
+     */
+    @Override
+    public Set<String> computeAutoDemotions(AgentToolSet baseSet, Integer budgetTokens) {
+        if (legacyMode() || baseSet == null || budgetTokens == null
+                || budgetTokens <= 0 || budgetTokens == Integer.MAX_VALUE) {
+            return Set.of();
+        }
+        List<ToolCallback> core = split(baseSet, Set.of()).activeCallbacks();
+        int coreTokens = TokenEstimator.estimateToolsTokens(core);
+        if (coreTokens <= budgetTokens) {
+            return Set.of();
+        }
+        Snapshot snap = snapshot();
+        List<ToolCallback> candidates = core.stream()
+                .filter(cb -> isDemotable(cb.getToolDefinition().name(), snap))
+                .sorted(demotionOrder())
+                .toList();
+        Set<String> demoted = new LinkedHashSet<>();
+        int remainingTokens = coreTokens;
+        for (ToolCallback cb : candidates) {
+            if (remainingTokens <= budgetTokens) {
+                break;
+            }
+            remainingTokens -= TokenEstimator.estimateToolsTokens(List.of(cb));
+            demoted.add(cb.getToolDefinition().name());
+        }
+        if (!demoted.isEmpty()) {
+            log.info("[ToolDisclosure] 工具 schema 估算 {} tokens 超出预算 {}——已将 {} 个最少使用的工具"
+                            + "降级到扩展目录(enable_tool 可找回): {}",
+                    coreTokens, budgetTokens, demoted.size(), demoted);
+        }
+        return demoted;
+    }
+
+    private boolean isDemotable(String toolName, Snapshot snap) {
+        if (toolName == null || ALWAYS_CORE.contains(toolName)) {
+            return false;
+        }
+        // An explicit core row is an operator decision — never override it.
+        return snap.builtinTierByName.get(toolName) != DisclosureTier.CORE;
+    }
+
+    /** Never-used tools demote first, then least recently used; name-tiebreak keeps builds deterministic. */
+    private Comparator<ToolCallback> demotionOrder() {
+        return Comparator
+                .<ToolCallback, Long>comparing(cb -> {
+                    Long lastUsed = usageRecencyTracker == null
+                            ? null : usageRecencyTracker.lastUsedAt(cb.getToolDefinition().name());
+                    return lastUsed == null ? Long.MIN_VALUE : lastUsed;
+                })
+                .thenComparing(cb -> cb.getToolDefinition().name());
+    }
+
     @Override
     public String renderExtensionCatalog(AgentToolSet baseSet, Integer maxInputTokens) {
+        return renderExtensionCatalog(baseSet, maxInputTokens, Set.of());
+    }
+
+    @Override
+    public String renderExtensionCatalog(AgentToolSet baseSet, Integer maxInputTokens,
+                                         Set<String> autoDemoted) {
         if (legacyMode() || baseSet == null) {
             return "";
         }
-        List<ToolCallback> extension = split(baseSet, Set.of()).extensionCatalog();
+        List<ToolCallback> extension = split(baseSet, Set.of(), autoDemoted).extensionCatalog();
         if (extension.isEmpty()) {
             return "";
         }

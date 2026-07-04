@@ -3,20 +3,25 @@
     <div class="mc-page-frame dashboard-frame">
       <div class="mc-page-inner dashboard-inner">
         <div class="mc-page-header">
-          <div>
+          <div class="header-title">
             <div class="mc-page-kicker">{{ t('dashboard.kicker') }}</div>
             <h1 class="mc-page-title">{{ t('dashboard.title') }}</h1>
             <p class="mc-page-desc">{{ t('dashboard.desc') }}</p>
-            <div v-if="dbLabel" class="db-chip" :title="t('doctor.database')">
-              <svg class="db-chip__icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/></svg>
-              <span class="db-chip__label">{{ t('doctor.database') }}</span>
-              <span class="db-chip__value">{{ dbLabel }}</span>
+            <div class="header-meta">
+              <div v-if="dbLabel" class="db-chip" :title="t('doctor.database')">
+                <svg class="db-chip__icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/></svg>
+                <span class="db-chip__label">{{ t('doctor.database') }}</span>
+                <span class="db-chip__value">{{ dbLabel }}</span>
+              </div>
+              <OperationalExport />
             </div>
           </div>
-          <div class="hero-note mc-surface-card">
-            <div class="hero-note__label">{{ t('dashboard.periods.today') }}</div>
-            <div class="hero-note__value">{{ todayStats.conversations }}</div>
-            <div class="hero-note__meta">{{ t('dashboard.conversations') }} · {{ todayStats.messages }} {{ t('dashboard.messages') }}</div>
+          <div class="header-actions">
+            <div class="hero-note mc-surface-card">
+              <div class="hero-note__label">{{ t('dashboard.periods.today') }}</div>
+              <div class="hero-note__value">{{ todayStats.conversations }}</div>
+              <div class="hero-note__meta">{{ t('dashboard.conversations') }} · {{ todayStats.messages }} {{ t('dashboard.messages') }}</div>
+            </div>
           </div>
         </div>
 
@@ -187,6 +192,7 @@
         </div>
       </div>
     </div>
+
   </div>
 </template>
 
@@ -197,6 +203,7 @@ import { useRouter } from 'vue-router'
 import { ArrowRight, ChatDotRound, DataLine, Document, Tools } from '@element-plus/icons-vue'
 import { dashboardApi, modelApi, http } from '@/api'
 import { getProviderIcon, onProviderIconError } from '@/utils/providerIcons'
+import OperationalExport from '@/components/dashboard/OperationalExport.vue'
 import * as echarts from 'echarts/core'
 import { LineChart } from 'echarts/charts'
 import { GridComponent, TooltipComponent, LegendComponent } from 'echarts/components'
@@ -206,6 +213,10 @@ echarts.use([LineChart, GridComponent, TooltipComponent, LegendComponent, Canvas
 
 const { t, locale } = useI18n()
 const router = useRouter()
+
+// Connected database product name (e.g. "MySQL" / "H2" / "PostgreSQL"), shown as
+// a subtle chip in the page header. Empty string hides it when unavailable.
+const dbLabel = ref('')
 
 const overview = ref<Record<string, any>>({})
 const recentRuns = ref<any[]>([])
@@ -224,9 +235,7 @@ const todayStats = reactive({
 // ── Model configuration card ──
 const modelProviders = ref<any[]>([])
 const activeModel = ref<{ providerId: string; model: string } | null>(null)
-// Connected database product name (e.g. "MySQL" / "H2" / "PostgreSQL"), surfaced
-// as a subtle line in the page header. Empty string hides it when unavailable.
-const dbLabel = ref('')
+
 
 const readyProviderCount = computed(
   () => modelProviders.value.filter((p) => providerChipStatus(p) === 'ready').length,
@@ -280,15 +289,6 @@ onMounted(async () => {
     // Dashboard data is non-critical
   }
 
-  // Connected database label — independent and non-critical. Reuses the
-  // existing system health endpoint, which already reports the product name.
-  try {
-    const healthRes: any = await http.get('/system/health')
-    dbLabel.value = (healthRes?.data || healthRes)?.database || ''
-  } catch {
-    dbLabel.value = ''
-  }
-
   // Model configuration card — loaded independently so a failure here never
   // blanks the analytics above, and vice versa.
   try {
@@ -300,6 +300,15 @@ onMounted(async () => {
     activeModel.value = (activeRes as any).data?.activeLlm || null
   } catch {
     // Non-critical
+  }
+
+  // Connected database label — independent and non-critical. Reuses the existing
+  // system health endpoint, which already reports the product name.
+  try {
+    const healthRes: any = await http.get('/system/health')
+    dbLabel.value = (healthRes?.data || healthRes)?.database || ''
+  } catch {
+    dbLabel.value = ''
   }
 })
 
@@ -402,6 +411,7 @@ function calcDuration(run: any): string {
   if (ms < 1000) return ms + 'ms'
   return (ms / 1000).toFixed(1) + 's'
 }
+
 </script>
 
 <style scoped>
@@ -432,32 +442,16 @@ function calcDuration(run: any): string {
   padding-right: 4px;
 }
 
-.db-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 14px;
-  padding: 4px 10px;
-  border: 1px solid var(--mc-border);
-  border-radius: 999px;
-  background: var(--mc-bg-sunken);
-  font-size: 12px;
-  line-height: 1;
-  color: var(--mc-text-secondary);
+.header-title {
 }
 
-.db-chip__icon {
-  color: var(--mc-text-tertiary);
+.header-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
   flex-shrink: 0;
-}
-
-.db-chip__label {
-  color: var(--mc-text-tertiary);
-}
-
-.db-chip__value {
-  font-weight: 600;
-  color: var(--mc-text-primary);
+  margin-top: 28px;
 }
 
 .hero-note {
@@ -486,6 +480,37 @@ function calcDuration(run: any): string {
   color: var(--mc-text-secondary);
   font-size: 13px;
   line-height: 1.5;
+}
+
+/* ── Header meta row: database chip + export trigger ── */
+.header-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+.db-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--mc-border);
+  border-radius: 999px;
+  background: var(--mc-bg-sunken);
+  font-size: 12px;
+  line-height: 1;
+  color: var(--mc-text-secondary);
+}
+.db-chip__icon {
+  color: var(--mc-text-tertiary);
+}
+.db-chip__label {
+  color: var(--mc-text-tertiary);
+}
+.db-chip__value {
+  font-weight: 600;
+  color: var(--mc-text-primary);
 }
 
 .section-head {

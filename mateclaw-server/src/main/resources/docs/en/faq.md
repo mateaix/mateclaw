@@ -1,6 +1,6 @@
 # FAQ
 
-Common questions and real answers. If your question isn't here, check the relevant feature page or open a [GitHub issue](https://github.com/matevip/mateclaw/issues).
+Common questions and real answers. If your question isn't here, check the relevant feature page or open a [GitHub issue](https://github.com/mateaix/mateclaw/issues).
 
 ---
 
@@ -322,7 +322,7 @@ Try launching from a terminal. On Windows, right-click → Unblock. On macOS, al
 
 ### How do I update the desktop app?
 
-**Auto-updates** via electron-updater. On startup, checks GitHub Releases and prompts you when a new version is available. Manual download also available from [Releases](https://github.com/matevip/mateclaw/releases).
+**Auto-updates** via electron-updater. On startup, checks GitHub Releases and prompts you when a new version is available. Manual download also available from [Releases](https://github.com/mateaix/mateclaw/releases).
 
 ---
 
@@ -419,4 +419,4 @@ Stored in `localStorage`. Clearing browser data wipes it.
 - [Quick Start](./quickstart) — setup walkthrough
 - [Configuration](./config) — full configuration reference
 - [Contributing](./contributing) — how to report bugs and request features
-- [GitHub Issues](https://github.com/matevip/mateclaw/issues) — when the docs don't answer your question
+- [GitHub Issues](https://github.com/mateaix/mateclaw/issues) — when the docs don't answer your question

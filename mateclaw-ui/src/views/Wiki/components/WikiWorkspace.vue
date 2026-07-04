@@ -157,8 +157,15 @@ const tabs = computed<{ key: WikiTab; label: string }[]>(() => {
 
 // Snap to each view's default tab whenever the KB or the view mode changes, so
 // the user never lands on a stale tab (or one that doesn't exist in this mode).
+// Use an array of getters (not a single getter returning an array): the latter
+// returns a fresh array reference on every evaluation, so Vue's Object.is check
+// always reports a change and the callback fires on *any* currentKB
+// reassignment — including background refreshes (refreshCurrentKB) that keep the
+// same id. That would yank the user off the config tab back to 'raw' every time
+// a poll/SSE refresh reassigned the KB object. The array-of-getters form
+// compares each source individually, so it fires only on a real id/mode change.
 watch(
-  () => [store.currentKB?.id, store.workspaceMode],
+  [() => store.currentKB?.id, () => store.workspaceMode],
   () => { activeTab.value = store.workspaceMode === 'manage' ? 'raw' : 'pages' },
   { immediate: true },
 )
@@ -187,7 +194,7 @@ async function onOpenPage(slug: string) {
 .tab-btn:hover { color: var(--mc-text-primary); }
 .tab-btn.active { color: var(--mc-primary); background: var(--mc-bg-elevated); box-shadow: 0 1px 4px rgba(0,0,0,0.08); font-weight: 600; }
 .tab-content { flex: 1; min-height: 0; overflow-y: auto; padding-right: 2px; }
-.tab-content--config { overflow: hidden; padding-right: 0; }
+.tab-content--config { overflow-y: auto; padding-right: 0; }
 .tab-content--graph { overflow: hidden; padding: 0; }
 
 .empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; min-height: 200px; color: var(--mc-text-tertiary); text-align: center; }

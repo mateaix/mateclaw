@@ -267,4 +267,38 @@ class ZipSkillFetcherTest {
         assertEquals(1, ex.references().size(), "GBK-named reference should survive the charset fallback");
         assertEquals("# 中文内容\n", ex.references().get("中文说明.md"));
     }
+
+    @Test
+    @DisplayName("configurable per-entry cap: entry over the default 1MB survives when the cap is raised")
+    void raisedEntryCapKeepsLargeEntry() throws IOException {
+        String bigDoc = "x".repeat(2_000_000); // 2MB, over the 1MB default
+        byte[] zip = zipOf(List.of(
+                new Entry("SKILL.md", SKILL_MD),
+                new Entry("references/big.md", bigDoc)));
+
+        ZipSkillFetcher.ExtractedSkill withDefaults = ZipSkillFetcher.extract(zip);
+        assertTrue(withDefaults.references().isEmpty(),
+                "default 1MB cap should drop the 2MB entry");
+
+        ZipSkillFetcher.ExtractedSkill withRaisedCap = ZipSkillFetcher.extract(
+                zip, ZipSkillFetcher.Limits.ofMb(5, 50));
+        assertEquals(bigDoc, withRaisedCap.references().get("big.md"),
+                "raised cap should keep the 2MB entry intact");
+    }
+
+    @Test
+    @DisplayName("configurable total cap: error message names the effective limit and the config knob")
+    void totalCapErrorNamesConfiguredLimit() throws IOException {
+        byte[] zip = zipOf(List.of(
+                new Entry("SKILL.md", SKILL_MD),
+                new Entry("references/a.md", "y".repeat(900_000)),
+                new Entry("references/b.md", "z".repeat(900_000))));
+
+        IOException ex = assertThrows(IOException.class,
+                () -> ZipSkillFetcher.extract(zip, ZipSkillFetcher.Limits.ofMb(1, 1)));
+        assertTrue(ex.getMessage().contains("1MB"),
+                "message should carry the configured total cap; got: " + ex.getMessage());
+        assertTrue(ex.getMessage().contains("max-total-size-mb"),
+                "message should point at the config property; got: " + ex.getMessage());
+    }
 }

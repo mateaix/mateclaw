@@ -318,8 +318,10 @@ public class WikiProcessingService {
             // Phase 1: 获取文本内容
             String textContent = rawService.getTextContent(raw);
             if (textContent == null || textContent.isBlank()) {
-                rawService.updateProcessingStatus(rawId, "failed", "No text content available");
+                rawService.updateProcessingStatus(rawId, "failed", "NO_CONTENT", "No text content available");
                 kbService.updateStatus(kb.getId(), "active");
+                progressBus.broadcast(kb.getId(), WikiProgressBus.EVENT_RAW_FAILED,
+                        Map.of("rawId", rawId, "error", "No text content available", "errorCode", "NO_CONTENT"));
                 return;
             }
 
@@ -382,6 +384,10 @@ public class WikiProcessingService {
 
             String finalStatus;
             String finalDetail = null;
+            // Structured failure code (null unless finalStatus becomes "failed"),
+            // carried into both the persisted row and the RAW_FAILED SSE event so
+            // the UI can localize the failure instead of echoing raw English text.
+            String finalErrorCode = null;
             // Cancellation takes precedence over the normal terminal-state logic:
             // chunks that observed the cancel flag returned early as "failed", but
             // those aren't real failures — the user asked to stop. Surface that
@@ -408,9 +414,10 @@ public class WikiProcessingService {
                     log.info("[Wiki] Eager produced 0 pages but {} chunks indexed; marking partial for raw={}",
                             totalChunks, rawId);
                 } else {
-                    rawService.updateProcessingStatus(rawId, "failed", "No pages generated from LLM response");
-                    finalStatus = "failed";
+                    finalErrorCode = "EMPTY_RESULT";
                     finalDetail = "No pages generated from LLM response";
+                    rawService.updateProcessingStatus(rawId, "failed", finalErrorCode, finalDetail);
+                    finalStatus = "failed";
                 }
             } else if (failedChunks > 0 || failedPages > 0) {
                 // 部分成功：chunk 整体失败 或 chunk 内有 page 失败
@@ -444,7 +451,9 @@ public class WikiProcessingService {
             // RFC-012 M3：广播终态
             if ("failed".equals(finalStatus)) {
                 progressBus.broadcast(kb.getId(), WikiProgressBus.EVENT_RAW_FAILED,
-                        Map.of("rawId", rawId, "error", finalDetail == null ? "" : finalDetail));
+                        Map.of("rawId", rawId,
+                                "error", finalDetail == null ? "" : finalDetail,
+                                "errorCode", finalErrorCode == null ? "UNKNOWN" : finalErrorCode));
             } else {
                 progressBus.broadcast(kb.getId(), WikiProgressBus.EVENT_RAW_COMPLETED,
                         Map.of(
@@ -517,6 +526,7 @@ public class WikiProcessingService {
             // every pending chunk and produce more "all chunks failed" noise.
             if (totalChunks > 0 && !"cancelled".equals(finalStatus)) {
                 final Long fKbId = kb.getId();
+                final Long fRawId = rawId;
                 WIKI_EXECUTOR.submit(() -> {
                     try {
                         int embedded = embeddingService.embedMissingChunks(fKbId);
@@ -529,8 +539,10 @@ public class WikiProcessingService {
                         // emit a calmer notice here instead of a generic failure log.
                         log.warn("[Wiki] Async embedding aborted by circuit-breaker for kbId={}: {}",
                                 fKbId, ex.getMessage());
+                        surfaceWarning(fKbId, fRawId, "EMBEDDING_FAILED", ex.getMessage());
                     } catch (Exception ex) {
                         log.warn("[Wiki] Async embedding failed for kbId={}: {}", fKbId, ex.getMessage());
+                        surfaceWarning(fKbId, fRawId, "EMBEDDING_FAILED", ex.getMessage());
                     }
                 });
             }
@@ -551,6 +563,7 @@ public class WikiProcessingService {
                         }
                     } catch (Exception ex) {
                         log.warn("[Wiki] Async entity extraction failed for kbId={}: {}", fKbId, ex.getMessage());
+                        surfaceWarning(fKbId, fRawId, "ENTITY_EXTRACTION_FAILED", ex.getMessage());
                     }
                 });
             }
@@ -562,6 +575,7 @@ public class WikiProcessingService {
             // checkpoint rejected between chunks).
             boolean cancelled = rawService.isCancelRequested(rawId);
             String terminalStatus = cancelled ? "cancelled" : "failed";
+            String errorCode = cancelled ? null : classifyErrorCode(e);
             String detail = cancelled
                     ? "Cancelled by user (interrupted: " + (e.getMessage() == null ? "unknown" : e.getMessage()) + ")"
                     : e.getMessage();
@@ -570,7 +584,7 @@ public class WikiProcessingService {
             } else {
                 log.error("[Wiki] Processing failed for raw={}: {}", rawId, e.getMessage(), e);
             }
-            rawService.updateProcessingStatus(rawId, terminalStatus, detail);
+            rawService.updateProcessingStatus(rawId, terminalStatus, errorCode, detail);
             kbService.updateStatus(kb.getId(), "active");
             if (wikiJobService != null && jobId != null) {
                 try {
@@ -587,7 +601,9 @@ public class WikiProcessingService {
                         Map.of("rawId", rawId, "status", "cancelled"));
             } else {
                 progressBus.broadcast(kb.getId(), WikiProgressBus.EVENT_RAW_FAILED,
-                        Map.of("rawId", rawId, "error", e.getMessage() == null ? "unknown" : e.getMessage()));
+                        Map.of("rawId", rawId,
+                                "error", e.getMessage() == null ? "unknown" : e.getMessage(),
+                                "errorCode", errorCode == null ? "UNKNOWN" : errorCode));
             }
         } finally {
             // RFC-012 M2 v2 UI v2：写入最终进度并清理共享计数器
@@ -1815,6 +1831,111 @@ public class WikiProcessingService {
         }
     }
 
+    /**
+     * Link an agent-authored page to its source raw material and populate the
+     * full set of ingest by-products (lineage, chunks, embeddings, citations,
+     * knowledge layer, pipeline-trigger event) so the page is a first-class
+     * citizen — searchable, citation-traceable, downloadable, reprocess-able —
+     * WITHOUT re-running the LLM page-generation pipeline (the agent already
+     * supplied the final page content).
+     *
+     * <p>Called by {@code WikiTool.wiki_create_page} right after {@code createPage}.
+     * Each step is individually try/caught so a failure in one (e.g. embedding
+     * provider down) cannot block the others — the page still lands with lineage
+     * and citations even if embeddings are deferred. The raw is flipped to
+     * {@code completed} at the end so it shows as a successfully processed
+     * material in the Raw Material panel.
+     *
+     * @param pageId   the newly created page id
+     * @param kbId     the KB id
+     * @param rawId    the agent-authored raw material id (from {@code addAgentAuthored})
+     * @param rawTitle the raw material title (for the lineage snapshot)
+     * @param pageType the page's pageType (may be null; used for layer + event)
+     */
+    public void linkAgentPageToRaw(Long pageId, Long kbId, Long rawId, String rawTitle, String pageType) {
+        // 1. Lineage: page -> raw (dual-writes sourceRawIds + sourceEntries so
+        //    the "View Citations" button appears and raw-delete cascade works).
+        try {
+            pageService.mergeSourceLineage(pageId, rawId, rawTitle);
+        } catch (Exception e) {
+            log.warn("[Wiki] Agent-page lineage failed for page={}, raw={}: {}", pageId, rawId, e.getMessage());
+        }
+
+        // Knowledge layer (fact/experience) from the pageType profile, matching
+        // afterPagePersisted so agent pages join the KB's layer classification.
+        try {
+            deriveKnowledgeLayer(pageId, kbId, pageType);
+        } catch (Exception e) {
+            log.warn("[Wiki] Agent-page knowledge layer failed for page={}: {}", pageId, e.getMessage());
+        }
+
+        // 2. Chunks from the raw's text — reuse the standard splitter so semantic
+        //    search and citations work exactly like an uploaded text file.
+        WikiRawMaterialEntity raw = rawService.getById(rawId);
+        if (raw == null) {
+            log.warn("[Wiki] Agent-page link skipped: raw={} not found", rawId);
+            return;
+        }
+        String textContent = rawService.getTextContent(raw);
+        if (textContent != null && !textContent.isBlank()) {
+            try {
+                List<ChunkWithOffset> chunksWithOffset = splitIntoChunksWithOffsets(textContent);
+                List<String> chunks = chunksWithOffset.stream().map(ChunkWithOffset::text).toList();
+                List<int[]> offsets = chunksWithOffset.stream()
+                        .map(c -> new int[]{c.startOffset(), c.endOffset()}).toList();
+                if (chunks.isEmpty()) {
+                    chunkService.persistChunks(kbId, rawId,
+                            List.of(textContent), List.of(new int[]{0, textContent.length()}));
+                } else {
+                    chunkService.persistChunks(kbId, rawId, chunks, offsets);
+                }
+            } catch (Exception e) {
+                log.warn("[Wiki] Agent-page chunk persistence failed for page={}, raw={}: {}",
+                        pageId, rawId, e.getMessage());
+            }
+        }
+
+        // 3. Embeddings (async-safe calls) — both chunk-level (for semantic
+        //    search) and page-level (for hybrid retrieval).
+        try {
+            embeddingService.embedMissingChunks(kbId);
+            embeddingService.embedPage(pageId);
+        } catch (Exception e) {
+            log.warn("[Wiki] Agent-page embedding failed for kb={}, page={}: {}", kbId, pageId, e.getMessage());
+        }
+
+        // 4. Citations: page -> chunks of its source raw (feeds the CitationDrawer).
+        try {
+            citationService.buildCitationsAsync(pageId, kbId);
+        } catch (Exception e) {
+            log.warn("[Wiki] Agent-page citation build failed for page={}: {}", pageId, e.getMessage());
+        }
+
+        // 5. Pipeline trigger event (so pageType-count triggers get evaluated),
+        //    matching afterPagePersisted's contract for ingest-created pages.
+        try {
+            if (eventPublisher != null && pageType != null && !pageType.isBlank()) {
+                eventPublisher.publishEvent(new WikiPageCreatedEvent(kbId, pageType, pageId));
+            }
+        } catch (Exception e) {
+            log.warn("[Wiki] Agent-page event publish failed for page={}: {}", pageId, e.getMessage());
+        }
+
+        // 6. Flip raw to completed so it shows as a successfully processed
+        //    material in the Raw Material panel, and stamp lastProcessedHash so
+        //    the reprocess short-circuit (unchanged content -> skip) works if
+        //    the user later reprocesses this raw through the normal pipeline.
+        try {
+            rawService.updateProcessingStatus(rawId, "completed", null, null);
+            rawService.setLastProcessedHash(rawId, raw.getContentHash());
+        } catch (Exception e) {
+            log.warn("[Wiki] Agent-page raw status flip failed for raw={}: {}", rawId, e.getMessage());
+        }
+
+        log.info("[Wiki] Agent page linked: pageId={}, kbId={}, rawId={}, pageType={}",
+                pageId, kbId, rawId, pageType);
+    }
+
     /** Stamp the page's knowledge layer (fact/experience) derived from its pageType profile. */
     private void deriveKnowledgeLayer(Long pageId, Long kbId, String pageType) {
         if (pageTypeProfileService == null || pageType == null || pageType.isBlank()) {
@@ -2705,6 +2826,24 @@ public class WikiProcessingService {
         TransientLlmException(String msg) { super(msg); }
     }
 
+    /**
+     * Persist a non-blocking warning on a completed material whose async sub-step
+     * (embedding / entity extraction) failed, and push it live so the UI can flag
+     * the degradation without a reload. Best-effort: a warning must never escalate
+     * into a pipeline failure, so any bookkeeping error here is swallowed.
+     */
+    private void surfaceWarning(Long kbId, Long rawId, String warningCode, String warningMessage) {
+        try {
+            rawService.recordWarning(rawId, warningCode, warningMessage);
+            progressBus.broadcast(kbId, WikiProgressBus.EVENT_RAW_WARNING,
+                    Map.of("rawId", rawId,
+                            "warningCode", warningCode,
+                            "warning", warningMessage == null ? "" : warningMessage));
+        } catch (Exception ex) {
+            log.warn("[Wiki] Failed to record warning for raw={}: {}", rawId, ex.getMessage());
+        }
+    }
+
     // ==================== RFC-030: Error classification ====================
 
     /**
@@ -2975,10 +3114,10 @@ public class WikiProcessingService {
         try {
             String textContent = rawService.getTextContent(raw);
             if (textContent == null || textContent.isBlank()) {
-                rawService.updateProcessingStatus(rawId, "failed", "No text content available");
+                rawService.updateProcessingStatus(rawId, "failed", "NO_CONTENT", "No text content available");
                 kbService.updateStatus(kbId, "active");
                 progressBus.broadcast(kbId, WikiProgressBus.EVENT_RAW_FAILED,
-                        Map.of("rawId", rawId, "error", "No text content available"));
+                        Map.of("rawId", rawId, "error", "No text content available", "errorCode", "NO_CONTENT"));
                 return;
             }
 
@@ -3010,6 +3149,7 @@ public class WikiProcessingService {
             // Async embedding — mirror the eager path so a slow embedding model
             // does not block the raw from reaching completed.
             final Long fKbId = kbId;
+            final Long fRawId = rawId;
             WIKI_EXECUTOR.submit(() -> {
                 try {
                     int embedded = embeddingService.embedMissingChunks(fKbId);
@@ -3019,8 +3159,10 @@ public class WikiProcessingService {
                 } catch (WikiEmbeddingProviderFailingException ex) {
                     log.warn("[Wiki] Lazy async embedding aborted by circuit-breaker for kbId={}: {}",
                             fKbId, ex.getMessage());
+                    surfaceWarning(fKbId, fRawId, "EMBEDDING_FAILED", ex.getMessage());
                 } catch (Exception ex) {
                     log.warn("[Wiki] Lazy async embedding failed for kbId={}: {}", fKbId, ex.getMessage());
+                    surfaceWarning(fKbId, fRawId, "EMBEDDING_FAILED", ex.getMessage());
                 }
             });
 
@@ -3058,11 +3200,13 @@ public class WikiProcessingService {
                     rawId, kbId, totalChunks);
         } catch (Exception e) {
             log.error("[Wiki] Lazy processing failed for raw={}: {}", rawId, e.getMessage(), e);
-            rawService.updateProcessingStatus(rawId, "failed", e.getMessage());
+            String errorCode = classifyErrorCode(e);
+            rawService.updateProcessingStatus(rawId, "failed", errorCode, e.getMessage());
             kbService.updateStatus(kbId, "active");
             progressBus.broadcast(kbId, WikiProgressBus.EVENT_RAW_FAILED,
                     Map.of("rawId", rawId,
-                            "error", e.getMessage() == null ? "unknown" : e.getMessage()));
+                            "error", e.getMessage() == null ? "unknown" : e.getMessage(),
+                            "errorCode", errorCode == null ? "UNKNOWN" : errorCode));
         }
     }
 }

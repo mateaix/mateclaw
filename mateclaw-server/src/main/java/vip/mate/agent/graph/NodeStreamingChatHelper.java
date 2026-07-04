@@ -25,6 +25,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 
 /**
  * 节点级流式 LLM 调用辅助
@@ -160,6 +161,19 @@ public class NodeStreamingChatHelper {
         this.healthTracker = healthTracker;
         this.primaryProviderId = primaryProviderId;
         this.providerPool = providerPool;
+    }
+
+    /**
+     * Optional hook fired with the raw error chain whenever the PRIMARY model
+     * rejects a call for exceeding its context window. Lets the caller feed
+     * the server-reported limit back into the context-window resolver so the
+     * next turn budgets against the model's true window. Fallback-model
+     * rejections are not reported — they belong to a different model.
+     */
+    private Consumer<String> contextLimitObserver;
+
+    public void setContextLimitObserver(Consumer<String> observer) {
+        this.contextLimitObserver = observer;
     }
 
     private static List<vip.mate.llm.failover.FallbackEntry> wrap(ChatModel m) {
@@ -585,6 +599,15 @@ public class NodeStreamingChatHelper {
     private StreamResult streamCallInternal(ChatModel chatModel, Prompt prompt,
                                              String conversationId, String phase,
                                              boolean broadcast) {
+        // Normalize every assistant tool call in the outgoing history to valid
+        // JSON arguments. The streaming aggregator already does this for the
+        // current turn's calls, but tool calls replayed from persisted history
+        // (e.g. an earlier MCP tool call with empty arguments, or messages
+        // stored by an older build) bypass that path. Strict providers reject
+        // the whole request with HTTP 400 when any function.arguments is not
+        // parseable JSON, so harmonize them here at the single send chokepoint.
+        prompt = normalizeToolCallArguments(prompt);
+
         // 在开始 LLM 调用前检查停止标志
         if (streamTracker.isStopRequested(conversationId)) {
             log.info("[{}] Stop requested before LLM call, aborting: conversationId={}", phase, conversationId);
@@ -632,7 +655,7 @@ public class NodeStreamingChatHelper {
             }
             llmCallCount++;
             if (attempt > 0) retryCount++;
-            lastResult = doStreamCall(chatModel, prompt, conversationId, phase, broadcast, attempt);
+            lastResult = doStreamCall(chatModel, prompt, conversationId, phase, broadcast, attempt, true);
             if (lastResult != null) {
                 // PTL: 不重试，直接返回给上层 Node 处理
                 if (lastResult.errorType() == ErrorType.PROMPT_TOO_LONG) {
@@ -774,7 +797,7 @@ public class NodeStreamingChatHelper {
             failoverCount++;
             llmCallCount++;
             StreamResult fallbackResult = doStreamCall(fallback, prompt, conversationId,
-                    phase + "_fallback_" + (i + 1), broadcast, 0);
+                    phase + "_fallback_" + (i + 1), broadcast, 0, false);
             // Accept only fully successful fallbacks. Non-successful results (auth
             // error, client error, still-rate-limited) propagate to the next
             // fallback instead of being surfaced as the final result.
@@ -821,7 +844,7 @@ public class NodeStreamingChatHelper {
      */
     private StreamResult doStreamCall(ChatModel chatModel, Prompt prompt,
                                        String conversationId, String phase,
-                                       boolean broadcast, int attempt) {
+                                       boolean broadcast, int attempt, boolean primaryCall) {
         // Collapse every SystemMessage in the prompt into a single SystemMessage
         // at index 0. Some OpenAI-compatible providers (LM Studio's built-in
         // server, certain strict vLLM / SGLang deployments) reject 400
@@ -874,7 +897,7 @@ public class NodeStreamingChatHelper {
         }
 
         try {
-            return doStreamCallInner(chatModel, outbound, conversationId, phase, broadcast, attempt);
+            return doStreamCallInner(chatModel, outbound, conversationId, phase, broadcast, attempt, primaryCall);
         } finally {
             // Idempotent: if consumer already took the entry, discard is a no-op.
             if (relayToken != null) {
@@ -906,7 +929,7 @@ public class NodeStreamingChatHelper {
 
     private StreamResult doStreamCallInner(ChatModel chatModel, Prompt prompt,
                                             String conversationId, String phase,
-                                            boolean broadcast, int attempt) {
+                                            boolean broadcast, int attempt, boolean primaryCall) {
         if (attempt > 0) {
             long delay = Math.min(backoffBaseMs * (1L << (attempt - 1)), backoffCapMs);
             // 加入 jitter 防止雷群效应
@@ -945,9 +968,10 @@ public class NodeStreamingChatHelper {
         AtomicReference<Throwable> errorRef = new AtomicReference<>();
         AtomicInteger promptTokens = new AtomicInteger(0);
         AtomicInteger completionTokens = new AtomicInteger(0);
-        // RFC-014: Anthropic prompt cache 计数（其它 provider 永远为 0）
+        // Prompt cache / reasoning counters; providers that don't report them stay 0.
         AtomicInteger cacheReadTokens = new AtomicInteger(0);
         AtomicInteger cacheWriteTokens = new AtomicInteger(0);
+        AtomicInteger reasoningTokens = new AtomicInteger(0);
 
         // thinking-only soft cap 触发后设为 true，外层轮询线程据此 dispose 订阅。
         // 注意：内容流的字符级 / 句子级重复检测已整体移除（设计取舍：
@@ -1133,10 +1157,12 @@ public class NodeStreamingChatHelper {
                         if (usage.getCompletionTokens() != null && usage.getCompletionTokens() > 0) {
                             completionTokens.set(usage.getCompletionTokens().intValue());
                         }
-                        // RFC-014: 反射抽取 Anthropic prompt cache 字段（DashScope/OpenAI 自然返回 0）
+                        // Reflective extraction of provider-native cache / reasoning
+                        // counters (Anthropic / OpenAI-compatible / DashScope).
                         var cache = vip.mate.llm.cache.CacheUsageExtractor.extract(usage);
                         if (cache.cacheReadTokens() > 0)  cacheReadTokens.set(cache.cacheReadTokens());
                         if (cache.cacheWriteTokens() > 0) cacheWriteTokens.set(cache.cacheWriteTokens());
+                        if (cache.reasoningTokens() > 0)  reasoningTokens.set(cache.reasoningTokens());
                     }
                 })
                 .subscribe(
@@ -1188,7 +1214,8 @@ public class NodeStreamingChatHelper {
                                 toolCallAccumulators.size(), conversationId);
                         return assembleStoppedResult(contentAccum, thinkingAccum, toolCallAccumulators,
                                 promptTokens.get(), completionTokens.get(),
-                                cacheReadTokens.get(), cacheWriteTokens.get(), phase);
+                                cacheReadTokens.get(), cacheWriteTokens.get(),
+                                reasoningTokens.get(), phase);
                     }
                     log.info("[{}] Stop requested during LLM call, no content accumulated, aborting: conversationId={}",
                             phase, conversationId);
@@ -1222,6 +1249,7 @@ public class NodeStreamingChatHelper {
                 return assembleResult(contentAccum, thinkingAccum, toolCallAccumulators,
                         promptTokens.get(), completionTokens.get(),
                         cacheReadTokens.get(), cacheWriteTokens.get(),
+                        reasoningTokens.get(),
                         phase, true, error.getMessage());
             }
 
@@ -1232,6 +1260,17 @@ public class NodeStreamingChatHelper {
             if (errorType == ErrorType.PROMPT_TOO_LONG) {
                 log.warn("[{}] Prompt too long error, returning to node for compaction: {}",
                         phase, error.getMessage());
+                // Teach the context-window resolver the server-reported limit so
+                // the next turn budgets against the model's true window. Raw
+                // chain (incl. response body) — the friendly text may drop the
+                // numbers. Primary model only; fallbacks are different models.
+                if (primaryCall && contextLimitObserver != null) {
+                    try {
+                        contextLimitObserver.accept(extractFullErrorChain(error));
+                    } catch (Exception observerError) {
+                        log.debug("context-limit observer failed: {}", observerError.getMessage());
+                    }
+                }
                 return buildErrorResultWithType("Prompt 过长: " + extractUserFriendlyError(error),
                         conversationId, phase, errorType);
             }
@@ -1310,7 +1349,8 @@ public class NodeStreamingChatHelper {
                 : null;
         return assembleResult(contentAccum, thinkingAccum, toolCallAccumulators,
                 promptTokens.get(), completionTokens.get(),
-                cacheReadTokens.get(), cacheWriteTokens.get(), phase,
+                cacheReadTokens.get(), cacheWriteTokens.get(),
+                reasoningTokens.get(), phase,
                 truncated,
                 truncationReason);
     }
@@ -1319,7 +1359,8 @@ public class NodeStreamingChatHelper {
     private StreamResult assembleStoppedResult(StringBuilder contentAccum, StringBuilder thinkingAccum,
                                                 List<ToolCallAccumulator> toolCallAccumulators,
                                                 int promptTok, int completionTok,
-                                                int cacheReadTok, int cacheWriteTok, String phase) {
+                                                int cacheReadTok, int cacheWriteTok,
+                                                int reasoningTok, String phase) {
         List<AssistantMessage.ToolCall> finalToolCalls = buildFinalToolCalls(toolCallAccumulators);
         String fullContent = contentAccum.toString();
         String fullThinking = thinkingAccum.toString();
@@ -1342,14 +1383,14 @@ public class NodeStreamingChatHelper {
         recordCacheMetrics(phase, promptTok, completionTok, cacheReadTok, cacheWriteTok);
         return new StreamResult(fullContent, fullThinking, assembledMessage,
                 finalToolCalls, !finalToolCalls.isEmpty(), promptTok, completionTok,
-                true, null, ErrorType.NONE, true, cacheReadTok, cacheWriteTok);
+                true, null, ErrorType.NONE, true, cacheReadTok, cacheWriteTok, reasoningTok);
     }
 
     /** 组装最终 StreamResult（成功或 partial） */
     private StreamResult assembleResult(StringBuilder contentAccum, StringBuilder thinkingAccum,
                                          List<ToolCallAccumulator> toolCallAccumulators,
                                          int promptTok, int completionTok,
-                                         int cacheReadTok, int cacheWriteTok,
+                                         int cacheReadTok, int cacheWriteTok, int reasoningTok,
                                          String phase, boolean partial, String errorMsg) {
         List<AssistantMessage.ToolCall> finalToolCalls = buildFinalToolCalls(toolCallAccumulators);
         String fullContent = contentAccum.toString();
@@ -1375,7 +1416,7 @@ public class NodeStreamingChatHelper {
         recordCacheMetrics(phase, promptTok, completionTok, cacheReadTok, cacheWriteTok);
         return new StreamResult(fullContent, fullThinking, assembledMessage,
                 finalToolCalls, !finalToolCalls.isEmpty(), promptTok, completionTok,
-                partial, errorMsg, ErrorType.NONE, false, cacheReadTok, cacheWriteTok);
+                partial, errorMsg, ErrorType.NONE, false, cacheReadTok, cacheWriteTok, reasoningTok);
     }
 
     /**
@@ -1537,6 +1578,66 @@ public class NodeStreamingChatHelper {
         log.debug("[dropTrailingAssistant] trimmed {} trailing AssistantMessage(s) from prompt (size {} -> {})",
                 messages.size() - end, messages.size(), end);
         return new Prompt(new ArrayList<>(messages.subList(0, end)), prompt.getOptions());
+    }
+
+    /**
+     * Rebuild any {@link AssistantMessage} whose tool calls carry blank or
+     * non-JSON {@code function.arguments} so the entire outgoing prompt stays
+     * acceptable to strict OpenAI-compatible providers (e.g. aliyun-codingplan,
+     * which 400s the whole request otherwise). Messages with no tool calls, or
+     * whose tool-call arguments are already valid JSON, pass through untouched —
+     * preserving content, metadata, and media. Returns the input unchanged when
+     * nothing needs fixing.
+     */
+    static Prompt normalizeToolCallArguments(Prompt prompt) {
+        if (prompt == null) {
+            return null;
+        }
+        List<Message> messages = prompt.getInstructions();
+        if (messages == null || messages.isEmpty()) {
+            return prompt;
+        }
+        List<Message> rebuilt = null;
+        for (int i = 0; i < messages.size(); i++) {
+            Message m = messages.get(i);
+            if (!(m instanceof AssistantMessage am)
+                    || am.getToolCalls() == null || am.getToolCalls().isEmpty()) {
+                if (rebuilt != null) rebuilt.add(m);
+                continue;
+            }
+            List<AssistantMessage.ToolCall> fixedCalls = null;
+            List<AssistantMessage.ToolCall> calls = am.getToolCalls();
+            for (int j = 0; j < calls.size(); j++) {
+                AssistantMessage.ToolCall tc = calls.get(j);
+                String safe = sanitizeToolCallArguments(tc.name(), tc.arguments());
+                if (!safe.equals(tc.arguments())) {
+                    if (fixedCalls == null) fixedCalls = new ArrayList<>(calls);
+                    fixedCalls.set(j, new AssistantMessage.ToolCall(tc.id(), tc.type(), tc.name(), safe));
+                }
+            }
+            if (fixedCalls == null) {
+                if (rebuilt != null) rebuilt.add(m);
+                continue;
+            }
+            if (rebuilt == null) {
+                rebuilt = new ArrayList<>(messages.subList(0, i));
+            }
+            AssistantMessage.Builder builder = AssistantMessage.builder()
+                    .content(am.getText() == null ? "" : am.getText())
+                    .toolCalls(fixedCalls);
+            if (am.getMetadata() != null && !am.getMetadata().isEmpty()) {
+                builder.properties(am.getMetadata());
+            }
+            if (am.getMedia() != null && !am.getMedia().isEmpty()) {
+                builder.media(am.getMedia());
+            }
+            rebuilt.add(builder.build());
+        }
+        if (rebuilt == null) {
+            return prompt;
+        }
+        log.debug("[normalizeToolCallArguments] normalized non-JSON tool-call arguments in outgoing prompt");
+        return new Prompt(rebuilt, prompt.getOptions());
     }
 
     private StreamResult buildErrorResult(String errorMsg, String conversationId, String phase) {
@@ -1753,17 +1854,19 @@ public class NodeStreamingChatHelper {
             ErrorType errorType,
             /** 用户主动停止（stopRequested）导致的提前返回 */
             boolean stopped,
-            /** RFC-014: Anthropic prompt cache 命中字节数（其它 provider 为 0） */
+            /** Prompt cache 命中 tokens（provider 未上报时为 0） */
             int cacheReadTokens,
-            /** RFC-014: Anthropic prompt cache 写入字节数（其它 provider 为 0） */
-            int cacheWriteTokens
+            /** Prompt cache 写入 tokens（provider 未上报时为 0） */
+            int cacheWriteTokens,
+            /** 思考（reasoning）阶段消耗的 completion tokens（provider 未上报时为 0） */
+            int reasoningTokens
     ) {
         /** 兼容旧调用方 — 无 partial/error/stopped 的正常结果 */
         public StreamResult(String text, String thinking, AssistantMessage assistantMessage,
                             List<AssistantMessage.ToolCall> toolCalls, boolean hasToolCalls,
                             int promptTokens, int completionTokens) {
             this(text, thinking, assistantMessage, toolCalls, hasToolCalls,
-                    promptTokens, completionTokens, false, null, ErrorType.NONE, false, 0, 0);
+                    promptTokens, completionTokens, false, null, ErrorType.NONE, false, 0, 0, 0);
         }
 
         /** 兼容 10-arg 调用点 */
@@ -1772,17 +1875,17 @@ public class NodeStreamingChatHelper {
                             int promptTokens, int completionTokens,
                             boolean partial, String errorMessage, ErrorType errorType) {
             this(text, thinking, assistantMessage, toolCalls, hasToolCalls,
-                    promptTokens, completionTokens, partial, errorMessage, errorType, false, 0, 0);
+                    promptTokens, completionTokens, partial, errorMessage, errorType, false, 0, 0, 0);
         }
 
-        /** 兼容 12-arg 调用点（pre-RFC-014） */
+        /** 兼容 11-arg 调用点（无 cache/reasoning 计数） */
         public StreamResult(String text, String thinking, AssistantMessage assistantMessage,
                             List<AssistantMessage.ToolCall> toolCalls, boolean hasToolCalls,
                             int promptTokens, int completionTokens,
                             boolean partial, String errorMessage, ErrorType errorType,
                             boolean stopped) {
             this(text, thinking, assistantMessage, toolCalls, hasToolCalls,
-                    promptTokens, completionTokens, partial, errorMessage, errorType, stopped, 0, 0);
+                    promptTokens, completionTokens, partial, errorMessage, errorType, stopped, 0, 0, 0);
         }
 
         /** 是否有不可忽略的错误（无内容 + 有错误） */

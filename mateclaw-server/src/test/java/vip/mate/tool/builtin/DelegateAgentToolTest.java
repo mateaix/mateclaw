@@ -15,6 +15,7 @@ import org.mockito.Mock;
 import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 import vip.mate.agent.AgentService;
+import vip.mate.agent.AgentService.ChatResult;
 import vip.mate.agent.delegation.SubagentRegistry;
 import vip.mate.agent.model.AgentEntity;
 import vip.mate.agent.repository.AgentMapper;
@@ -40,6 +41,8 @@ class DelegateAgentToolTest {
     @Mock ConversationService conversationService;
     @Mock AuditEventService auditEventService;
     @Spy SubagentRegistry subagentRegistry = new SubagentRegistry();
+    @Spy vip.mate.agent.delegation.DelegatedUsageAccumulator delegatedUsageAccumulator =
+            new vip.mate.agent.delegation.DelegatedUsageAccumulator();
 
     @InjectMocks DelegateAgentTool delegateAgentTool;
 
@@ -180,9 +183,9 @@ class DelegateAgentToolTest {
         // the test thread returns immediately. The orphan keeps sleeping on a
         // virtual thread until JVM teardown — that's the same behavior as
         // production (cancel is best-effort).
-        when(agentService.chat(anyLong(), anyString(), anyString(), any())).thenAnswer(invocation -> {
+        when(agentService.chatWithUsage(anyLong(), anyString(), anyString(), any())).thenAnswer(invocation -> {
             Thread.sleep(10_000);
-            return "should not reach here";
+            return ChatResult.contentOnly("should not reach here");
         });
 
         // Set a conversationId so resolveParentConversationId works
@@ -239,13 +242,13 @@ class DelegateAgentToolTest {
         when(streamTracker.isRunning(any())).thenReturn(false);
 
         // FastAgent completes immediately
-        when(agentService.chat(eq(10L), anyString(), anyString(), any()))
-                .thenReturn("Fast result completed successfully");
+        when(agentService.chatWithUsage(eq(10L), anyString(), anyString(), any()))
+                .thenReturn(ChatResult.contentOnly("Fast result completed successfully"));
 
         // SlowAgent blocks longer than the (test-overridden) 3 s budget.
-        when(agentService.chat(eq(11L), anyString(), anyString(), any())).thenAnswer(invocation -> {
+        when(agentService.chatWithUsage(eq(11L), anyString(), anyString(), any())).thenAnswer(invocation -> {
             Thread.sleep(10_000);
-            return "should not reach here";
+            return ChatResult.contentOnly("should not reach here");
         });
 
         ToolExecutionContext.set("parent-mixed", "admin");
@@ -262,5 +265,166 @@ class DelegateAgentToolTest {
         assertTrue(result.contains("SlowAgent"), "Should mention SlowAgent");
         assertTrue(result.contains("超时") || result.contains("✗"),
                 "Should contain timeout indicator for SlowAgent: " + result);
+    }
+
+    // ===== delegateParallel: fail-fast on required failure (RFC 05 Q3) =====
+
+    @Test
+    @DisplayName("delegateParallel fails fast: required failure cancels a slow sibling")
+    void delegateParallelRequiredFailureCancelsSibling() {
+        AgentEntity failAgent = new AgentEntity();
+        failAgent.setId(20L);
+        failAgent.setName("FailAgent");
+        failAgent.setEnabled(true);
+        failAgent.setWorkspaceId(1L);
+
+        AgentEntity slowAgent = new AgentEntity();
+        slowAgent.setId(21L);
+        slowAgent.setName("SlowAgent");
+        slowAgent.setEnabled(true);
+        slowAgent.setWorkspaceId(1L);
+
+        when(agentMapper.selectOne(any(LambdaQueryWrapper.class)))
+                .thenReturn(failAgent)
+                .thenReturn(slowAgent);
+        when(streamTracker.isRunning(any())).thenReturn(false);
+        // Required FailAgent errors immediately → arms fail-fast.
+        when(agentService.chatWithUsage(eq(20L), anyString(), anyString(), any()))
+                .thenThrow(new RuntimeException("boom"));
+        // SlowAgent would block well past the 3 s test budget; fail-fast cancels it.
+        when(agentService.chatWithUsage(eq(21L), anyString(), anyString(), any())).thenAnswer(inv -> {
+            Thread.sleep(10_000);
+            return ChatResult.contentOnly("unreachable");
+        });
+
+        ToolExecutionContext.set("parent-ff", "admin");
+        String json = "[{\"agentName\":\"FailAgent\",\"task\":\"a\"},{\"agentName\":\"SlowAgent\",\"task\":\"b\"}]";
+
+        long start = System.currentTimeMillis();
+        String result = delegateAgentTool.delegateParallel(json, null);
+        long elapsed = System.currentTimeMillis() - start;
+
+        assertTrue(elapsed < 2500, "fail-fast should return well before the budget, took " + elapsed + "ms");
+        assertTrue(result.contains("cancelled=1"), "slow sibling should be cancelled: " + result);
+        assertTrue(result.contains("已取消"), "should label the cancelled sibling: " + result);
+    }
+
+    @Test
+    @DisplayName("delegateParallel: optional task failure does not abort the batch")
+    void delegateParallelOptionalFailureDoesNotAbort() {
+        AgentEntity optAgent = new AgentEntity();
+        optAgent.setId(30L);
+        optAgent.setName("OptAgent");
+        optAgent.setEnabled(true);
+        optAgent.setWorkspaceId(1L);
+
+        AgentEntity okAgent = new AgentEntity();
+        okAgent.setId(31L);
+        okAgent.setName("OkAgent");
+        okAgent.setEnabled(true);
+        okAgent.setWorkspaceId(1L);
+
+        when(agentMapper.selectOne(any(LambdaQueryWrapper.class)))
+                .thenReturn(optAgent)
+                .thenReturn(okAgent);
+        when(streamTracker.isRunning(any())).thenReturn(false);
+        when(agentService.chatWithUsage(eq(30L), anyString(), anyString(), any()))
+                .thenThrow(new RuntimeException("opt boom"));
+        when(agentService.chatWithUsage(eq(31L), anyString(), anyString(), any()))
+                .thenReturn(ChatResult.contentOnly("ok result done"));
+
+        ToolExecutionContext.set("parent-opt", "admin");
+        String json = "[{\"agentName\":\"OptAgent\",\"task\":\"a\",\"optional\":true},"
+                + "{\"agentName\":\"OkAgent\",\"task\":\"b\"}]";
+        String result = delegateAgentTool.delegateParallel(json, null);
+
+        // An optional failure must not cancel anything; the other task completes normally.
+        assertTrue(result.contains("cancelled=0"), "no cancellation expected: " + result);
+        assertTrue(result.contains("OkAgent"), "ok task should be reported: " + result);
+    }
+
+    // ===== delegateParallel: per-task timeout override (RFC 05 Q2) =====
+
+    @Test
+    @DisplayName("delegateParallel: per-task timeout_seconds widens the batch budget")
+    void delegateParallelTimeoutOverrideWidensBudget() {
+        AgentEntity longAgent = new AgentEntity();
+        longAgent.setId(40L);
+        longAgent.setName("LongAgent");
+        longAgent.setEnabled(true);
+        longAgent.setWorkspaceId(1L);
+
+        when(agentMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(longAgent);
+        when(streamTracker.isRunning(any())).thenReturn(false);
+        // Sleeps 4 s — beyond the 3 s test budget, but within the 6 s override.
+        when(agentService.chatWithUsage(eq(40L), anyString(), anyString(), any())).thenAnswer(inv -> {
+            Thread.sleep(4_000);
+            return ChatResult.contentOnly("long task finished ok");
+        });
+
+        ToolExecutionContext.set("parent-to", "admin");
+        String json = "[{\"agentName\":\"LongAgent\",\"task\":\"a\",\"timeout_seconds\":6}]";
+        String result = delegateAgentTool.delegateParallel(json, null);
+
+        // With the override the child finishes instead of timing out at 3 s.
+        assertTrue(result.contains("long task finished ok") || result.contains("success=1"),
+                "long task should complete within the widened budget: " + result);
+        assertFalse(result.contains("timeout=1"), "should not time out with the override: " + result);
+    }
+
+    // ===== token usage surfacing =====
+
+    @Test
+    @DisplayName("delegateToAgent surfaces the child's token usage in the reply")
+    void delegateToAgentSurfacesTokenUsage() {
+        AgentEntity agent = new AgentEntity();
+        agent.setId(50L);
+        agent.setName("Worker");
+        agent.setEnabled(true);
+        agent.setWorkspaceId(1L);
+        when(agentMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(agent);
+        when(streamTracker.isRunning(any())).thenReturn(false);
+        when(agentService.chatWithUsage(eq(50L), anyString(), anyString(), any()))
+                .thenReturn(new ChatResult("done with work", 120, 45, null, null));
+
+        ToolExecutionContext.set("parent-usage", "admin");
+        String result = delegateAgentTool.delegateToAgent("Worker", "do the thing", null, null);
+
+        assertTrue(result.contains("tokensIn=120"), "reply should surface prompt tokens: " + result);
+        assertTrue(result.contains("tokensOut=45"), "reply should surface completion tokens: " + result);
+    }
+
+    @Test
+    @DisplayName("delegateParallel aggregates child token usage in the header and per-row lines")
+    void delegateParallelAggregatesTokenUsage() {
+        AgentEntity a = new AgentEntity();
+        a.setId(60L);
+        a.setName("AgentA");
+        a.setEnabled(true);
+        a.setWorkspaceId(1L);
+        AgentEntity b = new AgentEntity();
+        b.setId(61L);
+        b.setName("AgentB");
+        b.setEnabled(true);
+        b.setWorkspaceId(1L);
+        when(agentMapper.selectOne(any(LambdaQueryWrapper.class)))
+                .thenReturn(a)
+                .thenReturn(b);
+        when(streamTracker.isRunning(any())).thenReturn(false);
+        when(agentService.chatWithUsage(eq(60L), anyString(), anyString(), any()))
+                .thenReturn(new ChatResult("result A", 100, 30, null, null));
+        when(agentService.chatWithUsage(eq(61L), anyString(), anyString(), any()))
+                .thenReturn(new ChatResult("result B", 80, 20, null, null));
+
+        ToolExecutionContext.set("parent-usage-parallel", "admin");
+        String json = "[{\"agentName\":\"AgentA\",\"task\":\"a\"},{\"agentName\":\"AgentB\",\"task\":\"b\"}]";
+        String result = delegateAgentTool.delegateParallel(json, null);
+
+        // Machine header carries the batch totals (180 in, 50 out).
+        assertTrue(result.contains("tokensIn=180"), "header should aggregate prompt tokens: " + result);
+        assertTrue(result.contains("tokensOut=50"), "header should aggregate completion tokens: " + result);
+        // Per-row lines carry each child's own usage.
+        assertTrue(result.contains("tokensIn=100"), "row A should carry its prompt tokens: " + result);
+        assertTrue(result.contains("tokensIn=80"), "row B should carry its prompt tokens: " + result);
     }
 }

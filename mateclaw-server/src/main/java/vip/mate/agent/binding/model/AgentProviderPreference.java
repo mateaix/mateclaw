@@ -29,6 +29,16 @@ public class AgentProviderPreference {
     /** Provider id (matches {@code mate_model_provider.provider_id}). */
     private String providerId;
 
+    /**
+     * Specific chat model to pin for this entry (matches
+     * {@code mate_model_config.id}). {@code null} means "use the provider's
+     * default chat model" — backward compatible with provider-only
+     * preferences. With this column the same {@code providerId} may appear
+     * in multiple rows, each pinning a different model, forming a per-agent
+     * preferred-model chain.
+     */
+    private Long modelId;
+
     /** Lower wins. Two rows with the same value tie-break on provider_id alphabetically. */
     private Integer sortOrder;
 

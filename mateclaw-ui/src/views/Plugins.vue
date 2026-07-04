@@ -82,6 +82,17 @@
                 <span class="capability-label">{{ t('plugins.memoryProvider') }}:</span>
                 <span class="capability-tag">{{ plugin.registeredMemoryProvider }}</span>
               </div>
+              <div class="capability-section" v-if="plugin.registeredSearchProviders?.length">
+                <span class="capability-label">{{ t('plugins.searchProviders') }}:</span>
+                <span class="capability-tag" v-for="sp in plugin.registeredSearchProviders" :key="sp">{{ sp }}</span>
+              </div>
+            </div>
+
+            <!-- Plugin actions -->
+            <div class="plugin-actions" v-if="plugin.configSchema && Object.keys(plugin.configSchema).length > 0">
+              <button type="button" class="btn-secondary btn-configure" @click="openConfigDialog(plugin)">
+                {{ t('plugins.configure') }}
+              </button>
             </div>
 
             <!-- Error message -->
@@ -105,18 +116,64 @@
           <p class="empty-title">{{ t('plugins.emptyTitle') }}</p>
           <p class="empty-hint">{{ t('plugins.emptyHint') }}</p>
         </div>
+
+        <!-- Config modal -->
+        <div v-if="configDialogPlugin" class="modal-overlay" @click.self="closeConfigDialog">
+          <div class="modal" role="dialog" aria-modal="true">
+            <div class="modal-header">
+              <h2>{{ t('plugins.configTitle') }} — {{ configDialogPlugin.displayName || configDialogPlugin.name }}</h2>
+              <button type="button" class="modal-close" @click="closeConfigDialog" aria-label="close">&times;</button>
+            </div>
+            <div class="modal-body">
+              <div v-for="(field, key) in configDialogPlugin.configSchema" :key="key" class="config-field">
+                <label :for="`plugin-config-${key}`">
+                  {{ key }}
+                  <span v-if="field.required" class="required-mark">*{{ t('plugins.configRequired') }}</span>
+                </label>
+                <p v-if="field.description" class="config-field-desc">{{ field.description }}</p>
+                <input
+                  v-if="field.secret"
+                  :id="`plugin-config-${key}`"
+                  type="password"
+                  v-model="configDraft[key]"
+                  class="form-input"
+                  :placeholder="t('plugins.configSecretPlaceholder')"
+                  autocomplete="off"
+                />
+                <input
+                  v-else
+                  :id="`plugin-config-${key}`"
+                  type="text"
+                  v-model="configDraft[key]"
+                  class="form-input"
+                />
+              </div>
+            </div>
+            <div class="modal-footer">
+              <button type="button" class="btn-secondary" @click="closeConfigDialog">{{ t('plugins.configCancel') }}</button>
+              <button type="button" class="btn-primary" @click="saveConfigDialog">{{ t('plugins.configSave') }}</button>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { mcToast } from '@/composables/useMcToast'
 import { pluginApi } from '@/api'
 
 const { t } = useI18n()
+
+interface PluginConfigField {
+  type: string
+  required?: boolean
+  secret?: boolean
+  description?: string
+}
 
 interface PluginInfo {
   name: string
@@ -133,6 +190,9 @@ interface PluginInfo {
   registeredChannels?: string[]
   registeredProvider?: string
   registeredMemoryProvider?: string
+  registeredSearchProviders?: string[]
+  configSchema?: Record<string, PluginConfigField>
+  currentConfig?: Record<string, any>
 }
 
 const plugins = ref<PluginInfo[]>([])
@@ -179,12 +239,59 @@ function hasCapabilities(plugin: PluginInfo): boolean {
     plugin.registeredTools?.length ||
     plugin.registeredChannels?.length ||
     plugin.registeredProvider ||
-    plugin.registeredMemoryProvider
+    plugin.registeredMemoryProvider ||
+    plugin.registeredSearchProviders?.length
   )
+}
+
+const configDialogPlugin = ref<PluginInfo | null>(null)
+const configDraft = ref<Record<string, string>>({})
+
+function openConfigDialog(plugin: PluginInfo) {
+  configDialogPlugin.value = plugin
+  const draft: Record<string, string> = {}
+  for (const key of Object.keys(plugin.configSchema || {})) {
+    // secret fields always start blank (never echo plaintext); non-secret fields echo the current value
+    draft[key] = plugin.configSchema![key].secret ? '' : (plugin.currentConfig?.[key] ?? '')
+  }
+  configDraft.value = draft
+}
+
+function closeConfigDialog() {
+  configDialogPlugin.value = null
+  configDraft.value = {}
+}
+
+async function saveConfigDialog() {
+  if (!configDialogPlugin.value) return
+  // Only submit non-blank fields: blank secret means "keep unchanged"; non-secret fields may submit an empty string to overwrite.
+  const payload: Record<string, string> = {}
+  for (const [key, value] of Object.entries(configDraft.value)) {
+    const schema = configDialogPlugin.value.configSchema![key]
+    if (schema.secret && !value) continue
+    payload[key] = value
+  }
+  try {
+    await pluginApi.updateConfig(configDialogPlugin.value.name, payload)
+    mcToast.success(t('plugins.configSaved'))
+    closeConfigDialog()
+    await refresh()
+  } catch (e: any) {
+    mcToast.error(e?.message || t('plugins.configFailed'))
+  }
+}
+
+function handleEscapeKey(e: KeyboardEvent) {
+  if (e.key === 'Escape' && configDialogPlugin.value) closeConfigDialog()
 }
 
 onMounted(() => {
   loadPlugins()
+  window.addEventListener('keydown', handleEscapeKey)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('keydown', handleEscapeKey)
 })
 </script>
 
@@ -338,6 +445,70 @@ onMounted(() => {
   line-height: 1.4;
 }
 .plugin-error svg { flex-shrink: 0; margin-top: 1px; }
+
+.plugin-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.btn-configure { padding: 6px 12px; font-size: 12px; }
+
+/* Config modal */
+.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; z-index: 1000; padding: 20px; }
+.modal {
+  background: var(--mc-surface, #fff);
+  border-radius: 12px;
+  width: 480px;
+  max-width: 100%;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--mc-border);
+}
+.modal-header h2 { font-size: 16px; margin: 0; color: var(--mc-text-primary); }
+.modal-close {
+  background: none; border: none; cursor: pointer; font-size: 20px; line-height: 1;
+  color: var(--mc-text-tertiary); padding: 4px;
+}
+.modal-close:hover { color: var(--mc-text-primary); }
+.modal-body { padding: 16px 20px; overflow-y: auto; }
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 14px 20px;
+  border-top: 1px solid var(--mc-border);
+}
+
+.config-field { margin: 14px 0; }
+.config-field:first-child { margin-top: 0; }
+.config-field label { display: block; font-weight: 600; margin-bottom: 4px; color: var(--mc-text-primary); font-size: 13px; }
+.config-field-desc { font-size: 12px; color: var(--mc-text-tertiary); margin: 2px 0 6px; }
+.config-field .form-input {
+  width: 100%;
+  border: 1px solid var(--mc-border, #e5e7eb);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+  box-sizing: border-box;
+  background: var(--mc-surface, #fff);
+  color: var(--mc-text-primary);
+}
+.required-mark { font-size: 12px; color: var(--mc-accent, #6366f1); font-weight: 400; margin-left: 6px; }
+
+.btn-primary {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 500;
+  background: var(--mc-accent, #6366f1); color: #fff; border: none; cursor: pointer; transition: 0.15s;
+}
+.btn-primary:hover { opacity: 0.9; }
 
 /* Toggle switch (reuse pattern from Tools.vue) */
 .toggle-switch { position: relative; display: inline-block; width: 36px; height: 20px; flex-shrink: 0; }

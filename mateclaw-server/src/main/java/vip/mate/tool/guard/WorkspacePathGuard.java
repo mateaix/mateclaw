@@ -87,10 +87,82 @@ public final class WorkspacePathGuard {
         return defaultRoot;
     }
 
+    /**
+     * Additional always-trusted roots that sit <em>outside</em> any workspace
+     * boundary yet must remain readable by the agent. The tool-result spill
+     * store registers its base directories here: when a tool produces an
+     * oversized result it is written to disk and the agent is handed back a
+     * path with the instruction to {@code read_file} it on demand. That spill
+     * directory may live outside the workspace (a central
+     * {@code storage-base-dir} or the {@code ${java.io.tmpdir}} fallback), so
+     * without this allow-list the very read the agent is told to perform would
+     * be rejected as a boundary escape. Registered roots are matched exactly
+     * like {@link #skillRoot} — by {@code startsWith} on the normalized path.
+     */
+    private static final Set<Path> trustedRoots = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    /**
+     * Register an additional always-trusted root (e.g. a tool-result spill
+     * directory). A {@code null} or blank path is ignored. Idempotent.
+     */
+    public static void addTrustedRoot(@Nullable String path) {
+        if (path == null || path.isBlank()) {
+            return;
+        }
+        Path normalized = Paths.get(path).toAbsolutePath().normalize();
+        if (trustedRoots.add(normalized)) {
+            log.info("[WorkspacePathGuard] Trusted root added: {}", normalized);
+        }
+    }
+
+    /** Clear every registered trusted root. Intended for test teardown. */
+    public static void clearTrustedRoots() {
+        trustedRoots.clear();
+    }
+
     /** True when {@code normalized} lives under the shared skill root (if one is set). */
     private static boolean isUnderSkillRoot(Path normalized) {
         Path sr = skillRoot;
         return sr != null && normalized.startsWith(sr);
+    }
+
+    /**
+     * True when {@code normalized} (or its symlink-resolved real path) lives
+     * under the shared skill root or any registered {@link #trustedRoots}.
+     * Bundles the skill-root and trusted-root checks so every boundary check
+     * site stays a single call.
+     */
+    private static boolean isExempt(Path normalized) {
+        if (isUnderSkillRoot(normalized)) {
+            return true;
+        }
+        for (Path root : trustedRoots) {
+            if (normalized.startsWith(root)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Symlink-resolved variant of {@link #isExempt}. */
+    private static boolean isExemptReal(Path realPath) {
+        if (isUnderSkillRootReal(realPath)) {
+            return true;
+        }
+        for (Path root : trustedRoots) {
+            if (realPath.startsWith(root)) {
+                return true;
+            }
+            try {
+                Path realRoot = root.toFile().exists() ? root.toRealPath() : root;
+                if (realPath.startsWith(realRoot)) {
+                    return true;
+                }
+            } catch (IOException e) {
+                // fall through — the plain startsWith above already ran
+            }
+        }
+        return false;
     }
 
     /**
@@ -142,7 +214,7 @@ public final class WorkspacePathGuard {
         Path root = Paths.get(basePath).toAbsolutePath().normalize();
 
         // 先用 normalize 检查，再尝试 toRealPath 防符号链接逃逸
-        if (!normalized.startsWith(root) && !isUnderSkillRoot(normalized)) {
+        if (!normalized.startsWith(root) && !isExempt(normalized)) {
             throw new IllegalArgumentException(
                     "Path is outside workspace boundary: " + normalized + ", allowed root: " + root);
         }
@@ -152,7 +224,7 @@ public final class WorkspacePathGuard {
             if (normalized.toFile().exists()) {
                 Path realPath = normalized.toRealPath();
                 Path realRoot = root.toFile().exists() ? root.toRealPath() : root;
-                if (!realPath.startsWith(realRoot) && !isUnderSkillRootReal(realPath)) {
+                if (!realPath.startsWith(realRoot) && !isExemptReal(realPath)) {
                     throw new IllegalArgumentException(
                             "Path escapes workspace via symlink: " + realPath + ", allowed root: " + realRoot);
                 }
@@ -262,7 +334,7 @@ public final class WorkspacePathGuard {
         Path root = basePathToRoot(basePath);
         if (root == null) return null;
         Path normalized = Paths.get(rawPath).toAbsolutePath().normalize();
-        if (!normalized.startsWith(root) && !isUnderSkillRoot(normalized)) {
+        if (!normalized.startsWith(root) && !isExempt(normalized)) {
             return "Path is outside workspace boundary: " + normalized + ", allowed root: " + root;
         }
         return null;
@@ -340,7 +412,7 @@ public final class WorkspacePathGuard {
             if (destructive && normalized.equals(root)) {
                 throw rootDeletionError(root);
             }
-            if (!normalized.startsWith(root) && !isUnderSkillRoot(normalized)) {
+            if (!normalized.startsWith(root) && !isExempt(normalized)) {
                 throw new IllegalArgumentException(
                         "Shell command references path outside workspace boundary: "
                                 + normalized + ", allowed root: " + root);
@@ -364,7 +436,7 @@ public final class WorkspacePathGuard {
             if (destructive && resolved.equals(root)) {
                 throw rootDeletionError(root);
             }
-            if (!resolved.startsWith(root) && !isUnderSkillRoot(resolved)) {
+            if (!resolved.startsWith(root) && !isExempt(resolved)) {
                 throw new IllegalArgumentException(
                         "Shell command uses parent-directory traversal that escapes the workspace: '"
                                 + candidate + "' would resolve to " + resolved

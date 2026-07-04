@@ -243,6 +243,13 @@
       />
     </div>
 
+        <!-- 运行总览侧栏：计划进度 + 子 Agent 实时状态 -->
+        <RunOverviewPanel
+          :messages="messages"
+          :is-generating="isGenerating"
+          :agent-type="currentAgent?.agentType"
+        />
+
         <!-- Talk Mode 覆盖层 -->
         <TalkMode
           v-if="showTalkMode"
@@ -268,6 +275,7 @@ import { copyToClipboard } from '@/utils/clipboard'
 import { useFileDrop } from '@/composables/useFileDrop'
 import { useIsMobile, useMediaQuery, BREAKPOINTS } from '@/composables/useBreakpoint'
 import { useChat } from '@/composables/chat/useChat'
+import RunOverviewPanel from '@/components/chat/RunOverviewPanel.vue'
 import { reconstructErrorInfo } from '@/types/chatError'
 import { reconcileMessages, extractMessages } from '@/utils/messageReconcile'
 import type { Conversation, Agent, ModelConfig, ProviderInfo, ActiveModelsInfo, ChatAttachment, MessageContentPart, Message, ToolCallMeta, StreamPhase } from '@/types'
@@ -993,6 +1001,25 @@ const activeCronRuns = ref<ActiveCronRun[]>([])
 function isCronConversation(cid: string | null | undefined): boolean {
   return !!cid && (cid.startsWith('tasks_') || cid.startsWith('cron_'))
 }
+// True when a conversation id was minted client-side for a brand-new chat
+// the user hasn't sent anything in yet, so the backend has never persisted
+// (and therefore can't "own") it. Every per-conversation endpoint called with
+// such an id is rejected with 403 "无权访问该会话" — the status/messages poller
+// and the goal loader both skip the request entirely for these ids instead of
+// spamming the console with ownership errors.
+//
+// Conservative by construction: an id counts as ephemeral only when it is
+// absent from BOTH the loaded conversation list AND the local message buffer,
+// so a freshly-persisted conversation is never mistaken for one. At worst a
+// single stray 403 slips through during the persist race, which the leaf
+// callers swallow.
+function isEphemeralConversation(cid: string | null | undefined): boolean {
+  if (!cid) return true
+  // Server-managed virtual conversations (cron / scheduled tasks) always exist.
+  if (cid.startsWith('tasks_') || cid.startsWith('cron_')) return false
+  if (conversations.value.some((c) => c.conversationId === cid)) return false
+  return !messages.value.some((m: any) => m.conversationId === cid)
+}
 async function refreshActiveCronRuns(cid: string) {
   if (!isCronConversation(cid)) {
     activeCronRuns.value = []
@@ -1057,8 +1084,13 @@ async function pollActivity() {
     } catch {
       // 静默失败，下一轮再试
     }
-    // 自己没在生成时才刷新当前选中会话的消息 + 探测是否该接入流
-    if (currentConversationId.value && !isGenerating.value && streamPhase.value !== 'awaiting_approval') {
+    // 自己没在生成时才刷新当前选中会话的消息 + 探测是否该接入流。
+    // 跳过尚未落库的临时会话(新建空会话、还没发消息):后端查不到会话行,
+    // getStatus / listMessages 一律 403,4s 轮询会把 console 刷爆(见 issue #408)。
+    if (currentConversationId.value
+        && !isGenerating.value
+        && streamPhase.value !== 'awaiting_approval'
+        && !isEphemeralConversation(currentConversationId.value)) {
       const cid = currentConversationId.value
       try {
         const statusRes: any = await conversationApi.getStatus(cid)
@@ -1149,7 +1181,10 @@ const goalStore = useGoalStore()
 const workspaceStoreForGoal = useWorkspaceStore()
 const currentWorkspaceId = computed(() => workspaceStoreForGoal.currentWorkspaceId ?? '1')
 watch(currentConversationId, async (cid) => {
-  if (cid) {
+  // Skip un-persisted conversations: a brand-new empty chat has no goal yet
+  // and the lookup would only 403 (Not the owner). The ring is hydrated by the
+  // goal_created SSE event once the first turn lands.
+  if (cid && !isEphemeralConversation(cid)) {
     await goalStore.loadActiveForConversation(cid)
   }
 }, { immediate: true })
@@ -1162,7 +1197,9 @@ watch(currentConversationId, async (cid) => {
 // this transition-to-idle refresh is what keeps the goal ring honest after
 // every turn against the persisted truth.
 watch(isGenerating, async (generating, wasGenerating) => {
-  if (wasGenerating && !generating && currentConversationId.value) {
+  if (wasGenerating && !generating
+      && currentConversationId.value
+      && !isEphemeralConversation(currentConversationId.value)) {
     await goalStore.loadActiveForConversation(currentConversationId.value)
   }
 })
@@ -1428,8 +1465,24 @@ async function refreshCurrentConversationMessages(conversationId: string) {
 }
 
 async function hydrateStateFromRoute() {
-  const agentId = route.query.agentId ? String(route.query.agentId) : ''
-  const conversationId = String(route.query.conversationId || '')
+  let agentId = route.query.agentId ? String(route.query.agentId) : ''
+  let conversationId = String(route.query.conversationId || '')
+
+  // The URL can outlive its workspace: switching workspaces remounts this view
+  // (via the router-view key) but keeps the query string, so agentId /
+  // conversationId may still point at entities of the previous workspace. An
+  // agentId missing from the workspace-scoped agent list is such a leftover —
+  // drop it so the default-select below picks a real employee instead of the
+  // picker rendering the unresolvable raw id.
+  if (agentId && agents.value.length > 0 && !agents.value.some(a => String(a.id) === agentId)) {
+    agentId = ''
+    // Only follow the paired conversationId when it resolves locally (e.g. a
+    // Sessions-page jump within this workspace); otherwise it is equally stale
+    // and would attach the fallback agent to a foreign conversation.
+    if (!conversations.value.some(conv => conv.conversationId === conversationId)) {
+      conversationId = ''
+    }
+  }
 
   if (agentId && agentId !== String(selectedAgentId.value)) {
     selectedAgentId.value = agentId
@@ -1446,7 +1499,7 @@ async function hydrateStateFromRoute() {
       try {
         const res: any = await conversationApi.listMessages(conversationId)
         if (currentConversationId.value !== conversationId) return
-        messages.value = extractMessages(res).messages.map((msg: Message) => normalizeMessage(msg))
+      messages.value = extractMessages(res).messages.map((msg: Message) => normalizeMessage(msg, true))
       } catch {
         // 消息加载失败，保持空
       }
@@ -1485,6 +1538,7 @@ async function selectConversation(conv: Conversation) {
   const switchingAway = currentConversationId.value !== conv.conversationId
   if (switchingAway) {
     resetForNewConversation()
+    messageListRef.value?.resetScrollLock()
   }
   currentConversationId.value = conv.conversationId
   selectedAgentId.value = conv.agentId || selectedAgentId.value
@@ -1507,7 +1561,8 @@ async function selectConversation(conv: Conversation) {
     if (currentConversationId.value !== requestedConvId) return
     // 点同一个会话时，若已有 SSE 在跑就不要覆盖本地消息状态
     if (switchingAway || !isGenerating.value) {
-      messages.value = extractMessages(res).messages.map((msg: Message) => normalizeMessage(msg))
+      const convRunning = conv.streamStatus === 'running'
+      messages.value = extractMessages(res).messages.map((msg: Message) => normalizeMessage(msg, convRunning))
     }
 
     // Hydrate pending approvals：恢复刷新后丢失的审批卡片（RFC-067 §4.9）
@@ -1906,7 +1961,6 @@ async function handleApproveAlways(
 
 // 重连到运行中的流
 async function reconnectStream(conversationId: string) {
-  if (isGenerating.value) return
   try {
     await reconnectChatStream(conversationId)
   } catch (e) {
@@ -2000,7 +2054,7 @@ function buildOutgoingParts(text: string, attachments: ChatAttachment[]): Messag
 }
 
 // ============ 工具函数 ============
-function normalizeMessage(raw: Message): Message {
+function normalizeMessage(raw: Message, preserveGeneratingStatus?: boolean): Message {
   const msg: Message = { ...raw, contentParts: raw.contentParts ? [...raw.contentParts] : [] }
 
   // 统一解析 metadata：确保是对象而非 JSON 字符串
@@ -2019,6 +2073,9 @@ function normalizeMessage(raw: Message): Message {
   // 保留后端返回的 token 字段（MessageVO 新增）
   if ((raw as any).promptTokens) msg.promptTokens = (raw as any).promptTokens
   if ((raw as any).completionTokens) msg.completionTokens = (raw as any).completionTokens
+  if ((raw as any).cacheReadTokens) msg.cacheReadTokens = (raw as any).cacheReadTokens
+  if ((raw as any).cacheWriteTokens) msg.cacheWriteTokens = (raw as any).cacheWriteTokens
+  if ((raw as any).reasoningTokens) msg.reasoningTokens = (raw as any).reasoningTokens
   if ((raw as any).runtimeModel) msg.runtimeModel = (raw as any).runtimeModel
   if ((raw as any).runtimeProvider) msg.runtimeProvider = (raw as any).runtimeProvider
 
@@ -2070,7 +2127,7 @@ function normalizeMessage(raw: Message): Message {
     msg.metadata = { ...msg.metadata, toolCalls: cleaned }
   }
 
-  if (msg.status === 'generating') msg.status = 'failed'
+  if (!preserveGeneratingStatus && msg.status === 'generating') msg.status = 'failed'
   // interrupted 是合法的历史状态（interrupt-with-followup），不映射为 stopped
   if (!msg.status) msg.status = 'completed'
 

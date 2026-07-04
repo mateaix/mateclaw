@@ -119,4 +119,48 @@ class NodeStreamingChatHelperToolCallArgsTest {
         assertEquals(validArgs, result.toolCalls().get(0).arguments(),
                 "valid JSON arguments must not be rewritten");
     }
+
+    @Test
+    @DisplayName("Prompt-history tool call with empty arguments normalized before send")
+    void promptHistory_emptyArguments_normalized() {
+        // Mirrors a tool call replayed from persisted history (e.g. an earlier
+        // MCP call with no arguments): it never passes through the streaming
+        // aggregator, so the prompt-level pass must repair it.
+        AssistantMessage.ToolCall tc = new AssistantMessage.ToolCall(
+                "id-hist", "function", "mcp_excel_import", "");
+        AssistantMessage historyMsg = AssistantMessage.builder()
+                .content("calling tool")
+                .toolCalls(List.of(tc))
+                .build();
+        Prompt prompt = new Prompt(List.of(new UserMessage("hi"), historyMsg));
+
+        Prompt normalized = NodeStreamingChatHelper.normalizeToolCallArguments(prompt);
+
+        AssistantMessage out = (AssistantMessage) normalized.getInstructions().get(1);
+        assertEquals(1, out.getToolCalls().size());
+        assertEquals("{}", out.getToolCalls().get(0).arguments(),
+                "replayed empty arguments must be normalized to '{}'");
+        assertEquals("calling tool", out.getText(), "assistant content must be preserved");
+        assertEquals("mcp_excel_import", out.getToolCalls().get(0).name(),
+                "tool name must be preserved");
+        assertEquals("id-hist", out.getToolCalls().get(0).id(),
+                "tool call id must be preserved so the tool_call pairing holds");
+    }
+
+    @Test
+    @DisplayName("Prompt with only valid tool-call arguments returned unchanged")
+    void promptHistory_validArguments_returnsSameInstance() {
+        AssistantMessage.ToolCall tc = new AssistantMessage.ToolCall(
+                "id-ok", "function", "search", "{\"q\":\"x\"}");
+        AssistantMessage historyMsg = AssistantMessage.builder()
+                .content("")
+                .toolCalls(List.of(tc))
+                .build();
+        Prompt prompt = new Prompt(List.of(new UserMessage("hi"), historyMsg));
+
+        Prompt normalized = NodeStreamingChatHelper.normalizeToolCallArguments(prompt);
+
+        assertTrue(normalized == prompt,
+                "a prompt that needs no fix must be returned unchanged (no copy)");
+    }
 }
