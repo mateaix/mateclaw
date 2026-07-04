@@ -1218,7 +1218,6 @@ export default {
     title: 'Agent Context',
     desc: 'Manage prompt files and memory for agents',
     selectAgent: 'Select Employee',
-    unknownAgent: 'Unknown employee',
     noAgent: 'Please select an agent first',
     files: 'Files',
     coreFiles: 'Core Files',

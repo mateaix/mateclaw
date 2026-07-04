@@ -217,16 +217,18 @@ Full docs at **[claw.mate.vip/docs](https://claw.mate.vip/docs)** — setup, arc
 
 ## Roadmap
 
-**v1.6.0 (shipped 2026-06-22)** — make the autonomous employee *fast, sharp-eyed, and embeddable*:
+**v1.7.0 (shipped 2026-07-04)** — a *productionization pass*: once it's in real collaboration, close every loop you can't see, gather, reach, fit, or connect:
 
-- **Faster first token** — two-stage skill loading (base skills resident, scenario skills retrieved on demand by a relevance scorer) plus prefix compression, cutting the cold-start payload that used to blow past a million characters
-- **Native code execution** — `execute_code` lets an employee write and run sandboxed code to compute, transform data, and assemble multi-format reports, all JVM-side
-- **Vision that persists** — images stay in context across turns; `image_analyze` re-reads an attachment on demand, so "zoom into that chart" follow-ups work without re-uploading
-- **Embeddable & headless** — the webchat widget becomes a Web/API surface with multi-session support and per-end-user identity (`endUserId`), isolating memory per end user
-- **A Wiki you actually read** — reading split from management, a unified Sources tab with per-KB auto-sync, and clickable cross-KB `[[wikilinks]]`
-- **Steadier under load** — self-healing MCP connections · tool-call recovery on interleaved-thinking models · evidence-gated plan execution
+- **All three approval paths close the loop** — workflow `await_approval` actually pushes to channels and resolves → resumes, the WebChat (API-key) channel can approve/deny and replay, and Feishu/WeCom card clicks resolve workflow approvals directly
+- **Long tasks are visible** — an always-on Run Overview rail + a per-turn token breakdown (cache hit/miss/write + reasoning split) + sub-agent cost rolled up + one-click generated-file download
+- **Fits the real model window** — local-model context-window probing, a unified token budget for prefix injection, small-context degradation, and tool-schema budget gating — no more "guess 32K" pre-flight rejections or silent truncation
+- **Opens up** — a knowledge-base + Deep Research open API (API-key + rate limit + SSE), a pluggable search Provider SPI, and MCP identity forwarding (carry the authenticated user's identity into a STDIO MCP)
+- **Reaches further** — desktop local-embedded / remote-centralized dual mode (with `mateclaw-desktop` source opened) + a LAN deployment mode for controlled intranet access
+- **One-click operational data export** — Dashboard 9-sheet Excel + a CLI for offline export
 
-Full story in the [v1.6.0 release notes](https://claw.mate.vip/docs/en/releases/1.6.0).
+Full story in the [v1.7.0 release notes](https://claw.mate.vip/docs/en/releases/1.7.0).
+
+**v1.6.0 (shipped 2026-06-22)** — make the autonomous employee *fast, sharp-eyed, and embeddable*: two-stage skill loading + prefix compression (faster first token) · `execute_code` native sandboxed code execution · vision that persists across turns + `image_analyze` · embeddable/headless webchat with per-`endUserId` memory · a Wiki you actually read (reading split from management · unified Sources tab · clickable `[[wikilinks]]`) · steadier under load (self-healing MCP · tool-call recovery · evidence-gated plans). Full story in the [v1.6.0 release notes](https://claw.mate.vip/docs/en/releases/1.6.0).
 
 **v1.5.0 (shipped 2026-06-04)** — Goal checklists (fuzzy score → ticked boxes) · self-maintaining Wiki (`[[wikilinks]]` · fact/experience layers · pageType profiles & permissions · KB pipelines · local-directory ingest) · per-owner memory isolation (`owner_key` + visibility scope + `endUserId` passthrough) · per-agent primary knowledge base · provider-preference model routing. Full story in the [v1.5.0 release notes](https://claw.mate.vip/docs/en/releases/1.5.0).
 
