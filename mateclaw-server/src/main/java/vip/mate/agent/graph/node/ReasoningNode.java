@@ -698,15 +698,18 @@ public class ReasoningNode implements NodeAction {
         List<Message> nonHistoryPrefix = buildNonHistoryPrefix(systemPrompt, workspaceBasePath, agentIdStr, userMsg,
                 accessor.chatOrigin(), runtimeModelName, runtimeProviderId);
 
-        // Append the runtime-rendered skill catalog as a SEPARATE SystemMessage
-        // right after the skeleton system prompt. Keeping it out of the baked
-        // prompt keeps the stable prefix's prompt-cache hash intact, while
-        // re-rendering each turn lets skills loaded this run (load_skill) pin
-        // to the top of the catalog. Reused verbatim by the PTL retry branch.
+        // Append the skill catalog as a SEPARATE SystemMessage right after the
+        // skeleton system prompt. Rendered with an empty loadedThisRun set so
+        // the catalog content stays stable across turns — this lets the
+        // system+catalog SystemMessage pair be served from the prompt cache
+        // (Anthropic SYSTEM_AND_TOOLS / OpenAI prefix cache). The per-turn
+        // "skills loaded this run" hint is injected separately as a volatile
+        // suffix (after RuntimeContext) so it never invalidates the cached
+        // prefix. Reused verbatim by the PTL retry branch.
         if (skillCatalogRenderer != null) {
-            String skillCatalog = skillCatalogRenderer.render(accessor.loadedSkills());
-            if (skillCatalog != null && !skillCatalog.isBlank()) {
-                nonHistoryPrefix.add(1, new SystemMessage(skillCatalog));
+            String staticCatalog = skillCatalogRenderer.render(java.util.Set.of());
+            if (staticCatalog != null && !staticCatalog.isBlank()) {
+                nonHistoryPrefix.add(1, new SystemMessage(staticCatalog));
             }
         }
 
@@ -767,6 +770,20 @@ public class ReasoningNode implements NodeAction {
             } catch (Exception e) {
                 log.warn("[ReasoningNode] Failed to drain environment notifications for {}: {}",
                         conversationId, e.getMessage());
+            }
+        }
+
+        // Per-turn "skills loaded this run" hint — kept out of the stable
+        // catalog segment (which is rendered with an empty loadedThisRun set
+        // so it stays prompt-cache-friendly). Injected here as a volatile
+        // suffix so the model still sees which skills it already pulled in
+        // via load_skill this run, without invalidating the cached
+        // system+catalog SystemMessage prefix.
+        java.util.Set<String> loadedThisRun = accessor.loadedSkills();
+        if (loadedThisRun != null && !loadedThisRun.isEmpty()) {
+            String hint = renderLoadedSkillsHint(loadedThisRun);
+            if (hint != null) {
+                nonHistoryPrefix.add(new SystemMessage(hint));
             }
         }
 
@@ -1213,6 +1230,29 @@ public class ReasoningNode implements NodeAction {
         sb.append("\n以上通知由 Java 运行时检测并注入，权威可信。")
                 .append("如果通知涉及你正在使用的工具/skill，请立即调整后续步骤；")
                 .append("如果与当前任务无关，可忽略。");
+        return sb.toString();
+    }
+
+    /**
+     * Render the per-turn "skills loaded this run" hint as a short
+     * SystemMessage. Kept out of the stable skill-catalog segment (which is
+     * rendered with an empty loadedThisRun set for prompt-cache stability)
+     * so the model still knows which skills it already pulled in via
+     * load_skill without invalidating the cached system+catalog prefix.
+     * Returns {@code null} for an empty set so the caller can skip
+     * injection entirely.
+     */
+    // Package-private so tests can exercise the format without duplicating it.
+    static String renderLoadedSkillsHint(java.util.Set<String> loadedThisRun) {
+        if (loadedThisRun == null || loadedThisRun.isEmpty()) {
+            return null;
+        }
+        StringBuilder sb = new StringBuilder(96);
+        sb.append("Skills already loaded this run (available in context, do not re-load): ");
+        sb.append(String.join(", ", loadedThisRun.stream()
+                .map(n -> "`" + n + "`")
+                .toList()));
+        sb.append('.');
         return sb.toString();
     }
 

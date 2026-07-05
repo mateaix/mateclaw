@@ -92,7 +92,13 @@ public class DefaultToolDisclosureService implements ToolDisclosureService {
         }
         Long serverId = snap.mcpToolToServerId.get(toolName);
         if (serverId != null) {
-            return snap.serverTierById.getOrDefault(serverId, DisclosureTier.CORE);
+            // Move 5: MCP tools default to EXTENSION (on-demand exposure).
+            // A server with 20 tools flooding the CORE tool list makes it
+            // harder for the model to find the right builtin tool, and the
+            // MCP schemas are typically the heaviest part of the prompt.
+            // Users who want a server's tools visible by default can set
+            // disclosure_tier = core on the mate_mcp_server row.
+            return snap.serverTierById.getOrDefault(serverId, DisclosureTier.EXTENSION);
         }
         // Unknown source (ACP / dynamic-skill / plugin) — keep visible.
         return DisclosureTier.CORE;
@@ -132,10 +138,11 @@ public class DefaultToolDisclosureService implements ToolDisclosureService {
      * {@inheritDoc}
      *
      * <p>Protection set: {@link #ALWAYS_CORE} meta-tools and builtin tools
-     * with an explicit {@code disclosure_tier = core} row. MCP tools remain
-     * demotable — the server-level tier cannot distinguish an explicit core
-     * choice from the default, and MCP schemas are typically the heaviest
-     * part of the advertisement.
+     * with an explicit {@code disclosure_tier = core} row. MCP tools default
+     * to EXTENSION (Move 5) so they only enter the CORE list when an operator
+     * explicitly sets {@code disclosure_tier = core} on the server — in that
+     * case they are still demotable, since MCP schemas are typically the
+     * heaviest part of the advertisement.
      */
     @Override
     public Set<String> computeAutoDemotions(AgentToolSet baseSet, Integer budgetTokens) {
@@ -319,11 +326,18 @@ public class DefaultToolDisclosureService implements ToolDisclosureService {
         Map<Long, String> serverNameById = new LinkedHashMap<>();
         try {
             for (McpServerEntity s : mcpServerService.listAll()) {
-                serverTierById.put(s.getId(), DisclosureTier.fromToken(s.getDisclosureTier()));
+                // Move 5: only record an explicit tier. Servers with null
+                // disclosure_tier are intentionally absent from the map so
+                // resolveTierByName's getOrDefault(serverId, EXTENSION)
+                // applies the new on-demand default. Putting CORE here
+                // (via fromToken(null) → CORE) would override the default.
+                if (s.getDisclosureTier() != null && !s.getDisclosureTier().isBlank()) {
+                    serverTierById.put(s.getId(), DisclosureTier.fromToken(s.getDisclosureTier()));
+                }
                 serverNameById.put(s.getId(), s.getName());
             }
         } catch (Exception e) {
-            log.warn("ToolDisclosureService: failed to read MCP server tiers, defaulting to core: {}",
+            log.warn("ToolDisclosureService: failed to read MCP server tiers, defaulting to extension: {}",
                     e.getMessage());
         }
 

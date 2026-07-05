@@ -148,11 +148,14 @@ class ToolDisclosureServiceTest {
     }
 
     @Test
-    @DisplayName("MCP tool whose server has no tier set defaults to core (visible)")
-    void mcpDefaultsCoreWhenServerTierUnset() {
+    @DisplayName("Move 5: MCP tool whose server has no tier set defaults to EXTENSION (on-demand)")
+    void mcpDefaultsExtensionWhenServerTierUnset() {
+        // Move 5: MCP tools default to EXTENSION so they don't flood the
+        // CORE tool list. Pre-Move-4 this returned CORE.
         var svc = service(List.of(), List.of(server(7L, "github", null)),
                 List.of(mcpDto("mcp_github_create_issue", 7L)));
-        assertEquals(DisclosureTier.CORE, svc.resolveTierByName("mcp_github_create_issue"));
+        assertEquals(DisclosureTier.EXTENSION, svc.resolveTierByName("mcp_github_create_issue"),
+                "Move 5: MCP tools with no explicit tier must default to EXTENSION");
     }
 
     @Test

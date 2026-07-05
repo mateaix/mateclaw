@@ -258,8 +258,30 @@ public class AgentGraphBuilder {
     public BaseAgent build(AgentEntity entity, String modelProvider, String modelName) {
         AgentToolSet toolSet = toolRegistry.getEnabledToolSet();
 
-        // 过滤掉 denied 工具，使模型完全看不到它们（防止 prompt injection 利用 schema）
-        toolSet = toolSet.withDeniedToolsFiltered(toolGuardConfigService.getDeniedTools());
+        // Move 6 — Permission flattening at build time.
+        //
+        // Two layers of tool filtering exist in MateClaw:
+        //   (1) Build-time filter (HERE) — decides which tools the model SEES
+        //       in the tool list. Computed once per agent build; stable for
+        //       the agent's lifecycle unless bindings change.
+        //   (2) Runtime guard (ToolGuardService.evaluate) — decides which
+        //       tools the model can CALL. Runs on every invocation; checks
+        //       workspace boundaries, sensitive paths, credential exposure,
+        //       shell command patterns, and approval workflows. All dynamic
+        //       (depends on tool arguments, not just tool name).
+        //
+        // The build-time filter previously ran as 4 separate passes
+        // (deny → allow → deny → exclude). Move 6 consolidates them into
+        // a single deny-set + a single allow-set, applied in two passes:
+        //   denied = global denied ∪ skill-discovery denied ∪ {load_skill if disabled}
+        //   allowed = agent's bound tools (null = global default)
+        Set<String> deniedTools = new java.util.LinkedHashSet<>(
+                toolGuardConfigService.getDeniedTools());
+        deniedTools.addAll(agentBindingService.getSkillDiscoveryDeniedTools(entity.getId()));
+        if (!loadSkillToolEnabled) {
+            deniedTools.add("load_skill");
+        }
+        toolSet = toolSet.withDeniedToolsFiltered(deniedTools);
 
         // RFC-090 §14.2 — single entry point that merges:
         //   (a) tools expanded from bound skills' active features, and
@@ -268,24 +290,6 @@ public class AgentGraphBuilder {
         // global default); non-null (possibly empty) = explicit allowlist.
         Set<String> boundTools = agentBindingService.getEffectiveToolNames(entity.getId());
         toolSet = toolSet.withAllowedToolsOnly(boundTools); // null = 全局默认
-
-        // Issue #184 follow-up: an agent that opted out of skills must not be
-        // able to circle back and discover/load them via the meta tools. Strip
-        // the skill-discovery surface (listAvailableSkills / load_skill /
-        // readSkillFile / runSkillScript / listSkillFiles) here. This runs as a
-        // separate deny layer so the allowlist matrix in getEffectiveToolNames
-        // stays untouched — in particular, the (skillsDisabled, !toolsDisabled,
-        // no tool bindings) cell still returns null so non-skill global tools
-        // continue to flow through.
-        toolSet = toolSet.withDeniedToolsFiltered(
-                agentBindingService.getSkillDiscoveryDeniedTools(entity.getId()));
-
-        // Escape hatch: drop the load_skill meta tool entirely when disabled, so
-        // it isn't advertised regardless of binding (the catalog guidance falls
-        // back to readSkillFile — see SkillRuntimeService).
-        if (!loadSkillToolEnabled) {
-            toolSet = toolSet.excluding(java.util.Set.of("load_skill"));
-        }
 
         // Resolve the base model with the precedence: per-conversation pin >
         // per-Agent model override > global default. resolveRuntimeBaseModel
@@ -1649,6 +1653,7 @@ public class AgentGraphBuilder {
                 - `<serverId>` is a numeric ID identifying which MCP server the tool belongs to.
                 - Tools from DIFFERENT servers have DIFFERENT serverId prefixes, even if they have the same raw name (e.g. `search` on server A vs server B) — they are DIFFERENT tools and are NOT interchangeable.
                 - Each MCP tool's description starts with `[MCP server: <name>]` so you can identify the source server by its human-readable name.
+                - MCP tools are listed in the Extension Tools catalog by default. Use `enable_tool(toolName="<exact-name>")` to activate the one you need before calling it.
                 - Always call tools by the EXACT name shown in the tool list. Do NOT reconstruct a tool name by swapping the slug into a serverId you remember from a previous successful call — that produces a non-existent tool name and the call will fail.
                 - If a tool call returns "Tool not found" with candidate suggestions, pick the correct one from the candidates verbatim.
 
