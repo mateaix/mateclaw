@@ -60,6 +60,15 @@ public class AgentService {
     private ApplicationEventPublisher events;
 
     /**
+     * C5: tracks in-flight conversations so {@link vip.mate.agent.runtime.EnvironmentEventRouter}
+     * can push environment-change notifications into the agent's next reasoning
+     * turn. Field-injected (optional) so existing test constructors of
+     * {@code AgentService} don't need to supply it.
+     */
+    @Autowired(required = false)
+    private vip.mate.agent.runtime.RunningConversationRegistry runningConversationRegistry;
+
+    /**
      * Runtime Agent instance cache. Keyed first by agentId, then by a model
      * key, so a conversation that pins a non-default model gets its own graph
      * variant instead of mutating the one every other conversation shares.
@@ -518,6 +527,36 @@ public class AgentService {
         log.info("Agent caches refreshed after MCP server change: {}", event.reason());
     }
 
+    /**
+     * Listen for MCP connection-loss events and clear the agent cache.
+     *
+     * <p>Previously this listener was intentionally omitted (the design
+     * doc said "only listen to McpServerChangedEvent, not
+     * McpConnectionLostEvent") because {@link McpServerService} auto-heals
+     * and publishes McpServerChangedEvent on reconnect. However, between
+     * disconnect and reconnect, cached agents still hold the old
+     * {@code AgentToolSet} snapshot whose MCP tool callbacks point at a
+     * dead client — calls either time out (5 min default) or throw.
+     *
+     * <p>Clearing the cache on disconnect ensures the next agent build
+     * sees the live connection state: {@link McpClientManager} will
+     * either skip the dead server or fall back to {@code lastGoodCallbacks}
+     * with proper error handling, rather than letting the LLM discover
+     * the breakage by timing out.
+     *
+     * <p>Cost is low: {@code McpServerService} already debounces reconnect
+     * attempts by 10s, and {@code refreshAllAgents} is a Map.clear().
+     * The subsequent reconnect will fire another McpServerChangedEvent,
+     * which clears the cache again — at most two clears per disconnect
+     * cycle, which is acceptable.
+     */
+    @EventListener
+    public void onMcpConnectionLost(vip.mate.tool.mcp.event.McpConnectionLostEvent event) {
+        refreshAllAgents();
+        log.warn("Agent caches refreshed after MCP connection lost: serverId={}, reason={}",
+                event.serverId(), event.reason());
+    }
+
     // ==================== Lifecycle helpers ====================
 
     /**
@@ -529,17 +568,22 @@ public class AgentService {
      */
     private String withLifecycleSync(Long agentId, String message, String conversationId,
                                      java.util.function.BiFunction<String, String, String> invoke) {
-        if (!memoryProperties.isLifecycleMediatorEnabled()) {
-            return invoke.apply(message, conversationId);
+        safeRegister(conversationId, agentId);
+        try {
+            if (!memoryProperties.isLifecycleMediatorEnabled()) {
+                return invoke.apply(message, conversationId);
+            }
+            String ownerKey = memoryOwnerResolver.resolve(ChatOriginHolder.get());
+            TurnContext ctx = new TurnContext(agentId, conversationId, conversationId, 0, message, ownerKey);
+            String memoryContext = lifecycleMediator.beforeLlmCall(ctx);
+            // Inject memory context into the user message (RFC-037 §3.3)
+            String enrichedMessage = injectMemoryContext(message, memoryContext);
+            String result = invoke.apply(enrichedMessage, conversationId);
+            lifecycleMediator.afterLlmCall(ctx, result != null ? result : "");
+            return result;
+        } finally {
+            safeUnregister(conversationId);
         }
-        String ownerKey = memoryOwnerResolver.resolve(ChatOriginHolder.get());
-        TurnContext ctx = new TurnContext(agentId, conversationId, conversationId, 0, message, ownerKey);
-        String memoryContext = lifecycleMediator.beforeLlmCall(ctx);
-        // Inject memory context into the user message (RFC-037 §3.3)
-        String enrichedMessage = injectMemoryContext(message, memoryContext);
-        String result = invoke.apply(enrichedMessage, conversationId);
-        lifecycleMediator.afterLlmCall(ctx, result != null ? result : "");
-        return result;
     }
 
     /**
@@ -552,23 +596,47 @@ public class AgentService {
     private <T> Flux<T> withLifecycleFlux(Long agentId, String message, String conversationId,
                                           java.util.function.BiFunction<String, String, Flux<T>> invoke,
                                           Function<T, String> contentExtractor) {
-        if (!memoryProperties.isLifecycleMediatorEnabled()) {
-            return invoke.apply(message, conversationId);
+        safeRegister(conversationId, agentId);
+        try {
+            if (!memoryProperties.isLifecycleMediatorEnabled()) {
+                return invoke.apply(message, conversationId)
+                        .doFinally(s -> safeUnregister(conversationId));
+            }
+            String ownerKey = memoryOwnerResolver.resolve(ChatOriginHolder.get());
+            TurnContext ctx = new TurnContext(agentId, conversationId, conversationId, 0, message, ownerKey);
+            String memoryContext = lifecycleMediator.beforeLlmCall(ctx);
+            String enrichedMessage = injectMemoryContext(message, memoryContext);
+            StringBuilder reply = new StringBuilder();
+            return invoke.apply(enrichedMessage, conversationId)
+                    .doOnNext(item -> {
+                        String text = contentExtractor.apply(item);
+                        if (text != null) {
+                            reply.append(text);
+                        }
+                    })
+                    .doOnComplete(() -> lifecycleMediator.afterLlmCall(ctx, reply.toString()))
+                    .doOnError(e -> log.debug("[Memory] Stream error, skipping afterLlmCall: {}", e.getMessage()))
+                    .doFinally(s -> safeUnregister(conversationId));
+        } catch (Exception e) {
+            // If invoke.apply() throws before the Flux is constructed, the
+            // doFinally above never runs — clean up here.
+            safeUnregister(conversationId);
+            throw e;
         }
-        String ownerKey = memoryOwnerResolver.resolve(ChatOriginHolder.get());
-        TurnContext ctx = new TurnContext(agentId, conversationId, conversationId, 0, message, ownerKey);
-        String memoryContext = lifecycleMediator.beforeLlmCall(ctx);
-        String enrichedMessage = injectMemoryContext(message, memoryContext);
-        StringBuilder reply = new StringBuilder();
-        return invoke.apply(enrichedMessage, conversationId)
-                .doOnNext(item -> {
-                    String text = contentExtractor.apply(item);
-                    if (text != null) {
-                        reply.append(text);
-                    }
-                })
-                .doOnComplete(() -> lifecycleMediator.afterLlmCall(ctx, reply.toString()))
-                .doOnError(e -> log.debug("[Memory] Stream error, skipping afterLlmCall: {}", e.getMessage()));
+    }
+
+    /** C5 helper — null-safe register so tests without the registry don't NPE. */
+    private void safeRegister(String conversationId, Long agentId) {
+        if (runningConversationRegistry != null) {
+            runningConversationRegistry.register(conversationId, agentId);
+        }
+    }
+
+    /** C5 helper — null-safe unregister so tests without the registry don't NPE. */
+    private void safeUnregister(String conversationId) {
+        if (runningConversationRegistry != null) {
+            runningConversationRegistry.unregister(conversationId);
+        }
     }
 
     /**

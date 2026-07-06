@@ -12,6 +12,7 @@ import vip.mate.workspace.conversation.repository.ConversationMapper;
 
 import java.time.Instant;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantLock;
@@ -24,52 +25,64 @@ import java.util.concurrent.locks.ReentrantLock;
  * Callers above it work with {@link ProgressLedger} (immutable view) or plain
  * {@code Map<String, ProgressEntry>}.
  *
+ * <p>Three entry classes share the JSON column:
+ * <ul>
+ *   <li><b>Regular entries</b> ({@code entries} map) — written by the LLM via
+ *       {@code progress_update} tool through {@link #upsert}.</li>
+ *   <li><b>Pinned entries</b> ({@code pinned} map) — written by Java via
+ *       {@link #upsertPinned} when {@code load_skill} extracts structured
+ *       constraints. Never touched by the LLM's {@code progress_update}.</li>
+ *   <li><b>Auto-recorded entries</b> — stored in the {@code entries} map with
+ *       a key prefixed by {@link ProgressLedger#AUTO_RECORDED_PREFIX}, written
+ *       by Java via {@link #upsertAutoRecorded} after successful tool calls.
+ *       Bounded to the most recent {@link #MAX_AUTO_RECORDED} entries.</li>
+ * </ul>
+ *
+ * <p><b>JSON format</b> (backward-compatible): the new wrapper shape is
+ * {@code {"entries": {...}, "pinned": {...}}}. Old conversations stored as
+ * a flat map {@code {"step1": {...}}} are auto-migrated on first load —
+ * the flat map is treated as {@code entries} with an empty {@code pinned}.
+ *
  * <p>Failure mode: a malformed JSON value never throws back at the caller —
  * the runtime would rather render no snapshot than crash the reasoning loop
- * over a corrupted ledger column. Parse failures are logged at warn level so
- * the operator notices on a long-running deployment.
+ * over a corrupted ledger column.
  */
 @Service
 @RequiredArgsConstructor
 @Slf4j
 public class ProgressLedgerService {
 
-    /** Map<stepKey, ProgressEntry> — LinkedHashMap preserves insertion order in the rendered snapshot. */
-    private static final TypeReference<LinkedHashMap<String, ProgressEntry>> LEDGER_TYPE =
+    /** Map<stepKey, ProgressEntry> — LinkedHashMap preserves insertion order. */
+    private static final TypeReference<LinkedHashMap<String, ProgressEntry>> ENTRIES_TYPE =
             new TypeReference<>() {};
+
+    /** Wrapper type for the new JSON format. */
+    private static final TypeReference<LedgerWrapper> WRAPPER_TYPE = new TypeReference<>() {};
+
+    /** Maximum auto-recorded entries kept per conversation (risk mitigation). */
+    public static final int MAX_AUTO_RECORDED = 5;
 
     /**
      * Per-conversation lock for the load-mutate-save sequence inside
-     * {@link #upsert}. Without this guard, a single agent turn that issues
-     * N parallel {@code progress_update} tool calls (observed: 12 calls in
-     * one batch when the model pre-registered every step at task start)
-     * collapses to last-writer-wins, losing every entry but one — defeating
-     * the whole point of the ledger. Different conversations stay
-     * uncontended; only intra-conversation writes serialise.
-     *
-     * <p>Must be a {@link ReentrantLock}, not an intrinsic {@code synchronized}
-     * monitor. Tool calls execute on virtual threads, and the critical section
-     * spans blocking JDBC I/O (load + persist). A virtual thread that blocks —
-     * whether on the DB call or while waiting to enter the lock — pins its
-     * carrier when the lock is an intrinsic monitor. A turn that fires dozens
-     * of parallel {@code progress_update} calls on the same conversation then
-     * pins every carrier in the pool at once: the holder cannot be rescheduled
-     * to release its connection and exit, JDBC connections are held past the
-     * leak-detection threshold, and the whole server stops servicing requests.
-     * {@code ReentrantLock} parks via {@code LockSupport}, which unmounts the
-     * virtual thread and frees the carrier, so contention costs a park instead
-     * of a pinned platform thread.
-     *
-     * <p>Entries are computed on demand and never explicitly removed; even
-     * with thousands of long-running conversations the map stays bounded by
-     * the active conversation set, and any leak is one lock per conversation
-     * id — small enough to ignore relative to the rest of the per-conv state
-     * already held in memory.
+     * {@link #upsert}. See class Javadoc in ProgressLedger for the
+     * virtual-thread pinning rationale.
      */
     private final ConcurrentHashMap<String, ReentrantLock> upsertLocks = new ConcurrentHashMap<>();
 
     private final ConversationMapper conversationMapper;
     private final ObjectMapper objectMapper;
+
+    /**
+     * Wrapper for the persisted JSON. Both fields default to empty maps
+     * so a partially-written JSON (e.g. only entries) still parses.
+     */
+    public record LedgerWrapper(
+            LinkedHashMap<String, ProgressEntry> entries,
+            LinkedHashMap<String, ProgressEntry> pinned) {
+        public LedgerWrapper() {
+            this(new LinkedHashMap<>(), new LinkedHashMap<>());
+        }
+    }
 
     /**
      * @return the conversation's ledger, never null — an empty map when the
@@ -82,12 +95,6 @@ public class ProgressLedgerService {
         return parse(loadLedgerJson(conversationId));
     }
 
-    /**
-     * Read the raw JSON column for one conversation, or {@code null} when
-     * the row or column is empty. Protected so concurrency tests can
-     * subclass and back the service with an in-memory map without having
-     * to mock the Mybatis-Plus wrapper internals.
-     */
     protected String loadLedgerJson(String conversationId) {
         ConversationEntity row = conversationMapper.selectOne(
                 new LambdaQueryWrapper<ConversationEntity>()
@@ -96,10 +103,6 @@ public class ProgressLedgerService {
         return row != null ? row.getProgressLedger() : null;
     }
 
-    /**
-     * Write the raw JSON column for one conversation. Protected for the
-     * same reason as {@link #loadLedgerJson}.
-     */
     protected void saveLedgerJson(String conversationId, String json) {
         conversationMapper.update(null,
                 new LambdaUpdateWrapper<ConversationEntity>()
@@ -108,7 +111,8 @@ public class ProgressLedgerService {
     }
 
     /**
-     * Upsert one entry on the ledger atomically (load → mutate → save).
+     * Upsert one regular entry on the ledger atomically (load → mutate → save).
+     * Never touches pinned entries.
      *
      * @return the updated ledger so callers can render a fresh snapshot
      *         without a second DB roundtrip.
@@ -121,52 +125,224 @@ public class ProgressLedgerService {
         if (key == null || key.isBlank()) {
             throw new IllegalArgumentException("step key is required");
         }
+        // Guard reserved prefixes — the LLM must not overwrite Java-managed
+        // entries (auto-recorded tool calls or pinned skill constraints).
+        // Strip the prefix and continue with the remainder so the LLM's
+        // progress_update still lands, just under a non-reserved key.
+        if (key.startsWith(ProgressLedger.AUTO_RECORDED_PREFIX) || key.startsWith("pin_")) {
+            throw new IllegalArgumentException(
+                    "step key prefix '" + ProgressLedger.AUTO_RECORDED_PREFIX
+                            + "' / 'pin_' is reserved for system-managed entries; "
+                            + "use a different key like 'step_<name>'");
+        }
         if (status == null) {
             throw new IllegalArgumentException("status is required");
         }
-        // Serialise the load-mutate-save sequence per conversation. Without
-        // this, two parallel @Tool calls on the same conversation race: both
-        // read the same starting state, each adds its own entry, and the
-        // last save() drops the other's entry. Observed in production: a
-        // 12-entry pre-registration collapsed to 8 because four sibling
-        // tool calls landed in the same window.
         ReentrantLock lock = upsertLocks.computeIfAbsent(conversationId, k -> new ReentrantLock());
         lock.lock();
         try {
-            ProgressLedger ledger = load(conversationId);
-            Map<String, ProgressEntry> map = ledger.asMap();
+            LedgerWrapper wrapper = loadWrapper(conversationId);
+            Map<String, ProgressEntry> map = wrapper.entries;
             ProgressEntry existing = map.get(key);
             String effectiveLabel = (label != null && !label.isBlank())
                     ? label
                     : (existing != null ? existing.getLabel() : key);
             map.put(key, new ProgressEntry(key, effectiveLabel, status, note, Instant.now()));
-            persist(conversationId, map);
-            return new ProgressLedger(map);
+            persistWrapper(conversationId, wrapper);
+            return new ProgressLedger(map, wrapper.pinned);
         } finally {
             lock.unlock();
         }
     }
+
+    /**
+     * Upsert a pinned entry (Java-controlled, from skill constraints).
+     * The LLM's {@code progress_update} tool never touches pinned entries.
+     *
+     * @param conversationId target conversation
+     * @param key            stable key, e.g. {@code pin_<skillName>_<index>}
+     * @param label          human-readable constraint text
+     * @param note           optional extra context
+     */
+    public void upsertPinned(String conversationId, String key, String label, String note) {
+        if (conversationId == null || conversationId.isBlank()) {
+            throw new IllegalArgumentException("conversationId is required");
+        }
+        if (key == null || key.isBlank()) {
+            throw new IllegalArgumentException("pinned key is required");
+        }
+        ReentrantLock lock = upsertLocks.computeIfAbsent(conversationId, k -> new ReentrantLock());
+        lock.lock();
+        try {
+            LedgerWrapper wrapper = loadWrapper(conversationId);
+            wrapper.pinned.put(key, new ProgressEntry(key, label, ProgressStatus.PENDING, note, Instant.now()));
+            persistWrapper(conversationId, wrapper);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
+     * Remove all pinned entries whose key starts with the given prefix.
+     * Used when a skill is unloaded or updated — the old constraints
+     * should be cleared before re-injecting the new ones.
+     */
+    public void clearPinnedByPrefix(String conversationId, String keyPrefix) {
+        if (conversationId == null || conversationId.isBlank() || keyPrefix == null) {
+            return;
+        }
+        ReentrantLock lock = upsertLocks.computeIfAbsent(conversationId, k -> new ReentrantLock());
+        lock.lock();
+        try {
+            LedgerWrapper wrapper = loadWrapper(conversationId);
+            wrapper.pinned.entrySet().removeIf(e -> e.getKey() != null && e.getKey().startsWith(keyPrefix));
+            persistWrapper(conversationId, wrapper);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
+     * Auto-record a completed tool call as a ledger entry (B5). Uses the
+     * {@link ProgressLedger#AUTO_RECORDED_PREFIX} on the key so the renderer
+     * groups it separately. Bounds the total auto-recorded entries to
+     * {@link #MAX_AUTO_RECORDED} by evicting the oldest.
+     *
+     * <p>Does NOT overwrite an existing entry with the same key — if the
+     * LLM already tracked this step via {@code progress_update}, the LLM's
+     * entry stays. This prevents Java from clobbering a richer LLM-authored
+     * note.
+     *
+     * @param conversationId target conversation
+     * @param toolName       unique tool identifier used as the key suffix —
+     *                       for MCP tools this should be the FULL prefixed
+     *                       name ({@code mcp_<serverId>_<slug>_<hash6>}) to
+     *                       avoid collisions between servers that have tools
+     *                       with the same slug.
+     * @param displayName    human-readable label shown in the snapshot (e.g.
+     *                       the slug portion only). Falls back to
+     *                       {@code toolName} when null/blank.
+     * @param resultSummary  short tool-result excerpt; truncated to 120 chars
+     */
+    public void upsertAutoRecorded(String conversationId, String toolName, String displayName,
+                                   String resultSummary) {
+        if (conversationId == null || conversationId.isBlank() || toolName == null || toolName.isBlank()) {
+            return;
+        }
+        upsertAutoRecordedBatch(conversationId,
+                List.of(new AutoRecordEntry(toolName, displayName, resultSummary)));
+    }
+
+    /**
+     * Input tuple for batch auto-record: the unique tool name (key suffix),
+     * the readable display label, and the truncated result summary.
+     */
+    public record AutoRecordEntry(String toolName, String displayName, String resultSummary) {}
+
+    /**
+     * Batch version of {@link #upsertAutoRecorded} — processes multiple tool
+     * results in a single lock + load + mutate + save cycle. Use this when
+     * ActionNode receives a batch of parallel ToolResponses to avoid
+     * serializing N lock acquisitions.
+     *
+     * <p>Skips entries whose {@code toolName} is null/blank or whose key
+     * already exists in the ledger (LLM-authored entries are preserved).
+     * Bounds the total auto-recorded entries to {@link #MAX_AUTO_RECORDED}
+     * by evicting the oldest in bulk after inserting the new batch.
+     */
+    public void upsertAutoRecordedBatch(String conversationId, List<AutoRecordEntry> entries) {
+        if (conversationId == null || conversationId.isBlank()
+                || entries == null || entries.isEmpty()) {
+            return;
+        }
+        ReentrantLock lock = upsertLocks.computeIfAbsent(conversationId, k -> new ReentrantLock());
+        lock.lock();
+        try {
+            LedgerWrapper wrapper = loadWrapper(conversationId);
+            Map<String, ProgressEntry> map = wrapper.entries;
+            Instant now = Instant.now();
+            for (AutoRecordEntry e : entries) {
+                if (e == null || e.toolName() == null || e.toolName().isBlank()) {
+                    continue;
+                }
+                String key = ProgressLedger.AUTO_RECORDED_PREFIX + e.toolName();
+                // Don't overwrite an LLM-authored entry (LLM wouldn't use the auto_ prefix).
+                if (map.containsKey(key)) {
+                    continue;
+                }
+                String label = (e.displayName() != null && !e.displayName().isBlank())
+                        ? e.displayName() : e.toolName();
+                String note = e.resultSummary();
+                if (note != null && note.length() > 120) {
+                    note = note.substring(0, 120) + "…";
+                }
+                map.put(key, new ProgressEntry(key, label, ProgressStatus.DONE, note, now));
+            }
+            // Bound auto-recorded entries: evict oldest in bulk if over limit.
+            List<String> autoKeys = new java.util.ArrayList<>();
+            for (String k : map.keySet()) {
+                if (k != null && k.startsWith(ProgressLedger.AUTO_RECORDED_PREFIX)) {
+                    autoKeys.add(k);
+                }
+            }
+            while (autoKeys.size() > MAX_AUTO_RECORDED && !autoKeys.isEmpty()) {
+                String oldest = autoKeys.remove(0);
+                map.remove(oldest);
+            }
+            persistWrapper(conversationId, wrapper);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    // ==================== Internal: load / parse / persist ====================
 
     private ProgressLedger parse(String json) {
         if (json == null || json.isBlank() || "{}".equals(json.trim())) {
             return ProgressLedger.empty();
         }
         try {
-            LinkedHashMap<String, ProgressEntry> map = objectMapper.readValue(json, LEDGER_TYPE);
-            return new ProgressLedger(map);
+            LedgerWrapper wrapper = parseWrapper(json);
+            return new ProgressLedger(wrapper.entries, wrapper.pinned);
         } catch (Exception e) {
             log.warn("Failed to parse progress ledger JSON, treating as empty: {}", e.getMessage());
             return ProgressLedger.empty();
         }
     }
 
-    private void persist(String conversationId, Map<String, ProgressEntry> map) {
+    /**
+     * Parse with backward compatibility: new format has {@code "entries"}
+     * and {@code "pinned"} keys; old format is a flat map treated as entries.
+     */
+    private LedgerWrapper parseWrapper(String json) throws Exception {
+        // Peek: if the JSON contains '"entries"' it's the new wrapper format.
+        if (json.contains("\"entries\"")) {
+            return objectMapper.readValue(json, WRAPPER_TYPE);
+        }
+        // Old format: flat map → migrate to wrapper with empty pinned.
+        LinkedHashMap<String, ProgressEntry> entries = objectMapper.readValue(json, ENTRIES_TYPE);
+        return new LedgerWrapper(entries, new LinkedHashMap<>());
+    }
+
+    private LedgerWrapper loadWrapper(String conversationId) {
+        String json = loadLedgerJson(conversationId);
+        if (json == null || json.isBlank() || "{}".equals(json.trim())) {
+            return new LedgerWrapper();
+        }
         try {
-            String json = objectMapper.writeValueAsString(map);
+            return parseWrapper(json);
+        } catch (Exception e) {
+            log.warn("Failed to parse progress ledger JSON for {}, treating as empty: {}",
+                    conversationId, e.getMessage());
+            return new LedgerWrapper();
+        }
+    }
+
+    private void persistWrapper(String conversationId, LedgerWrapper wrapper) {
+        try {
+            String json = objectMapper.writeValueAsString(wrapper);
             saveLedgerJson(conversationId, json);
         } catch (Exception e) {
-            // Surface to caller so the tool can return an error message to
-            // the LLM rather than silently dropping the update.
             throw new IllegalStateException(
                     "Failed to persist progress ledger for " + conversationId + ": " + e.getMessage(), e);
         }

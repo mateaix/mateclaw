@@ -140,6 +140,8 @@ public class AgentGraphBuilder {
     private final vip.mate.goal.service.GoalEvaluationService goalEvaluationService;
     private final vip.mate.goal.service.GoalFollowupService goalFollowupService;
     private final vip.mate.goal.config.GoalProperties goalProperties;
+    /** C4: per-conversation environment notification registry, injected into ReasoningNode. */
+    private final vip.mate.agent.runtime.RunningConversationRegistry runningConversationRegistry;
 
     /**
      * Auto-grant resolver wired into the executor so an active
@@ -256,8 +258,30 @@ public class AgentGraphBuilder {
     public BaseAgent build(AgentEntity entity, String modelProvider, String modelName) {
         AgentToolSet toolSet = toolRegistry.getEnabledToolSet();
 
-        // 过滤掉 denied 工具，使模型完全看不到它们（防止 prompt injection 利用 schema）
-        toolSet = toolSet.withDeniedToolsFiltered(toolGuardConfigService.getDeniedTools());
+        // Move 6 — Permission flattening at build time.
+        //
+        // Two layers of tool filtering exist in MateClaw:
+        //   (1) Build-time filter (HERE) — decides which tools the model SEES
+        //       in the tool list. Computed once per agent build; stable for
+        //       the agent's lifecycle unless bindings change.
+        //   (2) Runtime guard (ToolGuardService.evaluate) — decides which
+        //       tools the model can CALL. Runs on every invocation; checks
+        //       workspace boundaries, sensitive paths, credential exposure,
+        //       shell command patterns, and approval workflows. All dynamic
+        //       (depends on tool arguments, not just tool name).
+        //
+        // The build-time filter previously ran as 4 separate passes
+        // (deny → allow → deny → exclude). Move 6 consolidates them into
+        // a single deny-set + a single allow-set, applied in two passes:
+        //   denied = global denied ∪ skill-discovery denied ∪ {load_skill if disabled}
+        //   allowed = agent's bound tools (null = global default)
+        Set<String> deniedTools = new java.util.LinkedHashSet<>(
+                toolGuardConfigService.getDeniedTools());
+        deniedTools.addAll(agentBindingService.getSkillDiscoveryDeniedTools(entity.getId()));
+        if (!loadSkillToolEnabled) {
+            deniedTools.add("load_skill");
+        }
+        toolSet = toolSet.withDeniedToolsFiltered(deniedTools);
 
         // RFC-090 §14.2 — single entry point that merges:
         //   (a) tools expanded from bound skills' active features, and
@@ -266,24 +290,6 @@ public class AgentGraphBuilder {
         // global default); non-null (possibly empty) = explicit allowlist.
         Set<String> boundTools = agentBindingService.getEffectiveToolNames(entity.getId());
         toolSet = toolSet.withAllowedToolsOnly(boundTools); // null = 全局默认
-
-        // Issue #184 follow-up: an agent that opted out of skills must not be
-        // able to circle back and discover/load them via the meta tools. Strip
-        // the skill-discovery surface (listAvailableSkills / load_skill /
-        // readSkillFile / runSkillScript / listSkillFiles) here. This runs as a
-        // separate deny layer so the allowlist matrix in getEffectiveToolNames
-        // stays untouched — in particular, the (skillsDisabled, !toolsDisabled,
-        // no tool bindings) cell still returns null so non-skill global tools
-        // continue to flow through.
-        toolSet = toolSet.withDeniedToolsFiltered(
-                agentBindingService.getSkillDiscoveryDeniedTools(entity.getId()));
-
-        // Escape hatch: drop the load_skill meta tool entirely when disabled, so
-        // it isn't advertised regardless of binding (the catalog guidance falls
-        // back to readSkillFile — see SkillRuntimeService).
-        if (!loadSkillToolEnabled) {
-            toolSet = toolSet.excluding(java.util.Set.of("load_skill"));
-        }
 
         // Resolve the base model with the precedence: per-conversation pin >
         // per-Agent model override > global default. resolveRuntimeBaseModel
@@ -941,7 +947,16 @@ public class AgentGraphBuilder {
                     skillCatalogRenderer, toolDisclosureService, progressLedgerService);
             reasoningNode.setPrefixBudgetPlan(prefixBudgetPlan);
             reasoningNode.setAutoDemotedTools(autoDemotedTools);
+            // C4: wire the environment-notification registry so ReasoningNode
+            // can drain pending MCP/skill events and inject them as a SystemMessage.
+            reasoningNode.setRunningConversationRegistry(runningConversationRegistry);
             ActionNode actionNode = new ActionNode(executor, streamTracker);
+            // B2/B5: wire optional collaborators so ActionNode can pin skill
+            // constraints and auto-record tool completions into ProgressLedger.
+            // Setter injection keeps the existing constructor signature stable
+            // for tests that build ActionNode directly.
+            actionNode.setSkillRuntimeService(skillRuntimeService);
+            actionNode.setProgressLedgerService(progressLedgerService);
             ObservationProcessor observationProcessor = new ObservationProcessor(graphObservationProperties);
             ObservationNode observationNode = new ObservationNode(observationProcessor, streamTracker);
             SummarizingNode summarizingNode = new SummarizingNode(chatModel, streamingHelper, streamTracker);
@@ -1633,6 +1648,15 @@ public class AgentGraphBuilder {
                 Only state you cannot access something if no relevant tool is available.
                 Do not claim a tool-generated file, URL, UUID, path, task id, or success result before the corresponding tool call has completed. If a tool is needed, call the tool first, then report only the actual returned result.
 
+                ## MCP Tool Naming
+                Tools from MCP servers have names shaped like `mcp_<serverId>_<slug>_<hash6>`:
+                - `<serverId>` is a numeric ID identifying which MCP server the tool belongs to.
+                - Tools from DIFFERENT servers have DIFFERENT serverId prefixes, even if they have the same raw name (e.g. `search` on server A vs server B) — they are DIFFERENT tools and are NOT interchangeable.
+                - Each MCP tool's description starts with `[MCP server: <name>]` so you can identify the source server by its human-readable name.
+                - MCP tools are listed in the Extension Tools catalog by default. Use `enable_tool(toolName="<exact-name>")` to activate the one you need before calling it.
+                - Always call tools by the EXACT name shown in the tool list. Do NOT reconstruct a tool name by swapping the slug into a serverId you remember from a previous successful call — that produces a non-existent tool name and the call will fail.
+                - If a tool call returns "Tool not found" with candidate suggestions, pick the correct one from the candidates verbatim.
+
                 ## Multi-Part Question Guidelines
                 When the user asks multiple questions or requests multiple tasks in a single message:
                 1. Structure your final answer with numbered sections, one per sub-task
@@ -1660,6 +1684,24 @@ public class AgentGraphBuilder {
                 3. Process the extracted text content
 
                 If you try to read a PDF/Office file with read_file, you will get binary garbage or an error.
+
+                ## ProgressLedger Discipline (mandatory)
+                The `## 当前任务进度` block injected near the top of every turn is the **authoritative record** of what you have done and what remains. Treat it as ground truth, not as a scratchpad you may ignore.
+                - **On starting any multi-step task** (≥3 tool calls expected), call `progress_update` in a parallel tool_calls batch to register every pending step BEFORE doing the work. Do not wait until "later" — context compression can trim earlier turns and you will lose track.
+                - **After each completed sub-step**, immediately call `progress_update` to flip its status to `done`. "Immediately" means in the same tool_calls batch that returns the result, not after the next reasoning turn.
+                - **Never re-execute a step the ledger shows as `done`** unless you can articulate why the prior result is stale.
+                - **🔒 固定约束 entries** (pinned from skill manifests) are non-negotiable. They survive context compression for a reason — re-read them every turn and make sure your planned action still satisfies them.
+                - **🔧 自动记录 entries** are auto-filled by Java after each tool call. They are a safety net, not a substitute for your own `progress_update` — if you only rely on them, you will lose the pending/blocked view that drives planning.
+                - If you see a `⚠️ 进度账本已 N 秒未更新` reminder, **stop whatever you are doing and update the ledger first**. Continuing to call tools without updating the ledger is the #1 cause of duplicate work and missed steps.
+                - The ledger is per-conversation and persists across context trims; treating it as ephemeral will cause you to repeat work after every compaction.
+
+                ## Environment Change Notifications
+                Occasionally you will see a `## 📢 环境变更通知` block injected near the top of a turn. It is generated by Java when an external event affects your runtime — an MCP server disconnecting, a skill being updated/removed, or a tool binding change.
+                - These notifications are **authoritative** — Java detected the change; do not second-guess them by re-probing the tool.
+                - If a notification says an MCP server is unavailable, **immediately stop calling tools prefixed with that server's id** and either switch to an alternative or report the gap to the user.
+                - If a notification says a skill was updated, **re-load it via `load_skill`** to refresh its constraints in your pinned ledger; the old constraints you remember may no longer apply.
+                - If a notification says a tool was removed, **do not attempt to call it**; pick a different approach or ask the user.
+                - These notifications appear at most once per event; if you miss one, it will not be repeated, so act on it in the turn you see it.
                 """.formatted(entity.getId());
 
         // Web-search vs browser_use priority guidance — emitted unconditionally so the rule
@@ -1696,14 +1738,48 @@ public class AgentGraphBuilder {
      * bound skills, effective tool allowlist, model window and workspace once;
      * the returned renderer is invoked each turn with the skills loaded so far
      * this run so {@code load_skill} pins float to the top of the catalog.
+     *
+     * <p>agent-4: when any loaded skill declares structured {@code constraints}
+     * in its manifest, the rendered catalog gets a trailing anchor note
+     * {@code "🔒 = 含固定约束的 skill（详见 ProgressLedger）"} so the LLM has
+     * a visible cue that some skills carry non-negotiable rules pinned into
+     * the ledger. The cue is appended (not interleaved) to keep the
+     * catalog's prompt-cache hash stable for the unchanged prefix.
      */
     private SkillCatalogRenderer buildSkillCatalogRenderer(AgentEntity entity, Set<String> boundTools,
                                                            Integer maxInputTokens) {
         Set<Long> boundSkillIds = agentBindingService.getBoundSkillIds(entity.getId());
         Long agentId = entity.getId();
         Long workspaceId = entity.getWorkspaceId();
-        return loaded -> skillRuntimeService.buildSkillPromptEnhancement(
-                boundSkillIds, boundTools, maxInputTokens, agentId, workspaceId, loaded);
+        return loaded -> {
+            String catalog = skillRuntimeService.buildSkillPromptEnhancement(
+                    boundSkillIds, boundTools, maxInputTokens, agentId, workspaceId, loaded);
+            if (catalog == null || catalog.isBlank() || loaded == null || loaded.isEmpty()) {
+                return catalog;
+            }
+            // Scan loaded skills for any with structured constraints. We only
+            // surface the anchor when at least one matches, to avoid noisy
+            // output on constraint-free skills.
+            boolean anyHasConstraints = false;
+            for (String skillName : loaded) {
+                try {
+                    vip.mate.skill.runtime.model.ResolvedSkill skill = skillRuntimeService.findActiveSkill(skillName);
+                    if (skill != null && skill.getManifest() != null) {
+                        List<String> constraints = skill.getManifest().getConstraints();
+                        if (constraints != null && !constraints.isEmpty()) {
+                            anyHasConstraints = true;
+                            break;
+                        }
+                    }
+                } catch (Exception ignored) {
+                    // best-effort lookup; do not fail the catalog render
+                }
+            }
+            if (!anyHasConstraints) {
+                return catalog;
+            }
+            return catalog + "\n\n🔒 = 含固定约束的 skill（已写入 ProgressLedger，详见 🔒 固定约束 段落，全程不可忽略）";
+        };
     }
 
     /**
