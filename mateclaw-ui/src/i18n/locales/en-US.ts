@@ -198,6 +198,16 @@ export default {
     replyModel: 'Reply model: {model}',
     tokenUsageTooltip: 'This turn used {total} tokens ({input} in · {output} out)',
     tokenUsageTooltipDelegated: 'This turn used {total} tokens ({input} in · {output} out), of which {delegated} came from delegated sub-agents',
+    contextUsage: {
+      title: 'context used',
+      chipTooltip: 'Context usage (click for breakdown, estimated)',
+      system: 'System prompt',
+      tools: 'Tools & skills',
+      history: 'History',
+      current: 'Current input',
+      willCompact: 'Near the limit — older turns will be compacted',
+      estimated: 'estimated',
+    },
     usageDetail: {
       title: 'Token usage detail',
       total: 'Total',

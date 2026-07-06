@@ -211,6 +211,11 @@
         :capabilities="agentCapabilities"
       />
 
+      <!-- 上下文占用（估算）：点击展开分项面板 -->
+      <div v-if="contextUsage" class="ctx-usage-row">
+        <ContextUsagePanel :usage="contextUsage" />
+      </div>
+
       <!-- 使用组件化的 ChatInput -->
       <ChatInput
         ref="chatInputRef"
@@ -294,6 +299,7 @@ import { agentIconColor } from '@/utils/agentIconColor'
 import ChatInput from '@/components/chat/ChatInput.vue'
 import MultimodalRoutingHint from '@/components/chat/MultimodalRoutingHint.vue'
 import StreamLoadingBar from '@/components/chat/StreamLoadingBar.vue'
+import ContextUsagePanel from '@/components/chat/ContextUsagePanel.vue'
 import TalkMode from '@/components/chat/TalkMode.vue'
 import ModelSelector from '@/components/chat/ModelSelector.vue'
 import { useEChartsRenderer } from '@/composables/useEChartsRenderer'
@@ -675,6 +681,7 @@ const {
   queueSize,
   heartbeat,
   compactStatus,
+  contextUsage,
   lifecycleStage,
   sendMessage: sendChatMessage,
   stopGeneration: stopChatGeneration,
@@ -2250,6 +2257,11 @@ function handleCodeCopy(e: MouseEvent) {
 </script>
 
 <style scoped>
+.ctx-usage-row {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 4px 4px;
+}
 .cron-running-bar {
   display: flex;
   flex-direction: column;

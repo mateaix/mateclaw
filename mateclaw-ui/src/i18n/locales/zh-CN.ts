@@ -198,6 +198,16 @@ export default {
     replyModel: '本条回复模型: {model}',
     tokenUsageTooltip: '本轮共消耗 {total} tokens（输入 {input} · 输出 {output}）',
     tokenUsageTooltipDelegated: '本轮共消耗 {total} tokens（输入 {input} · 输出 {output}），其中子 Agent 委派占 {delegated}',
+    contextUsage: {
+      title: '上下文已用',
+      chipTooltip: '上下文占用（点击查看分项，估算值）',
+      system: '系统提示词',
+      tools: '工具与技能',
+      history: '历史消息',
+      current: '本轮输入',
+      willCompact: '接近上限，将压缩较早的对话',
+      estimated: '估算值',
+    },
     usageDetail: {
       title: 'Token 消耗明细',
       total: '总计',

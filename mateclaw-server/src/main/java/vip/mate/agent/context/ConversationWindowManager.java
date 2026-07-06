@@ -271,6 +271,16 @@ public class ConversationWindowManager {
                                      java.util.Collection<ToolCallback> toolCallbacks,
                                      String workspaceBasePath) {
         if (messages == null || messages.isEmpty()) {
+            // Still surface an occupancy snapshot for the very first turn so
+            // the chat panel shows context usage from message one on.
+            int firstTurnMax = (maxInputTokens != null && maxInputTokens > 0)
+                    ? maxInputTokens : properties.getDefaultMaxInputTokens();
+            broadcastContextUsage(conversationId, firstTurnMax,
+                    TokenEstimator.estimateTokens(systemPrompt),
+                    TokenEstimator.estimateTokens(currentUserMessage) + TokenEstimator.PER_MESSAGE_OVERHEAD,
+                    0,
+                    TokenEstimator.estimateToolsTokens(toolCallbacks),
+                    false);
             return messages;
         }
         long spillsAtEntry = (toolResultStorage != null) ? toolResultStorage.getSpillCount() : 0L;
@@ -291,6 +301,9 @@ public class ConversationWindowManager {
         int historyTokens = TokenEstimator.estimateTokens(messages);
         int toolsTokens = TokenEstimator.estimateToolsTokens(toolCallbacks);
         int totalTokens = systemTokens + currentMsgTokens + historyTokens + toolsTokens;
+
+        broadcastContextUsage(conversationId, effectiveMax, systemTokens, currentMsgTokens,
+                historyTokens, toolsTokens, totalTokens > triggerThreshold);
 
         if (totalTokens <= triggerThreshold) {
             return messages;
@@ -319,9 +332,14 @@ public class ConversationWindowManager {
         // 尾部保护 token 预算：阈值的 20%
         int tailTokenBudget = (int) (triggerThreshold * 0.20);
 
-        return compactMessages(messages, historyBudget, tailTokenBudget, chatModel,
+        List<Message> compacted = compactMessages(messages, historyBudget, tailTokenBudget, chatModel,
                 conversationId, agentId, totalTokens, spillsAtEntry, "token_threshold",
                 workspaceBasePath);
+        // Re-broadcast so the occupancy gauge falls immediately after
+        // compaction instead of waiting for the next window-fit pass.
+        broadcastContextUsage(conversationId, effectiveMax, systemTokens, currentMsgTokens,
+                TokenEstimator.estimateTokens(compacted), toolsTokens, false);
+        return compacted;
     }
 
     /**
@@ -336,6 +354,42 @@ public class ConversationWindowManager {
     }
 
     // ==================== 核心压缩逻辑 ====================
+
+    /**
+     * Broadcast a {@code context_usage} snapshot: how much of the effective
+     * input window the next LLM call will occupy, split by source (system
+     * prompt / tool schemas / history / current input). Values come from
+     * {@link TokenEstimator}, so they are heuristic estimates for a gauge,
+     * not billing-grade counts — the UI labels them as such. Fired once per
+     * window-fit pass (i.e. per reasoning step) and again after compaction
+     * completes so the gauge falls back. Silent no-op when no tracker is
+     * wired or the window size is unknown.
+     */
+    private void broadcastContextUsage(String conversationId, int windowTokens,
+                                       int systemTokens, int currentTokens,
+                                       int historyTokens, int toolsTokens,
+                                       boolean willCompact) {
+        if (streamTracker == null || conversationId == null || conversationId.isEmpty()
+                || windowTokens <= 0) {
+            return;
+        }
+        try {
+            int usedTokens = systemTokens + currentTokens + historyTokens + toolsTokens;
+            Map<String, Object> payload = new java.util.LinkedHashMap<>();
+            payload.put("windowTokens", windowTokens);
+            payload.put("usedTokens", usedTokens);
+            payload.put("systemTokens", systemTokens);
+            payload.put("currentTokens", currentTokens);
+            payload.put("historyTokens", historyTokens);
+            payload.put("toolsTokens", toolsTokens);
+            payload.put("ratio", windowTokens > 0 ? (double) usedTokens / windowTokens : 0d);
+            payload.put("willCompact", willCompact);
+            payload.put("timestamp", System.currentTimeMillis());
+            streamTracker.broadcastObject(conversationId, "context_usage", payload);
+        } catch (Exception e) {
+            log.debug("[ConversationWindow] broadcast context_usage failed: {}", e.getMessage());
+        }
+    }
 
     /** Broadcast a single compact_status event; silent no-op when no tracker is wired. */
     private void broadcastCompactStatus(String conversationId, String status, Map<String, Object> extra) {
