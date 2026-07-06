@@ -19,19 +19,24 @@ import java.util.concurrent.CancellationException;
 import static vip.mate.agent.graph.state.MateClawStateKeys.*;
 
 /**
- * 工具执行节点（ReAct Action 阶段）
+ * Tool-execution node (the ReAct Action phase).
  * <p>
- * 委托 {@link ToolExecutionExecutor} 执行工具调用，支持并发执行和审批 barrier。
+ * Delegates tool-call execution to {@link ToolExecutionExecutor}, supporting
+ * concurrent execution and the approval barrier.
  * <p>
- * 支持 forced_replay 阶段：当审批通过后的重放调用到达时，跳过 ToolGuard 检查直接执行。
+ * Supports the forced_replay phase: when an approved replay call arrives, it
+ * skips the ToolGuard check and executes directly.
  *
- * <p>B2: 当检测到 {@code load_skill} 调用时，从 skill manifest 提取
- * {@code constraints} 并写入 ProgressLedger 的 pinned entries，使约束
- * 在整个对话中可见、不被 LLM 的 progress_update 覆盖、不被上下文压缩裁剪。
+ * <p>B2: when a {@code load_skill} call is detected, the skill manifest's
+ * {@code constraints} are extracted and written to the ProgressLedger's pinned
+ * entries, so the constraints stay visible for the whole conversation — never
+ * overwritten by the LLM's progress_update, never trimmed by context compression.
  *
- * <p>B5: 工具调用成功后自动回填 ProgressLedger，让 LLM 即使不主动调用
- * progress_update 也能在下一轮看到已完成的工具调用记录。自动记录条数有上限
- * （{@link ProgressLedgerService#MAX_AUTO_RECORDED}），且不覆盖 LLM 已写的条目。
+ * <p>B5: after a tool call succeeds, the ProgressLedger is auto-backfilled so the
+ * LLM sees the completed tool-call record on the next turn even without calling
+ * progress_update. Auto-recorded entries are capped
+ * ({@link ProgressLedgerService#MAX_AUTO_RECORDED}) and never overwrite entries
+ * the LLM already wrote.
  *
  * @author MateClaw Team
  */

@@ -127,8 +127,8 @@ public class ProgressLedgerService {
         }
         // Guard reserved prefixes — the LLM must not overwrite Java-managed
         // entries (auto-recorded tool calls or pinned skill constraints).
-        // Strip the prefix and continue with the remainder so the LLM's
-        // progress_update still lands, just under a non-reserved key.
+        // Reject the write so the caller re-issues progress_update under a
+        // non-reserved key instead of clobbering a system-managed entry.
         if (key.startsWith(ProgressLedger.AUTO_RECORDED_PREFIX) || key.startsWith("pin_")) {
             throw new IllegalArgumentException(
                     "step key prefix '" + ProgressLedger.AUTO_RECORDED_PREFIX
