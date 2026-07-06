@@ -1092,6 +1092,7 @@ export default {
     title: '智能体上下文',
     desc: '管理智能体的提示文件和记忆',
     selectAgent: '选择员工',
+    unknownAgent: '未知员工',
     noAgent: '请先选择一个智能体',
     files: '文件列表',
     coreFiles: '核心文件',
