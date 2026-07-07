@@ -2,6 +2,7 @@
 -- enabled uses SMALLINT (not BOOLEAN): WikiSourceGroupEntity.enabled is Integer
 -- (1/0), same convention as WikiKnowledgeBaseEntity.watcherEnabled (V146) —
 -- vanilla PostgreSQL cannot map a BOOLEAN into a JDBC int.
+-- scan_mode dropped and alias uniqueness added; see h2/V166 for full notes.
 CREATE TABLE IF NOT EXISTS mate_wiki_source_group (
     id            BIGINT       NOT NULL PRIMARY KEY,
     kb_id         BIGINT       NOT NULL,
@@ -9,7 +10,6 @@ CREATE TABLE IF NOT EXISTS mate_wiki_source_group (
     alias         VARCHAR(128) NOT NULL,
     path          VARCHAR(512) NOT NULL,
     file_filter   VARCHAR(256),
-    scan_mode     VARCHAR(16)  NOT NULL DEFAULT 'incremental',
     cron_expr     VARCHAR(64),
     enabled       SMALLINT     NOT NULL DEFAULT 1,
     last_scan_at  TIMESTAMP,
@@ -18,3 +18,4 @@ CREATE TABLE IF NOT EXISTS mate_wiki_source_group (
     deleted       INT          NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_wiki_sgroup_kb ON mate_wiki_source_group (kb_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uk_wiki_sgroup_kb_alias ON mate_wiki_source_group (kb_id, alias);

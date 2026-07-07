@@ -74,7 +74,7 @@ class WikiSourceGroupControllerIdorTest {
     @DisplayName("createSourceGroup on another workspace's KB → 403")
     void createSourceGroupCrossWorkspaceRejected() {
         when(kbService.getById(10L)).thenReturn(kb(10L, 2L));
-        SourceGroupRequest req = new SourceGroupRequest("docs", "/data/docs", null, "incremental", null, true);
+        SourceGroupRequest req = new SourceGroupRequest("docs", "/data/docs", null, null, true);
 
         assertThatThrownBy(() -> controller.createSourceGroup(10L, req, 1L))
                 .isInstanceOf(MateClawException.class);
@@ -84,7 +84,7 @@ class WikiSourceGroupControllerIdorTest {
     @DisplayName("updateSourceGroup on another workspace's KB → 403")
     void updateSourceGroupCrossWorkspaceRejected() {
         when(kbService.getById(10L)).thenReturn(kb(10L, 2L));
-        SourceGroupRequest req = new SourceGroupRequest("docs", "/data/docs", null, "incremental", null, true);
+        SourceGroupRequest req = new SourceGroupRequest("docs", "/data/docs", null, null, true);
 
         assertThatThrownBy(() -> controller.updateSourceGroup(10L, 5L, req, 1L))
                 .isInstanceOf(MateClawException.class);
@@ -131,7 +131,7 @@ class WikiSourceGroupControllerIdorTest {
     @DisplayName("unknown kbId on createSourceGroup → 404")
     void unknownKbReturns404() {
         when(kbService.getById(999L)).thenReturn(null);
-        SourceGroupRequest req = new SourceGroupRequest("docs", "/data/docs", null, "incremental", null, true);
+        SourceGroupRequest req = new SourceGroupRequest("docs", "/data/docs", null, null, true);
 
         assertThatThrownBy(() -> controller.createSourceGroup(999L, req, 1L))
                 .isInstanceOf(MateClawException.class)

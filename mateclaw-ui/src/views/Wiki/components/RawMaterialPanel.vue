@@ -149,6 +149,11 @@
         <div class="batch-actions">
           <button class="batch-btn" @click="batchReprocess">⟳ {{ t('wiki.sources.batchReprocess') }}</button>
           <button class="batch-btn" @click="batchDownload">⬇ {{ t('wiki.sources.batchDownload') }}</button>
+          <select class="batch-move-select" @change="onBatchMoveSelect">
+            <option value="" disabled selected>{{ t('wiki.sources.moveToGroup') }}</option>
+            <option :value="UNGROUPED_KEY">{{ t('wiki.sources.ungrouped') }}</option>
+            <option v-for="g in store.sourceGroups" :key="g.id" :value="g.id">{{ g.alias }}</option>
+          </select>
           <button class="batch-btn danger" @click="batchDelete">🗑 {{ t('wiki.sources.batchDelete') }}</button>
         </div>
         <span class="clear-sel" @click="clearSelection">{{ t('wiki.sources.clearSelection') }}</span>
@@ -267,8 +272,32 @@
               <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
             </svg>
             {{ scheduleText(group.key) }}
+            <span class="schedule-inactive-badge" :title="t('wiki.pathConfig.scheduleInactiveHint')">{{ t('wiki.pathConfig.scheduleInactive') }}</span>
           </span>
-          <div v-if="canManageWiki" class="group-actions" @click.stop>
+          <div v-if="canManageWiki && group.key !== UNGROUPED_KEY" class="group-actions" @click.stop>
+            <button
+              class="btn-icon group-scan-btn"
+              :class="{ 'is-scanning': scanningGroups[Number(group.key)] }"
+              :disabled="scanningGroups[Number(group.key)]"
+              :title="t('wiki.pathConfig.scanIncremental')"
+              @click="scanGroup(group.key, 'incremental')"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" :class="{ spinner: scanningGroups[Number(group.key)] }">
+                <polyline points="23 4 23 10 17 10"/>
+                <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+              </svg>
+            </button>
+            <button
+              class="btn-icon group-scan-btn"
+              :class="{ 'is-scanning': scanningGroups[Number(group.key)] }"
+              :disabled="scanningGroups[Number(group.key)]"
+              :title="t('wiki.pathConfig.scanFull')"
+              @click="scanGroup(group.key, 'full')"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>
+              </svg>
+            </button>
             <button class="btn-icon group-cfg-btn" :title="t('wiki.pathConfig.title')" @click="openConfig(group)">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <circle cx="12" cy="12" r="3"/>
@@ -331,6 +360,16 @@
             </span>
           </div>
           <div v-if="canManageWiki" class="raw-item-actions">
+            <select
+              class="row-move-select"
+              :value="raw.groupId != null ? raw.groupId : UNGROUPED_KEY"
+              :title="t('wiki.sources.moveToGroup')"
+              @click.stop
+              @change="onRowMoveSelect(raw.id, $event)"
+            >
+              <option :value="UNGROUPED_KEY">{{ t('wiki.sources.ungrouped') }}</option>
+              <option v-for="g in store.sourceGroups" :key="g.id" :value="g.id">{{ g.alias }}</option>
+            </select>
             <button
               v-if="raw.processingStatus === 'processing' && !cancellingIds.has(raw.id)"
               class="btn-icon btn-icon-danger" :title="t('wiki.cancel')"
@@ -472,8 +511,6 @@
             ? t('wiki.pathConfig.addTitle')
             : t('wiki.pathConfig.titleWith', { name: configForm.alias || t('wiki.pathConfig.title') }) }}
         </h3>
-        <p class="frontend-only-hint">⚠ {{ t('wiki.pathConfig.frontendOnlyHint') }}</p>
-
         <div class="form-group">
           <label>{{ t('wiki.pathConfig.alias') }}</label>
           <input v-model="configForm.alias" class="form-input" :placeholder="t('wiki.pathConfig.aliasPlaceholder')" />
@@ -510,29 +547,18 @@
             :placeholder="t('wiki.pathConfig.cronCustomPlaceholder')"
           />
         </div>
-        <div class="form-group">
-          <label>{{ t('wiki.pathConfig.scanMode') }}</label>
-          <div class="mode-selector">
-            <label class="mode-option" :class="{ selected: configForm.scanMode === 'incr' }">
-              <input type="radio" value="incr" v-model="configForm.scanMode" />
-              <span class="mode-option-text">
-                <span class="mode-option-title">{{ t('wiki.pathConfig.modeIncr') }}</span>
-                <span class="mode-option-hint">{{ t('wiki.pathConfig.modeIncrHint') }}</span>
-              </span>
-            </label>
-            <label class="mode-option" :class="{ selected: configForm.scanMode === 'full' }">
-              <input type="radio" value="full" v-model="configForm.scanMode" />
-              <span class="mode-option-text">
-                <span class="mode-option-title">{{ t('wiki.pathConfig.modeFull') }}</span>
-                <span class="mode-option-hint">{{ t('wiki.pathConfig.modeFullHint') }}</span>
-              </span>
-            </label>
-          </div>
+        <div v-if="pathModalMode === 'edit'" class="form-group">
+          <label>{{ t('wiki.pathConfig.removeReassignLabel') }}</label>
+          <select v-model="removeReassignTo" class="select-filter">
+            <option :value="null">{{ t('wiki.sources.ungrouped') }}</option>
+            <option v-for="g in otherGroups" :key="g.id" :value="g.id">{{ g.alias }}</option>
+          </select>
+          <span class="form-hint">{{ t('wiki.pathConfig.removeReassignHint') }}</span>
         </div>
 
         <div class="modal-actions path-modal-actions">
           <button
-            v-if="pathModalMode === 'edit' && configEditingIsCustom"
+            v-if="pathModalMode === 'edit'"
             class="btn-remove-path"
             @click="removePath"
           >{{ t('wiki.pathConfig.removePath') }}</button>
@@ -565,7 +591,7 @@
           </div>
         </div>
         <div class="preview-meta">
-          <span class="preview-meta-item">{{ t('wiki.preview.group') }}: {{ groupLabel(previewRaw.sourceType || UNGROUPED_KEY) }}</span>
+          <span class="preview-meta-item">{{ t('wiki.preview.group') }}: {{ groupLabel(groupKeyOf(previewRaw)) }}</span>
           <span class="preview-meta-item">{{ t('wiki.preview.size') }}: {{ formatSize(previewRaw.fileSize) }}</span>
           <span class="preview-meta-item">{{ t('wiki.preview.scanTime') }}: {{ formatScanTime(previewRaw.createTime) || '—' }}</span>
           <span class="status-badge" :class="previewRaw.processingStatus">{{ t(`wiki.status.${previewRaw.processingStatus}`) }}</span>
@@ -700,9 +726,6 @@ const filteredMaterials = computed(() => {
 type RawItem = (typeof store.rawMaterials)[number]
 
 const UNGROUPED_KEY = '__ungrouped__'
-// Fixed display order for known source types; unknown types sort after these,
-// and the ungrouped bucket always sinks to the bottom.
-const GROUP_ORDER = ['UPLOAD', 'TEXT', 'SCAN']
 
 // Collapsed group keys. The ungrouped bucket now holds all manual materials, so
 // it starts expanded.
@@ -718,44 +741,46 @@ function toggleGroup(key: string) {
   collapsedGroups.value = next
 }
 
+/** groupId null/unmatched → the ungrouped bucket; otherwise the group's own key. */
+function groupKeyOf(raw: RawItem): string {
+  return raw.groupId != null ? String(raw.groupId) : UNGROUPED_KEY
+}
+function findGroupById(key: string) {
+  return store.sourceGroups.find(g => String(g.id) === key)
+}
 function groupLabel(key: string): string {
-  const alias = pathConfigs.value[key]?.alias
-  if (alias) return alias
   if (key === UNGROUPED_KEY) return t('wiki.sources.ungrouped')
-  if (key.startsWith('custom:')) return t('wiki.pathConfig.untitledPath')
-  return sourceTypeLabel(key)
+  return findGroupById(key)?.alias || t('wiki.pathConfig.untitledPath')
 }
 
 function formatScanTime(s: string): string {
   return s ? s.replace('T', ' ').slice(0, 16) : ''
 }
 
-/** Group filtered+sorted materials by sourceType, preserving the active sort. */
+/** Group filtered+sorted materials by their real source-group, preserving the active sort. */
 const groupedMaterials = computed(() => {
   const map = new Map<string, RawItem[]>()
   for (const raw of filteredMaterials.value) {
-    // Manual uploads/pasted text all land in one "未分组文档" bucket regardless of
-    // file type; only user-created scan-path groups get their own group.
-    const key = UNGROUPED_KEY
+    const key = groupKeyOf(raw)
     const bucket = map.get(key)
     if (bucket) bucket.push(raw)
     else map.set(key, [raw])
   }
 
-  // Frontend-only custom scan paths render as (possibly empty) groups.
-  for (const ck of customGroupKeys.value) {
-    if (!map.has(ck)) map.set(ck, [])
+  // Configured source groups render as (possibly empty) groups even with no
+  // matching raws, so the user can find/scan/edit a freshly created group.
+  for (const g of store.sourceGroups) {
+    const key = String(g.id)
+    if (!map.has(key)) map.set(key, [])
   }
 
-  const rank = (k: string) => {
-    const i = GROUP_ORDER.indexOf(k)
-    if (i !== -1) return i
-    return k === UNGROUPED_KEY ? 999 : 500
-  }
+  // Ungrouped always sinks to the bottom; real groups keep the backend's
+  // (createTime-ascending) order.
+  const orderIndex = new Map(store.sourceGroups.map((g, i) => [String(g.id), i]))
   const keys = Array.from(map.keys()).sort((a, b) => {
-    const ra = rank(a)
-    const rb = rank(b)
-    return ra !== rb ? ra - rb : a.localeCompare(b)
+    if (a === UNGROUPED_KEY) return 1
+    if (b === UNGROUPED_KEY) return -1
+    return (orderIndex.get(a) ?? 999) - (orderIndex.get(b) ?? 999)
   })
 
   return keys.map(key => {
@@ -769,7 +794,10 @@ const groupedMaterials = computed(() => {
       else if (r.processingStatus === 'failed' || r.processingStatus === 'cancelled') counts.failed++
       if (r.createTime && r.createTime > lastTime) lastTime = r.createTime
     }
-    return { key, label: groupLabel(key), items, counts, lastTime }
+    // Real groups report their own lastScanAt from the backend; fall back to
+    // the newest member raw's createTime for the ungrouped bucket.
+    const group = findGroupById(key)
+    return { key, label: groupLabel(key), items, counts, lastTime: group?.lastScanAt || lastTime }
   })
 })
 
@@ -853,126 +881,191 @@ async function batchDelete() {
   await store.fetchRawMaterials(kbId)
 }
 
-// ── Phase 4: Per-group path config (frontend-only, localStorage) ──────────
-// NOTE: the backend currently has no multi-path / per-path schedule / scan-mode
-// API. This config is persisted in localStorage as a UI-first prototype; only
-// alias and grouping affect what the user sees today. Wire to a real API later.
-type ScanMode = 'incr' | 'full'
-interface PathConfig {
+// ── Phase 4: Per-group path config, backed by the real source-group API ────
+interface PathConfigForm {
   alias: string
   path: string
   fileFilter: string
   scheduleEnabled: boolean
   cron: string
   customCron: string
-  scanMode: ScanMode
 }
 
 const CRON_OPTIONS = ['hourly', 'daily02', 'daily06', 'daily10', 'daily22', 'weekly1', 'custom']
-function defaultConfig(): PathConfig {
-  return { alias: '', path: '', fileFilter: '', scheduleEnabled: false, cron: 'daily02', customCron: '', scanMode: 'incr' }
+// Spring's 6-field cron format (sec min hour day month weekday), matching what
+// WikiSourceGroupService validates via CronExpression.parse. Kept as a fixed
+// preset set for now — no scheduler (P2) consumes these yet.
+const CRON_PRESETS: Record<string, string> = {
+  hourly: '0 0 * * * *',
+  daily02: '0 0 2 * * *',
+  daily06: '0 0 6 * * *',
+  daily10: '0 0 10 * * *',
+  daily22: '0 0 22 * * *',
+  weekly1: '0 0 2 * * MON',
+}
+function defaultConfig(): PathConfigForm {
+  return { alias: '', path: '', fileFilter: '', scheduleEnabled: false, cron: 'daily02', customCron: '' }
 }
 function cronLabel(v: string): string {
   return t(`wiki.pathConfig.cron_${v}`)
 }
+/** Matches a stored cronExpr back to its preset key, or 'custom' if it doesn't match any preset. */
+function presetKeyForCron(cronExpr: string | null | undefined): string {
+  if (!cronExpr) return 'daily02'
+  for (const [key, expr] of Object.entries(CRON_PRESETS)) {
+    if (expr === cronExpr) return key
+  }
+  return 'custom'
+}
+/** Resolves the form's schedule fields into the cronExpr sent to the backend, or null when off. */
+function resolveCronExpr(form: PathConfigForm): string | null {
+  if (!form.scheduleEnabled) return null
+  if (form.cron === 'custom') return form.customCron.trim() || null
+  return CRON_PRESETS[form.cron] ?? null
+}
 
 /** Human-readable schedule summary for a group's header chip; '' when off. */
 function scheduleText(key: string): string {
-  const cfg = pathConfigs.value[key]
-  if (!cfg?.scheduleEnabled) return ''
-  if (cfg.cron === 'custom') return cfg.customCron || t('wiki.pathConfig.cron_custom')
-  return cronLabel(cfg.cron)
-}
-
-const pathConfigs = ref<Record<string, PathConfig>>({})
-const customGroupKeys = ref<string[]>([])
-
-function pathStorageKey(kbId: number): string {
-  return `wiki:rawcfg:${kbId}`
-}
-function loadPathConfigs(kbId: number) {
-  pathConfigs.value = {}
-  customGroupKeys.value = []
-  try {
-    const raw = localStorage.getItem(pathStorageKey(kbId))
-    if (raw) {
-      const data = JSON.parse(raw)
-      pathConfigs.value = data.configs || {}
-      customGroupKeys.value = data.custom || []
-    }
-  } catch { /* ignore corrupt cache */ }
-}
-function savePathConfigs() {
-  if (!store.currentKB) return
-  try {
-    localStorage.setItem(pathStorageKey(store.currentKB.id), JSON.stringify({
-      configs: pathConfigs.value,
-      custom: customGroupKeys.value,
-    }))
-  } catch { /* ignore quota errors */ }
+  const g = findGroupById(key)
+  if (!g?.enabled || !g.cronExpr) return ''
+  const preset = presetKeyForCron(g.cronExpr)
+  return preset === 'custom' ? g.cronExpr : cronLabel(preset)
 }
 
 const pathModalOpen = ref(false)
 const pathModalMode = ref<'edit' | 'add'>('edit')
-const configForm = ref<PathConfig>(defaultConfig())
-const configEditingKey = ref<string | null>(null)
-const configEditingIsCustom = ref(false)
+const configForm = ref<PathConfigForm>(defaultConfig())
+const configEditingGroupId = ref<number | null>(null)
+// Which group to move member raws into when the group being edited is removed;
+// null (the default) means "leave them ungrouped".
+const removeReassignTo = ref<number | null>(null)
+
+/** Every configured group except the one currently being edited — used for the reassign-on-delete dropdown. */
+const otherGroups = computed(() =>
+  store.sourceGroups.filter(g => g.id !== configEditingGroupId.value)
+)
 
 function openConfig(group: { key: string; label: string }) {
-  const key = group.key
-  configEditingKey.value = key
-  configEditingIsCustom.value = key.startsWith('custom:')
+  const g = findGroupById(group.key)
+  if (!g) return
+  configEditingGroupId.value = g.id
+  removeReassignTo.value = null
   pathModalMode.value = 'edit'
-  const stored = pathConfigs.value[key]
-  const base = defaultConfig()
-  base.alias = stored?.alias || (key.startsWith('custom:') ? '' : group.label)
-  base.path = stored?.path || (key === 'SCAN' ? (store.currentKB?.sourceDirectory || '') : '')
-  base.fileFilter = stored?.fileFilter || ''
-  base.scheduleEnabled = stored?.scheduleEnabled ?? false
-  base.cron = stored?.cron || 'daily02'
-  base.customCron = stored?.customCron || ''
-  base.scanMode = stored?.scanMode || 'incr'
-  configForm.value = base
+  const preset = presetKeyForCron(g.cronExpr)
+  configForm.value = {
+    alias: g.alias,
+    path: g.path,
+    fileFilter: g.fileFilter || '',
+    scheduleEnabled: !!g.enabled && !!g.cronExpr,
+    cron: preset === 'custom' ? 'custom' : preset,
+    customCron: preset === 'custom' ? (g.cronExpr || '') : '',
+  }
   pathModalOpen.value = true
 }
 function openAddPath() {
-  configEditingKey.value = null
-  configEditingIsCustom.value = false
+  configEditingGroupId.value = null
   pathModalMode.value = 'add'
   configForm.value = defaultConfig()
   pathModalOpen.value = true
 }
-function saveConfig() {
-  const key = configEditingKey.value
-  if (!key) return
-  pathConfigs.value = { ...pathConfigs.value, [key]: { ...configForm.value } }
-  savePathConfigs()
-  pathModalOpen.value = false
+function validateConfigForm(): boolean {
+  if (!configForm.value.alias.trim() || !configForm.value.path.trim()) {
+    mcToast.error(t('wiki.pathConfig.aliasAndPathRequired'))
+    return false
+  }
+  return true
 }
-function confirmAddPath() {
-  const key = `custom:${Date.now()}`
-  customGroupKeys.value = [...customGroupKeys.value, key]
-  pathConfigs.value = { ...pathConfigs.value, [key]: { ...configForm.value } }
-  savePathConfigs()
-  pathModalOpen.value = false
+async function saveConfig() {
+  if (!store.currentKB || configEditingGroupId.value == null) return
+  if (!validateConfigForm()) return
+  const form = configForm.value
+  try {
+    await store.updateSourceGroup(store.currentKB.id, configEditingGroupId.value, {
+      alias: form.alias.trim(),
+      path: form.path.trim(),
+      fileFilter: form.fileFilter.trim() || null,
+      cronExpr: resolveCronExpr(form),
+      enabled: form.scheduleEnabled,
+    })
+    pathModalOpen.value = false
+  } catch (e: any) {
+    mcToast.error(e?.response?.data?.message || t('wiki.pathConfig.saveFailed'))
+  }
+}
+async function confirmAddPath() {
+  if (!store.currentKB) return
+  if (!validateConfigForm()) return
+  const form = configForm.value
+  try {
+    await store.createSourceGroup(store.currentKB.id, {
+      alias: form.alias.trim(),
+      path: form.path.trim(),
+      fileFilter: form.fileFilter.trim() || null,
+      cronExpr: resolveCronExpr(form),
+      enabled: form.scheduleEnabled,
+    })
+    pathModalOpen.value = false
+  } catch (e: any) {
+    mcToast.error(e?.response?.data?.message || t('wiki.pathConfig.saveFailed'))
+  }
 }
 async function removePath() {
-  const key = configEditingKey.value
-  if (!key) return
+  if (!store.currentKB || configEditingGroupId.value == null) return
   const ok = await mcConfirm({
     title: t('wiki.pathConfig.removePath'),
     message: t('wiki.pathConfig.removeConfirm'),
     tone: 'danger',
   })
   if (!ok) return
-  const cfgs = { ...pathConfigs.value }
-  delete cfgs[key]
-  pathConfigs.value = cfgs
-  if (key.startsWith('custom:')) {
-    customGroupKeys.value = customGroupKeys.value.filter(k => k !== key)
+  try {
+    await store.deleteSourceGroup(store.currentKB.id, configEditingGroupId.value, removeReassignTo.value)
+    pathModalOpen.value = false
+  } catch (e: any) {
+    mcToast.error(e?.response?.data?.message || t('wiki.pathConfig.removeFailed'))
   }
-  savePathConfigs()
-  pathModalOpen.value = false
+}
+
+// ── PR-C: scan / move-to-group actions against the real backend ───────────
+const scanningGroups = reactive<Record<number, boolean>>({})
+async function scanGroup(key: string, mode: 'incremental' | 'full') {
+  if (!store.currentKB) return
+  const g = findGroupById(key)
+  if (!g) return
+  scanningGroups[g.id] = true
+  try {
+    const result: any = await store.scanSourceGroup(store.currentKB.id, g.id, mode)
+    mcToast.success(t('wiki.pathConfig.scanDone', { added: result?.added ?? 0 }))
+  } catch (e: any) {
+    mcToast.error(e?.response?.data?.message || t('wiki.pathConfig.scanFailed'))
+  } finally {
+    delete scanningGroups[g.id]
+  }
+}
+
+async function onBatchMoveSelect(event: Event) {
+  const select = event.target as HTMLSelectElement
+  const val = select.value
+  select.value = ''
+  if (!val || !store.currentKB) return
+  const groupId = val === UNGROUPED_KEY ? null : Number(val)
+  const ids = Array.from(selectedIds.value)
+  try {
+    await store.batchUpdateRawGroup(store.currentKB.id, ids, groupId)
+    clearSelection()
+  } catch (e: any) {
+    mcToast.error(e?.response?.data?.message || t('wiki.sources.moveFailed'))
+  }
+}
+
+async function onRowMoveSelect(rawId: number, event: Event) {
+  if (!store.currentKB) return
+  const val = (event.target as HTMLSelectElement).value
+  const groupId = val === UNGROUPED_KEY ? null : Number(val)
+  try {
+    await store.updateRawGroup(store.currentKB.id, rawId, groupId)
+  } catch (e: any) {
+    mcToast.error(e?.response?.data?.message || t('wiki.sources.moveFailed'))
+  }
 }
 
 // ── Phase 5: File preview modal ───────────────────────────────────────────
@@ -1336,7 +1429,6 @@ async function toggleWatcher(next: boolean) {
 watch(() => store.currentKB?.id, (id) => {
   if (id) {
     void loadWatcher(id as number)
-    loadPathConfigs(id as number)
   }
 }, { immediate: true })
 

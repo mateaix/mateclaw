@@ -3,8 +3,10 @@ package vip.mate.wiki.service;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import lombok.RequiredArgsConstructor;
+import org.springframework.scheduling.support.CronExpression;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import vip.mate.exception.MateClawException;
 import vip.mate.wiki.model.WikiKnowledgeBaseEntity;
 import vip.mate.wiki.model.WikiSourceGroupEntity;
 import vip.mate.wiki.repository.WikiSourceGroupMapper;
@@ -45,8 +47,10 @@ public class WikiSourceGroupService {
 
     @Transactional
     public WikiSourceGroupEntity create(Long kbId, String alias, String path, String fileFilter,
-                                         String scanMode, String cronExpr, Boolean enabled) {
+                                         String cronExpr, Boolean enabled) {
         pathValidator.validatePatternBase(path);
+        validateCronExpr(cronExpr);
+        assertAliasAvailable(kbId, alias, null);
         WikiKnowledgeBaseEntity kb = kbService.getById(kbId);
         WikiSourceGroupEntity group = new WikiSourceGroupEntity();
         group.setKbId(kbId);
@@ -54,7 +58,6 @@ public class WikiSourceGroupService {
         group.setAlias(alias);
         group.setPath(path);
         group.setFileFilter(fileFilter);
-        group.setScanMode(scanMode == null || scanMode.isBlank() ? "incremental" : scanMode);
         group.setCronExpr(cronExpr);
         group.setEnabled(enabled == null || enabled ? 1 : 0);
         groupMapper.insert(group);
@@ -63,21 +66,20 @@ public class WikiSourceGroupService {
 
     @Transactional
     public WikiSourceGroupEntity update(WikiSourceGroupEntity group, String alias, String path, String fileFilter,
-                                         String scanMode, String cronExpr, Boolean enabled) {
+                                         String cronExpr, Boolean enabled) {
         if (path != null) {
             pathValidator.validatePatternBase(path);
             group.setPath(path);
         }
         if (alias != null) {
+            assertAliasAvailable(group.getKbId(), alias, group.getId());
             group.setAlias(alias);
         }
         if (fileFilter != null) {
             group.setFileFilter(fileFilter);
         }
-        if (scanMode != null) {
-            group.setScanMode(scanMode);
-        }
         if (cronExpr != null) {
+            validateCronExpr(cronExpr);
             group.setCronExpr(cronExpr);
         }
         if (enabled != null) {
@@ -85,6 +87,27 @@ public class WikiSourceGroupService {
         }
         groupMapper.updateById(group);
         return group;
+    }
+
+    private void validateCronExpr(String cronExpr) {
+        if (cronExpr == null || cronExpr.isBlank()) {
+            return;
+        }
+        try {
+            CronExpression.parse(cronExpr);
+        } catch (IllegalArgumentException e) {
+            throw new MateClawException(400, "Cron 表达式非法: " + e.getMessage());
+        }
+    }
+
+    private void assertAliasAvailable(Long kbId, String alias, Long excludeGroupId) {
+        Long count = groupMapper.selectCount(new LambdaQueryWrapper<WikiSourceGroupEntity>()
+                .eq(WikiSourceGroupEntity::getKbId, kbId)
+                .eq(WikiSourceGroupEntity::getAlias, alias)
+                .ne(excludeGroupId != null, WikiSourceGroupEntity::getId, excludeGroupId));
+        if (count != null && count > 0) {
+            throw new MateClawException(400, "分组别名已存在: " + alias);
+        }
     }
 
     /**
