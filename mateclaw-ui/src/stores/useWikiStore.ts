@@ -42,15 +42,19 @@ export interface WikiRawMaterial {
   // Page count derived from sourceRawIds (injected by listRaw endpoint)
   pageCount?: number
   // Source group this raw belongs to; null = ungrouped (legacy/manual raw).
-  groupId: number | null
+  // Snowflake ID — backend serializes Long as string (ToStringSerializer), so
+  // this arrives as a string at runtime despite the numeric-looking type.
+  groupId: number | string | null
   // Path/glob this raw was scanned from, when it came from a source group.
   sourcePath?: string | null
 }
 
 /** A configured scan source: one path/glob under a KB, with its own alias and schedule. */
 export interface WikiSourceGroup {
-  id: number
-  kbId: number
+  // Snowflake IDs — backend serializes Long as string; keep the union so
+  // v-model/select values round-trip without precision-losing Number() coercion.
+  id: number | string
+  kbId: number | string
   alias: string
   path: string
   fileFilter: string | null
@@ -318,7 +322,7 @@ export const useWikiStore = defineStore('wiki', () => {
     return res.data || res
   }
 
-  async function updateSourceGroup(kbId: number, groupId: number, data: {
+  async function updateSourceGroup(kbId: number, groupId: number | string, data: {
     alias?: string | null
     path?: string | null
     fileFilter?: string | null
@@ -331,23 +335,23 @@ export const useWikiStore = defineStore('wiki', () => {
   }
 
   /** reassignTo: target groupId to move member raws into, or null/undefined to leave them ungrouped. */
-  async function deleteSourceGroup(kbId: number, groupId: number, reassignTo?: number | null) {
+  async function deleteSourceGroup(kbId: number, groupId: number | string, reassignTo?: number | string | null) {
     await wikiApi.deleteSourceGroup(kbId, groupId, reassignTo)
     await Promise.all([fetchSourceGroups(kbId), fetchRawMaterials(kbId)])
   }
 
-  async function scanSourceGroup(kbId: number, groupId: number, mode: 'incremental' | 'full' = 'incremental') {
+  async function scanSourceGroup(kbId: number, groupId: number | string, mode: 'incremental' | 'full' = 'incremental') {
     const res: any = await wikiApi.scanSourceGroup(kbId, groupId, mode)
     await Promise.all([fetchSourceGroups(kbId), fetchRawMaterials(kbId)])
     return res.data || res
   }
 
-  async function updateRawGroup(kbId: number, rawId: number, groupId: number | null) {
+  async function updateRawGroup(kbId: number, rawId: number, groupId: number | string | null) {
     await wikiApi.updateRawGroup(kbId, rawId, groupId)
     await Promise.all([fetchRawMaterials(kbId), fetchSourceGroups(kbId)])
   }
 
-  async function batchUpdateRawGroup(kbId: number, rawIds: number[], groupId: number | null) {
+  async function batchUpdateRawGroup(kbId: number, rawIds: number[], groupId: number | string | null) {
     await wikiApi.batchUpdateRawGroup(kbId, rawIds, groupId)
     await Promise.all([fetchRawMaterials(kbId), fetchSourceGroups(kbId)])
   }
