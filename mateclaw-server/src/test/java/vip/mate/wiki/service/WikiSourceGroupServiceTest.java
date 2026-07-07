@@ -3,6 +3,7 @@ package vip.mate.wiki.service;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import vip.mate.exception.MateClawException;
 import vip.mate.wiki.model.WikiKnowledgeBaseEntity;
 import vip.mate.wiki.model.WikiSourceGroupEntity;
 import vip.mate.wiki.repository.WikiSourceGroupMapper;
@@ -50,12 +51,11 @@ class WikiSourceGroupServiceTest {
     @Test
     @DisplayName("create: validates the path and denormalizes workspaceId from the KB")
     void create_validatesPathAndDenormalizesWorkspace() {
-        WikiSourceGroupEntity group = service.create(KB_ID, "docs", "/data/docs", null, null, null, null);
+        WikiSourceGroupEntity group = service.create(KB_ID, "docs", "/data/docs", null, null, null);
 
         verify(pathValidator).validatePatternBase("/data/docs");
         assertEquals(KB_ID, group.getKbId());
         assertEquals(7L, group.getWorkspaceId());
-        assertEquals("incremental", group.getScanMode(), "blank scanMode defaults to incremental");
         assertEquals(1, group.getEnabled(), "null enabled defaults to on");
         verify(groupMapper).insert(group);
     }
@@ -67,7 +67,29 @@ class WikiSourceGroupServiceTest {
                 .when(pathValidator).validatePatternBase(anyString());
 
         assertThrows(IllegalArgumentException.class,
-                () -> service.create(KB_ID, "docs", "/etc", null, null, null, null));
+                () -> service.create(KB_ID, "docs", "/etc", null, null, null));
+        verify(groupMapper, never()).insert(any());
+    }
+
+    @Test
+    @DisplayName("create: rejects an invalid cron expression with a 400")
+    void create_invalidCronExprThrows() {
+        MateClawException ex = assertThrows(MateClawException.class,
+                () -> service.create(KB_ID, "docs", "/data/docs", null, "not a cron", null));
+
+        assertEquals(400, ex.getCode());
+        verify(groupMapper, never()).insert(any());
+    }
+
+    @Test
+    @DisplayName("create: rejects a duplicate alias within the same KB")
+    void create_duplicateAliasThrows() {
+        when(groupMapper.selectCount(any())).thenReturn(1L);
+
+        MateClawException ex = assertThrows(MateClawException.class,
+                () -> service.create(KB_ID, "docs", "/data/docs", null, null, null));
+
+        assertEquals(400, ex.getCode());
         verify(groupMapper, never()).insert(any());
     }
 
@@ -79,10 +101,9 @@ class WikiSourceGroupServiceTest {
         existing.setKbId(KB_ID);
         existing.setAlias("old-alias");
         existing.setPath("/data/old");
-        existing.setScanMode("incremental");
         existing.setEnabled(1);
 
-        WikiSourceGroupEntity updated = service.update(existing, null, null, null, null, null, false);
+        WikiSourceGroupEntity updated = service.update(existing, null, null, null, null, false);
 
         assertEquals("old-alias", updated.getAlias(), "null alias leaves existing value untouched");
         assertEquals("/data/old", updated.getPath());

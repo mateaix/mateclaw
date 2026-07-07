@@ -366,7 +366,7 @@ public class WikiController {
         verifyKBWorkspace(kbId, workspaceId);
         try {
             WikiSourceGroupEntity group = sourceGroupService.create(kbId, req.alias(), req.path(), req.fileFilter(),
-                    req.scanMode(), req.cronExpr(), req.enabled());
+                    req.cronExpr(), req.enabled());
             return R.ok(toSourceGroupVO(group, Map.of()));
         } catch (IllegalArgumentException e) {
             return R.fail(400, e.getMessage());
@@ -386,7 +386,7 @@ public class WikiController {
         }
         try {
             group = sourceGroupService.update(group, req.alias(), req.path(), req.fileFilter(),
-                    req.scanMode(), req.cronExpr(), req.enabled());
+                    req.cronExpr(), req.enabled());
             return R.ok(toSourceGroupVO(group, sourceGroupService.countRawByKbId(kbId)));
         } catch (IllegalArgumentException e) {
             return R.fail(400, e.getMessage());
@@ -479,7 +479,7 @@ public class WikiController {
     private SourceGroupVO toSourceGroupVO(WikiSourceGroupEntity group, Map<Long, Long> rawCounts) {
         Long rawCount = rawCounts.getOrDefault(group.getId(), 0L);
         return new SourceGroupVO(group.getId(), group.getKbId(), group.getAlias(), group.getPath(),
-                group.getFileFilter(), group.getScanMode(), group.getCronExpr(), group.getEnabled(),
+                group.getFileFilter(), group.getCronExpr(), group.getEnabled(),
                 rawCount, group.getLastScanAt());
     }
 

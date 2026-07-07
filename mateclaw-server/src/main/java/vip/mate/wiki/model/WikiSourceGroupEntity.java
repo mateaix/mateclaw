@@ -32,9 +32,6 @@ public class WikiSourceGroupEntity {
     /** 可选的扩展名/glob 过滤器；null = 沿用 WikiDirectoryScanService 的默认支持扩展名 */
     private String fileFilter;
 
-    /** incremental（默认）| full，见 WikiDirectoryScanService#scanGroup */
-    private String scanMode;
-
     /** 可选的 cron 表达式，供后续定时调度使用；本轮先落库不接调度器 */
     private String cronExpr;
 
@@ -50,5 +47,6 @@ public class WikiSourceGroupEntity {
     @TableField(fill = FieldFill.INSERT_UPDATE)
     private LocalDateTime updateTime;
 
+    @TableLogic
     private Integer deleted;
 }
