@@ -144,6 +144,28 @@ class WorkspaceBoundaryGuardianTest {
         assertTrue(guardian.evaluate(write(WORKSPACE + "/notes.txt", WORKSPACE)).isEmpty());
     }
 
+    @Test
+    @DisplayName("write_file with a relative path resolves against the workspace, not the process CWD (issue #494)")
+    void writeRelativePath_pass() {
+        // Regression for #494: a plain relative path like "./foo.html" was
+        // resolved against the JVM launch directory via toAbsolutePath(), so it
+        // fell outside the workspace whenever the server ran from elsewhere and
+        // tripped a spurious CRITICAL "工作区越界" block. It must resolve into
+        // the workspace and pass.
+        assertTrue(guardian.evaluate(write("./fiber-signal-architecture.html", WORKSPACE)).isEmpty());
+        assertTrue(guardian.evaluate(write("notes/todo.md", WORKSPACE)).isEmpty());
+        assertTrue(guardian.evaluate(write("report.txt", WORKSPACE)).isEmpty());
+    }
+
+    @Test
+    @DisplayName("write_file with a relative traversal that climbs out is still blocked")
+    void writeRelativeTraversal_blocked() {
+        // The fix must not weaken the boundary: "../escape.txt" normalizes to a
+        // path outside the workspace root and stays blocked.
+        assertBlocked(guardian.evaluate(write("../escape.txt", WORKSPACE)));
+        assertBlocked(guardian.evaluate(write("../../etc/evil.conf", WORKSPACE)));
+    }
+
     // ==================== Default-root fallback & escape hatch ====================
 
     @Test
