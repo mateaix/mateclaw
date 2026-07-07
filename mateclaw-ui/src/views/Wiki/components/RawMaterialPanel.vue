@@ -277,20 +277,20 @@
           <div v-if="canManageWiki && group.key !== UNGROUPED_KEY" class="group-actions" @click.stop>
             <button
               class="btn-icon group-scan-btn"
-              :class="{ 'is-scanning': scanningGroups[Number(group.key)] }"
-              :disabled="scanningGroups[Number(group.key)]"
+              :class="{ 'is-scanning': scanningGroups[group.key] }"
+              :disabled="scanningGroups[group.key]"
               :title="t('wiki.pathConfig.scanIncremental')"
               @click="scanGroup(group.key, 'incremental')"
             >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" :class="{ spinner: scanningGroups[Number(group.key)] }">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" :class="{ spinner: scanningGroups[group.key] }">
                 <polyline points="23 4 23 10 17 10"/>
                 <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
               </svg>
             </button>
             <button
               class="btn-icon group-scan-btn"
-              :class="{ 'is-scanning': scanningGroups[Number(group.key)] }"
-              :disabled="scanningGroups[Number(group.key)]"
+              :class="{ 'is-scanning': scanningGroups[group.key] }"
+              :disabled="scanningGroups[group.key]"
               :title="t('wiki.pathConfig.scanFull')"
               @click="scanGroup(group.key, 'full')"
             >
@@ -935,10 +935,12 @@ function scheduleText(key: string): string {
 const pathModalOpen = ref(false)
 const pathModalMode = ref<'edit' | 'add'>('edit')
 const configForm = ref<PathConfigForm>(defaultConfig())
-const configEditingGroupId = ref<number | null>(null)
+// Snowflake ID — backend serializes Long as string; keep the union so this
+// never gets routed through a Number() coercion (precision loss on real IDs).
+const configEditingGroupId = ref<number | string | null>(null)
 // Which group to move member raws into when the group being edited is removed;
 // null (the default) means "leave them ungrouped".
-const removeReassignTo = ref<number | null>(null)
+const removeReassignTo = ref<number | string | null>(null)
 
 /** Every configured group except the one currently being edited — used for the reassign-on-delete dropdown. */
 const otherGroups = computed(() =>
@@ -1026,19 +1028,20 @@ async function removePath() {
 }
 
 // ── PR-C: scan / move-to-group actions against the real backend ───────────
-const scanningGroups = reactive<Record<number, boolean>>({})
+// Keyed by the group's string key (see groupKeyOf), not a coerced numeric ID.
+const scanningGroups = reactive<Record<string, boolean>>({})
 async function scanGroup(key: string, mode: 'incremental' | 'full') {
   if (!store.currentKB) return
   const g = findGroupById(key)
   if (!g) return
-  scanningGroups[g.id] = true
+  scanningGroups[key] = true
   try {
     const result: any = await store.scanSourceGroup(store.currentKB.id, g.id, mode)
     mcToast.success(t('wiki.pathConfig.scanDone', { added: result?.added ?? 0 }))
   } catch (e: any) {
     mcToast.error(e?.response?.data?.message || t('wiki.pathConfig.scanFailed'))
   } finally {
-    delete scanningGroups[g.id]
+    delete scanningGroups[key]
   }
 }
 
@@ -1047,7 +1050,9 @@ async function onBatchMoveSelect(event: Event) {
   const val = select.value
   select.value = ''
   if (!val || !store.currentKB) return
-  const groupId = val === UNGROUPED_KEY ? null : Number(val)
+  // val is a Snowflake ID string straight from the <option> value — do not
+  // run it through Number(), which silently loses precision above 2^53.
+  const groupId = val === UNGROUPED_KEY ? null : val
   const ids = Array.from(selectedIds.value)
   try {
     await store.batchUpdateRawGroup(store.currentKB.id, ids, groupId)
@@ -1060,7 +1065,7 @@ async function onBatchMoveSelect(event: Event) {
 async function onRowMoveSelect(rawId: number, event: Event) {
   if (!store.currentKB) return
   const val = (event.target as HTMLSelectElement).value
-  const groupId = val === UNGROUPED_KEY ? null : Number(val)
+  const groupId = val === UNGROUPED_KEY ? null : val
   try {
     await store.updateRawGroup(store.currentKB.id, rawId, groupId)
   } catch (e: any) {

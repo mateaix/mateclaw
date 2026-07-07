@@ -843,9 +843,11 @@ export const wikiApi = {
     http.get<Blob>(`/wiki/knowledge-bases/${kbId}/raw/${rawId}/download`, {
       responseType: 'blob',
     }),
-  updateRawGroup: (kbId: number, rawId: number, groupId: number | null) =>
+  // groupId/rawId are Snowflake IDs — backend serializes Long as string, so
+  // keep the number|string union and never coerce these through Number().
+  updateRawGroup: (kbId: number, rawId: number, groupId: number | string | null) =>
     http.patch(`/wiki/knowledge-bases/${kbId}/raw/${rawId}/group`, { groupId }),
-  batchUpdateRawGroup: (kbId: number, rawIds: number[], groupId: number | null) =>
+  batchUpdateRawGroup: (kbId: number, rawIds: number[], groupId: number | string | null) =>
     http.patch(`/wiki/knowledge-bases/${kbId}/raw/group`, { rawIds, groupId }),
 
   // Source Groups
@@ -859,7 +861,7 @@ export const wikiApi = {
     enabled?: boolean | null
   }) =>
     http.post(`/wiki/knowledge-bases/${kbId}/source-groups`, data),
-  updateSourceGroup: (kbId: number, groupId: number, data: {
+  updateSourceGroup: (kbId: number, groupId: number | string, data: {
     alias?: string | null
     path?: string | null
     fileFilter?: string | null
@@ -867,11 +869,11 @@ export const wikiApi = {
     enabled?: boolean | null
   }) =>
     http.put(`/wiki/knowledge-bases/${kbId}/source-groups/${groupId}`, data),
-  deleteSourceGroup: (kbId: number, groupId: number, reassignTo?: number | null) =>
+  deleteSourceGroup: (kbId: number, groupId: number | string, reassignTo?: number | string | null) =>
     http.delete(`/wiki/knowledge-bases/${kbId}/source-groups/${groupId}`, {
       params: reassignTo != null ? { reassignTo } : undefined,
     }),
-  scanSourceGroup: (kbId: number, groupId: number, mode: 'incremental' | 'full' = 'incremental') =>
+  scanSourceGroup: (kbId: number, groupId: number | string, mode: 'incremental' | 'full' = 'incremental') =>
     http.post(`/wiki/knowledge-bases/${kbId}/source-groups/${groupId}/scan`, undefined, { params: { mode } }),
 
   // Wiki Pages
