@@ -253,6 +253,21 @@ public final class MateClawStateAccessor {
         return state.<Set<String>>value(ENABLED_EXTENSION_TOOLS).orElse(Set.of());
     }
 
+    // ===== Tool-call loop guard =====
+
+    /**
+     * Loop-guard counters accumulated so far this run. Empty at run start.
+     */
+    @SuppressWarnings("unchecked")
+    public java.util.Map<String, Object> toolLoopStats() {
+        return state.<java.util.Map<String, Object>>value(TOOL_LOOP_STATS).orElse(java.util.Map.of());
+    }
+
+    /** Whether the one-shot post-mutation verification reminder was already injected this run. */
+    public boolean mutationReminderInjected() {
+        return state.value(MUTATION_REMINDER_INJECTED, false);
+    }
+
     // ===== Token Usage =====
 
     public int promptTokens() {
@@ -526,6 +541,15 @@ public final class MateClawStateAccessor {
         // ---- Tool progressive disclosure ----
         public OutputBuilder enabledExtensionTools(Set<String> names) {
             return put(ENABLED_EXTENSION_TOOLS, names);
+        }
+
+        // ---- Tool-call loop guard ----
+        public OutputBuilder toolLoopStats(java.util.Map<String, Object> stats) {
+            return put(TOOL_LOOP_STATS, stats);
+        }
+
+        public OutputBuilder mutationReminderInjected(boolean injected) {
+            return put(MUTATION_REMINDER_INJECTED, injected);
         }
 
         // ---- Token Usage ----

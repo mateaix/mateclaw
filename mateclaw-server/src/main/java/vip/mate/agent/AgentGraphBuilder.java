@@ -741,6 +741,12 @@ public class AgentGraphBuilder {
                     // Tool progressive disclosure — extensions enabled this run.
                     // Registered in BOTH graphs for the same merge-safety reason.
                     .addStrategy(MateClawStateKeys.ENABLED_EXTENSION_TOOLS, KeyStrategy.REPLACE)
+                    // Tool-call loop guard counters + one-shot post-mutation
+                    // verification reminder flag. Read-merge-write by
+                    // ObservationNode; registered in BOTH graphs so the
+                    // counters survive multi-node merges.
+                    .addStrategy(MateClawStateKeys.TOOL_LOOP_STATS, KeyStrategy.REPLACE)
+                    .addStrategy(MateClawStateKeys.MUTATION_REMINDER_INJECTED, KeyStrategy.REPLACE)
                     .build();
 
             // Graph 拓扑：
@@ -1067,6 +1073,12 @@ public class AgentGraphBuilder {
                     // Tool progressive disclosure — extensions enabled this run.
                     // Registered in BOTH graphs for the same merge-safety reason.
                     .addStrategy(MateClawStateKeys.ENABLED_EXTENSION_TOOLS, KeyStrategy.REPLACE)
+                    // Tool-call loop guard counters + one-shot post-mutation
+                    // verification reminder flag. Read-merge-write by
+                    // ObservationNode; registered in BOTH graphs so the
+                    // counters survive multi-node merges.
+                    .addStrategy(MateClawStateKeys.TOOL_LOOP_STATS, KeyStrategy.REPLACE)
+                    .addStrategy(MateClawStateKeys.MUTATION_REMINDER_INJECTED, KeyStrategy.REPLACE)
                     .build();
 
             GoalEvaluationNode goalEvalNode = new GoalEvaluationNode(
