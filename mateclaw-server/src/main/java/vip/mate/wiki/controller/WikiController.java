@@ -679,6 +679,7 @@ public class WikiController {
             item.put("kbId", raw.getKbId());
             item.put("title", raw.getTitle());
             item.put("sourceType", raw.getSourceType());
+            item.put("fileSize", raw.getFileSize());
             item.put("processingStatus", raw.getProcessingStatus());
             item.put("errorCode", raw.getErrorCode());
             item.put("errorMessage", raw.getErrorMessage());
