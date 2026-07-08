@@ -2594,11 +2594,6 @@ export default {
     configPlaceholder: '在此编辑 Wiki 处理规则...',
     pageCount: '{count} 页',
     sourceCount: '{count} 份材料',
-    dirPlaceholder: '输入本地目录路径，如 /Users/me/docs',
-    scan: '扫描',
-    scanning: '扫描中...',
-    scanResult: '已扫描 {scanned} 个文件，新增 {added} 个，跳过 {skipped} 个',
-    scanFailed: '扫描失败',
     saving: '保存中...',
     sourceType: {
       UPLOAD: '上传文件',
