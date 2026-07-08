@@ -88,6 +88,20 @@ class WorkspacePathGuardSandboxTest {
         }
 
         @Test
+        @DisplayName("validatePath: a relative path resolves into the default root, not the process CWD (issue #494)")
+        void validatePathRelative_resolvesIntoRoot() {
+            // A plain relative path must land inside the sandbox and return a
+            // path rooted there — not one resolved against the JVM launch dir.
+            java.nio.file.Path resolved = WorkspacePathGuard.validatePath("./report.html");
+            org.junit.jupiter.api.Assertions.assertTrue(
+                    resolved.startsWith(java.nio.file.Paths.get(DEFAULT_ROOT)),
+                    "relative path should resolve inside the root, got: " + resolved);
+            // A relative traversal that climbs out is still rejected.
+            assertThrows(IllegalArgumentException.class, () ->
+                    WorkspacePathGuard.validatePath("../escape.txt"));
+        }
+
+        @Test
         @DisplayName("Per-conversation workspace still takes precedence over the default root")
         void conversationWorkspace_wins() {
             ToolExecutionContext.set("conv", "user", WORKSPACE);

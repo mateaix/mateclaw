@@ -155,6 +155,12 @@ public final class MateClawStateKeys {
     // ===== Token Usage 累计（REPLACE 策略，节点内累加后写回）=====
     public static final String PROMPT_TOKENS = "prompt_tokens";
     public static final String COMPLETION_TOKENS = "completion_tokens";
+    /** Prompt cache 命中 tokens 累计（provider 未上报时保持 0） */
+    public static final String CACHE_READ_TOKENS = "cache_read_tokens";
+    /** Prompt cache 写入 tokens 累计（provider 未上报时保持 0） */
+    public static final String CACHE_WRITE_TOKENS = "cache_write_tokens";
+    /** 思考（reasoning）tokens 累计（provider 未上报时保持 0） */
+    public static final String REASONING_TOKENS = "reasoning_tokens";
 
     // ===== 运行时模型快照（REPLACE 策略，buildInitialState 注入）=====
     public static final String RUNTIME_MODEL_NAME = "runtime_model_name";
@@ -296,4 +302,29 @@ public final class MateClawStateKeys {
      * {@link #LOADED_SKILLS}).
      */
     public static final String ENABLED_EXTENSION_TOOLS = "enabled_extension_tools";
+
+    // ===== Tool-call loop guard (REPLACE strategy) =====
+
+    /**
+     * Per-run counters for the tool-call loop guard: repeated identical-argument
+     * failures, per-tool failure totals, and consecutive no-progress results
+     * from idempotent read-only tools. Stored as a {@code Map<String, Object>}
+     * keyed by detector-prefixed signatures; ObservationNode reads the prior
+     * map and writes back the updated one each observation round
+     * (read-merge-write under REPLACE). Implicitly empty at run start, so the
+     * counters reset naturally between graph runs.
+     * <p>
+     * MUST be registered in both KeyStrategyFactory blocks (see
+     * {@link #LOADED_SKILLS}).
+     */
+    public static final String TOOL_LOOP_STATS = "tool_loop_stats";
+
+    /**
+     * True once the one-shot post-mutation verification reminder has been
+     * injected into an observation this run. The reminder asks the model to
+     * verify a successful file mutation (run tests / re-read the file) before
+     * declaring the task complete; injecting it at most once per run keeps
+     * multi-file tasks from being spammed. REPLACE strategy.
+     */
+    public static final String MUTATION_REMINDER_INJECTED = "mutation_reminder_injected";
 }

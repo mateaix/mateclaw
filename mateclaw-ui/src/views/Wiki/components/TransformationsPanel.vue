@@ -345,7 +345,6 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { mcToast } from '@/composables/useMcToast'
-import { ElIcon } from 'element-plus'
 import { Loading, WarningFilled } from '@element-plus/icons-vue'
 import { wikiApi, modelApi } from '@/api/index'
 import { useWikiStore, type WikiRawMaterial } from '@/stores/useWikiStore'

@@ -366,4 +366,25 @@ public final class GraphEventPublisher {
         data.put("timestamp", ts);
         return new GraphEvent(EVENT_ITERATION_END, Map.copyOf(data), ts);
     }
+
+    // ===== Warning events =====
+
+    public static final String EVENT_WARNING = "warning";
+
+    /**
+     * A user-visible runtime warning. The stream accumulator folds
+     * {@code message} into the assistant message's {@code metadata.warnings}
+     * (persisted) and rebroadcasts the event live on SSE, so the chat UI can
+     * render a warning chip both during streaming and on history reload.
+     * {@code source} lets consumers group or filter warnings by origin
+     * (e.g. {@code "loop_guard"}).
+     */
+    public static GraphEvent warning(String message, String source) {
+        long ts = System.currentTimeMillis();
+        return new GraphEvent(EVENT_WARNING, Map.of(
+                "message", message != null ? message : "",
+                "source", source != null ? source : "",
+                "timestamp", ts
+        ), ts);
+    }
 }

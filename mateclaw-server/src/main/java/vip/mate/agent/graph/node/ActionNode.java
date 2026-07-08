@@ -19,11 +19,24 @@ import java.util.concurrent.CancellationException;
 import static vip.mate.agent.graph.state.MateClawStateKeys.*;
 
 /**
- * 工具执行节点（ReAct Action 阶段）
+ * Tool-execution node (the ReAct Action phase).
  * <p>
- * 委托 {@link ToolExecutionExecutor} 执行工具调用，支持并发执行和审批 barrier。
+ * Delegates tool-call execution to {@link ToolExecutionExecutor}, supporting
+ * concurrent execution and the approval barrier.
  * <p>
- * 支持 forced_replay 阶段：当审批通过后的重放调用到达时，跳过 ToolGuard 检查直接执行。
+ * Supports the forced_replay phase: when an approved replay call arrives, it
+ * skips the ToolGuard check and executes directly.
+ *
+ * <p>B2: when a {@code load_skill} call is detected, the skill manifest's
+ * {@code constraints} are extracted and written to the ProgressLedger's pinned
+ * entries, so the constraints stay visible for the whole conversation — never
+ * overwritten by the LLM's progress_update, never trimmed by context compression.
+ *
+ * <p>B5: after a tool call succeeds, the ProgressLedger is auto-backfilled so the
+ * LLM sees the completed tool-call record on the next turn even without calling
+ * progress_update. Auto-recorded entries are capped
+ * ({@link ProgressLedgerService#MAX_AUTO_RECORDED}) and never overwrite entries
+ * the LLM already wrote.
  *
  * @author MateClaw Team
  */
@@ -38,8 +51,26 @@ public class ActionNode implements NodeAction {
     /** Function name of the extension-tool activator, mirrored from EnableExtensionTool. */
     private static final String ENABLE_TOOL = "enable_tool";
 
+    /** Function name of the progress-update tool — skip auto-recording it. */
+    private static final String PROGRESS_UPDATE_TOOL = "progress_update";
+
+    /**
+     * Tools whose results should NOT be auto-recorded into the ledger.
+     * Meta-tools (load_skill, enable_tool, progress_update) either have
+     * their own ledger side-effects or are the ledger itself.
+     */
+    private static final Set<String> AUTO_RECORD_SKIP = Set.of(
+            LOAD_SKILL_TOOL, ENABLE_TOOL, PROGRESS_UPDATE_TOOL,
+            "listAvailableSkills", "readSkillFile", "runSkillScript"
+    );
+
     private final ToolExecutionExecutor executor;
     private final vip.mate.channel.web.ChatStreamTracker streamTracker;
+
+    /** Optional — B2: extract constraints from skill manifest on load_skill. */
+    private vip.mate.skill.runtime.SkillRuntimeService skillRuntimeService;
+    /** Optional — B2/B5: write pinned + auto-recorded entries. */
+    private vip.mate.agent.progress.ProgressLedgerService progressLedgerService;
 
     public ActionNode(ToolExecutionExecutor executor) {
         this(executor, null);
@@ -48,6 +79,16 @@ public class ActionNode implements NodeAction {
     public ActionNode(ToolExecutionExecutor executor, vip.mate.channel.web.ChatStreamTracker streamTracker) {
         this.executor = executor;
         this.streamTracker = streamTracker;
+    }
+
+    /** Setter injection so existing constructors stay source-compatible. */
+    public void setSkillRuntimeService(vip.mate.skill.runtime.SkillRuntimeService s) {
+        this.skillRuntimeService = s;
+    }
+
+    /** Setter injection so existing constructors stay source-compatible. */
+    public void setProgressLedgerService(vip.mate.agent.progress.ProgressLedgerService s) {
+        this.progressLedgerService = s;
     }
 
     @Override
@@ -88,14 +129,6 @@ public class ActionNode implements NodeAction {
                 .responses(result.responses())
                 .build();
 
-        // Use the executor's raw-stage ledger instead of re-parsing the
-        // spill-compacted responses. ToolExecutionExecutor builds this
-        // ledger from the full pre-truncate text, so a 30 KB grep result
-        // whose head/tail-cut version no longer mentions a path will still
-        // contribute that path to the evidence pool. Falls back to empty
-        // for legacy executor stubs (tests, mocks) that didn't populate
-        // the new field — fine, the merge with `accessor.sourceEvidenceLedger`
-        // is no-op in that case.
         SourceEvidenceLedger rawLedger = result.rawEvidenceLedger() != null
                 ? result.rawEvidenceLedger()
                 : SourceEvidenceLedger.empty();
@@ -112,19 +145,6 @@ public class ActionNode implements NodeAction {
         }
 
         // RFC-052: any returnDirect tool in this batch ⇒ short-circuit the graph.
-        // ObservationDispatcher will route to FinalAnswerNode (skipping the next
-        // LLM call). Direct outputs and the trigger flag both live in state so
-        // FinalAnswerNode can assemble the final answer verbatim.
-        //
-        // Priority guard: when an approval barrier ALSO fires in the same batch
-        // (a direct tool ran successfully BEFORE a sibling tool that needed
-        // approval), let the approval flow win. Otherwise the user would see a
-        // "RETURN_DIRECT" final answer while an approval modal is still open
-        // for the unresolved sibling — a confusing dual-track state. After the
-        // user resolves the approval, the replay path will re-execute and the
-        // direct tool's content reaches the user via the streamedContent path
-        // instead. Same-batch direct+approval is rare; we explicitly defer to
-        // approval for safety.
         if (result.hasDirectOutputs() && !result.awaitingApproval()) {
             output.returnDirectTriggered(true);
             output.directToolOutputs(result.directOutputs());
@@ -144,20 +164,20 @@ public class ActionNode implements NodeAction {
         }
 
         // Pin skills the model loaded this run so the next reasoning turn's
-        // catalog ranks them first and the model stops re-loading the same
-        // skill it already pulled into message history. Tools cannot mutate
-        // graph state directly, so the load is detected here from the tool
-        // calls and merged into LOADED_SKILLS (read-merge-write, REPLACE key).
+        // catalog ranks them first.
         Set<String> requestedSkills = extractLoadedSkillNames(toolCalls);
         if (!requestedSkills.isEmpty()) {
             Set<String> merged = new LinkedHashSet<>(accessor.loadedSkills());
             if (merged.addAll(requestedSkills)) {
                 output.loadedSkills(Set.copyOf(merged));
             }
+            // B2: extract structured constraints from loaded skills' manifests
+            // and pin them into the ProgressLedger so they survive context
+            // compression and stay visible on every turn.
+            pinSkillConstraints(conversationId, requestedSkills);
         }
 
-        // Same mechanism for enable_tool: record the activated extension tools so
-        // ReasoningNode's next turn adds them back to the advertised callbacks.
+        // Same mechanism for enable_tool
         Set<String> enabledTools = extractEnabledToolNames(toolCalls);
         if (!enabledTools.isEmpty()) {
             Set<String> merged = new LinkedHashSet<>(accessor.enabledExtensionTools());
@@ -166,15 +186,134 @@ public class ActionNode implements NodeAction {
             }
         }
 
+        // B5: auto-record successful tool calls into the ledger so the LLM
+        // sees what it already did even if it forgot to call progress_update.
+        // Skips meta-tools (load_skill, enable_tool, progress_update) and
+        // doesn't overwrite LLM-authored entries.
+        autoRecordToolCalls(conversationId, result.responses());
+
         return output.build();
     }
 
+    // ==================== B2: Pin skill constraints ====================
+
     /**
-     * Extract the {@code toolName} argument of every {@code enable_tool} call in
-     * this batch. Like {@link #extractLoadedSkillNames}, an unknown name is
-     * harmless: the reasoning-node split only activates names that resolve to an
-     * extension-tier tool actually in the agent's set.
+     * For each loaded skill, extract the manifest's {@code constraints} list
+     * and write them as pinned entries in the ProgressLedger. Pinned entries
+     * live in {@code nonHistoryPrefix} (never trimmed) and are never
+     * overwritten by the LLM's {@code progress_update} tool.
+     *
+     * <p>Failures are swallowed — a missing manifest or a ledger write error
+     * must never abort the tool execution batch.
      */
+    private void pinSkillConstraints(String conversationId, Set<String> skillNames) {
+        if (progressLedgerService == null || skillRuntimeService == null
+                || conversationId == null || conversationId.isBlank()) {
+            return;
+        }
+        for (String skillName : skillNames) {
+            try {
+                vip.mate.skill.runtime.model.ResolvedSkill skill = skillRuntimeService.findActiveSkill(skillName);
+                if (skill == null || skill.getManifest() == null) {
+                    continue;
+                }
+                List<String> constraints = skill.getManifest().getConstraints();
+                if (constraints == null || constraints.isEmpty()) {
+                    continue;
+                }
+                // Clear old pinned entries for this skill first (handles re-load after update).
+                String keyPrefix = "pin_" + skillName + "_";
+                progressLedgerService.clearPinnedByPrefix(conversationId, keyPrefix);
+                // Write each constraint as a pinned entry.
+                for (int i = 0; i < constraints.size(); i++) {
+                    String constraint = constraints.get(i);
+                    if (constraint == null || constraint.isBlank()) {
+                        continue;
+                    }
+                    String key = keyPrefix + i;
+                    progressLedgerService.upsertPinned(conversationId, key,
+                            "🔒 " + skillName + ": " + truncate(constraint, 100), constraint);
+                }
+                log.info("[ActionNode] Pinned {} constraint(s) from skill '{}' for conv {}",
+                        constraints.size(), skillName, conversationId);
+            } catch (Exception e) {
+                log.warn("[ActionNode] Failed to pin constraints for skill '{}': {}",
+                        skillName, e.getMessage());
+            }
+        }
+    }
+
+    // ==================== B5: Auto-record tool calls ====================
+
+    /**
+     * Auto-record each successful tool call as a ledger entry with key
+     * {@code auto_<toolName>}. Bounded to {@link ProgressLedgerService#MAX_AUTO_RECORDED}
+     * most recent entries. Skips meta-tools and doesn't overwrite LLM entries.
+     *
+     * <p>Key uniqueness: for MCP tools the FULL prefixed name
+     * ({@code mcp_<serverId>_<slug>_<hash6>}) is used as the key suffix to
+     * avoid collisions between servers that expose tools with the same slug.
+     * The display label uses the simplified slug for readability.
+     */
+    private void autoRecordToolCalls(String conversationId,
+                                     List<ToolResponseMessage.ToolResponse> responses) {
+        if (progressLedgerService == null || conversationId == null
+                || conversationId.isBlank() || responses == null || responses.isEmpty()) {
+            return;
+        }
+        // Collect valid entries first, then persist in a single batch to avoid
+        // N separate lock+load+save cycles when the LLM calls tools in parallel.
+        List<vip.mate.agent.progress.ProgressLedgerService.AutoRecordEntry> batch = new java.util.ArrayList<>();
+        for (ToolResponseMessage.ToolResponse resp : responses) {
+            String toolName = resp.name();
+            if (toolName == null || toolName.isBlank() || AUTO_RECORD_SKIP.contains(toolName)) {
+                continue;
+            }
+            // Use the full tool name as the key (unique across MCP servers),
+            // but the simplified slug as the display label (readable).
+            String displayName = simplifyToolName(toolName);
+            String summary = resp.responseData();
+            if (summary != null && summary.length() > 120) {
+                summary = summary.substring(0, 120) + "…";
+            }
+            batch.add(new vip.mate.agent.progress.ProgressLedgerService.AutoRecordEntry(
+                    toolName, displayName, summary));
+        }
+        if (batch.isEmpty()) {
+            return;
+        }
+        try {
+            progressLedgerService.upsertAutoRecordedBatch(conversationId, batch);
+        } catch (Exception e) {
+            log.debug("[ActionNode] Batch auto-record failed for {} tools: {}",
+                    batch.size(), e.getMessage());
+        }
+    }
+
+    /**
+     * Simplify an MCP tool name ({@code mcp_<serverId>_<slug>_<hash6>})
+     * to just the slug for ledger readability. Non-MCP names pass through.
+     */
+    private static String simplifyToolName(String name) {
+        if (name == null) return "unknown";
+        if (!name.startsWith("mcp_")) return name;
+        // mcp_<serverId>_<slug>_<hash6> → <slug>
+        int firstSep = name.indexOf('_', 4);
+        int lastSep = name.lastIndexOf('_');
+        if (firstSep > 0 && lastSep > firstSep) {
+            String slug = name.substring(firstSep + 1, lastSep);
+            return slug.isEmpty() ? name : slug;
+        }
+        return name;
+    }
+
+    private static String truncate(String s, int max) {
+        if (s == null) return "";
+        return s.length() > max ? s.substring(0, max) + "…" : s;
+    }
+
+    // ==================== Existing helpers ====================
+
     static Set<String> extractEnabledToolNames(List<AssistantMessage.ToolCall> toolCalls) {
         if (toolCalls == null || toolCalls.isEmpty()) {
             return Set.of();
@@ -192,12 +331,6 @@ public class ActionNode implements NodeAction {
         return names;
     }
 
-    /**
-     * Extract the {@code skillName} argument of every {@code load_skill} call in
-     * this batch. The names are used only to bias catalog ordering, so an
-     * unparseable or unknown name is harmless (it simply never matches a
-     * visible skill) — failures are swallowed rather than aborting the batch.
-     */
     static Set<String> extractLoadedSkillNames(List<AssistantMessage.ToolCall> toolCalls) {
         if (toolCalls == null || toolCalls.isEmpty()) {
             return Set.of();
@@ -215,11 +348,6 @@ public class ActionNode implements NodeAction {
         return names;
     }
 
-    /**
-     * Read the first present, non-null string value among {@code keys} from a
-     * tool-call arguments JSON object. Returns null on malformed JSON or when
-     * none of the keys are present.
-     */
     private static String parseStringArg(String argumentsJson, String... keys) {
         if (argumentsJson == null || argumentsJson.isBlank()) {
             return null;

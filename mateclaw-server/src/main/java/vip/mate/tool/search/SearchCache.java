@@ -8,7 +8,7 @@ import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 搜索结果内存缓存 — 借鉴 openclaw 的 SEARCH_CACHE 设计
+ * 搜索结果内存缓存
  *
  * <p>避免 Agent 同一对话中多次搜索相同/相似 query 时重复调用搜索 API。
  * <ul>

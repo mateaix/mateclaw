@@ -292,9 +292,9 @@
 </template>
 
 <script setup lang="ts">
+import { ElMessage } from 'element-plus/es/components/message/index'
 import { ref, computed, onMounted, reactive } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
 import {
   Delete,
   Lock,

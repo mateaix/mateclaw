@@ -204,12 +204,18 @@ const selectedAgent = computed<PickableAgent | null>(() => {
 })
 
 /** modelValue is set but resolves to no known agent — the referenced
- *  employee was likely renamed or removed. */
-const isUnknown = computed(() => hasValue.value && !selectedAgent.value)
+ *  employee was likely renamed or removed.
+ *  Requires agents to have loaded first: while the list is still empty
+ *  (component just rebuilt, /agents in flight) we must NOT treat a missing
+ *  match as "unknown" — otherwise the trigger flashes the raw numeric id
+ *  until the list lands. Falling through to the placeholder during that
+ *  window keeps the trigger readable and self-heals once agents arrive. */
+const isUnknown = computed(() =>
+  hasValue.value && !selectedAgent.value && props.agents.length > 0)
 
 const triggerLabel = computed(() => {
   if (selectedAgent.value) return selectedAgent.value.name
-  if (isUnknown.value) return props.unknownLabel || String(props.modelValue)
+  if (isUnknown.value) return props.unknownLabel || t('agentContext.unknownAgent')
   return props.placeholder || t('agentContext.selectAgent')
 })
 

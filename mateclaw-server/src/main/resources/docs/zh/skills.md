@@ -192,7 +192,7 @@ scripts:
 | `id` | 主键 |
 | `skill_id` | 外键到 `mate_skill` |
 | `file_path` | `scripts/run.py` 或 `references/cfg.md` 这种相对路径 |
-| `content` | UTF-8 文本（单文件 ≤1 MB，bundle ≤50 MB） |
+| `content` | UTF-8 文本（默认单文件 ≤1 MB、bundle ≤50 MB，可通过 `mateclaw.skill.upload.max-entry-size-mb` / `max-total-size-mb` 调整） |
 | `content_size` | 字节数（不用拉 blob 就能列） |
 | `sha256` | 内容指纹，给同步器做幂等 diff |
 
@@ -228,7 +228,7 @@ scripts:
 
 第三方打包者千奇百怪——有人把 `setup.sh` 直接放 zip 根，有人 `scripts/` 排在 `SKILL.md` 之前。`ZipSkillFetcher` v1.3 起：
 
-- **两遍扫描**——先把所有条目缓存（受 50 MB 上限保护），定位 `SKILL.md` 算出 wrapper 前缀，再分类。**条目顺序不再影响结果**。
+- **两遍扫描**——先把所有条目缓存（受总大小上限保护，默认 50 MB，可用 `mateclaw.skill.upload.max-total-size-mb` 调整），定位 `SKILL.md` 算出 wrapper 前缀，再分类。**条目顺序不再影响结果**。
 - **根目录扩展名兜底**——SKILL.md 同级的非约定文件按扩展名归类：`.sh / .py / .js / .rb / ...` → `scripts/`，`.md / .json / .yaml / .csv / ...` → `references/`，未识别扩展名落 `WARN` 日志。
 - **写后裁剪 + 空 bundle 守卫**——重装时**先写新文件再裁剪不在新 bundle 里的旧文件**。如果新 bundle 某个桶（`scripts/` 或 `references/`）一个条目都没有，**保留磁盘上的旧文件**——一个解析失败的损坏 zip 不会再把你的 skill 擦干净。要强制清空就传 `forcePrune=true`。
 

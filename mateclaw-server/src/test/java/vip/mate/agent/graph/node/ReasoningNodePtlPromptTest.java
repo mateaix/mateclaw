@@ -12,6 +12,7 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -38,7 +39,7 @@ class ReasoningNodePtlPromptTest {
     @Test
     void prefixIncludesSystemRuntimeAndWikiSegments() {
         WikiContextService wikiContextService = mock(WikiContextService.class);
-        when(wikiContextService.buildRelevantContext(eq(42L), anyString()))
+        when(wikiContextService.buildRelevantContext(eq(42L), anyString(), isNull()))
                 .thenReturn(WIKI_RELEVANT_TEXT);
 
         ReasoningNode node = newNode(wikiContextService);
@@ -67,7 +68,7 @@ class ReasoningNodePtlPromptTest {
         // that two independent calls with the same inputs produce
         // structurally identical output.
         WikiContextService wikiContextService = mock(WikiContextService.class);
-        when(wikiContextService.buildRelevantContext(eq(42L), anyString()))
+        when(wikiContextService.buildRelevantContext(eq(42L), anyString(), isNull()))
                 .thenReturn(WIKI_RELEVANT_TEXT);
 
         ReasoningNode node = newNode(wikiContextService);
@@ -125,7 +126,7 @@ class ReasoningNodePtlPromptTest {
     @Test
     void blankWikiResultSkipsWikiSegment() {
         WikiContextService wikiContextService = mock(WikiContextService.class);
-        when(wikiContextService.buildRelevantContext(eq(42L), anyString()))
+        when(wikiContextService.buildRelevantContext(eq(42L), anyString(), isNull()))
                 .thenReturn("   ");  // blank → drop the layer
 
         ReasoningNode node = newNode(wikiContextService);

@@ -258,7 +258,34 @@ public final class PlanStateAccessor {
             int existingLlmCalls = currentState.value(MateClawStateKeys.LLM_CALL_COUNT, 0);
             map.put(MateClawStateKeys.PROMPT_TOKENS, existingPrompt + result.promptTokens());
             map.put(MateClawStateKeys.COMPLETION_TOKENS, existingCompletion + result.completionTokens());
+            map.put(MateClawStateKeys.CACHE_READ_TOKENS,
+                    currentState.value(MateClawStateKeys.CACHE_READ_TOKENS, 0) + result.cacheReadTokens());
+            map.put(MateClawStateKeys.CACHE_WRITE_TOKENS,
+                    currentState.value(MateClawStateKeys.CACHE_WRITE_TOKENS, 0) + result.cacheWriteTokens());
+            map.put(MateClawStateKeys.REASONING_TOKENS,
+                    currentState.value(MateClawStateKeys.REASONING_TOKENS, 0) + result.reasoningTokens());
             map.put(MateClawStateKeys.LLM_CALL_COUNT, existingLlmCalls + 1);
+            return this;
+        }
+
+        /**
+         * 将一个 step 的累计 usage（含 cache / reasoning 分项）加到 state 已有值上。
+         * StepExecutionNode 在多个出口路径上写回同一组键，统一走这里避免漏项。
+         */
+        public OutputBuilder addStepUsage(OverAllState currentState,
+                                          int promptTokens, int completionTokens,
+                                          int cacheReadTokens, int cacheWriteTokens,
+                                          int reasoningTokens) {
+            map.put(MateClawStateKeys.PROMPT_TOKENS,
+                    currentState.value(MateClawStateKeys.PROMPT_TOKENS, 0) + promptTokens);
+            map.put(MateClawStateKeys.COMPLETION_TOKENS,
+                    currentState.value(MateClawStateKeys.COMPLETION_TOKENS, 0) + completionTokens);
+            map.put(MateClawStateKeys.CACHE_READ_TOKENS,
+                    currentState.value(MateClawStateKeys.CACHE_READ_TOKENS, 0) + cacheReadTokens);
+            map.put(MateClawStateKeys.CACHE_WRITE_TOKENS,
+                    currentState.value(MateClawStateKeys.CACHE_WRITE_TOKENS, 0) + cacheWriteTokens);
+            map.put(MateClawStateKeys.REASONING_TOKENS,
+                    currentState.value(MateClawStateKeys.REASONING_TOKENS, 0) + reasoningTokens);
             return this;
         }
 

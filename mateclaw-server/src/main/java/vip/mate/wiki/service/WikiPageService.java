@@ -1200,7 +1200,7 @@ public class WikiPageService {
         List<WikiPageEntity> allPages = listByKbId(kbId);
         int deleted = 0;
         for (WikiPageEntity page : allPages) {
-            if ("manual".equals(page.getLastUpdatedBy())) continue;
+            if ("manual".equals(page.getLastUpdatedBy()) || "ai".equals(page.getLastUpdatedBy())) continue;
             // RFC-051 PR-2: never sweep system / locked pages, even when their
             // source raw is being reprocessed.
             if (isProtected(page)) continue;

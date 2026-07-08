@@ -253,6 +253,21 @@ public final class MateClawStateAccessor {
         return state.<Set<String>>value(ENABLED_EXTENSION_TOOLS).orElse(Set.of());
     }
 
+    // ===== Tool-call loop guard =====
+
+    /**
+     * Loop-guard counters accumulated so far this run. Empty at run start.
+     */
+    @SuppressWarnings("unchecked")
+    public java.util.Map<String, Object> toolLoopStats() {
+        return state.<java.util.Map<String, Object>>value(TOOL_LOOP_STATS).orElse(java.util.Map.of());
+    }
+
+    /** Whether the one-shot post-mutation verification reminder was already injected this run. */
+    public boolean mutationReminderInjected() {
+        return state.value(MUTATION_REMINDER_INJECTED, false);
+    }
+
     // ===== Token Usage =====
 
     public int promptTokens() {
@@ -528,6 +543,15 @@ public final class MateClawStateAccessor {
             return put(ENABLED_EXTENSION_TOOLS, names);
         }
 
+        // ---- Tool-call loop guard ----
+        public OutputBuilder toolLoopStats(java.util.Map<String, Object> stats) {
+            return put(TOOL_LOOP_STATS, stats);
+        }
+
+        public OutputBuilder mutationReminderInjected(boolean injected) {
+            return put(MUTATION_REMINDER_INJECTED, injected);
+        }
+
         // ---- Token Usage ----
 
         /** 将本次 LLM 调用的 usage 累加到 state 已有值上 */
@@ -537,6 +561,12 @@ public final class MateClawStateAccessor {
             int existingCompletion = currentState.value(COMPLETION_TOKENS, 0);
             map.put(PROMPT_TOKENS, existingPrompt + result.promptTokens());
             map.put(COMPLETION_TOKENS, existingCompletion + result.completionTokens());
+            map.put(CACHE_READ_TOKENS,
+                    currentState.value(CACHE_READ_TOKENS, 0) + result.cacheReadTokens());
+            map.put(CACHE_WRITE_TOKENS,
+                    currentState.value(CACHE_WRITE_TOKENS, 0) + result.cacheWriteTokens());
+            map.put(REASONING_TOKENS,
+                    currentState.value(REASONING_TOKENS, 0) + result.reasoningTokens());
             return this;
         }
 

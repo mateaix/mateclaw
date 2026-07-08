@@ -50,7 +50,43 @@ public class MateClawApplication {
     private volatile DbType resolvedDbType;
 
     public static void main(String[] args) {
+        configureHttpClientDefaults();
         SpringApplication.run(MateClawApplication.class, args);
+    }
+
+    /**
+     * Harden the JDK {@link java.net.http.HttpClient} defaults before any client
+     * (or the JDK's internal header-allowlist) is initialized.
+     *
+     * <ul>
+     *   <li><b>keep-alive timeout</b> — the JDK default is 1200s, far longer than a
+     *   typical reverse proxy / API gateway idle window (often 15–75s). A pooled
+     *   HTTP/1.1 connection therefore outlives the peer's socket, and the next
+     *   request onto that now-closed socket is reset by the peer before any
+     *   response byte arrives, surfacing as
+     *   {@code "HTTP/1.1 header parser received no bytes"} / {@code Connection reset}.
+     *   Capping it to 15s makes the client evict idle connections before most
+     *   gateways do, eliminating stale reuse. (curl never hits this because it
+     *   opens a fresh connection per invocation.)</li>
+     *   <li><b>allow the {@code Connection} request header</b> — {@code Connection}
+     *   is a restricted header the JDK client strips by default; allowing it lets
+     *   the OpenAI-compatible path send {@code Connection: close} to force a fresh
+     *   connection per request against flaky self-hosted gateways.</li>
+     * </ul>
+     *
+     * <p>Both are only set when the operator has not already provided an explicit
+     * {@code -D} override, so deliberate tuning is respected.
+     */
+    private static void configureHttpClientDefaults() {
+        if (System.getProperty("jdk.httpclient.keepalive.timeout") == null) {
+            System.setProperty("jdk.httpclient.keepalive.timeout", "15");
+        }
+        String allowRestricted = System.getProperty("jdk.httpclient.allowRestrictedHeaders");
+        if (allowRestricted == null) {
+            System.setProperty("jdk.httpclient.allowRestrictedHeaders", "connection");
+        } else if (!allowRestricted.toLowerCase().contains("connection")) {
+            System.setProperty("jdk.httpclient.allowRestrictedHeaders", allowRestricted + ",connection");
+        }
     }
 
     /**
