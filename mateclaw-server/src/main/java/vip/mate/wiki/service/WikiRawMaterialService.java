@@ -3,6 +3,8 @@ package vip.mate.wiki.service;
 import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.ApplicationEventPublisher;
@@ -21,8 +23,10 @@ import vip.mate.wiki.repository.WikiRawMaterialMapper;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.LocalDateTime;
+import java.util.Collection;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Map;
 import vip.mate.wiki.dto.WikiFailureItem;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -301,6 +305,55 @@ public class WikiRawMaterialService {
         rawMapper.update(null, new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<WikiRawMaterialEntity>()
                 .eq(WikiRawMaterialEntity::getId, rawId)
                 .set(WikiRawMaterialEntity::getSourcePath, sourcePath));
+    }
+
+    /**
+     * 改分组（含清空为 null）。必须用 LambdaUpdateWrapper.set 显式赋值，
+     * 否则 updateById 在默认 NOT_NULL 策略下无法把 groupId 置空。
+     */
+    public void updateGroup(Long rawId, Long groupId) {
+        if (rawId == null) {
+            return;
+        }
+        rawMapper.update(null, new LambdaUpdateWrapper<WikiRawMaterialEntity>()
+                .eq(WikiRawMaterialEntity::getId, rawId)
+                .set(WikiRawMaterialEntity::getGroupId, groupId));
+    }
+
+    public int updateGroupBatch(Collection<Long> rawIds, Long groupId) {
+        if (rawIds == null || rawIds.isEmpty()) {
+            return 0;
+        }
+        return rawMapper.update(null, new LambdaUpdateWrapper<WikiRawMaterialEntity>()
+                .in(WikiRawMaterialEntity::getId, rawIds)
+                .set(WikiRawMaterialEntity::getGroupId, groupId));
+    }
+
+    /** 分组删除时批量改挂：把某分组下所有 raw 的 groupId 从 fromGroupId 改成 toGroupId（可为 null）。 */
+    public int reassignGroup(Long kbId, Long fromGroupId, Long toGroupId) {
+        return rawMapper.update(null, new LambdaUpdateWrapper<WikiRawMaterialEntity>()
+                .eq(WikiRawMaterialEntity::getKbId, kbId)
+                .eq(WikiRawMaterialEntity::getGroupId, fromGroupId)
+                .set(WikiRawMaterialEntity::getGroupId, toGroupId));
+    }
+
+    /** 按 groupId 聚合统计某知识库下各分组的 raw 数量，一次查询避免 N+1。 */
+    public Map<Long, Long> countRawByGroup(Long kbId) {
+        List<Map<String, Object>> rows = rawMapper.selectMaps(
+                new QueryWrapper<WikiRawMaterialEntity>()
+                        .select("group_id", "COUNT(*) as cnt")
+                        .eq("kb_id", kbId)
+                        .isNotNull("group_id")
+                        .groupBy("group_id"));
+        java.util.Map<Long, Long> result = new java.util.HashMap<>();
+        for (Map<String, Object> row : rows) {
+            Object groupIdObj = row.get("group_id");
+            Object cntObj = row.get("cnt");
+            if (groupIdObj != null && cntObj != null) {
+                result.put(((Number) groupIdObj).longValue(), ((Number) cntObj).longValue());
+            }
+        }
+        return result;
     }
 
     public List<WikiRawMaterialEntity> listPending(Long kbId) {
