@@ -2,20 +2,85 @@ import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import tailwindcss from '@tailwindcss/vite'
 import { visualizer } from 'rollup-plugin-visualizer'
+import Components from 'unplugin-vue-components/vite'
 import { resolve } from 'path'
+
+// Sub-components that Element Plus re-exports from a parent package rather than
+// shipping under their own es/components/<name> directory.
+const EP_AGGREGATE: Record<string, string> = {
+  ElDropdownItem: 'dropdown',
+  ElDropdownMenu: 'dropdown',
+  ElOption: 'select',
+  ElOptionGroup: 'select',
+  ElCheckboxButton: 'checkbox',
+  ElCheckboxGroup: 'checkbox',
+  ElRadioButton: 'radio',
+  ElRadioGroup: 'radio',
+  ElCollapseItem: 'collapse',
+  ElBreadcrumbItem: 'breadcrumb',
+  ElStep: 'steps',
+  ElTabPane: 'tabs',
+  ElTimelineItem: 'timeline',
+  ElMenuItem: 'menu',
+  ElSubMenu: 'menu',
+  ElFormItem: 'form',
+  ElTableColumn: 'table',
+  ElCarouselItem: 'carousel',
+}
+
+// Resolve <el-*> components to their per-component subpath
+// (element-plus/es/components/<dir>/index) instead of the element-plus/es
+// barrel. The barrel statically imports every component, so importing any single
+// name from it drags the whole library into the bundle — the stock
+// ElementPlusResolver (for Element Plus 2.x) uses that barrel and relies on
+// Rollup tree-shaking, which does not hold here. Per-component subpaths make the
+// tree-shaking explicit. No style side effect is emitted because the full
+// element-plus/dist/index.css is imported once in main.ts.
+function elementPlusSubpathResolver() {
+  return {
+    type: 'component' as const,
+    resolve(name: string) {
+      if (!/^El[A-Z]/.test(name)) return
+      // <el-icon-xxx> style icon usage — resolve to the icons package.
+      if (/^ElIcon.+/.test(name)) {
+        return { name: name.replace(/^ElIcon/, ''), from: '@element-plus/icons-vue' }
+      }
+      const dir = EP_AGGREGATE[name]
+        ?? name.slice(2).replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase()
+      return { name, from: `element-plus/es/components/${dir}/index` }
+    },
+  }
+}
 
 export default defineConfig({
   plugins: [
     vue({
       template: {
         compilerOptions: {
-          // Treat <model-viewer> as a custom Web Component (registered globally
-          // via @google/model-viewer in main.ts) so Vue doesn't try to resolve
-          // it as a Vue component and emit a "Failed to resolve component"
-          // warning at runtime.
+          // Treat <model-viewer> as a custom Web Component (lazy-registered on
+          // demand via src/utils/lazyModelViewer.ts) so Vue doesn't try to
+          // resolve it as a Vue component and emit a "Failed to resolve
+          // component" warning at runtime.
           isCustomElement: (tag) => tag === 'model-viewer',
         },
       },
+    }),
+    // On-demand Element Plus: resolve <el-*> components used in templates to
+    // their per-component subpath (element-plus/es/components/*) instead of
+    // registering the whole library via app.use(ElementPlus), so only the ~16
+    // components the app actually uses land in the bundle. importStyle:false
+    // because the full element-plus/dist/index.css is still imported once in
+    // main.ts — every component's styles and the theme CSS variables stay intact
+    // (no visual regression); only dead component *code* is tree-shaken out.
+    // dirs:[] so local components stay explicitly imported (no auto-scan).
+    // NOTE: imperative APIs (ElMessage) are imported explicitly from their
+    // subpath at the 3 call sites — auto-import resolved them from the
+    // `element-plus/es` barrel, which re-exports everything and defeated
+    // tree-shaking entirely.
+    Components({
+      dirs: [],
+      resolvers: [elementPlusSubpathResolver()],
+      dts: 'src/types/components.d.ts',
     }),
     tailwindcss(),
     // ANALYZE=1 pnpm build writes dist/stats.html. Skipped on normal builds so
