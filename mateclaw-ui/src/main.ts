@@ -9,10 +9,10 @@ import router from './router'
 import './assets/main.css'
 import { i18n, initializeLocale } from './i18n'
 
-// Side-effect import: registers the <model-viewer> Web Component globally so
-// generated 3D assets (.glb) can be previewed inline in chat bubbles. Vue's
-// compiler is told to treat the tag as a custom element via vite.config.ts.
-import '@google/model-viewer'
+// Note: the heavy <model-viewer> Web Component is no longer imported here. It is
+// lazy-registered on demand (see src/utils/lazyModelViewer.ts) the first time a
+// chat bubble renders a 3D (.glb) asset, keeping it out of the initial bundle.
+// Vue's compiler still treats <model-viewer> as a custom element via vite.config.ts.
 
 async function bootstrap() {
   await initializeLocale()

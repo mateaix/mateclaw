@@ -88,18 +88,38 @@ export default defineConfig({
         //      chunk lets each Worker on the chunk run with a smaller
         //      working set, which is what blew up the Docker build at
         //      1.3.0 (needed --max-old-space-size=6144 as a band-aid).
-        manualChunks: {
-          'vendor-monaco': ['monaco-editor', '@guolao/vue-monaco-editor'],
-          'vendor-vue-flow': [
-            '@vue-flow/core',
-            '@vue-flow/background',
-            '@vue-flow/controls',
-            '@vue-flow/minimap',
-          ],
-          'vendor-mermaid': ['mermaid'],
-          'vendor-echarts': ['echarts'],
-          'vendor-element': ['element-plus', '@element-plus/icons-vue'],
-          'vendor-markdown': ['marked', 'marked-highlight', 'highlight.js', 'dompurify'],
+        //
+        // Function form (not the object map) so we can ISOLATE the CommonJS
+        // interop helpers into their own tiny chunk. With the object form,
+        // Rollup hoisted the shared `commonjsHelpers` module into
+        // vendor-mermaid / vendor-markdown; because the eager entry chunk needs
+        // that helper, it gained a *static* import of both ~1 MB vendor chunks,
+        // and Vite then `modulepreload`-ed them on first paint even though
+        // mermaid/markdown are only used on the (lazy) chat route. Splitting the
+        // helper into its own leaf chunk lets the entry depend on a few-hundred-
+        // byte module instead, so the heavy vendors stay purely on-demand.
+        manualChunks(id) {
+          // Isolate shared runtime helpers FIRST — before the node_modules gate.
+          // The Vite preload helper (\0vite/preload-helper, exported as the
+          // __vitePreload used by every lazy route import) and the CommonJS
+          // interop helpers are virtual modules with no node_modules path. If one
+          // lands inside a heavy vendor chunk, the entry's route-lazy imports pull
+          // that whole chunk in as a static dependency and Vite preloads it. A
+          // dedicated leaf chunk keeps them out of the vendors.
+          if (id.includes('vite/preload-helper') || id.includes('commonjsHelpers')
+              || id.includes('commonjs-dynamic-modules') || id.includes('\0commonjs')) {
+            return 'vendor-runtime'
+          }
+          if (!id.includes('node_modules')) return undefined
+          if (id.includes('monaco-editor') || id.includes('vue-monaco-editor')) return 'vendor-monaco'
+          if (id.includes('@vue-flow')) return 'vendor-vue-flow'
+          if (id.includes('/mermaid/')) return 'vendor-mermaid'
+          if (id.includes('/echarts/') || id.includes('zrender')) return 'vendor-echarts'
+          if (id.includes('element-plus') || id.includes('@element-plus')) return 'vendor-element'
+          if (id.includes('/marked') || id.includes('highlight.js') || id.includes('dompurify')) {
+            return 'vendor-markdown'
+          }
+          return undefined
         },
       },
     },

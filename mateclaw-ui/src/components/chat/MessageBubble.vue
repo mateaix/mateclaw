@@ -537,6 +537,7 @@ import {
 } from '@element-plus/icons-vue'
 import { useStreamingMarkdown } from '@/composables/useStreamingMarkdown'
 import { buildGeneratedFileNameMap, linkifyGeneratedFileUrls } from '@/utils/generatedFileLinks'
+import { ensureModelViewer } from '@/utils/lazyModelViewer'
 import { useAuthenticatedAttachment } from '@/composables/useAuthenticatedAttachment'
 import { useToolLabel } from '@/composables/useToolLabel'
 import { http } from '@/api'
@@ -901,9 +902,14 @@ watch(audioAttachments, (atts) => {
   if (atts.length > 0) loadAllAudios(atts)
 }, { immediate: true })
 // 3D models also need the auth-blob loader — <model-viewer src> doesn't carry
-// the Authorization header any more than <img>/<audio> do.
+// the Authorization header any more than <img>/<audio> do. The heavy
+// @google/model-viewer Web Component is lazy-loaded here (only when a bubble
+// actually has a 3D attachment) instead of eagerly in main.ts.
 watch(model3dAttachments, (atts) => {
-  if (atts.length > 0) loadAllModels(atts)
+  if (atts.length > 0) {
+    ensureModelViewer()
+    loadAllModels(atts)
+  }
 }, { immediate: true })
 
 // --- 时间 ---
