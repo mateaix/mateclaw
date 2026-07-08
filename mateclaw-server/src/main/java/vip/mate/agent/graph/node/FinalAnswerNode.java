@@ -265,12 +265,15 @@ public class FinalAnswerNode implements NodeAction {
 
     /**
      * Replace fake {@code /api/v1/files/generated/{id}} URLs (cache-miss)
-     * with a user-visible warning. No-op when no cache is wired (legacy
-     * tests) or when the answer is empty.
+     * with a user-visible warning, and wrap live bare URLs into
+     * {@code [filename](url)} markdown links so the chat shows the file name
+     * instead of the raw id. No-op when no cache is wired (legacy tests) or
+     * when the answer is empty.
      */
     private String scrubFakeUrls(String text) {
         if (generatedFileCache == null || text == null || text.isEmpty()) return text;
-        return generatedFileCache.scrubMissingReferences(text);
+        return generatedFileCache.linkifyBareReferences(
+                generatedFileCache.scrubMissingReferences(text));
     }
 
     private FinishReason parseFinishReason(String reason) {

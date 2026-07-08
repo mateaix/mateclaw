@@ -38,7 +38,11 @@ import vip.mate.llm.chatmodel.ReasoningEffortResolver;
 import vip.mate.llm.model.ModelConfigEntity;
 import vip.mate.llm.model.ModelFamily;
 import vip.mate.llm.model.ModelProtocol;
+import vip.mate.agent.context.PrefixBudgetPlan;
+import vip.mate.agent.context.PrefixBudgetPlanner;
+import vip.mate.agent.context.TokenEstimator;
 import vip.mate.llm.model.ModelProviderEntity;
+import vip.mate.llm.probe.ModelContextWindowResolver;
 import vip.mate.llm.routing.ProviderModelRef;
 import vip.mate.llm.routing.ProviderRouter;
 import vip.mate.llm.service.ModelConfigService;
@@ -48,6 +52,7 @@ import vip.mate.skill.runtime.SkillCatalogRenderer;
 import vip.mate.skill.service.SkillService;
 import vip.mate.system.service.SystemSettingService;
 import vip.mate.tool.ToolRegistry;
+import vip.mate.tool.disclosure.ToolUsageRecencyTracker;
 import vip.mate.memory.spi.MemoryManager;
 import vip.mate.workspace.document.WorkspaceFileService;
 import vip.mate.tool.guard.service.ToolGuardService;
@@ -97,6 +102,9 @@ public class AgentGraphBuilder {
     private final ConversationService conversationService;
     private final ModelConfigService modelConfigService;
     private final ModelProviderService modelProviderService;
+    private final ModelContextWindowResolver contextWindowResolver;
+    private final PrefixBudgetPlanner prefixBudgetPlanner;
+    private final ToolUsageRecencyTracker toolUsageRecencyTracker;
     private final vip.mate.llm.service.ModelCapabilityService modelCapabilityService;
     private final ProviderRouter providerRouter;
     private final PlanningService planningService;
@@ -132,6 +140,8 @@ public class AgentGraphBuilder {
     private final vip.mate.goal.service.GoalEvaluationService goalEvaluationService;
     private final vip.mate.goal.service.GoalFollowupService goalFollowupService;
     private final vip.mate.goal.config.GoalProperties goalProperties;
+    /** C4: per-conversation environment notification registry, injected into ReasoningNode. */
+    private final vip.mate.agent.runtime.RunningConversationRegistry runningConversationRegistry;
 
     /**
      * Auto-grant resolver wired into the executor so an active
@@ -248,8 +258,30 @@ public class AgentGraphBuilder {
     public BaseAgent build(AgentEntity entity, String modelProvider, String modelName) {
         AgentToolSet toolSet = toolRegistry.getEnabledToolSet();
 
-        // 过滤掉 denied 工具，使模型完全看不到它们（防止 prompt injection 利用 schema）
-        toolSet = toolSet.withDeniedToolsFiltered(toolGuardConfigService.getDeniedTools());
+        // Move 6 — Permission flattening at build time.
+        //
+        // Two layers of tool filtering exist in MateClaw:
+        //   (1) Build-time filter (HERE) — decides which tools the model SEES
+        //       in the tool list. Computed once per agent build; stable for
+        //       the agent's lifecycle unless bindings change.
+        //   (2) Runtime guard (ToolGuardService.evaluate) — decides which
+        //       tools the model can CALL. Runs on every invocation; checks
+        //       workspace boundaries, sensitive paths, credential exposure,
+        //       shell command patterns, and approval workflows. All dynamic
+        //       (depends on tool arguments, not just tool name).
+        //
+        // The build-time filter previously ran as 4 separate passes
+        // (deny → allow → deny → exclude). Move 6 consolidates them into
+        // a single deny-set + a single allow-set, applied in two passes:
+        //   denied = global denied ∪ skill-discovery denied ∪ {load_skill if disabled}
+        //   allowed = agent's bound tools (null = global default)
+        Set<String> deniedTools = new java.util.LinkedHashSet<>(
+                toolGuardConfigService.getDeniedTools());
+        deniedTools.addAll(agentBindingService.getSkillDiscoveryDeniedTools(entity.getId()));
+        if (!loadSkillToolEnabled) {
+            deniedTools.add("load_skill");
+        }
+        toolSet = toolSet.withDeniedToolsFiltered(deniedTools);
 
         // RFC-090 §14.2 — single entry point that merges:
         //   (a) tools expanded from bound skills' active features, and
@@ -258,24 +290,6 @@ public class AgentGraphBuilder {
         // global default); non-null (possibly empty) = explicit allowlist.
         Set<String> boundTools = agentBindingService.getEffectiveToolNames(entity.getId());
         toolSet = toolSet.withAllowedToolsOnly(boundTools); // null = 全局默认
-
-        // Issue #184 follow-up: an agent that opted out of skills must not be
-        // able to circle back and discover/load them via the meta tools. Strip
-        // the skill-discovery surface (listAvailableSkills / load_skill /
-        // readSkillFile / runSkillScript / listSkillFiles) here. This runs as a
-        // separate deny layer so the allowlist matrix in getEffectiveToolNames
-        // stays untouched — in particular, the (skillsDisabled, !toolsDisabled,
-        // no tool bindings) cell still returns null so non-skill global tools
-        // continue to flow through.
-        toolSet = toolSet.withDeniedToolsFiltered(
-                agentBindingService.getSkillDiscoveryDeniedTools(entity.getId()));
-
-        // Escape hatch: drop the load_skill meta tool entirely when disabled, so
-        // it isn't advertised regardless of binding (the catalog guidance falls
-        // back to readSkillFile — see SkillRuntimeService).
-        if (!loadSkillToolEnabled) {
-            toolSet = toolSet.excluding(java.util.Set.of("load_skill"));
-        }
 
         // Resolve the base model with the precedence: per-conversation pin >
         // per-Agent model override > global default. resolveRuntimeBaseModel
@@ -354,6 +368,12 @@ public class AgentGraphBuilder {
 
         ModelProtocol protocol = ModelProtocol.fromChatModel(provider.getChatModel());
 
+        // Effective context window: explicit config > local-server probe > null
+        // (downstream keeps its global-default fallback). Without probing, a
+        // local 8k/16k model with maxInputTokens unset budgets against the
+        // 128k global default and the first oversized request fails outright.
+        Integer effectiveMaxInputTokens = contextWindowResolver.resolveMaxInputTokens(provider, runtimeModel);
+
         // 内置搜索检测（DashScope / Kimi），但不再移除 WebSearchTool — 两者协同而非互斥
         boolean builtinSearchEnabled = false;
         Map<String, Object> providerKwargs = modelProviderService.readProviderGenerateKwargs(provider);
@@ -388,23 +408,45 @@ public class AgentGraphBuilder {
             }
         }
 
-        String enhancedPrompt = buildEnhancedPrompt(entity, builtinSearchEnabled);
+        // Prefix injection budget: optional blocks (memory / wiki / skill
+        // catalog / extension catalog / ledger) share a token budget scaled
+        // to the model's effective window. The agent's own prompt and the
+        // tool schemas are never truncated — they are subtracted from the
+        // budget so the optional blocks absorb the squeeze.
+        int basePromptTokens = TokenEstimator.estimateTokens(entity.getSystemPrompt());
+        int toolSchemaTokens = TokenEstimator.estimateToolsTokens(toolSet.callbacks());
+        PrefixBudgetPlan prefixBudgetPlan = prefixBudgetPlanner.plan(
+                effectiveMaxInputTokens, basePromptTokens, toolSchemaTokens);
+        if (basePromptTokens > prefixBudgetPlan.effectiveMaxTokens() / 2) {
+            log.warn("Agent {} 的身份 prompt 约 {} tokens,已超过模型有效窗口 {} 的一半——"
+                            + "系统不会截断用户自写的身份 prompt,请自行精简,否则小上下文模型可能无法响应",
+                    entity.getId(), basePromptTokens, prefixBudgetPlan.effectiveMaxTokens());
+        }
+
+        String enhancedPrompt = buildEnhancedPrompt(entity, builtinSearchEnabled, prefixBudgetPlan.memoryTokens());
 
         // Runtime skill-catalog renderer — captures this agent's bound skills,
         // effective tool allowlist, model window and workspace; invoked each
         // turn by the reasoning / step-execution nodes with the skills loaded
         // so far this run so load_skill pins float to the top of the catalog.
         SkillCatalogRenderer skillCatalogRenderer = buildSkillCatalogRenderer(
-                entity, boundTools, runtimeModel.getMaxInputTokens());
+                entity, boundTools, effectiveMaxInputTokens);
 
         // Extension-tool catalog — only for ReAct. The dynamic tool split runs
         // in ReasoningNode; Plan-Execute keeps advertising every tool (it has no
         // action node to record enable_tool), so baking the catalog there would
         // describe an enable_tool flow that can never take effect.
+        // Auto-demotion is likewise ReAct-only: hiding a tool from Plan-Execute
+        // would remove it with no enable_tool path to recover it.
         boolean isPlanExecute = "plan_execute".equals(entity.getAgentType());
+        Set<String> autoDemotedTools = Set.of();
         if (!isPlanExecute) {
+            if (prefixBudgetPlan.enabled()) {
+                autoDemotedTools = toolDisclosureService.computeAutoDemotions(
+                        toolSet, prefixBudgetPlan.toolSchemaBudgetTokens());
+            }
             String extensionCatalog = toolDisclosureService.renderExtensionCatalog(
-                    toolSet, runtimeModel.getMaxInputTokens());
+                    toolSet, effectiveMaxInputTokens, autoDemotedTools);
             if (extensionCatalog != null && !extensionCatalog.isBlank()) {
                 enhancedPrompt = enhancedPrompt + extensionCatalog;
             }
@@ -424,7 +466,8 @@ public class AgentGraphBuilder {
             log.info("Built StateGraph Plan-Execute agent: {} (maxIterations={}, tools={}, protocol={})",
                     entity.getName(), maxIter, toolSet.size(), protocol.getId());
         } else {
-            agent = buildReActAgent(toolSet, runtimeModel, maxIter, entity.getId(), skillCatalogRenderer);
+            agent = buildReActAgent(toolSet, runtimeModel, maxIter, entity.getId(), skillCatalogRenderer,
+                    prefixBudgetPlan, autoDemotedTools);
             // StateGraph 路径下工具调用由 ActionNode 控制，始终启用
             toolCallingEnabled = true;
             log.info("Built StateGraph ReAct agent: {} (maxIterations={}, tools={}, protocol={})",
@@ -452,7 +495,7 @@ public class AgentGraphBuilder {
         agent.userLocale = resolveLocale();
         agent.temperature = runtimeModel.getTemperature();
         agent.maxTokens = runtimeModel.getMaxTokens();
-        agent.maxInputTokens = runtimeModel.getMaxInputTokens();
+        agent.maxInputTokens = effectiveMaxInputTokens;
         agent.topP = runtimeModel.getTopP();
         agent.toolCallingEnabled = toolCallingEnabled;
 
@@ -511,11 +554,17 @@ public class AgentGraphBuilder {
 
     StateGraphReActAgent buildReActAgent(AgentToolSet toolSet, ModelConfigEntity runtimeModel,
                                          int maxIter, Long agentId, SkillCatalogRenderer skillCatalogRenderer) {
+        return buildReActAgent(toolSet, runtimeModel, maxIter, agentId, skillCatalogRenderer, null, Set.of());
+    }
+
+    StateGraphReActAgent buildReActAgent(AgentToolSet toolSet, ModelConfigEntity runtimeModel,
+                                         int maxIter, Long agentId, SkillCatalogRenderer skillCatalogRenderer,
+                                         PrefixBudgetPlan prefixBudgetPlan, Set<String> autoDemotedTools) {
         ChatModel chatModel = buildRuntimeChatModel(runtimeModel);
         ChatClient chatClient = ChatClient.create(chatModel);
         String reasoningEffort = resolveReasoningEffortForModel(runtimeModel);
         CompiledGraph compiledGraph = buildReActGraph(toolSet, chatModel, maxIter, reasoningEffort,
-                runtimeModel, agentId, skillCatalogRenderer);
+                runtimeModel, agentId, skillCatalogRenderer, prefixBudgetPlan, autoDemotedTools);
         return new StateGraphReActAgent(chatClient, conversationService, compiledGraph,
                 chatModel, conversationWindowManager, toolSet);
     }
@@ -566,6 +615,14 @@ public class AgentGraphBuilder {
                     streamTracker, fallbackChain, llmCacheMetricsAggregator, providerHealthTracker,
                     primaryModelConfig != null ? primaryModelConfig.getProvider() : null,
                     providerPool);
+            if (primaryModelConfig != null) {
+                // Feed "prompt too long" rejections back into the window resolver
+                // so the next turn budgets against the server-reported limit.
+                streamingHelper.setContextLimitObserver(errorMessage ->
+                        contextWindowResolver.noteContextLimitError(
+                                primaryModelConfig.getProvider(),
+                                primaryModelConfig.getModelName(), errorMessage));
+            }
             ToolExecutionExecutor executor = new ToolExecutionExecutor(
                     toolSet, toolGuardService, approvalService, streamTracker,
                     toolTimeoutProperties, toolResultStorage, toolConcurrencyRegistry,
@@ -574,6 +631,7 @@ public class AgentGraphBuilder {
             // LLM mis-calls a skill name as a tool, the response tells it
             // the right invocation pattern instead of a dead-end error.
             executor.setSkillRuntimeService(skillRuntimeService);
+            executor.setUsageRecencyTracker(toolUsageRecencyTracker);
             // Optional: route child-agent denied-tool audit events through
             // the audit pipeline. Null when audit is not wired (legacy / test).
             if (auditEventService != null) {
@@ -648,6 +706,9 @@ public class AgentGraphBuilder {
                     // Token Usage
                     .addStrategy(MateClawStateKeys.PROMPT_TOKENS, KeyStrategy.REPLACE)
                     .addStrategy(MateClawStateKeys.COMPLETION_TOKENS, KeyStrategy.REPLACE)
+                    .addStrategy(MateClawStateKeys.CACHE_READ_TOKENS, KeyStrategy.REPLACE)
+                    .addStrategy(MateClawStateKeys.CACHE_WRITE_TOKENS, KeyStrategy.REPLACE)
+                    .addStrategy(MateClawStateKeys.REASONING_TOKENS, KeyStrategy.REPLACE)
                     .addStrategy(MateClawStateKeys.LLM_CALL_COUNT, KeyStrategy.REPLACE)
                     .addStrategy(MateClawStateKeys.RUNTIME_MODEL_NAME, KeyStrategy.REPLACE)
                     .addStrategy(MateClawStateKeys.RUNTIME_PROVIDER_ID, KeyStrategy.REPLACE)
@@ -680,6 +741,12 @@ public class AgentGraphBuilder {
                     // Tool progressive disclosure — extensions enabled this run.
                     // Registered in BOTH graphs for the same merge-safety reason.
                     .addStrategy(MateClawStateKeys.ENABLED_EXTENSION_TOOLS, KeyStrategy.REPLACE)
+                    // Tool-call loop guard counters + one-shot post-mutation
+                    // verification reminder flag. Read-merge-write by
+                    // ObservationNode; registered in BOTH graphs so the
+                    // counters survive multi-node merges.
+                    .addStrategy(MateClawStateKeys.TOOL_LOOP_STATS, KeyStrategy.REPLACE)
+                    .addStrategy(MateClawStateKeys.MUTATION_REMINDER_INJECTED, KeyStrategy.REPLACE)
                     .build();
 
             // Graph 拓扑：
@@ -830,12 +897,28 @@ public class AgentGraphBuilder {
     CompiledGraph buildReActGraph(AgentToolSet toolSet, ChatModel chatModel, int maxIterations,
                                    String reasoningEffort, ModelConfigEntity primaryModelConfig,
                                    Long agentId, SkillCatalogRenderer skillCatalogRenderer) {
+        return buildReActGraph(toolSet, chatModel, maxIterations, reasoningEffort,
+                primaryModelConfig, agentId, skillCatalogRenderer, null, Set.of());
+    }
+
+    CompiledGraph buildReActGraph(AgentToolSet toolSet, ChatModel chatModel, int maxIterations,
+                                   String reasoningEffort, ModelConfigEntity primaryModelConfig,
+                                   Long agentId, SkillCatalogRenderer skillCatalogRenderer,
+                                   PrefixBudgetPlan prefixBudgetPlan, Set<String> autoDemotedTools) {
         try {
             List<vip.mate.llm.failover.FallbackEntry> fallbackChain = buildFallbackChain(primaryModelConfig, agentId);
             NodeStreamingChatHelper streamingHelper = new NodeStreamingChatHelper(
                     streamTracker, fallbackChain, llmCacheMetricsAggregator, providerHealthTracker,
                     primaryModelConfig != null ? primaryModelConfig.getProvider() : null,
                     providerPool);
+            if (primaryModelConfig != null) {
+                // Feed "prompt too long" rejections back into the window resolver
+                // so the next turn budgets against the server-reported limit.
+                streamingHelper.setContextLimitObserver(errorMessage ->
+                        contextWindowResolver.noteContextLimitError(
+                                primaryModelConfig.getProvider(),
+                                primaryModelConfig.getModelName(), errorMessage));
+            }
             ToolExecutionExecutor executor = new ToolExecutionExecutor(
                     toolSet, toolGuardService, approvalService, streamTracker,
                     toolTimeoutProperties, toolResultStorage, toolConcurrencyRegistry,
@@ -844,6 +927,7 @@ public class AgentGraphBuilder {
             // LLM mis-calls a skill name as a tool, the response tells it
             // the right invocation pattern instead of a dead-end error.
             executor.setSkillRuntimeService(skillRuntimeService);
+            executor.setUsageRecencyTracker(toolUsageRecencyTracker);
             // Optional: route child-agent denied-tool audit events through
             // the audit pipeline. Null when audit is not wired (legacy / test).
             if (auditEventService != null) {
@@ -854,11 +938,31 @@ public class AgentGraphBuilder {
             // capability from reasoningEffort == null.
             boolean supportsReasoningEffort = primaryModelConfig != null
                     && ModelFamily.detect(primaryModelConfig.getModelName()).supportsReasoningEffort();
+            // Honor the model's configured output cap. Passing 0 here made the
+            // node fall back to its 16384 default, so the user-configured
+            // maxTokens never took effect and strict local servers (vLLM's
+            // max_model_len pre-check) rejected the request outright.
+            int configuredMaxOutputTokens = (primaryModelConfig != null
+                    && primaryModelConfig.getMaxTokens() != null
+                    && primaryModelConfig.getMaxTokens() > 0)
+                    ? primaryModelConfig.getMaxTokens() : 0;
             ReasoningNode reasoningNode = new ReasoningNode(chatModel, toolSet, reasoningEffort,
                     supportsReasoningEffort,
-                    streamingHelper, conversationWindowManager, streamTracker, 0, wikiContextService,
+                    streamingHelper, conversationWindowManager, streamTracker,
+                    configuredMaxOutputTokens, wikiContextService,
                     skillCatalogRenderer, toolDisclosureService, progressLedgerService);
+            reasoningNode.setPrefixBudgetPlan(prefixBudgetPlan);
+            reasoningNode.setAutoDemotedTools(autoDemotedTools);
+            // C4: wire the environment-notification registry so ReasoningNode
+            // can drain pending MCP/skill events and inject them as a SystemMessage.
+            reasoningNode.setRunningConversationRegistry(runningConversationRegistry);
             ActionNode actionNode = new ActionNode(executor, streamTracker);
+            // B2/B5: wire optional collaborators so ActionNode can pin skill
+            // constraints and auto-record tool completions into ProgressLedger.
+            // Setter injection keeps the existing constructor signature stable
+            // for tests that build ActionNode directly.
+            actionNode.setSkillRuntimeService(skillRuntimeService);
+            actionNode.setProgressLedgerService(progressLedgerService);
             ObservationProcessor observationProcessor = new ObservationProcessor(graphObservationProperties);
             ObservationNode observationNode = new ObservationNode(observationProcessor, streamTracker);
             SummarizingNode summarizingNode = new SummarizingNode(chatModel, streamingHelper, streamTracker);
@@ -936,6 +1040,9 @@ public class AgentGraphBuilder {
                     // Token Usage
                     .addStrategy(MateClawStateKeys.PROMPT_TOKENS, KeyStrategy.REPLACE)
                     .addStrategy(MateClawStateKeys.COMPLETION_TOKENS, KeyStrategy.REPLACE)
+                    .addStrategy(MateClawStateKeys.CACHE_READ_TOKENS, KeyStrategy.REPLACE)
+                    .addStrategy(MateClawStateKeys.CACHE_WRITE_TOKENS, KeyStrategy.REPLACE)
+                    .addStrategy(MateClawStateKeys.REASONING_TOKENS, KeyStrategy.REPLACE)
                     .addStrategy(MateClawStateKeys.RUNTIME_MODEL_NAME, KeyStrategy.REPLACE)
                     .addStrategy(MateClawStateKeys.RUNTIME_PROVIDER_ID, KeyStrategy.REPLACE)
                     // SourceEvidenceLedger: ActionNode 把每轮 ToolResponse 抽取出的
@@ -966,6 +1073,12 @@ public class AgentGraphBuilder {
                     // Tool progressive disclosure — extensions enabled this run.
                     // Registered in BOTH graphs for the same merge-safety reason.
                     .addStrategy(MateClawStateKeys.ENABLED_EXTENSION_TOOLS, KeyStrategy.REPLACE)
+                    // Tool-call loop guard counters + one-shot post-mutation
+                    // verification reminder flag. Read-merge-write by
+                    // ObservationNode; registered in BOTH graphs so the
+                    // counters survive multi-node merges.
+                    .addStrategy(MateClawStateKeys.TOOL_LOOP_STATS, KeyStrategy.REPLACE)
+                    .addStrategy(MateClawStateKeys.MUTATION_REMINDER_INJECTED, KeyStrategy.REPLACE)
                     .build();
 
             GoalEvaluationNode goalEvalNode = new GoalEvaluationNode(
@@ -1443,6 +1556,10 @@ public class AgentGraphBuilder {
             """;
 
     private String buildEnhancedPrompt(AgentEntity entity, boolean builtinSearchEnabled) {
+        return buildEnhancedPrompt(entity, builtinSearchEnabled, Integer.MAX_VALUE);
+    }
+
+    private String buildEnhancedPrompt(AgentEntity entity, boolean builtinSearchEnabled, int memoryBudgetTokens) {
         // The agent's own systemPrompt encodes its identity (role / goal /
         // backstory). The memory block from workspace files (AGENTS.md, SOUL.md,
         // PROFILE.md, MEMORY.md, ...) augments that identity with durable
@@ -1451,7 +1568,7 @@ public class AgentGraphBuilder {
         // dropped the identity prompt, so editor-side identity changes never
         // reached runtime if the agent had any workspace files.
         String identityPrompt = entity.getSystemPrompt() != null ? entity.getSystemPrompt().trim() : "";
-        String memoryPrompt = memoryManager.buildSystemPromptBlock(entity.getId());
+        String memoryPrompt = memoryManager.buildSystemPromptBlock(entity.getId(), memoryBudgetTokens);
         StringBuilder basePromptBuilder = new StringBuilder();
         if (!identityPrompt.isEmpty()) {
             basePromptBuilder.append(identityPrompt);
@@ -1543,6 +1660,15 @@ public class AgentGraphBuilder {
                 Only state you cannot access something if no relevant tool is available.
                 Do not claim a tool-generated file, URL, UUID, path, task id, or success result before the corresponding tool call has completed. If a tool is needed, call the tool first, then report only the actual returned result.
 
+                ## MCP Tool Naming
+                Tools from MCP servers have names shaped like `mcp_<serverId>_<slug>_<hash6>`:
+                - `<serverId>` is a numeric ID identifying which MCP server the tool belongs to.
+                - Tools from DIFFERENT servers have DIFFERENT serverId prefixes, even if they have the same raw name (e.g. `search` on server A vs server B) — they are DIFFERENT tools and are NOT interchangeable.
+                - Each MCP tool's description starts with `[MCP server: <name>]` so you can identify the source server by its human-readable name.
+                - MCP tools are listed in the Extension Tools catalog by default. Use `enable_tool(toolName="<exact-name>")` to activate the one you need before calling it.
+                - Always call tools by the EXACT name shown in the tool list. Do NOT reconstruct a tool name by swapping the slug into a serverId you remember from a previous successful call — that produces a non-existent tool name and the call will fail.
+                - If a tool call returns "Tool not found" with candidate suggestions, pick the correct one from the candidates verbatim.
+
                 ## Multi-Part Question Guidelines
                 When the user asks multiple questions or requests multiple tasks in a single message:
                 1. Structure your final answer with numbered sections, one per sub-task
@@ -1570,6 +1696,24 @@ public class AgentGraphBuilder {
                 3. Process the extracted text content
 
                 If you try to read a PDF/Office file with read_file, you will get binary garbage or an error.
+
+                ## ProgressLedger Discipline (mandatory)
+                The `## 当前任务进度` block injected near the top of every turn is the **authoritative record** of what you have done and what remains. Treat it as ground truth, not as a scratchpad you may ignore.
+                - **On starting any multi-step task** (≥3 tool calls expected), call `progress_update` in a parallel tool_calls batch to register every pending step BEFORE doing the work. Do not wait until "later" — context compression can trim earlier turns and you will lose track.
+                - **After each completed sub-step**, immediately call `progress_update` to flip its status to `done`. "Immediately" means in the same tool_calls batch that returns the result, not after the next reasoning turn.
+                - **Never re-execute a step the ledger shows as `done`** unless you can articulate why the prior result is stale.
+                - **🔒 固定约束 entries** (pinned from skill manifests) are non-negotiable. They survive context compression for a reason — re-read them every turn and make sure your planned action still satisfies them.
+                - **🔧 自动记录 entries** are auto-filled by Java after each tool call. They are a safety net, not a substitute for your own `progress_update` — if you only rely on them, you will lose the pending/blocked view that drives planning.
+                - If you see a `⚠️ 进度账本已 N 秒未更新` reminder, **stop whatever you are doing and update the ledger first**. Continuing to call tools without updating the ledger is the #1 cause of duplicate work and missed steps.
+                - The ledger is per-conversation and persists across context trims; treating it as ephemeral will cause you to repeat work after every compaction.
+
+                ## Environment Change Notifications
+                Occasionally you will see a `## 📢 环境变更通知` block injected near the top of a turn. It is generated by Java when an external event affects your runtime — an MCP server disconnecting, a skill being updated/removed, or a tool binding change.
+                - These notifications are **authoritative** — Java detected the change; do not second-guess them by re-probing the tool.
+                - If a notification says an MCP server is unavailable, **immediately stop calling tools prefixed with that server's id** and either switch to an alternative or report the gap to the user.
+                - If a notification says a skill was updated, **re-load it via `load_skill`** to refresh its constraints in your pinned ledger; the old constraints you remember may no longer apply.
+                - If a notification says a tool was removed, **do not attempt to call it**; pick a different approach or ask the user.
+                - These notifications appear at most once per event; if you miss one, it will not be repeated, so act on it in the turn you see it.
                 """.formatted(entity.getId());
 
         // Web-search vs browser_use priority guidance — emitted unconditionally so the rule
@@ -1606,14 +1750,48 @@ public class AgentGraphBuilder {
      * bound skills, effective tool allowlist, model window and workspace once;
      * the returned renderer is invoked each turn with the skills loaded so far
      * this run so {@code load_skill} pins float to the top of the catalog.
+     *
+     * <p>agent-4: when any loaded skill declares structured {@code constraints}
+     * in its manifest, the rendered catalog gets a trailing anchor note
+     * {@code "🔒 = 含固定约束的 skill（详见 ProgressLedger）"} so the LLM has
+     * a visible cue that some skills carry non-negotiable rules pinned into
+     * the ledger. The cue is appended (not interleaved) to keep the
+     * catalog's prompt-cache hash stable for the unchanged prefix.
      */
     private SkillCatalogRenderer buildSkillCatalogRenderer(AgentEntity entity, Set<String> boundTools,
                                                            Integer maxInputTokens) {
         Set<Long> boundSkillIds = agentBindingService.getBoundSkillIds(entity.getId());
         Long agentId = entity.getId();
         Long workspaceId = entity.getWorkspaceId();
-        return loaded -> skillRuntimeService.buildSkillPromptEnhancement(
-                boundSkillIds, boundTools, maxInputTokens, agentId, workspaceId, loaded);
+        return loaded -> {
+            String catalog = skillRuntimeService.buildSkillPromptEnhancement(
+                    boundSkillIds, boundTools, maxInputTokens, agentId, workspaceId, loaded);
+            if (catalog == null || catalog.isBlank() || loaded == null || loaded.isEmpty()) {
+                return catalog;
+            }
+            // Scan loaded skills for any with structured constraints. We only
+            // surface the anchor when at least one matches, to avoid noisy
+            // output on constraint-free skills.
+            boolean anyHasConstraints = false;
+            for (String skillName : loaded) {
+                try {
+                    vip.mate.skill.runtime.model.ResolvedSkill skill = skillRuntimeService.findActiveSkill(skillName);
+                    if (skill != null && skill.getManifest() != null) {
+                        List<String> constraints = skill.getManifest().getConstraints();
+                        if (constraints != null && !constraints.isEmpty()) {
+                            anyHasConstraints = true;
+                            break;
+                        }
+                    }
+                } catch (Exception ignored) {
+                    // best-effort lookup; do not fail the catalog render
+                }
+            }
+            if (!anyHasConstraints) {
+                return catalog;
+            }
+            return catalog + "\n\n🔒 = 含固定约束的 skill（已写入 ProgressLedger，详见 🔒 固定约束 段落，全程不可忽略）";
+        };
     }
 
     /**

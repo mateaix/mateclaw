@@ -201,7 +201,7 @@ public class McpClientManager {
                     McpIdentityForwardService idSvc =
                             identityForwardService.forwardsTo(serverId, serverName) ? identityForwardService : null;
                     String audience = idSvc != null ? identityForwardService.audienceFor(serverId, serverName) : null;
-                    List<ToolCallback> wrapped = wrapServerCallbacks(serverId, cbs, idSvc, audience);
+                    List<ToolCallback> wrapped = wrapServerCallbacks(serverId, cbs, idSvc, audience, serverName);
                     lastGoodCallbacks.put(serverId, wrapped);
                     allCallbacks.addAll(wrapped);
                     continue;
@@ -253,7 +253,7 @@ public class McpClientManager {
      * real {@link McpSyncClient}.
      */
     static List<ToolCallback> wrapServerCallbacks(long serverId, ToolCallback[] cbs) {
-        return wrapServerCallbacks(serverId, cbs, null, null);
+        return wrapServerCallbacks(serverId, cbs, null, null, null);
     }
 
     /**
@@ -263,9 +263,13 @@ public class McpClientManager {
      *        {@link McpIdentityForwardService} opt-in per server; {@code null}
      *        means this server does not forward identity.
      * @param audience the token audience for this server (ignored in plaintext mode).
+     * @param serverName human-readable MCP server name; forwarded into each
+     *        {@link PrefixedNameToolCallback} so the tool description is tagged
+     *        {@code [MCP server: <name>]}. May be {@code null} when unknown.
      */
     static List<ToolCallback> wrapServerCallbacks(long serverId, ToolCallback[] cbs,
-                                                  McpIdentityForwardService identitySvc, String audience) {
+                                                  McpIdentityForwardService identitySvc, String audience,
+                                                  String serverName) {
         List<String> rawNames = new ArrayList<>(cbs.length);
         for (ToolCallback cb : cbs) {
             rawNames.add(cb.getToolDefinition() != null ? cb.getToolDefinition().name() : null);
@@ -294,7 +298,7 @@ public class McpClientManager {
             ToolCallback inner = identitySvc != null
                     ? new IdentityForwardingToolCallback(cb, identitySvc, audience)
                     : cb;
-            out.add(new PrefixedNameToolCallback(d.prefixedName(), inner));
+            out.add(new PrefixedNameToolCallback(d.prefixedName(), inner, serverName));
         }
         return out;
     }

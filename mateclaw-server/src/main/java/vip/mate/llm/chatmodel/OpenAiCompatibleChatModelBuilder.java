@@ -350,6 +350,14 @@ public class OpenAiCompatibleChatModelBuilder implements ChatModelBuilder {
     private MultiValueMap<String, String> buildOpenAiHeaders(Map<String, Object> kwargs) {
         LinkedMultiValueMap<String, String> headers = new LinkedMultiValueMap<>();
         headers.add("User-Agent", "MateClaw/1.0");
+        // Force a fresh TCP connection per request (no keep-alive pooling). Self-hosted
+        // OpenAI-compatible gateways frequently idle-close connections faster than the
+        // JDK HttpClient evicts them from its pool, so a reused-but-dead socket gets reset
+        // by the peer before any response byte arrives — "header parser received no bytes".
+        // This mirrors curl's one-connection-per-call behavior. "Connection" is a JDK
+        // restricted header, enabled at startup via jdk.httpclient.allowRestrictedHeaders.
+        // A user-supplied Connection header in kwargs.headers overrides this (set() below).
+        headers.add("Connection", "close");
         Object headerObject = kwargs.get("headers");
         if (headerObject instanceof Map<?, ?> headerMap) {
             headerMap.forEach((key, value) -> {

@@ -6,6 +6,7 @@ import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
 import vip.mate.common.result.R;
+import vip.mate.system.model.SearchProviderCatalogResponse;
 import vip.mate.system.model.SystemSettingsDTO;
 import vip.mate.system.service.SystemSettingService;
 import vip.mate.workspace.core.annotation.RequireGlobalAdmin;
@@ -31,6 +32,13 @@ public class SystemSettingController {
     @RequireWorkspaceRole("admin")
     public R<SystemSettingsDTO> saveSettings(@RequestBody SystemSettingsDTO dto) {
         return R.ok(systemSettingService.saveSettings(dto));
+    }
+
+    @Operation(summary = "获取搜索 provider catalog（内置 + 插件），及当前实际生效的 provider")
+    @GetMapping("/search-providers")
+    @RequireWorkspaceRole("admin")
+    public R<SearchProviderCatalogResponse> getSearchProviders() {
+        return R.ok(systemSettingService.getSearchProviderCatalog());
     }
 
     @Operation(summary = "获取当前语言")

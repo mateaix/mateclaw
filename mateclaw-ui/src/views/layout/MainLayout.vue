@@ -578,7 +578,9 @@ function logout() {
   localStorage.removeItem('token')
   localStorage.removeItem('username')
   localStorage.removeItem('role')
-  router.push('/login')
+  // 刷新页面而非 router.push：确保 keepAlive 缓存的 ChatConsole、
+  // 模块级变量（cachedAgents 等）全部清空，杜绝跨用户数据泄漏。
+  window.location.href = '/login'
 }
 
 async function changeLocale(locale: AppLocale) {

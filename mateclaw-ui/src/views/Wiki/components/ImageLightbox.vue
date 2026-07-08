@@ -26,7 +26,6 @@
  * upstream so this component stays a thin coordinator.
  */
 import { ref } from 'vue'
-import { ElImageViewer } from 'element-plus'
 
 const open = ref(false)
 const urls = ref<string[]>([])

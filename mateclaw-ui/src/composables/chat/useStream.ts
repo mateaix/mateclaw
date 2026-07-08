@@ -80,6 +80,7 @@ export type SSEEventType =
   // (start → pair_safe → summarize → done/skipped/failed). Payload
   // carries preTokens/postTokens/messagesSummarized/tailKept/etc.
   | 'compact_status'
+  | 'context_usage'
 
 export interface SSEEvent {
   type: SSEEventType

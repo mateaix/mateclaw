@@ -71,9 +71,12 @@ class ConversationWindowManagerSpillMarkerPreservationTest {
         ToolResponseMessage trm0 = (ToolResponseMessage) messages.get(0);
         ToolResponseMessage trm1 = (ToolResponseMessage) messages.get(1);
         assertEquals(SPILL_BODY, trm0.getResponses().getFirst().responseData(),
-                "Phase 2 hard clear must not replace a spill-marker body with [tool result removed]");
-        assertEquals("[tool result removed]", trm1.getResponses().getFirst().responseData(),
+                "Phase 2 hard clear must not replace a spill-marker body with the cleared placeholder");
+        String clearedBody = trm1.getResponses().getFirst().responseData();
+        assertTrue(clearedBody.contains("cleared to save context"),
                 "non-spill bodies should still be replaced by Phase 2");
+        assertTrue(clearedBody.contains("search") && clearedBody.contains("2000 chars"),
+                "the cleared placeholder should carry the tool name and original size");
         assertEquals(1, cleared,
                 "clear counter should reflect only the non-spill body that was actually replaced");
     }
@@ -120,7 +123,7 @@ class ConversationWindowManagerSpillMarkerPreservationTest {
         ToolResponseMessage trm = (ToolResponseMessage) messages.getFirst();
         assertEquals(SPILL_BODY, trm.getResponses().get(0).responseData(),
                 "the spill response in a mixed message must survive Phase 2");
-        assertEquals("[tool result removed]", trm.getResponses().get(1).responseData(),
+        assertTrue(trm.getResponses().get(1).responseData().contains("cleared to save context"),
                 "the non-spill response in a mixed message must still be cleared");
     }
 

@@ -20,6 +20,9 @@ export interface DateUsageItem {
 export interface TokenUsageSummary {
   totalPromptTokens: number
   totalCompletionTokens: number
+  totalCacheReadTokens: number
+  totalCacheWriteTokens: number
+  totalReasoningTokens: number
   totalMessages: number
   byModel: ModelUsageItem[]
   byDate: DateUsageItem[]

@@ -3,6 +3,7 @@ package vip.mate.skill.installer;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import vip.mate.skill.installer.model.HubSkillInfo;
 import vip.mate.skill.installer.model.SkillBundle;
@@ -36,6 +37,13 @@ import java.util.Map;
 @Slf4j
 @Service
 public class SkillHubClient {
+
+    /** Per-entry / total caps for marketplace bundle ZIPs — same knobs as upload. */
+    @Value("${mateclaw.skill.upload.max-entry-size-mb:1}")
+    private long maxEntrySizeMb = 1;
+
+    @Value("${mateclaw.skill.upload.max-total-size-mb:50}")
+    private long maxTotalSizeMb = 50;
 
     private final SkillHubProperties properties;
     private final ObjectMapper objectMapper;
@@ -131,7 +139,9 @@ public class SkillHubClient {
 
         // Step 3: extract + assemble SkillBundle.
         try {
-            ZipSkillFetcher.ExtractedSkill extracted = ZipSkillFetcher.extract(new ByteArrayInputStream(zipBytes));
+            ZipSkillFetcher.ExtractedSkill extracted = ZipSkillFetcher.extract(
+                    new ByteArrayInputStream(zipBytes),
+                    ZipSkillFetcher.Limits.ofMb(maxEntrySizeMb, maxTotalSizeMb));
 
             var parsed = frontmatterParser.parse(extracted.skillMdContent());
             Map<String, Object> fm = parsed.getFrontmatter();

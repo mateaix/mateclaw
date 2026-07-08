@@ -3,6 +3,7 @@ package vip.mate.skill.controller;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
@@ -32,6 +33,15 @@ public class SkillInstallController {
 
     private final SkillInstaller skillInstaller;
     private final SkillFrontmatterParser frontmatterParser;
+
+    /** Per-entry cap inside an uploaded skill ZIP (MB). */
+    @Value("${mateclaw.skill.upload.max-entry-size-mb:1}")
+    private long maxEntrySizeMb = 1;
+
+    /** Total size cap for an uploaded skill ZIP (MB). The archive is buffered
+     *  in memory during extraction, so this also bounds peak heap usage. */
+    @Value("${mateclaw.skill.upload.max-total-size-mb:50}")
+    private long maxTotalSizeMb = 50;
 
     @Operation(summary = "搜索 ClawHub 市场")
     @GetMapping("/hub/search")
@@ -90,7 +100,8 @@ public class SkillInstallController {
             return R.fail(400, "Only .zip files are accepted");
         }
         try {
-            SkillBundle bundle = ZipSkillFetcher.parse(zipFile, frontmatterParser);
+            SkillBundle bundle = ZipSkillFetcher.parse(zipFile, frontmatterParser,
+                    ZipSkillFetcher.Limits.ofMb(maxEntrySizeMb, maxTotalSizeMb));
             Map<String, Object> result = skillInstaller.installFromBundle(
                     bundle, enable, overwrite, targetName, workspaceId);
             return R.ok(result);

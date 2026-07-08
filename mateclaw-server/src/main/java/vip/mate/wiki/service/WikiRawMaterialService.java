@@ -299,6 +299,58 @@ public class WikiRawMaterialService {
     }
 
     /**
+     * Create a raw material record for agent-authored content WITHOUT triggering
+     * the LLM ingest pipeline. Used by {@code wiki_create_page} so an agent-written
+     * page gets a lineage anchor — it appears in the Raw Material panel, hosts
+     * chunks, supports the download button (text raws are served from the
+     * {@code original_content} column by the download endpoint), and can be
+     * reprocessed later — without re-running LLM page generation, since the
+     * agent has already produced the final page content.
+     *
+     * <p>The raw is left in {@code processing} status; the caller flips it to
+     * {@code completed} via {@link WikiProcessingService#linkAgentPageToRaw}
+     * once chunks + citations have landed. Dedup by content hash reuses an
+     * existing row when the agent writes the same content again (idempotent),
+     * mirroring {@link #addText}'s dedup semantics.
+     *
+     * @return the raw material entity (newly inserted or an existing same-content row)
+     */
+    @Transactional
+    public WikiRawMaterialEntity addAgentAuthored(Long kbId, String title, String content) {
+        String hash = computeHash(content);
+
+        // Dedup: reuse any existing row with the same hash in this KB (any status).
+        // An agent often re-writes the same report title in a conversation; stacking
+        // duplicate raws would pollute the Raw Material panel.
+        WikiRawMaterialEntity existing = rawMapper.selectOne(
+                new LambdaQueryWrapper<WikiRawMaterialEntity>()
+                        .eq(WikiRawMaterialEntity::getKbId, kbId)
+                        .eq(WikiRawMaterialEntity::getContentHash, hash)
+                        .last("LIMIT 1"));
+        if (existing != null) {
+            return existing;
+        }
+
+        WikiRawMaterialEntity entity = new WikiRawMaterialEntity();
+        entity.setKbId(kbId);
+        entity.setTitle(title);
+        entity.setSourceType("text");
+        entity.setOriginalContent(content);
+        entity.setFileSize((long) content.getBytes(StandardCharsets.UTF_8).length);
+        entity.setContentHash(hash);
+        // 'processing' rather than 'pending': this raw is claimed by the agent
+        // tool's own synchronous post-processing (linkAgentPageToRaw), so it
+        // must NOT be picked up by the async ingest listener (which would
+        // re-run LLM page generation). The caller flips it to 'completed'.
+        entity.setProcessingStatus("processing");
+        rawMapper.insert(entity);
+        kbService.incrementRawCount(kbId);
+
+        log.info("[Wiki] Agent-authored raw material added: id={}, kbId={}, title={}", entity.getId(), kbId, title);
+        return entity;
+    }
+
+    /**
      * Adds a file-type raw material (PDF / DOCX / image / ...).
      *
      * <p>Backwards-compatible overload that omits the MIME type. Callers

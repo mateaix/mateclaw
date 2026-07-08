@@ -7,6 +7,7 @@ import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.test.util.ReflectionTestUtils;
 import vip.mate.agent.AgentToolSet;
+import vip.mate.agent.context.TokenEstimator;
 import vip.mate.tool.ToolRegistry;
 import vip.mate.tool.mcp.model.McpServerEntity;
 import vip.mate.tool.mcp.service.McpServerService;
@@ -88,7 +89,7 @@ class ToolDisclosureServiceTest {
         lenient().when(ms.listAll()).thenReturn(servers);
         lenient().when(as.listAvailable()).thenReturn(available);
         lenient().when(tr.getEnabledToolSet()).thenReturn(globalSet());
-        return new DefaultToolDisclosureService(ts, ms, as, tr);
+        return new DefaultToolDisclosureService(ts, ms, as, tr, new ToolUsageRecencyTracker());
     }
 
     @Test
@@ -147,11 +148,14 @@ class ToolDisclosureServiceTest {
     }
 
     @Test
-    @DisplayName("MCP tool whose server has no tier set defaults to core (visible)")
-    void mcpDefaultsCoreWhenServerTierUnset() {
+    @DisplayName("Move 5: MCP tool whose server has no tier set defaults to EXTENSION (on-demand)")
+    void mcpDefaultsExtensionWhenServerTierUnset() {
+        // Move 5: MCP tools default to EXTENSION so they don't flood the
+        // CORE tool list. Pre-Move-4 this returned CORE.
         var svc = service(List.of(), List.of(server(7L, "github", null)),
                 List.of(mcpDto("mcp_github_create_issue", 7L)));
-        assertEquals(DisclosureTier.CORE, svc.resolveTierByName("mcp_github_create_issue"));
+        assertEquals(DisclosureTier.EXTENSION, svc.resolveTierByName("mcp_github_create_issue"),
+                "Move 5: MCP tools with no explicit tier must default to EXTENSION");
     }
 
     @Test
@@ -201,5 +205,106 @@ class ToolDisclosureServiceTest {
 
     private static List<String> names(List<ToolCallback> cbs) {
         return cbs.stream().map(c -> c.getToolDefinition().name()).toList();
+    }
+
+    // ==================== budget-driven auto-demotion ====================
+
+    /** Three plain core tools for demotion-ranking tests. */
+    static class ManyCoreTools {
+        @Tool(description = "core tool a")
+        public String tool_a() { return ""; }
+
+        @Tool(description = "core tool b")
+        public String tool_b() { return ""; }
+
+        @Tool(description = "core tool c")
+        public String tool_c() { return ""; }
+    }
+
+    private static AgentToolSet manyCoreSet() {
+        return AgentToolSet.fromCallbacks(List.of(new ManyCoreTools()),
+                List.of(ToolCallbacks.from(new ManyCoreTools())));
+    }
+
+    @Test
+    @DisplayName("no demotion when the core schemas fit the budget, or when budget is absent")
+    void noDemotionWhenBudgetFits() {
+        var svc = service(List.of(), List.of(), List.of());
+        AgentToolSet set = manyCoreSet();
+        assertTrue(svc.computeAutoDemotions(set, Integer.MAX_VALUE).isEmpty());
+        assertTrue(svc.computeAutoDemotions(set, null).isEmpty());
+        assertTrue(svc.computeAutoDemotions(set, 1_000_000).isEmpty());
+    }
+
+    @Test
+    @DisplayName("tiny budget demotes every demotable tool, alphabetical when nothing was ever used")
+    void tinyBudgetDemotesAll() {
+        var svc = service(List.of(), List.of(), List.of());
+        var demoted = svc.computeAutoDemotions(manyCoreSet(), 1);
+        assertEquals(Set.of("tool_a", "tool_b", "tool_c"), demoted);
+    }
+
+    @Test
+    @DisplayName("budget one tool short demotes exactly the first never-used candidate")
+    void partialDemotionTakesFirstCandidate()  {
+        var svc = service(List.of(), List.of(), List.of());
+        AgentToolSet set = manyCoreSet();
+        int coreTokens = TokenEstimator.estimateToolsTokens(svc.split(set, Set.of()).activeCallbacks());
+        var demoted = svc.computeAutoDemotions(set, coreTokens - 1);
+        assertEquals(Set.of("tool_a"), demoted);
+    }
+
+    @Test
+    @DisplayName("recently used tools demote last")
+    void recencyProtectsRecentlyUsed() {
+        ToolUsageRecencyTracker tracker = new ToolUsageRecencyTracker();
+        tracker.recordUse("tool_a");
+        ToolService ts = mock(ToolService.class);
+        McpServerService ms = mock(McpServerService.class);
+        AvailableToolService as = mock(AvailableToolService.class);
+        ToolRegistry tr = mock(ToolRegistry.class);
+        lenient().when(ts.listTools()).thenReturn(List.of());
+        lenient().when(ms.listAll()).thenReturn(List.of());
+        lenient().when(as.listAvailable()).thenReturn(List.of());
+        lenient().when(tr.getEnabledToolSet()).thenReturn(globalSet());
+        var svc = new DefaultToolDisclosureService(ts, ms, as, tr, tracker);
+
+        AgentToolSet set = manyCoreSet();
+        int coreTokens = TokenEstimator.estimateToolsTokens(svc.split(set, Set.of()).activeCallbacks());
+        // One tool over budget: the never-used tool_b (alphabetically first
+        // among never-used) demotes, the recently used tool_a survives.
+        var demoted = svc.computeAutoDemotions(set, coreTokens - 1);
+        assertEquals(Set.of("tool_b"), demoted);
+    }
+
+    @Test
+    @DisplayName("explicit core DB row and meta-tools are never demoted")
+    void explicitCoreProtected() {
+        var svc = service(List.of(toolRow("tool_a", "builtin", "core")), List.of(), List.of());
+        var demoted = svc.computeAutoDemotions(manyCoreSet(), 1);
+        assertEquals(Set.of("tool_b", "tool_c"), demoted);
+    }
+
+    @Test
+    @DisplayName("auto-demoted tools behave as extension in split and can be enabled back")
+    void splitHonorsAutoDemotions() {
+        var svc = service(List.of(), List.of(), List.of());
+        AgentToolSet set = manyCoreSet();
+
+        var split = svc.split(set, Set.of(), Set.of("tool_b"));
+        assertEquals(List.of("tool_a", "tool_c"), names(split.activeCallbacks()));
+        assertEquals(List.of("tool_b"), names(split.extensionCatalog()));
+
+        var enabledBack = svc.split(set, Set.of("tool_b"), Set.of("tool_b"));
+        assertTrue(names(enabledBack.activeCallbacks()).contains("tool_b"));
+    }
+
+    @Test
+    @DisplayName("catalog rendering lists auto-demoted tools for discoverability")
+    void catalogListsAutoDemoted() {
+        var svc = service(List.of(), List.of(), List.of());
+        String catalog = svc.renderExtensionCatalog(manyCoreSet(), 8192, Set.of("tool_b"));
+        assertTrue(catalog.contains("tool_b"));
+        assertFalse(catalog.contains("| `tool_a`"), "non-demoted core tools stay out of the catalog");
     }
 }

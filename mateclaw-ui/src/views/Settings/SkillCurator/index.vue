@@ -148,7 +148,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElIcon } from 'element-plus'
 import { Loading, WarningFilled } from '@element-plus/icons-vue'
 import { mcToast } from '@/composables/useMcToast'
 import { skillApi } from '@/api/index'

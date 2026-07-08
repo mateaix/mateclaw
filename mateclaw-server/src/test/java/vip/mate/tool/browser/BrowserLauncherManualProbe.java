@@ -3,6 +3,7 @@ package vip.mate.tool.browser;
 import com.microsoft.playwright.Browser;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.Playwright;
+import vip.mate.common.net.SsrfProperties;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -25,7 +26,7 @@ public final class BrowserLauncherManualProbe {
         System.out.println("user    = " + System.getProperty("user.name"));
 
         BrowserProperties props = new BrowserProperties();
-        BrowserLauncher launcher = new BrowserLauncher(props);
+        BrowserLauncher launcher = new BrowserLauncher(props, new SsrfProperties());
 
         System.out.println("\nCandidate paths on this OS:");
         for (Path p : BrowserLauncher.systemBrowserCandidates()) {
