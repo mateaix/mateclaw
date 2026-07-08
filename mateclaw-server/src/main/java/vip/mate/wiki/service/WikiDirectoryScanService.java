@@ -5,6 +5,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import vip.mate.wiki.WikiProperties;
 import vip.mate.wiki.model.WikiKnowledgeBaseEntity;
+import vip.mate.wiki.model.WikiRawMaterialEntity;
+import vip.mate.wiki.model.WikiSourceGroupEntity;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -76,12 +78,33 @@ public class WikiDirectoryScanService {
         if (patterns.isEmpty()) {
             return new ScanResult(0, 0, 0, List.of("No source directory configured"));
         }
-        return scanWithPatterns(kbId, patterns);
+        return scanWithPatterns(kbId, patterns, null, null);
+    }
+
+    /**
+     * 按来源分组扫描。{@code full=false} 为增量扫描（沿用既有 dedup 语义）；
+     * {@code full=true} 会对本次命中但内容未变（skip）的已有 raw 额外触发强制重跑，
+     * 复用既有的 setLastProcessedHash(null)+reprocess 组合，不改动 ingest 内部去重逻辑。
+     */
+    public ScanResult scanGroup(Long kbId, WikiSourceGroupEntity group, boolean full) {
+        List<String> patterns = WikiSourcePathValidator.parseSourcePatterns(group.getPath());
+        if (patterns.isEmpty()) {
+            return new ScanResult(0, 0, 0, List.of("No path configured for this source group"));
+        }
+        List<Long> skippedRawIds = full ? new ArrayList<>() : null;
+        ScanResult result = scanWithPatterns(kbId, patterns, group.getId(), skippedRawIds);
+        if (full && skippedRawIds != null && !skippedRawIds.isEmpty()) {
+            for (Long rawId : skippedRawIds) {
+                rawService.setLastProcessedHash(rawId, null);
+                rawService.reprocess(rawId);
+            }
+        }
+        return result;
     }
 
     // ==================== private ====================
 
-    private ScanResult scanWithPatterns(Long kbId, List<String> patterns) {
+    private ScanResult scanWithPatterns(Long kbId, List<String> patterns, Long groupId, List<Long> skippedRawIdsOut) {
         List<FileCandidate> candidates = new ArrayList<>();
         List<String> errors = new ArrayList<>();
         int maxFiles = properties.getMaxScanFiles();
@@ -150,6 +173,7 @@ public class WikiDirectoryScanService {
                     // skipped while a modified file (new hash) is re-ingested.
                     String content = Files.readString(realFile, StandardCharsets.UTF_8);
                     boolean fresh = rawService.ingestTextFileFromScan(kbId, fileName, absolutePath, content);
+                    tagGroupIfNeeded(kbId, absolutePath, groupId, fresh, skippedRawIdsOut);
                     if (fresh) {
                         added++;
                     } else {
@@ -171,6 +195,7 @@ public class WikiDirectoryScanService {
                 };
                 boolean freshBinary = rawService.ingestBinaryFileFromScan(
                         kbId, fileName, sourceType, absolutePath, realSize);
+                tagGroupIfNeeded(kbId, absolutePath, groupId, freshBinary, skippedRawIdsOut);
                 if (freshBinary) {
                     added++;
                 } else {
@@ -190,6 +215,27 @@ public class WikiDirectoryScanService {
                 patterns, scanned, added, skipped, errors.size());
 
         return new ScanResult(scanned, added, skipped, errors);
+    }
+
+    /**
+     * 分组扫描时打标 groupId：仅在历史 raw 尚未归属任何分组时补写，从不覆盖已有的
+     * （包括手动改挂的）分组归属。这也是历史 raw 回填分组的唯一机制——
+     * 不做一次性路径匹配脚本，靠下一次该分组的正常扫描自然回填。
+     */
+    private void tagGroupIfNeeded(Long kbId, String absolutePath, Long groupId, boolean fresh, List<Long> skippedRawIdsOut) {
+        if (groupId == null) {
+            return;
+        }
+        WikiRawMaterialEntity raw = rawService.findBySourcePath(kbId, absolutePath);
+        if (raw == null) {
+            return;
+        }
+        if (raw.getGroupId() == null) {
+            rawService.updateGroup(raw.getId(), groupId);
+        }
+        if (!fresh && skippedRawIdsOut != null) {
+            skippedRawIdsOut.add(raw.getId());
+        }
     }
 
     private void collectCandidates(String pattern, List<FileCandidate> candidates,

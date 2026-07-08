@@ -204,14 +204,20 @@ public final class WorkspacePathGuard {
      * transition window.
      */
     public static Path validatePath(String rawPath, @Nullable ToolContext ctx) {
-        Path normalized = Paths.get(rawPath).toAbsolutePath().normalize();
-
         String basePath = resolveBasePath(ctx);
         if (basePath == null || basePath.isBlank()) {
-            return normalized; // 未配置活动目录，不限制
+            // 未配置活动目录，不限制。此时相对路径仍按进程 CWD 解析（遗留行为）。
+            return Paths.get(rawPath).toAbsolutePath().normalize();
         }
 
         Path root = Paths.get(basePath).toAbsolutePath().normalize();
+        // A relative path means "relative to the agent's workspace root", not
+        // the JVM's launch directory. Resolving against process CWD (via
+        // toAbsolutePath) sent a plain "./foo.html" outside the sandbox whenever
+        // the server ran from a directory other than the workspace, tripping a
+        // spurious "工作区越界" block (issue #494). This matches the shell
+        // scanner, which already resolves relative tokens against root.
+        Path normalized = resolveAgainstRoot(rawPath, root);
 
         // 先用 normalize 检查，再尝试 toRealPath 防符号链接逃逸
         if (!normalized.startsWith(root) && !isExempt(normalized)) {
@@ -333,11 +339,27 @@ public final class WorkspacePathGuard {
         if (rawPath == null || rawPath.isBlank()) return null;
         Path root = basePathToRoot(basePath);
         if (root == null) return null;
-        Path normalized = Paths.get(rawPath).toAbsolutePath().normalize();
+        // Relative paths resolve against the workspace root (see validatePath /
+        // issue #494), so a plain "./foo.html" stays inside the sandbox
+        // regardless of the server's launch directory.
+        Path normalized = resolveAgainstRoot(rawPath, root);
         if (!normalized.startsWith(root) && !isExempt(normalized)) {
             return "Path is outside workspace boundary: " + normalized + ", allowed root: " + root;
         }
         return null;
+    }
+
+    /**
+     * Resolve a user-supplied path against the workspace {@code root}: absolute
+     * paths are taken as-is, relative paths (including {@code ./foo} and
+     * {@code ../foo}) are resolved against {@code root} and normalized. A
+     * traversal that climbs out of the workspace still normalizes to a path
+     * that fails the {@code startsWith(root)} check, so this only fixes the
+     * legitimate in-workspace relative case — it does not weaken the boundary.
+     */
+    private static Path resolveAgainstRoot(String rawPath, Path root) {
+        Path p = Paths.get(rawPath);
+        return (p.isAbsolute() ? p : root.resolve(p)).normalize();
     }
 
     /**

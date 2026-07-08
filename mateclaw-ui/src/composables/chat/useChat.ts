@@ -59,6 +59,30 @@ export interface CompactStatusEvent {
   fromCache?: boolean
 }
 
+/**
+ * Snapshot of a {@code context_usage} SSE event. Mirrors the payload built by
+ * ConversationWindowManager.broadcastContextUsage: how much of the effective
+ * input window the next LLM call occupies, split by source. All values are
+ * TokenEstimator heuristics — a gauge, not a bill.
+ */
+export interface ContextUsageEvent {
+  /** Effective input window (tokens) of the active model. */
+  windowTokens: number
+  /** system + tools + history + current, in tokens. */
+  usedTokens: number
+  systemTokens: number
+  /** Tool / skill schemas advertised to the model (includes MCP tools). */
+  toolsTokens: number
+  historyTokens: number
+  /** Current user input (plus per-message overhead). */
+  currentTokens: number
+  /** usedTokens / windowTokens (may exceed 1 before compaction runs). */
+  ratio: number
+  /** True when this pass will trigger history compaction. */
+  willCompact: boolean
+  timestamp?: number
+}
+
 export interface UseChatOptions {
   /** Base API URL */
   baseUrl: string
@@ -111,6 +135,11 @@ export interface UseChatReturn {
    * to {@code null} when a turn finishes, so the chip auto-hides.
    */
   compactStatus: import('vue').Ref<CompactStatusEvent | null>
+  /**
+   * Latest context_usage SSE event. Persists between turns (occupancy stays
+   * meaningful after a reply lands); reset only when switching conversations.
+   */
+  contextUsage: import('vue').Ref<ContextUsageEvent | null>
   /**
    * Fine-grained pre-token lifecycle stage. Drives the loading bar copy in the
    * window between "send pressed" and "first delta arrived". `null` once a
@@ -188,6 +217,9 @@ export function useChat(options: UseChatOptions): UseChatReturn {
    * immediately, so the user gets a chance to see the result.
    */
   const compactStatus = ref<CompactStatusEvent | null>(null)
+
+  /** Latest context-usage snapshot; kept across turns, cleared on conversation switch. */
+  const contextUsage = ref<ContextUsageEvent | null>(null)
 
   /** All segments of the current assistant message (for segmented display) */
   const currentSegments = ref<MessageSegment[]>([])
@@ -640,6 +672,9 @@ export function useChat(options: UseChatOptions): UseChatReturn {
         const msg = messages.value[msgIndex]
         if (data.promptTokens !== undefined) msg.promptTokens = data.promptTokens
         if (data.completionTokens !== undefined) msg.completionTokens = data.completionTokens
+        if (data.cacheReadTokens !== undefined) msg.cacheReadTokens = data.cacheReadTokens
+        if (data.cacheWriteTokens !== undefined) msg.cacheWriteTokens = data.cacheWriteTokens
+        if (data.reasoningTokens !== undefined) msg.reasoningTokens = data.reasoningTokens
         if (data.runtimeModel) msg.runtimeModel = data.runtimeModel
         if (data.runtimeProvider) msg.runtimeProvider = data.runtimeProvider
         // Replace the local temp ID with the backend-persisted ID so reconcile can match by ID
@@ -983,6 +1018,13 @@ export function useChat(options: UseChatOptions): UseChatReturn {
   stream.on('compact_status', (data) => {
     if (isStaleEvent(data)) return
     compactStatus.value = { ...data } as CompactStatusEvent
+  })
+
+  // Context-window occupancy snapshot, fired once per window-fit pass and
+  // again after compaction. Drives the occupancy chip next to the input.
+  stream.on('context_usage', (data) => {
+    if (isStaleEvent(data)) return
+    contextUsage.value = { ...data } as ContextUsageEvent
   })
 
   stream.on('phase', (data) => {
@@ -2189,6 +2231,7 @@ export function useChat(options: UseChatOptions): UseChatReturn {
     streamPhase.value = 'idle'
     phaseInfo.value = null
     compactStatus.value = null
+    contextUsage.value = null
     lifecycleStage.value = null
     error.value = null
     messageQueue.clear()
@@ -2209,6 +2252,7 @@ export function useChat(options: UseChatOptions): UseChatReturn {
     queueSize: messageQueue.queueSize,
     heartbeat,
     compactStatus,
+    contextUsage,
     lifecycleStage,
     sendMessage,
     stopGeneration,

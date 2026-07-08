@@ -248,6 +248,9 @@ public class StepExecutionNode implements NodeAction {
         String approvalToolName = null;
         int stepPromptTokens = 0;
         int stepCompletionTokens = 0;
+        int stepCacheReadTokens = 0;
+        int stepCacheWriteTokens = 0;
+        int stepReasoningTokens = 0;
 
         // RFC-052: any returnDirect tool that fires inside this step must
         // short-circuit the entire plan (not just this step). We accumulate
@@ -322,6 +325,9 @@ public class StepExecutionNode implements NodeAction {
 
                 stepPromptTokens += result.promptTokens();
                 stepCompletionTokens += result.completionTokens();
+                stepCacheReadTokens += result.cacheReadTokens();
+                stepCacheWriteTokens += result.cacheWriteTokens();
+                stepReasoningTokens += result.reasoningTokens();
 
                 if (!result.thinking().isEmpty()) {
                     stepThinking = result.thinking();
@@ -444,8 +450,8 @@ public class StepExecutionNode implements NodeAction {
                         .currentPhase("awaiting_approval")
                         .contentStreamed(true)
                         .thinkingStreamed(!stepThinking.isEmpty())
-                        .put(MateClawStateKeys.PROMPT_TOKENS, state.value(MateClawStateKeys.PROMPT_TOKENS, 0) + stepPromptTokens)
-                        .put(MateClawStateKeys.COMPLETION_TOKENS, state.value(MateClawStateKeys.COMPLETION_TOKENS, 0) + stepCompletionTokens)
+                        .addStepUsage(state, stepPromptTokens, stepCompletionTokens,
+                                stepCacheReadTokens, stepCacheWriteTokens, stepReasoningTokens)
                         .events(events)
                         .build();
             }
@@ -480,10 +486,8 @@ public class StepExecutionNode implements NodeAction {
                         .contentStreamed(false)  // 由 StateGraphPlanExecuteAgent 经 finalSummary 推送
                         .put(MateClawStateKeys.RETURN_DIRECT_TRIGGERED, true)
                         .put(MateClawStateKeys.DIRECT_TOOL_OUTPUTS, List.copyOf(stepDirectOutputs))
-                        .put(MateClawStateKeys.PROMPT_TOKENS,
-                                state.value(MateClawStateKeys.PROMPT_TOKENS, 0) + stepPromptTokens)
-                        .put(MateClawStateKeys.COMPLETION_TOKENS,
-                                state.value(MateClawStateKeys.COMPLETION_TOKENS, 0) + stepCompletionTokens)
+                        .addStepUsage(state, stepPromptTokens, stepCompletionTokens,
+                                stepCacheReadTokens, stepCacheWriteTokens, stepReasoningTokens)
                         .events(events)
                         .build();
             }
@@ -532,8 +536,8 @@ public class StepExecutionNode implements NodeAction {
                         .currentStepTitle("")
                         .currentStepResult("")
                         .contentStreamed(false)
-                        .put(MateClawStateKeys.PROMPT_TOKENS, state.value(MateClawStateKeys.PROMPT_TOKENS, 0) + stepPromptTokens)
-                        .put(MateClawStateKeys.COMPLETION_TOKENS, state.value(MateClawStateKeys.COMPLETION_TOKENS, 0) + stepCompletionTokens)
+                        .addStepUsage(state, stepPromptTokens, stepCompletionTokens,
+                                stepCacheReadTokens, stepCacheWriteTokens, stepReasoningTokens)
                         .events(events)
                         .build();
             }
@@ -590,8 +594,8 @@ public class StepExecutionNode implements NodeAction {
                         .currentStepTitle("")
                         .currentStepResult("")
                         .contentStreamed(false)
-                        .put(MateClawStateKeys.PROMPT_TOKENS, state.value(MateClawStateKeys.PROMPT_TOKENS, 0) + stepPromptTokens)
-                        .put(MateClawStateKeys.COMPLETION_TOKENS, state.value(MateClawStateKeys.COMPLETION_TOKENS, 0) + stepCompletionTokens)
+                        .addStepUsage(state, stepPromptTokens, stepCompletionTokens,
+                                stepCacheReadTokens, stepCacheWriteTokens, stepReasoningTokens)
                         .events(events)
                         .build();
             }
@@ -602,8 +606,8 @@ public class StepExecutionNode implements NodeAction {
                     .currentStepResult(shortError)
                     .currentPhase("plan_aborted")
                     .contentStreamed(false)
-                    .put(MateClawStateKeys.PROMPT_TOKENS, state.value(MateClawStateKeys.PROMPT_TOKENS, 0) + stepPromptTokens)
-                    .put(MateClawStateKeys.COMPLETION_TOKENS, state.value(MateClawStateKeys.COMPLETION_TOKENS, 0) + stepCompletionTokens)
+                    .addStepUsage(state, stepPromptTokens, stepCompletionTokens,
+                            stepCacheReadTokens, stepCacheWriteTokens, stepReasoningTokens)
                     .events(events)
                     .build();
         }
@@ -646,8 +650,8 @@ public class StepExecutionNode implements NodeAction {
                 .currentPhase("step_completed")
                 .contentStreamed(true)
                 .thinkingStreamed(!stepThinking.isEmpty())
-                .put(MateClawStateKeys.PROMPT_TOKENS, state.value(MateClawStateKeys.PROMPT_TOKENS, 0) + stepPromptTokens)
-                .put(MateClawStateKeys.COMPLETION_TOKENS, state.value(MateClawStateKeys.COMPLETION_TOKENS, 0) + stepCompletionTokens)
+                .addStepUsage(state, stepPromptTokens, stepCompletionTokens,
+                        stepCacheReadTokens, stepCacheWriteTokens, stepReasoningTokens)
                 .events(events)
                 .build();
     }

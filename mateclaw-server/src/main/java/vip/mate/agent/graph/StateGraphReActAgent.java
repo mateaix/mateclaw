@@ -198,6 +198,9 @@ public class StateGraphReActAgent extends BaseAgent implements StructuredStreamC
             AtomicInteger sentEventCount = new AtomicInteger(0);
             AtomicInteger finalPromptTokens = new AtomicInteger(0);
             AtomicInteger finalCompletionTokens = new AtomicInteger(0);
+            AtomicInteger finalCacheReadTokens = new AtomicInteger(0);
+            AtomicInteger finalCacheWriteTokens = new AtomicInteger(0);
+            AtomicInteger finalReasoningTokens = new AtomicInteger(0);
             AtomicReference<String> finalModelName = new AtomicReference<>("");
             AtomicReference<String> finalProviderId = new AtomicReference<>("");
             // 防重保护：同 chatStructuredStream
@@ -269,6 +272,9 @@ public class StateGraphReActAgent extends BaseAgent implements StructuredStreamC
 
                         finalPromptTokens.set(output.state().value(PROMPT_TOKENS, 0));
                         finalCompletionTokens.set(output.state().value(COMPLETION_TOKENS, 0));
+                        finalCacheReadTokens.set(output.state().value(CACHE_READ_TOKENS, 0));
+                        finalCacheWriteTokens.set(output.state().value(CACHE_WRITE_TOKENS, 0));
+                        finalReasoningTokens.set(output.state().value(REASONING_TOKENS, 0));
                         finalModelName.set(output.state().value(RUNTIME_MODEL_NAME, ""));
                         finalProviderId.set(output.state().value(RUNTIME_PROVIDER_ID, ""));
 
@@ -295,6 +301,9 @@ public class StateGraphReActAgent extends BaseAgent implements StructuredStreamC
                                     "completionTokens", completionTokens,
                                     "delegatedPromptTokens", delegated.promptTokens(),
                                     "delegatedCompletionTokens", delegated.completionTokens(),
+                                    "cacheReadTokens", finalCacheReadTokens.get(),
+                                    "cacheWriteTokens", finalCacheWriteTokens.get(),
+                                    "reasoningTokens", finalReasoningTokens.get(),
                                     "runtimeModelName", finalModelName.get(),
                                     "runtimeProviderId", finalProviderId.get()
                             ));
@@ -348,6 +357,9 @@ public class StateGraphReActAgent extends BaseAgent implements StructuredStreamC
             // Token usage 追踪（每次 NodeOutput 更新最新累计值，最后一次即最终值）
             AtomicInteger finalPromptTokens = new AtomicInteger(0);
             AtomicInteger finalCompletionTokens = new AtomicInteger(0);
+            AtomicInteger finalCacheReadTokens = new AtomicInteger(0);
+            AtomicInteger finalCacheWriteTokens = new AtomicInteger(0);
+            AtomicInteger finalReasoningTokens = new AtomicInteger(0);
             AtomicReference<String> finalModelName = new AtomicReference<>("");
             AtomicReference<String> finalProviderId = new AtomicReference<>("");
             // 防重保护：StateGraph 对每个节点都 emit NodeOutput，FINAL_ANSWER 一旦写入后续节点都携带，
@@ -433,6 +445,9 @@ public class StateGraphReActAgent extends BaseAgent implements StructuredStreamC
                         // 3. 更新最新累计 token usage
                         finalPromptTokens.set(output.state().value(PROMPT_TOKENS, 0));
                         finalCompletionTokens.set(output.state().value(COMPLETION_TOKENS, 0));
+                        finalCacheReadTokens.set(output.state().value(CACHE_READ_TOKENS, 0));
+                        finalCacheWriteTokens.set(output.state().value(CACHE_WRITE_TOKENS, 0));
+                        finalReasoningTokens.set(output.state().value(REASONING_TOKENS, 0));
                         finalModelName.set(output.state().value(RUNTIME_MODEL_NAME, ""));
                         finalProviderId.set(output.state().value(RUNTIME_PROVIDER_ID, ""));
 
@@ -461,6 +476,9 @@ public class StateGraphReActAgent extends BaseAgent implements StructuredStreamC
                                     "completionTokens", completionTokens,
                                     "delegatedPromptTokens", delegated.promptTokens(),
                                     "delegatedCompletionTokens", delegated.completionTokens(),
+                                    "cacheReadTokens", finalCacheReadTokens.get(),
+                                    "cacheWriteTokens", finalCacheWriteTokens.get(),
+                                    "reasoningTokens", finalReasoningTokens.get(),
                                     "runtimeModelName", finalModelName.get(),
                                     "runtimeProviderId", finalProviderId.get()
                             ));
@@ -551,6 +569,9 @@ public class StateGraphReActAgent extends BaseAgent implements StructuredStreamC
         inputs.put(FORCED_TOOL_CALL, "");
         inputs.put(PROMPT_TOKENS, 0);
         inputs.put(COMPLETION_TOKENS, 0);
+        inputs.put(CACHE_READ_TOKENS, 0);
+        inputs.put(CACHE_WRITE_TOKENS, 0);
+        inputs.put(REASONING_TOKENS, 0);
         inputs.put(RUNTIME_MODEL_NAME, modelName != null ? modelName : "");
         inputs.put(RUNTIME_PROVIDER_ID, runtimeProviderId != null ? runtimeProviderId : "");
         inputs.put(TRACE_ID, UUID.randomUUID().toString().substring(0, 8));

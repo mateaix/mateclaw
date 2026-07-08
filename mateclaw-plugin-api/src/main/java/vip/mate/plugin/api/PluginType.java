@@ -17,5 +17,8 @@ public enum PluginType {
     CHANNEL,
 
     /** Register new memory providers */
-    MEMORY
+    MEMORY,
+
+    /** Register new web-search providers for the web_search tool */
+    SEARCH
 }

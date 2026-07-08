@@ -35,6 +35,8 @@ const providerIconMap: Record<string, string> = {
   'volcengine': '/icons/providers/volcengine.svg',
   // volcengine-plan = "Volcano Engine Coding Plan" — same brand, reuse mark.
   'volcengine-plan': '/icons/providers/volcengine.svg',
+  // volcengine-agent-plan = "Volcano Engine Agent Plan" — same brand, reuse mark.
+  'volcengine-agent-plan': '/icons/providers/volcengine.svg',
   'xiaomi-mimo': '/icons/providers/xiaomimimo.svg',
   'hunyuan-3d': '/icons/providers/hunyuan-color.svg',
   'opencode': '/icons/providers/opencode.svg',

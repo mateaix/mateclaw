@@ -31,16 +31,20 @@ public class ProgressLedgerTool {
     private final ProgressLedgerService service;
 
     @Tool(description = "Record or update a single step in the current conversation's progress "
-            + "ledger. Use this to track multi-step tasks (research workflows, document drafting "
-            + "split by section, etc.) — the runtime injects a rendered snapshot of the ledger "
-            + "into your context before every reasoning step so you never lose track of what is "
-            + "already done after a context trim. Call once per step transition: "
-            + "register pending entries up front when you decompose a task, mark in_progress "
-            + "before starting each one, then done as soon as it lands. Re-using the same stepKey "
-            + "overwrites the entry in place (no duplicates).")
+        + "ledger. Use this to track multi-step tasks (research workflows, document drafting "
+        + "split by section, etc.) — the runtime injects a rendered snapshot of the ledger "
+        + "into your context before every reasoning step so you never lose track of what is "
+        + "already done after a context trim. Call once per step transition: "
+        + "register pending entries up front when you decompose a task, mark in_progress "
+        + "before starting each one, then done as soon as it lands. Re-using the same stepKey "
+        + "overwrites the entry in place (no duplicates). "
+        + "IMPORTANT: do NOT use the `auto_` or `pin_` prefix in stepKey — those are reserved "
+        + "for system-managed entries (auto-recorded tool completions and pinned skill "
+        + "constraints) and will be rejected.")
     public String progress_update(
             @ToolParam(description = "Stable identifier for this step (e.g. 'model_gpt55', "
-                    + "'section_intro', 'step_pptx'). Reuse exactly to update an existing entry.")
+                + "'section_intro', 'step_pptx'). Reuse exactly to update an existing entry. "
+                + "Do NOT prefix with 'auto_' or 'pin_' — those are system-reserved.")
             String stepKey,
             @ToolParam(description = "Human-readable label shown in the snapshot (e.g. "
                     + "'GPT-5.5 调研'). Pass empty to keep the existing label when updating.",

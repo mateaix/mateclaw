@@ -790,7 +790,7 @@ public class ChannelMessageRouter {
                     StringBuilder replyAccumulator = new StringBuilder();
                     final String channelType = adapter.getChannelType();
                     // Token usage + model attribution: capture _usage_final event emitted at stream end
-                    final int[] usage = {0, 0}; // [promptTokens, completionTokens]
+                    final int[] usage = {0, 0, 0, 0, 0}; // [prompt, completion, cacheRead, cacheWrite, reasoning]
                     final String[] modelInfo = {null, null}; // [runtimeModel, runtimeProvider]
                     agentService.chatStructuredStream(agentId, promptText, conversationId,
                                     message.getSenderId(), chatOrigin)
@@ -800,6 +800,9 @@ public class ChannelMessageRouter {
                                         Map<String, Object> data = delta.eventData();
                                         usage[0] = ((Number) data.getOrDefault("promptTokens", 0)).intValue();
                                         usage[1] = ((Number) data.getOrDefault("completionTokens", 0)).intValue();
+                                        usage[2] = ((Number) data.getOrDefault("cacheReadTokens", 0)).intValue();
+                                        usage[3] = ((Number) data.getOrDefault("cacheWriteTokens", 0)).intValue();
+                                        usage[4] = ((Number) data.getOrDefault("reasoningTokens", 0)).intValue();
                                         Object model = data.get("runtimeModelName");
                                         Object provider = data.get("runtimeProviderId");
                                         if (model != null) modelInfo[0] = model.toString();
@@ -840,7 +843,7 @@ public class ChannelMessageRouter {
                         String status = isError ? "error" : "completed";
                         MessageEntity saved = conversationService.saveMessage(
                                 conversationId, "assistant", reply, null, status,
-                                usage[0], usage[1], modelInfo[0], modelInfo[1]);
+                                usage[0], usage[1], usage[2], usage[3], usage[4], modelInfo[0], modelInfo[1], null);
                         savedAssistantId = saved != null ? saved.getId() : null;
                         if (!isError) {
                             publishConversationCompletedEvent(agentId, conversationId, message.getContent(), reply, chatOrigin);
@@ -955,13 +958,16 @@ public class ChannelMessageRouter {
             // plan_step_* events, leaving the Web Console mirror with no
             // PlanStepsPanel for IM-routed conversations.
             // Token usage + model attribution: capture _usage_final event emitted at stream end
-            final int[] usage = {0, 0}; // [promptTokens, completionTokens]
+            final int[] usage = {0, 0, 0, 0, 0}; // [prompt, completion, cacheRead, cacheWrite, reasoning]
             final String[] modelInfo = {null, null}; // [runtimeModel, runtimeProvider]
             Flux<AgentService.StreamDelta> mirroredStream = stream.doOnNext(delta -> {
                 if (delta.isEvent() && "_usage_final".equals(delta.eventType())) {
                     Map<String, Object> data = delta.eventData();
                     usage[0] = ((Number) data.getOrDefault("promptTokens", 0)).intValue();
                     usage[1] = ((Number) data.getOrDefault("completionTokens", 0)).intValue();
+                    usage[2] = ((Number) data.getOrDefault("cacheReadTokens", 0)).intValue();
+                    usage[3] = ((Number) data.getOrDefault("cacheWriteTokens", 0)).intValue();
+                    usage[4] = ((Number) data.getOrDefault("reasoningTokens", 0)).intValue();
                     Object model = data.get("runtimeModelName");
                     Object provider = data.get("runtimeProviderId");
                     if (model != null) modelInfo[0] = model.toString();
@@ -989,7 +995,7 @@ public class ChannelMessageRouter {
                 String status = isError ? "error" : "completed";
                 MessageEntity saved = conversationService.saveMessage(
                         conversationId, "assistant", finalContent, null, status,
-                        usage[0], usage[1], modelInfo[0], modelInfo[1]);
+                        usage[0], usage[1], usage[2], usage[3], usage[4], modelInfo[0], modelInfo[1], null);
                 if (!isError) {
                     publishConversationCompletedEvent(agentId, conversationId, promptText, finalContent, chatOrigin);
                 }

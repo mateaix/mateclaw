@@ -143,6 +143,9 @@ public class StateGraphPlanExecuteAgent extends BaseAgent implements StructuredS
         AtomicInteger sentEventCount = new AtomicInteger(0);
         AtomicInteger finalPromptTokens = new AtomicInteger(0);
         AtomicInteger finalCompletionTokens = new AtomicInteger(0);
+        AtomicInteger finalCacheReadTokens = new AtomicInteger(0);
+        AtomicInteger finalCacheWriteTokens = new AtomicInteger(0);
+        AtomicInteger finalReasoningTokens = new AtomicInteger(0);
         AtomicReference<String> finalModelName = new AtomicReference<>("");
         AtomicReference<String> finalProviderId = new AtomicReference<>("");
         // Root conversation for this turn — used to roll delegated sub-agent
@@ -208,6 +211,9 @@ public class StateGraphPlanExecuteAgent extends BaseAgent implements StructuredS
                     // 3. 更新最新累计 token usage
                     finalPromptTokens.set(output.state().value(MateClawStateKeys.PROMPT_TOKENS, 0));
                     finalCompletionTokens.set(output.state().value(MateClawStateKeys.COMPLETION_TOKENS, 0));
+                    finalCacheReadTokens.set(output.state().value(MateClawStateKeys.CACHE_READ_TOKENS, 0));
+                    finalCacheWriteTokens.set(output.state().value(MateClawStateKeys.CACHE_WRITE_TOKENS, 0));
+                    finalReasoningTokens.set(output.state().value(MateClawStateKeys.REASONING_TOKENS, 0));
                     finalModelName.set(output.state().value(MateClawStateKeys.RUNTIME_MODEL_NAME, ""));
                     finalProviderId.set(output.state().value(MateClawStateKeys.RUNTIME_PROVIDER_ID, ""));
 
@@ -229,6 +235,9 @@ public class StateGraphPlanExecuteAgent extends BaseAgent implements StructuredS
                                 "completionTokens", completionTokens,
                                 "delegatedPromptTokens", delegated.promptTokens(),
                                 "delegatedCompletionTokens", delegated.completionTokens(),
+                                "cacheReadTokens", finalCacheReadTokens.get(),
+                                "cacheWriteTokens", finalCacheWriteTokens.get(),
+                                "reasoningTokens", finalReasoningTokens.get(),
                                 "runtimeModelName", finalModelName.get(),
                                 "runtimeProviderId", finalProviderId.get()
                         ));
@@ -320,6 +329,9 @@ public class StateGraphPlanExecuteAgent extends BaseAgent implements StructuredS
         inputs.put(MateClawStateKeys.REQUESTER_ID, "");
         inputs.put(MateClawStateKeys.PROMPT_TOKENS, 0);
         inputs.put(MateClawStateKeys.COMPLETION_TOKENS, 0);
+        inputs.put(MateClawStateKeys.CACHE_READ_TOKENS, 0);
+        inputs.put(MateClawStateKeys.CACHE_WRITE_TOKENS, 0);
+        inputs.put(MateClawStateKeys.REASONING_TOKENS, 0);
         inputs.put(MateClawStateKeys.RUNTIME_MODEL_NAME, modelName != null ? modelName : "");
         inputs.put(MateClawStateKeys.RUNTIME_PROVIDER_ID, runtimeProviderId != null ? runtimeProviderId : "");
         inputs.put(MateClawStateKeys.TRACE_ID, UUID.randomUUID().toString().substring(0, 8));

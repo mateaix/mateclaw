@@ -9,6 +9,7 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import vip.mate.exception.MateClawException;
 import vip.mate.skill.event.SkillRemovedEvent;
+import vip.mate.skill.event.SkillUpdatedEvent;
 import vip.mate.skill.lifecycle.SkillLifecycleService;
 import vip.mate.skill.model.SkillEntity;
 import vip.mate.skill.repository.SkillFileMapper;
@@ -217,7 +218,11 @@ public class SkillService {
                     "Skill runtime not initialized yet; retry in a moment");
         }
         runtimeService.rescanSingle(skill);
-        return skillMapper.selectById(id);
+        SkillEntity reloaded = skillMapper.selectById(id);
+        // B6: notify running agents that this skill's manifest/security verdict
+        // may have changed so they can re-load constraints and refresh tool ads.
+        eventPublisher.publishEvent(new SkillUpdatedEvent(id, reloaded.getName(), "rescan"));
+        return reloaded;
     }
 
     /**
@@ -440,6 +445,8 @@ public class SkillService {
                 runtimeService.refreshActiveSkills();
             }
 
+            // B6: notify running agents so they re-load this skill's constraints.
+            eventPublisher.publishEvent(new SkillUpdatedEvent(existing.getId(), existing.getName(), "update"));
             return existing;
         }
 
@@ -475,6 +482,8 @@ public class SkillService {
             runtimeService.refreshActiveSkills();
         }
 
+        // B6: notify running agents so they re-load this skill's constraints.
+        eventPublisher.publishEvent(new SkillUpdatedEvent(existing.getId(), existing.getName(), "update"));
         return existing;
     }
 
@@ -604,6 +613,9 @@ public class SkillService {
             runtimeService.refreshActiveSkills();
         }
 
+        // B6: notify running agents so they re-evaluate this skill's ads/constraints.
+        eventPublisher.publishEvent(new SkillUpdatedEvent(skill.getId(), skill.getName(),
+                enabled ? "enable" : "disable"));
         return skill;
     }
 

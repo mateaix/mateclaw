@@ -111,6 +111,9 @@ export interface Message {
   // Token 统计
   promptTokens?: number
   completionTokens?: number
+  cacheReadTokens?: number
+  cacheWriteTokens?: number
+  reasoningTokens?: number
   // Runtime model attribution (assistant messages): the model that actually produced this reply
   runtimeModel?: string
   runtimeProvider?: string
@@ -825,6 +828,21 @@ export interface SystemSettings {
   klingSecretKey?: string
   klingAccessKeyMasked?: string
   klingSecretKeyMasked?: string
+}
+
+export interface SearchProviderCatalogEntry {
+  id: string
+  label: string
+  builtin: boolean
+  requiresCredential: boolean
+  available: boolean
+  pluginName: string | null
+}
+
+export interface SearchProviderCatalog {
+  providers: SearchProviderCatalogEntry[]
+  resolvedId: string | null
+  resolvedSource: string | null
 }
 
 export interface ProviderModelInfo {

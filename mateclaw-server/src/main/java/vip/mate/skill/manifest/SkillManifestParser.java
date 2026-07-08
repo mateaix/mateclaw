@@ -41,6 +41,7 @@ public class SkillManifestParser {
             "knowledge",
             "acp",
             "scripts",
+            "constraints",
             // legacy / housekeeping fields that aren't manifest-relevant
             "metadata"
     );
@@ -104,6 +105,7 @@ public class SkillManifestParser {
                 .knowledge(parseKnowledge(fm.get("knowledge")))
                 .acp(parseAcp(fm.get("acp")))
                 .scripts(parseScripts(fm.get("scripts")))
+                .constraints(stringList(fm.get("constraints")))
                 .extras(extractUnknown(fm));
 
         return b.build();

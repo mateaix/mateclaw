@@ -15,11 +15,15 @@ import vip.mate.common.result.R;
 import vip.mate.exception.MateClawException;
 import vip.mate.workspace.core.annotation.RequireWorkspaceRole;
 import vip.mate.wiki.WikiProperties;
+import vip.mate.wiki.dto.BatchGroupRequest;
+import vip.mate.wiki.dto.SourceGroupRequest;
+import vip.mate.wiki.dto.SourceGroupVO;
 import vip.mate.wiki.model.WikiKnowledgeBaseEntity;
 import vip.mate.wiki.model.WikiPageEntity;
 import vip.mate.wiki.model.WikiAgentPageTypePermissionEntity;
 import vip.mate.wiki.model.WikiPageTypeProfileEntity;
 import vip.mate.wiki.model.WikiRawMaterialEntity;
+import vip.mate.wiki.model.WikiSourceGroupEntity;
 import vip.mate.wiki.profile.WikiPageTypeProfileService;
 import vip.mate.wiki.service.WikiDirectoryScanService;
 import vip.mate.wiki.service.WikiSourcePathValidator;
@@ -29,6 +33,8 @@ import vip.mate.wiki.service.WikiPageService;
 import vip.mate.wiki.service.WikiPageTypePermissionService;
 import vip.mate.wiki.service.WikiProcessingService;
 import vip.mate.wiki.service.WikiRawMaterialService;
+import vip.mate.wiki.service.WikiSourceGroupService;
+import vip.mate.wiki.service.WikiSourceGroupScanService;
 import vip.mate.wiki.sse.WikiProgressBus;
 
 import java.io.IOException;
@@ -64,6 +70,8 @@ public class WikiController {
     private final WikiPageTypeProfileService pageTypeProfileService;
     private final WikiPageTypePermissionService pageTypePermissionService;
     private final WikiSourcePathValidator pathValidator;
+    private final WikiSourceGroupService sourceGroupService;
+    private final WikiSourceGroupScanService sourceGroupScanService;
     private final vip.mate.wiki.service.WikiSourceWatcherService sourceWatcherService;
     private final vip.mate.wiki.pipeline.WikiPipelineDefinitionService pipelineDefinitionService;
     private final vip.mate.wiki.repository.WikiPipelineRunMapper pipelineRunMapper;
@@ -333,6 +341,148 @@ public class WikiController {
         return R.ok(response);
     }
 
+    // ==================== Source Groups ====================
+
+    @RequireWorkspaceRole("viewer")
+    @Operation(summary = "获取来源分组列表")
+    @GetMapping("/knowledge-bases/{kbId}/source-groups")
+    public R<List<SourceGroupVO>> listSourceGroups(@PathVariable Long kbId,
+                                                     @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        verifyKBWorkspace(kbId, workspaceId);
+        List<WikiSourceGroupEntity> groups = sourceGroupService.listByKbId(kbId);
+        Map<Long, Long> rawCounts = sourceGroupService.countRawByKbId(kbId);
+        List<SourceGroupVO> result = new java.util.ArrayList<>(groups.size());
+        for (WikiSourceGroupEntity group : groups) {
+            result.add(toSourceGroupVO(group, rawCounts));
+        }
+        return R.ok(result);
+    }
+
+    @RequireWorkspaceRole("member")
+    @Operation(summary = "创建来源分组")
+    @PostMapping("/knowledge-bases/{kbId}/source-groups")
+    public R<SourceGroupVO> createSourceGroup(@PathVariable Long kbId, @RequestBody SourceGroupRequest req,
+                                                @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        verifyKBWorkspace(kbId, workspaceId);
+        try {
+            WikiSourceGroupEntity group = sourceGroupService.create(kbId, req.alias(), req.path(), req.fileFilter(),
+                    req.cronExpr(), req.enabled());
+            return R.ok(toSourceGroupVO(group, Map.of()));
+        } catch (IllegalArgumentException e) {
+            return R.fail(400, e.getMessage());
+        }
+    }
+
+    @RequireWorkspaceRole("member")
+    @Operation(summary = "更新来源分组")
+    @PutMapping("/knowledge-bases/{kbId}/source-groups/{groupId}")
+    public R<SourceGroupVO> updateSourceGroup(@PathVariable Long kbId, @PathVariable Long groupId,
+                                                @RequestBody SourceGroupRequest req,
+                                                @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        verifyKBWorkspace(kbId, workspaceId);
+        WikiSourceGroupEntity group = sourceGroupService.getById(groupId);
+        if (group == null || !kbId.equals(group.getKbId())) {
+            return R.fail(404, "Source group not found in this knowledge base");
+        }
+        try {
+            group = sourceGroupService.update(group, req.alias(), req.path(), req.fileFilter(),
+                    req.cronExpr(), req.enabled());
+            return R.ok(toSourceGroupVO(group, sourceGroupService.countRawByKbId(kbId)));
+        } catch (IllegalArgumentException e) {
+            return R.fail(400, e.getMessage());
+        }
+    }
+
+    @RequireWorkspaceRole("admin")
+    @Operation(summary = "删除来源分组（默认组下材料转为未分组，reassignTo 可指定改挂目标分组）")
+    @DeleteMapping("/knowledge-bases/{kbId}/source-groups/{groupId}")
+    public R<Void> deleteSourceGroup(@PathVariable Long kbId, @PathVariable Long groupId,
+                                       @RequestParam(value = "reassignTo", required = false) Long reassignTo,
+                                       @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        verifyKBWorkspace(kbId, workspaceId);
+        WikiSourceGroupEntity group = sourceGroupService.getById(groupId);
+        if (group == null || !kbId.equals(group.getKbId())) {
+            return R.fail(404, "Source group not found in this knowledge base");
+        }
+        if (reassignTo != null) {
+            WikiSourceGroupEntity target = sourceGroupService.getById(reassignTo);
+            if (target == null || !kbId.equals(target.getKbId())) {
+                return R.fail(404, "Reassign target group not found in this knowledge base");
+            }
+        }
+        sourceGroupService.delete(kbId, groupId, reassignTo);
+        return R.ok();
+    }
+
+    @RequireWorkspaceRole("member")
+    @Operation(summary = "按分组扫描（mode=incremental 默认增量去重；mode=full 额外强制重跑未变化的命中文件）")
+    @PostMapping("/knowledge-bases/{kbId}/source-groups/{groupId}/scan")
+    public R<Map<String, Object>> scanSourceGroup(@PathVariable Long kbId, @PathVariable Long groupId,
+                                                    @RequestParam(value = "mode", defaultValue = "incremental") String mode,
+                                                    @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        verifyKBWorkspace(kbId, workspaceId);
+        WikiDirectoryScanService.ScanResult result = sourceGroupScanService.scan(kbId, groupId, "full".equalsIgnoreCase(mode));
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("scanned", result.scanned());
+        response.put("added", result.added());
+        response.put("skipped", result.skipped());
+        response.put("errors", result.errors());
+        return R.ok(response);
+    }
+
+    @RequireWorkspaceRole("member")
+    @Operation(summary = "改单条原始材料的分组（groupId 传 null 表示改为未分组）")
+    @PatchMapping("/knowledge-bases/{kbId}/raw/{rawId}/group")
+    public R<Void> updateRawGroup(@PathVariable Long kbId, @PathVariable Long rawId,
+                                    @RequestBody Map<String, Long> body,
+                                    @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        verifyKBWorkspace(kbId, workspaceId);
+        WikiRawMaterialEntity raw = rawService.getById(rawId);
+        if (raw == null || !kbId.equals(raw.getKbId())) {
+            return R.fail(404, "Raw material not found in this knowledge base");
+        }
+        Long groupId = body.get("groupId");
+        if (groupId != null && !groupBelongsToKb(kbId, groupId)) {
+            return R.fail(404, "Source group not found in this knowledge base");
+        }
+        rawService.updateGroup(rawId, groupId);
+        return R.ok();
+    }
+
+    @RequireWorkspaceRole("member")
+    @Operation(summary = "批量改原始材料的分组")
+    @PatchMapping("/knowledge-bases/{kbId}/raw/group")
+    public R<Void> updateRawGroupBatch(@PathVariable Long kbId, @RequestBody BatchGroupRequest req,
+                                         @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        verifyKBWorkspace(kbId, workspaceId);
+        if (req.groupId() != null && !groupBelongsToKb(kbId, req.groupId())) {
+            return R.fail(404, "Source group not found in this knowledge base");
+        }
+        if (req.rawIds() == null || req.rawIds().isEmpty()) {
+            return R.ok();
+        }
+        // Restrict the batch update to raw IDs that actually belong to this KB,
+        // so a caller cannot use a foreign rawId to reach across knowledge bases.
+        List<Long> owned = rawService.listByKbId(kbId).stream()
+                .map(WikiRawMaterialEntity::getId)
+                .filter(req.rawIds()::contains)
+                .toList();
+        rawService.updateGroupBatch(owned, req.groupId());
+        return R.ok();
+    }
+
+    private boolean groupBelongsToKb(Long kbId, Long groupId) {
+        WikiSourceGroupEntity group = sourceGroupService.getById(groupId);
+        return group != null && kbId.equals(group.getKbId());
+    }
+
+    private SourceGroupVO toSourceGroupVO(WikiSourceGroupEntity group, Map<Long, Long> rawCounts) {
+        Long rawCount = rawCounts.getOrDefault(group.getId(), 0L);
+        return new SourceGroupVO(group.getId(), group.getKbId(), group.getAlias(), group.getPath(),
+                group.getFileFilter(), group.getCronExpr(), group.getEnabled(),
+                rawCount, group.getLastScanAt());
+    }
+
     // ==================== Source Watcher ====================
 
     @RequireWorkspaceRole("viewer")
@@ -532,6 +682,8 @@ public class WikiController {
             item.put("progressDone", raw.getProgressDone());
             item.put("progressTotal", raw.getProgressTotal());
             item.put("contentHash", raw.getContentHash());
+            item.put("groupId", raw.getGroupId());
+            item.put("sourcePath", raw.getSourcePath());
             item.put("createTime", raw.getCreateTime());
             item.put("updateTime", raw.getUpdateTime());
             // Enriched field: page count derived from this raw material
