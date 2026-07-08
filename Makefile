@@ -37,7 +37,6 @@ MIHOMO_GZ_IMAGE := ccr.ccs.tencentyun.com/connor-ai-lab/mihomo-client:$(MIHOMO_I
 build-sg:
 	docker buildx build \
 	  --platform linux/amd64 \
-	  --no-cache \
 	  -f mateclaw-server/Dockerfile \
 	  --build-arg MAVEN_FLAGS="-Paliyun-first" \
 	  -t $(MATECLAW_SERVER_SG_IMAGE) \
@@ -47,7 +46,6 @@ build-sg:
 build-gz:
 	docker buildx build \
 	  --platform linux/amd64 \
-	  --no-cache \
 	  -f mateclaw-server/Dockerfile \
 	  --build-arg MAVEN_FLAGS="-Paliyun-first" \
 	  -t $(MATECLAW_SERVER_GZ_IMAGE) \
