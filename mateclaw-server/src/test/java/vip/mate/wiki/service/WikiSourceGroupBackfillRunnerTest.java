@@ -53,9 +53,9 @@ class WikiSourceGroupBackfillRunnerTest {
         runner.run(null);
 
         verify(groupService).create(eq(1L), eq("/data/docs"), eq("/data/docs"),
-                isNull(), eq("incremental"), isNull(), eq(true));
+                isNull(), isNull(), eq(true));
         verify(groupService).create(eq(1L), eq("/data/notes"), eq("/data/notes"),
-                isNull(), eq("incremental"), isNull(), eq(true));
+                isNull(), isNull(), eq(true));
     }
 
     @Test
@@ -79,7 +79,7 @@ class WikiSourceGroupBackfillRunnerTest {
 
         runner.run(null);
 
-        verify(groupService, never()).create(eq(1L), anyString(), anyString(), isNull(), anyString(), isNull(), anyBoolean());
+        verify(groupService, never()).create(eq(1L), anyString(), anyString(), isNull(), isNull(), anyBoolean());
     }
 
     @Test
@@ -93,6 +93,6 @@ class WikiSourceGroupBackfillRunnerTest {
         runner.run(null);
         runner.run(null);
 
-        verify(groupService, times(1)).create(eq(1L), anyString(), anyString(), isNull(), eq("incremental"), isNull(), eq(true));
+        verify(groupService, times(1)).create(eq(1L), anyString(), anyString(), isNull(), isNull(), eq(true));
     }
 }
