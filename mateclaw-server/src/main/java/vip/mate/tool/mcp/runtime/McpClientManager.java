@@ -1,6 +1,7 @@
 package vip.mate.tool.mcp.runtime;
 
 import cn.hutool.json.JSONUtil;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.modelcontextprotocol.client.McpClient;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.client.transport.ServerParameters;
@@ -67,13 +68,21 @@ public class McpClientManager {
 
     private final McpIdentityForwardService identityForwardService;
 
+    private final McpProgressContext progressContext;
+
+    private final ObjectMapper objectMapper;
+
     /** serverId -> server name, captured at build time for identity-forward opt-in matching. */
     private final ConcurrentHashMap<Long, String> serverNames = new ConcurrentHashMap<>();
 
     public McpClientManager(ApplicationEventPublisher eventPublisher,
-                            McpIdentityForwardService identityForwardService) {
+                            McpIdentityForwardService identityForwardService,
+                            McpProgressContext progressContext,
+                            ObjectMapper objectMapper) {
         this.eventPublisher = eventPublisher;
         this.identityForwardService = identityForwardService;
+        this.progressContext = progressContext;
+        this.objectMapper = objectMapper;
     }
 
     /** serverId -> connection result info */
@@ -201,7 +210,8 @@ public class McpClientManager {
                     McpIdentityForwardService idSvc =
                             identityForwardService.forwardsTo(serverId, serverName) ? identityForwardService : null;
                     String audience = idSvc != null ? identityForwardService.audienceFor(serverId, serverName) : null;
-                    List<ToolCallback> wrapped = wrapServerCallbacks(serverId, cbs, idSvc, audience, serverName);
+                    List<ToolCallback> wrapped = wrapServerCallbacks(serverId, cbs, idSvc, audience, serverName,
+                            entry.getValue(), objectMapper);
                     lastGoodCallbacks.put(serverId, wrapped);
                     allCallbacks.addAll(wrapped);
                     continue;
@@ -253,7 +263,7 @@ public class McpClientManager {
      * real {@link McpSyncClient}.
      */
     static List<ToolCallback> wrapServerCallbacks(long serverId, ToolCallback[] cbs) {
-        return wrapServerCallbacks(serverId, cbs, null, null, null);
+        return wrapServerCallbacks(serverId, cbs, null, null, null, null, null);
     }
 
     /**
@@ -266,10 +276,15 @@ public class McpClientManager {
      * @param serverName human-readable MCP server name; forwarded into each
      *        {@link PrefixedNameToolCallback} so the tool description is tagged
      *        {@code [MCP server: <name>]}. May be {@code null} when unknown.
+     * @param mcpClient the active {@link McpSyncClient} for this server; when
+     *        non-null each callback is wrapped in {@link ProgressAwareMcpToolCallback}
+     *        so {@code _meta.progressToken} can be injected into tools/call requests.
+     * @param objectMapper JSON mapper for argument serialization inside the wrapper.
      */
     static List<ToolCallback> wrapServerCallbacks(long serverId, ToolCallback[] cbs,
                                                   McpIdentityForwardService identitySvc, String audience,
-                                                  String serverName) {
+                                                  String serverName,
+                                                  McpSyncClient mcpClient, ObjectMapper objectMapper) {
         List<String> rawNames = new ArrayList<>(cbs.length);
         for (ToolCallback cb : cbs) {
             rawNames.add(cb.getToolDefinition() != null ? cb.getToolDefinition().name() : null);
@@ -298,6 +313,13 @@ public class McpClientManager {
             ToolCallback inner = identitySvc != null
                     ? new IdentityForwardingToolCallback(cb, identitySvc, audience)
                     : cb;
+            // Wrap with progress-aware callback so _meta.progressToken is
+            // injected when ToolContext carries a progress token. Must sit
+            // inside PrefixedNameToolCallback so both the prefixed name and
+            // the call-path see the same chain.
+            if (mcpClient != null) {
+                inner = new ProgressAwareMcpToolCallback(inner, mcpClient, raw, objectMapper);
+            }
             out.add(new PrefixedNameToolCallback(d.prefixedName(), inner, serverName));
         }
         return out;
@@ -418,6 +440,29 @@ public class McpClientManager {
             Long serverId = server.getId();
             spec.toolsChangeConsumer(tools ->
                     eventPublisher.publishEvent(new McpServerChangedEvent("mcp-tools-changed:" + serverId)));
+
+            // MCP progress notifications: the server pushes progress for
+            // long-running tool calls. progressToken → context lookup + event
+            // publish so McpProgressRelay can forward to the SSE stream.
+            spec.progressConsumer(progressNotification -> {
+                if (progressNotification == null || progressNotification.progressToken() == null) return;
+                McpProgressContext.ProgressEntry entry = progressContext.lookup(progressNotification.progressToken());
+                if (entry == null) return;
+                try {
+                    McpProgressEvent event = new McpProgressEvent(
+                            this,
+                            entry.conversationId(),
+                            entry.toolCallId(),
+                            entry.toolName(),
+                            progressNotification.progress(),
+                            progressNotification.total(),
+                            progressNotification.message()
+                    );
+                    eventPublisher.publishEvent(event);
+                } catch (Exception e) {
+                    log.warn("Failed to publish McpProgressEvent: {}", e.getMessage());
+                }
+            });
         }
         return spec.build();
     }
