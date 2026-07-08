@@ -902,13 +902,17 @@ watch(filteredMaterials, (list) => {
 const selectedRaws = computed(() => store.rawMaterials.filter(r => selectedIds.value.has(r.id)))
 
 async function batchReprocess() {
+  if (!store.currentKB) return
+  const kbId = store.currentKB.id
   const ids = selectedRaws.value
     .filter(r => r.processingStatus !== 'processing' && r.processingStatus !== 'uploading')
     .map(r => r.id)
   for (const id of ids) {
-    try { await reprocess(id) } catch { /* skip failures, continue the batch */ }
+    try { await triggerReprocess(id) } catch { /* skip failures, continue the batch */ }
   }
   clearSelection()
+  await store.fetchRawMaterials(kbId)
+  scheduleRawMaterialRefetch(kbId)
 }
 
 async function batchDownload() {
@@ -1193,9 +1197,13 @@ const failedMaterials = computed(() => store.rawMaterials.filter(r => r.processi
 const errorSectionOpen = ref(false)
 
 async function retryAllErrors() {
+  if (!store.currentKB) return
+  const kbId = store.currentKB.id
   for (const r of failedMaterials.value) {
-    try { await reprocess(r.id) } catch { /* skip failures, continue the batch */ }
+    try { await triggerReprocess(r.id) } catch { /* skip failures, continue the batch */ }
   }
+  await store.fetchRawMaterials(kbId)
+  scheduleRawMaterialRefetch(kbId)
 }
 
 async function clearAllErrors() {
@@ -1583,10 +1591,11 @@ async function handleAddText() {
   textContent.value = ''
 }
 
-async function reprocess(rawId: number) {
+/** Fires the reprocess call and updates local state only — no list refresh, so
+ *  batch callers can trigger many of these and refresh the list once at the end. */
+async function triggerReprocess(rawId: number) {
   if (!store.currentKB) return
-  const kbId = store.currentKB.id
-  await wikiApi.reprocessRaw(kbId, rawId)
+  await wikiApi.reprocessRaw(store.currentKB.id, rawId)
   // Immediately mark local state as processing so SSE connects and progress bar shows
   const raw = store.rawMaterials.find(r => r.id === rawId)
   if (raw) {
@@ -1596,10 +1605,20 @@ async function reprocess(rawId: number) {
   }
   // Clear stale job entry
   delete rawJobs[rawId]
-  await store.fetchRawMaterials(kbId)
-  // Delayed re-fetch to catch final status if processing finishes before SSE connects
+}
+
+/** Delayed re-fetches to catch final status if processing finishes before SSE connects. */
+function scheduleRawMaterialRefetch(kbId: number) {
   setTimeout(() => { store.fetchRawMaterials(kbId) }, 5000)
   setTimeout(() => { store.fetchRawMaterials(kbId) }, 15000)
+}
+
+async function reprocess(rawId: number) {
+  if (!store.currentKB) return
+  const kbId = store.currentKB.id
+  await triggerReprocess(rawId)
+  await store.fetchRawMaterials(kbId)
+  scheduleRawMaterialRefetch(kbId)
 }
 
 async function deleteRaw(rawId: number) {
