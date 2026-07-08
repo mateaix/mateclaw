@@ -1039,7 +1039,7 @@ async function saveConfig() {
     await store.updateSourceGroup(store.currentKB.id, configEditingGroupId.value, {
       alias: form.alias.trim(),
       path: form.path.trim(),
-      fileFilter: form.fileFilter.trim() || null,
+      fileFilter: form.fileFilter.trim(),
       cronExpr: resolveCronExpr(form),
       enabled: form.scheduleEnabled,
     })
@@ -1056,7 +1056,7 @@ async function confirmAddPath() {
     await store.createSourceGroup(store.currentKB.id, {
       alias: form.alias.trim(),
       path: form.path.trim(),
-      fileFilter: form.fileFilter.trim() || null,
+      fileFilter: form.fileFilter.trim(),
       cronExpr: resolveCronExpr(form),
       enabled: form.scheduleEnabled,
     })
