@@ -463,10 +463,7 @@ public class WikiController {
         }
         // Restrict the batch update to raw IDs that actually belong to this KB,
         // so a caller cannot use a foreign rawId to reach across knowledge bases.
-        List<Long> owned = rawService.listByKbId(kbId).stream()
-                .map(WikiRawMaterialEntity::getId)
-                .filter(req.rawIds()::contains)
-                .toList();
+        List<Long> owned = rawService.filterOwnedIds(kbId, req.rawIds());
         rawService.updateGroupBatch(owned, req.groupId());
         return R.ok();
     }
