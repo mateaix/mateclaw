@@ -41,6 +41,27 @@ export interface WikiRawMaterial {
   progressDone: number
   // Page count derived from sourceRawIds (injected by listRaw endpoint)
   pageCount?: number
+  // Source group this raw belongs to; null = ungrouped (legacy/manual raw).
+  // Snowflake ID — backend serializes Long as string (ToStringSerializer), so
+  // this arrives as a string at runtime despite the numeric-looking type.
+  groupId: number | string | null
+  // Path/glob this raw was scanned from, when it came from a source group.
+  sourcePath?: string | null
+}
+
+/** A configured scan source: one path/glob under a KB, with its own alias and schedule. */
+export interface WikiSourceGroup {
+  // Snowflake IDs — backend serializes Long as string; keep the union so
+  // v-model/select values round-trip without precision-losing Number() coercion.
+  id: number | string
+  kbId: number | string
+  alias: string
+  path: string
+  fileFilter: string | null
+  cronExpr: string | null
+  enabled: number
+  rawCount: number
+  lastScanAt: string | null
 }
 
 export interface WikiPage {
@@ -140,6 +161,7 @@ export const useWikiStore = defineStore('wiki', () => {
   // selectKB, so switching between them is a flag flip with no refetch.
   const workspaceMode = ref<'browse' | 'manage'>('browse')
   const rawMaterials = ref<WikiRawMaterial[]>([])
+  const sourceGroups = ref<WikiSourceGroup[]>([])
   const pages = ref<WikiPage[]>([])
   const currentPage = ref<WikiPage | null>(null)
   const loading = ref(false)
@@ -215,6 +237,7 @@ export const useWikiStore = defineStore('wiki', () => {
     if (brokenLinksPollTimer) { clearInterval(brokenLinksPollTimer); brokenLinksPollTimer = null }
     await Promise.all([
       fetchRawMaterials(id),
+      fetchSourceGroups(id),
       fetchPages(id),
       fetchPageRefs(id),
       loadBrokenLinksReport(id),
@@ -265,6 +288,7 @@ export const useWikiStore = defineStore('wiki', () => {
     if (currentKB.value?.id === id) {
       currentKB.value = null
       rawMaterials.value = []
+      sourceGroups.value = []
       pages.value = []
     }
   }
@@ -280,6 +304,7 @@ export const useWikiStore = defineStore('wiki', () => {
     currentPage.value = null
     workspaceMode.value = 'browse'
     rawMaterials.value = []
+    sourceGroups.value = []
     pages.value = []
     pageRefs.value = []
     archivedPageRefs.value = []
@@ -303,6 +328,71 @@ export const useWikiStore = defineStore('wiki', () => {
       : undefined
     const res: any = await wikiApi.listRaw(kbId, params)
     rawMaterials.value = res.data || []
+  }
+
+<<<<<<< HEAD
+  // Update the raw-material filters and refetch. Empty-string fields clear
+  // their clause. Used by the raw-material panel's filter bar.
+  async function setRawFilters(
+    kbId: number,
+    filters: Partial<{ status: string; sourceType: string; keyword: string }>,
+  ) {
+    rawFilters.value = { ...rawFilters.value, ...filters }
+    await fetchRawMaterials(kbId)
+  }
+
+  function resetRawFilters() {
+    rawFilters.value = { status: '', sourceType: '', keyword: '' }
+=======
+  async function fetchSourceGroups(kbId: number) {
+    const res: any = await wikiApi.listSourceGroups(kbId)
+    sourceGroups.value = res.data || []
+  }
+
+  async function createSourceGroup(kbId: number, data: {
+    alias: string
+    path: string
+    fileFilter?: string | null
+    cronExpr?: string | null
+    enabled?: boolean | null
+  }) {
+    const res: any = await wikiApi.createSourceGroup(kbId, data)
+    await fetchSourceGroups(kbId)
+    return res.data || res
+  }
+
+  async function updateSourceGroup(kbId: number, groupId: number | string, data: {
+    alias?: string | null
+    path?: string | null
+    fileFilter?: string | null
+    cronExpr?: string | null
+    enabled?: boolean | null
+  }) {
+    const res: any = await wikiApi.updateSourceGroup(kbId, groupId, data)
+    await fetchSourceGroups(kbId)
+    return res.data || res
+  }
+
+  /** reassignTo: target groupId to move member raws into, or null/undefined to leave them ungrouped. */
+  async function deleteSourceGroup(kbId: number, groupId: number | string, reassignTo?: number | string | null) {
+    await wikiApi.deleteSourceGroup(kbId, groupId, reassignTo)
+    await Promise.all([fetchSourceGroups(kbId), fetchRawMaterials(kbId)])
+  }
+
+  async function scanSourceGroup(kbId: number, groupId: number | string, mode: 'incremental' | 'full' = 'incremental') {
+    const res: any = await wikiApi.scanSourceGroup(kbId, groupId, mode)
+    await Promise.all([fetchSourceGroups(kbId), fetchRawMaterials(kbId)])
+    return res.data || res
+  }
+
+  async function updateRawGroup(kbId: number, rawId: number, groupId: number | string | null) {
+    await wikiApi.updateRawGroup(kbId, rawId, groupId)
+    await Promise.all([fetchRawMaterials(kbId), fetchSourceGroups(kbId)])
+  }
+
+  async function batchUpdateRawGroup(kbId: number, rawIds: number[], groupId: number | string | null) {
+    await wikiApi.batchUpdateRawGroup(kbId, rawIds, groupId)
+    await Promise.all([fetchRawMaterials(kbId), fetchSourceGroups(kbId)])
   }
 
   // Update the raw-material filters and refetch. Empty-string fields clear
@@ -433,6 +523,7 @@ export const useWikiStore = defineStore('wiki', () => {
     const [kbRes] = await Promise.all([
       wikiApi.getKB(kbId),
       fetchRawMaterials(kbId),
+      fetchSourceGroups(kbId),
       fetchPages(kbId, selectedRawId.value ?? undefined),
       // Keep refs in lockstep with the rest of the KB state so a freshly
       // created page is immediately resolvable by the viewer.
@@ -502,6 +593,7 @@ export const useWikiStore = defineStore('wiki', () => {
     currentKB,
     workspaceMode,
     rawMaterials,
+    sourceGroups,
     pages,
     currentPage,
     loading,
@@ -523,6 +615,13 @@ export const useWikiStore = defineStore('wiki', () => {
     setWorkspaceMode,
     backToLibrary,
     fetchRawMaterials,
+    fetchSourceGroups,
+    createSourceGroup,
+    updateSourceGroup,
+    deleteSourceGroup,
+    scanSourceGroup,
+    updateRawGroup,
+    batchUpdateRawGroup,
     fetchPages,
     fetchPageRefs,
     fetchArchivedPageRefs,
