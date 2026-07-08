@@ -113,10 +113,20 @@ public class WikiSourceGroupService {
     /**
      * 删除分组。{@code reassignTo} 非 null 时把组下 raw 改挂到该分组，
      * 否则默认置为未分组（groupId = null）。
+     * <p>
+     * 删除前把 alias 改写成墓碑名：{@code @TableLogic} 会让软删行对
+     * {@link #assertAliasAvailable} 的查重不可见，若不改名，同名分组永远建不回来
+     * （查重通过后 INSERT 撞 {@code uk_wiki_sgroup_kb_alias} 唯一索引，裸 500）。
      */
     @Transactional
     public void delete(Long kbId, Long groupId, Long reassignTo) {
         rawService.reassignGroup(kbId, groupId, reassignTo);
+        WikiSourceGroupEntity group = groupMapper.selectById(groupId);
+        if (group != null) {
+            groupMapper.update(null, new LambdaUpdateWrapper<WikiSourceGroupEntity>()
+                    .eq(WikiSourceGroupEntity::getId, groupId)
+                    .set(WikiSourceGroupEntity::getAlias, group.getAlias() + "#del#" + groupId));
+        }
         groupMapper.deleteById(groupId);
     }
 
