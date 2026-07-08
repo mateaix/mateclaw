@@ -2360,6 +2360,7 @@ export default {
       loadFailed: 'Failed to load content',
       empty: '(No text content)',
       binaryHint: 'This file type cannot be previewed online. Please download to view.',
+      tooLargeHint: 'This file is too large to preview online. Please download to view.',
     },
     errorSection: {
       title: 'Error files',
