@@ -320,6 +320,24 @@ public class WikiRawMaterialService {
                 .set(WikiRawMaterialEntity::getGroupId, groupId));
     }
 
+    /**
+     * 在给定的 rawIds 里筛出真正属于该 kbId 的那些，供批量改分组一类接口拒绝跨库越权
+     * 的 rawId。单条 SQL 查询完成，避免拉全表再内存 filter。
+     */
+    public List<Long> filterOwnedIds(Long kbId, Collection<Long> rawIds) {
+        if (rawIds == null || rawIds.isEmpty()) {
+            return List.of();
+        }
+        return rawMapper.selectList(
+                        new LambdaQueryWrapper<WikiRawMaterialEntity>()
+                                .eq(WikiRawMaterialEntity::getKbId, kbId)
+                                .in(WikiRawMaterialEntity::getId, rawIds)
+                                .select(WikiRawMaterialEntity::getId))
+                .stream()
+                .map(WikiRawMaterialEntity::getId)
+                .toList();
+    }
+
     public int updateGroupBatch(Collection<Long> rawIds, Long groupId) {
         if (rawIds == null || rawIds.isEmpty()) {
             return 0;
