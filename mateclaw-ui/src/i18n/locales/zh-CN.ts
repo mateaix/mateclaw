@@ -2295,6 +2295,7 @@ export default {
       aliasAndPathRequired: '请填写业务别名和服务器物理路径',
       scanIncremental: '增量扫描',
       scanFull: '全量扫描',
+      scanFullConfirm: '全量扫描会重新处理该分组下所有未在处理中的文档，可能耗时较长，确定继续吗？',
       scanDone: '扫描完成，新增 {added} 个文档',
       scanFailed: '扫描失败',
       cron_hourly: '每小时',

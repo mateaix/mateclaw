@@ -2283,6 +2283,7 @@ export default {
       aliasAndPathRequired: 'Display name and server path are required',
       scanIncremental: 'Incremental scan',
       scanFull: 'Full scan',
+      scanFullConfirm: 'A full scan will reprocess every non-busy document in this group and may take a while. Continue?',
       scanDone: 'Scan complete, {added} new documents',
       scanFailed: 'Scan failed',
       cron_hourly: 'Hourly',

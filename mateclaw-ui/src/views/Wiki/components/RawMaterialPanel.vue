@@ -1034,6 +1034,14 @@ async function scanGroup(key: string, mode: 'incremental' | 'full') {
   if (!store.currentKB) return
   const g = findGroupById(key)
   if (!g) return
+  if (mode === 'full') {
+    const ok = await mcConfirm({
+      title: t('wiki.pathConfig.scanFull'),
+      message: t('wiki.pathConfig.scanFullConfirm'),
+      tone: 'danger',
+    })
+    if (!ok) return
+  }
   scanningGroups[key] = true
   try {
     const result: any = await store.scanSourceGroup(store.currentKB.id, g.id, mode)
