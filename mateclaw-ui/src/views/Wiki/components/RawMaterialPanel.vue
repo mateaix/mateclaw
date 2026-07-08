@@ -721,7 +721,7 @@ const filteredCounts = computed(() => {
     if (r.processingStatus === 'completed' || r.processingStatus === 'partial') counts.completed++
     else if (r.processingStatus === 'processing') counts.processing++
     else if (r.processingStatus === 'pending') counts.pending++
-    else if (r.processingStatus === 'failed' || r.processingStatus === 'cancelled') counts.failed++
+    else if (r.processingStatus === 'failed') counts.failed++
   }
   return counts
 })
@@ -747,7 +747,7 @@ const filteredMaterials = computed(() => {
     if (sf === 'completed') {
       list = list.filter(r => r.processingStatus === 'completed' || r.processingStatus === 'partial')
     } else if (sf === 'failed') {
-      list = list.filter(r => r.processingStatus === 'failed' || r.processingStatus === 'cancelled')
+      list = list.filter(r => r.processingStatus === 'failed')
     } else {
       list = list.filter(r => r.processingStatus === sf)
     }
@@ -845,7 +845,7 @@ const groupedMaterials = computed(() => {
       if (r.processingStatus === 'completed' || r.processingStatus === 'partial') counts.completed++
       else if (r.processingStatus === 'processing') counts.processing++
       else if (r.processingStatus === 'pending') counts.pending++
-      else if (r.processingStatus === 'failed' || r.processingStatus === 'cancelled') counts.failed++
+      else if (r.processingStatus === 'failed') counts.failed++
       if (r.createTime && r.createTime > lastTime) lastTime = r.createTime
     }
     // Real groups report their own lastScanAt from the backend; fall back to
