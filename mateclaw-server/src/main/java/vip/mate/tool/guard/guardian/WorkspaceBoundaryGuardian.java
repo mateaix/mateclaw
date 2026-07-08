@@ -3,10 +3,14 @@ package vip.mate.tool.guard.guardian;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Component;
+import vip.mate.tool.builtin.ChatUploadResolver;
 import vip.mate.tool.guard.WorkspacePathGuard;
 import vip.mate.tool.guard.model.*;
+import vip.mate.workspace.core.service.ChatUploadLocationResolver;
 
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -64,6 +68,20 @@ public class WorkspaceBoundaryGuardian implements ToolGuardGuardian {
     );
 
     private final ObjectMapper objectMapper = new ObjectMapper();
+
+    /**
+     * Chat-upload location resolver injected lazily to avoid a cyclic dependency
+     * ({@code agentService → agentGraphBuilder → conversationService → this}).
+     * Used as a fallback when a file-tool path triggers a boundary violation:
+     * resolves the real upload roots from the database so attachments stored in
+     * workspace-scoped directories are found even when the thread-local
+     * {@code workspaceBasePath} is null.
+     */
+    private final ChatUploadLocationResolver chatUploadLocationResolver;
+
+    public WorkspaceBoundaryGuardian(@Lazy ChatUploadLocationResolver chatUploadLocationResolver) {
+        this.chatUploadLocationResolver = chatUploadLocationResolver;
+    }
 
     @Override
     public boolean supports(ToolInvocationContext context) {
@@ -123,6 +141,29 @@ public class WorkspaceBoundaryGuardian implements ToolGuardGuardian {
             String path = extractJsonParam(rawArgs, paramName);
             String violation = WorkspacePathGuard.findPathBoundaryViolation(path, basePath);
             if (violation != null) {
+                // Chat-upload fallback: a path like "chat-uploads/{convId}/..."
+                // may sit outside the workspace root yet still be a legitimate
+                // user attachment. Resolve candidate upload roots from the DB
+                // (workspace-scoped + default) to find the file — this avoids
+                // the workspaceBasePath heuristic that can be null when the
+                // agent isn't configured with a workspace override.
+                String conversationId = context.conversationId();
+                if (conversationId != null && !conversationId.isBlank()) {
+                    try {
+                        List<Path> candidateRoots = chatUploadLocationResolver
+                                .resolveCandidateUploadRoots(conversationId);
+                        Path resolved = ChatUploadResolver.resolve(
+                                path, conversationId, candidateRoots);
+                        if (resolved != null) {
+                            log.debug("[WorkspaceBoundaryGuardian] Path {} resolved to chat-upload: {}",
+                                    path, resolved);
+                            return List.of();
+                        }
+                    } catch (Exception e) {
+                        log.debug("[WorkspaceBoundaryGuardian] Chat-upload fallback failed for {}: {}",
+                                path, e.getMessage());
+                    }
+                }
                 return List.of(boundaryFinding(tool, "path", path, violation));
             }
         }

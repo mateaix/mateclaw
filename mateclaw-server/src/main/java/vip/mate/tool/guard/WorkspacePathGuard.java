@@ -431,6 +431,13 @@ public final class WorkspacePathGuard {
                 // idioms (`2>/dev/null`, `cmd <(cat file)`) keep working.
                 continue;
             }
+            if (isFilesystemRoot(normalized)) {
+                // A normalized filesystem root `/` (or `//`) is almost always a
+                // false positive from shell syntax — sed's s/pattern//, awk's
+                // empty field, etc. Real commands never target the filesystem
+                // root as a cat/ls/write operand.
+                continue;
+            }
             if (destructive && normalized.equals(root)) {
                 throw rootDeletionError(root);
             }
@@ -553,6 +560,17 @@ public final class WorkspacePathGuard {
     private static boolean isAllowedDeviceNode(Path normalized) {
         String s = normalized.toString();
         return ALLOWED_DEVICE_NODES.contains(s) || ALLOWED_DEV_FD.matcher(s).matches();
+    }
+
+    /**
+     * True when {@code normalized} is the filesystem root ({@code /} or
+     * {@code //}). These are almost always false positives from shell syntax
+     * (sed's {@code s/pattern//}, awk's empty field, etc.) — real commands
+     * never target the filesystem root as a cat/ls/write operand.
+     */
+    private static boolean isFilesystemRoot(Path normalized) {
+        String s = normalized.toString();
+        return "/".equals(s) || "//".equals(s);
     }
 
     private static String truncateForError(String s) {
