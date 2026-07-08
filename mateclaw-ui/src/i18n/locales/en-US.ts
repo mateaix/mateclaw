@@ -2636,11 +2636,6 @@ export default {
     configPlaceholder: 'Edit wiki processing rules here...',
     pageCount: '{count} pages',
     sourceCount: '{count} sources',
-    dirPlaceholder: 'Enter local directory path, e.g. /Users/me/docs',
-    scan: 'Scan',
-    scanning: 'Scanning...',
-    scanResult: 'Scanned {scanned} files, added {added}, skipped {skipped}',
-    scanFailed: 'Scan failed',
     saving: 'Saving...',
     sourceType: {
       UPLOAD: 'Uploaded file',
