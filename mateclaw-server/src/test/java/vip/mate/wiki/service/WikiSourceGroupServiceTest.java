@@ -68,7 +68,7 @@ class WikiSourceGroupServiceTest {
 
         assertThrows(IllegalArgumentException.class,
                 () -> service.create(KB_ID, "docs", "/etc", null, null, null));
-        verify(groupMapper, never()).insert(any());
+        verify(groupMapper, never()).insert(any(WikiSourceGroupEntity.class));
     }
 
     @Test
@@ -78,7 +78,7 @@ class WikiSourceGroupServiceTest {
                 () -> service.create(KB_ID, "docs", "/data/docs", null, "not a cron", null));
 
         assertEquals(400, ex.getCode());
-        verify(groupMapper, never()).insert(any());
+        verify(groupMapper, never()).insert(any(WikiSourceGroupEntity.class));
     }
 
     @Test
@@ -90,7 +90,7 @@ class WikiSourceGroupServiceTest {
                 () -> service.create(KB_ID, "docs", "/data/docs", null, null, null));
 
         assertEquals(400, ex.getCode());
-        verify(groupMapper, never()).insert(any());
+        verify(groupMapper, never()).insert(any(WikiSourceGroupEntity.class));
     }
 
     @Test
