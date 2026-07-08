@@ -654,6 +654,7 @@
         </div>
         <div class="preview-body">
           <div v-if="previewIsBinary" class="preview-placeholder">{{ t('wiki.preview.binaryHint') }}</div>
+          <div v-else-if="previewTooLarge" class="preview-placeholder">{{ t('wiki.preview.tooLargeHint') }}</div>
           <div v-else-if="previewLoading" class="preview-placeholder">{{ t('wiki.preview.loading') }}</div>
           <div v-else-if="previewError" class="preview-placeholder">{{ t('wiki.preview.loadFailed') }}</div>
           <pre v-else-if="previewText" class="preview-content">{{ previewText }}</pre>
@@ -1144,11 +1145,14 @@ async function onRowMoveSelect(rawId: number, event: Event) {
 // a "download to view" hint. Pasted text (sourceType TEXT) is always text.
 const TEXT_EXTENSIONS = new Set(['txt', 'md', 'markdown', 'csv', 'tsv', 'html', 'htm', 'json', 'log', 'xml', 'yaml', 'yml'])
 
+const PREVIEW_MAX_SIZE = 2 * 1024 * 1024
+
 const previewOpen = ref(false)
 const previewRaw = ref<RawItem | null>(null)
 const previewLoading = ref(false)
 const previewText = ref('')
 const previewIsBinary = ref(false)
+const previewTooLarge = ref(false)
 const previewError = ref(false)
 
 function formatSize(bytes?: number): string {
@@ -1172,12 +1176,17 @@ async function openPreview(raw: RawItem) {
   previewRaw.value = raw
   previewText.value = ''
   previewError.value = false
+  previewTooLarge.value = false
   previewOpen.value = true
   if (!isTextLike(raw)) {
     previewIsBinary.value = true
     return
   }
   previewIsBinary.value = false
+  if (raw.fileSize && raw.fileSize > PREVIEW_MAX_SIZE) {
+    previewTooLarge.value = true
+    return
+  }
   if (!store.currentKB) return
   previewLoading.value = true
   try {

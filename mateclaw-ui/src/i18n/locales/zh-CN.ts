@@ -2372,6 +2372,7 @@ export default {
       loadFailed: '内容加载失败',
       empty: '（无文本内容）',
       binaryHint: '该文件类型暂不支持在线预览，请下载后查看。',
+      tooLargeHint: '文件过大，暂不支持在线预览，请下载后查看。',
     },
     errorSection: {
       title: '异常文件独立分区',
