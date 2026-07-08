@@ -32,6 +32,9 @@ public class WikiRawMaterialEntity {
     /** Original file path on disk (binary uploads only). */
     private String sourcePath;
 
+    /** 所属来源分组 ID（mate_wiki_source_group.id）；null = 未分组 */
+    private Long groupId;
+
     /** 原始文本内容（文本类型） */
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private String originalContent;
