@@ -1,8 +1,10 @@
 package vip.mate.wiki.service;
 
+import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import vip.mate.exception.MateClawException;
 import vip.mate.wiki.model.WikiKnowledgeBaseEntity;
 import vip.mate.wiki.model.WikiSourceGroupEntity;
@@ -12,8 +14,10 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -68,7 +72,7 @@ class WikiSourceGroupServiceTest {
 
         assertThrows(IllegalArgumentException.class,
                 () -> service.create(KB_ID, "docs", "/etc", null, null, null));
-        verify(groupMapper, never()).insert(any());
+        verify(groupMapper, never()).insert(any(WikiSourceGroupEntity.class));
     }
 
     @Test
@@ -78,7 +82,7 @@ class WikiSourceGroupServiceTest {
                 () -> service.create(KB_ID, "docs", "/data/docs", null, "not a cron", null));
 
         assertEquals(400, ex.getCode());
-        verify(groupMapper, never()).insert(any());
+        verify(groupMapper, never()).insert(any(WikiSourceGroupEntity.class));
     }
 
     @Test
@@ -90,7 +94,7 @@ class WikiSourceGroupServiceTest {
                 () -> service.create(KB_ID, "docs", "/data/docs", null, null, null));
 
         assertEquals(400, ex.getCode());
-        verify(groupMapper, never()).insert(any());
+        verify(groupMapper, never()).insert(any(WikiSourceGroupEntity.class));
     }
 
     @Test
@@ -127,6 +131,25 @@ class WikiSourceGroupServiceTest {
         service.delete(KB_ID, 5L, 9L);
 
         verify(rawService).reassignGroup(KB_ID, 5L, 9L);
+        verify(groupMapper).deleteById(5L);
+    }
+
+    @Test
+    @DisplayName("delete: tombstones the alias before soft-deleting so it can be reused")
+    void delete_tombstonesAliasBeforeSoftDelete() {
+        WikiSourceGroupEntity existing = new WikiSourceGroupEntity();
+        existing.setId(5L);
+        existing.setKbId(KB_ID);
+        existing.setAlias("docs");
+        when(groupMapper.selectById(5L)).thenReturn(existing);
+
+        service.delete(KB_ID, 5L, null);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Wrapper<WikiSourceGroupEntity>> captor = ArgumentCaptor.forClass(Wrapper.class);
+        verify(groupMapper).update(isNull(), captor.capture());
+        assertTrue(captor.getValue().getParamNameValuePairs().containsValue("docs#del#5"),
+                "alias should be rewritten to a tombstone so the original alias can be reused");
         verify(groupMapper).deleteById(5L);
     }
 

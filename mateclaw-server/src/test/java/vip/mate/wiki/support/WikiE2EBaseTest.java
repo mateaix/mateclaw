@@ -6,6 +6,10 @@ import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Primary;
 import org.springframework.test.annotation.DirtiesContext;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
+
+import java.util.UUID;
 
 /**
  * Abstract base for wiki end-to-end tests.
@@ -14,6 +18,10 @@ import org.springframework.test.annotation.DirtiesContext;
  * <ul>
  *   <li>A full Spring Boot context with H2 backed by Flyway migrations
  *       (default profile already wires this in {@code application.yml}).</li>
+ *   <li>An in-memory H2 database, unique per context build (see
+ *       {@link #overrideDatasource}) — not the persistent {@code ./data/mateclaw}
+ *       file the default profile points at, which every E2E run used to write
+ *       test rows into.</li>
  *   <li>A {@link ChatModel} bean replaced by {@link MockLlmChatModel} loaded
  *       from {@code classpath:fixtures/llm-responses.json}, so tests can
  *       exercise the compile pipeline without hitting a real LLM.</li>
@@ -35,6 +43,20 @@ import org.springframework.test.annotation.DirtiesContext;
 })
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 public abstract class WikiE2EBaseTest {
+
+    /**
+     * A plain {@code @SpringBootTest(properties=...)} entry must be a compile-time
+     * constant, so it can't carry a per-run-unique db name — this runs once per
+     * context build instead (paired with {@code @DirtiesContext(AFTER_CLASS)}, that's
+     * once per test class), generating a fresh in-memory database name each time so
+     * classes never share — let alone pollute — each other's data.
+     */
+    @DynamicPropertySource
+    static void overrideDatasource(DynamicPropertyRegistry registry) {
+        String dbName = "wiki_e2e_" + UUID.randomUUID().toString().replace("-", "");
+        registry.add("spring.datasource.url", () -> "jdbc:h2:mem:" + dbName
+                + ";MODE=MySQL;DATABASE_TO_LOWER=TRUE;CASE_INSENSITIVE_IDENTIFIERS=TRUE;DB_CLOSE_DELAY=-1");
+    }
 
     /** Overrides the default {@link ChatModel} bean with a fixture-driven mock. */
     @TestConfiguration

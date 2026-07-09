@@ -3,12 +3,15 @@ package vip.mate.wiki.service;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 import vip.mate.wiki.model.WikiKnowledgeBaseEntity;
 import vip.mate.wiki.model.WikiRawMaterialEntity;
 import vip.mate.wiki.repository.WikiKnowledgeBaseMapper;
 import vip.mate.wiki.repository.WikiRawMaterialMapper;
 
 import java.time.LocalDateTime;
+import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -30,6 +33,16 @@ import static org.junit.jupiter.api.Assertions.assertNull;
         }
 )
 class WikiRawMaterialGroupE2ETest {
+
+    /** Runs against an isolated in-memory H2 instead of the shared persistent
+     * {@code ./data/mateclaw} the default profile points at, so this class no
+     * longer writes test rows into the local dev database on every run. */
+    @DynamicPropertySource
+    static void overrideDatasource(DynamicPropertyRegistry registry) {
+        String dbName = "wiki_e2e_" + UUID.randomUUID().toString().replace("-", "");
+        registry.add("spring.datasource.url", () -> "jdbc:h2:mem:" + dbName
+                + ";MODE=MySQL;DATABASE_TO_LOWER=TRUE;CASE_INSENSITIVE_IDENTIFIERS=TRUE;DB_CLOSE_DELAY=-1");
+    }
 
     @Autowired
     private WikiRawMaterialService rawService;

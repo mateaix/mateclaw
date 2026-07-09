@@ -58,7 +58,7 @@ public class WikiSourceGroupBackfillRunner implements ApplicationRunner {
             for (String pattern : patterns) {
                 String alias = uniqueAlias(pattern, usedAliases);
                 try {
-                    groupService.create(kb.getId(), alias, pattern, null, "incremental", null, true);
+                    groupService.create(kb.getId(), alias, pattern, null, null, true);
                     createdGroups++;
                 } catch (IllegalArgumentException e) {
                     log.warn("[Wiki] Skipped backfilling source group for kb={} pattern='{}': {}",
