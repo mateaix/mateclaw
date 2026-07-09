@@ -58,6 +58,8 @@ const isRead = computed(() => {
 const isSuccess = computed(() => props.segment.status === 'completed' && props.segment.toolSuccess !== false)
 const isError = computed(() => props.segment.status === 'error' || props.segment.toolSuccess === false)
 const isRunning = computed(() => props.segment.status === 'running')
+// MCP progress bar: show when running AND progress data is available
+const hasProgress = computed(() => isRunning.value && props.segment.progress != null)
 // A delegation flagged by the heartbeat watchdog as making no progress.
 const isStalled = computed(() => isDelegation.value && isRunning.value && !!props.segment.delegationStale)
 // Fire-and-forget delegation: runs detached, result comes via task_output later.
@@ -118,6 +120,7 @@ const detailStatus = computed<'running' | 'completed' | 'error'>(() => {
     <div class="seg-tool__header" @click="hasBody ? (expanded = !expanded) : null">
       <span class="seg-tool__status">
         <el-icon v-if="isAsync" class="seg-tool__async" :title="$t('chat.subagentAsync')" :size="13"><Clock /></el-icon>
+        <el-icon v-else-if="hasProgress" :size="13"><Loading /></el-icon>
         <el-icon v-else-if="isRunning" class="is-loading" :size="13"><Loading /></el-icon>
         <el-icon v-else-if="isSuccess" :size="13"><Select /></el-icon>
         <el-icon v-else :size="13"><CloseBold /></el-icon>
@@ -146,6 +149,14 @@ const detailStatus = computed<'running' | 'completed' | 'error'>(() => {
           :size="11"
         ><ArrowDown /></el-icon>
       </span>
+    </div>
+    <!-- MCP progress bar: shown when running and progress data is available -->
+    <div v-if="hasProgress" class="seg-tool__progress">
+      <div class="seg-tool__progress-bar">
+        <div class="seg-tool__progress-fill" :style="{ width: (segment.progress || 0) + '%' }"></div>
+      </div>
+      <div class="seg-tool__progress-label">{{ segment.progress }}%</div>
+      <div v-if="segment.progressMessage" class="seg-tool__progress-msg">{{ segment.progressMessage }}</div>
     </div>
     <Transition name="seg-slide">
       <div v-if="expanded && hasBody" class="seg-tool__body">
@@ -384,5 +395,40 @@ const detailStatus = computed<'running' | 'completed' | 'error'>(() => {
 .seg-slide-enter-from, .seg-slide-leave-to {
   opacity: 0;
   transform: translateY(-4px);
+}
+
+/* MCP progress bar */
+.seg-tool__progress {
+  padding: 0 10px 6px 22px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.seg-tool__progress-bar {
+  flex: 1;
+  min-width: 80px;
+  height: 6px;
+  background: var(--mc-bg-muted);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.seg-tool__progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--mc-primary), var(--mc-primary-light, #f0a070));
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+.seg-tool__progress-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--mc-primary);
+  white-space: nowrap;
+}
+.seg-tool__progress-msg {
+  width: 100%;
+  font-size: 11px;
+  color: var(--mc-text-tertiary);
+  line-height: 1.3;
 }
 </style>
