@@ -16,7 +16,7 @@ import { useMessageQueue } from './useMessageQueue'
 import { useGoalStore } from '@/stores/useGoalStore'
 import { useSystemSettingsStore } from '@/stores/useSystemSettingsStore'
 import { storeToRefs } from 'pinia'
-import type { Message, MessageContentPart, MessageSegment, StreamPhase, HeartbeatData, QueuedMessage, PhaseEventData, DelegationNode, DelegationToolEntry, PlanMeta } from '@/types'
+import type { Message, MessageContentPart, MessageSegment, StreamPhase, HeartbeatData, QueuedMessage, PhaseEventData, DelegationNode, DelegationToolEntry, PlanMeta, GeneratedFile } from '@/types'
 import { classifyBackendError, type ChatErrorInfo } from '@/types/chatError'
 import { http } from '@/api'
 
@@ -57,6 +57,30 @@ export interface CompactStatusEvent {
   fallbackKept?: number
   /** True when the boundary was served from the in-memory summary cache. */
   fromCache?: boolean
+}
+
+/**
+ * Snapshot of a {@code context_usage} SSE event. Mirrors the payload built by
+ * ConversationWindowManager.broadcastContextUsage: how much of the effective
+ * input window the next LLM call occupies, split by source. All values are
+ * TokenEstimator heuristics — a gauge, not a bill.
+ */
+export interface ContextUsageEvent {
+  /** Effective input window (tokens) of the active model. */
+  windowTokens: number
+  /** system + tools + history + current, in tokens. */
+  usedTokens: number
+  systemTokens: number
+  /** Tool / skill schemas advertised to the model (includes MCP tools). */
+  toolsTokens: number
+  historyTokens: number
+  /** Current user input (plus per-message overhead). */
+  currentTokens: number
+  /** usedTokens / windowTokens (may exceed 1 before compaction runs). */
+  ratio: number
+  /** True when this pass will trigger history compaction. */
+  willCompact: boolean
+  timestamp?: number
 }
 
 export interface UseChatOptions {
@@ -111,6 +135,11 @@ export interface UseChatReturn {
    * to {@code null} when a turn finishes, so the chip auto-hides.
    */
   compactStatus: import('vue').Ref<CompactStatusEvent | null>
+  /**
+   * Latest context_usage SSE event. Persists between turns (occupancy stays
+   * meaningful after a reply lands); reset only when switching conversations.
+   */
+  contextUsage: import('vue').Ref<ContextUsageEvent | null>
   /**
    * Fine-grained pre-token lifecycle stage. Drives the loading bar copy in the
    * window between "send pressed" and "first delta arrived". `null` once a
@@ -188,6 +217,9 @@ export function useChat(options: UseChatOptions): UseChatReturn {
    * immediately, so the user gets a chance to see the result.
    */
   const compactStatus = ref<CompactStatusEvent | null>(null)
+
+  /** Latest context-usage snapshot; kept across turns, cleared on conversation switch. */
+  const contextUsage = ref<ContextUsageEvent | null>(null)
 
   /** All segments of the current assistant message (for segmented display) */
   const currentSegments = ref<MessageSegment[]>([])
@@ -417,6 +449,21 @@ export function useChat(options: UseChatOptions): UseChatReturn {
     return null
   }
 
+  /** Markdown link pointing at a generated-file download URL. */
+  const GENERATED_FILE_LINK_RE = /\[([^\]]+)\]\(((?:https?:\/\/[^/\s)\]]+)?\/api\/v1\/files\/generated\/[A-Za-z0-9-]+)\)/g
+
+  /** Extract generated-file artifacts from a tool result string. */
+  function extractGeneratedFiles(result: unknown, toolName: string): GeneratedFile[] {
+    if (typeof result !== 'string' || !result) return []
+    const files: GeneratedFile[] = []
+    let m: RegExpExecArray | null
+    GENERATED_FILE_LINK_RE.lastIndex = 0
+    while ((m = GENERATED_FILE_LINK_RE.exec(result)) !== null) {
+      files.push({ filename: m[1], url: m[2], toolName })
+    }
+    return files
+  }
+
   // ===== SSE event handlers =====
 
   stream.on('content_delta', (data) => {
@@ -625,6 +672,9 @@ export function useChat(options: UseChatOptions): UseChatReturn {
         const msg = messages.value[msgIndex]
         if (data.promptTokens !== undefined) msg.promptTokens = data.promptTokens
         if (data.completionTokens !== undefined) msg.completionTokens = data.completionTokens
+        if (data.cacheReadTokens !== undefined) msg.cacheReadTokens = data.cacheReadTokens
+        if (data.cacheWriteTokens !== undefined) msg.cacheWriteTokens = data.cacheWriteTokens
+        if (data.reasoningTokens !== undefined) msg.reasoningTokens = data.reasoningTokens
         if (data.runtimeModel) msg.runtimeModel = data.runtimeModel
         if (data.runtimeProvider) msg.runtimeProvider = data.runtimeProvider
         // Replace the local temp ID with the backend-persisted ID so reconcile can match by ID
@@ -860,9 +910,21 @@ export function useChat(options: UseChatOptions): UseChatReturn {
             status: 'completed'
           }
         }
+        // Extract generated-file links from the tool result for the run-overview rail.
+        // De-duplicate by URL so a link echoed in later tool results doesn't
+        // produce duplicate entries.
+        const newFiles = extractGeneratedFiles(data.result, data.toolName)
+        const existingFiles = (metadata?.generatedFiles || []) as GeneratedFile[]
+        const existingUrls = new Set(existingFiles.map(f => f.url))
+        const dedupedNew = newFiles.filter(f => !existingUrls.has(f.url))
+        const generatedFiles = dedupedNew.length
+          ? [...existingFiles, ...dedupedNew]
+          : existingFiles.length
+            ? existingFiles
+            : undefined
         updateMessage(currentAssistantId.value, {
           ...msg,
-          metadata: { ...metadata, toolCalls, runningToolName: undefined }
+          metadata: { ...metadata, toolCalls, runningToolName: undefined, generatedFiles }
         } as any)
       }
       // Segments: prefer toolCallId match, fall back to first-running by toolName.
@@ -958,6 +1020,13 @@ export function useChat(options: UseChatOptions): UseChatReturn {
     compactStatus.value = { ...data } as CompactStatusEvent
   })
 
+  // Context-window occupancy snapshot, fired once per window-fit pass and
+  // again after compaction. Drives the occupancy chip next to the input.
+  stream.on('context_usage', (data) => {
+    if (isStaleEvent(data)) return
+    contextUsage.value = { ...data } as ContextUsageEvent
+  })
+
   stream.on('phase', (data) => {
     if (isStaleEvent(data)) return
     const phase = data.phase as StreamPhase
@@ -1045,14 +1114,29 @@ export function useChat(options: UseChatOptions): UseChatReturn {
   }
 
   /** Mark a subagent (segment or nested node) complete by subagentId. */
+  // Compact "(12s · 3.2k tok)" meta suffix for a completed delegation segment.
+  function delegMetaSuffix(durationMs?: number, promptTokens?: number, completionTokens?: number): string {
+    const parts: string[] = []
+    if (durationMs) parts.push(`${Math.round(durationMs / 1000)}s`)
+    const tok = (promptTokens || 0) + (completionTokens || 0)
+    if (tok > 0) parts.push(`${tok >= 1000 ? (tok / 1000).toFixed(1) + 'k' : tok} tok`)
+    return parts.length ? ` (${parts.join(' · ')})` : ''
+  }
+
   function markDelegComplete(segs: MessageSegment[], subagentId: string | undefined, childConvId: string | undefined,
-                             success: boolean, resultPreview?: string, durationMs?: number): boolean {
+                             success: boolean, resultPreview?: string, durationMs?: number,
+                             promptTokens?: number, completionTokens?: number): boolean {
     const seg = findDelegSegment(segs, subagentId, childConvId)
     if (seg) {
       seg.status = success ? 'completed' : 'error'
       seg.toolSuccess = success
       if (resultPreview) seg.toolResult = resultPreview
-      if (durationMs) seg.toolArgs = (seg.toolArgs || '').trimEnd() + ` (${Math.round(durationMs / 1000)}s)`
+      const suffix = delegMetaSuffix(durationMs, promptTokens, completionTokens)
+      if (suffix) seg.toolArgs = (seg.toolArgs || '').trimEnd() + suffix
+      // Keep tokens as numbers too so the message footer can roll this child
+      // up into the turn total (the suffix above is display-only).
+      if (promptTokens) seg.delegPromptTokens = promptTokens
+      if (completionTokens) seg.delegCompletionTokens = completionTokens
       return true
     }
     if (subagentId) {
@@ -1062,6 +1146,8 @@ export function useChat(options: UseChatOptions): UseChatReturn {
           node.status = success ? 'completed' : 'error'
           if (resultPreview) node.result = resultPreview
           if (durationMs) node.durationMs = durationMs
+          if (promptTokens) node.promptTokens = promptTokens
+          if (completionTokens) node.completionTokens = completionTokens
           return true
         }
       }
@@ -1205,7 +1291,7 @@ export function useChat(options: UseChatOptions): UseChatReturn {
     if (isStaleEvent(data)) return
     if (!currentAssistantId.value) return
     markDelegComplete(currentSegments.value, data.subagentId, data.childConversationId,
-      !!data.success, data.resultPreview, data.durationMs)
+      !!data.success, data.resultPreview, data.durationMs, data.promptTokens, data.completionTokens)
     flushSegmentsToMessage()
   })
 
@@ -1223,7 +1309,7 @@ export function useChat(options: UseChatOptions): UseChatReturn {
             : !!(cr.subagentId && findNode(segs.flatMap(s => s.childTimeline?.children || []), cr.subagentId)?.status === 'running')
           if (stillRunning) {
             markDelegComplete(segs, cr.subagentId, cr.childConversationId, !!cr.success,
-              cr.error || undefined, cr.durationMs)
+              cr.error || undefined, cr.durationMs, cr.promptTokens, cr.completionTokens)
           }
         }
       } else {
@@ -1234,7 +1320,7 @@ export function useChat(options: UseChatOptions): UseChatReturn {
       }
     } else {
       markDelegComplete(segs, data.subagentId, data.childConversationId,
-        !!data.success, data.resultPreview, data.durationMs)
+        !!data.success, data.resultPreview, data.durationMs, data.promptTokens, data.completionTokens)
     }
     flushSegmentsToMessage()
   })
@@ -2028,7 +2114,7 @@ export function useChat(options: UseChatOptions): UseChatReturn {
 
   // Reconnect to a stream that is already running on the backend
   const reconnectStream = async (conversationId: string) => {
-    if (isGenerating.value) return
+    if (isGenerating.value && streamConversationId === conversationId) return
 
     // Clear any leftover stop fallback timer
     if (stopFallbackTimer) { clearTimeout(stopFallbackTimer); stopFallbackTimer = null }
@@ -2054,9 +2140,28 @@ export function useChat(options: UseChatOptions): UseChatReturn {
       }
     }
 
-    const assistantMessage = createAssistantMessage('', conversationId)
-    ;(assistantMessage as any)._turnId = activeTurnId
-    currentAssistantId.value = assistantMessage.id as string
+    const existingAsst = [...messages.value].reverse().find(
+      m => m.role === 'assistant'
+        && m.conversationId === conversationId
+        && (m.status === 'generating' || m.status === 'awaiting_approval')
+    )
+    if (existingAsst) {
+      updateMessage(existingAsst.id as string, {
+        ...existingAsst,
+        content: '',
+        contentParts: [],
+        _turnId: activeTurnId,
+        metadata: {
+          ...((existingAsst as any).metadata || {}),
+          segments: [],
+        },
+      } as any)
+      currentAssistantId.value = existingAsst.id as string
+    } else {
+      const assistantMessage = createAssistantMessage('', conversationId)
+      ;(assistantMessage as any)._turnId = activeTurnId
+      currentAssistantId.value = assistantMessage.id as string
+    }
 
     try {
       // reconnectStream always rebuilds from an EMPTY placeholder (above), so it
@@ -2126,6 +2231,7 @@ export function useChat(options: UseChatOptions): UseChatReturn {
     streamPhase.value = 'idle'
     phaseInfo.value = null
     compactStatus.value = null
+    contextUsage.value = null
     lifecycleStage.value = null
     error.value = null
     messageQueue.clear()
@@ -2146,6 +2252,7 @@ export function useChat(options: UseChatOptions): UseChatReturn {
     queueSize: messageQueue.queueSize,
     heartbeat,
     compactStatus,
+    contextUsage,
     lifecycleStage,
     sendMessage,
     stopGeneration,

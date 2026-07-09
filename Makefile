@@ -20,7 +20,7 @@ builder-inspect:
 # Docker build targets
 # Convention: -sg suffix = SGCCR (singapore), -gz suffix = CCR (guangzhou)
 
-METACLAW_SERVER_IMAGE_TAG := 1.6.0-SNAPSHOT
+METACLAW_SERVER_IMAGE_TAG := 1.6.3-SNAPSHOT
 MATECLAW_SERVER_SG_IMAGE := sgccr.ccs.tencentyun.com/connor-ai-lab/mateclaw-server:$(METACLAW_SERVER_IMAGE_TAG)
 MATECLAW_SERVER_GZ_IMAGE := ccr.ccs.tencentyun.com/connor-ai-lab/mateclaw-server:$(METACLAW_SERVER_IMAGE_TAG)
 # MATECLAW_SERVER_IMAGE := connor-mateclaw-registry.zeabur.app/mateclaw/mateclaw-server:$(IMAGE_TAG)
@@ -37,7 +37,6 @@ MIHOMO_GZ_IMAGE := ccr.ccs.tencentyun.com/connor-ai-lab/mihomo-client:$(MIHOMO_I
 build-sg:
 	docker buildx build \
 	  --platform linux/amd64 \
-	  --no-cache \
 	  -f mateclaw-server/Dockerfile \
 	  --build-arg MAVEN_FLAGS="-Paliyun-first" \
 	  -t $(MATECLAW_SERVER_SG_IMAGE) \
@@ -47,7 +46,6 @@ build-sg:
 build-gz:
 	docker buildx build \
 	  --platform linux/amd64 \
-	  --no-cache \
 	  -f mateclaw-server/Dockerfile \
 	  --build-arg MAVEN_FLAGS="-Paliyun-first" \
 	  -t $(MATECLAW_SERVER_GZ_IMAGE) \

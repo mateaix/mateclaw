@@ -186,7 +186,7 @@ const isCronHeader = (msg: Message) => {
 }
 
 // 智能滚动
-const { scrollRef, contentRef, isAtBottom, escapedFromLock, scrollToBottom } = useStickToBottom({
+const { scrollRef, contentRef, isAtBottom, escapedFromLock, scrollToBottom, resetLock } = useStickToBottom({
   enabled: props.autoScroll,
   offset: 70,
   smooth: true,
@@ -200,14 +200,21 @@ const showCursorForMessage = (msg: Message) => {
   return isLastAssistant && msg.status === 'generating'
 }
 
-// 监听消息变化，自动滚动
+// 监听消息变化，自动滚动。流式生成时 token 逐字变更会高频触发本 watcher，
+// 用一个 rAF 合并同一帧内的多次变更为一次即时滚动，避免每 token 动画抖动；
+// 用户上滚脱离贴底后（escapedFromLock）完全不滚动，读历史不被打断。
+let scrollRaf = 0
 watch(
   () => props.messages,
-  async () => {
-    await nextTick()
-    // Don't auto-scroll while the user has scrolled up to read history.
+  () => {
     if (escapedFromLock.value) return
-    scrollToBottom()
+    if (scrollRaf) return
+    scrollRaf = requestAnimationFrame(async () => {
+      scrollRaf = 0
+      await nextTick()
+      if (escapedFromLock.value) return
+      scrollToBottom({ smooth: false })
+    })
   },
   { deep: true }
 )
@@ -226,7 +233,8 @@ watch(
 // Explicit "jump to bottom" request (button click / End key): force past the
 // escape lock and clear it so sticky auto-scroll resumes following new content.
 function goToBottom() {
-  escapedFromLock.value = false
+  // force ignores the escape lock; the composable re-pins (isAtBottom /
+  // escapedFromLock stay in sync) once the scroll settles.
   scrollToBottom({ force: true, smooth: true })
 }
 
@@ -275,6 +283,8 @@ function handleGlobalKeydown(e: KeyboardEvent) {
 }
 
 onMounted(() => document.addEventListener('keydown', handleGlobalKeydown))
+defineExpose({ resetScrollLock: resetLock })
+
 onUnmounted(() => {
   clearDockTimer()
   document.removeEventListener('keydown', handleGlobalKeydown)

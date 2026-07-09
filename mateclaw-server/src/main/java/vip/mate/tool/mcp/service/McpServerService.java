@@ -13,6 +13,7 @@ import org.springframework.stereotype.Service;
 import vip.mate.exception.MateClawException;
 import vip.mate.tool.mcp.event.McpConnectionLostEvent;
 import vip.mate.tool.mcp.event.McpServerChangedEvent;
+import vip.mate.tool.mcp.event.McpServerRemovedEvent;
 import vip.mate.tool.mcp.model.McpServerEntity;
 import vip.mate.tool.mcp.repository.McpServerMapper;
 import vip.mate.tool.mcp.runtime.McpClientManager;
@@ -221,6 +222,9 @@ public class McpServerService {
         mcpClientManager.remove(id);
         mcpServerMapper.deleteById(id);
         publishChanged("server-deleted");
+        // Cascade-clean agent-tool bindings for this server's tools so the agent
+        // edit page doesn't keep showing orphan bindings the user can't clear.
+        eventPublisher.publishEvent(new McpServerRemovedEvent(id, entity.getName()));
         log.info("MCP server deleted: name={}, id={}", entity.getName(), id);
     }
 

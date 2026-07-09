@@ -71,6 +71,13 @@
                   :collapsed="effectiveCollapsed"
                   :title="t('notifications.pendingApprovals', { n: pendingApprovals })"
                 />
+                <NavBadge
+                  v-else-if="item.path === '/wiki' && isAdminRole"
+                  :count="failedWikiJobs"
+                  tone="warning"
+                  :collapsed="effectiveCollapsed"
+                  :title="t('notifications.failedWikiJobs', { n: failedWikiJobs })"
+                />
               </router-link>
             </McTooltip>
           </div>
@@ -281,7 +288,7 @@ function goAutoApproveSettings() {
 // Live view) and `/security` (pending approvals) read from a shared 15s poller
 // so multiple consumers don't multiply HTTP traffic.
 const isAdminRole = computed(() => (localStorage.getItem('role') || 'user') === 'admin')
-const { stuckAgents, pendingApprovals } = useNotificationCenter()
+const { stuckAgents, pendingApprovals, failedWikiJobs } = useNotificationCenter()
 const liveAlertActive = computed(() => isAdminRole.value && stuckAgents.value > 0)
 
 // 移动端状态
@@ -571,7 +578,9 @@ function logout() {
   localStorage.removeItem('token')
   localStorage.removeItem('username')
   localStorage.removeItem('role')
-  router.push('/login')
+  // 刷新页面而非 router.push：确保 keepAlive 缓存的 ChatConsole、
+  // 模块级变量（cachedAgents 等）全部清空，杜绝跨用户数据泄漏。
+  window.location.href = '/login'
 }
 
 async function changeLocale(locale: AppLocale) {

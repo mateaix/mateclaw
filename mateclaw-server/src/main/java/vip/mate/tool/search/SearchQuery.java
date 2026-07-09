@@ -1,7 +1,7 @@
 package vip.mate.tool.search;
 
 /**
- * 搜索查询参数封装 — 借鉴 openclaw 的丰富工具参数设计
+ * 搜索查询参数封装
  *
  * @param query     搜索关键词（必须）
  * @param freshness 时间范围过滤：day / week / month / year（可选）

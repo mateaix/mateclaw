@@ -199,6 +199,13 @@ mateclaw:
       # remain resolvable. Defaults to the legacy location for zero-config parity.
       base-dir: ${MATECLAW_CHAT_UPLOAD_BASE_DIR:data/chat-uploads}
   skill:
+    upload:
+      # Size caps for skill bundle ZIPs (upload endpoint and marketplace
+      # install). The archive is buffered in memory during extraction, so
+      # max-total-size-mb also bounds peak heap usage per install. Uploads
+      # additionally pass through spring.servlet.multipart limits above.
+      max-entry-size-mb: ${MATECLAW_SKILL_UPLOAD_MAX_ENTRY_SIZE_MB:1}
+      max-total-size-mb: ${MATECLAW_SKILL_UPLOAD_MAX_TOTAL_SIZE_MB:50}
     workspace:
       # Skill workspace root. Override with MATECLAW_SKILL_WORKSPACE_ROOT to
       # relocate it onto a persistent volume — in Docker this is pointed at
@@ -245,6 +252,12 @@ mateclaw:
     audit:
       enabled: true              # 每次派发写 mate_hook_run
       retain-days: 7
+  security:
+    # Hosts/IPs/CIDR blocks allowed through the SSRF guards (browser, hooks, image
+    # download) even though they are loopback/private/link-local/metadata. Each
+    # entry is a literal hostname, a literal IP, or an IPv4 CIDR block. Keep narrow.
+    # Example: [192.168.100.100, 192.168.100.0/24, internal.corp]
+    ssrf-allowlist: []
   # RFC-014: Anthropic prompt cache 标记
   llm:
     cache:

@@ -768,6 +768,7 @@ curl -X PUT "http://localhost:18088/api/v1/auth/users/1/password?oldPassword=adm
 | 方法 | 路径 | 用途 / handler |
 |---|---|---|
 | `POST` | `/api/v1/wiki/admin/backfill-tokens` | `Force-run the token-count backfill batch now` |
+| `GET` | `/api/v1/wiki/admin/failures` | `跨知识库列出需要关注的处理失败/降级材料（管理员）` |
 | `POST` | `/api/v1/wiki/admin/kb/{kbId}/rebuild-overview` | `Ensure overview/log scaffold + rebuild overview stats now` |
 | `GET` | `/api/v1/wiki/chunks/{chunkId}/pages` | `Pages By Chunk Id` |
 | `DELETE` | `/api/v1/wiki/hot-cache/{kbId}` | `Soft-delete the hot cache row` |

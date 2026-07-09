@@ -135,6 +135,10 @@ VALUES ('volcengine-plan', 'Volcano Engine Coding Plan (火山方舟代码计划
 
 MERGE INTO mate_model_provider (provider_id, name, api_key_prefix, chat_model, api_key, base_url, generate_kwargs, is_custom, is_local, support_model_discovery, support_connection_check, freeze_url, require_api_key, create_time, update_time)
 KEY (provider_id)
+VALUES ('volcengine-agent-plan', 'Volcano Engine Agent Plan (火山方舟 Agent Plan)', '', 'OpenAIChatModel', '', 'https://ark.cn-beijing.volces.com/api/plan/v3', '{}', FALSE, FALSE, TRUE, TRUE, TRUE, TRUE, NOW(), NOW());
+
+MERGE INTO mate_model_provider (provider_id, name, api_key_prefix, chat_model, api_key, base_url, generate_kwargs, is_custom, is_local, support_model_discovery, support_connection_check, freeze_url, require_api_key, create_time, update_time)
+KEY (provider_id)
 VALUES ('zhipu-cn-codingplan', 'Zhipu Coding Plan (智谱编码套餐)', '', 'OpenAIChatModel', '', 'https://open.bigmodel.cn/api/coding/paas/v4', '{"completionsPath":"/chat/completions"}', FALSE, FALSE, FALSE, FALSE, TRUE, TRUE, NOW(), NOW());
 
 MERGE INTO mate_model_provider (provider_id, name, api_key_prefix, chat_model, api_key, base_url, generate_kwargs, is_custom, is_local, support_model_discovery, support_connection_check, freeze_url, require_api_key, create_time, update_time)
@@ -321,6 +325,18 @@ MERGE INTO mate_model_config (id, name, provider, model_name, description, tempe
 (1000000323, 'GLM 4.7 Coding', 'volcengine-plan', 'glm-4.7', 'GLM 4.7 编码版（火山方舟托管），200K 上下文', 0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
 (1000000324, 'Kimi K2 Thinking', 'volcengine-plan', 'kimi-k2-thinking', 'Kimi K2 推理版（火山方舟托管），256K 上下文', 0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
 (1000000325, 'Kimi K2.5 Coding', 'volcengine-plan', 'kimi-k2.5', 'Kimi K2.5 编码版（火山方舟托管），256K 上下文', 0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000350, 'GLM-5.2', 'volcengine-agent-plan', 'glm-5.2', '智谱最新旗舰模型，1M 上下文，长程任务效果突出（可用 glm-latest 访问最新版）', 0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000351, '方舟 Agent Plan（自动路由）', 'volcengine-agent-plan', 'ark-code-latest', '自动路由入口，按需分发到最合适的套餐模型', 0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000353, 'Doubao-Seed-2.0-Code', 'volcengine-agent-plan', 'doubao-seed-2.0-code', 'Seed 2.0 代码强化，前端出众、多语言适配；默认 non-thinking，支持开启深度思考', 0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000354, 'Doubao-Seed-2.0-pro', 'volcengine-agent-plan', 'doubao-seed-2.0-pro', '旗舰级全能通用模型，适合复杂推理与长链路任务；默认开启深度思考，可关闭', 0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000355, 'Doubao-Seed-2.0-lite', 'volcengine-agent-plan', 'doubao-seed-2.0-lite', '兼顾生成质量与响应速度的通用生产级模型', 0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000356, 'Doubao-Seed-2.0-mini', 'volcengine-agent-plan', 'doubao-seed-2.0-mini', '面向低时延、高并发与成本敏感场景的轻量模型', 0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000357, 'Kimi-K2.7-Code', 'volcengine-agent-plan', 'kimi-k2.7-code', 'Kimi 最新 Coding 模型，长上下文指令遵循更可靠，支持文本/图片/视频输入', 0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000358, 'MiniMax-M3', 'volcengine-agent-plan', 'minimax-m3', '新一代 M 系列，编码与智能体评测行业顶尖', 0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000359, 'DeepSeek-V4-Flash', 'volcengine-agent-plan', 'deepseek-v4-flash', '更快捷经济的 DeepSeek-V4；默认开启深度思考，可手动关闭', 0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000360, 'DeepSeek-V4-Pro', 'volcengine-agent-plan', 'deepseek-v4-pro', 'DeepSeek-V4 Agent 能力显著增强，世界知识丰富；默认开启深度思考，可关闭', 0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000361, 'MiniMax-M2.7', 'volcengine-agent-plan', 'minimax-m2.7', '可自行构建复杂 Agent Harness，完成高度复杂的生产力任务', 0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000362, 'Kimi-K2.6', 'volcengine-agent-plan', 'kimi-k2.6', '月之暗面新一代智能模型；默认开启深度思考，可关闭', 0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
 (1000000240, 'Kimi for Coding', 'kimi-code', 'kimi-for-coding', 'Kimi Code 专用编码模型', 0.2, 32768, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
 (1000000250, 'GPT-5.4', 'openai-chatgpt', 'gpt-5.4', 'ChatGPT Plus/Pro 会员模型（OAuth 登录）', NULL, 128000, NULL, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
 (1000000251, 'GPT-5.4 Mini', 'openai-chatgpt', 'gpt-5.4-mini', 'ChatGPT 会员轻量模型', NULL, 128000, NULL, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
@@ -444,6 +460,16 @@ VALUES (1000000004, 'ReadFileTool', '读取文件', '读取指定文件的内容
 MERGE INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
 KEY (id)
 VALUES (1000000005, 'WriteFileTool', '写入文件', '将内容写入指定文件。如果文件已存在则完全覆写，不存在则创建新文件。每次执行需要用户审批确认。', 'builtin', 'writeFileTool', '📝', TRUE, TRUE, NOW(), NOW(), 0);
+
+-- 内置工具：本地文件访问（通过桌面隧道操作用户本机文件）
+MERGE INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
+KEY (id)
+VALUES (1000000026, 'LocalFileTools', '本地文件访问', '通过桌面隧道读取/写入/编辑/列目录/获取元数据，操作的是用户本机文件（非服务器）。受目录白名单约束；写入与编辑需用户在桌面端原生审批。', 'builtin', 'localFileTools', '💻', TRUE, TRUE, NOW(), NOW(), 0);
+
+-- 内置工具：本地命令执行（通过桌面隧道在用户本机执行）
+MERGE INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
+KEY (id)
+VALUES (1000000027, 'LocalShellTool', '本地命令执行', '通过桌面隧道在用户本机执行 Shell 命令（非服务器）。每次执行需用户在桌面端原生审批。', 'builtin', 'localShellTool', '🖥', TRUE, TRUE, NOW(), NOW(), 0);
 
 -- 内置工具：编辑文件（默认启用，危险操作由 ToolGuard 审批控制）
 MERGE INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)

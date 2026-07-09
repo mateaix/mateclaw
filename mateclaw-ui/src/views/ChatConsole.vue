@@ -211,6 +211,11 @@
         :capabilities="agentCapabilities"
       />
 
+      <!-- 上下文占用（估算）：点击展开分项面板 -->
+      <div v-if="contextUsage" class="ctx-usage-row">
+        <ContextUsagePanel :usage="contextUsage" />
+      </div>
+
       <!-- 使用组件化的 ChatInput -->
       <ChatInput
         ref="chatInputRef"
@@ -263,14 +268,18 @@
   </div>
 </template>
 
+<script lang="ts">
+let cachedAgents: import('@/types').Agent[] = []
+</script>
+
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
+import { ElMessage } from 'element-plus/es/components/message/index'
+import { ref, computed, onMounted, onBeforeUnmount, onActivated, onDeactivated, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { mcToast } from '@/composables/useMcToast'
 import { ChatDotRound, Delete, Setting, UploadFilled } from '@element-plus/icons-vue'
 import { conversationApi, agentApi, modelApi, chatApi, cronJobApi, approvalApi } from '@/api/index'
-import { ElMessage } from 'element-plus'
 import { copyToClipboard } from '@/utils/clipboard'
 import { useFileDrop } from '@/composables/useFileDrop'
 import { useIsMobile, useMediaQuery, BREAKPOINTS } from '@/composables/useBreakpoint'
@@ -290,6 +299,7 @@ import { agentIconColor } from '@/utils/agentIconColor'
 import ChatInput from '@/components/chat/ChatInput.vue'
 import MultimodalRoutingHint from '@/components/chat/MultimodalRoutingHint.vue'
 import StreamLoadingBar from '@/components/chat/StreamLoadingBar.vue'
+import ContextUsagePanel from '@/components/chat/ContextUsagePanel.vue'
 import TalkMode from '@/components/chat/TalkMode.vue'
 import ModelSelector from '@/components/chat/ModelSelector.vue'
 import { useEChartsRenderer } from '@/composables/useEChartsRenderer'
@@ -359,7 +369,7 @@ const router = useRouter()
 const route = useRoute()
 const { t } = useI18n()
 
-const agents = ref<Agent[]>([])
+const agents = ref<Agent[]>(cachedAgents.length > 0 ? [...cachedAgents] : [])
 const conversations = ref<Conversation[]>([])
 const selectedAgentId = ref<string | number>('')
 const currentConversationId = ref<string>('')
@@ -671,6 +681,7 @@ const {
   queueSize,
   heartbeat,
   compactStatus,
+  contextUsage,
   lifecycleStage,
   sendMessage: sendChatMessage,
   stopGeneration: stopChatGeneration,
@@ -1162,6 +1173,45 @@ onBeforeUnmount(() => {
   revokeAllPreviewUrls()
 })
 
+onDeactivated(() => {
+  if (activityPollTimer !== null) {
+    clearInterval(activityPollTimer)
+    activityPollTimer = null
+  }
+  if (elapsedTickTimer !== null) {
+    clearInterval(elapsedTickTimer)
+    elapsedTickTimer = null
+  }
+  document.removeEventListener('click', handleCodeCopy)
+  disposeECharts()
+  disposeKatex()
+  disposeMermaid()
+  revokeAllPreviewUrls()
+  resetForNewConversation()
+})
+
+onActivated(async () => {
+  document.addEventListener('click', handleCodeCopy)
+  startECharts()
+  startKatex()
+  startMermaid()
+  activityPollTimer = window.setInterval(pollActivity, ACTIVITY_POLL_MS)
+  elapsedTickTimer = window.setInterval(() => {
+    if (activeCronRuns.value.length > 0) elapsedNow.value = Date.now()
+  }, 1000)
+  // 登出已改为 window.location.href（刷新页面），所以切回时不会有跨用户残留
+  if (currentConversationId.value && !isEphemeralConversation(currentConversationId.value)) {
+    try {
+      const statusRes: any = await conversationApi.getStatus(currentConversationId.value)
+      if (currentConversationId.value && statusRes.data?.streamStatus === 'running') {
+        await reconnectStream(currentConversationId.value)
+      }
+    } catch {
+      // 忽略
+    }
+  }
+})
+
 watch(() => route.query, () => {
   // If a fresh action arrives (e.g. user re-fires Ctrl+K via the URL while
   // the view is already alive), pick it up immediately.
@@ -1331,6 +1381,7 @@ async function loadAgents() {
     // a confusing failure path. The admin Agents view passes no filter.
     const res: any = await agentApi.list({ enabled: true })
     agents.value = res.data || []
+    if (agents.value.length > 0) cachedAgents = [...agents.value]
     // 只有在 URL 没有指定 agentId 且当前无选中时，才默认选第一个
     if (agents.value.length > 0 && !selectedAgentId.value && !route.query.agentId) {
       selectedAgentId.value = agents.value[0].id
@@ -1465,8 +1516,24 @@ async function refreshCurrentConversationMessages(conversationId: string) {
 }
 
 async function hydrateStateFromRoute() {
-  const agentId = route.query.agentId ? String(route.query.agentId) : ''
-  const conversationId = String(route.query.conversationId || '')
+  let agentId = route.query.agentId ? String(route.query.agentId) : ''
+  let conversationId = String(route.query.conversationId || '')
+
+  // The URL can outlive its workspace: switching workspaces remounts this view
+  // (via the router-view key) but keeps the query string, so agentId /
+  // conversationId may still point at entities of the previous workspace. An
+  // agentId missing from the workspace-scoped agent list is such a leftover —
+  // drop it so the default-select below picks a real employee instead of the
+  // picker rendering the unresolvable raw id.
+  if (agentId && agents.value.length > 0 && !agents.value.some(a => String(a.id) === agentId)) {
+    agentId = ''
+    // Only follow the paired conversationId when it resolves locally (e.g. a
+    // Sessions-page jump within this workspace); otherwise it is equally stale
+    // and would attach the fallback agent to a foreign conversation.
+    if (!conversations.value.some(conv => conv.conversationId === conversationId)) {
+      conversationId = ''
+    }
+  }
 
   if (agentId && agentId !== String(selectedAgentId.value)) {
     selectedAgentId.value = agentId
@@ -1483,7 +1550,7 @@ async function hydrateStateFromRoute() {
       try {
         const res: any = await conversationApi.listMessages(conversationId)
         if (currentConversationId.value !== conversationId) return
-        messages.value = extractMessages(res).messages.map((msg: Message) => normalizeMessage(msg))
+      messages.value = extractMessages(res).messages.map((msg: Message) => normalizeMessage(msg, true))
       } catch {
         // 消息加载失败，保持空
       }
@@ -1522,6 +1589,7 @@ async function selectConversation(conv: Conversation) {
   const switchingAway = currentConversationId.value !== conv.conversationId
   if (switchingAway) {
     resetForNewConversation()
+    messageListRef.value?.resetScrollLock()
   }
   currentConversationId.value = conv.conversationId
   selectedAgentId.value = conv.agentId || selectedAgentId.value
@@ -1544,7 +1612,8 @@ async function selectConversation(conv: Conversation) {
     if (currentConversationId.value !== requestedConvId) return
     // 点同一个会话时，若已有 SSE 在跑就不要覆盖本地消息状态
     if (switchingAway || !isGenerating.value) {
-      messages.value = extractMessages(res).messages.map((msg: Message) => normalizeMessage(msg))
+      const convRunning = conv.streamStatus === 'running'
+      messages.value = extractMessages(res).messages.map((msg: Message) => normalizeMessage(msg, convRunning))
     }
 
     // Hydrate pending approvals：恢复刷新后丢失的审批卡片（RFC-067 §4.9）
@@ -1943,7 +2012,6 @@ async function handleApproveAlways(
 
 // 重连到运行中的流
 async function reconnectStream(conversationId: string) {
-  if (isGenerating.value) return
   try {
     await reconnectChatStream(conversationId)
   } catch (e) {
@@ -2037,7 +2105,7 @@ function buildOutgoingParts(text: string, attachments: ChatAttachment[]): Messag
 }
 
 // ============ 工具函数 ============
-function normalizeMessage(raw: Message): Message {
+function normalizeMessage(raw: Message, preserveGeneratingStatus?: boolean): Message {
   const msg: Message = { ...raw, contentParts: raw.contentParts ? [...raw.contentParts] : [] }
 
   // 统一解析 metadata：确保是对象而非 JSON 字符串
@@ -2056,6 +2124,9 @@ function normalizeMessage(raw: Message): Message {
   // 保留后端返回的 token 字段（MessageVO 新增）
   if ((raw as any).promptTokens) msg.promptTokens = (raw as any).promptTokens
   if ((raw as any).completionTokens) msg.completionTokens = (raw as any).completionTokens
+  if ((raw as any).cacheReadTokens) msg.cacheReadTokens = (raw as any).cacheReadTokens
+  if ((raw as any).cacheWriteTokens) msg.cacheWriteTokens = (raw as any).cacheWriteTokens
+  if ((raw as any).reasoningTokens) msg.reasoningTokens = (raw as any).reasoningTokens
   if ((raw as any).runtimeModel) msg.runtimeModel = (raw as any).runtimeModel
   if ((raw as any).runtimeProvider) msg.runtimeProvider = (raw as any).runtimeProvider
 
@@ -2107,7 +2178,7 @@ function normalizeMessage(raw: Message): Message {
     msg.metadata = { ...msg.metadata, toolCalls: cleaned }
   }
 
-  if (msg.status === 'generating') msg.status = 'failed'
+  if (!preserveGeneratingStatus && msg.status === 'generating') msg.status = 'failed'
   // interrupted 是合法的历史状态（interrupt-with-followup），不映射为 stopped
   if (!msg.status) msg.status = 'completed'
 
@@ -2186,6 +2257,11 @@ function handleCodeCopy(e: MouseEvent) {
 </script>
 
 <style scoped>
+.ctx-usage-row {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 4px 4px;
+}
 .cron-running-bar {
   display: flex;
   flex-direction: column;

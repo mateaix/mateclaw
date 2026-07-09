@@ -2,77 +2,97 @@ package vip.mate.agent;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import vip.mate.llm.model.ModelProviderEntity;
+import vip.mate.llm.routing.ProviderModelRef;
 
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
- * RFC-009 PR-3 — verifies the agent-preference reorder used by
- * {@link AgentGraphBuilder#buildFallbackChain}: listed providers move to the
- * front in their declared order; unlisted providers keep their original
- * relative order; missing/duplicate preferences are ignored gracefully.
+ * Verifies the preferred-model chain planning used by
+ * {@link AgentGraphBuilder#buildFallbackChain}: explicit (provider, model)
+ * entries lead in declared order (same provider may repeat with different
+ * models), then every non-preferred provider follows in the global order with
+ * its default model. Exact (provider, model) duplicates and blank ids are
+ * dropped; tail entries never repeat a provider already led by an explicit
+ * entry.
  */
 class AgentGraphBuilderPreferenceTest {
 
-    private static ModelProviderEntity p(String id) {
-        ModelProviderEntity p = new ModelProviderEntity();
-        p.setProviderId(id);
-        return p;
+    private static ProviderModelRef ref(String providerId, Long modelId) {
+        return new ProviderModelRef(providerId, modelId);
     }
 
-    private static List<String> ids(List<ModelProviderEntity> ps) {
-        return ps.stream().map(ModelProviderEntity::getProviderId).toList();
+    private static List<String> keys(List<ProviderModelRef> plan) {
+        return plan.stream()
+                .map(r -> r.providerId() + "/" + (r.modelId() == null ? "default" : r.modelId()))
+                .toList();
     }
 
     @Test
-    @DisplayName("Empty preferences: original order preserved")
+    @DisplayName("No preferences: tail = global order, all default models")
     void noPreferences() {
-        var input = List.of(p("openai"), p("anthropic"), p("dashscope"));
-        var out = AgentGraphBuilder.reorderByPreferences(input, List.of());
-        assertEquals(List.of("openai", "anthropic", "dashscope"), ids(out));
+        var out = AgentGraphBuilder.planFallbackOrder(
+                List.of(), List.of("openai", "anthropic", "dashscope"));
+        assertEquals(List.of("openai/default", "anthropic/default", "dashscope/default"), keys(out));
     }
 
     @Test
-    @DisplayName("Single preference: preferred provider moves to front, rest follow original order")
-    void singlePreferenceFront() {
-        var input = List.of(p("openai"), p("anthropic"), p("dashscope"));
-        var out = AgentGraphBuilder.reorderByPreferences(input, List.of("dashscope"));
-        assertEquals(List.of("dashscope", "openai", "anthropic"), ids(out));
+    @DisplayName("Single provider-default preference moves to front, tail drops it")
+    void singleProviderDefaultFront() {
+        var out = AgentGraphBuilder.planFallbackOrder(
+                List.of(ref("dashscope", null)),
+                List.of("openai", "anthropic", "dashscope"));
+        assertEquals(List.of("dashscope/default", "openai/default", "anthropic/default"), keys(out));
     }
 
     @Test
-    @DisplayName("Multiple preferences: preferred order matches declaration, rest stable")
-    void multiplePreferencesOrder() {
-        var input = List.of(p("openai"), p("anthropic"), p("dashscope"), p("kimi"));
-        var out = AgentGraphBuilder.reorderByPreferences(input, List.of("kimi", "anthropic"));
-        // kimi → anthropic → (rest in original order: openai, dashscope)
-        assertEquals(List.of("kimi", "anthropic", "openai", "dashscope"), ids(out));
+    @DisplayName("Same provider repeated with different models — both kept, in order")
+    void sameProviderMultipleModels() {
+        var out = AgentGraphBuilder.planFallbackOrder(
+                List.of(ref("openai", 1L), ref("openai", 2L), ref("anthropic", 3L)),
+                List.of("openai", "anthropic", "dashscope"));
+        // explicit head in order, then only the un-named provider (dashscope) trails
+        assertEquals(
+                List.of("openai/1", "openai/2", "anthropic/3", "dashscope/default"),
+                keys(out));
     }
 
     @Test
-    @DisplayName("Preference references unknown provider: silently skipped")
-    void preferenceReferencesUnknown() {
-        var input = List.of(p("openai"), p("anthropic"));
-        var out = AgentGraphBuilder.reorderByPreferences(input, List.of("ghost", "anthropic"));
-        assertEquals(List.of("anthropic", "openai"), ids(out));
+    @DisplayName("Exact (provider, model) duplicate is dropped")
+    void exactDuplicateDropped() {
+        var out = AgentGraphBuilder.planFallbackOrder(
+                List.of(ref("openai", 1L), ref("openai", 1L)),
+                List.of("openai", "anthropic"));
+        assertEquals(List.of("openai/1", "anthropic/default"), keys(out));
     }
 
     @Test
-    @DisplayName("Duplicate preferences: each provider appears at most once")
-    void duplicatePreferencesDeduped() {
-        var input = List.of(p("openai"), p("anthropic"));
-        var out = AgentGraphBuilder.reorderByPreferences(input, List.of("openai", "openai", "anthropic"));
-        assertEquals(List.of("openai", "anthropic"), ids(out));
+    @DisplayName("Provider pinned by id is not re-added as a default tail entry")
+    void pinnedProviderExcludedFromTail() {
+        var out = AgentGraphBuilder.planFallbackOrder(
+                List.of(ref("openai", 1L)),
+                List.of("openai", "anthropic"));
+        // openai already led explicitly → no extra openai/default in the tail
+        assertEquals(List.of("openai/1", "anthropic/default"), keys(out));
     }
 
     @Test
-    @DisplayName("All providers preferred: input pure-reordered, no drops")
-    void allProvidersPreferred() {
-        var input = List.of(p("openai"), p("anthropic"), p("dashscope"));
-        var out = AgentGraphBuilder.reorderByPreferences(input,
-                List.of("dashscope", "openai", "anthropic"));
-        assertEquals(List.of("dashscope", "openai", "anthropic"), ids(out));
+    @DisplayName("Blank / null provider ids are ignored")
+    void blankIdsIgnored() {
+        var out = AgentGraphBuilder.planFallbackOrder(
+                List.of(ref("", 1L), ref(null, 2L), ref("openai", 3L)),
+                List.of("openai", "anthropic"));
+        assertEquals(List.of("openai/3", "anthropic/default"), keys(out));
+    }
+
+    @Test
+    @DisplayName("Preference for a provider absent from the global pool is still honoured")
+    void preferenceForUnknownProvider() {
+        var out = AgentGraphBuilder.planFallbackOrder(
+                List.of(ref("ghost", 9L)),
+                List.of("openai", "anthropic"));
+        // ghost leads (pool gating happens later in buildFallbackChain), tail follows
+        assertEquals(List.of("ghost/9", "openai/default", "anthropic/default"), keys(out));
     }
 }

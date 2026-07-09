@@ -45,7 +45,7 @@ class ApprovalReplayContinuityTest {
                 /* senderName */ "Alice",
                 /* channelType */ "wecom",
                 /* chatId */ "group-a",
-                /* baseUrl */ null);
+                /* baseUrl */ null, null);
 
         String json = objectMapper.writeValueAsString(original);
         ChatOrigin restored = workflow.restoreChatOrigin(json);

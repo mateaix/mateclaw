@@ -1,6 +1,6 @@
 /**
  * SSE 流处理 Composable
- * 参考 @agentscope-ai/chat 的 Stream 实现，提供标准的 SSE 解析
+ * 提供标准的 SSE 流式解析
  */
 import { ref, computed } from 'vue'
 import { handleAuthFailure, updateTokenFromHeader } from '@/utils/auth'
@@ -80,6 +80,7 @@ export type SSEEventType =
   // (start → pair_safe → summarize → done/skipped/failed). Payload
   // carries preTokens/postTokens/messagesSummarized/tailKept/etc.
   | 'compact_status'
+  | 'context_usage'
 
 export interface SSEEvent {
   type: SSEEventType

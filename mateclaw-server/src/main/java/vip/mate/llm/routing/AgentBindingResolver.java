@@ -21,9 +21,13 @@ public interface AgentBindingResolver {
     Set<Long> getBoundSkillIds(Long agentId);
 
     /**
-     * Provider ids the agent prefers, in priority order; empty when none.
+     * Ordered preferred-model chain for the agent: each entry is a provider
+     * plus an optional pinned model ({@code modelId == null} = the provider's
+     * default chat model). The same provider may repeat with different models,
+     * so an agent can express a chain like {@code A/modelX → A/modelY →
+     * B/modelZ}. Empty when the agent has no preferences.
      */
-    List<String> getPreferredProviderIds(Long agentId);
+    List<ProviderModelRef> getPreferredProviderModels(Long agentId);
 
     /**
      * Wiki knowledge-base ids bound to the agent, or {@code null} when the

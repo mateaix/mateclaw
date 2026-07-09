@@ -1,35 +1,57 @@
-version: '3.8'
-
+# ============================================================================
+#  ⚠️  DATABASE ENGINE: PostgreSQL  (was MySQL before)
+#
+#  This stack now runs on PostgreSQL 16. Switching the DB engine is a BREAKING
+#  change for existing deployments: `docker compose up -d` on a host that
+#  previously ran the MySQL stack starts a FRESH, EMPTY PostgreSQL volume
+#  (postgres_data). The old `mysql_data` volume is NOT read and the app
+#  re-seeds default data — existing data is not lost, but it is also NOT
+#  visible to the new stack.
+#
+#  Treat this as FRESH-INSTALL-ONLY. To carry data across from a MySQL
+#  deployment, dump the OLD stack BEFORE pulling this change, e.g.:
+#      docker compose exec mysql mysqldump -u"$DB_USERNAME" -p"$DB_PASSWORD" "$DB_NAME" > mateclaw-mysql.sql
+#  then load into PostgreSQL with a cross-engine tool such as pgloader —
+#  there is no automatic MySQL → PostgreSQL migration here. Alternatively,
+#  keep running MySQL by pinning your checkout to a pre-switch tag and setting
+#  SPRING_PROFILES_ACTIVE=mysql (the mysql Spring profile remains supported).
+# ============================================================================
 services:
-  # MySQL 数据库
+  # PostgreSQL 数据库
   #
   # ⚠️ 密码通过环境变量传入，必须从 .env 文件提供。首次部署前：
   #   1. cp .env.example .env
-  #   2. 编辑 .env 把 DB_ROOT_PASSWORD / DB_PASSWORD 改成强密码
+  #   2. 编辑 .env 把 DB_ADMIN_PASSWORD / DB_PASSWORD 改成强密码
   # 未设置会直接在 `docker compose up` 时报错，避免把默认密码带到生产环境。
-  mysql:
-    image: mysql:8.0
-    container_name: mateclaw-mysql
+  postgres:
+    image: postgres:16
+    container_name: mateclaw-postgres
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:?DB_ROOT_PASSWORD is required in .env}
-      MYSQL_DATABASE: ${DB_NAME:-mateclaw}
-      MYSQL_USER: ${DB_USERNAME:-mateclaw}
-      MYSQL_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required in .env}
+      # Bootstrap/superuser — owns the cluster, used only for init + admin tasks.
+      POSTGRES_DB: ${DB_NAME:-mateclaw}
+      POSTGRES_USER: ${DB_ADMIN_USERNAME:-mateclaw_admin}
+      POSTGRES_PASSWORD: ${DB_ADMIN_PASSWORD:?DB_ADMIN_PASSWORD is required in .env}
+      # Least-privilege application role created by the init script below; this
+      # is the account the server connects with (NOT a superuser).
+      APP_DB_USERNAME: ${DB_USERNAME:-mateclaw}
+      APP_DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required in .env}
       TZ: Asia/Shanghai
-    ports:
-      - "3306:3306"
+    # No host port on purpose — the DB is only reachable from the compose
+    # network. For ad-hoc inspection use `docker compose exec postgres psql`,
+    # or temporarily add:  ports: ["127.0.0.1:5432:5432"]
     volumes:
-      - mysql_data:/var/lib/mysql
-    # Schema and seed data are managed by Flyway on application startup.
-    # Do NOT mount legacy schema.sql / data.sql here — Flyway creates all
-    # tables from V1 baseline and applies incremental migrations automatically.
-    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+      - postgres_data:/var/lib/postgresql/data
+      # Runs once on first init (empty data dir): creates the restricted app
+      # role and the mateclaw schema it owns. See docker/postgres/init/.
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_ADMIN_USERNAME:-mateclaw_admin} -d ${DB_NAME:-mateclaw}"]
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - mateclaw-net
 
   # SearXNG 搜索引擎（keyless 搜索 provider）
   #
@@ -37,6 +59,8 @@ services:
   # works out of the box (upstream image ships JSON disabled + Limiter enabled,
   # both of which silently break mateclaw's SearXNGSearchProvider).
   # No host bind-mount — edit docker/searxng/settings.yml and rebuild.
+  # Internal-only: the app reaches it via the compose network. To debug from
+  # the host, temporarily add:  ports: ["127.0.0.1:8088:8080"]
   searxng:
     build:
       context: ./docker/searxng
@@ -47,14 +71,15 @@ services:
       - SEARXNG_SECRET=${SEARXNG_SECRET:-mateclaw-dev-searxng-secret-change-me}
       - UWSGI_WORKERS=2
       - UWSGI_THREADS=4
-    ports:
-      - "8088:8080"
+    # searxng ports removed upstream (no host port mapping)
     healthcheck:
       # Healthz needs json format, so this also doubles as an integration check.
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/healthz"]
       interval: 30s
       timeout: 5s
       retries: 3
+    networks:
+      - mateclaw-net
 
   # MateClaw 后端服务
   mateclaw-server:
@@ -66,14 +91,14 @@ services:
     container_name: mateclaw-server
     restart: unless-stopped
     depends_on:
-      mysql:
+      postgres:
         condition: service_healthy
       searxng:
         condition: service_healthy
     environment:
-      SPRING_PROFILES_ACTIVE: mysql
-      DB_HOST: mysql
-      DB_PORT: 3306
+      SPRING_PROFILES_ACTIVE: postgres
+      DB_HOST: postgres
+      DB_PORT: 5432
       DB_NAME: ${DB_NAME:-mateclaw}
       DB_USERNAME: ${DB_USERNAME:-mateclaw}
       DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required in .env}
@@ -82,6 +107,7 @@ services:
       #   Settings → Models → Add Provider
       # Keys are stored in mate_model_provider and hot-reloaded.
       SERPER_API_KEY: ${SERPER_API_KEY:-}
+      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
       JWT_SECRET: ${JWT_SECRET:-}
       MATECLAW_CORS_ALLOWED_ORIGINS: ${MATECLAW_CORS_ALLOWED_ORIGINS:-}
       # SearXNG: tell the app where to reach the sidecar container
@@ -92,6 +118,30 @@ services:
       MATECLAW_BROWSER_CDP_URL: ${MATECLAW_BROWSER_CDP_URL:-}
       MATECLAW_BROWSER_CHROME_PATH: ${MATECLAW_BROWSER_CHROME_PATH:-}
       MATECLAW_BROWSER_CHANNEL: ${MATECLAW_BROWSER_CHANNEL:-}
+      # SSRF / TLS relaxations for isolated LAN / on-prem deployments.
+      # Both default to false (strict mode, public-internet safe).
+      # The .env file uses the PLAYWRIGHT_* prefix (component-oriented naming,
+      # not product-oriented) — here we translate to the MATECLAW_BROWSER_*
+      # container env that Spring Boot relaxed-binding maps to BrowserProperties.
+      # - PLAYWRIGHT_ALLOW_PRIVATE_NETWORK=true: allow loopback / private / link-local
+      #   addresses through the browser SSRF guard. Cloud-metadata endpoints stay
+      #   blocked. Turn on when the agent must drive http://192.168.x.x:port style
+      #   internal services and has no path to the public internet.
+      # - PLAYWRIGHT_IGNORE_HTTPS_ERRORS=true: ignore HTTPS certificate errors.
+      #   Auto-enables --ignore-certificate-errors at the Chromium command line
+      #   when ALLOW_PRIVATE_NETWORK is also true (so CDP-attached external
+      #   browsers benefit too). Leave false on internet-facing deployments.
+      MATECLAW_BROWSER_ALLOW_PRIVATE_NETWORK: ${PLAYWRIGHT_ALLOW_PRIVATE_NETWORK:-false}
+      MATECLAW_BROWSER_IGNORE_HTTPS_ERRORS: ${PLAYWRIGHT_IGNORE_HTTPS_ERRORS:-false}
+      # Playwright action / navigation timeouts (seconds). Increase for slow
+      # LAN or large-page scenarios. Defaults match Playwright's own (30s).
+      MATECLAW_BROWSER_DEFAULT_TIMEOUT_SECONDS: ${PLAYWRIGHT_DEFAULT_TIMEOUT_SECONDS:-30}
+      MATECLAW_BROWSER_DEFAULT_NAVIGATION_TIMEOUT_SECONDS: ${PLAYWRIGHT_NAVIGATION_TIMEOUT_SECONDS:-30}
+      # Hard cap on the textual snapshot returned by action=snapshot. Content
+      # beyond this length is dropped with a truncated:true flag and a hint to
+      # retry with selector. Results > framework spill threshold (~8000 chars)
+      # are further spilt to disk by ToolResultStorage.
+      MATECLAW_BROWSER_SNAPSHOT_MAX_LENGTH: ${PLAYWRIGHT_SNAPSHOT_MAX_LENGTH:-20000}
       # OAuth 模式默认保持 auto：localhost 访问走 LOCAL，IP/域名访问走 DEVICE_CODE。
       # 本机 Docker 若要强制使用 localhost:1455 回调，可在 .env 显式设为 local。
       MATECLAW_OAUTH_OPENAI_DEPLOYMENT_MODE: ${MATECLAW_OAUTH_OPENAI_DEPLOYMENT_MODE:-}
@@ -109,6 +159,10 @@ services:
       # 已安装的 skill、运行时积累的 LESSONS.md 以及 skill 运行产物，容器重启不丢。
       # 内置 skill 仍由 JAR classpath 每次启动现场释放，空卷不会丢内置文件。
       MATECLAW_SKILL_WORKSPACE_ROOT: ${MATECLAW_SKILL_WORKSPACE_ROOT:-/app/data/skills}
+      # Skill ZIP 上传/安装大小上限（MB）。解包过程整包缓存在内存里，
+      # max-total 调多大，单次安装的峰值内存就可能吃多大。
+      MATECLAW_SKILL_UPLOAD_MAX_ENTRY_SIZE_MB: ${MATECLAW_SKILL_UPLOAD_MAX_ENTRY_SIZE_MB:-1}
+      MATECLAW_SKILL_UPLOAD_MAX_TOTAL_SIZE_MB: ${MATECLAW_SKILL_UPLOAD_MAX_TOTAL_SIZE_MB:-50}
     # Chromium needs a real /dev/shm. Docker defaults to 64MB which causes
     # SIGBUS / "Target page closed" errors under load. 2GB is the usual
     # recommendation for Playwright / headless chrome.
@@ -117,11 +171,17 @@ services:
       - "18080:18088"   # host:container — app listens on 18088 inside the container
       - "1455:1455"
     volumes:
-      # server_data covers /app/data — H2 DB, wiki-uploads, AND the skill
-      # workspace (MATECLAW_SKILL_WORKSPACE_ROOT=/app/data/skills above), so a
-      # single volume persists everything. No separate skills volume needed.
+      # server_data covers /app/data — wiki-uploads AND the skill workspace
+      # (MATECLAW_SKILL_WORKSPACE_ROOT=/app/data/skills above), so a single
+      # volume persists everything. No separate skills volume needed.
       - server_data:/app/data
+    networks:
+      - mateclaw-net
 
 volumes:
-  mysql_data:
+  postgres_data:
   server_data:
+
+networks:
+  mateclaw-net:
+    driver: bridge

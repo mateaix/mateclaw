@@ -81,6 +81,10 @@ public class WikiResearchService {
             broadcast(sessionId, "research.plan", Map.of(
                     "questions", questions.stream().map(q -> Map.of("question", q.question, "intent", q.intent)).toList()
             ));
+            // Cooperative cancellation: the Open API cancel endpoint calls
+            // streamTracker.requestStop(sessionId). Bail before the expensive
+            // retrieve+draft fan-out so cancel actually halts LLM cost.
+            ensureNotCancelled(sessionId);
 
             // Stage 2: Retrieve + Draft (并行)
             List<Section> sections = draftStage(kbId, questions, topK, sessionId);
@@ -88,6 +92,8 @@ public class WikiResearchService {
                 broadcast(sessionId, "research.error", Map.of("message", i18n.msg("research.broadcast.draft_all_empty")));
                 return new ResearchResult(topic, sections, i18n.msg("research.fallback.no_materials"));
             }
+            // Second checkpoint before the compose LLM call.
+            ensureNotCancelled(sessionId);
 
             // Stage 3: Compose
             String report = composeStage(topic, sections);
@@ -97,10 +103,26 @@ public class WikiResearchService {
                     "materialsUsed", sections.stream().flatMap(s -> s.materialRefs.stream()).distinct().count()
             ));
             return new ResearchResult(topic, sections, report);
+        } catch (ResearchCancelledException ce) {
+            // Expected: caller has already flipped the session to CANCELLED
+            // and closed the SSE stream. Do not broadcast an error event.
+            log.info("[Research] Cancelled: kbId={}, topic={}, sessionId={}", kbId, topic, sessionId);
+            return new ResearchResult(topic, List.of(), "Research cancelled by user");
         } catch (Exception e) {
             log.error("[Research] Failed: kbId={}, topic={}: {}", kbId, topic, e.getMessage(), e);
             broadcast(sessionId, "research.error", Map.of("message", e.getMessage() != null ? e.getMessage() : i18n.msg("research.broadcast.failed")));
             return new ResearchResult(topic, List.of(), i18n.msg("research.fallback.failed", e.getMessage()));
+        }
+    }
+
+    /**
+     * Throws {@link ResearchCancelledException} if the caller (via the Open API
+     * cancel endpoint) has called {@link ChatStreamTracker#requestStop} on this
+     * session. Checked at each pipeline stage boundary.
+     */
+    private void ensureNotCancelled(String sessionId) {
+        if (streamTracker.isStopRequested(sessionId)) {
+            throw new ResearchCancelledException(sessionId);
         }
     }
 
@@ -149,6 +171,12 @@ public class WikiResearchService {
                     semaphore.acquire();
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
+                    return new Section(q.question, "", List.of());
+                }
+                // Re-check cancellation inside the parallel draft loop too —
+                // draftOneSection issues its own LLM call, which is the main
+                // cost driver, so skip queued-but-not-started drafts on cancel.
+                if (streamTracker.isStopRequested(sessionId)) {
                     return new Section(q.question, "", List.of());
                 }
                 try {
@@ -300,4 +328,16 @@ public class WikiResearchService {
     public record Section(String question, String content, List<MaterialRef> materialRefs) {}
 
     public record ResearchResult(String topic, List<Section> sections, String report) {}
+
+    /**
+     * Thrown when {@link ChatStreamTracker#requestStop(String)} was called on
+     * the session between pipeline stages. The {@link #research} method catches
+     * this to short-circuit — the caller (the Open API controller) has already
+     * flipped the registry to CANCELLED and closed the SSE stream.
+     */
+    public static class ResearchCancelledException extends RuntimeException {
+        public ResearchCancelledException(String sessionId) {
+            super("Research cancelled: sessionId=" + sessionId);
+        }
+    }
 }

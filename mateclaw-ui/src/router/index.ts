@@ -25,7 +25,7 @@ const router = createRouter({
           path: 'chat',
           name: 'Chat',
           component: () => import('@/views/ChatConsole.vue'),
-          meta: { title: 'Chat', requiredCapability: 'chat' },
+          meta: { title: 'Chat', requiredCapability: 'chat', keepAlive: true },
         },
         {
           path: 'dashboard',

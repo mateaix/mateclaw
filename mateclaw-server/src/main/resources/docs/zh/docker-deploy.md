@@ -1,6 +1,8 @@
 # Docker 部署
 
-桌面端之外的唯一推荐生产部署方式。一条 `docker compose up -d` 起三个容器：MySQL、SearXNG、mateclaw-server。
+桌面端之外的唯一推荐生产部署方式。一条 `docker compose up -d` 起三个容器：PostgreSQL、SearXNG、mateclaw-server。
+
+> **⚠️ 从 MySQL 栈升级**：Docker 栈已从 MySQL 切换到 PostgreSQL 16。老部署直接 `git pull` 后 `up -d` 会启动一个**全新的空 PostgreSQL 卷**——旧 `mysql_data` 卷不会被读取（数据不丢，但新栈看不到）。要携带数据请先在旧栈上 `mysqldump`，再用 pgloader 等工具导入 PostgreSQL；或钉在切换前的 tag 上继续用 MySQL（`mysql` Spring profile 仍然支持）。
 
 这一页覆盖**要求、步骤、验证、常见坑**。配置变量明细请看 [配置说明](./config)。
 
@@ -13,7 +15,7 @@
 | Docker Engine | 24.0+ | 最新稳定 | `docker --version` 确认 |
 | Docker Compose | v2.20+ | v2.30+ | `docker compose version`（注意是 `compose` 不是 `compose`） |
 | 宿主 RAM | 4 GB | 8 GB+ | 浏览器工具启动时 Chromium 会吃 1-2 GB |
-| 磁盘空间 | 6 GB | 20 GB+ | 镜像约 2 GB + MySQL 数据 + 工作空间文件 |
+| 磁盘空间 | 6 GB | 20 GB+ | 镜像约 2 GB + PostgreSQL 数据 + 工作空间文件 |
 | /dev/shm | 默认 | compose 已自动设 2 GB | Chromium 用共享内存做渲染，默认 64 MB 会 SIGBUS |
 | 网络 | 出公网 | — | 拉镜像 + 调 LLM API |
 
@@ -25,7 +27,7 @@
 
 | 服务 | 镜像 | 作用 | 暴露端口 |
 |---|---|---|---|
-| `mysql` | `mysql:8.0` | 业务数据存储 | `3306` |
+| `postgres` | `postgres:16` | 业务数据存储 | 仅容器网络内（默认不映射宿主端口） |
 | `searxng` | 本地构建 `./docker/searxng/` | 无 API Key 搜索兜底 | `8088` |
 | `mateclaw-server` | 本地构建 `mateclaw-server/Dockerfile` | Spring Boot 后端 + 内置浏览器 | `18080` |
 
@@ -178,8 +180,8 @@ vi .env   # 见下方必填表
 
 | 变量 | 说明 |
 |---|---|
-| `DB_PASSWORD` | 业务库账号密码，建议 16+ 位 + 大小写 + 数字 + 符号 |
-| `DB_ROOT_PASSWORD` | MySQL root 密码，**与上面不同** |
+| `DB_PASSWORD` | 应用账号密码（最小权限角色，仅拥有 `mateclaw` schema），建议 16+ 位 + 大小写 + 数字 + 符号 |
+| `DB_ADMIN_PASSWORD` | PostgreSQL 引导超级账号密码，仅用于首次初始化与运维，**与上面不同** |
 
 **强烈建议**（不填不会报错，启动日志里 WARN）：
 
@@ -299,7 +301,7 @@ docker compose build mateclaw-server   # 只重建后端
 docker compose up -d mateclaw-server
 ```
 
-MySQL 数据卷（`mysql_data`）不会动，Flyway 自动跑增量迁移 + 自愈 checksum 变化。**版本号写在 `mateclaw-server/pom.xml` 和 git tag**，生产环境建议钉 tag 而不是 `dev` 分支。
+PostgreSQL 数据卷（`postgres_data`）不会动，Flyway 自动跑增量迁移 + 自愈 checksum 变化。**版本号写在 `mateclaw-server/pom.xml` 和 git tag**，生产环境建议钉 tag 而不是 `dev` 分支。
 
 ---
 

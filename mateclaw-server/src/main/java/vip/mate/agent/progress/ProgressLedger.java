@@ -16,41 +16,82 @@ import java.util.Optional;
  * blocked) and stays short on purpose: the agent reads it on every turn, so
  * spending more than ~200 tokens on it would defeat the very context
  * pressure this ledger exists to relieve.
+ *
+ * <p>Three entry classes coexist:
+ * <ul>
+ *   <li><b>Regular entries</b> — LLM-controlled via the {@code progress_update}
+ *       tool. The model registers steps, advances their status, and adds
+ *       notes. These are what {@link #mostRecentUpdate()} and the stale
+ *       reminder consider when judging whether the ledger is maintained.</li>
+ *   <li><b>Pinned entries</b> — Java-controlled, written by ActionNode when
+ *       {@code load_skill} is called (B2). They carry the skill's structured
+ *       constraints (from {@code SkillManifest.constraints}) and survive
+ *       context compression because they live in {@code nonHistoryPrefix}.
+ *       The LLM's {@code progress_update} tool never touches them.</li>
+ *   <li><b>Auto-recorded entries</b> — Java-controlled, written by ActionNode
+ *       after a successful tool call (B5). They use the
+ *       {@link #AUTO_RECORDED_PREFIX} on their key so the renderer can group
+ *       them separately. They don't affect staleness calculation.</li>
+ * </ul>
  */
 public final class ProgressLedger {
 
     /** Hard cap on the snapshot's note suffix so a rambling note can't bloat every turn. */
     private static final int NOTE_PREVIEW_CHARS = 120;
 
+    /**
+     * Key prefix for entries auto-recorded by ActionNode after successful
+     * tool calls (B5). Lets the renderer group them into a separate
+     * "auto-recorded" section and exclude them from staleness calculation.
+     */
+    public static final String AUTO_RECORDED_PREFIX = "auto_";
+
     private final Map<String, ProgressEntry> entries;
+    private final Map<String, ProgressEntry> pinned;
 
     public ProgressLedger(Map<String, ProgressEntry> entries) {
+        this(entries, null);
+    }
+
+    public ProgressLedger(Map<String, ProgressEntry> entries, Map<String, ProgressEntry> pinned) {
         this.entries = entries != null ? entries : new LinkedHashMap<>();
+        this.pinned = pinned != null ? pinned : new LinkedHashMap<>();
     }
 
     public static ProgressLedger empty() {
-        return new ProgressLedger(new LinkedHashMap<>());
+        return new ProgressLedger(new LinkedHashMap<>(), new LinkedHashMap<>());
     }
 
     public boolean isEmpty() {
-        return entries.isEmpty();
+        return entries.isEmpty() && pinned.isEmpty();
     }
 
     public int size() {
-        return entries.size();
+        return entries.size() + pinned.size();
     }
 
     public Map<String, ProgressEntry> asMap() {
         return entries;
     }
 
+    /** @return the pinned (Java-controlled) entries, never null. */
+    public Map<String, ProgressEntry> pinnedEntries() {
+        return pinned;
+    }
+
     /**
-     * @return the most recent {@code updatedAt} across all entries, or empty
-     *         when the ledger is empty / all entries lack a timestamp.
+     * @return the most recent {@code updatedAt} across regular (non-auto,
+     *         non-pinned) entries, or empty when none have a timestamp.
+     *         Only regular entries count because pinned entries are static
+     *         constraints and auto-recorded entries are Java-side — neither
+     *         indicates the LLM is maintaining the ledger.
      */
     public Optional<Instant> mostRecentUpdate() {
         Instant max = null;
         for (ProgressEntry e : entries.values()) {
+            if (e.getKey() != null && e.getKey().startsWith(AUTO_RECORDED_PREFIX)) {
+                continue;
+            }
             Instant t = e.getUpdatedAt();
             if (t != null && (max == null || t.isAfter(max))) {
                 max = t;
@@ -59,45 +100,21 @@ public final class ProgressLedger {
         return Optional.ofNullable(max);
     }
 
-    /** Iteration before which no stale reminder is ever issued — too early to judge. */
-    private static final int STALE_WARMUP_ITERATIONS = 10;
-
-    /** Iteration past which an empty ledger triggers a "you should register steps" reminder. */
-    private static final int EMPTY_LEDGER_NUDGE_ITERATIONS = 15;
-
-    /** Wall-clock gap that flips a non-empty ledger from "fresh" to "stale". */
-    private static final long STALE_GAP_SECONDS = 90;
-
     /**
-     * Build a stale-reminder string for injection into the model's context
-     * when the ledger appears to be falling behind the actual reasoning
-     * progress. Returns {@code null} when the ledger is being maintained
-     * normally so the caller can skip the injection.
-     *
-     * <p>Trigger heuristics — derived from round-4 of the LLM-review smoke
-     * test, where the model stopped calling {@code progress_update} after
-     * the first 30s and silently fell out of the ledger discipline:
-     *
-     * <ul>
-     *   <li><strong>Warm-up</strong>: {@code currentIteration < 10} → never
-     *       remind, the model is still setting up the task.</li>
-     *   <li><strong>Empty ledger</strong>: {@code currentIteration ≥ 15} and
-     *       no entries at all → likely a multi-step task being executed
-     *       without any ledger discipline.</li>
-     *   <li><strong>Stale updates</strong>: ledger has entries, but the
-     *       most recent {@code updatedAt} is &gt; 90 s ago → ledger is no
-     *       longer tracking the real work.</li>
-     * </ul>
-     *
-     * @param currentIteration the agent's current ReAct iteration count
-     * @param now              the reference instant for staleness ("now");
-     *                         injected for testability
+     * Iteration before which no stale reminder is ever issued — too early to judge.
      */
+    private static final int STALE_WARMUP_ITERATIONS = 3;
+    private static final int EMPTY_LEDGER_NUDGE_ITERATIONS = 5;
+    private static final long STALE_GAP_SECONDS = 45;
+
     public String renderStaleReminder(int currentIteration, Instant now) {
         if (currentIteration < STALE_WARMUP_ITERATIONS) {
             return null;
         }
-        if (entries.isEmpty()) {
+        // Only regular (non-auto) entries indicate LLM engagement with the ledger.
+        boolean hasRegularEntries = entries.values().stream()
+                .anyMatch(e -> e.getKey() == null || !e.getKey().startsWith(AUTO_RECORDED_PREFIX));
+        if (!hasRegularEntries) {
             if (currentIteration < EMPTY_LEDGER_NUDGE_ITERATIONS) {
                 return null;
             }
@@ -114,20 +131,27 @@ public final class ProgressLedger {
         if (gap < STALE_GAP_SECONDS) {
             return null;
         }
-        int done = (int) entries.values().stream()
-                .filter(e -> e.getStatus() == ProgressStatus.DONE).count();
-        int inProgress = (int) entries.values().stream()
-                .filter(e -> e.getStatus() == ProgressStatus.IN_PROGRESS).count();
+        long done = entries.values().stream()
+                .filter(e -> isRegular(e) && e.getStatus() == ProgressStatus.DONE).count();
+        long inProgress = entries.values().stream()
+                .filter(e -> isRegular(e) && e.getStatus() == ProgressStatus.IN_PROGRESS).count();
+        long pending = entries.values().stream()
+                .filter(e -> isRegular(e) && e.getStatus() == ProgressStatus.PENDING).count();
         return "## ⚠️ 进度账本已 " + gap + " 秒未更新\n\n"
                 + "你已运行 " + currentIteration + " 轮，但 progress_update 已经 "
                 + gap + " 秒（约 " + (gap / 60) + " 分钟）没被调用过。\n"
                 + "当前账本：" + done + " done / " + inProgress + " in_progress / "
-                + (entries.size() - done - inProgress) + " pending。\n\n"
+                + pending + " pending。\n\n"
                 + "**立即做以下一件事**（不要再 read_file 或 browser_use，先更新账本）：\n"
                 + "- 把已经完成的子步骤切到 `done`（如果你能看到工作区文件已生成）\n"
                 + "- 把正在做的步骤切到 `in_progress`\n"
                 + "- 有阻塞切到 `blocked` + 写明原因\n"
                 + "不维护账本会导致重复工作 / 漏做项目 / 撞迭代上限。";
+    }
+
+    /** True when the entry is regular (not auto-recorded, not pinned). */
+    private boolean isRegular(ProgressEntry e) {
+        return e.getKey() == null || !e.getKey().startsWith(AUTO_RECORDED_PREFIX);
     }
 
     /**
@@ -136,16 +160,54 @@ public final class ProgressLedger {
      *         entirely (no "(empty)" placeholder noise).
      */
     public String renderSnapshot() {
-        if (entries.isEmpty()) {
+        if (isEmpty()) {
             return null;
         }
-        List<ProgressEntry> done = bucket(ProgressStatus.DONE);
-        List<ProgressEntry> inProgress = bucket(ProgressStatus.IN_PROGRESS);
-        List<ProgressEntry> pending = bucket(ProgressStatus.PENDING);
-        List<ProgressEntry> blocked = bucket(ProgressStatus.BLOCKED);
-
         StringBuilder sb = new StringBuilder(256);
         sb.append("## 当前任务进度（执行参考，权威记录）\n\n");
+
+        // Pinned constraints (highest priority — always visible)
+        if (!pinned.isEmpty()) {
+            sb.append("🔒 固定约束（来自 skill，全程不可忽略）:\n");
+            for (ProgressEntry e : pinned.values()) {
+                String label = e.getLabel() != null && !e.getLabel().isBlank()
+                        ? e.getLabel() : e.getKey();
+                sb.append("- ").append(label);
+                String note = e.getNote();
+                if (note != null && !note.isBlank()) {
+                    String trimmed = note.length() > NOTE_PREVIEW_CHARS
+                            ? note.substring(0, NOTE_PREVIEW_CHARS) + "…"
+                            : note;
+                    sb.append(" — ").append(trimmed);
+                }
+                sb.append('\n');
+            }
+            sb.append('\n');
+        }
+
+        // Auto-recorded tool completions (B5)
+        List<ProgressEntry> autoRecorded = new ArrayList<>();
+        for (ProgressEntry e : entries.values()) {
+            if (e.getKey() != null && e.getKey().startsWith(AUTO_RECORDED_PREFIX)) {
+                autoRecorded.add(e);
+            }
+        }
+        if (!autoRecorded.isEmpty()) {
+            sb.append("🔧 自动记录（工具调用完成）:\n");
+            for (ProgressEntry e : autoRecorded) {
+                String label = e.getLabel() != null && !e.getLabel().isBlank()
+                        ? e.getLabel() : e.getKey();
+                sb.append("- ").append(label).append(" → ").append(e.getStatus());
+                sb.append('\n');
+            }
+            sb.append('\n');
+        }
+
+        // Regular entries grouped by status
+        List<ProgressEntry> done = bucketRegular(ProgressStatus.DONE);
+        List<ProgressEntry> inProgress = bucketRegular(ProgressStatus.IN_PROGRESS);
+        List<ProgressEntry> pending = bucketRegular(ProgressStatus.PENDING);
+        List<ProgressEntry> blocked = bucketRegular(ProgressStatus.BLOCKED);
         appendBucket(sb, "✅ 已完成", done);
         appendBucket(sb, "🔄 进行中", inProgress);
         appendBucket(sb, "⏳ 待办", pending);
@@ -155,10 +217,10 @@ public final class ProgressLedger {
         return sb.toString();
     }
 
-    private List<ProgressEntry> bucket(ProgressStatus status) {
+    private List<ProgressEntry> bucketRegular(ProgressStatus status) {
         List<ProgressEntry> out = new ArrayList<>();
         for (ProgressEntry e : entries.values()) {
-            if (e.getStatus() == status) {
+            if (isRegular(e) && e.getStatus() == status) {
                 out.add(e);
             }
         }

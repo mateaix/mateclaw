@@ -768,6 +768,7 @@ Total routes extracted: 406.
 | Method | Path | Purpose / handler |
 |---|---|---|
 | `POST` | `/api/v1/wiki/admin/backfill-tokens` | `Force-run the token-count backfill batch now` |
+| `GET` | `/api/v1/wiki/admin/failures` | `Cross-KB list of materials needing attention (failed/partial/degraded) — admin` |
 | `POST` | `/api/v1/wiki/admin/kb/{kbId}/rebuild-overview` | `Ensure overview/log scaffold + rebuild overview stats now` |
 | `GET` | `/api/v1/wiki/chunks/{chunkId}/pages` | `Pages By Chunk Id` |
 | `DELETE` | `/api/v1/wiki/hot-cache/{kbId}` | `Soft-delete the hot cache row` |

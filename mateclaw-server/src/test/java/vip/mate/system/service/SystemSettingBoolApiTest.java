@@ -10,13 +10,18 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import vip.mate.plugin.PluginManager;
 import vip.mate.system.model.SystemSettingEntity;
 import vip.mate.system.repository.SystemSettingMapper;
+import vip.mate.tool.search.SearchProviderRegistry;
+
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -41,7 +46,7 @@ class SystemSettingBoolApiTest {
 
     @BeforeEach
     void setUp() {
-        service = new SystemSettingService(mapper);
+        service = new SystemSettingService(mapper, new SearchProviderRegistry(List.of()), mock(PluginManager.class));
     }
 
     private SystemSettingEntity row(String value) {

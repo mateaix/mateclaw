@@ -98,6 +98,17 @@ public class WikiTool {
     private vip.mate.wiki.profile.WikiPageTypeProfileService pageTypeProfileService;
 
     /**
+     * Optional. When present, {@code wiki_create_page} also creates a raw
+     * material + chunks + embeddings + citations + lineage so the agent-written
+     * page is a first-class citizen (searchable / citation-traceable /
+     * downloadable / reprocess-able) identical to a UI-uploaded text file.
+     * Absent in lightweight test contexts — the page is still created, just
+     * without the ingest by-products (legacy behavior).
+     */
+    @Autowired(required = false)
+    private WikiProcessingService processingService;
+
+    /**
      * Per-agent pageType permission gate. Mandatory: this is a security control,
      * so it is a required constructor dependency rather than an optional bean —
      * a missing gate must fail loudly at startup, never silently fail open.
@@ -508,6 +519,27 @@ public class WikiTool {
                 : pageTypeProfileService.normalizePageType(kbId, null);
         WikiPageEntity page = pageService.createPage(kbId, slug, title, content, summary, null, pageType);
         log.info("[WikiTool] Created page: {} (slug={}, kbId={}, type={})", title, slug, kbId, pageType);
+
+        // Make the agent-written page a first-class citizen: create a raw
+        // material (so it shows in the Raw Material panel + supports the
+        // download button) and link page -> raw with chunks / embeddings /
+        // citations / lineage (so "View Citations", semantic search, and
+        // reprocess all work) — identical to a UI-uploaded text file, but
+        // without re-running LLM page generation (the content is already final).
+        // Skipped in lightweight test contexts where processingService is null.
+        if (processingService != null) {
+            try {
+                WikiRawMaterialEntity raw = rawService.addAgentAuthored(kbId, title, content);
+                processingService.linkAgentPageToRaw(
+                        page.getId(), kbId, raw.getId(), raw.getTitle(), pageType);
+            } catch (Exception e) {
+                // The page itself is already persisted; by-product population
+                // is a best-effort enhancement, never a blocker for the tool
+                // contract (agent already has its pageId to return).
+                log.warn("[WikiTool] Agent-page by-product population failed for page={}: {}",
+                        page.getId(), e.getMessage());
+            }
+        }
 
         return JSONUtil.createObj()
                 .set("ok", true)

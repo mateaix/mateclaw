@@ -30,6 +30,7 @@ import vip.mate.planning.service.PlanningService;
 import vip.mate.agent.context.ChatOrigin;
 import vip.mate.skill.runtime.SkillCatalogRenderer;
 import vip.mate.tool.builtin.DelegateAgentTool;
+import vip.mate.tool.builtin.DelegateAgentTool.ChildResult;
 import vip.mate.tool.builtin.DelegationContext;
 import vip.mate.tool.builtin.ToolExecutionContext;
 
@@ -247,6 +248,9 @@ public class StepExecutionNode implements NodeAction {
         String approvalToolName = null;
         int stepPromptTokens = 0;
         int stepCompletionTokens = 0;
+        int stepCacheReadTokens = 0;
+        int stepCacheWriteTokens = 0;
+        int stepReasoningTokens = 0;
 
         // RFC-052: any returnDirect tool that fires inside this step must
         // short-circuit the entire plan (not just this step). We accumulate
@@ -321,6 +325,9 @@ public class StepExecutionNode implements NodeAction {
 
                 stepPromptTokens += result.promptTokens();
                 stepCompletionTokens += result.completionTokens();
+                stepCacheReadTokens += result.cacheReadTokens();
+                stepCacheWriteTokens += result.cacheWriteTokens();
+                stepReasoningTokens += result.reasoningTokens();
 
                 if (!result.thinking().isEmpty()) {
                     stepThinking = result.thinking();
@@ -443,8 +450,8 @@ public class StepExecutionNode implements NodeAction {
                         .currentPhase("awaiting_approval")
                         .contentStreamed(true)
                         .thinkingStreamed(!stepThinking.isEmpty())
-                        .put(MateClawStateKeys.PROMPT_TOKENS, state.value(MateClawStateKeys.PROMPT_TOKENS, 0) + stepPromptTokens)
-                        .put(MateClawStateKeys.COMPLETION_TOKENS, state.value(MateClawStateKeys.COMPLETION_TOKENS, 0) + stepCompletionTokens)
+                        .addStepUsage(state, stepPromptTokens, stepCompletionTokens,
+                                stepCacheReadTokens, stepCacheWriteTokens, stepReasoningTokens)
                         .events(events)
                         .build();
             }
@@ -479,10 +486,8 @@ public class StepExecutionNode implements NodeAction {
                         .contentStreamed(false)  // 由 StateGraphPlanExecuteAgent 经 finalSummary 推送
                         .put(MateClawStateKeys.RETURN_DIRECT_TRIGGERED, true)
                         .put(MateClawStateKeys.DIRECT_TOOL_OUTPUTS, List.copyOf(stepDirectOutputs))
-                        .put(MateClawStateKeys.PROMPT_TOKENS,
-                                state.value(MateClawStateKeys.PROMPT_TOKENS, 0) + stepPromptTokens)
-                        .put(MateClawStateKeys.COMPLETION_TOKENS,
-                                state.value(MateClawStateKeys.COMPLETION_TOKENS, 0) + stepCompletionTokens)
+                        .addStepUsage(state, stepPromptTokens, stepCompletionTokens,
+                                stepCacheReadTokens, stepCacheWriteTokens, stepReasoningTokens)
                         .events(events)
                         .build();
             }
@@ -531,8 +536,8 @@ public class StepExecutionNode implements NodeAction {
                         .currentStepTitle("")
                         .currentStepResult("")
                         .contentStreamed(false)
-                        .put(MateClawStateKeys.PROMPT_TOKENS, state.value(MateClawStateKeys.PROMPT_TOKENS, 0) + stepPromptTokens)
-                        .put(MateClawStateKeys.COMPLETION_TOKENS, state.value(MateClawStateKeys.COMPLETION_TOKENS, 0) + stepCompletionTokens)
+                        .addStepUsage(state, stepPromptTokens, stepCompletionTokens,
+                                stepCacheReadTokens, stepCacheWriteTokens, stepReasoningTokens)
                         .events(events)
                         .build();
             }
@@ -589,8 +594,8 @@ public class StepExecutionNode implements NodeAction {
                         .currentStepTitle("")
                         .currentStepResult("")
                         .contentStreamed(false)
-                        .put(MateClawStateKeys.PROMPT_TOKENS, state.value(MateClawStateKeys.PROMPT_TOKENS, 0) + stepPromptTokens)
-                        .put(MateClawStateKeys.COMPLETION_TOKENS, state.value(MateClawStateKeys.COMPLETION_TOKENS, 0) + stepCompletionTokens)
+                        .addStepUsage(state, stepPromptTokens, stepCompletionTokens,
+                                stepCacheReadTokens, stepCacheWriteTokens, stepReasoningTokens)
                         .events(events)
                         .build();
             }
@@ -601,8 +606,8 @@ public class StepExecutionNode implements NodeAction {
                     .currentStepResult(shortError)
                     .currentPhase("plan_aborted")
                     .contentStreamed(false)
-                    .put(MateClawStateKeys.PROMPT_TOKENS, state.value(MateClawStateKeys.PROMPT_TOKENS, 0) + stepPromptTokens)
-                    .put(MateClawStateKeys.COMPLETION_TOKENS, state.value(MateClawStateKeys.COMPLETION_TOKENS, 0) + stepCompletionTokens)
+                    .addStepUsage(state, stepPromptTokens, stepCompletionTokens,
+                            stepCacheReadTokens, stepCacheWriteTokens, stepReasoningTokens)
                     .events(events)
                     .build();
         }
@@ -645,8 +650,8 @@ public class StepExecutionNode implements NodeAction {
                 .currentPhase("step_completed")
                 .contentStreamed(true)
                 .thinkingStreamed(!stepThinking.isEmpty())
-                .put(MateClawStateKeys.PROMPT_TOKENS, state.value(MateClawStateKeys.PROMPT_TOKENS, 0) + stepPromptTokens)
-                .put(MateClawStateKeys.COMPLETION_TOKENS, state.value(MateClawStateKeys.COMPLETION_TOKENS, 0) + stepCompletionTokens)
+                .addStepUsage(state, stepPromptTokens, stepCompletionTokens,
+                        stepCacheReadTokens, stepCacheWriteTokens, stepReasoningTokens)
                 .events(events)
                 .build();
     }
@@ -678,7 +683,7 @@ public class StepExecutionNode implements NodeAction {
         // Seed the delegation context with the plan's REAL conversation id (from
         // graph state) so the delegated child conversation is parented to it and
         // stays hidden from the user's conversation list. The ChatOrigin in the
-        // plan-execute path carries no conversationId, so delegateByAgentId can't
+        // plan-execute path carries no conversationId, so the delegation can't
         // derive the parent on its own — we provide it here.
         boolean seeded = false;
         if (conversationId != null && !conversationId.isBlank()
@@ -687,20 +692,30 @@ public class StepExecutionNode implements NodeAction {
             DelegationContext.enter(conversationId, Set.of(), conversationId, null, 0);
             seeded = true;
         }
-        String result;
+        ChildResult childResult = null;
+        String delegateError = null;
         try {
-            result = delegateAgentTool.delegateByAgentId(assignedAgentId, step, chatOrigin);
+            childResult = delegateAgentTool.delegateByAgentIdStructured(assignedAgentId, step, chatOrigin);
         } catch (Exception e) {
             log.error("[StepExecution] Delegated step {} threw: {}", stepIndex, e.getMessage(), e);
-            result = "[错误] 委派执行异常：" + e.getMessage();
+            delegateError = e.getMessage();
         } finally {
             if (seeded) {
                 DelegationContext.exit();
             }
         }
 
-        String finalResult = result != null ? result : "";
-        boolean failed = finalResult.isEmpty() || finalResult.startsWith("[错误]");
+        // Branch on the structured outcome instead of pattern-matching an error
+        // prefix out of the reply text: a successful child with non-empty content
+        // is the only "ok" case; blank / error / missing all count as failure.
+        boolean ok = childResult != null && childResult.success() && !childResult.isBlank();
+        String finalResult = ok
+                ? (childResult.result() != null ? childResult.result() : "")
+                : "[错误] 委派执行失败：" + (delegateError != null ? delegateError
+                    : childResult != null && childResult.error() != null ? childResult.error()
+                    : childResult != null && childResult.isBlank() ? "子 Agent 返回内容为空"
+                    : "未知错误");
+        boolean failed = !ok;
         if (failed) {
             planningService.updateSubPlanFailure(planId, stepIndex, finalResult);
         } else {

@@ -3,6 +3,8 @@ package vip.mate.wiki.service;
 import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.ApplicationEventPublisher;
@@ -20,8 +22,11 @@ import vip.mate.wiki.repository.WikiRawMaterialMapper;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.util.Collection;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Map;
+import vip.mate.wiki.dto.WikiFailureItem;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -152,7 +157,7 @@ public class WikiRawMaterialService {
         entity.setFileSize((long) content.getBytes(StandardCharsets.UTF_8).length);
         entity.setSourcePath(sourcePath);
         entity.setProcessingStatus("pending");
-        entity.setErrorMessage(null);
+        clearFailureState(entity);
         entity.setExtractedText(null);
         entity.setProgressPhase(null);
         entity.setProgressDone(0);
@@ -227,7 +232,7 @@ public class WikiRawMaterialService {
         entity.setFileSize(fileSize);
         entity.setSourcePath(sourcePath);
         entity.setProcessingStatus("pending");
-        entity.setErrorMessage(null);
+        clearFailureState(entity);
         entity.setExtractedText(null);
         entity.setProgressPhase(null);
         entity.setProgressDone(0);
@@ -251,6 +256,55 @@ public class WikiRawMaterialService {
         rawMapper.update(null, new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<WikiRawMaterialEntity>()
                 .eq(WikiRawMaterialEntity::getId, rawId)
                 .set(WikiRawMaterialEntity::getSourcePath, sourcePath));
+    }
+
+    /**
+     * 改分组（含清空为 null）。必须用 LambdaUpdateWrapper.set 显式赋值，
+     * 否则 updateById 在默认 NOT_NULL 策略下无法把 groupId 置空。
+     */
+    public void updateGroup(Long rawId, Long groupId) {
+        if (rawId == null) {
+            return;
+        }
+        rawMapper.update(null, new LambdaUpdateWrapper<WikiRawMaterialEntity>()
+                .eq(WikiRawMaterialEntity::getId, rawId)
+                .set(WikiRawMaterialEntity::getGroupId, groupId));
+    }
+
+    public int updateGroupBatch(Collection<Long> rawIds, Long groupId) {
+        if (rawIds == null || rawIds.isEmpty()) {
+            return 0;
+        }
+        return rawMapper.update(null, new LambdaUpdateWrapper<WikiRawMaterialEntity>()
+                .in(WikiRawMaterialEntity::getId, rawIds)
+                .set(WikiRawMaterialEntity::getGroupId, groupId));
+    }
+
+    /** 分组删除时批量改挂：把某分组下所有 raw 的 groupId 从 fromGroupId 改成 toGroupId（可为 null）。 */
+    public int reassignGroup(Long kbId, Long fromGroupId, Long toGroupId) {
+        return rawMapper.update(null, new LambdaUpdateWrapper<WikiRawMaterialEntity>()
+                .eq(WikiRawMaterialEntity::getKbId, kbId)
+                .eq(WikiRawMaterialEntity::getGroupId, fromGroupId)
+                .set(WikiRawMaterialEntity::getGroupId, toGroupId));
+    }
+
+    /** 按 groupId 聚合统计某知识库下各分组的 raw 数量，一次查询避免 N+1。 */
+    public Map<Long, Long> countRawByGroup(Long kbId) {
+        List<Map<String, Object>> rows = rawMapper.selectMaps(
+                new QueryWrapper<WikiRawMaterialEntity>()
+                        .select("group_id", "COUNT(*) as cnt")
+                        .eq("kb_id", kbId)
+                        .isNotNull("group_id")
+                        .groupBy("group_id"));
+        java.util.Map<Long, Long> result = new java.util.HashMap<>();
+        for (Map<String, Object> row : rows) {
+            Object groupIdObj = row.get("group_id");
+            Object cntObj = row.get("cnt");
+            if (groupIdObj != null && cntObj != null) {
+                result.put(((Number) groupIdObj).longValue(), ((Number) cntObj).longValue());
+            }
+        }
+        return result;
     }
 
     public List<WikiRawMaterialEntity> listPending(Long kbId) {
@@ -294,6 +348,58 @@ public class WikiRawMaterialService {
         }
 
         log.info("[Wiki] Raw material added: id={}, kbId={}, title={}", entity.getId(), kbId, title);
+        return entity;
+    }
+
+    /**
+     * Create a raw material record for agent-authored content WITHOUT triggering
+     * the LLM ingest pipeline. Used by {@code wiki_create_page} so an agent-written
+     * page gets a lineage anchor — it appears in the Raw Material panel, hosts
+     * chunks, supports the download button (text raws are served from the
+     * {@code original_content} column by the download endpoint), and can be
+     * reprocessed later — without re-running LLM page generation, since the
+     * agent has already produced the final page content.
+     *
+     * <p>The raw is left in {@code processing} status; the caller flips it to
+     * {@code completed} via {@link WikiProcessingService#linkAgentPageToRaw}
+     * once chunks + citations have landed. Dedup by content hash reuses an
+     * existing row when the agent writes the same content again (idempotent),
+     * mirroring {@link #addText}'s dedup semantics.
+     *
+     * @return the raw material entity (newly inserted or an existing same-content row)
+     */
+    @Transactional
+    public WikiRawMaterialEntity addAgentAuthored(Long kbId, String title, String content) {
+        String hash = computeHash(content);
+
+        // Dedup: reuse any existing row with the same hash in this KB (any status).
+        // An agent often re-writes the same report title in a conversation; stacking
+        // duplicate raws would pollute the Raw Material panel.
+        WikiRawMaterialEntity existing = rawMapper.selectOne(
+                new LambdaQueryWrapper<WikiRawMaterialEntity>()
+                        .eq(WikiRawMaterialEntity::getKbId, kbId)
+                        .eq(WikiRawMaterialEntity::getContentHash, hash)
+                        .last("LIMIT 1"));
+        if (existing != null) {
+            return existing;
+        }
+
+        WikiRawMaterialEntity entity = new WikiRawMaterialEntity();
+        entity.setKbId(kbId);
+        entity.setTitle(title);
+        entity.setSourceType("text");
+        entity.setOriginalContent(content);
+        entity.setFileSize((long) content.getBytes(StandardCharsets.UTF_8).length);
+        entity.setContentHash(hash);
+        // 'processing' rather than 'pending': this raw is claimed by the agent
+        // tool's own synchronous post-processing (linkAgentPageToRaw), so it
+        // must NOT be picked up by the async ingest listener (which would
+        // re-run LLM page generation). The caller flips it to 'completed'.
+        entity.setProcessingStatus("processing");
+        rawMapper.insert(entity);
+        kbService.incrementRawCount(kbId);
+
+        log.info("[Wiki] Agent-authored raw material added: id={}, kbId={}, title={}", entity.getId(), kbId, title);
         return entity;
     }
 
@@ -411,7 +517,7 @@ public class WikiRawMaterialService {
             return false;
         }
         entity.setProcessingStatus("processing");
-        entity.setErrorMessage(null);
+        clearFailureState(entity);
         // RFC-012 M2 v2 UI：新一轮处理开始，清掉上次遗留的进度显示
         entity.setProgressPhase(null);
         entity.setProgressTotal(0);
@@ -478,11 +584,60 @@ public class WikiRawMaterialService {
         rawMapper.updateById(entity);
     }
 
-    @Transactional
     public void updateProcessingStatus(Long id, String status, String errorMessage) {
+        updateProcessingStatus(id, status, null, errorMessage);
+    }
+
+    /**
+     * Reset all failure/warning surfacing fields to a clean slate for a fresh
+     * run. Required because {@code errorCode}/{@code errorMessage}/{@code warning*}
+     * all carry {@code FieldStrategy.ALWAYS}: a row loaded then re-saved would
+     * otherwise re-persist its stale values.
+     */
+    private static void clearFailureState(WikiRawMaterialEntity e) {
+        e.setErrorCode(null);
+        e.setErrorMessage(null);
+        e.setWarningCode(null);
+        e.setWarningMessage(null);
+    }
+
+    /**
+     * Record a non-blocking warning on a material that finished processing but
+     * had an async sub-step (embedding / entity extraction) fail. Does not touch
+     * {@code processingStatus} — the material is still usable, just degraded.
+     */
+    @Transactional
+    public void recordWarning(Long id, String warningCode, String warningMessage) {
+        WikiRawMaterialEntity entity = rawMapper.selectById(id);
+        if (entity == null) return;
+        entity.setWarningCode(warningCode);
+        entity.setWarningMessage(warningMessage);
+        rawMapper.updateById(entity);
+    }
+
+    /** Cross-KB count of materials needing operator attention (failed/partial/degraded). */
+    public long countFailures() {
+        return rawMapper.countFailures();
+    }
+
+    /** Cross-KB list of materials needing operator attention, newest first (capped). */
+    public List<WikiFailureItem> listFailures(int limit) {
+        return rawMapper.listFailures(Math.max(1, Math.min(limit, 500)));
+    }
+
+    /**
+     * Terminal/intermediate status transition that also records a structured
+     * {@code errorCode} (see {@code WikiProcessingService#classifyErrorCode}).
+     * Both error fields carry {@link com.baomidou.mybatisplus.annotation.FieldStrategy#ALWAYS}
+     * on the entity, so a success transition with {@code null} code/message
+     * clears any stale failure left from a prior run.
+     */
+    @Transactional
+    public void updateProcessingStatus(Long id, String status, String errorCode, String errorMessage) {
         WikiRawMaterialEntity entity = rawMapper.selectById(id);
         if (entity == null) return;
         entity.setProcessingStatus(status);
+        entity.setErrorCode(errorCode);
         entity.setErrorMessage(errorMessage);
         if ("completed".equals(status)) {
             entity.setLastProcessedAt(java.time.LocalDateTime.now());
@@ -539,7 +694,7 @@ public class WikiRawMaterialService {
         }
         boolean wasPartial = "partial".equals(entity.getProcessingStatus());
         entity.setProcessingStatus("pending");
-        entity.setErrorMessage(null);
+        clearFailureState(entity);
         rawMapper.updateById(entity);
 
         if (wasPartial) {
@@ -798,7 +953,7 @@ public class WikiRawMaterialService {
             raw.setProgressPhase(null);
             raw.setProgressTotal(0);
             raw.setProgressDone(0);
-            raw.setErrorMessage(null);
+            clearFailureState(raw);
             rawMapper.updateById(raw);
 
             if (properties.isAutoProcessOnUpload()) {

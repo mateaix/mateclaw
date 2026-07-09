@@ -1,6 +1,14 @@
 /**
  * 智能滚动 Composable
- * 参考 @agentscope-ai/chat 的 StickToBottom 实现，提供智能的自动滚动体验
+ * 提供"贴底/脱离锁定"的智能自动滚动体验：内容增长时自动贴底，用户上滚后释放锁定。
+ *
+ * Pin model: a single "pinned" state derived purely from the absolute distance
+ * from the bottom (scrollHeight - scrollTop - clientHeight). The view is pinned
+ * (auto-follows new content) only while the user is within `offset` of the
+ * bottom; scrolling up past `offset` unpins, and scrolling back within `offset`
+ * re-pins. No scroll-direction deltas are used — those flicker during scrollbar
+ * drags and caused the view to snap back to the newest message while reading
+ * history (issue #498).
  */
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 
@@ -16,11 +24,11 @@ export interface StickToBottomOptions {
 }
 
 export interface StickToBottomReturn {
-  /** 是否在底部 */
+  /** 是否贴底（自动跟随新内容） */
   isAtBottom: import('vue').Ref<boolean>
   /** 是否在底部附近 */
   isNearBottom: import('vue').ComputedRef<boolean>
-  /** 是否被用户滚动中断 */
+  /** 是否被用户滚动中断（= 未贴底） */
   escapedFromLock: import('vue').Ref<boolean>
   /** 滚动元素引用 */
   scrollRef: import('vue').Ref<HTMLElement | null>
@@ -32,6 +40,7 @@ export interface StickToBottomReturn {
   stopScroll: () => void
   /** 检查是否在底部 */
   checkIsAtBottom: () => boolean
+  resetLock: () => void
 }
 
 // 默认配置
@@ -46,141 +55,157 @@ export function useStickToBottom(
   options: StickToBottomOptions = {}
 ): StickToBottomReturn {
   const opts = { ...DEFAULT_OPTIONS, ...options }
-  
+
   const scrollRef = ref<HTMLElement | null>(null)
   const contentRef = ref<HTMLElement | null>(null)
-  
+
+  // Single source of truth. `isAtBottom` = pinned (auto-follow on);
+  // `escapedFromLock` is its inverse, kept in sync via setPinned() so the two
+  // exported refs can never disagree.
   const isAtBottom = ref(true)
   const escapedFromLock = ref(false)
-  let isScrolling = false
-  let lastScrollTop = 0
+
+  // True only while we drive a programmatic (smooth) scroll toward the bottom.
+  // During that window the scroll events we ourselves generate must not be
+  // interpreted as user intent. A user gesture (wheel-up / pointer down) clears
+  // it to hand control back immediately.
+  let programmatic = false
   let isSelecting = false
+  let lastScrollTop = 0
+
+  const supportsSmooth =
+    typeof document !== 'undefined' && 'scrollBehavior' in document.documentElement.style
+
+  const distanceFromBottom = (el: HTMLElement) =>
+    el.scrollHeight - el.scrollTop - el.clientHeight
+
+  const atBottom = (el: HTMLElement) => distanceFromBottom(el) <= opts.offset
+
+  const setPinned = (pinned: boolean) => {
+    isAtBottom.value = pinned
+    escapedFromLock.value = !pinned
+  }
 
   // 是否在底部附近
   const isNearBottom = computed(() => {
     if (!scrollRef.value) return false
-    const { scrollHeight, scrollTop, clientHeight } = scrollRef.value
-    return scrollHeight - scrollTop - clientHeight <= opts.offset
+    return atBottom(scrollRef.value)
   })
 
   // 检查是否在底部
   const checkIsAtBottom = () => {
     if (!scrollRef.value) return false
-    const { scrollHeight, scrollTop, clientHeight } = scrollRef.value
-    return scrollHeight - scrollTop - clientHeight <= opts.offset
+    return atBottom(scrollRef.value)
   }
 
   // 滚动到底部
   const scrollToBottom = async (scrollOptions?: { force?: boolean; smooth?: boolean }) => {
     const { force = false, smooth = opts.smooth } = scrollOptions || {}
-    
-    if (!scrollRef.value) return
-    
-    // 如果用户已经向上滚动，且不强制滚动，则跳过
-    if (!force && escapedFromLock.value) return
-    
-    // 如果正在选择文本，不滚动
-    if (isSelecting) return
 
     const element = scrollRef.value
+    if (!element) return
+
+    // 用户已上滚脱离贴底，且非强制：不打扰
+    if (!force && escapedFromLock.value) return
+    // 正在选择文本：不滚动
+    if (isSelecting) return
+
     const targetScrollTop = element.scrollHeight - element.clientHeight
 
-    // 已经在底部，无需滚动
-    if (element.scrollTop >= targetScrollTop - 1) return
-
-    isScrolling = true
-
-    if (smooth && 'scrollBehavior' in document.documentElement.style) {
-      // 使用原生平滑滚动
-      element.scrollTo({ top: targetScrollTop, behavior: 'smooth' })
-      
-      // 等待滚动完成
-      await new Promise<void>((resolve) => {
-        const startedAt = performance.now()
-        const checkScrollEnd = () => {
-          if (!isScrolling || Math.abs(element.scrollTop - targetScrollTop) < 1
-              || performance.now() - startedAt > opts.duration * 2) {
-            isScrolling = false
-            lastScrollTop = element.scrollTop
-            resolve()
-          } else {
-            requestAnimationFrame(checkScrollEnd)
-          }
-        }
-        setTimeout(checkScrollEnd, opts.duration)
-      })
-    } else {
-      // 直接滚动
-      element.scrollTop = targetScrollTop
-      isScrolling = false
-      lastScrollTop = element.scrollTop
+    // 已在底部
+    if (element.scrollTop >= targetScrollTop - 1) {
+      setPinned(true)
+      return
     }
 
-    isAtBottom.value = true
+    if (smooth && supportsSmooth) {
+      programmatic = true
+      element.scrollTo({ top: targetScrollTop, behavior: 'smooth' })
+
+      await new Promise<void>((resolve) => {
+        const startedAt = performance.now()
+        const step = () => {
+          // 用户中断（programmatic 被手势清除）—— 让位
+          if (!programmatic) {
+            resolve()
+            return
+          }
+          const settled = Math.abs(element.scrollTop - (element.scrollHeight - element.clientHeight)) < 1
+          const timedOut = performance.now() - startedAt > opts.duration * 2
+          if (settled || timedOut) {
+            programmatic = false
+            lastScrollTop = element.scrollTop
+            setPinned(true)
+            resolve()
+          } else {
+            requestAnimationFrame(step)
+          }
+        }
+        requestAnimationFrame(step)
+      })
+    } else {
+      element.scrollTop = targetScrollTop
+      lastScrollTop = element.scrollTop
+      setPinned(true)
+    }
   }
 
   // 停止自动滚动
   const stopScroll = () => {
-    escapedFromLock.value = true
-    isAtBottom.value = false
+    programmatic = false
+    setPinned(false)
   }
 
-  // 处理滚动事件
+  // 处理滚动事件 —— 纯绝对位置判定，无方向增量
   const handleScroll = () => {
-    if (!scrollRef.value) return
-    if (isScrolling) {
-      lastScrollTop = scrollRef.value.scrollTop
+    const element = scrollRef.value
+    if (!element) return
+
+    // 忽略我们自己的程序化滚动产生的事件
+    if (programmatic) {
+      lastScrollTop = element.scrollTop
       return
     }
 
+    // 绝对判定：距底 <= offset 即贴底，否则脱离
+    if (atBottom(element)) {
+      if (escapedFromLock.value) setPinned(true)
+    } else if (!escapedFromLock.value) {
+      setPinned(false)
+    }
+    lastScrollTop = element.scrollTop
+  }
+
+  // 用户手势：立即接管（取消进行中的程序化滚动）
+  const handleUserGestureUp = () => {
+    programmatic = false
     const element = scrollRef.value
-    const currentScrollTop = element.scrollTop
-    
-    // 检测滚动方向
-    const isScrollingUp = currentScrollTop < lastScrollTop
-    const isScrollingDown = currentScrollTop > lastScrollTop
-    
-    lastScrollTop = currentScrollTop
-
-    // 向上滚动，用户想要查看历史内容，中断自动滚动
-    if (isScrollingUp) {
-      escapedFromLock.value = true
-      isAtBottom.value = false
-    }
-
-    // 向下滚动到底部，恢复自动滚动
-    if ((isScrollingDown || checkIsAtBottom()) && isNearBottom.value) {
-      escapedFromLock.value = false
-      isAtBottom.value = true
-    }
+    if (element && !atBottom(element)) setPinned(false)
   }
 
-  // 处理鼠标滚轮
   const handleWheel = (e: WheelEvent) => {
-    if (!scrollRef.value) return
-    
-    // 如果用户向上滚动，确保我们记录这个行为
-    if (e.deltaY < 0) {
-      isScrolling = false
-      escapedFromLock.value = true
-      isAtBottom.value = false
-    }
+    if (e.deltaY < 0) handleUserGestureUp()
   }
 
-  // 处理鼠标/触摸开始（选择文本）
+  // 处理鼠标/触摸开始（拖动滚动条 / 选择文本）
   const handlePointerDown = () => {
     isSelecting = true
+    // 抓住滚动条即视为用户接管，取消程序化滚动
+    programmatic = false
   }
 
   const handlePointerUp = () => {
     isSelecting = false
-    // 选择结束后检查是否在底部
+    // 结束后按绝对位置复核贴底状态
     setTimeout(() => {
-      if (checkIsAtBottom()) {
-        escapedFromLock.value = false
-        isAtBottom.value = true
-      }
+      const element = scrollRef.value
+      if (element) setPinned(atBottom(element))
     }, 100)
+  }
+
+  const resetLock = () => {
+    programmatic = false
+    setPinned(true)
   }
 
   // ResizeObserver 监听内容变化
@@ -191,18 +216,16 @@ export function useStickToBottom(
 
     const element = scrollRef.value
 
-    // 添加事件监听
     element.addEventListener('scroll', handleScroll, { passive: true })
     element.addEventListener('wheel', handleWheel, { passive: true })
     element.addEventListener('mousedown', handlePointerDown)
-    element.addEventListener('touchstart', handlePointerDown)
+    element.addEventListener('touchstart', handlePointerDown, { passive: true })
     document.addEventListener('mouseup', handlePointerUp)
     document.addEventListener('touchend', handlePointerUp)
 
-    // 监听内容变化
+    // 内容变化时，仅在贴底状态下跟随（用即时滚动，避免每 token 动画抖动）
     if (contentRef.value && window.ResizeObserver) {
       resizeObserver = new ResizeObserver(() => {
-        // 内容变化时，如果在底部则保持滚动到底部
         if (opts.enabled && isAtBottom.value && !escapedFromLock.value) {
           scrollToBottom({ smooth: false })
         }
@@ -217,19 +240,16 @@ export function useStickToBottom(
   })
 
   onUnmounted(() => {
-    if (!scrollRef.value) return
-
     const element = scrollRef.value
-
-    // 移除事件监听
-    element.removeEventListener('scroll', handleScroll)
-    element.removeEventListener('wheel', handleWheel)
-    element.removeEventListener('mousedown', handlePointerDown)
-    element.removeEventListener('touchstart', handlePointerDown)
+    if (element) {
+      element.removeEventListener('scroll', handleScroll)
+      element.removeEventListener('wheel', handleWheel)
+      element.removeEventListener('mousedown', handlePointerDown)
+      element.removeEventListener('touchstart', handlePointerDown)
+    }
     document.removeEventListener('mouseup', handlePointerUp)
     document.removeEventListener('touchend', handlePointerUp)
 
-    // 断开 ResizeObserver
     if (resizeObserver) {
       resizeObserver.disconnect()
       resizeObserver = null
@@ -245,6 +265,7 @@ export function useStickToBottom(
     scrollToBottom,
     stopScroll,
     checkIsAtBottom,
+    resetLock,
   }
 }
 

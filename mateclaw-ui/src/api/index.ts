@@ -390,6 +390,7 @@ export const liveApi = {
 export interface NotificationSummary {
   pendingApprovals: number
   stuckAgents: number
+  failedWikiJobs: number
   failedCrons: number
   downChannels: number
   downMcps: number
@@ -674,6 +675,7 @@ export const settingsApi = {
   // sidestep JS Number precision loss on 19-digit Snowflake IDs.
   updateSidecar: (data: { defaultVisionModelId: number | string | null; defaultVideoModelId: number | string | null }) =>
     http.put('/settings/sidecar', data),
+  getSearchProviders: () => http.get('/settings/search-providers'),
 }
 
 // ==================== Global outbound proxy ====================
@@ -782,6 +784,22 @@ export const cronJobApi = {
 }
 
 // ==================== Wiki Knowledge Base ====================
+// One row in the cross-KB failure center. ids are strings (global Long→String
+// Jackson config) to avoid Snowflake precision loss.
+export interface WikiFailureItem {
+  rawId: string
+  kbId: string
+  kbName: string
+  workspaceId: string | null
+  title: string
+  processingStatus: string
+  errorCode: string | null
+  errorMessage: string | null
+  warningCode: string | null
+  warningMessage: string | null
+  updateTime: string | null
+}
+
 export const wikiApi = {
   // Knowledge Base
   listKBs: () => http.get('/wiki/knowledge-bases'),
@@ -801,6 +819,9 @@ export const wikiApi = {
   setSourceDirectory: (id: string | number, path: string) =>
     http.put(`/wiki/knowledge-bases/${id}/source-directory`, { path }),
   scanDirectory: (id: number) => http.post(`/wiki/knowledge-bases/${id}/scan`),
+
+  // Centralized cross-KB failure center (admin only)
+  listFailures: (limit = 100) => http.get<{ data: WikiFailureItem[] }>(`/wiki/admin/failures?limit=${limit}`),
 
   // Raw Materials
   listRaw: (kbId: number) => http.get(`/wiki/knowledge-bases/${kbId}/raw`),
@@ -823,6 +844,38 @@ export const wikiApi = {
     http.get<Blob>(`/wiki/knowledge-bases/${kbId}/raw/${rawId}/download`, {
       responseType: 'blob',
     }),
+  // groupId/rawId are Snowflake IDs — backend serializes Long as string, so
+  // keep the number|string union and never coerce these through Number().
+  updateRawGroup: (kbId: number, rawId: number, groupId: number | string | null) =>
+    http.patch(`/wiki/knowledge-bases/${kbId}/raw/${rawId}/group`, { groupId }),
+  batchUpdateRawGroup: (kbId: number, rawIds: number[], groupId: number | string | null) =>
+    http.patch(`/wiki/knowledge-bases/${kbId}/raw/group`, { rawIds, groupId }),
+
+  // Source Groups
+  listSourceGroups: (kbId: number) =>
+    http.get(`/wiki/knowledge-bases/${kbId}/source-groups`),
+  createSourceGroup: (kbId: number, data: {
+    alias: string
+    path: string
+    fileFilter?: string | null
+    cronExpr?: string | null
+    enabled?: boolean | null
+  }) =>
+    http.post(`/wiki/knowledge-bases/${kbId}/source-groups`, data),
+  updateSourceGroup: (kbId: number, groupId: number | string, data: {
+    alias?: string | null
+    path?: string | null
+    fileFilter?: string | null
+    cronExpr?: string | null
+    enabled?: boolean | null
+  }) =>
+    http.put(`/wiki/knowledge-bases/${kbId}/source-groups/${groupId}`, data),
+  deleteSourceGroup: (kbId: number, groupId: number | string, reassignTo?: number | string | null) =>
+    http.delete(`/wiki/knowledge-bases/${kbId}/source-groups/${groupId}`, {
+      params: reassignTo != null ? { reassignTo } : undefined,
+    }),
+  scanSourceGroup: (kbId: number, groupId: number | string, mode: 'incremental' | 'full' = 'incremental') =>
+    http.post(`/wiki/knowledge-bases/${kbId}/source-groups/${groupId}/scan`, undefined, { params: { mode } }),
 
   // Wiki Pages
   listPages: (kbId: number, rawId?: number) =>
@@ -1031,11 +1084,16 @@ export const agentBindingApi = {
   unbindSkill: (agentId: string | number, skillId: number) => http.delete(`/agents/${agentId}/skills/${skillId}`),
   listTools: (agentId: string | number) => http.get(`/agents/${agentId}/tools`),
   setTools: (agentId: string | number, toolNames: string[]) => http.put(`/agents/${agentId}/tools`, toolNames),
-  // RFC-009 PR-3: per-agent provider preference order. Empty list = use global chain order.
+  // Per-agent preferred-model chain (provider + model). Empty list = use the
+  // global chain order. modelId null = the provider's default model; the same
+  // provider may appear multiple times with different models. modelId is a
+  // string to preserve Snowflake precision.
   listProviderPreferences: (agentId: string | number) =>
     http.get(`/agents/${agentId}/provider-preferences`),
-  setProviderPreferences: (agentId: string | number, providerIds: string[]) =>
-    http.put(`/agents/${agentId}/provider-preferences`, providerIds),
+  setProviderPreferences: (
+    agentId: string | number,
+    preferences: Array<{ providerId: string; modelId: string | null }>,
+  ) => http.put(`/agents/${agentId}/provider-preferences`, preferences),
   // Per-agent knowledge base access scope. Empty array = unrestricted
   // (agent can reach every KB in its workspace). IDs are kept as strings
   // for the Snowflake-precision contract.

@@ -3,6 +3,7 @@ package vip.mate.wiki.service;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import vip.mate.agent.context.TokenEstimator;
 import vip.mate.wiki.WikiProperties;
 import vip.mate.wiki.dto.PageSearchResult;
 import vip.mate.wiki.model.WikiKnowledgeBaseEntity;
@@ -47,7 +48,20 @@ public class WikiContextService {
      * returns snippet + reason instead of just summary.
      */
     public String buildRelevantContext(Long agentId, String userMessage) {
+        return buildRelevantContext(agentId, userMessage, null);
+    }
+
+    /**
+     * Budgeted variant: in addition to the absolute {@code maxContextChars}
+     * cap, the injected block may not exceed {@code budgetTokens} (estimated).
+     * Null budget keeps the previous chars-only behavior. Small local context
+     * windows need this — the chars cap is sized for large cloud models.
+     */
+    public String buildRelevantContext(Long agentId, String userMessage, Integer budgetTokens) {
         if (!properties.isEnabled() || userMessage == null || userMessage.isBlank()) {
+            return "";
+        }
+        if (budgetTokens != null && budgetTokens <= 0) {
             return "";
         }
 
@@ -94,15 +108,26 @@ public class WikiContextService {
                 "e.g. 「来源：[[页面标题]]」or「(来源：页面标题)」.]\n\n");
         int totalChars = 0;
         int maxChars = properties.getMaxContextChars();
+        int totalTokens = TokenEstimator.estimateTokens(sb.toString());
+        boolean anyEntry = false;
 
         for (PageSearchResult hit : hits) {
             String entry = buildContextEntry(hit);
-            if (totalChars + entry.length() > maxChars) {
+            int entryTokens = TokenEstimator.estimateTokens(entry);
+            if (totalChars + entry.length() > maxChars
+                    || (budgetTokens != null && totalTokens + entryTokens > budgetTokens)) {
                 sb.append("- ... (use wiki_search_pages for more)\n");
                 break;
             }
             sb.append(entry);
             totalChars += entry.length();
+            totalTokens += entryTokens;
+            anyEntry = true;
+        }
+        // A budget too small for even one entry yields a header-only block —
+        // pure overhead. Skip the injection entirely; wiki tools stay usable.
+        if (!anyEntry && budgetTokens != null) {
+            return "";
         }
         sb.append("</wiki-relevant>");
         return sb.toString();

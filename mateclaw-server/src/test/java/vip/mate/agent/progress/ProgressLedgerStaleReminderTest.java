@@ -23,27 +23,27 @@ class ProgressLedgerStaleReminderTest {
     private static final Instant NOW = Instant.parse("2026-05-24T19:30:00Z");
 
     @Test
-    @DisplayName("Iteration < 10 → no reminder regardless of ledger state.")
+    @DisplayName("Iteration < 3 → no reminder regardless of ledger state.")
     void warmupPeriodNoReminder() {
         assertNull(ProgressLedger.empty().renderStaleReminder(0, NOW));
-        assertNull(ProgressLedger.empty().renderStaleReminder(5, NOW));
-        assertNull(ProgressLedger.empty().renderStaleReminder(9, NOW));
+        assertNull(ProgressLedger.empty().renderStaleReminder(1, NOW));
+        assertNull(ProgressLedger.empty().renderStaleReminder(2, NOW));
     }
 
     @Test
-    @DisplayName("Empty ledger between iter 10 and 14 → still no reminder.")
+    @DisplayName("Empty ledger between iter 3 and 4 → still no reminder.")
     void emptyLedgerBelowNudgeThreshold() {
-        assertNull(ProgressLedger.empty().renderStaleReminder(10, NOW));
-        assertNull(ProgressLedger.empty().renderStaleReminder(14, NOW));
+        assertNull(ProgressLedger.empty().renderStaleReminder(3, NOW));
+        assertNull(ProgressLedger.empty().renderStaleReminder(4, NOW));
     }
 
     @Test
-    @DisplayName("Empty ledger at iter ≥ 15 → emit empty-ledger reminder.")
+    @DisplayName("Empty ledger at iter ≥ 5 → emit empty-ledger reminder.")
     void emptyLedgerTriggersReminder() {
-        String out = ProgressLedger.empty().renderStaleReminder(15, NOW);
+        String out = ProgressLedger.empty().renderStaleReminder(5, NOW);
         assertNotNull(out);
         assertTrue(out.contains("进度账本是空的"), out);
-        assertTrue(out.contains("15 轮"), out);
+        assertTrue(out.contains("5 轮"), out);
         assertTrue(out.contains("progress_update"), out);
     }
 
@@ -57,7 +57,7 @@ class ProgressLedgerStaleReminderTest {
     }
 
     @Test
-    @DisplayName("Non-empty ledger with last update ≥ 90s ago → emit stale reminder.")
+    @DisplayName("Non-empty ledger with last update ≥ 45s ago → emit stale reminder.")
     void staleUpdateTriggersReminder() {
         Map<String, ProgressEntry> entries = new LinkedHashMap<>();
         entries.put("a", new ProgressEntry("a", "A", ProgressStatus.DONE, null,
@@ -78,7 +78,7 @@ class ProgressLedgerStaleReminderTest {
         Map<String, ProgressEntry> entries = new LinkedHashMap<>();
         entries.put("a", new ProgressEntry("a", "A", ProgressStatus.DONE, null,
                 NOW.minusSeconds(600)));
-        assertNull(new ProgressLedger(entries).renderStaleReminder(5, NOW));
+        assertNull(new ProgressLedger(entries).renderStaleReminder(2, NOW));
     }
 
     @Test

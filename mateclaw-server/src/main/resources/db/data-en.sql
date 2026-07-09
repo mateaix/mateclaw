@@ -135,6 +135,10 @@ VALUES ('volcengine-plan', 'Volcano Engine Coding Plan', '', 'OpenAIChatModel', 
 
 MERGE INTO mate_model_provider (provider_id, name, api_key_prefix, chat_model, api_key, base_url, generate_kwargs, is_custom, is_local, support_model_discovery, support_connection_check, freeze_url, require_api_key, create_time, update_time)
 KEY (provider_id)
+VALUES ('volcengine-agent-plan', 'Volcano Engine Agent Plan', '', 'OpenAIChatModel', '', 'https://ark.cn-beijing.volces.com/api/plan/v3', '{}', FALSE, FALSE, TRUE, TRUE, TRUE, TRUE, NOW(), NOW());
+
+MERGE INTO mate_model_provider (provider_id, name, api_key_prefix, chat_model, api_key, base_url, generate_kwargs, is_custom, is_local, support_model_discovery, support_connection_check, freeze_url, require_api_key, create_time, update_time)
+KEY (provider_id)
 VALUES ('zhipu-cn-codingplan', 'Zhipu Coding Plan (BigModel)', '', 'OpenAIChatModel', '', 'https://open.bigmodel.cn/api/coding/paas/v4', '{"completionsPath":"/chat/completions"}', FALSE, FALSE, FALSE, FALSE, TRUE, TRUE, NOW(), NOW());
 
 MERGE INTO mate_model_provider (provider_id, name, api_key_prefix, chat_model, api_key, base_url, generate_kwargs, is_custom, is_local, support_model_discovery, support_connection_check, freeze_url, require_api_key, create_time, update_time)
@@ -319,6 +323,18 @@ MERGE INTO mate_model_config (id, name, provider, model_name, description, tempe
 (1000000323, 'GLM 4.7 Coding', 'volcengine-plan', 'glm-4.7', 'GLM 4.7 coding edition (hosted on Volcano Ark), 200K context', 0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
 (1000000324, 'Kimi K2 Thinking', 'volcengine-plan', 'kimi-k2-thinking', 'Kimi K2 Thinking (hosted on Volcano Ark), 256K context', 0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
 (1000000325, 'Kimi K2.5 Coding', 'volcengine-plan', 'kimi-k2.5', 'Kimi K2.5 coding edition (hosted on Volcano Ark), 256K context', 0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000350, 'GLM-5.2', 'volcengine-agent-plan', 'glm-5.2', 'Zhipu latest flagship, 1M context, strong on long-horizon tasks (use glm-latest for newest)', 0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000351, 'Ark Agent Plan (Auto Router)', 'volcengine-agent-plan', 'ark-code-latest', 'Auto-routing entry that dispatches to the best-fit plan model', 0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000353, 'Doubao-Seed-2.0-Code', 'volcengine-agent-plan', 'doubao-seed-2.0-code', 'Seed 2.0 code-tuned, strong front-end and multi-language; non-thinking by default, deep thinking optional', 0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000354, 'Doubao-Seed-2.0-pro', 'volcengine-agent-plan', 'doubao-seed-2.0-pro', 'Flagship general model for complex reasoning and long-chain tasks; thinking on by default', 0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000355, 'Doubao-Seed-2.0-lite', 'volcengine-agent-plan', 'doubao-seed-2.0-lite', 'Balanced quality and speed for general production workloads', 0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000356, 'Doubao-Seed-2.0-mini', 'volcengine-agent-plan', 'doubao-seed-2.0-mini', 'Low-latency, high-concurrency, cost-sensitive lightweight tasks', 0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000357, 'Kimi-K2.7-Code', 'volcengine-agent-plan', 'kimi-k2.7-code', 'Latest Kimi coding model; reliable long-context instruction following, text/image/video input', 0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000358, 'MiniMax-M3', 'volcengine-agent-plan', 'minimax-m3', 'New-gen M-series, top-tier on coding and agent benchmarks', 0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000359, 'DeepSeek-V4-Flash', 'volcengine-agent-plan', 'deepseek-v4-flash', 'Fast, economical DeepSeek-V4; thinking on by default, can be disabled', 0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000360, 'DeepSeek-V4-Pro', 'volcengine-agent-plan', 'deepseek-v4-pro', 'DeepSeek-V4 with strengthened agent ability and rich world knowledge', 0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000361, 'MiniMax-M2.7', 'volcengine-agent-plan', 'minimax-m2.7', 'Builds complex agent harnesses via teams, skills and tools', 0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000362, 'Kimi-K2.6', 'volcengine-agent-plan', 'kimi-k2.6', 'Moonshot next-gen model; thinking on by default, can be disabled', 0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
 (1000000240, 'Kimi for Coding', 'kimi-code', 'kimi-for-coding', 'Kimi Code dedicated coding model', 0.2, 32768, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
 (1000000250, 'GPT-5.4', 'openai-chatgpt', 'gpt-5.4', 'ChatGPT Plus/Pro member model (OAuth login)', NULL, 128000, NULL, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
 (1000000251, 'GPT-5.4 Mini', 'openai-chatgpt', 'gpt-5.4-mini', 'ChatGPT member lightweight model', NULL, 128000, NULL, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
@@ -443,6 +459,16 @@ VALUES (1000000004, 'ReadFileTool', 'Read File', 'Read file contents with line r
 MERGE INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
 KEY (id)
 VALUES (1000000005, 'WriteFileTool', 'Write File', 'Write content to a file. Overwrites if exists, creates if not. Requires user approval.', 'builtin', 'writeFileTool', '📝', TRUE, TRUE, NOW(), NOW(), 0);
+
+-- Built-in tool: Local File Access (operates on the user's local desktop via the desktop tunnel)
+MERGE INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
+KEY (id)
+VALUES (1000000026, 'LocalFileTools', 'Local File Access', 'Read/write/edit/list/stat files on the user''s local desktop machine via the desktop tunnel. Directory-whitelisted; writes and edits require native user approval.', 'builtin', 'localFileTools', '💻', TRUE, TRUE, NOW(), NOW(), 0);
+
+-- Built-in tool: Local Shell (operates on the user's local desktop via the desktop tunnel)
+MERGE INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
+KEY (id)
+VALUES (1000000027, 'LocalShellTool', 'Local Shell', 'Execute shell commands on the user''s local desktop machine via the desktop tunnel. Requires native user approval.', 'builtin', 'localShellTool', '🖥', TRUE, TRUE, NOW(), NOW(), 0);
 
 -- Built-in tool: Edit File (enabled by default, dangerous ops controlled by ToolGuard)
 MERGE INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)

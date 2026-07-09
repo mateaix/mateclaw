@@ -5,6 +5,7 @@ import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.tool.ToolCallback;
 import vip.mate.plugin.api.channel.PluginChannelAdapter;
 import vip.mate.plugin.api.memory.PluginMemoryProvider;
+import vip.mate.plugin.api.search.PluginSearchProvider;
 
 import java.util.function.Supplier;
 
@@ -59,6 +60,19 @@ public interface PluginContext {
      * @throws PluginException if an external memory provider is already registered
      */
     void registerMemoryProvider(PluginMemoryProvider provider);
+
+    /**
+     * Register a web-search provider that joins the platform's search provider
+     * chain used by the {@code web_search} tool.
+     * <p>
+     * The provider id must be globally unique — registration fails with a
+     * {@link PluginException} if it clashes with a built-in provider
+     * (serper / tavily / searxng / duckduckgo) or another plugin's provider.
+     *
+     * @param provider the search provider
+     * @throws PluginException if the id is blank or already taken
+     */
+    void registerSearchProvider(PluginSearchProvider provider);
 
     /**
      * Read a configuration value from the plugin's config.

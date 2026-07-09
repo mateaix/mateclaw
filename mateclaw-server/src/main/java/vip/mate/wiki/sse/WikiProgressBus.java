@@ -38,6 +38,8 @@ public class WikiProgressBus {
     public static final String EVENT_CHUNK_DONE    = "chunk.done";
     public static final String EVENT_RAW_COMPLETED = "raw.completed";
     public static final String EVENT_RAW_FAILED    = "raw.failed";
+    /** Non-blocking warning on an otherwise-completed material (async sub-step failed). */
+    public static final String EVENT_RAW_WARNING   = "raw.warning";
     public static final String EVENT_HEARTBEAT     = "heartbeat";
 
     private final ObjectMapper objectMapper;

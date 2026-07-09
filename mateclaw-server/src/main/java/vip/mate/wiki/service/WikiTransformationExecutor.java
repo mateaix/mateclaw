@@ -145,7 +145,10 @@ public class WikiTransformationExecutor {
         WikiTransformationRunEntity run = new WikiTransformationRunEntity();
         run.setTransformationId(transformation.getId());
         run.setKbId(page.getKbId());
-        run.setWorkspaceId(transformation.getWorkspaceId());
+        // Global templates have a null workspace_id; the run row requires one, so
+        // fall back to the default workspace for bookkeeping (run visibility is
+        // gated by the KB's workspace, not this field).
+        run.setWorkspaceId(transformation.getWorkspaceId() != null ? transformation.getWorkspaceId() : 1L);
         run.setInputKind("page");
         run.setPageId(pageId);
         run.setStatus("running");
@@ -420,7 +423,10 @@ public class WikiTransformationExecutor {
         WikiTransformationRunEntity run = new WikiTransformationRunEntity();
         run.setTransformationId(transformation.getId());
         run.setKbId(raw.getKbId());
-        run.setWorkspaceId(transformation.getWorkspaceId());
+        // Global templates have a null workspace_id; the run row requires one, so
+        // fall back to the default workspace for bookkeeping (run visibility is
+        // gated by the KB's workspace, not this field).
+        run.setWorkspaceId(transformation.getWorkspaceId() != null ? transformation.getWorkspaceId() : 1L);
         run.setInputKind("raw");
         run.setRawId(rawId);
         run.setStatus("running");
