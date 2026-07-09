@@ -6,6 +6,7 @@ import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
 import com.microsoft.playwright.Browser;
 import com.microsoft.playwright.BrowserContext;
+import com.microsoft.playwright.ElementHandle;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.Playwright;
 import com.microsoft.playwright.PlaywrightException;
@@ -39,9 +40,74 @@ import java.util.regex.Pattern;
 public class BrowserUseTool {
 
     private static final long IDLE_TIMEOUT_MINUTES = 30;
-    private static final int MAX_SNAPSHOT_LENGTH = 20_000;
     private static final int CDP_SCAN_PORT_MIN = 9000;
     private static final int CDP_SCAN_PORT_MAX = 10000;
+
+    /**
+     * Snapshot extractor — runs as an ElementHandle.evaluate so {@code this}
+     * is the scoped root (document.body when no selector is passed). Uses a
+     * budget object so truncation stops at element boundaries rather than
+     * mid-TEXT_NODE, and surfaces a {@code truncated:true} flag to the caller
+     * so the LLM can be told to retry with a narrower selector.
+     */
+    private static final String SNAPSHOT_JS = """
+            (maxLen) => {
+                const budget = { remaining: maxLen, truncated: false };
+                function getVisibleText(node, depth) {
+                    if (depth > 10 || budget.remaining <= 0) return '';
+                    const results = [];
+                    if (node.nodeType === Node.TEXT_NODE) {
+                        const text = node.textContent.trim();
+                        if (text) {
+                            if (text.length > budget.remaining) {
+                                const slice = text.substring(0, budget.remaining);
+                                const lastSpace = slice.lastIndexOf(' ');
+                                results.push(lastSpace > budget.remaining * 0.5
+                                    ? slice.substring(0, lastSpace) : slice);
+                                budget.remaining = 0;
+                                budget.truncated = true;
+                            } else {
+                                results.push(text);
+                                budget.remaining -= text.length;
+                            }
+                        }
+                    } else if (node.nodeType === Node.ELEMENT_NODE) {
+                        const el = node;
+                        const style = window.getComputedStyle(el);
+                        if (style.display === 'none' || style.visibility === 'hidden') return '';
+                        const tag = el.tagName.toLowerCase();
+                        if (['a', 'button', 'input', 'select', 'textarea'].includes(tag)) {
+                            const id = el.id ? '#' + el.id : '';
+                            const cls = el.className && typeof el.className === 'string'
+                                ? '.' + el.className.trim().split(/\\s+/).slice(0, 2).join('.')
+                                : '';
+                            const text = el.textContent ? el.textContent.trim().substring(0, 80) : '';
+                            const href = el.getAttribute('href') || '';
+                            const placeholder = el.getAttribute('placeholder') || '';
+                            const desc = '[' + tag + id + cls + ']'
+                                + (text ? ' "' + text + '"' : '')
+                                + (href ? ' href=' + href : '')
+                                + (placeholder ? ' placeholder=' + placeholder : '');
+                            if (desc.length > budget.remaining) {
+                                budget.remaining = 0;
+                                budget.truncated = true;
+                                return results.join('\\n');
+                            }
+                            results.push(desc);
+                            budget.remaining -= desc.length;
+                        }
+                        for (const child of el.childNodes) {
+                            if (budget.remaining <= 0) break;
+                            const childText = getVisibleText(child, depth + 1);
+                            if (childText) results.push(childText);
+                        }
+                    }
+                    return results.join('\\n');
+                }
+                const text = getVisibleText(this, 0);
+                return JSON.stringify({ text: text, truncated: budget.truncated });
+            }
+            """;
 
     /** SSE broadcaster for pushing browser actions to the frontend in real time. */
     private final vip.mate.channel.web.ChatStreamTracker streamTracker;
@@ -99,7 +165,10 @@ public class BrowserUseTool {
         - start: Launch a new browser (tries system Chrome, system Edge, then Playwright bundled). Optional headed=true.
         - stop: Close browser. If connected via CDP, only disconnects (Chrome keeps running).
         - open: Navigate to a URL. Requires url parameter. Auto-starts browser if not running.
-        - snapshot: Get page text content, interactive elements, and title.
+        - snapshot: Get page text content, interactive elements, and title. Optional `selector`
+          scopes to a subtree — USE IT when the page is large (big tables, long lists) to avoid
+          truncation. Without selector, content is capped and a `truncated:true` flag is returned
+          with a hint to retry using selector.
         - screenshot: Take a screenshot. Optional path to save file; returns base64 if no path.
         - click: Click an element. Requires selector (CSS selector).
         - type: Type text into an element. Requires selector and text.
@@ -112,7 +181,7 @@ public class BrowserUseTool {
     public String browser_use(
             @ToolParam(description = "Action: start|stop|open|snapshot|screenshot|click|type|eval|connect_cdp|list_cdp_targets|navigate_back|diagnose") String action,
             @ToolParam(description = "URL to navigate to (for open), or CDP base URL (for connect_cdp, e.g. http://localhost:9222)", required = false) String url,
-            @ToolParam(description = "CSS selector for target element (for click/type)", required = false) String selector,
+            @ToolParam(description = "CSS selector. REQUIRED for click/type. OPTIONAL for snapshot: pass to scope to a subtree when previous snapshot returned truncated:true.", required = false) String selector,
             @ToolParam(description = "Text to type (for action=type)", required = false) String text,
             @ToolParam(description = "JavaScript code to execute (for action=eval). Top-level await is allowed; add `return` to return a value when the snippet uses await.", required = false) String code,
             @ToolParam(description = "File path to save screenshot (for action=screenshot)", required = false) String path,
@@ -138,7 +207,7 @@ public class BrowserUseTool {
                 case "start" -> doStart(sessionKey, Boolean.TRUE.equals(headed));
                 case "stop" -> doStop(sessionKey);
                 case "open" -> doOpen(sessionKey, url);
-                case "snapshot" -> doSnapshot(sessionKey);
+                case "snapshot" -> doSnapshot(sessionKey, selector);
                 case "screenshot" -> doScreenshot(sessionKey, path);
                 case "click" -> doClick(sessionKey, selector);
                 case "type" -> doType(sessionKey, selector, text);
@@ -432,7 +501,9 @@ public class BrowserUseTool {
 
         if (launcher.properties().isSsrfCheckEnabled()) {
             try {
-                UrlSafetyChecker.check(normalizedUrl, ssrfProperties.getSsrfAllowlist());
+                UrlSafetyChecker.check(normalizedUrl,
+                        ssrfProperties.getSsrfAllowlist(),
+                        launcher.properties().isAllowPrivateNetwork());
             } catch (SecurityException se) {
                 log.warn("[BrowserUse] SSRF check rejected url={}: {}", normalizedUrl, se.getMessage());
                 return error(se.getMessage());
@@ -490,7 +561,7 @@ public class BrowserUseTool {
         return JSONUtil.toJsonPrettyStr(result);
     }
 
-    private String doSnapshot(String sessionKey) {
+    private String doSnapshot(String sessionKey, String selector) {
         BrowserSession session = requireSession(sessionKey);
         if (session == null) {
             return error("No browser running. Use action=start first.");
@@ -502,50 +573,46 @@ public class BrowserUseTool {
         String title = page.title();
         String url = page.url();
 
-        String textContent = page.evaluate("""
-            (() => {
-                function getVisibleText(node, depth) {
-                    if (depth > 10) return '';
-                    const results = [];
-                    if (node.nodeType === Node.TEXT_NODE) {
-                        const text = node.textContent.trim();
-                        if (text) results.push(text);
-                    } else if (node.nodeType === Node.ELEMENT_NODE) {
-                        const el = node;
-                        const style = window.getComputedStyle(el);
-                        if (style.display === 'none' || style.visibility === 'hidden') return '';
-                        const tag = el.tagName.toLowerCase();
-                        if (['a', 'button', 'input', 'select', 'textarea'].includes(tag)) {
-                            const id = el.id ? '#' + el.id : '';
-                            const cls = el.className && typeof el.className === 'string'
-                                ? '.' + el.className.trim().split(/\\s+/).slice(0, 2).join('.')
-                                : '';
-                            const text = el.textContent ? el.textContent.trim().substring(0, 80) : '';
-                            const href = el.getAttribute('href') || '';
-                            const placeholder = el.getAttribute('placeholder') || '';
-                            const selector = tag + id + cls;
-                            let desc = '[' + selector + ']';
-                            if (text) desc += ' "' + text + '"';
-                            if (href) desc += ' href=' + href;
-                            if (placeholder) desc += ' placeholder=' + placeholder;
-                            results.push(desc);
-                        }
-                        for (const child of el.childNodes) {
-                            const childText = getVisibleText(child, depth + 1);
-                            if (childText) results.push(childText);
-                        }
-                    }
-                    return results.join('\\n');
-                }
-                const text = getVisibleText(document.body, 0);
-                return text.substring(0, %d);
-            })()
-            """.formatted(MAX_SNAPSHOT_LENGTH)).toString();
+        // Resolve root element via ElementHandle — safer than string-concatenating
+        // the selector into JS (avoids selector-injection via crafted selectors).
+        // Falls back to body when no selector is provided.
+        ElementHandle root;
+        if (selector != null && !selector.isBlank()) {
+            root = page.querySelector(selector);
+            if (root == null) {
+                return error("Snapshot root not found for selector: " + selector);
+            }
+        } else {
+            root = page.querySelector("body");
+            if (root == null) {
+                return error("Snapshot failed: document.body not available");
+            }
+        }
+
+        int maxLen = launcher.properties().getSnapshotMaxLength();
+        String jsResult = (String) root.evaluate(SNAPSHOT_JS, maxLen);
+
+        // JS returns { text: "...", truncated: true/false }
+        JSONObject parsed = JSONUtil.parseObj(jsResult);
+        String textContent = parsed.getStr("text");
+        boolean truncated = parsed.getBool("truncated", false);
 
         JSONObject result = new JSONObject();
         result.set("ok", true);
         result.set("title", title);
         result.set("url", url);
+        // IMPORTANT: truncated + hint MUST come before content. The framework's
+        // spill-preview keeps only the head ~800 chars of the JSON, so placing
+        // these flags first ensures the LLM still sees them after a spill.
+        result.set("truncated", truncated);
+        if (truncated) {
+            result.set("hint", "Content truncated. Re-call browser_use with action=snapshot"
+                    + " and selector=<CSS> to scope to a subtree (e.g. selector='#main',"
+                    + " selector='table tbody tr').");
+        }
+        if (selector != null && !selector.isBlank()) {
+            result.set("scopedTo", selector);
+        }
         result.set("content", textContent);
         return JSONUtil.toJsonPrettyStr(result);
     }

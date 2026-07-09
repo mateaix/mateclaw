@@ -675,6 +675,7 @@ export const settingsApi = {
   // sidestep JS Number precision loss on 19-digit Snowflake IDs.
   updateSidecar: (data: { defaultVisionModelId: number | string | null; defaultVideoModelId: number | string | null }) =>
     http.put('/settings/sidecar', data),
+  getSearchProviders: () => http.get('/settings/search-providers'),
 }
 
 // ==================== Global outbound proxy ====================

@@ -217,16 +217,18 @@ mateclaw/
 
 ## 路线图
 
-**v1.6.0（2026-06-22 发布）** — 让自驱的数字员工*更快、更会看、更易嵌入*：
+**v1.7.0（2026-07-04 发布）** — 一次*生产化加固*：把它放进真正的协作里之后，那些看不见、收不拢、够不着、装不下、连不通的地方全补上：
 
-- **首字节更快** — 技能两段式载入（基础技能常驻，场景技能由相关性评分器按需检索）+ prefix 压缩，砍掉过去单请求动辄上百万字符的冷启动负载
-- **原生代码执行** — `execute_code` 让员工自己写、自己跑沙箱代码，完成计算、数据加工与多格式报告生成，全程在 JVM 内
-- **能记住图的视觉** — 图片跨轮次保留在上下文里；`image_analyze` 按需重新解析某张附件，"放大看那张图表"这类追问无需重新上传
-- **可嵌入、可无头** — webchat 组件升级为 Web/API 接入面，支持多会话与按终端用户身份（`endUserId`）隔离记忆
-- **真正可读的 Wiki** — 阅读与管理分离、统一的 Sources 标签页（按知识库自动同步）、可点击的跨库 `[[wikilinks]]`
-- **高负载更稳** — MCP 连接自愈 · interleaved-thinking 模型的工具调用恢复 · 计划执行的证据闸门
+- **审批三条链路彻底闭环** — 工作流 `await_approval` 真的推到渠道并 resolve→恢复执行、WebChat（API-Key）渠道能批准/拒绝并重放、飞书/企微点卡片直接 resolve 工作流审批
+- **长任务看得见** — 常驻「运行总览」侧栏 + 本轮 Token 明细（缓存命中/未命中/写入 + 推理拆分）+ 子 Agent 成本向上滚加 + 生成文件一键下载
+- **装得下真实模型窗口** — 本地模型上下文窗口探测、prefix 注入统一 Token 预算、小上下文降级、工具 schema 预算门——不再被"猜个 32K"坑到预检拒绝或悄悄截断
+- **开放出去** — 知识库 / Deep Research 开放 API（API-Key + 限流 + SSE）、插件化搜索 Provider SPI、MCP 身份透传（把认证用户身份带给 STDIO MCP）
+- **够得着更远** — 桌面端本地内嵌 / 远程集中部署双模式（`mateclaw-desktop` 源码开放）+ 局域网部署模式放开受控内网访问
+- **运营数据一键导出** — Dashboard 9 表 Excel + CLI 命令行离线导出
 
-完整故事见 [v1.6.0 release notes](https://claw.mate.vip/docs/zh/releases/1.6.0)。
+完整故事见 [v1.7.0 release notes](https://claw.mate.vip/docs/zh/releases/1.7.0)。
+
+**v1.6.0（2026-06-22 发布）** — 让自驱的数字员工*更快、更会看、更易嵌入*：技能两段式载入 + prefix 压缩（首字节更快）· `execute_code` 原生沙箱代码执行 · 图片跨轮次留存 + `image_analyze` · 可嵌入/无头 webchat 按 `endUserId` 隔离记忆 · 真正可读的 Wiki（阅读与管理分离 · 统一 Sources 标签 · 可点击 `[[wikilinks]]`）· 高负载更稳（MCP 自愈 · 工具调用恢复 · 计划证据闸门）。完整故事见 [v1.6.0 release notes](https://claw.mate.vip/docs/zh/releases/1.6.0)。
 
 **v1.5.0（2026-06-04 发布）** — Goal 可勾选清单（模糊评分 → 逐项打勾）· Wiki 自维护（`[[wikilinks]]` · 事实层/经验层 · pageType 模板与权限 · 知识库流水线 · 本地目录接入）· 按拥有者隔离记忆（`owner_key` + 可见域 + `endUserId` 透传）· 每员工绑定主知识库 · 偏好 provider 驱动选型。完整故事见 [v1.5.0 release notes](https://claw.mate.vip/docs/zh/releases/1.5.0)。
 

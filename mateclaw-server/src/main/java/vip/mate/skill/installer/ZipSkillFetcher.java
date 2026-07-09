@@ -27,7 +27,9 @@ import java.util.zip.ZipInputStream;
  * path (downloaded ZIP bytes). Hardened against:
  * <ul>
  *   <li>Zip Slip path traversal</li>
- *   <li>Per-file ≤1MB, total ≤50MB</li>
+ *   <li>Per-file / total size caps (defaults 1MB / 50MB, configurable via
+ *       {@code mateclaw.skill.upload.max-entry-size-mb} /
+ *       {@code mateclaw.skill.upload.max-total-size-mb})</li>
  *   <li>Only SKILL.md / references/ / scripts/ entries are kept</li>
  *   <li>Binary entries are skipped with a WARN — bundle storage is text-only,
  *       so decoding them as text would persist corrupted content</li>
@@ -44,8 +46,23 @@ import java.util.zip.ZipInputStream;
 @Slf4j
 public class ZipSkillFetcher {
 
-    private static final long MAX_FILE_SIZE = 1_000_000;      // 1MB per file
-    private static final long MAX_TOTAL_SIZE = 50_000_000;     // 50MB total
+    /**
+     * Size caps applied while decompressing a bundle. Callers wire these from
+     * {@code mateclaw.skill.upload.max-entry-size-mb} /
+     * {@code mateclaw.skill.upload.max-total-size-mb}; the defaults preserve
+     * the historical 1MB-per-entry / 50MB-total behaviour. The whole archive
+     * is buffered in memory during extraction, so raising the total cap
+     * raises peak heap usage accordingly.
+     */
+    public record Limits(long maxEntryBytes, long maxTotalBytes) {
+        public static final Limits DEFAULT = ofMb(1, 50);
+
+        public static Limits ofMb(long entryMb, long totalMb) {
+            return new Limits(entryMb * 1_000_000L, totalMb * 1_000_000L);
+        }
+
+        long totalMb() { return maxTotalBytes / 1_000_000L; }
+    }
     private static final String SKILL_MD = "SKILL.md";
     private static final String SKILL_MD_LOWER = "skill.md";
 
@@ -87,16 +104,26 @@ public class ZipSkillFetcher {
      * and source URL is the original filename.
      */
     public static SkillBundle parse(MultipartFile zipFile, SkillFrontmatterParser parser) throws IOException {
+        return parse(zipFile, parser, Limits.DEFAULT);
+    }
+
+    /**
+     * Parse an uploaded ZIP file into a SkillBundle with explicit size caps
+     * (see {@link Limits}).
+     */
+    public static SkillBundle parse(MultipartFile zipFile, SkillFrontmatterParser parser,
+                                    Limits limits) throws IOException {
         if (zipFile == null || zipFile.isEmpty()) {
             throw new IllegalArgumentException("ZIP file is empty");
         }
-        if (zipFile.getSize() > MAX_TOTAL_SIZE) {
-            throw new IllegalArgumentException("ZIP file too large (max 50MB)");
+        if (zipFile.getSize() > limits.maxTotalBytes()) {
+            throw new IllegalArgumentException("ZIP file too large (max " + limits.totalMb()
+                    + "MB; adjust mateclaw.skill.upload.max-total-size-mb)");
         }
 
         ExtractedSkill extracted;
         try (InputStream is = zipFile.getInputStream()) {
-            extracted = extract(is);
+            extracted = extract(is, limits);
         }
 
         var parsed = parser.parse(extracted.skillMdContent());
@@ -140,7 +167,12 @@ public class ZipSkillFetcher {
      * instead of being silently dropped.
      */
     public static ExtractedSkill extract(InputStream zipStream) throws IOException {
-        return extract(zipStream.readAllBytes());
+        return extract(zipStream.readAllBytes(), Limits.DEFAULT);
+    }
+
+    /** Variant of {@link #extract(InputStream)} with explicit size caps. */
+    public static ExtractedSkill extract(InputStream zipStream, Limits limits) throws IOException {
+        return extract(zipStream.readAllBytes(), limits);
     }
 
     /** Fallback charset for archives authored on Chinese Windows (entry names / content in GBK). */
@@ -154,12 +186,17 @@ public class ZipSkillFetcher {
      * a one-shot stream) is what makes the retry possible.
      */
     public static ExtractedSkill extract(byte[] zipBytes) throws IOException {
+        return extract(zipBytes, Limits.DEFAULT);
+    }
+
+    /** Variant of {@link #extract(byte[])} with explicit size caps. */
+    public static ExtractedSkill extract(byte[] zipBytes, Limits limits) throws IOException {
         try {
-            return extract(zipBytes, StandardCharsets.UTF_8);
+            return extract(zipBytes, StandardCharsets.UTF_8, limits);
         } catch (IOException | RuntimeException e) {
             if (GBK != null && isCharsetError(e)) {
                 log.warn("[ZipSkillFetcher] UTF-8 entry decode failed, retrying with GBK (Windows-authored archive?)");
-                return extract(zipBytes, GBK);
+                return extract(zipBytes, GBK, limits);
             }
             throw e;
         }
@@ -182,7 +219,7 @@ public class ZipSkillFetcher {
         return false;
     }
 
-    private static ExtractedSkill extract(byte[] zipBytes, Charset charset) throws IOException {
+    private static ExtractedSkill extract(byte[] zipBytes, Charset charset, Limits limits) throws IOException {
         List<RawEntry> raws = new ArrayList<>();
         String skillMdContent = null;
         String skillMdPrefix = "";
@@ -214,21 +251,22 @@ public class ZipSkillFetcher {
                 }
 
                 long declaredSize = entry.getSize();
-                if (declaredSize > MAX_FILE_SIZE) {
+                if (declaredSize > limits.maxEntryBytes()) {
                     log.warn("[ZipSkillFetcher] Skipping oversized entry: {} ({}bytes)", entryName, declaredSize);
                     zis.closeEntry();
                     continue;
                 }
 
                 byte[] bytes = zis.readAllBytes();
-                if (bytes.length > MAX_FILE_SIZE) {
+                if (bytes.length > limits.maxEntryBytes()) {
                     log.warn("[ZipSkillFetcher] Skipping oversized entry post-read: {} ({}bytes)", entryName, bytes.length);
                     zis.closeEntry();
                     continue;
                 }
                 totalSize += bytes.length;
-                if (totalSize > MAX_TOTAL_SIZE) {
-                    throw new IOException("Total extracted size exceeds 50MB limit");
+                if (totalSize > limits.maxTotalBytes()) {
+                    throw new IOException("Total extracted size exceeds " + limits.totalMb()
+                            + "MB limit (adjust mateclaw.skill.upload.max-total-size-mb)");
                 }
 
                 // Skill bundles persist file contents as text (mate_skill_file

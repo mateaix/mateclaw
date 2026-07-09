@@ -212,7 +212,7 @@ public class WebChatController {
                 // delta is not a persistence-only echo of content already streamed by inner nodes.
                 StringBuilder assistantReply = new StringBuilder();
                 // Token usage + model attribution: capture _usage_final event emitted at stream end
-                final int[] usage = {0, 0}; // [promptTokens, completionTokens]
+                final int[] usage = {0, 0, 0, 0, 0}; // [prompt, completion, cacheRead, cacheWrite, reasoning]
                 final String[] modelInfo = {null, null}; // [runtimeModel, runtimeProvider]
 
                 // Attribute memory to this external visitor so each end-user
@@ -230,6 +230,9 @@ public class WebChatController {
                                 Map<String, Object> data = delta.eventData();
                                 usage[0] = ((Number) data.getOrDefault("promptTokens", 0)).intValue();
                                 usage[1] = ((Number) data.getOrDefault("completionTokens", 0)).intValue();
+                                usage[2] = ((Number) data.getOrDefault("cacheReadTokens", 0)).intValue();
+                                usage[3] = ((Number) data.getOrDefault("cacheWriteTokens", 0)).intValue();
+                                usage[4] = ((Number) data.getOrDefault("reasoningTokens", 0)).intValue();
                                 Object model = data.get("runtimeModelName");
                                 Object provider = data.get("runtimeProviderId");
                                 if (model != null) modelInfo[0] = model.toString();
@@ -265,7 +268,7 @@ public class WebChatController {
                                 if (!reply.isBlank()) {
                                     conversationService.saveMessage(
                                             conversationId, "assistant", reply, List.of(),
-                                            "completed", usage[0], usage[1], modelInfo[0], modelInfo[1]);
+                                            "completed", usage[0], usage[1], usage[2], usage[3], usage[4], modelInfo[0], modelInfo[1], null);
                                 }
                                 completionPublisher.publish(
                                         resolvedAgentId, conversationId, message, reply, "webchat", webchatOwnerKey);
@@ -1288,6 +1291,9 @@ public class WebChatController {
                                 Map<String, Object> data = delta.eventData();
                                 usage[0] = ((Number) data.getOrDefault("promptTokens", 0)).intValue();
                                 usage[1] = ((Number) data.getOrDefault("completionTokens", 0)).intValue();
+                                usage[2] = ((Number) data.getOrDefault("cacheReadTokens", 0)).intValue();
+                                usage[3] = ((Number) data.getOrDefault("cacheWriteTokens", 0)).intValue();
+                                usage[4] = ((Number) data.getOrDefault("reasoningTokens", 0)).intValue();
                                 Object model = data.get("runtimeModelName");
                                 Object provider = data.get("runtimeProviderId");
                                 if (model != null) modelInfo[0] = model.toString();
@@ -1315,7 +1321,7 @@ public class WebChatController {
                                 if (!reply.isBlank()) {
                                     conversationService.saveMessage(
                                             conversationId, "assistant", reply, List.of(),
-                                            "completed", usage[0], usage[1], modelInfo[0], modelInfo[1]);
+                                            "completed", usage[0], usage[1], usage[2], usage[3], usage[4], modelInfo[0], modelInfo[1], null);
                                 }
                             } catch (Exception persistErr) {
                                 log.warn("[WebChat] approve replay persist failed: {}", persistErr.getMessage());

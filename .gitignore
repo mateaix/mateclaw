@@ -105,6 +105,9 @@ CLAUDE.md
 # Codex CLI local artifacts
 .codex/
 
+# Codebase memory (local agent index / graph artifact; do not commit)
+.codebase-memory/
+
 # Sync tooling local state (generated each run; report is intentionally tracked)
 scripts/.*-sync-state.json
 

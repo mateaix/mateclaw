@@ -32,11 +32,43 @@ public interface ToolDisclosureService {
     ToolDisclosureSplit split(AgentToolSet baseSet, Set<String> enabledExtensions);
 
     /**
+     * Budget-aware variant: tools in {@code autoDemoted} are treated as
+     * extension tier for this split even when their resolved tier is core.
+     * The demotion set is decided once per agent build (see
+     * {@link #computeAutoDemotions}) so the runtime split, the baked catalog
+     * and the prompt-cache prefix stay consistent with each other.
+     */
+    default ToolDisclosureSplit split(AgentToolSet baseSet, Set<String> enabledExtensions,
+                                      Set<String> autoDemoted) {
+        return split(baseSet, enabledExtensions);
+    }
+
+    /**
+     * Decide which core-tier tools to auto-demote so the advertised tool
+     * schemas fit {@code budgetTokens} (estimated). Ranking: never-used tools
+     * first, then least recently used; meta-tools and explicitly configured
+     * core tools are never demoted. Empty when the set already fits, when
+     * {@code budgetTokens} is null, or in legacy disclosure mode.
+     */
+    default Set<String> computeAutoDemotions(AgentToolSet baseSet, Integer budgetTokens) {
+        return Set.of();
+    }
+
+    /**
      * Render the {@code ## Extension Tools} system-prompt segment for the
      * agent's extension tools, or an empty string when there are none / when
      * disclosure is disabled.
      */
     String renderExtensionCatalog(AgentToolSet baseSet, Integer maxInputTokens);
+
+    /**
+     * Budget-aware variant: auto-demoted tools are listed in the catalog too,
+     * so the model can discover and {@code enable_tool} them back.
+     */
+    default String renderExtensionCatalog(AgentToolSet baseSet, Integer maxInputTokens,
+                                          Set<String> autoDemoted) {
+        return renderExtensionCatalog(baseSet, maxInputTokens);
+    }
 
     /** Drop the cached tier snapshot so the next resolve re-reads the DB. */
     void invalidate();

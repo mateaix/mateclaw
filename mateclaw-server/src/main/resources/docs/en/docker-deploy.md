@@ -1,6 +1,8 @@
 # Docker Deployment
 
-The only recommended production deployment outside the desktop app. One `docker compose up -d` brings up three containers: MySQL, SearXNG, and mateclaw-server.
+The only recommended production deployment outside the desktop app. One `docker compose up -d` brings up three containers: PostgreSQL, SearXNG, and mateclaw-server.
+
+> **⚠️ Upgrading from the MySQL stack**: the Docker stack switched from MySQL to PostgreSQL 16. Pulling this change and running `up -d` on an existing host starts a **fresh, empty PostgreSQL volume** — the old `mysql_data` volume is not read (data is not lost, but the new stack cannot see it). To carry data across, `mysqldump` from the old stack first and import into PostgreSQL with a cross-engine tool such as pgloader; or stay on a pre-switch tag to keep running MySQL (the `mysql` Spring profile remains supported).
 
 This page covers **requirements, steps, verification, and common gotchas**. For the full environment variable reference, see [Configuration](./config).
 
@@ -13,7 +15,7 @@ This page covers **requirements, steps, verification, and common gotchas**. For 
 | Docker Engine | 24.0+ | latest stable | `docker --version` |
 | Docker Compose | v2.20+ | v2.30+ | `docker compose version` (the v2 plugin, not the legacy `docker-compose`) |
 | Host RAM | 4 GB | 8 GB+ | Chromium consumes 1-2 GB when the browser tool is active |
-| Disk | 6 GB | 20 GB+ | ~2 GB image + MySQL data + workspace files |
+| Disk | 6 GB | 20 GB+ | ~2 GB image + PostgreSQL data + workspace files |
 | /dev/shm | default | compose sets 2 GB automatically | Chromium uses shared memory for rendering; the 64 MB default causes SIGBUS |
 | Network | outbound | — | for pulling images and calling LLM APIs |
 
@@ -25,7 +27,7 @@ This page covers **requirements, steps, verification, and common gotchas**. For 
 
 | Service | Image | Role | Exposed port |
 |---|---|---|---|
-| `mysql` | `mysql:8.0` | Business data | `3306` |
+| `postgres` | `postgres:16` | Business data | compose network only (no host port by default) |
 | `searxng` | Built from `./docker/searxng/` | Keyless search fallback | `8088` |
 | `mateclaw-server` | Built from `mateclaw-server/Dockerfile` | Spring Boot backend + embedded browser | `18080` |
 
@@ -179,7 +181,7 @@ vi .env   # see table below
 | Variable | Notes |
 |---|---|
 | `DB_PASSWORD` | App DB password — 16+ chars, mixed case, digits, symbols |
-| `DB_ROOT_PASSWORD` | MySQL root password — **must differ from the above** |
+| `DB_ADMIN_PASSWORD` | PostgreSQL bootstrap superuser password (init + admin only) — **must differ from the above** |
 
 **Strongly recommended** (not enforced, but startup logs WARN if missing):
 
@@ -299,7 +301,7 @@ docker compose build mateclaw-server   # only rebuild the backend
 docker compose up -d mateclaw-server
 ```
 
-The `mysql_data` volume persists across rebuilds. Flyway runs incremental migrations automatically and self-heals checksum changes on restart. **Version is pinned in `mateclaw-server/pom.xml` and the git tag** — prefer pinning to a tag in production, not tracking `dev`.
+The `postgres_data` volume persists across rebuilds. Flyway runs incremental migrations automatically and self-heals checksum changes on restart. **Version is pinned in `mateclaw-server/pom.xml` and the git tag** — prefer pinning to a tag in production, not tracking `dev`.
 
 ---
 

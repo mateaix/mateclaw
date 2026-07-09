@@ -3,6 +3,7 @@ package vip.mate.memory.spi;
 import io.micrometer.core.instrument.MeterRegistry;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
+import vip.mate.agent.context.TokenEstimator;
 import vip.mate.memory.MemoryProperties;
 import vip.mate.memory.spi.decorator.MetricsMemoryProvider;
 import vip.mate.memory.spi.decorator.RetryableMemoryProvider;
@@ -81,19 +82,68 @@ public class MemoryManager {
      * Called once at agent build time (snapshot frozen for session).
      */
     public String buildSystemPromptBlock(Long agentId) {
+        return buildSystemPromptBlock(agentId, Integer.MAX_VALUE);
+    }
+
+    /**
+     * Budgeted variant: providers keep their own per-block caps, but the
+     * combined output additionally may not exceed {@code budgetTokens}
+     * (estimated). Provider order is priority order — once the budget is
+     * spent, later providers are dropped whole and a partially fitting block
+     * is truncated at a line boundary. Small local context windows need this:
+     * the individual caps are sized for large cloud models and stack up past
+     * an 8k/16k window on their own.
+     */
+    public String buildSystemPromptBlock(Long agentId, int budgetTokens) {
         List<String> blocks = new ArrayList<>();
+        int usedTokens = 0;
         for (MemoryProvider provider : providers) {
             try {
                 String block = provider.systemPromptBlock(agentId);
-                if (block != null && !block.isBlank()) {
-                    blocks.add(block);
+                if (block == null || block.isBlank()) {
+                    continue;
                 }
+                int blockTokens = TokenEstimator.estimateTokens(block);
+                if (usedTokens + blockTokens <= budgetTokens) {
+                    blocks.add(block);
+                    usedTokens += blockTokens;
+                    continue;
+                }
+                int remaining = budgetTokens - usedTokens;
+                String truncated = truncateToTokenBudget(block, remaining);
+                if (!truncated.isBlank()) {
+                    blocks.add(truncated + "\n\n[memory truncated to fit the model context window]");
+                }
+                log.info("[MemoryManager] Memory block budget {} tokens reached at provider '{}' — "
+                        + "remaining providers dropped from the system prompt", budgetTokens, provider.id());
+                break;
             } catch (Exception e) {
                 log.warn("[MemoryManager] Provider '{}' systemPromptBlock() failed: {}",
                         provider.id(), e.getMessage());
             }
         }
         return String.join("\n\n", blocks);
+    }
+
+    /** Trim to the last full line that fits the token budget; empty when nothing fits. */
+    private static String truncateToTokenBudget(String block, int budgetTokens) {
+        if (budgetTokens <= 0) {
+            return "";
+        }
+        StringBuilder kept = new StringBuilder();
+        int usedTokens = 0;
+        for (String line : block.split("\n", -1)) {
+            int lineTokens = TokenEstimator.estimateTokens(line) + 1;
+            if (usedTokens + lineTokens > budgetTokens) {
+                break;
+            }
+            if (kept.length() > 0) {
+                kept.append('\n');
+            }
+            kept.append(line);
+            usedTokens += lineTokens;
+        }
+        return kept.toString();
     }
 
     // ==================== Prefetch / Recall ====================

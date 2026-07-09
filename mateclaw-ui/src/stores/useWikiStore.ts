@@ -199,7 +199,13 @@ export const useWikiStore = defineStore('wiki', () => {
     loading.value = true
     try {
       const res: any = await wikiApi.listKBs()
-      knowledgeBases.value = res.data || []
+      const next: WikiKB[] = res.data || []
+      // 工作区切换时清理上一个工作区的 KB 上下文，避免显示其内容。
+      // backToLibrary 已清理 pages/pageRefs/rawMaterials 等关联状态，这里复用。
+      if (currentKB.value && !next.some(kb => kb.id === currentKB.value!.id)) {
+        backToLibrary()
+      }
+      knowledgeBases.value = next
     } catch (e) {
       console.error('Failed to fetch knowledge bases', e)
     } finally {

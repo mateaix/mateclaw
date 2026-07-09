@@ -1831,6 +1831,111 @@ public class WikiProcessingService {
         }
     }
 
+    /**
+     * Link an agent-authored page to its source raw material and populate the
+     * full set of ingest by-products (lineage, chunks, embeddings, citations,
+     * knowledge layer, pipeline-trigger event) so the page is a first-class
+     * citizen — searchable, citation-traceable, downloadable, reprocess-able —
+     * WITHOUT re-running the LLM page-generation pipeline (the agent already
+     * supplied the final page content).
+     *
+     * <p>Called by {@code WikiTool.wiki_create_page} right after {@code createPage}.
+     * Each step is individually try/caught so a failure in one (e.g. embedding
+     * provider down) cannot block the others — the page still lands with lineage
+     * and citations even if embeddings are deferred. The raw is flipped to
+     * {@code completed} at the end so it shows as a successfully processed
+     * material in the Raw Material panel.
+     *
+     * @param pageId   the newly created page id
+     * @param kbId     the KB id
+     * @param rawId    the agent-authored raw material id (from {@code addAgentAuthored})
+     * @param rawTitle the raw material title (for the lineage snapshot)
+     * @param pageType the page's pageType (may be null; used for layer + event)
+     */
+    public void linkAgentPageToRaw(Long pageId, Long kbId, Long rawId, String rawTitle, String pageType) {
+        // 1. Lineage: page -> raw (dual-writes sourceRawIds + sourceEntries so
+        //    the "View Citations" button appears and raw-delete cascade works).
+        try {
+            pageService.mergeSourceLineage(pageId, rawId, rawTitle);
+        } catch (Exception e) {
+            log.warn("[Wiki] Agent-page lineage failed for page={}, raw={}: {}", pageId, rawId, e.getMessage());
+        }
+
+        // Knowledge layer (fact/experience) from the pageType profile, matching
+        // afterPagePersisted so agent pages join the KB's layer classification.
+        try {
+            deriveKnowledgeLayer(pageId, kbId, pageType);
+        } catch (Exception e) {
+            log.warn("[Wiki] Agent-page knowledge layer failed for page={}: {}", pageId, e.getMessage());
+        }
+
+        // 2. Chunks from the raw's text — reuse the standard splitter so semantic
+        //    search and citations work exactly like an uploaded text file.
+        WikiRawMaterialEntity raw = rawService.getById(rawId);
+        if (raw == null) {
+            log.warn("[Wiki] Agent-page link skipped: raw={} not found", rawId);
+            return;
+        }
+        String textContent = rawService.getTextContent(raw);
+        if (textContent != null && !textContent.isBlank()) {
+            try {
+                List<ChunkWithOffset> chunksWithOffset = splitIntoChunksWithOffsets(textContent);
+                List<String> chunks = chunksWithOffset.stream().map(ChunkWithOffset::text).toList();
+                List<int[]> offsets = chunksWithOffset.stream()
+                        .map(c -> new int[]{c.startOffset(), c.endOffset()}).toList();
+                if (chunks.isEmpty()) {
+                    chunkService.persistChunks(kbId, rawId,
+                            List.of(textContent), List.of(new int[]{0, textContent.length()}));
+                } else {
+                    chunkService.persistChunks(kbId, rawId, chunks, offsets);
+                }
+            } catch (Exception e) {
+                log.warn("[Wiki] Agent-page chunk persistence failed for page={}, raw={}: {}",
+                        pageId, rawId, e.getMessage());
+            }
+        }
+
+        // 3. Embeddings (async-safe calls) — both chunk-level (for semantic
+        //    search) and page-level (for hybrid retrieval).
+        try {
+            embeddingService.embedMissingChunks(kbId);
+            embeddingService.embedPage(pageId);
+        } catch (Exception e) {
+            log.warn("[Wiki] Agent-page embedding failed for kb={}, page={}: {}", kbId, pageId, e.getMessage());
+        }
+
+        // 4. Citations: page -> chunks of its source raw (feeds the CitationDrawer).
+        try {
+            citationService.buildCitationsAsync(pageId, kbId);
+        } catch (Exception e) {
+            log.warn("[Wiki] Agent-page citation build failed for page={}: {}", pageId, e.getMessage());
+        }
+
+        // 5. Pipeline trigger event (so pageType-count triggers get evaluated),
+        //    matching afterPagePersisted's contract for ingest-created pages.
+        try {
+            if (eventPublisher != null && pageType != null && !pageType.isBlank()) {
+                eventPublisher.publishEvent(new WikiPageCreatedEvent(kbId, pageType, pageId));
+            }
+        } catch (Exception e) {
+            log.warn("[Wiki] Agent-page event publish failed for page={}: {}", pageId, e.getMessage());
+        }
+
+        // 6. Flip raw to completed so it shows as a successfully processed
+        //    material in the Raw Material panel, and stamp lastProcessedHash so
+        //    the reprocess short-circuit (unchanged content -> skip) works if
+        //    the user later reprocesses this raw through the normal pipeline.
+        try {
+            rawService.updateProcessingStatus(rawId, "completed", null, null);
+            rawService.setLastProcessedHash(rawId, raw.getContentHash());
+        } catch (Exception e) {
+            log.warn("[Wiki] Agent-page raw status flip failed for raw={}: {}", rawId, e.getMessage());
+        }
+
+        log.info("[Wiki] Agent page linked: pageId={}, kbId={}, rawId={}, pageType={}",
+                pageId, kbId, rawId, pageType);
+    }
+
     /** Stamp the page's knowledge layer (fact/experience) derived from its pageType profile. */
     private void deriveKnowledgeLayer(Long pageId, Long kbId, String pageType) {
         if (pageTypeProfileService == null || pageType == null || pageType.isBlank()) {

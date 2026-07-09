@@ -252,7 +252,7 @@ KbOpenApiAuthFilter (OncePerRequestFilter, 仅拦截 /api/v1/open/kb/**)
 
 | Scope | 允许的操作 | 说明 |
 |---|---|---|
-| `kb:search` | POST `/search`、POST `/search/chunks` | 检索 |
+| `kb:search` | POST `/search`、POST `/search/chunks`、POST `/research/**`（Deep Research 全套）| 检索（含异步深度研究，复用同一 scope）|
 | `kb:read` | GET `/pages/{slug}`、GET `/pages/{slug}/trace`、POST `/pages/{slug}/traverse` | 读主体画像 + 溯源 + 关系遍历 |
 | `kb:list` | GET `/pages`、GET `/taxonomy` | 列页面 + 地图 |
 | `kb:meta` | GET `/stats`、GET `/whats-new` | 元信息 + 时效查询 |

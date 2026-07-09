@@ -349,4 +349,49 @@ public class GeneratedFileCache {
         m.appendTail(out);
         return out.toString();
     }
+
+    /**
+     * Wrap bare {@code /api/v1/files/generated/{id}} URLs whose id is live
+     * into a {@code [filename](url)} markdown link, so chat surfaces render
+     * the file name instead of the raw id URL. Models frequently echo the
+     * download URL as plain text ("下载链接：http://…/{uuid}") even though the
+     * tool result hands them a ready-made markdown link; autolink rendering
+     * then displays the UUID to the user.
+     *
+     * <p>URLs already serving as a markdown link destination (directly
+     * preceded by {@code ](}) are left untouched, whatever their link text —
+     * the model may have chosen a legitimate custom label. Cache misses are
+     * also left untouched; {@link #scrubMissingReferences} owns that case.
+     */
+    public String linkifyBareReferences(String text) {
+        if (text == null || text.isEmpty()) return text;
+        Matcher m = GENERATED_URL_PATTERN.matcher(text);
+        if (!m.find()) return text;
+        StringBuilder out = new StringBuilder();
+        m.reset();
+        while (m.find()) {
+            String replacement = m.group(0);
+            int s = m.start();
+            boolean isLinkDestination = s >= 2
+                    && text.charAt(s - 1) == '('
+                    && text.charAt(s - 2) == ']';
+            // Angle-bracket autolinks (<url>) must not be wrapped either —
+            // "[name](<url>)" with the brackets kept inline breaks rendering.
+            boolean isAngleAutolink = s >= 1 && text.charAt(s - 1) == '<';
+            if (!isLinkDestination && !isAngleAutolink) {
+                String filename = get(m.group(1))
+                        .map(Entry::filename)
+                        .filter(n -> n != null && !n.isBlank())
+                        // Square brackets would terminate the link text early.
+                        .map(n -> n.replaceAll("[\\[\\]]", ""))
+                        .orElse(null);
+                if (filename != null) {
+                    replacement = "[" + filename + "](" + m.group(0) + ")";
+                }
+            }
+            m.appendReplacement(out, Matcher.quoteReplacement(replacement));
+        }
+        m.appendTail(out);
+        return out.toString();
+    }
 }

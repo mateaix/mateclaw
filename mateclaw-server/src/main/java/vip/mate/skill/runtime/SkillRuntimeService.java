@@ -499,8 +499,8 @@ public class SkillRuntimeService {
         sb.append("If a skill describes steps but ships no runnable script, write the code ");
         sb.append("its instructions describe and run it with ");
         sb.append("`execute_code(language=<python|bash|node>, code=..., skillName=<name>)`.\n\n");
-        sb.append("| Skill | Status | Description |\n");
-        sb.append("|-------|--------|-------------|\n");
+        sb.append("| Skill | Status | Description | Constraints |\n");
+        sb.append("|-------|--------|-------------|-------------|\n");
         for (ResolvedSkill skill : selected) {
             sb.append("| `").append(skill.getName()).append("`");
             if (skill.getIcon() != null && !skill.getIcon().isBlank()) {
@@ -516,12 +516,48 @@ public class SkillRuntimeService {
                 // break the table layout.
                 sb.append(desc.replace("|", "\\|").replace("\n", " "));
             }
+            sb.append(" | ");
+            // Only bound skills show constraints — they're the ones the agent
+            // is configured to obey. Constraints are stable (agent lifecycle)
+            // so they live in the prompt-cache-friendly static catalog segment,
+            // immune to history compression. Non-bound skills (recommended /
+            // recent) are "visible but optional" and don't carry constraints
+            // the agent must follow.
+            if (skill.getId() != null && boundIds.contains(skill.getId())
+                    && skill.getManifest() != null
+                    && skill.getManifest().getConstraints() != null
+                    && !skill.getManifest().getConstraints().isEmpty()) {
+                sb.append(renderConstraintsSummary(skill.getManifest().getConstraints()));
+            }
             sb.append(" |\n");
         }
         if (selected.size() < visibleSkills.size()) {
             sb.append("\nShowing ").append(selected.size()).append(" of ")
                     .append(visibleSkills.size())
                     .append(" available skills. Use `listAvailableSkills()` for the full catalog.\n");
+        }
+
+        // Append a compact "bound skill tools" block so the model knows which
+        // tools each bound skill allows — this is the other half of the skill
+        // contract (constraints in the table above, allowedTools here). Kept
+        // in the static catalog segment (prompt-cache-friendly, immune to
+        // history compression) so the model always knows the tool boundary
+        // for bound skills without needing to load_skill.
+        List<ResolvedSkill> boundWithTools = selected.stream()
+                .filter(s -> s.getId() != null && boundIds.contains(s.getId()))
+                .filter(s -> s.getEffectiveAllowedTools() != null
+                        && !s.getEffectiveAllowedTools().isEmpty())
+                .toList();
+        if (!boundWithTools.isEmpty()) {
+            sb.append("\n### Bound skill allowed tools\n");
+            for (ResolvedSkill skill : boundWithTools) {
+                Set<String> tools = skill.getEffectiveAllowedTools();
+                sb.append("- `").append(skill.getName()).append("`: ");
+                sb.append(tools.stream()
+                        .map(t -> "`" + t + "`")
+                        .collect(java.util.stream.Collectors.joining(", ")));
+                sb.append('\n');
+            }
         }
 
         List<ResolvedSkill> lessonSkills = sorted.stream()
@@ -601,6 +637,30 @@ public class SkillRuntimeService {
         if (max <= 16384) return 100;
         if (max <= 32768) return 140;
         return 160;
+    }
+
+    /**
+     * Per-constraint char budget for the catalog table's Constraints column.
+     * Kept short so the table stays compact — the full constraints are
+     * available via load_skill / readSkillFile when the agent needs the
+     * complete text. Multiple constraints are joined with "; " before
+     * truncation.
+     */
+    private static final int CONSTRAINTS_SUMMARY_LIMIT = 80;
+
+    /**
+     * Render a compact one-line summary of a skill's constraints for the
+     * catalog table. Multiple constraints are joined with "; "; the result
+     * is truncated to {@link #CONSTRAINTS_SUMMARY_LIMIT} chars and
+     * pipe/newline escaped so it doesn't break the table layout.
+     */
+    static String renderConstraintsSummary(List<String> constraints) {
+        if (constraints == null || constraints.isEmpty()) return "";
+        String joined = String.join("; ", constraints);
+        if (joined.length() > CONSTRAINTS_SUMMARY_LIMIT) {
+            joined = joined.substring(0, CONSTRAINTS_SUMMARY_LIMIT) + "...";
+        }
+        return joined.replace("|", "\\|").replace("\n", " ");
     }
 
     private static String statusToken(ResolvedSkill skill) {

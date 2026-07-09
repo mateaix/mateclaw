@@ -4,16 +4,19 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 import vip.mate.system.model.SystemSettingsDTO;
 
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
  * 搜索提供商注册表 — 收集所有 {@link SearchProvider} 实现，提供优先级排序与自动探测
  *
- * <p>借鉴 openclaw 的 provider auto-detect 机制：
+ * <p>provider 自动探测机制：
  * <ol>
  *   <li>用户显式配置的 primary provider → 直接使用</li>
  *   <li>按 autoDetectOrder 遍历，优先选有 credential 的 provider</li>
@@ -29,6 +32,16 @@ public class SearchProviderRegistry {
     private final List<SearchProvider> sortedProviders;
     private final Map<String, SearchProvider> providerMap;
 
+    /** 插件注册的 provider（运行时可变），与 Spring 注入的内置 provider 合并成完整视图 */
+    private final ConcurrentHashMap<String, SearchProvider> pluginProviders = new ConcurrentHashMap<>();
+
+    /**
+     * 注册写锁：大小写不敏感的冲突检测是"先检查后插入"，两个并发注册大小写变体
+     * （"Foo"/"foo"）可能双双通过检查后各自落入不同 key——写路径必须原子化。
+     * 读路径（getById/allSorted/resolve）仍走无锁的 ConcurrentHashMap。
+     */
+    private final Object registrationLock = new Object();
+
     public SearchProviderRegistry(List<SearchProvider> providers) {
         this.sortedProviders = providers.stream()
                 .sorted(Comparator.comparingInt(SearchProvider::autoDetectOrder))
@@ -39,20 +52,78 @@ public class SearchProviderRegistry {
                 sortedProviders.stream().map(p -> p.id() + "(order=" + p.autoDetectOrder() + ")").toList());
     }
 
-    /** 按 ID 获取指定 provider */
-    public SearchProvider getById(String id) {
-        return providerMap.get(id);
+    /**
+     * 注册一个插件提供的 provider。
+     *
+     * <p>id 规则：不允许为空或含首尾空白（拒绝而非 trim——注册键必须与
+     * {@code provider.id()} 完全一致，反注册才能对得上）；存储与查找大小写敏感，
+     * 但冲突检测大小写不敏感，防止 "Serper" 这类变体在 UI 上与内置 "serper" 混淆。
+     *
+     * @throws IllegalArgumentException id 为空、含首尾空白，或与内置/已注册插件 provider 冲突
+     */
+    public void registerPluginProvider(SearchProvider provider) {
+        String id = provider.id();
+        if (id == null || id.isBlank()) {
+            throw new IllegalArgumentException("Search provider id must not be blank");
+        }
+        if (!id.equals(id.trim())) {
+            throw new IllegalArgumentException(
+                    "Search provider id must not contain leading/trailing whitespace: '" + id + "'");
+        }
+        synchronized (registrationLock) {
+            if (containsIgnoreCase(providerMap.keySet(), id)) {
+                throw new IllegalArgumentException(
+                        "Search provider id conflicts with a built-in provider: " + id);
+            }
+            if (containsIgnoreCase(pluginProviders.keySet(), id)) {
+                throw new IllegalArgumentException(
+                        "Search provider id already registered by another plugin: " + id);
+            }
+            pluginProviders.put(id, provider);
+        }
+        log.info("插件搜索提供商已注册: {} (order={})", id, provider.autoDetectOrder());
     }
 
-    /** 获取按 autoDetectOrder 排序的全部 provider 列表 */
+    private static boolean containsIgnoreCase(Set<String> ids, String candidate) {
+        return ids.stream().anyMatch(existing -> existing.equalsIgnoreCase(candidate));
+    }
+
+    /** 反注册插件 provider（disable / rollback 路径调用；id 不存在时静默） */
+    public void unregisterPluginProvider(String id) {
+        if (pluginProviders.remove(id) != null) {
+            log.info("插件搜索提供商已反注册: {}", id);
+        }
+    }
+
+    /** 判断某个 id 是否由插件注册（而非内置 Spring bean） */
+    public boolean isPluginProvider(String id) {
+        return pluginProviders.containsKey(id);
+    }
+
+    /** 按 ID 获取指定 provider（内置优先，其次插件注册区） */
+    public SearchProvider getById(String id) {
+        SearchProvider builtin = providerMap.get(id);
+        return builtin != null ? builtin : pluginProviders.get(id);
+    }
+
+    /**
+     * 获取按 autoDetectOrder 排序的全部 provider（内置 + 插件）。
+     * <p>有插件注册时每次调用重新合并排序——provider 总数 &lt;10，无需缓存。
+     */
     public List<SearchProvider> allSorted() {
-        return sortedProviders;
+        if (pluginProviders.isEmpty()) {
+            return sortedProviders;
+        }
+        List<SearchProvider> merged = new ArrayList<>(sortedProviders);
+        merged.addAll(pluginProviders.values());
+        merged.sort(Comparator.comparingInt(SearchProvider::autoDetectOrder));
+        return merged;
     }
 
     /**
      * 根据当前配置，解析应使用的 provider。
      *
-     * <p>解析策略（借鉴 openclaw resolveWebSearchProviderId）：
+     * <p>解析策略：
      * <ol>
      *   <li>如果用户配置了 primary provider 且该 provider 可用 → 选中</li>
      *   <li>否则按 autoDetectOrder 遍历，跳过 keyless，先找有 credential 的</li>
@@ -65,7 +136,7 @@ public class SearchProviderRegistry {
         // 1. 用户显式配置的 primary provider
         String configuredId = config.getSearchProvider();
         if (configuredId != null && !configuredId.isBlank()) {
-            SearchProvider configured = providerMap.get(configuredId);
+            SearchProvider configured = getById(configuredId);
             if (configured != null && configured.isAvailable(config)) {
                 return new ResolvedProvider(configured, "configured");
             }
@@ -73,7 +144,7 @@ public class SearchProviderRegistry {
 
         // 2. 按优先级遍历，先找有 credential 的
         SearchProvider keylessFallback = null;
-        for (SearchProvider p : sortedProviders) {
+        for (SearchProvider p : allSorted()) {
             if (!p.requiresCredential()) {
                 // 记住第一个可用的 keyless provider
                 if (keylessFallback == null && p.isAvailable(config)) {

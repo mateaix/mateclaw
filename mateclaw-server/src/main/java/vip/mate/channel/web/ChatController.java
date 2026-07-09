@@ -357,6 +357,9 @@ public class ChatController {
                                                 persistStatus,
                                                 accumulator.getPromptTokens(),
                                                 accumulator.getCompletionTokens(),
+                                                accumulator.getCacheReadTokens(),
+                                                accumulator.getCacheWriteTokens(),
+                                                accumulator.getReasoningTokens(),
                                                 accumulator.getRuntimeModelName(),
                                                 accumulator.getRuntimeProviderId(),
                                                 accumulator.toMetadataJson());  // includes toolCalls metadata
@@ -436,6 +439,9 @@ public class ChatController {
                                                 errStatus,
                                                 accumulator.getPromptTokens(),
                                                 accumulator.getCompletionTokens(),
+                                                accumulator.getCacheReadTokens(),
+                                                accumulator.getCacheWriteTokens(),
+                                                accumulator.getReasoningTokens(),
                                                 accumulator.getRuntimeModelName(),
                                                 accumulator.getRuntimeProviderId(),
                                                 accumulator.toMetadataJson());
@@ -556,7 +562,7 @@ public class ChatController {
                 // tools that need a workspace path read it from the agent (origin
                 // is enriched with workspaceBasePath in StateGraph buildInitialState).
                 vip.mate.agent.context.ChatOrigin webOrigin =
-                        memoryOrigin(conversationId, username, workspaceId, request.getEndUserId())
+                        memoryOrigin(conversationId, username, requesterUserIdOf(auth), workspaceId, request.getEndUserId())
                                 .withBaseUrl(requestBaseUrl);
                 Disposable disposable = agentService.chatStructuredStream(agentId, promptText, conversationId, username, request.getThinkingLevel(), webOrigin)
                         .doOnNext(delta -> {
@@ -629,6 +635,9 @@ public class ChatController {
                                             persistStatus,
                                             accumulator.getPromptTokens(),
                                             accumulator.getCompletionTokens(),
+                                            accumulator.getCacheReadTokens(),
+                                            accumulator.getCacheWriteTokens(),
+                                            accumulator.getReasoningTokens(),
                                             accumulator.getRuntimeModelName(),
                                             accumulator.getRuntimeProviderId(),
                                             accumulator.toMetadataJson());
@@ -747,6 +756,9 @@ public class ChatController {
                                             status,
                                             accumulator.getPromptTokens(),
                                             accumulator.getCompletionTokens(),
+                                            accumulator.getCacheReadTokens(),
+                                            accumulator.getCacheWriteTokens(),
+                                            accumulator.getReasoningTokens(),
                                             accumulator.getRuntimeModelName(),
                                             accumulator.getRuntimeProviderId(),
                                             accumulator.toMetadataJson());
@@ -849,6 +861,9 @@ public class ChatController {
                                             status,
                                             accumulator.getPromptTokens(),
                                             accumulator.getCompletionTokens(),
+                                            accumulator.getCacheReadTokens(),
+                                            accumulator.getCacheWriteTokens(),
+                                            accumulator.getReasoningTokens(),
                                             accumulator.getRuntimeModelName(),
                                             accumulator.getRuntimeProviderId(),
                                             accumulator.toMetadataJson());
@@ -1057,7 +1072,7 @@ public class ChatController {
         // Carry the web origin so per-owner memory recall (read) and the
         // post-conversation memory write below agree on the same owner key.
         vip.mate.agent.context.ChatOrigin webOrigin =
-                memoryOrigin(request.getConversationId(), username, workspaceId, request.getEndUserId());
+                memoryOrigin(request.getConversationId(), username, requesterUserIdOf(auth), workspaceId, request.getEndUserId());
         AgentService.ChatResult result = agentService.chatWithUsage(agentId, promptText, request.getConversationId(), webOrigin);
         String response = result.content();
         conversationService.saveMessage(request.getConversationId(), "assistant", response, null, "completed",
@@ -1103,8 +1118,8 @@ public class ChatController {
         response.setFileName(originalFilename);
         response.setStoredName(storedName);
         response.setUrl("/api/v1/chat/files/" + conversationId + "/" + storedName);
-        // 使用相对路径，避免暴露服务端绝对路径
-        response.setPath(uploadRoot.resolve(conversationId).resolve(storedName).toString());
+        // 用 root 相对路径，避免暴露服务端绝对路径（uploadRoot 现在恒为绝对路径）。
+        response.setPath(toRelativeUploadPath(uploadRoot, conversationId, storedName));
         response.setSize(file.getSize());
         response.setContentType(file.getContentType());
         return R.ok(response);
@@ -1170,17 +1185,33 @@ public class ChatController {
      * MateClaw user ({@code user:<username>}).
      */
     private vip.mate.agent.context.ChatOrigin memoryOrigin(String conversationId, String username,
-                                                           Long workspaceId, String endUserId) {
+                                                           Long requesterUserId, Long workspaceId,
+                                                           String endUserId) {
         // Resolve the public base URL here, on the request thread, so it can ride
         // the origin into async tool execution where no request is bound. Tools
         // then mint absolute download links without operator config.
         String baseUrl = resolveRequestBaseUrl();
         if (endUserId != null && !endUserId.isBlank()) {
+            // Third-party single-account integration: the requester is an external
+            // end-user id, not a MateClaw account — no requesterUserId to assert.
             return vip.mate.agent.context.ChatOrigin
                     .web(conversationId, endUserId.trim(), workspaceId, null, baseUrl)
                     .withSender(null, "api", null);
         }
-        return vip.mate.agent.context.ChatOrigin.web(conversationId, username, workspaceId, null, baseUrl);
+        // Authenticated web user: carry the immutable id so on-behalf-of identity
+        // forwarding can assert "MateClaw authenticated this user" (not an anon id).
+        return vip.mate.agent.context.ChatOrigin.web(conversationId, username, workspaceId, null, baseUrl, requesterUserId);
+    }
+
+    /**
+     * Extract the authenticated user's immutable numeric id from the
+     * {@link Authentication} details (stamped by {@code JwtAuthFilter} for both
+     * the JWT and PAT paths). Null when not authenticated or details absent.
+     */
+    private Long requesterUserIdOf(org.springframework.security.core.Authentication auth) {
+        if (auth == null) return null;
+        Object details = auth.getDetails();
+        return details instanceof Long id ? id : null;
     }
 
     /**
@@ -1359,6 +1390,9 @@ public class ChatController {
                                     persistStatus,
                                     accumulator.getPromptTokens(),
                                     accumulator.getCompletionTokens(),
+                                    accumulator.getCacheReadTokens(),
+                                    accumulator.getCacheWriteTokens(),
+                                    accumulator.getReasoningTokens(),
                                     accumulator.getRuntimeModelName(),
                                     accumulator.getRuntimeProviderId(),
                                     accumulator.toMetadataJson());
@@ -1411,6 +1445,9 @@ public class ChatController {
                                     "failed",
                                     accumulator.getPromptTokens(),
                                     accumulator.getCompletionTokens(),
+                                    accumulator.getCacheReadTokens(),
+                                    accumulator.getCacheWriteTokens(),
+                                    accumulator.getReasoningTokens(),
                                     accumulator.getRuntimeModelName(),
                                     accumulator.getRuntimeProviderId(),
                                     accumulator.toMetadataJson());
@@ -1500,6 +1537,31 @@ public class ChatController {
         return savedAssistant != null;
     }
 
+    /**
+     * Build the value stored in {@code ChatUploadResponse.path} (and, downstream,
+     * the message content part): a root-relative path like
+     * {@code chat-uploads/{convId}/{storedName}}, never the absolute on-disk
+     * location.
+     * <p>
+     * {@code uploadRoot} is always absolute (the resolver normalizes it via
+     * {@code toAbsolutePath().normalize()}), and this field is purely
+     * informational — it is rendered into the LLM prompt ("附件: foo (path)") and
+     * returned to the client, while retrieval goes through the basename-based
+     * {@code ChatUploadResolver} plus the {@code /api/v1/chat/files/...} URL. So
+     * the absolute form must be avoided: it leaks the server's filesystem layout
+     * into the prompt/response and breaks if the deploy directory ever moves.
+     * <p>
+     * The path is made relative to {@code uploadRoot}'s parent so the trailing
+     * upload sub-directory name is preserved (e.g. {@code chat-uploads/...}), and
+     * separators are normalized to {@code /} so the value is stable across OSes.
+     */
+    static String toRelativeUploadPath(Path uploadRoot, String conversationId, String storedName) {
+        Path target = uploadRoot.resolve(conversationId).resolve(storedName);
+        Path base = uploadRoot.getParent();
+        Path relative = base != null ? base.relativize(target) : target;
+        return relative.toString().replace('\\', '/');
+    }
+
     private MessageEntity saveEmptyAssistantPlaceholder(String conversationId, String status,
                                                        StreamAccumulator accumulator, String source) {
         log.warn("{} with empty accumulator: conversationId={}, status={}, finishReason={}, phase={}, hasSegments={}",
@@ -1509,6 +1571,9 @@ public class ChatController {
                 emptyAssistantPlaceholder(status), null, status,
                 accumulator.getPromptTokens(),
                 accumulator.getCompletionTokens(),
+                accumulator.getCacheReadTokens(),
+                accumulator.getCacheWriteTokens(),
+                accumulator.getReasoningTokens(),
                 accumulator.getRuntimeModelName(),
                 accumulator.getRuntimeProviderId(),
                 accumulator.toMetadataJson());
@@ -1556,6 +1621,19 @@ public class ChatController {
         }
         if (promptTokens > 0) payload.put("promptTokens", promptTokens);
         if (completionTokens > 0) payload.put("completionTokens", completionTokens);
+        // Cache / reasoning detail rides on the persisted row so the live bubble
+        // can render the usage breakdown without waiting for a history reload.
+        if (savedAssistant != null) {
+            if (savedAssistant.getCacheReadTokens() != null && savedAssistant.getCacheReadTokens() > 0) {
+                payload.put("cacheReadTokens", savedAssistant.getCacheReadTokens());
+            }
+            if (savedAssistant.getCacheWriteTokens() != null && savedAssistant.getCacheWriteTokens() > 0) {
+                payload.put("cacheWriteTokens", savedAssistant.getCacheWriteTokens());
+            }
+            if (savedAssistant.getReasoningTokens() != null && savedAssistant.getReasoningTokens() > 0) {
+                payload.put("reasoningTokens", savedAssistant.getReasoningTokens());
+            }
+        }
         payload.put("persisted", persisted);
         if (messageCount != null) payload.put("messageCount", messageCount);
         return payload;
@@ -1610,6 +1688,9 @@ public class ChatController {
                     status,
                     accumulator.getPromptTokens(),
                     accumulator.getCompletionTokens(),
+                    accumulator.getCacheReadTokens(),
+                    accumulator.getCacheWriteTokens(),
+                    accumulator.getReasoningTokens(),
                     accumulator.getRuntimeModelName(),
                     accumulator.getRuntimeProviderId(),
                     accumulator.toMetadataJson());
@@ -1765,6 +1846,9 @@ public class ChatController {
         private int segCounter = 0;
         private int promptTokens = 0;
         private int completionTokens = 0;
+        private int cacheReadTokens = 0;
+        private int cacheWriteTokens = 0;
+        private int reasoningTokens = 0;
         private String runtimeModelName = "";
         private String runtimeProviderId = "";
         private boolean awaitingApproval = false;
@@ -1811,6 +1895,9 @@ public class ChatController {
                     Map<String, Object> data = delta.eventData();
                     promptTokens = ((Number) data.getOrDefault("promptTokens", 0)).intValue();
                     completionTokens = ((Number) data.getOrDefault("completionTokens", 0)).intValue();
+                    cacheReadTokens = ((Number) data.getOrDefault("cacheReadTokens", 0)).intValue();
+                    cacheWriteTokens = ((Number) data.getOrDefault("cacheWriteTokens", 0)).intValue();
+                    reasoningTokens = ((Number) data.getOrDefault("reasoningTokens", 0)).intValue();
                     runtimeModelName = String.valueOf(data.getOrDefault("runtimeModelName", ""));
                     runtimeProviderId = String.valueOf(data.getOrDefault("runtimeProviderId", ""));
                     return;
@@ -2099,6 +2186,9 @@ public class ChatController {
         String getThinking() { return thinking.toString().trim(); }
         int getPromptTokens() { return promptTokens; }
         int getCompletionTokens() { return completionTokens; }
+        int getCacheReadTokens() { return cacheReadTokens; }
+        int getCacheWriteTokens() { return cacheWriteTokens; }
+        int getReasoningTokens() { return reasoningTokens; }
         String getRuntimeModelName() { return runtimeModelName; }
         String getRuntimeProviderId() { return runtimeProviderId; }
         String getCurrentPhase() { return currentPhase; }

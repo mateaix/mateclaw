@@ -35,7 +35,6 @@ Make an AI assistant a coworker who uses tools, not a chat box.
 Move AI out of the chat box on a webpage and into every IM your team actually uses.
 
 - **8 channels**: Web / DingTalk / Feishu / WeCom / Telegram / Discord / QQ / WeChat Personal / Slack
-- Session source tracking: every message knows which channel it came from
 - 4-layer memory: session context + workspace memory + post-chat extraction + 2 AM consolidation
 - DREAMS.md consolidation diary: human-readable audit of memory changes
 - Workspace isolation: every agent / skill / wiki / conversation / memory belongs to a workspace
@@ -47,111 +46,136 @@ Move AI out of the chat box on a webpage and into every IM your team actually us
 Renamed "agents" to **digital employees** — not vocabulary purism, a worldview shift.
 
 - **Digital employees** with Role / Goal / Backstory — not a cold system prompt
-- **5 career templates**: product researcher / customer support / knowledge curator / data analyst / executive assistant — open one, it works
-- **Skills are no longer aliases for tools** — each skill is a backbone with its own SKILL.md + LESSONS.md + workspace filesystem
+- **5 career templates**: product researcher / customer support / knowledge curator / data analyst / executive assistant
+- **Skills are backbones**: each skill has its own SKILL.md + LESSONS.md + workspace filesystem
 - **ACP bridge**: Claude Code, Codex, Gemini CLI plug in as employees
-- **Backstage runtime console**: for the first time you can **see what each employee is doing right now** — who's running, on which step, how many tokens, kill them in one click
-- **Onboarding wizard**: first-login four-step flow from zero to first message
-- **Dashboard**: daily usage trend + top agents/tools
-- **Doctor**: system health checks + one-click fix
+- **Backstage runtime console**: for the first time you can **see what each employee is doing right now**
+- Onboarding wizard + Dashboard + Doctor
 
 Full story: [v1.2.0 release notes](./releases/1.2.0.md).
 
----
+### v1.3 — It orchestrates business flows ✅ Released (2026-05-13)
 
-## v1.3 — The workflow year ✅ Shipped (2026-05-13)
+Graduating from a chatbot framework to a business-process OS — a flow is no longer several employees chatting separately, but a publishable, triggerable, replayable **linear-step DSL**.
 
-> "Focus is about saying no to the hundred other good ideas that there are."
-
-Each digital employee being able to do work is just the beginning. **Real collaboration needs orchestration.**
-
-The v1.3 line is **graduating MateClaw from a chatbot framework to a business-process OS** — a flow is no longer the sum of several employees chatting separately, but a publishable, triggerable, replayable **linear-step DSL**.
+- **Workflow**: 7 step modes (sequential / fan_out / collect / conditional / await_approval / dispatch_channel / write_memory) + Pebble expressions + JSON-first authoring + integer revisions + run history
+- **Natural language → workflow draft**: describe the flow, an agent emits graph_json, a human reviews before publish
+- **Triggers**: 6 pattern types (cron / webhook / channel_message / agent_lifecycle / content_match / workflow_completion), event governance on by default (dedup / rate limit / recursion guard)
+- **Persistent `await_approval` pause**: survives service restarts
+- Image editing, 4 document-generation tools (Docx/Xlsx/Pptx/Pdf), MCP per-agent tool binding, multimodal sidecar routing
 
 Full story: [v1.3.0 release notes](./releases/1.3.0.md).
 
-### Workflow
+### v1.4 — It's more autonomous and leads teams ✅ Released (2026-05-23)
 
-- [x] **7 step modes**: sequential / fan_out / collect / conditional / await_approval / dispatch_channel / write_memory
-- [x] **Pebble expression subset** for conditionals + variable references (no side effects, no code execution)
-- [x] **JSON-first authoring**: Monaco + JSON-schema validation + static Pebble checking + template dropdown
-- [x] **Natural language → workflow draft** (`POST /workflows/draft/generate`): a user describes the flow, an agent emits `graph_json` + compile diagnostics; never publishes directly — a human still reviews
-- [x] **Integer revisions**: publish writes a new immutable row; draft is split from published version
-- [x] **Run history**: every step's input / output / duration / token / failure chain is recorded
-- [x] **Internal payload storage**: large I/O goes through `payload://` URIs — doesn't blow out the DB
-- [x] **Cross-workspace ACL**: publish-time validation rejects agent / channel / employeeId references outside the workspace
-- [x] **Persistent `await_approval` pause**: survives service restarts
+Flows were scripted by you, but the employee itself still "answered one round and stopped." This release puts the focus back on the employee.
 
-### Triggers
+- **Persistent goals**: say it once — the employee locks the goal, self-checks every round, and keeps itself going until done or out of budget
+- **Sub-employee delegation tree**: recursive delegation up to 3 levels deep, with sync / parallel fan-out / async delegation tools; the Employee Builder spins up a whole team from one sentence
+- **Progressive tool/skill disclosure**: core tier always visible, extension tier activated on demand via `enable_tool` / `load_skill` — pile on tools without blowing the context
+- **Workspace RBAC**: Owner / Admin / Member / Viewer roles + capability gates — MateClaw is usable by a team for the first time
+- **Feishu as a first-class citizen**: interactive cards, approval cards, streaming cards, voice transcription, file/audio/video I/O, channel-native tools
+- Native Gemini, xAI / Grok, per-conversation model pinning, structured context compaction, rate-limit failover
 
-- [x] **6 pattern types**: cron / webhook / channel_message / agent_lifecycle / content_match / workflow_completion
-- [x] **Event governance on by default**: dedup (60s window), per-trigger rate limit, bot-self-msg filter, A→B→A recursion guard
-- [x] **CronDelegationPort**: shares ShedLock + Spring TaskScheduler with the legacy cron module without writing into mate_cron_job
-- [x] **Cross-instance consistency**: `pattern_version` self-cancellation + periodic syncFromDatabase
-- [x] **Structured forms**: each of the 6 pattern types has its own field UI — no need to hand-write patternJson
+Full story: [v1.4.0 release notes](./releases/1.4.0.md).
 
-### Existing experience upgrades
+### v1.5 — It's verifiable, knowledge self-maintains, memory knows its owner ✅ Released (2026-06-04)
 
-- [x] **Image editing** (issue #75): `image_generate` gains `image` / `images` parameters with 5 reference forms (including `msg:<id>:<idx>` for in-conversation attachments)
-- [x] **DashScope OpenAI-compatible variant**: same sk- key, reaches the dot-versioned families (qwen3.5-plus / qwen3.6-plus / qwen3-vl-plus etc.)
-- [x] **New Wanxiang / Qwen-Image families**: 14 new image models, 3 new video models (including happyhorse-1.0-t2v)
-- [x] **4 document-generation tools**: DocxRenderTool / XlsxRenderTool / PptxRenderTool / PdfRenderTool — Markdown rendered directly into Office files, no subprocess fork, no npm dependency
-- [x] **MCP per-agent tool binding**: every employee binds MCP tools individually + status badges (connected / stale / unavailable / orphan) + namespace collisions auto-prefixed + server renames auto-followed
-- [x] **Xiaomi MiMo provider**: MiMo V2.5 Pro / V2.5 / V2 Pro / V2 Omni / V2 Flash
-- [x] **Multimodal sidecar routing** (issue #87): when a text-only primary model meets an image attachment, the configured vision model captions it first so the primary chat stays cheap; the old "do not call any tools" hard ban is gone, so user-built tools are no longer suppressed; routing badge on the bubble and a hint above the input box make every decision visible
+Make autonomy **verifiable**, knowledge **self-maintaining**, and memory **owner-aware**.
 
-### Still to do in v1.3
+- **Goal checklists**: goals decompose into independently verifiable criteria; the evaluator checks them off one by one — **all checked or it's not done**. No "95% is close enough"
+- **Self-maintaining Wiki**: `[[wikilink]]` page interlinking + rename/delete cascade rewrites + broken-link lint; fact vs. experience knowledge layers with staleness propagation; pageType profiles + per-agent permissions; event-triggered processing pipelines; local directories mounted as knowledge sources with incremental sync
+- **Per-owner memory isolation**: every memory carries an owner_key and visibility scope (personal / team / global) — one employee serves a whole group without cross-talk; APIs pass through `endUserId`
+- Primary KB per employee, preferred-provider routing that actually applies, generated files persisted to disk
 
-- [ ] **Canvas editor (v1)**: today's canvas is read-only chain rendering; the goal is `@vue-flow/core` drag-to-edit
-- [ ] **Run replay view**: trace timeline + hover any node to diff input/output
-- [ ] **`loop` mode**: iterate N times or per-item over an array
-- [ ] **`invoke_skill` mode**: call a skill directly without going through an employee
-- [ ] **Inter-trigger priority / dependency**: serial / parallel control when an event hits multiple triggers
-- [ ] **Event replay**: a "redispatch" button on `mate_trigger_event` rows
+Full story: [v1.5.0 release notes](./releases/1.5.0.md).
+
+### v1.6 — It meets you where you are ✅ Released (2026-06-22)
+
+Where it can run, what it can do with hands and eyes, and how directly you shape who it is.
+
+- **KingbaseES + PostgreSQL as first-class citizens**: the PostgreSQL family shares one migration tree; regulated / domestic-procurement environments covered; MySQL and desktop H2 untouched
+- **Images persist across turns**: the screenshot you sent three messages ago is still visible on follow-up; `image_analyze` re-reads on demand
+- **`execute_code`**: the employee writes code and runs it — arithmetic, file conversion, verification become real actions instead of guesses
+- **Shape the employee's identity**: a real editor for AGENTS.md and other context files (modal + section reorder); an About You identity block; the employee knows which model it runs on
+- **Scoped KB access** + Wiki Sources tab (multi-path + glob + per-KB auto-sync)
+- Global outbound proxy, deterministic Markdown normalization of final answers
+
+Full story: [v1.6.0 release notes](./releases/1.6.0.md).
+
+### v1.7 — It's ready for production ✅ Released (2026-07-04)
+
+A **productionization pass**: once you put it into real collaboration, the places that go invisible, un-closable, out of reach, oversized for the window, and walled off — all fixed.
+
+- **All three approval paths closed end-to-end**: workflow `await_approval` actually pushes to channels and resolves → resumes execution; the WebChat (API-key) channel can approve/deny and replay; Feishu/WeCom card buttons directly resolve workflow approvals
+- **Long tasks are visible**: an always-on Run Overview rail (step progress + live delegated sub-agent tree) + a per-turn token breakdown (cache hit/miss/write + reasoning split) + sub-agent cost rolled up + one-click generated-file download
+- **Fits the real model window**: local-model context-window probing, a unified token budget for prefix injection, small-context degradation, and tool-schema budget gating — no more "guess 32K" pre-flight rejections or silent truncation
+- **Opens up**: a knowledge-base + Deep Research open API (API-key + rate limit + SSE), a pluggable search Provider SPI, and MCP identity forwarding (carry the authenticated user's identity into a STDIO MCP)
+- **Reaches further**: desktop local-embedded / remote-centralized dual mode + multi-server switching + the `mateclaw-desktop` source opened; a LAN deployment mode opens controlled intranet access
+- **One-click operational data export**: 9-sheet Excel from the Dashboard + a CLI for offline export
+- Wiki processing-failure visibility, per-employee model chains, OpenAPI / Swagger directly debuggable, chat back-to-bottom floating button
+
+Full story: [v1.7.0 release notes](./releases/1.7.0.md).
 
 ---
 
-## Next: v1.4 — The scenario-application year
+## Next: v1.8 — Agent Team & Agent Loop
 
-> "When the tools are good enough, hide the tools and put the scenarios in front."
+> "Great things in business are never done by one person. They're done by a team of people."
 
-v1.0 → v1.3 builds out the infrastructure: employees, memory, knowledge bases, tools, skills, workflows, triggers, multimodal, channels. **The next move isn't another bolt** — it's assembling these parts into **scenarios users can drop in and use**.
+Look back along the line: v1.2 gave employees an identity, v1.3 made flows orchestratable, v1.4 made employees follow goals and spin up delegation trees, v1.5 made autonomy verifiable, v1.7 made long tasks visible.
 
-The v1.4 keyword is **scenario applications**. Not "more features" — **letting normal users get value without learning 7 step modes and 6 trigger pattern types**.
+But today's MateClaw still has two "stops":
 
-### Industry scenario templates (workflow + trigger combos)
+**Collaboration is one-shot.** The v1.4 delegation tree is powerful, but it's **task-scoped** — parent delegates child, the task ends, the tree dissolves. The next task starts from zero. Teams have no name, no roster, no accumulated experience — like hiring a fresh batch of temps for every project.
 
-Each one is **a one-click-importable workflow template + trigger config + recommended employee bindings + recommended KB structure**:
+**Employees are reactive.** Goal auto-followup only lives **within a single run**; cron and triggers can wake an employee up, but every wake-up is an isolated response. No employee is truly **on duty** — continuously watching its area of responsibility and deciding for itself when to act.
 
-- [ ] **Customer ticket triage**: WeCom / Feishu entry → digital-employee classification → route / escalate / auto-reply → write to customer record
-- [ ] **Morning / weekly report automation**: cron trigger → multi-employee parallel data collection → data analyst summarizes → generate PDF/PPTX → multi-channel dispatch
-- [ ] **Contract approval flow**: contract upload → legal-employee first review → approval wait → legal-employee revision suggestions → write to archived memory
-- [ ] **Market intel monitoring**: webhook trigger (site change) → content_match filtering → business analyst summary → Feishu bot push
-- [ ] **New employee onboarding**: webhook (HRIS hire event) → executive assistant pulls doc checklist → training-KB onboarding → multi-day follow-up triggers
-- [ ] **Code PR review**: GitHub webhook → code-reviewer employee runs review → comments back to PR → flag critical changes through await_approval
+v1.8 turns both stops into continuity.
 
-### Scenario marketplace
+### Agent Team — from "temp hires" to "standing roster"
 
-- [ ] **Scenario package format**: one scenario = `workflow.json` + `triggers.json` + `agents/*.md` + `knowledge/*.md` + `README.md`, shareable / installable
-- [ ] **Scenario marketplace UI**: browse / try-run / one-click install / ratings + reviews
-- [ ] **Scenario package versioning**: upgrade prompts + diff preview + rollback
+A team is no longer a tree that sprouts at delegation time and vanishes when the task ends. It becomes a **persistent organizational unit**:
 
-### Cross-scenario employee collaboration
+- [ ] **Team entity**: a team = name + leader + member roster + charter — persisted, reusable, exportable and shareable
+- [ ] **Team charter (TEAM.md)**: division of labor, collaboration rules, escalation paths — shapes the team the way AGENTS.md shapes an individual
+- [ ] **Leader dispatch**: tasks come in, the leader decomposes, assigns to the best-fit member, and reviews the result; what it can't handle gets escalated instead of improvised
+- [ ] **Peer review**: critical deliverables can require another member's sign-off before shipping
+- [ ] **Shared team memory**: built on v1.5's TEAM scope — members share team memory and a team file space while personal memories stay isolated
+- [ ] **Team-level goals**: one goal decomposes into member sub-goals; the checklist aggregates across members — hover the leader's avatar to see what the whole team still owes
+- [ ] **Team-to-channel binding**: bind a Feishu / DingTalk group to a team; @ the team in the group, the leader decides who takes it
+- [ ] **Team retrospectives**: task wrap-up auto-generates a retrospective into the team's LESSONS.md — this team does better next time
+- [ ] **Employee Builder upgrade**: v1.4 builds a batch of employees from one sentence; v1.8 makes it emit a **standing team with a charter**
+- [ ] **Run Overview becomes a team view**: each member on-duty / busy / idle at a glance; click through to see what it's working on
 
-- [ ] **Employee directory profile**: each employee auto-gains "good at / weak at" tags (based on history + skills + tool set)
-- [ ] **Scenario suggestions**: user describes "I want a flow that does X" → recommend the closest scenario template + existing employees
-- [ ] **Cross-scenario memory sharing**: customer ticket triage and contract approval see the same customer record
+### Agent Loop — from "answers then stops" to "on duty"
 
-### Hide the infrastructure further
+A new state for employees: **on duty**. Not waiting for you to speak, but cycling autonomously on a heartbeat — **wake → check inbox and goals → decide whether to act → act → journal → sleep**:
 
-- [ ] **Natural language → full scenario package**: v1.3 already does "NL → workflow draft"; v1.4 extends it to **the whole scenario** — one sentence yields a draft of workflow + triggers + recommended employees + recommended KB structure
-- [ ] **Self-diagnosis wizards**: typical issues like "my workflow stuck waiting on approval" become self-serve diagnostics
-- [ ] **Scenario-level dashboards**: not "tokens spent today" but "average customer-ticket handling time today"
+- [ ] **Resident loop runtime**: an employee can be set "on duty," waking on a configurable heartbeat (minutes to days) to check its area of responsibility
+- [ ] **Task inbox**: channel messages, trigger events, delegations from other employees, to-dos you toss over — one queue, consumed by priority on each wake-up
+- [ ] **Cross-session goal continuation**: v1.4/v1.5 auto-followup lives inside a single run; the loop carries goals across sessions and across days until every criterion is checked
+- [ ] **Budgets and circuit breakers**: per-loop token / cost / turn budgets; consecutive failures trip the breaker into sleep pending your decision; ToolGuard approval gates still intercept sensitive actions — autonomy is not loss of control
+- [ ] **Loop journal**: what it did each wake-up, why it chose not to act, what it spent — human-readable and replayable, what DREAMS.md is to memory
+- [ ] **Pause / resume / clock-out**: controllable from the UI and from channel commands; the Run Overview sidebar shows every on-duty employee's loop state
+- [ ] **Quiet hours and interruption policy**: silent accumulation at night, proactive reporting for what matters — integrated with the nudge system, it knows what's worth waking you for
 
-### Foundational capabilities advancing in parallel
+### Where they converge: a department that runs itself
 
-- [ ] **Scenario-level ACL**: installing a scenario package atomically configures the required channel / agent / KB / tool allowlists
-- [ ] **Cross-workspace scenario sharing**: scenario templates reusable across workspaces (clone + override)
-- [ ] **Scenario cost estimation**: see expected tokens / API calls / trigger frequency before installing
+A leader on a loop, members summoned on demand — that's a **self-running digital department**:
+
+- Morning-report department: the leader wakes at 7:00, dispatches data collection, analysis, and writing to members, peer-reviews, posts to the group — you wake up to results
+- Support department: a ticket lands in the inbox, the leader classifies, assigns the right member, escalates to you what it can't handle
+- Intelligence department: a monitoring employee loops over sources, wakes the analyst only when something changed, notifies you only when it's worth interrupting
+
+**Workflows own the deterministic processes; teams + loops own the unpredictable everyday.** They complement each other — none replaces another.
+
+### Advancing in parallel
+
+- [ ] **Workflow `loop` / `invoke_skill` step modes**: per-item array iteration / call a skill without going through an employee
+- [ ] **Workflow canvas editing**: from read-only chain rendering to drag-to-edit
+- [ ] **Run replay view**: trace timeline + input/output diff on any node
+- [ ] **Scenario templates and marketplace**: package "employees + team + workflow + triggers + KB structure" into one-click-importable scenario bundles
 
 ---
 
@@ -161,12 +185,13 @@ Each one is **a one-click-importable workflow template + trigger config + recomm
 
 | Cut | Why | When it might return |
 |-----|-----|---------------------|
-| **Full RBAC permission model** | MateClaw is a digital-employee system, not an enterprise management platform. A single team doesn't need 100 permission combinations | When real multi-team SaaS customers need fine-grained permissions |
-| **Multi-tenancy** | Same as above. Premature multi-tenancy is architectural cancer | When there's a clear SaaS commercialization path |
+| **Fine-grained RBAC beyond four roles** | v1.4's Owner / Admin / Member / Viewer + capability gates cover real team needs. Button-level permissions and custom role composition belong to enterprise management platforms | When real multi-team SaaS customers need fine-grained permissions |
+| **Multi-tenancy** | Premature multi-tenancy is architectural cancer. Workspace isolation already covers multiple teams in one org | When there's a clear SaaS commercialization path |
 | **SSO / LDAP / SAML** | Enterprise integration is a bottomless pit | When paying enterprise customers explicitly ask |
-| **30+ node visual workflow editor** | Most users won't reach for it. **v1.3's 7 step modes already cover 90% of real-world scenarios**; the rest is pushed to LLM natural-language generation | When a user case actually needs 30+ nodes (rare) |
-| **Native mobile app** | 8 IM channels + desktop + Web already cover it. On your phone, you use MateClaw via DingTalk / Feishu / Telegram | When Web / IM channels can't deliver an irreplaceable mobile-only feature |
-| **Replacing ReAct / Plan-Execute** | Workflow and those two engines **collaborate**, not replace — single-agent multi-turn reasoning still lives there | Never replaces |
+| **30+ node visual workflow editor** | 7 step modes already cover 90% of real-world scenarios; the rest is pushed to natural-language generation | When a user case actually needs 30+ nodes (rare) |
+| **Native mobile app** | 8 IM channels + desktop (now with remote connect) + Web already cover it. On your phone, you use MateClaw via DingTalk / Feishu / Telegram | When Web / IM channels can't deliver an irreplaceable mobile-only feature |
+| **Replacing ReAct / Plan-Execute** | Workflows, teams, and loops **collaborate** with those two engines, not replace them — single-agent multi-turn reasoning still lives there | Never replaces |
+| **Unbudgeted full autonomy** | Agent Loop always ships with budgets, circuit breakers, and approval gates. "Run until the money's gone" isn't autonomy, it's loss of control | Never |
 
 ---
 
@@ -176,9 +201,13 @@ Each one is **a one-click-importable workflow template + trigger config + recomm
 |---------|----------|----------------------|--------|
 | **v1.0** | It thinks and acts | An AI assistant that uses tools to solve problems | ✅ Released |
 | **v1.1** | It's everywhere | 8 channels + 4-layer memory + workspaces + LLM Wiki | ✅ Released |
-| **v1.2** | It's your coworker | Digital employees + 5 career templates + backbone-style skills + ACP bridge + Backstage runtime | ✅ Released |
-| **v1.3** | It orchestrates business flows | Workflow + triggers + image editing + document generation + per-agent tool binding | ✅ Released |
-| **v1.4** | **It lands real scenarios** | **Industry scenario templates + scenario marketplace + NL → workflow + cross-scenario employee profiling** | 📋 Planned |
+| **v1.2** | It's your coworker | Digital employees + career templates + backbone skills + ACP bridge + Backstage | ✅ Released |
+| **v1.3** | It orchestrates business flows | Workflow + triggers + document generation + per-agent tool binding | ✅ Released |
+| **v1.4** | It's more autonomous and leads teams | Persistent goals + delegation tree + progressive disclosure + RBAC + first-class Feishu | ✅ Released |
+| **v1.5** | It's verifiable | Goal checklists + self-maintaining Wiki + owner-aware memory | ✅ Released |
+| **v1.6** | It meets you where you are | Domestic databases + persistent vision + code execution + identity shaping | ✅ Released |
+| **v1.7** | It's ready for production | Approval paths closed + Run Overview & cost visibility + context/token budgeting + open API/Deep Research + desktop remote/LAN + operational export | ✅ Released |
+| **v1.8** | **It's on duty** | **Agent Team standing rosters + Agent Loop resident cycles = a department that runs itself** | 📋 Planned |
 
 ---
 
@@ -190,7 +219,7 @@ We're building it because we believe one thing:
 
 **AI shouldn't be a chat box on a webpage. It should be your second brain.**
 
-It lives in your DingTalk, your Feishu, your Telegram. It's read every document you have. It remembers what you said three months ago. It uses your company's internal tools. It consolidates memory while you sleep. **It runs an entire business flow on your behalf.**
+It lives in your DingTalk, your Feishu, your Telegram. It's read every document you have. It remembers what you said three months ago. It uses your company's internal tools. It consolidates memory while you sleep. It runs an entire business flow on your behalf. **Soon it will lead a standing team, stay on duty, and watch over the things you can't get to.**
 
 Someday, you'll forget it's a program.
 

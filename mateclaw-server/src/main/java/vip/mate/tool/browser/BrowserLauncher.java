@@ -1,13 +1,18 @@
 package vip.mate.tool.browser;
 
+import com.microsoft.playwright.APIResponse;
 import com.microsoft.playwright.Browser;
 import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.BrowserType;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.Playwright;
 import com.microsoft.playwright.PlaywrightException;
+import com.microsoft.playwright.Route;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
+import vip.mate.common.net.SsrfProperties;
+
+import java.net.URI;
 import org.springframework.stereotype.Component;
 
 import java.io.BufferedReader;
@@ -40,9 +45,11 @@ public class BrowserLauncher {
             .toLowerCase(Locale.ROOT).contains("mac");
 
     private final BrowserProperties props;
+    private final SsrfProperties ssrfProperties;
 
-    public BrowserLauncher(BrowserProperties props) {
+    public BrowserLauncher(BrowserProperties props, SsrfProperties ssrfProperties) {
         this.props = props;
+        this.ssrfProperties = ssrfProperties;
     }
 
     public BrowserProperties properties() {
@@ -126,6 +133,7 @@ public class BrowserLauncher {
                 context = browser.newContext();
                 page = context.newPage();
             }
+            applyContextDefaults(context);
             long elapsed = System.currentTimeMillis() - t0;
             trace.add(Attempt.ok(strategy, "connectOverCDP(" + normalized + ")", elapsed));
             return Result.success(browser, context, page, true, normalized, strategy, trace);
@@ -282,6 +290,7 @@ public class BrowserLauncher {
                     ? browser.newContext()
                     : browser.contexts().get(0);
             Page page = context.pages().isEmpty() ? context.newPage() : context.pages().get(0);
+            applyContextDefaults(context);
             long elapsed = System.currentTimeMillis() - t0;
             trace.add(Attempt.ok(Strategy.EXTERNAL_CDP, browserBin + " + connectOverCDP(" + cdpBase + ")", elapsed));
             // Hand ownership of `proc` and `userDataDir` to the caller — the session that
@@ -336,6 +345,17 @@ public class BrowserLauncher {
     private BrowserType.LaunchOptions baseLaunchOptions(boolean headed) {
         BrowserType.LaunchOptions opts = new BrowserType.LaunchOptions().setHeadless(!headed);
         List<String> args = chromiumLaunchArgs();
+        // When the deployment is LAN-isolated AND the operator opted into ignoring
+        // HTTPS errors, push the flag to the Chromium command line as well. This
+        // covers the EXTERNAL_CDP path where the browser is spawned by us but its
+        // contexts are created without NewContextOptions (so setIgnoreHTTPSErrors
+        // would not apply), and is also a stronger guarantee than the per-context
+        // flag for self-signed LAN CAs. Gated on allowPrivateNetwork so internet-
+        // facing deployments cannot accidentally disable cert validation globally.
+        if (props.isIgnoreHttpsErrors() && props.isAllowPrivateNetwork()) {
+            args.add("--ignore-certificate-errors");
+            args.add("--allow-running-insecure-content");
+        }
         if (!args.isEmpty()) {
             opts.setArgs(args);
         }
@@ -344,12 +364,108 @@ public class BrowserLauncher {
 
     private Result wrapLocalBrowser(Browser browser, Strategy strategy, String desc,
                                     long elapsedMs, List<Attempt> trace) {
-        BrowserContext context = browser.newContext(new Browser.NewContextOptions()
+        Browser.NewContextOptions opts = new Browser.NewContextOptions()
                 .setViewportSize(props.getViewportWidth(), props.getViewportHeight())
-                .setLocale("zh-CN"));
+                .setLocale("zh-CN");
+        // Gate the per-context TLS bypass on allowPrivateNetwork too (matching the
+        // command-line flags above), so ignoring HTTPS errors is scoped to LAN
+        // deployments and never silently disables cert validation for public traffic.
+        if (props.isIgnoreHttpsErrors() && props.isAllowPrivateNetwork()) {
+            opts.setIgnoreHTTPSErrors(true);
+        }
+        BrowserContext context = browser.newContext(opts);
+        applyContextDefaults(context);
         Page page = context.newPage();
         trace.add(Attempt.ok(strategy, desc, elapsedMs));
         return Result.success(browser, context, page, false, null, strategy, trace);
+    }
+
+    /**
+     * Apply configurable Playwright timeouts to a freshly acquired context.
+     * Called on every context creation path (wrapLocalBrowser, tryCdp,
+     * tryExternalCdpLaunch) so {@code page.click / page.fill / page.navigate}
+     * inherit the configured limits without per-call boilerplate.
+     */
+    private void applyContextDefaults(BrowserContext context) {
+        context.setDefaultTimeout(props.getDefaultTimeoutSeconds() * 1000L);
+        context.setDefaultNavigationTimeout(props.getDefaultNavigationTimeoutSeconds() * 1000L);
+        installSsrfInterceptor(context);
+    }
+
+    /**
+     * Re-run the SSRF guard on every http(s) request the page makes, so subresources,
+     * script-initiated fetches AND server-side redirect targets cannot reach blocked
+     * hosts (above all cloud-metadata endpoints) after the initial navigation URL
+     * already passed the one-shot check in the tool layer.
+     * <p>
+     * Redirects need special handling: Playwright follows 3xx responses internally on
+     * {@code route.resume()} without re-invoking this handler, so a public page that
+     * 302s to a metadata IP would slip through. For navigation requests we therefore
+     * fetch with {@code maxRedirects=0} and validate the {@code Location} of every hop
+     * before fulfilling, so each redirect target is checked. Non-network schemes
+     * (data:, blob:, about:, …) are not SSRF vectors and pass through untouched.
+     */
+    private void installSsrfInterceptor(BrowserContext context) {
+        if (!props.isSsrfCheckEnabled()) {
+            return;
+        }
+        context.route("**/*", (Route route) -> {
+            String reqUrl = route.request().url();
+            String lower = reqUrl == null ? "" : reqUrl.toLowerCase(Locale.ROOT);
+            if (!lower.startsWith("http://") && !lower.startsWith("https://")) {
+                route.resume();
+                return;
+            }
+            // 1. Validate the request URL itself (covers subresources and fetches,
+            //    which are each delivered to this handler as their own request).
+            try {
+                UrlSafetyChecker.check(reqUrl, ssrfProperties.getSsrfAllowlist(),
+                        props.isAllowPrivateNetwork());
+            } catch (SecurityException se) {
+                log.warn("[BrowserLauncher] SSRF interceptor blocked request url={}: {}",
+                        reqUrl, se.getMessage());
+                route.abort();
+                return;
+            } catch (Exception e) {
+                route.resume();
+                return;
+            }
+            // 2. Non-navigation requests carry no auto-followed redirect chain, so the
+            //    URL check above is sufficient — resume normally.
+            if (!route.request().isNavigationRequest()) {
+                route.resume();
+                return;
+            }
+            // 3. Navigation requests: follow redirects manually so each hop is checked.
+            try {
+                APIResponse resp = route.fetch(new Route.FetchOptions().setMaxRedirects(0));
+                int status = resp.status();
+                if (status >= 300 && status < 400) {
+                    String location = resp.headers().get("location");
+                    if (location != null && !location.isBlank()) {
+                        String target = URI.create(reqUrl).resolve(location.trim()).toString();
+                        UrlSafetyChecker.check(target, ssrfProperties.getSsrfAllowlist(),
+                                props.isAllowPrivateNetwork());
+                    }
+                }
+                // Hand the (possibly-3xx) response back; the browser follows any safe
+                // redirect, whose next hop re-enters this handler and is re-validated.
+                route.fulfill(new Route.FulfillOptions().setResponse(resp));
+            } catch (SecurityException se) {
+                log.warn("[BrowserLauncher] SSRF interceptor blocked redirect from url={}: {}",
+                        reqUrl, se.getMessage());
+                route.abort();
+            } catch (Exception e) {
+                // Manual fetch/proxy failed (network, unsupported response, …). The
+                // request URL itself already passed the check, so fall back to normal
+                // handling rather than wedging the page.
+                try {
+                    route.resume();
+                } catch (Exception ignore) {
+                    // route may already be consumed by the failed fetch; nothing to do.
+                }
+            }
+        });
     }
 
     public static List<String> chromiumLaunchArgs() {
