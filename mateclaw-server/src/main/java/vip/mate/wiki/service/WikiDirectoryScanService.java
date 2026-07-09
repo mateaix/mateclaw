@@ -46,6 +46,9 @@ public class WikiDirectoryScanService {
 
     private static final Set<String> TEXT_EXTENSIONS = Set.of("txt", "md", "csv");
 
+    /** Raws mid-flight in these statuses must not be force-rerun by a full scan. */
+    private static final Set<String> BUSY_PROCESSING_STATUSES = Set.of("processing", "pending");
+
     /** 一个待处理候选文件及其所属的扫描根（用于符号链接逃逸检测）。 */
     private record FileCandidate(Path file, Path scanRoot) {}
 
@@ -78,7 +81,7 @@ public class WikiDirectoryScanService {
         if (patterns.isEmpty()) {
             return new ScanResult(0, 0, 0, List.of("No source directory configured"));
         }
-        return scanWithPatterns(kbId, patterns, null, null);
+        return scanWithPatterns(kbId, patterns, null, null, null);
     }
 
     /**
@@ -92,7 +95,7 @@ public class WikiDirectoryScanService {
             return new ScanResult(0, 0, 0, List.of("No path configured for this source group"));
         }
         List<Long> skippedRawIds = full ? new ArrayList<>() : null;
-        ScanResult result = scanWithPatterns(kbId, patterns, group.getId(), skippedRawIds);
+        ScanResult result = scanWithPatterns(kbId, patterns, group.getId(), skippedRawIds, group.getFileFilter());
         if (full && skippedRawIds != null && !skippedRawIds.isEmpty()) {
             for (Long rawId : skippedRawIds) {
                 rawService.setLastProcessedHash(rawId, null);
@@ -104,15 +107,17 @@ public class WikiDirectoryScanService {
 
     // ==================== private ====================
 
-    private ScanResult scanWithPatterns(Long kbId, List<String> patterns, Long groupId, List<Long> skippedRawIdsOut) {
+    private ScanResult scanWithPatterns(Long kbId, List<String> patterns, Long groupId, List<Long> skippedRawIdsOut,
+                                         String fileFilter) {
         List<FileCandidate> candidates = new ArrayList<>();
         List<String> errors = new ArrayList<>();
         int maxFiles = properties.getMaxScanFiles();
         long maxFileSize = properties.getMaxScanFileSize();
+        PathMatcher fileFilterMatcher = compileFileFilter(fileFilter);
 
         for (String pattern : patterns) {
             if (candidates.size() >= maxFiles) break;
-            collectCandidates(pattern, candidates, errors, maxFiles, maxFileSize);
+            collectCandidates(pattern, candidates, errors, maxFiles, maxFileSize, fileFilterMatcher);
         }
 
         // Deduplicate: the same file can be matched by multiple overlapping patterns.
@@ -221,6 +226,11 @@ public class WikiDirectoryScanService {
      * 分组扫描时打标 groupId：仅在历史 raw 尚未归属任何分组时补写，从不覆盖已有的
      * （包括手动改挂的）分组归属。这也是历史 raw 回填分组的唯一机制——
      * 不做一次性路径匹配脚本，靠下一次该分组的正常扫描自然回填。
+     * <p>
+     * 全量扫描的强制重跑队列在这里额外收窄两层：跳过仍在 {@code processing}/
+     * {@code pending} 的 raw（否则会把管道里跑到一半的材料重新置 pending，引发并发
+     * 处理），以及跳过已被手动迁到其它分组的 raw（否则全量扫描会绕开行级重处理按钮
+     * 对处理中行的隐藏这层前端守卫，形成后门）。
      */
     private void tagGroupIfNeeded(Long kbId, String absolutePath, Long groupId, boolean fresh, List<Long> skippedRawIdsOut) {
         if (groupId == null) {
@@ -230,16 +240,24 @@ public class WikiDirectoryScanService {
         if (raw == null) {
             return;
         }
-        if (raw.getGroupId() == null) {
+        Long originalGroupId = raw.getGroupId();
+        if (originalGroupId == null) {
             rawService.updateGroup(raw.getId(), groupId);
         }
-        if (!fresh && skippedRawIdsOut != null) {
+        if (fresh || skippedRawIdsOut == null) {
+            return;
+        }
+        boolean stillInThisGroup = originalGroupId == null || groupId.equals(originalGroupId);
+        boolean busy = raw.getProcessingStatus() != null
+                && BUSY_PROCESSING_STATUSES.contains(raw.getProcessingStatus());
+        if (stillInThisGroup && !busy) {
             skippedRawIdsOut.add(raw.getId());
         }
     }
 
     private void collectCandidates(String pattern, List<FileCandidate> candidates,
-                                   List<String> errors, int maxFiles, long maxFileSize) {
+                                   List<String> errors, int maxFiles, long maxFileSize,
+                                   PathMatcher fileFilterMatcher) {
         boolean hasWildcard = containsWildcard(pattern);
         Path scanRoot;
         PathMatcher matcher;
@@ -298,6 +316,7 @@ public class WikiDirectoryScanService {
         final Path finalScanRoot = scanRoot;
         final PathMatcher finalMatcher = matcher;
         final boolean finalRequireExt = requireSupportedExt;
+        final PathMatcher finalFileFilterMatcher = fileFilterMatcher;
 
         try {
             Files.walkFileTree(scanRoot, new SimpleFileVisitor<>() {
@@ -329,6 +348,9 @@ public class WikiDirectoryScanService {
                     } else {
                         accept = SUPPORTED_EXTENSIONS.contains(ext);
                     }
+                    if (accept && finalFileFilterMatcher != null) {
+                        accept = finalFileFilterMatcher.matches(file.getFileName());
+                    }
                     if (accept) {
                         candidates.add(new FileCandidate(file, finalScanRoot));
                     }
@@ -358,6 +380,17 @@ public class WikiDirectoryScanService {
 
     private static boolean containsWildcard(String s) {
         return s.contains("*") || s.contains("?") || s.contains("{") || s.contains("[");
+    }
+
+    /**
+     * 编译分组的 {@code fileFilter}（如 {@code *.pdf}）为文件名级别的 glob matcher，
+     * 在候选文件收集阶段作为已有匹配逻辑之外的附加过滤，一次编译、跨所有 pattern 复用。
+     */
+    private static PathMatcher compileFileFilter(String fileFilter) {
+        if (fileFilter == null || fileFilter.isBlank()) {
+            return null;
+        }
+        return FileSystems.getDefault().getPathMatcher("glob:" + fileFilter);
     }
 
     /** Escape glob metacharacters so a literal path segment is matched verbatim. */

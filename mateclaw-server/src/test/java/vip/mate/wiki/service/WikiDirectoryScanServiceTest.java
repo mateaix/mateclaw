@@ -134,6 +134,55 @@ class WikiDirectoryScanServiceTest {
     }
 
     @Test
+    @DisplayName("full scan: a raw still processing/pending is not force-reprocessed")
+    void fullScan_skipsRawStillProcessing() throws IOException {
+        writeFile("a.txt", "unchanged content");
+        when(rawService.ingestTextFileFromScan(eq(KB_ID), eq("a.txt"), anyString(), eq("unchanged content")))
+                .thenReturn(false);
+        WikiRawMaterialEntity raw = raw(100L, GROUP_ID);
+        raw.setProcessingStatus("processing");
+        when(rawService.findBySourcePath(eq(KB_ID), anyString())).thenReturn(raw);
+
+        scanService.scanGroup(KB_ID, group(), true);
+
+        verify(rawService, never()).setLastProcessedHash(any(), any());
+        verify(rawService, never()).reprocess(any());
+    }
+
+    @Test
+    @DisplayName("full scan: a raw manually moved to another group is not force-reprocessed")
+    void fullScan_skipsRawMovedToAnotherGroup() throws IOException {
+        writeFile("a.txt", "unchanged content");
+        when(rawService.ingestTextFileFromScan(eq(KB_ID), eq("a.txt"), anyString(), eq("unchanged content")))
+                .thenReturn(false);
+        when(rawService.findBySourcePath(eq(KB_ID), anyString())).thenReturn(raw(100L, 999L));
+
+        scanService.scanGroup(KB_ID, group(), true);
+
+        verify(rawService, never()).setLastProcessedHash(any(), any());
+        verify(rawService, never()).reprocess(any());
+    }
+
+    @Test
+    @DisplayName("fileFilter restricts scan results to matching filenames only")
+    void fileFilter_restrictsToMatchingFiles() throws IOException {
+        writeFile("keep.txt", "hello");
+        Files.write(tmpDir.resolve("skip.pdf"), new byte[]{1, 2, 3});
+        when(rawService.ingestTextFileFromScan(eq(KB_ID), eq("keep.txt"), anyString(), eq("hello")))
+                .thenReturn(true);
+        when(rawService.findBySourcePath(eq(KB_ID), anyString())).thenReturn(raw(100L, null));
+
+        WikiSourceGroupEntity g = group();
+        g.setFileFilter("*.txt");
+
+        WikiDirectoryScanService.ScanResult result = scanService.scanGroup(KB_ID, g, false);
+
+        assertEquals(1, result.scanned());
+        assertEquals(1, result.added());
+        verify(rawService, never()).ingestBinaryFileFromScan(any(), anyString(), anyString(), anyString(), anyLong());
+    }
+
+    @Test
     @DisplayName("full scan: a freshly added file is not force-reprocessed again")
     void fullScan_freshFileNotDoubleReprocessed() throws IOException {
         writeFile("a.txt", "brand new content");
