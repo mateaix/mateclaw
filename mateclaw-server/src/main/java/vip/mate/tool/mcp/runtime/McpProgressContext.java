@@ -38,17 +38,21 @@ public class McpProgressContext {
                    .put(toolCallId, progressJson);
     }
 
-    /** SSE 重连时获取某个 conversation 下所有进行中的进度快照 */
+    /** Snapshot of every in-progress tool call for a conversation, taken on SSE reconnect. */
     public Map<String, String> getSnapshots(String conversationId) {
         Map<String, String> tools = snapshotMap.get(conversationId);
         return tools != null ? Map.copyOf(tools) : Map.of();
     }
 
-    /** Remove snapshot after tool completion. */
+    /**
+     * Remove a tool-call snapshot after completion, dropping the conversation's
+     * inner map once it is empty so the outer map does not accumulate empty
+     * entries for every conversation that ever ran a progress-reporting tool.
+     */
     public void removeSnapshot(String conversationId, String toolCallId) {
-        Map<String, String> tools = snapshotMap.get(conversationId);
-        if (tools != null) {
+        snapshotMap.computeIfPresent(conversationId, (k, tools) -> {
             tools.remove(toolCallId);
-        }
+            return tools.isEmpty() ? null : tools;
+        });
     }
 }
