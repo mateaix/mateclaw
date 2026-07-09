@@ -28,7 +28,7 @@ class WorkspaceBoundaryGuardianTest {
     private static final String WORKSPACE = "/tmp/ws-boundary-guardian-test";
     private static final String DEFAULT_ROOT = "/tmp/ws-boundary-default-root";
 
-    private final WorkspaceBoundaryGuardian guardian = new WorkspaceBoundaryGuardian();
+    private final WorkspaceBoundaryGuardian guardian = new WorkspaceBoundaryGuardian(null);
 
     @AfterEach
     void teardown() {
