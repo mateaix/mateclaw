@@ -88,43 +88,6 @@ public final class ChatUploadResolver {
     }
 
     /**
-     * Resolve a raw path against a pre-computed set of candidate upload roots
-     * (from {@link ChatUploadLocationResolver#resolveCandidateUploadRoots(String)}).
-     * Each root is the conversation-scoped upload directory
-     * ({@code {root}/{conversationId}/}); this overload avoids the
-     * {@code workspaceBasePath} heuristic so the guardian can use DB-resolved
-     * candidate roots even when the thread-local context carries {@code null}.
-     *
-     * @param rawPath             user-supplied path (basename or relative)
-     * @param conversationId      business conversation id
-     * @param candidateUploadRoots pre-resolved candidate upload roots,
-     *                             each being an upload root <em>without</em>
-     *                             the conversation-id subdirectory appended
-     * @return absolute path of the matched attachment, or {@code null}
-     */
-    public static Path resolve(String rawPath, String conversationId,
-                                 List<Path> candidateUploadRoots) {
-        if (rawPath == null || rawPath.isBlank()) {
-            return null;
-        }
-        if (conversationId == null || conversationId.isBlank()) {
-            return null;
-        }
-        if (candidateUploadRoots == null || candidateUploadRoots.isEmpty()) {
-            return null;
-        }
-        for (Path uploadRoot : candidateUploadRoots) {
-            Path uploadDir = uploadRoot.resolve(conversationId)
-                    .toAbsolutePath().normalize();
-            Path matched = resolveIn(rawPath, uploadDir);
-            if (matched != null) {
-                return matched;
-            }
-        }
-        return null;
-    }
-
-    /**
      * Ordered candidate upload directories for a conversation: the
      * workspace-scoped dir first (when a base path is active), then the default
      * fallback dir. De-duplicated so the two coincide (no base path configured)

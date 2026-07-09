@@ -5,12 +5,12 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Component;
-import vip.mate.tool.builtin.ChatUploadResolver;
 import vip.mate.tool.guard.WorkspacePathGuard;
 import vip.mate.tool.guard.model.*;
 import vip.mate.workspace.core.service.ChatUploadLocationResolver;
 
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -141,22 +141,20 @@ public class WorkspaceBoundaryGuardian implements ToolGuardGuardian {
             String path = extractJsonParam(rawArgs, paramName);
             String violation = WorkspacePathGuard.findPathBoundaryViolation(path, basePath);
             if (violation != null) {
-                // Chat-upload fallback: a path like "chat-uploads/{convId}/..."
-                // may sit outside the workspace root yet still be a legitimate
-                // user attachment. Resolve candidate upload roots from the DB
-                // (workspace-scoped + default) to find the file — this avoids
-                // the workspaceBasePath heuristic that can be null when the
-                // agent isn't configured with a workspace override.
+                // Chat-upload fallback: an attachment path may sit outside the
+                // workspace root yet still be a legitimate user upload. Resolve
+                // candidate upload roots from the DB (workspace-scoped +
+                // default) — this avoids the workspaceBasePath heuristic that
+                // can be null when the agent isn't configured with a workspace
+                // override. Any resolver failure keeps the BLOCK finding.
                 String conversationId = context.conversationId();
                 if (conversationId != null && !conversationId.isBlank()) {
                     try {
                         List<Path> candidateRoots = chatUploadLocationResolver
                                 .resolveCandidateUploadRoots(conversationId);
-                        Path resolved = ChatUploadResolver.resolve(
-                                path, conversationId, candidateRoots);
-                        if (resolved != null) {
-                            log.debug("[WorkspaceBoundaryGuardian] Path {} resolved to chat-upload: {}",
-                                    path, resolved);
+                        if (isInsideUploadDir(path, conversationId, candidateRoots)) {
+                            log.debug("[WorkspaceBoundaryGuardian] Path {} is inside a chat-upload dir "
+                                    + "of conversation {}", path, conversationId);
                             return List.of();
                         }
                     } catch (Exception e) {
@@ -168,6 +166,40 @@ public class WorkspaceBoundaryGuardian implements ToolGuardGuardian {
             }
         }
         return List.of();
+    }
+
+    /**
+     * True when {@code rawPath} itself normalizes to a location inside one of
+     * the conversation's candidate upload directories
+     * ({@code {root}/{conversationId}/}).
+     * <p>
+     * The check is a strict prefix match on the <em>requested</em> path — a
+     * basename match against stored attachments is deliberately not enough to
+     * clear a boundary violation, because an arbitrary outside path could share
+     * a basename with an uploaded file and would then slip past the guard
+     * whenever it exists under some other trusted root. Tool-level resolvers
+     * may still redirect a basename-only request to the stored attachment; the
+     * redirected path they read lands inside the upload directory and passes
+     * this same check.
+     */
+    private static boolean isInsideUploadDir(String rawPath, String conversationId,
+                                             List<Path> candidateRoots) {
+        if (rawPath == null || rawPath.isBlank() || candidateRoots == null) {
+            return false;
+        }
+        Path normalized;
+        try {
+            normalized = Paths.get(rawPath).toAbsolutePath().normalize();
+        } catch (Exception e) {
+            return false;
+        }
+        for (Path root : candidateRoots) {
+            Path uploadDir = root.resolve(conversationId).toAbsolutePath().normalize();
+            if (normalized.startsWith(uploadDir)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private GuardFinding boundaryFinding(String toolName, String paramName, String matchValue, String reason) {

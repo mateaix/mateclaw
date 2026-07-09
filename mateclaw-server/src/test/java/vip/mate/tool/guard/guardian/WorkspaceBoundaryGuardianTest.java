@@ -5,17 +5,23 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.DisabledOnOs;
 import org.junit.jupiter.api.condition.OS;
+import org.junit.jupiter.api.io.TempDir;
 import vip.mate.tool.guard.WorkspacePathGuard;
 import vip.mate.tool.guard.model.GuardDecision;
 import vip.mate.tool.guard.model.GuardFinding;
 import vip.mate.tool.guard.model.GuardSeverity;
 import vip.mate.tool.guard.model.ToolInvocationContext;
+import vip.mate.workspace.core.service.ChatUploadLocationResolver;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
  * Verifies that {@link WorkspaceBoundaryGuardian} turns a workspace-boundary
@@ -44,6 +50,12 @@ class WorkspaceBoundaryGuardianTest {
     private ToolInvocationContext write(String path, String basePath) {
         String args = "{\"filePath\":\"" + path + "\",\"content\":\"x\"}";
         return ToolInvocationContext.of("write_file", args, "conv", "agent")
+                .withWorkspaceBasePath(basePath);
+    }
+
+    private ToolInvocationContext read(String path, String basePath) {
+        String args = "{\"filePath\":\"" + path + "\"}";
+        return ToolInvocationContext.of("read_file", args, "conv", "agent")
                 .withWorkspaceBasePath(basePath);
     }
 
@@ -192,6 +204,68 @@ class WorkspaceBoundaryGuardianTest {
         assertTrue(guardian.supports(write("a.txt", WORKSPACE)));
         assertFalse(guardian.supports(
                 ToolInvocationContext.of("web_search", "{}", "conv", "agent")));
+    }
+
+    // ==================== Chat-upload fallback scope ====================
+
+    @Test
+    @DisplayName("A stored chat-upload path outside the workspace is allowed via the DB-backed fallback")
+    void chatUpload_storedPath_pass(@TempDir Path uploadRoot) throws Exception {
+        Path stored = Files.createDirectories(uploadRoot.resolve("conv"))
+                .resolve("1777391026594_secret.txt");
+        Files.writeString(stored, "attachment");
+
+        ChatUploadLocationResolver resolver = mock(ChatUploadLocationResolver.class);
+        when(resolver.resolveCandidateUploadRoots("conv")).thenReturn(List.of(uploadRoot));
+        WorkspaceBoundaryGuardian g = new WorkspaceBoundaryGuardian(resolver);
+
+        // The upload root sits outside the workspace, so the boundary check
+        // trips first; the fallback must clear it for the real stored path.
+        assertTrue(g.evaluate(read(stored.toString(), WORKSPACE)).isEmpty());
+    }
+
+    @Test
+    @DisplayName("An outside path merely sharing a basename with an attachment stays blocked")
+    void chatUpload_basenameCollision_blocked(@TempDir Path uploadRoot, @TempDir Path elsewhere)
+            throws Exception {
+        // Store an attachment whose "{millis}_{safeName}" name would basename-match
+        // a request for "secret.txt" — the fallback must not let that clear a
+        // violation for a path pointing somewhere else entirely.
+        Path uploadDir = Files.createDirectories(uploadRoot.resolve("conv"));
+        Files.writeString(uploadDir.resolve("1777391026594_secret.txt"), "attachment");
+        Path outside = elsewhere.resolve("secret.txt");
+        Files.writeString(outside, "not an attachment");
+
+        ChatUploadLocationResolver resolver = mock(ChatUploadLocationResolver.class);
+        when(resolver.resolveCandidateUploadRoots("conv")).thenReturn(List.of(uploadRoot));
+        WorkspaceBoundaryGuardian g = new WorkspaceBoundaryGuardian(resolver);
+
+        assertBlocked(g.evaluate(read(outside.toString(), WORKSPACE)));
+    }
+
+    @Test
+    @DisplayName("A path inside a different conversation's upload dir stays blocked")
+    void chatUpload_otherConversation_blocked(@TempDir Path uploadRoot) throws Exception {
+        Path otherConvFile = Files.createDirectories(uploadRoot.resolve("other-conv"))
+                .resolve("1777391026594_secret.txt");
+        Files.writeString(otherConvFile, "someone else's attachment");
+
+        ChatUploadLocationResolver resolver = mock(ChatUploadLocationResolver.class);
+        when(resolver.resolveCandidateUploadRoots("conv")).thenReturn(List.of(uploadRoot));
+        WorkspaceBoundaryGuardian g = new WorkspaceBoundaryGuardian(resolver);
+
+        assertBlocked(g.evaluate(read(otherConvFile.toString(), WORKSPACE)));
+    }
+
+    @Test
+    @DisplayName("Resolver failure keeps the BLOCK finding (fail closed)")
+    void chatUpload_resolverFailure_blocked() {
+        ChatUploadLocationResolver resolver = mock(ChatUploadLocationResolver.class);
+        when(resolver.resolveCandidateUploadRoots("conv"))
+                .thenThrow(new RuntimeException("db down"));
+        WorkspaceBoundaryGuardian g = new WorkspaceBoundaryGuardian(resolver);
+
+        assertBlocked(g.evaluate(read("/somewhere/else/file.txt", WORKSPACE)));
     }
 
     // ==================== Tool-result spill dir stays reachable (issue #403) ====================

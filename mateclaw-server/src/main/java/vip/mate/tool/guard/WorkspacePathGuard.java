@@ -432,10 +432,17 @@ public final class WorkspacePathGuard {
                 continue;
             }
             if (isFilesystemRoot(normalized)) {
-                // A normalized filesystem root `/` (or `//`) is almost always a
-                // false positive from shell syntax — sed's s/pattern//, awk's
-                // empty field, etc. Real commands never target the filesystem
-                // root as a cat/ls/write operand.
+                // A token normalizing to the filesystem root is usually shell
+                // syntax misread as a path — sed's s/pattern//, awk's empty
+                // field, etc. — so it is skipped for non-destructive commands.
+                // When the command carries a destructive verb, fail closed:
+                // `rm -rf //` (or `/.`, `/..`) targets the filesystem root and
+                // must be refused. The verb flag is command-wide, so a compound
+                // command mixing e.g. `rm` with a sed empty replacement is also
+                // refused — the error tells the caller to split the command.
+                if (destructive) {
+                    throw filesystemRootDeletionError();
+                }
                 continue;
             }
             if (destructive && normalized.equals(root)) {
@@ -564,9 +571,10 @@ public final class WorkspacePathGuard {
 
     /**
      * True when {@code normalized} is the filesystem root ({@code /} or
-     * {@code //}). These are almost always false positives from shell syntax
-     * (sed's {@code s/pattern//}, awk's empty field, etc.) — real commands
-     * never target the filesystem root as a cat/ls/write operand.
+     * {@code //}). In non-destructive commands these are almost always false
+     * positives from shell syntax (sed's {@code s/pattern//}, awk's empty
+     * field, etc.) and are skipped; destructive commands are refused at the
+     * call site because {@code rm -rf //} really does target the root.
      */
     private static boolean isFilesystemRoot(Path normalized) {
         String s = normalized.toString();
@@ -581,6 +589,14 @@ public final class WorkspacePathGuard {
         return new IllegalArgumentException(
                 "Shell command would delete the workspace root directory itself: " + root
                         + ". Deleting the workspace root is refused — target a path inside it instead.");
+    }
+
+    private static IllegalArgumentException filesystemRootDeletionError() {
+        return new IllegalArgumentException(
+                "Shell command combines a destructive verb (rm/rmdir/shred/srm) with a path that "
+                        + "normalizes to the filesystem root (/), which is refused. If the root-like "
+                        + "token comes from shell syntax (e.g. an empty sed replacement) rather than a "
+                        + "delete target, run the delete and the text edit as separate commands.");
     }
 
     /**
