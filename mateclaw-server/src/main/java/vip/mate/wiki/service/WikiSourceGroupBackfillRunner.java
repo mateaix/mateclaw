@@ -22,7 +22,7 @@ import java.util.Set;
  * （见 {@link WikiDirectoryScanService#scanGroup}）自然、安全地补写。
  *
  * <p>Order(220) — runs after {@code DatabaseBootstrapRunner}(200) / 其它模块的
- * bootstrap runner，此时表结构（V166/V167）已就绪。
+ * bootstrap runner，此时表结构（V168/V169）已就绪。
  *
  * @author MateClaw Team
  */
