@@ -162,6 +162,14 @@ services:
       # max-total 调多大，单次安装的峰值内存就可能吃多大。
       MATECLAW_SKILL_UPLOAD_MAX_ENTRY_SIZE_MB: ${MATECLAW_SKILL_UPLOAD_MAX_ENTRY_SIZE_MB:-1}
       MATECLAW_SKILL_UPLOAD_MAX_TOTAL_SIZE_MB: ${MATECLAW_SKILL_UPLOAD_MAX_TOTAL_SIZE_MB:-50}
+      # pip 镜像源配置（可选）。skill 里的 Python 脚本缺包时 pip install 会走这个源。
+      # 留空则用 PyPI 默认源（pypi.org）。pip 原生读 PIP_INDEX_URL / PIP_TRUSTED_HOST
+      # 环境变量，容器内所有进程（JVM、Python 子进程、bash）自动继承，无需额外配置。
+      # HTTP 源会自动从 URL 推导 PIP_TRUSTED_HOST；自签 HTTPS 需手动填。
+      # - 互联网加速：PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+      # - 局域网私有源：PIP_INDEX_URL=http://192.168.1.100:8080/simple（trusted-host 自动推导）
+      PIP_INDEX_URL: ${PIP_INDEX_URL:-}
+      PIP_TRUSTED_HOST: ${PIP_TRUSTED_HOST:-}
     # Chromium needs a real /dev/shm. Docker defaults to 64MB which causes
     # SIGBUS / "Target page closed" errors under load. 2GB is the usual
     # recommendation for Playwright / headless chrome.
