@@ -9,6 +9,7 @@ import vip.mate.tool.guard.WorkspacePathGuard;
 import vip.mate.tool.guard.model.*;
 import vip.mate.workspace.core.service.ChatUploadLocationResolver;
 
+import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.List;
@@ -193,10 +194,25 @@ public class WorkspaceBoundaryGuardian implements ToolGuardGuardian {
         } catch (Exception e) {
             return false;
         }
+        String safeSegment = ChatUploadLocationResolver.sanitizeSegment(conversationId);
         for (Path root : candidateRoots) {
-            Path uploadDir = root.resolve(conversationId).toAbsolutePath().normalize();
-            if (normalized.startsWith(uploadDir)) {
+            // Accept the sanitized dir (where writes land) — always a legal
+            // segment — and, for legacy Linux uploads, the raw-id dir when it is
+            // a legal path on this OS. Write and read must agree here or a valid
+            // attachment read would be flagged as a boundary escape.
+            Path sanitizedDir = root.resolve(safeSegment).toAbsolutePath().normalize();
+            if (normalized.startsWith(sanitizedDir)) {
                 return true;
+            }
+            if (!safeSegment.equals(conversationId)) {
+                try {
+                    Path rawDir = root.resolve(conversationId).toAbsolutePath().normalize();
+                    if (normalized.startsWith(rawDir)) {
+                        return true;
+                    }
+                } catch (InvalidPathException ignore) {
+                    // Raw id illegal on this filesystem (e.g. ':' on Windows).
+                }
             }
         }
         return false;

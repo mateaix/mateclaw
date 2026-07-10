@@ -9,6 +9,7 @@ import reactor.core.publisher.Flux;
 import vip.mate.agent.AgentService.StreamDelta;
 import vip.mate.channel.AbstractChannelAdapter;
 import vip.mate.channel.ChannelMessage;
+import vip.mate.workspace.core.service.ChatUploadLocationResolver;
 import vip.mate.channel.ChannelMessageRouter;
 import vip.mate.channel.ExponentialBackoff;
 import vip.mate.channel.StreamingChannelAdapter;
@@ -269,6 +270,29 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
             roots.add(chatUploadsRoot);
         }
         return roots;
+    }
+
+    /**
+     * Candidate conversation attachment directories: the sanitized segment under
+     * each candidate root first, then — for backward compatibility with pre-fix
+     * Linux uploads that used the raw id verbatim — the raw-id dir when legal on
+     * this filesystem. Mirrors {@code ChatUploadLocationResolver
+     * .resolveCandidateConversationDirs} for the resolver-less fallback path.
+     */
+    private java.util.List<java.nio.file.Path> candidateChatUploadDirs(String conversationId) {
+        String safe = ChatUploadLocationResolver.sanitizeSegment(conversationId);
+        java.util.Set<java.nio.file.Path> dirs = new java.util.LinkedHashSet<>();
+        for (java.nio.file.Path root : candidateChatUploadRoots(conversationId)) {
+            dirs.add(root.resolve(safe));
+            if (!safe.equals(conversationId)) {
+                try {
+                    dirs.add(root.resolve(conversationId));
+                } catch (java.nio.file.InvalidPathException ignore) {
+                    // Raw id illegal on this filesystem (e.g. ':' on Windows).
+                }
+            }
+        }
+        return new java.util.ArrayList<>(dirs);
     }
 
     public FeishuChannelAdapter(ChannelEntity channelEntity,
@@ -1775,8 +1799,11 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
                     : maybeDownloadResource(messageId, fileKey, type, fileName);
             if (dl == null) return null;
 
-            // Save under the workspace/agent-aware upload root ({convId}/ subdir)
-            Path uploadDir = chatUploadRootFor(conversationId).resolve(conversationId);
+            // Save under the workspace/agent-aware upload root ({convId}/ subdir).
+            // Sanitize the id for the path segment — IM ids like "feishu:xxx"
+            // carry a ':' that is illegal in a Windows filename.
+            Path uploadDir = chatUploadRootFor(conversationId)
+                    .resolve(ChatUploadLocationResolver.sanitizeSegment(conversationId));
             Files.createDirectories(uploadDir);
             String rawName = (dl.fileName() != null && !dl.fileName().isBlank())
                     ? dl.fileName() : fileKey;
@@ -1869,8 +1896,8 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
     private List<RecentFileEntry> loadRecentFilesFromDisk(String conversationId) {
         long cutoff = System.currentTimeMillis() - RECENT_FILE_TTL_MINUTES * 60_000L;
         List<RecentFileEntry> merged = new java.util.ArrayList<>();
-        for (Path root : candidateChatUploadRoots(conversationId)) {
-            merged.addAll(loadRecentFilesFromDisk(root.resolve(conversationId), cutoff));
+        for (Path dir : candidateChatUploadDirs(conversationId)) {
+            merged.addAll(loadRecentFilesFromDisk(dir, cutoff));
         }
         return merged;
     }

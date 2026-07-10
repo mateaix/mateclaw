@@ -31,7 +31,7 @@ public class VideoFileDownloader {
      * @return 本地文件路径
      */
     public Path download(String videoUrl, String conversationId, String taskId) throws IOException {
-        Path dir = uploadLocationResolver.resolveUploadRoot(conversationId).resolve(conversationId);
+        Path dir = uploadLocationResolver.resolveConversationDir(conversationId);
         Files.createDirectories(dir);
 
         String extension = guessExtension(videoUrl);
