@@ -824,7 +824,10 @@ export const wikiApi = {
   listFailures: (limit = 100) => http.get<{ data: WikiFailureItem[] }>(`/wiki/admin/failures?limit=${limit}`),
 
   // Raw Materials
-  listRaw: (kbId: number) => http.get(`/wiki/knowledge-bases/${kbId}/raw`),
+  listRaw: (
+    kbId: number,
+    filters?: { status?: string; sourceType?: string; keyword?: string; startTime?: string; endTime?: string },
+  ) => http.get(`/wiki/knowledge-bases/${kbId}/raw`, filters ? { params: filters } : undefined),
   addRawText: (kbId: number, data: { title: string; content: string }) =>
     http.post(`/wiki/knowledge-bases/${kbId}/raw/text`, data),
   uploadRaw: (kbId: number, formData: FormData, onProgress?: (pct: number) => void) =>
@@ -840,6 +843,16 @@ export const wikiApi = {
     http.post(`/wiki/knowledge-bases/${kbId}/raw/${rawId}/reprocess`),
   cancelRaw: (kbId: number, rawId: number) =>
     http.post(`/wiki/knowledge-bases/${kbId}/raw/${rawId}/cancel`),
+  // Batch reprocess/delete. Select by explicit `ids` (Snowflake strings — never
+  // coerce to number) or by a `status` selector (e.g. retry all failed).
+  batchReprocessRaw: (
+    kbId: number,
+    body: { ids?: (string | number)[]; status?: string; force?: boolean },
+  ) => http.post(`/wiki/knowledge-bases/${kbId}/raw/batch/reprocess`, body),
+  batchDeleteRaw: (
+    kbId: number,
+    body: { ids?: (string | number)[]; status?: string },
+  ) => http.post(`/wiki/knowledge-bases/${kbId}/raw/batch/delete`, body),
   downloadRaw: (kbId: number, rawId: number) =>
     http.get<Blob>(`/wiki/knowledge-bases/${kbId}/raw/${rawId}/download`, {
       responseType: 'blob',

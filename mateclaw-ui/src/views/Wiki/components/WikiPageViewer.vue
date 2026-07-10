@@ -98,6 +98,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useRouter } from 'vue-router'
 import { useWikiStore, isProtectedPage, type WikiPage } from '@/stores/useWikiStore'
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore'
 import { wikiApi } from '@/api/index'
@@ -110,6 +111,7 @@ import CitationDrawer from './CitationDrawer.vue'
 import ImageLightbox from './ImageLightbox.vue'
 
 const { t } = useI18n()
+const router = useRouter()
 const store = useWikiStore()
 const workspace = useWorkspaceStore()
 const { renderMarkdown } = useMarkdownRenderer()
@@ -280,7 +282,17 @@ onMounted(() => {
     const target = e.target as HTMLElement
     if (target.classList.contains('wiki-link')) {
       const slug = target.dataset.slug
-      if (slug) openPage(slug)
+      if (!slug) return
+      // Cross-KB link [[kbId/slug]] — data-kbid points at a different KB.
+      // Route through the query contract the Wiki view reads (?kbId&slug)
+      // so the store loads the target KB rather than the current one. IDs
+      // stay strings end-to-end (Snowflake precision).
+      const kbId = target.dataset.kbid
+      if (kbId && kbId !== String(store.currentKB?.id ?? '')) {
+        router.push({ name: 'Wiki', query: { kbId, slug } })
+        return
+      }
+      openPage(slug)
     }
   })
 })
@@ -359,6 +371,10 @@ onMounted(() => {
   font-style: italic;
 }
 .page-content :deep(.wiki-link.wiki-link-archived:hover) { color: var(--mc-text-secondary); }
+/* Cross-KB target — clickable, routes to another knowledge base. Solid
+   underline distinguishes it from same-KB (dashed) links so readers know the
+   click leaves the current KB. */
+.page-content :deep(.wiki-link.wiki-link-crosskb) { border-bottom-style: solid; }
 /* Broken target — no click, no href, no request. Dashed underline + muted tone
    tells the reader the wikilink couldn't be resolved without committing to
    navigation that would 404. Tooltip shows the rejection reason. */

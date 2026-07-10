@@ -56,6 +56,15 @@ public class WikiLinkService {
     private static final Pattern WIKILINK = Pattern.compile("\\[\\[([^\\]]+?)]]");
 
     /**
+     * Matches a cross-KB wikilink target of the form {@code kbId/slug}, where
+     * {@code kbId} is a numeric knowledge-base id and {@code slug} is a page
+     * slug inside that KB. A plain single-KB slug never contains {@code /}, so
+     * this pattern is unambiguous — historical {@code [[slug]]} /
+     * {@code [[Title]]} content is unaffected.
+     */
+    private static final Pattern CROSS_KB = Pattern.compile("^(\\d+)/(.+)$");
+
+    /**
      * Matches a fenced code block. Anchored to {@code ^```} on a line so a
      * stray triple-backtick mid-paragraph does not flip the world into "in
      * code" mode and swallow real wikilinks for the rest of the document.
@@ -135,10 +144,43 @@ public class WikiLinkService {
         if (resolvableKeysLower == null) resolvableKeysLower = Collections.emptySet();
         List<String> broken = new ArrayList<>();
         for (String t : outlinks) {
+            // Cross-KB targets ([[kbId/slug]]) can't be validated against this
+            // KB's key set — checking existence would need a cross-KB query.
+            // Exempt well-formed cross-KB refs from the single-KB broken-link
+            // rule so they aren't false-flagged; the target KB's viewer surfaces
+            // a real page-not-found on click if the slug is stale.
+            if (parseCrossKb(t) != null) continue;
             if (!resolvableKeysLower.contains(t)) broken.add(t);
         }
         return broken;
     }
+
+    /**
+     * Parse a cross-KB wikilink target {@code kbId/slug} into its parts, or
+     * {@code null} when {@code target} is a plain single-KB slug/title.
+     * Pure function — no I/O, no existence check.
+     *
+     * @param target the wikilink target (before any {@code |alias}); may be
+     *               already lowercased by {@link #extractOutlinks}
+     * @return {@link CrossKbRef} when the target has a numeric KB prefix, else null
+     */
+    public CrossKbRef parseCrossKb(String target) {
+        if (target == null || target.isBlank()) return null;
+        Matcher m = CROSS_KB.matcher(target.trim());
+        if (!m.matches()) return null;
+        try {
+            long kbId = Long.parseLong(m.group(1));
+            String slug = m.group(2).trim();
+            if (slug.isEmpty()) return null;
+            return new CrossKbRef(kbId, slug);
+        } catch (NumberFormatException e) {
+            // kbId overflowed long — treat as a plain (broken) single-KB target.
+            return null;
+        }
+    }
+
+    /** A parsed cross-KB wikilink target: target KB id + page slug. */
+    public record CrossKbRef(long kbId, String slug) {}
 
     /**
      * Convenience: extract + compute in one call. Used from

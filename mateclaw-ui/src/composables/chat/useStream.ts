@@ -16,6 +16,7 @@ export type SSEEventType =
   | 'message_start'
   // Agent 事件
   | 'tool_call_started'
+  | 'tool_call_progress'
   | 'tool_call_completed'
   | 'phase'
   | 'plan_created'

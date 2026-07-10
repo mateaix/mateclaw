@@ -2567,6 +2567,22 @@ export default {
       cancelled: 'CANCELLED',
       cancelling: 'CANCELLING…',
     },
+    // Raw-material filtering + batch operations (issue #506).
+    batch: {
+      allStatus: 'All statuses',
+      allTypes: 'All types',
+      keywordPlaceholder: 'Search title…',
+      clearFilter: 'Clear filter',
+      noMatch: 'No matching materials',
+      selectAll: 'Select all',
+      selectedCount: '{n} selected',
+      reprocess: 'Reprocess',
+      delete: 'Delete',
+      retryAllFailed: 'Retry all failed ({n})',
+      deleteConfirm: 'Delete the {n} selected material(s)? Their generated pages are cascade-deleted and this cannot be undone.',
+      reprocessDone: 'Re-queued {n} item(s)',
+      deleteDone: 'Deleted {n} item(s)',
+    },
     // Friendly, localized hints keyed by the backend's structured error code.
     // The raw exception text is kept as the hover tooltip for troubleshooting.
     errorCode: {
