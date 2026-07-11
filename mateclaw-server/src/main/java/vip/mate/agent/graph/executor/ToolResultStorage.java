@@ -5,6 +5,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.messages.ToolResponseMessage;
 import vip.mate.agent.context.StructuredTruncator;
 import vip.mate.tool.guard.WorkspacePathGuard;
+import vip.mate.workspace.core.service.ChatUploadLocationResolver;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.stereotype.Component;
@@ -478,10 +479,14 @@ public class ToolResultStorage {
         return deleted;
     }
 
-    /** Strip path separators and reserved characters so user-supplied IDs cannot escape the directory. */
+    /**
+     * Strip path separators and reserved characters so user-supplied IDs cannot
+     * escape the directory. Delegates to the canonical conversation-id sanitizer
+     * so every id → path-segment mapping across the codebase stays byte-for-byte
+     * identical (see issue #507).
+     */
     private static String sanitize(String s) {
-        if (s == null) return "";
-        return s.replaceAll("[^A-Za-z0-9_.-]", "_");
+        return ChatUploadLocationResolver.sanitizeSegment(s);
     }
 
     /** Test/admin helper: lexicographic ordering by length, descending. Not used at runtime. */

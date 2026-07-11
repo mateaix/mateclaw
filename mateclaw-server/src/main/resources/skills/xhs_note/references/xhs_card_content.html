@@ -1,0 +1,69 @@
+<!doctype html>
+<!--
+  Xiaohongshu CONTENT card — clean list style. Vertical 3:4 (1080x1440).
+  Self-contained: embedded CSS, system font stack, no remote assets.
+  Replace tokens:
+    {{TITLE}}    — section heading (short)
+    {{SUBTITLE}} — one supporting line (optional, can be emptied)
+    {{POINTS}}   — inject one <li>...</li> per tip. Wrap key words in
+                   <strong> for emphasis. Keep 3–6 items so they fit.
+  Shares the coral/peach palette of the cover card but on a light ground.
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 1080px; height: 1440px; }
+  body {
+    font-family: 'PingFang SC','Hiragino Sans GB','Microsoft YaHei',-apple-system,sans-serif;
+    background: #fff5f2;
+    color: #2b2b2b;
+    padding: 92px 84px;
+    display: flex; flex-direction: column;
+  }
+  .kicker {
+    width: 96px; height: 12px; border-radius: 6px;
+    background: linear-gradient(90deg,#ff6b81,#ff8e53); margin-bottom: 40px;
+  }
+  .title {
+    font-size: 76px; font-weight: 900; line-height: 1.25; color: #1f1f1f;
+  }
+  .subtitle {
+    font-size: 40px; font-weight: 500; color: #ff5a6e; margin-top: 22px;
+  }
+  ul { list-style: none; margin-top: 64px; }
+  li {
+    display: flex; align-items: flex-start; gap: 28px;
+    background: #fff; border-radius: 24px;
+    padding: 36px 40px; margin-bottom: 34px;
+    box-shadow: 0 10px 30px rgba(255,107,129,0.10);
+    font-size: 42px; line-height: 1.5; font-weight: 500; color: #333;
+    counter-increment: item;
+  }
+  /* Numbered coral chip before each item */
+  li::before {
+    content: counter(item);
+    flex: 0 0 auto;
+    width: 64px; height: 64px; border-radius: 50%;
+    background: linear-gradient(150deg,#ff6b81,#ff8e53); color: #fff;
+    font-size: 38px; font-weight: 800;
+    display: flex; align-items: center; justify-content: center;
+  }
+  li strong { color: #ff5a6e; font-weight: 800; }
+  ul { counter-reset: item; }
+</style>
+</head>
+<body>
+  <div class="kicker"></div>
+  <h1 class="title">{{TITLE}}</h1>
+  <p class="subtitle">{{SUBTITLE}}</p>
+  <ul>
+    {{POINTS}}
+    <!-- Example items (replace):
+    <li>每天<strong>前两小时</strong>不排会，专注推进核心任务</li>
+    <li>清单只留<strong>3件</strong>真正重要的事，其余延后</li>
+    -->
+  </ul>
+</body>
+</html>

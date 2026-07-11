@@ -1,0 +1,59 @@
+<!--
+  WeChat Official Account article template — MINIMAL / EDITORIAL — INLINE STYLES ONLY.
+  The WeChat editor strips <style> blocks and class attributes, so every
+  visual rule lives in a style="..." attribute on the element itself.
+  Mobile-first: base font 17px, airy line-height, restrained accent, thin hairlines.
+  Replace the {{PLACEHOLDER}} tokens and the sample image URL before use.
+  Palette: ink #22201d, muted #8a857d, accent #b08a4f (warm gold), hairline #eae7e1.
+-->
+<section style="max-width:100%;margin:0 auto;padding:0 6px;font-family:Georgia,'Times New Roman','Songti SC','Noto Serif SC',serif;color:#22201d;font-size:17px;line-height:1.9;letter-spacing:.2px;">
+
+  <!-- Kicker / eyebrow label -->
+  <p style="font-size:12px;letter-spacing:3px;color:#b08a4f;text-transform:uppercase;margin:24px 0 10px;font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;">{{KICKER}}</p>
+
+  <!-- Title -->
+  <h1 style="font-size:26px;line-height:1.5;font-weight:700;color:#22201d;margin:0 0 14px;">{{TITLE}}</h1>
+
+  <!-- Byline / meta -->
+  <p style="font-size:13px;color:#a49e94;margin:0 0 4px;font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;">{{AUTHOR}} · {{DATE}}</p>
+
+  <!-- Thin divider under the header -->
+  <hr style="border:none;border-top:1px solid #eae7e1;margin:22px 0 28px;" />
+
+  <!-- Lead / hook paragraph — slightly larger, softer ink -->
+  <p style="margin:0 0 26px;color:#4a463f;font-size:18px;line-height:1.85;">{{LEAD_PARAGRAPH}}</p>
+
+  <!-- Section heading — centered, quiet, with a short rule underneath -->
+  <h2 style="font-size:20px;font-weight:700;color:#22201d;margin:38px 0 6px;text-align:center;">{{SECTION_HEADING}}</h2>
+  <div style="width:36px;height:2px;background:#b08a4f;margin:0 auto 22px;"></div>
+
+  <!-- Body paragraph -->
+  <p style="margin:0 0 20px;">{{BODY_PARAGRAPH}}</p>
+
+  <!-- Section image + caption -->
+  <figure style="margin:30px 0;text-align:center;">
+    <img src="{{IMAGE_URL}}" alt="{{IMAGE_ALT}}" style="max-width:100%;height:auto;display:block;margin:0 auto;" />
+    <figcaption style="font-size:13px;color:#a49e94;margin-top:10px;font-style:italic;font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;">{{IMAGE_CAPTION}}</figcaption>
+  </figure>
+
+  <!-- Quote / pull-out callout — no box, large centered serif with big quotation mark -->
+  <blockquote style="margin:34px 0;padding:0 8px;text-align:center;color:#3a362f;font-size:21px;font-weight:600;line-height:1.7;font-style:italic;">
+    <span style="display:block;font-size:44px;color:#dcd4c6;line-height:1;margin-bottom:6px;">&#8220;</span>
+    {{PULL_QUOTE}}
+  </blockquote>
+
+  <!-- Another section -->
+  <h2 style="font-size:20px;font-weight:700;color:#22201d;margin:38px 0 6px;text-align:center;">{{SECTION_HEADING_2}}</h2>
+  <div style="width:36px;height:2px;background:#b08a4f;margin:0 auto 22px;"></div>
+  <p style="margin:0 0 20px;">{{BODY_PARAGRAPH_2}}</p>
+
+  <!-- Divider -->
+  <hr style="border:none;border-top:1px solid #eae7e1;margin:40px 0 26px;" />
+
+  <!-- Footer CTA / follow prompt — minimal, centered, no fill -->
+  <section style="text-align:center;padding:8px 16px 24px;">
+    <p style="font-size:16px;color:#22201d;margin:0 0 8px;font-weight:600;font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;">{{CTA_LINE}}</p>
+    <p style="font-size:13px;color:#a49e94;margin:0;letter-spacing:1px;font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;">{{FOLLOW_LINE}}</p>
+  </section>
+
+</section>

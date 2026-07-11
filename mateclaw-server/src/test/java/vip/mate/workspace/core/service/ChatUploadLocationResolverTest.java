@@ -200,4 +200,68 @@ class ChatUploadLocationResolverTest {
 
         assertThat(root).isEqualTo(tempDir.toAbsolutePath().normalize());
     }
+
+    // ==================== conversationId path safety (issue #507) ====================
+
+    @Test
+    @DisplayName("sanitizeSegment: colon (and other unsafe chars) → underscore; safe ids unchanged")
+    void sanitizeSegmentReplacesUnsafeChars() {
+        // IM-channel id with the ':' that breaks Windows paths.
+        assertThat(ChatUploadLocationResolver.sanitizeSegment("wecom:XuZhanFu"))
+                .isEqualTo("wecom_XuZhanFu");
+        // Separator-laden id is fully flattened to a single safe segment.
+        assertThat(ChatUploadLocationResolver.sanitizeSegment("a/b\\c:d*e?"))
+                .isEqualTo("a_b_c_d_e_");
+        // Already-safe ids (web / webchat / numeric) are a no-op.
+        assertThat(ChatUploadLocationResolver.sanitizeSegment("2055137662148763649"))
+                .isEqualTo("2055137662148763649");
+        assertThat(ChatUploadLocationResolver.sanitizeSegment("conv-abc_1.2"))
+                .isEqualTo("conv-abc_1.2");
+        assertThat(ChatUploadLocationResolver.sanitizeSegment(null)).isEmpty();
+    }
+
+    @Test
+    @DisplayName("resolveConversationDir: colon id lands under the sanitized segment (no InvalidPathException)")
+    void resolveConversationDirUsesSanitizedSegment() {
+        stubConversation("wecom:XuZhanFu", null, null);
+        when(workspaceService.getById(anyLong())).thenReturn(workspace(1L, null));
+
+        ChatUploadLocationResolver r = resolver(tempDir);
+        Path dir = r.resolveConversationDir("wecom:XuZhanFu");
+
+        assertThat(dir).isEqualTo(tempDir.toAbsolutePath().normalize().resolve("wecom_XuZhanFu"));
+    }
+
+    @Test
+    @DisplayName("candidate conversation dirs: sanitized first, then raw id for backward compat")
+    void candidateConversationDirsIncludeSanitizedAndRaw() {
+        stubConversation("wecom:XuZhanFu", null, null);
+        when(workspaceService.getById(anyLong())).thenReturn(workspace(1L, null));
+
+        ChatUploadLocationResolver r = resolver(tempDir);
+        List<Path> dirs = r.resolveCandidateConversationDirs("wecom:XuZhanFu");
+        Path base = tempDir.toAbsolutePath().normalize();
+
+        int sanitizedIdx = dirs.indexOf(base.resolve("wecom_XuZhanFu"));
+        assertThat(sanitizedIdx).isGreaterThanOrEqualTo(0);
+        // On a POSIX filesystem the raw ':' dir is a legal (legacy) candidate,
+        // ordered after the sanitized one.
+        boolean posix = !System.getProperty("os.name").toLowerCase().contains("win");
+        if (posix) {
+            int rawIdx = dirs.indexOf(base.resolve("wecom:XuZhanFu"));
+            assertThat(rawIdx).isGreaterThan(sanitizedIdx);
+        }
+    }
+
+    @Test
+    @DisplayName("candidate conversation dirs: safe id yields a single dir (no duplicate raw)")
+    void candidateConversationDirsNoDuplicateForSafeId() {
+        stubConversation("plainconv", null, null);
+        when(workspaceService.getById(anyLong())).thenReturn(workspace(1L, null));
+
+        ChatUploadLocationResolver r = resolver(tempDir);
+        List<Path> dirs = r.resolveCandidateConversationDirs("plainconv");
+
+        assertThat(dirs).containsExactly(tempDir.toAbsolutePath().normalize().resolve("plainconv"));
+    }
 }

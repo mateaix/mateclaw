@@ -77,7 +77,12 @@ public final class IdentityForwardingToolCallback implements ToolCallback {
         return delegate;
     }
 
-    private String inject(String toolInput, ToolContext toolContext) {
+    /**
+     * Inject identity claim into the toolInput JSON.
+     * Package-private so {@link ProgressAwareMcpToolCallback} can apply identity
+     * forwarding before calling mcpClient directly (progress path).
+     */
+    String inject(String toolInput, ToolContext toolContext) {
         return identityService.resolve(toolContext, audience)
                 .map(i -> withClaim(toolInput, i.key(), i.value()))
                 .orElse(toolInput);

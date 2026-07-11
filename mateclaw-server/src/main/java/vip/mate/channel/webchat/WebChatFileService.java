@@ -120,7 +120,9 @@ public class WebChatFileService {
 
         String storedName = UUID.randomUUID() + "_" + safeName;
         Path uploadRoot = uploadLocationResolver.resolveUploadRoot(conversationId).normalize();
-        Path dir = uploadRoot.resolve(conversationId).normalize();
+        // Sanitize the id for the path segment (IM ids like "wecom:XXXX" carry a
+        // ':' illegal on Windows); reads use the same sanitization.
+        Path dir = uploadRoot.resolve(ChatUploadLocationResolver.sanitizeSegment(conversationId)).normalize();
         if (!dir.startsWith(uploadRoot)) {
             // conversationId is server-derived, so this should never happen; fail closed if it does.
             throw new UploadRejectedException("Invalid conversation");
@@ -172,10 +174,10 @@ public class WebChatFileService {
         }
         // Check every candidate root (workspace-scoped dir + legacy default dir)
         // so files written before the workspace-aware relocation still resolve.
-        for (Path root : uploadLocationResolver.resolveCandidateUploadRoots(conversationId)) {
-            Path base = root.resolve(conversationId).normalize();
-            Path file = base.resolve(storedName).normalize();
-            if (file.startsWith(base) && Files.exists(file) && Files.isRegularFile(file)) {
+        for (Path base : uploadLocationResolver.resolveCandidateConversationDirs(conversationId)) {
+            Path normBase = base.normalize();
+            Path file = normBase.resolve(storedName).normalize();
+            if (file.startsWith(normBase) && Files.exists(file) && Files.isRegularFile(file)) {
                 return Optional.of(file);
             }
         }

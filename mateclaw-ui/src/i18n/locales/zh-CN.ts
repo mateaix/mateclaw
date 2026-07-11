@@ -2612,6 +2612,22 @@ export default {
       cancelled: '已取消',
       cancelling: '正在取消…',
     },
+    // Raw-material filtering + batch operations (issue #506).
+    batch: {
+      allStatus: '全部状态',
+      allTypes: '全部类型',
+      keywordPlaceholder: '搜索标题…',
+      clearFilter: '清除筛选',
+      noMatch: '没有匹配的材料',
+      selectAll: '全选',
+      selectedCount: '已选 {n} 项',
+      reprocess: '批量重试',
+      delete: '批量删除',
+      retryAllFailed: '重试全部失败（{n}）',
+      deleteConfirm: '确定删除选中的 {n} 项材料？将级联删除其生成的页面，且不可撤销。',
+      reprocessDone: '已重新排队 {n} 项',
+      deleteDone: '已删除 {n} 项',
+    },
     // Friendly, localized hints keyed by the backend's structured error code.
     // The raw exception text is kept as the hover tooltip for troubleshooting.
     errorCode: {

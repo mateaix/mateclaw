@@ -138,6 +138,7 @@
       <h4 class="raw-list-title">
         {{ t('wiki.rawMaterials') }} ({{ store.rawMaterials.length + uploadingFiles.length }})
       </h4>
+
       <div v-if="store.rawMaterials.length === 0 && uploadingFiles.length === 0" class="empty-hint">
         {{ t('wiki.noRawMaterials') }}
       </div>
@@ -619,6 +620,7 @@
 import { ref, reactive, computed, watch, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { mcToast } from '@/composables/useMcToast'
+import { mcConfirm } from '@/components/common/useConfirm'
 import { useFileDrop } from '@/composables/useFileDrop'
 import { Download } from '@element-plus/icons-vue'
 import { useWikiStore } from '@/stores/useWikiStore'
@@ -1411,6 +1413,15 @@ watch(() => store.rawMaterials, (rows) => {
   }
 }, { deep: true })
 
+// Prune batch selections that no longer exist after a refresh (deleted rows,
+// or rows filtered out of the current view).
+watch(() => store.rawMaterials, (rows) => {
+  if (selectedIds.value.size === 0) return
+  const present = new Set(rows.map(r => String(r.id)))
+  const next = new Set([...selectedIds.value].filter(id => present.has(String(id))))
+  if (next.size !== selectedIds.value.size) selectedIds.value = next
+})
+
 async function handleLocalRepair(rawId: number) {
   if (!store.currentKB) return
   // For local repair, we'd need a page slug. For now, reprocess the raw material.
@@ -2142,4 +2153,5 @@ function toggleRawFilter(rawId: number) {
     justify-content: space-between;
   }
 }
+
 </style>

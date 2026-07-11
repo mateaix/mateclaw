@@ -31,6 +31,7 @@ export interface WikilinkRef {
 /** Result of resolving a single `[[...]]` target string. */
 export type WikilinkResolution =
   | { kind: 'hit'; slug: string; display: string; archived: boolean }
+  | { kind: 'cross-kb'; kbId: string; slug: string; display: string }
   | { kind: 'broken'; display: string; reason: 'empty' | 'dangerous' | 'too-long' | 'unknown' }
 
 /**
@@ -60,6 +61,14 @@ const MAX_SLUG_LEN = 256
 
 /** `[[...]]` matcher used during text-node walking. Non-greedy. */
 const WIKILINK_RE = /\[\[([^\]]+?)\]\]/g
+
+/**
+ * Cross-KB target matcher: `kbId/slug` where `kbId` is a numeric knowledge-base
+ * id. A plain single-KB slug never contains `/`, so this is unambiguous and
+ * historical `[[slug]]` / `[[Title]]` content is unaffected. Mirrors the
+ * backend `WikiLinkService.CROSS_KB` pattern — both must stay in lockstep.
+ */
+const CROSS_KB_RE = /^(\d+)\/(.+)$/
 
 /**
  * Resolve a single raw target into a render directive.
@@ -115,6 +124,19 @@ export function resolveWikilink(
     return { kind: 'broken', display: literal, reason: 'too-long' }
   }
 
+  // Cross-KB reference `[[kbId/slug]]`: resolve to a deterministic link into
+  // the target KB. Existence is not checked here (that would need the target
+  // KB's refs) — the target KB's viewer surfaces page-not-found on click if
+  // the slug is stale. Display falls back to the slug since the target page's
+  // title lives in another KB.
+  const crossKb = CROSS_KB_RE.exec(target)
+  if (crossKb) {
+    const slug = crossKb[2].trim()
+    if (slug) {
+      return { kind: 'cross-kb', kbId: crossKb[1], slug, display: explicitDisplay || slug }
+    }
+  }
+
   const lookupSlug = target.toLowerCase()
   const lookupTitle = target.trim().toLowerCase()
 
@@ -165,6 +187,20 @@ function buildLinkElement(
     if (resolution.archived) {
       a.setAttribute('title', 'Archived page')
     }
+    a.textContent = resolution.display
+    return a
+  }
+  if (resolution.kind === 'cross-kb') {
+    const a = doc.createElement('a')
+    a.className = 'wiki-link wiki-link-crosskb'
+    // data-slug keeps the existing click contract; data-kbid signals the
+    // viewer's click handler to route into a different KB rather than the
+    // current one.
+    a.setAttribute('data-slug', resolution.slug)
+    a.setAttribute('data-kbid', resolution.kbId)
+    a.setAttribute('role', 'link')
+    a.setAttribute('tabindex', '0')
+    a.setAttribute('title', 'Cross-KB link')
     a.textContent = resolution.display
     return a
   }

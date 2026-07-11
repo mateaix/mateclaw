@@ -63,6 +63,17 @@ export function useGlobalWikilinkClick() {
     e.preventDefault()
     e.stopPropagation()
 
+    // Cross-KB reference [[kbId/slug]] — the token carries an explicit numeric
+    // KB id, so route straight to that KB instead of guessing via lookup.
+    const crossKb = /^(\d+)\/(.+)$/.exec(title.trim())
+    if (crossKb) {
+      const slug = crossKb[2].trim()
+      if (slug) {
+        router.push({ name: 'Wiki', query: { kbId: crossKb[1], slug } })
+        return
+      }
+    }
+
     try {
       // Pass both — backend matches slug first, falls back to title. For
       // a bracket like `[[StateGraph]]` the captured "title" is actually

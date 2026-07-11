@@ -53,6 +53,7 @@ import vip.mate.skill.service.SkillService;
 import vip.mate.system.service.SystemSettingService;
 import vip.mate.tool.ToolRegistry;
 import vip.mate.tool.disclosure.ToolUsageRecencyTracker;
+import vip.mate.tool.mcp.runtime.McpProgressContext;
 import vip.mate.memory.spi.MemoryManager;
 import vip.mate.workspace.document.WorkspaceFileService;
 import vip.mate.tool.guard.service.ToolGuardService;
@@ -105,6 +106,7 @@ public class AgentGraphBuilder {
     private final ModelContextWindowResolver contextWindowResolver;
     private final PrefixBudgetPlanner prefixBudgetPlanner;
     private final ToolUsageRecencyTracker toolUsageRecencyTracker;
+    private final McpProgressContext progressContext;
     private final vip.mate.llm.service.ModelCapabilityService modelCapabilityService;
     private final ProviderRouter providerRouter;
     private final PlanningService planningService;
@@ -632,6 +634,7 @@ public class AgentGraphBuilder {
             // the right invocation pattern instead of a dead-end error.
             executor.setSkillRuntimeService(skillRuntimeService);
             executor.setUsageRecencyTracker(toolUsageRecencyTracker);
+            executor.setProgressContext(progressContext);
             // Optional: route child-agent denied-tool audit events through
             // the audit pipeline. Null when audit is not wired (legacy / test).
             if (auditEventService != null) {
@@ -928,6 +931,7 @@ public class AgentGraphBuilder {
             // the right invocation pattern instead of a dead-end error.
             executor.setSkillRuntimeService(skillRuntimeService);
             executor.setUsageRecencyTracker(toolUsageRecencyTracker);
+            executor.setProgressContext(progressContext);
             // Optional: route child-agent denied-tool audit events through
             // the audit pipeline. Null when audit is not wired (legacy / test).
             if (auditEventService != null) {

@@ -204,7 +204,7 @@ public class TtsService {
 
     private Path saveAudioFile(String conversationId, String fileId, byte[] data, String format)
             throws IOException {
-        Path dir = uploadLocationResolver.resolveUploadRoot(conversationId).resolve(conversationId);
+        Path dir = uploadLocationResolver.resolveConversationDir(conversationId);
         Files.createDirectories(dir);
         String fileName = "tts_" + fileId + "." + format;
         Path filePath = dir.resolve(fileName);

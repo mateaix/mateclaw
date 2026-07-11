@@ -1,0 +1,81 @@
+<!--
+  WeChat Official Account article template — BUSINESS / PROFESSIONAL — INLINE STYLES ONLY.
+  The WeChat editor strips <style> blocks and class attributes, so every
+  visual rule lives in a style="..." attribute on the element itself.
+  Structured look: colored header band, numbered section chips, key-point box,
+  a 3-up stat row, footer CTA. Mobile-first, base font 16px.
+  Replace the {{PLACEHOLDER}} tokens and the sample image URL before use.
+  Palette: brand #0e4a8a, brand-dark #0a3a6e, ink #1f2733, muted #6b7583,
+           panel #eef4fb, hairline #e2e8f1, accent #f2a20c.
+-->
+<section style="max-width:100%;margin:0 auto;font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;color:#1f2733;font-size:16px;line-height:1.8;letter-spacing:.3px;">
+
+  <!-- Colored header band -->
+  <section style="background:#0e4a8a;background:linear-gradient(135deg,#0e4a8a 0%,#0a3a6e 100%);border-radius:12px;padding:26px 22px;color:#ffffff;">
+    <p style="font-size:12px;letter-spacing:2px;color:#a9c8ee;margin:0 0 12px;font-weight:600;">{{CATEGORY_LABEL}}</p>
+    <h1 style="font-size:23px;line-height:1.45;font-weight:800;color:#ffffff;margin:0 0 12px;">{{TITLE}}</h1>
+    <p style="font-size:13px;color:#c7dcf5;margin:0;">{{AUTHOR}} · {{DATE}}</p>
+  </section>
+
+  <!-- Lead / hook paragraph -->
+  <p style="margin:22px 4px 8px;color:#3a4453;font-size:16px;">{{LEAD_PARAGRAPH}}</p>
+
+  <!-- Section 1 — numbered chip heading -->
+  <div style="margin:28px 4px 12px;">
+    <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+      <tr>
+        <td style="width:34px;height:34px;background:#0e4a8a;border-radius:8px;color:#ffffff;font-size:17px;font-weight:800;text-align:center;line-height:34px;">01</td>
+        <td style="padding-left:12px;font-size:18px;font-weight:700;color:#1f2733;">{{SECTION_HEADING}}</td>
+      </tr>
+    </table>
+  </div>
+  <p style="margin:0 4px 16px;">{{BODY_PARAGRAPH}}</p>
+
+  <!-- Key-point highlight box -->
+  <section style="margin:22px 4px;background:#eef4fb;border-radius:10px;border-left:5px solid #f2a20c;padding:16px 18px;">
+    <p style="font-size:13px;font-weight:700;color:#b9760a;margin:0 0 6px;letter-spacing:1px;">{{KEYPOINT_LABEL}}</p>
+    <p style="font-size:16px;font-weight:600;color:#1f2733;margin:0;line-height:1.7;">{{KEYPOINT_TEXT}}</p>
+  </section>
+
+  <!-- Section 2 — numbered chip heading -->
+  <div style="margin:28px 4px 12px;">
+    <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+      <tr>
+        <td style="width:34px;height:34px;background:#0e4a8a;border-radius:8px;color:#ffffff;font-size:17px;font-weight:800;text-align:center;line-height:34px;">02</td>
+        <td style="padding-left:12px;font-size:18px;font-weight:700;color:#1f2733;">{{SECTION_HEADING_2}}</td>
+      </tr>
+    </table>
+  </div>
+  <p style="margin:0 4px 16px;">{{BODY_PARAGRAPH_2}}</p>
+
+  <!-- Data / stat row — three cells -->
+  <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:separate;border-spacing:8px 0;margin:22px 0;table-layout:fixed;">
+    <tr>
+      <td style="background:#f6f9fd;border:1px solid #e2e8f1;border-radius:10px;padding:16px 8px;text-align:center;vertical-align:top;">
+        <div style="font-size:26px;font-weight:800;color:#0e4a8a;line-height:1.2;">{{STAT_1_VALUE}}</div>
+        <div style="font-size:12px;color:#6b7583;margin-top:6px;">{{STAT_1_LABEL}}</div>
+      </td>
+      <td style="background:#f6f9fd;border:1px solid #e2e8f1;border-radius:10px;padding:16px 8px;text-align:center;vertical-align:top;">
+        <div style="font-size:26px;font-weight:800;color:#0e4a8a;line-height:1.2;">{{STAT_2_VALUE}}</div>
+        <div style="font-size:12px;color:#6b7583;margin-top:6px;">{{STAT_2_LABEL}}</div>
+      </td>
+      <td style="background:#f6f9fd;border:1px solid #e2e8f1;border-radius:10px;padding:16px 8px;text-align:center;vertical-align:top;">
+        <div style="font-size:26px;font-weight:800;color:#0e4a8a;line-height:1.2;">{{STAT_3_VALUE}}</div>
+        <div style="font-size:12px;color:#6b7583;margin-top:6px;">{{STAT_3_LABEL}}</div>
+      </td>
+    </tr>
+  </table>
+
+  <!-- Section image + caption -->
+  <figure style="margin:22px 4px;text-align:center;">
+    <img src="{{IMAGE_URL}}" alt="{{IMAGE_ALT}}" style="max-width:100%;height:auto;border-radius:10px;display:block;margin:0 auto;" />
+    <figcaption style="font-size:13px;color:#8a929e;margin-top:8px;">{{IMAGE_CAPTION}}</figcaption>
+  </figure>
+
+  <!-- Footer CTA / follow prompt — solid brand card -->
+  <section style="text-align:center;padding:22px 18px;background:#0e4a8a;border-radius:12px;margin:26px 0 8px;">
+    <p style="font-size:16px;color:#ffffff;margin:0 0 8px;font-weight:700;">{{CTA_LINE}}</p>
+    <p style="font-size:13px;color:#a9c8ee;margin:0;">{{FOLLOW_LINE}}</p>
+  </section>
+
+</section>
