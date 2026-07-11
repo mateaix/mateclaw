@@ -21,6 +21,7 @@ import vip.mate.memory.event.ConversationCompletionPublisher;
 import vip.mate.tts.TtsService;
 import vip.mate.workspace.conversation.ConversationService;
 import vip.mate.workspace.conversation.model.MessageContentPart;
+import vip.mate.workspace.core.service.ChatUploadLocationResolver;
 import vip.mate.workspace.conversation.model.MessageEntity;
 
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -1539,16 +1540,18 @@ public class ChannelMessageRouter {
      */
     private Path resolveVoiceReplyAudio(String conversationId, String fileName) {
         if (chatUploadLocationResolver != null) {
-            for (Path root : chatUploadLocationResolver.resolveCandidateUploadRoots(conversationId)) {
-                Path candidate = root.resolve(conversationId).resolve(fileName);
+            for (Path dir : chatUploadLocationResolver.resolveCandidateConversationDirs(conversationId)) {
+                Path candidate = dir.resolve(fileName);
                 if (Files.exists(candidate)) {
                     return candidate;
                 }
             }
         }
         // Fallback to the legacy default dir when the resolver is absent
-        // (e.g. direct-construction unit tests).
-        Path legacy = Paths.get("data", "chat-uploads", conversationId, fileName);
+        // (e.g. direct-construction unit tests). Sanitize the id for the path
+        // segment so it matches the write side.
+        Path legacy = Paths.get("data", "chat-uploads",
+                ChatUploadLocationResolver.sanitizeSegment(conversationId), fileName);
         return Files.exists(legacy) ? legacy : null;
     }
 

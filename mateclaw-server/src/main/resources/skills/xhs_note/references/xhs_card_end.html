@@ -1,0 +1,55 @@
+<!doctype html>
+<!--
+  Xiaohongshu END card — follow / CTA style. Vertical 3:4 (1080x1440).
+  Self-contained: embedded CSS, system font stack, no remote assets.
+  Replace tokens:
+    {{TITLE}} — closing line / payoff (short, punchy)
+    {{CTA}}   — call to action, e.g. "点赞收藏，别弄丢啦"
+    {{TAGS}}  — hashtag line, e.g. "#效率 #自律 #学生党"
+    {{HANDLE}}— account name / signature
+  Deeper coral gradient than the cover, so the set reads as one series.
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 1080px; height: 1440px; }
+  body {
+    font-family: 'PingFang SC','Hiragino Sans GB','Microsoft YaHei',-apple-system,sans-serif;
+    background: radial-gradient(circle at 30% 20%, #ff8e53 0%, #ff5a6e 55%, #e94b6b 100%);
+    color: #fff;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    text-align: center; padding: 96px 88px; position: relative;
+  }
+  .heart { font-size: 120px; margin-bottom: 40px; }
+  .title {
+    font-size: 88px; font-weight: 900; line-height: 1.3;
+    text-shadow: 0 6px 24px rgba(0,0,0,0.15);
+  }
+  .cta {
+    margin-top: 56px;
+    background: #fff; color: #ff5a6e;
+    font-size: 46px; font-weight: 800;
+    padding: 28px 60px; border-radius: 999px;
+    box-shadow: 0 12px 30px rgba(0,0,0,0.18);
+  }
+  .tags {
+    margin-top: 60px; font-size: 38px; font-weight: 600;
+    color: rgba(255,255,255,0.92); line-height: 1.6;
+  }
+  .handle {
+    position: absolute; bottom: 80px;
+    font-size: 34px; font-weight: 600; color: rgba(255,255,255,0.9);
+  }
+</style>
+</head>
+<body>
+  <div class="heart">💛</div>
+  <h1 class="title">{{TITLE}}</h1>
+  <div class="cta">{{CTA}}</div>
+  <p class="tags">{{TAGS}}</p>
+  <div class="handle">{{HANDLE}}</div>
+</body>
+</html>

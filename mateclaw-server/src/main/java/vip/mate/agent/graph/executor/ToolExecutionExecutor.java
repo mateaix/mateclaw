@@ -8,7 +8,9 @@ import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.ToolCallback;
 import vip.mate.tool.builtin.ToolExecutionContext;
 import vip.mate.tool.disclosure.ToolUsageRecencyTracker;
+import vip.mate.tool.mcp.runtime.McpProgressContext;
 import vip.mate.tool.mcp.runtime.McpToolNameResolver;
+import vip.mate.tool.mcp.runtime.ProgressAwareMcpToolCallback;
 import vip.mate.agent.AgentToolSet;
 import vip.mate.agent.GraphEventPublisher;
 import vip.mate.agent.context.ChatOrigin;
@@ -256,8 +258,15 @@ public class ToolExecutionExecutor {
     /** Optional recency feed for budget-driven tool-disclosure demotion. */
     private ToolUsageRecencyTracker usageRecencyTracker;
 
+    /** Optional MCP progress context for long-running tool progress relay. */
+    private McpProgressContext progressContext;
+
     public void setUsageRecencyTracker(ToolUsageRecencyTracker tracker) {
         this.usageRecencyTracker = tracker;
+    }
+
+    public void setProgressContext(McpProgressContext ctx) {
+        this.progressContext = ctx;
     }
 
     public void setSkillRuntimeService(vip.mate.skill.runtime.SkillRuntimeService s) {
@@ -883,14 +892,31 @@ public class ToolExecutionExecutor {
             // not yet migrated to ToolContext keep working unchanged.
             ToolExecutionContext.set(pc.conversationId, pc.requesterId, pc.workspaceBasePath);
             String result;
+            String progressToken = null;
             try {
                 ChatOrigin runtimeOrigin = pc.origin != null ? pc.origin : ChatOrigin.EMPTY;
                 runtimeOrigin = runtimeOrigin
                         .withConversationId(pc.conversationId)
                         .withWorkspace(runtimeOrigin.workspaceId(), pc.workspaceBasePath);
                 ToolContext toolContext = runtimeOrigin.toToolContext();
+
+                // MCP progress: generate progressToken and inject into ToolContext
+                // so ProgressAwareMcpToolCallback can include it in tools/call _meta.
+                if (progressContext != null) {
+                    progressToken = UUID.randomUUID().toString();
+                    progressContext.register(progressToken,
+                            new McpProgressContext.ProgressEntry(pc.conversationId, pc.toolCall.id(), toolName));
+                    Map<String, Object> ctxMap = new HashMap<>(toolContext.getContext());
+                    ctxMap.put(ProgressAwareMcpToolCallback.MCP_PROGRESS_TOKEN_KEY, progressToken);
+                    toolContext = new ToolContext(ctxMap);
+                }
+
                 result = pc.callback.call(pc.arguments, toolContext);
             } finally {
+                if (progressToken != null) {
+                    progressContext.remove(progressToken);
+                    progressContext.removeSnapshot(pc.conversationId, pc.toolCall.id());
+                }
                 ToolExecutionContext.clear();
             }
 

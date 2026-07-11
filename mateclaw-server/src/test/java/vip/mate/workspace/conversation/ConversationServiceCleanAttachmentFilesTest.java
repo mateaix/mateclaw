@@ -17,7 +17,6 @@ import vip.mate.workspace.core.service.ChatUploadLocationResolver;
 
 import java.io.IOException;
 import java.nio.file.Files;
-import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Comparator;
@@ -27,26 +26,19 @@ import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
 
 /**
- * Regression coverage for issue #36: deleting a CRON-task conversation throws
- * {@code InvalidPathException} on Windows because the conversation id
- * ("cron:&lt;jobId&gt;") contains a colon, which is illegal in Windows path
- * segments. The exception bubbles out of the {@code @Transactional}
- * {@code deleteConversation}, rolling back the row deletes and leaving the
- * user unable to remove the entry.
+ * Regression coverage for issues #36 / #507: a conversation id like
+ * {@code cron:<jobId>} or {@code wecom:<user>} carries a colon, which is illegal
+ * in a Windows path segment. The old behaviour caught the resulting
+ * {@code InvalidPathException} and silently skipped cleanup; the fix instead
+ * sanitizes the id to a filesystem-safe segment so the attachment directory is
+ * both written and cleaned consistently on every OS.
  */
 @ExtendWith(MockitoExtension.class)
 class ConversationServiceCleanAttachmentFilesTest {
-
-    /** NUL byte: rejected by Paths.get on every OS, so it portably triggers
-     * the same InvalidPathException branch the colon hits on Windows. Built
-     * via String.valueOf((char) 0) so the source text contains no embedded
-     * NUL (which would be invisible in diff tools). */
-    private static final String UNREPRESENTABLE_ID = "bad" + (char) 0 + "id";
 
     @Mock private ConversationMapper conversationMapper;
     @Mock private MessageMapper messageMapper;
@@ -60,11 +52,11 @@ class ConversationServiceCleanAttachmentFilesTest {
 
     @BeforeEach
     void stubResolver() {
-        // cleanAttachmentFiles now resolves the upload root via the resolver.
-        // Point its candidate roots at the legacy default dir so both the
-        // happy-path and unrepresentable-id cases exercise the real filesystem.
-        when(chatUploadLocationResolver.resolveCandidateUploadRoots(any()))
-                .thenReturn(List.of(Paths.get("data", "chat-uploads")));
+        // cleanAttachmentFiles now walks sanitized conversation dirs. Mirror the
+        // real resolver: {legacy-default-root}/{sanitizeSegment(id)}.
+        when(chatUploadLocationResolver.resolveCandidateConversationDirs(any()))
+                .thenAnswer(inv -> List.of(Paths.get("data", "chat-uploads")
+                        .resolve(ChatUploadLocationResolver.sanitizeSegment(inv.getArgument(0)))));
     }
 
     @AfterEach
@@ -79,28 +71,25 @@ class ConversationServiceCleanAttachmentFilesTest {
     }
 
     @Test
-    @DisplayName("conversation id that yields an unrepresentable path is skipped, not thrown")
-    void unrepresentablePathIdIsSkipped() {
-        // Precondition: confirm the id really does break Paths.resolve on
-        // this JDK / OS. If a future JDK ever accepts the NUL byte, the
-        // service-level assertion below would silently pass without
-        // exercising the catch branch we are guarding — fail loudly here
-        // instead.
-        assertThatThrownBy(() -> Paths.get("data", "chat-uploads").resolve(UNREPRESENTABLE_ID))
-                .isInstanceOf(InvalidPathException.class);
+    @DisplayName("colon-bearing id (cron:jobId / wecom:xxx) is sanitized and its dir is cleaned, not skipped")
+    void colonIdIsSanitizedAndCleaned() throws IOException {
+        // The ':' would throw InvalidPathException as a raw Windows path segment;
+        // the service must sanitize it and clean the sanitized dir — never throw,
+        // never silently skip (the pre-fix bug from issue #36).
+        String convId = "cron:job-" + UUID.randomUUID();
+        Path uploadRoot = Paths.get("data", "chat-uploads");
+        createdDir = uploadRoot.resolve(ChatUploadLocationResolver.sanitizeSegment(convId));
+        Files.createDirectories(createdDir);
+        Files.writeString(createdDir.resolve("a.txt"), "hello");
 
-        // Without the catch in cleanAttachmentFiles, this would propagate
-        // InvalidPathException out of the @Transactional deleteConversation,
-        // rolling back the row deletes — the user-visible bug from issue #36.
-        assertThatCode(() -> service.cleanAttachmentFiles(UNREPRESENTABLE_ID))
-                .doesNotThrowAnyException();
+        assertThatCode(() -> service.cleanAttachmentFiles(convId)).doesNotThrowAnyException();
+        assertThat(Files.exists(createdDir)).isFalse();
     }
 
     @Test
     @DisplayName("legal id with a real attachment dir is still cleaned (happy path)")
     void legalIdHappyPathStillCleans() throws IOException {
-        // UUID-shaped id matches what the web channel actually uses, so the
-        // resolve() succeeds on every OS and the walk/delete loop runs.
+        // UUID-shaped id matches what the web channel uses; sanitize is a no-op.
         String convId = "test-" + UUID.randomUUID();
         Path uploadRoot = Paths.get("data", "chat-uploads");
         createdDir = uploadRoot.resolve(convId);

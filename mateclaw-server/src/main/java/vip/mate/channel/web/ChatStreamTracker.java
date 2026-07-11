@@ -3,10 +3,13 @@ package vip.mate.channel.web;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.ApplicationContext;
 import org.springframework.stereotype.Component;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import reactor.core.Disposable;
+import vip.mate.tool.mcp.runtime.McpProgressContext;
 import vip.mate.workspace.conversation.model.MessageContentPart;
 
 import java.io.IOException;
@@ -105,6 +108,9 @@ public class ChatStreamTracker {
      */
     @Value("${mateclaw.stream.heartbeat.tool-sec:5}")
     private int heartbeatToolSec = 5;
+
+    @Autowired
+    private ApplicationContext applicationContext;
 
     public ChatStreamTracker(ObjectMapper objectMapper) {
         this.objectMapper = objectMapper;
@@ -582,6 +588,15 @@ public class ChatStreamTracker {
      * early-return remains.
      */
     public void broadcast(String conversationId, String eventName, String jsonData) {
+        broadcast(conversationId, eventName, jsonData, false);
+    }
+
+    /**
+     * Broadcast an event to all subscribers (optionally skip buffer).
+     * @param skipBuffer if true, do not write to the ring buffer — used for
+     *                   high-frequency transient events (e.g. progress).
+     */
+    public void broadcast(String conversationId, String eventName, String jsonData, boolean skipBuffer) {
         RunState state = runs.get(conversationId);
 
         boolean isDone = "done".equals(eventName);
@@ -652,18 +667,23 @@ public class ChatStreamTracker {
         }
 
         synchronized (state.lock) {
-            long id = ++state.nextEventId;
-            SseEvent event = new SseEvent(id, eventName, jsonData);
-            state.buffer.add(event);
-            // buffer 容量保护：超出上限时优先丢弃 thinking_delta（占比最大且非关键）
-            if (state.buffer.size() > MAX_BUFFER_SIZE) {
-                trimBuffer(state.buffer);
+            if (!skipBuffer) {
+                long id = ++state.nextEventId;
+                SseEvent event = new SseEvent(id, eventName, jsonData);
+                state.buffer.add(event);
+                if (state.buffer.size() > MAX_BUFFER_SIZE) {
+                    trimBuffer(state.buffer);
+                }
             }
             Iterator<SseEmitter> it = state.subscribers.iterator();
             while (it.hasNext()) {
                 SseEmitter emitter = it.next();
                 try {
-                    emitter.send(SseEmitter.event().id(String.valueOf(id)).name(eventName).data(jsonData));
+                    if (skipBuffer) {
+                        emitter.send(SseEmitter.event().name(eventName).data(jsonData));
+                    } else {
+                        emitter.send(SseEmitter.event().id(String.valueOf(state.nextEventId)).name(eventName).data(jsonData));
+                    }
                 } catch (IOException | IllegalStateException e) {
                     log.debug("Removing dead subscriber for {}: {}", conversationId, e.getMessage());
                     it.remove();
@@ -695,6 +715,13 @@ public class ChatStreamTracker {
      * @param data           事件载荷，将被 Jackson 序列化为 JSON
      */
     public void broadcastObject(String conversationId, String eventName, Object data) {
+        broadcastObject(conversationId, eventName, data, false);
+    }
+
+    /**
+     * Broadcast an Object directly (auto-serialized to JSON), optionally skipping the buffer.
+     */
+    public void broadcastObject(String conversationId, String eventName, Object data, boolean skipBuffer) {
         String json;
         try {
             json = objectMapper.writeValueAsString(data);
@@ -702,7 +729,32 @@ public class ChatStreamTracker {
             log.warn("Failed to serialize broadcast data for event {}: {}", eventName, e.getMessage());
             json = "{\"error\":\"serialization_failed\"}";
         }
-        broadcast(conversationId, eventName, json);
+        broadcast(conversationId, eventName, json, skipBuffer);
+    }
+
+    /**
+     * Deliver MCP progress snapshots on SSE reconnect. Progress events do not
+     * participate in buffer replay, so the latest snapshot is read from
+     * {@link McpProgressContext} and delivered separately on attach.
+     */
+    private void sendProgressSnapshots(String conversationId, SseEmitter emitter) {
+        try {
+            McpProgressContext progressCtx = applicationContext.getBean(McpProgressContext.class);
+            Map<String, String> snapshots = progressCtx.getSnapshots(conversationId);
+            if (snapshots != null && !snapshots.isEmpty()) {
+                for (Map.Entry<String, String> entry : snapshots.entrySet()) {
+                    try {
+                        emitter.send(SseEmitter.event()
+                                .name("tool_call_progress")
+                                .data(entry.getValue()));
+                    } catch (IOException e) {
+                        log.debug("Failed to send progress snapshot for {}: {}", conversationId, e.getMessage());
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.debug("Failed to send progress snapshots for {}: {}", conversationId, e.getMessage());
+        }
     }
 
     /**
@@ -921,6 +973,10 @@ public class ChatStreamTracker {
             // Without this, async_task_completed fired after `done` would be silently
             // dropped, leaving the chat UI stuck on the "正在生成中" placeholder.
             state.subscribers.add(emitter);
+
+            // Deliver MCP progress snapshots on reconnect (progress events skip buffer replay)
+            sendProgressSnapshots(conversationId, emitter);
+
             if (state.done) {
                 log.info("[SSE] Replayed {} buffered events; emitter stays subscribed for late async events: {}",
                         state.buffer.size(), conversationId);

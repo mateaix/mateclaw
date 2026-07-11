@@ -101,12 +101,23 @@ RUN apt-get update \
         tesseract-ocr \
         tesseract-ocr-chi-sim \
         tzdata \
+        python3-pip \
+        python-is-python3 \
+        python3-dev \
+        build-essential \
     && rm -rf /var/lib/apt/lists/*
+
+# Remove PEP 668's EXTERNALLY-MANAGED marker so pip can install packages
+# system-wide without --break-system-packages. This is a container — there is
+# no host Python environment to protect. Skill scripts and LLM-generated code
+# need to `pip install` on the fly; PEP 668 would block every install with
+# "error: externally-managed-environment".
+RUN rm -f /usr/lib/python3*/EXTERNALLY-MANAGED
 
 # Install Playwright Python bindings so Python-based browser tools
 # (browser_use, etc.) can reuse the bundled browsers under
 # PLAYWRIGHT_BROWSERS_PATH without re-downloading them.
-RUN pip3 install --break-system-packages playwright
+RUN pip3 install playwright
 
 # Pre-trust GitHub's SSH host key so sync_github.py's git pull never
 # blocks on an interactive "Are you sure?" prompt.

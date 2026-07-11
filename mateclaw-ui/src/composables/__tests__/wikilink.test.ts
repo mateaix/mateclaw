@@ -129,6 +129,46 @@ describe('resolveWikilink — safety cases', () => {
 })
 
 // ---------------------------------------------------------------------------
+// resolveWikilink — cross-KB targets [[kbId/slug]]
+// ---------------------------------------------------------------------------
+describe('resolveWikilink — cross-KB', () => {
+  it('resolves [[kbId/slug]] to a cross-kb link', () => {
+    const r = resolveWikilink('2055137662148763649/photosynthesis', REFS)
+    expect(r).toEqual({
+      kind: 'cross-kb',
+      kbId: '2055137662148763649',
+      slug: 'photosynthesis',
+      display: 'photosynthesis',
+    })
+  })
+
+  it('honours explicit display for cross-KB targets', () => {
+    const r = resolveWikilink('123/some-page|Some Page', REFS)
+    expect(r.kind).toBe('cross-kb')
+    if (r.kind === 'cross-kb') {
+      expect(r.kbId).toBe('123')
+      expect(r.slug).toBe('some-page')
+      expect(r.display).toBe('Some Page')
+    }
+  })
+
+  it('does not treat a non-numeric prefix as cross-KB', () => {
+    // Falls through to normal (broken here) single-KB resolution.
+    expect(resolveWikilink('chapter/section', REFS).kind).toBe('broken')
+  })
+
+  it('renders a cross-KB anchor with data-kbid + data-slug', () => {
+    const root = document.createElement('div')
+    root.innerHTML = 'See [[123/photosynthesis]].'
+    postprocessWikilinks(root, (raw) => resolveWikilink(raw, REFS, ARCHIVED_REFS))
+    const a = root.querySelector('a.wiki-link-crosskb') as HTMLAnchorElement
+    expect(a).not.toBeNull()
+    expect(a.getAttribute('data-kbid')).toBe('123')
+    expect(a.getAttribute('data-slug')).toBe('photosynthesis')
+  })
+})
+
+// ---------------------------------------------------------------------------
 // postprocessWikilinks — DOM walker behaviour
 // ---------------------------------------------------------------------------
 describe('postprocessWikilinks — DOM behaviour', () => {

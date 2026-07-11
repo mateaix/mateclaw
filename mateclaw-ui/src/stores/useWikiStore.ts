@@ -170,6 +170,16 @@ export const useWikiStore = defineStore('wiki', () => {
   const selectedRawId = ref<number | null>(null)
   const totalPageCount = ref(0)
 
+  // Raw-material list query filters (status / sourceType / title keyword).
+  // Held in the store so they stay applied across background refreshes
+  // (SSE completion, job poller) — a filtered list must not silently snap
+  // back to the full list when a raw finishes processing.
+  const rawFilters = ref<{ status: string; sourceType: string; keyword: string }>({
+    status: '',
+    sourceType: '',
+    keyword: '',
+  })
+
   // Active KB's pageType profile (parsed). Loaded alongside the KB so sidebar
   // grouping, graph colouring and the transformation editor can render the
   // KB's own classification. Null until a KB is selected / its profile loads.
@@ -303,12 +313,85 @@ export const useWikiStore = defineStore('wiki', () => {
     if (brokenLinksPollTimer) { clearInterval(brokenLinksPollTimer); brokenLinksPollTimer = null }
     brokenLinksLoading.value = false
     selectedRawId.value = null
+    rawFilters.value = { status: '', sourceType: '', keyword: '' }
     pageTypeProfile.value = null
   }
 
   async function fetchRawMaterials(kbId: number) {
-    const res: any = await wikiApi.listRaw(kbId)
+    const f = rawFilters.value
+    const params = f.status || f.sourceType || f.keyword
+      ? {
+          status: f.status || undefined,
+          sourceType: f.sourceType || undefined,
+          keyword: f.keyword || undefined,
+        }
+      : undefined
+    const res: any = await wikiApi.listRaw(kbId, params)
     rawMaterials.value = res.data || []
+  }
+
+  // Update the raw-material filters and refetch. Empty-string fields clear
+  // their clause. Used by the raw-material panel's filter bar.
+  async function setRawFilters(
+    kbId: number,
+    filters: Partial<{ status: string; sourceType: string; keyword: string }>,
+  ) {
+    rawFilters.value = { ...rawFilters.value, ...filters }
+    await fetchRawMaterials(kbId)
+  }
+
+  function resetRawFilters() {
+    rawFilters.value = { status: '', sourceType: '', keyword: '' }
+  }
+  async function fetchSourceGroups(kbId: number) {
+    const res: any = await wikiApi.listSourceGroups(kbId)
+    sourceGroups.value = res.data || []
+  }
+
+  async function createSourceGroup(kbId: number, data: {
+    alias: string
+    path: string
+    fileFilter?: string | null
+    cronExpr?: string | null
+    enabled?: boolean | null
+  }) {
+    const res: any = await wikiApi.createSourceGroup(kbId, data)
+    await fetchSourceGroups(kbId)
+    return res.data || res
+  }
+
+  async function updateSourceGroup(kbId: number, groupId: number | string, data: {
+    alias?: string | null
+    path?: string | null
+    fileFilter?: string | null
+    cronExpr?: string | null
+    enabled?: boolean | null
+  }) {
+    const res: any = await wikiApi.updateSourceGroup(kbId, groupId, data)
+    await fetchSourceGroups(kbId)
+    return res.data || res
+  }
+
+  /** reassignTo: target groupId to move member raws into, or null/undefined to leave them ungrouped. */
+  async function deleteSourceGroup(kbId: number, groupId: number | string, reassignTo?: number | string | null) {
+    await wikiApi.deleteSourceGroup(kbId, groupId, reassignTo)
+    await Promise.all([fetchSourceGroups(kbId), fetchRawMaterials(kbId)])
+  }
+
+  async function scanSourceGroup(kbId: number, groupId: number | string, mode: 'incremental' | 'full' = 'incremental') {
+    const res: any = await wikiApi.scanSourceGroup(kbId, groupId, mode)
+    await Promise.all([fetchSourceGroups(kbId), fetchRawMaterials(kbId)])
+    return res.data || res
+  }
+
+  async function updateRawGroup(kbId: number, rawId: number, groupId: number | string | null) {
+    await wikiApi.updateRawGroup(kbId, rawId, groupId)
+    await Promise.all([fetchRawMaterials(kbId), fetchSourceGroups(kbId)])
+  }
+
+  async function batchUpdateRawGroup(kbId: number, rawIds: number[], groupId: number | string | null) {
+    await wikiApi.batchUpdateRawGroup(kbId, rawIds, groupId)
+    await Promise.all([fetchRawMaterials(kbId), fetchSourceGroups(kbId)])
   }
 
   async function fetchSourceGroups(kbId: number) {
@@ -552,6 +635,9 @@ export const useWikiStore = defineStore('wiki', () => {
     loading,
     selectedRawId,
     totalPageCount,
+    rawFilters,
+    setRawFilters,
+    resetRawFilters,
     pageTypeProfile,
     pageRefs,
     archivedPageRefs,

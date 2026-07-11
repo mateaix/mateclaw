@@ -784,22 +784,6 @@ export const cronJobApi = {
 }
 
 // ==================== Wiki Knowledge Base ====================
-// One row in the cross-KB failure center. ids are strings (global Long→String
-// Jackson config) to avoid Snowflake precision loss.
-export interface WikiFailureItem {
-  rawId: string
-  kbId: string
-  kbName: string
-  workspaceId: string | null
-  title: string
-  processingStatus: string
-  errorCode: string | null
-  errorMessage: string | null
-  warningCode: string | null
-  warningMessage: string | null
-  updateTime: string | null
-}
-
 export const wikiApi = {
   // Knowledge Base
   listKBs: () => http.get('/wiki/knowledge-bases'),
@@ -820,11 +804,11 @@ export const wikiApi = {
     http.put(`/wiki/knowledge-bases/${id}/source-directory`, { path }),
   scanDirectory: (id: number) => http.post(`/wiki/knowledge-bases/${id}/scan`),
 
-  // Centralized cross-KB failure center (admin only)
-  listFailures: (limit = 100) => http.get<{ data: WikiFailureItem[] }>(`/wiki/admin/failures?limit=${limit}`),
-
   // Raw Materials
-  listRaw: (kbId: number) => http.get(`/wiki/knowledge-bases/${kbId}/raw`),
+  listRaw: (
+    kbId: number,
+    filters?: { status?: string; sourceType?: string; keyword?: string; startTime?: string; endTime?: string },
+  ) => http.get(`/wiki/knowledge-bases/${kbId}/raw`, filters ? { params: filters } : undefined),
   addRawText: (kbId: number, data: { title: string; content: string }) =>
     http.post(`/wiki/knowledge-bases/${kbId}/raw/text`, data),
   uploadRaw: (kbId: number, formData: FormData, onProgress?: (pct: number) => void) =>
@@ -840,6 +824,16 @@ export const wikiApi = {
     http.post(`/wiki/knowledge-bases/${kbId}/raw/${rawId}/reprocess`),
   cancelRaw: (kbId: number, rawId: number) =>
     http.post(`/wiki/knowledge-bases/${kbId}/raw/${rawId}/cancel`),
+  // Batch reprocess/delete. Select by explicit `ids` (Snowflake strings — never
+  // coerce to number) or by a `status` selector (e.g. retry all failed).
+  batchReprocessRaw: (
+    kbId: number,
+    body: { ids?: (string | number)[]; status?: string; force?: boolean },
+  ) => http.post(`/wiki/knowledge-bases/${kbId}/raw/batch/reprocess`, body),
+  batchDeleteRaw: (
+    kbId: number,
+    body: { ids?: (string | number)[]; status?: string },
+  ) => http.post(`/wiki/knowledge-bases/${kbId}/raw/batch/delete`, body),
   downloadRaw: (kbId: number, rawId: number) =>
     http.get<Blob>(`/wiki/knowledge-bases/${kbId}/raw/${rawId}/download`, {
       responseType: 'blob',

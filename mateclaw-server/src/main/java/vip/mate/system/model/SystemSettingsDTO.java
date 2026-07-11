@@ -34,6 +34,14 @@ public class SystemSettingsDTO {
     private String serperApiKeyMasked;
     private String tavilyApiKeyMasked;
 
+    // ===== WeChat Official Account (公众号) publish credentials =====
+    /** 公众号 AppID (plain — not sensitive). */
+    private String weixinoaAppId;
+    /** 公众号 AppSecret — write-only from the client; never echoed in plaintext. */
+    private String weixinoaAppSecret;
+    /** Masked AppSecret for display. */
+    private String weixinoaAppSecretMasked;
+
     // ===== 视频生成配置 =====
     /** 是否启用视频生成能力 */
     private Boolean videoEnabled;

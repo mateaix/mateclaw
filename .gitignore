@@ -125,3 +125,8 @@ docs/superpowers/
 # Ignore stray npm/yarn lockfiles so they are not committed by mistake.
 package-lock.json
 yarn.lock
+
+# Python bytecode caches generated when skill scripts (e.g. skills/*/scripts/*.py)
+# are executed. Never commit or sync these.
+__pycache__/
+*.pyc

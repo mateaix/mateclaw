@@ -1,0 +1,81 @@
+<!doctype html>
+<!--
+  Xiaohongshu QUOTE card — big golden-sentence style. Vertical 3:4 (1080x1440).
+  Self-contained: embedded CSS, system font stack, no remote assets.
+  Replace tokens: {{QUOTE}} (the golden sentence, keep it punchy),
+  {{SOURCE}} (attribution, e.g. "— 《被讨厌的勇气》" or a name),
+  {{TAG}} (small top label, e.g. "每日一句" / "读书摘录"),
+  {{FOOTER}} (handle or teaser line).
+  Wrap a key phrase inside {{QUOTE}} in <em>...</em> to highlight it.
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 1080px; height: 1440px; }
+  body {
+    font-family: 'Songti SC','Noto Serif SC','PingFang SC','Microsoft YaHei',serif;
+    background: #f4efe6;
+    color: #2a2620;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: 120px 96px;
+    position: relative;
+    overflow: hidden;
+  }
+  /* Warm paper texture accents */
+  .frame {
+    position: absolute; inset: 44px;
+    border: 2px solid #d8ccb4; border-radius: 20px;
+    pointer-events: none;
+  }
+  .tag {
+    align-self: center;
+    font-family: 'PingFang SC','Microsoft YaHei',sans-serif;
+    font-size: 30px; font-weight: 600; letter-spacing: 8px;
+    color: #a9895a; margin-bottom: 64px;
+  }
+  /* Oversized decorative opening quotation mark */
+  .mark {
+    font-size: 220px; line-height: 0.7; color: #c9a86a;
+    font-family: Georgia,'Times New Roman',serif;
+    margin-bottom: 12px; align-self: center;
+  }
+  .quote {
+    font-size: 76px; font-weight: 600; line-height: 1.55;
+    text-align: center; letter-spacing: 2px;
+  }
+  .quote em {
+    font-style: normal;
+    background: linear-gradient(180deg, transparent 62%, #f2d79a 62%, #f2d79a 92%, transparent 92%);
+    padding: 0 6px;
+  }
+  .source {
+    font-family: 'PingFang SC','Microsoft YaHei',sans-serif;
+    font-size: 40px; font-weight: 500; color: #7a6f5c;
+    text-align: center; margin-top: 72px;
+  }
+  .rule {
+    width: 120px; height: 3px; background: #c9a86a;
+    margin: 56px auto 0;
+  }
+  .footer {
+    position: absolute; bottom: 90px; left: 0; right: 0;
+    text-align: center;
+    font-family: 'PingFang SC','Microsoft YaHei',sans-serif;
+    font-size: 32px; font-weight: 500; color: #a9895a;
+  }
+</style>
+</head>
+<body>
+  <div class="frame"></div>
+  <div class="tag">{{TAG}}</div>
+  <div class="mark">&#8220;</div>
+  <p class="quote">{{QUOTE}}</p>
+  <div class="rule"></div>
+  <p class="source">{{SOURCE}}</p>
+  <div class="footer">{{FOOTER}}</div>
+</body>
+</html>
