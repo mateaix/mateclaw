@@ -1,6 +1,7 @@
 package vip.mate.wiki.service;
 
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -9,6 +10,7 @@ import vip.mate.exception.MateClawException;
 import vip.mate.wiki.model.WikiKnowledgeBaseEntity;
 import vip.mate.wiki.model.WikiSourceGroupEntity;
 import vip.mate.wiki.repository.WikiSourceGroupMapper;
+import vip.mate.wiki.support.MybatisPlusLambdaCacheInitializer;
 
 import java.util.Map;
 
@@ -29,6 +31,11 @@ import static org.mockito.Mockito.when;
  * CRUD + delete-with-reassign behavior for {@link WikiSourceGroupService}.
  */
 class WikiSourceGroupServiceTest {
+
+    @BeforeAll
+    static void initLambdaCache() {
+        MybatisPlusLambdaCacheInitializer.init(WikiSourceGroupEntity.class);
+    }
 
     private static final Long KB_ID = 1L;
 

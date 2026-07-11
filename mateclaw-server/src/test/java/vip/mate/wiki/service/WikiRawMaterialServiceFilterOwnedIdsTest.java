@@ -1,5 +1,6 @@
 package vip.mate.wiki.service;
 
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -10,6 +11,7 @@ import vip.mate.tool.image.vision.ImageVisionService;
 import vip.mate.wiki.WikiProperties;
 import vip.mate.wiki.model.WikiRawMaterialEntity;
 import vip.mate.wiki.repository.WikiRawMaterialMapper;
+import vip.mate.wiki.support.MybatisPlusLambdaCacheInitializer;
 
 import java.util.List;
 
@@ -26,6 +28,11 @@ import static org.mockito.Mockito.when;
  * query rather than filtering an in-memory full table scan.
  */
 class WikiRawMaterialServiceFilterOwnedIdsTest {
+
+    @BeforeAll
+    static void initLambdaCache() {
+        MybatisPlusLambdaCacheInitializer.init(WikiRawMaterialEntity.class);
+    }
 
     private WikiRawMaterialMapper rawMapper;
     private WikiRawMaterialService service;
