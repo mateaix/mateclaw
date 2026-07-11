@@ -818,6 +818,9 @@ export interface SystemSettings {
   tavilyBaseUrl: string
   serperApiKeyMasked?: string
   tavilyApiKeyMasked?: string
+  weixinoaAppId?: string
+  weixinoaAppSecret?: string
+  weixinoaAppSecretMasked?: string
   // Keyless 搜索 provider
   duckduckgoEnabled: boolean
   searxngBaseUrl: string
