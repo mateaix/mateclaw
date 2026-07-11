@@ -148,6 +148,16 @@ export const useWikiStore = defineStore('wiki', () => {
   const selectedRawId = ref<number | null>(null)
   const totalPageCount = ref(0)
 
+  // Raw-material list query filters (status / sourceType / title keyword).
+  // Held in the store so they stay applied across background refreshes
+  // (SSE completion, job poller) — a filtered list must not silently snap
+  // back to the full list when a raw finishes processing.
+  const rawFilters = ref<{ status: string; sourceType: string; keyword: string }>({
+    status: '',
+    sourceType: '',
+    keyword: '',
+  })
+
   // Active KB's pageType profile (parsed). Loaded alongside the KB so sidebar
   // grouping, graph colouring and the transformation editor can render the
   // KB's own classification. Null until a KB is selected / its profile loads.
@@ -278,12 +288,35 @@ export const useWikiStore = defineStore('wiki', () => {
     if (brokenLinksPollTimer) { clearInterval(brokenLinksPollTimer); brokenLinksPollTimer = null }
     brokenLinksLoading.value = false
     selectedRawId.value = null
+    rawFilters.value = { status: '', sourceType: '', keyword: '' }
     pageTypeProfile.value = null
   }
 
   async function fetchRawMaterials(kbId: number) {
-    const res: any = await wikiApi.listRaw(kbId)
+    const f = rawFilters.value
+    const params = f.status || f.sourceType || f.keyword
+      ? {
+          status: f.status || undefined,
+          sourceType: f.sourceType || undefined,
+          keyword: f.keyword || undefined,
+        }
+      : undefined
+    const res: any = await wikiApi.listRaw(kbId, params)
     rawMaterials.value = res.data || []
+  }
+
+  // Update the raw-material filters and refetch. Empty-string fields clear
+  // their clause. Used by the raw-material panel's filter bar.
+  async function setRawFilters(
+    kbId: number,
+    filters: Partial<{ status: string; sourceType: string; keyword: string }>,
+  ) {
+    rawFilters.value = { ...rawFilters.value, ...filters }
+    await fetchRawMaterials(kbId)
+  }
+
+  function resetRawFilters() {
+    rawFilters.value = { status: '', sourceType: '', keyword: '' }
   }
 
   async function fetchPages(kbId: number, rawId?: number | null) {
@@ -474,6 +507,9 @@ export const useWikiStore = defineStore('wiki', () => {
     loading,
     selectedRawId,
     totalPageCount,
+    rawFilters,
+    setRawFilters,
+    resetRawFilters,
     pageTypeProfile,
     pageRefs,
     archivedPageRefs,

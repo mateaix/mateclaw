@@ -36,6 +36,9 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -509,13 +512,19 @@ public class WikiController {
     // ==================== Raw Materials ====================
 
     @RequireWorkspaceRole("viewer")
-    @Operation(summary = "获取原始材料列表（含每条材料生成的页面数）")
+    @Operation(summary = "获取原始材料列表（含每条材料生成的页面数），支持按状态/类型/关键词/时间筛选")
     @GetMapping("/knowledge-bases/{kbId}/raw")
     public R<List<Map<String, Object>>> listRaw(@PathVariable Long kbId,
+                                                 @RequestParam(required = false) String status,
+                                                 @RequestParam(required = false) String sourceType,
+                                                 @RequestParam(required = false) String keyword,
+                                                 @RequestParam(required = false) String startTime,
+                                                 @RequestParam(required = false) String endTime,
                                                  @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
         verifyKBWorkspace(kbId, workspaceId);
-        List<WikiRawMaterialEntity> raws = rawService.listByKbId(kbId);
-        List<Map<String, Object>> result = new java.util.ArrayList<>(raws.size());
+        List<WikiRawMaterialEntity> raws = rawService.listByKbIdFiltered(
+                kbId, status, sourceType, keyword, parseTime(startTime, false), parseTime(endTime, true));
+        List<Map<String, Object>> result = new ArrayList<>(raws.size());
         for (WikiRawMaterialEntity raw : raws) {
             Map<String, Object> item = new LinkedHashMap<>();
             // Serialize all entity fields via Jackson-friendly approach
@@ -646,6 +655,137 @@ public class WikiController {
         // safe and do not surface an error to the user.
         rawService.requestCancel(rawId);
         return R.ok();
+    }
+
+    /** Hard cap on how many raw materials one batch call may touch. */
+    private static final int MAX_RAW_BATCH = 500;
+
+    @RequireWorkspaceRole("member")
+    @Operation(summary = "批量重新处理原始材料（按 ids 或按 status 选取；force=true 绕过 content_hash 短路）")
+    @PostMapping("/knowledge-bases/{kbId}/raw/batch/reprocess")
+    public R<Map<String, Object>> batchReprocessRaw(@PathVariable Long kbId,
+                                                    @RequestBody Map<String, Object> body,
+                                                    @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        verifyKBWorkspace(kbId, workspaceId);
+        List<Long> ids = resolveBatchIds(kbId, body);
+        if (ids == null) {
+            return R.fail(400, "Must supply non-empty 'ids' or a 'status' selector");
+        }
+        if (ids.size() > MAX_RAW_BATCH) {
+            return R.fail(400, "Batch too large: " + ids.size() + " > " + MAX_RAW_BATCH);
+        }
+        boolean force = Boolean.TRUE.equals(body.get("force"));
+        int processed = 0;
+        int skipped = 0;
+        for (Long id : ids) {
+            WikiRawMaterialEntity raw = rawService.getById(id);
+            // Guard against cross-KB ids sneaking in via an explicit id list.
+            if (raw == null || !kbId.equals(raw.getKbId())) {
+                skipped++;
+                continue;
+            }
+            try {
+                if (force) {
+                    rawService.setLastProcessedHash(id, null);
+                }
+                rawService.reprocess(id);
+                processed++;
+            } catch (Exception e) {
+                log.warn("[Wiki] Batch reprocess skipped raw={}: {}", id, e.getMessage());
+                skipped++;
+            }
+        }
+        return R.ok(Map.of("requested", ids.size(), "processed", processed, "skipped", skipped));
+    }
+
+    @RequireWorkspaceRole("admin")
+    @Operation(summary = "批量删除原始材料（按 ids 或按 status 选取；级联清理页面/分块）")
+    @PostMapping("/knowledge-bases/{kbId}/raw/batch/delete")
+    public R<Map<String, Object>> batchDeleteRaw(@PathVariable Long kbId,
+                                                 @RequestBody Map<String, Object> body,
+                                                 @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        verifyKBWorkspace(kbId, workspaceId);
+        List<Long> ids = resolveBatchIds(kbId, body);
+        if (ids == null) {
+            return R.fail(400, "Must supply non-empty 'ids' or a 'status' selector");
+        }
+        if (ids.size() > MAX_RAW_BATCH) {
+            return R.fail(400, "Batch too large: " + ids.size() + " > " + MAX_RAW_BATCH);
+        }
+        int deleted = 0;
+        int skipped = 0;
+        for (Long id : ids) {
+            WikiRawMaterialEntity raw = rawService.getById(id);
+            if (raw == null || !kbId.equals(raw.getKbId())) {
+                skipped++;
+                continue;
+            }
+            try {
+                rawService.delete(id);
+                kbService.decrementRawCount(kbId);
+                deleted++;
+            } catch (Exception e) {
+                log.warn("[Wiki] Batch delete skipped raw={}: {}", id, e.getMessage());
+                skipped++;
+            }
+        }
+        return R.ok(Map.of("requested", ids.size(), "deleted", deleted, "skipped", skipped));
+    }
+
+    /**
+     * Resolve the target id set for a batch operation from the request body.
+     * An explicit non-empty {@code ids} array wins; otherwise a {@code status}
+     * selector resolves to every raw in the KB with that status. Returns
+     * {@code null} when neither is usable (caller returns 400). Ids are parsed
+     * leniently from string or number JSON forms (Snowflake precision).
+     */
+    private List<Long> resolveBatchIds(Long kbId, Map<String, Object> body) {
+        Object rawIds = body.get("ids");
+        if (rawIds instanceof List<?> list && !list.isEmpty()) {
+            List<Long> ids = new ArrayList<>(list.size());
+            for (Object o : list) {
+                if (o == null) continue;
+                try {
+                    ids.add(Long.parseLong(String.valueOf(o).trim()));
+                } catch (NumberFormatException ignored) {
+                    // Skip malformed ids rather than failing the whole batch.
+                }
+            }
+            return ids.isEmpty() ? null : ids;
+        }
+        Object status = body.get("status");
+        if (status != null && !String.valueOf(status).isBlank()) {
+            List<Long> ids = rawService.selectIdsByStatus(kbId, String.valueOf(status).trim());
+            return ids.isEmpty() ? List.of() : ids;
+        }
+        return null;
+    }
+
+    /**
+     * Parse an optional ISO date or date-time filter bound. Accepts a full
+     * {@code LocalDateTime} (e.g. {@code 2026-07-10T13:00:00}) or a bare date
+     * (e.g. {@code 2026-07-10}); a bare date maps to start-of-day for a lower
+     * bound or end-of-day for an upper bound. Blank/unparseable input yields
+     * {@code null} (no clause) rather than an error.
+     *
+     * @param value  the raw query-parameter string
+     * @param endOfDay when true and {@code value} is date-only, use 23:59:59.999999999
+     */
+    private LocalDateTime parseTime(String value, boolean endOfDay) {
+        if (value == null || value.isBlank()) return null;
+        String v = value.trim();
+        try {
+            return LocalDateTime.parse(v);
+        } catch (Exception ignored) {
+            // Fall through to date-only parsing.
+        }
+        try {
+            LocalDate d = LocalDate.parse(v);
+            return endOfDay ? d.atTime(java.time.LocalTime.MAX) : d.atStartOfDay();
+        } catch (Exception ignored) {
+            log.warn("[Wiki] Ignoring unparseable raw-material time filter: {}", v);
+            return null;
+        }
     }
 
     @RequireWorkspaceRole("viewer")

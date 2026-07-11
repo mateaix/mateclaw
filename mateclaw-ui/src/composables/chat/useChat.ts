@@ -958,6 +958,21 @@ export function useChat(options: UseChatOptions): UseChatReturn {
   stream.on('tool_call_started', handleToolCallStarted)
   stream.on('tool_call_completed', handleToolCallCompleted)
 
+  // MCP long-running tool progress: update the matching tool_call segment's
+  // progress field so ToolCallSegment can render a progress bar.
+  stream.on('tool_call_progress', (data: any) => {
+    if (isStaleEvent(data)) return
+    if (!data?.toolCallId) return
+    const segs = currentSegments.value
+    const toolSeg = segs.find((s: MessageSegment) =>
+      s.type === 'tool_call' && s.status === 'running' && s.toolCallId === data.toolCallId)
+    if (toolSeg) {
+      toolSeg.progress = data.percent
+      toolSeg.progressMessage = data.message
+      toolSeg.progressStage = data.stage
+    }
+  })
+
   // ===== Browser action events =====
 
   stream.on('browser_action', (data) => {

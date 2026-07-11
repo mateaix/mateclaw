@@ -2,10 +2,12 @@ package vip.mate.skill.runtime;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -28,10 +30,23 @@ import java.util.concurrent.TimeUnit;
 public class SkillScriptExecutionService {
 
     private static final long DEFAULT_TIMEOUT_SECONDS = 30;
-    private static final long MAX_TIMEOUT_SECONDS = 300;
+    private static final long MAX_TIMEOUT_SECONDS = 600;
     private static final int MAX_OUTPUT_BYTES = 50_000;
     private static final boolean IS_WINDOWS = System.getProperty("os.name", "")
             .toLowerCase(Locale.ROOT).contains("win");
+
+    /**
+     * Pip mirror config for desktop (non-Docker) deployments. In Docker these
+     * arrive as PIP_INDEX_URL / PIP_TRUSTED_HOST env vars (set in
+     * docker-compose) and are inherited by ProcessBuilder directly. On the
+     * desktop app Java runs on the host — the host may not have those env
+     * vars set, so we fall back to Spring config and inject them explicitly.
+     */
+    @Value("${mateclaw.pip.index-url:}")
+    private String pipIndexUrl;
+
+    @Value("${mateclaw.pip.trusted-host:}")
+    private String pipTrustedHost;
 
     /** Supported inline-code languages mapped to the temp-file extension. */
     private static final Map<String, String> LANGUAGE_EXTENSIONS = Map.of(
@@ -225,6 +240,7 @@ public class SkillScriptExecutionService {
                     processEnv.put(e.getKey(), e.getValue());
                 }
             }
+            injectPipMirrorEnv(pb);
 
             Process process = pb.start();
 
@@ -269,6 +285,45 @@ public class SkillScriptExecutionService {
             process.waitFor(5, TimeUnit.SECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+        }
+    }
+
+    /**
+     * Inject pip mirror config into the subprocess environment.
+     *
+     * <p>Three layers, later ones only fill gaps left by earlier ones:
+     * <ol>
+     *   <li>Docker / system env — {@code PIP_INDEX_URL} / {@code PIP_TRUSTED_HOST}
+     *       already in the ProcessBuilder env (inherited from JVM). Nothing to do.</li>
+     *   <li>Spring config fallback — for desktop (non-Docker) deployments where
+     *       the host may not have those env vars. Injected only when absent.</li>
+     *   <li>Auto-derive {@code PIP_TRUSTED_HOST} — if the index URL is plain
+     *       HTTP and no trusted-host is set, pip blocks the download. Extract
+     *       the host from the URL so the user only needs to set one variable.</li>
+     * </ol>
+     */
+    private void injectPipMirrorEnv(ProcessBuilder pb) {
+        Map<String, String> env = pb.environment();
+
+        // Layer 2: Spring config fallback (desktop)
+        if (pipIndexUrl != null && !pipIndexUrl.isBlank()
+                && !env.containsKey("PIP_INDEX_URL")) {
+            env.put("PIP_INDEX_URL", pipIndexUrl);
+        }
+        if (pipTrustedHost != null && !pipTrustedHost.isBlank()
+                && !env.containsKey("PIP_TRUSTED_HOST")) {
+            env.put("PIP_TRUSTED_HOST", pipTrustedHost);
+        }
+
+        // Layer 3: auto-derive trusted-host for HTTP sources
+        String indexUrl = env.get("PIP_INDEX_URL");
+        if (indexUrl != null && !indexUrl.isBlank()
+                && !env.containsKey("PIP_TRUSTED_HOST")
+                && indexUrl.startsWith("http://")) {
+            String host = URI.create(indexUrl).getHost();
+            if (host != null && !host.isEmpty()) {
+                env.put("PIP_TRUSTED_HOST", host);
+            }
         }
     }
 

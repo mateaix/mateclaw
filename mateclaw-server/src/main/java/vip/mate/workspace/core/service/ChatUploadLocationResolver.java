@@ -17,6 +17,7 @@ import vip.mate.workspace.core.model.WorkspaceEntity;
 import vip.mate.workspace.conversation.model.ConversationEntity;
 import vip.mate.workspace.conversation.repository.ConversationMapper;
 
+import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Duration;
@@ -61,6 +62,65 @@ public class ChatUploadLocationResolver {
 
     /** Sub-directory appended under a configured base path. */
     public static final String UPLOAD_SUBDIR = "chat-uploads";
+
+    /**
+     * Turn a business conversation id into a filesystem-safe path segment.
+     * <p>
+     * IM-channel conversation ids carry a {@code channelType:identifier} shape
+     * (e.g. {@code wecom:XuZhanFu}); the {@code :} is illegal in a Windows
+     * filename (reserved for drive / alternate-data-stream syntax), so using the
+     * raw id as a directory name throws {@link InvalidPathException} on Windows
+     * and breaks every attachment / media write for IM channels there. Every
+     * conversationId → directory-segment mapping MUST route through this method
+     * so writes and reads agree on the on-disk layout.
+     * <p>
+     * The replacement set matches {@code ToolResultStorage.sanitize} exactly and
+     * is a no-op for ids that are already {@code [A-Za-z0-9_.-]}-only (web /
+     * webchat / numeric), so their existing on-disk layout is unchanged.
+     *
+     * @param conversationId raw business id ({@code null} yields empty string)
+     * @return a segment safe to use as a single path component on any OS
+     */
+    public static String sanitizeSegment(String conversationId) {
+        if (conversationId == null) return "";
+        return conversationId.replaceAll("[^A-Za-z0-9_.-]", "_");
+    }
+
+    /**
+     * The single conversation attachment directory (write target):
+     * {@code {uploadRoot}/{sanitizeSegment(conversationId)}/}.
+     */
+    public Path resolveConversationDir(String conversationId) {
+        return resolveUploadRoot(conversationId).resolve(sanitizeSegment(conversationId));
+    }
+
+    /**
+     * Every conversation attachment directory a read / cleanup path should probe,
+     * ordered: the sanitized dir under each candidate root first, then — for
+     * backward compatibility with pre-fix Linux uploads that used the raw id
+     * verbatim — the raw-id dir (only when it differs from the sanitized form
+     * and is a legal path on this filesystem).
+     * <p>
+     * On Windows a raw id containing {@code :} throws {@link InvalidPathException}
+     * from {@link Path#resolve(String)}; such an id never produced a directory on
+     * Windows, so the raw candidate is simply skipped.
+     */
+    public List<Path> resolveCandidateConversationDirs(String conversationId) {
+        String safe = sanitizeSegment(conversationId);
+        Set<Path> dirs = new LinkedHashSet<>();
+        for (Path root : resolveCandidateUploadRoots(conversationId)) {
+            dirs.add(root.resolve(safe));
+            if (!safe.equals(conversationId)) {
+                try {
+                    dirs.add(root.resolve(conversationId));
+                } catch (InvalidPathException ignore) {
+                    // Raw id is not a legal path on this OS (e.g. ':' on Windows);
+                    // no legacy attachments could exist there, so skip it.
+                }
+            }
+        }
+        return new ArrayList<>(dirs);
+    }
 
     private final ConversationMapper conversationMapper;
     private final WorkspaceService workspaceService;

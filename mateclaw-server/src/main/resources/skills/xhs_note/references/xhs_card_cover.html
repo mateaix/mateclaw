@@ -1,0 +1,64 @@
+<!doctype html>
+<!--
+  Xiaohongshu COVER card — bold hero style. Vertical 3:4 (1080x1440).
+  Self-contained: embedded CSS, system font stack, no remote assets.
+  Replace tokens: {{TITLE}} (big hook, keep short), {{SUBTITLE}} (one line),
+  {{BADGE}} (small tag, e.g. "亲测" / "干货"), {{FOOTER}} (handle or teaser).
+  Optional: swap --bg-image or the gradient for an image_generate portrait URL.
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 1080px; height: 1440px; }
+  body {
+    font-family: 'PingFang SC','Hiragino Sans GB','Microsoft YaHei',-apple-system,sans-serif;
+    background: linear-gradient(150deg, #ff6b81 0%, #ff8e53 100%);
+    color: #fff;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: 96px 88px;
+    position: relative;
+    overflow: hidden;
+  }
+  /* Decorative oversized circle for depth */
+  .blob {
+    position: absolute; width: 620px; height: 620px; border-radius: 50%;
+    background: rgba(255,255,255,0.12); top: -180px; right: -160px;
+  }
+  .badge {
+    display: inline-block; align-self: flex-start;
+    background: #fff; color: #ff5a6e;
+    font-size: 34px; font-weight: 800;
+    padding: 14px 30px; border-radius: 999px;
+    margin-bottom: 48px; letter-spacing: 2px;
+  }
+  .title {
+    font-size: 108px; font-weight: 900; line-height: 1.22;
+    letter-spacing: 1px; text-shadow: 0 6px 24px rgba(0,0,0,0.15);
+  }
+  /* Highlighter bar behind emphasized runs — wrap key words in <mark> */
+  .title mark {
+    background: #fff3b0; color: #d6335a;
+    padding: 0 12px; border-radius: 8px;
+  }
+  .subtitle {
+    font-size: 46px; font-weight: 600; line-height: 1.5;
+    margin-top: 44px; color: rgba(255,255,255,0.95);
+  }
+  .footer {
+    position: absolute; bottom: 88px; left: 88px;
+    font-size: 34px; font-weight: 600; color: rgba(255,255,255,0.9);
+  }
+</style>
+</head>
+<body>
+  <div class="blob"></div>
+  <span class="badge">{{BADGE}}</span>
+  <h1 class="title">{{TITLE}}</h1>
+  <p class="subtitle">{{SUBTITLE}}</p>
+  <div class="footer">{{FOOTER}}</div>
+</body>
+</html>

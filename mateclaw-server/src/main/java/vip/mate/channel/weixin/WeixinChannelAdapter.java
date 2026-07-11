@@ -10,6 +10,7 @@ import vip.mate.channel.media.InboundMediaDownloader;
 import vip.mate.channel.model.ChannelEntity;
 import vip.mate.channel.weixin.error.TokenExpiredException;
 import vip.mate.common.security.SecretEquals;
+import vip.mate.workspace.core.service.ChatUploadLocationResolver;
 import vip.mate.workspace.conversation.model.MessageContentPart;
 
 import java.io.IOException;
@@ -687,8 +688,8 @@ public class WeixinChannelAdapter extends AbstractChannelAdapter {
         }
 
         Path uploadDir = (chatUploadLocationResolver != null)
-                ? chatUploadLocationResolver.resolveUploadRoot(conversationId).resolve(conversationId)
-                : Path.of("data", "chat-uploads", conversationId);
+                ? chatUploadLocationResolver.resolveConversationDir(conversationId)
+                : Path.of("data", "chat-uploads", ChatUploadLocationResolver.sanitizeSegment(conversationId));
         return InboundMediaDownloader.download(
                         () -> client.downloadMedia("", aesKey, encryptQueryParam),
                         filenameHint,

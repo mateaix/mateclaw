@@ -97,8 +97,61 @@
       <h4 class="raw-list-title">
         {{ t('wiki.rawMaterials') }} ({{ store.rawMaterials.length + uploadingFiles.length }})
       </h4>
+
+      <!-- Filter bar: status / source type / title keyword. Filters are held in
+           the store so they survive background refreshes. -->
+      <div v-if="store.rawMaterials.length > 0 || hasActiveFilter" class="raw-toolbar">
+        <div class="raw-filters">
+          <select v-model="filterStatus" class="raw-filter-select" @change="applyFilters">
+            <option value="">{{ t('wiki.batch.allStatus') }}</option>
+            <option v-for="s in RAW_STATUSES" :key="s" :value="s">{{ t(`wiki.status.${s}`) }}</option>
+          </select>
+          <select v-model="filterSourceType" class="raw-filter-select" @change="applyFilters">
+            <option value="">{{ t('wiki.batch.allTypes') }}</option>
+            <option v-for="st in RAW_SOURCE_TYPES" :key="st" :value="st">{{ st }}</option>
+          </select>
+          <input
+            v-model="filterKeyword"
+            type="text"
+            class="raw-filter-input"
+            :placeholder="t('wiki.batch.keywordPlaceholder')"
+          />
+          <button v-if="hasActiveFilter" class="btn-text" @click="clearFilters">
+            {{ t('wiki.batch.clearFilter') }}
+          </button>
+        </div>
+        <button
+          v-if="canManageWiki && failedCount > 0"
+          class="btn-text retry-all-failed"
+          :disabled="batchBusy"
+          @click="retryAllFailed"
+        >
+          {{ t('wiki.batch.retryAllFailed', { n: failedCount }) }}
+        </button>
+      </div>
+
+      <!-- Selection + batch actions. Always shown (when manageable and rows
+           exist); the action buttons are disabled until at least one row is
+           selected. -->
+      <div v-if="canManageWiki && store.rawMaterials.length > 0" class="raw-selection-bar">
+        <label class="raw-select-all" @click.stop>
+          <input type="checkbox" :checked="allSelected" @change="toggleSelectAll" />
+          <span>{{ selectedIds.size > 0
+            ? t('wiki.batch.selectedCount', { n: selectedIds.size })
+            : t('wiki.batch.selectAll') }}</span>
+        </label>
+        <div class="raw-selection-actions">
+          <button class="btn-text" :disabled="batchBusy || selectedIds.size === 0" @click="batchReprocess">
+            {{ t('wiki.batch.reprocess') }}
+          </button>
+          <button class="btn-text btn-danger-text" :disabled="batchBusy || selectedIds.size === 0" @click="batchDelete">
+            {{ t('wiki.batch.delete') }}
+          </button>
+        </div>
+      </div>
+
       <div v-if="store.rawMaterials.length === 0 && uploadingFiles.length === 0" class="empty-hint">
-        {{ t('wiki.noRawMaterials') }}
+        {{ hasActiveFilter ? t('wiki.batch.noMatch') : t('wiki.noRawMaterials') }}
       </div>
 
       <!-- Optimistic uploading items shown at the top -->
@@ -156,6 +209,13 @@
         @click="toggleRawFilter(raw.id)"
       >
         <div class="raw-item-row">
+          <label v-if="canManageWiki" class="raw-select-box" @click.stop>
+            <input
+              type="checkbox"
+              :checked="selectedIds.has(String(raw.id))"
+              @change="toggleSelect(raw.id)"
+            />
+          </label>
           <div class="raw-item-info">
             <span class="raw-item-title">{{ raw.title }}</span>
             <span class="raw-item-type">{{ raw.sourceType }}</span>
@@ -316,6 +376,7 @@
 import { ref, reactive, computed, watch, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { mcToast } from '@/composables/useMcToast'
+import { mcConfirm } from '@/components/common/useConfirm'
 import { useFileDrop } from '@/composables/useFileDrop'
 import { Download } from '@element-plus/icons-vue'
 import { useWikiStore } from '@/stores/useWikiStore'
@@ -332,6 +393,139 @@ const workspace = useWorkspaceStore()
 // Viewers can still see the material list but get no write controls.
 const canManageWiki = computed(() => workspace.can('manage:wiki'))
 const fileInput = ref<HTMLInputElement | null>(null)
+
+// ---- Raw-material filtering + batch operations (issue #506) --------------
+// Processing states and source types used to populate the filter dropdowns.
+const RAW_STATUSES = ['pending', 'processing', 'completed', 'failed', 'partial', 'cancelled'] as const
+const RAW_SOURCE_TYPES = ['text', 'pdf', 'docx', 'xlsx', 'pptx', 'html', 'image', 'url'] as const
+
+// Local mirrors of the store's filter state; edits flow back through
+// store.setRawFilters so background refreshes keep the filter applied.
+const filterStatus = ref(store.rawFilters.status)
+const filterSourceType = ref(store.rawFilters.sourceType)
+const filterKeyword = ref(store.rawFilters.keyword)
+
+const hasActiveFilter = computed(
+  () => !!(filterStatus.value || filterSourceType.value || filterKeyword.value),
+)
+const failedCount = computed(
+  () => store.rawMaterials.filter(r => r.processingStatus === 'failed').length,
+)
+
+// Selected raw ids for batch ops. Keyed by String(id) — raw ids are Snowflake
+// values and must stay strings (never coerce to number).
+const selectedIds = ref<Set<string>>(new Set())
+const batchBusy = ref(false)
+const allSelected = computed(
+  () => store.rawMaterials.length > 0
+    && store.rawMaterials.every(r => selectedIds.value.has(String(r.id))),
+)
+
+function applyFilters() {
+  if (!store.currentKB) return
+  clearSelection()
+  void store.setRawFilters(store.currentKB.id, {
+    status: filterStatus.value,
+    sourceType: filterSourceType.value,
+    keyword: filterKeyword.value.trim(),
+  })
+}
+
+// Debounce keyword typing so we don't refetch on every keystroke.
+let keywordTimer: ReturnType<typeof setTimeout> | null = null
+watch(filterKeyword, () => {
+  if (keywordTimer) clearTimeout(keywordTimer)
+  keywordTimer = setTimeout(applyFilters, 350)
+})
+
+function clearFilters() {
+  filterStatus.value = ''
+  filterSourceType.value = ''
+  filterKeyword.value = ''
+  applyFilters()
+}
+
+function toggleSelect(rawId: number | string) {
+  const key = String(rawId)
+  const next = new Set(selectedIds.value)
+  if (next.has(key)) next.delete(key)
+  else next.add(key)
+  selectedIds.value = next
+}
+
+function toggleSelectAll() {
+  if (allSelected.value) {
+    selectedIds.value = new Set()
+  } else {
+    selectedIds.value = new Set(store.rawMaterials.map(r => String(r.id)))
+  }
+}
+
+function clearSelection() {
+  selectedIds.value = new Set()
+}
+
+async function batchReprocess() {
+  if (!store.currentKB || selectedIds.value.size === 0) return
+  const kbId = store.currentKB.id
+  batchBusy.value = true
+  try {
+    const res: any = await wikiApi.batchReprocessRaw(kbId, { ids: [...selectedIds.value] })
+    const d = res.data || res || {}
+    mcToast.success(t('wiki.batch.reprocessDone', { n: d.processed ?? 0 }))
+    clearSelection()
+    await store.fetchRawMaterials(kbId)
+    setTimeout(() => { store.fetchRawMaterials(kbId) }, 5000)
+    setTimeout(() => { store.fetchRawMaterials(kbId) }, 15000)
+  } catch (e) {
+    mcToast.error(e instanceof Error ? e.message : String(e))
+  } finally {
+    batchBusy.value = false
+  }
+}
+
+async function batchDelete() {
+  if (!store.currentKB || selectedIds.value.size === 0) return
+  const ok = await mcConfirm({
+    title: t('wiki.batch.delete'),
+    message: t('wiki.batch.deleteConfirm', { n: selectedIds.value.size }),
+    confirmText: t('common.delete'),
+    tone: 'danger',
+  })
+  if (!ok) return
+  const kbId = store.currentKB.id
+  batchBusy.value = true
+  try {
+    const res: any = await wikiApi.batchDeleteRaw(kbId, { ids: [...selectedIds.value] })
+    const d = res.data || res || {}
+    mcToast.success(t('wiki.batch.deleteDone', { n: d.deleted ?? 0 }))
+    clearSelection()
+    await store.fetchRawMaterials(kbId)
+  } catch (e) {
+    mcToast.error(e instanceof Error ? e.message : String(e))
+  } finally {
+    batchBusy.value = false
+  }
+}
+
+async function retryAllFailed() {
+  if (!store.currentKB) return
+  const kbId = store.currentKB.id
+  batchBusy.value = true
+  try {
+    const res: any = await wikiApi.batchReprocessRaw(kbId, { status: 'failed' })
+    const d = res.data || res || {}
+    mcToast.success(t('wiki.batch.reprocessDone', { n: d.processed ?? 0 }))
+    clearSelection()
+    await store.fetchRawMaterials(kbId)
+    setTimeout(() => { store.fetchRawMaterials(kbId) }, 5000)
+    setTimeout(() => { store.fetchRawMaterials(kbId) }, 15000)
+  } catch (e) {
+    mcToast.error(e instanceof Error ? e.message : String(e))
+  } finally {
+    batchBusy.value = false
+  }
+}
 
 // Map a structured backend errorCode to a localized, user-friendly hint.
 // Falls back to the raw backend message, then to a generic failure label, so
@@ -566,6 +760,15 @@ watch(() => store.rawMaterials, (rows) => {
     cancellingIds.value = next
   }
 }, { deep: true })
+
+// Prune batch selections that no longer exist after a refresh (deleted rows,
+// or rows filtered out of the current view).
+watch(() => store.rawMaterials, (rows) => {
+  if (selectedIds.value.size === 0) return
+  const present = new Set(rows.map(r => String(r.id)))
+  const next = new Set([...selectedIds.value].filter(id => present.has(id)))
+  if (next.size !== selectedIds.value.size) selectedIds.value = next
+})
 
 async function handleLocalRepair(rawId: number) {
   if (!store.currentKB) return
@@ -986,5 +1189,70 @@ async function handleScanDir() {
     width: 100%;
     justify-content: space-between;
   }
+}
+
+/* ---- Filter bar + batch operations (issue #506) ---- */
+.raw-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.raw-filters {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.raw-filter-select,
+.raw-filter-input {
+  padding: 5px 10px;
+  font-size: 12px;
+  border: 1px solid var(--mc-border);
+  border-radius: 8px;
+  background: var(--mc-bg-elevated);
+  color: var(--mc-text-primary);
+}
+.raw-filter-input { min-width: 140px; }
+.raw-filter-select:focus,
+.raw-filter-input:focus { outline: none; border-color: var(--mc-primary); }
+.btn-text {
+  padding: 4px 8px;
+  font-size: 12px;
+  background: none;
+  border: none;
+  color: var(--mc-primary);
+  cursor: pointer;
+  border-radius: 6px;
+}
+.btn-text:hover:not(:disabled) { background: var(--mc-bg-sunken); }
+.btn-text:disabled { color: var(--mc-text-tertiary); cursor: not-allowed; }
+.btn-danger-text { color: var(--mc-danger, #e05252); }
+.raw-selection-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  margin-bottom: 8px;
+  background: var(--mc-bg-sunken);
+  border-radius: 8px;
+}
+.raw-select-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--mc-text-secondary);
+  cursor: pointer;
+}
+.raw-selection-actions { display: inline-flex; align-items: center; gap: 4px; }
+.raw-select-box {
+  display: inline-flex;
+  align-items: center;
+  margin-right: 8px;
+  cursor: pointer;
 }
 </style>

@@ -13,6 +13,7 @@ import reactor.core.publisher.Flux;
 import vip.mate.MateClawApplication;
 import vip.mate.agent.AgentService;
 import vip.mate.agent.model.AgentEntity;
+import vip.mate.workspace.core.service.ChatUploadLocationResolver;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -282,9 +283,11 @@ class WebChatAttachmentE2ETest {
         assertThat(parts).contains("\"fileName\":\"note.txt\"");
         assertThat(parts).contains("\"contentType\":\"text/plain\"");
         assertThat(parts).contains("\"path\":\"");
-        // Path points into the conversation's upload dir on disk.
+        // Path points into the conversation's upload dir on disk. The dir uses
+        // the sanitized conversation id (cid carries ':' which is path-illegal
+        // on Windows), so assert against the sanitized segment.
         String path = extractStringField(parts, "path");
-        assertThat(path).contains(cid);
+        assertThat(path).contains(ChatUploadLocationResolver.sanitizeSegment(cid));
         assertThat(Files.isRegularFile(Path.of(path))).isTrue();
         // The bytes on disk match what we uploaded.
         assertThat(Files.readString(Path.of(path))).isEqualTo(fileBody);

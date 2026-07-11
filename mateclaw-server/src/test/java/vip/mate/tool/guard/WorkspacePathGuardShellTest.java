@@ -311,6 +311,41 @@ class WorkspacePathGuardShellTest {
                 WorkspacePathGuard.validateShellCommand("echo evil > /tmp/leak.txt"));
     }
 
+    // ==================== Filesystem-root tokens ====================
+
+    @Test
+    @DisplayName("Destructive command targeting the filesystem root (`rm -rf //`, `/.`, `/..`) → rejected")
+    void destructiveFilesystemRoot_blocked() {
+        // "//", "/." and "/.." all normalize to "/" — a delete aimed there must
+        // not be skipped by the root-token false-positive allowance.
+        assertThrows(IllegalArgumentException.class, () ->
+                WorkspacePathGuard.validateShellCommand("rm -rf //"));
+        assertThrows(IllegalArgumentException.class, () ->
+                WorkspacePathGuard.validateShellCommand("rm -rf /."));
+        assertThrows(IllegalArgumentException.class, () ->
+                WorkspacePathGuard.validateShellCommand("rm -rf /.."));
+    }
+
+    @Test
+    @DisplayName("sed empty replacement (s/pattern//) is not misread as a filesystem-root path")
+    void sedEmptyReplacement_pass() {
+        // The trailing "// inside the sed script produces a token that
+        // normalizes to "/" — allowed because the command is non-destructive.
+        assertDoesNotThrow(() ->
+                WorkspacePathGuard.validateShellCommand("sed 's/\"text\": \"//' data.json"));
+    }
+
+    @Test
+    @DisplayName("Compound command mixing a destructive verb with a root-normalizing token fails closed")
+    void destructiveMixedWithRootToken_blocked() {
+        // The destructive flag is command-wide by design: a compound command
+        // that both deletes and carries a "/"-normalizing token is refused,
+        // trading a rare false positive for never skipping `rm ... //`.
+        assertThrows(IllegalArgumentException.class, () ->
+                WorkspacePathGuard.validateShellCommand(
+                        "rm -f old.log && sed 's/\"x\": \"//' data.json"));
+    }
+
     // ==================== Device-node negative cases ====================
 
     @Test

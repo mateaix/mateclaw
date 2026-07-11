@@ -5,6 +5,7 @@ import lombok.extern.slf4j.Slf4j;
 import vip.mate.channel.AbstractChannelAdapter;
 import vip.mate.channel.ChannelMessage;
 import vip.mate.channel.ChannelMessageRouter;
+import vip.mate.workspace.core.service.ChatUploadLocationResolver;
 import vip.mate.channel.ExponentialBackoff;
 import vip.mate.channel.media.InboundMediaDownloader;
 import vip.mate.channel.model.ChannelEntity;
@@ -2970,8 +2971,8 @@ public class WeComChannelAdapter extends AbstractChannelAdapter {
         // dedup-named write; the WeCom-specific AES-256-CBC decrypt stays here
         // inside the byte source so a fetch + decrypt is retried as one unit.
         Path uploadDir = (chatUploadLocationResolver != null)
-                ? chatUploadLocationResolver.resolveUploadRoot(conversationId).resolve(conversationId)
-                : Path.of("data", "chat-uploads", conversationId);
+                ? chatUploadLocationResolver.resolveConversationDir(conversationId)
+                : Path.of("data", "chat-uploads", ChatUploadLocationResolver.sanitizeSegment(conversationId));
         String hint = (fileNameHint == null || fileNameHint.isBlank()) ? null : fileNameHint;
         return InboundMediaDownloader.download(
                 () -> {
