@@ -37,11 +37,23 @@ public class GeneratedFileController {
                     String encodedName = URLEncoder.encode(entry.filename(), StandardCharsets.UTF_8)
                             .replace("+", "%20");
                     HttpHeaders headers = new HttpHeaders();
-                    headers.setContentType(MediaType.parseMediaType(entry.mimeType()));
+                    String mime = entry.mimeType();
+                    headers.setContentType(MediaType.parseMediaType(mime));
                     // RFC 5987 filename* lets non-ASCII names round-trip in browsers.
-                    String disposition = entry.mimeType() != null && entry.mimeType().startsWith("image/")
-                            ? "inline"
-                            : "attachment";
+                    // Images and HTML previews render inline; everything else downloads.
+                    boolean isImage = mime != null && mime.startsWith("image/");
+                    boolean isHtml = mime != null && mime.toLowerCase().startsWith("text/html");
+                    String disposition = (isImage || isHtml) ? "inline" : "attachment";
+                    if (isHtml) {
+                        // The bytes are model/tool-generated HTML served from the app's
+                        // own origin. A strict CSP neutralises XSS: scripts, plugins and
+                        // framing are forbidden, only inline styles + images/fonts load.
+                        // This makes an on-demand "open the article" preview safe.
+                        headers.add("Content-Security-Policy",
+                                "default-src 'none'; img-src * data:; style-src 'unsafe-inline'; "
+                                        + "font-src * data:; media-src *; base-uri 'none'; form-action 'none'");
+                        headers.add("X-Content-Type-Options", "nosniff");
+                    }
                     headers.add(HttpHeaders.CONTENT_DISPOSITION,
                             disposition + "; filename=\"" + sanitizeAscii(entry.filename())
                                     + "\"; filename*=UTF-8''" + encodedName);

@@ -1904,3 +1904,44 @@ WHERE NOT EXISTS (SELECT 1 FROM mate_tool_guard_config WHERE id = 1000000001);
 -- Removed 6 legacy SQL rules (rule_id: write_file_any, edit_file_any, shell_rm_approval,
 -- shell_rm_rf_block, shell_write_system_file, shell_chmod_777).
 -- Their superset is registered in ToolGuardRuleSeedService.buildBuiltinRules() with correct tool names.
+
+-- ==================== Content Studio scenario (公众号 / 小红书 图文创作) ====================
+MERGE INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
+KEY (id)
+VALUES (1000000630, 'WechatArticleExtractTool', 'WeChat Article Extract', 'Fetch a WeChat Official Account (公众号) article by URL and return cleaned title/author/time/body(Markdown)/images. Preferred over browser_use for mp.weixin.qq.com article pages; use it for reference gathering and summarisation.', 'builtin', 'wechatArticleExtractTool', '📰', TRUE, TRUE, NOW(), NOW(), 0);
+MERGE INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
+KEY (id)
+VALUES (1000000631, 'GzhPublishTool', 'WeChat OA Publish', 'Publish a generated image-text article to a WeChat Official Account: action=draft uploads the cover and creates a 草稿箱 draft (recommended); action=publish free-publishes for verified accounts and requires explicit confirmation. Needs weixinoa.app_id/app_secret in system settings.', 'builtin', 'gzhPublishTool', '📤', TRUE, TRUE, NOW(), NOW(), 0);
+MERGE INTO mate_agent (id, name, description, agent_type, system_prompt, model_name, max_iterations, enabled, icon, tags, create_time, update_time, deleted)
+KEY (id)
+VALUES (1000000640, 'Content Studio', 'End-to-end 公众号 & 小红书 image-text creation: research, write, illustrate, de-AI, layout, and publish to draft.', 'react', 'You are MateClaw''s Content Studio — a specialist that creates WeChat Official Account (公众号) and Xiaohongshu (小红书) image-text posts end to end.
+
+Workflow (7 stages):
+1) Topic — use the topic_interests memory + web_search(freshness=week) to find angles.
+2) Research — for reference 公众号 links use wechat_article_extract (or browser_use) and summarise, staying original and citing sources; never copy verbatim.
+3) Write — for 公众号 load the gzh_article skill, for 小红书 load the xhs_note skill, honoring the user persona and style.
+4) Illustrate — image_generate for covers/inline art, and render_html_image to turn 小红书 card HTML into images.
+5) De-AI — load the deai_humanize skill and run its detect→rewrite loop until the AI-trace score is low.
+6) Package & deliver — use gzh_package: pass the article body as Markdown and it builds the 公众号 inline-styled HTML plus an online preview and a downloadable material bundle server-side. Do NOT hand-write a large HTML blob into write_file / render_html_image(html=...) — big, escape-heavy tool arguments get truncated and make the call fail.
+7) Publish — send the gzh_package online preview to the user, and after confirmation default to gzh_publish action=draft (into the 草稿箱).
+
+At the start of a task, recall_structured these keys and honor them: content_persona, writing_style_gzh, writing_style_xhs, topic_interests, banned_words, signature_blocks. If a needed one is missing, ask the user once and remember_structured it.
+
+Publishing is an outward, irreversible action: always show the final content and get explicit user confirmation before calling gzh_publish; never free-publish without confirmPublish=true and the user''s sign-off. Respect banned_words and advertising-law restrictions; keep every piece original.
+', NULL, 100, TRUE, 'pi:pen-nib', 'content,gzh,xhs,writing', NOW(), NOW(), 0);
+
+-- ---- Content Studio T3/T4: 小红书发布工具 + 场景化 Cron 模板（默认关闭，用户按需启用）----
+MERGE INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
+KEY (id)
+VALUES (1000000632, 'XhsPublishTool', 'Xiaohongshu Publish', 'Package a Xiaohongshu (小红书) note (copy + tags + card images) into one downloadable .zip and give manual-publish steps. No official API — never auto-uploads or bypasses verification.', 'builtin', 'xhsPublishTool', '📕', TRUE, TRUE, NOW(), NOW(), 0);
+MERGE INTO mate_cron_job (id, name, cron_expression, timezone, agent_id, task_type, trigger_message, request_body, enabled, create_time, update_time, deleted)
+KEY (id)
+VALUES (1000100020, 'Daily Topic Radar', '0 8 * * *', 'Asia/Shanghai', 1000000640, 'agent', NULL, 'Read the topic_interests structured memory, use web_search(freshness=week) to gather today''s fresh angles on those directions, and produce a Today''s Topic List: each item with a working title, a one-line angle, target platform (公众号/小红书), and a suggested illustration direction. Selection only — do not write the full article.', FALSE, NOW(), NOW(), 0);
+MERGE INTO mate_cron_job (id, name, cron_expression, timezone, agent_id, task_type, trigger_message, request_body, enabled, create_time, update_time, deleted)
+KEY (id)
+VALUES (1000100021, 'Weekly 公众号 Draft', '0 9 * * 1', 'Asia/Shanghai', 1000000640, 'agent', NULL, 'Pick one topic from topic_interests for this week, load the gzh_article skill to produce a full 公众号 image-text article (with illustrations and de-AI pass), laid out as inline-styled HTML. If 公众号 credentials (weixinoa.app_id/app_secret) are configured in system settings, use gzh_publish action=draft to save it to the draft box and remind me to review and publish in the backend; otherwise just send me the HTML and cover.', FALSE, NOW(), NOW(), 0);
+
+-- Content Studio: gzh_package (Markdown -> 在线预览 + 素材下载, avoids big-HTML tool-arg truncation)
+MERGE INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
+KEY (id)
+VALUES (1000000633, 'GzhPackageTool', 'WeChat Article Package', 'Package a finished 公众号 article from Markdown into an online preview (rendered HTML) plus a downloadable material bundle (article.html + article.md + cover). Builds the inline-styled HTML server-side so a large HTML string never rides on the tool-argument stream (which truncates and fails).', 'builtin', 'gzhPackageTool', '📦', TRUE, TRUE, NOW(), NOW(), 0);

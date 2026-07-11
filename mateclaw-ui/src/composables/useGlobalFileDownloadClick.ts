@@ -46,6 +46,21 @@ export function useGlobalFileDownloadClick() {
     if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
     const target = e.target as HTMLElement | null
     if (!target) return
+
+    // Inline generated images (rendered by useMarkdownRenderer.link() as
+    // <img data-generated-image>) open full-size in a new tab on click, so the
+    // user can zoom without the picture ever becoming a download.
+    const genImg = target.closest<HTMLImageElement>('img[data-generated-image]')
+    if (genImg) {
+      const src = genImg.getAttribute('src')
+      if (src) {
+        e.preventDefault()
+        e.stopPropagation()
+        window.open(src, '_blank', 'noopener,noreferrer')
+        return
+      }
+    }
+
     const anchor = target.closest<HTMLAnchorElement>('a[href]')
     if (!anchor) return
 
