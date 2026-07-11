@@ -330,7 +330,6 @@ export const useWikiStore = defineStore('wiki', () => {
     rawMaterials.value = res.data || []
   }
 
-<<<<<<< HEAD
   // Update the raw-material filters and refetch. Empty-string fields clear
   // their clause. Used by the raw-material panel's filter bar.
   async function setRawFilters(
@@ -343,7 +342,8 @@ export const useWikiStore = defineStore('wiki', () => {
 
   function resetRawFilters() {
     rawFilters.value = { status: '', sourceType: '', keyword: '' }
-=======
+  }
+
   async function fetchSourceGroups(kbId: number) {
     const res: any = await wikiApi.listSourceGroups(kbId)
     sourceGroups.value = res.data || []
@@ -393,20 +393,6 @@ export const useWikiStore = defineStore('wiki', () => {
   async function batchUpdateRawGroup(kbId: number, rawIds: number[], groupId: number | string | null) {
     await wikiApi.batchUpdateRawGroup(kbId, rawIds, groupId)
     await Promise.all([fetchRawMaterials(kbId), fetchSourceGroups(kbId)])
-  }
-
-  // Update the raw-material filters and refetch. Empty-string fields clear
-  // their clause. Used by the raw-material panel's filter bar.
-  async function setRawFilters(
-    kbId: number,
-    filters: Partial<{ status: string; sourceType: string; keyword: string }>,
-  ) {
-    rawFilters.value = { ...rawFilters.value, ...filters }
-    await fetchRawMaterials(kbId)
-  }
-
-  function resetRawFilters() {
-    rawFilters.value = { status: '', sourceType: '', keyword: '' }
   }
 
   async function fetchPages(kbId: number, rawId?: number | null) {
