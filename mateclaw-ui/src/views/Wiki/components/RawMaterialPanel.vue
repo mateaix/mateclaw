@@ -601,6 +601,7 @@
         </div>
         <div class="preview-body">
           <div v-if="previewIsBinary" class="preview-placeholder">{{ t('wiki.preview.binaryHint') }}</div>
+          <div v-else-if="previewTooLarge" class="preview-placeholder">{{ t('wiki.preview.tooLargeHint') }}</div>
           <div v-else-if="previewLoading" class="preview-placeholder">{{ t('wiki.preview.loading') }}</div>
           <div v-else-if="previewError" class="preview-placeholder">{{ t('wiki.preview.loadFailed') }}</div>
           <pre v-else-if="previewText" class="preview-content">{{ previewText }}</pre>
@@ -667,7 +668,7 @@ const filteredCounts = computed(() => {
     if (r.processingStatus === 'completed' || r.processingStatus === 'partial') counts.completed++
     else if (r.processingStatus === 'processing') counts.processing++
     else if (r.processingStatus === 'pending') counts.pending++
-    else if (r.processingStatus === 'failed' || r.processingStatus === 'cancelled') counts.failed++
+    else if (r.processingStatus === 'failed') counts.failed++
   }
   return counts
 })
@@ -693,7 +694,7 @@ const filteredMaterials = computed(() => {
     if (sf === 'completed') {
       list = list.filter(r => r.processingStatus === 'completed' || r.processingStatus === 'partial')
     } else if (sf === 'failed') {
-      list = list.filter(r => r.processingStatus === 'failed' || r.processingStatus === 'cancelled')
+      list = list.filter(r => r.processingStatus === 'failed')
     } else {
       list = list.filter(r => r.processingStatus === sf)
     }
@@ -791,7 +792,7 @@ const groupedMaterials = computed(() => {
       if (r.processingStatus === 'completed' || r.processingStatus === 'partial') counts.completed++
       else if (r.processingStatus === 'processing') counts.processing++
       else if (r.processingStatus === 'pending') counts.pending++
-      else if (r.processingStatus === 'failed' || r.processingStatus === 'cancelled') counts.failed++
+      else if (r.processingStatus === 'failed') counts.failed++
       if (r.createTime && r.createTime > lastTime) lastTime = r.createTime
     }
     // Real groups report their own lastScanAt from the backend; fall back to
@@ -848,13 +849,17 @@ watch(filteredMaterials, (list) => {
 const selectedRaws = computed(() => store.rawMaterials.filter(r => selectedIds.value.has(r.id)))
 
 async function batchReprocess() {
+  if (!store.currentKB) return
+  const kbId = store.currentKB.id
   const ids = selectedRaws.value
     .filter(r => r.processingStatus !== 'processing' && r.processingStatus !== 'uploading')
     .map(r => r.id)
   for (const id of ids) {
-    try { await reprocess(id) } catch { /* skip failures, continue the batch */ }
+    try { await triggerReprocess(id) } catch { /* skip failures, continue the batch */ }
   }
   clearSelection()
+  await store.fetchRawMaterials(kbId)
+  scheduleRawMaterialRefetch(kbId)
 }
 
 async function batchDownload() {
@@ -985,7 +990,7 @@ async function saveConfig() {
     await store.updateSourceGroup(store.currentKB.id, configEditingGroupId.value, {
       alias: form.alias.trim(),
       path: form.path.trim(),
-      fileFilter: form.fileFilter.trim() || null,
+      fileFilter: form.fileFilter.trim(),
       cronExpr: resolveCronExpr(form),
       enabled: form.scheduleEnabled,
     })
@@ -1002,7 +1007,7 @@ async function confirmAddPath() {
     await store.createSourceGroup(store.currentKB.id, {
       alias: form.alias.trim(),
       path: form.path.trim(),
-      fileFilter: form.fileFilter.trim() || null,
+      fileFilter: form.fileFilter.trim(),
       cronExpr: resolveCronExpr(form),
       enabled: form.scheduleEnabled,
     })
@@ -1034,6 +1039,14 @@ async function scanGroup(key: string, mode: 'incremental' | 'full') {
   if (!store.currentKB) return
   const g = findGroupById(key)
   if (!g) return
+  if (mode === 'full') {
+    const ok = await mcConfirm({
+      title: t('wiki.pathConfig.scanFull'),
+      message: t('wiki.pathConfig.scanFullConfirm'),
+      tone: 'danger',
+    })
+    if (!ok) return
+  }
   scanningGroups[key] = true
   try {
     const result: any = await store.scanSourceGroup(store.currentKB.id, g.id, mode)
@@ -1078,11 +1091,14 @@ async function onRowMoveSelect(rawId: number, event: Event) {
 // a "download to view" hint. Pasted text (sourceType TEXT) is always text.
 const TEXT_EXTENSIONS = new Set(['txt', 'md', 'markdown', 'csv', 'tsv', 'html', 'htm', 'json', 'log', 'xml', 'yaml', 'yml'])
 
+const PREVIEW_MAX_SIZE = 2 * 1024 * 1024
+
 const previewOpen = ref(false)
 const previewRaw = ref<RawItem | null>(null)
 const previewLoading = ref(false)
 const previewText = ref('')
 const previewIsBinary = ref(false)
+const previewTooLarge = ref(false)
 const previewError = ref(false)
 
 function formatSize(bytes?: number): string {
@@ -1106,12 +1122,17 @@ async function openPreview(raw: RawItem) {
   previewRaw.value = raw
   previewText.value = ''
   previewError.value = false
+  previewTooLarge.value = false
   previewOpen.value = true
   if (!isTextLike(raw)) {
     previewIsBinary.value = true
     return
   }
   previewIsBinary.value = false
+  if (raw.fileSize && raw.fileSize > PREVIEW_MAX_SIZE) {
+    previewTooLarge.value = true
+    return
+  }
   if (!store.currentKB) return
   previewLoading.value = true
   try {
@@ -1131,9 +1152,13 @@ const failedMaterials = computed(() => store.rawMaterials.filter(r => r.processi
 const errorSectionOpen = ref(false)
 
 async function retryAllErrors() {
+  if (!store.currentKB) return
+  const kbId = store.currentKB.id
   for (const r of failedMaterials.value) {
-    try { await reprocess(r.id) } catch { /* skip failures, continue the batch */ }
+    try { await triggerReprocess(r.id) } catch { /* skip failures, continue the batch */ }
   }
+  await store.fetchRawMaterials(kbId)
+  scheduleRawMaterialRefetch(kbId)
 }
 
 async function clearAllErrors() {
@@ -1512,10 +1537,11 @@ async function handleAddText() {
   textContent.value = ''
 }
 
-async function reprocess(rawId: number) {
+/** Fires the reprocess call and updates local state only — no list refresh, so
+ *  batch callers can trigger many of these and refresh the list once at the end. */
+async function triggerReprocess(rawId: number) {
   if (!store.currentKB) return
-  const kbId = store.currentKB.id
-  await wikiApi.reprocessRaw(kbId, rawId)
+  await wikiApi.reprocessRaw(store.currentKB.id, rawId)
   // Immediately mark local state as processing so SSE connects and progress bar shows
   const raw = store.rawMaterials.find(r => r.id === rawId)
   if (raw) {
@@ -1525,10 +1551,20 @@ async function reprocess(rawId: number) {
   }
   // Clear stale job entry
   delete rawJobs[rawId]
-  await store.fetchRawMaterials(kbId)
-  // Delayed re-fetch to catch final status if processing finishes before SSE connects
+}
+
+/** Delayed re-fetches to catch final status if processing finishes before SSE connects. */
+function scheduleRawMaterialRefetch(kbId: number) {
   setTimeout(() => { store.fetchRawMaterials(kbId) }, 5000)
   setTimeout(() => { store.fetchRawMaterials(kbId) }, 15000)
+}
+
+async function reprocess(rawId: number) {
+  if (!store.currentKB) return
+  const kbId = store.currentKB.id
+  await triggerReprocess(rawId)
+  await store.fetchRawMaterials(kbId)
+  scheduleRawMaterialRefetch(kbId)
 }
 
 async function deleteRaw(rawId: number) {
