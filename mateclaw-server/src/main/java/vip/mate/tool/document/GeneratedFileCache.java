@@ -20,6 +20,7 @@ import java.time.Duration;
 import java.util.Base64;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -233,6 +234,71 @@ public class GeneratedFileCache {
             return Optional.empty();
         }
         return Optional.of(entry);
+    }
+
+    /**
+     * Best-effort lookup of a live entry's id by its logical filename, optionally
+     * constrained to a mime-type prefix (e.g. {@code "image/"}). Scans the
+     * in-memory cache first — which covers the common case of a reference to a
+     * file generated earlier in the same run — then persisted metadata on disk as
+     * a durable fallback. Returns the first live match, or empty.
+     *
+     * <p>This exists to self-heal references that point at a file's logical
+     * <em>name</em> ({@code cover_xyz.png}) rather than its issued id: such a
+     * reference cannot be resolved by {@link #GENERATED_URL_PATTERN} (the id
+     * capture group stops at the first {@code _} or {@code .}), so a name-based
+     * fallback recovers the real, servable id instead of yielding a broken link.
+     */
+    public Optional<String> findIdByFilename(String filename, @Nullable String mimePrefix) {
+        if (filename == null || filename.isBlank()) {
+            return Optional.empty();
+        }
+        String target = filename.trim();
+        // 1. In-memory — the fresh-same-run case, and cheap.
+        synchronized (entries) {
+            for (Map.Entry<String, Entry> e : entries.entrySet()) {
+                Entry v = e.getValue();
+                if (!v.expired() && target.equalsIgnoreCase(v.filename())
+                        && (mimePrefix == null
+                            || (v.mimeType() != null && v.mimeType().startsWith(mimePrefix)))) {
+                    return Optional.of(e.getKey());
+                }
+            }
+        }
+        // 2. Disk metas — durable fallback (survives memory eviction / restart).
+        if (!Files.isDirectory(storageDir)) {
+            return Optional.empty();
+        }
+        List<Path> metas;
+        try (Stream<Path> files = Files.list(storageDir)) {
+            metas = files.filter(p -> p.getFileName().toString().endsWith(META_SUFFIX)).toList();
+        } catch (IOException e) {
+            log.debug("findIdByFilename disk scan failed: {}", e.toString());
+            return Optional.empty();
+        }
+        long now = System.currentTimeMillis();
+        for (Path metaPath : metas) {
+            try {
+                String[] parts = Files.readString(metaPath).split("\t", 3);
+                if (Long.parseLong(parts[0].trim()) <= now) {
+                    continue;
+                }
+                String mime = parts.length > 1 && !parts[1].isEmpty() ? parts[1] : null;
+                if (mimePrefix != null && (mime == null || !mime.startsWith(mimePrefix))) {
+                    continue;
+                }
+                String fn = parts.length > 2 && !parts[2].isEmpty()
+                        ? new String(Base64.getDecoder().decode(parts[2]), StandardCharsets.UTF_8)
+                        : null;
+                if (fn != null && target.equalsIgnoreCase(fn)) {
+                    String name = metaPath.getFileName().toString();
+                    return Optional.of(name.substring(0, name.length() - META_SUFFIX.length()));
+                }
+            } catch (Exception ignore) {
+                // Skip unreadable / malformed meta.
+            }
+        }
+        return Optional.empty();
     }
 
     private void persist(String id, Entry entry) {

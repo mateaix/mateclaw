@@ -18,6 +18,12 @@ import org.springframework.stereotype.Component;
 import vip.mate.tool.browser.UrlSafetyChecker;
 import vip.mate.tool.document.GeneratedFileCache;
 
+import javax.imageio.ImageIO;
+import java.awt.Color;
+import java.awt.GradientPaint;
+import java.awt.Graphics2D;
+import java.awt.RenderingHints;
+import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
@@ -101,10 +107,22 @@ public class GzhPackageTool {
 
         // 1. Markdown -> HTML fragment, then inline every style (公众号 drops <style>/class).
         String innerHtml = markdownToInlineHtml(markdown);
-        String coverTag = (coverImageUrl != null && !coverImageUrl.isBlank())
-                ? "<img src=\"" + escapeAttr(coverImageUrl.trim()) + "\" alt=\"cover\" "
-                  + "style=\"width:100%;border-radius:8px;margin:0 0 20px;display:block;\" />"
-                : "";
+
+        // Resolve the cover to real image bytes + a servable URL up front, so the
+        // preview never embeds a broken <img>: a reference that doesn't resolve to
+        // an actual image is dropped (and flagged) rather than rendered. This also
+        // self-heals a reference that points at the file's name instead of its id.
+        ResolvedCover cover = resolveCover(coverImageUrl, ctx);
+        // Fallback: 公众号 requires a cover to publish, so never ship without one —
+        // synthesize a neutral gradient placeholder when none resolves.
+        boolean placeholderCover = false;
+        if (cover == null) {
+            byte[] ph = placeholderCover();
+            cover = new ResolvedCover(ph, store(ph, "gzh-cover-placeholder.png", "image/png", ctx));
+            placeholderCover = true;
+        }
+        String coverTag = "<img src=\"" + escapeAttr(cover.url()) + "\" alt=\"cover\" "
+                + "style=\"width:100%;border-radius:8px;margin:0 0 20px;display:block;\" />";
         String meta = (author != null && !author.isBlank())
                 ? "<p style=\"color:" + FAINT + ";font-size:14px;margin:0 0 20px;\">" + escapeText(author.trim()) + "</p>"
                 : "";
@@ -130,7 +148,7 @@ public class GzhPackageTool {
         String zipUrl;
         String coverNote;
         try {
-            byte[] coverBytes = resolveCover(coverImageUrl);
+            byte[] coverBytes = cover != null ? cover.bytes() : null;
             // For the offline bundle, point the cover at the local file.
             String bundleContainer = coverBytes != null
                     ? container.replaceFirst("<img src=\"[^\"]*\"", "<img src=\"cover.png\"")
@@ -150,6 +168,14 @@ public class GzhPackageTool {
 
         StringBuilder out = new StringBuilder();
         out.append("✅ 公众号图文已打包完成。\n\n");
+        if (placeholderCover) {
+            // Never a broken image — but tell the user we substituted a placeholder.
+            boolean hadRef = coverImageUrl != null && !coverImageUrl.isBlank();
+            out.append("⚠️ ")
+               .append(hadRef ? "提供的封面无法解析为图片" : "未提供封面")
+               .append("，已生成占位封面（纯色渐变）。建议补一张正式头图（2.35:1），")
+               .append("用 image_generate(aspectRatio=landscape) 出图后把完整 URL 传给 coverImageUrl 再打包。\n\n");
+        }
         out.append("🔍 在线预览（浏览器打开即渲染）：").append(previewUrl).append('\n');
         if (zipUrl != null) {
             out.append("📦 素材下载（article.html + article.md + 封面，").append(coverNote).append("）：")
@@ -157,7 +183,7 @@ public class GzhPackageTool {
         }
         out.append("\n可将下面的内联样式 HTML 直接粘贴进公众号编辑器（如需直接进草稿箱，用 gzh_publish）：\n");
         out.append("```html\n").append(container).append("\n```");
-        log.info("[GzhPackage] packaged '{}' ({} md chars, cover={})", title, markdown.length(), coverImageUrl != null);
+        log.info("[GzhPackage] packaged '{}' ({} md chars, coverResolved={})", title, markdown.length(), cover != null);
         return out.toString();
     }
 
@@ -222,28 +248,108 @@ public class GzhPackageTool {
         return bos.toByteArray();
     }
 
-    /** Resolve the cover reference to bytes: generated-file id, http(s) URL, else null. */
+    /** A cover resolved to real image bytes (for the bundle) and a servable URL (for the preview). */
+    private record ResolvedCover(byte[] bytes, String url) { }
+
+    /**
+     * Resolve the cover reference to real image bytes plus a servable URL, or null
+     * if it can't be made into an image. Three paths, in order:
+     * <ol>
+     *   <li>an explicit generated-file id in the URL ({@code .../generated/<uuid>}),
+     *       accepted only if it maps to a live {@code image/*} entry;</li>
+     *   <li><b>self-heal</b>: the ref points at the file's logical <em>name</em>
+     *       ({@code cover_xyz.png}) rather than its id — recover the real id by
+     *       filename so a name-based reference still yields a working cover;</li>
+     *   <li>an external {@code http(s)} image — downloaded for the bundle, its URL
+     *       kept for the preview.</li>
+     * </ol>
+     */
     @Nullable
-    private byte[] resolveCover(@Nullable String ref) {
+    private ResolvedCover resolveCover(@Nullable String ref, @Nullable ToolContext ctx) {
         if (ref == null || ref.isBlank()) {
             return null;
         }
         String r = ref.trim();
         try {
+            // 1. Explicit generated-file id — trust only a live image entry.
             Matcher m = GeneratedFileCache.GENERATED_URL_PATTERN.matcher(r);
             if (m.find()) {
                 Optional<GeneratedFileCache.Entry> e = cache.get(m.group(1));
-                return e.map(GeneratedFileCache.Entry::bytes).orElse(null);
+                if (e.isPresent() && isImage(e.get()) && hasBytes(e.get())) {
+                    return new ResolvedCover(e.get().bytes(), cache.downloadUrl(m.group(1), ctx));
+                }
             }
+            // 2. Self-heal a name-based reference (the id pattern can't parse
+            //    underscores/dots, so `cover_xyz.png` never matches step 1).
+            String name = lastSegment(r);
+            if (name != null && !name.isBlank()) {
+                Optional<String> healed = cache.findIdByFilename(name, "image/");
+                if (healed.isPresent()) {
+                    Optional<GeneratedFileCache.Entry> e = cache.get(healed.get());
+                    if (e.isPresent() && hasBytes(e.get())) {
+                        log.info("[GzhPackage] cover ref '{}' healed to generated id {} by filename", r, healed.get());
+                        return new ResolvedCover(e.get().bytes(), cache.downloadUrl(healed.get(), ctx));
+                    }
+                }
+            }
+            // 3. External http(s) image — download for the bundle, keep the URL.
             if (r.startsWith("http://") || r.startsWith("https://")) {
                 UrlSafetyChecker.check(r);
                 byte[] b = HttpUtil.downloadBytes(r);
-                return (b != null && b.length > 0) ? b : null;
+                if (b != null && b.length > 0) {
+                    return new ResolvedCover(b, r);
+                }
             }
         } catch (Exception e) {
-            log.warn("[GzhPackage] cover resolve failed: {}", e.getMessage());
+            log.warn("[GzhPackage] cover resolve failed for '{}': {}", r, e.getMessage());
         }
         return null;
+    }
+
+    /**
+     * A neutral 2.35:1 gradient placeholder cover. Deliberately text-free — server
+     * JVMs often lack CJK fonts, so drawing the title risks tofu boxes; a clean
+     * gradient is a always-valid cover the user can replace with a real one.
+     */
+    private static byte[] placeholderCover() {
+        int w = 900, h = 383;
+        BufferedImage img = new BufferedImage(w, h, BufferedImage.TYPE_INT_RGB);
+        Graphics2D g = img.createGraphics();
+        g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+        g.setPaint(new GradientPaint(0, 0, new Color(0x2f6fed), w, h, new Color(0x1a3a8f)));
+        g.fillRect(0, 0, w, h);
+        // A couple of soft translucent circles for a bit of depth.
+        g.setColor(new Color(255, 255, 255, 26));
+        g.fillOval(w - 220, -120, 340, 340);
+        g.fillOval(-80, h - 160, 260, 260);
+        g.dispose();
+        try {
+            ByteArrayOutputStream bos = new ByteArrayOutputStream();
+            ImageIO.write(img, "png", bos);
+            return bos.toByteArray();
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to render placeholder cover", e);
+        }
+    }
+
+    private static boolean isImage(GeneratedFileCache.Entry e) {
+        return e.mimeType() != null && e.mimeType().startsWith("image/");
+    }
+
+    private static boolean hasBytes(GeneratedFileCache.Entry e) {
+        return e.bytes() != null && e.bytes().length > 0;
+    }
+
+    /** Last path segment of a URL, minus any {@code ?query} / {@code #fragment}. */
+    @Nullable
+    private static String lastSegment(String url) {
+        String s = url;
+        int cut = s.indexOf('?');
+        if (cut >= 0) s = s.substring(0, cut);
+        cut = s.indexOf('#');
+        if (cut >= 0) s = s.substring(0, cut);
+        int slash = s.lastIndexOf('/');
+        return slash >= 0 ? s.substring(slash + 1) : s;
     }
 
     private String store(byte[] bytes, String name, String mime, @Nullable ToolContext ctx) {
