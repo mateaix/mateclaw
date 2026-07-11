@@ -875,12 +875,16 @@ async function batchReprocess() {
   const ids = selectedRaws.value
     .filter(r => r.processingStatus !== 'processing' && r.processingStatus !== 'uploading')
     .map(r => r.id)
+  let failures = 0
   for (const id of ids) {
-    try { await triggerReprocess(id) } catch { /* skip failures, continue the batch */ }
+    try { await triggerReprocess(id) } catch { failures++ }
   }
   clearSelection()
   await store.fetchRawMaterials(kbId)
   scheduleRawMaterialRefetch(kbId)
+  if (failures > 0) {
+    mcToast.error(t('wiki.sources.batchPartialFail', { failed: failures, total: ids.length }))
+  }
 }
 
 async function batchDownload() {
@@ -900,11 +904,15 @@ async function batchDelete() {
   })
   if (!ok) return
   const kbId = store.currentKB.id
+  let failures = 0
   for (const id of Array.from(selectedIds.value)) {
-    try { await wikiApi.deleteRaw(kbId, id) } catch { /* skip failures, continue the batch */ }
+    try { await wikiApi.deleteRaw(kbId, id) } catch { failures++ }
   }
   clearSelection()
   await store.fetchRawMaterials(kbId)
+  if (failures > 0) {
+    mcToast.error(t('wiki.sources.batchPartialFail', { failed: failures, total: count }))
+  }
 }
 
 // ── Phase 4: Per-group path config, backed by the real source-group API ────
@@ -1158,6 +1166,12 @@ async function openPreview(raw: RawItem) {
   previewLoading.value = true
   try {
     const blob = (await wikiApi.downloadRaw(store.currentKB.id, raw.id)) as unknown as Blob
+    // Double-check the actual blob size — raw.fileSize can be 0/undefined for
+    // TEXT source types, which would bypass the pre-check above (M3 fix).
+    if (blob.size > PREVIEW_MAX_SIZE) {
+      previewTooLarge.value = true
+      return
+    }
     previewText.value = await blob.text()
   } catch {
     previewError.value = true
@@ -1193,11 +1207,16 @@ function exceptionMessage(raw: RawItem): string {
 async function retryAllErrors() {
   if (!store.currentKB) return
   const kbId = store.currentKB.id
+  const ids = exceptionMaterials.value.map(r => r.id)
+  let failures = 0
   for (const r of exceptionMaterials.value) {
-    try { await triggerReprocess(r.id) } catch { /* skip failures, continue the batch */ }
+    try { await triggerReprocess(r.id) } catch { failures++ }
   }
   await store.fetchRawMaterials(kbId)
   scheduleRawMaterialRefetch(kbId)
+  if (failures > 0) {
+    mcToast.error(t('wiki.sources.batchPartialFail', { failed: failures, total: ids.length }))
+  }
 }
 
 async function clearAllErrors() {
@@ -1210,10 +1229,14 @@ async function clearAllErrors() {
   })
   if (!ok) return
   const kbId = store.currentKB.id
+  let failures = 0
   for (const id of ids) {
-    try { await wikiApi.deleteRaw(kbId, id) } catch { /* skip failures, continue the batch */ }
+    try { await wikiApi.deleteRaw(kbId, id) } catch { failures++ }
   }
   await store.fetchRawMaterials(kbId)
+  if (failures > 0) {
+    mcToast.error(t('wiki.sources.batchPartialFail', { failed: failures, total: ids.length }))
+  }
 }
 
 // Map a structured backend errorCode to a localized, user-friendly hint.
@@ -1246,6 +1269,14 @@ function friendlyWarning(raw: { warningCode?: string | null; warningMessage?: st
 let sse: EventSource | null = null
 let fallbackTimer: number | null = null
 let activeKbId: number | null = null
+// Track all deferred-refetch timers so they can be cleared on unmount.
+// Without this, a timer fires after the user switched KBs and overwrites the
+// current KB's rawMaterials with stale data from the old KB (C3 fix).
+const refetchTimers: ReturnType<typeof setTimeout>[] = []
+
+// Store SSE event handler refs so closeSse can removeEventListener (M2 fix).
+type SseHandler = (ev: MessageEvent) => void
+let sseHandlers: Record<string, SseHandler> = {}
 
 const hasProcessing = computed(() =>
   store.rawMaterials.some(r => r.processingStatus === 'processing' || r.processingStatus === 'pending')
@@ -1266,69 +1297,75 @@ function openSse(kbId: number) {
   const es = new EventSource(`/api/v1/wiki/knowledge-bases/${kbId}/progress`)
   sse = es
 
-  es.addEventListener('raw.started', (ev: MessageEvent) => {
-    try {
-      const data = JSON.parse(ev.data)
-      const raw = store.rawMaterials.find(r => r.id === data.rawId)
-      if (raw) {
-        raw.processingStatus = 'processing'
-        raw.progressDone = 0
-        raw.progressTotal = 0
-      }
-    } catch { /* ignore */ }
-  })
-  es.addEventListener('route.done', (ev: MessageEvent) => {
-    try { applyProgressEvent(JSON.parse(ev.data)) } catch { /* ignore */ }
-  })
-  es.addEventListener('chunk.done', (ev: MessageEvent) => {
-    try { applyProgressEvent(JSON.parse(ev.data)) } catch { /* ignore */ }
-  })
-  es.addEventListener('raw.completed', (ev: MessageEvent) => {
-    try {
-      const data = JSON.parse(ev.data)
-      const raw = store.rawMaterials.find(r => r.id === data.rawId)
-      if (raw) {
-        raw.processingStatus = data.status === 'partial' ? 'partial' : 'completed'
-        if (typeof data.totalPages === 'number') {
-          raw.progressDone = data.totalPages
-          raw.progressTotal = data.totalPages
+  const handlers: Record<string, SseHandler> = {
+    'raw.started': (ev: MessageEvent) => {
+      try {
+        const data = JSON.parse(ev.data)
+        const raw = store.rawMaterials.find(r => r.id === data.rawId)
+        if (raw) {
+          raw.processingStatus = 'processing'
+          raw.progressDone = 0
+          raw.progressTotal = 0
         }
-      }
-      // Clear stale job entry so JobStageBar hides
-      delete rawJobs[data.rawId]
-      if (store.currentKB) void store.refreshCurrentKB()
-    } catch { /* ignore */ }
-  })
-  es.addEventListener('raw.failed', (ev: MessageEvent) => {
-    try {
-      const data = JSON.parse(ev.data)
-      const raw = store.rawMaterials.find(r => r.id === data.rawId)
-      if (raw) {
-        raw.processingStatus = 'failed'
-        // Surface the failure immediately from the event payload instead of
-        // waiting for the refresh round-trip — and never drop it: a null
-        // message would otherwise leave the user with a blank "failed" badge.
-        if (typeof data.error === 'string') raw.errorMessage = data.error
-        if (typeof data.errorCode === 'string') raw.errorCode = data.errorCode
-      }
-      // Clear stale job entry
-      delete rawJobs[data.rawId]
-      if (store.currentKB) void store.refreshCurrentKB()
-    } catch { /* ignore */ }
-  })
-  es.addEventListener('raw.warning', (ev: MessageEvent) => {
-    try {
-      const data = JSON.parse(ev.data)
-      const raw = store.rawMaterials.find(r => r.id === data.rawId)
-      // A warning lands async after the material already completed, so the
-      // refresh round-trip on raw.completed has already happened — apply it
-      // live here, otherwise it would only appear on the next manual reload.
-      if (raw) {
-        if (typeof data.warning === 'string') raw.warningMessage = data.warning
-        if (typeof data.warningCode === 'string') raw.warningCode = data.warningCode
-      }
-    } catch { /* ignore */ }
-  })
+      } catch { /* ignore */ }
+    },
+    'route.done': (ev: MessageEvent) => {
+      try { applyProgressEvent(JSON.parse(ev.data)) } catch { /* ignore */ }
+    },
+    'chunk.done': (ev: MessageEvent) => {
+      try { applyProgressEvent(JSON.parse(ev.data)) } catch { /* ignore */ }
+    },
+    'raw.completed': (ev: MessageEvent) => {
+      try {
+        const data = JSON.parse(ev.data)
+        const raw = store.rawMaterials.find(r => r.id === data.rawId)
+        if (raw) {
+          raw.processingStatus = data.status === 'partial' ? 'partial' : 'completed'
+          if (typeof data.totalPages === 'number') {
+            raw.progressDone = data.totalPages
+            raw.progressTotal = data.totalPages
+          }
+        }
+        // Clear stale job entry so JobStageBar hides
+        delete rawJobs[data.rawId]
+        if (store.currentKB) void store.refreshCurrentKB()
+      } catch { /* ignore */ }
+    },
+    'raw.failed': (ev: MessageEvent) => {
+      try {
+        const data = JSON.parse(ev.data)
+        const raw = store.rawMaterials.find(r => r.id === data.rawId)
+        if (raw) {
+          raw.processingStatus = 'failed'
+          // Surface the failure immediately from the event payload instead of
+          // waiting for the refresh round-trip — and never drop it: a null
+          // message would otherwise leave the user with a blank "failed" badge.
+          if (typeof data.error === 'string') raw.errorMessage = data.error
+          if (typeof data.errorCode === 'string') raw.errorCode = data.errorCode
+        }
+        // Clear stale job entry
+        delete rawJobs[data.rawId]
+        if (store.currentKB) void store.refreshCurrentKB()
+      } catch { /* ignore */ }
+    },
+    'raw.warning': (ev: MessageEvent) => {
+      try {
+        const data = JSON.parse(ev.data)
+        const raw = store.rawMaterials.find(r => r.id === data.rawId)
+        // A warning lands async after the material already completed, so the
+        // refresh round-trip on raw.completed has already happened — apply it
+        // live here, otherwise it would only appear on the next manual reload.
+        if (raw) {
+          if (typeof data.warning === 'string') raw.warningMessage = data.warning
+          if (typeof data.warningCode === 'string') raw.warningCode = data.warningCode
+        }
+      } catch { /* ignore */ }
+    },
+  }
+  for (const [event, handler] of Object.entries(handlers)) {
+    es.addEventListener(event, handler)
+  }
+  sseHandlers = handlers
   es.onerror = () => {
     // Browser EventSource auto-reconnects; just log
     // console.debug('Wiki SSE error/reconnect', kbId)
@@ -1337,6 +1374,13 @@ function openSse(kbId: number) {
 
 function closeSse() {
   if (sse) {
+    // Remove all listeners explicitly — relying solely on .close() + GC is
+    // fragile: a deferred event between close and GC fires into a handler
+    // that mutates store.rawMaterials, potentially for a different KB (M2 fix).
+    for (const [event, handler] of Object.entries(sseHandlers)) {
+      sse.removeEventListener(event, handler)
+    }
+    sseHandlers = {}
     sse.close()
     sse = null
   }
@@ -1380,11 +1424,17 @@ onBeforeUnmount(() => {
     clearTimeout(jobPoller)
     jobPoller = null
   }
+  // Clear all deferred-refetch timers — otherwise they fire after unmount,
+  // overwriting the current KB's rawMaterials with stale data from a
+  // previous KB (C3 fix).
+  for (const id of refetchTimers) clearTimeout(id)
+  refetchTimers.length = 0
 })
 
 // RFC-033: Job polling per raw material
 const rawJobs = reactive<Record<number, WikiProcessingJob>>({})
 let jobPoller: ReturnType<typeof setTimeout> | null = null
+let isPolling = false
 
 const TERMINAL_STATUSES = new Set(['completed', 'failed', 'partial', 'cancelled'])
 
@@ -1398,34 +1448,46 @@ const cancellingIds = ref(new Set<number>())
 
 async function pollJobs() {
   if (!store.currentKB) return
-  const kbId = store.currentKB.id
-  const processingRaws = store.rawMaterials.filter(
-    r => r.processingStatus === 'processing' || r.processingStatus === 'pending'
-  )
-  let anyTerminal = false
-  for (const raw of processingRaws) {
-    try {
-      const res: any = await wikiApi.getWikiJobs(kbId, raw.id)
-      const list = res.data || res || []
-      if (list.length > 0) {
-        const job = list[0]
-        rawJobs[raw.id] = job
-        if (TERMINAL_STATUSES.has(job.status)) {
-          anyTerminal = true
+  // Reentrancy guard: refreshCurrentKB() inside this function reassigns
+  // rawMaterials, which retriggers the hasProcessing watcher, which calls
+  // pollJobs again — without this guard, N parallel pollJobs chains stack up,
+  // each firing its own batch of per-raw HTTP requests (H1 fix).
+  if (jobPoller != null && isPolling) return
+  isPolling = true
+  try {
+    const kbId = store.currentKB.id
+    const processingRaws = store.rawMaterials.filter(
+      r => r.processingStatus === 'processing' || r.processingStatus === 'pending'
+    )
+    let anyTerminal = false
+    for (const raw of processingRaws) {
+      try {
+        const res: any = await wikiApi.getWikiJobs(kbId, raw.id)
+        const list = res.data || res || []
+        if (list.length > 0) {
+          const job = list[0]
+          rawJobs[raw.id] = job
+          if (TERMINAL_STATUSES.has(job.status)) {
+            anyTerminal = true
+          }
         }
-      }
-    } catch { /* ignore */ }
-  }
-  // When any job reaches terminal, refresh wiki metadata, pages, and raw badges.
-  if (anyTerminal) {
-    await store.refreshCurrentKB()
-  }
-  // Continue polling while there are still processing/pending raws
-  const stillActive = store.rawMaterials.some(
-    r => r.processingStatus === 'processing' || r.processingStatus === 'pending'
-  )
-  if (stillActive) {
-    jobPoller = setTimeout(pollJobs, 3000)
+      } catch { /* ignore */ }
+    }
+    // When any job reaches terminal, refresh wiki metadata, pages, and raw badges.
+    if (anyTerminal) {
+      await store.refreshCurrentKB()
+    }
+    // Continue polling while there are still processing/pending raws
+    const stillActive = store.rawMaterials.some(
+      r => r.processingStatus === 'processing' || r.processingStatus === 'pending'
+    )
+    if (stillActive) {
+      jobPoller = setTimeout(pollJobs, 3000)
+    } else {
+      jobPoller = null
+    }
+  } finally {
+    isPolling = false
   }
 }
 
@@ -1586,12 +1648,15 @@ async function handleAddText() {
 }
 
 /** Fires the reprocess call and updates local state only — no list refresh, so
- *  batch callers can trigger many of these and refresh the list once at the end. */
+ *  batch callers can trigger many of these and refresh the list once at the end.
+ *  Throws on failure so batch callers (batchReprocess/retryAllErrors) can count
+ *  failures and report them instead of silently swallowing (H2 fix). */
 async function triggerReprocess(rawId: number) {
   if (!store.currentKB) return
+  const raw = store.rawMaterials.find(r => r.id === rawId)
+  const prevStatus = raw?.processingStatus
   await wikiApi.reprocessRaw(store.currentKB.id, rawId)
   // Immediately mark local state as processing so SSE connects and progress bar shows
-  const raw = store.rawMaterials.find(r => r.id === rawId)
   if (raw) {
     raw.processingStatus = 'processing'
     raw.progressDone = 0
@@ -1599,12 +1664,28 @@ async function triggerReprocess(rawId: number) {
   }
   // Clear stale job entry
   delete rawJobs[rawId]
+  // Store prevStatus for potential rollback by batch callers
+  void prevStatus
 }
 
-/** Delayed re-fetches to catch final status if processing finishes before SSE connects. */
+/** Delayed re-fetches to catch final status if processing finishes before SSE connects.
+ *  All timers are tracked in refetchTimers so they are cleared on unmount (C3 fix). */
 function scheduleRawMaterialRefetch(kbId: number) {
-  setTimeout(() => { store.fetchRawMaterials(kbId) }, 5000)
-  setTimeout(() => { store.fetchRawMaterials(kbId) }, 15000)
+  const capturedKbId = kbId
+  for (const delay of [5000, 15000]) {
+    const id = setTimeout(() => {
+      // Guard against firing for a different KB after the user switched —
+      // only refetch if we're still viewing the same KB.
+      if (store.currentKB?.id === capturedKbId) {
+        store.fetchRawMaterials(capturedKbId)
+      }
+    }, delay)
+    refetchTimers.push(id)
+  }
+  // Prune completed timers to prevent unbounded growth.
+  if (refetchTimers.length > 20) {
+    refetchTimers.splice(0, refetchTimers.length - 20)
+  }
 }
 
 async function reprocess(rawId: number) {
@@ -1617,8 +1698,13 @@ async function reprocess(rawId: number) {
 
 async function deleteRaw(rawId: number) {
   if (!store.currentKB) return
-  await wikiApi.deleteRaw(store.currentKB.id, rawId)
-  await store.fetchRawMaterials(store.currentKB.id)
+  try {
+    await wikiApi.deleteRaw(store.currentKB.id, rawId)
+    await store.fetchRawMaterials(store.currentKB.id)
+  } catch (e: any) {
+    const msg = e?.response?.data?.message || e?.message || String(e)
+    mcToast.error(msg)
+  }
 }
 
 async function cancelRaw(rawId: number) {
@@ -1641,8 +1727,7 @@ async function cancelRaw(rawId: number) {
   // 'cancelled' as soon as the pipeline observes the flag and writes its
   // terminal status — at which point the watch below clears the flag.
   await store.fetchRawMaterials(kbId)
-  setTimeout(() => { store.fetchRawMaterials(kbId) }, 5000)
-  setTimeout(() => { store.fetchRawMaterials(kbId) }, 15000)
+  scheduleRawMaterialRefetch(kbId)
 }
 
 async function downloadRaw(raw: { id: number; title?: string }) {
@@ -1672,13 +1757,21 @@ async function downloadRaw(raw: { id: number; title?: string }) {
 async function processAll() {
   if (!store.currentKB) return
   const kbId = store.currentKB.id
-  await wikiApi.processKB(kbId)
+  // Snapshot pending rows so we can roll back the optimistic flip on failure (H2 fix).
+  const pendingRows = store.rawMaterials.filter(r => r.processingStatus === 'pending')
+  try {
+    await wikiApi.processKB(kbId)
+  } catch (e: any) {
+    // Don't flip to processing if the request failed — without this rollback,
+    // rows get stuck in a fake "processing" state with no reset path.
+    const msg = e?.response?.data?.message || e?.message || String(e)
+    mcToast.error(msg)
+    return
+  }
   // Mark all pending materials as processing so SSE connects
-  store.rawMaterials
-    .filter(r => r.processingStatus === 'pending')
-    .forEach(r => { r.processingStatus = 'processing'; r.progressDone = 0; r.progressTotal = 0 })
+  pendingRows.forEach(r => { r.processingStatus = 'processing'; r.progressDone = 0; r.progressTotal = 0 })
   await store.fetchRawMaterials(kbId)
-  setTimeout(() => { store.fetchRawMaterials(kbId) }, 5000)
+  scheduleRawMaterialRefetch(kbId)
 }
 
 function toggleRawFilter(rawId: number) {

@@ -2316,6 +2316,7 @@ export default {
       batchDelete: '批量删除',
       clearSelection: '取消选择',
       batchDeleteConfirm: '确定删除选中的 {count} 个材料吗？此操作不可撤销。',
+      batchPartialFail: '{failed}/{total} 个操作失败，请重试。',
       moveToGroup: '移动到分组',
       moveFailed: '移动分组失败',
     },

@@ -391,8 +391,8 @@ public class WikiController {
             group = sourceGroupService.update(group, req.alias(), req.path(), req.fileFilter(),
                     req.cronExpr(), req.enabled());
             return R.ok(toSourceGroupVO(group, sourceGroupService.countRawByKbId(kbId)));
-        } catch (IllegalArgumentException e) {
-            return R.fail(400, e.getMessage());
+        } catch (IllegalArgumentException | MateClawException e) {
+            return R.fail(e instanceof MateClawException m ? m.getCode() : 400, e.getMessage());
         }
     }
 
@@ -463,6 +463,10 @@ public class WikiController {
         }
         if (req.rawIds() == null || req.rawIds().isEmpty()) {
             return R.ok();
+        }
+        if (req.rawIds().size() > BatchGroupRequest.MAX_RAW_IDS) {
+            return R.fail(400, "Batch too large: max " + BatchGroupRequest.MAX_RAW_IDS
+                    + " raw IDs per request, got " + req.rawIds().size());
         }
         // Restrict the batch update to raw IDs that actually belong to this KB,
         // so a caller cannot use a foreign rawId to reach across knowledge bases.

@@ -2304,6 +2304,7 @@ export default {
       batchDelete: 'Delete',
       clearSelection: 'Clear',
       batchDeleteConfirm: 'Delete the {count} selected materials? This cannot be undone.',
+      batchPartialFail: '{failed}/{total} operations failed, please retry.',
       moveToGroup: 'Move to group',
       moveFailed: 'Failed to move to group',
     },

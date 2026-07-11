@@ -48,13 +48,17 @@ public class WikiSourceGroupService {
     @Transactional
     public WikiSourceGroupEntity create(Long kbId, String alias, String path, String fileFilter,
                                          String cronExpr, Boolean enabled) {
+        validateFileFilter(fileFilter);
         pathValidator.validatePatternBase(path);
         validateCronExpr(cronExpr);
         assertAliasAvailable(kbId, alias, null);
         WikiKnowledgeBaseEntity kb = kbService.getById(kbId);
+        if (kb == null) {
+            throw new MateClawException(404, "Knowledge base not found: " + kbId);
+        }
         WikiSourceGroupEntity group = new WikiSourceGroupEntity();
         group.setKbId(kbId);
-        group.setWorkspaceId(kb != null ? kb.getWorkspaceId() : null);
+        group.setWorkspaceId(kb.getWorkspaceId());
         group.setAlias(alias);
         group.setPath(path);
         group.setFileFilter(fileFilter);
@@ -75,12 +79,14 @@ public class WikiSourceGroupService {
             assertAliasAvailable(group.getKbId(), alias, group.getId());
             group.setAlias(alias);
         }
+        // null = don't touch; non-null (incl. "") = validate then set — allows clearing
         if (fileFilter != null) {
-            group.setFileFilter(fileFilter);
+            validateFileFilter(fileFilter);
+            group.setFileFilter(fileFilter.isBlank() ? null : fileFilter);
         }
         if (cronExpr != null) {
             validateCronExpr(cronExpr);
-            group.setCronExpr(cronExpr);
+            group.setCronExpr(cronExpr.isBlank() ? null : cronExpr);
         }
         if (enabled != null) {
             group.setEnabled(enabled ? 1 : 0);
@@ -97,6 +103,21 @@ public class WikiSourceGroupService {
             CronExpression.parse(cronExpr);
         } catch (IllegalArgumentException e) {
             throw new MateClawException(400, "Cron 表达式非法: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 校验 fileFilter glob 语法，非法模式（如未闭合的 {@code [}）在 create/update 时
+     * 就拒绝，而不是留到扫描时冒泡成 500。空字符串视为"清除过滤器"，合法。
+     */
+    private void validateFileFilter(String fileFilter) {
+        if (fileFilter == null || fileFilter.isBlank()) {
+            return;
+        }
+        try {
+            java.nio.file.FileSystems.getDefault().getPathMatcher("glob:" + fileFilter);
+        } catch (java.util.regex.PatternSyntaxException e) {
+            throw new MateClawException(400, "文件过滤器语法非法: " + e.getMessage());
         }
     }
 

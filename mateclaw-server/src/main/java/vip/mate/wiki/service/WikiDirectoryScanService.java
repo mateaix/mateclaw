@@ -129,6 +129,14 @@ public class WikiDirectoryScanService {
         int added = 0;
         int skipped = 0;
 
+        // Pre-fetch existing raws for this KB into a sourcePath→raw map, so
+        // tagGroupIfNeeded doesn't fire one query per file (N+1 on large scans).
+        Map<String, WikiRawMaterialEntity> existingRawsByPath = groupId != null
+                ? rawService.listByKbId(kbId).stream()
+                        .collect(java.util.stream.Collectors.toMap(
+                                WikiRawMaterialEntity::getSourcePath, r -> r, (a, b) -> a))
+                : Map.of();
+
         for (FileCandidate candidate : candidates) {
             Path file = candidate.file();
             Path scanRoot = candidate.scanRoot();
@@ -178,7 +186,7 @@ public class WikiDirectoryScanService {
                     // skipped while a modified file (new hash) is re-ingested.
                     String content = Files.readString(realFile, StandardCharsets.UTF_8);
                     boolean fresh = rawService.ingestTextFileFromScan(kbId, fileName, absolutePath, content);
-                    tagGroupIfNeeded(kbId, absolutePath, groupId, fresh, skippedRawIdsOut);
+                    tagGroupIfNeeded(kbId, absolutePath, groupId, fresh, skippedRawIdsOut, existingRawsByPath);
                     if (fresh) {
                         added++;
                     } else {
@@ -200,7 +208,7 @@ public class WikiDirectoryScanService {
                 };
                 boolean freshBinary = rawService.ingestBinaryFileFromScan(
                         kbId, fileName, sourceType, absolutePath, realSize);
-                tagGroupIfNeeded(kbId, absolutePath, groupId, freshBinary, skippedRawIdsOut);
+                tagGroupIfNeeded(kbId, absolutePath, groupId, freshBinary, skippedRawIdsOut, existingRawsByPath);
                 if (freshBinary) {
                     added++;
                 } else {
@@ -231,14 +239,21 @@ public class WikiDirectoryScanService {
      * {@code pending} 的 raw（否则会把管道里跑到一半的材料重新置 pending，引发并发
      * 处理），以及跳过已被手动迁到其它分组的 raw（否则全量扫描会绕开行级重处理按钮
      * 对处理中行的隐藏这层前端守卫，形成后门）。
+     *
+     * @param existingRawsByPath 扫描前一次性预取的 sourcePath→raw 映射，避免逐文件查询（N+1）
      */
-    private void tagGroupIfNeeded(Long kbId, String absolutePath, Long groupId, boolean fresh, List<Long> skippedRawIdsOut) {
+    private void tagGroupIfNeeded(Long kbId, String absolutePath, Long groupId, boolean fresh,
+                                  List<Long> skippedRawIdsOut, Map<String, WikiRawMaterialEntity> existingRawsByPath) {
         if (groupId == null) {
             return;
         }
-        WikiRawMaterialEntity raw = rawService.findBySourcePath(kbId, absolutePath);
+        WikiRawMaterialEntity raw = existingRawsByPath.get(absolutePath);
         if (raw == null) {
-            return;
+            // freshly ingested in this scan pass — not in the pre-fetch snapshot
+            raw = rawService.findBySourcePath(kbId, absolutePath);
+            if (raw == null) {
+                return;
+            }
         }
         Long originalGroupId = raw.getGroupId();
         if (originalGroupId == null) {
