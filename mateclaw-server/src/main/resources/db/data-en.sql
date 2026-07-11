@@ -1950,3 +1950,7 @@ VALUES (1000000633, 'GzhPackageTool', 'WeChat Article Package', 'Package a finis
 MERGE INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
 KEY (id)
 VALUES (1000000634, 'ScreenshotTool', 'Console Screenshot', 'Capture a screenshot of a MateClaw console page (relative path like /chat, /channels) and return an embeddable image URL. Use it to put REAL product screenshots into how-to/tutorial articles; embed the returned URL as ![](url) in a gzh_package Markdown body.', 'builtin', 'screenshotTool', '📷', TRUE, TRUE, NOW(), NOW(), 0);
+
+MERGE INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
+KEY (id)
+VALUES (1000000635, 'XhsPackageTool', 'Xiaohongshu Package', 'Package a Xiaohongshu (小红书) note into an image-first online preview (phone-style swipe: images up top, copy below) plus a material zip (numbered card images + copy.txt). Requires at least 3 vertical images (1 cover + >=2 content); refuses fewer. 小红书 has no publish API; never auto-uploads.', 'builtin', 'xhsPackageTool', '🖼️', TRUE, TRUE, NOW(), NOW(), 0);

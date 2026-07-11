@@ -1988,3 +1988,7 @@ ON DUPLICATE KEY UPDATE name=VALUES(name), display_name=VALUES(display_name), de
 INSERT INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
 VALUES (1000000634, 'ScreenshotTool', '后台截图', '截取 MateClaw 后台页面（站内相对路径如 /chat、/channels）并返回可嵌入的图片 URL。用于给「如何用 MateClaw 做 XX」这类操作教程配真实产品截图，把返回 URL 以 ![](url) 嵌进 gzh_package 的 Markdown。', 'builtin', 'screenshotTool', '📷', TRUE, TRUE, NOW(), NOW(), 0)
 ON DUPLICATE KEY UPDATE name=VALUES(name), display_name=VALUES(display_name), description=VALUES(description), tool_type=VALUES(tool_type), bean_name=VALUES(bean_name), icon=VALUES(icon), enabled=VALUES(enabled), builtin=VALUES(builtin), update_time=VALUES(update_time), deleted=VALUES(deleted);
+
+INSERT INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
+VALUES (1000000635, 'XhsPackageTool', '小红书打包', '把小红书笔记打包成在线预览（手机版滑动预览，以图为主、文字辅助）+ 素材下载 zip（编号卡片图 + 文案.txt）。强制至少 3 张竖版图（1 封面 + ≥2 内容图），不足则拒绝打包。小红书无发布 API，不自动上传。', 'builtin', 'xhsPackageTool', '🖼️', TRUE, TRUE, NOW(), NOW(), 0)
+ON DUPLICATE KEY UPDATE name=VALUES(name), display_name=VALUES(display_name), description=VALUES(description), tool_type=VALUES(tool_type), bean_name=VALUES(bean_name), icon=VALUES(icon), enabled=VALUES(enabled), builtin=VALUES(builtin), update_time=VALUES(update_time), deleted=VALUES(deleted);
