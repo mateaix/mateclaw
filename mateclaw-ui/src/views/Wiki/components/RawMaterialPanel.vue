@@ -160,42 +160,6 @@
         <span class="clear-sel" @click="clearSelection">{{ t('wiki.sources.clearSelection') }}</span>
       </div>
 
-      <!-- ── Phase 6: Error file partition ────────────────────────────────── -->
-      <div v-if="failedMaterials.length > 0" class="error-section">
-        <div class="error-section-header" @click="errorSectionOpen = !errorSectionOpen">
-          <span class="group-chevron" :class="{ open: errorSectionOpen }">▶</span>
-          <span class="error-icon">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-          </span>
-          <span class="error-title">{{ t('wiki.errorSection.title') }}</span>
-          <span class="error-count">{{ failedMaterials.length }}</span>
-          <span class="error-hint-text">{{ t('wiki.errorSection.hint') }}</span>
-          <div v-if="canManageWiki" class="error-actions-bar" @click.stop>
-            <button class="error-bar-btn" @click="retryAllErrors">⟳ {{ t('wiki.errorSection.retryAll') }}</button>
-            <button class="error-bar-btn danger" @click="clearAllErrors">🗑 {{ t('wiki.errorSection.clearAll') }}</button>
-          </div>
-        </div>
-        <div v-show="errorSectionOpen" class="error-body">
-          <div v-for="raw in failedMaterials" :key="raw.id" class="error-item">
-            <span class="error-file-emoji">📄</span>
-            <div class="error-file-info">
-              <div class="error-file-name">
-                <span class="error-file-title clickable" :title="raw.title" @click="openPreview(raw)">{{ raw.title }}</span>
-                <span v-if="raw.sourceType" class="error-tag">{{ sourceTypeLabel(raw.sourceType) }}</span>
-              </div>
-              <div class="error-msg">{{ raw.errorMessage || friendlyError(raw) }}</div>
-            </div>
-            <div v-if="canManageWiki" class="error-actions">
-              <button class="error-item-btn" @click="openPreview(raw)">👁 {{ t('wiki.errorSection.preview') }}</button>
-              <button class="error-item-btn" @click="reprocess(raw.id)">⟳ {{ t('wiki.errorSection.retry') }}</button>
-              <button class="btn-icon btn-icon-danger" :title="t('common.delete')" @click="deleteRaw(raw.id)">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-
       <!-- Optimistic uploading items shown at the top -->
       <div
         v-for="uf in uploadingFiles"
@@ -483,6 +447,19 @@
       {{ t('wiki.processAll') }}
     </button>
 
+    <!-- ── Phase 6: Exception module — pinned to panel bottom, independent of group list length ── -->
+    <div v-if="exceptionMaterials.length > 0" class="exception-footer">
+      <div class="exception-entry" @click="errorModalOpen = true">
+        <span class="exception-icon">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+        </span>
+        <span class="exception-title">{{ t('wiki.errorSection.entryTitle') }}</span>
+        <span class="exception-count">{{ exceptionMaterials.length }}</span>
+        <span class="exception-hint">{{ t('wiki.errorSection.entryHint') }}</span>
+        <svg class="exception-arrow" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+      </div>
+    </div>
+
     <!-- Add Text Modal -->
     <div v-if="showAddText" class="modal-overlay">
       <div class="modal-content">
@@ -574,7 +551,7 @@
     </div>
 
     <!-- ── Phase 5: File preview modal ────────────────────────────────────── -->
-    <div v-if="previewOpen && previewRaw" class="modal-overlay" @click.self="previewOpen = false">
+    <div v-if="previewOpen && previewRaw" class="modal-overlay preview-overlay" @click.self="previewOpen = false">
       <div class="modal-content preview-modal">
         <div class="preview-header">
           <span class="preview-title" :title="previewRaw.title">
@@ -610,6 +587,49 @@
         </div>
         <div class="modal-actions">
           <button class="btn-secondary" @click="previewOpen = false">{{ t('wiki.preview.close') }}</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Phase 6: Exception modal ───────────────────────────────────────── -->
+    <div v-if="errorModalOpen" class="modal-overlay" @click.self="errorModalOpen = false">
+      <div class="modal-content exception-modal">
+        <div class="exception-modal-header">
+          <span class="exception-modal-title">
+            <span class="exception-icon">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+            </span>
+            {{ t('wiki.errorSection.entryTitle') }}
+            <span class="exception-count">{{ exceptionMaterials.length }}</span>
+          </span>
+          <div class="exception-modal-actions">
+            <button v-if="canManageWiki" class="error-bar-btn" @click="retryAllErrors">⟳ {{ t('wiki.errorSection.retryAll') }}</button>
+            <button v-if="canManageWiki" class="error-bar-btn danger" @click="clearAllErrors">🗑 {{ t('wiki.errorSection.clearAll') }}</button>
+            <button class="btn-icon" :title="t('wiki.preview.close')" @click="errorModalOpen = false">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+          </div>
+        </div>
+        <div class="exception-modal-body">
+          <div v-for="raw in exceptionMaterials" :key="raw.id" class="error-item">
+            <span class="status-badge" :class="raw.processingStatus">{{ t(`wiki.status.${raw.processingStatus}`) }}</span>
+            <div class="error-file-info">
+              <div class="error-file-name">
+                <span class="error-file-title clickable" :title="raw.title" @click="openPreview(raw)">{{ raw.title }}</span>
+                <span v-if="raw.sourceType" class="error-tag">{{ sourceTypeLabel(raw.sourceType) }}</span>
+              </div>
+              <div class="error-msg">{{ exceptionMessage(raw) }}</div>
+            </div>
+            <div class="error-actions">
+              <button class="error-item-btn" @click="openPreview(raw)">👁 {{ t('wiki.errorSection.preview') }}</button>
+              <template v-if="canManageWiki">
+                <button class="error-item-btn" @click="reprocess(raw.id)">⟳ {{ t('wiki.errorSection.retry') }}</button>
+                <button class="btn-icon btn-icon-danger" :title="t('common.delete')" @click="deleteRaw(raw.id)">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                </button>
+              </template>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -855,12 +875,16 @@ async function batchReprocess() {
   const ids = selectedRaws.value
     .filter(r => r.processingStatus !== 'processing' && r.processingStatus !== 'uploading')
     .map(r => r.id)
+  let failures = 0
   for (const id of ids) {
-    try { await triggerReprocess(id) } catch { /* skip failures, continue the batch */ }
+    try { await triggerReprocess(id) } catch { failures++ }
   }
   clearSelection()
   await store.fetchRawMaterials(kbId)
   scheduleRawMaterialRefetch(kbId)
+  if (failures > 0) {
+    mcToast.error(t('wiki.sources.batchPartialFail', { failed: failures, total: ids.length }))
+  }
 }
 
 async function batchDownload() {
@@ -880,11 +904,15 @@ async function batchDelete() {
   })
   if (!ok) return
   const kbId = store.currentKB.id
+  let failures = 0
   for (const id of Array.from(selectedIds.value)) {
-    try { await wikiApi.deleteRaw(kbId, id) } catch { /* skip failures, continue the batch */ }
+    try { await wikiApi.deleteRaw(kbId, id) } catch { failures++ }
   }
   clearSelection()
   await store.fetchRawMaterials(kbId)
+  if (failures > 0) {
+    mcToast.error(t('wiki.sources.batchPartialFail', { failed: failures, total: count }))
+  }
 }
 
 // ── Phase 4: Per-group path config, backed by the real source-group API ────
@@ -1138,6 +1166,12 @@ async function openPreview(raw: RawItem) {
   previewLoading.value = true
   try {
     const blob = (await wikiApi.downloadRaw(store.currentKB.id, raw.id)) as unknown as Blob
+    // Double-check the actual blob size — raw.fileSize can be 0/undefined for
+    // TEXT source types, which would bypass the pre-check above (M3 fix).
+    if (blob.size > PREVIEW_MAX_SIZE) {
+      previewTooLarge.value = true
+      return
+    }
     previewText.value = await blob.text()
   } catch {
     previewError.value = true
@@ -1146,24 +1180,47 @@ async function openPreview(raw: RawItem) {
   }
 }
 
-// ── Phase 6: Error file partition ─────────────────────────────────────────
-// Failed materials are surfaced in a dedicated red-themed section for triage,
-// in addition to appearing in their normal source group.
-const failedMaterials = computed(() => store.rawMaterials.filter(r => r.processingStatus === 'failed'))
-const errorSectionOpen = ref(false)
+// ── Phase 6: Exception triage ─────────────────────────────────────────────
+// Materials needing attention are surfaced via a collapsed entry below the
+// groups that opens a triage modal, in addition to appearing in their normal
+// source group. Mirrors the backend "needs attention" criterion
+// (WikiRawMaterialMapper.NEEDS_ATTENTION): failed/partial status OR a
+// non-blocking warning code on an otherwise-completed row.
+const exceptionMaterials = computed(() =>
+  store.rawMaterials.filter(
+    r => r.processingStatus === 'failed' || r.processingStatus === 'partial' || !!r.warningCode,
+  ),
+)
+const errorModalOpen = ref(false)
+
+// Best-available message for an exception row: prefer the raw backend text,
+// then fall back to the localized code hint (error for failed, warning for
+// partial), so the row never renders blank.
+function exceptionMessage(raw: RawItem): string {
+  if (raw.errorMessage) return raw.errorMessage
+  if (raw.warningMessage) return raw.warningMessage
+  if (raw.errorCode) return friendlyError(raw)
+  if (raw.warningCode) return friendlyWarning(raw)
+  return t('wiki.errorCode.UNKNOWN')
+}
 
 async function retryAllErrors() {
   if (!store.currentKB) return
   const kbId = store.currentKB.id
-  for (const r of failedMaterials.value) {
-    try { await triggerReprocess(r.id) } catch { /* skip failures, continue the batch */ }
+  const ids = exceptionMaterials.value.map(r => r.id)
+  let failures = 0
+  for (const r of exceptionMaterials.value) {
+    try { await triggerReprocess(r.id) } catch { failures++ }
   }
   await store.fetchRawMaterials(kbId)
   scheduleRawMaterialRefetch(kbId)
+  if (failures > 0) {
+    mcToast.error(t('wiki.sources.batchPartialFail', { failed: failures, total: ids.length }))
+  }
 }
 
 async function clearAllErrors() {
-  const ids = failedMaterials.value.map(r => r.id)
+  const ids = exceptionMaterials.value.map(r => r.id)
   if (ids.length === 0 || !store.currentKB) return
   const ok = await mcConfirm({
     title: t('wiki.errorSection.clearAll'),
@@ -1172,10 +1229,14 @@ async function clearAllErrors() {
   })
   if (!ok) return
   const kbId = store.currentKB.id
+  let failures = 0
   for (const id of ids) {
-    try { await wikiApi.deleteRaw(kbId, id) } catch { /* skip failures, continue the batch */ }
+    try { await wikiApi.deleteRaw(kbId, id) } catch { failures++ }
   }
   await store.fetchRawMaterials(kbId)
+  if (failures > 0) {
+    mcToast.error(t('wiki.sources.batchPartialFail', { failed: failures, total: ids.length }))
+  }
 }
 
 // Map a structured backend errorCode to a localized, user-friendly hint.
@@ -1208,6 +1269,14 @@ function friendlyWarning(raw: { warningCode?: string | null; warningMessage?: st
 let sse: EventSource | null = null
 let fallbackTimer: number | null = null
 let activeKbId: number | null = null
+// Track all deferred-refetch timers so they can be cleared on unmount.
+// Without this, a timer fires after the user switched KBs and overwrites the
+// current KB's rawMaterials with stale data from the old KB (C3 fix).
+const refetchTimers: ReturnType<typeof setTimeout>[] = []
+
+// Store SSE event handler refs so closeSse can removeEventListener (M2 fix).
+type SseHandler = (ev: MessageEvent) => void
+let sseHandlers: Record<string, SseHandler> = {}
 
 const hasProcessing = computed(() =>
   store.rawMaterials.some(r => r.processingStatus === 'processing' || r.processingStatus === 'pending')
@@ -1228,69 +1297,75 @@ function openSse(kbId: number) {
   const es = new EventSource(`/api/v1/wiki/knowledge-bases/${kbId}/progress`)
   sse = es
 
-  es.addEventListener('raw.started', (ev: MessageEvent) => {
-    try {
-      const data = JSON.parse(ev.data)
-      const raw = store.rawMaterials.find(r => r.id === data.rawId)
-      if (raw) {
-        raw.processingStatus = 'processing'
-        raw.progressDone = 0
-        raw.progressTotal = 0
-      }
-    } catch { /* ignore */ }
-  })
-  es.addEventListener('route.done', (ev: MessageEvent) => {
-    try { applyProgressEvent(JSON.parse(ev.data)) } catch { /* ignore */ }
-  })
-  es.addEventListener('chunk.done', (ev: MessageEvent) => {
-    try { applyProgressEvent(JSON.parse(ev.data)) } catch { /* ignore */ }
-  })
-  es.addEventListener('raw.completed', (ev: MessageEvent) => {
-    try {
-      const data = JSON.parse(ev.data)
-      const raw = store.rawMaterials.find(r => r.id === data.rawId)
-      if (raw) {
-        raw.processingStatus = data.status === 'partial' ? 'partial' : 'completed'
-        if (typeof data.totalPages === 'number') {
-          raw.progressDone = data.totalPages
-          raw.progressTotal = data.totalPages
+  const handlers: Record<string, SseHandler> = {
+    'raw.started': (ev: MessageEvent) => {
+      try {
+        const data = JSON.parse(ev.data)
+        const raw = store.rawMaterials.find(r => r.id === data.rawId)
+        if (raw) {
+          raw.processingStatus = 'processing'
+          raw.progressDone = 0
+          raw.progressTotal = 0
         }
-      }
-      // Clear stale job entry so JobStageBar hides
-      delete rawJobs[data.rawId]
-      if (store.currentKB) void store.refreshCurrentKB()
-    } catch { /* ignore */ }
-  })
-  es.addEventListener('raw.failed', (ev: MessageEvent) => {
-    try {
-      const data = JSON.parse(ev.data)
-      const raw = store.rawMaterials.find(r => r.id === data.rawId)
-      if (raw) {
-        raw.processingStatus = 'failed'
-        // Surface the failure immediately from the event payload instead of
-        // waiting for the refresh round-trip — and never drop it: a null
-        // message would otherwise leave the user with a blank "failed" badge.
-        if (typeof data.error === 'string') raw.errorMessage = data.error
-        if (typeof data.errorCode === 'string') raw.errorCode = data.errorCode
-      }
-      // Clear stale job entry
-      delete rawJobs[data.rawId]
-      if (store.currentKB) void store.refreshCurrentKB()
-    } catch { /* ignore */ }
-  })
-  es.addEventListener('raw.warning', (ev: MessageEvent) => {
-    try {
-      const data = JSON.parse(ev.data)
-      const raw = store.rawMaterials.find(r => r.id === data.rawId)
-      // A warning lands async after the material already completed, so the
-      // refresh round-trip on raw.completed has already happened — apply it
-      // live here, otherwise it would only appear on the next manual reload.
-      if (raw) {
-        if (typeof data.warning === 'string') raw.warningMessage = data.warning
-        if (typeof data.warningCode === 'string') raw.warningCode = data.warningCode
-      }
-    } catch { /* ignore */ }
-  })
+      } catch { /* ignore */ }
+    },
+    'route.done': (ev: MessageEvent) => {
+      try { applyProgressEvent(JSON.parse(ev.data)) } catch { /* ignore */ }
+    },
+    'chunk.done': (ev: MessageEvent) => {
+      try { applyProgressEvent(JSON.parse(ev.data)) } catch { /* ignore */ }
+    },
+    'raw.completed': (ev: MessageEvent) => {
+      try {
+        const data = JSON.parse(ev.data)
+        const raw = store.rawMaterials.find(r => r.id === data.rawId)
+        if (raw) {
+          raw.processingStatus = data.status === 'partial' ? 'partial' : 'completed'
+          if (typeof data.totalPages === 'number') {
+            raw.progressDone = data.totalPages
+            raw.progressTotal = data.totalPages
+          }
+        }
+        // Clear stale job entry so JobStageBar hides
+        delete rawJobs[data.rawId]
+        if (store.currentKB) void store.refreshCurrentKB()
+      } catch { /* ignore */ }
+    },
+    'raw.failed': (ev: MessageEvent) => {
+      try {
+        const data = JSON.parse(ev.data)
+        const raw = store.rawMaterials.find(r => r.id === data.rawId)
+        if (raw) {
+          raw.processingStatus = 'failed'
+          // Surface the failure immediately from the event payload instead of
+          // waiting for the refresh round-trip — and never drop it: a null
+          // message would otherwise leave the user with a blank "failed" badge.
+          if (typeof data.error === 'string') raw.errorMessage = data.error
+          if (typeof data.errorCode === 'string') raw.errorCode = data.errorCode
+        }
+        // Clear stale job entry
+        delete rawJobs[data.rawId]
+        if (store.currentKB) void store.refreshCurrentKB()
+      } catch { /* ignore */ }
+    },
+    'raw.warning': (ev: MessageEvent) => {
+      try {
+        const data = JSON.parse(ev.data)
+        const raw = store.rawMaterials.find(r => r.id === data.rawId)
+        // A warning lands async after the material already completed, so the
+        // refresh round-trip on raw.completed has already happened — apply it
+        // live here, otherwise it would only appear on the next manual reload.
+        if (raw) {
+          if (typeof data.warning === 'string') raw.warningMessage = data.warning
+          if (typeof data.warningCode === 'string') raw.warningCode = data.warningCode
+        }
+      } catch { /* ignore */ }
+    },
+  }
+  for (const [event, handler] of Object.entries(handlers)) {
+    es.addEventListener(event, handler)
+  }
+  sseHandlers = handlers
   es.onerror = () => {
     // Browser EventSource auto-reconnects; just log
     // console.debug('Wiki SSE error/reconnect', kbId)
@@ -1299,6 +1374,13 @@ function openSse(kbId: number) {
 
 function closeSse() {
   if (sse) {
+    // Remove all listeners explicitly — relying solely on .close() + GC is
+    // fragile: a deferred event between close and GC fires into a handler
+    // that mutates store.rawMaterials, potentially for a different KB (M2 fix).
+    for (const [event, handler] of Object.entries(sseHandlers)) {
+      sse.removeEventListener(event, handler)
+    }
+    sseHandlers = {}
     sse.close()
     sse = null
   }
@@ -1342,11 +1424,17 @@ onBeforeUnmount(() => {
     clearTimeout(jobPoller)
     jobPoller = null
   }
+  // Clear all deferred-refetch timers — otherwise they fire after unmount,
+  // overwriting the current KB's rawMaterials with stale data from a
+  // previous KB (C3 fix).
+  for (const id of refetchTimers) clearTimeout(id)
+  refetchTimers.length = 0
 })
 
 // RFC-033: Job polling per raw material
 const rawJobs = reactive<Record<number, WikiProcessingJob>>({})
 let jobPoller: ReturnType<typeof setTimeout> | null = null
+let isPolling = false
 
 const TERMINAL_STATUSES = new Set(['completed', 'failed', 'partial', 'cancelled'])
 
@@ -1360,34 +1448,45 @@ const cancellingIds = ref(new Set<number>())
 
 async function pollJobs() {
   if (!store.currentKB) return
-  const kbId = store.currentKB.id
-  const processingRaws = store.rawMaterials.filter(
-    r => r.processingStatus === 'processing' || r.processingStatus === 'pending'
-  )
-  let anyTerminal = false
-  for (const raw of processingRaws) {
-    try {
-      const res: any = await wikiApi.getWikiJobs(kbId, raw.id)
-      const list = res.data || res || []
-      if (list.length > 0) {
-        const job = list[0]
-        rawJobs[raw.id] = job
-        if (TERMINAL_STATUSES.has(job.status)) {
-          anyTerminal = true
+  // Reentrancy guard: refreshCurrentKB() inside this function reassigns
+  // rawMaterials, which retriggers the hasProcessing watcher, which calls
+  // pollJobs again. isPolling alone is sufficient — if already polling, bail.
+  if (isPolling) return
+  isPolling = true
+  try {
+    const kbId = store.currentKB.id
+    const processingRaws = store.rawMaterials.filter(
+      r => r.processingStatus === 'processing' || r.processingStatus === 'pending'
+    )
+    let anyTerminal = false
+    for (const raw of processingRaws) {
+      try {
+        const res: any = await wikiApi.getWikiJobs(kbId, raw.id)
+        const list = res.data || res || []
+        if (list.length > 0) {
+          const job = list[0]
+          rawJobs[raw.id] = job
+          if (TERMINAL_STATUSES.has(job.status)) {
+            anyTerminal = true
+          }
         }
-      }
-    } catch { /* ignore */ }
-  }
-  // When any job reaches terminal, refresh wiki metadata, pages, and raw badges.
-  if (anyTerminal) {
-    await store.refreshCurrentKB()
-  }
-  // Continue polling while there are still processing/pending raws
-  const stillActive = store.rawMaterials.some(
-    r => r.processingStatus === 'processing' || r.processingStatus === 'pending'
-  )
-  if (stillActive) {
-    jobPoller = setTimeout(pollJobs, 3000)
+      } catch { /* ignore */ }
+    }
+    // When any job reaches terminal, refresh wiki metadata, pages, and raw badges.
+    if (anyTerminal) {
+      await store.refreshCurrentKB()
+    }
+    // Continue polling while there are still processing/pending raws
+    const stillActive = store.rawMaterials.some(
+      r => r.processingStatus === 'processing' || r.processingStatus === 'pending'
+    )
+    if (stillActive) {
+      jobPoller = setTimeout(pollJobs, 3000)
+    } else {
+      jobPoller = null
+    }
+  } finally {
+    isPolling = false
   }
 }
 
@@ -1548,11 +1647,14 @@ async function handleAddText() {
 }
 
 /** Fires the reprocess call and updates local state only — no list refresh, so
- *  batch callers can trigger many of these and refresh the list once at the end. */
+ *  batch callers can trigger many of these and refresh the list once at the end.
+ *  Throws on failure so batch callers (batchReprocess/retryAllErrors) can count
+ *  failures and report them instead of silently swallowing (H2 fix). */
 async function triggerReprocess(rawId: number) {
   if (!store.currentKB) return
   await wikiApi.reprocessRaw(store.currentKB.id, rawId)
-  // Immediately mark local state as processing so SSE connects and progress bar shows
+  // Immediately mark local state as processing so SSE connects and progress bar shows.
+  // Only reached on success — failure throws before this point, so no rollback needed.
   const raw = store.rawMaterials.find(r => r.id === rawId)
   if (raw) {
     raw.processingStatus = 'processing'
@@ -1563,10 +1665,24 @@ async function triggerReprocess(rawId: number) {
   delete rawJobs[rawId]
 }
 
-/** Delayed re-fetches to catch final status if processing finishes before SSE connects. */
+/** Delayed re-fetches to catch final status if processing finishes before SSE connects.
+ *  All timers are tracked in refetchTimers so they are cleared on unmount (C3 fix). */
 function scheduleRawMaterialRefetch(kbId: number) {
-  setTimeout(() => { store.fetchRawMaterials(kbId) }, 5000)
-  setTimeout(() => { store.fetchRawMaterials(kbId) }, 15000)
+  const capturedKbId = kbId
+  for (const delay of [5000, 15000]) {
+    const id = setTimeout(() => {
+      // Guard against firing for a different KB after the user switched —
+      // only refetch if we're still viewing the same KB.
+      if (store.currentKB?.id === capturedKbId) {
+        store.fetchRawMaterials(capturedKbId)
+      }
+    }, delay)
+    refetchTimers.push(id)
+  }
+  // Prune completed timers to prevent unbounded growth.
+  if (refetchTimers.length > 20) {
+    refetchTimers.splice(0, refetchTimers.length - 20)
+  }
 }
 
 async function reprocess(rawId: number) {
@@ -1579,8 +1695,13 @@ async function reprocess(rawId: number) {
 
 async function deleteRaw(rawId: number) {
   if (!store.currentKB) return
-  await wikiApi.deleteRaw(store.currentKB.id, rawId)
-  await store.fetchRawMaterials(store.currentKB.id)
+  try {
+    await wikiApi.deleteRaw(store.currentKB.id, rawId)
+    await store.fetchRawMaterials(store.currentKB.id)
+  } catch (e: any) {
+    const msg = e?.response?.data?.message || e?.message || String(e)
+    mcToast.error(msg)
+  }
 }
 
 async function cancelRaw(rawId: number) {
@@ -1603,8 +1724,7 @@ async function cancelRaw(rawId: number) {
   // 'cancelled' as soon as the pipeline observes the flag and writes its
   // terminal status — at which point the watch below clears the flag.
   await store.fetchRawMaterials(kbId)
-  setTimeout(() => { store.fetchRawMaterials(kbId) }, 5000)
-  setTimeout(() => { store.fetchRawMaterials(kbId) }, 15000)
+  scheduleRawMaterialRefetch(kbId)
 }
 
 async function downloadRaw(raw: { id: number; title?: string }) {
@@ -1634,13 +1754,21 @@ async function downloadRaw(raw: { id: number; title?: string }) {
 async function processAll() {
   if (!store.currentKB) return
   const kbId = store.currentKB.id
-  await wikiApi.processKB(kbId)
+  // Snapshot pending rows so we can roll back the optimistic flip on failure (H2 fix).
+  const pendingRows = store.rawMaterials.filter(r => r.processingStatus === 'pending')
+  try {
+    await wikiApi.processKB(kbId)
+  } catch (e: any) {
+    // Don't flip to processing if the request failed — without this rollback,
+    // rows get stuck in a fake "processing" state with no reset path.
+    const msg = e?.response?.data?.message || e?.message || String(e)
+    mcToast.error(msg)
+    return
+  }
   // Mark all pending materials as processing so SSE connects
-  store.rawMaterials
-    .filter(r => r.processingStatus === 'pending')
-    .forEach(r => { r.processingStatus = 'processing'; r.progressDone = 0; r.progressTotal = 0 })
+  pendingRows.forEach(r => { r.processingStatus = 'processing'; r.progressDone = 0; r.progressTotal = 0 })
   await store.fetchRawMaterials(kbId)
-  setTimeout(() => { store.fetchRawMaterials(kbId) }, 5000)
+  scheduleRawMaterialRefetch(kbId)
 }
 
 function toggleRawFilter(rawId: number) {
@@ -2011,6 +2139,10 @@ function toggleRawFilter(rawId: number) {
 
 /* Phase 5: file preview modal */
 .preview-modal { width: 720px; max-width: 92vw; }
+/* Preview is a detail view that can be launched from within the exception
+   modal, so it must stack above it. Compound selector so it beats the later
+   `.modal-overlay { z-index: 1000 }` rule on specificity, not source order. */
+.modal-overlay.preview-overlay { z-index: 1100; }
 .preview-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
 .preview-title { display: inline-flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 600; color: var(--mc-text-primary); min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .preview-title svg { flex-shrink: 0; color: var(--mc-text-tertiary); }
@@ -2023,20 +2155,27 @@ function toggleRawFilter(rawId: number) {
 .preview-placeholder { background: var(--mc-bg-muted); border: 1px solid var(--mc-border-light); border-radius: 8px; padding: 32px 16px; text-align: center; font-size: 13px; color: var(--mc-text-tertiary); }
 
 /* Phase 6: error file partition */
-.error-section { background: var(--mc-danger-bg); border: 1px solid var(--mc-danger); border-radius: 14px; overflow: hidden; }
-.error-section-header { display: flex; align-items: center; gap: 10px; padding: 12px 14px; cursor: pointer; user-select: none; }
-.error-icon { color: var(--mc-danger); display: inline-flex; flex-shrink: 0; }
-.error-title { font-weight: 600; color: var(--mc-danger); font-size: 13px; }
-.error-count { padding: 1px 8px; border-radius: 9999px; background: var(--mc-danger); color: #fff; font-size: 11px; font-weight: 700; }
-.error-hint-text { margin-left: 4px; font-size: 11px; color: var(--mc-text-tertiary); }
-.error-actions-bar { display: flex; gap: 8px; flex-shrink: 0; margin-left: auto; }
+/* Phase 6: exception triage — collapsed entry (below groups) + modal */
+/* Pinned to the bottom of the scroll viewport so it stays reachable no matter
+   how long the group list is (independent module, not buried under the groups). */
+.exception-footer { position: sticky; bottom: 0; z-index: 5; margin-top: auto; padding-top: 10px; background: var(--mc-bg); box-shadow: 0 -8px 12px -10px rgba(0, 0, 0, 0.25); }
+.exception-entry { display: flex; align-items: center; gap: 10px; padding: 11px 14px; background: var(--mc-danger-bg); border: 1px solid var(--mc-danger); border-radius: 14px; cursor: pointer; user-select: none; transition: background 0.15s; }
+.exception-entry:hover { background: color-mix(in srgb, var(--mc-danger) 12%, transparent); }
+.exception-icon { color: var(--mc-danger); display: inline-flex; flex-shrink: 0; }
+.exception-title { font-weight: 600; color: var(--mc-danger); font-size: 13px; }
+.exception-count { padding: 1px 8px; border-radius: 9999px; background: var(--mc-danger); color: #fff; font-size: 11px; font-weight: 700; }
+.exception-hint { margin-left: 4px; font-size: 11px; color: var(--mc-text-tertiary); }
+.exception-arrow { margin-left: auto; color: var(--mc-text-tertiary); flex-shrink: 0; }
+.exception-modal { width: 640px; max-width: 92vw; padding: 0; display: flex; flex-direction: column; max-height: 80vh; }
+.exception-modal-header { display: flex; align-items: center; gap: 10px; padding: 16px 20px; border-bottom: 1px solid var(--mc-border); }
+.exception-modal-title { display: inline-flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 700; color: var(--mc-danger); }
+.exception-modal-actions { display: flex; gap: 8px; align-items: center; margin-left: auto; }
+.exception-modal-body { overflow-y: auto; padding: 4px 6px; }
 .error-bar-btn { padding: 4px 10px; border: 1px solid var(--mc-danger); border-radius: 8px; background: transparent; color: var(--mc-danger); font-size: 11px; cursor: pointer; transition: all 0.15s; }
 .error-bar-btn:hover { background: var(--mc-danger); color: #fff; }
 .error-bar-btn.danger { font-weight: 600; }
-.error-body { border-top: 1px solid var(--mc-danger); }
 .error-item { display: flex; align-items: flex-start; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--mc-border-light); }
 .error-item:last-child { border-bottom: none; }
-.error-file-emoji { font-size: 16px; flex-shrink: 0; line-height: 1.4; }
 .error-file-info { flex: 1; min-width: 0; }
 .error-file-name { font-size: 12px; color: var(--mc-text-primary); display: flex; align-items: center; gap: 6px; }
 .error-file-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

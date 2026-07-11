@@ -6,6 +6,7 @@ import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
+import vip.mate.exception.MateClawException;
 import vip.mate.wiki.model.WikiKnowledgeBaseEntity;
 import vip.mate.wiki.model.WikiSourceGroupEntity;
 
@@ -22,7 +23,7 @@ import java.util.Set;
  * （见 {@link WikiDirectoryScanService#scanGroup}）自然、安全地补写。
  *
  * <p>Order(220) — runs after {@code DatabaseBootstrapRunner}(200) / 其它模块的
- * bootstrap runner，此时表结构（V166/V167）已就绪。
+ * bootstrap runner，此时表结构（V169/V170）已就绪。
  *
  * @author MateClaw Team
  */
@@ -60,7 +61,7 @@ public class WikiSourceGroupBackfillRunner implements ApplicationRunner {
                 try {
                     groupService.create(kb.getId(), alias, pattern, null, null, true);
                     createdGroups++;
-                } catch (IllegalArgumentException e) {
+                } catch (IllegalArgumentException | MateClawException e) {
                     log.warn("[Wiki] Skipped backfilling source group for kb={} pattern='{}': {}",
                             kb.getId(), pattern, e.getMessage());
                 }
@@ -72,13 +73,31 @@ public class WikiSourceGroupBackfillRunner implements ApplicationRunner {
         }
     }
 
+    /**
+     * 生成唯一别名。超长路径用 {@link #safeTruncate} 截断，不在 UTF-16
+     * 代理对（surrogate pair）中间断开，避免产生无效字符串。
+     */
     private String uniqueAlias(String pattern, Set<String> usedAliases) {
-        String base = pattern.length() > MAX_ALIAS_LENGTH ? pattern.substring(0, MAX_ALIAS_LENGTH) : pattern;
+        String base = safeTruncate(pattern, MAX_ALIAS_LENGTH);
         String alias = base;
         int suffix = 2;
         while (!usedAliases.add(alias)) {
             alias = base + "-" + suffix++;
         }
         return alias;
+    }
+
+    /** 截断到 maxChars 个 Java char，但不在代理对（surrogate pair）中间断开。 */
+    private static String safeTruncate(String s, int maxChars) {
+        if (s.length() <= maxChars) {
+            return s;
+        }
+        int cut = maxChars;
+        // If the char at the cut boundary is a high surrogate, step back one so we
+        // don't split a surrogate pair.
+        if (Character.isHighSurrogate(s.charAt(cut - 1))) {
+            cut--;
+        }
+        return s.substring(0, cut);
     }
 }

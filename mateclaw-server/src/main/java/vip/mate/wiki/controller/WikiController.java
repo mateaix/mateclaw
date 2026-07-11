@@ -391,8 +391,8 @@ public class WikiController {
             group = sourceGroupService.update(group, req.alias(), req.path(), req.fileFilter(),
                     req.cronExpr(), req.enabled());
             return R.ok(toSourceGroupVO(group, sourceGroupService.countRawByKbId(kbId)));
-        } catch (IllegalArgumentException e) {
-            return R.fail(400, e.getMessage());
+        } catch (IllegalArgumentException | MateClawException e) {
+            return R.fail(e instanceof MateClawException m ? m.getCode() : 400, e.getMessage());
         }
     }
 
@@ -408,6 +408,9 @@ public class WikiController {
             return R.fail(404, "Source group not found in this knowledge base");
         }
         if (reassignTo != null) {
+            if (reassignTo.equals(groupId)) {
+                return R.fail(400, "Cannot reassign to the group being deleted");
+            }
             WikiSourceGroupEntity target = sourceGroupService.getById(reassignTo);
             if (target == null || !kbId.equals(target.getKbId())) {
                 return R.fail(404, "Reassign target group not found in this knowledge base");
@@ -463,6 +466,10 @@ public class WikiController {
         }
         if (req.rawIds() == null || req.rawIds().isEmpty()) {
             return R.ok();
+        }
+        if (req.rawIds().size() > BatchGroupRequest.MAX_RAW_IDS) {
+            return R.fail(400, "Batch too large: max " + BatchGroupRequest.MAX_RAW_IDS
+                    + " raw IDs per request, got " + req.rawIds().size());
         }
         // Restrict the batch update to raw IDs that actually belong to this KB,
         // so a caller cannot use a foreign rawId to reach across knowledge bases.
