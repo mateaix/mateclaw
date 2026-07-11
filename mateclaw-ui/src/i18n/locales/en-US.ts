@@ -2365,6 +2365,8 @@ export default {
     errorSection: {
       title: 'Error files',
       hint: 'These files need separate triage',
+      entryTitle: 'Knowledge base processing issues',
+      entryHint: 'Click to review and resolve',
       retryAll: 'Retry all',
       clearAll: 'Clear all',
       retry: 'Retry',
@@ -2689,10 +2691,6 @@ export default {
       EMBEDDING_FAILED: 'Embedding failed — this material is not semantically searchable yet; check the embedding model and reprocess.',
       ENTITY_EXTRACTION_FAILED: 'Entity-graph extraction failed — the knowledge graph may be incomplete; reprocess later.',
       UNKNOWN: 'Some background processing did not finish — see details.',
-    },
-    failureCenter: {
-      title: 'Knowledge base processing issues',
-      open: 'Open',
     },
     progress: {
       preparing: 'Preparing…',

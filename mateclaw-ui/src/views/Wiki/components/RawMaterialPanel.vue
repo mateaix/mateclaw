@@ -212,42 +212,6 @@
         <span class="clear-sel" @click="clearSelection">{{ t('wiki.sources.clearSelection') }}</span>
       </div>
 
-      <!-- ── Phase 6: Error file partition ────────────────────────────────── -->
-      <div v-if="failedMaterials.length > 0" class="error-section">
-        <div class="error-section-header" @click="errorSectionOpen = !errorSectionOpen">
-          <span class="group-chevron" :class="{ open: errorSectionOpen }">▶</span>
-          <span class="error-icon">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-          </span>
-          <span class="error-title">{{ t('wiki.errorSection.title') }}</span>
-          <span class="error-count">{{ failedMaterials.length }}</span>
-          <span class="error-hint-text">{{ t('wiki.errorSection.hint') }}</span>
-          <div v-if="canManageWiki" class="error-actions-bar" @click.stop>
-            <button class="error-bar-btn" @click="retryAllErrors">⟳ {{ t('wiki.errorSection.retryAll') }}</button>
-            <button class="error-bar-btn danger" @click="clearAllErrors">🗑 {{ t('wiki.errorSection.clearAll') }}</button>
-          </div>
-        </div>
-        <div v-show="errorSectionOpen" class="error-body">
-          <div v-for="raw in failedMaterials" :key="raw.id" class="error-item">
-            <span class="error-file-emoji">📄</span>
-            <div class="error-file-info">
-              <div class="error-file-name">
-                <span class="error-file-title clickable" :title="raw.title" @click="openPreview(raw)">{{ raw.title }}</span>
-                <span v-if="raw.sourceType" class="error-tag">{{ sourceTypeLabel(raw.sourceType) }}</span>
-              </div>
-              <div class="error-msg">{{ raw.errorMessage || friendlyError(raw) }}</div>
-            </div>
-            <div v-if="canManageWiki" class="error-actions">
-              <button class="error-item-btn" @click="openPreview(raw)">👁 {{ t('wiki.errorSection.preview') }}</button>
-              <button class="error-item-btn" @click="reprocess(raw.id)">⟳ {{ t('wiki.errorSection.retry') }}</button>
-              <button class="btn-icon btn-icon-danger" :title="t('common.delete')" @click="deleteRaw(raw.id)">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-
       <!-- Optimistic uploading items shown at the top -->
       <div
         v-for="uf in uploadingFiles"
@@ -535,6 +499,19 @@
       {{ t('wiki.processAll') }}
     </button>
 
+    <!-- ── Phase 6: Exception module — pinned to panel bottom, independent of group list length ── -->
+    <div v-if="exceptionMaterials.length > 0" class="exception-footer">
+      <div class="exception-entry" @click="errorModalOpen = true">
+        <span class="exception-icon">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+        </span>
+        <span class="exception-title">{{ t('wiki.errorSection.entryTitle') }}</span>
+        <span class="exception-count">{{ exceptionMaterials.length }}</span>
+        <span class="exception-hint">{{ t('wiki.errorSection.entryHint') }}</span>
+        <svg class="exception-arrow" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+      </div>
+    </div>
+
     <!-- Add Text Modal -->
     <div v-if="showAddText" class="modal-overlay">
       <div class="modal-content">
@@ -626,7 +603,7 @@
     </div>
 
     <!-- ── Phase 5: File preview modal ────────────────────────────────────── -->
-    <div v-if="previewOpen && previewRaw" class="modal-overlay" @click.self="previewOpen = false">
+    <div v-if="previewOpen && previewRaw" class="modal-overlay preview-overlay" @click.self="previewOpen = false">
       <div class="modal-content preview-modal">
         <div class="preview-header">
           <span class="preview-title" :title="previewRaw.title">
@@ -662,6 +639,49 @@
         </div>
         <div class="modal-actions">
           <button class="btn-secondary" @click="previewOpen = false">{{ t('wiki.preview.close') }}</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Phase 6: Exception modal ───────────────────────────────────────── -->
+    <div v-if="errorModalOpen" class="modal-overlay" @click.self="errorModalOpen = false">
+      <div class="modal-content exception-modal">
+        <div class="exception-modal-header">
+          <span class="exception-modal-title">
+            <span class="exception-icon">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+            </span>
+            {{ t('wiki.errorSection.entryTitle') }}
+            <span class="exception-count">{{ exceptionMaterials.length }}</span>
+          </span>
+          <div class="exception-modal-actions">
+            <button v-if="canManageWiki" class="error-bar-btn" @click="retryAllErrors">⟳ {{ t('wiki.errorSection.retryAll') }}</button>
+            <button v-if="canManageWiki" class="error-bar-btn danger" @click="clearAllErrors">🗑 {{ t('wiki.errorSection.clearAll') }}</button>
+            <button class="btn-icon" :title="t('wiki.preview.close')" @click="errorModalOpen = false">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+          </div>
+        </div>
+        <div class="exception-modal-body">
+          <div v-for="raw in exceptionMaterials" :key="raw.id" class="error-item">
+            <span class="status-badge" :class="raw.processingStatus">{{ t(`wiki.status.${raw.processingStatus}`) }}</span>
+            <div class="error-file-info">
+              <div class="error-file-name">
+                <span class="error-file-title clickable" :title="raw.title" @click="openPreview(raw)">{{ raw.title }}</span>
+                <span v-if="raw.sourceType" class="error-tag">{{ sourceTypeLabel(raw.sourceType) }}</span>
+              </div>
+              <div class="error-msg">{{ exceptionMessage(raw) }}</div>
+            </div>
+            <div class="error-actions">
+              <button class="error-item-btn" @click="openPreview(raw)">👁 {{ t('wiki.errorSection.preview') }}</button>
+              <template v-if="canManageWiki">
+                <button class="error-item-btn" @click="reprocess(raw.id)">⟳ {{ t('wiki.errorSection.retry') }}</button>
+                <button class="btn-icon btn-icon-danger" :title="t('common.delete')" @click="deleteRaw(raw.id)">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                </button>
+              </template>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -1199,16 +1219,34 @@ async function openPreview(raw: RawItem) {
   }
 }
 
-// ── Phase 6: Error file partition ─────────────────────────────────────────
-// Failed materials are surfaced in a dedicated red-themed section for triage,
-// in addition to appearing in their normal source group.
-const failedMaterials = computed(() => store.rawMaterials.filter(r => r.processingStatus === 'failed'))
-const errorSectionOpen = ref(false)
+// ── Phase 6: Exception triage ─────────────────────────────────────────────
+// Materials needing attention are surfaced via a collapsed entry below the
+// groups that opens a triage modal, in addition to appearing in their normal
+// source group. Mirrors the backend "needs attention" criterion
+// (WikiRawMaterialMapper.NEEDS_ATTENTION): failed/partial status OR a
+// non-blocking warning code on an otherwise-completed row.
+const exceptionMaterials = computed(() =>
+  store.rawMaterials.filter(
+    r => r.processingStatus === 'failed' || r.processingStatus === 'partial' || !!r.warningCode,
+  ),
+)
+const errorModalOpen = ref(false)
+
+// Best-available message for an exception row: prefer the raw backend text,
+// then fall back to the localized code hint (error for failed, warning for
+// partial), so the row never renders blank.
+function exceptionMessage(raw: RawItem): string {
+  if (raw.errorMessage) return raw.errorMessage
+  if (raw.warningMessage) return raw.warningMessage
+  if (raw.errorCode) return friendlyError(raw)
+  if (raw.warningCode) return friendlyWarning(raw)
+  return t('wiki.errorCode.UNKNOWN')
+}
 
 async function retryAllErrors() {
   if (!store.currentKB) return
   const kbId = store.currentKB.id
-  for (const r of failedMaterials.value) {
+  for (const r of exceptionMaterials.value) {
     try { await triggerReprocess(r.id) } catch { /* skip failures, continue the batch */ }
   }
   await store.fetchRawMaterials(kbId)
@@ -1216,7 +1254,7 @@ async function retryAllErrors() {
 }
 
 async function clearAllErrors() {
-  const ids = failedMaterials.value.map(r => r.id)
+  const ids = exceptionMaterials.value.map(r => r.id)
   if (ids.length === 0 || !store.currentKB) return
   const ok = await mcConfirm({
     title: t('wiki.errorSection.clearAll'),
@@ -2064,6 +2102,10 @@ function toggleRawFilter(rawId: number) {
 
 /* Phase 5: file preview modal */
 .preview-modal { width: 720px; max-width: 92vw; }
+/* Preview is a detail view that can be launched from within the exception
+   modal, so it must stack above it. Compound selector so it beats the later
+   `.modal-overlay { z-index: 1000 }` rule on specificity, not source order. */
+.modal-overlay.preview-overlay { z-index: 1100; }
 .preview-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
 .preview-title { display: inline-flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 600; color: var(--mc-text-primary); min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .preview-title svg { flex-shrink: 0; color: var(--mc-text-tertiary); }
@@ -2076,20 +2118,27 @@ function toggleRawFilter(rawId: number) {
 .preview-placeholder { background: var(--mc-bg-muted); border: 1px solid var(--mc-border-light); border-radius: 8px; padding: 32px 16px; text-align: center; font-size: 13px; color: var(--mc-text-tertiary); }
 
 /* Phase 6: error file partition */
-.error-section { background: var(--mc-danger-bg); border: 1px solid var(--mc-danger); border-radius: 14px; overflow: hidden; }
-.error-section-header { display: flex; align-items: center; gap: 10px; padding: 12px 14px; cursor: pointer; user-select: none; }
-.error-icon { color: var(--mc-danger); display: inline-flex; flex-shrink: 0; }
-.error-title { font-weight: 600; color: var(--mc-danger); font-size: 13px; }
-.error-count { padding: 1px 8px; border-radius: 9999px; background: var(--mc-danger); color: #fff; font-size: 11px; font-weight: 700; }
-.error-hint-text { margin-left: 4px; font-size: 11px; color: var(--mc-text-tertiary); }
-.error-actions-bar { display: flex; gap: 8px; flex-shrink: 0; margin-left: auto; }
+/* Phase 6: exception triage — collapsed entry (below groups) + modal */
+/* Pinned to the bottom of the scroll viewport so it stays reachable no matter
+   how long the group list is (independent module, not buried under the groups). */
+.exception-footer { position: sticky; bottom: 0; z-index: 5; margin-top: auto; padding-top: 10px; background: var(--mc-bg); box-shadow: 0 -8px 12px -10px rgba(0, 0, 0, 0.25); }
+.exception-entry { display: flex; align-items: center; gap: 10px; padding: 11px 14px; background: var(--mc-danger-bg); border: 1px solid var(--mc-danger); border-radius: 14px; cursor: pointer; user-select: none; transition: background 0.15s; }
+.exception-entry:hover { background: color-mix(in srgb, var(--mc-danger) 12%, transparent); }
+.exception-icon { color: var(--mc-danger); display: inline-flex; flex-shrink: 0; }
+.exception-title { font-weight: 600; color: var(--mc-danger); font-size: 13px; }
+.exception-count { padding: 1px 8px; border-radius: 9999px; background: var(--mc-danger); color: #fff; font-size: 11px; font-weight: 700; }
+.exception-hint { margin-left: 4px; font-size: 11px; color: var(--mc-text-tertiary); }
+.exception-arrow { margin-left: auto; color: var(--mc-text-tertiary); flex-shrink: 0; }
+.exception-modal { width: 640px; max-width: 92vw; padding: 0; display: flex; flex-direction: column; max-height: 80vh; }
+.exception-modal-header { display: flex; align-items: center; gap: 10px; padding: 16px 20px; border-bottom: 1px solid var(--mc-border); }
+.exception-modal-title { display: inline-flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 700; color: var(--mc-danger); }
+.exception-modal-actions { display: flex; gap: 8px; align-items: center; margin-left: auto; }
+.exception-modal-body { overflow-y: auto; padding: 4px 6px; }
 .error-bar-btn { padding: 4px 10px; border: 1px solid var(--mc-danger); border-radius: 8px; background: transparent; color: var(--mc-danger); font-size: 11px; cursor: pointer; transition: all 0.15s; }
 .error-bar-btn:hover { background: var(--mc-danger); color: #fff; }
 .error-bar-btn.danger { font-weight: 600; }
-.error-body { border-top: 1px solid var(--mc-danger); }
 .error-item { display: flex; align-items: flex-start; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--mc-border-light); }
 .error-item:last-child { border-bottom: none; }
-.error-file-emoji { font-size: 16px; flex-shrink: 0; line-height: 1.4; }
 .error-file-info { flex: 1; min-width: 0; }
 .error-file-name { font-size: 12px; color: var(--mc-text-primary); display: flex; align-items: center; gap: 6px; }
 .error-file-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
