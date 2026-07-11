@@ -370,6 +370,48 @@ public class WikiRawMaterialService {
     }
 
     /**
+     * Adds an agent-authored text raw material (from {@code wiki_create_page}'s
+     * synchronous post-processing). Like {@link #addText} but the status is
+     * {@code processing} (claimed by the caller's own post-processing) instead
+     * of {@code pending}, and no {@link WikiProcessingEvent} is published, so
+     * the async ingest listener does not re-run LLM page generation.
+     */
+    @Transactional
+    public WikiRawMaterialEntity addAgentAuthored(Long kbId, String title, String content) {
+        String hash = computeHash(content);
+
+        // Dedup: reuse any existing row with the same hash in this KB (any status).
+        // An agent often re-writes the same report title in a conversation; stacking
+        // duplicate raws would pollute the Raw Material panel.
+        WikiRawMaterialEntity existing = rawMapper.selectOne(
+                new LambdaQueryWrapper<WikiRawMaterialEntity>()
+                        .eq(WikiRawMaterialEntity::getKbId, kbId)
+                        .eq(WikiRawMaterialEntity::getContentHash, hash)
+                        .last("LIMIT 1"));
+        if (existing != null) {
+            return existing;
+        }
+
+        WikiRawMaterialEntity entity = new WikiRawMaterialEntity();
+        entity.setKbId(kbId);
+        entity.setTitle(title);
+        entity.setSourceType("text");
+        entity.setOriginalContent(content);
+        entity.setFileSize((long) content.getBytes(StandardCharsets.UTF_8).length);
+        entity.setContentHash(hash);
+        // 'processing' rather than 'pending': this raw is claimed by the agent
+        // tool's own synchronous post-processing (linkAgentPageToRaw), so it
+        // must NOT be picked up by the async ingest listener (which would
+        // re-run LLM page generation). The caller flips it to 'completed'.
+        entity.setProcessingStatus("processing");
+        rawMapper.insert(entity);
+        kbService.incrementRawCount(kbId);
+
+        log.info("[Wiki] Agent-authored raw material added: id={}, kbId={}, title={}", entity.getId(), kbId, title);
+        return entity;
+    }
+
+    /**
      * Adds a file-type raw material (PDF / DOCX / image / ...).
      *
      * <p>Backwards-compatible overload that omits the MIME type. Callers
