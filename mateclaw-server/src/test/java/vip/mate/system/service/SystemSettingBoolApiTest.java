@@ -46,7 +46,8 @@ class SystemSettingBoolApiTest {
 
     @BeforeEach
     void setUp() {
-        service = new SystemSettingService(mapper, new SearchProviderRegistry(List.of()), mock(PluginManager.class));
+        service = new SystemSettingService(mapper, new SearchProviderRegistry(List.of()),
+                new SettingCrypto("test-key"), mock(PluginManager.class));
     }
 
     private SystemSettingEntity row(String value) {
