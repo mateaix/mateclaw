@@ -626,7 +626,6 @@ import { Download } from '@element-plus/icons-vue'
 import { useWikiStore } from '@/stores/useWikiStore'
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore'
 import { wikiApi } from '@/api/index'
-import { mcConfirm } from '@/components/common/useConfirm'
 import JobStageBar from './JobStageBar.vue'
 import type { WikiProcessingJob } from '@/composables/useWikiJobPoller'
 
