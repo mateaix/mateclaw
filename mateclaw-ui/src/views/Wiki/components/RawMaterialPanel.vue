@@ -1450,9 +1450,8 @@ async function pollJobs() {
   if (!store.currentKB) return
   // Reentrancy guard: refreshCurrentKB() inside this function reassigns
   // rawMaterials, which retriggers the hasProcessing watcher, which calls
-  // pollJobs again — without this guard, N parallel pollJobs chains stack up,
-  // each firing its own batch of per-raw HTTP requests (H1 fix).
-  if (jobPoller != null && isPolling) return
+  // pollJobs again. isPolling alone is sufficient — if already polling, bail.
+  if (isPolling) return
   isPolling = true
   try {
     const kbId = store.currentKB.id
@@ -1653,10 +1652,10 @@ async function handleAddText() {
  *  failures and report them instead of silently swallowing (H2 fix). */
 async function triggerReprocess(rawId: number) {
   if (!store.currentKB) return
-  const raw = store.rawMaterials.find(r => r.id === rawId)
-  const prevStatus = raw?.processingStatus
   await wikiApi.reprocessRaw(store.currentKB.id, rawId)
-  // Immediately mark local state as processing so SSE connects and progress bar shows
+  // Immediately mark local state as processing so SSE connects and progress bar shows.
+  // Only reached on success — failure throws before this point, so no rollback needed.
+  const raw = store.rawMaterials.find(r => r.id === rawId)
   if (raw) {
     raw.processingStatus = 'processing'
     raw.progressDone = 0
@@ -1664,8 +1663,6 @@ async function triggerReprocess(rawId: number) {
   }
   // Clear stale job entry
   delete rawJobs[rawId]
-  // Store prevStatus for potential rollback by batch callers
-  void prevStatus
 }
 
 /** Delayed re-fetches to catch final status if processing finishes before SSE connects.

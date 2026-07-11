@@ -48,6 +48,7 @@ public class WikiSourceGroupService {
     @Transactional
     public WikiSourceGroupEntity create(Long kbId, String alias, String path, String fileFilter,
                                          String cronExpr, Boolean enabled) {
+        validateAlias(alias);
         validateFileFilter(fileFilter);
         pathValidator.validatePatternBase(path);
         validateCronExpr(cronExpr);
@@ -76,6 +77,7 @@ public class WikiSourceGroupService {
             group.setPath(path);
         }
         if (alias != null) {
+            validateAlias(alias);
             assertAliasAvailable(group.getKbId(), alias, group.getId());
             group.setAlias(alias);
         }
@@ -103,6 +105,18 @@ public class WikiSourceGroupService {
             CronExpression.parse(cronExpr);
         } catch (IllegalArgumentException e) {
             throw new MateClawException(400, "Cron 表达式非法: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 校验 alias 非空、非纯空白，且不超过 DB 列长度（VARCHAR(128)）。
+     */
+    private void validateAlias(String alias) {
+        if (alias == null || alias.isBlank()) {
+            throw new MateClawException(400, "分组别名不能为空");
+        }
+        if (alias.length() > 128) {
+            throw new MateClawException(400, "分组别名过长（最多 128 字符）");
         }
     }
 

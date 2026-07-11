@@ -10,10 +10,8 @@ import vip.mate.exception.MateClawException;
 import vip.mate.wiki.model.WikiKnowledgeBaseEntity;
 import vip.mate.wiki.model.WikiSourceGroupEntity;
 
-import java.text.BreakIterator;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Set;
 
 /**
@@ -76,8 +74,8 @@ public class WikiSourceGroupBackfillRunner implements ApplicationRunner {
     }
 
     /**
-     * 生成唯一别名。超长路径用 {@link BreakIterator} 按字符边界截断，避免
-     * {@code substring} 砍在 UTF-16 代理对中间产生无效字符串。
+     * 生成唯一别名。超长路径用 {@link #safeTruncate} 截断，不在 UTF-16
+     * 代理对（surrogate pair）中间断开，避免产生无效字符串。
      */
     private String uniqueAlias(String pattern, Set<String> usedAliases) {
         String base = safeTruncate(pattern, MAX_ALIAS_LENGTH);

@@ -131,8 +131,11 @@ public class WikiDirectoryScanService {
 
         // Pre-fetch existing raws for this KB into a sourcePath→raw map, so
         // tagGroupIfNeeded doesn't fire one query per file (N+1 on large scans).
+        // Filter out null sourcePath (binary uploads may not have one) —
+        // Collectors.toMap throws NPE on null keys (N4 fix).
         Map<String, WikiRawMaterialEntity> existingRawsByPath = groupId != null
                 ? rawService.listByKbId(kbId).stream()
+                        .filter(r -> r.getSourcePath() != null)
                         .collect(java.util.stream.Collectors.toMap(
                                 WikiRawMaterialEntity::getSourcePath, r -> r, (a, b) -> a))
                 : Map.of();

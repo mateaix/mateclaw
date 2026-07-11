@@ -408,6 +408,9 @@ public class WikiController {
             return R.fail(404, "Source group not found in this knowledge base");
         }
         if (reassignTo != null) {
+            if (reassignTo.equals(groupId)) {
+                return R.fail(400, "Cannot reassign to the group being deleted");
+            }
             WikiSourceGroupEntity target = sourceGroupService.getById(reassignTo);
             if (target == null || !kbId.equals(target.getKbId())) {
                 return R.fail(404, "Reassign target group not found in this knowledge base");
