@@ -1,6 +1,6 @@
 package vip.mate.wiki.service;
 
-import com.baomidou.mybatisplus.core.conditions.Wrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -146,7 +146,8 @@ class WikiSourceGroupServiceTest {
         service.delete(KB_ID, 5L, null);
 
         @SuppressWarnings("unchecked")
-        ArgumentCaptor<Wrapper<WikiSourceGroupEntity>> captor = ArgumentCaptor.forClass(Wrapper.class);
+        ArgumentCaptor<LambdaUpdateWrapper<WikiSourceGroupEntity>> captor =
+                ArgumentCaptor.forClass(LambdaUpdateWrapper.class);
         verify(groupMapper).update(isNull(), captor.capture());
         assertTrue(captor.getValue().getParamNameValuePairs().containsValue("docs#del#5"),
                 "alias should be rewritten to a tombstone so the original alias can be reused");

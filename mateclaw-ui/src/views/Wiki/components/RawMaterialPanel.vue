@@ -139,60 +139,8 @@
         {{ t('wiki.rawMaterials') }} ({{ store.rawMaterials.length + uploadingFiles.length }})
       </h4>
 
-      <!-- Filter bar: status / source type / title keyword. Filters are held in
-           the store so they survive background refreshes. -->
-      <div v-if="store.rawMaterials.length > 0 || hasActiveFilter" class="raw-toolbar">
-        <div class="raw-filters">
-          <select v-model="filterStatus" class="raw-filter-select" @change="applyFilters">
-            <option value="">{{ t('wiki.batch.allStatus') }}</option>
-            <option v-for="s in RAW_STATUSES" :key="s" :value="s">{{ t(`wiki.status.${s}`) }}</option>
-          </select>
-          <select v-model="filterSourceType" class="raw-filter-select" @change="applyFilters">
-            <option value="">{{ t('wiki.batch.allTypes') }}</option>
-            <option v-for="st in RAW_SOURCE_TYPES" :key="st" :value="st">{{ st }}</option>
-          </select>
-          <input
-            v-model="filterKeyword"
-            type="text"
-            class="raw-filter-input"
-            :placeholder="t('wiki.batch.keywordPlaceholder')"
-          />
-          <button v-if="hasActiveFilter" class="btn-text" @click="clearFilters">
-            {{ t('wiki.batch.clearFilter') }}
-          </button>
-        </div>
-        <button
-          v-if="canManageWiki && failedCount > 0"
-          class="btn-text retry-all-failed"
-          :disabled="batchBusy"
-          @click="retryAllFailed"
-        >
-          {{ t('wiki.batch.retryAllFailed', { n: failedCount }) }}
-        </button>
-      </div>
-
-      <!-- Selection + batch actions. Always shown (when manageable and rows
-           exist); the action buttons are disabled until at least one row is
-           selected. -->
-      <div v-if="canManageWiki && store.rawMaterials.length > 0" class="raw-selection-bar">
-        <label class="raw-select-all" @click.stop>
-          <input type="checkbox" :checked="allSelected" @change="toggleSelectAll" />
-          <span>{{ selectedIds.size > 0
-            ? t('wiki.batch.selectedCount', { n: selectedIds.size })
-            : t('wiki.batch.selectAll') }}</span>
-        </label>
-        <div class="raw-selection-actions">
-          <button class="btn-text" :disabled="batchBusy || selectedIds.size === 0" @click="batchReprocess">
-            {{ t('wiki.batch.reprocess') }}
-          </button>
-          <button class="btn-text btn-danger-text" :disabled="batchBusy || selectedIds.size === 0" @click="batchDelete">
-            {{ t('wiki.batch.delete') }}
-          </button>
-        </div>
-      </div>
-
       <div v-if="store.rawMaterials.length === 0 && uploadingFiles.length === 0" class="empty-hint">
-        {{ hasActiveFilter ? t('wiki.batch.noMatch') : t('wiki.noRawMaterials') }}
+        {{ t('wiki.noRawMaterials') }}
       </div>
 
       <!-- ── Phase 3: Batch action bar ────────────────────────────────────── -->
@@ -678,7 +626,6 @@ import { Download } from '@element-plus/icons-vue'
 import { useWikiStore } from '@/stores/useWikiStore'
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore'
 import { wikiApi } from '@/api/index'
-import { mcConfirm } from '@/components/common/useConfirm'
 import JobStageBar from './JobStageBar.vue'
 import type { WikiProcessingJob } from '@/composables/useWikiJobPoller'
 
@@ -1470,7 +1417,7 @@ watch(() => store.rawMaterials, (rows) => {
 watch(() => store.rawMaterials, (rows) => {
   if (selectedIds.value.size === 0) return
   const present = new Set(rows.map(r => String(r.id)))
-  const next = new Set([...selectedIds.value].filter(id => present.has(id)))
+  const next = new Set([...selectedIds.value].filter(id => present.has(String(id))))
   if (next.size !== selectedIds.value.size) selectedIds.value = next
 })
 
@@ -2206,68 +2153,4 @@ function toggleRawFilter(rawId: number) {
   }
 }
 
-/* ---- Filter bar + batch operations (issue #506) ---- */
-.raw-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin-bottom: 8px;
-}
-.raw-filters {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-.raw-filter-select,
-.raw-filter-input {
-  padding: 5px 10px;
-  font-size: 12px;
-  border: 1px solid var(--mc-border);
-  border-radius: 8px;
-  background: var(--mc-bg-elevated);
-  color: var(--mc-text-primary);
-}
-.raw-filter-input { min-width: 140px; }
-.raw-filter-select:focus,
-.raw-filter-input:focus { outline: none; border-color: var(--mc-primary); }
-.btn-text {
-  padding: 4px 8px;
-  font-size: 12px;
-  background: none;
-  border: none;
-  color: var(--mc-primary);
-  cursor: pointer;
-  border-radius: 6px;
-}
-.btn-text:hover:not(:disabled) { background: var(--mc-bg-sunken); }
-.btn-text:disabled { color: var(--mc-text-tertiary); cursor: not-allowed; }
-.btn-danger-text { color: var(--mc-danger, #e05252); }
-.raw-selection-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 6px 10px;
-  margin-bottom: 8px;
-  background: var(--mc-bg-sunken);
-  border-radius: 8px;
-}
-.raw-select-all {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--mc-text-secondary);
-  cursor: pointer;
-}
-.raw-selection-actions { display: inline-flex; align-items: center; gap: 4px; }
-.raw-select-box {
-  display: inline-flex;
-  align-items: center;
-  margin-right: 8px;
-  cursor: pointer;
-}
 </style>
