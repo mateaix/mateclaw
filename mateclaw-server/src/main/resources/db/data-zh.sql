@@ -1955,3 +1955,11 @@ VALUES (1000000634, 'ScreenshotTool', '后台截图', '截取 MateClaw 后台页
 MERGE INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
 KEY (id)
 VALUES (1000000635, 'XhsPackageTool', '小红书打包', '把小红书笔记打包成在线预览（手机版滑动预览，以图为主、文字辅助）+ 素材下载 zip（编号卡片图 + 文案.txt）。强制至少 3 张竖版图（1 封面 + ≥2 内容图），不足则拒绝打包。小红书无发布 API，不自动上传。', 'builtin', 'xhsPackageTool', '🖼️', TRUE, TRUE, NOW(), NOW(), 0);
+
+MERGE INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
+KEY (id)
+VALUES (1000000636, 'ContentItemTool', '内容日历', '内容日历 / 发布去重台账：check_recent 查最近 N 天某平台是否做过同题（选题前先查避免重复）；record 记录产出（含标题/预览链接/状态）；mark_published 标记为已发布。让每日定时不重复选题、发布可追溯。', 'builtin', 'contentItemTool', '🗓️', TRUE, TRUE, NOW(), NOW(), 0);
+
+MERGE INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
+KEY (id)
+VALUES (1000000637, 'ComplianceScanTool', '合规扫描', '发布前服务端硬扫合规风险：广告法极限词（最/第一/唯一/国家级/100%）、微信诱导词（集赞/助力/分享解锁/关注才能看）、承诺收益、医疗功效。返回命中清单；公众号进草稿箱前对高危词硬拦截。', 'builtin', 'complianceScanTool', '🛡️', TRUE, TRUE, NOW(), NOW(), 0);

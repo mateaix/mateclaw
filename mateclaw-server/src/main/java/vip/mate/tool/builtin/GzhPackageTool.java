@@ -18,6 +18,12 @@ import org.springframework.stereotype.Component;
 import vip.mate.tool.browser.UrlSafetyChecker;
 import vip.mate.tool.document.GeneratedFileCache;
 
+import javax.imageio.ImageIO;
+import java.awt.Color;
+import java.awt.GradientPaint;
+import java.awt.Graphics2D;
+import java.awt.RenderingHints;
+import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
@@ -107,10 +113,16 @@ public class GzhPackageTool {
         // an actual image is dropped (and flagged) rather than rendered. This also
         // self-heals a reference that points at the file's name instead of its id.
         ResolvedCover cover = resolveCover(coverImageUrl, ctx);
-        String coverTag = (cover != null)
-                ? "<img src=\"" + escapeAttr(cover.url()) + "\" alt=\"cover\" "
-                  + "style=\"width:100%;border-radius:8px;margin:0 0 20px;display:block;\" />"
-                : "";
+        // Fallback: 公众号 requires a cover to publish, so never ship without one —
+        // synthesize a neutral gradient placeholder when none resolves.
+        boolean placeholderCover = false;
+        if (cover == null) {
+            byte[] ph = placeholderCover();
+            cover = new ResolvedCover(ph, store(ph, "gzh-cover-placeholder.png", "image/png", ctx));
+            placeholderCover = true;
+        }
+        String coverTag = "<img src=\"" + escapeAttr(cover.url()) + "\" alt=\"cover\" "
+                + "style=\"width:100%;border-radius:8px;margin:0 0 20px;display:block;\" />";
         String meta = (author != null && !author.isBlank())
                 ? "<p style=\"color:" + FAINT + ";font-size:14px;margin:0 0 20px;\">" + escapeText(author.trim()) + "</p>"
                 : "";
@@ -156,12 +168,13 @@ public class GzhPackageTool {
 
         StringBuilder out = new StringBuilder();
         out.append("✅ 公众号图文已打包完成。\n\n");
-        if (coverImageUrl != null && !coverImageUrl.isBlank() && cover == null) {
-            // Requested a cover but it didn't resolve to an image — say so instead
-            // of silently shipping a broken image tag.
-            out.append("⚠️ 提供的封面引用无法解析为图片，已跳过封面（未嵌坏图）：")
-               .append(coverImageUrl.trim())
-               .append("\n   请改用 image_generate 返回的完整 URL（/api/v1/files/generated/<id>）再打包一次。\n\n");
+        if (placeholderCover) {
+            // Never a broken image — but tell the user we substituted a placeholder.
+            boolean hadRef = coverImageUrl != null && !coverImageUrl.isBlank();
+            out.append("⚠️ ")
+               .append(hadRef ? "提供的封面无法解析为图片" : "未提供封面")
+               .append("，已生成占位封面（纯色渐变）。建议补一张正式头图（2.35:1），")
+               .append("用 image_generate(aspectRatio=landscape) 出图后把完整 URL 传给 coverImageUrl 再打包。\n\n");
         }
         out.append("🔍 在线预览（浏览器打开即渲染）：").append(previewUrl).append('\n');
         if (zipUrl != null) {
@@ -291,6 +304,32 @@ public class GzhPackageTool {
             log.warn("[GzhPackage] cover resolve failed for '{}': {}", r, e.getMessage());
         }
         return null;
+    }
+
+    /**
+     * A neutral 2.35:1 gradient placeholder cover. Deliberately text-free — server
+     * JVMs often lack CJK fonts, so drawing the title risks tofu boxes; a clean
+     * gradient is a always-valid cover the user can replace with a real one.
+     */
+    private static byte[] placeholderCover() {
+        int w = 900, h = 383;
+        BufferedImage img = new BufferedImage(w, h, BufferedImage.TYPE_INT_RGB);
+        Graphics2D g = img.createGraphics();
+        g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+        g.setPaint(new GradientPaint(0, 0, new Color(0x2f6fed), w, h, new Color(0x1a3a8f)));
+        g.fillRect(0, 0, w, h);
+        // A couple of soft translucent circles for a bit of depth.
+        g.setColor(new Color(255, 255, 255, 26));
+        g.fillOval(w - 220, -120, 340, 340);
+        g.fillOval(-80, h - 160, 260, 260);
+        g.dispose();
+        try {
+            ByteArrayOutputStream bos = new ByteArrayOutputStream();
+            ImageIO.write(img, "png", bos);
+            return bos.toByteArray();
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to render placeholder cover", e);
+        }
     }
 
     private static boolean isImage(GeneratedFileCache.Entry e) {

@@ -1,7 +1,7 @@
 ---
 name: xhs_note
 description: '小红书图文创作 / 笔记 / 种草文案 (xiaohongshu / red note) — 端到端：成文→配图(≥3 张竖版)→去AI化→在线预览打包交付。以图为主、文字辅助：标题四件套 + 碎句正文 + 话题标签，配 3:4 竖版卡片，最少 3 张图。honors user persona & style memory.'
-version: 1.1.0
+version: 1.2.0
 tags:
 - 小红书
 - 图文
@@ -115,6 +115,14 @@ xhs_package(title="<标题>", body="<正文，含 emoji 与换行>",
 （旧的 `xhs_publish` 只出 zip、无在线预览，`xhs_package` 已覆盖并更完整；仅在用户只要发布包、不需要预览时才用它。）
 
 打包前对照 `banned_words` 扫一遍正文和标题，命中即标注替换。
+
+## 定时 / 批量场景：内容日历 + 合规
+
+长期投产（每日定时）时多接两步：
+
+- **选题前查重**：`content_item(action="check_recent", platform="xhs", topic="<选题>")`，命中就换角度。
+- **打包前硬扫**：把标题+正文交给 `compliance_scan`（极限词/诱导/承诺/功效），命中先替换。
+- **产出落台账**：`xhs_package` 完成后 `content_item(action="record", platform="xhs", title, previewUrl, status="packaged")`；用户手动上传发布后 `content_item(action="mark_published", id)`。这样能知道哪些已发、哪些还在待办。
 
 ## 保存自定义卡片模板 / 对话升级技能
 

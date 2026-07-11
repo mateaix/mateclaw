@@ -13,6 +13,7 @@ import vip.mate.tool.search.SearchProvider;
 import vip.mate.tool.search.SearchProviderRegistry;
 
 import java.util.List;
+import java.util.Set;
 
 @Service
 public class SystemSettingService {
@@ -86,8 +87,19 @@ public class SystemSettingService {
     private static final String MINIMAX_API_KEY_KEY = "minimaxApiKey";
     private static final String MINIMAX_REGION_KEY = "minimaxRegion";
 
+    /**
+     * Keys whose values are secrets and must be encrypted at rest. Reads decrypt
+     * transparently and writes encrypt; legacy plaintext is upgraded on next save
+     * (see {@link SettingCrypto}). Add every credential-bearing key here.
+     */
+    private static final Set<String> SENSITIVE_KEYS = Set.of(
+            SERPER_API_KEY_KEY, TAVILY_API_KEY_KEY, WEIXINOA_APP_SECRET_KEY,
+            ZHIPU_API_KEY_KEY, FAL_API_KEY_KEY, KLING_ACCESS_KEY_KEY, KLING_SECRET_KEY_KEY,
+            RUNWAY_API_KEY_KEY, MINIMAX_API_KEY_KEY);
+
     private final SystemSettingMapper systemSettingMapper;
     private final SearchProviderRegistry searchProviderRegistry;
+    private final SettingCrypto settingCrypto;
 
     /**
      * {@code PluginManager} is injected lazily because the bean graph is
@@ -105,9 +117,11 @@ public class SystemSettingService {
 
     public SystemSettingService(SystemSettingMapper systemSettingMapper,
                                  SearchProviderRegistry searchProviderRegistry,
+                                 SettingCrypto settingCrypto,
                                  @Lazy PluginManager pluginManager) {
         this.systemSettingMapper = systemSettingMapper;
         this.searchProviderRegistry = searchProviderRegistry;
+        this.settingCrypto = settingCrypto;
         this.pluginManager = pluginManager;
     }
 
@@ -515,7 +529,12 @@ public class SystemSettingService {
         SystemSettingEntity entity = systemSettingMapper.selectOne(new LambdaQueryWrapper<SystemSettingEntity>()
                 .eq(SystemSettingEntity::getSettingKey, key)
                 .last("LIMIT 1"));
-        return entity != null && entity.getSettingValue() != null ? entity.getSettingValue() : defaultValue;
+        if (entity == null || entity.getSettingValue() == null) {
+            return defaultValue;
+        }
+        String stored = entity.getSettingValue();
+        // Sensitive keys are stored encrypted; decrypt() passes legacy plaintext through.
+        return SENSITIVE_KEYS.contains(key) ? settingCrypto.decrypt(stored) : stored;
     }
 
     private String maskApiKey(String apiKey) {
@@ -529,6 +548,10 @@ public class SystemSettingService {
     }
 
     private void saveValue(String key, String value, String description) {
+        // Encrypt secrets at rest; non-blank only (blank passes through to clear).
+        if (SENSITIVE_KEYS.contains(key) && value != null && !value.isEmpty()) {
+            value = settingCrypto.encrypt(value);
+        }
         SystemSettingEntity entity = systemSettingMapper.selectOne(new LambdaQueryWrapper<SystemSettingEntity>()
                 .eq(SystemSettingEntity::getSettingKey, key)
                 .last("LIMIT 1"));

@@ -53,8 +53,8 @@ class GzhPackageCoverHealingTest {
     }
 
     @Test
-    @DisplayName("unresolvable cover → dropped with a warning, never a broken <img>")
-    void unresolvableCoverDroppedAndWarned() {
+    @DisplayName("unresolvable cover → placeholder cover + warning, never a broken <img>")
+    void unresolvableCoverUsesPlaceholder() {
         String out = tool.gzh_package(
                 "标题",
                 BODY,
@@ -63,7 +63,9 @@ class GzhPackageCoverHealingTest {
                 null);
 
         assertTrue(out.contains("⚠️"), "an unresolved cover must be flagged; got:\n" + out);
-        assertFalse(out.contains("<img "), "no broken cover image may be embedded");
+        assertTrue(out.contains("占位封面"), "a placeholder cover must be substituted");
+        assertTrue(out.contains("<img "), "the placeholder cover is embedded (never broken/absent)");
+        assertFalse(out.contains("generated/deadbeef"), "the broken ref must not be embedded");
     }
 
     @Test
@@ -83,8 +85,8 @@ class GzhPackageCoverHealingTest {
     }
 
     @Test
-    @DisplayName("a non-image generated file referenced as cover is not embedded")
-    void nonImageReferenceNotEmbedded() {
+    @DisplayName("a non-image generated file referenced as cover → placeholder, not the non-image")
+    void nonImageReferenceFallsBackToPlaceholder() {
         String id = cache.put("%PDF".getBytes(), "handout.pdf", "application/pdf");
         String out = tool.gzh_package(
                 "标题",
@@ -94,6 +96,7 @@ class GzhPackageCoverHealingTest {
                 null);
 
         assertTrue(out.contains("⚠️"), "a non-image cover must be flagged");
-        assertFalse(out.contains("<img "), "a non-image must not be embedded as a cover");
+        assertTrue(out.contains("占位封面"), "a placeholder cover must be substituted");
+        assertFalse(out.contains("generated/" + id), "the non-image ref must not be embedded as the cover");
     }
 }
