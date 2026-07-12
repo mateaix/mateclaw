@@ -31,6 +31,9 @@ public class ContentItemService {
     /** Ignore same-topic rows created within this window, so a record→check in one
      *  run doesn't flag itself as a repeat. */
     private static final long SELF_MATCH_GUARD_MINUTES = 2;
+    /** Re-packaging the same topic within this window updates the existing ledger
+     *  row instead of inserting a duplicate (the agent may call a package tool twice). */
+    private static final long RECORD_DEDUP_MINUTES = 10;
 
     private final ContentItemMapper contentItemMapper;
 
@@ -50,16 +53,49 @@ public class ContentItemService {
                 .orderByDesc(ContentItemEntity::getCreateTime));
     }
 
-    /** Record a produced piece; returns the new item id. */
+    /**
+     * Record a produced piece; returns its item id. Idempotent within a short
+     * window: re-packaging the same topic on the same platform (e.g. the agent
+     * called a package tool twice) updates the existing row instead of inserting
+     * a duplicate. A published row is never overwritten.
+     */
     public Long record(Long workspaceId, String platform, String topic, String title,
                        String status, String previewUrl, String externalRef) {
+        String plat = platform.trim().toLowerCase();
+        String fp = fingerprint(topic != null ? topic : title);
+        String resolvedStatus = status == null || status.isBlank() ? "packaged" : status.trim().toLowerCase();
+
+        ContentItemEntity existing = contentItemMapper.selectOne(new LambdaQueryWrapper<ContentItemEntity>()
+                .eq(ContentItemEntity::getPlatform, plat)
+                .eq(ContentItemEntity::getTopicFingerprint, fp)
+                .ne(ContentItemEntity::getStatus, "published")
+                .ge(ContentItemEntity::getCreateTime, LocalDateTime.now().minusMinutes(RECORD_DEDUP_MINUTES))
+                .orderByDesc(ContentItemEntity::getCreateTime)
+                .last("LIMIT 1"));
+        if (existing != null) {
+            if (title != null && !title.isBlank()) {
+                existing.setTitle(title.trim());
+            }
+            if (previewUrl != null) {
+                existing.setPreviewUrl(previewUrl);
+            }
+            if (externalRef != null) {
+                existing.setExternalRef(externalRef);
+            }
+            existing.setStatus(resolvedStatus);
+            contentItemMapper.updateById(existing);
+            log.info("[ContentItem] re-package dedup: updated id={} platform={} topic='{}'",
+                    existing.getId(), plat, topic);
+            return existing.getId();
+        }
+
         ContentItemEntity e = new ContentItemEntity();
         e.setWorkspaceId(workspaceId);
-        e.setPlatform(platform.trim().toLowerCase());
+        e.setPlatform(plat);
         e.setTopic(topic != null ? topic.trim() : null);
-        e.setTopicFingerprint(fingerprint(topic != null ? topic : title));
+        e.setTopicFingerprint(fp);
         e.setTitle(title != null ? title.trim() : null);
-        e.setStatus(status == null || status.isBlank() ? "packaged" : status.trim().toLowerCase());
+        e.setStatus(resolvedStatus);
         e.setPreviewUrl(previewUrl);
         e.setExternalRef(externalRef);
         contentItemMapper.insert(e);
