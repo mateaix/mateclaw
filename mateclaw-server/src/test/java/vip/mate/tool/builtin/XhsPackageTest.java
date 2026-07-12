@@ -4,7 +4,10 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import vip.mate.content.service.ContentItemService;
 import vip.mate.tool.document.GeneratedFileCache;
+
+import static org.mockito.Mockito.mock;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
@@ -26,7 +29,7 @@ class XhsPackageTest {
     @BeforeEach
     void setUp(@TempDir Path tempDir) {
         cache = new GeneratedFileCache(tempDir);
-        tool = new XhsPackageTool(cache);
+        tool = new XhsPackageTool(cache, mock(ContentItemService.class));
     }
 
     private String putImg(String name) {
@@ -45,7 +48,7 @@ class XhsPackageTest {
     @DisplayName("fewer than 3 images → refused, no preview minted")
     void refusesUnderThreeImages() {
         String imgs = putImg("cover.png") + "," + putImg("c1.png");
-        String out = tool.xhs_package("夏日穿搭", "正文", "穿搭,夏天", imgs, null);
+        String out = tool.xhs_package("夏日穿搭", "正文", "穿搭,夏天", imgs, null, null);
         assertTrue(out.contains("至少需要 3 张"), "should demand >=3 images; got:\n" + out);
         assertFalse(out.contains("在线预览"), "must not produce a preview when refused");
     }
@@ -54,7 +57,7 @@ class XhsPackageTest {
     @DisplayName("3 images → packaged; preview is image-first (images before the copy)")
     void packagesThreeImagesImageFirst() {
         String imgs = putImg("cover.png") + "," + putImg("c1.png") + "," + putImg("c2.png");
-        String out = tool.xhs_package("3天2夜厦门citywalk", "第一天去了鼓浪屿\n人不多", "厦门,citywalk,旅行", imgs, null);
+        String out = tool.xhs_package("3天2夜厦门citywalk", "第一天去了鼓浪屿\n人不多", "厦门,citywalk,旅行", imgs, null, null);
 
         assertTrue(out.contains("在线预览"), "should return a preview link");
         assertTrue(out.contains("素材下载"), "should return a material zip");
@@ -76,7 +79,7 @@ class XhsPackageTest {
         // First ref uses the filename (id pattern can't parse it); two more are valid.
         String imgs = "/api/v1/files/generated/cover_xhs.png,"
                 + putImg("c1.png") + "," + putImg("c2.png");
-        String out = tool.xhs_package("标题", "正文", "标签", imgs, null);
+        String out = tool.xhs_package("标题", "正文", "标签", imgs, null, null);
 
         assertTrue(out.contains("在线预览"), "name-based ref should self-heal to reach >=3; got:\n" + out);
         assertTrue(out.contains("3 张图"), "healed image should be counted");

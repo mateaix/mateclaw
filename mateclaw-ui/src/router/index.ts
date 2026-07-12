@@ -96,6 +96,12 @@ const router = createRouter({
           component: () => import('@/views/SkillMarket.vue'),
           meta: { title: 'Skills', requiredCapability: 'manage:skills' },
         },
+        {
+          path: 'content-calendar',
+          name: 'ContentCalendar',
+          component: () => import('@/views/ContentCalendar.vue'),
+          meta: { title: 'Content Calendar', requiredCapability: 'manage:agents' },
+        },
         // Tools 顶层入口已降级到 Settings ▸ Tools (Catalog) (RFC-090 Phase 1)
         // 旧路径 /tools 由下方 redirect 兼容
         {

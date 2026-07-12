@@ -15,6 +15,8 @@ import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Component;
+import vip.mate.agent.context.ChatOrigin;
+import vip.mate.content.service.ContentItemService;
 import vip.mate.tool.browser.UrlSafetyChecker;
 import vip.mate.tool.document.GeneratedFileCache;
 
@@ -69,6 +71,7 @@ public class GzhPackageTool {
     private static final String CODE_BG = "#f6f8fa";
 
     private final GeneratedFileCache cache;
+    private final ContentItemService contentItemService;
 
     @Tool(name = "gzh_package", description = """
         Package a finished WeChat Official Account (公众号) article and return an
@@ -96,6 +99,8 @@ public class GzhPackageTool {
             String coverImageUrl,
             @ToolParam(description = "Author / source name", required = false)
             String author,
+            @ToolParam(description = "Selected topic (for the content ledger; falls back to title)", required = false)
+            String topic,
             @Nullable ToolContext ctx) {
 
         if (title == null || title.isBlank()) {
@@ -181,9 +186,25 @@ public class GzhPackageTool {
             out.append("📦 素材下载（article.html + article.md + 封面，").append(coverNote).append("）：")
                .append(zipUrl).append('\n');
         }
+        // Auto compliance scan on delivery — never relies on the model calling it.
+        ComplianceScanner.Result scan = ComplianceScanner.scan(title + "\n" + markdown);
+        if (!scan.clean()) {
+            out.append('\n').append(ComplianceScanner.report(scan)).append('\n');
+        }
         out.append("\n可将下面的内联样式 HTML 直接粘贴进公众号编辑器（如需直接进草稿箱，用 gzh_publish）：\n");
         out.append("```html\n").append(container).append("\n```");
-        log.info("[GzhPackage] packaged '{}' ({} md chars, coverResolved={})", title, markdown.length(), cover != null);
+
+        // Auto-record into the content ledger — the calendar is always populated.
+        try {
+            Long itemId = contentItemService.record(workspaceFromContext(ctx), "gzh",
+                    topic != null && !topic.isBlank() ? topic : title.trim(),
+                    title.trim(), "packaged", previewUrl, null);
+            out.append("\n🗓️ 已记入内容日历（item id: ").append(itemId).append("）。");
+        } catch (Exception e) {
+            log.warn("[GzhPackage] auto-record failed: {}", e.getMessage());
+        }
+        log.info("[GzhPackage] packaged '{}' ({} md chars, coverResolved={}, complianceHits={})",
+                title, markdown.length(), cover != null, scan.hits().size());
         return out.toString();
     }
 
@@ -330,6 +351,11 @@ public class GzhPackageTool {
         } catch (Exception e) {
             throw new IllegalStateException("Failed to render placeholder cover", e);
         }
+    }
+
+    private static Long workspaceFromContext(@Nullable ToolContext ctx) {
+        ChatOrigin origin = ChatOrigin.from(ctx);
+        return origin != null && origin.workspaceId() != null ? origin.workspaceId() : 1L;
     }
 
     private static boolean isImage(GeneratedFileCache.Entry e) {

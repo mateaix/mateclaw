@@ -8,6 +8,8 @@ import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Component;
+import vip.mate.agent.context.ChatOrigin;
+import vip.mate.content.service.ContentItemService;
 import vip.mate.tool.browser.UrlSafetyChecker;
 import vip.mate.tool.document.GeneratedFileCache;
 import vip.mate.tool.guard.WorkspacePathGuard;
@@ -66,6 +68,7 @@ public class XhsPackageTool {
     private static final String PAGE_BG = "#f4f4f4";
 
     private final GeneratedFileCache cache;
+    private final ContentItemService contentItemService;
 
     @Tool(name = "xhs_package", description = """
         Package a Xiaohongshu (小红书) note into an IMAGE-FIRST online preview plus a
@@ -94,6 +97,8 @@ public class XhsPackageTool {
             String tags,
             @ToolParam(description = "Comma-separated image references in display order (first = cover); >=3 required")
             String images,
+            @ToolParam(description = "Selected topic (for the content ledger; falls back to title)", required = false)
+            String topic,
             @Nullable ToolContext ctx) {
 
         if (title == null || title.isBlank()) {
@@ -156,8 +161,23 @@ public class XhsPackageTool {
         if (!skipped.isEmpty()) {
             out.append("⚠️ 未打包：").append(String.join("；", skipped)).append('\n');
         }
+        // Auto compliance scan on delivery — never relies on the model calling it.
+        ComplianceScanner.Result scan = ComplianceScanner.scan(title + "\n" + (body == null ? "" : body));
+        if (!scan.clean()) {
+            out.append(ComplianceScanner.report(scan)).append('\n');
+        }
+        // Auto-record into the content ledger.
+        try {
+            Long itemId = contentItemService.record(workspaceFromContext(ctx), "xhs",
+                    topic != null && !topic.isBlank() ? topic : title.trim(),
+                    title.trim(), "packaged", previewUrl, null);
+            out.append("🗓️ 已记入内容日历（item id: ").append(itemId).append("）。\n");
+        } catch (Exception e) {
+            log.warn("[XhsPackage] auto-record failed: {}", e.getMessage());
+        }
         out.append('\n').append(guideText());
-        log.info("[XhsPackage] packaged '{}' ({} images, {} skipped)", title, imgs.size(), skipped.size());
+        log.info("[XhsPackage] packaged '{}' ({} images, {} skipped, complianceHits={})",
+                title, imgs.size(), skipped.size(), scan.hits().size());
         return out.toString();
     }
 
@@ -307,6 +327,11 @@ public class XhsPackageTool {
             3. 按 01、02… 顺序上传卡片图（首图即封面）。
             4. 从「文案.txt」复制标题、正文、话题标签，粘贴到对应输入框。
             5. 核对无违禁词后自行发布。""".formatted(CREATOR_URL);
+    }
+
+    private static Long workspaceFromContext(@Nullable ToolContext ctx) {
+        ChatOrigin origin = ChatOrigin.from(ctx);
+        return origin != null && origin.workspaceId() != null ? origin.workspaceId() : 1L;
     }
 
     /** Last path segment of a reference, minus any {@code ?query} / {@code #fragment}. */

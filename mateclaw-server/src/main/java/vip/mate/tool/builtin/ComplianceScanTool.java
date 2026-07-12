@@ -5,6 +5,8 @@ import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.stereotype.Component;
 
+import java.util.Arrays;
+
 /**
  * Built-in tool: server-side compliance scan for 公众号 / 小红书 copy. Deterministic
  * backstop for the model's skill-side self-check — catches 广告法 极限词, WeChat 诱导
@@ -25,8 +27,12 @@ public class ComplianceScanTool {
         """)
     public String compliance_scan(
             @ToolParam(description = "Text to scan (title + body)")
-            String text) {
-        ComplianceScanner.Result result = ComplianceScanner.scan(text);
+            String text,
+            @ToolParam(description = "Extra banned words to enforce, comma-separated (e.g. recalled banned_words)", required = false)
+            String extraBannedWords) {
+        ComplianceScanner.Result result = (extraBannedWords == null || extraBannedWords.isBlank())
+                ? ComplianceScanner.scan(text)
+                : ComplianceScanner.scan(text, Arrays.asList(extraBannedWords.split(",")));
         log.info("[ComplianceScan] hits={}, highRisk={}", result.hits().size(), result.hasHighRisk());
         return ComplianceScanner.report(result);
     }

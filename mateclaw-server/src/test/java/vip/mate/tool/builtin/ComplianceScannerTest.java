@@ -3,6 +3,8 @@ package vip.mate.tool.builtin;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
@@ -41,6 +43,19 @@ class ComplianceScannerTest {
         ComplianceScanner.Result r = ComplianceScanner.scan("这款茶能排毒养颜");
         assertFalse(r.clean());
         assertFalse(r.hasHighRisk(), "医疗功效 is a warning, not a hard block");
+    }
+
+    @Test
+    @DisplayName("extra banned words merge in as a non-high-risk 自定义禁用词 category")
+    void extraBannedWords() {
+        ComplianceScanner.Result r = ComplianceScanner.scan(
+                "这段文字提到了竞品X和内部代号Y", List.of("竞品X", "内部代号Y", "没出现的词"));
+        assertFalse(r.clean());
+        assertFalse(r.hasHighRisk(), "custom banned words are a warning, not a hard block");
+        String rep = ComplianceScanner.report(r);
+        assertTrue(rep.contains("自定义禁用词"));
+        assertTrue(rep.contains("竞品X") && rep.contains("内部代号Y"));
+        assertFalse(rep.contains("没出现的词"), "only actually-present terms are reported");
     }
 
     @Test

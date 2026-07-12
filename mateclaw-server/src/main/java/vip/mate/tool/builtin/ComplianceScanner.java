@@ -1,6 +1,7 @@
 package vip.mate.tool.builtin;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -81,6 +82,34 @@ final class ComplianceScanner {
             }
         }
         return new Result(hits);
+    }
+
+    /**
+     * Scan with additional user-supplied banned words merged in as a
+     * (non-high-risk) {@code 自定义禁用词} category — e.g. the user's
+     * {@code banned_words} memory or brand-forbidden terms.
+     */
+    static Result scan(String text, Collection<String> extraTerms) {
+        Result base = scan(text);
+        if (extraTerms == null || extraTerms.isEmpty() || text == null || text.isBlank()) {
+            return base;
+        }
+        List<String> hitTerms = new ArrayList<>();
+        for (String t : extraTerms) {
+            if (t == null) {
+                continue;
+            }
+            String term = t.trim();
+            if (!term.isEmpty() && text.contains(term) && !hitTerms.contains(term)) {
+                hitTerms.add(term);
+            }
+        }
+        if (hitTerms.isEmpty()) {
+            return base;
+        }
+        List<CategoryHit> all = new ArrayList<>(base.hits());
+        all.add(new CategoryHit("自定义禁用词", hitTerms, false));
+        return new Result(all);
     }
 
     /** Render a scan result as a short Chinese report. */

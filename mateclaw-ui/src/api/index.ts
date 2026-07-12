@@ -187,6 +187,13 @@ export const chatApi = {
 }
 
 // ==================== Conversation ====================
+// Content calendar (read-only) — produced 公众号 / 小红书 pieces + lifecycle status.
+export const contentItemApi = {
+  list: (params?: { page?: number; size?: number; platform?: string; status?: string }) =>
+    http.get('/content-items', { params }),
+  summary: () => http.get('/content-items/summary'),
+}
+
 export const conversationApi = {
   list: () => http.get('/conversations'),
   /**
