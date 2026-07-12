@@ -1,6 +1,6 @@
 {
   "name": "mateclaw-desktop",
-  "version": "1.8.0-SNAPSHOT",
+  "version": "1.8.0",
   "description": "MateClaw Desktop - AI Assistant powered by Spring AI Alibaba",
   "author": "MateClaw Team",
   "license": "Apache-2.0",

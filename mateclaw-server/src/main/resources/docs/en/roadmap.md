@@ -117,9 +117,22 @@ A **productionization pass**: once you put it into real collaboration, the place
 
 Full story: [v1.7.0 release notes](./releases/1.7.0.md).
 
+### v1.8 — It does a whole job ✅ Released (2026-07-12)
+
+The employee turns **outward and finishes a whole job** — from a one-sentence brief to a publishable post — on MateClaw's own primitives.
+
+- **Content Studio** — the first flagship *scene*: a seeded employee runs pick-topic → research → draft → illustrate → de-AI → layout → deliver. **WeChat Official Account (公众号)** image-text articles (inline-style HTML → draft box) and **Xiaohongshu (小红书)** image-first notes (≥3 vertical 3:4 cards + online preview) ship first-class
+- **De-AI-ification you can measure** — a heuristic AI-trace score drives a detect → rewrite → re-check loop, capped at 3 rounds
+- **A publish chain hardened for real operation** — body images uploaded into WeChat, AES-GCM-encrypted secrets, reused service + persisted token, retry + Chinese error hints, guaranteed fallback cover; draft-box-first, publish approval-gated
+- **A content calendar that dedups and remembers** — every delivery is compliance-scanned and auto-recorded, a topic fingerprint stops repeat picks, and a read-only Content Calendar page shows drafted/packaged/published/failed
+- **The browser agent sees by reference** — an accessibility-tree ref snapshot + interact-by-ref, real-browser privacy guardrails, and a controlled CDP escape hatch
+- Attention anchoring & environment awareness, a tool-call loop guard, a post-mutation verify reminder; a fast-load pass (~78% smaller initial bundle), a context-occupancy panel, cross-KB wikilinks, MCP progress notifications, a Volcano Engine provider, PostgreSQL 16
+
+Full story: [v1.8.0 release notes](./releases/1.8.0.md).
+
 ---
 
-## Next: v1.8 — Agent Team & Agent Loop
+## Next: Agent Team & Agent Loop
 
 > "Great things in business are never done by one person. They're done by a team of people."
 
@@ -131,7 +144,7 @@ But today's MateClaw still has two "stops":
 
 **Employees are reactive.** Goal auto-followup only lives **within a single run**; cron and triggers can wake an employee up, but every wake-up is an isolated response. No employee is truly **on duty** — continuously watching its area of responsibility and deciding for itself when to act.
 
-v1.8 turns both stops into continuity.
+v1.9 turns both stops into continuity.
 
 ### Agent Team — from "temp hires" to "standing roster"
 
@@ -145,7 +158,7 @@ A team is no longer a tree that sprouts at delegation time and vanishes when the
 - [ ] **Team-level goals**: one goal decomposes into member sub-goals; the checklist aggregates across members — hover the leader's avatar to see what the whole team still owes
 - [ ] **Team-to-channel binding**: bind a Feishu / DingTalk group to a team; @ the team in the group, the leader decides who takes it
 - [ ] **Team retrospectives**: task wrap-up auto-generates a retrospective into the team's LESSONS.md — this team does better next time
-- [ ] **Employee Builder upgrade**: v1.4 builds a batch of employees from one sentence; v1.8 makes it emit a **standing team with a charter**
+- [ ] **Employee Builder upgrade**: v1.4 builds a batch of employees from one sentence; v1.9 makes it emit a **standing team with a charter**
 - [ ] **Run Overview becomes a team view**: each member on-duty / busy / idle at a glance; click through to see what it's working on
 
 ### Agent Loop — from "answers then stops" to "on duty"
@@ -207,7 +220,8 @@ A leader on a loop, members summoned on demand — that's a **self-running digit
 | **v1.5** | It's verifiable | Goal checklists + self-maintaining Wiki + owner-aware memory | ✅ Released |
 | **v1.6** | It meets you where you are | Domestic databases + persistent vision + code execution + identity shaping | ✅ Released |
 | **v1.7** | It's ready for production | Approval paths closed + Run Overview & cost visibility + context/token budgeting + open API/Deep Research + desktop remote/LAN + operational export | ✅ Released |
-| **v1.8** | **It's on duty** | **Agent Team standing rosters + Agent Loop resident cycles = a department that runs itself** | 📋 Planned |
+| **v1.8** | **It does a whole job** | **Content Studio — one sentence to a publishable 公众号 / 小红书 post + browser ref interaction** | ✅ Released |
+| **v1.9** | **It's on duty** | **Agent Team standing rosters + Agent Loop resident cycles = a department that runs itself** | 📋 Planned |
 
 ---
 

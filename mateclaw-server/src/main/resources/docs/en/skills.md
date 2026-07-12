@@ -634,6 +634,18 @@ Full review in [Security & Approval](./security).
 
 ---
 
+## Content Studio skills (1.8.0+)
+
+Three built-in skills compose the [Content Studio](./content-studio) scene — one sentence to a publishable 公众号 / 小红书 post:
+
+- **`gzh_article`** — WeChat Official Account image-text creation, end-to-end: pick topic → research → draft → illustrate → de-AI → inline-style HTML layout → deliver / draft box. Honors your persona & style memory.
+- **`xhs_note`** — Xiaohongshu image-first notes: four-part title + short-sentence body + topic tags, rendered as ≥3 vertical 3:4 cards with an online preview.
+- **`deai_humanize`** — measurable de-AI-ification: a heuristic AI-trace score drives a detect → rewrite → re-check loop (two tones: 公众号 measured, 小红书 lively), capped at 3 rounds.
+
+See [Content Studio](./content-studio) for the full pipeline, publish chain, and content calendar.
+
+---
+
 ## Next
 
 - [Tools](./tools) — tools that skills can use

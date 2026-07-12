@@ -604,6 +604,16 @@ curl -X POST http://localhost:18088/api/v1/channels \
 
 ---
 
+## WeChat Official Account (publish target, 1.8.0+)
+
+Unlike the nine conversational channels above, the **WeChat Official Account (公众号)** integration is a **one-way publish transport**, not an inbound message channel. It's used by [Content Studio](./content-studio) to push image-text articles into your Official Account **draft box**.
+
+- Configure the Official Account `app_id` / `app_secret` in **Settings** — the secret is **AES-GCM encrypted at rest** (set `MATECLAW_SETTING_KEY` and back it up).
+- The WeChat service instance is cached per appId with a **persisted access token** (WeChat allows one valid token per appId), and the publish chain **retries** transient errors and translates known error codes into actionable hints (e.g. *add the server IP to the Official Account whitelist*).
+- Publishing is **draft-box-first**; the optional `publish` action is approval-gated. See [Content Studio](./content-studio).
+
+---
+
 ## Channel management API
 
 ```bash
