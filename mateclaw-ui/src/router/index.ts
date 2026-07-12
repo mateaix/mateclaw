@@ -25,7 +25,7 @@ const router = createRouter({
           path: 'chat',
           name: 'Chat',
           component: () => import('@/views/ChatConsole.vue'),
-          meta: { title: 'Chat', requiredCapability: 'chat' },
+          meta: { title: 'Chat', requiredCapability: 'chat', keepAlive: true },
         },
         {
           path: 'dashboard',
@@ -95,6 +95,12 @@ const router = createRouter({
           name: 'Skills',
           component: () => import('@/views/SkillMarket.vue'),
           meta: { title: 'Skills', requiredCapability: 'manage:skills' },
+        },
+        {
+          path: 'content-calendar',
+          name: 'ContentCalendar',
+          component: () => import('@/views/ContentCalendar.vue'),
+          meta: { title: 'Content Calendar', requiredCapability: 'manage:agents' },
         },
         // Tools 顶层入口已降级到 Settings ▸ Tools (Catalog) (RFC-090 Phase 1)
         // 旧路径 /tools 由下方 redirect 兼容

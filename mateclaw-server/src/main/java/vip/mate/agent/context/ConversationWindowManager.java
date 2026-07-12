@@ -96,16 +96,31 @@ public class ConversationWindowManager {
 
     /**
      * Tool names whose results must never be compacted into a one-line
-     * summary. Sub-agent delegations are irreplaceable: the child runs an
+     * summary.
+     *
+     * <p>Sub-agent delegations are irreplaceable: the child runs an
      * independent LLM session that the parent cannot reproduce, so dropping
      * earlier batches forces the parent to re-dispatch the same children to
-     * recover what was lost. Every other tool (read_file, shell, search,
-     * memory) can be re-invoked cheaply if the parent decides it needs
-     * the data again.
+     * recover what was lost.
+     *
+     * <p>{@code load_skill} returns the SKILL.md content at load time —
+     * a snapshot of the skill's constraints, flow, and script entrypoints.
+     * The skill author may update SKILL.md between the original load and a
+     * hypothetical re-load, so re-invoking {@code load_skill} does NOT
+     * guarantee recovering the same instructions the agent started with.
+     * Dropping the original also forces the agent to either re-load (token
+     * expensive for 50KB+ skills) or operate without constraints — the
+     * root cause of the "skill constraint forgetting" bug. Pinning the
+     * original ToolResponseMessage keeps the agent's understanding of the
+     * task's rules stable across context-window trims.
+     *
+     * <p>Every other tool (read_file, shell, search, memory) can be
+     * re-invoked cheaply if the parent decides it needs the data again.
      */
     private static final java.util.Set<String> PRUNE_EXEMPT_TOOLS = java.util.Set.of(
             "delegateToAgent",
-            "delegateParallel"
+            "delegateParallel",
+            "load_skill"
     );
 
     // ==================== 冷却机制 ====================
@@ -256,6 +271,16 @@ public class ConversationWindowManager {
                                      java.util.Collection<ToolCallback> toolCallbacks,
                                      String workspaceBasePath) {
         if (messages == null || messages.isEmpty()) {
+            // Still surface an occupancy snapshot for the very first turn so
+            // the chat panel shows context usage from message one on.
+            int firstTurnMax = (maxInputTokens != null && maxInputTokens > 0)
+                    ? maxInputTokens : properties.getDefaultMaxInputTokens();
+            broadcastContextUsage(conversationId, firstTurnMax,
+                    TokenEstimator.estimateTokens(systemPrompt),
+                    TokenEstimator.estimateTokens(currentUserMessage) + TokenEstimator.PER_MESSAGE_OVERHEAD,
+                    0,
+                    TokenEstimator.estimateToolsTokens(toolCallbacks),
+                    false);
             return messages;
         }
         long spillsAtEntry = (toolResultStorage != null) ? toolResultStorage.getSpillCount() : 0L;
@@ -276,6 +301,9 @@ public class ConversationWindowManager {
         int historyTokens = TokenEstimator.estimateTokens(messages);
         int toolsTokens = TokenEstimator.estimateToolsTokens(toolCallbacks);
         int totalTokens = systemTokens + currentMsgTokens + historyTokens + toolsTokens;
+
+        broadcastContextUsage(conversationId, effectiveMax, systemTokens, currentMsgTokens,
+                historyTokens, toolsTokens, totalTokens > triggerThreshold);
 
         if (totalTokens <= triggerThreshold) {
             return messages;
@@ -304,8 +332,14 @@ public class ConversationWindowManager {
         // 尾部保护 token 预算：阈值的 20%
         int tailTokenBudget = (int) (triggerThreshold * 0.20);
 
-        return compactMessages(messages, historyBudget, tailTokenBudget, chatModel,
-                conversationId, agentId, totalTokens, spillsAtEntry, "token_threshold");
+        List<Message> compacted = compactMessages(messages, historyBudget, tailTokenBudget, chatModel,
+                conversationId, agentId, totalTokens, spillsAtEntry, "token_threshold",
+                workspaceBasePath);
+        // Re-broadcast so the occupancy gauge falls immediately after
+        // compaction instead of waiting for the next window-fit pass.
+        broadcastContextUsage(conversationId, effectiveMax, systemTokens, currentMsgTokens,
+                TokenEstimator.estimateTokens(compacted), toolsTokens, false);
+        return compacted;
     }
 
     /**
@@ -320,6 +354,42 @@ public class ConversationWindowManager {
     }
 
     // ==================== 核心压缩逻辑 ====================
+
+    /**
+     * Broadcast a {@code context_usage} snapshot: how much of the effective
+     * input window the next LLM call will occupy, split by source (system
+     * prompt / tool schemas / history / current input). Values come from
+     * {@link TokenEstimator}, so they are heuristic estimates for a gauge,
+     * not billing-grade counts — the UI labels them as such. Fired once per
+     * window-fit pass (i.e. per reasoning step) and again after compaction
+     * completes so the gauge falls back. Silent no-op when no tracker is
+     * wired or the window size is unknown.
+     */
+    private void broadcastContextUsage(String conversationId, int windowTokens,
+                                       int systemTokens, int currentTokens,
+                                       int historyTokens, int toolsTokens,
+                                       boolean willCompact) {
+        if (streamTracker == null || conversationId == null || conversationId.isEmpty()
+                || windowTokens <= 0) {
+            return;
+        }
+        try {
+            int usedTokens = systemTokens + currentTokens + historyTokens + toolsTokens;
+            Map<String, Object> payload = new java.util.LinkedHashMap<>();
+            payload.put("windowTokens", windowTokens);
+            payload.put("usedTokens", usedTokens);
+            payload.put("systemTokens", systemTokens);
+            payload.put("currentTokens", currentTokens);
+            payload.put("historyTokens", historyTokens);
+            payload.put("toolsTokens", toolsTokens);
+            payload.put("ratio", windowTokens > 0 ? (double) usedTokens / windowTokens : 0d);
+            payload.put("willCompact", willCompact);
+            payload.put("timestamp", System.currentTimeMillis());
+            streamTracker.broadcastObject(conversationId, "context_usage", payload);
+        } catch (Exception e) {
+            log.debug("[ConversationWindow] broadcast context_usage failed: {}", e.getMessage());
+        }
+    }
 
     /** Broadcast a single compact_status event; silent no-op when no tracker is wired. */
     private void broadcastCompactStatus(String conversationId, String status, Map<String, Object> extra) {
@@ -341,7 +411,7 @@ public class ConversationWindowManager {
                                           int tailTokenBudget, ChatModel chatModel,
                                           String conversationId, Long agentId,
                                           int preTokens, long spillsAtEntry,
-                                          String trigger) {
+                                          String trigger, String workspaceBasePath) {
         broadcastCompactStatus(conversationId, "start", Map.of(
                 "preTokens", preTokens,
                 "messagesIn", messages.size(),
@@ -418,6 +488,36 @@ public class ConversationWindowManager {
                 }
             } catch (Exception e) {
                 log.debug("[ConversationWindow] onPreCompress hook failed: {}", e.getMessage());
+            }
+        }
+
+        // ═══ Phase 2.7: Move 4 — Lossless spill evict ═══
+        // Before paying the LLM-summary cost (lossy + tokens + latency),
+        // try to bring oldMessages under budget by spilling remaining
+        // oversized tool results to disk. Each spilled result becomes a
+        // compact spill-marker (preview + on-disk path), recoverable via
+        // read_file. Exempt tools and already-spilled markers are skipped.
+        // If this phase lands the token count under historyBudget, the
+        // LLM summary is skipped entirely — the eviction is lossless.
+        if (toolResultStorage != null && workspaceBasePath != null) {
+            int spilled = spillEvictToolResults(oldMessages, conversationId, workspaceBasePath);
+            if (spilled > 0) {
+                int afterSpillTokens = TokenEstimator.estimateTokens(oldMessages)
+                        + TokenEstimator.estimateTokens(recentMessages);
+                log.info("[ConversationWindow] Phase 2.7 Spill evict: {} results spilled, tokens={}, budget={}",
+                        spilled, afterSpillTokens, historyBudget);
+                if (afterSpillTokens <= historyBudget) {
+                    List<Message> result = new ArrayList<>(oldMessages);
+                    result.addAll(recentMessages);
+                    broadcastCompactStatus(conversationId, "done", Map.of(
+                            "trigger", trigger,
+                            "preTokens", preTokens,
+                            "postTokens", afterSpillTokens,
+                            "strategy", "lossless_spill_evict",
+                            "resultsSpilled", spilled
+                    ));
+                    return result;
+                }
             }
         }
 
@@ -932,6 +1032,22 @@ public class ConversationWindowManager {
     }
 
     /**
+     * Move 4 — exempt tools ({@link #PRUNE_EXEMPT_TOOLS}) must bypass every
+     * compaction phase, not just the size-based and age-based passes. Their
+     * outputs are not replayable (sub-agent delegations run independent LLM
+     * sessions) or not safely recoverable (load_skill returns the SKILL.md
+     * snapshot at load time, which the author may have edited since). Trimming
+     * or clearing them in Phase 1/2/3 silently drops the skill's constraints
+     * and the sub-agent's transcript — the root cause of the
+     * "compression causes attention failure" symptom.
+     */
+    static boolean isExemptTool(ToolResponseMessage.ToolResponse r) {
+        return r != null
+                && r.name() != null
+                && PRUNE_EXEMPT_TOOLS.contains(r.name());
+    }
+
+    /**
      * Age-based compaction. Replace bodies of all tool responses older than
      * the {@code keepRecentN} most recent with a one-line placeholder, while
      * preserving the toolCallId and tool name so the assistant/tool pairing
@@ -1071,6 +1187,12 @@ public class ConversationWindowManager {
                         newResponses.add(r);
                         continue;
                     }
+                    if (isExemptTool(r)) {
+                        // Move 4: load_skill / delegateToAgent outputs are not
+                        // safely recoverable — pass through verbatim.
+                        newResponses.add(r);
+                        continue;
+                    }
                     String data = r.responseData();
                     if (data != null && data.length() > 500) {
                         String marker = "\n...[trimmed " + data.length() + " chars; "
@@ -1108,6 +1230,11 @@ public class ConversationWindowManager {
                         replaced.add(r);
                         continue;
                     }
+                    if (isExemptTool(r)) {
+                        // Move 4: exempt tools survive Phase 2 unchanged.
+                        replaced.add(r);
+                        continue;
+                    }
                     replaced.add(new ToolResponseMessage.ToolResponse(r.id(), r.name(),
                             buildInformativeCleared(r.name(), r.responseData())));
                     changed = true;
@@ -1130,14 +1257,23 @@ public class ConversationWindowManager {
         int pruned = 0;
         for (int i = 0; i < messages.size(); i++) {
             if (messages.get(i) instanceof ToolResponseMessage trm) {
+                // Move 4: skip the entire ToolResponseMessage if every
+                // response is either a spill marker or an exempt tool —
+                // there's nothing to prune.
                 boolean hasSubstantial = trm.getResponses().stream()
                         .anyMatch(r -> !isSpillMarker(r)
+                                && !isExemptTool(r)
                                 && r.responseData() != null
                                 && r.responseData().length() > 200);
                 if (hasSubstantial) {
                     List<ToolResponseMessage.ToolResponse> placeholders = new ArrayList<>(trm.getResponses().size());
                     for (ToolResponseMessage.ToolResponse r : trm.getResponses()) {
                         if (isSpillMarker(r)) {
+                            placeholders.add(r);
+                            continue;
+                        }
+                        if (isExemptTool(r)) {
+                            // Move 4: exempt tools survive Phase 3 pre-prune.
                             placeholders.add(r);
                             continue;
                         }
@@ -1150,6 +1286,71 @@ public class ConversationWindowManager {
             }
         }
         return pruned;
+    }
+
+    /**
+     * Move 4 — Phase 2.7 lossless spill evict. Walks {@code messages} and
+     * spills each non-exempt, non-spilled, oversized tool result to disk via
+     * {@link ToolResultStorage#persistIfOversized}, replacing the body with
+     * a compact spill marker (preview + on-disk path). The model can recover
+     * the original via {@code read_file} on the path.
+     *
+     * <p>Unlike Phase 1/2 (which trim/clear in place), this phase is
+     * <em>lossless</em>: the full output is preserved on disk. The token
+     * savings come from replacing a multi-KB body with a ~200-char preview.
+     * When the savings are enough to land under {@code historyBudget}, the
+     * caller skips the LLM summary entirely — avoiding its token cost,
+     * latency, and lossy compression.
+     *
+     * <p>Skips:
+     * <ul>
+     *   <li>Exempt tools ({@link #PRUNE_EXEMPT_TOOLS}) — not safely
+     *       recoverable.</li>
+     *   <li>Already-spilled markers — re-spilling would just overwrite the
+     *       same file.</li>
+     *   <li>Bodies under {@code perResultThresholdChars} — too small to
+     *       benefit from spilling (the marker preview is comparable in size).</li>
+     * </ul>
+     *
+     * @return number of tool responses actually spilled to disk
+     */
+    int spillEvictToolResults(List<Message> messages, String conversationId,
+                              String workspaceBasePath) {
+        if (toolResultStorage == null || conversationId == null || conversationId.isBlank()) {
+            return 0;
+        }
+        int spilled = 0;
+        for (int i = 0; i < messages.size(); i++) {
+            if (!(messages.get(i) instanceof ToolResponseMessage trm)) continue;
+            List<ToolResponseMessage.ToolResponse> newResponses = new ArrayList<>();
+            boolean changed = false;
+            for (ToolResponseMessage.ToolResponse r : trm.getResponses()) {
+                if (isSpillMarker(r) || isExemptTool(r)) {
+                    newResponses.add(r);
+                    continue;
+                }
+                String data = r.responseData();
+                if (data == null || data.isEmpty()) {
+                    newResponses.add(r);
+                    continue;
+                }
+                String spilledBody = toolResultStorage.persistIfOversized(
+                        data, r.name(), r.id(), conversationId, workspaceBasePath);
+                if (spilledBody != data) {
+                    // persistIfOversized replaced the body with a spill marker
+                    newResponses.add(new ToolResponseMessage.ToolResponse(
+                            r.id(), r.name(), spilledBody));
+                    changed = true;
+                    spilled++;
+                } else {
+                    newResponses.add(r);
+                }
+            }
+            if (changed) {
+                messages.set(i, ToolResponseMessage.builder().responses(newResponses).build());
+            }
+        }
+        return spilled;
     }
 
     // ==================== LLM 摘要生成（结构化 + 迭代更新） ====================
@@ -1383,7 +1584,7 @@ public class ConversationWindowManager {
 
         List<Message> compacted = compactMessages(messages, forcedBudget, forcedTailBudget,
                 chatModel, conversationId, agentId, currentTokens, spillsAtEntry,
-                "prompt_too_long");
+                "prompt_too_long", null);
 
         if (compacted == messages || TokenEstimator.estimateTokens(compacted) >= currentTokens) {
             log.warn("[ConversationWindow] PTL structured compaction had no effect for conv={}, falling back to tail-only",

@@ -116,5 +116,69 @@ public class BrowserProperties {
      * to avoid forcing every snapshot through the spill-and-preview path.
      */
     private int snapshotMaxLength = 20_000;
+
+    /**
+     * Whether {@code action=snapshot} includes non-interactive structural nodes
+     * (headings, list items, navigation, images) in the accessibility tree.
+     * Interactive elements always get a reference handle; structural nodes are
+     * emitted without one, purely to give the model page context. Turn off to
+     * produce a terser tree of only actionable elements.
+     */
+    private boolean snapshotIncludeNonInteractive = true;
+
+    /** Privacy guard for sessions attached to a user's own logged-in browser (action=connect_cdp). */
+    private Privacy privacy = new Privacy();
+
+    /** Raw DevTools Protocol escape hatch (action=cdp) configuration. */
+    private Cdp cdp = new Cdp();
+
+    /**
+     * Controls {@code action=cdp}, which forwards a raw Chrome DevTools Protocol
+     * command. Constrained by a method allowlist; content-reading methods are
+     * additionally subject to {@link Privacy} on user-managed browsers.
+     */
+    @Data
+    public static class Cdp {
+        /** Master switch for action=cdp. */
+        private boolean enabled = true;
+
+        /**
+         * Allowed CDP methods. An entry is either an exact method
+         * ({@code "Page.navigate"}) or a domain wildcard ({@code "Input.*"}).
+         * Defaults to safe actuation methods; extend for advanced automation.
+         * Content-reading methods stay guarded by {@link Privacy} even if added.
+         */
+        private java.util.List<String> allowedMethods = new java.util.ArrayList<>(java.util.List.of(
+                "Input.*",
+                "Page.navigate", "Page.reload", "Page.bringToFront",
+                "Page.getNavigationHistory", "Page.navigateToHistoryEntry"));
+    }
+
+    /**
+     * When the browser tool is attached to a user-managed Chrome (connected via
+     * CDP, process not spawned by us), that Chrome may have banking / email /
+     * internal-admin tabs open. This guard refuses content-reading actions
+     * (screenshot / eval / full snapshot) on pages that look sensitive, so
+     * private content is not funnelled into the model / persisted. It never
+     * affects headless or self-spawned browsers.
+     */
+    @Data
+    public static class Privacy {
+        /** Master switch. When false, no sensitive-page blocking happens. */
+        private boolean enabled = true;
+
+        /**
+         * Extra hosts to always treat as sensitive (exact host or any subdomain),
+         * on top of the built-in heuristic. E.g. {@code intranet.corp.example}.
+         */
+        private java.util.List<String> sensitiveHosts = new java.util.ArrayList<>();
+
+        /**
+         * Hosts to always treat as safe (exact host or any subdomain). Overrides
+         * both the heuristic and {@link #sensitiveHosts}. Use to un-block a page
+         * the heuristic flagged that you know is fine to read.
+         */
+        private java.util.List<String> trustedHosts = new java.util.ArrayList<>();
+    }
 }
 

@@ -72,7 +72,6 @@
 import { onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { mcToast } from '@/composables/useMcToast'
-import { ElIcon } from 'element-plus'
 import { Loading, WarningFilled } from '@element-plus/icons-vue'
 import { featureFlagApi, type FeatureFlag } from '@/api/index'
 

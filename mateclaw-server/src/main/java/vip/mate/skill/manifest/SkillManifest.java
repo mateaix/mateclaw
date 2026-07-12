@@ -91,6 +91,28 @@ public class SkillManifest {
     /** Set when {@code type=acp}. Resolves to a {@code mate_acp_endpoint} row. */
     private AcpBinding acp;
 
+    // ==================== Attention-anchoring constraints ====================
+
+    /**
+     * Short, high-priority constraints extracted from SKILL.md that the
+     * agent must obey throughout the task — e.g. "never delete user
+     * files", "always confirm before writing", "use server B's fetch
+     * tool, not server A's".
+     *
+     * <p>Unlike the full SKILL.md (which is a free-form document loaded
+     * via {@code load_skill} and subject to context-window trimming),
+     * these structured constraints are pinned into the ProgressLedger's
+     * pinned-entries section by ActionNode on {@code load_skill}, so they
+     * survive context compression and stay visible on every turn.
+     *
+     * <p>Empty list when the skill author didn't declare structured
+     * constraints — the agent then falls back to the SKILL.md content
+     * loaded via {@code load_skill} (protected by
+     * {@code PRUNE_EXEMPT_TOOLS} in ConversationWindowManager).
+     */
+    @Builder.Default
+    private List<String> constraints = List.of();
+
     // ==================== type=code script entrypoints ====================
 
     /**

@@ -229,6 +229,42 @@
       </div>
     </div>
 
+    <div class="settings-section system-section">
+      <h2 class="section-title">{{ t('settings.weixinoaTitle') }}</h2>
+      <p class="section-desc">{{ t('settings.weixinoaDesc') }}</p>
+      <div class="settings-card">
+        <div class="setting-item setting-item-vertical">
+          <div class="setting-info">
+            <div class="setting-label">{{ t('settings.fields.weixinoaAppId') }}</div>
+            <div class="setting-hint">{{ t('settings.hints.weixinoaAppId') }}</div>
+          </div>
+          <div class="setting-control setting-control-full">
+            <input
+              v-model="settings.weixinoaAppId"
+              type="text"
+              class="form-input"
+              placeholder="wx1234567890abcdef"
+            />
+          </div>
+        </div>
+        <div class="setting-item setting-item-vertical">
+          <div class="setting-info">
+            <div class="setting-label">{{ t('settings.fields.weixinoaAppSecret') }}</div>
+            <div class="setting-hint">{{ t('settings.hints.weixinoaAppSecret') }}</div>
+          </div>
+          <div class="setting-control setting-control-full">
+            <input
+              v-model="weixinoaAppSecretInput"
+              type="password"
+              class="form-input"
+              autocomplete="new-password"
+              :placeholder="settings.weixinoaAppSecretMasked || t('settings.model.apiKeyInput')"
+            />
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div class="save-bar">
       <button class="btn-secondary" @click="loadSettings">{{ t('common.reset') }}</button>
       <button class="btn-primary" @click="onSaveSettings">{{ t('settings.actions.saveSystem') }}</button>
@@ -254,6 +290,7 @@ const savedTip = ref('')
 // API Key 独立管理，不回显明文
 const serperApiKeyInput = ref('')
 const tavilyApiKeyInput = ref('')
+const weixinoaAppSecretInput = ref('')
 
 const providerCatalog = ref<SearchProviderCatalog>({ providers: [], resolvedId: null, resolvedSource: null })
 const expandedProviderId = ref<string | null>(null)
@@ -299,6 +336,7 @@ const settings = reactive<SystemSettings>({
   tavilyBaseUrl: 'https://api.tavily.com/search',
   duckduckgoEnabled: true,
   searxngBaseUrl: '',
+  weixinoaAppId: '',
 })
 
 onMounted(async () => {
@@ -313,6 +351,7 @@ async function loadSettings() {
   // 清空 API Key 输入框（不回显明文）
   serperApiKeyInput.value = ''
   tavilyApiKeyInput.value = ''
+  weixinoaAppSecretInput.value = ''
 }
 
 async function onSaveSettings() {
@@ -323,6 +362,9 @@ async function onSaveSettings() {
   }
   if (tavilyApiKeyInput.value) {
     payload.tavilyApiKey = tavilyApiKeyInput.value
+  }
+  if (weixinoaAppSecretInput.value) {
+    payload.weixinoaAppSecret = weixinoaAppSecretInput.value
   }
   await settingsApi.update(payload)
   await applyLocale(settings.language)

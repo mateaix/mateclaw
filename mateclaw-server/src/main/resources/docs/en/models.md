@@ -24,6 +24,7 @@ MateClaw doesn't care which LLM you use. It talks to every mainstream provider t
 | **DeepSeek** | deepseek-chat, deepseek-coder, **DeepSeek V4 flash + pro** (thinking-mode) | openai | OpenAI-compatible |
 | **Kimi (Moonshot)** | moonshot-v1-8k/32k/128k | openai | OpenAI-compatible |
 | **Zhipu AI** | GLM-5-Turbo, GLM-5V-Turbo, GLM-5, GLM-5.1, **GLM-5.2** | openai | OpenAI-compatible; CN + international standard endpoints plus two Coding Plan subscription endpoints |
+| **Volcano Engine Agent Plan** _(1.8.0+)_ | GLM-5.2 (primary) and more | openai | OpenAI-compatible; agent-plan endpoint (`/api/plan/v3`) |
 | **MiniMax** | abab6.5, abab5.5; expanded video catalog + CN endpoint | anthropic | Anthropic Messages API-compatible (endpoint `/anthropic`) |
 | **SiliconFlow CN/INTL** | Routed inference across hosted models | openai | Two endpoints, OpenAI-compatible |
 | **OpenCode** | Code-tuned routing | openai | OpenAI-compatible |

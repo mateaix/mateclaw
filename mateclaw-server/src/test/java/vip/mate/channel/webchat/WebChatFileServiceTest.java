@@ -4,6 +4,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockMultipartFile;
+import vip.mate.workspace.core.service.ChatUploadLocationResolver;
 import vip.mate.workspace.core.service.ChatUploadLocationResolverTestSupport;
 
 import java.io.IOException;
@@ -39,7 +40,9 @@ class WebChatFileServiceTest {
 
     @AfterEach
     void cleanup() throws IOException {
-        Path dir = Paths.get("data", "chat-uploads", CONV);
+        // Attachments land under the sanitized segment (CONV carries ':'), so
+        // clean that dir — not the raw-id one.
+        Path dir = Paths.get("data", "chat-uploads", ChatUploadLocationResolver.sanitizeSegment(CONV));
         if (Files.exists(dir)) {
             try (Stream<Path> walk = Files.walk(dir)) {
                 walk.sorted(Comparator.reverseOrder()).forEach(p -> {

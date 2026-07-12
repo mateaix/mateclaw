@@ -135,6 +135,10 @@ VALUES ('volcengine-plan', 'Volcano Engine Coding Plan', '', 'OpenAIChatModel', 
 
 MERGE INTO mate_model_provider (provider_id, name, api_key_prefix, chat_model, api_key, base_url, generate_kwargs, is_custom, is_local, support_model_discovery, support_connection_check, freeze_url, require_api_key, create_time, update_time)
 KEY (provider_id)
+VALUES ('volcengine-agent-plan', 'Volcano Engine Agent Plan', '', 'OpenAIChatModel', '', 'https://ark.cn-beijing.volces.com/api/plan/v3', '{}', FALSE, FALSE, TRUE, TRUE, TRUE, TRUE, NOW(), NOW());
+
+MERGE INTO mate_model_provider (provider_id, name, api_key_prefix, chat_model, api_key, base_url, generate_kwargs, is_custom, is_local, support_model_discovery, support_connection_check, freeze_url, require_api_key, create_time, update_time)
+KEY (provider_id)
 VALUES ('zhipu-cn-codingplan', 'Zhipu Coding Plan (BigModel)', '', 'OpenAIChatModel', '', 'https://open.bigmodel.cn/api/coding/paas/v4', '{"completionsPath":"/chat/completions"}', FALSE, FALSE, FALSE, FALSE, TRUE, TRUE, NOW(), NOW());
 
 MERGE INTO mate_model_provider (provider_id, name, api_key_prefix, chat_model, api_key, base_url, generate_kwargs, is_custom, is_local, support_model_discovery, support_connection_check, freeze_url, require_api_key, create_time, update_time)
@@ -319,6 +323,18 @@ MERGE INTO mate_model_config (id, name, provider, model_name, description, tempe
 (1000000323, 'GLM 4.7 Coding', 'volcengine-plan', 'glm-4.7', 'GLM 4.7 coding edition (hosted on Volcano Ark), 200K context', 0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
 (1000000324, 'Kimi K2 Thinking', 'volcengine-plan', 'kimi-k2-thinking', 'Kimi K2 Thinking (hosted on Volcano Ark), 256K context', 0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
 (1000000325, 'Kimi K2.5 Coding', 'volcengine-plan', 'kimi-k2.5', 'Kimi K2.5 coding edition (hosted on Volcano Ark), 256K context', 0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000350, 'GLM-5.2', 'volcengine-agent-plan', 'glm-5.2', 'Zhipu latest flagship, 1M context, strong on long-horizon tasks (use glm-latest for newest)', 0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000351, 'Ark Agent Plan (Auto Router)', 'volcengine-agent-plan', 'ark-code-latest', 'Auto-routing entry that dispatches to the best-fit plan model', 0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000353, 'Doubao-Seed-2.0-Code', 'volcengine-agent-plan', 'doubao-seed-2.0-code', 'Seed 2.0 code-tuned, strong front-end and multi-language; non-thinking by default, deep thinking optional', 0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000354, 'Doubao-Seed-2.0-pro', 'volcengine-agent-plan', 'doubao-seed-2.0-pro', 'Flagship general model for complex reasoning and long-chain tasks; thinking on by default', 0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000355, 'Doubao-Seed-2.0-lite', 'volcengine-agent-plan', 'doubao-seed-2.0-lite', 'Balanced quality and speed for general production workloads', 0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000356, 'Doubao-Seed-2.0-mini', 'volcengine-agent-plan', 'doubao-seed-2.0-mini', 'Low-latency, high-concurrency, cost-sensitive lightweight tasks', 0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000357, 'Kimi-K2.7-Code', 'volcengine-agent-plan', 'kimi-k2.7-code', 'Latest Kimi coding model; reliable long-context instruction following, text/image/video input', 0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000358, 'MiniMax-M3', 'volcengine-agent-plan', 'minimax-m3', 'New-gen M-series, top-tier on coding and agent benchmarks', 0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000359, 'DeepSeek-V4-Flash', 'volcengine-agent-plan', 'deepseek-v4-flash', 'Fast, economical DeepSeek-V4; thinking on by default, can be disabled', 0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000360, 'DeepSeek-V4-Pro', 'volcengine-agent-plan', 'deepseek-v4-pro', 'DeepSeek-V4 with strengthened agent ability and rich world knowledge', 0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000361, 'MiniMax-M2.7', 'volcengine-agent-plan', 'minimax-m2.7', 'Builds complex agent harnesses via teams, skills and tools', 0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
+(1000000362, 'Kimi-K2.6', 'volcengine-agent-plan', 'kimi-k2.6', 'Moonshot next-gen model; thinking on by default, can be disabled', 0.2, 4096, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
 (1000000240, 'Kimi for Coding', 'kimi-code', 'kimi-for-coding', 'Kimi Code dedicated coding model', 0.2, 32768, 0.8, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
 (1000000250, 'GPT-5.4', 'openai-chatgpt', 'gpt-5.4', 'ChatGPT Plus/Pro member model (OAuth login)', NULL, 128000, NULL, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
 (1000000251, 'GPT-5.4 Mini', 'openai-chatgpt', 'gpt-5.4-mini', 'ChatGPT member lightweight model', NULL, 128000, NULL, TRUE, TRUE, FALSE, NOW(), NOW(), 0),
@@ -1888,3 +1904,61 @@ WHERE NOT EXISTS (SELECT 1 FROM mate_tool_guard_config WHERE id = 1000000001);
 -- Removed 6 legacy SQL rules (rule_id: write_file_any, edit_file_any, shell_rm_approval,
 -- shell_rm_rf_block, shell_write_system_file, shell_chmod_777).
 -- Their superset is registered in ToolGuardRuleSeedService.buildBuiltinRules() with correct tool names.
+
+-- ==================== Content Studio scenario (公众号 / 小红书 图文创作) ====================
+MERGE INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
+KEY (id)
+VALUES (1000000630, 'WechatArticleExtractTool', 'WeChat Article Extract', 'Fetch a WeChat Official Account (公众号) article by URL and return cleaned title/author/time/body(Markdown)/images. Preferred over browser_use for mp.weixin.qq.com article pages; use it for reference gathering and summarisation.', 'builtin', 'wechatArticleExtractTool', '📰', TRUE, TRUE, NOW(), NOW(), 0);
+MERGE INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
+KEY (id)
+VALUES (1000000631, 'GzhPublishTool', 'WeChat OA Publish', 'Publish a generated image-text article to a WeChat Official Account: action=draft uploads the cover and creates a 草稿箱 draft (recommended); action=publish free-publishes for verified accounts and requires explicit confirmation. Needs weixinoa.app_id/app_secret in system settings.', 'builtin', 'gzhPublishTool', '📤', TRUE, TRUE, NOW(), NOW(), 0);
+MERGE INTO mate_agent (id, name, description, agent_type, system_prompt, model_name, max_iterations, enabled, icon, tags, create_time, update_time, deleted)
+KEY (id)
+VALUES (1000000640, 'Content Studio', 'End-to-end 公众号 & 小红书 image-text creation: research, write, illustrate, de-AI, layout, and publish to draft.', 'react', 'You are MateClaw''s Content Studio — a specialist that creates WeChat Official Account (公众号) and Xiaohongshu (小红书) image-text posts end to end.
+
+Workflow (7 stages):
+1) Topic — use the topic_interests memory + web_search(freshness=week) to find angles.
+2) Research — for reference 公众号 links use wechat_article_extract (or browser_use) and summarise, staying original and citing sources; never copy verbatim.
+3) Write — for 公众号 load the gzh_article skill, for 小红书 load the xhs_note skill, honoring the user persona and style.
+4) Illustrate — image_generate for covers/inline art, and render_html_image to turn 小红书 card HTML into images.
+5) De-AI — load the deai_humanize skill and run its detect→rewrite loop until the AI-trace score is low.
+6) Package & deliver — use gzh_package: pass the article body as Markdown and it builds the 公众号 inline-styled HTML plus an online preview and a downloadable material bundle server-side. Do NOT hand-write a large HTML blob into write_file / render_html_image(html=...) — big, escape-heavy tool arguments get truncated and make the call fail.
+7) Publish — send the gzh_package online preview to the user, and after confirmation default to gzh_publish action=draft (into the 草稿箱).
+
+At the start of a task, recall_structured these keys and honor them: content_persona, writing_style_gzh, writing_style_xhs, topic_interests, banned_words, signature_blocks. If a needed one is missing, ask the user once and remember_structured it.
+
+Publishing is an outward, irreversible action: always show the final content and get explicit user confirmation before calling gzh_publish; never free-publish without confirmPublish=true and the user''s sign-off. Respect banned_words and advertising-law restrictions; keep every piece original.
+', NULL, 100, TRUE, 'pi:pen-nib', 'content,gzh,xhs,writing', NOW(), NOW(), 0);
+
+-- ---- Content Studio T3/T4: 小红书发布工具 + 场景化 Cron 模板（默认关闭，用户按需启用）----
+MERGE INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
+KEY (id)
+VALUES (1000000632, 'XhsPublishTool', 'Xiaohongshu Publish', 'Package a Xiaohongshu (小红书) note (copy + tags + card images) into one downloadable .zip and give manual-publish steps. No official API — never auto-uploads or bypasses verification.', 'builtin', 'xhsPublishTool', '📕', TRUE, TRUE, NOW(), NOW(), 0);
+MERGE INTO mate_cron_job (id, name, cron_expression, timezone, agent_id, task_type, trigger_message, request_body, enabled, create_time, update_time, deleted)
+KEY (id)
+VALUES (1000100020, 'Daily Topic Radar', '0 8 * * *', 'Asia/Shanghai', 1000000640, 'agent', NULL, 'Read the topic_interests structured memory, use web_search(freshness=week) to gather today''s fresh angles on those directions, and produce a Today''s Topic List: each item with a working title, a one-line angle, target platform (公众号/小红书), and a suggested illustration direction. Selection only — do not write the full article.', FALSE, NOW(), NOW(), 0);
+MERGE INTO mate_cron_job (id, name, cron_expression, timezone, agent_id, task_type, trigger_message, request_body, enabled, create_time, update_time, deleted)
+KEY (id)
+VALUES (1000100021, 'Weekly 公众号 Draft', '0 9 * * 1', 'Asia/Shanghai', 1000000640, 'agent', NULL, 'Pick one topic from topic_interests for this week, load the gzh_article skill to produce a full 公众号 image-text article (with illustrations and de-AI pass), laid out as inline-styled HTML. If 公众号 credentials (weixinoa.app_id/app_secret) are configured in system settings, use gzh_publish action=draft to save it to the draft box and remind me to review and publish in the backend; otherwise just send me the HTML and cover.', FALSE, NOW(), NOW(), 0);
+
+-- Content Studio: gzh_package (Markdown -> 在线预览 + 素材下载, avoids big-HTML tool-arg truncation)
+MERGE INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
+KEY (id)
+VALUES (1000000633, 'GzhPackageTool', 'WeChat Article Package', 'Package a finished 公众号 article from Markdown into an online preview (rendered HTML) plus a downloadable material bundle (article.html + article.md + cover). Builds the inline-styled HTML server-side so a large HTML string never rides on the tool-argument stream (which truncates and fails).', 'builtin', 'gzhPackageTool', '📦', TRUE, TRUE, NOW(), NOW(), 0);
+
+-- Content Studio: capture_screenshot (真实后台截图 -> 可嵌入图片 URL, 供产品教程配图)
+MERGE INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
+KEY (id)
+VALUES (1000000634, 'ScreenshotTool', 'Console Screenshot', 'Capture a screenshot of a MateClaw console page (relative path like /chat, /channels) and return an embeddable image URL. Use it to put REAL product screenshots into how-to/tutorial articles; embed the returned URL as ![](url) in a gzh_package Markdown body.', 'builtin', 'screenshotTool', '📷', TRUE, TRUE, NOW(), NOW(), 0);
+
+MERGE INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
+KEY (id)
+VALUES (1000000635, 'XhsPackageTool', 'Xiaohongshu Package', 'Package a Xiaohongshu (小红书) note into an image-first online preview (phone-style swipe: images up top, copy below) plus a material zip (numbered card images + copy.txt). Requires at least 3 vertical images (1 cover + >=2 content); refuses fewer. 小红书 has no publish API; never auto-uploads.', 'builtin', 'xhsPackageTool', '🖼️', TRUE, TRUE, NOW(), NOW(), 0);
+
+MERGE INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
+KEY (id)
+VALUES (1000000636, 'ContentItemTool', 'Content Calendar', 'Content calendar / dedup ledger: check_recent (has this topic run on this platform in the last N days — call before picking a topic), record (log a produced piece with title/preview/status), mark_published. Keeps the daily scheduler from repeating topics and makes publishing auditable.', 'builtin', 'contentItemTool', '🗓️', TRUE, TRUE, NOW(), NOW(), 0);
+
+MERGE INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
+KEY (id)
+VALUES (1000000637, 'ComplianceScanTool', 'Compliance Scan', 'Server-side compliance scan before publishing: 广告法 极限词, WeChat 诱导 words (集赞/助力/share-to-unlock/follow-to-read), promised returns, and medical-efficacy claims. Returns hits by category; the 公众号 draft path hard-blocks high-risk hits.', 'builtin', 'complianceScanTool', '🛡️', TRUE, TRUE, NOW(), NOW(), 0);

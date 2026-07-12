@@ -211,6 +211,11 @@
         :capabilities="agentCapabilities"
       />
 
+      <!-- 上下文占用（估算）：点击展开分项面板 -->
+      <div v-if="contextUsage" class="ctx-usage-row">
+        <ContextUsagePanel :usage="contextUsage" />
+      </div>
+
       <!-- 使用组件化的 ChatInput -->
       <ChatInput
         ref="chatInputRef"
@@ -263,14 +268,18 @@
   </div>
 </template>
 
+<script lang="ts">
+let cachedAgents: import('@/types').Agent[] = []
+</script>
+
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
+import { ElMessage } from 'element-plus/es/components/message/index'
+import { ref, computed, onMounted, onBeforeUnmount, onActivated, onDeactivated, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { mcToast } from '@/composables/useMcToast'
 import { ChatDotRound, Delete, Setting, UploadFilled } from '@element-plus/icons-vue'
 import { conversationApi, agentApi, modelApi, chatApi, cronJobApi, approvalApi } from '@/api/index'
-import { ElMessage } from 'element-plus'
 import { copyToClipboard } from '@/utils/clipboard'
 import { useFileDrop } from '@/composables/useFileDrop'
 import { useIsMobile, useMediaQuery, BREAKPOINTS } from '@/composables/useBreakpoint'
@@ -290,6 +299,7 @@ import { agentIconColor } from '@/utils/agentIconColor'
 import ChatInput from '@/components/chat/ChatInput.vue'
 import MultimodalRoutingHint from '@/components/chat/MultimodalRoutingHint.vue'
 import StreamLoadingBar from '@/components/chat/StreamLoadingBar.vue'
+import ContextUsagePanel from '@/components/chat/ContextUsagePanel.vue'
 import TalkMode from '@/components/chat/TalkMode.vue'
 import ModelSelector from '@/components/chat/ModelSelector.vue'
 import { useEChartsRenderer } from '@/composables/useEChartsRenderer'
@@ -359,7 +369,7 @@ const router = useRouter()
 const route = useRoute()
 const { t } = useI18n()
 
-const agents = ref<Agent[]>([])
+const agents = ref<Agent[]>(cachedAgents.length > 0 ? [...cachedAgents] : [])
 const conversations = ref<Conversation[]>([])
 const selectedAgentId = ref<string | number>('')
 const currentConversationId = ref<string>('')
@@ -671,6 +681,7 @@ const {
   queueSize,
   heartbeat,
   compactStatus,
+  contextUsage,
   lifecycleStage,
   sendMessage: sendChatMessage,
   stopGeneration: stopChatGeneration,
@@ -1162,6 +1173,45 @@ onBeforeUnmount(() => {
   revokeAllPreviewUrls()
 })
 
+onDeactivated(() => {
+  if (activityPollTimer !== null) {
+    clearInterval(activityPollTimer)
+    activityPollTimer = null
+  }
+  if (elapsedTickTimer !== null) {
+    clearInterval(elapsedTickTimer)
+    elapsedTickTimer = null
+  }
+  document.removeEventListener('click', handleCodeCopy)
+  disposeECharts()
+  disposeKatex()
+  disposeMermaid()
+  revokeAllPreviewUrls()
+  resetForNewConversation()
+})
+
+onActivated(async () => {
+  document.addEventListener('click', handleCodeCopy)
+  startECharts()
+  startKatex()
+  startMermaid()
+  activityPollTimer = window.setInterval(pollActivity, ACTIVITY_POLL_MS)
+  elapsedTickTimer = window.setInterval(() => {
+    if (activeCronRuns.value.length > 0) elapsedNow.value = Date.now()
+  }, 1000)
+  // 登出已改为 window.location.href（刷新页面），所以切回时不会有跨用户残留
+  if (currentConversationId.value && !isEphemeralConversation(currentConversationId.value)) {
+    try {
+      const statusRes: any = await conversationApi.getStatus(currentConversationId.value)
+      if (currentConversationId.value && statusRes.data?.streamStatus === 'running') {
+        await reconnectStream(currentConversationId.value)
+      }
+    } catch {
+      // 忽略
+    }
+  }
+})
+
 watch(() => route.query, () => {
   // If a fresh action arrives (e.g. user re-fires Ctrl+K via the URL while
   // the view is already alive), pick it up immediately.
@@ -1331,6 +1381,7 @@ async function loadAgents() {
     // a confusing failure path. The admin Agents view passes no filter.
     const res: any = await agentApi.list({ enabled: true })
     agents.value = res.data || []
+    if (agents.value.length > 0) cachedAgents = [...agents.value]
     // 只有在 URL 没有指定 agentId 且当前无选中时，才默认选第一个
     if (agents.value.length > 0 && !selectedAgentId.value && !route.query.agentId) {
       selectedAgentId.value = agents.value[0].id
@@ -2206,6 +2257,11 @@ function handleCodeCopy(e: MouseEvent) {
 </script>
 
 <style scoped>
+.ctx-usage-row {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 4px 4px;
+}
 .cron-running-bar {
   display: flex;
   flex-direction: column;

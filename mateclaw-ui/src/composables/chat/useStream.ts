@@ -16,6 +16,7 @@ export type SSEEventType =
   | 'message_start'
   // Agent 事件
   | 'tool_call_started'
+  | 'tool_call_progress'
   | 'tool_call_completed'
   | 'phase'
   | 'plan_created'
@@ -80,6 +81,7 @@ export type SSEEventType =
   // (start → pair_safe → summarize → done/skipped/failed). Payload
   // carries preTokens/postTokens/messagesSummarized/tailKept/etc.
   | 'compact_status'
+  | 'context_usage'
 
 export interface SSEEvent {
   type: SSEEventType

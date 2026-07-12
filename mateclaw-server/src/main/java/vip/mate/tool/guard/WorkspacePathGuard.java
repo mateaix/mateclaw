@@ -204,14 +204,20 @@ public final class WorkspacePathGuard {
      * transition window.
      */
     public static Path validatePath(String rawPath, @Nullable ToolContext ctx) {
-        Path normalized = Paths.get(rawPath).toAbsolutePath().normalize();
-
         String basePath = resolveBasePath(ctx);
         if (basePath == null || basePath.isBlank()) {
-            return normalized; // 未配置活动目录，不限制
+            // 未配置活动目录，不限制。此时相对路径仍按进程 CWD 解析（遗留行为）。
+            return Paths.get(rawPath).toAbsolutePath().normalize();
         }
 
         Path root = Paths.get(basePath).toAbsolutePath().normalize();
+        // A relative path means "relative to the agent's workspace root", not
+        // the JVM's launch directory. Resolving against process CWD (via
+        // toAbsolutePath) sent a plain "./foo.html" outside the sandbox whenever
+        // the server ran from a directory other than the workspace, tripping a
+        // spurious "工作区越界" block (issue #494). This matches the shell
+        // scanner, which already resolves relative tokens against root.
+        Path normalized = resolveAgainstRoot(rawPath, root);
 
         // 先用 normalize 检查，再尝试 toRealPath 防符号链接逃逸
         if (!normalized.startsWith(root) && !isExempt(normalized)) {
@@ -333,11 +339,27 @@ public final class WorkspacePathGuard {
         if (rawPath == null || rawPath.isBlank()) return null;
         Path root = basePathToRoot(basePath);
         if (root == null) return null;
-        Path normalized = Paths.get(rawPath).toAbsolutePath().normalize();
+        // Relative paths resolve against the workspace root (see validatePath /
+        // issue #494), so a plain "./foo.html" stays inside the sandbox
+        // regardless of the server's launch directory.
+        Path normalized = resolveAgainstRoot(rawPath, root);
         if (!normalized.startsWith(root) && !isExempt(normalized)) {
             return "Path is outside workspace boundary: " + normalized + ", allowed root: " + root;
         }
         return null;
+    }
+
+    /**
+     * Resolve a user-supplied path against the workspace {@code root}: absolute
+     * paths are taken as-is, relative paths (including {@code ./foo} and
+     * {@code ../foo}) are resolved against {@code root} and normalized. A
+     * traversal that climbs out of the workspace still normalizes to a path
+     * that fails the {@code startsWith(root)} check, so this only fixes the
+     * legitimate in-workspace relative case — it does not weaken the boundary.
+     */
+    private static Path resolveAgainstRoot(String rawPath, Path root) {
+        Path p = Paths.get(rawPath);
+        return (p.isAbsolute() ? p : root.resolve(p)).normalize();
     }
 
     /**
@@ -407,6 +429,20 @@ public final class WorkspacePathGuard {
                 // Character devices like /dev/null, /dev/stdin, /dev/fd/0 don't
                 // expose any on-disk user data — allow them so common shell
                 // idioms (`2>/dev/null`, `cmd <(cat file)`) keep working.
+                continue;
+            }
+            if (isFilesystemRoot(normalized)) {
+                // A token normalizing to the filesystem root is usually shell
+                // syntax misread as a path — sed's s/pattern//, awk's empty
+                // field, etc. — so it is skipped for non-destructive commands.
+                // When the command carries a destructive verb, fail closed:
+                // `rm -rf //` (or `/.`, `/..`) targets the filesystem root and
+                // must be refused. The verb flag is command-wide, so a compound
+                // command mixing e.g. `rm` with a sed empty replacement is also
+                // refused — the error tells the caller to split the command.
+                if (destructive) {
+                    throw filesystemRootDeletionError();
+                }
                 continue;
             }
             if (destructive && normalized.equals(root)) {
@@ -533,6 +569,18 @@ public final class WorkspacePathGuard {
         return ALLOWED_DEVICE_NODES.contains(s) || ALLOWED_DEV_FD.matcher(s).matches();
     }
 
+    /**
+     * True when {@code normalized} is the filesystem root ({@code /} or
+     * {@code //}). In non-destructive commands these are almost always false
+     * positives from shell syntax (sed's {@code s/pattern//}, awk's empty
+     * field, etc.) and are skipped; destructive commands are refused at the
+     * call site because {@code rm -rf //} really does target the root.
+     */
+    private static boolean isFilesystemRoot(Path normalized) {
+        String s = normalized.toString();
+        return "/".equals(s) || "//".equals(s);
+    }
+
     private static String truncateForError(String s) {
         return s.length() > 200 ? s.substring(0, 200) + "..." : s;
     }
@@ -541,6 +589,14 @@ public final class WorkspacePathGuard {
         return new IllegalArgumentException(
                 "Shell command would delete the workspace root directory itself: " + root
                         + ". Deleting the workspace root is refused — target a path inside it instead.");
+    }
+
+    private static IllegalArgumentException filesystemRootDeletionError() {
+        return new IllegalArgumentException(
+                "Shell command combines a destructive verb (rm/rmdir/shred/srm) with a path that "
+                        + "normalizes to the filesystem root (/), which is refused. If the root-like "
+                        + "token comes from shell syntax (e.g. an empty sed replacement) rather than a "
+                        + "delete target, run the delete and the text edit as separate commands.");
     }
 
     /**

@@ -257,6 +257,20 @@
         </div>
 
         <!--
+          Runtime warning chips (metadata.warnings): loop-guard interventions
+          and other backend runtime notices. Populated live via the 'warning'
+          SSE event (useChat merges it into metadata.warnings) and persisted by
+          the stream accumulator, so streaming and history reload render the
+          same chips. Message text arrives pre-localized from the backend.
+        -->
+        <div v-if="runtimeWarnings.length" class="runtime-warnings">
+          <div v-for="(warning, wIdx) in runtimeWarnings" :key="wIdx" class="runtime-warning-chip">
+            <el-icon class="runtime-warning-chip__icon"><WarningFilled /></el-icon>
+            <span class="runtime-warning-chip__text">{{ warning }}</span>
+          </div>
+        </div>
+
+        <!--
           feedback_event card: recovery affordances for turns that ended
           in a non-transient error. Backend's NodeStreamingChatHelper
           handles transient TLS / IO retries silently; this card only
@@ -537,6 +551,7 @@ import {
 } from '@element-plus/icons-vue'
 import { useStreamingMarkdown } from '@/composables/useStreamingMarkdown'
 import { buildGeneratedFileNameMap, linkifyGeneratedFileUrls } from '@/utils/generatedFileLinks'
+import { ensureModelViewer } from '@/utils/lazyModelViewer'
 import { useAuthenticatedAttachment } from '@/composables/useAuthenticatedAttachment'
 import { useToolLabel } from '@/composables/useToolLabel'
 import { http } from '@/api'
@@ -901,9 +916,14 @@ watch(audioAttachments, (atts) => {
   if (atts.length > 0) loadAllAudios(atts)
 }, { immediate: true })
 // 3D models also need the auth-blob loader — <model-viewer src> doesn't carry
-// the Authorization header any more than <img>/<audio> do.
+// the Authorization header any more than <img>/<audio> do. The heavy
+// @google/model-viewer Web Component is lazy-loaded here (only when a bubble
+// actually has a 3D attachment) instead of eagerly in main.ts.
 watch(model3dAttachments, (atts) => {
-  if (atts.length > 0) loadAllModels(atts)
+  if (atts.length > 0) {
+    ensureModelViewer()
+    loadAllModels(atts)
+  }
 }, { immediate: true })
 
 // --- 时间 ---
@@ -1230,6 +1250,20 @@ const isIncomplete = computed<boolean>(() => {
 const isEvidenceInsufficient = computed<boolean>(() => {
   if (props.message.role !== 'assistant') return false
   return parsedMetadata.value?.finishReason === 'evidence_insufficient'
+})
+
+/**
+ * Backend runtime warnings for this turn (metadata.warnings) — e.g. the
+ * tool-call loop guard flagging repeated identical failures or a forced
+ * wrap-up. Strings arrive pre-localized from the backend; live streaming
+ * pushes them via the 'warning' SSE event and history reload reads the
+ * persisted metadata, so both paths converge here.
+ */
+const runtimeWarnings = computed<string[]>(() => {
+  if (props.message.role !== 'assistant') return []
+  const raw = parsedMetadata.value?.warnings
+  if (!Array.isArray(raw)) return []
+  return raw.filter((w: unknown): w is string => typeof w === 'string' && w.trim().length > 0)
 })
 
 /**
@@ -2067,6 +2101,39 @@ watch(isGenerating, (generating) => {
 .error-card__retry:hover {
   background: color-mix(in srgb, var(--mc-danger) 15%, var(--mc-bg-elevated));
   border-color: color-mix(in srgb, var(--mc-danger) 50%, transparent);
+}
+
+/* ==================== 运行时警示条（循环守卫等 metadata.warnings） ==================== */
+.runtime-warnings {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.runtime-warning-chip {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--mc-warning, #d97706) 8%, var(--mc-bg-elevated));
+  border: 1px solid color-mix(in srgb, var(--mc-warning, #d97706) 25%, transparent);
+  font-size: 12px;
+  line-height: 1.5;
+  max-width: 560px;
+  color: var(--mc-text-secondary);
+}
+
+.runtime-warning-chip__icon {
+  flex-shrink: 0;
+  margin-top: 2px;
+  font-size: 13px;
+  color: var(--mc-warning, #d97706);
+}
+
+.runtime-warning-chip__text {
+  word-break: break-word;
 }
 
 /* ==================== INCOMPLETE 截断卡片（重复检测 / thinking-only 软上限） ==================== */

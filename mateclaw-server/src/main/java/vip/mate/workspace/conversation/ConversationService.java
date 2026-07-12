@@ -36,7 +36,6 @@ import vip.mate.workspace.core.service.WorkspaceService;
 
 import java.io.IOException;
 import java.nio.file.Files;
-import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -1692,18 +1691,10 @@ public class ConversationService {
             return;
         }
         boolean cleanedAny = false;
-        for (Path root : chatUploadLocationResolver.resolveCandidateUploadRoots(conversationId)) {
-            Path dir;
-            try {
-                dir = root.resolve(conversationId);
-            } catch (InvalidPathException e) {
-                // Conversation id contains characters illegal on this filesystem
-                // (e.g. ':' in cron:<jobId> on Windows). No attachments could
-                // ever have been written under such an id on this OS, so there
-                // is nothing to clean.
-                log.debug("Skipping attachment cleanup for non-path-safe conversation id: {}", conversationId);
-                return;
-            }
+        // resolveCandidateConversationDirs sanitizes the id for the path segment
+        // (so ids like "wecom:XXXX" clean correctly on Windows) and also probes
+        // the raw-id dir for pre-fix Linux uploads.
+        for (Path dir : chatUploadLocationResolver.resolveCandidateConversationDirs(conversationId)) {
             if (!Files.exists(dir)) {
                 continue;
             }

@@ -15,6 +15,7 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import vip.mate.common.result.R;
+import vip.mate.workspace.core.service.ChatUploadLocationResolver;
 import vip.mate.agent.AgentService;
 import vip.mate.agent.model.AgentEntity;
 import vip.mate.approval.ApprovalWorkflowService;
@@ -1106,7 +1107,10 @@ public class ChatController {
         String safeFilename = Path.of(originalFilename).getFileName().toString().replaceAll("[^a-zA-Z0-9._-]", "_");
         String storedName = System.currentTimeMillis() + "_" + safeFilename;
         Path uploadRoot = uploadLocationResolver.resolveUploadRoot(conversationId);
-        Path conversationDir = uploadRoot.resolve(conversationId);
+        // Sanitize the id before using it as a path segment — IM-channel ids like
+        // "wecom:XXXX" carry a ':' that is illegal in a Windows filename and would
+        // throw InvalidPathException here. Reads use the same sanitization.
+        Path conversationDir = uploadRoot.resolve(ChatUploadLocationResolver.sanitizeSegment(conversationId));
         Files.createDirectories(conversationDir);
         Path target = conversationDir.resolve(storedName);
         file.transferTo(target);
@@ -1143,10 +1147,12 @@ public class ChatController {
         // current workspace-scoped ones, are both servable. Each candidate keeps
         // its own startsWith traversal guard.
         Path filePath = null;
-        for (Path root : uploadLocationResolver.resolveCandidateUploadRoots(conversationId)) {
-            Path conversationDir = root.resolve(conversationId).normalize();
-            Path candidate = conversationDir.resolve(storedName).normalize();
-            if (Files.exists(candidate) && candidate.startsWith(conversationDir)) {
+        // Sanitized-then-raw candidate dirs so both new writes (sanitized) and
+        // legacy Linux uploads (raw ':' dir) resolve.
+        for (Path conversationDir : uploadLocationResolver.resolveCandidateConversationDirs(conversationId)) {
+            Path normDir = conversationDir.normalize();
+            Path candidate = normDir.resolve(storedName).normalize();
+            if (Files.exists(candidate) && candidate.startsWith(normDir)) {
                 filePath = candidate;
                 break;
             }
@@ -1556,7 +1562,7 @@ public class ChatController {
      * separators are normalized to {@code /} so the value is stable across OSes.
      */
     static String toRelativeUploadPath(Path uploadRoot, String conversationId, String storedName) {
-        Path target = uploadRoot.resolve(conversationId).resolve(storedName);
+        Path target = uploadRoot.resolve(ChatUploadLocationResolver.sanitizeSegment(conversationId)).resolve(storedName);
         Path base = uploadRoot.getParent();
         Path relative = base != null ? base.relativize(target) : target;
         return relative.toString().replace('\\', '/');

@@ -1,0 +1,50 @@
+<!--
+  WeChat Official Account article template — INLINE STYLES ONLY.
+  The WeChat editor strips <style> blocks and class attributes, so every
+  visual rule lives in a style="..." attribute on the element itself.
+  Mobile-first: base font 16px, generous line-height, 100% max width.
+  Replace the {{PLACEHOLDER}} tokens and the sample image URLs before use.
+  Palette: ink #1a1a1a, muted #6b6b6b, accent #2f6fed, hairline #ececec.
+-->
+<section style="max-width:100%;margin:0 auto;padding:0 4px;font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;color:#1a1a1a;font-size:16px;line-height:1.8;letter-spacing:.3px;">
+
+  <!-- Title -->
+  <h1 style="font-size:22px;line-height:1.45;font-weight:700;color:#1a1a1a;margin:8px 0 6px;">{{TITLE}}</h1>
+
+  <!-- Byline / meta -->
+  <p style="font-size:13px;color:#9a9a9a;margin:0 0 20px;">{{AUTHOR}} · {{DATE}}</p>
+
+  <!-- Lead / hook paragraph -->
+  <p style="margin:0 0 18px;color:#3a3a3a;">{{LEAD_PARAGRAPH}}</p>
+
+  <!-- Section heading -->
+  <h2 style="font-size:18px;font-weight:700;color:#1a1a1a;margin:28px 0 12px;padding-left:10px;border-left:4px solid #2f6fed;">{{SECTION_HEADING}}</h2>
+
+  <!-- Body paragraph -->
+  <p style="margin:0 0 16px;">{{BODY_PARAGRAPH}}</p>
+
+  <!-- Section image + caption -->
+  <figure style="margin:20px 0;text-align:center;">
+    <img src="{{IMAGE_URL}}" alt="{{IMAGE_ALT}}" style="max-width:100%;height:auto;border-radius:8px;display:block;margin:0 auto;" />
+    <figcaption style="font-size:13px;color:#9a9a9a;margin-top:8px;">{{IMAGE_CAPTION}}</figcaption>
+  </figure>
+
+  <!-- Quote / pull-out callout (金句块) -->
+  <blockquote style="margin:24px 0;padding:16px 18px;background:#f5f7ff;border-left:4px solid #2f6fed;border-radius:6px;color:#2a2a2a;font-size:17px;font-weight:600;line-height:1.7;">
+    {{PULL_QUOTE}}
+  </blockquote>
+
+  <!-- Another section -->
+  <h2 style="font-size:18px;font-weight:700;color:#1a1a1a;margin:28px 0 12px;padding-left:10px;border-left:4px solid #2f6fed;">{{SECTION_HEADING_2}}</h2>
+  <p style="margin:0 0 16px;">{{BODY_PARAGRAPH_2}}</p>
+
+  <!-- Divider -->
+  <hr style="border:none;border-top:1px solid #ececec;margin:32px 0;" />
+
+  <!-- Footer CTA / follow prompt -->
+  <section style="text-align:center;padding:20px 16px;background:#fafafa;border-radius:10px;margin-top:8px;">
+    <p style="font-size:15px;color:#3a3a3a;margin:0 0 6px;font-weight:600;">{{CTA_LINE}}</p>
+    <p style="font-size:14px;color:#6b6b6b;margin:0;">{{FOLLOW_LINE}}</p>
+  </section>
+
+</section>

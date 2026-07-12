@@ -103,6 +103,9 @@ You hire coworkers, not chat boxes. Each one has a **Role**, a **Goal**, a **Bac
 ### Multimodal creation
 Text-to-speech · Speech-to-text · Image · Music · Video · 3D. First-class, not add-ons. **Sidecar routing** (1.3.0+) means a text-only main model + an image attachment no longer dead-ends — a configured vision model describes the image, and the main model answers. **Image edit** lands too: refer to an earlier conversation attachment by `msg:<id>:<idx>` and ask the model to recolor or restyle it. Four **document-generation tools** (`DocxRenderTool` / `XlsxRenderTool` / `PptxRenderTool` / `PdfRenderTool`) render Markdown straight to Office files inside the JVM — no subprocess, no Office install.
 
+### Content Studio (1.8.0+)
+A flagship *scene*, not a tool — a seeded "Content Studio" employee turns one sentence into a publishable post: pick-topic → research → draft → illustrate → **de-AI** → lay out → deliver. **WeChat Official Account (公众号)** articles land in your draft box as inline-style HTML with body images uploaded into WeChat; **Xiaohongshu (小红书)** notes package as ≥3 vertical 3:4 cards with an online preview. De-AI-ification runs against a **measurable AI-trace score**; every delivery is compliance-scanned and logged to a **content calendar** that dedups by topic fingerprint.
+
 ### Enterprise-ready
 RBAC + JWT. **Personal Access Tokens** for headless scripts and CI. **HMAC-SHA-256 outbound webhook signing**. **Distributed Cron lock** so multi-instance deployments don't double-fire. Full audit trail. Flyway-managed schema that auto-heals on upgrade. One JAR to ship. MySQL in production, H2 for dev — nothing to change in your code.
 
@@ -216,6 +219,19 @@ Desktop binaries ship via [GitHub Releases](https://github.com/mateaix/mateclaw/
 Full docs at **[claw.mate.vip/docs](https://claw.mate.vip/docs)** — setup, architecture, each subsystem, API reference.
 
 ## Roadmap
+
+**v1.8.0 (shipped 2026-07-12)** — the employee turns *outward and does a whole job*: **Content Studio**, the first flagship scene built end-to-end on MateClaw's own primitives:
+
+- **Content Studio — one sentence to a publishable post** — a seeded "Content Studio" employee runs pick-topic → research → draft → illustrate → de-AI → layout → deliver. **WeChat Official Account (公众号)** image-text articles (inline-style HTML → draft box) and **Xiaohongshu (小红书)** image-first notes (≥3 vertical 3:4 cards + online preview) ship first-class
+- **De-AI-ification you can measure** — a heuristic AI-trace score (no LLM, deterministic) drives a detect → rewrite → re-check loop, capped at 3 rounds
+- **A publish chain hardened for real operation** — body images uploaded into WeChat (no broken external links), AES-GCM-encrypted secrets, reused service + persisted token, retry + Chinese error hints, a guaranteed fallback cover; draft-box-first, publish approval-gated
+- **A content calendar that dedups and remembers** — every delivery is compliance-scanned and auto-recorded, a topic fingerprint stops repeat picks, and a read-only Content Calendar page shows drafted/packaged/published/failed
+- **The browser agent sees by reference** — an accessibility-tree ref snapshot + interact-by-ref (click the element, not a pixel), real-browser privacy guardrails, and a controlled CDP escape hatch
+- **Sharper attention, tighter loops** — attention anchoring & environment awareness (MCP tool provenance + pinned skill constraints + event notifications), a tool-call loop guard, and a post-mutation verify reminder
+
+Plus: a fast-load pass (initial load down ~78%), a chat context-occupancy panel, cross-KB wikilinks, MCP progress notifications, a Volcano Engine provider, and the public Docker stack on PostgreSQL 16.
+
+Full story in the [v1.8.0 release notes](https://claw.mate.vip/docs/en/releases/1.8.0).
 
 **v1.7.0 (shipped 2026-07-04)** — a *productionization pass*: once it's in real collaboration, close every loop you can't see, gather, reach, fit, or connect:
 

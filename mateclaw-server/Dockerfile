@@ -47,6 +47,7 @@ COPY pom.xml ./pom.xml
 COPY mateclaw-plugin-api/pom.xml mateclaw-plugin-api/pom.xml
 COPY mateclaw-server/pom.xml mateclaw-server/pom.xml
 COPY mateclaw-plugin-sample/pom.xml mateclaw-plugin-sample/pom.xml
+COPY mateclaw-plugin-search-sample/pom.xml mateclaw-plugin-search-sample/pom.xml
 
 # Pre-fetch backend dependencies through the reactor so the parent POM,
 # dependencyManagement, and internal module versions all resolve consistently.
@@ -99,7 +100,18 @@ RUN apt-get update \
         tesseract-ocr \
         tesseract-ocr-chi-sim \
         tzdata \
+        python3-pip \
+        python-is-python3 \
+        python3-dev \
+        build-essential \
     && rm -rf /var/lib/apt/lists/*
+
+# Remove PEP 668's EXTERNALLY-MANAGED marker so pip can install packages
+# system-wide without --break-system-packages. This is a container — there is
+# no host Python environment to protect. Skill scripts and LLM-generated code
+# need to `pip install` on the fly; PEP 668 would block every install with
+# "error: externally-managed-environment".
+RUN rm -f /usr/lib/python3*/EXTERNALLY-MANAGED
 
 # Tell Playwright Java where Microsoft's image stored the browsers.
 # BrowserLauncher's BUNDLED strategy will then succeed without extra config.
@@ -117,6 +129,7 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
 ENV SPRING_PROFILES_ACTIVE=mysql
 
 COPY --from=builder /build/mateclaw-server/target/*.jar app.jar
+
 EXPOSE 18088
 EXPOSE 1455
 ENTRYPOINT ["java", "-jar", "app.jar"]

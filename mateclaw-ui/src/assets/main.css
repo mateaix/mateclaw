@@ -401,6 +401,20 @@ html.dark body::before {
    ================================================================ */
 .markdown-body { line-height: 1.75; }
 
+/* Inline preview for tool-generated images (render_html_image / image gen).
+   Rendered by useMarkdownRenderer.link(); click opens full-size in a new tab. */
+.markdown-body .markdown-generated-image {
+  display: block;
+  max-width: min(560px, 100%);
+  max-height: 640px;
+  height: auto;
+  margin: 12px 0;
+  border-radius: 10px;
+  border: 1px solid var(--mc-code-header-border);
+  object-fit: contain;
+  cursor: zoom-in;
+}
+
 /* headings */
 .markdown-body h1,
 .markdown-body h2,

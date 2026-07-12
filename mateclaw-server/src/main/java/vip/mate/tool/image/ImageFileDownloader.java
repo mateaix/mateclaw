@@ -40,7 +40,7 @@ public class ImageFileDownloader {
         if (imageUrl == null) {
             throw new IOException("imageUrl is null");
         }
-        Path dir = uploadLocationResolver.resolveUploadRoot(conversationId).resolve(conversationId);
+        Path dir = uploadLocationResolver.resolveConversationDir(conversationId);
         Files.createDirectories(dir);
 
         if (imageUrl.startsWith("data:")) {
@@ -112,7 +112,7 @@ public class ImageFileDownloader {
      * 将 Base64 编码的图片保存到本地
      */
     public Path saveBase64(String base64Data, String conversationId, String taskId, int index) throws IOException {
-        Path dir = uploadLocationResolver.resolveUploadRoot(conversationId).resolve(conversationId);
+        Path dir = uploadLocationResolver.resolveConversationDir(conversationId);
         Files.createDirectories(dir);
 
         String fileName = "image_" + taskId + "_" + index + ".png";

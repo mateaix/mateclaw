@@ -20,6 +20,7 @@ import vip.mate.wiki.repository.WikiRawMaterialMapper;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.time.LocalDateTime;
 import java.util.HexFormat;
 import java.util.List;
 import vip.mate.wiki.dto.WikiFailureItem;
@@ -64,9 +65,40 @@ public class WikiRawMaterialService {
     private final Set<Long> partialResumeIds = ConcurrentHashMap.newKeySet();
 
     public List<WikiRawMaterialEntity> listByKbId(Long kbId) {
+        return listByKbIdFiltered(kbId, null, null, null, null, null);
+    }
+
+    /**
+     * List raw materials in a KB, optionally narrowed by any combination of
+     * processing status, source type, a title keyword, and a create-time range.
+     * All filter arguments are optional — a {@code null}/blank value drops that
+     * clause, so calling with all-null is identical to the unfiltered list.
+     * <p>
+     * Powers the raw-material panel's filter bar (issue #506): with dozens of
+     * materials per KB, filtering by {@code status = "failed"} or a title
+     * keyword replaces page-by-page scrolling.
+     *
+     * @param kbId       owning knowledge base (required)
+     * @param status     processing status (pending/processing/completed/failed/partial/cancelled)
+     * @param sourceType source type (text/pdf/docx/image/…)
+     * @param keyword    case-insensitive substring matched against the title
+     * @param startTime  inclusive lower bound on create time
+     * @param endTime    inclusive upper bound on create time
+     */
+    public List<WikiRawMaterialEntity> listByKbIdFiltered(Long kbId, String status, String sourceType,
+                                                          String keyword,
+                                                          LocalDateTime startTime, LocalDateTime endTime) {
         List<WikiRawMaterialEntity> list = rawMapper.selectList(
                 new LambdaQueryWrapper<WikiRawMaterialEntity>()
                         .eq(WikiRawMaterialEntity::getKbId, kbId)
+                        .eq(status != null && !status.isBlank(),
+                                WikiRawMaterialEntity::getProcessingStatus, status)
+                        .eq(sourceType != null && !sourceType.isBlank(),
+                                WikiRawMaterialEntity::getSourceType, sourceType)
+                        .like(keyword != null && !keyword.isBlank(),
+                                WikiRawMaterialEntity::getTitle, keyword)
+                        .ge(startTime != null, WikiRawMaterialEntity::getCreateTime, startTime)
+                        .le(endTime != null, WikiRawMaterialEntity::getCreateTime, endTime)
                         .orderByDesc(WikiRawMaterialEntity::getCreateTime));
         // 不返回大文本字段
         list.forEach(r -> {
@@ -78,6 +110,23 @@ public class WikiRawMaterialService {
 
     public WikiRawMaterialEntity getById(Long id) {
         return rawMapper.selectById(id);
+    }
+
+    /**
+     * Ids of all raw materials in {@code kbId} with the given processing
+     * status, newest first. Used by the batch reprocess/delete endpoints to
+     * resolve a status selector (e.g. "retry all failed") server-side so the
+     * client doesn't have to enumerate ids.
+     */
+    public List<Long> selectIdsByStatus(Long kbId, String status) {
+        if (status == null || status.isBlank()) return List.of();
+        return rawMapper.selectList(
+                        new LambdaQueryWrapper<WikiRawMaterialEntity>()
+                                .select(WikiRawMaterialEntity::getId)
+                                .eq(WikiRawMaterialEntity::getKbId, kbId)
+                                .eq(WikiRawMaterialEntity::getProcessingStatus, status)
+                                .orderByDesc(WikiRawMaterialEntity::getCreateTime))
+                .stream().map(WikiRawMaterialEntity::getId).toList();
     }
 
     public WikiRawMaterialEntity findBySourcePath(Long kbId, String sourcePath) {

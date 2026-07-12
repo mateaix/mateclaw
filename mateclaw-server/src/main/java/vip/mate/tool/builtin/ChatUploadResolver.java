@@ -5,6 +5,7 @@ import vip.mate.workspace.core.service.ChatUploadLocationResolver;
 
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
@@ -97,11 +98,30 @@ public final class ChatUploadResolver {
         Set<Path> dirs = new LinkedHashSet<>();
         String basePath = ToolExecutionContext.workspaceBasePath();
         if (basePath != null && !basePath.isBlank()) {
-            dirs.add(Paths.get(basePath).toAbsolutePath().normalize()
-                    .resolve(UPLOAD_SUBDIR).resolve(conversationId));
+            Path scopedRoot = Paths.get(basePath).toAbsolutePath().normalize().resolve(UPLOAD_SUBDIR);
+            addConversationDirs(dirs, scopedRoot, conversationId);
         }
-        dirs.add(defaultRoot.resolve(conversationId).toAbsolutePath().normalize());
+        addConversationDirs(dirs, defaultRoot, conversationId);
         return new ArrayList<>(dirs);
+    }
+
+    /**
+     * Add a conversation's attachment dir under {@code root} to {@code dirs}:
+     * the sanitized segment first (matching the write path), then — for
+     * backward compatibility with pre-fix Linux uploads that used the raw id
+     * verbatim — the raw-id dir when it differs and is a legal path on this OS.
+     */
+    private static void addConversationDirs(Set<Path> dirs, Path root, String conversationId) {
+        String safe = ChatUploadLocationResolver.sanitizeSegment(conversationId);
+        dirs.add(root.resolve(safe).toAbsolutePath().normalize());
+        if (!safe.equals(conversationId)) {
+            try {
+                dirs.add(root.resolve(conversationId).toAbsolutePath().normalize());
+            } catch (InvalidPathException ignore) {
+                // Raw id illegal on this filesystem (e.g. ':' on Windows) — no
+                // legacy attachments could exist there.
+            }
+        }
     }
 
     private static Path resolveIn(String rawPath, Path uploadDir) {
