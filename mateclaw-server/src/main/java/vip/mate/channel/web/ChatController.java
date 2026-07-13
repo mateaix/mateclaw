@@ -68,8 +68,11 @@ public class ChatController {
     private final vip.mate.workspace.core.service.ChatUploadLocationResolver uploadLocationResolver;
     private final vip.mate.tool.document.preview.OfficePreviewService officePreviewService;
 
-    // 使用虚拟线程池处理 SSE（Java 17+ 兼容，Java 21 可用 Executors.newVirtualThreadPerTaskExecutor()）
-    private final ExecutorService sseExecutor = Executors.newCachedThreadPool();
+    // Virtual thread per SSE task: matches the app-wide virtual-thread model
+    // (spring.threads.virtual.enabled=true) and, unlike a cached platform-thread
+    // pool, never reuses a thread across tasks, so no ThreadLocal state can leak
+    // from one stream into another.
+    private final ExecutorService sseExecutor = Executors.newVirtualThreadPerTaskExecutor();
 
     /**
      * SSE 流式对话（支持断线重连）

@@ -222,6 +222,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { warmRouteChunks } from '@/router'
 import { useIsMobile, useMediaQuery } from '@/composables/useBreakpoint'
 import { useI18n } from 'vue-i18n'
 import { useThemeStore } from '@/stores/useThemeStore'
@@ -376,6 +377,11 @@ onMounted(async () => {
   fetchAutoApproveSummary()
   // Sidebar attention counts (live / security) are driven by
   // useNotificationCenter — it polls when admins are mounted.
+
+  // Warm every lazy route chunk into the browser cache while the tab is
+  // idle, so sidebar navigation never depends on a live chunk fetch while an
+  // agent run keeps the backend busy (issue #515).
+  warmRouteChunks()
 })
 
 onBeforeUnmount(() => {

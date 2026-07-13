@@ -2,6 +2,9 @@ export default {
   app: {
     title: 'MateClaw - AI Assistant',
   },
+  router: {
+    chunkLoadFailed: 'Failed to load page resources. Check your network and try again.',
+  },
   common: {
     save: 'Save',
     saving: 'Saving...',

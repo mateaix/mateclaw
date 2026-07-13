@@ -1,6 +1,8 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import { ElMessage } from 'element-plus'
 import type { Capability } from '@/composables/capabilities'
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore'
+import { i18n } from '@/i18n'
 
 // Augment vue-router's RouteMeta so each route can declare its capability gate.
 declare module 'vue-router' {
@@ -381,5 +383,75 @@ router.beforeEach(async (to) => {
   }
   return true
 })
+
+// ---------------------------------------------------------------------------
+// Lazy-chunk resilience (issue #515)
+// ---------------------------------------------------------------------------
+// A route chunk fetch that stalls or fails while an agent run keeps the
+// backend busy leaves the navigation silently hung, and the browser module
+// map caches the failed dynamic import for the rest of the session — the menu
+// item stays dead until a full page reload. Two layers fix that class:
+//   1. router.onError: hard-navigate to the clicked route once (resets the
+//      module map; the history-mode fallback serves index.html for any path),
+//      guarded so a persistently failing chunk cannot reload-loop.
+//   2. warmRouteChunks(): pre-fetch every lazy route chunk during idle time
+//      right after login, so navigation stops depending on live HTTP fetches.
+
+const CHUNK_RELOAD_GUARD_KEY = 'mc-chunk-reload-at'
+const CHUNK_RELOAD_MIN_INTERVAL_MS = 10_000
+
+function isChunkLoadError(error: unknown): boolean {
+  const msg = error instanceof Error ? error.message : String(error)
+  // Chrome / Firefox / Safari wordings respectively.
+  return /Failed to fetch dynamically imported module|error loading dynamically imported module|Importing a module script failed/i
+    .test(msg)
+}
+
+router.onError((error, to) => {
+  if (!isChunkLoadError(error)) return
+  const lastReload = Number(sessionStorage.getItem(CHUNK_RELOAD_GUARD_KEY) || 0)
+  if (Date.now() - lastReload < CHUNK_RELOAD_MIN_INTERVAL_MS) {
+    // Auto-reloaded moments ago and the chunk still fails — surface the
+    // failure instead of looping. Cast around vue-i18n's typed instance:
+    // resolving its fully typed `global.t` overloads at this call site blows
+    // up TS instantiation depth (TS2589).
+    const { t } = (i18n as unknown as { global: { t: (key: string) => string } }).global
+    ElMessage.error(t('router.chunkLoadFailed'))
+    return
+  }
+  sessionStorage.setItem(CHUNK_RELOAD_GUARD_KEY, String(Date.now()))
+  window.location.assign(to.fullPath)
+})
+
+/**
+ * Warm every lazy route chunk during browser idle time. Menu navigation then
+ * hits the module cache instead of depending on a fresh HTTP fetch, which can
+ * stall or fail while an agent run keeps the backend and the HTTP/1.1
+ * connection pool busy. Sequential on purpose — a single in-flight chunk
+ * request at a time, yielding back to the browser between chunks. Failures
+ * are ignored: real navigation still gets the onError fallback above.
+ */
+export function warmRouteChunks(): void {
+  const idle = typeof window.requestIdleCallback === 'function'
+    ? (fn: () => void) => window.requestIdleCallback(fn, { timeout: 10_000 })
+    : (fn: () => void) => window.setTimeout(fn, 1_000)
+  // vue-router replaces a record's lazy loader with the resolved component
+  // after its first navigation, so the function filter naturally skips views
+  // that are already loaded.
+  const loaders = router.getRoutes()
+    .map((route) => route.components?.default)
+    .filter((component): component is () => Promise<unknown> => typeof component === 'function')
+  let index = 0
+  const next = () => {
+    if (index >= loaders.length) return
+    const load = loaders[index]
+    index += 1
+    Promise.resolve()
+      .then(() => load())
+      .catch(() => { /* best-effort warmup; navigation has its own fallback */ })
+      .finally(() => idle(next))
+  }
+  idle(next)
+}
 
 export default router
