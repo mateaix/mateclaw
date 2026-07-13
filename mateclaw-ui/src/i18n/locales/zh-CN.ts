@@ -450,6 +450,17 @@ export default {
       reportCopied: '错误详情已复制到剪贴板',
       reportFailed: '复制失败，请检查浏览器权限',
     },
+    // 附件在线预览弹窗
+    preview: {
+      download: '下载',
+      fullscreen: '全屏',
+      exitFullscreen: '退出全屏',
+      loading: '正在加载预览…',
+      failed: '预览加载失败，请下载后查看',
+      unsupported: '该格式暂不支持在线预览，请下载后查看',
+      truncated: '仅显示前 {max} 行，完整内容请下载查看',
+      htmlSandboxNotice: 'HTML 在隔离沙箱中渲染，无法访问你的登录状态',
+    },
     // 审批栏
     approvalAllow: '允许',
     approvalExecute: '执行？',

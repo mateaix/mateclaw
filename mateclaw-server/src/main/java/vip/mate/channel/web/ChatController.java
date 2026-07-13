@@ -8,6 +8,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.io.FileSystemResource;
 import org.springframework.core.io.Resource;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
@@ -65,6 +66,7 @@ public class ChatController {
     private final ConversationCompletionPublisher completionPublisher;
     private final vip.mate.memory.identity.MemoryOwnerResolver memoryOwnerResolver;
     private final vip.mate.workspace.core.service.ChatUploadLocationResolver uploadLocationResolver;
+    private final vip.mate.tool.document.preview.OfficePreviewService officePreviewService;
 
     // 使用虚拟线程池处理 SSE（Java 17+ 兼容，Java 21 可用 Executors.newVirtualThreadPerTaskExecutor()）
     private final ExecutorService sseExecutor = Executors.newCachedThreadPool();
@@ -1142,21 +1144,7 @@ public class ChatController {
             return ResponseEntity.status(403).build();
         }
 
-        // Check every candidate root (workspace-scoped dir + legacy default dir)
-        // so attachments written before the workspace-aware relocation, and the
-        // current workspace-scoped ones, are both servable. Each candidate keeps
-        // its own startsWith traversal guard.
-        Path filePath = null;
-        // Sanitized-then-raw candidate dirs so both new writes (sanitized) and
-        // legacy Linux uploads (raw ':' dir) resolve.
-        for (Path conversationDir : uploadLocationResolver.resolveCandidateConversationDirs(conversationId)) {
-            Path normDir = conversationDir.normalize();
-            Path candidate = normDir.resolve(storedName).normalize();
-            if (Files.exists(candidate) && candidate.startsWith(normDir)) {
-                filePath = candidate;
-                break;
-            }
-        }
+        Path filePath = resolveUploadedFile(conversationId, storedName);
         if (filePath == null) {
             return ResponseEntity.notFound().build();
         }
@@ -1181,6 +1169,62 @@ public class ChatController {
                 .contentType(mediaType)
                 .header(HttpHeaders.CONTENT_DISPOSITION, "inline; filename*=UTF-8''" + encodedFilename)
                 .body(resource);
+    }
+
+    @Operation(summary = "生成聊天附件的 PDF 预览（office 格式，soffice 转换）")
+    @GetMapping("/files/{conversationId}/{storedName:.+}/preview")
+    public ResponseEntity<byte[]> previewUploadedFile(
+            @PathVariable String conversationId,
+            @PathVariable String storedName,
+            Authentication auth) {
+
+        // Same ownership gate as the raw file endpoint.
+        String username = auth != null ? auth.getName() : "anonymous";
+        if (!conversationService.isConversationOwner(conversationId, username)) {
+            return ResponseEntity.status(403).build();
+        }
+
+        // 415: the client asked to preview a format this endpoint won't convert.
+        if (!officePreviewService.isConvertible(storedName)) {
+            return ResponseEntity.status(HttpStatus.UNSUPPORTED_MEDIA_TYPE).build();
+        }
+        // 501: no soffice on this host — the UI degrades to a download link.
+        if (!officePreviewService.isAvailable()) {
+            return ResponseEntity.status(HttpStatus.NOT_IMPLEMENTED).build();
+        }
+
+        Path filePath = resolveUploadedFile(conversationId, storedName);
+        if (filePath == null) {
+            return ResponseEntity.notFound().build();
+        }
+
+        try {
+            byte[] pdf = officePreviewService.renderPdf(filePath);
+            return ResponseEntity.ok()
+                    .contentType(MediaType.APPLICATION_PDF)
+                    .header(HttpHeaders.CONTENT_DISPOSITION, "inline")
+                    .body(pdf);
+        } catch (IOException e) {
+            log.warn("[ChatController] office preview conversion failed for {}: {}", storedName, e.getMessage());
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+        }
+    }
+
+    /**
+     * Resolve an uploaded attachment to its on-disk path, probing every
+     * candidate conversation dir (workspace-scoped + legacy default, sanitized +
+     * raw id) with a per-candidate path-traversal guard. Returns {@code null}
+     * when no candidate holds the file.
+     */
+    private Path resolveUploadedFile(String conversationId, String storedName) {
+        for (Path conversationDir : uploadLocationResolver.resolveCandidateConversationDirs(conversationId)) {
+            Path normDir = conversationDir.normalize();
+            Path candidate = normDir.resolve(storedName).normalize();
+            if (Files.exists(candidate) && candidate.startsWith(normDir)) {
+                return candidate;
+            }
+        }
+        return null;
     }
 
     /**

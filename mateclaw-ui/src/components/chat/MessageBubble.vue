@@ -365,11 +365,16 @@
             :key="attachment.storedName"
             class="message-attachment"
             type="button"
-            @click="downloadFile(attachment)"
+            @click="openFileAttachment(attachment)"
           >
             <el-icon class="message-attachment__icon"><Document /></el-icon>
             <span class="message-attachment__name">{{ attachment.name }}</span>
             <span class="message-attachment__meta">{{ formatFileSize(attachment.size) }}</span>
+            <el-icon
+              class="message-attachment__download"
+              :title="$t('chat.preview.download')"
+              @click.stop="downloadFile(attachment)"
+            ><Download /></el-icon>
           </button>
         </div>
       </div>
@@ -539,6 +544,7 @@ import {
   CloseBold,
   CopyDocument,
   Document,
+  Download,
   InfoFilled,
   Loading,
   Microphone,
@@ -557,6 +563,8 @@ import { useToolLabel } from '@/composables/useToolLabel'
 import { http } from '@/api'
 import { copyToClipboard } from '@/utils/clipboard'
 import TypingCursor from './TypingCursor.vue'
+import { previewKindOf } from './preview/previewKind'
+import { openFilePreview } from './preview/previewBus'
 import BrowserTimeline from './BrowserTimeline.vue'
 import ToolCallSegment from './ToolCallSegment.vue'
 import ThinkingSegment from './ThinkingSegment.vue'
@@ -574,6 +582,16 @@ import type { ChatErrorInfo } from '@/types/chatError'
 const { t, locale } = useI18n()
 const { getToolLabel } = useToolLabel()
 const { blobUrls, loadAllImages, loadAllVideos, loadAllAudios, loadAllModels, downloadFile, openImage, getDisplayUrl, revokeAll } = useAuthenticatedAttachment()
+
+// Document attachments: preview in the global dialog when the format is
+// supported, otherwise fall back to the legacy download behavior.
+function openFileAttachment(attachment: ChatAttachment) {
+  if (previewKindOf(attachment)) {
+    openFilePreview(attachment)
+  } else {
+    void downloadFile(attachment)
+  }
+}
 
 interface Props {
   message: Message
@@ -2449,6 +2467,16 @@ watch(isGenerating, (generating) => {
 .message-attachment__icon {
   flex-shrink: 0;
   opacity: 0.76;
+}
+
+.message-attachment__download {
+  flex-shrink: 0;
+  opacity: 0.6;
+  transition: opacity 0.15s;
+}
+
+.message-attachment__download:hover {
+  opacity: 1;
 }
 
 /* ==================== Markdown 样式 ==================== */

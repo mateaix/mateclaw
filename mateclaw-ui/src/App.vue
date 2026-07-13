@@ -4,6 +4,10 @@
     <!-- Mounted once at the app root so mcConfirm() can pop a dialog
          from anywhere without each caller wiring its own host. -->
     <McConfirmHost />
+    <!-- Single global file-preview dialog. Attachment cards and generated-file
+         links open it via the previewBus window event, so both user-uploaded
+         and AI-generated docx/xlsx/pdf preview in-place. -->
+    <FilePreviewDialog global />
   </el-config-provider>
 </template>
 
@@ -18,6 +22,7 @@ import { useSystemSettingsStore } from '@/stores/useSystemSettingsStore'
 import { useGlobalWikilinkClick } from '@/composables/useGlobalWikilinkClick'
 import { useGlobalFileDownloadClick } from '@/composables/useGlobalFileDownloadClick'
 import McConfirmHost from '@/components/common/McConfirmHost.vue'
+import FilePreviewDialog from '@/components/chat/preview/FilePreviewDialog.vue'
 
 // Initialize theme — applies .dark class to <html> immediately
 useThemeStore()
