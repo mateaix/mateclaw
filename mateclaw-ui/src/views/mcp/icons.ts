@@ -10,7 +10,6 @@
  *     The catalog entry's `iconKey` must match the basename.
  */
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
 const rawSvgs = import.meta.glob('@/assets/icons/mcp/*.svg', {
   query: '?raw',
   import: 'default',

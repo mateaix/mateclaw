@@ -16,7 +16,7 @@
     </div>
     <div class="stage-labels">
       <div
-        v-for="(stage, idx) in stages"
+        v-for="stage in stages"
         :key="stage.key"
         class="stage-label-cell"
       >
