@@ -855,12 +855,17 @@ async function showLocalToolsSettings(): Promise<void> {
   ].join('\n')
 
   const parent = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined
+  const hasDirs = cfg.allowedDirs.length > 0
+  const buttons = hasDirs
+    ? ['关闭', '添加目录…', '移除目录…', cfg.enabled ? '停用' : '启用']
+    : ['关闭', '添加目录…', cfg.enabled ? '停用' : '启用']
+  const toggleId = buttons.length - 1
   const opts = {
     type: 'info' as const,
     title: '本地工具设置',
     message: '本地文件/命令工具',
     detail,
-    buttons: ['关闭', '添加目录…', cfg.enabled ? '停用' : '启用'],
+    buttons,
     defaultId: 0,
     cancelId: 0,
     noLink: true,
@@ -871,11 +876,37 @@ async function showLocalToolsSettings(): Promise<void> {
 
   if (res.response === 1) {
     await pickAllowedDirectory()
-  } else if (res.response === 2) {
+  } else if (hasDirs && res.response === 2) {
+    await pickDirectoryToRemove(cfg.allowedDirs)
+  } else if (res.response === toggleId) {
     const saved = saveLocalToolsConfig({ enabled: !cfg.enabled })
     if (saved.enabled && backendReady) localBridge.start()
     else if (!saved.enabled) localBridge.stop()
   }
+}
+
+// Second-level picker for removing a whitelisted directory: native dialogs
+// cannot render per-item delete controls, so each directory becomes a button.
+async function pickDirectoryToRemove(dirs: string[]): Promise<void> {
+  const parent = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined
+  const opts = {
+    type: 'question' as const,
+    title: '移除目录',
+    message: '选择要从白名单移除的目录',
+    detail: '移除后，本地文件/命令工具将无法再访问该目录。',
+    buttons: ['取消', ...dirs],
+    defaultId: 0,
+    cancelId: 0,
+    noLink: true,
+  }
+  const res = parent
+    ? await dialog.showMessageBox(parent, opts)
+    : await dialog.showMessageBox(opts)
+  if (res.response === 0) return
+
+  const dir = dirs[res.response - 1]
+  const cfg = loadLocalToolsConfig()
+  saveLocalToolsConfig({ allowedDirs: cfg.allowedDirs.filter((d) => d !== dir) })
 }
 
 async function menuCheckForUpdates(): Promise<void> {

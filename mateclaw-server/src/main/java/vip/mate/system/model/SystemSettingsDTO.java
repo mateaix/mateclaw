@@ -10,6 +10,13 @@ public class SystemSettingsDTO {
     private Boolean debugMode;
     private Boolean stateGraphEnabled;
 
+    /**
+     * Default workspace storage root (global fallback sandbox root). Empty
+     * string = not overridden, fall back to the yml/env configuration. Null on
+     * save = field not submitted (partial payloads keep the stored value).
+     */
+    private String workspaceStorageRoot;
+
     // ===== 搜索服务配置 =====
     private Boolean searchEnabled;
     /** serper / tavily */

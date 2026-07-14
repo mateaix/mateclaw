@@ -44,6 +44,21 @@
           </label>
         </div>
       </div>
+
+      <div class="setting-item setting-item-vertical">
+        <div class="setting-info">
+          <div class="setting-label">{{ t('settings.fields.workspaceStorageRoot') }}</div>
+          <div class="setting-hint">{{ t('settings.hints.workspaceStorageRoot') }}</div>
+        </div>
+        <div class="setting-control-full">
+          <input
+            v-model.trim="settings.workspaceStorageRoot"
+            type="text"
+            class="form-input"
+            :placeholder="t('settings.hints.workspaceStorageRootPlaceholder')"
+          />
+        </div>
+      </div>
     </div>
 
     <!-- 搜索服务配置 -->
@@ -279,6 +294,7 @@ import { onMounted, reactive, ref, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { settingsApi } from '@/api'
 import { applyLocale } from '@/i18n'
+import { mcToast } from '@/composables/useMcToast'
 import { useSystemSettingsStore } from '@/stores/useSystemSettingsStore'
 import { buildProviderOptions, builtinFallbackCatalog, resolveDefaultExpandedId, resolveSourceLabelKey } from '@/composables/useSearchProviderCatalog'
 import type { SystemSettings, SearchProviderCatalog } from '@/types'
@@ -329,6 +345,7 @@ const settings = reactive<SystemSettings>({
   language: 'zh-CN',
   streamEnabled: true,
   debugMode: false,
+  workspaceStorageRoot: '',
   searchEnabled: true,
   searchProvider: 'serper',
   searchFallbackEnabled: false,
@@ -366,7 +383,13 @@ async function onSaveSettings() {
   if (weixinoaAppSecretInput.value) {
     payload.weixinoaAppSecret = weixinoaAppSecretInput.value
   }
-  await settingsApi.update(payload)
+  try {
+    await settingsApi.update(payload)
+  } catch (e: any) {
+    // Surface backend validation failures (e.g. invalid storage path).
+    mcToast.error(e?.response?.data?.msg || e?.message || t('settings.messages.saveFailed'))
+    return
+  }
   await applyLocale(settings.language)
   // 重新加载以获取最新脱敏值
   await loadSettings()

@@ -17,6 +17,7 @@ import vip.mate.system.model.SystemSettingsDTO;
 import vip.mate.system.repository.SystemSettingMapper;
 import vip.mate.tool.search.SearchProvider;
 import vip.mate.tool.search.SearchProviderRegistry;
+import vip.mate.workspace.core.config.WorkspaceSandboxProperties;
 import vip.mate.tool.search.SearchResult;
 
 import java.util.List;
@@ -68,7 +69,7 @@ class SystemSettingServiceCatalogTest {
     @DisplayName("marks builtin providers as builtin=true with no pluginName")
     void builtinEntry() {
         SearchProviderRegistry registry = new SearchProviderRegistry(List.of(stub("serper", 300, true, false)));
-        service = new SystemSettingService(mapper, registry, new SettingCrypto("test-key"), pluginManager);
+        service = new SystemSettingService(mapper, registry, new SettingCrypto("test-key"), new WorkspaceSandboxProperties(), pluginManager);
 
         SearchProviderCatalogResponse catalog = service.getSearchProviderCatalog();
 
@@ -86,7 +87,7 @@ class SystemSettingServiceCatalogTest {
         SearchProviderRegistry registry = new SearchProviderRegistry(List.of());
         registry.registerPluginProvider(stub("my-search", 500, true, true));
         when(pluginManager.getPluginNameForSearchProvider("my-search")).thenReturn("my-plugin");
-        service = new SystemSettingService(mapper, registry, new SettingCrypto("test-key"), pluginManager);
+        service = new SystemSettingService(mapper, registry, new SettingCrypto("test-key"), new WorkspaceSandboxProperties(), pluginManager);
 
         SearchProviderCatalogResponse catalog = service.getSearchProviderCatalog();
 
@@ -105,7 +106,7 @@ class SystemSettingServiceCatalogTest {
                 stub("duckduckgo", 100, false, true)));
         registry.registerPluginProvider(stub("my-search", 200, true, true));
         when(pluginManager.getPluginNameForSearchProvider("my-search")).thenReturn("my-plugin");
-        service = new SystemSettingService(mapper, registry, new SettingCrypto("test-key"), pluginManager);
+        service = new SystemSettingService(mapper, registry, new SettingCrypto("test-key"), new WorkspaceSandboxProperties(), pluginManager);
 
         SearchProviderCatalogResponse catalog = service.getSearchProviderCatalog();
 
@@ -128,7 +129,7 @@ class SystemSettingServiceCatalogTest {
     @DisplayName("surfaces the resolved provider id and source alongside the catalog")
     void resolvedSurfaced() {
         SearchProviderRegistry registry = new SearchProviderRegistry(List.of(stub("duckduckgo", 100, false, true)));
-        service = new SystemSettingService(mapper, registry, new SettingCrypto("test-key"), pluginManager);
+        service = new SystemSettingService(mapper, registry, new SettingCrypto("test-key"), new WorkspaceSandboxProperties(), pluginManager);
 
         SearchProviderCatalogResponse catalog = service.getSearchProviderCatalog();
 
@@ -140,7 +141,7 @@ class SystemSettingServiceCatalogTest {
     @DisplayName("resolvedId/resolvedSource are null when no provider is available at all")
     void resolvedNullWhenNothingAvailable() {
         SearchProviderRegistry registry = new SearchProviderRegistry(List.of(stub("serper", 300, true, false)));
-        service = new SystemSettingService(mapper, registry, new SettingCrypto("test-key"), pluginManager);
+        service = new SystemSettingService(mapper, registry, new SettingCrypto("test-key"), new WorkspaceSandboxProperties(), pluginManager);
 
         SearchProviderCatalogResponse catalog = service.getSearchProviderCatalog();
 

@@ -1,20 +1,31 @@
 package vip.mate.system.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.annotation.Lazy;
+import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
+import vip.mate.exception.MateClawException;
 import vip.mate.plugin.PluginManager;
 import vip.mate.system.model.SearchProviderCatalogEntry;
 import vip.mate.system.model.SearchProviderCatalogResponse;
 import vip.mate.system.model.SystemSettingEntity;
 import vip.mate.system.model.SystemSettingsDTO;
 import vip.mate.system.repository.SystemSettingMapper;
+import vip.mate.tool.guard.WorkspacePathGuard;
 import vip.mate.tool.search.SearchProvider;
 import vip.mate.tool.search.SearchProviderRegistry;
+import vip.mate.workspace.core.config.WorkspaceSandboxProperties;
 
+import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.List;
 import java.util.Set;
 
+@Slf4j
 @Service
 public class SystemSettingService {
 
@@ -78,6 +89,14 @@ public class SystemSettingService {
     private static final String DEFAULT_VISION_MODEL_KEY = "default.vision_model";
     private static final String DEFAULT_VIDEO_MODEL_KEY = "default.video_model";
 
+    /**
+     * Default workspace storage root override. When set, it replaces the
+     * yml/env-configured {@code mateclaw.workspace.sandbox.root} as the global
+     * fallback sandbox root for conversations without a per-workspace base
+     * path. Empty string means "not overridden" (fall back to yml/env).
+     */
+    private static final String WORKSPACE_STORAGE_ROOT_KEY = "workspace.storage_root";
+
     private static final String ZHIPU_API_KEY_KEY = "zhipuApiKey";
     private static final String ZHIPU_BASE_URL_KEY = "zhipuBaseUrl";
     private static final String FAL_API_KEY_KEY = "falApiKey";
@@ -100,6 +119,7 @@ public class SystemSettingService {
     private final SystemSettingMapper systemSettingMapper;
     private final SearchProviderRegistry searchProviderRegistry;
     private final SettingCrypto settingCrypto;
+    private final WorkspaceSandboxProperties workspaceSandboxProperties;
 
     /**
      * {@code PluginManager} is injected lazily because the bean graph is
@@ -118,10 +138,12 @@ public class SystemSettingService {
     public SystemSettingService(SystemSettingMapper systemSettingMapper,
                                  SearchProviderRegistry searchProviderRegistry,
                                  SettingCrypto settingCrypto,
+                                 WorkspaceSandboxProperties workspaceSandboxProperties,
                                  @Lazy PluginManager pluginManager) {
         this.systemSettingMapper = systemSettingMapper;
         this.searchProviderRegistry = searchProviderRegistry;
         this.settingCrypto = settingCrypto;
+        this.workspaceSandboxProperties = workspaceSandboxProperties;
         this.pluginManager = pluginManager;
     }
 
@@ -210,6 +232,9 @@ public class SystemSettingService {
         // Multimodal sidecar routing — empty string means "not configured"
         dto.setDefaultVisionModelId(parseIdOrNull(getValue(DEFAULT_VISION_MODEL_KEY, "")));
         dto.setDefaultVideoModelId(parseIdOrNull(getValue(DEFAULT_VIDEO_MODEL_KEY, "")));
+
+        // Default workspace storage root — empty string means "not overridden"
+        dto.setWorkspaceStorageRoot(getValue(WORKSPACE_STORAGE_ROOT_KEY, ""));
         return dto;
     }
 
@@ -461,7 +486,88 @@ public class SystemSettingService {
                     String.valueOf(dto.getDefaultVideoModelId()),
                     "Default video-capable model id (mate_model_config.id) for sidecar routing");
         }
+
+        // Default workspace storage root. null = field not submitted (partial
+        // save from an unrelated settings page); blank = explicit clear, fall
+        // back to the yml/env-configured sandbox root. Applied immediately —
+        // no restart required. Only affects newly created files; existing data
+        // is never migrated.
+        if (dto.getWorkspaceStorageRoot() != null) {
+            String root = dto.getWorkspaceStorageRoot().trim();
+            if (!root.isEmpty()) {
+                validateWorkspaceStorageRoot(root);
+            }
+            saveValue(WORKSPACE_STORAGE_ROOT_KEY, root, "默认工作空间存储路径（全局兜底沙箱根，空=使用配置文件默认值）");
+            applyWorkspaceStorageRoot(root);
+        }
         return getSettings();
+    }
+
+    /**
+     * Reject a storage root that could never work: relative paths (the guard
+     * needs a stable absolute boundary) and paths that cannot be created.
+     */
+    private void validateWorkspaceStorageRoot(String root) {
+        Path path;
+        try {
+            path = Paths.get(root);
+        } catch (InvalidPathException e) {
+            throw new MateClawException("err.settings.storage_root_invalid", 400,
+                    "Invalid storage path: " + e.getMessage());
+        }
+        if (!path.isAbsolute()) {
+            throw new MateClawException("err.settings.storage_root_not_absolute", 400,
+                    "Storage path must be absolute: " + root);
+        }
+        try {
+            Files.createDirectories(path);
+        } catch (Exception e) {
+            throw new MateClawException("err.settings.storage_root_create_failed", 400,
+                    "Cannot create storage directory " + root + ": " + e.getMessage());
+        }
+    }
+
+    /**
+     * Register the effective global fallback sandbox root with
+     * {@link WorkspacePathGuard}. Priority: DB override > yml/env > built-in
+     * default. A blank override restores the yml/env-configured behaviour,
+     * including the {@code enabled=false} escape hatch.
+     */
+    private void applyWorkspaceStorageRoot(String override) {
+        if (override == null || override.isBlank()) {
+            if (workspaceSandboxProperties.isEnabled()) {
+                Path root = Paths.get(workspaceSandboxProperties.getRoot()).toAbsolutePath().normalize();
+                WorkspacePathGuard.setDefaultRoot(root.toString());
+            } else {
+                WorkspacePathGuard.setDefaultRoot(null);
+            }
+            return;
+        }
+        Path root = Paths.get(override).toAbsolutePath().normalize();
+        WorkspacePathGuard.setDefaultRoot(root.toString());
+    }
+
+    /**
+     * Apply a persisted storage-root override once the database is ready.
+     * Startup registration order: WorkspaceSandboxAutoConfiguration registers
+     * the yml/env root at context construction, then this listener overrides
+     * it with the DB value when one is set.
+     */
+    @EventListener(ApplicationReadyEvent.class)
+    public void applyPersistedWorkspaceStorageRoot() {
+        String root = getValue(WORKSPACE_STORAGE_ROOT_KEY, "");
+        if (root == null || root.isBlank()) {
+            return;
+        }
+        try {
+            Files.createDirectories(Paths.get(root));
+        } catch (Exception e) {
+            // Registering the root still tightens the boundary even if the
+            // directory can't be pre-created; log and continue.
+            log.warn("[SystemSetting] Failed to create workspace storage root {}: {}", root, e.getMessage());
+        }
+        applyWorkspaceStorageRoot(root);
+        log.info("[SystemSetting] Workspace storage root override applied: {}", root);
     }
 
     /**

@@ -55,6 +55,9 @@ import { useI18n } from 'vue-i18n'
 const route = useRoute()
 const { t } = useI18n()
 
+// The desktop preload bridge marks that we run inside the desktop shell.
+const isDesktop = typeof window !== 'undefined' && !!window.mateClawAPI
+
 // Routes that benefit from extra editor width — the sub-nav auto-collapses
 // to a 56px rail unless the user has explicitly toggled it open.
 const COMPACT_ROUTES = ['/settings/workflows']
@@ -195,6 +198,16 @@ const sections = computed(() => [
     label: t('settings.sections.proxy', '网络代理'),
     icon: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>',
   },
+  // Desktop-only entry: the local tools bridge exists only inside the
+  // desktop shell, so hide the nav item in plain browsers.
+  ...(isDesktop
+    ? [{
+        id: 'local-tools',
+        path: '/settings/local-tools',
+        label: t('settings.sections.localTools', '本地工具'),
+        icon: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>',
+      }]
+    : []),
   // RFC-090 Phase 7: ACP endpoints
   {
     id: 'acp',

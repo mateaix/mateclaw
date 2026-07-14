@@ -245,6 +245,15 @@ const router = createRouter({
               component: () => import('@/views/Settings/Proxy/index.vue'),
               meta: { title: 'Settings - Proxy', requiredCapability: 'manage:settings' },
             },
+            {
+              // Desktop-only: local file/shell tool whitelist management. The
+              // page itself degrades to a notice when the desktop bridge is
+              // absent (plain browser access).
+              path: 'local-tools',
+              name: 'SettingsLocalTools',
+              component: () => import('@/views/Settings/LocalTools/index.vue'),
+              meta: { title: 'Settings - Local Tools', requiredCapability: 'manage:settings' },
+            },
             // RFC-090 Phase 7: ACP endpoints (External coding agents)
             {
               path: 'acp',

@@ -808,6 +808,8 @@ export interface SystemSettings {
   language: 'zh-CN' | 'en-US'
   streamEnabled: boolean
   debugMode: boolean
+  // Default workspace storage root; '' = use the server-side default
+  workspaceStorageRoot?: string
   // 搜索服务配置
   searchEnabled: boolean
   searchProvider: 'serper' | 'tavily'
