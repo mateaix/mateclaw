@@ -4,6 +4,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import vip.mate.exception.MateClawException;
 import vip.mate.wiki.model.WikiKnowledgeBaseEntity;
 import vip.mate.wiki.model.WikiTransformationEntity;
 import vip.mate.wiki.repository.WikiKnowledgeBaseMapper;
@@ -11,11 +12,14 @@ import vip.mate.wiki.repository.WikiTransformationMapper;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -127,5 +131,61 @@ class WikiTransformationStarterPackGlobalE2ETest {
         Set<String> names = rows.stream().map(WikiTransformationEntity::getName).collect(Collectors.toSet());
         assertTrue(names.containsAll(STARTER_PACK),
                 "listByWorkspace for an arbitrary workspace should still include the global starter pack");
+    }
+
+    @Test
+    @DisplayName("Global starter-pack templates are read-only: update/delete rejected (regression for #456)")
+    void globalTemplateIsReadOnly() {
+        // Pick a real seeded global template (workspace_id NULL).
+        WikiTransformationEntity before = service.listByWorkspace(1L).stream()
+                .filter(t -> t.getWorkspaceId() == null)
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("expected at least one global template after V165"));
+        long id = before.getId();
+        String originalPrompt = before.getPromptTemplate();
+
+        // update must be rejected, and the stored row must be untouched afterwards.
+        WikiTransformationEntity patch = new WikiTransformationEntity();
+        patch.setTitle("tampered title");
+        MateClawException updateEx = assertThrows(MateClawException.class,
+                () -> service.update(id, patch));
+        assertEquals(403, updateEx.getCode());
+        WikiTransformationEntity afterUpdate = service.getById(id);
+        assertEquals(before.getTitle(), afterUpdate.getTitle(),
+                "global template title must not change after a rejected update");
+        assertEquals(originalPrompt, afterUpdate.getPromptTemplate());
+
+        // delete must be rejected too; the row must still be present.
+        MateClawException deleteEx = assertThrows(MateClawException.class,
+                () -> service.delete(id));
+        assertEquals(403, deleteEx.getCode());
+        assertTrue(service.getById(id) != null, "global template must not be deleted");
+    }
+
+    @Test
+    @DisplayName("findByName prefers a workspace-local template over a same-named global one")
+    void findByNamePrefersWorkspaceLocalOverGlobal() {
+        long ws = 555555L;
+        long kb = newKb(ws);
+        // A starter-pack name exists globally; create a workspace-wide clone with the same name.
+        String sharedName = "contract-risk-extract";
+        WikiTransformationEntity local = new WikiTransformationEntity();
+        long localId = SEQ.incrementAndGet();
+        local.setId(localId);
+        local.setKbId(null);
+        local.setWorkspaceId(ws);
+        local.setName(sharedName);
+        local.setTitle("local override");
+        local.setPromptTemplate("local prompt");
+        local.setEnabled(true);
+        local.setCreateTime(LocalDateTime.now());
+        local.setUpdateTime(LocalDateTime.now());
+        local.setDeleted(0);
+        transformationMapper.insert(local);
+
+        Optional<WikiTransformationEntity> hit = service.findByName(kb, ws, sharedName);
+        assertTrue(hit.isPresent());
+        assertEquals(localId, hit.get().getId(),
+                "findByName must return the workspace-local template, not the global starter pack");
     }
 }
