@@ -110,9 +110,11 @@ public class DatasourceTool {
                     "SELECT TABLE_NAME, TABLE_COMMENT, TABLE_ROWS FROM information_schema.TABLES WHERE TABLE_SCHEMA = '%s' ORDER BY TABLE_NAME",
                     sanitizeIdentifier(entity.getDatabaseName()));
             case "postgresql" -> String.format(
-                    "SELECT tablename AS table_name, obj_description(c.oid) AS table_comment " +
-                    "FROM pg_tables t LEFT JOIN pg_class c ON c.relname = t.tablename " +
-                    "WHERE t.schemaname = '%s' ORDER BY tablename",
+                    "SELECT t.table_name, obj_description(c.oid) AS table_comment " +
+                    "FROM information_schema.tables t " +
+                    "LEFT JOIN pg_namespace n ON n.nspname = t.table_schema " +
+                    "LEFT JOIN pg_class c ON c.relnamespace = n.oid AND c.relname = t.table_name " +
+                    "WHERE t.table_schema = '%s' ORDER BY t.table_name",
                     sanitizeIdentifier(entity.getSchemaName() != null ? entity.getSchemaName() : "public"));
             case "clickhouse" -> "SHOW TABLES";
             default -> throw new IllegalArgumentException("不支持的数据库类型: " + dbType);
