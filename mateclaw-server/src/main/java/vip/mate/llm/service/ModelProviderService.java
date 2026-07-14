@@ -157,11 +157,12 @@ public class ModelProviderService {
         if (modelProviderMapper.selectById(request.getId()) != null) {
             throw new MateClawException("err.llm.provider_exists", "Provider 已存在: " + request.getId());
         }
+        ModelProtocol protocol = ModelProtocol.resolve(request.getProtocol(), request.getChatModel());
         ModelProviderEntity provider = new ModelProviderEntity();
         provider.setProviderId(request.getId());
         provider.setName(request.getName());
         provider.setApiKeyPrefix(request.getApiKeyPrefix());
-        provider.setChatModel(ModelProtocol.resolveChatModel(request.getProtocol(), request.getChatModel()));
+        provider.setChatModel(protocol.getChatModelClass());
         provider.setBaseUrl(request.getDefaultBaseUrl());
         provider.setGenerateKwargs("{}");
         provider.setIsCustom(true);
@@ -169,7 +170,12 @@ public class ModelProviderService {
         // RFC-074: custom providers are user-created, so opt them in by default
         // — the user just made the row, no need to make them flip a second toggle.
         provider.setEnabled(true);
-        provider.setSupportModelDiscovery(false);
+        // Default model discovery on for protocols whose discovery works from a
+        // self-configured baseUrl+apiKey (OpenAI-compatible, DashScope, Gemini,
+        // Anthropic). Previously hard-coded false, which left self-hosted
+        // OpenAI-compatible endpoints (vLLM/Xinference/LocalAI/…) unable to
+        // surface the "discover models" button at all. OAuth protocols stay off.
+        provider.setSupportModelDiscovery(protocol.supportsSelfConfiguredDiscovery());
         provider.setSupportConnectionCheck(false);
         provider.setFreezeUrl(false);
         provider.setRequireApiKey(request.getRequireApiKey() == null || Boolean.TRUE.equals(request.getRequireApiKey()));

@@ -11,6 +11,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 import org.springframework.web.client.RestClient;
 import vip.mate.exception.MateClawException;
+import vip.mate.llm.chatmodel.OpenAiModelsPath;
 import vip.mate.llm.model.*;
 import vip.mate.llm.oauth.OpenAIOAuthService;
 
@@ -461,12 +462,12 @@ public class ModelDiscoveryService {
                 .defaultHeader(HttpHeaders.ACCEPT, MediaType.APPLICATION_JSON_VALUE)
                 .build();
 
-        RestClient.RequestHeadersSpec<?> spec = client.get().uri(resolveModelsPath(baseUrl));
+        Map<String, Object> kwargs = modelProviderService.readProviderGenerateKwargs(provider);
+        RestClient.RequestHeadersSpec<?> spec = client.get().uri(OpenAiModelsPath.resolve(baseUrl, kwargs));
         if (modelProviderService.hasUsableApiKey(apiKey)) {
             spec = spec.header(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey.trim());
         }
         // Apply any custom headers declared in generateKwargs.
-        Map<String, Object> kwargs = modelProviderService.readProviderGenerateKwargs(provider);
         applyCustomHeaders(spec, kwargs);
 
         String body = spec.retrieve().body(String.class);
@@ -927,19 +928,6 @@ public class ModelDiscoveryService {
         // so we don't end up with /api/v3/v1/chat/completions (404).
         if (baseUrl != null && BASE_URL_VERSION_SUFFIX.matcher(baseUrl).matches() && path.startsWith("/v1/")) {
             path = path.substring(3);
-        }
-        return path;
-    }
-
-    /**
-     * Resolve the OpenAI-compatible {@code /v1/models} path against a base URL,
-     * stripping the {@code /v1} prefix when the base already carries a {@code /v{N}}
-     * suffix (Volcano Engine Ark, etc.).
-     */
-    private String resolveModelsPath(String baseUrl) {
-        String path = "/v1/models";
-        if (baseUrl != null && BASE_URL_VERSION_SUFFIX.matcher(baseUrl).matches()) {
-            path = "/models";
         }
         return path;
     }

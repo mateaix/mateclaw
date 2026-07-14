@@ -169,6 +169,41 @@ class ModelProviderServiceCustomProviderTest {
         assertEquals("err.llm.provider_fields_required", ex.getMsgKey());
     }
 
+    // ==================== model-discovery default (issue: custom providers
+    //                       never showed the "discover models" button) ========
+
+    @Test
+    @DisplayName("createCustomProvider defaults supportModelDiscovery=true for openai-compatible")
+    void discoveryDefaultsOnForOpenAiCompatible() {
+        CreateCustomProviderRequest req = req("vllm-internal", "Internal vLLM");
+        req.setProtocol("openai-compatible");
+        req.setChatModel("OpenAIChatModel");
+        when(providerMapper.selectById("vllm-internal")).thenReturn(null);
+
+        service.createCustomProvider(req);
+
+        ArgumentCaptor<ModelProviderEntity> captor = ArgumentCaptor.forClass(ModelProviderEntity.class);
+        verify(providerMapper).insert(captor.capture());
+        assertTrue(captor.getValue().getSupportModelDiscovery(),
+                "self-hosted OpenAI-compatible endpoints should expose discovery by default");
+    }
+
+    @Test
+    @DisplayName("createCustomProvider keeps supportModelDiscovery=false for OAuth (claude-code) protocol")
+    void discoveryStaysOffForOAuthProtocol() {
+        CreateCustomProviderRequest req = req("my-claude-code", "Claude Code");
+        req.setProtocol("anthropic-claude-code");
+        req.setChatModel("ClaudeCodeChatModel");
+        when(providerMapper.selectById("my-claude-code")).thenReturn(null);
+
+        service.createCustomProvider(req);
+
+        ArgumentCaptor<ModelProviderEntity> captor = ArgumentCaptor.forClass(ModelProviderEntity.class);
+        verify(providerMapper).insert(captor.capture());
+        assertFalse(captor.getValue().getSupportModelDiscovery(),
+                "OAuth-based protocols cannot discover from a self-configured provider row");
+    }
+
     // ==================== delete-side: dirty data rescue ====================
 
     @Test
