@@ -109,6 +109,7 @@ public class DatasourceService {
         // 更新测试结果
         entity.setLastTestTime(LocalDateTime.now());
         entity.setLastTestOk(ok);
+        encryptPassword(entity);
         datasourceMapper.updateById(entity);
         return ok;
     }
