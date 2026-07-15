@@ -13,7 +13,7 @@ import java.time.LocalDateTime;
 @TableName("mate_wiki_page_citation")
 public class WikiPageCitationEntity {
 
-    @TableId(type = IdType.AUTO)
+    @TableId(type = IdType.ASSIGN_ID)
     private Long id;
 
     private Long pageId;
