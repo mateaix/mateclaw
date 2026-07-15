@@ -404,6 +404,12 @@ const enabledModels = ref<ModelConfig[]>([])
 const activeModels = ref<ActiveModelsInfo | null>(null)
 // Global default model — seeds the selector for conversations with no pin yet.
 const globalDefaultModel = ref<{ providerId: string; model: string } | null>(null)
+// True once the user manually picks a model for the CURRENT conversation.
+// Guards the agent-capability re-seed (see the selectedAgentId watcher) from
+// clobbering that pick during the window where the async capability fetch
+// resolves after a fresh conversation was already seeded. Reset whenever we
+// move to a different conversation.
+const userPickedModel = ref(false)
 const pendingAttachments = ref<ChatAttachment[]>([])
 const uploadingAttachment = ref(false)
 
@@ -445,6 +451,9 @@ function onAgentPicked(value: string | number | null) {
 function selectModel(value: string) {
   const [providerId, model] = value.split('::')
   if (!providerId || !model) return
+  // Remember the explicit pick so a late-arriving agent-capability fetch
+  // doesn't re-seed over it on a not-yet-persisted conversation.
+  userPickedModel.value = true
   // Per-conversation model: switching here only affects THIS conversation.
   // We update the selector + the local list entry immediately so the UI is
   // responsive, then persist the pin to the server right away IF the
@@ -514,13 +523,62 @@ function selectModel(value: string) {
 }
 
 /**
- * Point the model selector at a conversation's pinned model, or the global
- * default when the conversation has no pin yet (fresh chat, IM, cron).
+ * The selected agent's model override, as a (provider, model) pair — or null
+ * when the agent has no usable override.
+ *
+ * Two sources, in order:
+ *   1. agentCapabilities — the backend-resolved pair from /agents/{id}/capabilities.
+ *      Authoritative: it runs the same resolveModel the runtime uses (honouring
+ *      disabled→default fallback and provider disambiguation). But it arrives
+ *      via an async fetch that resolves AFTER the synchronous seeding on an
+ *      agent switch / deep-link, and is lost entirely if that fetch fails.
+ *   2. currentAgent.modelName resolved against the enabled-model list — a
+ *      SYNCHRONOUS fallback so an agent switch, a capability-fetch failure, or a
+ *      not-yet-hydrated deep-link still honour the per-agent override instead of
+ *      silently dropping to the global default (which handleSendMessage would
+ *      then pin, re-introducing the very clobber this whole change fixes).
+ *
+ * enabledModels is viewer-accessible (/models/enabled) and loaded at mount, so
+ * the fallback works for viewers too.
+ */
+function agentSeedModel(): { providerId: string; model: string } | null {
+  const cap = agentCapabilities.value
+  if (cap?.providerId && cap?.modelName) {
+    return { providerId: cap.providerId, model: cap.modelName }
+  }
+  const name = currentAgent.value?.modelName
+  if (name) {
+    const hit = enabledModels.value.find(m => m.modelName === name)
+    if (hit?.provider) {
+      return { providerId: hit.provider, model: hit.modelName }
+    }
+  }
+  return null
+}
+
+/**
+ * Point the model selector at the model this conversation should run, honouring
+ * the same precedence the backend uses when it resolves the runtime model
+ * (see AgentGraphBuilder.resolveRuntimeBaseModel):
+ *
+ *   conversation pin  >  selected agent's model override  >  global default
+ *
+ * The middle tier is the fix for the "I set the agent's model but chat used
+ * another one" bug: without it a fresh conversation seeded the global default,
+ * and handleSendMessage then PINNED that default onto the conversation row —
+ * which outranks the agent override and silently clobbered it.
  */
 function applyConversationModel(conv?: Conversation | null) {
   if (conv?.modelProvider && conv?.modelName) {
     activeModels.value = { activeLlm: { providerId: conv.modelProvider, model: conv.modelName } }
-  } else if (globalDefaultModel.value) {
+    return
+  }
+  const agentModel = agentSeedModel()
+  if (agentModel) {
+    activeModels.value = { activeLlm: { providerId: agentModel.providerId, model: agentModel.model } }
+    return
+  }
+  if (globalDefaultModel.value) {
     activeModels.value = { activeLlm: { ...globalDefaultModel.value } }
   }
 }
@@ -1369,6 +1427,17 @@ watch(selectedAgentId, async (id) => {
   try {
     const res: any = await agentApi.getCapabilities(id)
     agentCapabilities.value = res.data || null
+    // The capability fetch is async and typically resolves AFTER the
+    // synchronous newConversation()/applyConversationModel() that ran on this
+    // same agent switch (which fell back to the global default because caps
+    // weren't loaded yet). Re-seed now that we know the agent's resolved model
+    // — but only for a conversation with no server-side pin and where the user
+    // hasn't manually picked a model, so we never clobber an explicit choice.
+    const conv = conversations.value.find(c => c.conversationId === currentConversationId.value)
+    const hasServerPin = !!(conv?.modelProvider && conv?.modelName)
+    if (!hasServerPin && !userPickedModel.value) {
+      applyConversationModel(conv)
+    }
   } catch {
     agentCapabilities.value = null
   }
@@ -1594,6 +1663,9 @@ async function selectConversation(conv: Conversation) {
   }
   currentConversationId.value = conv.conversationId
   selectedAgentId.value = conv.agentId || selectedAgentId.value
+  // Opening another conversation: its pin (or the agent/global fallback) is
+  // authoritative, so clear the previous conversation's manual-pick guard.
+  userPickedModel.value = false
   // Restore this conversation's pinned model into the selector.
   applyConversationModel(conv)
   // Reset cron placeholder state up front; the immediate fetch below repopulates
@@ -1728,7 +1800,9 @@ function newConversation() {
   resetForNewConversation()
   currentConversationId.value = `conv_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
   messages.value = []
-  // A fresh conversation starts on the global default model.
+  // A fresh conversation defers to the selected agent's model (then the global
+  // default) until the user explicitly picks one.
+  userPickedModel.value = false
   applyConversationModel()
 }
 
@@ -1741,6 +1815,11 @@ function onConversationsDeleted(ids: string[]) {
     resetStreamingState()
     messages.value = []
     currentConversationId.value = ''
+    // Deleting the open conversation drops us back to a blank slate — clear the
+    // manual-pick guard so the next message (which mints a fresh conversation)
+    // seeds from the agent override again instead of inheriting the deleted
+    // conversation's pick. Mirrors newConversation()/selectConversation().
+    userPickedModel.value = false
   }
 }
 
