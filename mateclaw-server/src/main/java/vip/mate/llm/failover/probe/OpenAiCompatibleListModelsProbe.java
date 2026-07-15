@@ -1,5 +1,7 @@
 package vip.mate.llm.failover.probe;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -9,6 +11,7 @@ import org.springframework.util.StringUtils;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.HttpServerErrorException;
 import org.springframework.web.client.RestClient;
+import vip.mate.llm.chatmodel.OpenAiModelsPath;
 import vip.mate.llm.failover.ProbeResult;
 import vip.mate.llm.failover.ProviderProbeStrategy;
 import vip.mate.llm.model.ModelProtocol;
@@ -16,7 +19,7 @@ import vip.mate.llm.model.ModelProviderEntity;
 
 import java.net.http.HttpClient;
 import java.time.Duration;
-import java.util.regex.Pattern;
+import java.util.Map;
 
 /**
  * Probes an OpenAI-compatible provider by listing its models.
@@ -24,14 +27,11 @@ import java.util.regex.Pattern;
  * <p>Two non-trivial things this implementation handles:</p>
  *
  * <ol>
- *   <li><b>Path construction.</b> Different vendors set Base URL to different
- *       depths: OpenAI/DeepSeek/Kimi point at the API root
- *       ({@code https://api.openai.com}) while LMStudio / ZhipuAI bake the
- *       version segment in ({@code http://localhost:1234/v1},
- *       {@code https://open.bigmodel.cn/api/paas/v4}). We append {@code /models}
- *       when the URL already ends with a {@code /vN} segment, otherwise
- *       {@code /v1/models}. Without this we'd hit {@code /v1/v1/models} on
- *       LMStudio and {@code /v4/v1/models} on Zhipu — both 404.</li>
+ *   <li><b>Path construction.</b> Delegated to {@link OpenAiModelsPath} so the
+ *       probe lists the exact same endpoint discovery does — including an
+ *       operator's {@code modelsPath} override for non-standard gateway prefixes.
+ *       Without sharing, a provider could be discoverable yet still marked
+ *       unhealthy here by a probe hitting the wrong hard-coded path.</li>
  *
  *   <li><b>Permissive 4xx/5xx handling.</b> Not every OpenAI-compatible
  *       vendor implements {@code /models}. Kimi for Coding returns a
@@ -49,8 +49,11 @@ public class OpenAiCompatibleListModelsProbe implements ProviderProbeStrategy {
     /** Conservative HTTP timeout — keeps a stalled provider from holding up the parallel batch. */
     private static final Duration TIMEOUT = Duration.ofSeconds(5);
 
-    /** Matches a trailing {@code /v1}, {@code /v2}, ..., {@code /v99} segment on the base URL. */
-    private static final Pattern VERSION_SUFFIX = Pattern.compile("/v\\d{1,2}$");
+    private final ObjectMapper objectMapper;
+
+    public OpenAiCompatibleListModelsProbe(ObjectMapper objectMapper) {
+        this.objectMapper = objectMapper;
+    }
 
     @Override
     public ModelProtocol supportedProtocol() {
@@ -63,7 +66,7 @@ public class OpenAiCompatibleListModelsProbe implements ProviderProbeStrategy {
             return ProbeResult.fail(0, "base URL not configured");
         }
         String baseUrl = stripTrailingSlash(provider.getBaseUrl().trim());
-        String modelsPath = resolveModelsPath(baseUrl);
+        String modelsPath = OpenAiModelsPath.resolve(baseUrl, parseKwargs(provider.getGenerateKwargs()));
         long start = System.currentTimeMillis();
         try {
             HttpClient httpClient = HttpClient.newBuilder().connectTimeout(TIMEOUT).build();
@@ -124,15 +127,21 @@ public class OpenAiCompatibleListModelsProbe implements ProviderProbeStrategy {
     }
 
     /**
-     * Pick the right path to append. If the base URL already ends in a {@code /vN}
-     * version segment, append only {@code /models}. Otherwise append {@code /v1/models}.
-     * Package-private so the unit test can exercise it directly.
+     * Parse the provider's {@code generateKwargs} JSON into a map so a
+     * {@code modelsPath} override is visible to {@link OpenAiModelsPath}. Returns
+     * an empty map on null / blank / malformed JSON — a bad kwargs blob must not
+     * knock a provider out of the pool; it simply falls back to the default path.
      */
-    static String resolveModelsPath(String baseUrl) {
-        if (baseUrl != null && VERSION_SUFFIX.matcher(baseUrl).find()) {
-            return "/models";
+    private Map<String, Object> parseKwargs(String json) {
+        if (!StringUtils.hasText(json)) {
+            return Map.of();
         }
-        return "/v1/models";
+        try {
+            return objectMapper.readValue(json, new TypeReference<Map<String, Object>>() {});
+        } catch (Exception e) {
+            log.debug("[Probe] ignoring unparseable generateKwargs: {}", e.getMessage());
+            return Map.of();
+        }
     }
 
     private static String stripTrailingSlash(String url) {
