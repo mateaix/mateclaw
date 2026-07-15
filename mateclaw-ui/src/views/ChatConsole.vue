@@ -887,6 +887,7 @@ const modelPromptText = computed<{ title: string; desc: string }>(() => {
     case 'unprobed':
       return { title: t('chat.prompt.unprobed.title'), desc: t('chat.prompt.unprobed.desc') }
     case 'no-models':
+    default:
       return {
         title: t('chat.prompt.noModels.title', { name: p?.name || '' }),
         desc:  t('chat.prompt.noModels.desc'),
