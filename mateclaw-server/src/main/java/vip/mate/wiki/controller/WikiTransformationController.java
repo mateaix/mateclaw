@@ -86,6 +86,7 @@ public class WikiTransformationController {
         WikiTransformationEntity existing = transformationService.getById(id);
         if (existing == null) return R.fail(404, "Transformation not found");
         verifyTemplateWorkspace(existing, workspaceId);
+        rejectGlobalTemplateMutation(existing);
         return R.ok(transformationService.update(id, body));
     }
 
@@ -96,6 +97,7 @@ public class WikiTransformationController {
         WikiTransformationEntity existing = transformationService.getById(id);
         if (existing != null) {
             verifyTemplateWorkspace(existing, workspaceId);
+            rejectGlobalTemplateMutation(existing);
             transformationService.delete(id);
         }
         return R.ok();
@@ -271,6 +273,21 @@ public class WikiTransformationController {
         long wsId = workspaceId != null ? workspaceId : 1L;
         if (t.getWorkspaceId() != null && !t.getWorkspaceId().equals(wsId)) {
             throw new MateClawException("err.common.wrong_workspace", 403, "Resource does not belong to current workspace");
+        }
+    }
+
+    /**
+     * Global templates ({@code workspace_id IS NULL}, e.g. the built-in starter
+     * pack) are shared across every workspace, so they must stay read-only on
+     * the write/delete paths — a mutation by one workspace would affect all of
+     * them, and a delete is unrecoverable (the Flyway seed runs once).
+     * {@link #verifyTemplateWorkspace} intentionally allows null-workspace on
+     * read/apply paths; this guard only covers mutation endpoints.
+     */
+    private void rejectGlobalTemplateMutation(WikiTransformationEntity t) {
+        if (t.getWorkspaceId() == null) {
+            throw new MateClawException("err.wiki.global_template_readonly", 403,
+                    "Built-in global templates are read-only");
         }
     }
 }

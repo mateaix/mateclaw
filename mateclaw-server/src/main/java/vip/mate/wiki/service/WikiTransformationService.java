@@ -5,6 +5,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import vip.mate.exception.MateClawException;
 import vip.mate.wiki.model.WikiTransformationEntity;
 import vip.mate.wiki.model.WikiTransformationRunEntity;
 import vip.mate.wiki.repository.WikiTransformationMapper;
@@ -77,7 +78,10 @@ public class WikiTransformationService {
                         .and(ws -> ws.eq(WikiTransformationEntity::getWorkspaceId, workspaceId)
                                 .or().isNull(WikiTransformationEntity::getWorkspaceId))
                         .eq(WikiTransformationEntity::getName, name)
-                        .last("LIMIT 1"));
+                        // Deterministic: prefer the workspace-local row over a same-named
+                        // global one, then newer-first. (workspace_id IS NULL) ASC puts the
+                        // non-null workspace-scoped row first — consistent across H2/MySQL/Kingbase.
+                        .last("ORDER BY (workspace_id IS NULL) ASC, update_time DESC LIMIT 1"));
         return Optional.ofNullable(global);
     }
 
@@ -135,6 +139,10 @@ public class WikiTransformationService {
         if (entity == null) {
             throw new IllegalArgumentException("Transformation not found: " + id);
         }
+        // Defense in depth: global templates are system-owned / read-only.
+        // The controller already rejects this, but this also guards callers that
+        // bypass the controller (e.g. the WikiTool LLM entry points).
+        rejectGlobalTemplateMutation(entity);
         if (patch.getTitle() != null) entity.setTitle(patch.getTitle());
         if (patch.getDescription() != null) entity.setDescription(patch.getDescription());
         if (patch.getPromptTemplate() != null) entity.setPromptTemplate(patch.getPromptTemplate());
@@ -219,6 +227,11 @@ public class WikiTransformationService {
 
     @Transactional
     public void delete(Long id) {
+        WikiTransformationEntity entity = transformationMapper.selectById(id);
+        if (entity == null) {
+            return;
+        }
+        rejectGlobalTemplateMutation(entity);
         transformationMapper.deleteById(id);
     }
 
@@ -286,6 +299,18 @@ public class WikiTransformationService {
         if (name == null || !NAME_PATTERN.matcher(name).matches()) {
             throw new IllegalArgumentException(
                     "name must be 3-64 chars, lowercase letters / digits / hyphens (start and end alphanumeric)");
+        }
+    }
+
+    /**
+     * Global templates ({@code workspace_id IS NULL}) are shared across all
+     * workspaces and seeded once by Flyway, so they are read-only: a mutation
+     * by one workspace hits everyone, and a delete is unrecoverable.
+     */
+    private static void rejectGlobalTemplateMutation(WikiTransformationEntity entity) {
+        if (entity.getWorkspaceId() == null) {
+            throw new MateClawException("err.wiki.global_template_readonly", 403,
+                    "Built-in global templates are read-only");
         }
     }
 }
