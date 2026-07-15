@@ -162,6 +162,7 @@ function onEditorMount(editor: monaco.editor.IStandaloneCodeEditor) {
   // is needed because monaco's d.ts marks the static `languages.json`
   // namespace as deprecated even though it's still the official runtime
   // API for jsonDefaults.setDiagnosticsOptions in the v0.55.x line.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const jsonLang = (monaco.languages as any).json
   if (jsonLang?.jsonDefaults) {
     jsonLang.jsonDefaults.setDiagnosticsOptions({

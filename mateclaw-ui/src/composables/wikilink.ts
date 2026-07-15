@@ -53,6 +53,7 @@ const SKIP_TAGS = new Set(['PRE', 'CODE', 'KBD', 'SAMP'])
  * when someone wrote them literally instead of as escape text. If a real slug
  * needs a tab character, that is a backend bug worth surfacing.
  */
+// eslint-disable-next-line no-control-regex
 const DANGEROUS_CHAR_RE = /[<>"'`\n\r\x00-\x1F\x7F]/
 
 /** Slug length cap. Backend `toSlug` produces slugs well under this. */

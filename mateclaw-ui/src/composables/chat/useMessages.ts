@@ -132,7 +132,7 @@ export function useMessages(options: UseMessagesOptions = {}): UseMessagesReturn
     if (!message) return
 
     // 获取或创建对应类型的 contentPart
-    const contentParts = [...(message.contentParts || [])]
+    let contentParts = [...(message.contentParts || [])]
     const partIndex = contentParts.findLastIndex(p => p.type === type)
 
     if (partIndex === -1) {

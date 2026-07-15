@@ -1,6 +1,5 @@
 import axios from 'axios'
 import { handleAuthFailure, updateTokenFromHeader } from '@/utils/auth'
-import { WIKI_UPLOAD_TIMEOUT_MS } from '@/utils/wikiUpload'
 import type {
   ApprovalGrant,
   ApprovalGrantPage,
@@ -841,7 +840,6 @@ export const wikiApi = {
   uploadRaw: (kbId: number, formData: FormData, onProgress?: (pct: number) => void) =>
     http.post(`/wiki/knowledge-bases/${kbId}/raw/upload`, formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
-      timeout: WIKI_UPLOAD_TIMEOUT_MS,
       onUploadProgress: onProgress
         ? (e) => { if (e.total) onProgress(Math.round((e.loaded / e.total) * 100)) }
         : undefined,

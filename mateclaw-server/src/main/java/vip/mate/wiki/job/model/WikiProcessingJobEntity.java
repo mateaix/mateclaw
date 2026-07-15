@@ -13,7 +13,7 @@ import java.time.LocalDateTime;
 @TableName("mate_wiki_processing_job")
 public class WikiProcessingJobEntity {
 
-    @TableId(type = IdType.ASSIGN_ID)
+    @TableId(type = IdType.AUTO)
     private Long id;
 
     private Long kbId;
