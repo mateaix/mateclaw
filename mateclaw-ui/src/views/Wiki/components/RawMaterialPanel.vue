@@ -382,6 +382,7 @@ import { Download } from '@element-plus/icons-vue'
 import { useWikiStore } from '@/stores/useWikiStore'
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore'
 import { wikiApi } from '@/api/index'
+import { processWithConcurrency } from '@/utils/wikiUpload'
 import JobStageBar from './JobStageBar.vue'
 import type { WikiProcessingJob } from '@/composables/useWikiJobPoller'
 
@@ -831,7 +832,10 @@ const { isDragging, onDragEnter, onDragLeave, onDrop: handleDrop } = useFileDrop
 async function uploadDroppedFiles(event: DragEvent) {
   if (!event.dataTransfer?.files || !store.currentKB) return
   const kbId = store.currentKB.id
-  await Promise.all(Array.from(event.dataTransfer.files).map(f => uploadFile(kbId, f)))
+  await processWithConcurrency(
+    Array.from(event.dataTransfer.files),
+    file => uploadFile(kbId, file),
+  )
 }
 
 // ─── Optimistic upload items ──────────────────────────────────────────────────
@@ -886,8 +890,10 @@ async function handleFileSelect(event: Event) {
   const input = event.target as HTMLInputElement
   if (!input.files || !store.currentKB) return
   const kbId = store.currentKB.id
-  // Upload all files concurrently
-  await Promise.all(Array.from(input.files).map(f => uploadFile(kbId, f)))
+  await processWithConcurrency(
+    Array.from(input.files),
+    file => uploadFile(kbId, file),
+  )
   input.value = ''
 }
 
