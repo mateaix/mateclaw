@@ -1743,8 +1743,13 @@ public class AgentGraphBuilder {
                 """;
         }
 
-        // Wiki 知识库上下文注入
-        String wikiContext = wikiContextService.buildWikiContext(entity.getId());
+        // Wiki 知识库上下文注入。Share the same prefix budget as the memory
+        // block so a large KB's page listing can't consume a fixed
+        // maxContextChars-sized slice of a small model's window every turn
+        // (issue #521). Integer.MAX_VALUE (the unbudgeted default path) keeps
+        // the legacy chars-only cap for large cloud models.
+        Integer wikiBudgetTokens = memoryBudgetTokens == Integer.MAX_VALUE ? null : memoryBudgetTokens;
+        String wikiContext = wikiContextService.buildWikiContext(entity.getId(), wikiBudgetTokens);
 
         return basePrompt + ABOUT_YOU_BLOCK + toolGuidance + searchGuidance + wikiContext;
     }

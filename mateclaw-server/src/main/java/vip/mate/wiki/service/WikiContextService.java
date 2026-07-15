@@ -151,7 +151,22 @@ public class WikiContextService {
      * Build full wiki context for agent system prompt.
      */
     public String buildWikiContext(Long agentId) {
+        return buildWikiContext(agentId, null);
+    }
+
+    /**
+     * Budgeted variant of the system-prompt wiki listing. In addition to the
+     * absolute {@code maxContextChars} cap (sized for large cloud models), the
+     * enumerated page list may not exceed {@code budgetTokens} (estimated), so
+     * a large KB cannot consume a fixed ~{@code maxContextChars}-sized slice of
+     * a small local model's context window on every turn. A null budget keeps
+     * the previous chars-only behavior; a non-positive budget skips injection.
+     */
+    public String buildWikiContext(Long agentId, Integer budgetTokens) {
         if (!properties.isEnabled()) {
+            return "";
+        }
+        if (budgetTokens != null && budgetTokens <= 0) {
             return "";
         }
 
@@ -166,6 +181,9 @@ public class WikiContextService {
 
         int totalChars = 0;
         int maxChars = properties.getMaxContextChars();
+        // Running estimate of what has been appended, so the page enumeration
+        // (the part that scales with KB file count) can respect budgetTokens.
+        int totalTokens = TokenEstimator.estimateTokens(sb.toString());
 
         // Each KB renders as a HEADING-ONLY block (### <name>) followed by a
         // metadata line and its page list. The heading deliberately contains
@@ -180,16 +198,20 @@ public class WikiContextService {
             List<WikiPageEntity> pages = pageService.listSummaries(kb.getId());
             if (pages.isEmpty()) continue;
 
-            // Heading: pure KB name. This is what `kbName` expects verbatim.
-            sb.append("### ").append(kb.getName()).append("\n");
+            // Heading: pure KB name (what `kbName` expects verbatim) plus a
+            // metadata line — built as one string so its tokens are budgeted too.
+            StringBuilder heading = new StringBuilder();
+            heading.append("### ").append(kb.getName()).append("\n");
             // Metadata line: page count first (easy to scan), then optional
             // description. Lives on its own line so it can't be confused for
             // part of the name.
-            sb.append(pages.size()).append(" pages");
+            heading.append(pages.size()).append(" pages");
             if (kb.getDescription() != null && !kb.getDescription().isBlank()) {
-                sb.append(" — ").append(kb.getDescription());
+                heading.append(" — ").append(kb.getDescription());
             }
-            sb.append("\n\n");
+            heading.append("\n\n");
+            sb.append(heading);
+            totalTokens += TokenEstimator.estimateTokens(heading.toString());
 
             boolean compact = pages.size() > 20;
 
@@ -204,12 +226,15 @@ public class WikiContextService {
                     }
                     line += "\n";
                 }
-                if (totalChars + line.length() > maxChars) {
+                int lineTokens = TokenEstimator.estimateTokens(line);
+                if (totalChars + line.length() > maxChars
+                        || (budgetTokens != null && totalTokens + lineTokens > budgetTokens)) {
                     sb.append("- ... and more (use wiki_list_pages to see all)\n");
                     break;
                 }
                 sb.append(line);
                 totalChars += line.length();
+                totalTokens += lineTokens;
             }
             sb.append("\n");
         }

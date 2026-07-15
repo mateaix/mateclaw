@@ -7,6 +7,7 @@ import org.mockito.Mockito;
 import vip.mate.wiki.WikiProperties;
 import vip.mate.wiki.dto.PageSearchResult;
 import vip.mate.wiki.model.WikiKnowledgeBaseEntity;
+import vip.mate.wiki.model.WikiPageEntity;
 
 import java.util.List;
 
@@ -17,12 +18,15 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 
 /**
- * Tests for the token-budgeted knowledge-base relevance injection in
- * {@link WikiContextService}.
+ * Tests for the token-budgeted knowledge-base injection in
+ * {@link WikiContextService} — both the per-query relevance block
+ * ({@code buildRelevantContext}) and the system-prompt page listing
+ * ({@code buildWikiContext}).
  */
 class WikiContextServiceBudgetTest {
 
     private WikiKnowledgeBaseService kbService;
+    private WikiPageService pageService;
     private HybridRetriever hybridRetriever;
     private WikiProperties properties;
     private WikiContextService service;
@@ -31,7 +35,7 @@ class WikiContextServiceBudgetTest {
     void setUp() {
         kbService = Mockito.mock(WikiKnowledgeBaseService.class);
         hybridRetriever = Mockito.mock(HybridRetriever.class);
-        WikiPageService pageService = Mockito.mock(WikiPageService.class);
+        pageService = Mockito.mock(WikiPageService.class);
         properties = new WikiProperties();
         service = new WikiContextService(kbService, pageService, hybridRetriever, properties);
 
@@ -83,5 +87,54 @@ class WikiContextServiceBudgetTest {
         String result = service.buildRelevantContext(1L, "如何配置数据库连接", 0);
         assertEquals("", result);
         Mockito.verifyNoInteractions(hybridRetriever);
+    }
+
+    // ---- buildWikiContext (system-prompt page listing) budget (issue #521) ----
+
+    private void stubKbWithPages(int pageCount) {
+        WikiKnowledgeBaseEntity kb = new WikiKnowledgeBaseEntity();
+        kb.setId(7L);
+        kb.setName("产品知识库");
+        Mockito.when(kbService.listByAgentId(anyLong())).thenReturn(List.of(kb));
+
+        List<WikiPageEntity> pages = new java.util.ArrayList<>();
+        for (int i = 0; i < pageCount; i++) {
+            WikiPageEntity p = new WikiPageEntity();
+            p.setSlug("page-" + i);
+            p.setTitle("知识库页面标题" + i);
+            pages.add(p);
+        }
+        Mockito.when(pageService.listSummaries(anyLong())).thenReturn(pages);
+    }
+
+    @Test
+    @DisplayName("null budget lists all pages (chars-only legacy behavior)")
+    void wikiContextNullBudgetListsAll() {
+        stubKbWithPages(50);
+        String result = service.buildWikiContext(1L, null);
+        assertTrue(result.contains("page-0"));
+        assertTrue(result.contains("page-49"));
+        assertFalse(result.contains("... and more"));
+    }
+
+    @Test
+    @DisplayName("token budget truncates the page listing and appends the search hint")
+    void wikiContextBudgetTruncates() {
+        stubKbWithPages(50);
+        // Each compact line ("- page-N: 知识库页面标题N\n") is ~10+ CJK tokens; a
+        // small budget must cut the listing well before all 50 pages.
+        String result = service.buildWikiContext(1L, 80);
+        assertTrue(result.contains("page-0"));
+        assertFalse(result.contains("page-49"));
+        assertTrue(result.contains("... and more (use wiki_list_pages to see all)"));
+    }
+
+    @Test
+    @DisplayName("zero or negative budget skips the wiki block entirely")
+    void wikiContextZeroBudgetSkips() {
+        String result = service.buildWikiContext(1L, 0);
+        assertEquals("", result);
+        Mockito.verifyNoInteractions(kbService);
+        Mockito.verifyNoInteractions(pageService);
     }
 }
