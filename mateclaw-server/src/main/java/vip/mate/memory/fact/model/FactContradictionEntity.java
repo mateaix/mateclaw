@@ -14,7 +14,7 @@ import java.time.LocalDateTime;
 @TableName("mate_fact_contradiction")
 public class FactContradictionEntity {
 
-    @TableId(type = IdType.AUTO)
+    @TableId(type = IdType.ASSIGN_ID)
     private Long id;
 
     private Long agentId;

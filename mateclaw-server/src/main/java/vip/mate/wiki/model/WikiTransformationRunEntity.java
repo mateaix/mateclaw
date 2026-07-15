@@ -19,7 +19,7 @@ import java.time.LocalDateTime;
 @TableName("mate_wiki_transformation_run")
 public class WikiTransformationRunEntity {
 
-    @TableId(type = IdType.AUTO)
+    @TableId(type = IdType.ASSIGN_ID)
     private Long id;
 
     private Long transformationId;

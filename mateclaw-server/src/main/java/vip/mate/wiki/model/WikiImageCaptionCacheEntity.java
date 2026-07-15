@@ -23,7 +23,7 @@ import java.time.LocalDateTime;
 @TableName("mate_wiki_image_caption_cache")
 public class WikiImageCaptionCacheEntity {
 
-    @TableId(type = IdType.AUTO)
+    @TableId(type = IdType.ASSIGN_ID)
     private Long id;
 
     /** SHA-256 hex digest (64 chars, lowercase) of the original image bytes. */

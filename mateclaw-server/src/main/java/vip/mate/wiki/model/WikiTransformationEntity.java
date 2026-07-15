@@ -22,7 +22,7 @@ import java.time.LocalDateTime;
 @TableName("mate_wiki_transformation")
 public class WikiTransformationEntity {
 
-    @TableId(type = IdType.AUTO)
+    @TableId(type = IdType.ASSIGN_ID)
     private Long id;
 
     /**
