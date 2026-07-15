@@ -606,8 +606,15 @@
                 <span class="provider-pref-rank">{{ idx + 1 }}</span>
                 <span class="provider-pref-name">{{ providerNameById(pref.providerId) }}</span>
                 <select class="provider-pref-model" v-model="pref.modelId">
-                  <option :value="null">{{ t('agents.binding.providerDefaultModel') }}</option>
-                  <option v-for="m in modelsForProvider(pref.providerId)" :key="m.id" :value="m.id">
+                  <option :value="null" :disabled="isProviderChoiceTaken(pref.providerId, null, idx)">
+                    {{ t('agents.binding.providerDefaultModel') }}
+                  </option>
+                  <option
+                    v-for="m in modelsForProvider(pref.providerId)"
+                    :key="m.id"
+                    :value="m.id"
+                    :disabled="isProviderChoiceTaken(pref.providerId, m.id, idx)"
+                  >
                     {{ m.modelName }}
                   </option>
                 </select>
@@ -625,6 +632,7 @@
                 v-for="p in availableProviders"
                 :key="p.id"
                 class="provider-pref-add-btn"
+                :disabled="!hasFreeProviderChoice(p.id)"
                 @click="addProviderEntry(p.id)"
               >+ {{ p.name }}</button>
             </div>
@@ -1251,10 +1259,38 @@ function modelsForProvider(providerId: string) {
   return availableModels.value.filter(m => m.provider === providerId)
 }
 
-// Append a new chain entry (defaults to the provider's default model). The same
-// provider may appear more than once, so we never dedup here.
+// Whether a specific (provider, model) — or the provider's default slot when
+// modelId === null — is already chosen in another row. Keeps each
+// (provider, model) unique across the chain. `exceptIdx` excludes one row
+// (pass the current row's index so its own value stays selectable); pass -1
+// to check against every row (used when appending).
+function isProviderChoiceTaken(providerId: string, modelId: string | null, exceptIdx: number): boolean {
+  return selectedProviderPrefs.value.some(
+    (pref, i) => i !== exceptIdx && pref.providerId === providerId && pref.modelId === modelId,
+  )
+}
+
+// Whether the provider still has any free (provider, model) slot to add.
+function hasFreeProviderChoice(providerId: string): boolean {
+  if (!isProviderChoiceTaken(providerId, null, -1)) return true
+  return modelsForProvider(providerId).some(m => !isProviderChoiceTaken(providerId, m.id, -1))
+}
+
+// Append a new chain entry. The same provider may repeat across the chain,
+// but each (provider, model) must stay unique: take the default slot if it is
+// still free, otherwise the first unused model. If every option is already
+// picked there is nothing to add.
 function addProviderEntry(providerId: string) {
-  selectedProviderPrefs.value.push({ providerId, modelId: null })
+  if (!isProviderChoiceTaken(providerId, null, -1)) {
+    selectedProviderPrefs.value.push({ providerId, modelId: null })
+    return
+  }
+  const firstFree = modelsForProvider(providerId).find(
+    m => !isProviderChoiceTaken(providerId, m.id, -1),
+  )
+  if (firstFree) {
+    selectedProviderPrefs.value.push({ providerId, modelId: firstFree.id })
+  }
 }
 
 function removeProviderEntry(idx: number) {
