@@ -269,6 +269,48 @@ class ZipSkillFetcherTest {
     }
 
     @Test
+    @DisplayName("issue #534: GBK-named entry alongside genuinely UTF-8 content — UTF-8 must not be corrupted")
+    void mixedGbkNameAndUtf8ContentDoesNotCorruptUtf8() throws IOException {
+        org.junit.jupiter.api.Assumptions.assumeTrue(
+                java.nio.charset.Charset.isSupported("GBK"), "GBK charset not available on this JVM");
+        java.nio.charset.Charset gbk = java.nio.charset.Charset.forName("GBK");
+
+        String description = "这是一个测试技能，用于复现乱码问题";
+        String skillMdWithDescription = """
+                ---
+                name: tencent-meeting
+                description: %s
+                version: 1.0.0
+                ---
+                # Test skill
+                """.formatted(description);
+
+        // Windows zip tools commonly write entry names in the local codepage
+        // (GBK) without setting the ZIP UTF-8 flag, even when the underlying
+        // file content was authored in UTF-8 by a text editor. Encoding the
+        // whole ZipOutputStream with GBK reproduces that: the entry NAME
+        // "参考资料.md" is GBK bytes, while SKILL.md's CONTENT stays UTF-8.
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        try (ZipOutputStream zos = new ZipOutputStream(baos, gbk)) {
+            zos.putNextEntry(new ZipEntry("SKILL.md"));
+            zos.write(skillMdWithDescription.getBytes(StandardCharsets.UTF_8));
+            zos.closeEntry();
+
+            zos.putNextEntry(new ZipEntry("references/参考资料.md"));
+            zos.write("中文参考内容".getBytes(StandardCharsets.UTF_8));
+            zos.closeEntry();
+        }
+
+        ZipSkillFetcher.ExtractedSkill ex = ZipSkillFetcher.extract(baos.toByteArray());
+
+        assertTrue(ex.skillMdContent().contains(description),
+                "SKILL.md's genuinely UTF-8 content must not be re-decoded as GBK "
+                        + "just because a different entry's name needed the GBK fallback");
+        assertEquals(1, ex.references().size());
+        assertEquals("中文参考内容", ex.references().get("参考资料.md"));
+    }
+
+    @Test
     @DisplayName("configurable per-entry cap: entry over the default 1MB survives when the cap is raised")
     void raisedEntryCapKeepsLargeEntry() throws IOException {
         String bigDoc = "x".repeat(2_000_000); // 2MB, over the 1MB default

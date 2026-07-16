@@ -8,8 +8,10 @@ import vip.mate.skill.runtime.SkillFrontmatterParser;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.ByteBuffer;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.Charset;
+import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -179,11 +181,17 @@ public class ZipSkillFetcher {
     private static final Charset GBK = Charset.isSupported("GBK") ? Charset.forName("GBK") : null;
 
     /**
-     * Decompress raw ZIP bytes, trying UTF-8 first and falling back to GBK when
-     * an entry name fails to decode as UTF-8 — the common failure mode for zips
-     * packaged on Chinese Windows, where filenames are GBK and UTF-8 decoding
-     * throws a {@link CharacterCodingException}. Buffering the bytes (rather than
-     * a one-shot stream) is what makes the retry possible.
+     * Decompress raw ZIP bytes into in-memory SKILL.md + references + scripts.
+     *
+     * <p>Entry names and entry content are each decoded independently — UTF-8
+     * first, falling back to GBK — rather than picking one charset for the
+     * whole archive. Zips packaged on Windows commonly mix encodings: the OS
+     * zip tool writes entry names in the local codepage (GBK) because it
+     * never sets the ZIP "language encoding flag", while file content
+     * authored in a UTF-8 text editor stays UTF-8. Deciding the charset once
+     * for the entire archive means a single GBK-named entry forces every
+     * already-correct UTF-8 file to be mis-decoded as GBK, turning valid
+     * Chinese text into mojibake.
      */
     public static ExtractedSkill extract(byte[] zipBytes) throws IOException {
         return extract(zipBytes, Limits.DEFAULT);
@@ -191,41 +199,17 @@ public class ZipSkillFetcher {
 
     /** Variant of {@link #extract(byte[])} with explicit size caps. */
     public static ExtractedSkill extract(byte[] zipBytes, Limits limits) throws IOException {
-        try {
-            return extract(zipBytes, StandardCharsets.UTF_8, limits);
-        } catch (IOException | RuntimeException e) {
-            if (GBK != null && isCharsetError(e)) {
-                log.warn("[ZipSkillFetcher] UTF-8 entry decode failed, retrying with GBK (Windows-authored archive?)");
-                return extract(zipBytes, GBK, limits);
-            }
-            throw e;
-        }
-    }
-
-    /** True if {@code t} (or any cause) is a charset-decode failure, vs a genuine "no SKILL.md" error. */
-    private static boolean isCharsetError(Throwable t) {
-        for (Throwable c = t; c != null; c = c.getCause()) {
-            if (c instanceof CharacterCodingException) {
-                return true;
-            }
-            String m = c.getMessage();
-            if (m != null && m.toLowerCase().contains("malformed")) {
-                return true;
-            }
-            if (c.getCause() == c) {
-                break;
-            }
-        }
-        return false;
-    }
-
-    private static ExtractedSkill extract(byte[] zipBytes, Charset charset, Limits limits) throws IOException {
         List<RawEntry> raws = new ArrayList<>();
         String skillMdContent = null;
         String skillMdPrefix = "";
         long totalSize = 0;
 
-        try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(zipBytes), charset)) {
+        // ISO-8859-1 maps every byte value 0-255 to a distinct character, so
+        // ZipInputStream never throws while decoding a name with it — even a
+        // raw GBK-encoded name comes back as reversible mojibake that
+        // fixEntryName() below can re-decode itself, instead of aborting the
+        // whole archive read the way a strict UTF-8/GBK charset would.
+        try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(zipBytes), StandardCharsets.ISO_8859_1)) {
             ZipEntry entry;
             while ((entry = zis.getNextEntry()) != null) {
                 if (entry.isDirectory()) {
@@ -233,7 +217,7 @@ public class ZipSkillFetcher {
                     continue;
                 }
 
-                String entryName = entry.getName();
+                String entryName = fixEntryName(entry.getName());
 
                 // Skip macOS archive cruft so it doesn't surface as "ignored" noise.
                 if (entryName.startsWith("__MACOSX/") || entryName.equals(".DS_Store")
@@ -286,7 +270,7 @@ public class ZipSkillFetcher {
                     continue;
                 }
 
-                String content = new String(bytes, charset);
+                String content = decodeBytes(bytes);
                 String normalizedName = entryPath.toString().replace('\\', '/');
                 String fileName = entryPath.getFileName().toString();
 
@@ -344,6 +328,64 @@ public class ZipSkillFetcher {
         }
 
         return new ExtractedSkill(skillMdContent, references, scripts);
+    }
+
+    /**
+     * Re-decode a ZIP entry name that {@link ZipInputStream} returned via the
+     * byte-preserving ISO-8859-1 read. If the archive's language-encoding
+     * flag was actually set for this entry, the JDK already forced a real
+     * UTF-8 decode and the name contains genuine non-Latin-1 characters —
+     * left untouched. Otherwise the name is just the raw bytes reinterpreted
+     * as Latin-1 (fully reversible), so the original bytes are recovered and
+     * decoded again, trying UTF-8 then falling back to GBK.
+     */
+    private static String fixEntryName(String name) {
+        if (!isLatin1(name)) {
+            return name;
+        }
+        return decodeBytes(name.getBytes(StandardCharsets.ISO_8859_1));
+    }
+
+    private static boolean isLatin1(String s) {
+        for (int i = 0; i < s.length(); i++) {
+            if (s.charAt(i) > 0xFF) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Decode raw bytes as text, trying UTF-8 first and falling back to GBK —
+     * per entry, not per archive, so one mis-encoded name or file doesn't
+     * force a lossy re-decode of everything else that was already correct.
+     * Falls back to a lossy UTF-8 decode (replacement characters) only if
+     * neither charset parses cleanly.
+     */
+    private static String decodeBytes(byte[] bytes) {
+        String utf8 = tryDecodeStrict(bytes, StandardCharsets.UTF_8);
+        if (utf8 != null) {
+            return utf8;
+        }
+        if (GBK != null) {
+            String gbk = tryDecodeStrict(bytes, GBK);
+            if (gbk != null) {
+                return gbk;
+            }
+        }
+        return new String(bytes, StandardCharsets.UTF_8);
+    }
+
+    private static String tryDecodeStrict(byte[] bytes, Charset charset) {
+        try {
+            return charset.newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .decode(ByteBuffer.wrap(bytes))
+                    .toString();
+        } catch (CharacterCodingException e) {
+            return null;
+        }
     }
 
     /**
