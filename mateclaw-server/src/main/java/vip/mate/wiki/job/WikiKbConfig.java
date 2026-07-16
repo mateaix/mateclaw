@@ -84,4 +84,23 @@ public class WikiKbConfig {
      * lets the extractor use its built-in default type set.
      */
     private List<String> entityTypes;
+
+    /**
+     * Optional closed relation schema: a whitelist of
+     * (subjectType, predicate, objectType) triples. When non-empty,
+     * extraction is constrained to only these relations instead of freely
+     * inferring arbitrary ones, which keeps the resulting graph focused on
+     * the handful of relationships a KB actually cares about instead of
+     * diluting it with incidental entities. {@code null} or empty keeps the
+     * legacy open-vocabulary behaviour.
+     */
+    private List<RelationSchemaEntry> relationSchema;
+
+    /** One allowed relation triple in {@link #relationSchema}. */
+    @Data
+    public static class RelationSchemaEntry {
+        private String subjectType;
+        private String predicate;
+        private String objectType;
+    }
 }

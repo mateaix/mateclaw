@@ -173,6 +173,46 @@ class WikiEntityExtractionServiceTest {
     }
 
     @Test
+    @DisplayName("relation schema: filters out a relation whose triple isn't in the whitelist, entities still persist")
+    void extractForRaw_relationSchema_filtersNonMatchingRelation() {
+        WikiKnowledgeBaseEntity kb = new WikiKnowledgeBaseEntity();
+        kb.setId(KB_ID);
+        // Schema only allows organization→employs→person; the canned LLM output
+        // is person→works_for→organization, so it must not match.
+        kb.setConfigContent("""
+                {"relationSchema": [{"subjectType": "organization", "predicate": "employs", "objectType": "person"}]}
+                """);
+        when(kbService.getById(KB_ID)).thenReturn(kb);
+        when(chunkService.listByRawId(RAW_ID)).thenReturn(List.of(chunk(1L, "Alice works at Acme.")));
+
+        int touched = service.extractForRaw(KB_ID, RAW_ID);
+
+        assertEquals(2, touched, "entities still resolve even when their relation is filtered out");
+        verify(entityMapper, times(2)).insert(any(WikiEntityEntity.class));
+        verify(mentionMapper, times(2)).insert(any(WikiEntityMentionEntity.class));
+        verify(relationMapper, times(0)).insert(any(WikiEntityRelationEntity.class));
+    }
+
+    @Test
+    @DisplayName("relation schema: persists a relation whose triple matches the whitelist")
+    void extractForRaw_relationSchema_allowsMatchingRelation() {
+        WikiKnowledgeBaseEntity kb = new WikiKnowledgeBaseEntity();
+        kb.setId(KB_ID);
+        // "works for" (with a space) must normalize the same way as the
+        // extracted "works for" predicate for the match to succeed.
+        kb.setConfigContent("""
+                {"relationSchema": [{"subjectType": "person", "predicate": "works for", "objectType": "organization"}]}
+                """);
+        when(kbService.getById(KB_ID)).thenReturn(kb);
+        when(chunkService.listByRawId(RAW_ID)).thenReturn(List.of(chunk(1L, "Alice works at Acme.")));
+
+        int touched = service.extractForRaw(KB_ID, RAW_ID);
+
+        assertEquals(2, touched);
+        verify(relationMapper, times(1)).insert(any(WikiEntityRelationEntity.class));
+    }
+
+    @Test
     @DisplayName("extractForRaw: skips chunks that already have mentions")
     void extractForRaw_skipsProcessedChunks() {
         when(chunkService.listByRawId(RAW_ID)).thenReturn(List.of(chunk(1L, "Alice works at Acme.")));

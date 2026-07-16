@@ -115,9 +115,10 @@ public class WikiEntityExtractionService {
         }
 
         List<String> types = resolveEntityTypes(kb);
+        List<WikiKbConfig.RelationSchemaEntry> relationSchema = resolveRelationSchema(kb);
         BeanOutputConverter<EntityExtractionResult> converter =
                 new BeanOutputConverter<>(EntityExtractionResult.class);
-        String systemPrompt = buildSystemPrompt(types);
+        String systemPrompt = buildSystemPrompt(types, relationSchema);
 
         // Per-run resolution cache: type+normalizedKey → entityId. Seeded lazily
         // from the DB so entities resolve consistently within and across chunks.
@@ -144,7 +145,7 @@ public class WikiEntityExtractionService {
                 if (alreadyProcessed) {
                     clearChunkArtifacts(chunk.getId());
                 }
-                persistChunk(kbId, chunk, result, resolved, index);
+                persistChunk(kbId, chunk, result, resolved, index, relationSchema);
             } catch (Exception e) {
                 log.warn("[WikiEntity] Extraction failed for chunkId={} kbId={}: {}",
                         chunk.getId(), kbId, e.getMessage());
@@ -180,27 +181,44 @@ public class WikiEntityExtractionService {
         }
     }
 
-    private String buildSystemPrompt(List<String> types) {
-        return "You are a knowledge-graph entity extractor. From the given source text, "
-                + "extract named entities and the factual relations between them.\n"
-                + "Entity types to use: " + String.join(", ", types) + ".\n"
-                + "Rules:\n"
-                + "- Only extract entities explicitly named in the text; do not invent any.\n"
-                + "- Use the most complete surface form as the name; list shorter forms as aliases.\n"
-                + "- For each relation, subject and object must both appear in the entities list.\n"
-                + "- Keep predicates short and snake_case (e.g. works_for, located_in, founded).\n"
-                + "- Provide a short verbatim evidence quote for each entity and relation.\n"
-                + "- If nothing relevant is present, return empty lists.";
+    private String buildSystemPrompt(List<String> types, List<WikiKbConfig.RelationSchemaEntry> relationSchema) {
+        StringBuilder sb = new StringBuilder()
+                .append("You are a knowledge-graph entity extractor. From the given source text, ")
+                .append("extract named entities and the factual relations between them.\n")
+                .append("Entity types to use: ").append(String.join(", ", types)).append(".\n")
+                .append("Rules:\n")
+                .append("- Only extract entities explicitly named in the text; do not invent any.\n")
+                .append("- Use the most complete surface form as the name; list shorter forms as aliases.\n")
+                .append("- For each relation, subject and object must both appear in the entities list.\n")
+                .append("- Keep predicates short and snake_case (e.g. works_for, located_in, founded).\n")
+                .append("- Provide a short verbatim evidence quote for each entity and relation.\n")
+                .append("- If nothing relevant is present, return empty lists.");
+        if (relationSchema != null && !relationSchema.isEmpty()) {
+            sb.append("\n\nAllowed relations (ONLY extract these — ignore everything else):\n");
+            for (WikiKbConfig.RelationSchemaEntry rule : relationSchema) {
+                if (rule == null) {
+                    continue;
+                }
+                sb.append("- ").append(rule.getSubjectType()).append(' ')
+                        .append(rule.getPredicate()).append(' ')
+                        .append(rule.getObjectType()).append('\n');
+            }
+            sb.append("Only extract named entities that participate in at least one relation above. ")
+                    .append("Ignore all other named entities and relations, even if they fit one of the entity types.");
+        }
+        return sb.toString();
     }
 
     // ---- persistence ------------------------------------------------------
 
     private void persistChunk(Long kbId, WikiChunkEntity chunk, EntityExtractionResult result,
-                              Map<String, Long> resolved, EntityIndex index) {
+                              Map<String, Long> resolved, EntityIndex index,
+                              List<WikiKbConfig.RelationSchemaEntry> relationSchema) {
         Long pageId = firstCitingPage(chunk.getId());
 
         // Resolve each entity to a canonical id, persist its mention for this chunk.
         Map<String, Long> localByName = new HashMap<>();
+        Map<String, String> localTypeByName = new HashMap<>();
         if (result.getEntities() != null) {
             for (EntityExtractionResult.ExtractedEntity e : result.getEntities()) {
                 if (e == null || e.getName() == null || e.getName().isBlank()) {
@@ -212,10 +230,12 @@ public class WikiEntityExtractionService {
                     continue;
                 }
                 localByName.put(normalize(e.getName()), entityId);
+                localTypeByName.put(normalize(e.getName()), type);
                 if (e.getAliases() != null) {
                     for (String alias : e.getAliases()) {
                         if (alias != null && !alias.isBlank()) {
                             localByName.put(normalize(alias), entityId);
+                            localTypeByName.put(normalize(alias), type);
                         }
                     }
                 }
@@ -224,7 +244,10 @@ public class WikiEntityExtractionService {
             }
         }
 
-        // Persist relations whose endpoints both resolved.
+        // Persist relations whose endpoints both resolved and, when a relation
+        // schema is configured, whose (subjectType, predicate, objectType)
+        // matches an allowed triple — a hard backstop in case the model
+        // doesn't fully follow the prompt-level restriction.
         if (result.getRelations() != null) {
             for (EntityExtractionResult.ExtractedRelation r : result.getRelations()) {
                 if (r == null || r.getSubject() == null || r.getObject() == null
@@ -236,10 +259,47 @@ public class WikiEntityExtractionService {
                 if (subjectId == null || objectId == null || subjectId.equals(objectId)) {
                     continue;
                 }
-                upsertRelation(kbId, subjectId, objectId, normalizePredicate(r.getPredicate()),
-                        r.getEvidence(), chunk.getId());
+                String predicate = normalizePredicate(r.getPredicate());
+                String subjectType = localTypeByName.get(normalize(r.getSubject()));
+                String objectType = localTypeByName.get(normalize(r.getObject()));
+                if (!allowedBySchema(relationSchema, subjectType, predicate, objectType)) {
+                    continue;
+                }
+                upsertRelation(kbId, subjectId, objectId, predicate, r.getEvidence(), chunk.getId());
             }
         }
+    }
+
+    /**
+     * True when {@code schema} is empty (legacy open behaviour) or contains a
+     * triple matching {@code subjectType}/{@code predicate}/{@code objectType}.
+     * {@code predicate} is expected to already be {@link #normalizePredicate}d;
+     * the rule's predicate is normalized the same way before comparing so
+     * e.g. a user-entered "works for" matches an extracted "works_for".
+     */
+    private boolean allowedBySchema(List<WikiKbConfig.RelationSchemaEntry> schema,
+                                    String subjectType, String predicate, String objectType) {
+        if (schema == null || schema.isEmpty()) {
+            return true;
+        }
+        for (WikiKbConfig.RelationSchemaEntry rule : schema) {
+            if (rule == null || rule.getPredicate() == null || rule.getPredicate().isBlank()) {
+                continue;
+            }
+            if (equalsNormalized(rule.getSubjectType(), subjectType)
+                    && normalizePredicate(rule.getPredicate()).equals(predicate)
+                    && equalsNormalized(rule.getObjectType(), objectType)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean equalsNormalized(String a, String b) {
+        if (a == null || b == null) {
+            return false;
+        }
+        return a.trim().equalsIgnoreCase(b.trim());
     }
 
     /**
@@ -455,6 +515,16 @@ public class WikiEntityExtractionService {
             }
         }
         return DEFAULT_ENTITY_TYPES;
+    }
+
+    private List<WikiKbConfig.RelationSchemaEntry> resolveRelationSchema(WikiKnowledgeBaseEntity kb) {
+        if (kb.getConfigContent() != null) {
+            WikiKbConfig config = WikiKbConfigParser.parse(objectMapper, kb.getConfigContent());
+            if (config != null && config.getRelationSchema() != null && !config.getRelationSchema().isEmpty()) {
+                return config.getRelationSchema();
+            }
+        }
+        return List.of();
     }
 
     private String normalize(String s) {

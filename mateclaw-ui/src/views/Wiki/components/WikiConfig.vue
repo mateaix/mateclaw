@@ -90,6 +90,54 @@
         </el-select>
         <div class="entity-types__hint">{{ t('wiki.configPanel.entityTypesHint') }}</div>
       </div>
+
+      <!-- Relation schema: optional closed whitelist of (subjectType, predicate, objectType)
+           triples. Empty = open-vocabulary relations (legacy behavior). -->
+      <div v-if="entityExtractionEnabled" class="relation-schema">
+        <div class="relation-schema__label">{{ t('wiki.configPanel.relationSchemaLabel') }}</div>
+        <div class="relation-schema__hint">{{ t('wiki.configPanel.relationSchemaHint') }}</div>
+
+        <div v-for="(row, idx) in relationSchema" :key="idx" class="relation-schema__row">
+          <el-select
+            v-model="row.subjectType"
+            filterable
+            allow-create
+            default-first-option
+            size="small"
+            class="relation-schema__type"
+            :placeholder="t('wiki.configPanel.relationSchemaSubject')"
+          >
+            <el-option v-for="opt in relationSchemaTypeOptions" :key="opt" :label="formatEntityType(opt)" :value="opt" />
+          </el-select>
+          <input
+            type="text"
+            v-model.trim="row.predicate"
+            class="relation-schema__predicate"
+            :placeholder="t('wiki.configPanel.relationSchemaPredicate')"
+          />
+          <el-select
+            v-model="row.objectType"
+            filterable
+            allow-create
+            default-first-option
+            size="small"
+            class="relation-schema__type"
+            :placeholder="t('wiki.configPanel.relationSchemaObject')"
+          >
+            <el-option v-for="opt in relationSchemaTypeOptions" :key="opt" :label="formatEntityType(opt)" :value="opt" />
+          </el-select>
+          <button
+            class="relation-schema__remove"
+            @click="removeRelationSchemaRow(idx)"
+            :title="t('common.delete')"
+            :aria-label="t('common.delete')"
+          >×</button>
+        </div>
+
+        <button class="btn-save btn-save--ghost relation-schema__add" @click="addRelationSchemaRow">
+          {{ t('wiki.configPanel.relationSchemaAdd') }}
+        </button>
+      </div>
     </div>
 
     <!-- ② Model strategy -->
@@ -297,6 +345,24 @@ const entityTypes = ref<string[]>([])
 const savingEntityExtraction = ref(false)
 const extracting = ref(false)
 
+// Optional closed relation schema: a whitelist of (subjectType, predicate,
+// objectType) triples. Empty = open-vocabulary relations (legacy behavior).
+interface RelationSchemaRow { subjectType: string; predicate: string; objectType: string }
+const relationSchema = ref<RelationSchemaRow[]>([])
+
+// Type dropdown suggestions: whatever entity types are currently configured,
+// plus the built-in defaults, deduped.
+const relationSchemaTypeOptions = computed(() =>
+  [...new Set([...entityTypes.value, ...DEFAULT_ENTITY_TYPES])])
+
+function addRelationSchemaRow() {
+  relationSchema.value.push({ subjectType: '', predicate: '', objectType: '' })
+}
+
+function removeRelationSchemaRow(idx: number) {
+  relationSchema.value.splice(idx, 1)
+}
+
 async function saveEntityExtraction() {
   if (!store.currentKB) return
   savingEntityExtraction.value = true
@@ -312,6 +378,18 @@ async function saveEntityExtraction() {
       ? [...new Set(entityTypes.value.map(s => s.trim().toLowerCase()).filter(Boolean))]
       : []
     existingConfig.entityTypes = cleanedTypes.length > 0 ? cleanedTypes : undefined
+    // Only keep fully-filled rows; a row with any blank field can't match
+    // anything on the backend and would silently do nothing.
+    const cleanedRelationSchema = entityExtractionEnabled.value
+      ? relationSchema.value
+          .map(row => ({
+            subjectType: row.subjectType.trim().toLowerCase(),
+            predicate: row.predicate.trim().toLowerCase(),
+            objectType: row.objectType.trim().toLowerCase(),
+          }))
+          .filter(row => row.subjectType && row.predicate && row.objectType)
+      : []
+    existingConfig.relationSchema = cleanedRelationSchema.length > 0 ? cleanedRelationSchema : undefined
     await wikiApi.updateConfig(store.currentKB.id, JSON.stringify(existingConfig, null, 2))
   } catch (e) {
     console.error('[WikiConfig] Failed to save entity extraction toggle', e)
@@ -352,6 +430,7 @@ function loadStepModels() {
   ingestMode.value = 'eager'
   entityExtractionEnabled.value = false
   entityTypes.value = []
+  relationSchema.value = []
   if (!store.currentKB) return
   try {
     const cfg = store.currentKB.configContent ? JSON.parse(store.currentKB.configContent) : null
@@ -366,6 +445,13 @@ function loadStepModels() {
     if (cfg?.ingestMode === 'lazy') ingestMode.value = 'lazy'
     if (cfg?.entityExtractionEnabled) entityExtractionEnabled.value = true
     if (Array.isArray(cfg?.entityTypes)) entityTypes.value = cfg.entityTypes.map(String)
+    if (Array.isArray(cfg?.relationSchema)) {
+      relationSchema.value = cfg.relationSchema.map((row: any) => ({
+        subjectType: String(row?.subjectType ?? ''),
+        predicate: String(row?.predicate ?? ''),
+        objectType: String(row?.objectType ?? ''),
+      }))
+    }
   } catch { /* not JSON */ }
 }
 
@@ -595,6 +681,38 @@ loadProviderNames().then(() => {
 .entity-types__label { font-size: 12px; font-weight: 600; color: var(--mc-text-secondary); }
 .entity-types__select { width: 100%; }
 .entity-types__hint { font-size: 11px; color: var(--mc-text-tertiary); line-height: 1.4; }
+
+/* Relation schema editor */
+.relation-schema { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.relation-schema__label { font-size: 12px; font-weight: 600; color: var(--mc-text-secondary); }
+.relation-schema__hint { font-size: 11px; color: var(--mc-text-tertiary); line-height: 1.4; }
+.relation-schema__row { display: flex; align-items: center; gap: 6px; }
+.relation-schema__type { flex: 1; min-width: 0; }
+.relation-schema__predicate {
+  flex: 1;
+  min-width: 0;
+  height: 24px;
+  padding: 0 8px;
+  font-size: 12px;
+  color: var(--mc-text-primary);
+  background: var(--mc-bg-sunken);
+  border: 1px solid var(--mc-border);
+  border-radius: 4px;
+}
+.relation-schema__predicate:focus { outline: none; border-color: var(--mc-primary); }
+.relation-schema__remove {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--mc-border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--mc-text-tertiary);
+  cursor: pointer;
+  line-height: 1;
+}
+.relation-schema__remove:hover { color: var(--mc-text-primary); border-color: var(--mc-text-tertiary); }
+.relation-schema__add { align-self: flex-start; margin-top: 2px; }
 
 /* Ingest mode radio group */
 .ingest-mode-row { display: flex; gap: 8px; flex-wrap: wrap; }
