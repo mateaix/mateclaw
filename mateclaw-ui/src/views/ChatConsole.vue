@@ -1254,6 +1254,12 @@ onActivated(async () => {
   startECharts()
   startKatex()
   startMermaid()
+  // Issue #538: ChatConsole is kept alive by the router (meta.keepAlive), so
+  // navigating away and back only fires onActivated, not onMounted — an
+  // agent created/edited/deleted elsewhere (e.g. the Employees page) never
+  // reached this component's own `agents` list otherwise, and stayed
+  // invisible in the picker until a full page reload forced a fresh mount.
+  await loadAgents()
   activityPollTimer = window.setInterval(pollActivity, ACTIVITY_POLL_MS)
   elapsedTickTimer = window.setInterval(() => {
     if (activeCronRuns.value.length > 0) elapsedNow.value = Date.now()
