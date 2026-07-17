@@ -10,6 +10,7 @@ import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Component;
 import vip.mate.tool.document.GeneratedFileCache;
 import vip.mate.tool.document.WorkspaceArtifactSurfacer;
+import vip.mate.workspace.artifact.service.WorkspaceArtifactService;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -45,6 +46,7 @@ public class ShellExecuteTool {
 
     private final vip.mate.i18n.I18nService i18n;
     private final GeneratedFileCache generatedFileCache;
+    private final WorkspaceArtifactService artifactService;
 
     private static final int DEFAULT_TIMEOUT_SECONDS = 60;
     private static final int MAX_OUTPUT_BYTES = 10_000;
@@ -140,7 +142,7 @@ public class ShellExecuteTool {
                 // as execute_code). A single newline-joined string, not a JSON array,
                 // so the link-extraction regex captures the clean filename.
                 java.nio.file.Path workingDir = vip.mate.tool.guard.WorkspacePathGuard.getWorkingDirectory(ctx);
-                List<String> fileLinks = WorkspaceArtifactSurfacer.collect(generatedFileCache, workingDir, runStart, ctx);
+                List<String> fileLinks = WorkspaceArtifactSurfacer.collect(generatedFileCache, workingDir, runStart, ctx, artifactService);
                 if (!fileLinks.isEmpty()) {
                     result.set("generatedFiles", String.join("\n", fileLinks));
                 }

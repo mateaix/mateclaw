@@ -81,6 +81,21 @@ public record ChatOrigin(
     /** Key used when this origin is wrapped into a Spring AI {@link ToolContext}. */
     public static final String CTX_KEY = "mateclaw.chatOrigin";
 
+    /**
+     * Context-map key carrying the current tool-call id (issue #514). Populated
+     * by {@code ToolExecutionExecutor.executeSingleTool} so document-render tools
+     * can stamp their output with provenance. Read via {@link #toolCallId(org.springframework.ai.chat.model.ToolContext)}.
+     * Not a record field — kept as a loose context key to avoid the record's
+     * add-only / 90-day-deprecation evolution rule.
+     */
+    public static final String TOOL_CALL_ID_KEY = "mateclaw.toolCallId";
+
+    /**
+     * Context-map key carrying the current tool's bean/display name (issue #514),
+     * so artifacts can record which tool produced them.
+     */
+    public static final String TOOL_NAME_KEY = "mateclaw.toolName";
+
     /** Sentinel used by AgentService default overloads where no origin is supplied. */
     public static final ChatOrigin EMPTY =
             new ChatOrigin(null, null, "", null, null, null, null, false, null, null, null, null, null);
@@ -188,5 +203,27 @@ public record ChatOrigin(
         if (ctx == null) return EMPTY;
         Object v = ctx.getContext().get(CTX_KEY);
         return v instanceof ChatOrigin co ? co : EMPTY;
+    }
+
+    /**
+     * Read the tool-call id stamped into the context by the executor (issue #514).
+     * Returns {@code null} when no tool-call id is present (e.g. a tool invoked
+     * outside the agent graph, or a unit test).
+     */
+    @Nullable
+    public static String toolCallId(@Nullable ToolContext ctx) {
+        if (ctx == null) return null;
+        Object v = ctx.getContext().get(TOOL_CALL_ID_KEY);
+        return v instanceof String s && !s.isBlank() ? s : null;
+    }
+
+    /**
+     * Read the tool name stamped into the context by the executor (issue #514).
+     */
+    @Nullable
+    public static String toolName(@Nullable ToolContext ctx) {
+        if (ctx == null) return null;
+        Object v = ctx.getContext().get(TOOL_NAME_KEY);
+        return v instanceof String s && !s.isBlank() ? s : null;
     }
 }

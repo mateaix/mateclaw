@@ -51,6 +51,9 @@ import reactor.core.Disposable;
 import vip.mate.approval.PendingApproval;
 import vip.mate.approval.ResolveOutcome;
 import vip.mate.agent.context.ChatOrigin;
+import vip.mate.workspace.artifact.model.WorkspaceArtifactEntity;
+import vip.mate.workspace.artifact.service.WorkspaceArtifactService;
+import vip.mate.workspace.artifact.vo.ArtifactPageVO;
 
 /**
  * WebChat 嵌入式对话接口
@@ -91,6 +94,12 @@ public class WebChatController {
      * and the turn was wasted.
      */
     private final vip.mate.approval.ApprovalWorkflowService approvalService;
+
+    /**
+     * Issue #514: registers user-uploaded + agent-produced files into the
+     * Agent's workspace artifact catalog and serves the cross-session listing.
+     */
+    private final WorkspaceArtifactService artifactService;
 
     /** Visitor-token TTL in seconds (7 days). Mirrors GeneratedFileCache's TTL. */
     static final long VISITOR_TOKEN_TTL_SECONDS = 7 * 24 * 3600L;
@@ -1489,6 +1498,10 @@ public class WebChatController {
             audit(channel, vid, "webchat.upload-file", conversationId,
                     "{\"sessionId\":\"" + sid + "\",\"fileId\":\"" + stored.storedName()
                             + "\",\"size\":" + stored.size() + "}");
+            // Issue #514: register the user upload into the workspace artifact
+            // catalog so it shows up in the cross-session file listing. Best-effort
+            // — a catalog write failure must not fail the upload (the file is stored).
+            registerUserUpload(channel, conversationId, sid, stored);
             return R.ok(Map.of(
                     "fileId", stored.storedName(),
                     "fileName", stored.originalName(),
@@ -1562,6 +1575,92 @@ public class WebChatController {
                 .header(HttpHeaders.CONTENT_DISPOSITION,
                         (inlineImage ? "inline" : "attachment") + "; filename*=UTF-8''" + encodedName)
                 .body(new FileSystemResource(file));
+    }
+
+    // ==================== Issue #514: Workspace Artifacts ====================
+
+    /**
+     * List the Agent workspace's full file inventory — both Agent-produced
+     * output and user uploads — across all sessions (issue #514). Files live
+     * at the Agent/Workspace level; sessions are a provenance filter only.
+     */
+    @Operation(summary = "列出 Agent 工作空间的产出文件")
+    @GetMapping("/artifacts")
+    public R<ArtifactPageVO> listArtifacts(
+            @RequestHeader("X-MC-Key") String apiKey,
+            @RequestHeader(value = "X-MC-Visitor-Token", required = false) String visitorToken,
+            @RequestParam String visitorId,
+            @RequestParam(required = false) String sessionId,
+            @RequestParam(required = false) String source,
+            @RequestParam(required = false) String type,
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "50") int size) {
+        ChannelEntity channel = resolveChannel(apiKey);
+        if (channel == null) {
+            return R.fail(401, "Invalid API Key");
+        }
+        if (!verifyVisitorToken(visitorTokenSecret, channel.getId(), visitorId, visitorToken)) {
+            return R.fail(401, "Invalid or missing visitor token");
+        }
+        Long agentId = channel.getAgentId();
+        if (agentId == null) {
+            return R.fail(400, "No agent configured for this WebChat channel");
+        }
+        Long workspaceId = channel.getWorkspaceId() != null ? channel.getWorkspaceId() : 1L;
+        // sessionId filter uses the server-derived conversationId (same key the
+        // upload/agent paths store), so the listing filter matches the
+        // registration key exactly.
+        String conversationId = null;
+        if (sessionId != null && !sessionId.isBlank()) {
+            try {
+                conversationId = deriveConversationId(apiKey,
+                        normalizeVisitorId(visitorId), normalizeSessionId(sessionId));
+            } catch (IllegalArgumentException ex) {
+                return R.fail(400, ex.getMessage());
+            }
+        }
+        ArtifactPageVO result = artifactService.list(agentId, workspaceId,
+                conversationId, source, type, page, size);
+        audit(channel, visitorId, "webchat.list-artifacts", null,
+                "{\"agentId\":" + agentId + ",\"page\":" + page + ",\"size\":" + size + "}");
+        return R.ok(result);
+    }
+
+    /**
+     * Register a user-uploaded file into the workspace artifact catalog
+     * (issue #514, source=user). Best-effort: swallows exceptions so a
+     * catalog write failure never fails the upload.
+     */
+    private void registerUserUpload(ChannelEntity channel, String conversationId,
+                                    String sessionLabel,
+                                    WebChatFileService.StagedFile stored) {
+        try {
+            WorkspaceArtifactEntity entity = new WorkspaceArtifactEntity();
+            entity.setWorkspaceId(channel.getWorkspaceId() != null ? channel.getWorkspaceId() : 1L);
+            entity.setChannelId(channel.getId());
+            entity.setAgentId(channel.getAgentId());
+            entity.setConversationId(conversationId);
+            entity.setSessionLabel(sessionLabel);
+            entity.setToolCallId(null);
+            entity.setToolName(null);
+            entity.setSource(WorkspaceArtifactService.SOURCE_USER);
+            entity.setArtifactType(WorkspaceArtifactService.classifyType(
+                    stored.originalName(), stored.contentType()));
+            entity.setName(stored.originalName());
+            entity.setMime(stored.contentType());
+            entity.setSizeBytes(stored.size());
+            entity.setStorageKind(WorkspaceArtifactService.STORAGE_UPLOAD);
+            entity.setStorageRef(stored.storedName());
+            // User uploads are served by the existing session-scoped /files
+            // endpoint; the download URL carries the session so the endpoint
+            // can re-derive the storage path.
+            entity.setDownloadUrl("/api/v1/channels/webchat/files?storedName="
+                    + stored.storedName());
+            artifactService.register(entity);
+        } catch (Exception e) {
+            log.warn("[WebChat] artifact registration failed for upload {}: {}",
+                    stored.storedName(), e.toString());
+        }
     }
 
     /**

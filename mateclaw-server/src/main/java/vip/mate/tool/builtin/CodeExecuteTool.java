@@ -22,6 +22,7 @@ import vip.mate.skill.secret.SkillSecretService;
 import vip.mate.tool.document.GeneratedFileCache;
 import vip.mate.tool.document.WorkspaceArtifactSurfacer;
 import vip.mate.tool.guard.WorkspacePathGuard;
+import vip.mate.workspace.artifact.service.WorkspaceArtifactService;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -61,6 +62,7 @@ public class CodeExecuteTool {
     private final SkillSecretService skillSecretService;
     private final ObjectMapper objectMapper;
     private final GeneratedFileCache generatedFileCache;
+    private final WorkspaceArtifactService artifactService;
 
     @Lazy
     @Autowired
@@ -161,7 +163,7 @@ public class CodeExecuteTool {
             // Surface any files the run wrote as one-click downloads so the user can
             // grab generated artifacts (xlsx / csv / images / …) without the model
             // having to call send_file or echo a server path.
-            List<String> fileLinks = WorkspaceArtifactSurfacer.collect(generatedFileCache, workingDir, runStart, ctx);
+            List<String> fileLinks = WorkspaceArtifactSurfacer.collect(generatedFileCache, workingDir, runStart, ctx, artifactService);
             return formatResult(result, fileLinks);
         } catch (Exception e) {
             log.error("[CodeExecute] Execution failed: {}", e.getMessage());

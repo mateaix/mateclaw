@@ -132,9 +132,19 @@ public class GeneratedFileCache {
         }
     }
 
-    public record Entry(byte[] bytes, String filename, String mimeType, long expireAt) {
+    public record Entry(byte[] bytes, String filename, String mimeType, long expireAt,
+                        boolean persistent) {
+
+        public Entry(byte[] bytes, String filename, String mimeType, long expireAt) {
+            this(bytes, filename, mimeType, expireAt, false);
+        }
 
         public boolean expired() {
+            // Persistent entries never expire — they were registered into an
+            // Agent's workspace (issue #514) and must survive the TTL sweep.
+            if (persistent) {
+                return false;
+            }
             return System.currentTimeMillis() > expireAt;
         }
     }
@@ -145,13 +155,29 @@ public class GeneratedFileCache {
      * {@code /api/v1/files/generated/{id}}.
      */
     public String put(byte[] bytes, String filename, String mimeType) {
+        return put(bytes, filename, mimeType, false);
+    }
+
+    /**
+     * Store bytes that have been registered into an Agent's workspace catalog
+     * (issue #514). A persistent entry is exempt from the {@link #TTL} sweep so
+     * the download link stays live for the lifetime of the workspace — not 7
+     * days. Returns the id, or {@code null} if persistence failed (the caller
+     * treats a {@code null} id as "not registered" and falls back to the
+     * standard TTL path).
+     */
+    public String putPersistent(byte[] bytes, String filename, String mimeType) {
+        return put(bytes, filename, mimeType, true);
+    }
+
+    private String put(byte[] bytes, String filename, String mimeType, boolean persistent) {
         String id = UUID.randomUUID().toString();
         long expireAt = System.currentTimeMillis() + TTL.toMillis();
-        Entry entry = new Entry(bytes, filename, mimeType, expireAt);
+        Entry entry = new Entry(bytes, filename, mimeType, expireAt, persistent);
         entries.put(id, entry);
         persist(id, entry);
-        log.debug("Cached generated file id={} filename={} bytes={}", id, filename,
-                bytes != null ? bytes.length : 0);
+        log.debug("Cached generated file id={} filename={} bytes={} persistent={}",
+                id, filename, bytes != null ? bytes.length : 0, persistent);
         return id;
     }
 
@@ -279,8 +305,13 @@ public class GeneratedFileCache {
         long now = System.currentTimeMillis();
         for (Path metaPath : metas) {
             try {
-                String[] parts = Files.readString(metaPath).split("\t", 3);
-                if (Long.parseLong(parts[0].trim()) <= now) {
+                // split limit 4: issue #514 added a 4th field (persistent flag);
+                // older 3-field metas still parse (absent fields default).
+                String[] parts = Files.readString(metaPath).split("\t", 4);
+                boolean persistent = parts.length > 3 && "1".equals(parts[3].trim());
+                // Persistent entries never expire (issue #514); transient ones
+                // are skipped once their expireAt has passed.
+                if (!persistent && Long.parseLong(parts[0].trim()) <= now) {
                     continue;
                 }
                 String mime = parts.length > 1 && !parts[1].isEmpty() ? parts[1] : null;
@@ -307,12 +338,16 @@ public class GeneratedFileCache {
         }
         try {
             Files.write(storageDir.resolve(id), entry.bytes());
-            // expireAt \t mimeType \t base64(filename) — filename is base64-encoded
-            // so arbitrary unicode / separators round-trip without escaping.
+            // expireAt \t mimeType \t base64(filename) \t persistent
+            // — filename is base64-encoded so arbitrary unicode / separators
+            //   round-trip without escaping.
+            // — persistent ("1"/"0") was added in issue #514; older metas have
+            //   only 3 fields and default to non-persistent on read.
             String meta = entry.expireAt()
                     + "\t" + (entry.mimeType() == null ? "" : entry.mimeType())
                     + "\t" + Base64.getEncoder().encodeToString(
-                            (entry.filename() == null ? "" : entry.filename()).getBytes(StandardCharsets.UTF_8));
+                            (entry.filename() == null ? "" : entry.filename()).getBytes(StandardCharsets.UTF_8))
+                    + "\t" + (entry.persistent() ? "1" : "0");
             Files.writeString(storageDir.resolve(id + META_SUFFIX), meta);
         } catch (IOException e) {
             // Best-effort: an in-memory entry still serves the current process.
@@ -328,14 +363,17 @@ public class GeneratedFileCache {
             return null;
         }
         try {
-            String[] parts = Files.readString(meta).split("\t", 3);
+            String[] parts = Files.readString(meta).split("\t", 4);
             long expireAt = Long.parseLong(parts[0].trim());
             String mimeType = parts.length > 1 && !parts[1].isEmpty() ? parts[1] : null;
             String filename = parts.length > 2 && !parts[2].isEmpty()
                     ? new String(Base64.getDecoder().decode(parts[2]), StandardCharsets.UTF_8)
                     : id;
+            // 4th field (issue #514): "1" = persistent (workspace artifact).
+            // Absent in pre-#514 metas → defaults to false (TTL-governed).
+            boolean persistent = parts.length > 3 && "1".equals(parts[3].trim());
             byte[] bytes = Files.readAllBytes(bin);
-            return new Entry(bytes, filename, mimeType, expireAt);
+            return new Entry(bytes, filename, mimeType, expireAt, persistent);
         } catch (Exception e) {
             log.warn("Could not load generated file id={}: {}", id, e.toString());
             return null;
@@ -354,14 +392,18 @@ public class GeneratedFileCache {
 
     /**
      * Drop expired entries from memory and disk. Runs on a fixed delay; also
-     * sweeps orphaned files left by an unclean shutdown.
+     * sweeps orphaned files left by an unclean shutdown. Persistent entries
+     * (issue #514 workspace artifacts) are never swept — they are exempt from
+     * the TTL so the workspace catalog's download links stay live.
      */
     @Scheduled(fixedDelay = CLEANUP_INTERVAL_MS, initialDelay = CLEANUP_INTERVAL_MS)
     public void cleanupExpired() {
         long now = System.currentTimeMillis();
         // entrySet() of a synchronizedMap must be iterated while holding its lock.
+        // Persistent entries are excluded: Entry.expired() already returns false
+        // for them, so this removeIf is automatically safe.
         synchronized (entries) {
-            entries.entrySet().removeIf(e -> e.getValue().expireAt() <= now);
+            entries.entrySet().removeIf(e -> e.getValue().expired());
         }
         if (!Files.isDirectory(storageDir)) {
             return;
@@ -372,9 +414,12 @@ public class GeneratedFileCache {
                         String name = metaPath.getFileName().toString();
                         String id = name.substring(0, name.length() - META_SUFFIX.length());
                         try {
-                            long expireAt = Long.parseLong(
-                                    Files.readString(metaPath).split("\t", 2)[0].trim());
-                            if (expireAt <= now) {
+                            String[] parts = Files.readString(metaPath).split("\t", 4);
+                            long expireAt = Long.parseLong(parts[0].trim());
+                            boolean persistent = parts.length > 3 && "1".equals(parts[3].trim());
+                            // Persistent entries survive the sweep (issue #514);
+                            // everything else with a passed expiry is evicted.
+                            if (!persistent && expireAt <= now) {
                                 evict(id);
                             }
                         } catch (Exception e) {

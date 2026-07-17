@@ -22,6 +22,7 @@ import vip.mate.tool.browser.BrowserLauncher;
 import vip.mate.tool.document.FilenameSanitizer;
 import vip.mate.tool.document.GeneratedFileCache;
 import vip.mate.tool.document.GeneratedFileLink;
+import vip.mate.workspace.artifact.service.WorkspaceArtifactService;
 
 /**
  * Built-in tool: capture a screenshot of a MateClaw admin-console page and
@@ -55,6 +56,7 @@ public class ScreenshotTool {
 
     private final GeneratedFileCache cache;
     private final AuthService authService;
+    private final WorkspaceArtifactService artifactService;
 
     @Value("${server.port:18088}")
     private int serverPort;
@@ -112,7 +114,7 @@ public class ScreenshotTool {
         }
 
         log.info("[Screenshot] captured {} ({} bytes, fullPage={})", p, png.length, full);
-        return GeneratedFileLink.resultZh(png, displayName, PNG_MIME, cache, "截图", ctx);
+        return GeneratedFileLink.resultZh(png, displayName, PNG_MIME, cache, "截图", ctx, artifactService);
     }
 
     private byte[] render(String url, String token, boolean fullPage, int settleMs) {
