@@ -78,6 +78,23 @@ class IdentityForwardingToolCallbackTest {
     }
 
     @Test
+    @DisplayName("sanitize strips CR/LF and caps length (log-injection hardening)")
+    void sanitizePreventsLogInjection() {
+        // A crafted toolInput surfaces inside Jackson exception messages; the
+        // sanitize helper must neutralize newlines (no forged log lines) and
+        // cap length so a huge payload can't blow up log volume.
+        String crafted = "line1\nline2\r\n2026-07-18 ERROR fake-injected-line\ttab";
+        String out = IdentityForwardingToolCallback.sanitize(crafted);
+        assertThat(out).as("no CR/LF/control chars survive").doesNotContain("\n", "\r", "\t");
+        assertThat(out).contains("line1").contains("line2");   // content preserved
+        // Length cap.
+        String huge = "x".repeat(500);
+        assertThat(IdentityForwardingToolCallback.sanitize(huge).length())
+                .as("capped to ~200 chars").isLessThanOrEqualTo(201);
+        assertThat(IdentityForwardingToolCallback.sanitize(null)).isEmpty();
+    }
+
+    @Test
     @DisplayName("opt-in matching: by id or name, empty set never forwards")
     void optInMatching() {
         McpIdentityForwardProperties p = new McpIdentityForwardProperties();

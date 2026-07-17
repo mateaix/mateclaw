@@ -504,8 +504,10 @@ REST 后端验签（伪代码）：
 
 ```python
 import jwt  # PyJWT
+# 留一点时钟偏差余量——iat/exp 用的是 MateClaw 的时钟，可能与本后端有漂移。
+# ttl-seconds=60 时，leeway≈10s 可避免在窗口边界拒绝合法 token。
 claims = jwt.decode(token, public_key_pem, algorithms=["RS256"],
-                    issuer="mateclaw", audience="https://api.internal")
+                    issuer="mateclaw", audience="https://api.internal", leeway=10)
 # 验签通过只证明 token 由 MateClaw 签发——并不代表 sub 是认证账号。
 # 授权前务必看 trust claim。
 if claims.get("trust") != "authenticated":
@@ -513,6 +515,23 @@ if claims.get("trust") != "authenticated":
 user = claims["sub"]            # 不可变数字 id（认证路径）
 # → 按 user 做 per-user 授权；验签失败/过期 → 401
 ```
+
+> **时钟偏差。** `iat`/`exp` 按 MateClaw 主机时钟计算。默认 60s TTL 下，请让
+> MateClaw 与 REST 后端共用同一 NTP 源，并在验签侧配置 leeway（PyJWT
+> `leeway=10`、jjwt `setAllowedClockSkewSeconds(10)`），避免微小漂移误拒合法
+> token。部署偏差较大时调大 `ttl-seconds`。
+
+> **密钥轮换手册（暂无 JWKS）。** 公钥当前带外分发（JWKS 端点是后续工作），
+> 因此轮换签名密钥是**多主机协同操作**，不是 MateClaw 单侧一键完成：
+> 1. 生成新密钥对（`openssl genpkey -algorithm RSA -pkcs8 ...`）。
+> 2. **先把每个 REST 后端的公钥更新到位**——在后端全部接受新公钥之前，用
+>    新私钥签的 token 会被 401 拒绝。
+> 3. 然后更新 MateClaw 的 `MCP_IDFWD_PRIVATE_KEY_PEM` 并重启（或对 properties
+>    bean 做 refresh-scoped 重绑）。
+> 4. 观察日志出现 `[McpIdentity] loaded RS256 signing key (kid=…)`——新 `kid`
+>    确认轮换已生效。
+>
+> MateClaw 侧轮换后若后端 401 激增，几乎一定是某个后端漏做了第 2 步。
 
 > 公钥分发：当前由运维把上面生成的公钥配到 REST 侧（带外）。后续可加一个 JWKS 端点自动分发+轮换。
 >

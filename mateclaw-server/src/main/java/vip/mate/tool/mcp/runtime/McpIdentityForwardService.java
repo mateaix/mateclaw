@@ -109,6 +109,18 @@ public class McpIdentityForwardService {
     /** The (key, value) to merge into the call arguments, or empty to inject nothing. */
     public record Injection(String key, String value) {}
 
+    /**
+     * Make an exception message safe to interpolate into a log line: replace
+     * CR/LF and other ASCII control chars (which a malformed operator- or model
+     * supplied PEM/toolInput can surface inside the message) with a visible
+     * glyph, and cap the length — log-injection hardening.
+     */
+    private static String sanitize(String msg) {
+        if (msg == null) return "";
+        String cleaned = msg.replaceAll("[\\r\\n\\t\\p{Cntrl}]", "?");
+        return cleaned.length() > 200 ? cleaned.substring(0, 200) + "…" : cleaned;
+    }
+
     /** A typed identity resolved from the request origin. Empty = inject nothing. */
     record ResolvedIdentity(String subject, String trust, String channelType) {
         static final ResolvedIdentity NONE = new ResolvedIdentity(null, null, null);
@@ -213,7 +225,7 @@ public class McpIdentityForwardService {
                     .signWith(key, Jwts.SIG.RS256)
                     .compact();
         } catch (Exception e) {
-            log.error("[McpIdentity] failed to mint identity token: {}", e.getMessage());
+            log.error("[McpIdentity] failed to mint identity token: {}", sanitize(e.getMessage()));
             return null;
         }
     }
@@ -291,7 +303,18 @@ public class McpIdentityForwardService {
                 // If a prior good key exists it keeps serving (best-effort
                 // availability); if not, signingKey stays null (fail-closed).
                 // Either way the dedup above prevents re-parsing this same PEM.
-                log.error("[McpIdentity] failed to parse private-key-pem (expect PKCS#8 RSA): {}", e.getMessage());
+                String hint = "";
+                if (pem != null && pem.contains("ENCRYPTED PRIVATE KEY")) {
+                    hint = " (the key is passphrase-protected; strip it with "
+                            + "`openssl pkcs8 -topk8 -nocrypt -in ... -out ...` — "
+                            + "MateClaw needs an UNENCRYPTED PKCS#8 RSA key)";
+                } else if (e instanceof java.security.NoSuchAlgorithmException) {
+                    hint = " (RSA KeyFactory unavailable in this JVM's security-provider "
+                            + "configuration — FIPS/restricted-provider JVMs may need "
+                            + "BouncyCastle registered)";
+                }
+                log.error("[McpIdentity] failed to parse private-key-pem (expect PKCS#8 RSA){}: {}",
+                        hint, sanitize(e.getMessage()));
             }
             return signingKey;
         }

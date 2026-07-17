@@ -329,9 +329,14 @@ class McpIdentityForwardServiceTest {
         // (2) the key is parsed exactly once (single-flight) — otherwise the DCL
         // is meaningless. Counting the "loaded RS256 signing key" INFO log line
         // pins the single-flight guarantee the test is named for.
+        // Guard the logback cast: these tests need a logback Logger to attach a
+        // ListAppender. Skip (not fail) if the runtime SLF4J binding isn't logback.
+        org.junit.jupiter.api.Assumptions.assumeTrue(
+                org.slf4j.LoggerFactory.getLogger(McpIdentityForwardService.class)
+                        instanceof ch.qos.logback.classic.Logger,
+                "logback must be the active SLF4J binding for this log-capture test");
         ch.qos.logback.classic.Logger logger =
                 (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(McpIdentityForwardService.class);
-        java.util.List<ch.qos.logback.classic.spi.ILoggingEvent> captured = new java.util.concurrent.CopyOnWriteArrayList<>();
         ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> appender =
                 new ch.qos.logback.core.read.ListAppender<>();
         appender.start();
@@ -404,6 +409,10 @@ class McpIdentityForwardServiceTest {
 
         // 2. Corrupt the PEM. Subsequent calls must still mint verifiable tokens
         //    (using the stale good key) — fail-soft, not fail-closed.
+        org.junit.jupiter.api.Assumptions.assumeTrue(
+                org.slf4j.LoggerFactory.getLogger(McpIdentityForwardService.class)
+                        instanceof ch.qos.logback.classic.Logger,
+                "logback must be the active SLF4J binding for this log-capture test");
         ch.qos.logback.classic.Logger logger =
                 (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(McpIdentityForwardService.class);
         ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> appender =

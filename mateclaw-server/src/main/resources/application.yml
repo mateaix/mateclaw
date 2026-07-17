@@ -172,6 +172,24 @@ mateclaw:
   # MCP server 配置已迁移至数据库（mate_mcp_server 表），通过 UI 管理
   mcp:
     enabled: true
+    # on-behalf-of identity forwarding to MCP servers (issue #459). OFF by default —
+    # enabling leaks caller identity to the listed servers, so it is opt-in per
+    # server (by name or numeric id). Two trust models: plaintext (default) injects
+    # '<trust>:<subject>' under __mateclaw_user__; token (token.enabled=true) injects
+    # a short-lived RS256 JWT under __mateclaw_token__. Token mode fails closed when
+    # the private key is missing/malformed (never silently downgrades to plaintext).
+    # See docs/{en,zh}/mcp.md "on-behalf-of" for the wire format and backend recipe.
+    # identity-forward:
+    #   servers:
+    #     - my-internal-api      # mate_mcp_server name or numeric id
+    #   token:
+    #     enabled: true                              # false ⇒ plaintext (back-compat)
+    #     issuer: mateclaw
+    #     ttl-seconds: 60                            # short; backend should allow clock skew
+    #     key-id: mateclaw-mcp-1
+    #     private-key-pem: ${MCP_IDFWD_PRIVATE_KEY_PEM:}   # PKCS#8 PEM, RS256; empty ⇒ fail-closed
+    #     audiences:                                 # optional; default aud = server name
+    #       my-internal-api: https://api.internal
   tools:
     disclosure:
       # progressive: extension-tier tools are hidden behind the extension-tools

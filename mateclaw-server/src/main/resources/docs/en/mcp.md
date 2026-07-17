@@ -555,8 +555,11 @@ REST backend verifies (pseudocode):
 
 ```python
 import jwt  # PyJWT
+# Allow a small clock-skew window — iat/exp come from MateClaw's clock, which
+# may drift from this backend's. With ttl-seconds=60, a leeway of ~10s avoids
+# rejecting valid tokens near the boundary.
 claims = jwt.decode(token, public_key_pem, algorithms=["RS256"],
-                    issuer="mateclaw", audience="https://api.internal")
+                    issuer="mateclaw", audience="https://api.internal", leeway=10)
 # A valid signature only proves MateClaw minted the token — it does NOT mean
 # `sub` is an authenticated account. Check the trust claim before authorizing.
 if claims.get("trust") != "authenticated":
@@ -564,6 +567,27 @@ if claims.get("trust") != "authenticated":
 user = claims["sub"]            # immutable numeric id (authenticated path)
 # → per-user authorization; invalid/expired → 401
 ```
+
+> **Clock skew.** `iat`/`exp` are computed from the MateClaw host's clock. With
+> the default 60s TTL, keep MateClaw and the REST backend on the same NTP source
+> and configure verification leeway (PyJWT `leeway=10`, jjwt
+> `setAllowedClockSkewSeconds(10)`) so minor drift doesn't reject valid tokens.
+> Raise `ttl-seconds` if your deployment has larger skew.
+
+> **Key rotation runbook (no JWKS yet).** Public-key distribution is out-of-band
+> today (a JWKS endpoint is a follow-up). Rotating the signing key is therefore
+> a **coordinated multi-host operation**, not a one-shot MateClaw change:
+> 1. Generate a new keypair (`openssl genpkey -algorithm RSA -pkcs8 ...`).
+> 2. **Update every REST backend's public key FIRST** — until every backend
+>    accepts the new public key, tokens signed with the new private key will be
+>    rejected with 401.
+> 3. Then update `MCP_IDFWD_PRIVATE_KEY_PEM` on MateClaw and restart (or rebind
+>    the properties bean if refresh-scoped).
+> 4. Watch the MateClaw log for `[McpIdentity] loaded RS256 signing key (kid=…)`
+>    — the new `kid` confirms the rotation took effect.
+>
+> A spike in backend 401s immediately after a MateClaw-side rotation almost
+> always means step 2 was missed on some backend.
 
 > Public-key distribution: for now an operator configures the public key on the
 > REST side out-of-band. A JWKS endpoint for auto-distribution + rotation is a
