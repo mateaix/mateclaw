@@ -1608,7 +1608,13 @@ public class WebChatController {
         if (agentId == null) {
             return R.fail(400, "No agent configured for this WebChat channel");
         }
-        Long workspaceId = channel.getWorkspaceId() != null ? channel.getWorkspaceId() : 1L;
+        // Use the AGENT's workspaceId, not the channel's — agent-produced
+        // artifacts are registered under the agent's workspace (chatStream
+        // builds the ChatOrigin from webAgent.getWorkspaceId()), so the list
+        // filter must read the same source to stay consistent.
+        vip.mate.agent.model.AgentEntity listAgent = agentService.getAgent(agentId);
+        Long workspaceId = listAgent != null && listAgent.getWorkspaceId() != null
+                ? listAgent.getWorkspaceId() : 1L;
         // sessionId filter uses the server-derived conversationId (same key the
         // upload/agent paths store), so the listing filter matches the
         // registration key exactly.
@@ -1753,7 +1759,10 @@ public class WebChatController {
             entity.setChannelId(channel.getId());
             entity.setAgentId(channel.getAgentId());
             entity.setConversationId(conversationId);
-            entity.setSessionLabel(sessionLabel);
+            // Store conversationId (not the raw sessionLabel) so user uploads
+            // and agent artifacts share the same sessionId format in the VO —
+            // both use the server-derived conversationId as the provenance key.
+            entity.setSessionLabel(conversationId);
             entity.setToolCallId(null);
             entity.setToolName(null);
             entity.setSource(WorkspaceArtifactService.SOURCE_USER);

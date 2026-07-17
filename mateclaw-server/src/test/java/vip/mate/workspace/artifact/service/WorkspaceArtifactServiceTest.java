@@ -103,8 +103,10 @@ class WorkspaceArtifactServiceTest {
         row.setId(42L);
         row.setToolCallId("tc_007");
         row.setArtifactType("data");
+        // Both registration paths (agent + user) now store conversationId as
+        // sessionLabel for consistency (round-3 F2 fix).
         row.setConversationId("webchat:abc12345:visitor1:sess_001");
-        row.setSessionLabel("sess_001");
+        row.setSessionLabel("webchat:abc12345:visitor1:sess_001");
         Page<WorkspaceArtifactEntity> mpPage = new Page<>(1, 50);
         mpPage.setRecords(List.of(row));
         mpPage.setTotal(1);
@@ -121,10 +123,9 @@ class WorkspaceArtifactServiceTest {
         assertEquals("tc_007", vo.getToolCallId());
         // downloadUrl is built at read time from the artifact id.
         assertEquals(WorkspaceArtifactService.DOWNLOAD_PATH_PREFIX + "42/download", vo.getDownloadUrl());
-        // sessionId returns the sessionLabel (set by the registration path);
-        // for user uploads it's the client-supplied label, for agent artifacts
-        // it's the conversationId.
-        assertEquals("sess_001", vo.getSessionId());
+        // sessionId returns the sessionLabel, which both registration paths now
+        // set to the conversationId for cross-source consistency.
+        assertEquals("webchat:abc12345:visitor1:sess_001", vo.getSessionId());
         assertFalse(result.isHasMore());
         verify(mapper).selectPage(any(Page.class), any(LambdaQueryWrapper.class));
     }
