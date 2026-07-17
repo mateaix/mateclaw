@@ -390,9 +390,11 @@ user; its environment is fixed at spawn and STDIO has no per-request header
 channel like HTTP. So per-user identity **cannot travel via env** — it must ride
 in-band with each tool call.
 
-MateClaw can inject the **authenticated username** into every tool call for a
-chosen server, so the server can call its downstream REST backend on behalf of
-that user.
+MateClaw can inject the **caller's identity** into every tool call for a chosen
+server, so the server can call its downstream REST backend on behalf of that
+user. The identity is **typed** so the backend can tell "MateClaw authenticated
+this user" apart from "this is an external/anonymous identifier" (see
+[Identity typing](#identity-typing) below).
 
 ### Enable (opt-in, per server)
 
@@ -411,10 +413,21 @@ mateclaw:
 ### Data contract
 
 When enabled, MateClaw injects the reserved argument **`__mateclaw_user__`**
-(value = authenticated username) into each tool call's JSON arguments. It is
-injected by trusted server code, **never by the LLM** — any model-supplied value
-of the same key is overwritten, so the model cannot spoof identity. When there is
-no authenticated user, nothing is injected (identity is never fabricated).
+into each tool call's JSON arguments. The value is **`<trust>:<subject>`** — a
+trust prefix followed by the subject identifier — so the backend can tell
+authenticated users apart from anonymous/external ones without verifying a JWT.
+It is injected by trusted server code, **never by the LLM** — any
+model-supplied value of the same key is overwritten, so the model cannot spoof
+identity. When there is no usable identity (cron / system / unattributed),
+nothing is injected (identity is never fabricated).
+
+The trust prefix is one of:
+
+| Prefix | Meaning | Example value |
+|---|---|---|
+| `authenticated` | MateClaw web-console login (JWT/PAT). `sub` = the user's immutable numeric id (or username on legacy paths). | `authenticated:42` |
+| `anonymous` | webchat visitor / third-party `endUserId`. **No MateClaw account backs it.** | `anonymous:visitor-xyz` |
+| `external` | IM sender (feishu/wecom/…). External platform id. | `external:im_user_1` |
 
 The MCP server reads and strips the key, then calls REST with it plus its own
 backend API key (e.g. an `X-On-Behalf-Of` header):
@@ -432,9 +445,14 @@ API_KEY = os.environ["BACKEND_API_KEY"]      # service-level key (authenticates 
 def query_orders(keyword: str, __mateclaw_user__: str | None = None) -> str:
     if not __mateclaw_user__:
         raise ValueError("missing injected identity")   # reject identity-less calls
+    # __mateclaw_user__ is "<trust>:<subject>", e.g. "authenticated:42".
+    # Split off the trust prefix; authorize on-behalf-of only for "authenticated".
+    trust, _, subject = __mateclaw_user__.partition(":")
+    if trust != "authenticated":
+        raise ValueError(f"refusing on-behalf-of for non-authenticated identity: {__mateclaw_user__}")
     headers = {
         "Authorization": f"ApiKey {API_KEY}",            # service identity
-        "X-On-Behalf-Of": __mateclaw_user__,             # the acting user
+        "X-On-Behalf-Of": subject,                       # the acting user
     }
     r = httpx.get(f"{REST_BASE}/orders", params={"q": keyword}, headers=headers, timeout=30)
     r.raise_for_status()
@@ -447,6 +465,29 @@ if __name__ == "__main__":
 > If a tool's input schema is `additionalProperties: false`, declare
 > `__mateclaw_user__` as an optional parameter (as above) or strict validation
 > will reject it.
+
+### Identity typing
+
+Not every requester is a MateClaw-authenticated account. The injected identity is
+typed so the REST backend can decide how much to trust the on-behalf-of call:
+
+- **`authenticated`** — web-console login (JWT/PAT). MateClaw vouches for this
+  user. `sub` is the user's immutable numeric id (`ChatOrigin.requesterUserId`)
+  on the standard path, falling back to the username on legacy ThreadLocal-only
+  paths. The backend may authorize on-behalf-of freely.
+- **`anonymous`** — webchat visitor / third-party single-account `endUserId`. No
+  MateClaw account backs it; `sub` is the visitor id. **The backend must treat
+  this as unauthenticated** and decide for itself whether/how to serve — do not
+  map `sub` onto a MateClaw account, and do not grant authenticated-user rights.
+- **`external`** — IM sender (feishu/wecom/…). `sub` is the platform sender id;
+  same caveat as anonymous.
+- _(nothing injected)_ — cron / system / unattributed origin. MateClaw never
+  asserts identity on behalf of a non-user (fail-closed).
+
+This typing matters most in the **signed token** model below: a verified
+signature proves the token was minted by MateClaw, **not** that the `sub` is an
+authenticated account. Always check the `trust` claim (or the plaintext prefix)
+before authorizing.
 
 ### Two trust models
 
@@ -484,15 +525,20 @@ openssl pkey -in mcp-idfwd-private.pem -pubout -out mcp-idfwd-public.pem
 # private-key-pem takes the private key body (PEM headers optional; stripped on parse)
 ```
 
-Token claims: `iss`, `sub`=user, `aud`=this server, `iat`, `exp` (short), `jti`.
-`aud` + short `exp` bound replay to tens of seconds and to one backend. **When
-token mode is on but no key is configured, it fails closed** (no token minted,
-nothing injected — the backend rejects) rather than silently downgrading to
-plaintext.
+Token claims: `iss`, `sub`=subject, `aud`=this server, `iat`, `exp` (short),
+`jti`, plus two typing claims — **`trust`** (`authenticated` / `anonymous` /
+`external`) and **`channel_type`** (`web` / `api` / `feishu` / …). `aud` + short
+`exp` bound replay to tens of seconds and to one backend. **When token mode is
+on but no key is configured, it fails closed** (no token minted, nothing injected
+— the backend rejects) rather than silently downgrading to plaintext.
 
-> `sub` carries the MateClaw user identifier (`ChatOrigin.requesterId`). If your
-> backend authorizes on an immutable numeric id, resolve username→id before
-> minting (kept decoupled from the user store here).
+> **`sub` semantics.** On the standard authenticated-web path `sub` is the user's
+> **immutable numeric id** (`ChatOrigin.requesterUserId`); on legacy
+> ThreadLocal-only paths it falls back to the username. No backend-side
+> username→id resolution is needed. Always also read the `trust` claim before
+> authorizing — a verified signature only proves MateClaw minted the token, not
+> that `sub` is an authenticated account (an anonymous visitor token also
+> verifies).
 
 The MCP server (Python) only forwards — it does not verify:
 
@@ -511,7 +557,11 @@ REST backend verifies (pseudocode):
 import jwt  # PyJWT
 claims = jwt.decode(token, public_key_pem, algorithms=["RS256"],
                     issuer="mateclaw", audience="https://api.internal")
-user = claims["sub"]            # trusted only after signature verification
+# A valid signature only proves MateClaw minted the token — it does NOT mean
+# `sub` is an authenticated account. Check the trust claim before authorizing.
+if claims.get("trust") != "authenticated":
+    raise PermissionError(f"refuse on-behalf-of for {claims.get('trust')} identity")
+user = claims["sub"]            # immutable numeric id (authenticated path)
 # → per-user authorization; invalid/expired → 401
 ```
 

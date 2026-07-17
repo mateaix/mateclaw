@@ -80,6 +80,15 @@ public class McpIdentityForwardService {
      */
     private volatile String lastAttemptedPem;
 
+    /**
+     * PEM content from which {@link #signingKey} was successfully parsed. Lets a
+     * valid-to-valid rotation take effect without a restart: when the configured
+     * PEM differs from this, the fast path falls through to a fresh parse and
+     * swaps in the rotated key (critical when the old key is being retired).
+     * {@code null} = no successful parse yet.
+     */
+    private volatile String lastSuccessfulPem;
+
     public McpIdentityForwardService(McpIdentityForwardProperties properties) {
         this.properties = properties;
     }
@@ -206,30 +215,42 @@ public class McpIdentityForwardService {
 
     /**
      * Resolve the signing key, parsing it lazily. Self-heals when the configured
-     * PEM changes (e.g. an operator fixes a malformed key or a config reload
-     * pushes a new one) — a prior failed parse is retried on the next call once
-     * {@code private-key-pem} differs from what was last attempted, so recovery
-     * no longer needs an app restart. Stays fail-closed otherwise.
+     * PEM changes (e.g. an operator fixes a malformed key, rotates a suspected
+     * compromise, or a config reload pushes a new one) — recovery no longer
+     * needs an app restart. Two self-heal cases:
+     * <ul>
+     *   <li><b>failed → fixed</b>: a prior parse left {@code signingKey} null;
+     *       the next call re-parses once the PEM differs from the last attempt.</li>
+     *   <li><b>valid → rotated</b>: {@code signingKey} is already non-null but
+     *       the configured PEM has changed; the new key is parsed and swapped in
+     *       so tokens are re-signed with the rotated key (critical when the old
+     *       key is being rotated out because it may be compromised).</li>
+     * </ul>
+     * Stays fail-closed otherwise: a parse failure leaves {@code signingKey}
+     * null and the same PEM is not retried on every call.
      */
     private PrivateKey signingKey() {
+        String pem = properties.getToken().getPrivateKeyPem();
         PrivateKey k = signingKey;
-        if (k != null) {
+        // Fast path ONLY for the steady state: a cached key parsed from the
+        // *current* PEM. Any other case (cold start, in-flight parse on another
+        // thread, rotation, or a prior failed parse) must enter the lock — we
+        // never return null from the fast path just because another thread set
+        // lastAttemptedPem, since that thread may still be mid-parse and about
+        // to publish a good key.
+        if (k != null && pem != null && pem.equals(lastSuccessfulPem)) {
             return k;
         }
-        String pem = properties.getToken().getPrivateKeyPem();
-        // Skip only while the PEM is unchanged since the last attempt — that
-        // avoids re-parsing (and re-logging) on every call. A changed PEM clears
-        // the way for a fresh parse, which is the self-healing path.
-        if (lastAttemptedPem != null && lastAttemptedPem.equals(pem)) {
-            return null;
-        }
         synchronized (this) {
-            if (signingKey != null) {
+            // Re-check under the lock: another thread may have just parsed the
+            // same (current) PEM, in which case we reuse its result.
+            if (signingKey != null && pem != null && pem.equals(lastSuccessfulPem)) {
                 return signingKey;
             }
-            // Re-check under the lock: another thread may have just attempted
-            // the same (unchanged) PEM.
-            if (lastAttemptedPem != null && lastAttemptedPem.equals(pem)) {
+            // A prior attempt at this same PEM failed (or is being retried with
+            // an unchanged value). Don't re-parse on every call — that would
+            // spam the log and burn CPU. A PEM *change* falls through to parse.
+            if (signingKey == null && lastAttemptedPem != null && lastAttemptedPem.equals(pem)) {
                 return null;
             }
             lastAttemptedPem = pem;
@@ -245,6 +266,7 @@ public class McpIdentityForwardService {
                 byte[] der = Base64.getDecoder().decode(body);
                 signingKey = KeyFactory.getInstance("RSA")
                         .generatePrivate(new PKCS8EncodedKeySpec(der));
+                lastSuccessfulPem = pem;   // remember the PEM this key was parsed from
                 log.info("[McpIdentity] loaded RS256 signing key (kid={})", properties.getToken().getKeyId());
             } catch (Exception e) {
                 log.error("[McpIdentity] failed to parse private-key-pem (expect PKCS#8 RSA): {}", e.getMessage());

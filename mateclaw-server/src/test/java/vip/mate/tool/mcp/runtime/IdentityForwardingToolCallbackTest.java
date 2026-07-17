@@ -69,4 +69,31 @@ class IdentityForwardingToolCallbackTest {
         p.setServers(Set.of("42"));
         assertThat(p.forwardsTo(42L, "other")).isTrue();          // by id
     }
+
+    @Test
+    @DisplayName("forwardsTo: null id and null name never forward (no NPE)")
+    void forwardsToNullSafe() {
+        McpIdentityForwardProperties p = new McpIdentityForwardProperties();
+        p.setServers(Set.of("svc"));
+        assertThat(p.forwardsTo(null, null)).isFalse();
+        assertThat(p.forwardsTo(null, "svc")).isTrue();
+        p.setServers(Set.of("42"));
+        assertThat(p.forwardsTo(42L, null)).isTrue();
+    }
+
+    @Test
+    @DisplayName("audienceFor(null, null) is rejected — no colliding \"null\" audience")
+    void audienceForRejectsBothNull() {
+        // Two distinct unidentified servers must NOT share the literal "null"
+        // audience — that would defeat per-server audience isolation. Require an
+        // id or name instead of silently returning a colliding sentinel.
+        McpIdentityForwardProperties p = new McpIdentityForwardProperties();
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> p.audienceFor(null, null))
+                .isInstanceOf(IllegalArgumentException.class);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> p.audienceFor(null, "  "))
+                .isInstanceOf(IllegalArgumentException.class);
+        // But a single null is fine — the other identifies the server.
+        assertThat(p.audienceFor(null, "svc")).isEqualTo("svc");
+        assertThat(p.audienceFor(42L, null)).isEqualTo("42");
+    }
 }

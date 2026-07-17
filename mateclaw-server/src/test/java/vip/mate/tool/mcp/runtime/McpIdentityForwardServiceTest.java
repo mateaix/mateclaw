@@ -16,6 +16,9 @@ import java.util.Base64;
 import java.util.Date;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -159,6 +162,29 @@ class McpIdentityForwardServiceTest {
                     .isEqualTo(McpIdentityForwardService.ResolvedIdentity.NONE);
         }
 
+        // ---- Branch coverage for the NONE returns inside classify() ----
+
+        @Test
+        @DisplayName("web channel, no requesterUserId, no ThreadLocal username → NONE")
+        void webChannelNoUserNoThreadLocal() {
+            // Do NOT seed the ThreadLocal — mirrors a thread that has never run a
+            // tool-execution executor pass (or just cleared it). The web branch's
+            // username fallback must then return NONE rather than inject garbage.
+            ChatOrigin origin = ChatOrigin.web("c1", "", 1L, null, null);
+            assertThat(svc(new McpIdentityForwardProperties()).classify(ctx(origin)))
+                    .isEqualTo(McpIdentityForwardService.ResolvedIdentity.NONE);
+        }
+
+        @Test
+        @DisplayName("non-web channel with blank requesterId → NONE")
+        void nonWebChannelBlankRequester() {
+            // A recognised channelType but no requester id: nothing to forward.
+            ChatOrigin origin = new ChatOrigin(null, "c1", "", 1L, null,
+                    null, null, false, null, "feishu", null, null, null);
+            assertThat(svc(new McpIdentityForwardProperties()).classify(ctx(origin)))
+                    .isEqualTo(McpIdentityForwardService.ResolvedIdentity.NONE);
+        }
+
         @Test
         @DisplayName("unrecognised non-web channel → downgraded to external (never authenticated)")
         void novelChannelIsDowngradedNotAuthenticated() {
@@ -248,6 +274,81 @@ class McpIdentityForwardServiceTest {
                 .parseSignedClaims(inj.get().value())
                 .getPayload();
         assertThat(claims.getSubject()).isEqualTo("42");
+    }
+
+    @Test
+    @DisplayName("signing key rotates when a valid PEM is replaced by another valid PEM (no restart)")
+    void signingKeyRotatesOnValidPemChange() {
+        // Regression for the rotation gap: once a key is cached, a subsequent
+        // valid PEM change MUST take effect without an app restart — otherwise a
+        // key retired on suspicion of compromise keeps signing tokens forever.
+        KeyPair kp1 = rsaKeyPair();
+        KeyPair kp2 = rsaKeyPair();
+        String pem1 = Base64.getEncoder().encodeToString(kp1.getPrivate().getEncoded());
+        String pem2 = Base64.getEncoder().encodeToString(kp2.getPrivate().getEncoded());
+        ChatOrigin origin = ChatOrigin.web("c1", "alice", 1L, null, null, 42L);
+
+        var p = new McpIdentityForwardProperties();
+        p.getToken().setEnabled(true);
+        p.getToken().setIssuer("mateclaw");
+        p.getToken().setTtlSeconds(60);
+        p.getToken().setPrivateKeyPem(pem1);
+        McpIdentityForwardService service = svc(p);
+
+        // 1. First token is signed with key #1 and verifies with pubkey #1.
+        String tok1 = service.resolve(ctx(origin), "my-api").orElseThrow().value();
+        Jwts.parser().verifyWith(kp1.getPublic()).requireAudience("my-api").build()
+                .parseSignedClaims(tok1).getPayload();
+
+        // 2. Rotate to key #2. The next token MUST verify with pubkey #2 (not #1).
+        p.getToken().setPrivateKeyPem(pem2);
+        String tok2 = service.resolve(ctx(origin), "my-api").orElseThrow().value();
+        Jwts.parser().verifyWith(kp2.getPublic()).requireAudience("my-api").build()
+                .parseSignedClaims(tok2).getPayload();
+        // And the rotated token must NOT verify with the OLD pubkey anymore.
+        org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+                Jwts.parser().verifyWith(kp1.getPublic()).requireAudience("my-api").build()
+                        .parseSignedClaims(tok2).getPayload());
+    }
+
+    @Test
+    @DisplayName("signing-key parse is single-flight under concurrency (all tokens verify)")
+    void signingKeyParseIsSingleFlightConcurrently() throws Exception {
+        // Stress the double-checked locking: N threads hit a cold service at once.
+        // Every returned token must verify against the single public key.
+        KeyPair kp = rsaKeyPair();
+        var p = new McpIdentityForwardProperties();
+        p.getToken().setEnabled(true);
+        p.getToken().setIssuer("mateclaw");
+        p.getToken().setTtlSeconds(60);
+        p.getToken().setPrivateKeyPem(Base64.getEncoder().encodeToString(kp.getPrivate().getEncoded()));
+        McpIdentityForwardService service = svc(p);
+
+        int n = 16;
+        // Use Callables so a thread that loses the race still returns its result;
+        // no shared mutable array, no early-return-drops-slot hazard.
+        java.util.List<java.util.concurrent.Callable<String>> tasks = new java.util.ArrayList<>(n);
+        for (int i = 0; i < n; i++) {
+            tasks.add(() -> {
+                ChatOrigin origin = ChatOrigin.web("c1", "alice", 1L, null, null, 42L);
+                return service.resolve(ctx(origin), "my-api").orElseThrow().value();
+            });
+        }
+        ExecutorService pool = Executors.newFixedThreadPool(n);
+        try {
+            java.util.List<java.util.concurrent.Future<String>> futures = pool.invokeAll(tasks);
+            pool.shutdown();
+            org.assertj.core.api.Assertions.assertThat(pool.awaitTermination(30, TimeUnit.SECONDS)).isTrue();
+
+            for (java.util.concurrent.Future<String> f : futures) {
+                String t = f.get();   // propagates any execution exception
+                assertThat(t).isNotBlank();
+                Jwts.parser().verifyWith(kp.getPublic()).requireAudience("my-api").build()
+                        .parseSignedClaims(t).getPayload();
+            }
+        } finally {
+            pool.shutdownNow();
+        }
     }
 
     @Test
