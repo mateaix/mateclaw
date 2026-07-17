@@ -121,7 +121,9 @@ class WorkspaceArtifactServiceTest {
         assertEquals("tc_007", vo.getToolCallId());
         // downloadUrl is built at read time from the artifact id.
         assertEquals(WorkspaceArtifactService.DOWNLOAD_PATH_PREFIX + "42/download", vo.getDownloadUrl());
-        // sessionId returns the human-facing sessionLabel, not the composite conversationId.
+        // sessionId returns the sessionLabel (set by the registration path);
+        // for user uploads it's the client-supplied label, for agent artifacts
+        // it's the conversationId.
         assertEquals("sess_001", vo.getSessionId());
         assertFalse(result.isHasMore());
         verify(mapper).selectPage(any(Page.class), any(LambdaQueryWrapper.class));

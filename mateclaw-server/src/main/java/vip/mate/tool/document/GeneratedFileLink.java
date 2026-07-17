@@ -132,7 +132,12 @@ public final class GeneratedFileLink {
         entity.setWorkspaceId(origin.workspaceId());
         entity.setChannelId(origin.channelId());
         entity.setConversationId(origin.conversationId());
-        entity.setSessionLabel(extractSessionLabel(origin.conversationId()));
+        // Store the conversationId as the provenance label. We deliberately do
+        // not parse the conversationId for a "clean" sessionId because visitorId
+        // may legally contain colons (VISITOR_ID_PATTERN allows ':'), making
+        // colon-based splitting ambiguous. The consumer filters by sessionId via
+        // the list endpoint, which re-derives the same conversationId server-side.
+        entity.setSessionLabel(origin.conversationId());
         entity.setToolCallId(ChatOrigin.toolCallId(ctx));
         entity.setToolName(ChatOrigin.toolName(ctx));
         entity.setSource(WorkspaceArtifactService.SOURCE_AGENT);
@@ -149,28 +154,4 @@ public final class GeneratedFileLink {
 
     /** Internal: the cache id + resolved download URL produced by a stash. */
     private record ArtifactRef(String id, String url) {}
-
-    /**
-     * Extract the human-facing session label from a server-derived
-     * conversationId of the form {@code webchat:{key8}:{visitorId}:{sessionId}}.
-     * Returns the full conversationId when it does not match the webchat shape
-     * (non-webchat origins, hashed ids).
-     */
-    static String extractSessionLabel(@Nullable String conversationId) {
-        if (conversationId == null || conversationId.isBlank()) {
-            return null;
-        }
-        // webchat:{key8}:{visitorId}:{sessionId} → sessionId is the 4th segment.
-        // Non-webchat or hashed conversationIds won't match; return them as-is
-        // so the consumer at least sees a non-null provenance label.
-        if (conversationId.startsWith("webchat:")) {
-            int first = conversationId.indexOf(':');
-            int second = conversationId.indexOf(':', first + 1);
-            int third = conversationId.indexOf(':', second + 1);
-            if (third > 0 && third < conversationId.length() - 1) {
-                return conversationId.substring(third + 1);
-            }
-        }
-        return conversationId;
-    }
 }

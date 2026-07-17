@@ -1649,6 +1649,9 @@ public class WebChatController {
         if (!verifyVisitorToken(visitorTokenSecret, channel.getId(), visitorId, visitorToken)) {
             return ResponseEntity.status(401).build();
         }
+        if (channel.getAgentId() == null) {
+            return ResponseEntity.status(400).build();
+        }
         Long artifactId;
         try {
             artifactId = Long.parseLong(id);
