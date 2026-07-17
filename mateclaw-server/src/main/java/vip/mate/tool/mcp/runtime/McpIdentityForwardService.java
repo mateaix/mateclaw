@@ -76,9 +76,14 @@ public class McpIdentityForwardService {
      * PEM content last handed to the parser. Lets the cache self-heal when the
      * operator fixes the config (or a config reload pushes a new key) without an
      * app restart: if the PEM changed since the last attempt we retry instead of
-     * sticking with a permanent null. {@code null} = never attempted.
+     * sticking with a permanent null. May itself be {@code null} (when the
+     * configured PEM is empty), so {@link #attemptedPem} distinguishes "never
+     * attempted" from "attempted a null/empty PEM".
      */
     private volatile String lastAttemptedPem;
+
+    /** {@code true} once any PEM value (incl. null/empty) has been attempted. */
+    private volatile boolean attemptedPem;
 
     /**
      * PEM content from which {@link #signingKey} was successfully parsed. Lets a
@@ -214,10 +219,13 @@ public class McpIdentityForwardService {
     }
 
     /**
-     * Resolve the signing key, parsing it lazily. Self-heals when the configured
-     * PEM changes (e.g. an operator fixes a malformed key, rotates a suspected
-     * compromise, or a config reload pushes a new one) — recovery no longer
-     * needs an app restart. Two self-heal cases:
+     * Resolve the signing key, parsing it lazily. Picks up a changed
+     * {@code private-key-pem} on the next call without a JVM restart, but only
+     * if the properties bean is actually re-bound at runtime — the default
+     * {@code @ConfigurationProperties} binding reads {@code application.yml}
+     * once at startup, so in the stock deployment a static config edit still
+     * requires a restart. Self-heal applies when properties are mutated
+     * programmatically or a refresh-scope bean is re-bound:
      * <ul>
      *   <li><b>failed → fixed</b>: a prior parse left {@code signingKey} null;
      *       the next call re-parses once the PEM differs from the last attempt.</li>
@@ -225,9 +233,12 @@ public class McpIdentityForwardService {
      *       the configured PEM has changed; the new key is parsed and swapped in
      *       so tokens are re-signed with the rotated key (critical when the old
      *       key is being rotated out because it may be compromised).</li>
+     *   <li><b>valid → invalid</b>: the new PEM fails to parse; the stale key
+     *       keeps serving (best-effort availability) and the bad PEM is NOT
+     *       re-parsed/logged on every subsequent call.</li>
      * </ul>
-     * Stays fail-closed otherwise: a parse failure leaves {@code signingKey}
-     * null and the same PEM is not retried on every call.
+     * Stays fail-closed otherwise: a parse failure with no prior key leaves
+     * {@code signingKey} null and the same PEM is not retried on every call.
      */
     private PrivateKey signingKey() {
         String pem = properties.getToken().getPrivateKeyPem();
@@ -247,12 +258,18 @@ public class McpIdentityForwardService {
             if (signingKey != null && pem != null && pem.equals(lastSuccessfulPem)) {
                 return signingKey;
             }
-            // A prior attempt at this same PEM failed (or is being retried with
-            // an unchanged value). Don't re-parse on every call — that would
-            // spam the log and burn CPU. A PEM *change* falls through to parse.
-            if (signingKey == null && lastAttemptedPem != null && lastAttemptedPem.equals(pem)) {
-                return null;
+            // Dedup EVERY repeated attempt of the *same* PEM value — whether the
+            // prior attempt left signingKey null (failed/empty PEM) or left a
+            // stale key from an older PEM (valid→invalid rotation). Re-parsing
+            // the identical broken/unchanged PEM on every call would spam the
+            // log and burn CPU with no benefit. Uses Objects.equals so a null
+            // configured PEM dedups against a null lastAttemptedPem; the
+            // attemptedPem flag distinguishes "first ever call" (must log once)
+            // from "already tried this null PEM" (skip).
+            if (attemptedPem && java.util.Objects.equals(lastAttemptedPem, pem)) {
+                return signingKey;   // null if never parsed, or the stale key if rotated-to-invalid
             }
+            attemptedPem = true;
             lastAttemptedPem = pem;
             if (pem == null || pem.isBlank()) {
                 log.error("[McpIdentity] token mode enabled but mateclaw.mcp.identity-forward.token.private-key-pem is empty; "
@@ -264,11 +281,16 @@ public class McpIdentityForwardService {
                         .replaceAll("-----END (.*)-----", "")
                         .replaceAll("\\s", "");
                 byte[] der = Base64.getDecoder().decode(body);
-                signingKey = KeyFactory.getInstance("RSA")
+                PrivateKey parsed = KeyFactory.getInstance("RSA")
                         .generatePrivate(new PKCS8EncodedKeySpec(der));
-                lastSuccessfulPem = pem;   // remember the PEM this key was parsed from
+                signingKey = parsed;             // publish only on success
+                lastSuccessfulPem = pem;         // remember the PEM this key was parsed from
                 log.info("[McpIdentity] loaded RS256 signing key (kid={})", properties.getToken().getKeyId());
             } catch (Exception e) {
+                // Parse failed: leave signingKey/lastSuccessfulPem unchanged.
+                // If a prior good key exists it keeps serving (best-effort
+                // availability); if not, signingKey stays null (fail-closed).
+                // Either way the dedup above prevents re-parsing this same PEM.
                 log.error("[McpIdentity] failed to parse private-key-pem (expect PKCS#8 RSA): {}", e.getMessage());
             }
             return signingKey;

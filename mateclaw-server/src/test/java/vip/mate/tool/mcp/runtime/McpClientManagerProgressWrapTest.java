@@ -124,7 +124,7 @@ class McpClientManagerProgressWrapTest {
     void progressPathInjectsPlaintextIdentity() throws Exception {
         McpSyncClient client = mock(McpSyncClient.class);
         // A minimal non-null CallToolResult so the wrapper's serializeResult works.
-        org.mockito.Mockito.when(client.callTool(any()))
+        org.mockito.Mockito.when(client.callTool(any(McpSchema.CallToolRequest.class)))
                 .thenReturn(new McpSchema.CallToolResult(List.of(), false));
         ToolCallback cb = stub("long_task");
         ObjectMapper mapper = new ObjectMapper();
@@ -170,7 +170,7 @@ class McpClientManagerProgressWrapTest {
             throw new IllegalStateException(e);
         }
         McpSyncClient client = mock(McpSyncClient.class);
-        org.mockito.Mockito.when(client.callTool(any()))
+        org.mockito.Mockito.when(client.callTool(any(McpSchema.CallToolRequest.class)))
                 .thenReturn(new McpSchema.CallToolResult(List.of(), false));
         ToolCallback cb = stub("long_task");
         ObjectMapper mapper = new ObjectMapper();
@@ -211,7 +211,7 @@ class McpClientManagerProgressWrapTest {
     @DisplayName("progress path with no identity (cron) injects nothing, still calls with progress token")
     void progressPathNoIdentityInjectsNothing() throws Exception {
         McpSyncClient client = mock(McpSyncClient.class);
-        org.mockito.Mockito.when(client.callTool(any()))
+        org.mockito.Mockito.when(client.callTool(any(McpSchema.CallToolRequest.class)))
                 .thenReturn(new McpSchema.CallToolResult(List.of(), false));
         ToolCallback cb = stub("long_task");
         ObjectMapper mapper = new ObjectMapper();

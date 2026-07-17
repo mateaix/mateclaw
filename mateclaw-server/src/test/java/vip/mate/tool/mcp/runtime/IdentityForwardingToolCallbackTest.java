@@ -37,6 +37,25 @@ class IdentityForwardingToolCallbackTest {
     }
 
     @Test
+    @DisplayName("overwrites a NON-STRING LLM value of the reserved key (number / object / array)")
+    void overwritesNonStringLlmValue() throws Exception {
+        // The model may try to spoof identity with a non-scalar value; node.put
+        // replaces any prior value type with the trusted string unconditionally.
+        for (String adversarial : new String[]{
+                "{\"" + KEY + "\":123}",
+                "{\"" + KEY + "\":{\"admin\":true}}",
+                "{\"" + KEY + "\":[\"a\",\"b\"]}",
+                "{\"" + KEY + "\":null}"}) {
+            String out = IdentityForwardingToolCallback.withClaim(adversarial, KEY, "alice");
+            JsonNode node = MAPPER.readTree(out);
+            assertThat(node.get(KEY).isTextual())
+                    .as("reserved key must be coerced to the trusted string for input: %s", adversarial)
+                    .isTrue();
+            assertThat(node.get(KEY).asText()).isEqualTo("alice");
+        }
+    }
+
+    @Test
     @DisplayName("blank/empty input becomes a fresh object carrying the claim")
     void emptyInputGetsObject() throws Exception {
         for (String in : new String[]{null, "", "   "}) {
@@ -68,6 +87,47 @@ class IdentityForwardingToolCallbackTest {
         assertThat(p.forwardsTo(42L, "other")).isFalse();
         p.setServers(Set.of("42"));
         assertThat(p.forwardsTo(42L, "other")).isTrue();          // by id
+    }
+
+    @Test
+    @DisplayName("opt-in matching: OR semantics — either id OR name match forwards")
+    void forwardsToOrSemantics() {
+        // A server listed under BOTH its name and id must forward; a regression
+        // that required BOTH to match would silently disable opt-in here.
+        McpIdentityForwardProperties p = new McpIdentityForwardProperties();
+        p.setServers(Set.of("svc", "42"));
+        assertThat(p.forwardsTo(42L, "svc")).isTrue();            // both present
+        assertThat(p.forwardsTo(42L, "other")).isTrue();          // id matches, name doesn't
+        assertThat(p.forwardsTo(7L, "svc")).isTrue();             // name matches, id doesn't
+        assertThat(p.forwardsTo(7L, "other")).isFalse();          // neither
+    }
+
+    @Test
+    @DisplayName("call(toolInput) with NO ToolContext injects nothing (fail-closed)")
+    void callWithoutToolContextInjectsNothing() throws Exception {
+        // The single-arg call() has no ToolContext → classify() returns NONE →
+        // the input must pass through to the delegate UNMODIFIED. Guards against
+        // a future refactor that falls back to a stale ThreadLocal username.
+        java.util.concurrent.atomic.AtomicReference<String> captured = new java.util.concurrent.atomic.AtomicReference<>();
+        org.springframework.ai.tool.ToolCallback delegate = new org.springframework.ai.tool.ToolCallback() {
+            private final org.springframework.ai.tool.definition.ToolDefinition def =
+                    org.springframework.ai.tool.definition.DefaultToolDefinition.builder()
+                            .name("t").description("").inputSchema("{}").build();
+            @Override public org.springframework.ai.tool.definition.ToolDefinition getToolDefinition() { return def; }
+            @Override public String call(String toolInput) { captured.set(toolInput); return "ok"; }
+        };
+        McpIdentityForwardProperties props = new McpIdentityForwardProperties();
+        props.setServers(Set.of("svc"));
+        McpIdentityForwardService idSvc = new McpIdentityForwardService(props);
+        IdentityForwardingToolCallback cb = new IdentityForwardingToolCallback(delegate, idSvc, "svc");
+
+        cb.call("{\"q\":\"hi\"}");
+
+        JsonNode node = MAPPER.readTree(captured.get());
+        assertThat(node.has(McpIdentityForwardProperties.USER_ARG))
+                .as("no ToolContext ⇒ no identity injected").isFalse();
+        assertThat(node.has(McpIdentityForwardProperties.TOKEN_ARG)).isFalse();
+        assertThat(node.get("q").asText()).isEqualTo("hi");
     }
 
     @Test
