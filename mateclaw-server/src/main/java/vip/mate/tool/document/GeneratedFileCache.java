@@ -162,9 +162,8 @@ public class GeneratedFileCache {
      * Store bytes that have been registered into an Agent's workspace catalog
      * (issue #514). A persistent entry is exempt from the {@link #TTL} sweep so
      * the download link stays live for the lifetime of the workspace — not 7
-     * days. Returns the id, or {@code null} if persistence failed (the caller
-     * treats a {@code null} id as "not registered" and falls back to the
-     * standard TTL path).
+     * days. Always returns a non-null id (disk-write failures are best-effort:
+     * the in-memory entry still serves the current process, same as {@link #put}).
      */
     public String putPersistent(byte[] bytes, String filename, String mimeType) {
         return put(bytes, filename, mimeType, true);

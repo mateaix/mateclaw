@@ -51,6 +51,14 @@ public class WorkspaceArtifactService {
     private static final int MAX_PAGE_SIZE = 200;
     private static final int DEFAULT_PAGE_SIZE = 50;
 
+    /**
+     * Base path of the workspace-scoped download endpoint (issue #514). The
+     * downloadUrl in VOs is built from the artifact id at read time so it is
+     * always correct regardless of when the row was written — there is no
+     * id-bearing URL to get stale at insert time.
+     */
+    public static final String DOWNLOAD_PATH_PREFIX = "/api/v1/channels/webchat/artifacts/";
+
     private static final DateTimeFormatter ISO_UTC =
             DateTimeFormatter.ISO_OFFSET_DATE_TIME.withZone(ZoneOffset.UTC);
 
@@ -72,6 +80,19 @@ public class WorkspaceArtifactService {
                     entity.getName(), entity.getConversationId(), e.toString());
             return null;
         }
+    }
+
+    /**
+     * Look up a single artifact by id. Used by the download endpoint to resolve
+     * the backing-store reference without coupling to session-scoped resolution.
+     *
+     * @return the entity, or {@code null} if not found / soft-deleted.
+     */
+    public WorkspaceArtifactEntity findById(Long id) {
+        if (id == null) {
+            return null;
+        }
+        return mapper.selectById(id);
     }
 
     /**
@@ -154,6 +175,12 @@ public class WorkspaceArtifactService {
     }
 
     private static ArtifactVO toVO(WorkspaceArtifactEntity e) {
+        // Prefer the human-facing session label (sess_001) for the consumer; fall
+        // back to the server-derived conversationId when no label was recorded
+        // (shouldn't happen for webchat, but guards against cron/test origins).
+        String sessionId = e.getSessionLabel() != null && !e.getSessionLabel().isBlank()
+                ? e.getSessionLabel()
+                : e.getConversationId();
         return ArtifactVO.builder()
                 .id(String.valueOf(e.getId()))
                 .name(e.getName())
@@ -161,8 +188,11 @@ public class WorkspaceArtifactService {
                 .type(e.getArtifactType())
                 .size(e.getSizeBytes())
                 .mime(e.getMime())
-                .downloadUrl(e.getDownloadUrl())
-                .sessionId(e.getConversationId())
+                // Build the download URL at read time from the id — it is always
+                // correct regardless of when the row was inserted (issue #514
+                // review fix). The row's own downloadUrl column is not used.
+                .downloadUrl(DOWNLOAD_PATH_PREFIX + e.getId() + "/download")
+                .sessionId(sessionId)
                 .toolCallId(e.getToolCallId())
                 .createdAt(e.getCreateTime() != null
                         ? ISO_UTC.format(e.getCreateTime())

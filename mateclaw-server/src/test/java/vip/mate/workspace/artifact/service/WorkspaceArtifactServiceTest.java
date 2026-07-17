@@ -7,6 +7,7 @@ import org.junit.jupiter.api.Test;
 import vip.mate.workspace.artifact.model.WorkspaceArtifactEntity;
 import vip.mate.workspace.artifact.repository.WorkspaceArtifactMapper;
 import vip.mate.workspace.artifact.vo.ArtifactPageVO;
+import vip.mate.workspace.artifact.vo.ArtifactVO;
 
 import java.util.List;
 
@@ -99,8 +100,11 @@ class WorkspaceArtifactServiceTest {
     @SuppressWarnings("unchecked")
     void listWithFilters() {
         WorkspaceArtifactEntity row = newEntity("持仓.xlsx", WorkspaceArtifactService.SOURCE_AGENT);
+        row.setId(42L);
         row.setToolCallId("tc_007");
         row.setArtifactType("data");
+        row.setConversationId("webchat:abc12345:visitor1:sess_001");
+        row.setSessionLabel("sess_001");
         Page<WorkspaceArtifactEntity> mpPage = new Page<>(1, 50);
         mpPage.setRecords(List.of(row));
         mpPage.setTotal(1);
@@ -110,12 +114,57 @@ class WorkspaceArtifactServiceTest {
 
         assertEquals(1, result.getTotal());
         assertEquals(1, result.getItems().size());
-        assertEquals("持仓.xlsx", result.getItems().get(0).getName());
-        assertEquals("agent", result.getItems().get(0).getSource());
-        assertEquals("data", result.getItems().get(0).getType());
-        assertEquals("tc_007", result.getItems().get(0).getToolCallId());
+        ArtifactVO vo = result.getItems().get(0);
+        assertEquals("持仓.xlsx", vo.getName());
+        assertEquals("agent", vo.getSource());
+        assertEquals("data", vo.getType());
+        assertEquals("tc_007", vo.getToolCallId());
+        // downloadUrl is built at read time from the artifact id.
+        assertEquals(WorkspaceArtifactService.DOWNLOAD_PATH_PREFIX + "42/download", vo.getDownloadUrl());
+        // sessionId returns the human-facing sessionLabel, not the composite conversationId.
+        assertEquals("sess_001", vo.getSessionId());
         assertFalse(result.isHasMore());
         verify(mapper).selectPage(any(Page.class), any(LambdaQueryWrapper.class));
+    }
+
+    @Test
+    @DisplayName("sessionId falls back to conversationId when sessionLabel is null")
+    @SuppressWarnings("unchecked")
+    void sessionIdFallback() {
+        WorkspaceArtifactEntity row = newEntity("report.docx", WorkspaceArtifactService.SOURCE_AGENT);
+        row.setId(7L);
+        row.setConversationId("webchat:abc:visitor1:sess_002");
+        row.setSessionLabel(null);
+        Page<WorkspaceArtifactEntity> mpPage = new Page<>(1, 50);
+        mpPage.setRecords(List.of(row));
+        mpPage.setTotal(1);
+        when(mapper.selectPage(any(Page.class), any(LambdaQueryWrapper.class))).thenReturn(mpPage);
+
+        ArtifactPageVO result = service.list(10L, 1L, null, null, null, 1, 50);
+
+        assertEquals("webchat:abc:visitor1:sess_002", result.getItems().get(0).getSessionId());
+    }
+
+    // -------- findById --------
+
+    @Test
+    @DisplayName("findById delegates to mapper.selectById")
+    void findByIdDelegates() {
+        WorkspaceArtifactEntity entity = newEntity("x.docx", WorkspaceArtifactService.SOURCE_AGENT);
+        when(mapper.selectById(42L)).thenReturn(entity);
+
+        WorkspaceArtifactEntity found = service.findById(42L);
+
+        assertSame(entity, found);
+        verify(mapper).selectById(42L);
+    }
+
+    @Test
+    @DisplayName("findById returns null for null id or not-found")
+    void findByIdMisses() {
+        assertNull(service.findById(null));
+        when(mapper.selectById(999L)).thenReturn(null);
+        assertNull(service.findById(999L));
     }
 
     @Test

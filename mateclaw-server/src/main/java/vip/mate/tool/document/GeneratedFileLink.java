@@ -122,15 +122,17 @@ public final class GeneratedFileLink {
         }
         ChatOrigin origin = ChatOrigin.from(ctx);
         Long agentId = origin.agentId();
-        // No agent → not a workspace artifact (cron/test render). Skip silently.
-        if (agentId == null) {
+        // No agent/workspace → not a workspace artifact (cron/test render).
+        // Skip silently — such files are not workspace-catalog material.
+        if (agentId == null || origin.workspaceId() == null) {
             return;
         }
         WorkspaceArtifactEntity entity = new WorkspaceArtifactEntity();
         entity.setAgentId(agentId);
-        entity.setWorkspaceId(origin.workspaceId() != null ? origin.workspaceId() : 0L);
+        entity.setWorkspaceId(origin.workspaceId());
         entity.setChannelId(origin.channelId());
         entity.setConversationId(origin.conversationId());
+        entity.setSessionLabel(extractSessionLabel(origin.conversationId()));
         entity.setToolCallId(ChatOrigin.toolCallId(ctx));
         entity.setToolName(ChatOrigin.toolName(ctx));
         entity.setSource(WorkspaceArtifactService.SOURCE_AGENT);
@@ -140,10 +142,35 @@ public final class GeneratedFileLink {
         entity.setSizeBytes(bytes != null ? (long) bytes.length : 0L);
         entity.setStorageKind(storageKind);
         entity.setStorageRef(cacheId);
-        entity.setDownloadUrl(GeneratedFileCache.DOWNLOAD_PATH_PREFIX + cacheId);
+        // downloadUrl is NOT set here — WorkspaceArtifactService.toVO() builds it
+        // at read time from the artifact id, so it is always correct.
         service.register(entity);
     }
 
     /** Internal: the cache id + resolved download URL produced by a stash. */
     private record ArtifactRef(String id, String url) {}
+
+    /**
+     * Extract the human-facing session label from a server-derived
+     * conversationId of the form {@code webchat:{key8}:{visitorId}:{sessionId}}.
+     * Returns the full conversationId when it does not match the webchat shape
+     * (non-webchat origins, hashed ids).
+     */
+    static String extractSessionLabel(@Nullable String conversationId) {
+        if (conversationId == null || conversationId.isBlank()) {
+            return null;
+        }
+        // webchat:{key8}:{visitorId}:{sessionId} → sessionId is the 4th segment.
+        // Non-webchat or hashed conversationIds won't match; return them as-is
+        // so the consumer at least sees a non-null provenance label.
+        if (conversationId.startsWith("webchat:")) {
+            int first = conversationId.indexOf(':');
+            int second = conversationId.indexOf(':', first + 1);
+            int third = conversationId.indexOf(':', second + 1);
+            if (third > 0 && third < conversationId.length() - 1) {
+                return conversationId.substring(third + 1);
+            }
+        }
+        return conversationId;
+    }
 }
