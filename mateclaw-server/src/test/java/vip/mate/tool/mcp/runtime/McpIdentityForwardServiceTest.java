@@ -15,7 +15,6 @@ import java.security.KeyPairGenerator;
 import java.util.Base64;
 import java.util.Date;
 import java.util.Map;
-import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -176,43 +175,39 @@ class McpIdentityForwardServiceTest {
         }
     }
 
-    // ==================== Resolution: plaintext & token modes ====================
+    // ==================== Resolution: plaintext & token modes (_meta) ====================
 
     @Test
-    @DisplayName("plaintext mode: injects '<trust>:<subject>' under USER_ARG")
+    @DisplayName("plaintext mode: resolveMeta returns '<trust>:<subject>' under META_USER_KEY")
     void plaintextTyped() {
         ChatOrigin origin = ChatOrigin.web("c1", "alice", 1L, null, null, 42L);
-        var p = new McpIdentityForwardProperties();
-        Optional<McpIdentityForwardService.Injection> inj = svc(p).resolve(ctx(origin), "my-api");
-        assertThat(inj).isPresent();
-        assertThat(inj.get().key()).isEqualTo(McpIdentityForwardProperties.USER_ARG);
-        assertThat(inj.get().value()).isEqualTo("authenticated:42");
+        Map<String, String> meta = svc(new McpIdentityForwardProperties()).resolveMeta(ctx(origin), "my-api");
+        assertThat(meta).containsEntry(McpIdentityForwardProperties.META_USER_KEY, "authenticated:42");
+        assertThat(meta).doesNotContainKey(McpIdentityForwardProperties.META_TOKEN_KEY);
     }
 
     @Test
     @DisplayName("plaintext mode: anonymous visitor carries trust=anonymous prefix")
     void plaintextAnonymous() {
         ChatOrigin origin = ChatOrigin.web("c1", "visitor-xyz", 1L, null).withSender(null, "api", null);
-        Optional<McpIdentityForwardService.Injection> inj =
-                svc(new McpIdentityForwardProperties()).resolve(ctx(origin), "my-api");
-        assertThat(inj).isPresent();
-        assertThat(inj.get().value()).startsWith("anonymous:visitor-xyz");
+        Map<String, String> meta = svc(new McpIdentityForwardProperties()).resolveMeta(ctx(origin), "my-api");
+        assertThat(meta.get(McpIdentityForwardProperties.META_USER_KEY)).startsWith("anonymous:visitor-xyz");
     }
 
     @Test
-    @DisplayName("no usable identity (cron): nothing injected")
+    @DisplayName("no usable identity (cron): empty _meta map")
     void noIdentity() {
         ChatOrigin origin = ChatOrigin.cron("c1", 1L, null, 9L, null);
-        assertThat(svc(new McpIdentityForwardProperties()).resolve(ctx(origin), "my-api")).isEmpty();
+        assertThat(svc(new McpIdentityForwardProperties()).resolveMeta(ctx(origin), "my-api")).isEmpty();
     }
 
     @Test
-    @DisplayName("token mode but no key: fail-closed (nothing injected)")
+    @DisplayName("token mode but no key: fail-closed (empty _meta map)")
     void tokenModeNoKey() {
         ChatOrigin origin = ChatOrigin.web("c1", "alice", 1L, null, null, 42L);
         var p = new McpIdentityForwardProperties();
         p.getToken().setEnabled(true);   // no private-key-pem
-        assertThat(svc(p).resolve(ctx(origin), "my-api")).isEmpty();
+        assertThat(svc(p).resolveMeta(ctx(origin), "my-api")).isEmpty();
     }
 
     @Test
@@ -230,14 +225,14 @@ class McpIdentityForwardServiceTest {
         // 1. Malformed key → fail-closed.
         p.getToken().setPrivateKeyPem("not-a-valid-pem");
         McpIdentityForwardService service = svc(p);
-        assertThat(service.resolve(ctx(origin), "my-api")).isEmpty();
+        assertThat(service.resolveMeta(ctx(origin), "my-api")).isEmpty();
 
         // 2. Operator fixes the config (or a reload pushes a good key) → next
         //    call re-parses and issues a token, without needing an app restart.
         p.getToken().setPrivateKeyPem(goodPem);
-        Optional<McpIdentityForwardService.Injection> inj = service.resolve(ctx(origin), "my-api");
-        assertThat(inj).isPresent();
-        assertThat(inj.get().key()).isEqualTo(McpIdentityForwardProperties.TOKEN_ARG);
+        Map<String, String> meta = service.resolveMeta(ctx(origin), "my-api");
+        assertThat(meta).containsKey(McpIdentityForwardProperties.META_TOKEN_KEY);
+        String jwt = meta.get(McpIdentityForwardProperties.META_TOKEN_KEY);
 
         // The minted token verifies against the matching public key.
         Claims claims = Jwts.parser()
@@ -245,21 +240,21 @@ class McpIdentityForwardServiceTest {
                 .requireIssuer("mateclaw")
                 .requireAudience("my-api")
                 .build()
-                .parseSignedClaims(inj.get().value())
+                .parseSignedClaims(jwt)
                 .getPayload();
         assertThat(claims.getSubject()).isEqualTo("42");
     }
 
     @Test
-    @DisplayName("token mode: mints RS256 JWT that verifies with trust/channel_type claims")
+    @DisplayName("token mode: mints RS256 JWT under META_TOKEN_KEY that verifies with trust/channel_type claims")
     void tokenMintAndVerify() throws Exception {
         KeyPair kp = rsaKeyPair();
         var p = tokenProps(kp);
         ChatOrigin origin = ChatOrigin.web("c1", "alice", 1L, null, null, 42L);
 
-        Optional<McpIdentityForwardService.Injection> inj = svc(p).resolve(ctx(origin), "my-api");
-        assertThat(inj).isPresent();
-        assertThat(inj.get().key()).isEqualTo(McpIdentityForwardProperties.TOKEN_ARG);
+        Map<String, String> meta = svc(p).resolveMeta(ctx(origin), "my-api");
+        assertThat(meta).containsKey(McpIdentityForwardProperties.META_TOKEN_KEY);
+        String jwt = meta.get(McpIdentityForwardProperties.META_TOKEN_KEY);
 
         // The REST backend verifies with the public key and reads the typed claims.
         Claims claims = Jwts.parser()
@@ -267,7 +262,7 @@ class McpIdentityForwardServiceTest {
                 .requireIssuer("mateclaw")
                 .requireAudience("my-api")
                 .build()
-                .parseSignedClaims(inj.get().value())
+                .parseSignedClaims(jwt)
                 .getPayload();
 
         assertThat(claims.getSubject()).isEqualTo("42");
@@ -284,13 +279,13 @@ class McpIdentityForwardServiceTest {
         var p = tokenProps(kp);
         ChatOrigin origin = ChatOrigin.web("c1", "visitor-xyz", 1L, null).withSender(null, "api", null);
 
-        Optional<McpIdentityForwardService.Injection> inj = svc(p).resolve(ctx(origin), "my-api");
-        assertThat(inj).isPresent();
+        Map<String, String> meta = svc(p).resolveMeta(ctx(origin), "my-api");
+        String jwt = meta.get(McpIdentityForwardProperties.META_TOKEN_KEY);
 
         Claims claims = Jwts.parser()
                 .verifyWith(kp.getPublic())
                 .build()
-                .parseSignedClaims(inj.get().value())
+                .parseSignedClaims(jwt)
                 .getPayload();
         assertThat(claims.getSubject()).isEqualTo("visitor-xyz");
         assertThat(claims.get("trust", String.class)).isEqualTo(McpIdentityForwardService.TRUST_ANONYMOUS);
@@ -304,5 +299,68 @@ class McpIdentityForwardServiceTest {
         assertThat(p.audienceFor(42L, "svc")).isEqualTo("svc");          // default = name
         p.getToken().setAudiences(Map.of("svc", "https://api.internal"));
         assertThat(p.audienceFor(42L, "svc")).isEqualTo("https://api.internal");
+    }
+
+    // ==================== JWKS endpoint ====================
+
+    @Test
+    @DisplayName("JWKS: token mode exposes one RSA public key that verifies minted tokens")
+    void jwksVerifiesMintedToken() throws Exception {
+        KeyPair kp = rsaKeyPair();
+        var p = tokenProps(kp);
+        p.getToken().setKeyId("test-kid-1");
+        McpIdentityForwardService service = svc(p);
+
+        // Mint a token.
+        ChatOrigin origin = ChatOrigin.web("c1", "alice", 1L, null, null, 42L);
+        Map<String, String> meta = service.resolveMeta(ctx(origin), "my-api");
+        String jwt = meta.get(McpIdentityForwardProperties.META_TOKEN_KEY);
+
+        // Get the JWKS.
+        var jwks = service.publicKeyJwks();
+        assertThat(jwks).hasSize(1);
+        var jwk = jwks.get(0);
+        assertThat(jwk.get("kty")).isEqualTo("RSA");
+        assertThat(jwk.get("use")).isEqualTo("sig");
+        assertThat(jwk.get("alg")).isEqualTo("RS256");
+        assertThat(jwk.get("kid")).isEqualTo("test-kid-1");
+        assertThat(jwk.get("n")).isNotNull();
+        assertThat(jwk.get("e")).isNotNull();
+
+        // Reconstruct the public key from the JWK and verify the token with it.
+        java.math.BigInteger n = new java.math.BigInteger(1,
+                Base64.getUrlDecoder().decode((String) jwk.get("n")));
+        java.math.BigInteger e = new java.math.BigInteger(1,
+                Base64.getUrlDecoder().decode((String) jwk.get("e")));
+        java.security.spec.RSAPublicKeySpec pubSpec = new java.security.spec.RSAPublicKeySpec(n, e);
+        java.security.PublicKey pubFromJwks = java.security.KeyFactory.getInstance("RSA").generatePublic(pubSpec);
+
+        Claims claims = Jwts.parser()
+                .verifyWith(pubFromJwks)
+                .requireIssuer("mateclaw")
+                .requireAudience("my-api")
+                .build()
+                .parseSignedClaims(jwt)
+                .getPayload();
+        assertThat(claims.getSubject()).isEqualTo("42");
+    }
+
+    @Test
+    @DisplayName("JWKS: plaintext mode (token disabled) → empty keys list")
+    void jwksEmptyWhenTokenDisabled() {
+        McpIdentityForwardService service = svc(new McpIdentityForwardProperties());
+        assertThat(service.publicKeyJwks()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("JWKS: token enabled but bad key → empty keys list")
+    void jwksEmptyWhenKeyBad() {
+        var p = new McpIdentityForwardProperties();
+        p.getToken().setEnabled(true);
+        p.getToken().setPrivateKeyPem("not-valid");
+        // Force a parse attempt so the key is known-bad.
+        McpIdentityForwardService service = svc(p);
+        service.resolveMeta(ctx(ChatOrigin.web("c1", "alice", 1L, null, null, 42L)), "my-api");
+        assertThat(service.publicKeyJwks()).isEmpty();
     }
 }

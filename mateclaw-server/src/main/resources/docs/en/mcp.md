@@ -390,9 +390,11 @@ user; its environment is fixed at spawn and STDIO has no per-request header
 channel like HTTP. So per-user identity **cannot travel via env** — it must ride
 in-band with each tool call.
 
-MateClaw can inject the **authenticated username** into every tool call for a
-chosen server, so the server can call its downstream REST backend on behalf of
-that user.
+MateClaw can inject the **authenticated username** into the MCP **`_meta`**
+field of every tool call for a chosen server, so the server can call its
+downstream REST backend on behalf of that user. `_meta` is the caller-controlled
+channel on `tools/call` (not model-controlled), which is cleaner than injecting
+into the arguments JSON.
 
 ### Enable (opt-in, per server)
 
@@ -410,31 +412,35 @@ mateclaw:
 
 ### Data contract
 
-When enabled, MateClaw injects the reserved argument **`__mateclaw_user__`**
-(value = authenticated username) into each tool call's JSON arguments. It is
-injected by trusted server code, **never by the LLM** — any model-supplied value
-of the same key is overwritten, so the model cannot spoof identity. When there is
-no authenticated user, nothing is injected (identity is never fabricated).
+When enabled, MateClaw injects the reserved key **`mateclaw_user`** (value =
+authenticated username) into the MCP **`_meta`** field of each tool call (the
+caller-controlled channel on `tools/call`). It is injected by trusted server
+code, **never by the LLM** — `_meta` is not a model-controlled argument, so the
+model cannot spoof identity. When there is no authenticated user, nothing is
+injected (identity is never fabricated).
 
-The MCP server reads and strips the key, then calls REST with it plus its own
+The MCP server reads the key from `_meta`, then calls REST with it plus its own
 backend API key (e.g. an `X-On-Behalf-Of` header):
 
 ```python
 # FastMCP example: MCP server as a Python CLI script (STDIO)
 import os, httpx
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import FastMCP, Context
 
 mcp = FastMCP("my-internal-api")
 REST_BASE = os.environ["REST_BASE"]
 API_KEY = os.environ["BACKEND_API_KEY"]      # service-level key (authenticates the MCP service)
 
 @mcp.tool()
-def query_orders(keyword: str, __mateclaw_user__: str | None = None) -> str:
-    if not __mateclaw_user__:
+def query_orders(keyword: str, ctx: Context) -> str:
+    # Identity is in _meta, not args — read it from the MCP context
+    meta = ctx.meta or {}
+    user = meta.get("mateclaw_user")         # plaintext username
+    if not user:
         raise ValueError("missing injected identity")   # reject identity-less calls
     headers = {
         "Authorization": f"ApiKey {API_KEY}",            # service identity
-        "X-On-Behalf-Of": __mateclaw_user__,             # the acting user
+        "X-On-Behalf-Of": user,                          # the acting user
     }
     r = httpx.get(f"{REST_BASE}/orders", params={"q": keyword}, headers=headers, timeout=30)
     r.raise_for_status()
@@ -444,10 +450,6 @@ if __name__ == "__main__":
     mcp.run()   # STDIO
 ```
 
-> If a tool's input schema is `additionalProperties: false`, declare
-> `__mateclaw_user__` as an optional parameter (as above) or strict validation
-> will reject it.
-
 ### Two trust models
 
 **① Plaintext (default)**: injects the plaintext username. Fits a trusted
@@ -455,8 +457,8 @@ network where the backend authenticates the MCP service by API key and treats
 the forwarded user as on-behalf-of. The backend trusts the raw string.
 
 **② Signed token (recommended across a trust boundary)**: injects a short-lived
-**RS256 JWT** that MateClaw signs with a private key (reserved key becomes
-**`__mateclaw_token__`**); the REST backend **verifies it with the public key**,
+**RS256 JWT** that MateClaw signs with a private key (the `_meta` key becomes
+**`mateclaw_token`**); the REST backend **verifies it with the public key**,
 so it trusts the signature — not the MCP service, the Python script, or the
 transport.
 
@@ -494,30 +496,43 @@ plaintext.
 > backend authorizes on an immutable numeric id, resolve username→id before
 > minting (kept decoupled from the user store here).
 
-The MCP server (Python) only forwards — it does not verify:
+The MCP server (Python) only forwards — it does not verify (reads the token
+from `_meta`):
 
 ```python
 @mcp.tool()
-def query_orders(keyword: str, __mateclaw_token__: str | None = None) -> str:
-    if not __mateclaw_token__:
+def query_orders(keyword: str, ctx: Context) -> str:
+    meta = ctx.meta or {}
+    token = meta.get("mateclaw_token")
+    if not token:
         raise ValueError("missing identity token")
-    headers = {"Authorization": f"Bearer {__mateclaw_token__}"}   # forward to REST
+    headers = {"Authorization": f"Bearer {token}"}   # forward to REST
     return httpx.get(f"{REST_BASE}/orders", params={"q": keyword}, headers=headers, timeout=30).text
 ```
 
-REST backend verifies (pseudocode):
+REST backend verifies: fetch the public key from MateClaw's JWKS endpoint and
+verify the signature.
 
 ```python
 import jwt  # PyJWT
-claims = jwt.decode(token, public_key_pem, algorithms=["RS256"],
-                    issuer="mateclaw", audience="https://api.internal")
+from jwt import PyJWKClient
+
+# Fetch the public key from MateClaw's JWKS endpoint
+jwks_client = PyJWKClient("http://mateclaw-host:18088/api/v1/mcp/.well-known/jwks.json")
+signing_key = jwks_client.get_signing_key_from_jwt(token)
+claims = jwt.decode(
+    token, signing_key.key, algorithms=["RS256"],
+    issuer="mateclaw", audience="https://api.internal",
+)
 user = claims["sub"]            # trusted only after signature verification
+# claims["sub"] = user id, claims["trust"] = authenticated/anonymous/external
 # → per-user authorization; invalid/expired → 401
 ```
 
-> Public-key distribution: for now an operator configures the public key on the
-> REST side out-of-band. A JWKS endpoint for auto-distribution + rotation is a
-> natural follow-up.
+> Public key distribution: REST backends can fetch the public key via the JWKS
+> endpoint: `GET /api/v1/mcp/.well-known/jwks.json`. Returns standard JWKS
+> format. Use PyJWT / java-jwt to fetch from the JWKS URL and verify — no
+> out-of-band config needed.
 >
 > Relationship to the API key: you can keep the API key as service/channel auth
 > ("this MCP service may talk to the backend") plus the JWT as the user
