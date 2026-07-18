@@ -327,11 +327,23 @@ class McpIdentityForwardServiceTest {
         assertThat(jwk.get("n")).isNotNull();
         assertThat(jwk.get("e")).isNotNull();
 
-        // Reconstruct the public key from the JWK and verify the token with it.
-        java.math.BigInteger n = new java.math.BigInteger(1,
-                Base64.getUrlDecoder().decode((String) jwk.get("n")));
+        // RFC 7518 compliance: the base64url-decoded `n` must be the unsigned
+        // big-endian modulus WITHOUT a leading zero byte. Its length must equal
+        // ceil(bitLength/8), not bitLength/8 + 1.
+        byte[] nBytes = Base64.getUrlDecoder().decode((String) jwk.get("n"));
+        var rsaPub = (java.security.interfaces.RSAPublicKey) kp.getPublic();
+        int expectedLen = (rsaPub.getModulus().bitLength() + 7) / 8;
+        assertThat(nBytes.length)
+                .as("JWK n must be %d bytes (no leading zero), got %d", expectedLen, nBytes.length)
+                .isEqualTo(expectedLen);
+
+        // Reconstruct the public key from the JWK — decode as unsigned (no signum
+        // crutch: the bytes ARE the unsigned value per RFC 7518).
+        java.math.BigInteger n = new java.math.BigInteger(1, nBytes);
         java.math.BigInteger e = new java.math.BigInteger(1,
                 Base64.getUrlDecoder().decode((String) jwk.get("e")));
+        assertThat(n).isEqualTo(rsaPub.getModulus());
+        assertThat(e).isEqualTo(rsaPub.getPublicExponent());
         java.security.spec.RSAPublicKeySpec pubSpec = new java.security.spec.RSAPublicKeySpec(n, e);
         java.security.PublicKey pubFromJwks = java.security.KeyFactory.getInstance("RSA").generatePublic(pubSpec);
 
