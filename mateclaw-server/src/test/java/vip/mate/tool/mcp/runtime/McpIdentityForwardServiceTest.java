@@ -375,4 +375,39 @@ class McpIdentityForwardServiceTest {
         service.resolveMeta(ctx(ChatOrigin.web("c1", "alice", 1L, null, null, 42L)), "my-api");
         assertThat(service.publicKeyJwks()).isEmpty();
     }
+
+    // ==================== Log-spam regression guard ====================
+
+    @Test
+    @DisplayName("blank-PEM ERROR is logged exactly once across repeated calls (parseAttempted dedup)")
+    void blankPemLogsErrorOnce() {
+        var p = new McpIdentityForwardProperties();
+        p.getToken().setEnabled(true);
+        p.getToken().setPrivateKeyPem("");  // blank → fail-closed ERROR
+        McpIdentityForwardService service = svc(p);
+        ChatOrigin origin = ChatOrigin.web("c1", "alice", 1L, null, null, 42L);
+
+        // Capture log events from the service's logger.
+        ch.qos.logback.classic.Logger logger = (ch.qos.logback.classic.Logger)
+                org.slf4j.LoggerFactory.getLogger(McpIdentityForwardService.class);
+        var appender = new ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>();
+        logger.addAppender(appender);
+        try {
+            appender.start();
+            // Call 3 times with the same (blank) PEM.
+            for (int i = 0; i < 3; i++) {
+                assertThat(service.resolveMeta(ctx(origin), "my-api")).isEmpty();
+            }
+        } finally {
+            logger.detachAppender(appender);
+        }
+
+        long errorCount = appender.list.stream()
+                .filter(e -> e.getLevel() == ch.qos.logback.classic.Level.ERROR)
+                .filter(e -> e.getFormattedMessage().contains("private-key-pem is empty"))
+                .count();
+        assertThat(errorCount)
+                .as("blank-PEM ERROR must fire exactly once (parseAttempted dedup), not once per call")
+                .isEqualTo(1);
+    }
 }
