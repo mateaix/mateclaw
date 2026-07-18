@@ -433,9 +433,11 @@ API_KEY = os.environ["BACKEND_API_KEY"]      # service-level key (authenticates 
 
 @mcp.tool()
 def query_orders(keyword: str, ctx: Context) -> str:
-    # Identity is in _meta, not args — read it from the MCP context
-    meta = ctx.meta or {}
-    user = meta.get("mateclaw_user")         # plaintext username
+    # Identity is in _meta, not args — read it from the MCP context.
+    # FastMCP's Context exposes _meta via request_context.meta (a Pydantic
+    # model with extra="allow"); use getattr, not dict-style .get().
+    raw_meta = ctx.request_context.meta
+    user = getattr(raw_meta, "mateclaw_user", None) if raw_meta else None
     if not user:
         raise ValueError("missing injected identity")   # reject identity-less calls
     headers = {
@@ -502,8 +504,8 @@ from `_meta`):
 ```python
 @mcp.tool()
 def query_orders(keyword: str, ctx: Context) -> str:
-    meta = ctx.meta or {}
-    token = meta.get("mateclaw_token")
+    raw_meta = ctx.request_context.meta
+    token = getattr(raw_meta, "mateclaw_token", None) if raw_meta else None
     if not token:
         raise ValueError("missing identity token")
     headers = {"Authorization": f"Bearer {token}"}   # forward to REST
