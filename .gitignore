@@ -94,8 +94,13 @@ deploy/nginx/ssl/*.crt
 deploy/nginx/ssl/*.key
 deploy/nginx/ssl/*.pem
 
-# Deploy env
-deploy/.env
+# Env files (real secrets - do not commit)
+# .env matches any level; .env.example / *.env.example are templates and stay tracked.
+.env
+.env.local
+.env.*.local
+!.env.example
+!**/.env.example
 
 # Claude Code local settings
 CLAUDE.md
