@@ -78,6 +78,15 @@ public class ChannelMessageRouter {
     @Autowired(required = false)
     private vip.mate.workspace.core.service.ChatUploadLocationResolver chatUploadLocationResolver;
 
+    /** Field-injected so the IM sync path can scrub hallucinated
+     *  {@code /api/v1/files/generated/{id}} URLs (LLM wrote a UUID-shaped
+     *  link without ever calling a render tool). The graph's FinalAnswerNode
+     *  already does this, but the IM sync path accumulates {@code delta.content()}
+     *  directly and bypasses FinalAnswerNode — without this scrub, the fake
+     *  URL reaches the IM channel as a clickable link that 404s. */
+    @Autowired(required = false)
+    private vip.mate.tool.document.GeneratedFileCache generatedFileCache;
+
     /** 队列条目：封装消息及其路由上下文 */
     private record QueueEntry(ChannelMessage message, ChannelAdapter adapter, ChannelEntity channelEntity) {}
 
@@ -820,6 +829,22 @@ public class ChannelMessageRouter {
                             })
                             .blockLast(Duration.ofMinutes(10));
                     String reply = replyAccumulator.toString();
+
+                    // RFC: IM sync path bypasses FinalAnswerNode, so hallucinated
+                    // /api/v1/files/generated/{id} URLs (LLM wrote a fake link
+                    // without calling a render tool) reach here verbatim. Scrub
+                    // them to the user-visible warning so IM clients don't see
+                    // a clickable link that 404s. Real tool-produced URLs are
+                    // left intact for the channel adapter's scrubber to upgrade
+                    // into native attachments.
+                    if (generatedFileCache != null) {
+                        String scrubbed = generatedFileCache.scrubMissingReferences(reply);
+                        if (!scrubbed.equals(reply)) {
+                            log.info("[{}] Scrubbed hallucinated generated-file URL(s) from IM reply ({} -> {} chars)",
+                                    adapter.getChannelType(), reply.length(), scrubbed.length());
+                            reply = scrubbed;
+                        }
+                    }
 
                     // 检查 chat 过程中是否产生了审批 pending
                     PendingApproval newPending = approvalService.findPendingByConversation(conversationId);

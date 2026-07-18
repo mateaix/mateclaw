@@ -1213,7 +1213,7 @@ public class ChannelManager {
                     generatedFileCache, chatUploadLocationResolver);
             case "qq" -> new QQChannelAdapter(channel, messageRouter, objectMapper);
             case "weixin" -> new WeixinChannelAdapter(channel, messageRouter, objectMapper,
-                    chatUploadLocationResolver);
+                    chatUploadLocationResolver, generatedFileScrubber);
             case "slack" -> new vip.mate.channel.slack.SlackChannelAdapter(channel, messageRouter, objectMapper);
             case "webchat" -> new vip.mate.channel.webchat.WebChatChannelAdapter(channel, messageRouter, objectMapper);
             default -> throw new IllegalArgumentException("Unsupported channel type: " + type);
