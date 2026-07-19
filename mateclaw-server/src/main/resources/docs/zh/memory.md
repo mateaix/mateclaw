@@ -563,6 +563,64 @@ mate:
 
 ---
 
+## Mem0 集成（可选）
+
+::: warning 非默认栈
+Mem0 集成是**可选的社区贡献项**，不在 MateClaw 的默认安装里。它需要你**自己部署一份 Mem0 服务**（FastAPI + pgvector + 可选 Neo4j）。MateClaw 的"本地优先、零外部依赖"定位不变——这个插件只是给愿意多跑一套服务的人一个**叠加的语义召回通道**。
+:::
+
+[Mem0](https://github.com/mem0ai/mem0) 是一个独立的记忆服务，做的是 LLM 记忆的提取、去重、向量化召回。MateClaw 的 `mateclaw-plugin-mem0` 模块把它作为一个**插件式 memory provider** 接进来——内部 4 个 provider（Builtin / Structured / Session / Fact）一个都不动，Mem0 作为第 5 个外部 provider 叠加上去，**互不替代**。
+
+### 它做什么
+
+| 钩子 | 行为 |
+|------|------|
+| `systemPromptBlock` | 返回空——常驻 system prompt 不动，避免每轮 token 膨胀 |
+| `prefetch(agentId, query, ownerKey)` | 当 `searchEnabled=true` 且 `ownerKey` 非空时，调 `POST {baseUrl}/memories/search/`，返回一个 `[Mem0 Recall]` 块拼进本轮上下文 |
+| `syncTurn(agentId, conversationId, userMessage, assistantReply)` | 当 `syncEnabled=true` 时，**异步**把这一轮的 user/assistant 消息推到 `POST {baseUrl}/memories/`，失败只记日志、不阻塞响应 |
+| `getToolBeans` | 空列表——v1 不暴露 Agent 可调用的工具 |
+
+**故障隔离**：recall 或 sync 任何一边抛异常，插件自己吞掉、写日志，平台继续走其他 provider。Mem0 挂了不会影响 MateClaw 的本地记忆。
+
+### per-owner 隔离的映射
+
+Mem0 用 `user_id` + `agent_id` 做隔离。MateClaw 的映射：
+
+| MateClaw 字段 | Mem0 字段 | 说明 |
+|---|---|---|
+| `ownerKey`（如 `user:42` / `feishu:sender_abc`） | `user_id` | 透传，原样作为 user_id |
+| `agentId` | `agent_id` | 数字员工 ID |
+
+只有 `prefetch` 的三参版能拿到 `ownerKey`。两参版（无 ownerKey）会直接返回空——Mem0 要求 `user_id`，没它无法隔离。
+
+### 安装步骤
+
+1. **部署 Mem0 服务**：参考 Mem0 官方文档，自托管一份（FastAPI + pgvector + 可选 Neo4j）。记下它的 base URL，比如 `http://localhost:8080`。
+2. **构建插件 JAR**：在 MateClaw 仓库根目录跑 `mvn -pl mateclaw-plugin-mem0 -am package`，得到 `mateclaw-plugin-mem0/target/mateclaw-plugin-mem0-*.jar`。
+3. **放 JAR**：把 JAR 丢进 MateClaw 的 `plugins/` 目录。
+4. **配置**：在插件管理 UI 里填 `baseUrl`（必填），按需填 `apiKey`、调其他参数。重启或重载插件。
+
+### 配置项
+
+| 字段 | 类型 | 必填 | 默认 | 说明 |
+|------|------|------|------|------|
+| `baseUrl` | string | 是 | — | Mem0 REST API 地址，如 `http://localhost:8080` |
+| `apiKey` | string | 否 | — | Bearer token，作为 `Authorization` 头发给 Mem0 |
+| `searchEnabled` | boolean | 否 | `true` | 是否在 prefetch 时调 `/memories/search/` 做语义召回 |
+| `syncEnabled` | boolean | 否 | `true` | 是否在 syncTurn 时把每轮对话推到 `/memories/` |
+| `maxResults` | integer | 否 | `5` | 每次召回返回的记忆条数上限 |
+| `timeoutMs` | integer | 否 | `3000` | HTTP 超时（毫秒），recall 和 sync 共用 |
+
+配置只在插件加载时读一次——改了要重载插件才会生效。
+
+### 已知限制（v1）
+
+- **`syncTurn` 拿不到 `ownerKey`**：插件 SPI 的 `syncTurn` 签名只有 `(agentId, conversationId, userMessage, assistantReply)`，所以推送 Mem0 时只能用 `agentId` 作为 `user_id` 降级。这比 prefetch（有 ownerKey）的隔离粒度粗。如果你需要严格的 per-owner 同步，把 `syncEnabled=false`，只依赖 prefetch 做召回，由你自己的 Mem0 客户端负责写入。
+- **没有 token 预算控制**：prefetch 返回的 `[Mem0 Recall]` 块直接拼进上下文，不受 `system-block-max-chars` 那套注入预算约束（那套只管 `user`/`feedback` 结构化条目）。`maxResults` 是唯一的尺寸闸门。
+- **没有 Agent 工具**：v1 不暴露 `mem0_search` / `mem0_add` 之类的工具给 Agent 主动调用。Agent 只能被动接收 prefetch 的结果。
+
+---
+
 ## 下一步
 
 - [Agent 引擎](./agents)——Agent 在一个回合里怎么用记忆

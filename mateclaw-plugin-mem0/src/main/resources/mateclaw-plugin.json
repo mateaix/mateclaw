@@ -1,0 +1,48 @@
+{
+  "name": "mateclaw-plugin-mem0",
+  "version": "1.0.0",
+  "type": "memory",
+  "displayName": "Mem0 Memory Provider (Optional)",
+  "description": "Bridges MateClaw's memory system to a self-hosted Mem0 service. Adds semantic recall from Mem0 alongside the built-in local memory providers. Requires a separately deployed Mem0 service (FastAPI + pgvector). Not part of the default stack.",
+  "entrypoint": "vip.mate.plugin.mem0.Mem0Plugin",
+  "minPlatformVersion": "2.0.0",
+  "author": "MateClaw Team",
+  "config": {
+    "baseUrl": {
+      "type": "string",
+      "required": true,
+      "secret": false,
+      "description": "Mem0 REST API base URL, e.g. http://localhost:8080"
+    },
+    "apiKey": {
+      "type": "string",
+      "required": false,
+      "secret": true,
+      "description": "Optional bearer token sent as Authorization header to Mem0"
+    },
+    "searchEnabled": {
+      "type": "boolean",
+      "required": false,
+      "secret": false,
+      "description": "Enable semantic recall via Mem0 /memories/search/. Default true."
+    },
+    "syncEnabled": {
+      "type": "boolean",
+      "required": false,
+      "secret": false,
+      "description": "Enable pushing each turn to Mem0 /memories/. Default true."
+    },
+    "maxResults": {
+      "type": "integer",
+      "required": false,
+      "secret": false,
+      "description": "Max number of memories returned per recall. Default 5."
+    },
+    "timeoutMs": {
+      "type": "integer",
+      "required": false,
+      "secret": false,
+      "description": "HTTP timeout in milliseconds for both recall and sync. Default 3000."
+    }
+  }
+}

@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>vip.mate</groupId>
+        <artifactId>mateclaw</artifactId>
+        <version>${revision}</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>mateclaw-plugin-mem0</artifactId>
+    <packaging>jar</packaging>
+
+    <name>MateClaw Mem0 Memory Provider Plugin</name>
+    <description>
+        Optional community plugin that bridges MateClaw's memory system to a self-hosted
+        Mem0 service (FastAPI + pgvector + Neo4j). Provides semantic recall via Mem0's
+        REST API alongside the built-in local memory providers. Not in the default stack;
+        users must deploy Mem0 separately and install this JAR into the plugins/ directory.
+    </description>
+
+    <dependencies>
+        <!-- MateClaw Plugin API -->
+        <dependency>
+            <groupId>vip.mate</groupId>
+            <artifactId>mateclaw-plugin-api</artifactId>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- Spring AI (provided by the platform) — PluginContext method signatures
+             reference ToolCallback/ChatModel, so it must be resolvable at compile time -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-model</artifactId>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- Jackson (provided by the platform parent classloader) -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- SLF4J (provided by the platform) -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- Test only -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- slf4j-simple: gives the plugin a real logger during tests so
+             LoggerFactory.getLogger doesn't fall back to NOP silently -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-simple</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>

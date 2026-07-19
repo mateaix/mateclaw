@@ -18,6 +18,7 @@
         <module>mateclaw-server</module>
         <module>mateclaw-plugin-sample</module>
         <module>mateclaw-plugin-search-sample</module>
+        <module>mateclaw-plugin-mem0</module>
     </modules>
 
     <properties>

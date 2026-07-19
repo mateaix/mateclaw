@@ -55,6 +55,24 @@ public interface PluginMemoryProvider {
     }
 
     /**
+     * Pre-turn context recall with per-owner isolation. Called by the platform
+     * when an owner key (e.g. {@code "user:42"}, {@code "feishu:sender_abc"})
+     * is resolved for the current conversation.
+     * <p>
+     * Default implementation degrades to the two-arg variant, dropping the
+     * owner key. External providers that need per-owner recall (e.g. Mem0)
+     * should override this to use {@code ownerKey} as their per-user identifier.
+     *
+     * @param agentId   the agent ID
+     * @param userQuery the current user message
+     * @param ownerKey  memory owner key (e.g. {@code "user:42"}), or null if unknown
+     * @return context text to inject, or empty string
+     */
+    default String prefetch(Long agentId, String userQuery, String ownerKey) {
+        return prefetch(agentId, userQuery);
+    }
+
+    /**
      * Post-turn sync. Called after LLM response is available.
      * Should be non-blocking (async).
      */

@@ -569,6 +569,64 @@ For developers extending the memory layer, see [Architecture](./architecture).
 
 ---
 
+## Mem0 Integration (Optional)
+
+::: warning Not in the default stack
+Mem0 integration is an **optional community contribution** — it is NOT part of a default MateClaw install. It requires you to **self-host a Mem0 service** (FastAPI + pgvector + optional Neo4j). MateClaw's "local-first, zero external dependencies" stance is unchanged — this plugin just adds an **additive semantic recall channel** for people willing to run that extra service.
+:::
+
+[Mem0](https://github.com/mem0ai/mem0) is a standalone memory service that handles LLM memory extraction, deduplication, and vector-based recall. MateClaw's `mateclaw-plugin-mem0` module plugs it in as a **plugin-style memory provider** — none of the 4 built-in providers (Builtin / Structured / Session / Fact) are touched. Mem0 stacks on top as a 5th, external provider. **They don't replace each other.**
+
+### What it does
+
+| Hook | Behavior |
+|------|----------|
+| `systemPromptBlock` | Returns empty — leaves the resident system prompt alone, avoids per-turn token bloat |
+| `prefetch(agentId, query, ownerKey)` | When `searchEnabled=true` and `ownerKey` is non-blank, calls `POST {baseUrl}/memories/search/` and returns a `[Mem0 Recall]` block concatenated into the current turn's context |
+| `syncTurn(agentId, conversationId, userMessage, assistantReply)` | When `syncEnabled=true`, **asynchronously** pushes this turn's user/assistant messages to `POST {baseUrl}/memories/`. Failures are logged only, never block the response |
+| `getToolBeans` | Empty list — v1 exposes no agent-callable tools |
+
+**Fault isolation**: any exception in recall or sync is swallowed and logged by the plugin itself; the platform keeps going with the other providers. Mem0 being down does not affect MateClaw's local memory.
+
+### Per-owner isolation mapping
+
+Mem0 isolates by `user_id` + `agent_id`. MateClaw maps them as:
+
+| MateClaw field | Mem0 field | Notes |
+|---|---|---|
+| `ownerKey` (e.g. `user:42` / `feishu:sender_abc`) | `user_id` | Passed through verbatim |
+| `agentId` | `agent_id` | The digital employee ID |
+
+Only the three-arg `prefetch` variant receives `ownerKey`. The two-arg variant (no ownerKey) returns empty — Mem0 requires `user_id`, without it isolation is impossible.
+
+### Installation
+
+1. **Deploy Mem0**: following Mem0's official docs, self-host an instance (FastAPI + pgvector + optional Neo4j). Note its base URL, e.g. `http://localhost:8080`.
+2. **Build the plugin JAR**: from the MateClaw repo root, run `mvn -pl mateclaw-plugin-mem0 -am package` — the JAR lands at `mateclaw-plugin-mem0/target/mateclaw-plugin-mem0-*.jar`.
+3. **Drop the JAR**: place it in MateClaw's `plugins/` directory.
+4. **Configure**: in the plugin admin UI, set `baseUrl` (required) and optionally `apiKey` and other tunables. Restart or reload the plugin.
+
+### Configuration
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `baseUrl` | string | yes | — | Mem0 REST API base URL, e.g. `http://localhost:8080` |
+| `apiKey` | string | no | — | Bearer token sent as the `Authorization` header to Mem0 |
+| `searchEnabled` | boolean | no | `true` | Whether prefetch should call `/memories/search/` for semantic recall |
+| `syncEnabled` | boolean | no | `true` | Whether syncTurn should push each turn to `/memories/` |
+| `maxResults` | integer | no | `5` | Cap on memories returned per recall |
+| `timeoutMs` | integer | no | `3000` | HTTP timeout in milliseconds, shared by recall and sync |
+
+Config is read once at plugin load — changes require a plugin reload to take effect.
+
+### Known limitations (v1)
+
+- **`syncTurn` has no `ownerKey`**: the plugin SPI's `syncTurn` signature is only `(agentId, conversationId, userMessage, assistantReply)`, so when pushing to Mem0 the plugin falls back to using `agentId` as `user_id`. This is coarser isolation than prefetch (which has ownerKey). If you need strict per-owner sync, set `syncEnabled=false` and rely on prefetch-only recall, with writes handled by your own Mem0 client.
+- **No token budget control**: the `[Mem0 Recall]` block returned by prefetch is concatenated into the context directly — it is NOT subject to the `system-block-max-chars` injection budget (that budget only governs `user`/`feedback` structured entries). `maxResults` is the only size knob.
+- **No agent tools**: v1 does not expose `mem0_search` / `mem0_add` style tools for the agent to call proactively. The agent only passively receives prefetch results.
+
+---
+
 ## Next
 
 - [Agents](./agents) — how agents use memory during a turn

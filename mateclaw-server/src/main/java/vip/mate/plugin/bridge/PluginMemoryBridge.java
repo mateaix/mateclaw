@@ -46,6 +46,12 @@ public class PluginMemoryBridge implements MemoryProvider {
     }
 
     @Override
+    public String prefetch(Long agentId, String userQuery, String ownerKey) {
+        // 透传 ownerKey 到插件 provider；插件若未 override 三参版会走 default 退化到两参
+        return delegate.prefetch(agentId, userQuery, ownerKey);
+    }
+
+    @Override
     public void syncTurn(Long agentId, String conversationId,
                          String userMessage, String assistantReply) {
         delegate.syncTurn(agentId, conversationId, userMessage, assistantReply);
