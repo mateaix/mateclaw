@@ -271,6 +271,11 @@ public class ChannelMessageRouter {
         }
         channelEntity = fresh;
 
+        String conversationId = buildConversationId(message);
+        if (handleMagicCommand(message, adapter, conversationId)) {
+            return;
+        }
+
         // Fan out to the trigger pipeline FIRST — channel_message and
         // content_match triggers fire on every received message regardless
         // of whether the channel has an agent attached. If we returned
@@ -292,7 +297,6 @@ public class ChannelMessageRouter {
         }
 
         String channelType = adapter.getChannelType();
-        String conversationId = buildConversationId(message);
 
         log.info("[{}] Enqueuing message: sender={}, conversationId={}, agentId={}",
                 channelType, message.getSenderId(), conversationId, agentId);
@@ -601,6 +605,10 @@ public class ChannelMessageRouter {
                 adapter.getChannelType(), message.getSenderId(), conversationId, agentId);
 
         try {
+            if (handleMagicCommand(message, adapter, conversationId)) {
+                return;
+            }
+
             // ======= 审批拦截层 =======
             String userText = message.getContent() != null ? message.getContent().trim() : "";
             PendingApproval pending = approvalService.findPendingByConversation(conversationId);
@@ -907,6 +915,38 @@ public class ChannelMessageRouter {
                 log.error("[{}] Failed to send error message: {}",
                         adapter.getChannelType(), sendErr.getMessage());
             }
+        }
+    }
+
+    /**
+     * Handle channel-native control commands before the message is persisted
+     * or forwarded to the agent. Mirrors QwenPaw's control-command dispatch:
+     * a recognized command is terminal for this inbound message.
+     */
+    private boolean handleMagicCommand(ChannelMessage message, ChannelAdapter adapter,
+                                       String conversationId) {
+        String userText = message != null ? message.getContent() : null;
+        if (!ChannelMagicCommand.isClearCommand(userText)) {
+            return false;
+        }
+        cancelPending(conversationId);
+        conversationService.clearMessages(conversationId);
+        String replyTarget = resolveReplyTarget(message);
+        if (replyTarget != null) {
+            adapter.sendMessage(replyTarget, ChannelMagicCommand.clearConfirmation());
+        }
+        log.info("[{}] Magic command handled: clear conversationId={}, sender={}",
+                adapter.getChannelType(), conversationId, message != null ? message.getSenderId() : null);
+        return true;
+    }
+
+    private void cancelPending(String conversationId) {
+        PendingMessage pending;
+        synchronized (pendingMessages) {
+            pending = pendingMessages.remove(conversationId);
+        }
+        if (pending != null && pending.timer != null) {
+            pending.timer.cancel(false);
         }
     }
 
