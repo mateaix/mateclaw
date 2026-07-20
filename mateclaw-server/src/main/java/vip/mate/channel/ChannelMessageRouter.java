@@ -830,7 +830,7 @@ public class ChannelMessageRouter {
                             .blockLast(Duration.ofMinutes(10));
                     String reply = replyAccumulator.toString();
 
-                    // RFC: IM sync path bypasses FinalAnswerNode, so hallucinated
+                    // The IM sync path bypasses FinalAnswerNode, so hallucinated
                     // /api/v1/files/generated/{id} URLs (LLM wrote a fake link
                     // without calling a render tool) reach here verbatim. Scrub
                     // them to the user-visible warning so IM clients don't see
