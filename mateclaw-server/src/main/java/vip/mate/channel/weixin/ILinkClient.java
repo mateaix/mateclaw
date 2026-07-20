@@ -44,7 +44,8 @@ import java.util.*;
 public class ILinkClient {
 
     public static final String DEFAULT_BASE_URL = "https://ilinkai.weixin.qq.com";
-    private static final String CHANNEL_VERSION = "2.0.1";
+    private static final String CHANNEL_VERSION = "1.0.2";
+    private static final ObjectMapper WIRE_OBJECT_MAPPER = new ObjectMapper();
 
     /** 长轮询超时（服务端最长 35s，客户端设 45s） */
     private static final Duration GETUPDATES_TIMEOUT = Duration.ofSeconds(45);
@@ -226,14 +227,30 @@ public class ILinkClient {
         body.put("msg", msg);
         body.put("base_info", Map.of("channel_version", CHANNEL_VERSION));
 
+        String requestJson = WIRE_OBJECT_MAPPER.writeValueAsString(body);
+        log.info("[weixin] sendMessage request: toUser={}, contextTokenPresent={}, itemSummary={}, payload={}",
+                maskId(String.valueOf(msg.get("to_user_id"))),
+                String.valueOf(msg.getOrDefault("context_token", "")).length() > 0,
+                summarizeItems(msg.get("item_list")), redactSendMessagePayload(body));
+
         HttpRequest request = applyHeaders(HttpRequest.newBuilder()
                 .uri(URI.create(baseUrl + "/ilink/bot/sendmessage"))
-                .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body))))
+                .POST(HttpRequest.BodyPublishers.ofString(requestJson)))
                 .timeout(DEFAULT_TIMEOUT)
                 .build();
         HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        log.info("[weixin] sendMessage response: status={}, body={}", response.statusCode(), response.body());
         ensureOk(response, "sendMessage");
-        return objectMapper.readValue(response.body(), new TypeReference<>() {});
+        Map<String, Object> result = objectMapper.readValue(response.body(), new TypeReference<>() {});
+        Object ret = result.get("ret");
+        if (ret instanceof Number n && n.intValue() != 0) {
+            log.error("[weixin] sendMessage business error: ret={}, errmsg={}, toUser={}, itemSummary={}, body={}",
+                    ret, result.get("errmsg"), maskId(String.valueOf(msg.get("to_user_id"))),
+                    summarizeItems(msg.get("item_list")), response.body());
+            throw new RuntimeException("sendMessage business error: ret=" + ret
+                    + ", errmsg=" + result.get("errmsg"));
+        }
+        return result;
     }
 
     /**
@@ -376,14 +393,42 @@ public class ILinkClient {
         body.put("no_need_thumb", true);
         body.put("base_info", Map.of("channel_version", CHANNEL_VERSION));
 
+        String requestJson = WIRE_OBJECT_MAPPER.writeValueAsString(body);
+        log.info("[weixin] getUploadUrl request: mediaType={}, toUser={}, rawSize={}({}), encryptedSize={}({}), "
+                        + "rawMd5={}, aesKeyHexLen={}, noNeedThumb={}, channelVersion={}, payload={}",
+                mediaType, maskId(toUserId), rawSize, typeName(body.get("rawsize")),
+                fileSize, typeName(body.get("filesize")), rawFileMd5,
+                aesKeyHex == null ? 0 : aesKeyHex.length(), true, CHANNEL_VERSION,
+                redactUploadUrlPayload(body));
+
         HttpRequest request = applyHeaders(HttpRequest.newBuilder()
                 .uri(URI.create(baseUrl + "/ilink/bot/getuploadurl"))
-                .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body))))
+                .POST(HttpRequest.BodyPublishers.ofString(requestJson)))
                 .timeout(DEFAULT_TIMEOUT)
                 .build();
         HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        log.info("[weixin] getUploadUrl response: status={}, body={}",
+                response.statusCode(), response.body());
         ensureOk(response, "getUploadUrl");
-        return objectMapper.readValue(response.body(), new TypeReference<>() {});
+        Map<String, Object> result = objectMapper.readValue(response.body(), new TypeReference<>() {});
+        Object ret = result.get("ret");
+        if (ret instanceof Number n && n.intValue() != 0) {
+            log.error("[weixin] getUploadUrl business error: ret={}, errmsg={}, mediaType={}, toUser={}, "
+                            + "rawSize={}, encryptedSize={}, rawMd5={}, filekeyPrefix={}, body={}",
+                    ret, result.get("errmsg"), mediaType, maskId(toUserId), rawSize, fileSize,
+                    rawFileMd5, prefix(filekey, 8), response.body());
+            throw new RuntimeException("getUploadUrl business error: ret=" + ret
+                    + ", errmsg=" + result.get("errmsg"));
+        } else if (!result.containsKey("upload_full_url") && !result.containsKey("upload_param")) {
+            log.error("[weixin] getUploadUrl: missing upload_full_url and upload_param. Full response: {}",
+                    response.body());
+        } else {
+            log.info("[weixin] getUploadUrl ok: mediaType={}, rawSize={}, hasFullUrl={}, hasUploadParam={}, "
+                            + "uploadParamLen={}",
+                    mediaType, rawSize, result.containsKey("upload_full_url"), result.containsKey("upload_param"),
+                    String.valueOf(result.getOrDefault("upload_param", "")).length());
+        }
+        return result;
     }
 
     /**
@@ -406,6 +451,8 @@ public class ILinkClient {
         // 1. 原始文件元数据
         long rawSize = fileBytes.length;
         String rawFileMd5 = md5Hex(fileBytes);
+        log.info("[weixin] uploadMedia begin: mediaType={}, fileName={}, rawSize={}, rawMd5={}, toUser={}",
+                mediaType, fileName, rawSize, rawFileMd5, maskId(toUserId));
 
         // 2. 生成 AES key 并加密
         SecureRandom random = new SecureRandom();
@@ -418,11 +465,16 @@ public class ILinkClient {
 
         byte[] encryptedData = WeixinAesUtil.aesEcbEncrypt(fileBytes, aesKeyB64ForEncrypt);
         long encryptedSize = encryptedData.length;
+        log.info("[weixin] uploadMedia encrypted: mediaType={}, rawSize={}, encryptedSize={}, paddingBytes={}, "
+                        + "aesKeyHexLen={}",
+                mediaType, rawSize, encryptedSize, encryptedSize - rawSize, aesKeyHex.length());
 
         // 3. 生成 filekey（16 字节随机 hex）
         byte[] filekeyBytes = new byte[16];
         random.nextBytes(filekeyBytes);
         String filekey = bytesToHex(filekeyBytes);
+        log.info("[weixin] uploadMedia filekey generated: mediaType={}, filekeyPrefix={}, filekeyLen={}",
+                mediaType, prefix(filekey, 8), filekey.length());
 
         // 4. 获取上传 URL
         Map<String, Object> uploadUrlResp = getUploadUrl(filekey, mediaType, toUserId,
@@ -440,6 +492,13 @@ public class ILinkClient {
             String encParam = URLEncoder.encode(uploadParam, StandardCharsets.UTF_8);
             uploadUrl = CDN_BASE_URL + "/upload?encrypted_query_param=" + encParam + "&filekey=" + filekey;
         }
+        log.info("[weixin] CDN upload target resolved: mediaType={}, mode={}, uploadParamPresent={}, uploadParamLen={}, "
+                        + "uploadFullUrlPresent={}, uploadHost={}, uploadPath={}, filekeyPrefix={}",
+                mediaType, (fullUrl != null && !fullUrl.isBlank()) ? "upload_full_url" : "upload_param",
+                uploadUrlResp.get("upload_param") != null,
+                String.valueOf(uploadUrlResp.getOrDefault("upload_param", "")).length(),
+                fullUrl != null && !fullUrl.isBlank(),
+                URI.create(uploadUrl).getHost(), URI.create(uploadUrl).getPath(), prefix(filekey, 8));
 
         // 5. POST 加密数据到 CDN（注意：使用 upload_param 时不需要 Authorization 头）
         HttpRequest.Builder cdnBuilder = HttpRequest.newBuilder()
@@ -453,6 +512,12 @@ public class ILinkClient {
         }
 
         HttpResponse<byte[]> cdnResponse = httpClient.send(cdnBuilder.build(), HttpResponse.BodyHandlers.ofByteArray());
+        log.info("[weixin] CDN upload response: status={}, bodyBytes={}, hasXEncryptedParam={}, headers={}",
+                cdnResponse.statusCode(),
+                cdnResponse.body() == null ? 0 : cdnResponse.body().length,
+                cdnResponse.headers().firstValue("x-encrypted-param")
+                        .or(() -> cdnResponse.headers().firstValue("X-Encrypted-Param")).isPresent(),
+                cdnResponse.headers().map().keySet());
         ensureOk(cdnResponse, "CDN upload");
 
         // 6. 从响应头提取 encrypt_query_param
@@ -469,7 +534,7 @@ public class ILinkClient {
         log.info("[weixin] Media uploaded: type={}, size={}KB, encryptedSize={}KB",
                 mediaType, rawSize / 1024, encryptedSize / 1024);
 
-        return new UploadResult(encryptQueryParam, aesKeyB64ForMsg, encryptedSize);
+        return new UploadResult(encryptQueryParam, aesKeyB64ForMsg, encryptedSize, rawFileMd5, rawSize);
     }
 
     /**
@@ -480,6 +545,9 @@ public class ILinkClient {
      * @param contextToken 上下文 token
      */
     public void sendImage(String toUserId, byte[] imageBytes, String contextToken) throws Exception {
+        log.info("[weixin] sendImage begin: toUser={}, imageBytes={}, contextTokenPresent={}",
+                maskId(toUserId), imageBytes == null ? 0 : imageBytes.length,
+                contextToken != null && !contextToken.isBlank());
         UploadResult result = uploadMedia(imageBytes, "image.jpg", 1, toUserId);
 
         Map<String, Object> imageItem = new LinkedHashMap<>();
@@ -488,6 +556,7 @@ public class ILinkClient {
                 "media", Map.of(
                         "encrypt_query_param", result.encryptQueryParam(),
                         "aes_key", result.aesKeyB64(),
+                        "encrypt_type", 1,
                         "mid_size", result.fileSize()
                 )
         ));
@@ -517,16 +586,21 @@ public class ILinkClient {
      * @param contextToken 上下文 token
      */
     public void sendFile(String toUserId, byte[] fileBytes, String fileName, String contextToken) throws Exception {
+        log.info("[weixin] sendFile begin: toUser={}, fileName={}, fileBytes={}, contextTokenPresent={}",
+                maskId(toUserId), fileName, fileBytes == null ? 0 : fileBytes.length,
+                contextToken != null && !contextToken.isBlank());
         UploadResult result = uploadMedia(fileBytes, fileName, 3, toUserId);
 
         Map<String, Object> fileItem = new LinkedHashMap<>();
         fileItem.put("type", 4);
         fileItem.put("file_item", Map.of(
                 "file_name", fileName,
-                "len", (long) fileBytes.length,
+                "md5", result.rawFileMd5(),
+                "len", String.valueOf(result.rawSize()),
                 "media", Map.of(
                         "encrypt_query_param", result.encryptQueryParam(),
-                        "aes_key", result.aesKeyB64()
+                        "aes_key", result.aesKeyB64(),
+                        "encrypt_type", 1
                 )
         ));
 
@@ -539,6 +613,10 @@ public class ILinkClient {
         msg.put("context_token", contextToken);
         msg.put("item_list", List.of(fileItem));
 
+        log.info("[weixin] sendFile message prepared: toUser={}, fileName={}, len={}, encryptParamLen={}, aesKeyLen={}",
+                maskId(toUserId), fileName, fileBytes.length,
+                result.encryptQueryParam() == null ? 0 : result.encryptQueryParam().length(),
+                result.aesKeyB64() == null ? 0 : result.aesKeyB64().length());
         sendMessage(msg);
     }
 
@@ -557,7 +635,8 @@ public class ILinkClient {
         videoItem.put("video_item", Map.of(
                 "media", Map.of(
                         "encrypt_query_param", result.encryptQueryParam(),
-                        "aes_key", result.aesKeyB64()
+                        "aes_key", result.aesKeyB64(),
+                        "encrypt_type", 1
                 )
         ));
 
@@ -610,6 +689,128 @@ public class ILinkClient {
         return sb.toString();
     }
 
+    private static String maskId(String value) {
+        if (value == null || value.isBlank()) {
+            return "";
+        }
+        int head = Math.min(12, value.length());
+        return value.substring(0, head) + "...";
+    }
+
+    private static String prefix(String value, int length) {
+        if (value == null || value.isBlank()) {
+            return "";
+        }
+        return value.substring(0, Math.min(length, value.length()));
+    }
+
+    private static String typeName(Object value) {
+        return value == null ? "null" : value.getClass().getSimpleName();
+    }
+
+    private static String redactUploadUrlPayload(Map<String, Object> body) {
+        try {
+            Map<String, Object> redacted = new LinkedHashMap<>(body);
+            redacted.put("to_user_id", maskId(String.valueOf(body.get("to_user_id"))));
+            redacted.put("filekey", prefix(String.valueOf(body.get("filekey")), 8) + "...");
+            redacted.put("aeskey", "len:" + String.valueOf(body.get("aeskey")).length());
+            return WIRE_OBJECT_MAPPER.writeValueAsString(redacted);
+        } catch (Exception e) {
+            return "<redact-failed:" + e.getMessage() + ">";
+        }
+    }
+
+    private static String redactSendMessagePayload(Map<String, Object> body) {
+        try {
+            Map<String, Object> redacted = new LinkedHashMap<>(body);
+            Object msgObj = redacted.get("msg");
+            if (msgObj instanceof Map<?, ?> msgMap) {
+                Map<String, Object> msg = new LinkedHashMap<>();
+                msgMap.forEach((k, v) -> msg.put(String.valueOf(k), v));
+                msg.put("to_user_id", maskId(String.valueOf(msg.get("to_user_id"))));
+                if (msg.containsKey("context_token")) {
+                    msg.put("context_token", "present:" + !String.valueOf(msg.get("context_token")).isBlank());
+                }
+                msg.put("item_list", redactItems(msg.get("item_list")));
+                redacted.put("msg", msg);
+            }
+            return WIRE_OBJECT_MAPPER.writeValueAsString(redacted);
+        } catch (Exception e) {
+            return "<redact-failed:" + e.getMessage() + ">";
+        }
+    }
+
+    private static Object redactItems(Object itemListObj) {
+        if (!(itemListObj instanceof List<?> items)) {
+            return itemListObj;
+        }
+        List<Object> redacted = new ArrayList<>();
+        for (Object itemObj : items) {
+            if (!(itemObj instanceof Map<?, ?> itemMap)) {
+                redacted.add(itemObj);
+                continue;
+            }
+            Map<String, Object> item = new LinkedHashMap<>();
+            itemMap.forEach((k, v) -> item.put(String.valueOf(k), v));
+            Object fileObj = item.get("file_item");
+            if (fileObj instanceof Map<?, ?> fileMap) {
+                Map<String, Object> file = new LinkedHashMap<>();
+                fileMap.forEach((k, v) -> file.put(String.valueOf(k), v));
+                file.put("media", redactMedia(file.get("media")));
+                item.put("file_item", file);
+            }
+            Object imageObj = item.get("image_item");
+            if (imageObj instanceof Map<?, ?> imageMap) {
+                Map<String, Object> image = new LinkedHashMap<>();
+                imageMap.forEach((k, v) -> image.put(String.valueOf(k), v));
+                image.put("media", redactMedia(image.get("media")));
+                item.put("image_item", image);
+            }
+            redacted.add(item);
+        }
+        return redacted;
+    }
+
+    private static Object redactMedia(Object mediaObj) {
+        if (!(mediaObj instanceof Map<?, ?> mediaMap)) {
+            return mediaObj;
+        }
+        Map<String, Object> media = new LinkedHashMap<>();
+        mediaMap.forEach((k, v) -> media.put(String.valueOf(k), v));
+        media.put("encrypt_query_param", "len:" + String.valueOf(media.get("encrypt_query_param")).length());
+        media.put("aes_key", "len:" + String.valueOf(media.get("aes_key")).length());
+        return media;
+    }
+
+    private static String summarizeItems(Object itemListObj) {
+        if (!(itemListObj instanceof List<?> items)) {
+            return "not-list";
+        }
+        List<String> summaries = new ArrayList<>();
+        for (Object itemObj : items) {
+            if (!(itemObj instanceof Map<?, ?> itemMap)) {
+                summaries.add("unknown");
+                continue;
+            }
+            Object type = itemMap.get("type");
+            Object fileObj = itemMap.get("file_item");
+            if (fileObj instanceof Map<?, ?> fileMap) {
+                Object len = fileMap.get("len");
+                summaries.add("type=" + type + ",file,len=" + len + "(" + typeName(len) + ")");
+                continue;
+            }
+            Object imageObj = itemMap.get("image_item");
+            if (imageObj instanceof Map<?, ?> imageMap) {
+                Object mediaObj = imageMap.get("media");
+                Object midSize = mediaObj instanceof Map<?, ?> mediaMap ? mediaMap.get("mid_size") : null;
+                summaries.add("type=" + type + ",image,midSize=" + midSize + "(" + typeName(midSize) + ")");
+                continue;
+            }
+            summaries.add("type=" + type);
+        }
+        return String.join(";", summaries);
+    }
+
     // ==================== 内部模型 ====================
 
     /**
@@ -619,7 +820,8 @@ public class ILinkClient {
      * @param aesKeyB64         AES key 的 base64(hex) 编码（用于 media.aes_key）
      * @param fileSize          加密后文件大小
      */
-    public record UploadResult(String encryptQueryParam, String aesKeyB64, long fileSize) {}
+    public record UploadResult(String encryptQueryParam, String aesKeyB64, long fileSize,
+                               String rawFileMd5, long rawSize) {}
 
     /**
      * QR 码登录结果

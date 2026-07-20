@@ -155,24 +155,37 @@ public class WeixinChannelAdapter extends AbstractChannelAdapter {
      */
     private vip.mate.workspace.core.service.ChatUploadLocationResolver chatUploadLocationResolver;
 
+    /**
+     * Channel-shared scrubber that converts agent-emitted
+     * {@code /api/v1/files/generated/{id}} URLs into native WeChat attachments.
+     * Nullable for legacy callers / unit tests — when null, the URL passes
+     * through unchanged (legacy text-only behaviour).
+     */
+    private final vip.mate.channel.media.GeneratedFileScrubber generatedFileScrubber;
+
     public WeixinChannelAdapter(ChannelEntity channelEntity,
                                 ChannelMessageRouter messageRouter,
                                 ObjectMapper objectMapper) {
         super(channelEntity, messageRouter, objectMapper);
+        this.generatedFileScrubber = null;
     }
 
     /**
      * Full constructor used by the production factory (ChannelManager). The
      * trailing {@code chatUploadLocationResolver} enables workspace/agent-aware
      * attachment storage; {@code null} keeps the legacy {@code data/chat-uploads}
-     * behaviour.
+     * behaviour. The {@code generatedFileScrubber} upgrades
+     * {@code /api/v1/files/generated/{id}} URLs in agent replies into native
+     * WeChat file/image attachments.
      */
     public WeixinChannelAdapter(ChannelEntity channelEntity,
                                 ChannelMessageRouter messageRouter,
                                 ObjectMapper objectMapper,
-                                vip.mate.workspace.core.service.ChatUploadLocationResolver chatUploadLocationResolver) {
+                                vip.mate.workspace.core.service.ChatUploadLocationResolver chatUploadLocationResolver,
+                                vip.mate.channel.media.GeneratedFileScrubber generatedFileScrubber) {
         super(channelEntity, messageRouter, objectMapper);
         this.chatUploadLocationResolver = chatUploadLocationResolver;
+        this.generatedFileScrubber = generatedFileScrubber;
     }
 
     @Override
@@ -744,13 +757,27 @@ public class WeixinChannelAdapter extends AbstractChannelAdapter {
         // 停止输入提示
         stopTyping(toUserId);
 
+        // 文本 part 里可能携带 /api/v1/files/generated/{id} URL，需先 scrub。
+        // 收集所有命中的附件，待文本全部发完后再统一推送（保持"文本在前，附件在后"的顺序）
+        List<vip.mate.channel.media.GeneratedFileScrubber.AttachmentHit> deferredAttachments =
+                new java.util.ArrayList<>();
+
         for (MessageContentPart part : parts) {
             if (part == null) continue;
             try {
                 switch (part.getType()) {
                     case "text" -> {
                         if (part.getText() != null && !part.getText().isBlank()) {
-                            client.sendText(toUserId, part.getText(), contextToken);
+                            String textToSend = part.getText();
+                            if (generatedFileScrubber != null) {
+                                vip.mate.channel.media.GeneratedFileScrubber.ScrubResult scrubbed =
+                                        generatedFileScrubber.scrub(part.getText());
+                                textToSend = scrubbed.rewrittenText();
+                                deferredAttachments.addAll(scrubbed.attachments());
+                            }
+                            if (!textToSend.isBlank()) {
+                                client.sendText(toUserId, textToSend, contextToken);
+                            }
                         }
                     }
                     case "image" -> sendImagePart(toUserId, contextToken, part);
@@ -769,15 +796,34 @@ public class WeixinChannelAdapter extends AbstractChannelAdapter {
                 sendFallbackText(targetId, part);
             }
         }
+
+        // 推送文本 part 里 scrub 出来的原生附件
+        sendAttachmentHits(toUserId, contextToken, deferredAttachments);
     }
 
     @Override
     public void renderAndSend(String targetId, String content) {
         // 停止输入提示
         String[] split = targetId.split("\\|", 2);
+        String contextToken = split.length > 0 ? split[0] : "";
         String toUserId = split.length > 1 ? split[1] : "";
         if (!toUserId.isBlank()) {
             stopTyping(toUserId);
+        }
+
+        // 扫描 /api/v1/files/generated/{id} URL → 替换为 "📎 filename" 标记 + 收集附件字节
+        // 缺失此步会让 LLM 回复里的 URL 作为纯文本发到微信，用户无法点击下载
+        List<vip.mate.channel.media.GeneratedFileScrubber.AttachmentHit> attachments = List.of();
+        String rewrittenContent = content;
+        if (generatedFileScrubber != null && content != null && !content.isBlank()) {
+            vip.mate.channel.media.GeneratedFileScrubber.ScrubResult scrubbed =
+                    generatedFileScrubber.scrub(content);
+            rewrittenContent = scrubbed.rewrittenText();
+            attachments = scrubbed.attachments();
+            if (!attachments.isEmpty()) {
+                log.info("[weixin] renderAndSend: scrubbed {} attachment(s) from content",
+                        attachments.size());
+            }
         }
 
         // 调用父类默认渲染逻辑
@@ -787,9 +833,56 @@ public class WeixinChannelAdapter extends AbstractChannelAdapter {
         int maxLen = vip.mate.channel.ChannelMessageRenderer.PLATFORM_LIMITS.getOrDefault(getChannelType(), 2048);
 
         List<String> segments = vip.mate.channel.ChannelMessageRenderer.renderForChannel(
-                content, filterThinking, filterToolMessages, format, maxLen);
+                rewrittenContent, filterThinking, filterToolMessages, format, maxLen);
         for (String segment : segments) {
             sendMessage(targetId, segment);
+        }
+
+        // 文本发完后，把缓存里的字节作为原生附件推送（与 WeCom/Feishu 行为对齐）
+        sendAttachmentHits(toUserId, contextToken, attachments);
+    }
+
+    /**
+     * 把 {@link GeneratedFileScrubber} 抓取到的附件字节，通过 iLink 原生
+     * file/image 通道发送给微信用户。图片走 {@link ILinkClient#sendImage}，
+     * 其他类型走 {@link ILinkClient#sendFile}（保留原始 fileName）。
+     * 单个附件失败不阻断后续附件，仅记录 error 日志。
+     */
+    private void sendAttachmentHits(String toUserId, String contextToken,
+                                    List<vip.mate.channel.media.GeneratedFileScrubber.AttachmentHit> attachments) {
+        if (attachments == null || attachments.isEmpty() || client == null
+                || toUserId == null || toUserId.isBlank()
+                || contextToken == null || contextToken.isBlank()) {
+            log.info("[weixin] sendAttachmentHits skipped: attachments={}, clientReady={}, toUserPresent={}, contextTokenPresent={}",
+                    attachments == null ? 0 : attachments.size(), client != null,
+                    toUserId != null && !toUserId.isBlank(),
+                    contextToken != null && !contextToken.isBlank());
+            return;
+        }
+        log.info("[weixin] sendAttachmentHits begin: count={}, toUser={}, contextTokenPresent={}",
+                attachments.size(), toUserId.substring(0, Math.min(12, toUserId.length())),
+                !contextToken.isBlank());
+        for (vip.mate.channel.media.GeneratedFileScrubber.AttachmentHit hit : attachments) {
+            try {
+                log.info("[weixin] sendAttachmentHit: mediaType={}, fileName={}, mimeType={}, bytes={}",
+                        hit.mediaType(), hit.fileName(), hit.mimeType(),
+                        hit.bytes() == null ? 0 : hit.bytes().length);
+                if ("image".equals(hit.mediaType())) {
+                    client.sendImage(toUserId, hit.bytes(), contextToken);
+                    log.info("[weixin] Generated image sent to {}: {} ({}bytes)",
+                            toUserId.substring(0, Math.min(12, toUserId.length())),
+                            hit.fileName(), hit.bytes().length);
+                } else {
+                    client.sendFile(toUserId, hit.bytes(), hit.fileName(), contextToken);
+                    log.info("[weixin] Generated file sent to {}: {} ({}bytes)",
+                            toUserId.substring(0, Math.min(12, toUserId.length())),
+                            hit.fileName(), hit.bytes().length);
+                }
+            } catch (Exception e) {
+                log.error("[weixin] Failed to send generated attachment {} to {}: {}",
+                        hit.fileName(), toUserId.substring(0, Math.min(12, toUserId.length())),
+                        e.getMessage(), e);
+            }
         }
     }
 
