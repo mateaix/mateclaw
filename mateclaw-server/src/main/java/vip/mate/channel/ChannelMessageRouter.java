@@ -281,7 +281,7 @@ public class ChannelMessageRouter {
         channelEntity = fresh;
 
         String conversationId = buildConversationId(message);
-        if (handleMagicCommand(message, adapter, conversationId)) {
+        if (handleMagicCommand(message, adapter, channelEntity, conversationId)) {
             return;
         }
 
@@ -605,16 +605,18 @@ public class ChannelMessageRouter {
         }
         channelEntity = fresh;
         Long agentId = channelEntity.getAgentId();
-        if (agentId == null) {
-            log.warn("[{}] Channel {} has no associated agent at processing time; dropping message from {}",
-                    adapter.getChannelType(), channelEntity.getName(), message.getSenderId());
-            return;
-        }
         log.info("[{}] Processing message: sender={}, conversationId={}, agentId={}",
                 adapter.getChannelType(), message.getSenderId(), conversationId, agentId);
 
         try {
-            if (handleMagicCommand(message, adapter, conversationId)) {
+            // Magic commands run before the agent-binding check so /help and
+            // /status still answer on a channel with no agent attached.
+            if (handleMagicCommand(message, adapter, channelEntity, conversationId)) {
+                return;
+            }
+            if (agentId == null) {
+                log.warn("[{}] Channel {} has no associated agent at processing time; dropping message from {}",
+                        adapter.getChannelType(), channelEntity.getName(), message.getSenderId());
                 return;
             }
 
@@ -797,8 +799,8 @@ public class ChannelMessageRouter {
                 if (adapter instanceof StreamingChannelAdapter streamingAdapter) {
                     savedAssistantId = processWithStreaming(message, streamingAdapter, conversationId, agentId, promptText, channelEntity, chatOrigin);
                 } else {
-                    // Sync path for non-streaming IM adapters (feishu / wecom / weixin /
-                    // slack / discord / qq / telegram). We can't use agentService.chat()
+                    // Sync path for non-streaming IM adapters (weixin / slack /
+                    // discord / qq / telegram). We can't use agentService.chat()
                     // because its collector filters out `delta.isEvent()` deltas — that
                     // would silently drop plan_created / plan_step_* events that the Web
                     // Console mirror needs to render PlanStepsPanel. Instead we consume
@@ -945,24 +947,80 @@ public class ChannelMessageRouter {
 
     /**
      * Handle channel-native control commands before the message is persisted
-     * or forwarded to the agent. Mirrors QwenPaw's control-command dispatch:
-     * a recognized command is terminal for this inbound message.
+     * or forwarded to the agent. A recognized command is terminal for this
+     * inbound message: it never reaches the debounce queue or the LLM.
      */
     private boolean handleMagicCommand(ChannelMessage message, ChannelAdapter adapter,
-                                       String conversationId) {
+                                       ChannelEntity channelEntity, String conversationId) {
         String userText = message != null ? message.getContent() : null;
-        if (!ChannelMagicCommand.isClearCommand(userText)) {
+        ChannelMagicCommand.Parsed command = ChannelMagicCommand.parse(userText).orElse(null);
+        if (command == null) {
             return false;
         }
-        cancelPending(conversationId);
-        conversationService.clearMessages(conversationId);
         String replyTarget = resolveReplyTarget(message);
-        if (replyTarget != null) {
-            adapter.sendMessage(replyTarget, ChannelMagicCommand.clearConfirmation());
+        String reply = switch (command.type()) {
+            case CLEAR -> {
+                cancelPending(conversationId);
+                conversationService.clearMessages(conversationId);
+                yield ChannelMagicCommand.clearConfirmation();
+            }
+            case NEW -> {
+                // Channel conversation ids are deterministic (channelType:chatId),
+                // so "new session" cannot rotate the id — it clears the context
+                // like CLEAR and only differs in the confirmation wording.
+                cancelPending(conversationId);
+                conversationService.clearMessages(conversationId);
+                yield ChannelMagicCommand.newConfirmation();
+            }
+            case STOP -> {
+                cancelPending(conversationId);
+                boolean stopped = streamTracker.requestStop(conversationId);
+                yield stopped ? ChannelMagicCommand.stopConfirmation()
+                        : ChannelMagicCommand.stopNothingRunning();
+            }
+            case HELP -> ChannelMagicCommand.helpText();
+            case STATUS -> buildStatusReply(channelEntity, conversationId);
+        };
+        if (replyTarget != null && reply != null) {
+            adapter.sendMessage(replyTarget, reply);
         }
-        log.info("[{}] Magic command handled: clear conversationId={}, sender={}",
-                adapter.getChannelType(), conversationId, message != null ? message.getSenderId() : null);
+        log.info("[{}] Magic command handled: {} conversationId={}, sender={}",
+                adapter.getChannelType(), command.type(), conversationId,
+                message != null ? message.getSenderId() : null);
         return true;
+    }
+
+    /** Build the /status reply; every lookup degrades gracefully to keep the command side-effect free. */
+    private String buildStatusReply(ChannelEntity channelEntity, String conversationId) {
+        StringBuilder sb = new StringBuilder("📊 会话状态\n");
+        sb.append("- 会话: ").append(conversationId).append('\n');
+        Long agentId = channelEntity != null ? channelEntity.getAgentId() : null;
+        if (agentId == null) {
+            sb.append("- 智能体: 未绑定\n");
+        } else {
+            try {
+                AgentEntity agent = agentService.getAgent(agentId);
+                if (agent != null) {
+                    sb.append("- 智能体: ").append(agent.getName()).append('\n');
+                    if (agent.getModelName() != null && !agent.getModelName().isBlank()) {
+                        sb.append("- 模型: ").append(agent.getModelName()).append('\n');
+                    }
+                } else {
+                    sb.append("- 智能体: 未找到（id=").append(agentId).append("）\n");
+                }
+            } catch (Exception e) {
+                log.warn("Failed to load agent {} for /status: {}", agentId, e.getMessage());
+                sb.append("- 智能体: 查询失败\n");
+            }
+        }
+        try {
+            sb.append("- 历史消息数: ").append(conversationService.countMessages(conversationId)).append('\n');
+        } catch (Exception e) {
+            log.warn("Failed to count messages for /status: {}", e.getMessage());
+        }
+        boolean running = streamTracker.isRunning(conversationId);
+        sb.append("- 当前任务: ").append(running ? "进行中（可用 /stop 停止）" : "空闲");
+        return sb.toString();
     }
 
     private void cancelPending(String conversationId) {
