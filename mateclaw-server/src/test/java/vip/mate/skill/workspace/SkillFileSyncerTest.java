@@ -129,6 +129,24 @@ class SkillFileSyncerTest {
         verify(mapper, times(2)).insert(any(SkillFileEntity.class));
     }
 
+    @Test
+    @DisplayName("DB and FS empty, builtin skill: backfills from classpath into DB")
+    void backfillsFromClasspathWhenBuiltinAndDbFsEmpty() {
+        SkillEntity skill = newSkill(10L, "pdf");
+        skill.setBuiltin(true);
+        when(skillService.listSkills()).thenReturn(List.of(skill));
+
+        List<SkillFileEntity> after = List.of(
+                newRow(1L, 10L, "scripts/pdftotext.py", "pdf script")
+        );
+        when(mapper.selectList(any())).thenReturn(List.of(), List.of(), after);
+
+        var report = syncer.syncAll();
+
+        assertEquals(1, report.skillsBackfilled());
+        verify(mapper, atLeastOnce()).insert(any(SkillFileEntity.class));
+    }
+
     private static SkillEntity newSkill(Long id, String name) {
         SkillEntity s = new SkillEntity();
         s.setId(id);

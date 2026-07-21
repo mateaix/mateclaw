@@ -99,6 +99,9 @@ public class SkillFileSyncer {
         int backfilled = 0;
         if (dbFiles.isEmpty()) {
             backfilled = backfillFromDiskIfNeeded(skill, workspaceDir);
+            if (backfilled == 0 && Boolean.TRUE.equals(skill.getBuiltin())) {
+                backfilled = backfillFromClasspathIfNeeded(skill);
+            }
             if (backfilled > 0) {
                 didBackfill = true;
                 dbFiles = skillFileService.listBySkillId(skill.getId());
@@ -118,6 +121,38 @@ public class SkillFileSyncer {
         }
 
         return new PerSkillReport(materialized, alreadyCurrent, backfilled, didBackfill);
+    }
+
+    /**
+     * Backfills builtin skill bundle files from classpath when both DB and disk are empty.
+     */
+    private int backfillFromClasspathIfNeeded(SkillEntity skill) {
+        org.springframework.core.io.support.ResourcePatternResolver resolver =
+                new org.springframework.core.io.support.PathMatchingResourcePatternResolver();
+        String bundledPath = "skills/" + skill.getName();
+        vip.mate.skill.workspace.bundle.SkillBundleSource source =
+                new vip.mate.skill.workspace.bundle.ClasspathBundleSource(resolver, bundledPath);
+
+        java.util.Map<String, String> ingested = new java.util.LinkedHashMap<>();
+        try {
+            for (vip.mate.skill.workspace.bundle.SkillBundleSource.BundleAsset asset : source.assets()) {
+                String relative = asset.path();
+                if (relative.startsWith("scripts/") || relative.startsWith("references/")) {
+                    try (java.io.InputStream is = asset.open()) {
+                        ingested.put(relative, new String(is.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8));
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.warn("Failed to backfill builtin skill '{}' from classpath: {}", skill.getName(), e.getMessage());
+            return 0;
+        }
+
+        if (ingested.isEmpty()) return 0;
+        skillFileService.applyBundleFiles(skill.getId(), ingested, false);
+        log.info("Backfilled {} bundle file(s) from classpath into mate_skill_file for builtin skill '{}' (id={})",
+                ingested.size(), skill.getName(), skill.getId());
+        return ingested.size();
     }
 
     private enum MaterializeOutcome { WROTE, CURRENT, SKIPPED }
