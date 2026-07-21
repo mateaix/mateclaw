@@ -99,13 +99,29 @@ public class ToolGuardCardRenderer implements WeComCardRenderer {
      *                       to stay inside WeCom's main_title.desc limit
      */
     public static Map<String, Object> buildResolvedCard(String taskId, String title, String desc) {
+        return buildResolvedCard(taskId, title, desc, DEFAULT_CARD_ACTION_URL);
+    }
+
+    /**
+     * Fallback for the mandatory {@code card_action} link when the channel
+     * config doesn't provide one ({@code card_action_url}).
+     */
+    public static final String DEFAULT_CARD_ACTION_URL = "https://mateclaw.vip";
+
+    /**
+     * Same as {@link #buildResolvedCard(String, String, String)} but with an
+     * explicit {@code card_action} URL (per-channel configurable).
+     */
+    public static Map<String, Object> buildResolvedCard(String taskId, String title, String desc,
+                                                        String actionUrl) {
         Map<String, Object> mainTitle = new LinkedHashMap<>();
         mainTitle.put("title", title == null ? "" : title);
         mainTitle.put("desc", truncate(desc == null ? "" : desc, 30));
 
         Map<String, Object> cardAction = new LinkedHashMap<>();
         cardAction.put("type", 1);
-        cardAction.put("url", "https://mateclaw.vip");
+        cardAction.put("url", (actionUrl == null || actionUrl.isBlank())
+                ? DEFAULT_CARD_ACTION_URL : actionUrl);
 
         Map<String, Object> card = new LinkedHashMap<>();
         card.put("card_type", "text_notice");

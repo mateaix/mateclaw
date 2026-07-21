@@ -199,7 +199,8 @@ public class ToolGuardCardHandler implements WeComCardHandler {
                 : "Tool " + toolName + " 已拒绝";
         try {
             adapter.updateTemplateCard(eventReqId,
-                    ToolGuardCardRenderer.buildResolvedCard(taskId, title, desc));
+                    ToolGuardCardRenderer.buildResolvedCard(taskId, title, desc,
+                            adapter.resolvedCardActionUrl()));
         } catch (Exception e) {
             log.warn("[wecom-toolguard] update_template_card (resolved) failed: {}", e.getMessage());
         }
@@ -212,7 +213,8 @@ public class ToolGuardCardHandler implements WeComCardHandler {
             adapter.updateTemplateCard(eventReqId,
                     ToolGuardCardRenderer.buildResolvedCard(taskId,
                             "❌ 仅原请求者可审批",
-                            "请由 " + requesterLabel + " 操作"));
+                            "请由 " + requesterLabel + " 操作",
+                            adapter.resolvedCardActionUrl()));
         } catch (Exception e) {
             log.warn("[wecom-toolguard] update_template_card (unauthorised) failed: {}", e.getMessage());
         }
@@ -224,7 +226,8 @@ public class ToolGuardCardHandler implements WeComCardHandler {
             adapter.updateTemplateCard(eventReqId,
                     ToolGuardCardRenderer.buildResolvedCard(taskId,
                             "⌛ 审批已过期",
-                            "Tool " + toolName + " 的审批已过期或被处理"));
+                            "Tool " + toolName + " 的审批已过期或被处理",
+                            adapter.resolvedCardActionUrl()));
         } catch (Exception e) {
             log.warn("[wecom-toolguard] update_template_card (expired) failed: {}", e.getMessage());
         }

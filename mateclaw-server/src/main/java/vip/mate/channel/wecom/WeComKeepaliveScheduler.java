@@ -48,8 +48,16 @@ public class WeComKeepaliveScheduler {
     /** Hard ceiling — after this many seconds, force-finish the stream. */
     static final long MAX_DURATION_SECONDS = 180;
 
-    /** Placeholder text written on every refresh tick + on force-finish. */
+    /** Placeholder text written on every refresh tick (when no live progress supplier is attached). */
     static final String PROCESSING_TEXT = "🤔 思考中...";
+
+    /**
+     * Text written when the 180s ceiling force-finishes the stream. The real
+     * answer will arrive later as a separate pushed bubble (the reply context
+     * is invalidated below), so the sealed bubble must tell the user the
+     * reply is still coming — freezing it on "思考中..." reads as a hang.
+     */
+    static final String FORCE_FINISH_TEXT = "⏳ 任务耗时较长，仍在处理中，结果稍后送达";
 
     /** One-shot state per active stream. Held by reference inside the scheduled task. */
     private static final class StreamState {
@@ -159,7 +167,7 @@ public class WeComKeepaliveScheduler {
             // replyContext entry so the eventual real reply takes the
             // fresh-stream path.
             try {
-                st.adapter.replyStreamFinishForKeepalive(st.reqId, st.streamId, PROCESSING_TEXT);
+                st.adapter.replyStreamFinishForKeepalive(st.reqId, st.streamId, FORCE_FINISH_TEXT);
             } catch (Exception e) {
                 log.debug("[wecom-keepalive] force-finish replyStream failed for {}: {}",
                         st.streamId, e.getMessage());

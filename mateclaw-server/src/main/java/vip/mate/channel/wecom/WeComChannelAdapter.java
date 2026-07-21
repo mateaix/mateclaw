@@ -12,11 +12,13 @@ import vip.mate.workspace.core.service.ChatUploadLocationResolver;
 import vip.mate.channel.ExponentialBackoff;
 import vip.mate.channel.media.InboundMediaDownloader;
 import vip.mate.channel.model.ChannelEntity;
+import vip.mate.channel.wecom.cards.tool_guard.ToolGuardCardRenderer;
 import vip.mate.workspace.conversation.model.MessageContentPart;
 
 import javax.crypto.Cipher;
 import javax.crypto.spec.IvParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
+import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -24,6 +26,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.net.http.WebSocket;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
@@ -195,6 +198,15 @@ public class WeComChannelAdapter extends AbstractChannelAdapter implements Strea
 
     /** WebSocket 消息碎片缓冲区 */
     private final StringBuilder wsBuffer = new StringBuilder();
+
+    /**
+     * Raw-byte accumulator for fragmented binary WS frames. Bytes are only
+     * decoded (as UTF-8) once the final fragment arrives — decoding each
+     * fragment separately would corrupt any multi-byte character split
+     * across a fragment boundary. Accessed only from the JDK WebSocket
+     * listener callbacks, which are delivered serially per socket.
+     */
+    private final ByteArrayOutputStream wsBinaryBuffer = new ByteArrayOutputStream();
 
     /** 请求 ID 计数器 */
     private final AtomicInteger reqIdCounter = new AtomicInteger(0);
@@ -498,6 +510,9 @@ public class WeComChannelAdapter extends AbstractChannelAdapter implements Strea
         pendingFrames.clear();
         replyContexts.clear();
         streamLastContent.clear();
+        // 断线时可能残留半截帧碎片，清空以免污染下一个连接的首帧
+        wsBuffer.setLength(0);
+        wsBinaryBuffer.reset();
         if (keepaliveScheduler != null) {
             keepaliveScheduler.shutdownAll();
         }
@@ -761,8 +776,10 @@ public class WeComChannelAdapter extends AbstractChannelAdapter implements Strea
             }
             byte[] bytes = new byte[data.remaining()];
             data.get(bytes);
-            wsBuffer.append(new String(bytes));
+            wsBinaryBuffer.write(bytes, 0, bytes.length);
             if (last) {
+                wsBuffer.append(new String(wsBinaryBuffer.toByteArray(), StandardCharsets.UTF_8));
+                wsBinaryBuffer.reset();
                 String fullMessage = wsBuffer.toString();
                 wsBuffer.setLength(0);
                 handleWebSocketFrame(fullMessage);
@@ -1455,6 +1472,10 @@ public class WeComChannelAdapter extends AbstractChannelAdapter implements Strea
             try {
                 replyStream(ctx.frameReqId(), ctx.processingStreamId(), progress.snapshot(), false);
             } catch (Exception e) {
+                // Reset the throttle window so the next delta retries the
+                // overwrite immediately instead of waiting out the min
+                // interval — a failed push means the bubble is stale.
+                lastFlushAt[0] = 0L;
                 log.debug("[wecom] progress overwrite failed: {}", e.getMessage());
             }
         }).blockLast(Duration.ofMinutes(10));
@@ -1516,10 +1537,10 @@ public class WeComChannelAdapter extends AbstractChannelAdapter implements Strea
             return;
         }
 
-        // 检查是否有 pending frame（用于 reply_stream 覆盖"思考中..."）
-        // sendMessage 被 renderAndSend 调用时，尝试用 reply_stream 覆盖
-        // 但由于 rawPayload 信息在 ChannelMessageRouter 层已丢失，
-        // 这里走 send_message 主动推送路径
+        // 无 frame 上下文的通用发送入口（cron/异步通知等主动推送场景）。
+        // 带 WeComReplyContext 的回复路径（renderAndSend / sendContentParts）
+        // 已直接绑定入站 frame 发送，不再落到这里；此处保留
+        // send_message 主动推送 + 群聊缓存 reqId 兜底。
         sendMessageToChat(targetId, content);
     }
 
@@ -1655,6 +1676,10 @@ public class WeComChannelAdapter extends AbstractChannelAdapter implements Strea
                     && !ctx.processingStreamId().isBlank()) {
                 replyStream(ctx.frameReqId(), ctx.processingStreamId(), segment, true);
                 first = false;
+            } else if (ctx != null && ctx.frameReqId() != null && !ctx.frameReqId().isBlank()) {
+                // 后续分段绑定同一入站 frame 回复——群聊拒收主动推送，
+                // 走 frame 回复在群聊/单聊都可达且保持顺序
+                replyMarkdown(ctx.frameReqId(), segment);
             } else {
                 sendMessage(targetId, segment);
             }
@@ -1773,6 +1798,10 @@ public class WeComChannelAdapter extends AbstractChannelAdapter implements Strea
                                     && !ctx.processingStreamId().isBlank()) {
                                 replyStream(ctx.frameReqId(), ctx.processingStreamId(), rewritten, true);
                                 firstText = false;
+                            } else if (ctx != null && ctx.frameReqId() != null
+                                    && !ctx.frameReqId().isBlank()) {
+                                // 后续文本绑定同一入站 frame 回复（群聊拒收主动推送）
+                                replyMarkdown(ctx.frameReqId(), rewritten);
                             } else {
                                 sendMessage(targetId, rewritten);
                             }
@@ -2075,6 +2104,42 @@ public class WeComChannelAdapter extends AbstractChannelAdapter implements Strea
      */
     private final ConcurrentHashMap<String, String> streamLastContent = new ConcurrentHashMap<>();
 
+    /**
+     * Send a markdown bubble bound to an inbound frame via
+     * {@code aibot_respond_msg}.
+     *
+     * <p>Used for reply segments after the first when a live
+     * {@link WeComReplyContext} exists: the platform rejects
+     * {@code aibot_send_msg} in group chats, so segments pushed actively
+     * would silently vanish there. Riding the inbound frame's reply slot
+     * works in both group and single chats, and keeps segment ordering
+     * behind the stream bubble (same per-reqId serial worker queue).
+     *
+     * <p>Failures are logged, not propagated — one bad segment must not
+     * abort the remaining segments of a long reply.
+     */
+    private void replyMarkdown(String frameReqId, String content) {
+        if (frameReqId == null || frameReqId.isBlank()
+                || content == null || content.isBlank()) {
+            return;
+        }
+        try {
+            Map<String, Object> body = Map.of(
+                    "msgtype", "markdown",
+                    "markdown", Map.of("content", content)
+            );
+            Map<String, Object> frame = Map.of(
+                    "cmd", CMD_RESPONSE,
+                    "headers", Map.of("req_id", frameReqId),
+                    "body", body
+            );
+            sendFrameWithAck(frameReqId, frame);
+        } catch (Exception e) {
+            log.error("[wecom] Failed to send reply segment via frame {}: {}",
+                    frameReqId, e.getMessage());
+        }
+    }
+
     // ==================== 上传大小预校验（WeCom 平台限制） ====================
 
     /** WeCom hard limits — verified empirically; sources differ slightly. */
@@ -2253,6 +2318,16 @@ public class WeComChannelAdapter extends AbstractChannelAdapter implements Strea
     }
 
     /**
+     * URL for the resolved approval card's mandatory {@code card_action}
+     * link (WeCom rejects {@code text_notice} cards without a type-1/2
+     * action). Reads channel config {@code card_action_url}; public so the
+     * card handler (different package) can pass it to the renderer.
+     */
+    public String resolvedCardActionUrl() {
+        return getConfigString("card_action_url", ToolGuardCardRenderer.DEFAULT_CARD_ACTION_URL);
+    }
+
+    /**
      * Keepalive refresh tick (called by {@link WeComKeepaliveScheduler}
      * every 20s). Sends {@code finish=false} on the existing stream so
      * WeCom's server-side TTL counter resets.
@@ -2262,6 +2337,13 @@ public class WeComChannelAdapter extends AbstractChannelAdapter implements Strea
      * not be triggering refresh ticks.
      */
     public void replyStreamRefreshForKeepalive(String reqId, String streamId, String text) {
+        // Bypass chunk dedup: a refresh whose text equals the previous chunk
+        // (e.g. the static placeholder when no progress supplier is attached)
+        // would otherwise be swallowed by replyStream's dedup guard — no
+        // network frame goes out, the server-side TTL is NOT reset, and the
+        // slot dies exactly the way this keepalive exists to prevent. Clearing
+        // the dedup slot first guarantees every tick produces a real frame.
+        streamLastContent.remove(streamId);
         replyStream(reqId, streamId, text, false);
     }
 

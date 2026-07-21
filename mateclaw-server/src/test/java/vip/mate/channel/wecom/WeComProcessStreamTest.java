@@ -141,6 +141,44 @@ class WeComProcessStreamTest {
                 "default config must not leave standalone tool messages");
     }
 
+    @Test
+    @DisplayName("multi-segment reply: segments after the first ride the inbound frame, not proactive push")
+    @SuppressWarnings("unchecked")
+    void multiSegmentRidesInboundFrame() throws Exception {
+        TestableAdapter adapter = newAdapter("{}");
+        seedReplyContext(adapter, "alice", "req-1", "stream-1");
+
+        // Long enough to exceed the 2048-char platform limit → at least 2 segments.
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < 80; i++) {
+            sb.append("第").append(i)
+                    .append("行：这是一段足够长的中文内容，用来撑破企业微信单条消息的长度上限，验证分段发送路径。\n");
+        }
+        adapter.renderAndSend("alice", sb.toString());
+
+        List<Map<String, Object>> frames = adapter.drainFrames();
+        assertTrue(frames.size() >= 2, "expected >= 2 outbound frames, got " + frames.size());
+
+        // Segment 1 overwrites the stream bubble with finish=true.
+        Map<String, Object> firstBody = (Map<String, Object>) frames.get(0).get("body");
+        assertEquals("stream", firstBody.get("msgtype"), "first segment must close the stream bubble");
+
+        // Segments 2+ must be markdown replies bound to the SAME inbound frame —
+        // aibot_send_msg is rejected in group chats, so any proactive push here
+        // would silently lose the segment for group users.
+        for (int i = 1; i < frames.size(); i++) {
+            Map<String, Object> frame = frames.get(i);
+            assertEquals("aibot_respond_msg", frame.get("cmd"),
+                    "segment #" + (i + 1) + " must ride the inbound frame reply slot");
+            Map<String, Object> headers = (Map<String, Object>) frame.get("headers");
+            assertEquals("req-1", headers.get("req_id"));
+            Map<String, Object> body = (Map<String, Object>) frame.get("body");
+            assertEquals("markdown", body.get("msgtype"));
+        }
+        assertTrue(frames.stream().noneMatch(f -> "aibot_send_msg".equals(f.get("cmd"))),
+                "no segment may fall back to proactive push while a reply context exists");
+    }
+
     // ==================== helpers ====================
 
     private static ChannelMessage inbound(String sender) {

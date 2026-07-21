@@ -16,8 +16,8 @@ import static org.mockito.Mockito.*;
 /**
  * Verify the WeComKeepaliveScheduler bookkeeping + force-finish path.
  *
- * <p>The 20s/180s timing constants come from QwenPaw and are already
- * validated empirically in production; we don't re-test the exact
+ * <p>The 20s/180s timing constants were chosen against the empirically
+ * observed stream-slot TTL and are validated in production; we don't re-test the exact
  * scheduling intervals here (would require either real wall-clock waits
  * or invasive ScheduledExecutor mocking). Instead we cover:
  * <ul>
@@ -114,7 +114,7 @@ class WeComKeepaliveSchedulerTest {
         tick.invoke(scheduler, state);
 
         verify(adapter, times(1)).replyStreamFinishForKeepalive(
-                eq("req-x"), eq("stream-x"), eq(WeComKeepaliveScheduler.PROCESSING_TEXT));
+                eq("req-x"), eq("stream-x"), eq(WeComKeepaliveScheduler.FORCE_FINISH_TEXT));
         verify(adapter, times(1)).invalidateReplyContext(eq("user-alice"), eq("stream-x"));
         verify(adapter, never()).replyStreamRefreshForKeepalive(any(), any(), any());
         // After force-finish, the stream is removed from the tracker
@@ -142,11 +142,15 @@ class WeComKeepaliveSchedulerTest {
     }
 
     @Test
-    @DisplayName("constants match the QwenPaw-verified values (20s refresh / 180s ceiling)")
+    @DisplayName("constants match the empirically-verified values (20s refresh / 180s ceiling)")
     void constantsMatch() {
         assertEquals(20L, WeComKeepaliveScheduler.REFRESH_INTERVAL_SECONDS);
         assertEquals(180L, WeComKeepaliveScheduler.MAX_DURATION_SECONDS);
         assertEquals("🤔 思考中...", WeComKeepaliveScheduler.PROCESSING_TEXT);
+        // Force-finish must NOT reuse the processing placeholder — the sealed
+        // bubble is the last thing the user sees until the pushed reply lands.
+        assertNotEquals(WeComKeepaliveScheduler.PROCESSING_TEXT,
+                WeComKeepaliveScheduler.FORCE_FINISH_TEXT);
     }
 
     // Pull a tracked StreamState by streamId via reflection. The states map

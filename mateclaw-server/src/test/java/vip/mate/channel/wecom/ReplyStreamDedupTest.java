@@ -137,6 +137,26 @@ class ReplyStreamDedupTest {
     }
 
     @Test
+    @DisplayName("keepalive refresh bypasses dedup — identical placeholder text still dispatches")
+    void keepaliveRefreshBypassesDedup() throws Exception {
+        Method m = WeComChannelAdapter.class.getDeclaredMethod(
+                "replyStream", String.class, String.class, String.class, boolean.class);
+        m.setAccessible(true);
+        // Initial placeholder chunk primes the dedup slot with this exact text.
+        m.invoke(adapter, "rid", "stream-1", "🤔 思考中...", false);
+        // Keepalive ticks re-send the SAME static placeholder. If they were
+        // deduplicated, no frame would reach the server and the stream slot's
+        // TTL would never reset — the exact failure keepalive exists to prevent.
+        adapter.replyStreamRefreshForKeepalive("rid", "stream-1", "🤔 思考中...");
+        adapter.replyStreamRefreshForKeepalive("rid", "stream-1", "🤔 思考中...");
+
+        for (int i = 0; i < 3; i++) {
+            assertNotNull(sentFrames.poll(500, TimeUnit.MILLISECONDS),
+                    "expected frame #" + (i + 1) + " — keepalive refreshes must not be deduplicated");
+        }
+    }
+
+    @Test
     @DisplayName("after finish=true, the dedup slot is cleared so the next stream with same content goes")
     void finishClearsDedupSlot() throws Exception {
         Method m = WeComChannelAdapter.class.getDeclaredMethod(
