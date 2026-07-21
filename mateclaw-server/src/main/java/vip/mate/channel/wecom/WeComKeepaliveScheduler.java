@@ -9,6 +9,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 
 /**
  * Periodically refreshes a WeCom AI Bot {@code stream} reply with the
@@ -58,6 +59,10 @@ public class WeComKeepaliveScheduler {
         final String replyToken;
         final long startedAt;
         volatile ScheduledFuture<?> future;
+        /** Optional live progress text source; when set, refresh ticks write
+         *  its current snapshot instead of the static placeholder so the
+         *  bubble keeps showing elapsed time / tool state between events. */
+        volatile Supplier<String> textSupplier;
         StreamState(WeComChannelAdapter a, String r, String s, String t) {
             this.adapter = a; this.reqId = r; this.streamId = s; this.replyToken = t;
             this.startedAt = System.currentTimeMillis();
@@ -103,6 +108,22 @@ public class WeComKeepaliveScheduler {
                 TimeUnit.SECONDS);
         states.put(streamId, st);
         log.debug("[wecom-keepalive] started for stream={} reqId={}", streamId, reqId);
+    }
+
+    /**
+     * Attach a live progress text source to an already-tracked stream.
+     * Subsequent refresh ticks write the supplier's snapshot instead of the
+     * static placeholder. No-op when the stream is not tracked (already
+     * stopped or force-finished).
+     */
+    public void attachTextSupplier(String streamId, Supplier<String> supplier) {
+        if (streamId == null || streamId.isBlank()) {
+            return;
+        }
+        StreamState st = states.get(streamId);
+        if (st != null) {
+            st.textSupplier = supplier;
+        }
     }
 
     /**
@@ -155,10 +176,27 @@ public class WeComKeepaliveScheduler {
             return;
         }
         try {
-            st.adapter.replyStreamRefreshForKeepalive(st.reqId, st.streamId, PROCESSING_TEXT);
+            st.adapter.replyStreamRefreshForKeepalive(st.reqId, st.streamId, refreshText(st));
         } catch (Exception e) {
             log.debug("[wecom-keepalive] refresh failed for {}: {}", st.streamId, e.getMessage());
         }
+    }
+
+    /** Current refresh text: live progress snapshot when attached, static placeholder otherwise. */
+    private String refreshText(StreamState st) {
+        Supplier<String> supplier = st.textSupplier;
+        if (supplier != null) {
+            try {
+                String text = supplier.get();
+                if (text != null && !text.isBlank()) {
+                    return text;
+                }
+            } catch (Exception e) {
+                log.debug("[wecom-keepalive] progress supplier failed for {}: {}",
+                        st.streamId, e.getMessage());
+            }
+        }
+        return PROCESSING_TEXT;
     }
 
     // ---- Test hooks ----

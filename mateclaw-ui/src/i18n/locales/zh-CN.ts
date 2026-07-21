@@ -3619,9 +3619,9 @@ export default {
     messageFilter: {
       title: '消息过滤',
       filterThinking: '过滤思维链',
-      filterThinkingTooltip: '发送给用户前过滤 <think> 标签内容',
+      filterThinkingTooltip: '是：仅过滤最终答案中的 <think> 内容；否：思考过程实时展示（企业微信在进度气泡中流式显示）',
       filterToolMessages: '过滤工具消息',
-      filterToolMessagesTooltip: '过滤 tool_call / tool_result 和 ReAct Action/Observation 行',
+      filterToolMessagesTooltip: '是：仅过滤最终答案中的 tool_call / Action 等内联标签；否：每次工具调用以独立消息留痕（企业微信已支持）',
       messageFormat: '消息格式',
       formatAuto: '自动',
       formatMarkdown: 'Markdown',

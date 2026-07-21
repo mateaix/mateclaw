@@ -3519,9 +3519,9 @@ export default {
     messageFilter: {
       title: 'Message Filter',
       filterThinking: 'Filter Thinking',
-      filterThinkingTooltip: 'Filter <think> tag content before sending to users',
+      filterThinkingTooltip: 'Yes: strip <think> content from the final answer only; No: show reasoning live (WeCom streams it in the progress bubble)',
       filterToolMessages: 'Filter Tool Messages',
-      filterToolMessagesTooltip: 'Filter tool_call / tool_result and ReAct Action/Observation lines',
+      filterToolMessagesTooltip: 'Yes: strip inline tool_call / Action tags from the final answer only; No: each tool call leaves a standalone trace message (supported on WeCom)',
       messageFormat: 'Message Format',
       formatAuto: 'Auto',
       formatMarkdown: 'Markdown',

@@ -2,9 +2,12 @@ package vip.mate.channel.wecom;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
+import reactor.core.publisher.Flux;
+import vip.mate.agent.AgentService.StreamDelta;
 import vip.mate.channel.AbstractChannelAdapter;
 import vip.mate.channel.ChannelMessage;
 import vip.mate.channel.ChannelMessageRouter;
+import vip.mate.channel.StreamingChannelAdapter;
 import vip.mate.workspace.core.service.ChatUploadLocationResolver;
 import vip.mate.channel.ExponentialBackoff;
 import vip.mate.channel.media.InboundMediaDownloader;
@@ -55,12 +58,17 @@ import java.util.concurrent.atomic.AtomicInteger;
  *   <li>welcome_text: 欢迎消息（可选）</li>
  *   <li>media_download_enabled: 是否下载媒体文件（默认 true）</li>
  *   <li>media_dir: 媒体文件保存目录（默认 data/media）</li>
+ *   <li>stream_progress: 处理期间是否在气泡内展示实时进度（默认 true；
+ *       false 退化为"累积后一次性发送"）</li>
+ *   <li>progress_interval_ms: 进度覆写最小间隔（默认 500ms）</li>
+ *   <li>filter_thinking: false 时思考内容流式进入进度气泡（默认 true）</li>
+ *   <li>filter_tool_messages: false 时每次工具调用发独立留痕消息（默认 true）</li>
  * </ul>
  *
  * @author MateClaw Team
  */
 @Slf4j
-public class WeComChannelAdapter extends AbstractChannelAdapter {
+public class WeComChannelAdapter extends AbstractChannelAdapter implements StreamingChannelAdapter {
 
     public static final String CHANNEL_TYPE = "wecom";
 
@@ -1343,6 +1351,162 @@ public class WeComChannelAdapter extends AbstractChannelAdapter {
             log.warn("[wecom] approval card render/send failed, falling back to text: {}", e.getMessage());
             super.sendApprovalNotice(targetId, notice);
         }
+    }
+
+    // ==================== StreamingChannelAdapter ====================
+
+    /** Minimum interval between progress overwrites of the stream bubble. */
+    private static final long PROGRESS_MIN_INTERVAL_MS = 500;
+
+    /** Max chars of a tool-argument summary in a standalone tool message. */
+    private static final int TOOL_ARGS_SUMMARY_MAX = 120;
+
+    /**
+     * 流式处理 Agent 事件并渲染到企业微信
+     * <p>
+     * 渲染策略：复用入站时发出的 "🤔 思考中..." reply_stream 气泡，随
+     * agent 事件（思考、工具调用、计划步骤、内容产出）持续覆写为实时进度，
+     * 流结束后原地渐变为最终答案（走 renderAndSend 的分段逻辑）。
+     * <ul>
+     *   <li>覆写节流 {@link #PROGRESS_MIN_INTERVAL_MS}；工具/审批等关键事件立即刷新</li>
+     *   <li>静默期由 {@link WeComKeepaliveScheduler} 每 20s 用进度快照续期</li>
+     *   <li>{@code stream_progress=false} 或无可用气泡（语音入站等）时退化为
+     *       "累积后一次性发送"，与改造前行为一致</li>
+     *   <li>{@code filter_tool_messages=false} 时，每次工具调用另发独立消息留痕</li>
+     *   <li>{@code filter_thinking=false} 时，思考内容以引用块进入进度气泡</li>
+     * </ul>
+     */
+    @Override
+    public String processStream(Flux<StreamDelta> stream, ChannelMessage message, String conversationId) {
+        String replyTarget = message.getReplyToken() != null ? message.getReplyToken()
+                : (message.getChatId() != null ? message.getChatId() : message.getSenderId());
+        WeComReplyContext ctx = replyContexts.get(replyTarget);
+        boolean progressEnabled = getConfigBoolean("stream_progress", true);
+        boolean bubbleUsable = ctx != null && ctx.processingStreamId() != null
+                && !ctx.processingStreamId().isBlank()
+                && ctx.frameReqId() != null && !ctx.frameReqId().isBlank();
+
+        StringBuilder contentAccumulator = new StringBuilder();
+        if (!progressEnabled || !bubbleUsable) {
+            // Degraded path — identical to the pre-streaming sync behavior:
+            // accumulate content only (persistOnly deltas included, matching
+            // the router's legacy collector) and send once at the end.
+            stream.doOnNext(delta -> {
+                        if (!delta.isEvent() && delta.content() != null) {
+                            contentAccumulator.append(delta.content());
+                        }
+                    })
+                    .blockLast(Duration.ofMinutes(10));
+        } else {
+            consumeWithProgress(stream, message, replyTarget, ctx, contentAccumulator);
+        }
+
+        String finalContent = contentAccumulator.toString();
+        if (!finalContent.isBlank()) {
+            renderAndSend(replyTarget, finalContent);
+        }
+        return finalContent;
+    }
+
+    /** Event-driven progress rendering into the existing processing-stream bubble. */
+    private void consumeWithProgress(Flux<StreamDelta> stream, ChannelMessage message,
+                                     String replyTarget, WeComReplyContext ctx,
+                                     StringBuilder contentAccumulator) {
+        boolean showThinking = !getConfigBoolean("filter_thinking", true);
+        boolean standaloneToolMessages = !getConfigBoolean("filter_tool_messages", true);
+        long minIntervalMs = getConfigLong("progress_interval_ms", PROGRESS_MIN_INTERVAL_MS);
+
+        WeComProgressRenderer progress = new WeComProgressRenderer(
+                System.currentTimeMillis(), showThinking);
+        if (keepaliveScheduler != null) {
+            // Silent stretches (long LLM calls with no events) keep showing a
+            // fresh elapsed-time snapshot instead of the static placeholder.
+            keepaliveScheduler.attachTextSupplier(ctx.processingStreamId(), progress::snapshot);
+        }
+
+        final long[] lastFlushAt = {0L};
+        stream.doOnNext(delta -> {
+            boolean flushNow = false;
+            if (delta.isEvent()) {
+                flushNow = progress.onEvent(delta.eventType(), delta.eventData());
+                if (standaloneToolMessages) {
+                    maybeSendToolEventMessage(replyTarget, delta.eventType(), delta.eventData());
+                }
+            } else {
+                if (delta.thinking() != null) {
+                    progress.onThinkingDelta(delta.thinking());
+                }
+                if (delta.content() != null) {
+                    contentAccumulator.append(delta.content());
+                    progress.onContentDelta(delta.content());
+                }
+            }
+            long now = System.currentTimeMillis();
+            if (!flushNow && now - lastFlushAt[0] < minIntervalMs) {
+                return;
+            }
+            // The keepalive force-finish (180s ceiling) evicts the reply
+            // context; once that happens the stream slot is closed and
+            // further overwrites would be silently rejected — stop pushing.
+            if (replyContexts.get(replyTarget) != ctx) {
+                return;
+            }
+            lastFlushAt[0] = now;
+            try {
+                replyStream(ctx.frameReqId(), ctx.processingStreamId(), progress.snapshot(), false);
+            } catch (Exception e) {
+                log.debug("[wecom] progress overwrite failed: {}", e.getMessage());
+            }
+        }).blockLast(Duration.ofMinutes(10));
+    }
+
+    /**
+     * Standalone tool-call trace messages, sent only when the channel's
+     * {@code filter_tool_messages} toggle is off: the user opted into seeing
+     * the tool trail as persistent bubbles (the progress bubble alone is
+     * transient — the final answer overwrites it).
+     */
+    private void maybeSendToolEventMessage(String replyTarget, String eventType,
+                                           Map<String, Object> data) {
+        if (data == null || eventType == null) {
+            return;
+        }
+        Object toolName = data.get("toolName");
+        if (toolName == null) {
+            return;
+        }
+        try {
+            switch (eventType) {
+                case "tool_call_started" -> {
+                    String args = summarizeToolArgs(data.get("arguments"));
+                    sendMessage(replyTarget, "🔧 调用工具 `" + toolName + "`"
+                            + (args.isEmpty() ? "" : "\n> " + args));
+                }
+                case "tool_call_completed" -> {
+                    boolean success = !Boolean.FALSE.equals(data.get("success"));
+                    sendMessage(replyTarget, (success ? "✅ `" : "❌ `") + toolName
+                            + (success ? "` 完成" : "` 失败"));
+                }
+                default -> {
+                    // Other events carry no standalone tool trace.
+                }
+            }
+        } catch (Exception e) {
+            log.debug("[wecom] tool trace message failed: {}", e.getMessage());
+        }
+    }
+
+    private static String summarizeToolArgs(Object arguments) {
+        if (arguments == null) {
+            return "";
+        }
+        String text = arguments.toString().replaceAll("\\s+", " ").trim();
+        if (text.isEmpty() || "{}".equals(text)) {
+            return "";
+        }
+        return text.length() > TOOL_ARGS_SUMMARY_MAX
+                ? text.substring(0, TOOL_ARGS_SUMMARY_MAX) + "…"
+                : text;
     }
 
     @Override
