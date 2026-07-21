@@ -127,13 +127,22 @@ public class WikiKnowledgeBaseService {
      * KB just drops out). An agent with no scope rows stays workspace-wide,
      * preserving the pre-scoping behavior for every existing agent.
      * <p>
+     * An agent flagged {@code wiki_disabled=true} sees no KBs at all — the
+     * opt-out toggle wins over both workspace visibility and any leftover
+     * binding rows (the UI clears the rows when the flag is set, so the
+     * zero-row state must not fall through to "unrestricted").
+     * <p>
      * This is the single choke point for KB access: {@code wiki_list_kbs},
-     * {@link #findVisibleById}, {@link #findAllByName} and
-     * {@link #resolvePrimaryKb} all read through here, so narrowing it scopes
-     * every wiki tool at once.
+     * {@link #findVisibleById}, {@link #findAllByName},
+     * {@link #resolvePrimaryKb}, the system-prompt wiki context, and the
+     * per-turn relevant-page injection all read through here, so narrowing
+     * it scopes every wiki surface at once.
      */
     public List<WikiKnowledgeBaseEntity> listByAgentId(Long agentId) {
         AgentEntity agent = getAgentOrNull(agentId);
+        if (agent != null && Boolean.TRUE.equals(agent.getWikiDisabled())) {
+            return List.of();
+        }
         List<WikiKnowledgeBaseEntity> workspaceKbs = (agent == null || agent.getWorkspaceId() == null)
                 ? listAll()
                 : listByWorkspace(agent.getWorkspaceId());

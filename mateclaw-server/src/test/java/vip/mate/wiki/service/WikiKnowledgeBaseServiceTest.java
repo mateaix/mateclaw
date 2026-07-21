@@ -15,6 +15,7 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -307,5 +308,39 @@ class WikiKnowledgeBaseServiceTest {
                 kb(300L, null, 1L, "Scoped KB")));
 
         assertThat(service.resolvePrimaryKb(7L).getId()).isEqualTo(300L);
+    }
+
+    // ==================== wiki_disabled opt-out (issue #551) ====================
+    //
+    // The "use no knowledge base" toggle sets mate_agent.wiki_disabled=true
+    // and clears the binding rows. Zero rows normally means "unrestricted",
+    // so the flag must short-circuit BEFORE the scope fallback — otherwise
+    // the opted-out agent sees every workspace KB again and the system
+    // prompt keeps injecting wiki content.
+
+    @Test
+    @DisplayName("wiki_disabled hides every KB: list, primary, and by-id lookups all come back empty")
+    void wikiDisabledHidesAllKbs() {
+        AgentEntity optedOut = agent(7L, 1L, 100L);
+        optedOut.setWikiDisabled(true);
+        when(agentMapper.selectById(7L)).thenReturn(optedOut);
+
+        assertThat(service.listByAgentId(7L)).isEmpty();
+        assertThat(service.resolvePrimaryKb(7L)).isNull();
+        assertThat(service.findVisibleById(7L, 100L)).isNull();
+        verify(kbMapper, never()).selectList(any());
+    }
+
+    @Test
+    @DisplayName("wiki_disabled wins over leftover binding rows")
+    void wikiDisabledWinsOverLeftoverBindings() {
+        bindScope(100L);
+        AgentEntity optedOut = agent(7L, 1L, 100L);
+        optedOut.setWikiDisabled(true);
+        when(agentMapper.selectById(7L)).thenReturn(optedOut);
+        when(kbMapper.selectList(any())).thenReturn(List.of(
+                kb(100L, null, 1L, "Bound KB")));
+
+        assertThat(service.listByAgentId(7L)).isEmpty();
     }
 }
