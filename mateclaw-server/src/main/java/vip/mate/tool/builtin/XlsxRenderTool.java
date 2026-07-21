@@ -14,6 +14,7 @@ import vip.mate.tool.document.MarkdownInputResolver;
 import vip.mate.tool.document.MarkdownInputResolver.Resolved;
 import vip.mate.tool.document.MarkdownInputResolver.ResolveException;
 import vip.mate.tool.document.MarkdownXlsxRenderer;
+import vip.mate.workspace.artifact.service.WorkspaceArtifactService;
 
 /**
  * Render a brand-new .xlsx workbook from a Markdown body, in-process via
@@ -31,6 +32,7 @@ public class XlsxRenderTool {
 
     private final MarkdownXlsxRenderer renderer;
     private final GeneratedFileCache cache;
+    private final WorkspaceArtifactService artifactService;
 
     @Tool(description = """
         Render a NEW .xlsx workbook from Markdown and return a one-time download URL.
@@ -82,7 +84,7 @@ public class XlsxRenderTool {
             byte[] bytes = renderer.render(markdown);
             log.info("[XlsxRender] generated {} ({} bytes, {}ms)",
                     displayName, bytes.length, System.currentTimeMillis() - t0);
-            return GeneratedFileLink.resultZh(bytes, displayName, XLSX_MIME, cache, "工作簿", ctx);
+            return GeneratedFileLink.resultZh(bytes, displayName, XLSX_MIME, cache, "工作簿", ctx, artifactService);
         } catch (Exception e) {
             log.error("[XlsxRender] render failed for {}: {}", displayName, e.getMessage(), e);
             return "渲染失败：" + e.getMessage();
@@ -127,7 +129,7 @@ public class XlsxRenderTool {
             log.info("[XlsxRender] generated {} ({} bytes from {} bytes md, {}ms)",
                     displayName, bytes.length, input.totalBytes(),
                     System.currentTimeMillis() - t0);
-            return GeneratedFileLink.resultEn(bytes, displayName, XLSX_MIME, cache, "Workbook", 1, ctx);
+            return GeneratedFileLink.resultEn(bytes, displayName, XLSX_MIME, cache, "Workbook", 1, ctx, artifactService);
         } catch (Exception e) {
             log.error("[XlsxRender] render failed for {} (source: {}): {}",
                     displayName, input.sources().get(0), e.getMessage(), e);

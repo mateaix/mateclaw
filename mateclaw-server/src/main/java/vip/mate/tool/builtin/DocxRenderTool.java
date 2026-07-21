@@ -14,6 +14,7 @@ import vip.mate.tool.document.MarkdownDocxRenderer;
 import vip.mate.tool.document.MarkdownInputResolver;
 import vip.mate.tool.document.MarkdownInputResolver.Resolved;
 import vip.mate.tool.document.MarkdownInputResolver.ResolveException;
+import vip.mate.workspace.artifact.service.WorkspaceArtifactService;
 
 import java.util.List;
 
@@ -39,6 +40,7 @@ public class DocxRenderTool {
 
     private final MarkdownDocxRenderer renderer;
     private final GeneratedFileCache cache;
+    private final WorkspaceArtifactService artifactService;
 
     @Tool(description = """
         Render a new .docx (Microsoft Word) file from Markdown text and return a
@@ -87,7 +89,7 @@ public class DocxRenderTool {
             byte[] bytes = renderer.render(markdown, size);
             log.info("[DocxRender] generated {} ({} bytes, {}ms)",
                     displayName, bytes.length, System.currentTimeMillis() - t0);
-            return GeneratedFileLink.resultZh(bytes, displayName, DOCX_MIME, cache, "文档", ctx);
+            return GeneratedFileLink.resultZh(bytes, displayName, DOCX_MIME, cache, "文档", ctx, artifactService);
         } catch (Exception e) {
             log.error("[DocxRender] render failed for {}: {}", displayName, e.getMessage(), e);
             return "渲染失败：" + e.getMessage();
@@ -153,7 +155,7 @@ public class DocxRenderTool {
             byte[] bytes = renderer.render(input.markdown(), size);
             log.info("[DocxRender] generated {} ({} bytes from {} bytes md, {}ms)",
                     displayName, bytes.length, input.totalBytes(), System.currentTimeMillis() - t0);
-            return GeneratedFileLink.resultEn(bytes, displayName, DOCX_MIME, cache, "Document", 1, ctx);
+            return GeneratedFileLink.resultEn(bytes, displayName, DOCX_MIME, cache, "Document", 1, ctx, artifactService);
         } catch (Exception e) {
             log.error("[DocxRender] render failed for {} (source: {}): {}",
                     displayName, input.sources().get(0), e.getMessage(), e);
@@ -215,7 +217,7 @@ public class DocxRenderTool {
                     displayName, bytes.length, input.fileCount(), input.totalBytes(),
                     System.currentTimeMillis() - t0);
             return GeneratedFileLink.resultEn(bytes, displayName, DOCX_MIME, cache,
-                    "Document", input.fileCount(), ctx);
+                    "Document", input.fileCount(), ctx, artifactService);
         } catch (Exception e) {
             log.error("[DocxRender] render failed for {} (sources: {}): {}",
                     displayName, input.sources(), e.getMessage(), e);

@@ -15,6 +15,7 @@ import vip.mate.tool.document.MarkdownInputResolver.Resolved;
 import vip.mate.tool.document.MarkdownInputResolver.ResolveException;
 import vip.mate.tool.document.pdf.MarkdownPdfRenderer;
 import vip.mate.tool.document.pdf.PdfProperties;
+import vip.mate.workspace.artifact.service.WorkspaceArtifactService;
 
 import java.util.Locale;
 
@@ -34,6 +35,7 @@ public class PdfRenderTool {
 
     private final MarkdownPdfRenderer renderer;
     private final GeneratedFileCache cache;
+    private final WorkspaceArtifactService artifactService;
 
     @Tool(description = """
         Render a NEW .pdf file from Markdown and return a one-time download URL.
@@ -100,7 +102,7 @@ public class PdfRenderTool {
             MarkdownPdfRenderer.Result result = renderer.render(markdown, size, eng);
             log.info("[PdfRender] generated {} ({} bytes via {})",
                     displayName, result.bytes().length, result.backend());
-            return GeneratedFileLink.resultZh(result.bytes(), displayName, PDF_MIME, cache, "PDF", ctx);
+            return GeneratedFileLink.resultZh(result.bytes(), displayName, PDF_MIME, cache, "PDF", ctx, artifactService);
         } catch (Exception e) {
             log.error("[PdfRender] render failed for {}: {}", displayName, e.getMessage(), e);
             return "渲染失败：" + e.getMessage();
@@ -153,7 +155,7 @@ public class PdfRenderTool {
             MarkdownPdfRenderer.Result result = renderer.render(input.markdown(), size, eng);
             log.info("[PdfRender] generated {} ({} bytes via {} from {} bytes md)",
                     displayName, result.bytes().length, result.backend(), input.totalBytes());
-            return GeneratedFileLink.resultEn(result.bytes(), displayName, PDF_MIME, cache, "Document", 1, ctx);
+            return GeneratedFileLink.resultEn(result.bytes(), displayName, PDF_MIME, cache, "Document", 1, ctx, artifactService);
         } catch (Exception e) {
             log.error("[PdfRender] render failed for {} (source: {}): {}",
                     displayName, input.sources().get(0), e.getMessage(), e);

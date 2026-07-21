@@ -51,6 +51,10 @@ import reactor.core.Disposable;
 import vip.mate.approval.PendingApproval;
 import vip.mate.approval.ResolveOutcome;
 import vip.mate.agent.context.ChatOrigin;
+import vip.mate.workspace.artifact.model.WorkspaceArtifactEntity;
+import vip.mate.workspace.artifact.service.WorkspaceArtifactService;
+import vip.mate.workspace.artifact.vo.ArtifactPageVO;
+import vip.mate.tool.document.GeneratedFileCache;
 
 /**
  * WebChat 嵌入式对话接口
@@ -91,6 +95,13 @@ public class WebChatController {
      * and the turn was wasted.
      */
     private final vip.mate.approval.ApprovalWorkflowService approvalService;
+
+    /**
+     * Issue #514: registers user-uploaded + agent-produced files into the
+     * Agent's workspace artifact catalog and serves the cross-session listing.
+     */
+    private final WorkspaceArtifactService artifactService;
+    private final GeneratedFileCache generatedFileCache;
 
     /** Visitor-token TTL in seconds (7 days). Mirrors GeneratedFileCache's TTL. */
     static final long VISITOR_TOKEN_TTL_SECONDS = 7 * 24 * 3600L;
@@ -1489,6 +1500,10 @@ public class WebChatController {
             audit(channel, vid, "webchat.upload-file", conversationId,
                     "{\"sessionId\":\"" + sid + "\",\"fileId\":\"" + stored.storedName()
                             + "\",\"size\":" + stored.size() + "}");
+            // Issue #514: register the user upload into the workspace artifact
+            // catalog so it shows up in the cross-session file listing. Best-effort
+            // — a catalog write failure must not fail the upload (the file is stored).
+            registerUserUpload(channel, conversationId, sid, stored);
             return R.ok(Map.of(
                     "fileId", stored.storedName(),
                     "fileName", stored.originalName(),
@@ -1562,6 +1577,210 @@ public class WebChatController {
                 .header(HttpHeaders.CONTENT_DISPOSITION,
                         (inlineImage ? "inline" : "attachment") + "; filename*=UTF-8''" + encodedName)
                 .body(new FileSystemResource(file));
+    }
+
+    // ==================== Issue #514: Workspace Artifacts ====================
+
+    /**
+     * List the Agent workspace's full file inventory — both Agent-produced
+     * output and user uploads — across all sessions (issue #514). Files live
+     * at the Agent/Workspace level; sessions are a provenance filter only.
+     */
+    @Operation(summary = "列出 Agent 工作空间的产出文件")
+    @GetMapping("/artifacts")
+    public R<ArtifactPageVO> listArtifacts(
+            @RequestHeader("X-MC-Key") String apiKey,
+            @RequestHeader(value = "X-MC-Visitor-Token", required = false) String visitorToken,
+            @RequestParam String visitorId,
+            @RequestParam(required = false) String sessionId,
+            @RequestParam(required = false) String source,
+            @RequestParam(required = false) String type,
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "50") int size) {
+        ChannelEntity channel = resolveChannel(apiKey);
+        if (channel == null) {
+            return R.fail(401, "Invalid API Key");
+        }
+        if (!verifyVisitorToken(visitorTokenSecret, channel.getId(), visitorId, visitorToken)) {
+            return R.fail(401, "Invalid or missing visitor token");
+        }
+        Long agentId = channel.getAgentId();
+        if (agentId == null) {
+            return R.fail(400, "No agent configured for this WebChat channel");
+        }
+        // Use the AGENT's workspaceId, not the channel's — agent-produced
+        // artifacts are registered under the agent's workspace (chatStream
+        // builds the ChatOrigin from webAgent.getWorkspaceId()), so the list
+        // filter must read the same source to stay consistent.
+        vip.mate.agent.model.AgentEntity listAgent = agentService.getAgent(agentId);
+        Long workspaceId = listAgent != null && listAgent.getWorkspaceId() != null
+                ? listAgent.getWorkspaceId() : 1L;
+        // sessionId filter uses the server-derived conversationId (same key the
+        // upload/agent paths store), so the listing filter matches the
+        // registration key exactly.
+        String conversationId = null;
+        if (sessionId != null && !sessionId.isBlank()) {
+            try {
+                conversationId = deriveConversationId(apiKey,
+                        normalizeVisitorId(visitorId), normalizeSessionId(sessionId));
+            } catch (IllegalArgumentException ex) {
+                return R.fail(400, ex.getMessage());
+            }
+        }
+        ArtifactPageVO result = artifactService.list(agentId, workspaceId,
+                conversationId, source, type, page, size);
+        audit(channel, visitorId, "webchat.list-artifacts", null,
+                "{\"agentId\":" + agentId + ",\"page\":" + page + ",\"size\":" + size + "}");
+        return R.ok(result);
+    }
+
+    /**
+     * Download a workspace artifact by its catalog id (issue #514). Resolves
+     * the backing store from the artifact row — works for both agent-produced
+     * files ({@code generated_cache}) and user uploads ({@code upload}) without
+     * the caller re-deriving the conversationId. Auth: X-MC-Key + visitor token,
+     * same as the list endpoint.
+     */
+    @Operation(summary = "下载工作空间产出文件")
+    @GetMapping("/artifacts/{id}/download")
+    public ResponseEntity<Resource> downloadArtifact(
+            @RequestHeader("X-MC-Key") String apiKey,
+            @RequestHeader(value = "X-MC-Visitor-Token", required = false) String visitorToken,
+            @RequestParam String visitorId,
+            @PathVariable String id) {
+        ChannelEntity channel = resolveChannel(apiKey);
+        if (channel == null) {
+            return ResponseEntity.status(401).build();
+        }
+        if (!verifyVisitorToken(visitorTokenSecret, channel.getId(), visitorId, visitorToken)) {
+            return ResponseEntity.status(401).build();
+        }
+        if (channel.getAgentId() == null) {
+            return ResponseEntity.status(400).build();
+        }
+        Long artifactId;
+        try {
+            artifactId = Long.parseLong(id);
+        } catch (NumberFormatException ex) {
+            return ResponseEntity.badRequest().build();
+        }
+        WorkspaceArtifactEntity artifact = artifactService.findById(artifactId);
+        if (artifact == null
+                || !Integer.valueOf(0).equals(artifact.getDeleted())
+                || !channel.getAgentId().equals(artifact.getAgentId())) {
+            return ResponseEntity.notFound().build();
+        }
+        Path file;
+        long size;
+        String mime;
+        String name;
+        try {
+            if (WorkspaceArtifactService.STORAGE_GENERATED_CACHE.equals(artifact.getStorageKind())) {
+                GeneratedFileCache.Entry entry = generatedFileCache
+                        .get(artifact.getStorageRef()).orElse(null);
+                if (entry == null) {
+                    return ResponseEntity.notFound().build();
+                }
+                // Serve the cached bytes directly.
+                name = entry.filename();
+                mime = entry.mimeType();
+                size = entry.bytes() != null ? entry.bytes().length : 0;
+                String encodedName = URLEncoder.encode(name, StandardCharsets.UTF_8).replace("+", "%20");
+                MediaType mediaType = mime != null
+                        ? safeParseMediaType(mime) : MediaType.APPLICATION_OCTET_STREAM;
+                boolean inlineImage = mime != null && mime.startsWith("image/");
+                return ResponseEntity.ok()
+                        .contentType(mediaType)
+                        .header("X-Content-Type-Options", "nosniff")
+                        .header(HttpHeaders.CONTENT_DISPOSITION,
+                                (inlineImage ? "inline" : "attachment")
+                                        + "; filename*=UTF-8''" + encodedName)
+                        .header(HttpHeaders.CONTENT_LENGTH, String.valueOf(size))
+                        .body(new org.springframework.core.io.ByteArrayResource(entry.bytes()));
+            }
+            // User upload: resolve from the conversation dir.
+            file = fileService.resolve(artifact.getConversationId(),
+                    artifact.getStorageRef()).orElse(null);
+            if (file == null) {
+                return ResponseEntity.notFound().build();
+            }
+            name = artifact.getName();
+            mime = artifact.getMime();
+            try {
+                size = java.nio.file.Files.size(file);
+            } catch (IOException ignore) {
+                size = 0;
+            }
+        } catch (Exception e) {
+            log.warn("[WebChat] artifact download failed id={}: {}", id, e.toString());
+            return ResponseEntity.status(500).build();
+        }
+        String contentType = null;
+        try {
+            contentType = java.nio.file.Files.probeContentType(file);
+        } catch (IOException e) {
+            // fall back to artifact mime
+        }
+        if (contentType == null) {
+            contentType = mime != null ? mime : "application/octet-stream";
+        }
+        MediaType mediaType = safeParseMediaType(contentType);
+        boolean inlineImage = contentType.startsWith("image/");
+        String encodedName = URLEncoder.encode(name, StandardCharsets.UTF_8).replace("+", "%20");
+        return ResponseEntity.ok()
+                .contentType(mediaType)
+                .header("X-Content-Type-Options", "nosniff")
+                .header(HttpHeaders.CONTENT_DISPOSITION,
+                        (inlineImage ? "inline" : "attachment")
+                                + "; filename*=UTF-8''" + encodedName)
+                .header(HttpHeaders.CONTENT_LENGTH, String.valueOf(size))
+                .body(new FileSystemResource(file));
+    }
+
+    private MediaType safeParseMediaType(String mime) {
+        try {
+            return MediaType.parseMediaType(mime);
+        } catch (Exception e) {
+            return MediaType.APPLICATION_OCTET_STREAM;
+        }
+    }
+
+    /**
+     * Register a user-uploaded file into the workspace artifact catalog
+     * (issue #514, source=user). Best-effort: swallows exceptions so a
+     * catalog write failure never fails the upload.
+     */
+    private void registerUserUpload(ChannelEntity channel, String conversationId,
+                                    String sessionLabel,
+                                    WebChatFileService.StagedFile stored) {
+        try {
+            WorkspaceArtifactEntity entity = new WorkspaceArtifactEntity();
+            entity.setWorkspaceId(channel.getWorkspaceId() != null ? channel.getWorkspaceId() : 1L);
+            entity.setChannelId(channel.getId());
+            entity.setAgentId(channel.getAgentId());
+            entity.setConversationId(conversationId);
+            // Store conversationId (not the raw sessionLabel) so user uploads
+            // and agent artifacts share the same sessionId format in the VO —
+            // both use the server-derived conversationId as the provenance key.
+            entity.setSessionLabel(conversationId);
+            entity.setToolCallId(null);
+            entity.setToolName(null);
+            entity.setSource(WorkspaceArtifactService.SOURCE_USER);
+            entity.setArtifactType(WorkspaceArtifactService.classifyType(
+                    stored.originalName(), stored.contentType()));
+            entity.setName(stored.originalName());
+            entity.setMime(stored.contentType());
+            entity.setSizeBytes(stored.size());
+            entity.setStorageKind(WorkspaceArtifactService.STORAGE_UPLOAD);
+            entity.setStorageRef(stored.storedName());
+            // downloadUrl is built at read-time in WorkspaceArtifactService.toVO()
+            // from the artifact id, so it does not need to be set here.
+            entity.setDownloadUrl(null);
+            artifactService.register(entity);
+        } catch (Exception e) {
+            log.warn("[WebChat] artifact registration failed for upload {}: {}",
+                    stored.storedName(), e.toString());
+        }
     }
 
     /**

@@ -3,6 +3,7 @@ package vip.mate.tool.document;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.lang.Nullable;
+import vip.mate.workspace.artifact.service.WorkspaceArtifactService;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -43,6 +44,20 @@ public final class WorkspaceArtifactSurfacer {
      */
     public static List<String> collect(GeneratedFileCache cache, @Nullable Path workingDir,
                                        long sinceMillis, @Nullable ToolContext ctx) {
+        return collect(cache, workingDir, sinceMillis, ctx, null);
+    }
+
+    /**
+     * Variant that also registers each surfaced file into the Agent's workspace
+     * catalog (issue #514). Best-effort throughout — surfacing a download must
+     * never fail the tool run, and neither must the catalog write.
+     *
+     * @param artifactService if non-null, each file is registered as a persistent
+     *                        cross-session artifact with provenance from {@code ctx}
+     */
+    public static List<String> collect(GeneratedFileCache cache, @Nullable Path workingDir,
+                                       long sinceMillis, @Nullable ToolContext ctx,
+                                       @Nullable WorkspaceArtifactService artifactService) {
         if (cache == null || workingDir == null || !Files.isDirectory(workingDir)) {
             return List.of();
         }
@@ -67,8 +82,16 @@ public final class WorkspaceArtifactSurfacer {
                     byte[] bytes = Files.readAllBytes(p);
                     totalBytes += size;
                     String name = p.getFileName().toString();
-                    String id = cache.put(bytes, name, probeMime(p, name));
+                    String mime = probeMime(p, name);
+                    boolean register = artifactService != null;
+                    String id = register
+                            ? cache.putPersistent(bytes, name, mime)
+                            : cache.put(bytes, name, mime);
                     links.add("[" + name + "](" + cache.downloadUrl(id, ctx) + ")");
+                    if (register) {
+                        GeneratedFileLink.registerArtifact(artifactService, id, bytes, name, mime,
+                                ctx, WorkspaceArtifactService.STORAGE_GENERATED_CACHE);
+                    }
                 } catch (Exception perFile) {
                     log.debug("[ArtifactSurfacer] skip {}: {}", p, perFile.getMessage());
                 }

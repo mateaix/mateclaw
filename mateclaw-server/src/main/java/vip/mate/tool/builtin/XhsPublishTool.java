@@ -12,6 +12,7 @@ import vip.mate.tool.browser.UrlSafetyChecker;
 import vip.mate.tool.document.GeneratedFileCache;
 import vip.mate.tool.document.GeneratedFileLink;
 import vip.mate.tool.guard.WorkspacePathGuard;
+import vip.mate.workspace.artifact.service.WorkspaceArtifactService;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
@@ -49,6 +50,7 @@ public class XhsPublishTool {
     private static final int MAX_IMAGES = 18; // Xiaohongshu allows up to 18 images per note.
 
     private final GeneratedFileCache cache;
+    private final WorkspaceArtifactService artifactService;
 
     @Tool(name = "xhs_publish", description = """
         Package a Xiaohongshu (小红书) note into one downloadable bundle and give
@@ -121,7 +123,7 @@ public class XhsPublishTool {
         }
 
         String linkMsg = GeneratedFileLink.resultZh(
-                zip, "小红书发布包.zip", "application/zip", cache, "发布包", ctx);
+                zip, "小红书发布包.zip", "application/zip", cache, "发布包", ctx, artifactService);
 
         StringBuilder out = new StringBuilder();
         out.append(linkMsg).append("\n\n");

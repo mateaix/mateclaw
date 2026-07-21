@@ -900,13 +900,22 @@ public class ToolExecutionExecutor {
                         .withWorkspace(runtimeOrigin.workspaceId(), pc.workspaceBasePath);
                 ToolContext toolContext = runtimeOrigin.toToolContext();
 
+                // Issue #514: thread the tool-call id into the context map so
+                // document-render tools can register the artifacts they produce
+                // with provenance. Mirrors the MCP-progress injection below — a
+                // plain map key, no ChatOrigin record change (the record has a
+                // strict "add-only, 90-day deprecation" evolution rule).
+                Map<String, Object> ctxMap = new HashMap<>(toolContext.getContext());
+                ctxMap.put(ChatOrigin.TOOL_CALL_ID_KEY, pc.toolCall.id());
+                ctxMap.put(ChatOrigin.TOOL_NAME_KEY, toolName);
+                toolContext = new ToolContext(ctxMap);
+
                 // MCP progress: generate progressToken and inject into ToolContext
                 // so ProgressAwareMcpToolCallback can include it in tools/call _meta.
                 if (progressContext != null) {
                     progressToken = UUID.randomUUID().toString();
                     progressContext.register(progressToken,
                             new McpProgressContext.ProgressEntry(pc.conversationId, pc.toolCall.id(), toolName));
-                    Map<String, Object> ctxMap = new HashMap<>(toolContext.getContext());
                     ctxMap.put(ProgressAwareMcpToolCallback.MCP_PROGRESS_TOKEN_KEY, progressToken);
                     toolContext = new ToolContext(ctxMap);
                 }

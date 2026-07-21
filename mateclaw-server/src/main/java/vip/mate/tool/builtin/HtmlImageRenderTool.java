@@ -18,6 +18,7 @@ import vip.mate.tool.document.FilenameSanitizer;
 import vip.mate.tool.document.GeneratedFileCache;
 import vip.mate.tool.document.GeneratedFileLink;
 import vip.mate.tool.guard.WorkspacePathGuard;
+import vip.mate.workspace.artifact.service.WorkspaceArtifactService;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -44,12 +45,14 @@ public class HtmlImageRenderTool {
     private static final int SET_CONTENT_TIMEOUT_MS = 15_000;
 
     private final GeneratedFileCache cache;
+    private final WorkspaceArtifactService artifactService;
 
     private volatile Playwright sharedPlaywright;
     private final Object playwrightLock = new Object();
 
-    public HtmlImageRenderTool(GeneratedFileCache cache) {
+    public HtmlImageRenderTool(GeneratedFileCache cache, WorkspaceArtifactService artifactService) {
         this.cache = cache;
+        this.artifactService = artifactService;
     }
 
     @Tool(description = """
@@ -120,7 +123,7 @@ public class HtmlImageRenderTool {
 
         log.info("[HtmlImageRender] rendered {} ({} bytes, viewport={}x{}, fullPage={})",
                 displayName, pngBytes.length, vw, vh, full);
-        return GeneratedFileLink.resultZh(pngBytes, displayName, PNG_MIME, cache, "图片", ctx);
+        return GeneratedFileLink.resultZh(pngBytes, displayName, PNG_MIME, cache, "图片", ctx, artifactService);
     }
 
     private String resolveHtml(String filePath, String inlineHtml) throws Exception {

@@ -24,7 +24,7 @@ class CodeExecuteToolArgsTest {
 
     /** Unused collaborators are null — {@code normalizeArgs} only needs the mapper. */
     private final CodeExecuteTool tool =
-            new CodeExecuteTool(null, null, null, objectMapper, null);
+            new CodeExecuteTool(null, null, null, objectMapper, null, null);
 
     @Test
     @DisplayName("null / blank / empty-array args yield no argument list")

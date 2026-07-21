@@ -14,6 +14,7 @@ import vip.mate.tool.document.MarkdownInputResolver;
 import vip.mate.tool.document.MarkdownInputResolver.Resolved;
 import vip.mate.tool.document.MarkdownInputResolver.ResolveException;
 import vip.mate.tool.document.MarkdownPptxRenderer;
+import vip.mate.workspace.artifact.service.WorkspaceArtifactService;
 
 /**
  * Render a brand-new .pptx deck from Markdown, in-process via Apache POI.
@@ -31,6 +32,7 @@ public class PptxRenderTool {
 
     private final MarkdownPptxRenderer renderer;
     private final GeneratedFileCache cache;
+    private final WorkspaceArtifactService artifactService;
 
     @Tool(description = """
         Render a NEW .pptx slide deck from Markdown and return a one-time download URL.
@@ -91,7 +93,7 @@ public class PptxRenderTool {
             byte[] bytes = renderer.render(markdown, ratio);
             log.info("[PptxRender] generated {} ({} bytes, {}ms)",
                     displayName, bytes.length, System.currentTimeMillis() - t0);
-            return GeneratedFileLink.resultZh(bytes, displayName, PPTX_MIME, cache, "演示文稿", ctx);
+            return GeneratedFileLink.resultZh(bytes, displayName, PPTX_MIME, cache, "演示文稿", ctx, artifactService);
         } catch (Exception e) {
             log.error("[PptxRender] render failed for {}: {}", displayName, e.getMessage(), e);
             return "渲染失败：" + e.getMessage();
@@ -139,7 +141,7 @@ public class PptxRenderTool {
             log.info("[PptxRender] generated {} ({} bytes from {} bytes md, {}ms)",
                     displayName, bytes.length, input.totalBytes(),
                     System.currentTimeMillis() - t0);
-            return GeneratedFileLink.resultEn(bytes, displayName, PPTX_MIME, cache, "Presentation", 1, ctx);
+            return GeneratedFileLink.resultEn(bytes, displayName, PPTX_MIME, cache, "Presentation", 1, ctx, artifactService);
         } catch (Exception e) {
             log.error("[PptxRender] render failed for {} (source: {}): {}",
                     displayName, input.sources().get(0), e.getMessage(), e);
