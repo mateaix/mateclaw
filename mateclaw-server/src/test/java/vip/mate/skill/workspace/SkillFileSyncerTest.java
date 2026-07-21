@@ -51,8 +51,9 @@ class SkillFileSyncerTest {
         fileService = new SkillFileService(mapper);
         SkillWorkspaceProperties props = new SkillWorkspaceProperties();
         props.setRoot(tmp.toString());
+        props.setBundledSkillsPath("skills");
         workspaceManager = new SkillWorkspaceManager(props, mock(ApplicationEventPublisher.class));
-        syncer = new SkillFileSyncer(skillService, fileService, workspaceManager);
+        syncer = new SkillFileSyncer(skillService, fileService, workspaceManager, props);
     }
 
     @Test

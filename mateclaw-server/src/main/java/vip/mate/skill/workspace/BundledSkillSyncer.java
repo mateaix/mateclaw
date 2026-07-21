@@ -12,6 +12,7 @@ import vip.mate.skill.service.SkillFileService;
 import vip.mate.skill.service.SkillService;
 import vip.mate.skill.workspace.bundle.ClasspathBundleSource;
 import vip.mate.skill.workspace.bundle.MaterializeOptions;
+import vip.mate.skill.workspace.bundle.SkillBundleFiles;
 import vip.mate.skill.workspace.bundle.SkillBundleMaterializer;
 import vip.mate.skill.workspace.bundle.SkillBundleSource;
 
@@ -21,14 +22,13 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Discovers {@code classpath:skills/*\/SKILL.md} at startup and copies
+ * Discovers {@code classpath:skills/&#42;/SKILL.md} at startup and copies
  * each into the user's skill workspace, upgrading on version bumps.
  *
  * <p>Split out of {@link SkillWorkspaceManager} so the workspace service
@@ -41,9 +41,19 @@ import java.util.regex.Pattern;
  *   <li>Re-install: only when the classpath SKILL.md frontmatter
  *       {@code version} is strictly newer than the workspace copy. The
  *       existing workspace is archived (not deleted) before overwrite.</li>
- *   <li>Same / older / unparseable version: leave the workspace alone so
- *       user edits aren't clobbered.</li>
+ *   <li>Self-heal: when the bundle ships {@code scripts/} or
+ *       {@code references/} but the workspace lacks that directory entirely
+ *       (an install performed from a build whose jar was missing those
+ *       folders), the workspace is archived and re-copied even though the
+ *       version is unchanged.</li>
+ *   <li>Same / older / unparseable version with all buckets present: leave
+ *       the workspace alone so user edits aren't clobbered.</li>
  * </ul>
+ *
+ * <p>Whenever a bundle is copied to disk (install, upgrade, or self-heal),
+ * its {@code scripts/} and {@code references/} files are also persisted to
+ * the canonical {@code mate_skill_file} store so multi-instance deployments
+ * see the same content regardless of which node performed the sync.
  */
 @Slf4j
 @Component
@@ -94,7 +104,8 @@ public class BundledSkillSyncer {
 
     /**
      * Sync a single bundled skill. Returns true if the workspace was
-     * created or upgraded. Same/older versions are no-ops.
+     * created, upgraded, or self-healed. Same/older versions with all
+     * bundle buckets present on disk are no-ops.
      */
     private boolean syncOne(ResourcePatternResolver resolver, String bundledPath,
                              String skillName, Resource manifest) {
@@ -103,59 +114,74 @@ public class BundledSkillSyncer {
 
         SkillBundleSource source = new ClasspathBundleSource(resolver,
                 bundledPath + "/" + skillName);
-        Map<String, String> bundleFiles = loadBundleFilesFromSource(source);
-
-        SkillEntity skill = skillService.findByName(skillName);
-        if (skill != null && skill.getId() != null && !bundleFiles.isEmpty()) {
-            skillFileService.applyBundleFiles(skill.getId(), bundleFiles, false);
-        }
 
         if (!firstInstall) {
             String bundledVersion = readVersion(manifest);
             String workspaceVersion = readVersion(targetDir.resolve("SKILL.md"));
-            boolean missingScriptsOnDisk = hasScriptsInBundle(bundleFiles) && !Files.exists(targetDir.resolve("scripts"));
-
-            if (!missingScriptsOnDisk && (bundledVersion == null || !isNewerVersion(bundledVersion, workspaceVersion))) {
-                log.debug("Bundled skill '{}' workspace is current (bundled={}, workspace={}), skipping",
-                        skillName, bundledVersion, workspaceVersion);
-                return false;
-            }
-            if (!missingScriptsOnDisk) {
+            boolean upgrade = bundledVersion != null && isNewerVersion(bundledVersion, workspaceVersion);
+            if (upgrade) {
                 log.info("Bundled skill '{}' version {} > workspace version {}, upgrading",
                         skillName, bundledVersion, workspaceVersion);
-                workspaceManager.archiveWorkspace(skillName);
             } else {
-                log.info("Bundled skill '{}' is missing scripts directory on disk, force copying bundle", skillName);
+                List<String> missing = missingBucketsOnDisk(source, targetDir);
+                if (missing.isEmpty()) {
+                    log.debug("Bundled skill '{}' workspace is current (bundled={}, workspace={}), skipping",
+                            skillName, bundledVersion, workspaceVersion);
+                    return false;
+                }
+                log.info("Bundled skill '{}' is missing {} on disk, restoring from bundle",
+                        skillName, missing);
             }
+            // Archive (never overwrite in place) so local edits stay recoverable.
+            workspaceManager.archiveWorkspace(skillName);
         }
 
         copyBundle(source, targetDir);
+        syncBundleFilesToDb(skillName, source);
         eventPublisher.publishEvent(
                 new SkillWorkspaceEvent(skillName, SkillWorkspaceEvent.Type.CREATED, targetDir));
         log.info("{} bundled skill '{}' → {}", firstInstall ? "Synced" : "Upgraded", skillName, targetDir);
         return true;
     }
 
-    private Map<String, String> loadBundleFilesFromSource(SkillBundleSource source) {
-        Map<String, String> files = new LinkedHashMap<>();
+    /**
+     * Buckets ({@code scripts/}, {@code references/}) that ship in the
+     * bundle but are absent from the workspace directory — the fingerprint
+     * of an install performed from a build whose jar lacked those folders.
+     */
+    private List<String> missingBucketsOnDisk(SkillBundleSource source, Path targetDir) {
+        List<String> missing = new ArrayList<>();
         try {
-            for (SkillBundleSource.BundleAsset asset : source.assets()) {
-                String path = asset.relativePath();
-                if (path.startsWith("scripts/") || path.startsWith("references/")) {
-                    try (InputStream is = asset.open().get()) {
-                        String content = new String(is.readAllBytes(), StandardCharsets.UTF_8);
-                        files.put(path, content);
-                    }
+            List<SkillBundleSource.BundleAsset> assets = source.assets();
+            for (String prefix : SkillBundleFiles.DB_BUCKET_PREFIXES) {
+                boolean inBundle = assets.stream().anyMatch(a -> a.relativePath().startsWith(prefix));
+                String dirName = prefix.substring(0, prefix.length() - 1);
+                if (inBundle && !Files.isDirectory(targetDir.resolve(dirName))) {
+                    missing.add(dirName);
                 }
             }
-        } catch (Exception e) {
-            log.warn("Failed to load bundle assets from {}: {}", source.origin(), e.getMessage());
+        } catch (IOException e) {
+            log.warn("Failed to enumerate bundle assets from {}: {}", source.origin(), e.getMessage());
         }
-        return files;
+        return missing;
     }
 
-    private boolean hasScriptsInBundle(Map<String, String> bundleFiles) {
-        return bundleFiles.keySet().stream().anyMatch(p -> p.startsWith("scripts/"));
+    /**
+     * Mirror the bundle's DB-persisted buckets into {@code mate_skill_file}.
+     * Skipped silently when the skill row doesn't exist yet (first boot
+     * before seeding) — the skill file syncer's disk backfill covers that
+     * case once the row appears.
+     */
+    private void syncBundleFilesToDb(String skillName, SkillBundleSource source) {
+        SkillEntity skill = skillService.findByName(skillName);
+        if (skill == null || skill.getId() == null) return;
+        try {
+            Map<String, String> bundleFiles = SkillBundleFiles.readDbEligible(source);
+            if (bundleFiles.isEmpty()) return;
+            skillFileService.applyBundleFiles(skill.getId(), bundleFiles, false);
+        } catch (IOException e) {
+            log.warn("Failed to load bundle files from {}: {}", source.origin(), e.getMessage());
+        }
     }
 
     private void copyBundle(SkillBundleSource source, Path targetDir) {

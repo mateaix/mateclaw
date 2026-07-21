@@ -2,11 +2,16 @@ package vip.mate.skill.workspace;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
+import org.springframework.core.io.support.ResourcePatternResolver;
 import org.springframework.stereotype.Component;
 import vip.mate.skill.model.SkillEntity;
 import vip.mate.skill.model.SkillFileEntity;
 import vip.mate.skill.service.SkillFileService;
 import vip.mate.skill.service.SkillService;
+import vip.mate.skill.workspace.bundle.ClasspathBundleSource;
+import vip.mate.skill.workspace.bundle.SkillBundleFiles;
+import vip.mate.skill.workspace.bundle.SkillBundleSource;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -15,7 +20,9 @@ import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -25,8 +32,10 @@ import java.util.Set;
  *
  * <p>Also runs a one-time backfill: for any skill that has on-disk files
  * but no DB rows (typically pre-V112 installs), the local files are read
- * up into the DB so the canonical store catches up to reality. Backfill
- * is content-hash idempotent and safe to invoke repeatedly.
+ * up into the DB so the canonical store catches up to reality. Builtin
+ * skills with neither DB rows nor on-disk files fall back to re-reading
+ * the classpath bundle. Backfill is content-hash idempotent and safe to
+ * invoke repeatedly.
  *
  * <p>Triggered:
  * <ul>
@@ -45,6 +54,7 @@ public class SkillFileSyncer {
     private final SkillService skillService;
     private final SkillFileService skillFileService;
     private final SkillWorkspaceManager workspaceManager;
+    private final SkillWorkspaceProperties workspaceProperties;
 
     /** Aggregate counters for one full sync pass. */
     public record SyncReport(int skillsConsidered,
@@ -124,31 +134,27 @@ public class SkillFileSyncer {
     }
 
     /**
-     * Backfills builtin skill bundle files from classpath when both DB and disk are empty.
+     * Backfills builtin skill bundle files from the classpath when both the
+     * DB and the local workspace are empty — the state left behind by an
+     * install whose jar shipped without {@code scripts/}/{@code references/}.
      */
     private int backfillFromClasspathIfNeeded(SkillEntity skill) {
-        org.springframework.core.io.support.ResourcePatternResolver resolver =
-                new org.springframework.core.io.support.PathMatchingResourcePatternResolver();
-        String bundledPath = "skills/" + skill.getName();
-        vip.mate.skill.workspace.bundle.SkillBundleSource source =
-                new vip.mate.skill.workspace.bundle.ClasspathBundleSource(resolver, bundledPath);
+        String bundledPath = workspaceProperties.getBundledSkillsPath();
+        if (bundledPath == null || bundledPath.isBlank()) return 0;
 
-        java.util.Map<String, String> ingested = new java.util.LinkedHashMap<>();
+        ResourcePatternResolver resolver = new PathMatchingResourcePatternResolver();
+        SkillBundleSource source = new ClasspathBundleSource(resolver,
+                bundledPath + "/" + skill.getName());
+
+        Map<String, String> ingested;
         try {
-            for (vip.mate.skill.workspace.bundle.SkillBundleSource.BundleAsset asset : source.assets()) {
-                String relative = asset.relativePath();
-                if (relative.startsWith("scripts/") || relative.startsWith("references/")) {
-                    try (java.io.InputStream is = asset.open().get()) {
-                        ingested.put(relative, new String(is.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8));
-                    }
-                }
-            }
-        } catch (Exception e) {
+            ingested = SkillBundleFiles.readDbEligible(source);
+        } catch (IOException e) {
             log.warn("Failed to backfill builtin skill '{}' from classpath: {}", skill.getName(), e.getMessage());
             return 0;
         }
-
         if (ingested.isEmpty()) return 0;
+
         skillFileService.applyBundleFiles(skill.getId(), ingested, false);
         log.info("Backfilled {} bundle file(s) from classpath into mate_skill_file for builtin skill '{}' (id={})",
                 ingested.size(), skill.getName(), skill.getId());
@@ -209,7 +215,7 @@ public class SkillFileSyncer {
         if (Files.isDirectory(references)) roots.add(references);
         if (roots.isEmpty()) return 0;
 
-        java.util.Map<String, String> ingested = new java.util.LinkedHashMap<>();
+        Map<String, String> ingested = new LinkedHashMap<>();
         Set<String> seen = new HashSet<>();
         for (Path root : roots) {
             String prefix = workspaceDir.relativize(root).toString().replace('\\', '/') + "/";
