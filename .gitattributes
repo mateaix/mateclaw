@@ -1,0 +1,19 @@
+# Line-ending policy.
+#
+# Shell scripts are bind-mounted into Linux containers (e.g.
+# docker/postgres/init/ -> /docker-entrypoint-initdb.d) and executed there.
+# A CRLF checkout on Windows (core.autocrlf=true is the Git for Windows
+# default) turns the shebang into "#!/bin/sh\r", which fails with
+# "cannot execute: required file not found". Pin them to LF everywhere.
+#
+# SQL files are pinned to LF too so Flyway migration checksums stay
+# identical across platforms.
+
+*.sh   text eol=lf
+*.bash text eol=lf
+*.sql  text eol=lf
+
+# Windows-native scripts keep CRLF.
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+*.ps1  text eol=crlf
