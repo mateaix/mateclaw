@@ -7,6 +7,9 @@ import org.springframework.core.io.Resource;
 import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
 import org.springframework.core.io.support.ResourcePatternResolver;
 import org.springframework.stereotype.Component;
+import vip.mate.skill.model.SkillEntity;
+import vip.mate.skill.service.SkillFileService;
+import vip.mate.skill.service.SkillService;
 import vip.mate.skill.workspace.bundle.ClasspathBundleSource;
 import vip.mate.skill.workspace.bundle.MaterializeOptions;
 import vip.mate.skill.workspace.bundle.SkillBundleMaterializer;
@@ -18,12 +21,14 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Discovers {@code classpath:skills/&#42;/SKILL.md} at startup and copies
+ * Discovers {@code classpath:skills/*\/SKILL.md} at startup and copies
  * each into the user's skill workspace, upgrading on version bumps.
  *
  * <p>Split out of {@link SkillWorkspaceManager} so the workspace service
@@ -52,6 +57,8 @@ public class BundledSkillSyncer {
     private final SkillWorkspaceManager workspaceManager;
     private final SkillBundleMaterializer bundleMaterializer;
     private final ApplicationEventPublisher eventPublisher;
+    private final SkillService skillService;
+    private final SkillFileService skillFileService;
 
     /**
      * Run a full sync pass. Idempotent — safe to call from both startup
@@ -94,35 +101,69 @@ public class BundledSkillSyncer {
         Path targetDir = workspaceManager.resolveConventionPath(skillName);
         boolean firstInstall = !Files.exists(targetDir);
 
+        SkillBundleSource source = new ClasspathBundleSource(resolver,
+                bundledPath + "/" + skillName);
+        Map<String, String> bundleFiles = loadBundleFilesFromSource(source);
+
+        SkillEntity skill = skillService.findByName(skillName);
+        if (skill != null && skill.getId() != null && !bundleFiles.isEmpty()) {
+            skillFileService.applyBundleFiles(skill.getId(), bundleFiles, false);
+        }
+
         if (!firstInstall) {
             String bundledVersion = readVersion(manifest);
             String workspaceVersion = readVersion(targetDir.resolve("SKILL.md"));
-            if (bundledVersion == null || !isNewerVersion(bundledVersion, workspaceVersion)) {
+            boolean missingScriptsOnDisk = hasScriptsInBundle(bundleFiles) && !Files.exists(targetDir.resolve("scripts"));
+
+            if (!missingScriptsOnDisk && (bundledVersion == null || !isNewerVersion(bundledVersion, workspaceVersion))) {
                 log.debug("Bundled skill '{}' workspace is current (bundled={}, workspace={}), skipping",
                         skillName, bundledVersion, workspaceVersion);
                 return false;
             }
-            log.info("Bundled skill '{}' version {} > workspace version {}, upgrading",
-                    skillName, bundledVersion, workspaceVersion);
-            workspaceManager.archiveWorkspace(skillName);
+            if (!missingScriptsOnDisk) {
+                log.info("Bundled skill '{}' version {} > workspace version {}, upgrading",
+                        skillName, bundledVersion, workspaceVersion);
+                workspaceManager.archiveWorkspace(skillName);
+            } else {
+                log.info("Bundled skill '{}' is missing scripts directory on disk, force copying bundle", skillName);
+            }
         }
 
-        copyBundle(resolver, bundledPath, skillName, targetDir);
+        copyBundle(source, targetDir);
         eventPublisher.publishEvent(
                 new SkillWorkspaceEvent(skillName, SkillWorkspaceEvent.Type.CREATED, targetDir));
         log.info("{} bundled skill '{}' → {}", firstInstall ? "Synced" : "Upgraded", skillName, targetDir);
         return true;
     }
 
-    private void copyBundle(ResourcePatternResolver resolver, String bundledPath,
-                            String skillName, Path targetDir) {
-        SkillBundleSource source = new ClasspathBundleSource(resolver,
-                bundledPath + "/" + skillName);
+    private Map<String, String> loadBundleFilesFromSource(SkillBundleSource source) {
+        Map<String, String> files = new LinkedHashMap<>();
+        try {
+            for (SkillBundleSource.BundleAsset asset : source.assets()) {
+                String path = asset.relativePath();
+                if (path.startsWith("scripts/") || path.startsWith("references/")) {
+                    try (InputStream is = asset.open().get()) {
+                        String content = new String(is.readAllBytes(), StandardCharsets.UTF_8);
+                        files.put(path, content);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.warn("Failed to load bundle assets from {}: {}", source.origin(), e.getMessage());
+        }
+        return files;
+    }
+
+    private boolean hasScriptsInBundle(Map<String, String> bundleFiles) {
+        return bundleFiles.keySet().stream().anyMatch(p -> p.startsWith("scripts/"));
+    }
+
+    private void copyBundle(SkillBundleSource source, Path targetDir) {
         try {
             bundleMaterializer.materialize(source, targetDir, MaterializeOptions.verbatim());
         } catch (IOException e) {
-            log.warn("Failed to copy bundled skill '{}' from {}: {}",
-                    skillName, source.origin(), e.getMessage());
+            log.warn("Failed to copy bundled skill from {}: {}",
+                    source.origin(), e.getMessage());
         }
     }
 
