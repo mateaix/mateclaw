@@ -226,8 +226,13 @@ let isActive = true
 // ==================== Lifecycle ====================
 
 async function loadAgents() {
-  const res: any = await agentApi.list()
-  agents.value = res.data || []
+  try {
+    const res: any = await agentApi.list()
+    agents.value = res.data || []
+  } catch {
+    // Keep the previously loaded list — the agent picker degrades to
+    // slightly stale options instead of surfacing a hard error.
+  }
 }
 
 function startStatusPolling() {
@@ -260,6 +265,10 @@ onActivated(() => {
   isActive = true
   if (isInitialLoading.value) return
   loadStatus()
+  // The route is kept-alive, so returning from the Agents page re-activates
+  // (not re-mounts) this component — refresh the agent list here or the
+  // binding picker keeps offering the stale set from the first mount.
+  loadAgents()
   startStatusPolling()
 })
 
@@ -442,11 +451,15 @@ function getConnectionTooltip(channel: Channel): string {
 // ==================== Modal control ====================
 
 function openCreateModal() {
-  // RFC-084: New channel always starts with the type picker so the wizard
-  // can specialize Step 1 to the picked service. Editing an existing
-  // channel still goes straight to the legacy modal via openEditModal.
+  // New channel always starts with the type picker so the wizard can
+  // specialize Step 1 to the picked service. Editing an existing channel
+  // still goes straight to the legacy modal via openEditModal.
   editingChannel.value = null
   modalDefaults.value = {}
+  // Fire-and-forget refresh so agents created since the last load (this
+  // page is kept-alive) appear in the binding picker; the reactive prop
+  // updates the open dialog in place when the response lands.
+  loadAgents()
   showTypePicker.value = true
 }
 
@@ -469,6 +482,8 @@ async function onWizardCreated(_channel: Channel) {
 function openEditModal(channel: Channel) {
   editingChannel.value = channel
   modalDefaults.value = {}
+  // Same stale-picker guard as openCreateModal.
+  loadAgents()
   showModal.value = true
 }
 
