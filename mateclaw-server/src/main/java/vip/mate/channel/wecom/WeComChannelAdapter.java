@@ -3243,63 +3243,12 @@ public class WeComChannelAdapter extends AbstractChannelAdapter implements Strea
     }
 
     /**
-     * 下载并解密企业微信媒体文件（旧版本，保留给 outbound / 其他场景使用）
+     * AES-256-CBC decryption for WeCom media payloads.
      * <p>
-     * AES-256-CBC 解密：base64 decode aesKey → IV = 前 16 字节 → PKCS#7 去填充
-     *
-     * @param url          文件下载 URL
-     * @param aesKey       Base64 编码的 AES-256 密钥
-     * @param msgId        消息 ID（用于生成文件名）
-     * @param fileNameHint 文件名提示
-     * @return 本地文件路径，失败返回 null
-     */
-    private String downloadAndDecryptMedia(String url, String aesKey, String msgId, String fileNameHint) {
-        try {
-            String mediaDir = getConfigString("media_dir", "data/media");
-            Path mediaDirPath = Path.of(mediaDir);
-            Files.createDirectories(mediaDirPath);
-
-            // 1. HTTP GET 下载文件
-            HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(url))
-                    .timeout(Duration.ofSeconds(30))
-                    .GET()
-                    .build();
-
-            HttpResponse<InputStream> response = httpClient.send(request, HttpResponse.BodyHandlers.ofInputStream());
-            byte[] encryptedData = response.body().readAllBytes();
-
-            byte[] fileData;
-            // 2. AES 解密（如果提供了 aesKey）
-            if (aesKey != null && !aesKey.isBlank()) {
-                fileData = decryptAes256Cbc(encryptedData, aesKey);
-            } else {
-                fileData = encryptedData;
-            }
-
-            // 3. 保存到本地
-            String urlHash = md5Hex(url).substring(0, 8);
-            String safeName = fileNameHint.replaceAll("[^a-zA-Z0-9._-]", "_");
-            if (safeName.isBlank()) safeName = "media";
-            Path filePath = mediaDirPath.resolve("wecom_" + urlHash + "_" + safeName);
-            Files.write(filePath, fileData);
-
-            log.info("[wecom] Media downloaded: {} ({} bytes)", filePath, fileData.length);
-            return filePath.toAbsolutePath().toString();
-
-        } catch (Exception e) {
-            log.error("[wecom] Failed to download media: {}", e.getMessage(), e);
-            return null;
-        }
-    }
-
-    /**
-     * AES-256-CBC 解密（对齐 wecom-aibot-python-sdk crypto_utils.py）
-     * <p>
-     * 1. Base64 decode aesKey（自动补齐 padding）
-     * 2. IV = decoded key 前 16 字节
-     * 3. AES-256-CBC 解密
-     * 4. PKCS#7 去填充
+     * 1. Base64 decode aesKey (auto-fix missing padding)
+     * 2. IV = first 16 bytes of the decoded key
+     * 3. AES-256-CBC decrypt
+     * 4. Strip PKCS#7 padding
      */
     private byte[] decryptAes256Cbc(byte[] encryptedData, String aesKeyBase64) throws Exception {
         // 补齐 Base64 padding
@@ -3375,19 +3324,6 @@ public class WeComChannelAdapter extends AbstractChannelAdapter implements Strea
      */
     private String generateReqId(String prefix) {
         return prefix + "_" + System.currentTimeMillis() + "_" + reqIdCounter.incrementAndGet();
-    }
-
-    /**
-     * MD5 哈希（hex 字符串）
-     */
-    private String md5Hex(String input) {
-        try {
-            MessageDigest md = MessageDigest.getInstance("MD5");
-            byte[] hash = md.digest(input.getBytes());
-            return bytesToHex(hash);
-        } catch (Exception e) {
-            return Integer.toHexString(input.hashCode());
-        }
     }
 
     /**

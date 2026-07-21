@@ -74,8 +74,7 @@ public class ToolGuardCardRenderer implements FeishuCardRenderer {
         // mismatch error. Schema 2.0 is supported by im/v1/message.create
         // BUT the callback response validator only accepts Schema 1.0
         // inline (type="raw") — once we commit to Schema 1.0 here the
-        // resolved-state card update lands cleanly. QwenPaw's
-        // production Feishu integration uses the same Schema 1.0 path.
+        // resolved-state card update lands cleanly.
         Map<String, Object> approveBtn = new LinkedHashMap<>();
         approveBtn.put("tag", "button");
         approveBtn.put("text", plainText("批准"));
@@ -116,8 +115,7 @@ public class ToolGuardCardRenderer implements FeishuCardRenderer {
      * {@code cardkit/v1 card.create}, both of which DO accept Schema
      * 2.0. So we keep the original approval card (sent via message
      * create) in Schema 2.0 for the column_set button layout, but the
-     * resolved-state update has to be Schema 1.0. QwenPaw's production
-     * Feishu integration uses the same split.
+     * resolved-state update has to be Schema 1.0.
      *
      * <p>Caller passes the resulting Map to a {@code CallBackCard}
      * with {@code type="raw"} (NOT {@code card_json}).

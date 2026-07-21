@@ -284,8 +284,8 @@ public class ToolGuardCardHandler implements FeishuCardHandler {
         // Schema 2.0 body works fine on cardkit/v1 card.create and on
         // im/v1 message.create msg_type=interactive. Two different
         // server-side validators, only one of which has been upgraded
-        // for Schema 2.0. QwenPaw's production Feishu adapter uses the
-        // same type="raw" approach for callback updates.
+        // for Schema 2.0, so callback updates must go through
+        // type="raw" with a Schema 1.0 body.
         cb.setType("raw");
         cb.setData(cardJson);
         return cb;
