@@ -18,9 +18,12 @@ import vip.mate.channel.service.ChannelService;
 import vip.mate.channel.web.AgentStreamAccumulator;
 import vip.mate.channel.web.ChatStreamTracker;
 import vip.mate.exception.MateClawException;
+import vip.mate.llm.model.ModelConfigEntity;
+import vip.mate.llm.service.ModelConfigService;
 import vip.mate.memory.event.ConversationCompletionPublisher;
 import vip.mate.tts.TtsService;
 import vip.mate.workspace.conversation.ConversationService;
+import vip.mate.workspace.conversation.model.ConversationEntity;
 import vip.mate.workspace.conversation.model.MessageContentPart;
 import vip.mate.workspace.core.service.ChatUploadLocationResolver;
 import vip.mate.workspace.conversation.model.MessageEntity;
@@ -34,6 +37,7 @@ import java.nio.file.Paths;
 import java.time.Duration;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.*;
@@ -78,6 +82,13 @@ public class ChannelMessageRouter {
      *  still work; falls back to the legacy default dir when unset. */
     @Autowired(required = false)
     private vip.mate.workspace.core.service.ChatUploadLocationResolver chatUploadLocationResolver;
+
+    /** Field-injected for the same reason as {@link #events}: backs the
+     *  /model magic command (list + switch). Optional so tests that build
+     *  the router directly still work; when unset the command degrades to
+     *  a "service unavailable" reply instead of failing message intake. */
+    @Autowired(required = false)
+    private ModelConfigService modelConfigService;
 
     /** Field-injected so the IM sync path can scrub hallucinated
      *  {@code /api/v1/files/generated/{id}} URLs (LLM wrote a UUID-shaped
@@ -977,6 +988,7 @@ public class ChannelMessageRouter {
             }
             case HELP -> ChannelMagicCommand.helpText();
             case STATUS -> buildStatusReply(channelEntity, conversationId);
+            case MODEL -> handleModelCommand(channelEntity, conversationId, command.args());
         };
         if (replyTarget != null && reply != null) {
             // renderAndSend (not sendMessage) so adapters that pre-post a
@@ -997,6 +1009,7 @@ public class ChannelMessageRouter {
         StringBuilder sb = new StringBuilder("📊 会话状态\n");
         sb.append("- 会话: ").append(conversationId).append('\n');
         Long agentId = channelEntity != null ? channelEntity.getAgentId() : null;
+        String[] pinned = findPinnedModel(conversationId);
         if (agentId == null) {
             sb.append("- 智能体: 未绑定\n");
         } else {
@@ -1004,7 +1017,13 @@ public class ChannelMessageRouter {
                 AgentEntity agent = agentService.getAgent(agentId);
                 if (agent != null) {
                     sb.append("- 智能体: ").append(agent.getName()).append('\n');
-                    if (agent.getModelName() != null && !agent.getModelName().isBlank()) {
+                    // Conversation-pinned model wins over the agent default —
+                    // mirrors the resolution order in AgentService, so /status
+                    // never contradicts what /model just switched to.
+                    if (pinned != null) {
+                        sb.append("- 模型: ").append(pinned[0]).append(':').append(pinned[1])
+                                .append("（会话指定）\n");
+                    } else if (agent.getModelName() != null && !agent.getModelName().isBlank()) {
                         sb.append("- 模型: ").append(agent.getModelName()).append('\n');
                     }
                 } else {
@@ -1023,6 +1042,147 @@ public class ChannelMessageRouter {
         boolean running = streamTracker.isRunning(conversationId);
         sb.append("- 当前任务: ").append(running ? "进行中（可用 /stop 停止）" : "空闲");
         return sb.toString();
+    }
+
+    /**
+     * Handle the /model command: list enabled chat models, pin one on this
+     * conversation, or reset to the agent default. Listing and resetting work
+     * without a bound agent; switching requires one because the pinned pair
+     * only takes effect when the agent graph is built.
+     */
+    private String handleModelCommand(ChannelEntity channelEntity, String conversationId, String args) {
+        if (modelConfigService == null) {
+            return "⚠️ 模型管理服务不可用，请稍后再试。";
+        }
+        String arg = args == null ? "" : args.trim();
+        if ("reset".equalsIgnoreCase(arg) || "恢复默认".equals(arg)) {
+            conversationService.clearConversationModel(conversationId);
+            return "✅ 已恢复默认模型（跟随智能体配置），下一条消息生效。";
+        }
+        List<ModelConfigEntity> models;
+        try {
+            models = modelConfigService.listEnabledModels();
+        } catch (Exception e) {
+            log.warn("Failed to list models for /model on {}: {}", conversationId, e.getMessage());
+            return "⚠️ 查询模型列表失败，请稍后再试。";
+        }
+        if (arg.isEmpty() || "list".equalsIgnoreCase(arg)) {
+            return buildModelListReply(models, conversationId);
+        }
+        return switchConversationModel(channelEntity, conversationId, arg, models);
+    }
+
+    /** Max rows shown by /model list — a full catalog can exceed 180 rows,
+     *  which segments into several IM bubbles and buries the usage hint. */
+    private static final int MODEL_LIST_MAX_ROWS = 20;
+
+    private String buildModelListReply(List<ModelConfigEntity> models, String conversationId) {
+        if (models.isEmpty()) {
+            return "当前没有已启用的对话模型，请先在控制台配置。";
+        }
+        String[] pinned = findPinnedModel(conversationId);
+        StringBuilder sb = new StringBuilder("🧠 可用模型（/model <名称> 切换，/model reset 恢复默认）：\n");
+        int shown = 0;
+        for (ModelConfigEntity m : models) {
+            if (shown >= MODEL_LIST_MAX_ROWS) {
+                break;
+            }
+            sb.append("- ").append(m.getProvider()).append(':').append(m.getModelName());
+            if (pinned != null && pinned[0].equalsIgnoreCase(String.valueOf(m.getProvider()))
+                    && pinned[1].equalsIgnoreCase(String.valueOf(m.getModelName()))) {
+                sb.append("  ✅ 当前");
+            }
+            sb.append('\n');
+            shown++;
+        }
+        if (models.size() > MODEL_LIST_MAX_ROWS) {
+            sb.append("…共 ").append(models.size())
+                    .append(" 个已启用模型，仅展示前 ").append(MODEL_LIST_MAX_ROWS)
+                    .append(" 个；发送 /model <关键词> 搜索其余模型。\n");
+        }
+        sb.append(pinned == null
+                ? "当前：跟随智能体默认模型"
+                : "当前会话已指定：" + pinned[0] + ":" + pinned[1]);
+        return sb.toString();
+    }
+
+    private String switchConversationModel(ChannelEntity channelEntity, String conversationId,
+                                           String arg, List<ModelConfigEntity> models) {
+        if (channelEntity == null || channelEntity.getAgentId() == null) {
+            return "⚠️ 当前渠道未绑定智能体，请先在控制台绑定后再切换模型。";
+        }
+        String wantedProvider = null;
+        String wantedName = arg;
+        int colon = arg.indexOf(':');
+        if (colon > 0 && colon < arg.length() - 1) {
+            wantedProvider = arg.substring(0, colon).trim();
+            wantedName = arg.substring(colon + 1).trim();
+        }
+        final String fProvider = wantedProvider;
+        final String fName = wantedName;
+        List<ModelConfigEntity> matches = models.stream()
+                .filter(m -> fName.equalsIgnoreCase(m.getModelName()))
+                .filter(m -> fProvider == null || fProvider.equalsIgnoreCase(m.getProvider()))
+                .toList();
+        if (matches.isEmpty()) {
+            // No exact hit — treat the arg as a search keyword so users can
+            // discover models the capped /model list didn't show.
+            String keyword = fName.toLowerCase(Locale.ROOT);
+            List<ModelConfigEntity> fuzzy = models.stream()
+                    .filter(m -> String.valueOf(m.getModelName()).toLowerCase(Locale.ROOT).contains(keyword)
+                            || String.valueOf(m.getProvider()).toLowerCase(Locale.ROOT).contains(keyword))
+                    .limit(MODEL_LIST_MAX_ROWS)
+                    .toList();
+            if (fuzzy.isEmpty()) {
+                return "⚠️ 未找到已启用的模型「" + arg + "」，发送 /model 查看可用列表。";
+            }
+            StringBuilder sb = new StringBuilder("未找到精确匹配「").append(arg)
+                    .append("」，相近的可用模型：\n");
+            for (ModelConfigEntity m : fuzzy) {
+                sb.append("- /model ").append(m.getProvider()).append(':')
+                        .append(m.getModelName()).append('\n');
+            }
+            return sb.toString().stripTrailing();
+        }
+        if (matches.size() > 1) {
+            StringBuilder sb = new StringBuilder("⚠️ 模型「").append(fName)
+                    .append("」在多个 provider 下存在，请带上前缀再试：\n");
+            for (ModelConfigEntity m : matches) {
+                sb.append("- /model ").append(m.getProvider()).append(':').append(m.getModelName()).append('\n');
+            }
+            return sb.toString().stripTrailing();
+        }
+        ModelConfigEntity target = matches.get(0);
+        try {
+            // The magic-command layer runs before processMessage's
+            // get-or-create, so a /model sent as the very first message must
+            // create the conversation row itself — updateConversationModel
+            // silently no-ops on a missing row.
+            conversationService.getOrCreateSharedConversation(
+                    conversationId, channelEntity.getAgentId(), channelEntity.getWorkspaceId());
+            conversationService.updateConversationModel(
+                    conversationId, target.getProvider(), target.getModelName());
+        } catch (Exception e) {
+            log.warn("Failed to pin model {} on {}: {}", arg, conversationId, e.getMessage());
+            return "⚠️ 切换失败，请稍后再试。";
+        }
+        return "✅ 本会话模型已切换为 " + target.getProvider() + ":" + target.getModelName()
+                + "，下一条消息生效。发送 /model reset 可恢复默认。";
+    }
+
+    /** Conversation-pinned (provider, model) pair, or null when unpinned/unavailable. */
+    private String[] findPinnedModel(String conversationId) {
+        try {
+            ConversationEntity conv = conversationService.findByConversationId(conversationId);
+            if (conv != null
+                    && conv.getModelProvider() != null && !conv.getModelProvider().isBlank()
+                    && conv.getModelName() != null && !conv.getModelName().isBlank()) {
+                return new String[]{conv.getModelProvider(), conv.getModelName()};
+            }
+        } catch (Exception e) {
+            log.debug("Failed to load pinned model for {}: {}", conversationId, e.getMessage());
+        }
+        return null;
     }
 
     private void cancelPending(String conversationId) {
