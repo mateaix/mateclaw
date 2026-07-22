@@ -95,7 +95,11 @@ class ChannelMagicCommandTest {
         f.process("/clear");
 
         verify(f.conversationService).clearMessages("wecom:alice");
-        verify(f.adapter).sendMessage(eq("reply-1"), contains("上下文已清理"));
+        // Confirmation must ride renderAndSend so adapters that pre-post a
+        // "thinking..." placeholder (WeCom reply_stream) consume it — a plain
+        // sendMessage leaves the placeholder bubble dangling forever.
+        verify(f.adapter).renderAndSend(eq("reply-1"), contains("上下文已清理"));
+        verify(f.adapter, never()).sendMessage(anyString(), anyString());
         f.verifyAgentNeverCalled();
     }
 
@@ -107,7 +111,7 @@ class ChannelMagicCommandTest {
         f.process("/new");
 
         verify(f.conversationService).clearMessages("wecom:alice");
-        verify(f.adapter).sendMessage(eq("reply-1"), contains("新会话"));
+        verify(f.adapter).renderAndSend(eq("reply-1"), contains("新会话"));
         f.verifyAgentNeverCalled();
     }
 
@@ -120,7 +124,7 @@ class ChannelMagicCommandTest {
         f.process("/stop");
 
         verify(f.streamTracker).requestStop("wecom:alice");
-        verify(f.adapter).sendMessage(eq("reply-1"), contains("已停止"));
+        verify(f.adapter).renderAndSend(eq("reply-1"), contains("已停止"));
         verify(f.conversationService, never()).clearMessages(anyString());
         f.verifyAgentNeverCalled();
     }
@@ -133,7 +137,7 @@ class ChannelMagicCommandTest {
 
         f.process("/stop");
 
-        verify(f.adapter).sendMessage(eq("reply-1"), contains("没有进行中的任务"));
+        verify(f.adapter).renderAndSend(eq("reply-1"), contains("没有进行中的任务"));
     }
 
     @Test
@@ -149,7 +153,7 @@ class ChannelMagicCommandTest {
 
         f.process("/status");
 
-        verify(f.adapter).sendMessage(eq("reply-1"), argThat(text ->
+        verify(f.adapter).renderAndSend(eq("reply-1"), argThat(text ->
                 text.contains("会议助理") && text.contains("qwen-max")
                         && text.contains("12") && text.contains("进行中")));
         f.verifyAgentNeverCalled();
@@ -163,7 +167,7 @@ class ChannelMagicCommandTest {
 
         f.process("/status");
 
-        verify(f.adapter).sendMessage(eq("reply-1"), contains("未绑定"));
+        verify(f.adapter).renderAndSend(eq("reply-1"), contains("未绑定"));
     }
 
     @Test
@@ -173,7 +177,7 @@ class ChannelMagicCommandTest {
 
         f.process("/help");
 
-        verify(f.adapter).sendMessage(eq("reply-1"), contains("/clear"));
+        verify(f.adapter).renderAndSend(eq("reply-1"), contains("/clear"));
         verify(f.conversationService, never()).clearMessages(anyString());
         f.verifyAgentNeverCalled();
     }
