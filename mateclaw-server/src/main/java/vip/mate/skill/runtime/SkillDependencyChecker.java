@@ -16,6 +16,9 @@ import vip.mate.tool.repository.ToolMapper;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
+import java.net.InetSocketAddress;
+import java.net.Socket;
+import java.net.URI;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -26,7 +29,7 @@ import java.util.concurrent.TimeUnit;
 
 /**
  * 技能依赖检查器
- * 检查 commands / env / tools / platforms 依赖是否满足
+ * 检查 commands / env / tools / platforms / endpoints 依赖是否满足
  */
 @Slf4j
 @Service
@@ -55,6 +58,23 @@ public class SkillDependencyChecker {
      * same prereq (e.g. python3 / ffmpeg).
      */
     private final Cache<String, Boolean> commandAvailability = Caffeine.newBuilder()
+            .expireAfterWrite(Duration.ofSeconds(60))
+            .maximumSize(256)
+            .build();
+
+    /** Timeout for a single endpoint reachability probe (TCP connect). */
+    private static final int ENDPOINT_PROBE_TIMEOUT_MS = 1500;
+
+    /**
+     * 60s cache for endpoint reachability probes, keyed by {@code host:port}.
+     * Same rhythm as {@link #commandAvailability}: every active-skills
+     * refresh re-evaluates each feature requirement, and without caching,
+     * N skills declaring the same service address would each open a socket
+     * (blocking up to the probe timeout) per pass. Network state is also
+     * the most volatile requirement class, so a short TTL keeps the
+     * "service unreachable" verdict from going stale after a VPN connect.
+     */
+    private final Cache<String, Boolean> endpointReachability = Caffeine.newBuilder()
             .expireAfterWrite(Duration.ofSeconds(60))
             .maximumSize(256)
             .build();
@@ -195,6 +215,71 @@ public class SkillDependencyChecker {
         }
     }
 
+    // ==================== Endpoint reachability ====================
+
+    /** Parsed {@code host:port} target of an endpoint requirement. */
+    record EndpointTarget(String host, int port) {}
+
+    /**
+     * Parse an endpoint requirement's check target into {@code host:port}.
+     * Accepted forms:
+     * <ul>
+     *   <li>{@code http(s)://host[:port][/path]} — port defaults to the
+     *       scheme's standard port when omitted</li>
+     *   <li>{@code host:port}</li>
+     *   <li>{@code host} — port defaults to 80</li>
+     * </ul>
+     * Returns {@code null} when the target is blank or unparseable, which
+     * the caller maps to {@code UNKNOWN} — a misdeclared manifest must not
+     * flip a skill to setup-needed.
+     */
+    static EndpointTarget parseEndpointTarget(String target) {
+        if (target == null || target.isBlank()) return null;
+        String t = target.strip();
+        try {
+            if (t.contains("://")) {
+                URI uri = URI.create(t);
+                String host = uri.getHost();
+                if (host == null || host.isBlank()) return null;
+                int port = uri.getPort();
+                if (port <= 0) {
+                    port = "https".equalsIgnoreCase(uri.getScheme()) ? 443 : 80;
+                }
+                return new EndpointTarget(host, port);
+            }
+            int colon = t.lastIndexOf(':');
+            if (colon > 0 && colon < t.length() - 1) {
+                String maybePort = t.substring(colon + 1);
+                if (!maybePort.isEmpty() && maybePort.chars().allMatch(Character::isDigit)) {
+                    return new EndpointTarget(t.substring(0, colon), Integer.parseInt(maybePort));
+                }
+            }
+            if (t.contains("/") || t.contains(":")) return null;
+            return new EndpointTarget(t, 80);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private boolean isEndpointReachable(EndpointTarget target) {
+        String key = target.host() + ":" + target.port();
+        Boolean cached = endpointReachability.getIfPresent(key);
+        if (cached != null) return cached;
+        boolean reachable = probeEndpoint(target);
+        endpointReachability.put(key, reachable);
+        return reachable;
+    }
+
+    private boolean probeEndpoint(EndpointTarget target) {
+        try (Socket socket = new Socket()) {
+            socket.connect(new InetSocketAddress(target.host(), target.port()), ENDPOINT_PROBE_TIMEOUT_MS);
+            return true;
+        } catch (Exception e) {
+            log.debug("Endpoint probe failed for {}:{} — {}", target.host(), target.port(), e.getMessage());
+            return false;
+        }
+    }
+
     private static boolean isWindows() {
         return CURRENT_OS.equals("windows");
     }
@@ -221,7 +306,7 @@ public class SkillDependencyChecker {
      * probe regardless of how the manifest expressed it. {@code ANY} is the
      * fallback when the manifest doesn't declare a type — we infer.
      */
-    public enum RequirementType { BINARY, ENV_VAR, API_KEY, ANY }
+    public enum RequirementType { BINARY, ENV_VAR, API_KEY, ENDPOINT, ANY }
 
     /**
      * Status for a single requirement after probing.
@@ -263,6 +348,16 @@ public class SkillDependencyChecker {
                     String value = System.getenv(target);
                     yield (value != null && !value.isBlank()) ? RequirementStatus.SATISFIED : RequirementStatus.MISSING;
                 }
+                case ENDPOINT -> {
+                    // Reachability, not liveness: a TCP connect proves the
+                    // current deployment can route to the service (intranet
+                    // address + wrong network segment is the classic failure),
+                    // without depending on the service answering a particular
+                    // HTTP verb on its base path.
+                    EndpointTarget ep = parseEndpointTarget(target);
+                    if (ep == null) yield RequirementStatus.UNKNOWN;
+                    yield isEndpointReachable(ep) ? RequirementStatus.SATISFIED : RequirementStatus.MISSING;
+                }
                 case ANY -> RequirementStatus.UNKNOWN;
             };
         } catch (Exception e) {
@@ -278,6 +373,7 @@ public class SkillDependencyChecker {
                 case "binary" -> RequirementType.BINARY;
                 case "env_var", "env" -> RequirementType.ENV_VAR;
                 case "api_key", "key" -> RequirementType.API_KEY;
+                case "endpoint", "url", "service" -> RequirementType.ENDPOINT;
                 default -> RequirementType.ANY;
             };
         }
@@ -288,6 +384,11 @@ public class SkillDependencyChecker {
             if (k.startsWith("cmd:") || k.startsWith("bin:")) return RequirementType.BINARY;
             if (k.startsWith("env:")) return RequirementType.ENV_VAR;
             if (k.endsWith("_api_key") || k.endsWith("_key")) return RequirementType.API_KEY;
+        }
+        // A check target that looks like a URL is an endpoint probe even
+        // without a declared type.
+        if (req.getCheck() != null && req.getCheck().contains("://")) {
+            return RequirementType.ENDPOINT;
         }
         return RequirementType.ANY;
     }

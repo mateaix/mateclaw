@@ -140,9 +140,13 @@ public class SkillManifest {
     public static class RequirementDef {
         /** Required: stable identifier referenced by {@code features[*].requires}. */
         private String key;
-        /** binary | env_var | api_key */
+        /** binary | env_var | api_key | endpoint */
         private String type;
-        /** Probe target — for binary, the executable name; for env_var, the env name. */
+        /**
+         * Probe target — for binary, the executable name; for env_var, the
+         * env name; for endpoint, the service address to TCP-probe
+         * ({@code http(s)://host[:port][/path]} or {@code host[:port]}).
+         */
         private String check;
         /** Optional means it only blocks features that reference it explicitly. */
         @Builder.Default
