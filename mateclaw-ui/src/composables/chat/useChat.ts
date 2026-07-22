@@ -183,6 +183,12 @@ export interface SendMessageOptions {
   modelProvider?: string
   /** Model id picked for this conversation. Paired with modelProvider. */
   modelName?: string
+  /**
+   * Regenerate mode: the server deletes the trailing assistant reply block and
+   * reuses the persisted seed user message as this turn's input — no new user
+   * row is inserted and `content` is ignored server-side.
+   */
+  regenerate?: boolean
 }
 
 export function useChat(options: UseChatOptions): UseChatReturn {
@@ -1931,7 +1937,9 @@ export function useChat(options: UseChatOptions): UseChatReturn {
     lifecycleStage.value = { stage: 'connecting', since: Date.now() }
 
     try {
-      if (!isApprovalCommand) {
+      if (!isApprovalCommand && !options.regenerate) {
+        // Regenerate reuses the seed user message already in the list — only
+        // a fresh send needs a new local user bubble.
         createUserMessage(content, contentParts, conversationId)
       }
 
@@ -1955,6 +1963,9 @@ export function useChat(options: UseChatOptions): UseChatReturn {
       if (options.modelProvider && options.modelName) {
         body.modelProvider = options.modelProvider
         body.modelName = options.modelName
+      }
+      if (options.regenerate) {
+        body.regenerate = true
       }
       await stream.connect(body)
     } catch (e) {
@@ -2212,27 +2223,23 @@ export function useChat(options: UseChatOptions): UseChatReturn {
     }
   }
 
-  // Regenerate a message
+  // Regenerate the trailing assistant reply. The server owns the data change:
+  // it drops the trailing assistant block and reuses the persisted seed user
+  // message, so no duplicate user row is created — the local list just mirrors
+  // that truncation before reconnecting.
   const regenerate = async (messageId: string | number) => {
     const message = getMessage(messageId)
-    if (!message) return
+    if (!message || message.role !== 'assistant') return
 
     const index = messages.value.findIndex(m => m.id === messageId)
-    if (index <= 0) return
+    if (index < 0) return
 
-    const userMessage = messages.value[index - 1]
-    if (userMessage.role !== 'user') return
+    messages.value = messages.value.slice(0, index)
 
-    messages.value = messages.value.filter(m => m.id !== messageId)
-
-    const text = userMessage.contentParts
-      .filter(p => p.type === 'text')
-      .map(p => p.text || '')
-      .join('\n') || userMessage.content || ''
-
-    await sendMessage(text, {
-      conversationId: userMessage.conversationId,
+    await sendMessage('', {
+      conversationId: message.conversationId,
       agentId: '',
+      regenerate: true,
     })
   }
 

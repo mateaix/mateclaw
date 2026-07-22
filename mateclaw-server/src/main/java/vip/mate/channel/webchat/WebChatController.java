@@ -1,5 +1,6 @@
 package vip.mate.channel.webchat;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.swagger.v3.oas.annotations.Operation;
@@ -193,7 +194,11 @@ public class WebChatController {
                 // 保存用户消息（含访客本轮引用的附件）。附件元数据一律服务端按 fileId 回查，
                 // 不信客户端传入；path 用于 Agent 侧工具读取，对外消息视图会被剥离。
                 List<MessageContentPart> userParts = buildUserParts(conversationId, message, request.getAttachmentIds());
-                conversationService.saveMessage(conversationId, "user", message, userParts);
+                if (!request.isInternalSkipUserPersist()) {
+                    // Regenerate reuses the already-persisted seed user row —
+                    // inserting again would duplicate it.
+                    conversationService.saveMessage(conversationId, "user", message, userParts);
+                }
 
                 // 初始化 SSE 流跟踪
                 streamTracker.register(conversationId);
@@ -1425,29 +1430,27 @@ public class WebChatController {
         // right disposable; multi-node is a separate epic.
         streamTracker.requestStop(conversationId);
 
-        MessageEntity lastAssistant = conversationService.findLastMessageByRole(conversationId, "assistant");
-        if (lastAssistant != null) {
-            conversationService.deleteMessageById(lastAssistant.getId());
-        }
-        MessageEntity lastUser = conversationService.findLastMessageByRole(conversationId, "user");
-        if (lastUser == null) {
+        ConversationService.RegenerateSeed seed = conversationService.prepareRegenerate(conversationId);
+        if (seed == null) {
             sendErrorAndComplete(emitter, "No user message to regenerate from");
             return emitter;
         }
 
         log.info("[WebChat] Regenerate: conversationId={}, visitor={}, seedMessageId={}",
-                conversationId, visitorId, lastUser.getId());
+                conversationId, visitorId, seed.seedMessageId());
         audit(channel, visitorId, "webchat.regenerate-session", conversationId,
-                "{\"sessionId\":\"" + sid + "\",\"seedMessageId\":" + lastUser.getId() + "}");
+                "{\"sessionId\":\"" + sid + "\",\"seedMessageId\":" + seed.seedMessageId() + "}");
 
         // Reuse chatStream: it'll resolve the agent again (cheap), re-derive
-        // conversationId, saveMessage user (new id, same content), and start
-        // the agent turn. visitorId echoes through to keep the visitor-scoped
-        // memory owner consistent.
+        // conversationId and start the agent turn. The seed user row is reused
+        // as-is — internalSkipUserPersist stops chatStream from inserting a
+        // duplicate user row. visitorId echoes through to keep the
+        // visitor-scoped memory owner consistent.
         WebChatRequest req = new WebChatRequest();
-        req.setMessage(lastUser.getContent());
+        req.setMessage(seed.content());
         req.setVisitorId(visitorId);
         req.setSessionId(sid);
+        req.setInternalSkipUserPersist(true);
         return chatStream(apiKey, req);
     }
 
@@ -1656,7 +1659,7 @@ public class WebChatController {
             return full;
         }
         return "webchat:" + key8 + ":#"
-                + sha256Hex(visitorId + " " + (sessionId == null ? "" : sessionId)).substring(0, 40);
+                + sha256Hex(visitorId + "\0" + (sessionId == null ? "" : sessionId)).substring(0, 40);
     }
 
     /**
@@ -1917,6 +1920,13 @@ public class WebChatController {
          *  for this conversation. Metadata is resolved server-side; unknown / foreign / expired
          *  ids are dropped. */
         private List<String> attachmentIds;
+        /**
+         * Internal-only regenerate flag: the seed user row is already
+         * persisted, so {@code chatStream} must not insert a duplicate.
+         * Excluded from JSON binding — never client-settable.
+         */
+        @JsonIgnore
+        private boolean internalSkipUserPersist;
     }
 
     /** Compact view of one of a visitor's conversation threads. */

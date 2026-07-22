@@ -113,6 +113,7 @@
         :subtitle="blockingPrompt ? modelPromptText.desc : $t('chat.subtitle')"
         :suggestions="blockingPrompt ? [] : suggestions"
         @regenerate="handleRegenerate"
+        @rewind="handleRewind"
         @suggestion-click="sendSuggestion"
         @toggle-thinking="handleToggleThinking"
         @approve="handleApprove"
@@ -274,6 +275,7 @@ let cachedAgents: import('@/types').Agent[] = []
 
 <script setup lang="ts">
 import { ElMessage } from 'element-plus/es/components/message/index'
+import { ElMessageBox } from 'element-plus/es/components/message-box/index'
 import { ref, computed, onMounted, onBeforeUnmount, onActivated, onDeactivated, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
@@ -2008,21 +2010,60 @@ function handleStopStream() {
   stopChatGeneration()
 }
 
-function handleRegenerate(message: Message) {
-  if (isGenerating.value) return
+async function handleRegenerate(message: Message) {
+  if (isGenerating.value || !currentConversationId.value || !selectedAgentId.value) return
   const idx = messages.value.indexOf(message)
   if (idx >= 0) {
-    messages.value.splice(idx, 1)
+    // The server drops the trailing assistant block and reuses the persisted
+    // seed user message (no duplicate user row) — mirror the truncation locally.
+    messages.value.splice(idx)
   }
-  const lastUserMsg = messages.value.findLast(m => m.role === 'user')
-  if (!lastUserMsg) return
+  try {
+    await sendChatMessage('', {
+      conversationId: currentConversationId.value,
+      agentId: selectedAgentId.value,
+      contentParts: [],
+      thinkingLevel: thinkingLevel.value,
+      modelProvider: activeModels.value?.activeLlm?.providerId,
+      modelName: activeModels.value?.activeLlm?.model,
+      regenerate: true,
+    })
+  } catch (e: any) {
+    console.error('Regenerate failed:', e)
+    mcToast.error(e?.message || t('chat.regenerateFailed'))
+  }
+}
 
-  const text = lastUserMsg.contentParts
-    .filter(p => p.type === 'text')
-    .map(p => p.text || '')
-    .join('\n') || lastUserMsg.content || ''
-
-  handleSendMessage(text)
+async function handleRewind(message: Message) {
+  if (isGenerating.value || !currentConversationId.value) return
+  const idx = messages.value.indexOf(message)
+  if (idx < 0) return
+  const count = messages.value.length - idx
+  try {
+    await ElMessageBox.confirm(
+      t('chat.rewindConfirm', { count }),
+      t('chat.rewindHere'),
+      { type: 'warning' }
+    )
+  } catch {
+    return // user cancelled
+  }
+  try {
+    const res = await conversationApi.rewindMessage(
+      currentConversationId.value,
+      String(message.id)
+    )
+    messages.value.splice(idx)
+    // Sync the sidebar entry from the server-recomputed aggregates.
+    const data = res.data as { deletedCount: number; messageCount: number; lastMessage: string | null } | undefined
+    const conv = conversations.value.find(c => c.conversationId === currentConversationId.value)
+    if (conv && data) {
+      conv.lastMessage = data.lastMessage ?? ''
+      conv.messageCount = data.messageCount
+    }
+  } catch (e: any) {
+    mcToast.error(e?.message || t('chat.rewindFailed'))
+  }
 }
 
 function sendSuggestion(text: string) {

@@ -72,6 +72,7 @@
             :user-icon="userIcon"
             :show-cursor="showCursorForMessage(msg)"
             @regenerate="$emit('regenerate', msg)"
+            @rewind="$emit('rewind', msg)"
             @toggle-thinking="(expanded) => $emit('toggle-thinking', msg, expanded)"
             @approve="(pendingId) => $emit('approve', pendingId)"
             @deny="(pendingId) => $emit('deny', pendingId)"
@@ -159,6 +160,7 @@ const props = withDefaults(defineProps<Props>(), {
 
 const emit = defineEmits<{
   regenerate: [message: Message]
+  rewind: [message: Message]
   'toggle-thinking': [message: Message, expanded: boolean]
   'suggestion-click': [suggestion: string]
   scroll: [event: Event]

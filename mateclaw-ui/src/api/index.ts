@@ -212,6 +212,9 @@ export const conversationApi = {
     http.delete(`/conversations/${encId(conversationId)}`),
   clearMessages: (conversationId: string) =>
     http.delete(`/conversations/${encId(conversationId)}/messages`),
+  // messageId is a snowflake ID — keep it a string end-to-end (never Number()).
+  rewindMessage: (conversationId: string, messageId: string) =>
+    http.post(`/conversations/${encId(conversationId)}/messages/${messageId}/rewind`),
   rename: (conversationId: string, title: string) =>
     http.put(`/conversations/${encId(conversationId)}/title`, { title }),
   setPinned: (conversationId: string, pinned: boolean) =>

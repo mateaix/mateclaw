@@ -216,6 +216,30 @@ public class ConversationController {
     }
 
     /**
+     * 回退到指定消息：删除该消息及其之后的所有消息，会话回到该消息之前的状态。
+     * 生成中的会话拒绝回退（409），避免与在途流写入竞争。
+     */
+    @Operation(summary = "回退会话到指定消息之前")
+    @PostMapping("/{conversationId}/messages/{messageId}/rewind")
+    public R<ConversationService.RewindResult> rewindToMessage(@PathVariable String conversationId,
+                                                               @PathVariable Long messageId,
+                                                               Authentication auth) {
+        String username = auth != null ? auth.getName() : "anonymous";
+        if (!conversationService.isConversationOwner(conversationId, username)) {
+            return R.fail(403, "无权操作该会话");
+        }
+        if (streamTracker.isRunning(conversationId)) {
+            return R.fail(409, "正在生成回复，请先停止再回退");
+        }
+        ConversationService.RewindResult result =
+                conversationService.rewindToMessage(conversationId, messageId);
+        if (result == null) {
+            return R.fail(404, "消息不存在或不属于该会话");
+        }
+        return R.ok(result);
+    }
+
+    /**
      * 清空会话消息（保留会话记录）
      */
     @Operation(summary = "清空会话消息")

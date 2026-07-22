@@ -794,27 +794,112 @@ public class ConversationService {
     }
 
     /**
-     * Find the most recent message of a given role in a conversation.
-     * Used by the webchat regenerate flow to find the seed user message and
-     * locate the assistant reply to delete. Returns null if no match.
+     * Post-rewind snapshot handed back to the controller so the UI can sync
+     * the sidebar (message count + preview) without a follow-up query.
      */
-    public MessageEntity findLastMessageByRole(String conversationId, String role) {
-        List<MessageEntity> msgs = messageMapper.selectList(new LambdaQueryWrapper<MessageEntity>()
-                .eq(MessageEntity::getConversationId, conversationId)
-                .eq(MessageEntity::getRole, role)
-                .orderByDesc(MessageEntity::getId)
-                .last("LIMIT 1"));
-        return msgs.isEmpty() ? null : msgs.get(0);
+    public record RewindResult(int deletedCount, int messageCount, String lastMessage) {
     }
 
     /**
-     * Delete a single message by its primary key. Used by the webchat
-     * regenerate flow to drop the last assistant reply before re-running.
-     * Does NOT touch the conversation's messageCount counter — that is
-     * rewritten when the new assistant message is persisted by saveMessage.
+     * Delete the given message and every message after it (compression
+     * boundary rows included), returning the conversation to the state just
+     * before that message. Aggregate counters ({@code messageCount},
+     * {@code lastMessage}, {@code lastActiveTime}) are recomputed from the
+     * surviving rows.
+     *
+     * <p>回退到指定消息：删除该消息及其之后的所有消息，并重算会话统计。
+     *
+     * @return snapshot of the post-rewind state, or {@code null} when the
+     *         message does not belong to the conversation
      */
-    public void deleteMessageById(Long messageId) {
-        messageMapper.deleteById(messageId);
+    @Transactional
+    public RewindResult rewindToMessage(String conversationId, Long messageId) {
+        List<MessageEntity> all = listMessages(conversationId);
+        int index = -1;
+        for (int i = 0; i < all.size(); i++) {
+            if (messageId.equals(all.get(i).getId())) {
+                index = i;
+                break;
+            }
+        }
+        if (index < 0) {
+            return null;
+        }
+        List<Long> doomedIds = all.subList(index, all.size()).stream()
+                .map(MessageEntity::getId)
+                .toList();
+        messageMapper.delete(new LambdaQueryWrapper<MessageEntity>()
+                .eq(MessageEntity::getConversationId, conversationId)
+                .in(MessageEntity::getId, doomedIds));
+
+        List<MessageEntity> remaining = all.subList(0, index);
+        String lastMessage = remaining.stream()
+                .filter(m -> "assistant".equals(m.getRole()))
+                .reduce((first, second) -> second)
+                .map(this::assistantPreview)
+                .orElse(null);
+        ConversationEntity conv = conversationMapper.selectOne(new LambdaQueryWrapper<ConversationEntity>()
+                .eq(ConversationEntity::getConversationId, conversationId));
+        if (conv != null) {
+            conv.setMessageCount(remaining.size());
+            conv.setLastMessage(lastMessage);
+            conv.setLastActiveTime(LocalDateTime.now());
+            conversationMapper.updateById(conv);
+        }
+        log.info("[Conversation] Rewound conv={} to before message {}, deleted {} rows",
+                conversationId, messageId, doomedIds.size());
+        return new RewindResult(doomedIds.size(), remaining.size(), lastMessage);
+    }
+
+    /**
+     * Seed for a regenerate turn: the persisted user message whose reply is
+     * being regenerated. {@code parts} are already deserialized so the caller
+     * can rebuild the prompt exactly as the original turn saw it.
+     */
+    public record RegenerateSeed(Long seedMessageId, String content, List<MessageContentPart> parts) {
+    }
+
+    /**
+     * Prepare a regenerate turn: locate the most recent user message, delete
+     * every row after it (the assistant reply block, including any trailing
+     * system/boundary rows), and return that user message as the new turn's
+     * input. The caller re-runs the agent WITHOUT persisting a new user row,
+     * so {@code mate_message} stays free of duplicates.
+     *
+     * <p>When the user message is already the conversation tail (the reply
+     * never got persisted — stream died mid-turn), nothing is deleted and the
+     * seed is still returned, which doubles as the recovery path.
+     *
+     * <p>准备重新生成：删除最近一条 user 消息之后的所有行并返回该消息作为种子。
+     *
+     * @return the seed, or {@code null} when the conversation has no user
+     *         message to regenerate from
+     */
+    @Transactional
+    public RegenerateSeed prepareRegenerate(String conversationId) {
+        List<MessageEntity> all = listMessages(conversationId);
+        int i = all.size() - 1;
+        while (i >= 0 && !"user".equals(all.get(i).getRole())) {
+            i--;
+        }
+        if (i < 0) {
+            return null;
+        }
+        MessageEntity seed = all.get(i);
+        if (i + 1 < all.size()) {
+            rewindToMessage(conversationId, all.get(i + 1).getId());
+        }
+        return new RegenerateSeed(seed.getId(), seed.getContent(), parseMessageParts(seed));
+    }
+
+    /**
+     * Sidebar preview of an assistant reply — same summarization and 50-char
+     * truncation that {@link #saveMessage} applies to the
+     * {@code last_message} column.
+     */
+    private String assistantPreview(MessageEntity message) {
+        String summary = summarizeMessage(message.getContent(), parseMessageParts(message));
+        return summary.length() > 50 ? summary.substring(0, 50) + "..." : summary;
     }
 
     /**

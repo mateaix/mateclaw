@@ -412,15 +412,26 @@
             <el-icon v-else-if="ttsState === 'playing'"><VideoPause /></el-icon>
             <el-icon v-else><Microphone /></el-icon>
           </button>
-          <!-- 重新生成（仅 assistant） -->
+          <!-- 重新生成（仅会话末尾的 assistant 回答；服务端只支持对末条回答重生成） -->
           <button
-            v-if="role === 'assistant' && !isGenerating"
+            v-if="role === 'assistant' && !isGenerating && isLast"
             class="action-btn"
             type="button"
             :title="$t('chat.regenerate')"
             @click="$emit('regenerate')"
           >
             <el-icon><RefreshRight /></el-icon>
+          </button>
+          <!-- 回退到此处：删除本条及之后的所有消息。仅已持久化的消息可回退
+               （客户端临时 id 带下划线，持久化雪花 id 是纯数字） -->
+          <button
+            v-if="!isGenerating && canRewind"
+            class="action-btn"
+            type="button"
+            :title="$t('chat.rewindHere')"
+            @click="$emit('rewind')"
+          >
+            <el-icon><RefreshLeft /></el-icon>
           </button>
           <!-- Reply model attribution (assistant only) -->
           <span
@@ -549,6 +560,7 @@ import {
   Loading,
   Microphone,
   Opportunity,
+  RefreshLeft,
   RefreshRight,
   Select,
   Tools,
@@ -610,6 +622,7 @@ const props = withDefaults(defineProps<Props>(), {
 
 const emit = defineEmits<{
   regenerate: []
+  rewind: []
   'toggle-thinking': [expanded: boolean]
   approve: [pendingId: string]
   deny: [pendingId: string]
@@ -619,6 +632,9 @@ const emit = defineEmits<{
 const role = computed(() => props.message.role)
 const status = computed(() => props.message.status)
 const isGenerating = computed(() => status.value === 'generating' || status.value === 'awaiting_approval')
+// Only persisted messages can be rewound: DB snowflake ids are pure digits,
+// client temp ids carry an underscore (`${Date.now()}_${random}`).
+const canRewind = computed(() => /^\d+$/.test(String(props.message.id ?? '')))
 const hovered = ref(false)
 
 const avatarIcon = computed(() => {
