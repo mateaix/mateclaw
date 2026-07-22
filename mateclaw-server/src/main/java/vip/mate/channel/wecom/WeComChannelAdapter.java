@@ -36,6 +36,7 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * 企业微信智能机器人渠道适配器 — WebSocket 长连接模式
@@ -1425,9 +1426,9 @@ public class WeComChannelAdapter extends AbstractChannelAdapter implements Strea
         return finalContent;
     }
 
-    /** Event-driven progress rendering into the existing processing-stream bubble. */
+    /** Event-driven progress rendering into the processing-stream bubble, with per-stage bubble rolling. */
     private void consumeWithProgress(Flux<StreamDelta> stream, ChannelMessage message,
-                                     String replyTarget, WeComReplyContext ctx,
+                                     String replyTarget, WeComReplyContext initialCtx,
                                      StringBuilder contentAccumulator) {
         boolean showThinking = !getConfigBoolean("filter_thinking", true);
         boolean standaloneToolMessages = !getConfigBoolean("filter_tool_messages", true);
@@ -1438,9 +1439,15 @@ public class WeComChannelAdapter extends AbstractChannelAdapter implements Strea
         if (keepaliveScheduler != null) {
             // Silent stretches (long LLM calls with no events) keep showing a
             // fresh elapsed-time snapshot instead of the static placeholder.
-            keepaliveScheduler.attachTextSupplier(ctx.processingStreamId(), progress::snapshot);
+            keepaliveScheduler.attachTextSupplier(initialCtx.processingStreamId(), progress::snapshot);
         }
 
+        // The live progress bubble rolls forward on every stage narration:
+        // the current stream is finished with the narration text (making it
+        // a permanent bubble in place) and a fresh stream id opens below it
+        // as the new progress bubble, so chat chronology stays intact and
+        // the final answer always lands in the newest bubble.
+        AtomicReference<WeComReplyContext> liveCtx = new AtomicReference<>(initialCtx);
         final long[] lastFlushAt = {0L};
         stream.doOnNext(delta -> {
             boolean flushNow = false;
@@ -1449,6 +1456,25 @@ public class WeComChannelAdapter extends AbstractChannelAdapter implements Strea
                 if (standaloneToolMessages) {
                     maybeSendToolEventMessage(replyTarget, delta.eventType(), delta.eventData());
                 }
+            } else if (delta.segmentOnly()) {
+                // Per-stage narration ("我来查一下…"), emitted once per agent
+                // loop iteration. Each becomes its own permanent bubble and is
+                // excluded from the final answer: glued together they read as
+                // a wall of text, and persisted they pollute the next turn's
+                // LLM history with unanswered chain-of-thought.
+                String narration = delta.content() != null ? delta.content().trim() : "";
+                if (!narration.isEmpty()) {
+                    WeComReplyContext ctx = liveCtx.get();
+                    if (replyContexts.get(replyTarget) == ctx) {
+                        liveCtx.set(rollProgressBubble(replyTarget, ctx, narration, progress));
+                    } else {
+                        // Bubble already force-finished (180s ceiling) — the
+                        // narration still goes out as a plain message.
+                        sendMessage(replyTarget, narration);
+                    }
+                    lastFlushAt[0] = System.currentTimeMillis();
+                }
+                return;
             } else {
                 if (delta.thinking() != null) {
                     progress.onThinkingDelta(delta.thinking());
@@ -1462,6 +1488,7 @@ public class WeComChannelAdapter extends AbstractChannelAdapter implements Strea
             if (!flushNow && now - lastFlushAt[0] < minIntervalMs) {
                 return;
             }
+            WeComReplyContext ctx = liveCtx.get();
             // The keepalive force-finish (180s ceiling) evicts the reply
             // context; once that happens the stream slot is closed and
             // further overwrites would be silently rejected — stop pushing.
@@ -1479,6 +1506,70 @@ public class WeComChannelAdapter extends AbstractChannelAdapter implements Strea
                 log.debug("[wecom] progress overwrite failed: {}", e.getMessage());
             }
         }).blockLast(Duration.ofMinutes(10));
+    }
+
+    /**
+     * Finalize the current progress bubble with a stage narration and open a
+     * fresh stream as the next progress bubble.
+     * <p>
+     * The narration goes through the channel renderer (thinking/tool-tag
+     * filters, table formatting, length split): the first segment overwrites
+     * the current bubble with {@code finish=true}, overflow segments ride
+     * plain messages. The replacement context is registered in
+     * {@link #replyContexts} so {@code renderAndSend} / approval cards keep
+     * working against the newest bubble, and keepalive restarts on the new
+     * stream with the live progress snapshot.
+     */
+    private WeComReplyContext rollProgressBubble(String replyTarget, WeComReplyContext ctx,
+                                                 String narration, WeComProgressRenderer progress) {
+        boolean filterThinking = getConfigBoolean("filter_thinking", true);
+        boolean filterToolMessages = getConfigBoolean("filter_tool_messages", true);
+        String format = getConfigString("message_format", "auto");
+        int maxLen = vip.mate.channel.ChannelMessageRenderer.PLATFORM_LIMITS
+                .getOrDefault(getChannelType(), 2048);
+        List<String> segments = vip.mate.channel.ChannelMessageRenderer.renderForChannel(
+                narration, filterThinking, filterToolMessages, format, maxLen);
+        if (segments.isEmpty()) {
+            // Narration entirely filtered away — keep the current bubble.
+            return ctx;
+        }
+        if (keepaliveScheduler != null) {
+            // Stop before the finish chunk so a refresh tick can't race it
+            // on the same stream.
+            keepaliveScheduler.stop(ctx.processingStreamId());
+        }
+        boolean first = true;
+        for (String rawSegment : segments) {
+            String segment = formatMarkdownTables(rawSegment);
+            if (first) {
+                first = false;
+                try {
+                    replyStream(ctx.frameReqId(), ctx.processingStreamId(), segment, true);
+                } catch (Exception e) {
+                    log.debug("[wecom] stage bubble finalize failed: {}", e.getMessage());
+                }
+            } else {
+                sendMessage(replyTarget, segment);
+            }
+        }
+
+        String nextStreamId = generateReqId("stream");
+        WeComReplyContext next = new WeComReplyContext(ctx.frameReqId(), nextStreamId);
+        replyContexts.put(replyTarget, next);
+        try {
+            replyStream(ctx.frameReqId(), nextStreamId, progress.snapshot(), false);
+        } catch (Exception e) {
+            log.debug("[wecom] next progress bubble open failed: {}", e.getMessage());
+        }
+        if (keepaliveScheduler != null) {
+            try {
+                keepaliveScheduler.start(this, ctx.frameReqId(), nextStreamId, replyTarget);
+                keepaliveScheduler.attachTextSupplier(nextStreamId, progress::snapshot);
+            } catch (Exception e) {
+                log.debug("[wecom] keepalive restart failed: {}", e.getMessage());
+            }
+        }
+        return next;
     }
 
     /**

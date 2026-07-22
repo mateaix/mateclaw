@@ -69,6 +69,41 @@ class WeComProcessStreamTest {
     }
 
     @Test
+    @DisplayName("stage narrations roll the bubble: each stage finishes its own bubble, final answer excludes them")
+    void stageNarrationsRollBubbles() throws Exception {
+        TestableAdapter adapter = newAdapter("{\"progress_interval_ms\": 0}");
+        seedReplyContext(adapter, "alice", "req-1", "stream-1");
+
+        Flux<StreamDelta> stream = Flux.just(
+                StreamDelta.segmentOnly("我先查一下当前时间：", null),
+                StreamDelta.event("tool_call_started",
+                        Map.of("toolCallId", "c1", "toolName", "get_time")),
+                StreamDelta.event("tool_call_completed",
+                        Map.of("toolCallId", "c1", "toolName", "get_time", "success", true)),
+                StreamDelta.segmentOnly("时间拿到了，再查会议室：", null),
+                new StreamDelta("1 号会议室空闲，已预约。", null));
+
+        String result = adapter.processStream(stream, inbound("alice"), "wecom:alice");
+
+        // Narrations are excluded from the returned (persisted) final answer.
+        assertEquals("1 号会议室空闲，已预约。", result);
+
+        List<Map<String, Object>> streamBodies = streamBodies(adapter.drainFrames());
+        List<Map<String, Object>> finished = streamBodies.stream()
+                .filter(s -> Boolean.TRUE.equals(s.get("finish"))).toList();
+        // Three finished bubbles in chronological order: narration #1,
+        // narration #2, final answer — each on its own stream id.
+        assertEquals(3, finished.size(), "each stage plus the final answer closes one bubble");
+        assertTrue(String.valueOf(finished.get(0).get("content")).contains("我先查一下当前时间"));
+        assertTrue(String.valueOf(finished.get(1).get("content")).contains("再查会议室"));
+        assertTrue(String.valueOf(finished.get(2).get("content")).contains("已预约"));
+        assertEquals(3, finished.stream().map(s -> s.get("id")).distinct().count(),
+                "each finished bubble must ride its own stream id");
+        // The first narration finalizes the original placeholder stream.
+        assertEquals("stream-1", finished.get(0).get("id"));
+    }
+
+    @Test
     @DisplayName("stream_progress=false degrades to accumulate-then-send with no interim overwrites")
     void progressDisabledDegrades() throws Exception {
         TestableAdapter adapter = newAdapter("{\"stream_progress\": false}");
