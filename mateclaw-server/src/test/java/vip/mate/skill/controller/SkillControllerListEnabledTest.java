@@ -41,6 +41,7 @@ class SkillControllerListEnabledTest {
         controller = new SkillController(
                 skillService,
                 /* skillRuntimeService */ null,
+                /* skillPackageResolver */ null,
                 /* workspaceManager */ null,
                 /* bundledSkillSyncer */ null,
                 /* skillFileSyncer */ null,

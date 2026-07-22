@@ -59,6 +59,7 @@ public class SkillPackageResolver {
     private final ObjectMapper objectMapper;
     private final SkillWorkspaceManager workspaceManager;
     private final SkillMapper skillMapper;
+    private final SkillContentReconciler contentReconciler;
     /**
      * RFC-090 §14.4 — knowledge-skill wrapper tool factory.
      * {@code @Lazy} because WikiSkillWrapperToolFactory pulls in Wiki
@@ -113,6 +114,7 @@ public class SkillPackageResolver {
                                  ObjectMapper objectMapper,
                                  SkillWorkspaceManager workspaceManager,
                                  SkillMapper skillMapper,
+                                 SkillContentReconciler contentReconciler,
                                  @Lazy WikiSkillWrapperToolFactory wikiWrapperFactory,
                                  @Lazy AcpSkillWrapperToolFactory acpWrapperFactory,
                                  @Lazy ScriptSkillWrapperToolFactory scriptWrapperFactory,
@@ -125,6 +127,7 @@ public class SkillPackageResolver {
         this.objectMapper = objectMapper;
         this.workspaceManager = workspaceManager;
         this.skillMapper = skillMapper;
+        this.contentReconciler = contentReconciler;
         this.wikiWrapperFactory = wikiWrapperFactory;
         this.acpWrapperFactory = acpWrapperFactory;
         this.scriptWrapperFactory = scriptWrapperFactory;
@@ -173,6 +176,48 @@ public class SkillPackageResolver {
         persistScanOutcome(entity, resolved);
 
         return resolved;
+    }
+
+    /**
+     * Content-store-only reconciliation for read paths (e.g. the admin
+     * detail view). Runs the same SKILL.md store sync a full resolve
+     * performs — without the scan / dependency / manifest stages — so a
+     * detail query always returns the content the runtime would execute,
+     * even when the workspace file was edited out-of-band (agent shell
+     * tools, manual edits) and no refresh has run yet.
+     *
+     * <p>Mutates the passed entity's {@code skillContent} when the file
+     * side wins.
+     *
+     * @return {@code true} when the DB side changed — callers should then
+     *         trigger a single-skill rescan so caches and manifest
+     *         projections catch up.
+     */
+    public boolean reconcileEntityContent(SkillEntity entity) {
+        if (entity == null || entity.getId() == null || entity.getName() == null) return false;
+
+        String configuredDir = extractSkillDirString(entity);
+        if (configuredDir != null) {
+            Path explicit = Paths.get(configuredDir);
+            if (Files.exists(explicit) && Files.isDirectory(explicit)) {
+                Path skillMd = explicit.resolve("SKILL.md");
+                if (!Files.exists(skillMd)) return false;
+                try {
+                    String before = entity.getSkillContent();
+                    contentReconciler.mirrorToDb(entity, Files.readString(skillMd));
+                    return !Objects.equals(before, entity.getSkillContent());
+                } catch (Exception e) {
+                    log.warn("Read-time mirror failed for skill '{}': {}", entity.getName(), e.getMessage());
+                    return false;
+                }
+            }
+        }
+
+        Path convention = workspaceManager.resolveConventionPath(entity.getName());
+        if (!Files.exists(convention) || !Files.isDirectory(convention)) return false;
+        SkillContentReconciler.Outcome outcome = contentReconciler.reconcile(entity, convention);
+        return outcome.action() == SkillContentReconciler.Action.INGESTED_TO_DB
+                || outcome.action() == SkillContentReconciler.Action.BACKFILLED_TO_DB;
     }
 
     /**
@@ -308,20 +353,35 @@ public class SkillPackageResolver {
     // ==================== 阶段 1：内容解析 ====================
 
     private ResolvedSkill resolveFromDirectory(SkillEntity entity, Path skillDir, String configuredDir, String source) {
-        Path skillMd = skillDir.resolve("SKILL.md");
-
-        String content = "";
-        String description = entity.getDescription();
-
-        if (Files.exists(skillMd)) {
-            try {
-                content = Files.readString(skillMd);
-                SkillFrontmatterParser.ParsedSkillMd parsed = frontmatterParser.parse(content);
-                if (!parsed.getDescription().isBlank()) {
-                    description = parsed.getDescription();
+        String content;
+        if ("convention".equals(source)) {
+            // Convention workspace: the DB column is canonical and the
+            // directory is a materialized cache. Reconcile both stores so
+            // runtime content and DB-reading consumers (admin console, API)
+            // can never diverge — file edits made by agents/shell are
+            // ingested into the DB, DB edits are materialized to the file.
+            content = contentReconciler.reconcile(entity, skillDir).content();
+        } else {
+            // Explicit skillDir: the user-managed directory is the source
+            // of truth. Never write into it; mirror its content into the
+            // DB column so the console shows what actually executes.
+            Path skillMd = skillDir.resolve("SKILL.md");
+            content = "";
+            if (Files.exists(skillMd)) {
+                try {
+                    content = Files.readString(skillMd);
+                    contentReconciler.mirrorToDb(entity, content);
+                } catch (Exception e) {
+                    log.warn("Failed to read SKILL.md from {}: {}", skillMd, e.getMessage());
                 }
-            } catch (Exception e) {
-                log.warn("Failed to read SKILL.md from {}: {}", skillMd, e.getMessage());
+            }
+        }
+
+        String description = entity.getDescription();
+        if (!content.isBlank()) {
+            SkillFrontmatterParser.ParsedSkillMd parsed = frontmatterParser.parse(content);
+            if (!parsed.getDescription().isBlank()) {
+                description = parsed.getDescription();
             }
         }
 

@@ -17,6 +17,7 @@ import vip.mate.skill.lessons.SkillLessonsService;
 import vip.mate.skill.manifest.SkillManifest;
 import vip.mate.skill.model.SkillEntity;
 import vip.mate.skill.runtime.SkillDependencyChecker;
+import vip.mate.skill.runtime.SkillPackageResolver;
 import vip.mate.skill.runtime.SkillCatalogSort;
 import vip.mate.skill.runtime.SkillCatalogSorter;
 import vip.mate.skill.service.SkillService;
@@ -57,6 +58,7 @@ public class SkillController {
 
     private final SkillService skillService;
     private final SkillRuntimeService skillRuntimeService;
+    private final SkillPackageResolver skillPackageResolver;
     private final SkillWorkspaceManager workspaceManager;
     private final BundledSkillSyncer bundledSkillSyncer;
     private final SkillFileSyncer skillFileSyncer;
@@ -445,6 +447,20 @@ public class SkillController {
         }
         SkillEntity skill = skillService.getSkill(id);
         verifyResourceWorkspace(skill, workspaceId);
+        // Read-time store reconciliation: the workspace SKILL.md may have
+        // been edited out-of-band (agent shell tools in a chat session)
+        // with no refresh in between. One file read + hash compare in the
+        // steady state; when the file side actually changed, the content
+        // is ingested and a single-skill rescan re-projects manifest
+        // columns and drops stale runtime caches — so the detail view
+        // always shows what the runtime executes.
+        try {
+            if (skillPackageResolver.reconcileEntityContent(skill)) {
+                skillRuntimeService.rescanSingle(skill);
+            }
+        } catch (Exception ignored) {
+            // A reconcile failure must not break the detail view.
+        }
         return R.ok(skill);
     }
 

@@ -56,7 +56,7 @@ class SkillControllerLifecycleTest {
     @BeforeEach
     void setUp() {
         controller = new SkillController(
-                skillService, null, null, null, null, null, null, null, null, null,
+                skillService, null, null, null, null, null, null, null, null, null, null,
                 agentBindingService, null, null,
                 skillLifecycleService, skillCuratorJob, skillCuratorReportStore);
     }

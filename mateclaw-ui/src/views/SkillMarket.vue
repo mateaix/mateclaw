@@ -894,6 +894,35 @@ function openDetailDrawer(
   editingIdentity.value = false
   editingBody.value = false
   detailDrawerVisible.value = true
+  // The list rows are a snapshot from page load; the skill may have been
+  // modified since (e.g. by an agent in a chat session). Refetch the row
+  // so the drawer never shows stale content; the edit forms are seeded
+  // only after the fresh row lands.
+  void refreshDetailSkill(skill, opts)
+}
+
+/** Refetch the drawer's skill from the backend and sync the list row.
+ *  Edit-mode seeding waits for the fresh row so the user never edits a
+ *  stale body. On fetch failure the snapshot stays and edit mode still
+ *  opens (last-known content beats a dead drawer). */
+async function refreshDetailSkill(skill: Skill, opts: { editIdentity?: boolean; editBody?: boolean } = {}) {
+  if (!isVirtualSkillId(skill.id)) {
+    try {
+      const res: any = await skillApi.get(skill.id)
+      const fresh: Skill | undefined = res?.data
+      // Apply only if the drawer still shows this skill.
+      if (fresh && detailSkill.value && String(detailSkill.value.id) === String(fresh.id)) {
+        detailSkill.value = { ...detailSkill.value, ...fresh }
+        patchSkillInPlace(fresh)
+      }
+    } catch {
+      // Keep the list snapshot; the drawer still renders.
+    }
+    // Runtime-derived tabs (tools / features / security) read from the
+    // status map — refresh it too so a just-rescanned skill shows current.
+    void loadRuntimeStatus()
+  }
+  if (!detailSkill.value || String(detailSkill.value.id) !== String(skill.id)) return
   if (opts.editIdentity) startEditIdentity()
   if (opts.editBody) startEditBody()
 }
