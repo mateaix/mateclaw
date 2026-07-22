@@ -1523,8 +1523,7 @@ public class ChatStreamTracker {
 
     /**
      * RunState 最长无活动时间。从 wall-clock {@code MAX_LIFETIME_MS=30min}
-     * 切换到 inactivity-based 后默认 30 min — 与 hermes-agent 的
-     * {@code gateway_timeout=1800s} 同口径：只要 agent 还在持续产事件
+     * 切换到 inactivity-based 后默认 30 min（1800s 空闲超时）：只要 agent 还在持续产事件
      * （tool call / content delta / phase transition / progress_update），
      * 就一直活下去，墙钟跑 1 小时 2 小时都可以。只有真正"完全静默 ≥ N 分钟"
      * 才视为卡死并强制清理。

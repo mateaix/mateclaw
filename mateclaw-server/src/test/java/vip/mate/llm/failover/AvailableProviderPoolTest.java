@@ -150,4 +150,81 @@ class AvailableProviderPoolTest {
         var snap = pool.snapshot();
         assertNotNull(snap);
     }
+
+    // ===== TTL readmission of HARD-removed providers =====
+
+    private static AvailableProviderPool poolWithReadmitMs(long billingMs, long authMs) {
+        ProviderHealthProperties props = new ProviderHealthProperties();
+        props.setBillingReadmitMs(billingMs);
+        props.setAuthReadmitMs(authMs);
+        return new AvailableProviderPool(props);
+    }
+
+    @Test
+    @DisplayName("BILLING removal readmits lazily after its TTL")
+    void billingReadmitsAfterTtl() throws Exception {
+        AvailableProviderPool p = poolWithReadmitMs(50, 0);
+        p.add("openai");
+        p.remove("openai", RemovalSource.BILLING, "402 insufficient_quota");
+        assertFalse(p.contains("openai"), "still evicted inside the TTL window");
+
+        Thread.sleep(80);
+        assertTrue(p.contains("openai"), "TTL expired — contains() must lazily readmit");
+        // Readmission clears the removal reason like any add().
+        assertNull(p.snapshot().get("openai"));
+    }
+
+    @Test
+    @DisplayName("AUTH removal readmits after its own TTL")
+    void authReadmitsAfterTtl() throws Exception {
+        AvailableProviderPool p = poolWithReadmitMs(0, 50);
+        p.add("kimi");
+        p.remove("kimi", RemovalSource.AUTH_ERROR, "401");
+        assertFalse(p.contains("kimi"));
+
+        Thread.sleep(80);
+        assertTrue(p.contains("kimi"));
+    }
+
+    @Test
+    @DisplayName("INIT_PROBE and MANUAL removals never auto-readmit")
+    void probeAndManualNeverReadmit() throws Exception {
+        AvailableProviderPool p = poolWithReadmitMs(1, 1);
+        p.add("openai");
+        p.add("ollama");
+        p.remove("openai", RemovalSource.INIT_PROBE, "probe failed");
+        p.remove("ollama", RemovalSource.MANUAL, "operator disabled");
+
+        Thread.sleep(30);
+        assertFalse(p.contains("openai"), "broken configuration must not silently come back");
+        assertFalse(p.contains("ollama"), "explicit operator intent must not expire");
+    }
+
+    @Test
+    @DisplayName("TTL of 0 disables auto-readmission entirely")
+    void zeroTtlDisablesReadmission() throws Exception {
+        AvailableProviderPool p = poolWithReadmitMs(0, 0);
+        p.add("openai");
+        p.remove("openai", RemovalSource.BILLING, "402");
+
+        Thread.sleep(30);
+        assertFalse(p.contains("openai"));
+        assertEquals(0, p.snapshot().get("openai").readmitAtMs());
+    }
+
+    @Test
+    @DisplayName("Re-removal after readmission restarts the TTL from the latest incident")
+    void reRemovalRestartsTtl() throws Exception {
+        AvailableProviderPool p = poolWithReadmitMs(50, 0);
+        p.add("openai");
+        p.remove("openai", RemovalSource.BILLING, "402 first");
+        Thread.sleep(80);
+        assertTrue(p.contains("openai"), "first TTL expired");
+
+        // Still broken — the first post-readmission call evicts again.
+        p.remove("openai", RemovalSource.BILLING, "402 second");
+        assertFalse(p.contains("openai"), "fresh removal must start a fresh TTL window");
+        Thread.sleep(80);
+        assertTrue(p.contains("openai"), "second TTL expires independently");
+    }
 }

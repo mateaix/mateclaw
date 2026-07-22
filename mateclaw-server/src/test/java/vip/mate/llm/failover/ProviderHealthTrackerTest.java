@@ -114,4 +114,45 @@ class ProviderHealthTrackerTest {
         assertTrue(snap.get("openai").cooldownRemainingMs() > 0,
                 "cooldown remaining ms must be positive while active");
     }
+
+    // ===== Provider-stated cooldown override (Retry-After feedback) =====
+
+    @Test
+    @DisplayName("Cooldown override fires immediately, without waiting for the threshold")
+    void overrideBypassesThreshold() {
+        tracker.recordFailure("openai", 60_000);
+        assertTrue(tracker.isInCooldown("openai"),
+                "one failure with a stated retry window must start cooldown right away");
+        long remaining = tracker.snapshot().get("openai").cooldownRemainingMs();
+        assertTrue(remaining > 55_000 && remaining <= 60_000,
+                "cooldown must honor the stated window, got " + remaining);
+    }
+
+    @Test
+    @DisplayName("Override clamps to the 2h ceiling")
+    void overrideClampedToCeiling() {
+        tracker.recordFailure("openai", 24L * 3600 * 1000);
+        long remaining = tracker.snapshot().get("openai").cooldownRemainingMs();
+        assertTrue(remaining <= ProviderHealthTracker.MAX_COOLDOWN_OVERRIDE_MS,
+                "override must clamp at 2h, got " + remaining);
+    }
+
+    @Test
+    @DisplayName("Override never shortens a longer active cooldown")
+    void overrideNeverShortens() {
+        tracker.recordFailure("openai", 3600_000);
+        tracker.recordFailure("openai", 5_000);
+        long remaining = tracker.snapshot().get("openai").cooldownRemainingMs();
+        assertTrue(remaining > 5_000,
+                "a later, shorter window must not truncate the active cooldown, got " + remaining);
+    }
+
+    @Test
+    @DisplayName("Success clears an override cooldown like any other")
+    void successClearsOverride() {
+        tracker.recordFailure("openai", 3600_000);
+        assertTrue(tracker.isInCooldown("openai"));
+        tracker.recordSuccess("openai");
+        assertFalse(tracker.isInCooldown("openai"));
+    }
 }

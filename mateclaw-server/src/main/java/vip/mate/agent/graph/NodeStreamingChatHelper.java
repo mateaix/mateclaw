@@ -8,6 +8,8 @@ import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.http.HttpHeaders;
+import org.springframework.web.client.RestClientResponseException;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 import vip.mate.channel.web.ChatStreamTracker;
 import vip.mate.llm.chatmodel.AssistantThinkingRelay;
@@ -15,6 +17,10 @@ import vip.mate.llm.chatmodel.ReasoningContentCache;
 
 import reactor.core.Disposable;
 
+import java.time.Instant;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -194,6 +200,16 @@ public class NodeStreamingChatHelper {
     }
 
     /**
+     * Record a primary failure carrying a provider-stated retry window so the
+     * health tracker can start a cooldown of exactly that length. No-op under
+     * the same conditions as {@link #recordPrimary}.
+     */
+    private void recordPrimaryFailure(long cooldownOverrideMs) {
+        if (healthTracker == null || primaryProviderId == null) return;
+        healthTracker.recordFailure(primaryProviderId, cooldownOverrideMs);
+    }
+
+    /**
      * Map an {@link ErrorType} to the matching pool
      * {@link vip.mate.llm.failover.AvailableProviderPool.RemovalSource} for
      * provider-wide HARD failures (AUTH / BILLING). Returns {@code null} for
@@ -207,7 +223,11 @@ public class NodeStreamingChatHelper {
      * {@link vip.mate.llm.failover.ProviderHealthTracker}'s cooldown instead.</p>
      */
     private static vip.mate.llm.failover.AvailableProviderPool.RemovalSource hardRemovalSource(ErrorType type) {
-        if (type == null) return null;
+        // Policy lives on the enum ({@code evictsProvider}); this switch is
+        // only the name mapping to the pool's RemovalSource. A type marked
+        // evicting but missing here falls through to null (fail-open, logged
+        // nowhere) — extend the switch when adding a new evicting type.
+        if (type == null || !type.evictsProvider()) return null;
         return switch (type) {
             case AUTH_ERROR -> vip.mate.llm.failover.AvailableProviderPool.RemovalSource.AUTH_ERROR;
             case BILLING -> vip.mate.llm.failover.AvailableProviderPool.RemovalSource.BILLING;
@@ -224,11 +244,7 @@ public class NodeStreamingChatHelper {
      * says nothing about whether the provider's other models still work.
      */
     private static boolean isProviderLevelFailure(ErrorType type) {
-        if (type == null) return false;
-        return switch (type) {
-            case NONE, PROMPT_TOO_LONG, CLIENT_ERROR, THINKING_BLOCK_ERROR, MODEL_NOT_FOUND -> false;
-            default -> true;
-        };
+        return type != null && type.countsHealth();
     }
 
     /** Convenience: pool-aware membership check. Null pool means fail-open (everyone in). */
@@ -373,6 +389,21 @@ public class NodeStreamingChatHelper {
     // avoid masking truly fatal errors. MAX_TOTAL_DURATION_MS is the
     // ultimate safety net.
     static final int MAX_RETRIES_UNKNOWN = 5;
+    // OVERLOADED: the provider's serving capacity is saturated (Anthropic 529,
+    // "engine_overloaded", "model is overloaded"). Unlike RATE_LIMIT this says
+    // nothing about the caller's key, so waiting on the same provider is the
+    // productive move — recovery periods are typically tens of seconds, hence
+    // the dedicated long backoff table below instead of the generic 3s-based
+    // exponential.
+    static final int MAX_RETRIES_OVERLOADED = 5;
+    /**
+     * Backoff table for {@link ErrorType#OVERLOADED} retries, indexed by
+     * {@code attempt - 1} (attempts past the table reuse the last entry).
+     * A ±30% jitter is applied on top so concurrent conversations don't
+     * re-hit a saturated provider in lockstep. The 3-minute wall-clock
+     * budget still bounds the total wait.
+     */
+    static final long[] OVERLOADED_BACKOFF_MS = {10_000, 20_000, 40_000, 60_000, 60_000};
     // Hard time budget for the primary retry loop (3 min). Prevents
     // retries from stalling a single conversation turn indefinitely.
     // Aligned with WikiProcessingService.llmMaxTotalDurationMs.
@@ -455,9 +486,24 @@ public class NodeStreamingChatHelper {
                 || msg.contains("authentication") || msg.contains("AuthenticationError")) {
             return ErrorType.AUTH_ERROR;
         }
+        // Overloaded — the provider's serving capacity is saturated. Checked
+        // BEFORE the rate-limit patterns: providers commonly surface overload
+        // through a reused 429 status ("engine_overloaded" arrives alongside
+        // "429" in the same chain), and the more specific semantic must win —
+        // an overloaded provider deserves patient same-provider backoff, not
+        // the rate-limit fast-failover path.
+        if (msg.contains("engine_overloaded")
+                || msg.contains("overloaded_error")     // Anthropic 529 body type
+                || msg.contains("Overloaded")           // Anthropic 529 message
+                || msg.contains("model is overloaded")  // Gemini / OpenAI-compatible
+                || msg.contains("529")
+                || msg.contains("server is busy")
+                || msg.contains("当前分组上游负载已饱和")) { // SiliconFlow group saturation
+            return ErrorType.OVERLOADED;
+        }
         // Rate limit
         if (msg.contains("429") || msg.contains("rate_limit") || msg.contains("RateLimitError")
-                || msg.contains("Too Many Requests") || msg.contains("engine_overloaded")) {
+                || msg.contains("Too Many Requests")) {
             return ErrorType.RATE_LIMIT;
         }
         // Thinking block errors (Anthropic: old thinking blocks cannot be modified)
@@ -549,8 +595,7 @@ public class NodeStreamingChatHelper {
                 // surfaced as HTTP 400 with a body that describes the upstream
                 // outage. These are transient server-side failures — retryable.
                 || msg.contains("temporarily unavailable")
-                || msg.contains("service unavailable")
-                || msg.contains("model is overloaded")) {
+                || msg.contains("service unavailable")) {
             return ErrorType.SERVER_ERROR;
         }
         // Client errors (400 Bad Request — unsupported format, invalid params, etc.) — NOT retryable.
@@ -566,6 +611,111 @@ public class NodeStreamingChatHelper {
             return ErrorType.CLIENT_ERROR;
         }
         return ErrorType.UNKNOWN;
+    }
+
+    /**
+     * Ceiling for honoring a provider-stated retry window as an in-loop
+     * backoff sleep. Longer windows (quota resets measured in minutes or
+     * hours) are not worth blocking a conversation turn for — the call fails
+     * over instead, and the window is honored as a
+     * {@code ProviderHealthTracker} cooldown override so later turns skip
+     * the provider without re-probing it.
+     */
+    static final long HINTED_BACKOFF_CAP_MS = 90_000;
+
+    /** Floor / ceiling for any parsed retry-window hint (guards absurd values). */
+    private static final long MIN_HINT_MS = 1_000;
+    private static final long MAX_HINT_MS = 2 * 60 * 60 * 1000L;
+
+    private static final List<String> ANTHROPIC_RESET_HEADERS = List.of(
+            "anthropic-ratelimit-requests-reset",
+            "anthropic-ratelimit-tokens-reset",
+            "anthropic-ratelimit-input-tokens-reset",
+            "anthropic-ratelimit-output-tokens-reset");
+
+    private static final List<String> OPENAI_RESET_HEADERS = List.of(
+            "x-ratelimit-reset-requests",
+            "x-ratelimit-reset-tokens");
+
+    /** Matches Go-style duration strings ("1s", "6m0s", "120ms", "1h2m"). */
+    private static final java.util.regex.Pattern GO_DURATION = java.util.regex.Pattern.compile(
+            "^(?:(\\d+)h)?(?:(\\d+)m)?(?:(\\d+(?:\\.\\d+)?)s)?(?:(\\d+)ms)?$");
+
+    /**
+     * Walk the error chain for an HTTP response exception and parse the
+     * provider-stated retry window from its headers. Returns milliseconds
+     * clamped to {@code [MIN_HINT_MS, MAX_HINT_MS]}, or {@code 0} when no
+     * usable hint is present.
+     *
+     * <p>Priority: {@code Retry-After} (delta-seconds or HTTP-date) →
+     * Anthropic RFC-3339 reset instants → OpenAI-style duration resets. For
+     * multi-bucket reset headers the <b>earliest</b> future instant wins —
+     * optimistic, because a premature retry just re-records the hint, while
+     * over-waiting silently costs the user the whole window.</p>
+     */
+    static long extractRetryAfterMs(Throwable error) {
+        for (Throwable cur = error; cur != null; cur = cur.getCause()) {
+            HttpHeaders headers = null;
+            if (cur instanceof WebClientResponseException wre) {
+                headers = wre.getHeaders();
+            } else if (cur instanceof RestClientResponseException rre) {
+                headers = rre.getResponseHeaders();
+            }
+            if (headers == null) continue;
+            long ms = parseRetryWindowMs(headers);
+            if (ms > 0) return ms;
+        }
+        return 0;
+    }
+
+    private static long parseRetryWindowMs(HttpHeaders headers) {
+        String retryAfter = headers.getFirst("retry-after");
+        if (retryAfter != null && !retryAfter.isBlank()) {
+            String v = retryAfter.trim();
+            if (v.chars().allMatch(Character::isDigit)) {
+                return clampHint(Long.parseLong(v) * 1000);
+            }
+            try {
+                long epochMs = ZonedDateTime.parse(v, DateTimeFormatter.RFC_1123_DATE_TIME)
+                        .toInstant().toEpochMilli();
+                return clampHint(epochMs - System.currentTimeMillis());
+            } catch (DateTimeParseException ignored) {
+                // fall through to the reset headers
+            }
+        }
+        long best = 0;
+        for (String name : ANTHROPIC_RESET_HEADERS) {
+            String v = headers.getFirst(name);
+            if (v == null || v.isBlank()) continue;
+            try {
+                long delta = Instant.parse(v.trim()).toEpochMilli() - System.currentTimeMillis();
+                if (delta > 0 && (best == 0 || delta < best)) best = delta;
+            } catch (DateTimeParseException ignored) {
+            }
+        }
+        if (best > 0) return clampHint(best);
+        for (String name : OPENAI_RESET_HEADERS) {
+            long ms = parseGoDurationMs(headers.getFirst(name));
+            if (ms > 0 && (best == 0 || ms < best)) best = ms;
+        }
+        return best > 0 ? clampHint(best) : 0;
+    }
+
+    private static long parseGoDurationMs(String value) {
+        if (value == null || value.isBlank()) return 0;
+        java.util.regex.Matcher m = GO_DURATION.matcher(value.trim());
+        if (!m.matches()) return 0;
+        long ms = 0;
+        if (m.group(1) != null) ms += Long.parseLong(m.group(1)) * 3_600_000L;
+        if (m.group(2) != null) ms += Long.parseLong(m.group(2)) * 60_000L;
+        if (m.group(3) != null) ms += (long) (Double.parseDouble(m.group(3)) * 1000);
+        if (m.group(4) != null) ms += Long.parseLong(m.group(4));
+        return ms;
+    }
+
+    private static long clampHint(long ms) {
+        if (ms <= 0) return 0;
+        return Math.max(MIN_HINT_MS, Math.min(ms, MAX_HINT_MS));
     }
 
     /** 提取完整异常链信息用于关键字匹配 */
@@ -640,6 +790,17 @@ public class NodeStreamingChatHelper {
         int failoverCount = 0;
         int llmCallCount = 0;
         long callStartMs = System.currentTimeMillis();
+        // True once the generic routing below has already recorded a health
+        // failure for this incident — stops the post-loop fallback record from
+        // double-counting it.
+        boolean healthRecorded = false;
+        // Carries the ErrorType behind each null-return retry so the next
+        // attempt's backoff can be type-aware (see doStreamCall).
+        AtomicReference<ErrorType> retryType = new AtomicReference<>();
+        // Provider-stated retry window (ms) parsed from the latest 429/529
+        // response headers; 0 when absent. Consumed by the next attempt's
+        // backoff and by the health-cooldown override on failover.
+        AtomicReference<Long> retryHint = new AtomicReference<>(0L);
 
         // 主模型重试循环
         StreamResult lastResult = null;
@@ -655,111 +816,82 @@ public class NodeStreamingChatHelper {
             }
             llmCallCount++;
             if (attempt > 0) retryCount++;
-            lastResult = doStreamCall(chatModel, prompt, conversationId, phase, broadcast, attempt, true);
+            lastResult = doStreamCall(chatModel, prompt, conversationId, phase, broadcast, attempt, true, retryType, retryHint);
             if (lastResult != null) {
-                // PTL: 不重试，直接返回给上层 Node 处理
-                if (lastResult.errorType() == ErrorType.PROMPT_TOO_LONG) {
-                    return lastResult;
-                }
-                // AUTH: primary key 失效不会自愈，跳过同模型重试，交给 fallback chain
-                // — 其它 provider 的 key 可能仍然可用（与 BILLING / MODEL_NOT_FOUND 同策略）。
-                // recordPrimary(false) 仍记一次失败用于 healthTracker 冷却累计。
-                // 若 fallback chain 全部 401，walker 末尾会把最后一次 AUTH_ERROR 透出，
-                // 不会静默吞错。
-                if (lastResult.errorType() == ErrorType.AUTH_ERROR) {
-                    log.warn("[{}] Primary auth failed — skipping same-model retries, handing off to fallback chain", phase);
-                    recordPrimary(false);
-                    removeFromPool(primaryProviderId, ErrorType.AUTH_ERROR, lastResult.errorMessage());
-                    break;
-                }
-                // BILLING — provider-side hard failure (out of credit). Won't change
-                // on retry and affects every model on the provider, so evict it and
-                // hand off to the fallback chain (a different provider may have credits).
-                if (lastResult.errorType() == ErrorType.BILLING) {
-                    log.warn("[{}] Primary billing failure — skipping same-model retries, handing off to fallback chain", phase);
-                    recordPrimary(false);
-                    removeFromPool(primaryProviderId, ErrorType.BILLING, lastResult.errorMessage());
-                    break;
-                }
-                // MODEL_NOT_FOUND — the provider rejected this specific model id. The
-                // provider itself is healthy, so do NOT evict it from the pool or
-                // record a provider-level failure: that would take its sibling models
-                // down too. Just skip same-model retries and hand off to the fallback
-                // chain — a different provider may recognize the model name.
-                if (lastResult.errorType() == ErrorType.MODEL_NOT_FOUND) {
-                    log.warn("[{}] Primary model not found — handing off to fallback chain "
-                            + "(provider kept available for its other models)", phase);
-                    break;
-                }
-                // CLIENT_ERROR (400 Bad Request): 不重试（参数/格式错误重试也不会变）
-                if (lastResult.errorType() == ErrorType.CLIENT_ERROR) {
-                    return lastResult;
-                }
-                // THINKING_BLOCK_ERROR: 剥离旧 thinking 块后单次重试
-                if (lastResult.errorType() == ErrorType.THINKING_BLOCK_ERROR && attempt == 0) {
-                    log.warn("[{}] Thinking block error detected, stripping old thinking and retrying once", phase);
-                    prompt = stripThinkingFromPrompt(prompt);
-                    continue; // 重试一次
-                }
-                if (lastResult.errorType() == ErrorType.THINKING_BLOCK_ERROR) {
-                    return lastResult; // 已经重试过了
-                }
-                // EMPTY_RESPONSE — transient gateway blip often resolves on same-model
-                // retry (e.g., proxy timeout returns HTTP 200 with empty body).
-                // Retry up to MAX_RETRIES_EMPTY_RESPONSE before handing off to the
-                // fallback chain. A different provider has a better chance of
-                // succeeding if the same model repeatedly returns nothing.
-                if (lastResult.errorType() == ErrorType.EMPTY_RESPONSE) {
-                    if (attempt < MAX_RETRIES_EMPTY_RESPONSE) {
-                        log.warn("[{}] Primary returned empty response (attempt {}/{}), retrying same model...",
-                                phase, attempt + 1, MAX_RETRIES_EMPTY_RESPONSE + 1);
-                        continue;
-                    }
-                    log.warn("[{}] Primary exhausted empty-response retries — handing off to fallback chain", phase);
-                    recordPrimary(false);
-                    break;
-                }
-                // 成功
-                if (lastResult.errorMessage() == null || lastResult.errorType() == ErrorType.NONE) {
+                ErrorType errType = lastResult.errorType();
+                // Success — reaffirm health / pool membership and return.
+                if (lastResult.errorMessage() == null || errType == ErrorType.NONE) {
                     recordPrimary(true);
                     addToPool(primaryProviderId);
                     logPerfSummary(phase, conversationId, callStartMs, llmCallCount, retryCount, failoverCount);
                     return lastResult;
                 }
-                // RATE_LIMIT / SERVER_ERROR / UNKNOWN past their retry budget are
-                // provider-level failures: the same model will not recover within
-                // this turn, but a different provider can. Break to the fallback
-                // chain instead of returning — recordPrimary(false) runs once at
-                // the post-loop provider health check below, and if every fallback
-                // also fails the chain walker re-surfaces this same error to the
-                // caller.
-                // UNKNOWN errors are included defensively: an error we can't
-                // classify may be a transient (mis-classified by our keyword
-                // patterns) or a fatal (truly new error shape). Retrying with a
-                // smaller budget (MAX_RETRIES_UNKNOWN=5 vs MAX_RETRIES=10) is
-                // safer than immediate termination — MAX_TOTAL_DURATION_MS provides
-                // the ultimate safety net.
-                if (lastResult.errorType() == ErrorType.RATE_LIMIT
-                        || lastResult.errorType() == ErrorType.SERVER_ERROR
-                        || lastResult.errorType() == ErrorType.UNKNOWN) {
-                    log.warn("[{}] Primary exhausted retries (type={}) — handing off to fallback chain",
-                            phase, lastResult.errorType());
-                    break;
+                // PROMPT_TOO_LONG — side-effectful recovery owned by the caller:
+                // the node runs structured compaction and retries by itself, so
+                // the error must surface unchanged (never routed to fallback —
+                // a different provider has a different window and the caller
+                // would lose the compaction signal).
+                if (errType == ErrorType.PROMPT_TOO_LONG) {
+                    return lastResult;
                 }
-                // Any truly unhandled error type — safety net. Prefer falling back
-                // over terminating the entire call. If this branch is ever hit in
-                // production, the type should be added explicitly above.
-                recordPrimary(false);
-                log.warn("[{}] Primary returned unhandled error type={} — handing off to fallback chain",
-                        phase, lastResult.errorType());
+                // THINKING_BLOCK_ERROR — side-effectful recovery: strip stale
+                // thinking blocks from the prompt, then retry once. Kept as an
+                // explicit branch because the generic path cannot mutate the
+                // outgoing prompt.
+                if (errType == ErrorType.THINKING_BLOCK_ERROR) {
+                    if (attempt == 0) {
+                        log.warn("[{}] Thinking block error detected, stripping old thinking and retrying once", phase);
+                        prompt = stripThinkingFromPrompt(prompt);
+                        continue;
+                    }
+                    return lastResult;
+                }
+                // EMPTY_RESPONSE retries here in the outer loop — it is a
+                // result (HTTP 200 with an empty body), not an exception, so
+                // the inner retry gate never sees it. Same-model retry often
+                // resolves the transient gateway blip.
+                if (errType == ErrorType.EMPTY_RESPONSE && attempt < errType.retryBudget()) {
+                    log.warn("[{}] Primary returned empty response (attempt {}/{}), retrying same model...",
+                            phase, attempt + 1, errType.retryBudget() + 1);
+                    continue;
+                }
+                // Generic routing — driven entirely by the ErrorType policy
+                // attributes. By the time a typed error result surfaces here
+                // the type's same-model retry budget is already exhausted
+                // (enforced inside the call for exception-path types).
+                if (!errType.failsOver()) {
+                    // Fails identically everywhere (e.g. CLIENT_ERROR) —
+                    // surface to the caller instead of burning the chain.
+                    return lastResult;
+                }
+                if (errType.countsHealth()) {
+                    // A rate-limit response carrying an explicit retry window
+                    // becomes a health-cooldown override: later turns skip the
+                    // provider until the stated instant instead of re-probing
+                    // it every ~5 minutes and re-collecting the same 429.
+                    Long hintMs = retryHint.get();
+                    if (errType == ErrorType.RATE_LIMIT && hintMs != null && hintMs > 0) {
+                        recordPrimaryFailure(hintMs);
+                    } else {
+                        recordPrimary(false);
+                    }
+                    healthRecorded = true;
+                }
+                if (errType.evictsProvider()) {
+                    removeFromPool(primaryProviderId, errType, lastResult.errorMessage());
+                }
+                log.warn("[{}] Primary failed (type={}) — handing off to fallback chain", phase, errType);
                 break;
             }
             // lastResult == null 表示需要重试
         }
-        // If we exhausted the retry loop without a verdict, primary effectively
-        // failed. Only count it against provider health for provider-level errors —
-        // a MODEL_NOT_FOUND break above must not nudge the provider toward cooldown.
-        if (!primarySkipped && lastResult != null && isProviderLevelFailure(lastResult.errorType())) {
+        // Exits that bypassed the generic routing (time-budget break, an
+        // EMPTY_RESPONSE retry cut short by the loop bound) still count one
+        // health failure for provider-level errors. healthRecorded guards
+        // against double-counting the generic-path breaks; model-scoped
+        // errors (MODEL_NOT_FOUND et al.) never dent provider health.
+        if (!primarySkipped && !healthRecorded && lastResult != null
+                && isProviderLevelFailure(lastResult.errorType())) {
             recordPrimary(false);
         }
 
@@ -797,7 +929,8 @@ public class NodeStreamingChatHelper {
             failoverCount++;
             llmCallCount++;
             StreamResult fallbackResult = doStreamCall(fallback, prompt, conversationId,
-                    phase + "_fallback_" + (i + 1), broadcast, 0, false);
+                    phase + "_fallback_" + (i + 1), broadcast, 0, false,
+                    new AtomicReference<>(), new AtomicReference<>(0L));
             // Accept only fully successful fallbacks. Non-successful results (auth
             // error, client error, still-rate-limited) propagate to the next
             // fallback instead of being surfaced as the final result.
@@ -840,11 +973,17 @@ public class NodeStreamingChatHelper {
 
     /**
      * 单次流式调用尝试。
+     * @param retryTypeRef carries the {@link ErrorType} that caused the
+     *                     previous attempt's retry (set on every
+     *                     {@code return null}) so the next attempt's backoff
+     *                     can be type-aware (OVERLOADED uses the long table).
      * @return StreamResult 如果成功/降级/不可重试；null 如果应该重试
      */
     private StreamResult doStreamCall(ChatModel chatModel, Prompt prompt,
                                        String conversationId, String phase,
-                                       boolean broadcast, int attempt, boolean primaryCall) {
+                                       boolean broadcast, int attempt, boolean primaryCall,
+                                       AtomicReference<ErrorType> retryTypeRef,
+                                       AtomicReference<Long> retryHintRef) {
         // Collapse every SystemMessage in the prompt into a single SystemMessage
         // at index 0. Some OpenAI-compatible providers (LM Studio's built-in
         // server, certain strict vLLM / SGLang deployments) reject 400
@@ -897,7 +1036,7 @@ public class NodeStreamingChatHelper {
         }
 
         try {
-            return doStreamCallInner(chatModel, outbound, conversationId, phase, broadcast, attempt, primaryCall);
+            return doStreamCallInner(chatModel, outbound, conversationId, phase, broadcast, attempt, primaryCall, retryTypeRef, retryHintRef);
         } finally {
             // Idempotent: if consumer already took the entry, discard is a no-op.
             if (relayToken != null) {
@@ -929,18 +1068,42 @@ public class NodeStreamingChatHelper {
 
     private StreamResult doStreamCallInner(ChatModel chatModel, Prompt prompt,
                                             String conversationId, String phase,
-                                            boolean broadcast, int attempt, boolean primaryCall) {
+                                            boolean broadcast, int attempt, boolean primaryCall,
+                                            AtomicReference<ErrorType> retryTypeRef,
+                                            AtomicReference<Long> retryHintRef) {
         if (attempt > 0) {
-            long delay = Math.min(backoffBaseMs * (1L << (attempt - 1)), backoffCapMs);
-            // 加入 jitter 防止雷群效应
-            delay += ThreadLocalRandom.current().nextLong(0, Math.max(1, delay / 2));
-            delay = Math.min(delay, backoffCapMs);
-            log.warn("[{}] Retry attempt {}/{} after {}ms for conversation {}",
-                    phase, attempt, MAX_RETRIES, delay, conversationId);
+            boolean overloaded = retryTypeRef.get() == ErrorType.OVERLOADED;
+            Long hintedMs = retryHintRef.get();
+            long delay;
+            if (hintedMs != null && hintedMs > 0) {
+                // The provider stated exactly when to come back — honor it
+                // (capped: longer windows are handled by failover + the
+                // health-cooldown override, not by blocking this turn), with
+                // a small additive jitter so concurrent sessions don't retry
+                // in lockstep at the stated instant.
+                delay = Math.min(hintedMs, HINTED_BACKOFF_CAP_MS)
+                        + ThreadLocalRandom.current().nextLong(0, 1_000);
+            } else if (overloaded) {
+                // Saturated provider: recovery periods run tens of seconds, so
+                // the generic 3s-based exponential would burn attempts before
+                // capacity returns. Table lookup + ±30% jitter (decorrelates
+                // concurrent conversations re-hitting the same provider).
+                int idx = Math.min(attempt - 1, OVERLOADED_BACKOFF_MS.length - 1);
+                long base = OVERLOADED_BACKOFF_MS[idx];
+                delay = base * (70 + ThreadLocalRandom.current().nextLong(61)) / 100;
+            } else {
+                delay = Math.min(backoffBaseMs * (1L << (attempt - 1)), backoffCapMs);
+                // 加入 jitter 防止雷群效应
+                delay += ThreadLocalRandom.current().nextLong(0, Math.max(1, delay / 2));
+                delay = Math.min(delay, backoffCapMs);
+            }
+            log.warn("[{}] Retry attempt {}/{} after {}ms (prev type={}) for conversation {}",
+                    phase, attempt, MAX_RETRIES, delay, retryTypeRef.get(), conversationId);
             // 广播给前端：用户可见的重试倒计时
             if (broadcast) {
+                String cause = overloaded ? "模型服务繁忙" : "请求频率受限";
                 broadcastDelta(conversationId, "warning",
-                        buildDeltaJson("⏱️ 请求频率受限，等待 " + (delay / 1000) + " 秒后重试（第 " + attempt + "/" + MAX_RETRIES + " 次）..."));
+                        buildDeltaJson("⏱️ " + cause + "，等待 " + (delay / 1000) + " 秒后重试（第 " + attempt + "/" + MAX_RETRIES + " 次）..."));
             }
             // Poll stop flag every 100ms so user Stop is honored mid-backoff.
             long remaining = delay;
@@ -1256,6 +1419,14 @@ public class NodeStreamingChatHelper {
             // ===== 无内容：分类错误并决定是否重试 =====
             ErrorType errorType = classifyError(error);
 
+            // Extract the provider-stated retry window once per failure and
+            // publish it for both consumers (next attempt's backoff; health
+            // cooldown override on failover). Non-throttling types clear the
+            // slot so a stale hint from an earlier attempt can't leak into an
+            // unrelated retry's backoff.
+            retryHintRef.set(errorType == ErrorType.RATE_LIMIT || errorType == ErrorType.OVERLOADED
+                    ? extractRetryAfterMs(error) : 0L);
+
             // PTL: 不重试，返回给上层 Node 处理压缩
             if (errorType == ErrorType.PROMPT_TOO_LONG) {
                 log.warn("[{}] Prompt too long error, returning to node for compaction: {}",
@@ -1275,46 +1446,30 @@ public class NodeStreamingChatHelper {
                         conversationId, phase, errorType);
             }
 
-            // Auth: 不重试
-            if (errorType == ErrorType.AUTH_ERROR) {
-                log.error("[{}] Authentication error, not retrying: {}", phase, error.getMessage());
-                return buildErrorResultWithType("认证失败: " + extractUserFriendlyError(error),
-                        conversationId, phase, errorType);
+            // Generic retry gate — the ErrorType's own budget decides whether
+            // this attempt returns null (outer loop retries with backoff) or
+            // surfaces a typed terminal result for the routing skeleton.
+            // THINKING_BLOCK_ERROR is excluded: its retry needs the prompt
+            // mutation (strip thinking) that only the outer loop can do, so it
+            // always surfaces immediately despite a non-zero budget.
+            if (errorType != ErrorType.THINKING_BLOCK_ERROR && attempt < errorType.retryBudget()) {
+                log.warn("[{}] Retryable error (attempt {}/{}, type={}): {}",
+                        phase, attempt, errorType.retryBudget(), errorType, error.getMessage());
+                retryTypeRef.set(errorType);
+                return null;
             }
 
-            // Client error (400): 不重试（参数/格式错误重试也不会变）
-            if (errorType == ErrorType.CLIENT_ERROR) {
-                log.error("[{}] Client error (400), not retrying: {}", phase, error.getMessage());
-                return buildErrorResultWithType("Bad request: " + extractUserFriendlyError(error),
-                        conversationId, phase, errorType);
-            }
-
-            // Rate limit / Server error / Unknown: retryable, but with different budgets.
-            // RATE_LIMIT: cap at 2 retries then failover (RFC 06 D-2).
-            // SERVER_ERROR: keep full MAX_RETRIES — upstream flaps often self-heal.
-            // UNKNOWN: conservative cap (5 vs 10). Defensive: retry what we can't
-            // classify, but with a smaller budget to avoid masking truly fatal
-            // errors. MAX_TOTAL_DURATION_MS provides the ultimate safety net.
-            if (errorType == ErrorType.RATE_LIMIT
-                    || errorType == ErrorType.SERVER_ERROR
-                    || errorType == ErrorType.UNKNOWN) {
-                int effectiveMaxRetries = switch (errorType) {
-                    case RATE_LIMIT -> MAX_RETRIES_RATE_LIMIT;
-                    case UNKNOWN -> MAX_RETRIES_UNKNOWN;
-                    default -> MAX_RETRIES;
-                };
-                if (attempt < effectiveMaxRetries) {
-                    log.warn("[{}] Retryable error (attempt {}/{}, type={}): {}",
-                            phase, attempt, effectiveMaxRetries, errorType, error.getMessage());
-                    return null;  // 返回 null 触发重试
-                }
-            }
-
-            // 不可重试或已耗尽重试
-            log.error("[{}] LLM call failed after {} attempts for conversation {}: {}",
-                    phase, attempt + 1, conversationId, error.getMessage());
-            return buildErrorResultWithType("LLM 调用失败: " + extractUserFriendlyError(error),
-                    conversationId, phase, errorType);
+            // Not retryable, or retry budget exhausted — surface with a
+            // type-appropriate user-facing prefix.
+            String friendly = extractUserFriendlyError(error);
+            String message = switch (errorType) {
+                case AUTH_ERROR -> "认证失败: " + friendly;
+                case CLIENT_ERROR -> "Bad request: " + friendly;
+                default -> "LLM 调用失败: " + friendly;
+            };
+            log.error("[{}] LLM call failed (type={}) after {} attempts for conversation {}: {}",
+                    phase, errorType, attempt + 1, conversationId, error.getMessage());
+            return buildErrorResultWithType(message, conversationId, phase, errorType);
         }
 
         // ===== 成功（检查是否因 thinking-only 软上限或内容重复被截断） =====
@@ -1786,46 +1941,123 @@ public class NodeStreamingChatHelper {
     /**
      * LLM 调用错误类型分类
      */
+    /**
+     * Error classification with the recovery policy attached to each type.
+     *
+     * <p>Each constant carries four policy attributes so the retry loop, the
+     * fallback-chain router, the pool eviction hook, and the health tracker
+     * all read <b>one</b> source of truth instead of maintaining parallel
+     * per-type branch chains:</p>
+     * <ul>
+     *   <li>{@link #retryBudget()} — same-model retry attempts before the
+     *       type is considered exhausted (0 = never retried).</li>
+     *   <li>{@link #failsOver()} — whether an exhausted failure of this type
+     *       hands off to the fallback chain (vs. returning the error to the
+     *       caller, for errors that would fail identically on every provider
+     *       or that the caller must handle, e.g. prompt compaction).</li>
+     *   <li>{@link #evictsProvider()} — provider-wide HARD failure: remove
+     *       the provider from {@code AvailableProviderPool} so later walks
+     *       skip it entirely.</li>
+     *   <li>{@link #countsHealth()} — whether the failure reflects the
+     *       <i>provider's own health</i> and feeds the consecutive-failure
+     *       cooldown in {@code ProviderHealthTracker}. Model-scoped and
+     *       request-scoped errors must not penalise a healthy provider.</li>
+     * </ul>
+     *
+     * <p>Two types additionally have side-effectful recovery steps that
+     * cannot be expressed as attributes and keep explicit branches in the
+     * loop: {@link #PROMPT_TOO_LONG} (report server-stated window, return to
+     * node for compaction) and {@link #THINKING_BLOCK_ERROR} (strip stale
+     * thinking blocks from the prompt, then retry once).</p>
+     */
     public enum ErrorType {
-        /** 无错误 */
-        NONE,
-        /** 速率限制 (429) */
-        RATE_LIMIT,
-        /** 服务端错误 (5xx, timeout) */
-        SERVER_ERROR,
-        /** Prompt 过长 (context length exceeded) */
-        PROMPT_TOO_LONG,
-        /** 认证错误 */
-        AUTH_ERROR,
-        /** 客户端错误 (400 Bad Request, 不支持的格式等) — 不应重试 */
-        CLIENT_ERROR,
-        /** Thinking 块错误（旧消息中的 thinking block 不可修改）— 可剥离后单次重试 */
-        THINKING_BLOCK_ERROR,
+        //                    retryBudget                 failsOver  evicts  countsHealth
+        /** No error. */
+        NONE                 (0,                          false,     false,  false),
+        /**
+         * The caller's own key is throttled (HTTP 429). Small retry budget —
+         * staying on a rate-limited provider wastes time — then fail over.
+         */
+        RATE_LIMIT           (MAX_RETRIES_RATE_LIMIT,     true,      false,  true),
+        /**
+         * The provider's serving capacity is saturated (HTTP 529,
+         * "engine_overloaded", "model is overloaded"). The caller's key is
+         * healthy, so this neither dents provider health (a busy provider is
+         * not a broken one) nor rotates away eagerly — it waits on the long
+         * backoff table, then falls over.
+         */
+        OVERLOADED           (MAX_RETRIES_OVERLOADED,     true,      false,  false),
+        /** Transient server / network failure (5xx, timeout, TLS/socket flap). */
+        SERVER_ERROR         (MAX_RETRIES,                true,      false,  true),
+        /**
+         * Context window exceeded. Never retried here — returned to the node,
+         * which owns structured compaction and its own retry.
+         */
+        PROMPT_TOO_LONG      (0,                          false,     false,  false),
+        /** Auth / infrastructure failure (bad key, cert, DNS). Will not self-heal. */
+        AUTH_ERROR           (0,                          true,      true,   true),
+        /**
+         * 400-class request-shape error. Fails identically on every provider,
+         * so neither retried nor failed over — surfaced to the caller.
+         */
+        CLIENT_ERROR         (0,                          false,     false,  false),
+        /**
+         * Stale thinking blocks rejected by the provider. Retried once after
+         * stripping thinking from the prompt (explicit branch — needs the
+         * prompt mutation the generic path cannot do).
+         */
+        THINKING_BLOCK_ERROR (1,                          false,     false,  false),
         /**
          * RFC-009: LLM returned no content, no thinking, and no tool calls.
-         * Treated as a soft failure — skip same-model retries and hand off to
-         * the fallback chain directly. Typical cause: upstream rate-limit
-         * rejection that comes back as HTTP 200 with empty body.
+         * Typical cause: upstream soft failure surfaced as HTTP 200 with an
+         * empty body. Retried in the outer loop (it is a result, not an
+         * exception), then falls over.
          */
-        EMPTY_RESPONSE,
+        EMPTY_RESPONSE       (MAX_RETRIES_EMPTY_RESPONSE, true,      false,  true),
         /**
          * RFC-009 P3.2: payment / billing failure (HTTP 402, "insufficient_quota",
          * "credit balance is too low", etc.). Distinct from {@link #AUTH_ERROR}
          * because the right response is to <i>switch provider</i> (a different
-         * provider may have credits) rather than just terminate. Skips same-model
-         * retries and falls through to the fallback chain.
+         * provider may have credits) rather than just terminate.
          */
-        BILLING,
+        BILLING              (0,                          true,      true,   true),
         /**
          * RFC-009 P3.2: requested model id not recognized by the provider
          * (HTTP 404, "Model not exist", "model_not_found", DashScope's
-         * "url error"). Same handling as {@link #BILLING} — heads straight
-         * to the fallback chain instead of looping retries against a model
-         * that does not exist.
+         * "url error"). Model-scoped: heads to the fallback chain but never
+         * evicts the provider or dents its health — sibling models still work.
          */
-        MODEL_NOT_FOUND,
-        /** 其他未知错误 */
-        UNKNOWN
+        MODEL_NOT_FOUND      (0,                          true,      false,  false),
+        /**
+         * Unclassifiable. Retried defensively with a conservative budget —
+         * a transient mis-missed by the keyword patterns is cheaper to retry
+         * than a lost turn; the wall-clock budget bounds the fatal case.
+         */
+        UNKNOWN              (MAX_RETRIES_UNKNOWN,        true,      false,  true);
+
+        private final int retryBudget;
+        private final boolean failsOver;
+        private final boolean evictsProvider;
+        private final boolean countsHealth;
+
+        ErrorType(int retryBudget, boolean failsOver, boolean evictsProvider, boolean countsHealth) {
+            this.retryBudget = retryBudget;
+            this.failsOver = failsOver;
+            this.evictsProvider = evictsProvider;
+            this.countsHealth = countsHealth;
+        }
+
+        /** Same-model retry attempts before this type is exhausted (0 = never retried). */
+        public int retryBudget() { return retryBudget; }
+
+        /** Whether an exhausted failure hands off to the fallback chain. */
+        public boolean failsOver() { return failsOver; }
+
+        /** Whether this failure HARD-removes the provider from the available pool. */
+        public boolean evictsProvider() { return evictsProvider; }
+
+        /** Whether this failure counts toward the provider health cooldown tracker. */
+        public boolean countsHealth() { return countsHealth; }
     }
 
     /**

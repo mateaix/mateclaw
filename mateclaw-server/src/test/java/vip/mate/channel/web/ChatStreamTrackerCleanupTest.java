@@ -16,9 +16,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * <p>Before the fix, a long-running agent that kept producing tool calls
  * (47-minute LLM-review smoke test, round 6) was killed at the 30-minute
- * wall-clock mark mid-task. The new behaviour mirrors hermes-agent's
- * {@code gateway_timeout}: only completely idle runs are evicted, the
- * actively-producing ones can run as long as they need to.
+ * wall-clock mark mid-task. The new behaviour is an idle-timeout contract:
+ * only completely idle runs are evicted, the actively-producing ones can
+ * run as long as they need to.
  */
 class ChatStreamTrackerCleanupTest {
 

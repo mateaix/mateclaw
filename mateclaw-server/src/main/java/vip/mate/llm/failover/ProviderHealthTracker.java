@@ -63,13 +63,45 @@ public class ProviderHealthTracker {
     }
 
     /**
+     * Upper bound for a provider-supplied cooldown override. Guards against
+     * a provider returning an absurd {@code Retry-After} (misconfigured proxy,
+     * clock-skewed reset timestamp) locking a provider out for days.
+     */
+    static final long MAX_COOLDOWN_OVERRIDE_MS = 2 * 60 * 60 * 1000L;
+
+    /**
      * Record a single failure against {@code providerId}. When the counter
      * reaches the configured threshold, the provider enters cooldown.
      */
     public void recordFailure(String providerId) {
+        recordFailure(providerId, 0);
+    }
+
+    /**
+     * Record a failure with an optional provider-supplied cooldown override
+     * (milliseconds), typically parsed from a 429 response's
+     * {@code Retry-After} / rate-limit reset headers.
+     *
+     * <p>When {@code cooldownOverrideMs > 0} the provider has stated exactly
+     * when capacity returns, so the cooldown starts <b>immediately</b> —
+     * waiting for {@link ProviderHealthProperties#getFailureThreshold} more
+     * consecutive failures would burn extra calls against a window the
+     * provider already announced. The override is clamped to
+     * {@link #MAX_COOLDOWN_OVERRIDE_MS} and never <i>shortens</i> an active
+     * cooldown.</p>
+     */
+    public void recordFailure(String providerId, long cooldownOverrideMs) {
         if (!props.isEnabled() || providerId == null) return;
         AtomicLong counter = consecutiveFailures.computeIfAbsent(providerId, k -> new AtomicLong());
         long failures = counter.incrementAndGet();
+        if (cooldownOverrideMs > 0) {
+            long clamped = Math.min(cooldownOverrideMs, MAX_COOLDOWN_OVERRIDE_MS);
+            long cooldownEnd = System.currentTimeMillis() + clamped;
+            cooldownUntilMs.merge(providerId, cooldownEnd, Math::max);
+            log.warn("[ProviderHealth] provider={} entering cooldown for {}s (provider-stated retry window)",
+                    providerId, clamped / 1000);
+            return;
+        }
         if (failures >= props.getFailureThreshold()) {
             long cooldownEnd = System.currentTimeMillis() + props.getCooldownMs();
             cooldownUntilMs.put(providerId, cooldownEnd);

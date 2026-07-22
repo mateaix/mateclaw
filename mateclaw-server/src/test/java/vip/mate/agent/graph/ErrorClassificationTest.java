@@ -213,9 +213,13 @@ class ErrorClassificationTest {
     }
 
     @Test
-    @DisplayName("Gateway-rewritten 400 'model is overloaded' → SERVER_ERROR")
-    void gatewayOverloadedIsServerError() throws Exception {
-        assertEquals(NodeStreamingChatHelper.ErrorType.SERVER_ERROR,
+    @DisplayName("Gateway-rewritten 400 'model is overloaded' → OVERLOADED")
+    void gatewayOverloadedIsOverloaded() throws Exception {
+        // Previously SERVER_ERROR. The overload semantic now has its own
+        // type with patient same-provider backoff — still retryable, still
+        // fails over after its budget, but no longer dents provider health
+        // (a busy upstream is not a broken provider).
+        assertEquals(NodeStreamingChatHelper.ErrorType.OVERLOADED,
                 classify(new RuntimeException("400 Bad Request: model is overloaded, please try again")));
     }
 
@@ -285,5 +289,46 @@ class ErrorClassificationTest {
         assertEquals(NodeStreamingChatHelper.ErrorType.AUTH_ERROR,
                 classify(new RuntimeException(
                         "PKIX path building failed: unable to find valid certification path to requested target")));
+    }
+
+    // ===== OVERLOADED (provider capacity saturation) =====
+
+    @Test
+    @DisplayName("'engine_overloaded' (even alongside 429) → OVERLOADED, not RATE_LIMIT")
+    void engineOverloadedIsOverloaded() throws Exception {
+        // Providers reuse the 429 status for capacity saturation. The more
+        // specific overload semantic must win over the bare 429 pattern —
+        // an overloaded provider gets patient backoff, not fast failover.
+        assertEquals(NodeStreamingChatHelper.ErrorType.OVERLOADED,
+                classify(new RuntimeException("429 Too Many Requests: engine_overloaded")));
+    }
+
+    @Test
+    @DisplayName("Anthropic 529 'overloaded_error' → OVERLOADED")
+    void anthropic529IsOverloaded() throws Exception {
+        assertEquals(NodeStreamingChatHelper.ErrorType.OVERLOADED,
+                classify(new RuntimeException(
+                        "529 {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}")));
+    }
+
+    @Test
+    @DisplayName("'The model is overloaded' → OVERLOADED, not SERVER_ERROR")
+    void modelOverloadedIsOverloaded() throws Exception {
+        assertEquals(NodeStreamingChatHelper.ErrorType.OVERLOADED,
+                classify(new RuntimeException("The model is overloaded. Please try again later.")));
+    }
+
+    @Test
+    @DisplayName("SiliconFlow group-saturation message → OVERLOADED")
+    void siliconflowSaturationIsOverloaded() throws Exception {
+        assertEquals(NodeStreamingChatHelper.ErrorType.OVERLOADED,
+                classify(new RuntimeException("50603: 当前分组上游负载已饱和，请稍后再试")));
+    }
+
+    @Test
+    @DisplayName("Plain 429 without overload wording stays RATE_LIMIT")
+    void plain429StaysRateLimit() throws Exception {
+        assertEquals(NodeStreamingChatHelper.ErrorType.RATE_LIMIT,
+                classify(new RuntimeException("429 Too Many Requests")));
     }
 }
