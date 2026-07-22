@@ -1010,7 +1010,12 @@ public class ChannelMessageRouter {
             case STATUS -> buildStatusReply(channelEntity, conversationId);
         };
         if (replyTarget != null && reply != null) {
-            adapter.sendMessage(replyTarget, reply);
+            // renderAndSend (not sendMessage) so adapters that pre-post a
+            // "thinking..." placeholder on inbound (WeCom reply_stream)
+            // consume it here: the confirmation overwrites the placeholder
+            // bubble in place and the keepalive refresher is stopped.
+            // Plain sendMessage would leave the placeholder dangling forever.
+            adapter.renderAndSend(replyTarget, reply);
         }
         log.info("[{}] Magic command handled: {} conversationId={}, sender={}",
                 adapter.getChannelType(), command.type(), conversationId,

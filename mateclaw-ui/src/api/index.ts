@@ -262,6 +262,18 @@ export const skillApi = {
   refreshRuntime: () => http.post('/skills/runtime/refresh'),
   exportWorkspace: (id: string | number) => http.post(`/skills/${id}/export-workspace`),
   getWorkspaceInfo: (id: string | number) => http.get(`/skills/${id}/workspace`),
+  /**
+   * Bundle files (scripts/ + references/ + templates/) — canonical rows in
+   * mate_skill_file; writes also materialize the workspace cache and
+   * re-resolve the skill.
+   */
+  listFiles: (id: string | number) => http.get(`/skills/${id}/files`),
+  getFileContent: (id: string | number, path: string) =>
+    http.get(`/skills/${id}/files/content`, { params: { path } }),
+  saveFileContent: (id: string | number, path: string, content: string) =>
+    http.put(`/skills/${id}/files/content`, { path, content }),
+  deleteFile: (id: string | number, path: string) =>
+    http.delete(`/skills/${id}/files`, { params: { path } }),
   // RFC-090 §7 + §11.4 — pre-flight requirements + LESSONS.md + reverse lookup
   requirements: (id: string | number) => http.get(`/skills/${id}/requirements`),
   getLessons: (id: string | number) => http.get(`/skills/${id}/lessons`),

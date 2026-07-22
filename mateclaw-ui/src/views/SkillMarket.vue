@@ -271,6 +271,10 @@
           <button class="detail-tab" :class="{ active: detailTab === 'body' }" @click="detailTab = 'body'">
             {{ t('skills.detail.body') }}
           </button>
+          <button v-if="!isVirtualSkill" class="detail-tab" :class="{ active: detailTab === 'files' }" @click="detailTab = 'files'">
+            {{ t('skills.detail.files') }}
+            <span v-if="detailFiles.length > 0" class="tab-count">{{ detailFiles.length }}</span>
+          </button>
           <button class="detail-tab" :class="{ active: detailTab === 'tools' }" @click="detailTab = 'tools'">
             {{ t('skills.detail.tools') }}
             <span v-if="detailToolsCount > 0" class="tab-count">{{ detailToolsCount }}</span>
@@ -465,6 +469,98 @@
               <p class="detail-hint">{{ t('skills.detail.sourceCodeHint') }}</p>
               <pre v-if="detailSkill.sourceCode" class="detail-pre">{{ detailSkill.sourceCode }}</pre>
               <p v-else class="detail-empty">—</p>
+            </template>
+          </div>
+        </div>
+        <!-- Files tab — bundle files (scripts/ + references/ + templates/) -->
+        <div v-if="detailTab === 'files'" class="detail-section">
+          <div class="detail-block">
+            <div class="detail-block-head">
+              <h4 class="detail-block-title">{{ t('skills.detail.filesTitle') }}</h4>
+              <button
+                v-if="canEditFiles && !creatingFile"
+                class="detail-edit-btn detail-edit-primary"
+                @click="startCreateFile"
+              >
+                + {{ t('skills.detail.fileNew') }}
+              </button>
+            </div>
+            <p class="detail-hint">{{ t('skills.detail.filesHint') }}</p>
+            <p v-if="isBuiltinDetail" class="detail-hint">{{ t('skills.detail.builtinFilesReadonly') }}</p>
+
+            <!-- New-file form -->
+            <div v-if="creatingFile" class="skill-file-create">
+              <input
+                v-model.trim="newFileForm.path"
+                type="text"
+                class="skill-file-path-input"
+                :placeholder="t('skills.detail.filePathPlaceholder')"
+                spellcheck="false"
+              />
+              <textarea
+                v-model="newFileForm.content"
+                class="skill-file-editor"
+                :placeholder="t('skills.detail.fileContentPlaceholder')"
+                spellcheck="false"
+              ></textarea>
+              <div class="edit-actions">
+                <button class="detail-edit-btn detail-edit-cancel" @click="creatingFile = false" :disabled="savingFile">
+                  {{ t('skills.actions.cancel') }}
+                </button>
+                <button class="detail-edit-btn detail-edit-save" @click="saveNewFile" :disabled="savingFile || !newFileForm.path">
+                  {{ savingFile ? t('common.loading') : t('skills.actions.save') }}
+                </button>
+              </div>
+            </div>
+
+            <p v-if="detailFilesLoading" class="detail-empty">{{ t('common.loading') }}</p>
+            <p v-else-if="detailFiles.length === 0 && !creatingFile" class="detail-empty">
+              {{ t('skills.detail.filesEmpty') }}
+            </p>
+            <ul v-else class="skill-file-list">
+              <li v-for="f in detailFiles" :key="f.path">
+                <button
+                  class="skill-file-item"
+                  :class="{ active: activeFile?.path === f.path }"
+                  @click="openFile(f)"
+                >
+                  <code class="skill-file-path">{{ f.path }}</code>
+                  <span class="skill-file-size">{{ formatFileSize(f.size) }}</span>
+                </button>
+              </li>
+            </ul>
+
+            <!-- Viewer / editor for the selected file -->
+            <template v-if="activeFile && !creatingFile">
+              <div class="detail-block-head detail-subhead">
+                <h4 class="detail-block-title"><code>{{ activeFile.path }}</code></h4>
+                <div class="edit-actions">
+                  <template v-if="!editingFile">
+                    <button v-if="canEditFiles" class="detail-edit-btn detail-edit-primary" @click="startEditFile">
+                      {{ t('skills.detail.fileEdit') }}
+                    </button>
+                    <button v-if="canEditFiles" class="detail-edit-btn detail-edit-cancel" @click="removeActiveFile" :disabled="savingFile">
+                      {{ t('skills.detail.fileDelete') }}
+                    </button>
+                  </template>
+                  <template v-else>
+                    <button class="detail-edit-btn detail-edit-cancel" @click="editingFile = false" :disabled="savingFile">
+                      {{ t('skills.actions.cancel') }}
+                    </button>
+                    <button class="detail-edit-btn detail-edit-save" @click="saveActiveFile" :disabled="savingFile">
+                      {{ savingFile ? t('common.loading') : t('skills.actions.save') }}
+                    </button>
+                  </template>
+                </div>
+              </div>
+              <p v-if="fileContentLoading" class="detail-empty">{{ t('common.loading') }}</p>
+              <pre v-else-if="!editingFile" class="detail-pre">{{ activeFileContent }}</pre>
+              <textarea
+                v-else
+                v-model="fileEditContent"
+                class="skill-file-editor"
+                spellcheck="false"
+              ></textarea>
             </template>
           </div>
         </div>
@@ -763,7 +859,7 @@ const rescanning = ref<Record<string, boolean>>({})
  *  tab for back-compat with any deep links that may pass it. */
 const detailDrawerVisible = ref(false)
 const detailSkill = ref<Skill | null>(null)
-const detailTab = ref<'overview' | 'body' | 'manifest' | 'tools' | 'features' | 'security' | 'lessons' | 'secrets' | 'memory'>('overview')
+const detailTab = ref<'overview' | 'body' | 'files' | 'manifest' | 'tools' | 'features' | 'security' | 'lessons' | 'secrets' | 'memory'>('overview')
 const detailLessonsRaw = ref<string>('')
 const detailLessonsLoading = ref(false)
 const detailEmployees = ref<Array<{ id: number; name: string; icon?: string; binding?: 'explicit' | 'implicit' }>>([])
@@ -810,6 +906,142 @@ const editBodyForm = ref<{ skillContent: string; sourceCode: string }>({
   skillContent: '',
   sourceCode: '',
 })
+
+// ==================== Bundle files tab ====================
+
+interface SkillBundleFile {
+  path: string
+  size?: number
+  sha256?: string
+  updateTime?: string
+}
+
+const detailFiles = ref<SkillBundleFile[]>([])
+const detailFilesLoading = ref(false)
+const activeFile = ref<SkillBundleFile | null>(null)
+const activeFileContent = ref('')
+const fileContentLoading = ref(false)
+const editingFile = ref(false)
+const fileEditContent = ref('')
+const savingFile = ref(false)
+const creatingFile = ref(false)
+const newFileForm = ref<{ path: string; content: string }>({ path: '', content: '' })
+
+/** Builtin bundles are restored from the shipped jar on upgrade, and
+ *  virtual skills own no files — both stay view-only. */
+const canEditFiles = computed(() => !isVirtualSkill.value && !isBuiltinDetail.value)
+
+function resetFilesTab() {
+  detailFiles.value = []
+  activeFile.value = null
+  activeFileContent.value = ''
+  editingFile.value = false
+  creatingFile.value = false
+  newFileForm.value = { path: '', content: '' }
+}
+
+async function loadDetailFiles() {
+  if (!detailSkill.value || isVirtualSkill.value) return
+  detailFilesLoading.value = true
+  try {
+    const res: any = await skillApi.listFiles(detailSkill.value.id)
+    detailFiles.value = res?.data || []
+  } catch {
+    detailFiles.value = []
+  } finally {
+    detailFilesLoading.value = false
+  }
+}
+
+async function openFile(file: SkillBundleFile) {
+  if (!detailSkill.value) return
+  activeFile.value = file
+  editingFile.value = false
+  fileContentLoading.value = true
+  try {
+    const res: any = await skillApi.getFileContent(detailSkill.value.id, file.path)
+    activeFileContent.value = res?.data?.content ?? ''
+  } catch (e: any) {
+    activeFileContent.value = ''
+    mcToast.error(typeof e === 'string' ? e : e?.message || t('skills.detail.fileLoadFailed'))
+  } finally {
+    fileContentLoading.value = false
+  }
+}
+
+function startEditFile() {
+  fileEditContent.value = activeFileContent.value
+  editingFile.value = true
+}
+
+async function saveActiveFile() {
+  if (!detailSkill.value || !activeFile.value || savingFile.value) return
+  savingFile.value = true
+  try {
+    await skillApi.saveFileContent(detailSkill.value.id, activeFile.value.path, fileEditContent.value)
+    activeFileContent.value = fileEditContent.value
+    editingFile.value = false
+    mcToast.success(t('skills.detail.fileSaved'))
+    loadDetailFiles()
+  } catch (e: any) {
+    mcToast.error(typeof e === 'string' ? e : e?.message || t('skills.detail.fileSaveFailed'))
+  } finally {
+    savingFile.value = false
+  }
+}
+
+async function removeActiveFile() {
+  if (!detailSkill.value || !activeFile.value || savingFile.value) return
+  const ok = await mcConfirm({
+    title: t('skills.detail.fileDelete'),
+    message: t('skills.detail.fileDeleteConfirm', { path: activeFile.value.path }),
+    tone: 'danger',
+  })
+  if (!ok) return
+  savingFile.value = true
+  try {
+    await skillApi.deleteFile(detailSkill.value.id, activeFile.value.path)
+    activeFile.value = null
+    activeFileContent.value = ''
+    mcToast.success(t('skills.detail.fileDeleted'))
+    loadDetailFiles()
+  } catch (e: any) {
+    mcToast.error(typeof e === 'string' ? e : e?.message || t('skills.detail.fileSaveFailed'))
+  } finally {
+    savingFile.value = false
+  }
+}
+
+function startCreateFile() {
+  creatingFile.value = true
+  activeFile.value = null
+  activeFileContent.value = ''
+  editingFile.value = false
+  newFileForm.value = { path: 'references/', content: '' }
+}
+
+async function saveNewFile() {
+  if (!detailSkill.value || savingFile.value || !newFileForm.value.path) return
+  savingFile.value = true
+  try {
+    await skillApi.saveFileContent(detailSkill.value.id, newFileForm.value.path, newFileForm.value.content)
+    creatingFile.value = false
+    mcToast.success(t('skills.detail.fileSaved'))
+    await loadDetailFiles()
+    const created = detailFiles.value.find(f => f.path === newFileForm.value.path)
+    if (created) openFile(created)
+  } catch (e: any) {
+    mcToast.error(typeof e === 'string' ? e : e?.message || t('skills.detail.fileSaveFailed'))
+  } finally {
+    savingFile.value = false
+  }
+}
+
+function formatFileSize(size?: number): string {
+  if (size == null) return ''
+  if (size < 1024) return `${size} B`
+  return `${(size / 1024).toFixed(1)} KB`
+}
 
 /** New-skill modal — pared down to the two questions that *must* be answered
  *  at creation time. Everything else is filled in via the drawer. */
@@ -884,7 +1116,7 @@ const detailFeaturesCount = computed(() => detailFeatures.value.length)
 
 function openDetailDrawer(
   skill: Skill,
-  tab: 'overview' | 'body' | 'tools' | 'features' | 'security' | 'lessons' | 'secrets' | 'memory' = 'overview',
+  tab: 'overview' | 'body' | 'files' | 'tools' | 'features' | 'security' | 'lessons' | 'secrets' | 'memory' = 'overview',
   opts: { editIdentity?: boolean; editBody?: boolean } = {},
 ) {
   detailSkill.value = skill
@@ -893,6 +1125,7 @@ function openDetailDrawer(
   detailEmployees.value = []
   editingIdentity.value = false
   editingBody.value = false
+  resetFilesTab()
   detailDrawerVisible.value = true
   // The list rows are a snapshot from page load; the skill may have been
   // modified since (e.g. by an agent in a chat session). Refetch the row
@@ -978,6 +1211,11 @@ watch(detailTab, (tab) => {
   }
   if (tab === 'memory' && detailDrawerVisible.value && detailEmployees.value.length === 0 && !detailEmployeesLoading.value) {
     loadDetailEmployees()
+  }
+  // Refetch on every entry — files can change out-of-band (agent tools,
+  // other admins), and the list is cheap (no content payload).
+  if (tab === 'files' && detailDrawerVisible.value && !detailFilesLoading.value) {
+    loadDetailFiles()
   }
 })
 
@@ -2110,6 +2348,15 @@ html.dark .scan-finding-item { background: rgba(255, 255, 255, 0.05); }
 .detail-empty { color: var(--mc-text-tertiary); font-size: 13px; font-style: italic; }
 .detail-pre { background: var(--mc-bg-sunken); padding: 12px; border-radius: 8px; max-height: 480px; overflow: auto; font-size: 12px; line-height: 1.5; color: var(--mc-text-primary); font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace; white-space: pre-wrap; word-break: break-word; }
 .detail-tool-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; }
+.skill-file-list { list-style: none; padding: 0; margin: 12px 0 0; display: flex; flex-direction: column; gap: 4px; }
+.skill-file-item { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; padding: 6px 10px; background: var(--mc-bg-sunken); border: 1px solid transparent; border-radius: 8px; cursor: pointer; text-align: left; }
+.skill-file-item:hover { border-color: var(--mc-border-strong, var(--mc-border)); }
+.skill-file-item.active { border-color: var(--mc-accent, var(--mc-text-primary)); }
+.skill-file-path { font-size: 12px; color: var(--mc-text-primary); word-break: break-all; }
+.skill-file-size { flex-shrink: 0; font-size: 11px; color: var(--mc-text-tertiary); }
+.skill-file-editor { width: 100%; min-height: 220px; margin-top: 8px; padding: 12px; background: var(--mc-bg-sunken); border: 1px solid var(--mc-border); border-radius: 8px; font-size: 12px; line-height: 1.5; color: var(--mc-text-primary); font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace; resize: vertical; }
+.skill-file-create { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+.skill-file-path-input { width: 100%; padding: 8px 10px; background: var(--mc-bg-sunken); border: 1px solid var(--mc-border); border-radius: 8px; font-size: 12px; color: var(--mc-text-primary); font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace; }
 .detail-tool-item code { display: block; padding: 6px 10px; background: var(--mc-bg-sunken); border-radius: 8px; font-size: 12px; color: var(--mc-text-primary); }
 .detail-hint { margin-top: 12px; font-size: 12px; color: var(--mc-text-tertiary); line-height: 1.5; }
 .detail-feature-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 10px; }

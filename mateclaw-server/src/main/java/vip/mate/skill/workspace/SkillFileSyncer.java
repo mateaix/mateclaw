@@ -27,8 +27,8 @@ import java.util.Set;
 
 /**
  * Mirrors canonical {@code mate_skill_file} rows down to each node's local
- * workspace cache so {@code scripts/} and {@code references/} files exist
- * on disk wherever the skill might run.
+ * workspace cache so {@code scripts/}, {@code references/} and
+ * {@code templates/} files exist on disk wherever the skill might run.
  *
  * <p>Also runs a one-time backfill: for any skill that has on-disk files
  * but no DB rows (typically pre-V112 installs), the local files are read
@@ -166,9 +166,9 @@ public class SkillFileSyncer {
     private MaterializeOutcome materializeOne(Path workspaceDir, SkillFileEntity row) {
         String relative = row.getFilePath();
         if (relative == null || relative.isBlank()) return MaterializeOutcome.SKIPPED;
-        if (!relative.startsWith("references/") && !relative.startsWith("scripts/")) {
-            log.warn("Skipping skill_file row {} — path outside scripts/ or references/: {}",
-                    row.getId(), relative);
+        if (!SkillBundleFiles.isDbEligible(relative)) {
+            log.warn("Skipping skill_file row {} — path outside the DB-persisted buckets ({}): {}",
+                    row.getId(), SkillBundleFiles.DB_BUCKET_PREFIXES, relative);
             return MaterializeOutcome.SKIPPED;
         }
         if (relative.contains("..")) {
@@ -208,11 +208,11 @@ public class SkillFileSyncer {
     private int backfillFromDiskIfNeeded(SkillEntity skill, Path workspaceDir) {
         if (!Files.exists(workspaceDir) || !Files.isDirectory(workspaceDir)) return 0;
 
-        List<Path> roots = new ArrayList<>(2);
-        Path scripts = workspaceDir.resolve("scripts");
-        Path references = workspaceDir.resolve("references");
-        if (Files.isDirectory(scripts)) roots.add(scripts);
-        if (Files.isDirectory(references)) roots.add(references);
+        List<Path> roots = new ArrayList<>(SkillBundleFiles.DB_BUCKET_PREFIXES.size());
+        for (String prefix : SkillBundleFiles.DB_BUCKET_PREFIXES) {
+            Path root = workspaceDir.resolve(prefix.substring(0, prefix.length() - 1));
+            if (Files.isDirectory(root)) roots.add(root);
+        }
         if (roots.isEmpty()) return 0;
 
         Map<String, String> ingested = new LinkedHashMap<>();

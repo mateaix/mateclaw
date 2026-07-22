@@ -357,6 +357,40 @@ public class SkillWorkspaceManager {
     }
 
     /**
+     * 从 skill 工作区删除单个文件（与 {@link #writeWorkspaceFile} 相同的
+     * 路径安全约束）。文件不存在时为 no-op。顺带清理删空的父目录，
+     * 避免目录树里残留空壳。
+     *
+     * @throws IllegalArgumentException 如果路径不安全
+     */
+    public void deleteWorkspaceFile(String skillName, String relativePath) {
+        Path workspaceDir = resolveConventionPath(skillName);
+        Path safePath = validateWritePath(workspaceDir, relativePath);
+        if (safePath == null) {
+            throw new IllegalArgumentException("Unsafe file path rejected: " + relativePath);
+        }
+        try {
+            Files.deleteIfExists(safePath);
+            // Prune emptied parent dirs up to (not including) the bucket root.
+            Path parent = safePath.getParent();
+            Path scriptsRoot = workspaceDir.resolve("scripts");
+            Path referencesRoot = workspaceDir.resolve("references");
+            Path templatesRoot = workspaceDir.resolve("templates");
+            while (parent != null && !parent.equals(scriptsRoot) && !parent.equals(referencesRoot)
+                    && !parent.equals(templatesRoot)
+                    && parent.startsWith(workspaceDir) && !parent.equals(workspaceDir)) {
+                try (var children = Files.list(parent)) {
+                    if (children.findAny().isPresent()) break;
+                }
+                Files.delete(parent);
+                parent = parent.getParent();
+            }
+        } catch (IOException e) {
+            log.warn("Failed to delete workspace file {}/{}: {}", skillName, relativePath, e.getMessage());
+        }
+    }
+
+    /**
      * 清空 skill 工作区中的 references/ 和 scripts/ 目录内容（保留目录本身）
      * 用于 overwrite 安装前清除旧版本残留文件
      */
@@ -531,8 +565,9 @@ public class SkillWorkspaceManager {
         // 归一化分隔符
         String normalized = relativePath.replace("\\", "/");
 
-        // 必须以 references/ 或 scripts/ 开头
-        if (!normalized.startsWith("references/") && !normalized.startsWith("scripts/")) {
+        // 必须以 references/、scripts/ 或 templates/ 开头
+        if (!normalized.startsWith("references/") && !normalized.startsWith("scripts/")
+                && !normalized.startsWith("templates/")) {
             return null;
         }
 

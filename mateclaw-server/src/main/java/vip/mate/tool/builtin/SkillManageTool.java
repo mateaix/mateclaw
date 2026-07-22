@@ -13,6 +13,7 @@ import vip.mate.skill.model.SkillEntity;
 import vip.mate.skill.runtime.SkillRuntimeService;
 import vip.mate.skill.runtime.SkillSecurityService;
 import vip.mate.skill.runtime.SkillValidationResult;
+import vip.mate.skill.service.SkillFileService;
 import vip.mate.skill.service.SkillService;
 import vip.mate.skill.workspace.SkillWorkspaceManager;
 
@@ -39,6 +40,7 @@ import java.util.regex.Pattern;
 public class SkillManageTool {
 
     private final SkillService skillService;
+    private final SkillFileService skillFileService;
     private final SkillSecurityService securityService;
     private final SkillWorkspaceManager workspaceManager;
     private final SkillRuntimeService runtimeService;
@@ -82,10 +84,10 @@ public class SkillManageTool {
         - create: Create a new skill with SKILL.md content (YAML frontmatter + markdown body)
         - edit: Replace entire skill content (for major rewrites; preferred when changing version + body together)
         - patch: Find-and-replace a specific section (for small targeted fixes)
-        - write_file: Write a supporting file under the skill's references/ or scripts/ directory
-          (e.g. a long reference doc the SKILL.md links to, or a re-runnable script). Put the
-          file body in 'content' and the path in 'filePath'. Keep SKILL.md itself lean and move
-          bulky detail into references/.
+        - write_file: Write a supporting file under the skill's references/, scripts/ or
+          templates/ directory (e.g. a long reference doc the SKILL.md links to, a re-runnable
+          script, or an output template). Put the file body in 'content' and the path in
+          'filePath'. Keep SKILL.md itself lean and move bulky detail into references/.
         - delete: Remove a skill
 
         SKILL.md format example:
@@ -130,7 +132,7 @@ public class SkillManageTool {
             String newText,
 
             @JsonProperty
-            @JsonPropertyDescription("For write_file action: relative path under references/ or scripts/ (e.g. 'references/api.md', 'scripts/run.sh'). No '..' allowed.")
+            @JsonPropertyDescription("For write_file action: relative path under references/, scripts/ or templates/ (e.g. 'references/api.md', 'scripts/run.sh', 'templates/report.html'). No '..' allowed.")
             String filePath,
 
             // RFC-063r §2.5: carries the calling agent's ChatOrigin; hidden
@@ -359,7 +361,7 @@ public class SkillManageTool {
      */
     private String doWriteFile(String name, String filePath, String content) {
         if (filePath == null || filePath.isBlank()) {
-            return "Error: filePath is required for write_file (e.g. 'references/api.md' or 'scripts/run.sh').";
+            return "Error: filePath is required for write_file (e.g. 'references/api.md', 'scripts/run.sh' or 'templates/report.html').";
         }
         if (content == null) {
             return "Error: content is required for write_file action.";
@@ -386,11 +388,23 @@ public class SkillManageTool {
             workspaceManager.writeWorkspaceFile(name, filePath, content);
         } catch (IllegalArgumentException e) {
             return "Error: " + e.getMessage()
-                    + " (paths must start with references/ or scripts/, and may not contain '..').";
+                    + " (paths must start with references/, scripts/ or templates/, and may not contain '..').";
         } catch (Exception e) {
             log.error("[SkillManage] Failed to write file '{}' for skill '{}': {}", filePath, name, e.getMessage(), e);
             return "Error writing skill file: " + e.getMessage();
         }
+
+        // Mirror into the canonical mate_skill_file store so the file
+        // survives node changes and is visible to DB-reading consumers
+        // (admin file editor, multi-instance workspace sync).
+        try {
+            skillFileService.upsertFile(existing.getId(), filePath.replace('\\', '/'), content);
+        } catch (Exception e) {
+            log.warn("[SkillManage] Canonical store write failed for '{}' of skill '{}': {}",
+                    filePath, name, e.getMessage());
+        }
+
+        rescanQuietly(existing);
 
         log.info("[SkillManage] Agent wrote skill file: skill={}, path={}", name, filePath);
         return "File '" + filePath + "' written to skill '" + name + "' (security scan: PASSED).";

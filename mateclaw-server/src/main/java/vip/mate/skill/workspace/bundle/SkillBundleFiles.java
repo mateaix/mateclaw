@@ -9,16 +9,17 @@ import java.util.Map;
 
 /**
  * Helpers for the bundle file buckets that mirror into the canonical
- * {@code mate_skill_file} store ({@code scripts/} and {@code references/}).
+ * {@code mate_skill_file} store ({@code scripts/}, {@code references/}
+ * and {@code templates/}).
  *
- * <p>Shared by the bundled-skill startup sync and the skill file syncer's
- * classpath backfill so both agree on which paths are DB-persisted and how
- * bundle contents are read into memory.
+ * <p>Shared by the bundled-skill startup sync, the skill file syncer's
+ * classpath backfill, and the admin file editor so all agree on which
+ * paths are DB-persisted and how bundle contents are read into memory.
  */
 public final class SkillBundleFiles {
 
     /** Path prefixes of the buckets persisted to {@code mate_skill_file}. */
-    public static final List<String> DB_BUCKET_PREFIXES = List.of("scripts/", "references/");
+    public static final List<String> DB_BUCKET_PREFIXES = List.of("scripts/", "references/", "templates/");
 
     private SkillBundleFiles() {
     }
@@ -33,7 +34,7 @@ public final class SkillBundleFiles {
     }
 
     /**
-     * Read every {@code scripts/} and {@code references/} file of the bundle
+     * Read every DB-eligible bundle file ({@link #DB_BUCKET_PREFIXES})
      * into memory, keyed by workspace-relative path (the key shape
      * {@code SkillFileService#applyBundleFiles} expects). Iteration order
      * follows {@link SkillBundleSource#assets()} enumeration order.

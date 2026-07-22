@@ -20,6 +20,8 @@ import vip.mate.skill.runtime.SkillDependencyChecker;
 import vip.mate.skill.runtime.SkillPackageResolver;
 import vip.mate.skill.runtime.SkillCatalogSort;
 import vip.mate.skill.runtime.SkillCatalogSorter;
+import vip.mate.skill.model.SkillFileEntity;
+import vip.mate.skill.service.SkillFileService;
 import vip.mate.skill.service.SkillService;
 import vip.mate.skill.synthesis.SkillSynthesisService;
 import vip.mate.skill.runtime.SkillRuntimeService;
@@ -27,6 +29,7 @@ import vip.mate.skill.runtime.model.ResolvedSkill;
 import vip.mate.skill.workspace.BundledSkillSyncer;
 import vip.mate.skill.workspace.SkillFileSyncer;
 import vip.mate.skill.workspace.SkillWorkspaceManager;
+import vip.mate.skill.workspace.bundle.SkillBundleFiles;
 import vip.mate.exception.MateClawException;
 import vip.mate.skill.lifecycle.ConfirmRequiredException;
 import vip.mate.skill.lifecycle.LifecycleTransition;
@@ -73,6 +76,7 @@ public class SkillController {
     private final SkillLifecycleService skillLifecycleService;
     private final SkillCuratorJob skillCuratorJob;
     private final SkillCuratorReportStore skillCuratorReportStore;
+    private final SkillFileService skillFileService;
 
     @Operation(summary = "获取技能分页列表（RFC-042 §2.1）")
     @GetMapping
@@ -334,6 +338,157 @@ public class SkillController {
         body.put("filesAlreadyCurrent", report.filesAlreadyCurrent());
         body.put("filesBackfilledFromDisk", report.filesBackfilledFromDisk());
         return R.ok(body);
+    }
+
+    // ==================== Bundle files (scripts/ + references/) ====================
+
+    /** Per-file content ceiling for the admin editor — matches the installer's per-file bound. */
+    private static final int MAX_BUNDLE_FILE_CHARS = 1_000_000;
+
+    @Operation(summary = "List a skill's bundle files (scripts/ + references/), without content")
+    @GetMapping("/{id}/files")
+    @RequireWorkspaceRole("member")
+    public R<List<Map<String, Object>>> listBundleFiles(@PathVariable Long id,
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        // Virtual MCP/ACP skills mirror live servers and own no bundle files.
+        if (vip.mate.skill.mcp.McpSkillBridge.isVirtualMcpSkillId(id)
+                || vip.mate.skill.acp.AcpSkillBridge.isVirtualAcpSkillId(id)) {
+            return R.ok(List.of());
+        }
+        SkillEntity skill = skillService.getSkill(id);
+        verifyResourceWorkspace(skill, workspaceId);
+        List<SkillFileEntity> rows = skillFileService.listBySkillId(id);
+        if (rows.isEmpty()) {
+            // Self-heal: ingest pre-canonical on-disk files into the DB store
+            // so legacy directory-based skills list their files too.
+            skillFileSyncer.syncOne(skill);
+            rows = skillFileService.listBySkillId(id);
+        }
+        List<Map<String, Object>> out = new ArrayList<>(rows.size());
+        rows.stream()
+                .sorted(java.util.Comparator.comparing(SkillFileEntity::getFilePath,
+                        java.util.Comparator.nullsLast(String::compareTo)))
+                .forEach(row -> {
+                    Map<String, Object> item = new LinkedHashMap<>();
+                    item.put("path", row.getFilePath());
+                    item.put("size", row.getContentSize());
+                    item.put("sha256", row.getSha256());
+                    item.put("updateTime", row.getUpdateTime());
+                    out.add(item);
+                });
+        return R.ok(out);
+    }
+
+    @Operation(summary = "Read one bundle file's content")
+    @GetMapping("/{id}/files/content")
+    @RequireWorkspaceRole("member")
+    public R<Map<String, Object>> getBundleFileContent(@PathVariable Long id,
+            @RequestParam String path,
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        SkillEntity skill = skillService.getSkill(id);
+        verifyResourceWorkspace(skill, workspaceId);
+        String normalized = normalizeBundlePath(path);
+        if (normalized == null) {
+            return R.fail("Invalid file path: " + path);
+        }
+        SkillFileEntity row = skillFileService.getFile(id, normalized);
+        if (row == null) {
+            return R.fail("File not found: " + normalized);
+        }
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("path", row.getFilePath());
+        body.put("content", row.getContent() == null ? "" : row.getContent());
+        body.put("size", row.getContentSize());
+        body.put("sha256", row.getSha256());
+        body.put("updateTime", row.getUpdateTime());
+        return R.ok(body);
+    }
+
+    @Operation(summary = "Create or update one bundle file",
+            description = "Writes the canonical mate_skill_file row, materializes the workspace cache, " +
+                    "and re-resolves the skill so the runtime file tree updates immediately.")
+    @PutMapping("/{id}/files/content")
+    @RequireWorkspaceRole("admin")
+    public R<Map<String, Object>> putBundleFileContent(@PathVariable Long id,
+            @RequestBody Map<String, String> body,
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        rejectVirtualSkillMutation(id);
+        SkillEntity skill = skillService.getSkill(id);
+        verifyResourceWorkspace(skill, workspaceId);
+        if (Boolean.TRUE.equals(skill.getBuiltin())) {
+            return R.fail("Builtin skill files are read-only — they are restored from the shipped bundle on upgrade.");
+        }
+        String normalized = normalizeBundlePath(body.get("path"));
+        if (normalized == null) {
+            return R.fail("Invalid file path — must be under scripts/, references/ or templates/, no '..'.");
+        }
+        String content = body.get("content");
+        if (content == null) {
+            return R.fail("content is required (use the delete endpoint to remove a file).");
+        }
+        if (content.length() > MAX_BUNDLE_FILE_CHARS) {
+            return R.fail("Content too large (" + content.length() + " chars, max " + MAX_BUNDLE_FILE_CHARS + ").");
+        }
+
+        SkillFileEntity row = skillFileService.upsertFile(id, normalized, content);
+        try {
+            workspaceManager.writeWorkspaceFile(skill.getName(), normalized, content);
+        } catch (Exception e) {
+            // Canonical store is updated; the syncer heals the cache later.
+        }
+        skillRuntimeService.rescanSingle(skill);
+
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("path", row.getFilePath());
+        out.put("size", row.getContentSize());
+        out.put("sha256", row.getSha256());
+        out.put("updateTime", row.getUpdateTime());
+        return R.ok(out);
+    }
+
+    @Operation(summary = "Delete one bundle file")
+    @DeleteMapping("/{id}/files")
+    @RequireWorkspaceRole("admin")
+    public R<Map<String, Object>> deleteBundleFile(@PathVariable Long id,
+            @RequestParam String path,
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        rejectVirtualSkillMutation(id);
+        SkillEntity skill = skillService.getSkill(id);
+        verifyResourceWorkspace(skill, workspaceId);
+        if (Boolean.TRUE.equals(skill.getBuiltin())) {
+            return R.fail("Builtin skill files are read-only — they are restored from the shipped bundle on upgrade.");
+        }
+        String normalized = normalizeBundlePath(path);
+        if (normalized == null) {
+            return R.fail("Invalid file path: " + path);
+        }
+        boolean removed = skillFileService.deleteFile(id, normalized);
+        try {
+            workspaceManager.deleteWorkspaceFile(skill.getName(), normalized);
+        } catch (Exception e) {
+            // Cache cleanup is best-effort; the canonical row is gone.
+        }
+        skillRuntimeService.rescanSingle(skill);
+        return R.ok(Map.of("path", normalized, "removed", removed));
+    }
+
+    /**
+     * Normalize a bundle-relative path and enforce the same envelope the
+     * store and workspace cache use: forward slashes, must sit under a
+     * DB-persisted bucket ({@code scripts/}, {@code references/} or
+     * {@code templates/}), no traversal, no absolute paths, and a
+     * non-empty file name.
+     *
+     * @return normalized path, or {@code null} when rejected
+     */
+    static String normalizeBundlePath(String path) {
+        if (path == null || path.isBlank()) return null;
+        String p = path.strip().replace('\\', '/');
+        if (p.startsWith("/") || p.contains("..") || p.contains("//") || p.endsWith("/")) return null;
+        if (!SkillBundleFiles.isDbEligible(p)) return null;
+        int slash = p.indexOf('/');
+        if (slash == p.length() - 1) return null;
+        return p;
     }
 
     /**
