@@ -390,19 +390,23 @@ public class ZipSkillFetcher {
 
     /**
      * Heuristic binary detector: an entry is treated as binary if a NUL byte
-     * (0x00) appears within the inspected prefix. UTF-8 and GBK text never
-     * contain a NUL, while virtually every binary format (PNG/WOFF/ZIP/class/
-     * native executable) carries one near the start — this is the same cheap,
-     * reliable test git uses to decide "is this a text file". Inspecting only a
-     * prefix keeps it O(1) for large entries.
+     * (0x00) appears anywhere in it. UTF-8 and GBK text never contain a NUL,
+     * while virtually every binary format (PNG/WOFF/ZIP/class/native
+     * executable) carries one — this is the same cheap, reliable test git uses
+     * to decide "is this a text file".
+     *
+     * <p>The whole entry is scanned, not just a prefix: a NUL anywhere in the
+     * content is fatal for the PostgreSQL text contract ({@code mate_skill_file}
+     * is a {@code TEXT} column; PG rejects {@code 0x00}), so an otherwise-text
+     * file with a stray NUL past the first few KB must be caught here too. The
+     * per-entry cap is 1MB, so a full scan stays cheap.
      */
     private static boolean isLikelyBinary(byte[] bytes) {
         if (bytes == null || bytes.length == 0) {
             return false;
         }
-        int limit = Math.min(bytes.length, 8000);
-        for (int i = 0; i < limit; i++) {
-            if (bytes[i] == 0x00) {
+        for (byte b : bytes) {
+            if (b == 0x00) {
                 return true;
             }
         }

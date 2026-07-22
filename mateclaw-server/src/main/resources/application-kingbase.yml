@@ -69,6 +69,9 @@ mybatis-plus:
 mate:
   wiki:
     require-allowed-roots: true
+    allowed-source-roots: ${MATE_WIKI_ALLOWED_SOURCE_ROOTS:}
+    watcher-enabled: ${MATE_WIKI_WATCHER_ENABLED:false}
+    watcher-interval-ms: ${MATE_WIKI_WATCHER_INTERVAL_MS:300000}
 
 # Production hardening: lock down the Swagger UI / OpenAPI document so it is not
 # anonymously browsable. Requires a global admin (ROLE_ADMIN); SecurityConfig

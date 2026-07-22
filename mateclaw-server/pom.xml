@@ -395,6 +395,22 @@
             <scope>test</scope>
         </dependency>
 
+        <!-- ===== Testcontainers: real PostgreSQL for the postgresql migration
+             tree integration tests (PostgresE2EBaseTest and subclasses).
+             Versions are managed by Spring Boot's testcontainers-bom. Tests
+             are skipped (not failed) where no Docker daemon is available via
+             @Testcontainers(disabledWithoutDocker = true). ===== -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+
         <!-- ShedLock: distributed lock for the cron scheduler so a
              multi-instance deployment doesn't fire the same job N times.
              JDBC mode reuses the existing DataSource, so there is no Redis dependency

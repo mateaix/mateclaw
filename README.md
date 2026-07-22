@@ -107,7 +107,7 @@ Text-to-speech · Speech-to-text · Image · Music · Video · 3D. First-class, 
 A flagship *scene*, not a tool — a seeded "Content Studio" employee turns one sentence into a publishable post: pick-topic → research → draft → illustrate → **de-AI** → lay out → deliver. **WeChat Official Account (公众号)** articles land in your draft box as inline-style HTML with body images uploaded into WeChat; **Xiaohongshu (小红书)** notes package as ≥3 vertical 3:4 cards with an online preview. De-AI-ification runs against a **measurable AI-trace score**; every delivery is compliance-scanned and logged to a **content calendar** that dedups by topic fingerprint.
 
 ### Enterprise-ready
-RBAC + JWT. **Personal Access Tokens** for headless scripts and CI. **HMAC-SHA-256 outbound webhook signing**. **Distributed Cron lock** so multi-instance deployments don't double-fire. Full audit trail. Flyway-managed schema that auto-heals on upgrade. One JAR to ship. MySQL in production, H2 for dev — nothing to change in your code.
+RBAC + JWT. **Personal Access Tokens** for headless scripts and CI. **HMAC-SHA-256 outbound webhook signing**. **Distributed Cron lock** so multi-instance deployments don't double-fire. Full audit trail. Flyway-managed schema that auto-heals on upgrade. One JAR to ship. MySQL, PostgreSQL, or KingbaseES in production, H2 for dev — nothing to change in your code.
 
 ---
 
@@ -206,7 +206,7 @@ Desktop binaries ship via [GitHub Releases](https://github.com/mateaix/mateclaw/
 | Digital Employee Runtime | StateGraph · ReAct + Plan-Execute · Role / Goal / Backstory · LESSONS self-evolution |
 | Orchestration | Workflow (7 step modes · Pebble DSL) · Triggers (6 pattern types · event governance) · Wiki Transformations (1.3.0+) |
 | Capability Extension | SKILL.md packages · MCP (stdio / SSE / HTTP · per-agent binding) · ACP bridge (Claude Code / Codex) |
-| Database | H2 (dev) · MySQL 8.0+ (prod) |
+| Database | H2 (dev) · MySQL 8.0+ / PostgreSQL 14+ / KingbaseES 8+ (prod) |
 | Auth | Spring Security + JWT |
 | Frontend | Vue 3 · TypeScript · Vite · Element Plus · TailwindCSS 4 |
 | Desktop | Electron · electron-updater · JRE 21 (bundled) |

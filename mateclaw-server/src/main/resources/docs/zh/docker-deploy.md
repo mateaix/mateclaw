@@ -31,6 +31,16 @@
 | `searxng` | 本地构建 `./docker/searxng/` | 无 API Key 搜索兜底 | `8088` |
 | `mateclaw-server` | 本地构建 `mateclaw-server/Dockerfile` | Spring Boot 后端 + 内置浏览器 | `18080` |
 
+### 用 PostgreSQL 替代 MySQL
+
+`compose` 文件已内置 `postgres` 服务（默认不被 `mateclaw-server` 使用）。叠加 `docker-compose.pg.yml` 即可把后端切到 PostgreSQL，MySQL 容器不启动：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.pg.yml up -d
+```
+
+详见 [PostgreSQL 部署](./database-postgresql)。
+
 ---
 
 ## SearXNG 搜索服务

@@ -102,6 +102,29 @@ class SkillFileServiceTest {
         verify(mapper, never()).deleteById(anyLong());
     }
 
+    @Test
+    @DisplayName("NUL bytes are stripped before persist; size/hash track the stored content")
+    void nulStrippedBeforeInsert() {
+        when(mapper.selectList(any())).thenReturn(new ArrayList<>());
+
+        String clean = "print('hi')\nprint('bye')";
+        String dirty = "print('hi')\u0000\nprint('bye')";
+
+        var result = service.applyBundleFiles(42L, Map.of("scripts/run.py", dirty), false);
+
+        assertEquals(1, result.rowsWritten());
+        ArgumentCaptor<SkillFileEntity> captor = ArgumentCaptor.forClass(SkillFileEntity.class);
+        verify(mapper).insert((SkillFileEntity) captor.capture());
+        SkillFileEntity inserted = captor.getValue();
+        // The NUL is gone but the rest of the content survives verbatim.
+        assertEquals(clean, inserted.getContent());
+        assertFalse(inserted.getContent().contains("\u0000"));
+        // Size and hash are computed on the stripped content (post-strip),
+        // so the syncer's idempotent diff stays consistent with what's on disk.
+        assertEquals(clean.getBytes(java.nio.charset.StandardCharsets.UTF_8).length, inserted.getContentSize());
+        assertEquals(SkillFileService.sha256Hex(clean), inserted.getSha256());
+    }
+
     private static final AtomicLong IDS = new AtomicLong(1);
 
     private static SkillFileEntity newRow(Long id, String path, String content) {

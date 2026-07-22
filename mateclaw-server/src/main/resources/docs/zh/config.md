@@ -14,8 +14,10 @@
 |---------|--------|----------|
 | `default` | H2 文件 `./data/mateclaw` | 不用做什么 |
 | `mysql` | MySQL 8.0+ | `spring.profiles.active=mysql` 或环境变量 |
+| `postgres` | PostgreSQL 14+ | `spring.profiles.active=postgres` 或环境变量 |
+| `kingbase` | KingbaseES 8+（人大金仓） | `spring.profiles.active=kingbase`（需 `-Pkingbase` 构建） |
 
-Docker 部署自动激活 `mysql`。桌面版用 `default`。
+Docker 部署默认激活 `mysql`；用 PostgreSQL 叠加 `docker-compose.pg.yml`（见 [PostgreSQL 部署](./database-postgresql)）。桌面版用 `default`。
 
 ---
 
@@ -56,6 +58,23 @@ spring:
     password: ${MYSQL_ROOT_PASSWORD}
     driver-class-name: com.mysql.cj.jdbc.Driver
 ```
+
+### 数据库 —— PostgreSQL（生产）
+
+```yaml
+spring:
+  profiles:
+    active: postgres
+  datasource:
+    # stringtype=unspecified 必填：JSON 列在 PG 上是 JSONB，没有它 String 写入会报
+    # "column is of type jsonb but expression is of type character varying"
+    url: jdbc:postgresql://localhost:5432/mateclaw?currentSchema=mateclaw&stringtype=unspecified
+    username: ${DB_USERNAME:postgres}
+    password: ${DB_PASSWORD}
+    driver-class-name: org.postgresql.Driver
+```
+
+PostgreSQL 用独立迁移树 `db/migration/postgresql`（JSON 列为 JSONB）。完整说明、JSONB 设计、备份、从 kingbase 树升级路径见 [PostgreSQL 部署](./database-postgresql)。KingbaseES 与 PG 同源，用 `kingbase` profile + `-Pkingbase` 构建。
 
 ### AI 模型 —— 在 UI 里管，不在 YAML 里
 
@@ -261,9 +280,11 @@ MateClaw 用 **Flyway** 管理 schema 迁移：
 
 1. `db/migration/h2/V*__*.sql`——H2 方言的迁移脚本
 2. `db/migration/mysql/V*__*.sql`——MySQL 方言的迁移脚本
-3. 迁移完成后加载种子数据（`db/data-*.sql`），幂等执行
+3. `db/migration/kingbase/V*__*.sql`——KingbaseES（PG 同源）方言
+4. `db/migration/postgresql/V*__*.sql`——PostgreSQL 方言（fork 自 kingbase；JSON 列为 JSONB）
+5. 迁移完成后加载种子数据（`db/data-*.sql`），幂等执行
 
-启动时 Flyway 根据 active profile 自动选择正确的方言路径。每次启动时先做一次 `repair`，再 `migrate`——checksum 变更和部分失败的迁移自动修复（对桌面端离线升级用户尤其重要）。
+启动时 Flyway 根据 active profile 自动选择正确的方言路径。新增迁移必须**四套同步**、版本号一致。每次启动时先做一次 `repair`，再 `migrate`——checksum 变更和部分失败的迁移自动修复（对桌面端离线升级用户尤其重要）。
 
 ### 表约定
 
