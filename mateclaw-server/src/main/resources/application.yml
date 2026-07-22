@@ -329,9 +329,16 @@ mate:
       # exceeds the threshold, gets spilled to a new path, agent reads that one,
       # ad infinitum until MAX_TOOL_CALLS_PER_STEP is hit. Add MCP-provided
       # readers here if they have the same role.
+      # readSkillFile / load_skill deliberately return the full SKILL.md so the
+      # model never misses mandatory sections (API parameter tables etc.);
+      # spilling them defeats that and leaves the model an 800-char preview,
+      # causing wrong-parameter tool calls. Their references/scripts reads are
+      # already self-paginated to 8000 chars, so excluding them stays bounded.
       excluded-tools:
         - read_file
         - read_workspace_memory_file
+        - readSkillFile
+        - load_skill
       # Spill files are deleted after this many days. Default 0 disables the
       # scheduled sweep entirely so a summary/preview that points at a spill
       # path stays valid for the whole life of the conversation. Files are

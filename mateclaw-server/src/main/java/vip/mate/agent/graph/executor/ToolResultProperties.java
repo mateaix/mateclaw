@@ -94,8 +94,15 @@ public class ToolResultProperties {
      * <p>Defaults to file-read tools that already cap their own output internally.
      * Configurable so deployments can add more retrieval-style tools (e.g.,
      * MCP-provided readers) without code changes.</p>
+     *
+     * <p>{@code readSkillFile} / {@code load_skill} are included because they
+     * deliberately return the full SKILL.md — the skill's usage contract —
+     * and spilling it down to a preview makes the model act on incomplete
+     * instructions (e.g. wrong API parameter names). Their references/scripts
+     * reads are already self-paginated to a bounded size.</p>
      */
-    private List<String> excludedTools = List.of("read_file", "read_workspace_memory_file");
+    private List<String> excludedTools = List.of(
+            "read_file", "read_workspace_memory_file", "readSkillFile", "load_skill");
 
     /**
      * Days to retain spill files before the scheduled cleanup deletes them.
