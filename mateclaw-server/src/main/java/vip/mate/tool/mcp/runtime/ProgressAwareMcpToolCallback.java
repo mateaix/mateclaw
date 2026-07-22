@@ -10,24 +10,35 @@ import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.definition.ToolDefinition;
 import org.springframework.ai.tool.metadata.ToolMetadata;
 
+import java.util.HashMap;
 import java.util.Map;
-import java.util.UUID;
 
 /**
- * MCP tool callback wrapper that injects {@code _meta.progressToken} into
- * {@code tools/call} requests, enabling MCP Servers to push progress via
- * {@code notifications/progress}.
+ * MCP tool callback wrapper that builds {@code tools/call} requests with a
+ * populated {@code _meta} field, carrying:
+ * <ul>
+ *   <li>{@code progressToken} — enables MCP servers to push progress via
+ *       {@code notifications/progress} (issue #505).</li>
+ *   <li>Identity claims ({@code mateclaw_user} / {@code mateclaw_token}) — when
+ *       the inner delegate is an {@link IdentityForwardingToolCallback}, the
+ *       caller's typed identity is injected into {@code _meta} so the MCP server
+ *       can forward it on-behalf-of (#459 follow-up: moved from args to _meta).</li>
+ * </ul>
  *
- * <p>When {@code MCP_PROGRESS_TOKEN} is present in {@link ToolContext}, this wrapper
- * calls {@link McpSyncClient#callTool(McpSchema.CallToolRequest)} directly with the
- * progressToken injected. Otherwise it delegates to the original callback
- * (compatible with MCP Servers that do not support progress, and with built-in tools).
+ * <p>The direct {@link McpSyncClient#callTool} path is taken whenever <em>either</em>
+ * a progress token <em>or</em> identity forwarding is active — both require
+ * {@code _meta}, which the SDK's plain {@code delegate.call()} path cannot set.
+ * When neither is active, the call delegates transparently (compatible with MCP
+ * servers that don't support progress or identity, and with built-in tools).
  */
 @Slf4j
 public final class ProgressAwareMcpToolCallback implements ToolCallback {
 
     /** Key in ToolContext where the progressToken is stored. */
     public static final String MCP_PROGRESS_TOKEN_KEY = "_mcp_progress_token";
+
+    /** Key in the {@code _meta} map carrying the progress token. */
+    private static final String META_PROGRESS_TOKEN = "progressToken";
 
     private final ToolCallback delegate;
     private final McpSyncClient mcpClient;
@@ -59,36 +70,59 @@ public final class ProgressAwareMcpToolCallback implements ToolCallback {
 
     @Override
     public String call(String toolInput, ToolContext toolContext) {
-        String progressToken = null;
-        if (toolContext != null && toolContext.getContext() != null) {
-            Object token = toolContext.getContext().get(MCP_PROGRESS_TOKEN_KEY);
-            if (token instanceof String s && !s.isBlank()) {
-                progressToken = s;
-            }
-        }
-        if (progressToken == null) {
+        // Decide whether to take the direct callTool path: needed when either a
+        // progress token or identity forwarding requires _meta injection.
+        String progressToken = extractProgressToken(toolContext);
+        IdentityForwardingToolCallback idFwd = delegate instanceof IdentityForwardingToolCallback i
+                ? i : null;
+        Map<String, String> identityMeta = idFwd != null && toolContext != null
+                ? idFwd.metaInjection(toolContext)
+                : Map.of();
+
+        boolean needsDirectPath = progressToken != null || !identityMeta.isEmpty();
+        if (!needsDirectPath) {
             return delegate.call(toolInput, toolContext);
         }
         try {
-            // Apply identity forwarding BEFORE building CallToolRequest —
-            // otherwise the progress path would silently bypass identity injection.
-            String effectiveInput = toolInput;
-            if (delegate instanceof IdentityForwardingToolCallback idFwd) {
-                effectiveInput = idFwd.inject(toolInput, toolContext);
+            // Build _meta: merge progress token (if any) + identity claims (if any).
+            Map<String, Object> meta = new HashMap<>();
+            if (progressToken != null) {
+                meta.put(META_PROGRESS_TOKEN, progressToken);
             }
-            Map<String, Object> arguments = parseArguments(effectiveInput);
+            meta.putAll(identityMeta);
+
+            // Arguments come from the model verbatim — identity is NOT merged
+            // into args anymore (it lives in _meta now).
+            Map<String, Object> arguments = parseArguments(toolInput);
             McpSchema.CallToolRequest request = McpSchema.CallToolRequest.builder()
                     .name(rawToolName)
                     .arguments(arguments != null ? arguments : Map.of())
-                    .meta(Map.of("progressToken", progressToken))
+                    .meta(meta)
                     .build();
             McpSchema.CallToolResult result = mcpClient.callTool(request);
             return serializeResult(result);
         } catch (Exception e) {
-            log.warn("Progress-aware MCP call failed for tool '{}', falling back to delegate: {}",
+            log.warn("Progress/identity-aware MCP call failed for tool '{}', falling back to delegate: {}",
                     rawToolName, e.getMessage());
+            // Fallback delegates without _meta, which means identity is NOT
+            // injected on this path. Log explicitly so the loss is visible.
+            if (!identityMeta.isEmpty()) {
+                log.warn("[McpIdentity] identity dropped on fallback for tool '{}' "
+                        + "(direct callTool failed; delegate.call cannot set _meta)", rawToolName);
+            }
             return delegate.call(toolInput, toolContext);
         }
+    }
+
+    private String extractProgressToken(ToolContext toolContext) {
+        if (toolContext == null || toolContext.getContext() == null) {
+            return null;
+        }
+        Object token = toolContext.getContext().get(MCP_PROGRESS_TOKEN_KEY);
+        if (token instanceof String s && !s.isBlank()) {
+            return s;
+        }
+        return null;
     }
 
     private Map<String, Object> parseArguments(String toolInput) {

@@ -103,7 +103,10 @@ public class SecurityConfig {
                     // RFC-045: tool-generated files served via unguessable UUID; entries
                     // expire after GeneratedFileCache.TTL (7 days) — delayed access (e.g. an
                     // IM-delivered link opened later) is intentional, the UUID is the guard.
-                    "/api/v1/files/generated/**"
+                    "/api/v1/files/generated/**",
+                    // JWKS: public RSA key for verifying MCP identity-forward tokens
+                    // (issue #459). The public key is public by definition — no auth.
+                    "/api/v1/mcp/.well-known/jwks.json"
                 ).permitAll();
                 // Swagger UI / OpenAPI document — explicit rule rather than the
                 // permitAll() fallthrough. Public for local dev, admin-only in
