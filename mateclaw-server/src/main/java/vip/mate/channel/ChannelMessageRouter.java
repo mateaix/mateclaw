@@ -15,6 +15,7 @@ import vip.mate.channel.event.ChannelMessageReceivedEvent;
 import vip.mate.channel.model.ChannelEntity;
 import vip.mate.channel.notification.ApprovalNotificationService;
 import vip.mate.channel.service.ChannelService;
+import vip.mate.channel.web.AgentStreamAccumulator;
 import vip.mate.channel.web.ChatStreamTracker;
 import vip.mate.exception.MateClawException;
 import vip.mate.memory.event.ConversationCompletionPublisher;
@@ -156,30 +157,6 @@ public class ChannelMessageRouter {
     static long pickDebounceMs(int currentMergedLength) {
         return currentMergedLength > LONG_TEXT_THRESHOLD ? LONG_DEBOUNCE_MS : DEBOUNCE_MS;
     }
-
-    /**
-     * Plan-Execute SSE events that the Web Console mirror needs to see when
-     * a conversation runs through an IM channel.
-     * <p>
-     * The agent emits these via {@code GraphEventPublisher} and they ride on
-     * the {@code chatStructuredStream} Flux as {@code StreamDelta.event(...)}.
-     * Web direct chats already broadcast them via the ChatController
-     * accumulator. IM channels (DingTalk + the seven sync-path adapters)
-     * historically dropped them — DingTalk's {@code processStreamAsText}
-     * only consumes {@code delta.content()}, and the sync {@code chat()}
-     * collector explicitly filters {@code delta.isEvent()} out. The whitelist
-     * is applied in the IM stream path so PlanStepsPanel renders correctly
-     * when an operator monitors an IM conversation in the Web Console.
-     * <p>
-     * Whitelist (not pass-through) so Web-side accumulator-internal events
-     * like {@code _usage_final} or future agent-internal markers don't leak
-     * to subscribers.
-     */
-    private static final Set<String> MIRRORED_PLAN_EVENTS = Set.of(
-            "plan_created",
-            "plan_step_started",
-            "plan_step_completed"
-    );
 
     /** 是否已关闭 */
     private volatile boolean shutdown = false;
@@ -802,12 +779,10 @@ public class ChannelMessageRouter {
                     // Sync path for non-streaming IM adapters (weixin / slack /
                     // discord / qq / telegram). We can't use agentService.chat()
                     // because its collector filters out `delta.isEvent()` deltas — that
-                    // would silently drop plan_created / plan_step_* events that the Web
-                    // Console mirror needs to render PlanStepsPanel. Instead we consume
-                    // chatStructuredStream directly: content gets accumulated for the IM
-                    // reply, and whitelisted plan events are mirrored to ChatStreamTracker
-                    // for any Web SSE viewer of the same conversationId.
-                    StringBuilder replyAccumulator = new StringBuilder();
+                    // would silently drop the tool/plan events the Web Console
+                    // mirror and the persisted execution metadata both need.
+                    // Instead we consume chatStructuredStream directly through
+                    // the shared accumulator (reply text, metadata, live mirror).
                     final String channelType = adapter.getChannelType();
                     // Channel-level toggle for relaying per-stage narration as
                     // standalone messages mid-run. Shares the key the streaming
@@ -817,35 +792,25 @@ public class ChannelMessageRouter {
                     // still see it via the live broadcast).
                     final boolean relayNarration = channelConfigBoolean(
                             channelEntity, "stream_progress", true);
-                    // Token usage + model attribution: capture _usage_final event emitted at stream end
-                    final int[] usage = {0, 0, 0, 0, 0}; // [prompt, completion, cacheRead, cacheWrite, reasoning]
-                    final String[] modelInfo = {null, null}; // [runtimeModel, runtimeProvider]
+                    // Shared accumulator: builds the segments/toolCalls metadata
+                    // the Web console renders for history, mirrors events +
+                    // deltas to live Web observers, and captures token usage +
+                    // model attribution (_usage_final is consumed internally).
+                    // Reply text also comes from it — same semantics as the
+                    // legacy collector: persistOnly deltas included (DirectAnswerNode-
+                    // routed answers arrive as persistOnly when CONTENT_STREAMED=true
+                    // and IM channels still need the text for the outgoing reply),
+                    // segmentOnly narration excluded (issue #120).
+                    AgentStreamAccumulator accumulator = newAccumulator();
                     agentService.chatStructuredStream(agentId, promptText, conversationId,
                                     message.getSenderId(), chatOrigin)
                             .doOnNext(delta -> {
-                                if (delta.isEvent()) {
-                                    if ("_usage_final".equals(delta.eventType())) {
-                                        Map<String, Object> data = delta.eventData();
-                                        usage[0] = ((Number) data.getOrDefault("promptTokens", 0)).intValue();
-                                        usage[1] = ((Number) data.getOrDefault("completionTokens", 0)).intValue();
-                                        usage[2] = ((Number) data.getOrDefault("cacheReadTokens", 0)).intValue();
-                                        usage[3] = ((Number) data.getOrDefault("cacheWriteTokens", 0)).intValue();
-                                        usage[4] = ((Number) data.getOrDefault("reasoningTokens", 0)).intValue();
-                                        Object model = data.get("runtimeModelName");
-                                        Object provider = data.get("runtimeProviderId");
-                                        if (model != null) modelInfo[0] = model.toString();
-                                        if (provider != null) modelInfo[1] = provider.toString();
-                                    }
-                                    mirrorPlanEventToTracker(conversationId, delta, channelType);
-                                } else if (delta.segmentOnly()) {
+                                accumulator.accept(delta, conversationId);
+                                if (!delta.isEvent() && delta.segmentOnly()) {
                                     // Per-stage narration ("Let me look that up…"), emitted as
                                     // one complete delta per agent loop iteration. Relay it
                                     // immediately as its own outgoing message so the user sees
-                                    // progress mid-run, and keep it out of the reply accumulator:
-                                    // concatenated narrations read as a wall of text in the
-                                    // final reply, and persisting them feeds the next turn's
-                                    // LLM history an unanswered chain of stated intents that
-                                    // replay mistakes for unfinished work (issue #120).
+                                    // progress mid-run.
                                     String narration = delta.content() != null ? delta.content().trim() : "";
                                     if (relayNarration && !narration.isEmpty() && replyTarget != null) {
                                         try {
@@ -857,16 +822,10 @@ public class ChannelMessageRouter {
                                                     channelType, sendErr.getMessage());
                                         }
                                     }
-                                } else if (delta.content() != null) {
-                                    // Match the legacy agentService.chat() behavior: include
-                                    // persistOnly deltas too. DirectAnswerNode-routed answers
-                                    // arrive as persistOnly when CONTENT_STREAMED=true and IM
-                                    // channels still need the text for the outgoing reply.
-                                    replyAccumulator.append(delta.content());
                                 }
                             })
                             .blockLast(Duration.ofMinutes(10));
-                    String reply = replyAccumulator.toString();
+                    String reply = accumulator.getContent();
 
                     // The IM sync path bypasses FinalAnswerNode, so hallucinated
                     // /api/v1/files/generated/{id} URLs (LLM wrote a fake link
@@ -905,9 +864,19 @@ public class ChannelMessageRouter {
                         // error turns must not pollute memory extraction.
                         boolean isError = errorClassifier.isErrorReply(reply);
                         String status = isError ? "error" : "completed";
+                        // Persist the full execution record (parts + metadata)
+                        // so the Web console renders IM-routed turns exactly
+                        // like Web direct chats. The content column keeps the
+                        // scrubbed reply text that actually went out.
                         MessageEntity saved = conversationService.saveMessage(
-                                conversationId, "assistant", reply, null, status,
-                                usage[0], usage[1], usage[2], usage[3], usage[4], modelInfo[0], modelInfo[1], null);
+                                conversationId, "assistant", reply,
+                                accumulator.toAssistantParts(), status,
+                                accumulator.getPromptTokens(), accumulator.getCompletionTokens(),
+                                accumulator.getCacheReadTokens(), accumulator.getCacheWriteTokens(),
+                                accumulator.getReasoningTokens(),
+                                blankToNull(accumulator.getRuntimeModelName()),
+                                blankToNull(accumulator.getRuntimeProviderId()),
+                                accumulator.toMetadataJson());
                         savedAssistantId = saved != null ? saved.getId() : null;
                         if (!isError) {
                             publishConversationCompletedEvent(agentId, conversationId, message.getContent(), reply, chatOrigin);
@@ -1067,6 +1036,30 @@ public class ChannelMessageRouter {
     }
 
     /**
+     * Build a per-turn accumulator wired to the stream tracker, so live Web
+     * observers of an IM conversation receive the same event fan-out as Web
+     * direct chats, and the persisted metadata matches byte-for-byte.
+     */
+    private AgentStreamAccumulator newAccumulator() {
+        return new AgentStreamAccumulator(objectMapper, new AgentStreamAccumulator.Sink() {
+            @Override
+            public void broadcast(String conversationId, String eventName, Object payload) {
+                streamTracker.broadcastObject(conversationId, eventName, payload);
+            }
+
+            @Override
+            public void updatePhase(String conversationId, String phase) {
+                streamTracker.updatePhase(conversationId, phase);
+            }
+        });
+    }
+
+    /** Map the accumulator's empty-string defaults back to SQL NULL. */
+    private static String blankToNull(String s) {
+        return s == null || s.isBlank() ? null : s;
+    }
+
+    /**
      * 流式处理路径（渠道无关）
      * <p>
      * 事件流与渲染分离：
@@ -1074,30 +1067,6 @@ public class ChannelMessageRouter {
      * - StreamingChannelAdapter 负责渲染（AI Card / 卡片更新 / 文本累积等）
      * - Router 负责后续的审批检查、消息持久化、事件发布
      */
-    /**
-     * Forward whitelisted Plan-Execute SSE events to ChatStreamTracker so a
-     * Web Console viewer of an IM-routed conversation sees PlanStepsPanel.
-     * <p>
-     * Bounded to {@link #MIRRORED_PLAN_EVENTS} — see the constant's javadoc
-     * for why this is a whitelist rather than a pass-through. Failures here
-     * are best-effort and never propagate, since dropping a UI update is
-     * preferable to derailing the channel reply.
-     */
-    private void mirrorPlanEventToTracker(String conversationId,
-                                          AgentService.StreamDelta delta,
-                                          String channelTypeForLog) {
-        String eventType = delta.eventType();
-        if (eventType == null || !MIRRORED_PLAN_EVENTS.contains(eventType)) {
-            return;
-        }
-        try {
-            streamTracker.broadcastObject(conversationId, eventType, delta.eventData());
-        } catch (Exception ex) {
-            log.debug("[{}] Failed to mirror plan event {}: {}",
-                    channelTypeForLog, eventType, ex.getMessage());
-        }
-    }
-
     private Long processWithStreaming(ChannelMessage message, StreamingChannelAdapter streamingAdapter,
                                       String conversationId, Long agentId, String promptText,
                                       ChannelEntity channelEntity, ChatOrigin chatOrigin) {
@@ -1105,33 +1074,22 @@ public class ChannelMessageRouter {
         log.info("[{}] Streaming processing started: conversationId={}", channelType, conversationId);
 
         try {
-            // Step 1: 产生事件流（RFC-063r §2.5: forward ChatOrigin so tools see channelId）
+            // Step 1: 产生事件流（forward ChatOrigin so tools see channelId）
             Flux<AgentService.StreamDelta> stream = agentService.chatStructuredStream(
                     agentId, promptText, conversationId, message.getSenderId(), chatOrigin);
 
-            // Mirror plan-execute SSE events to ChatStreamTracker before the
-            // adapter consumes the Flux. DingTalkChannelAdapter.processStreamAsText
-            // only reads `delta.content()` and would otherwise eat plan_created /
-            // plan_step_* events, leaving the Web Console mirror with no
-            // PlanStepsPanel for IM-routed conversations.
-            // Token usage + model attribution: capture _usage_final event emitted at stream end
-            final int[] usage = {0, 0, 0, 0, 0}; // [prompt, completion, cacheRead, cacheWrite, reasoning]
-            final String[] modelInfo = {null, null}; // [runtimeModel, runtimeProvider]
-            Flux<AgentService.StreamDelta> mirroredStream = stream.doOnNext(delta -> {
-                if (delta.isEvent() && "_usage_final".equals(delta.eventType())) {
-                    Map<String, Object> data = delta.eventData();
-                    usage[0] = ((Number) data.getOrDefault("promptTokens", 0)).intValue();
-                    usage[1] = ((Number) data.getOrDefault("completionTokens", 0)).intValue();
-                    usage[2] = ((Number) data.getOrDefault("cacheReadTokens", 0)).intValue();
-                    usage[3] = ((Number) data.getOrDefault("cacheWriteTokens", 0)).intValue();
-                    usage[4] = ((Number) data.getOrDefault("reasoningTokens", 0)).intValue();
-                    Object model = data.get("runtimeModelName");
-                    Object provider = data.get("runtimeProviderId");
-                    if (model != null) modelInfo[0] = model.toString();
-                    if (provider != null) modelInfo[1] = provider.toString();
-                }
-                mirrorPlanEventToTracker(conversationId, delta, channelType);
-            });
+            // Feed every delta through the shared accumulator before the
+            // adapter consumes the Flux. The accumulator builds the same
+            // segments/toolCalls metadata the Web SSE path persists (so the
+            // console renders the execution timeline for IM-routed turns),
+            // mirrors tool/plan/content events to any live Web observer of
+            // this conversation, and captures token usage + model
+            // attribution. Internal bookkeeping events (_usage_final,
+            // _routing_decision) are consumed inside the accumulator and
+            // never reach subscribers.
+            AgentStreamAccumulator accumulator = newAccumulator();
+            Flux<AgentService.StreamDelta> mirroredStream = stream.doOnNext(delta ->
+                    accumulator.accept(delta, conversationId));
 
             // Step 2: 委托渠道渲染（渠道内部消费 Flux 并处理 UI 更新）
             String finalContent = streamingAdapter.processStream(mirroredStream, message, conversationId);
@@ -1150,9 +1108,20 @@ public class ChannelMessageRouter {
             } else if (finalContent != null && !finalContent.isBlank()) {
                 boolean isError = errorClassifier.isErrorReply(finalContent);
                 String status = isError ? "error" : "completed";
+                // Persist the full execution record — parts (text/thinking/
+                // tool_call) and metadata (segments/toolCalls/plan/…) — so
+                // the Web console renders IM-routed turns exactly like Web
+                // direct chats. The content column keeps the adapter's final
+                // text (the adapter may have post-processed it).
                 MessageEntity saved = conversationService.saveMessage(
-                        conversationId, "assistant", finalContent, null, status,
-                        usage[0], usage[1], usage[2], usage[3], usage[4], modelInfo[0], modelInfo[1], null);
+                        conversationId, "assistant", finalContent,
+                        accumulator.toAssistantParts(), status,
+                        accumulator.getPromptTokens(), accumulator.getCompletionTokens(),
+                        accumulator.getCacheReadTokens(), accumulator.getCacheWriteTokens(),
+                        accumulator.getReasoningTokens(),
+                        blankToNull(accumulator.getRuntimeModelName()),
+                        blankToNull(accumulator.getRuntimeProviderId()),
+                        accumulator.toMetadataJson());
                 if (!isError) {
                     publishConversationCompletedEvent(agentId, conversationId, promptText, finalContent, chatOrigin);
                 }

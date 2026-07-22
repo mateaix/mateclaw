@@ -162,11 +162,14 @@ class ChannelMessageRouterNarrationTest {
             process.invoke(router, message, adapter, channel, "telegram:alice");
         }
 
-        /** The persisted assistant row must hold the final-answer span only. */
+        /** The persisted assistant row must hold the final-answer span only.
+         *  Parts and metadata now carry the execution record (segments etc.),
+         *  so they are non-null — content semantics are what this asserts. */
         void verifyPersistedAssistantContent(String expected) {
             verify(conversationService).saveMessage(
-                    eq("telegram:alice"), eq("assistant"), eq(expected), isNull(), eq("completed"),
-                    eq(0), eq(0), eq(0), eq(0), eq(0), isNull(), isNull(), isNull());
+                    eq("telegram:alice"), eq("assistant"), eq(expected), anyList(), eq("completed"),
+                    eq(0), eq(0), eq(0), eq(0), eq(0), isNull(), isNull(),
+                    argThat((String metadata) -> metadata != null && metadata.contains("\"segments\"")));
         }
 
         /** processMessage swallows failures into a generic error reply — assert none fired. */
