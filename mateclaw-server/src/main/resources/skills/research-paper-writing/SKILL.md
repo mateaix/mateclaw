@@ -81,7 +81,7 @@ Use this skill when:
 |-----------------|--------|
 | **High** (clear repo, obvious contribution) | Write full draft, deliver, iterate on feedback |
 | **Medium** (some ambiguity) | Write draft with flagged uncertainties, continue |
-| **Low** (major unknowns) | Ask 1-2 targeted questions via `clarify`, then draft |
+| **Low** (major unknowns) | Ask 1-2 targeted questions directly in your reply, then draft |
 
 | Section | Draft Autonomously? | Flag With Draft |
 |---------|-------------------|-----------------|
@@ -154,7 +154,7 @@ Before writing anything, articulate:
 
 ### Step 0.5: Create a TODO List
 
-Use the `todo` tool to create a structured project plan:
+Maintain a structured project plan and track it with `progress_update`:
 
 ```
 Research Paper TODO:
@@ -245,24 +245,24 @@ Author Coordination Checklist:
 Start from papers already referenced in the codebase:
 
 ```bash
-# Via terminal:
+# Via execute_shell_command:
 grep -r "arxiv\|doi\|cite" --include="*.md" --include="*.bib" --include="*.py"
 find . -name "*.bib"
 ```
 
 ### Step 1.2: Search for Related Work
 
-**Load the `arxiv` skill** for structured paper discovery: `skill_view("arxiv")`. It provides arXiv REST API search, Semantic Scholar citation graphs, author profiles, and BibTeX generation.
+**Load the `arxiv` skill** for structured paper discovery: `load_skill(skillName="arxiv")`. It provides arXiv REST API search, Semantic Scholar citation graphs, author profiles, and BibTeX generation.
 
-Use `web_search` for broad discovery, `web_extract` for fetching specific papers:
+Use `web_search` for broad discovery, and `browser_use` to fetch a specific paper page:
 
 ```
 # Via web_search:
 web_search("[main technique] + [application domain] site:arxiv.org")
 web_search("[baseline method] comparison ICML NeurIPS 2024")
 
-# Via web_extract (for specific papers):
-web_extract("https://arxiv.org/abs/2303.17651")
+# Via browser_use (for a specific paper page):
+browser_use("navigate to https://arxiv.org/abs/2303.17651 and extract the abstract")
 ```
 
 Additional search queries to try:
@@ -309,7 +309,7 @@ Round 3 (Targeted): Fill specific gaps
 
 **When to stop**: If a round returns >80% papers already in your collection, the search is saturated. Typically 2-3 rounds suffice. For survey papers, expect 4-5 rounds.
 
-**For agent-based workflows**: Delegate each round's queries in parallel via `delegate_task`. Collect results, deduplicate, then generate the next round's queries from the combined learnings.
+**For agent-based workflows**: Delegate each round's queries in parallel via `delegateToAgent(agentName="...", task="...")`. Collect results, deduplicate, then generate the next round's queries from the combined learnings.
 
 ### Step 1.3: Verify Every Citation
 
@@ -2130,12 +2130,12 @@ Compose this skill with other the agent skills for specific phases:
 
 | Skill | When to Use | How to Load |
 |-------|-------------|-------------|
-| **arxiv** | Phase 1 (Literature Review): searching arXiv, generating BibTeX, finding related papers via Semantic Scholar | `skill_view("arxiv")` |
-| **subagent-driven-development** | Phase 5 (Drafting): parallel section writing with 2-stage review (spec compliance then quality) | `skill_view("subagent-driven-development")` |
-| **plan** | Phase 0 (Setup): creating structured plans before execution. Writes to `.mateclaw/plans/` | `skill_view("plan")` |
+| **arxiv** | Phase 1 (Literature Review): searching arXiv, generating BibTeX, finding related papers via Semantic Scholar | `load_skill(skillName="arxiv")` |
+| **subagent-driven-development** | Phase 5 (Drafting): parallel section writing with 2-stage review (spec compliance then quality) | `load_skill(skillName="subagent-driven-development")` |
+| **plan** | Phase 0 (Setup): creating structured plans before execution. Writes to `.mateclaw/plans/` | `load_skill(skillName="plan")` |
 | **qmd** | Phase 1 (Literature): searching local knowledge bases (notes, transcripts, docs) via hybrid BM25+vector search | Install: `skill_manage("install", "qmd")` |
-| **diagramming** | Phase 4-5: creating Excalidraw-based figures and architecture diagrams | `skill_view("diagramming")` |
-| **data-science** | Phase 4 (Analysis): Jupyter live kernel for interactive analysis and visualization | `skill_view("data-science")` |
+| **diagramming** | Phase 4-5: creating Excalidraw-based figures and architecture diagrams | `load_skill(skillName="diagramming")` |
+| **data-science** | Phase 4 (Analysis): Jupyter live kernel for interactive analysis and visualization | `load_skill(skillName="data-science")` |
 
 **This skill supersedes `ml-paper-writing`** — it contains all of ml-paper-writing's content plus the full experiment/analysis pipeline and autoreason methodology.
 
@@ -2143,18 +2143,14 @@ Compose this skill with other the agent skills for specific phases:
 
 | Tool | Usage in This Pipeline |
 |------|----------------------|
-| **`terminal`** | LaTeX compilation (`latexmk -pdf`), git operations, launching experiments (`nohup python run.py &`), process checks |
-| **`process`** | Background experiment management: `process("start", ...)`, `process("poll", pid)`, `process("log", pid)`, `process("kill", pid)` |
-| **`execute_code`** | Run Python for citation verification, statistical analysis, data aggregation. Has tool access via RPC. |
-| **`read_file`** / **`write_file`** / **`patch`** | Paper editing, experiment scripts, result files. Use `patch` for targeted edits to large .tex files. |
-| **`web_search`** | Literature discovery: `web_search("transformer attention mechanism 2024")` |
-| **`web_extract`** | Fetch paper content, verify citations: `web_extract("https://arxiv.org/abs/2303.17651")` |
-| **`delegate_task`** | **Parallel section drafting** — spawn isolated subagents for each section. Also for concurrent citation verification. |
-| **`todo`** | Primary state tracker across sessions. Update after every phase transition. |
-| **`memory`** | Persist key decisions across sessions: contribution framing, venue choice, reviewer feedback. |
-| **`cronjob`** | Schedule experiment monitoring, deadline countdowns, automated arXiv checks. |
-| **`clarify`** | Ask the user targeted questions when blocked (venue choice, contribution framing). |
-| **`send_message`** | Notify user when experiments complete or drafts are ready, even if user isn't in chat. |
+| **`execute_shell_command`** | LaTeX compilation (`latexmk -pdf`), git operations, launching experiments in the background (`nohup python run.py &`), and process checks (`ps aux \| grep python`, `kill <pid>`) |
+| **`execute_code`** | Run Python for citation verification, statistical analysis, data aggregation. Call with named params: `execute_code(language="python", code="...")` — both `language` and `code` are required. |
+| **`read_file`** / **`write_file`** / **`edit_file`** | Paper editing, experiment scripts, result files. Use `edit_file` for targeted edits to large .tex files. |
+| **`web_search`** | Literature discovery: `web_search("transformer attention mechanism 2024")`. Use `browser_use` to fetch a specific page when needed. |
+| **`delegateToAgent`** | **Parallel section drafting** — spawn isolated subagents for each section: `delegateToAgent(agentName="...", task="...")`. Also for concurrent citation verification. |
+| **`progress_update`** | Track granular progress across phases: `progress_update(stepKey="...", label="...", status="...", note="...")`. Update after every phase transition. |
+| **`write_workspace_memory_file`** / **`search_workspace_memory`** | Persist key decisions across sessions (contribution framing, venue choice, reviewer feedback) and recall them later. |
+| **`create_cron_job`** / **`list_cron_jobs`** | Schedule experiment monitoring, deadline countdowns, automated arXiv checks. |
 
 ### Tool Usage Patterns
 
@@ -2200,73 +2196,75 @@ for paper in results:
         print(bibtex)
 ```
 
-### State Management with `memory` and `todo`
+### State Management with workspace memory
 
-**`memory` tool** — persist key decisions (bounded: ~2200 chars for MEMORY.md):
+**`write_workspace_memory_file`** — persist key decisions (persists across sessions):
 
 ```
-memory("add", "Paper: autoreason. Venue: NeurIPS 2025 (9 pages). 
+write_workspace_memory_file(agentId=<id>, filename="decisions.md", content="Paper: autoreason. Venue: NeurIPS 2025 (9 pages).
   Contribution: structured refinement works when generation-evaluation gap is wide.
   Key results: Haiku 42/42, Sonnet 3/5, S4.6 constrained 2/3.
   Status: Phase 5 — drafting Methods section.")
 ```
 
-Update memory after major decisions or phase transitions. This persists across sessions.
+Update memory after major decisions or phase transitions. Recall it later with `search_workspace_memory(agentId=<id>, query="...")`.
 
-**`todo` tool** — track granular progress:
+**`progress_update`** — track granular progress:
 
 ```
-todo("add", "Design constrained task experiments for Sonnet 4.6")
-todo("add", "Run Haiku baseline comparison")
-todo("add", "Draft Methods section")
-todo("update", id=3, status="in_progress")
-todo("update", id=1, status="completed")
+progress_update(stepKey="design_s46_experiments", label="Design constrained task experiments for Sonnet 4.6", status="pending", note="")
+progress_update(stepKey="haiku_baseline", label="Run Haiku baseline comparison", status="pending", note="")
+progress_update(stepKey="draft_methods", label="Draft Methods section", status="pending", note="")
+progress_update(stepKey="draft_methods", label="Draft Methods section", status="in_progress", note="Starting outline")
+progress_update(stepKey="design_s46_experiments", label="Design constrained task experiments for Sonnet 4.6", status="completed", note="Done")
 ```
 
 **Session startup protocol:**
 ```
-1. todo("list")                           # Check current task list
-2. memory("read")                         # Recall key decisions
-3. terminal("git log --oneline -10")      # Check recent commits
-4. terminal("ps aux | grep python")       # Check running experiments
-5. terminal("ls results/ | tail -20")     # Check for new results
+1. Review the current task plan and progress
+2. search_workspace_memory(agentId=<id>, query="key decisions")   # Recall key decisions
+3. execute_shell_command("git log --oneline -10")                 # Check recent commits
+4. execute_shell_command("ps aux | grep python")                  # Check running experiments
+5. execute_shell_command("ls results/ | tail -20")                # Check for new results
 6. Report status to user, ask for direction
 ```
 
-### Cron Monitoring with `cronjob`
+### Cron Monitoring with `create_cron_job`
 
-Use the `cronjob` tool to schedule periodic experiment checks:
+Use `create_cron_job` to schedule periodic experiment checks:
 
 ```
-cronjob("create", {
-  "schedule": "*/30 * * * *",  # Every 30 minutes
-  "prompt": "Check experiment status:
+create_cron_job(
+  name="experiment-monitor",
+  cronExpression="*/30 * * * *",  # Every 30 minutes
+  triggerMessage="Check experiment status:
     1. ps aux | grep run_experiment
     2. tail -30 logs/experiment_haiku.log
     3. ls results/haiku_baselines/
-    4. If complete: read results, compute Borda scores, 
+    4. If complete: read results, compute Borda scores,
        git add -A && git commit -m 'Add Haiku results' && git push
     5. Report: table of results, key finding, next step
     6. If nothing changed: respond with [SILENT]"
-})
+)
 ```
 
 **[SILENT] protocol**: When nothing has changed since the last check, respond with exactly `[SILENT]`. This suppresses notification delivery to the user. Only report when there are genuine changes worth knowing about.
 
 **Deadline tracking**:
 ```
-cronjob("create", {
-  "schedule": "0 9 * * *",  # Daily at 9am
-  "prompt": "NeurIPS 2025 deadline: May 22. Today is {date}. 
-    Days remaining: {compute}. 
-    Check todo list — are we on track? 
+create_cron_job(
+  name="deadline-countdown",
+  cronExpression="0 9 * * *",  # Daily at 9am
+  triggerMessage="NeurIPS 2025 deadline: May 22. Today is {date}.
+    Days remaining: {compute}.
+    Check the task plan — are we on track?
     If <7 days: warn user about remaining tasks."
-})
+)
 ```
 
 ### Communication Patterns
 
-**When to notify the user** (via `send_message` or direct response):
+**When to notify the user** (via direct response, or `create_reminder` for scheduled delivery):
 - Experiment batch completed (with results table)
 - Unexpected finding or failure requiring decision
 - Draft section ready for review
@@ -2292,13 +2290,13 @@ Next step: <what happens next>
 
 ### Decision Points Requiring Human Input
 
-Use `clarify` for targeted questions when genuinely blocked:
+Ask targeted questions directly in your reply when genuinely blocked:
 
 | Decision | When to Ask |
 |----------|-------------|
 | Target venue | Before starting paper (affects page limits, framing) |
 | Contribution framing | When multiple valid framings exist |
-| Experiment priority | When TODO list has more experiments than time allows |
+| Experiment priority | When the task plan has more experiments than time allows |
 | Submission readiness | Before final submission |
 
 **Do NOT ask about** (be proactive, make a choice, flag it):
