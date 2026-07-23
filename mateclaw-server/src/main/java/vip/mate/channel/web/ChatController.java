@@ -271,7 +271,7 @@ public class ChatController {
                         // deny 是正常 turn 终结，用户可能在 awaiting_approval 阶段排了消息
                         ChatStreamTracker.CompletionResult denyCr = streamTracker.completeAndConsumeIfLast(conversationId);
                         if (denyCr.allDone() && denyCr.queuedInput() != null) {
-                            startQueuedMessage(conversationId, emitter, approvalEmitterDone, denyCr.queuedInput(), username, requestBaseUrl);
+                            startQueuedMessage(conversationId, emitter, approvalEmitterDone, denyCr.queuedInput(), username, requesterUserIdOf(auth), requestBaseUrl);
                         } else {
                             completeEmitterQuietly(emitter, approvalEmitterDone);
                         }
@@ -285,7 +285,7 @@ public class ChatController {
                         // 审批记录被另一个请求消费，但用户可能在等待期间排了消息
                         ChatStreamTracker.CompletionResult consumedNullCr = streamTracker.completeAndConsumeIfLast(conversationId);
                         if (consumedNullCr.allDone() && consumedNullCr.queuedInput() != null) {
-                            startQueuedMessage(conversationId, emitter, approvalEmitterDone, consumedNullCr.queuedInput(), username, requestBaseUrl);
+                            startQueuedMessage(conversationId, emitter, approvalEmitterDone, consumedNullCr.queuedInput(), username, requesterUserIdOf(auth), requestBaseUrl);
                         } else {
                             completeEmitterQuietly(emitter, approvalEmitterDone);
                         }
@@ -308,8 +308,11 @@ public class ChatController {
                     vip.mate.agent.context.ChatOrigin replayOrigin =
                             approvalService.restoreChatOrigin(finalConsumed.getChatOrigin());
                     if (replayOrigin == vip.mate.agent.context.ChatOrigin.EMPTY) {
+                        // Carry the immutable requesterUserId so on-behalf-of
+                        // identity forwarding (issue #459) asserts the real
+                        // account on replayed tool calls, not the username.
                         replayOrigin = vip.mate.agent.context.ChatOrigin.web(
-                                conversationId, username, workspaceId, null);
+                                conversationId, username, workspaceId, null, null, requesterUserIdOf(auth));
                     }
                     // Carry the request-thread base URL so any file a replayed
                     // tool generates gets an absolute download link.
@@ -390,7 +393,7 @@ public class ChatController {
                                     ChatStreamTracker.CompletionResult cr = streamTracker.completeAndConsumeIfLast(conversationId);
                                     if (cr.allDone()) {
                                         if (cr.queuedInput() != null) {
-                                            startQueuedMessage(conversationId, emitter, approvalEmitterDone, cr.queuedInput(), username, requestBaseUrl);
+                                            startQueuedMessage(conversationId, emitter, approvalEmitterDone, cr.queuedInput(), username, requesterUserIdOf(auth), requestBaseUrl);
                                         } else {
                                             conversationService.updateStreamStatus(conversationId, "idle");
                                             completeEmitterQuietly(emitter, approvalEmitterDone);
@@ -491,7 +494,7 @@ public class ChatController {
                                 ChatStreamTracker.CompletionResult cr = streamTracker.completeAndConsumeIfLast(conversationId);
                                 if (cr.allDone()) {
                                     if (cr.queuedInput() != null) {
-                                        startQueuedMessage(conversationId, emitter, approvalEmitterDone, cr.queuedInput(), username, requestBaseUrl);
+                                        startQueuedMessage(conversationId, emitter, approvalEmitterDone, cr.queuedInput(), username, requesterUserIdOf(auth), requestBaseUrl);
                                     } else {
                                         conversationService.updateStreamStatus(conversationId, "idle");
                                         completeEmitterQuietly(emitter, approvalEmitterDone);
@@ -740,7 +743,7 @@ public class ChatController {
                                     // genuinely doesn't want continuation, no message would
                                     // have been in messageQueue to begin with.
                                     if (cr.queuedInput() != null) {
-                                        startQueuedMessage(conversationId, emitter, emitterDone, cr.queuedInput(), username, requestBaseUrl);
+                                        startQueuedMessage(conversationId, emitter, emitterDone, cr.queuedInput(), username, requesterUserIdOf(auth), requestBaseUrl);
                                     } else {
                                         conversationService.updateStreamStatus(conversationId, "idle");
                                         // 延迟关闭 emitter，确保最后的事件都已发送
@@ -834,7 +837,7 @@ public class ChatController {
                                 if (cr.allDone()) {
                                     if (cr.queuedInput() != null) {
                                         // 无论中断类型，都消费排队消息（修复 Disposable 不可用时队列被丢弃的 bug）
-                                        startQueuedMessage(conversationId, emitter, emitterDone, cr.queuedInput(), username, requestBaseUrl);
+                                        startQueuedMessage(conversationId, emitter, emitterDone, cr.queuedInput(), username, requesterUserIdOf(auth), requestBaseUrl);
                                     } else {
                                         conversationService.updateStreamStatus(conversationId, "idle");
                                         completeEmitterQuietly(emitter, emitterDone);
@@ -957,7 +960,7 @@ public class ChatController {
                                 // — just run it. Aligns with doOnComplete and the 4 other
                                 // queue-launch sites in this controller.
                                 if (cr.queuedInput() != null) {
-                                    startQueuedMessage(conversationId, emitter, emitterDone, cr.queuedInput(), username, requestBaseUrl);
+                                    startQueuedMessage(conversationId, emitter, emitterDone, cr.queuedInput(), username, requesterUserIdOf(auth), requestBaseUrl);
                                 } else {
                                     conversationService.updateStreamStatus(conversationId, "idle");
                                     completeEmitterQuietly(emitter, emitterDone);
@@ -1387,7 +1390,7 @@ public class ChatController {
      */
     private void startQueuedMessage(String conversationId, SseEmitter emitter, AtomicBoolean emitterDone,
                                     ChatStreamTracker.QueuedInput preConsumedInput, String requesterId,
-                                    String baseUrl) {
+                                    Long requesterUserId, String baseUrl) {
         if (preConsumedInput == null) {
             conversationService.updateStreamStatus(conversationId, "idle");
             completeEmitterQuietly(emitter, emitterDone);
@@ -1446,9 +1449,11 @@ public class ChatController {
         streamTracker.incrementFlux(conversationId);
         // RFC-063r §2.5: queued messages land in the same conversation; carry
         // a web-origin ChatOrigin so any cron job created during the queued
-        // turn keeps a consistent (null-channel) binding.
+        // turn keeps a consistent (null-channel) binding. Carry the immutable
+        // requesterUserId so on-behalf-of identity forwarding (issue #459) still
+        // asserts the authenticated account, not just the mutable username.
         vip.mate.agent.context.ChatOrigin queuedOrigin =
-                vip.mate.agent.context.ChatOrigin.web(conversationId, requesterId, null, null)
+                vip.mate.agent.context.ChatOrigin.web(conversationId, requesterId, null, null, null, requesterUserId)
                         .withBaseUrl(baseUrl);
         Disposable disposable = agentService.chatStructuredStream(agentId, queuedMessage, conversationId, requesterId, null, queuedOrigin)
                 .doOnNext(delta -> {
@@ -1512,7 +1517,7 @@ public class ChatController {
                         if (cr.allDone()) {
                             if (cr.queuedInput() != null) {
                                 // 链式续跑：queued stream 期间又排了新消息
-                                startQueuedMessage(conversationId, emitter, emitterDone, cr.queuedInput(), requesterId, baseUrl);
+                                startQueuedMessage(conversationId, emitter, emitterDone, cr.queuedInput(), requesterId, requesterUserId, baseUrl);
                             } else {
                                 conversationService.updateStreamStatus(conversationId, "idle");
                                 sseExecutor.execute(() -> {
@@ -1557,7 +1562,7 @@ public class ChatController {
                     ChatStreamTracker.CompletionResult cr = streamTracker.completeAndConsumeIfLast(conversationId);
                     if (cr.allDone()) {
                         if (cr.queuedInput() != null) {
-                            startQueuedMessage(conversationId, emitter, emitterDone, cr.queuedInput(), requesterId, baseUrl);
+                            startQueuedMessage(conversationId, emitter, emitterDone, cr.queuedInput(), requesterId, requesterUserId, baseUrl);
                         } else {
                             conversationService.updateStreamStatus(conversationId, "idle");
                             completeEmitterQuietly(emitter, emitterDone);

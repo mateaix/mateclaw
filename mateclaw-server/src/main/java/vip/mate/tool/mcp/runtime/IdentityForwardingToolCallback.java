@@ -110,8 +110,25 @@ public final class IdentityForwardingToolCallback implements ToolCallback {
             node.put(key, value);
             return MAPPER.writeValueAsString(node);
         } catch (Exception e) {
-            log.warn("[McpIdentity] failed to inject identity into tool input: {}", e.getMessage());
+            // Sanitize: exception messages may echo fragments of the (model/user
+            // controlled) toolInput, and Jackson errors embed a source snippet —
+            // strip CR/LF so a crafted input can't forge extra log lines under
+            // naive log shippers, and cap the length.
+            log.warn("[McpIdentity] failed to inject identity into tool input: {}",
+                    sanitize(e.getMessage()));
             return toolInput;
         }
+    }
+
+    /**
+     * Make an exception message safe to interpolate into a log line: replace
+     * CR/LF (and other ASCII control chars) with a visible glyph and cap the
+     * length, so a crafted toolInput echoed inside a Jackson/parse error can't
+     * forge additional log records (log-injection hardening).
+     */
+    static String sanitize(String msg) {
+        if (msg == null) return "";
+        String cleaned = msg.replaceAll("[\\r\\n\\t\\p{Cntrl}]", "?");
+        return cleaned.length() > 200 ? cleaned.substring(0, 200) + "…" : cleaned;
     }
 }
