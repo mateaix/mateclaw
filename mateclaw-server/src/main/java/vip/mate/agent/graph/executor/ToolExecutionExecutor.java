@@ -1083,14 +1083,12 @@ public class ToolExecutionExecutor {
                 }
 
                 List<AssistantMessage.ToolCall> remaining = allToolCalls.subList(currentIndex + 1, allToolCalls.size());
-                String approvalResponse = ToolExecutionGuardHelper.handleToolApproval(
+                ToolExecutionGuardHelper.ApprovalRequest approval = ToolExecutionGuardHelper.handleToolApproval(
                         toolCall, toolName, arguments, evaluation,
                         conversationId, agentId, requesterId, approvalService, streamTracker,
                         events, remaining);
-                // Extract pendingId from response (format: "[APPROVAL_PENDING] tool=xxx awaiting user decision")
-                String pendingId = extractPendingId(approvalResponse);
-                toolGuardService.recordApprovalAudit(guardCtx, evaluation, pendingId, autoOutcome);
-                return GuardDecision.needsApproval(approvalResponse, pendingId);
+                toolGuardService.recordApprovalAudit(guardCtx, evaluation, approval.pendingId(), autoOutcome);
+                return GuardDecision.needsApproval(approval.response(), approval.pendingId());
             }
         } else if (toolGuard != null) {
             ToolGuardResult guardResult = toolGuard.check(toolName, arguments);
@@ -1111,7 +1109,9 @@ public class ToolExecutionExecutor {
                         toolCall, toolName, arguments, guardResult,
                         conversationId, agentId, requesterId, approvalService, streamTracker,
                         events, remaining);
-                return GuardDecision.needsApproval(approvalResponse, extractPendingId(approvalResponse));
+                // Legacy path never persisted a pendingId to carry here; the value
+                // is unused downstream (only the boolean awaitingApproval is read).
+                return GuardDecision.needsApproval(approvalResponse, null);
             }
         }
 
@@ -1205,14 +1205,6 @@ public class ToolExecutionExecutor {
         }
 
         return "Tool execution failed: " + message;
-    }
-
-    /**
-     * 从 approval response 中提取 pendingId（best-effort）
-     */
-    private String extractPendingId(String approvalResponse) {
-        // handleToolApproval 内部已经创建了 pending，这里只做标记
-        return approvalResponse;
     }
 
     /**

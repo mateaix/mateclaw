@@ -27,7 +27,15 @@ public final class ToolExecutionGuardHelper {
      *
      * @return 审批提示文本，作为 tool response 返回给 LLM
      */
-    public static String handleToolApproval(
+    /**
+     * Outcome of {@link #handleToolApproval}: the tool-response text handed back
+     * to the LLM plus the persisted pending-approval id. {@code pendingId} is
+     * null when the approval service is unavailable and the call degraded to a
+     * block-style message.
+     */
+    public record ApprovalRequest(String response, String pendingId) {}
+
+    public static ApprovalRequest handleToolApproval(
             AssistantMessage.ToolCall toolCall, String toolName, String arguments,
             GuardEvaluation evaluation, String conversationId, String agentId,
             String requesterId,
@@ -39,8 +47,8 @@ public final class ToolExecutionGuardHelper {
             log.warn("[GuardHelper] ApprovalService not available, falling back to BLOCK for tool={}", toolName);
             events.add(GraphEventPublisher.toolComplete(toolName,
                     evaluation.summary() != null ? evaluation.summary() : "需要审批", false));
-            return "[安全拦截] " + (evaluation.summary() != null ? evaluation.summary() : "需要审批")
-                    + "。审批服务不可用，请联系管理员。";
+            return new ApprovalRequest("[安全拦截] " + (evaluation.summary() != null ? evaluation.summary() : "需要审批")
+                    + "。审批服务不可用，请联系管理员。", null);
         }
 
         String toolCallPayload = serializeToolCall(toolCall);
@@ -78,7 +86,8 @@ public final class ToolExecutionGuardHelper {
         log.info("[GuardHelper] Approval pending created: pendingId={}, tool={}, findings={}",
                 pendingId, toolName, evaluation.hasFindings() ? evaluation.findings().size() : 0);
 
-        return "[APPROVAL_PENDING] tool=" + toolName + " awaiting user decision";
+        return new ApprovalRequest(
+                "[APPROVAL_PENDING] tool=" + toolName + " awaiting user decision", pendingId);
     }
 
     /**
