@@ -2103,7 +2103,10 @@ async function handleApproveAlways(
   } else if (payload.scope === 'AGENT') {
     scopeId = String(currentAgent.value?.id ?? '')
   } else if (payload.scope === 'USER') {
-    const me = localStorage.getItem('mc-user-id')
+    // Login persists the id under 'userId' (see Login.vue); the old 'mc-user-id'
+    // key was never written, so USER-scope always-approve silently failed to
+    // resolve a scopeId and fell back to a one-shot /approve without a grant.
+    const me = localStorage.getItem('userId')
     if (me) scopeId = me
   }
   if (!scopeId) {
