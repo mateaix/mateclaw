@@ -999,7 +999,7 @@ public class WeComChannelAdapter extends AbstractChannelAdapter implements Strea
                     Map<String, Object> imgBody = (Map<String, Object>) body.getOrDefault("image", Map.of());
                     String url = (String) imgBody.getOrDefault("url", "");
                     String aesKey = (String) imgBody.getOrDefault("aeskey", "");
-                    String inboundConvId = inboundConversationId(senderId, chatId, chatType);
+                    String inboundConvId = inboundConversationId(senderId, chatId, chatType, channelEntity != null ? channelEntity.getId() : null);
                     if (!url.isBlank()) {
                         contentParts.add(buildInboundImagePart(url, aesKey, msgId, "image.jpg", inboundConvId));
                     }
@@ -1028,7 +1028,7 @@ public class WeComChannelAdapter extends AbstractChannelAdapter implements Strea
                     String filename = (String) fileBody.getOrDefault("filename",
                             fileBody.getOrDefault("file_name",
                                     fileBody.getOrDefault("name", "file.bin")));
-                    String fileConvId = inboundConversationId(senderId, chatId, chatType);
+                    String fileConvId = inboundConversationId(senderId, chatId, chatType, channelEntity != null ? channelEntity.getId() : null);
                     if (!url.isBlank()) {
                         MessageContentPart filePart = buildInboundFilePart(
                                 url, aesKey, msgId, filename, fileConvId);
@@ -1058,7 +1058,7 @@ public class WeComChannelAdapter extends AbstractChannelAdapter implements Strea
                             Map<String, Object> img = (Map<String, Object>) item.getOrDefault("image", Map.of());
                             String url = (String) img.getOrDefault("url", "");
                             String aesKey = (String) img.getOrDefault("aeskey", "");
-                            String mixedConvId = inboundConversationId(senderId, chatId, chatType);
+                            String mixedConvId = inboundConversationId(senderId, chatId, chatType, channelEntity != null ? channelEntity.getId() : null);
                             if (!url.isBlank()) {
                                 contentParts.add(buildInboundImagePart(
                                         url, aesKey, msgId, "mixed_image.jpg", mixedConvId));
@@ -2936,9 +2936,15 @@ public class WeComChannelAdapter extends AbstractChannelAdapter implements Strea
      * matching row, returned 403, and the IM client rendered every
      * group-quoted image as a broken icon.
      */
-    private static String inboundConversationId(String senderId, String chatId, String chatType) {
+    private static String inboundConversationId(String senderId, String chatId, String chatType,
+                                                Long channelId) {
         boolean isGroup = "group".equals(chatType);
-        return isGroup ? "wecom:" + chatId : "wecom:" + senderId;
+        String identifier = isGroup ? chatId : senderId;
+        // Mirror ChannelMessageRouter#buildConversationId: scope the id by channelId so the
+        // same sender on two workspaces' wecom channels never shares a conversation. channelId
+        // is the ChannelEntity primary key; a null (unreachable for a persisted channel) keeps
+        // the legacy two-segment form so nothing NPEs.
+        return channelId != null ? "wecom:" + channelId + ":" + identifier : "wecom:" + identifier;
     }
 
     // ==================== 引用消息（quote）解析 ====================
@@ -2994,7 +3000,7 @@ public class WeComChannelAdapter extends AbstractChannelAdapter implements Strea
             items = List.of(quote);
         }
 
-        String inboundConvId = inboundConversationId(senderId, chatId, chatType);
+        String inboundConvId = inboundConversationId(senderId, chatId, chatType, channelEntity != null ? channelEntity.getId() : null);
         StringBuilder summary = new StringBuilder();
         List<MessageContentPart> attached = new ArrayList<>();
 
@@ -3106,7 +3112,7 @@ public class WeComChannelAdapter extends AbstractChannelAdapter implements Strea
         String title = ((String) appmsg.getOrDefault("title", "")).trim();
         String desc  = ((String) appmsg.getOrDefault("description", "")).trim();
         String linkUrl = ((String) appmsg.getOrDefault("url", "")).trim();
-        String inboundConvId = inboundConversationId(senderId, chatId, chatType);
+        String inboundConvId = inboundConversationId(senderId, chatId, chatType, channelEntity != null ? channelEntity.getId() : null);
 
         Object fileObj = appmsg.get("file");
         Object imageObj = appmsg.get("image");

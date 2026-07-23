@@ -320,15 +320,22 @@ public class ToolGuardCardHandler implements FeishuCardHandler {
     private static ChannelMessage buildSynthetic(String commandText, String clickerOpenId,
                                                   PendingApproval pending,
                                                   P2CardActionTriggerData data) {
-        // pending.conversationId looks like "feishu:<scope>" where
-        // <scope> is either ou_xxx (1:1 chat — derived from senderId)
-        // or oc_xxx (group chat — derived from chatId). Reverse the
-        // scope back into the right chatId field so buildConversationId
-        // reproduces the exact same key.
+        // pending.conversationId looks like "feishu:{channelId}:{scope}" (or the
+        // legacy two-segment "feishu:{scope}"), where {scope} is either ou_xxx
+        // (1:1 chat — derived from senderId) or oc_xxx (group chat — derived from
+        // chatId). Extract the trailing {scope} and reverse it back into the right
+        // chatId field so buildConversationId reproduces the exact same key. The
+        // replay routes through this same feishu channel, so the router re-embeds
+        // the matching channelId automatically. Scopes never contain ':', so
+        // splitting on the first ':' after the "feishu:" prefix is unambiguous and
+        // handles both the new three-segment and the legacy two-segment forms.
         String convId = pending.getConversationId();
-        String scope = (convId != null && convId.startsWith("feishu:"))
-                ? convId.substring("feishu:".length())
-                : null;
+        String scope = null;
+        if (convId != null && convId.startsWith("feishu:")) {
+            String rest = convId.substring("feishu:".length());
+            int colon = rest.indexOf(':');
+            scope = colon >= 0 ? rest.substring(colon + 1) : rest;
+        }
         boolean isGroup = scope != null && scope.startsWith("oc_");
         String chatId = isGroup ? scope : null;
         String replyToken = isGroup ? scope : clickerOpenId;

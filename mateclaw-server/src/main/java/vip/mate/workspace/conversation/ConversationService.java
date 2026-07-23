@@ -347,8 +347,22 @@ public class ConversationService {
             conv.setMessageCount(0);
             conv.setLastActiveTime(LocalDateTime.now());
             conversationMapper.insert(conv);
-        } else if (!conv.getUsername().equals(username)) {
-            throw new IllegalArgumentException("无权操作该会话");
+        } else {
+            // Defense-in-depth workspace isolation: an existing row whose owning
+            // workspace differs from the caller's means two workspaces resolved to
+            // the same conversationId. With channel-scoped ids this should no longer
+            // happen for channel traffic; refuse rather than silently write the
+            // caller's message into another workspace's conversation. Also closes the
+            // web-console bare-"default" cross-workspace edge case.
+            if (workspaceId != null && conv.getWorkspaceId() != null
+                    && !conv.getWorkspaceId().equals(workspaceId)) {
+                log.warn("[Conversation] Cross-workspace conversationId collision: id={} owner={} requested={}",
+                        conversationId, conv.getWorkspaceId(), workspaceId);
+                throw new IllegalArgumentException("会话不属于当前工作区");
+            }
+            if (!conv.getUsername().equals(username)) {
+                throw new IllegalArgumentException("无权操作该会话");
+            }
         }
         return conv;
     }

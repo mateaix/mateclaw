@@ -1212,7 +1212,8 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
         if (isGroup && chatId != null) {
             shortSuffix = resolveGroupSessionSuffix(chatId);
         }
-        String conversationId = buildConversationId(shortSuffix, senderOpenId, isGroup);
+        String conversationId = buildConversationId(shortSuffix, senderOpenId, isGroup,
+                channelEntity != null ? channelEntity.getId() : null);
 
         String stagedUploadPath = null;
         if (isFileMessage) {
@@ -1731,14 +1732,22 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
      * {@code senderId} is the full open id. Mirror that exactly:
      * {@code groups → feishu:{shortSuffix}}, {@code DMs → feishu:{senderOpenId}}.
      */
-    static String buildConversationId(String shortSuffix, String senderOpenId, boolean isGroup) {
+    static String buildConversationId(String shortSuffix, String senderOpenId, boolean isGroup,
+                                      Long channelId) {
         // The routed ChannelMessage carries chatId = (isGroup ? shortSuffix : null);
         // the router then falls back to senderId when that chatId is null. Mirror both
         // steps so the storage id matches the runtime id in every case (including the
         // degenerate group-with-no-suffix path).
         String routedChatId = isGroup ? shortSuffix : null;
         String identifier = routedChatId != null ? routedChatId : senderOpenId;
-        return identifier != null ? CHANNEL_TYPE + ":" + identifier : null;
+        if (identifier == null) {
+            return null;
+        }
+        // Mirror ChannelMessageRouter#buildConversationId: scope the id by channelId so
+        // the same sender on two workspaces' feishu channels never shares a conversation.
+        return channelId != null
+                ? CHANNEL_TYPE + ":" + channelId + ":" + identifier
+                : CHANNEL_TYPE + ":" + identifier;
     }
 
     // ==================== Per-chat recent file cache ====================

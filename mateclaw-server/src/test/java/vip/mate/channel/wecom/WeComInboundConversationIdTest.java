@@ -20,38 +20,45 @@ import static org.junit.jupiter.api.Assertions.*;
  * different conversationId — and the {@code /api/v1/chat/files/{convId}/...}
  * endpoint's owner check fails for every fetch (403 → broken images).
  *
- * <p>The format both produce: {@code wecom:{chatId}} for groups,
- * {@code wecom:{senderId}} for 1:1 — no {@code group:} infix.
+ * <p>The format both produce: {@code wecom:{channelId}:{chatId}} for groups,
+ * {@code wecom:{channelId}:{senderId}} for 1:1 — no {@code group:} infix. The
+ * {@code channelId} segment scopes the id to one channel row (hence one
+ * workspace) so the same sender on two workspaces' wecom channels never
+ * collides into one conversation.
  */
 class WeComInboundConversationIdTest {
 
+    private static final Long CHANNEL_ID = 2056987497408438273L;
+
     private static String inboundConversationId(String senderId, String chatId, String chatType) throws Exception {
         Method m = WeComChannelAdapter.class.getDeclaredMethod(
-                "inboundConversationId", String.class, String.class, String.class);
+                "inboundConversationId", String.class, String.class, String.class, Long.class);
         m.setAccessible(true);
-        return (String) m.invoke(null, senderId, chatId, chatType);
+        return (String) m.invoke(null, senderId, chatId, chatType, CHANNEL_ID);
+    }
+
+    /** Mirror of ChannelMessageRouter#buildConversationId for cross-checking. */
+    private static String routerConversationId(String identifier) {
+        return "wecom:" + CHANNEL_ID + ":" + identifier;
     }
 
     @Test
-    @DisplayName("group → wecom:{chatId} (no 'group:' infix, matches router)")
+    @DisplayName("group → wecom:{channelId}:{chatId} (no 'group:' infix, matches router)")
     void groupChatIdFormat() throws Exception {
-        // The bug fix: previously returned "wecom:group:abc" which mismatched
-        // the router's "wecom:abc" — quoted-image fileUrls hit a 403 because
-        // isConversationOwner couldn't find a "wecom:group:abc" row in
-        // mate_conversation.
-        assertEquals("wecom:group-abc",
+        // The channelId segment scopes the id to one channel/workspace; the
+        // group branch still uses chatId (no "group:" infix) to match the router.
+        assertEquals("wecom:" + CHANNEL_ID + ":group-abc",
                 inboundConversationId("XuZhanFu", "group-abc", "group"));
     }
 
     @Test
-    @DisplayName("1:1 → wecom:{senderId} (chatId is irrelevant in single chats)")
+    @DisplayName("1:1 → wecom:{channelId}:{senderId} (chatId is irrelevant in single chats)")
     void singleChatSenderFormat() throws Exception {
-        // Single-chat case never had the bug because both adapter and
-        // router fell back to senderId — pin it so a future refactor of
-        // either side doesn't accidentally diverge.
-        assertEquals("wecom:XuZhanFu",
+        // Single-chat case: both adapter and router fall back to senderId; pin it
+        // so a future refactor of either side doesn't accidentally diverge.
+        assertEquals("wecom:" + CHANNEL_ID + ":XuZhanFu",
                 inboundConversationId("XuZhanFu", null, "single"));
-        assertEquals("wecom:XuZhanFu",
+        assertEquals("wecom:" + CHANNEL_ID + ":XuZhanFu",
                 inboundConversationId("XuZhanFu", "ignored-when-single", "single"));
     }
 
@@ -59,19 +66,13 @@ class WeComInboundConversationIdTest {
     @DisplayName("matches ChannelMessageRouter.buildConversationId for both group and 1:1")
     void matchesRouterFormat() throws Exception {
         // Router's identifier picker:
-        //   chatId != null  → "{channelType}:{chatId}"   (group)
-        //   chatId == null  → "{channelType}:{senderId}" (single)
+        //   chatId != null  → "{channelType}:{channelId}:{chatId}"   (group)
+        //   chatId == null  → "{channelType}:{channelId}:{senderId}" (single)
         // Inbound side passes chatId for groups, null/ignored for 1:1.
         // Both must arrive at the same string, exact-equal.
-
-        // group: router gets chatId from the ChannelMessage builder
-        String routerGroup = "wecom" + ":" + "group-xyz";
-        assertEquals(routerGroup,
+        assertEquals(routerConversationId("group-xyz"),
                 inboundConversationId("Alice", "group-xyz", "group"));
-
-        // single: router falls back to senderId (chatId is null on the message)
-        String routerSingle = "wecom" + ":" + "Alice";
-        assertEquals(routerSingle,
+        assertEquals(routerConversationId("Alice"),
                 inboundConversationId("Alice", null, "single"));
     }
 }

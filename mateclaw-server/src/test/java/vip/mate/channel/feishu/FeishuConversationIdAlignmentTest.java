@@ -18,57 +18,74 @@ import static org.junit.jupiter.api.Assertions.*;
  *
  * <p>The router derives its id from the routed {@code ChannelMessage}, whose
  * {@code chatId} is {@code (isGroup ? shortSuffix : null)} and whose {@code senderId}
- * is the full open id, via {@code feishu:{chatId != null ? chatId : senderId}}.
+ * is the full open id, via {@code feishu:{channelId}:{chatId != null ? chatId : senderId}}.
+ * The {@code channelId} segment scopes the id to one channel row (hence one workspace)
+ * so the same sender on two workspaces' feishu channels never collides into one id.
  */
 class FeishuConversationIdAlignmentTest {
 
     private static final String CHANNEL = FeishuChannelAdapter.CHANNEL_TYPE; // "feishu"
     private static final String SHORT_SUFFIX = "cli2_abcd1234";
     private static final String SENDER = "ou_user0123456789";
+    private static final Long CHANNEL_ID = 2056987497408438273L;
 
     /** Mirror of ChannelMessageRouter#buildConversationId against the routed message. */
-    private static String routerConversationId(String shortSuffix, String senderId, boolean isGroup) {
+    private static String routerConversationId(String shortSuffix, String senderId, boolean isGroup,
+                                               Long channelId) {
         String routedChatId = isGroup ? shortSuffix : null;
         String identifier = routedChatId != null ? routedChatId : senderId;
-        return identifier != null ? CHANNEL + ":" + identifier : null;
+        if (identifier == null) {
+            return null;
+        }
+        return channelId != null
+                ? CHANNEL + ":" + channelId + ":" + identifier
+                : CHANNEL + ":" + identifier;
     }
 
     @Test
     void group_usesShortSuffix() {
-        assertEquals(CHANNEL + ":" + SHORT_SUFFIX,
-                FeishuChannelAdapter.buildConversationId(SHORT_SUFFIX, SENDER, true));
+        assertEquals(CHANNEL + ":" + CHANNEL_ID + ":" + SHORT_SUFFIX,
+                FeishuChannelAdapter.buildConversationId(SHORT_SUFFIX, SENDER, true, CHANNEL_ID));
     }
 
     @Test
     void dm_usesSenderOpenIdAndIgnoresShortSuffix() {
-        assertEquals(CHANNEL + ":" + SENDER,
-                FeishuChannelAdapter.buildConversationId(SHORT_SUFFIX, SENDER, false));
+        assertEquals(CHANNEL + ":" + CHANNEL_ID + ":" + SENDER,
+                FeishuChannelAdapter.buildConversationId(SHORT_SUFFIX, SENDER, false, CHANNEL_ID));
     }
 
     @Test
     void group_nullShortSuffix_fallsBackToSender() {
         // Degenerate group path: routed chatId is null, so the router (and this helper)
         // fall back to the sender open id — never null when a sender is present.
-        assertEquals(CHANNEL + ":" + SENDER,
-                FeishuChannelAdapter.buildConversationId(null, SENDER, true));
+        assertEquals(CHANNEL + ":" + CHANNEL_ID + ":" + SENDER,
+                FeishuChannelAdapter.buildConversationId(null, SENDER, true, CHANNEL_ID));
     }
 
     @Test
     void dm_nullSender_returnsNull() {
-        assertNull(FeishuChannelAdapter.buildConversationId(SHORT_SUFFIX, null, false));
+        assertNull(FeishuChannelAdapter.buildConversationId(SHORT_SUFFIX, null, false, CHANNEL_ID));
+    }
+
+    @Test
+    void nullChannelId_fallsBackToLegacyTwoSegmentForm() {
+        // Defensive: a null channelId (unreachable for a persisted channel row) keeps
+        // the legacy {channelType}:{identifier} form so nothing NPEs.
+        assertEquals(CHANNEL + ":" + SENDER,
+                FeishuChannelAdapter.buildConversationId(SHORT_SUFFIX, SENDER, false, null));
     }
 
     @Test
     void matchesRouterFormula_acrossCases() {
         // Group and DM, with and without a short suffix — the storage id must equal
         // the id the router computes for the routed ChannelMessage in every case.
-        assertEquals(routerConversationId(SHORT_SUFFIX, SENDER, true),
-                FeishuChannelAdapter.buildConversationId(SHORT_SUFFIX, SENDER, true));
-        assertEquals(routerConversationId(SHORT_SUFFIX, SENDER, false),
-                FeishuChannelAdapter.buildConversationId(SHORT_SUFFIX, SENDER, false));
-        assertEquals(routerConversationId(null, SENDER, true),
-                FeishuChannelAdapter.buildConversationId(null, SENDER, true));
-        assertEquals(routerConversationId(SHORT_SUFFIX, null, false),
-                FeishuChannelAdapter.buildConversationId(SHORT_SUFFIX, null, false));
+        assertEquals(routerConversationId(SHORT_SUFFIX, SENDER, true, CHANNEL_ID),
+                FeishuChannelAdapter.buildConversationId(SHORT_SUFFIX, SENDER, true, CHANNEL_ID));
+        assertEquals(routerConversationId(SHORT_SUFFIX, SENDER, false, CHANNEL_ID),
+                FeishuChannelAdapter.buildConversationId(SHORT_SUFFIX, SENDER, false, CHANNEL_ID));
+        assertEquals(routerConversationId(null, SENDER, true, CHANNEL_ID),
+                FeishuChannelAdapter.buildConversationId(null, SENDER, true, CHANNEL_ID));
+        assertEquals(routerConversationId(SHORT_SUFFIX, null, false, CHANNEL_ID),
+                FeishuChannelAdapter.buildConversationId(SHORT_SUFFIX, null, false, CHANNEL_ID));
     }
 }

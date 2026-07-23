@@ -22,6 +22,7 @@ import vip.mate.workspace.conversation.repository.MessageMapper;
 import vip.mate.workspace.core.service.WorkspaceService;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -238,6 +239,38 @@ class ConversationServiceOwnershipWorkspaceTest {
         u.setId(id);
         u.setRole(role);
         return u;
+    }
+
+    // ------------------------------------------------------------------
+    // getOrCreateConversation cross-workspace defense (channel-scoping)
+    // ------------------------------------------------------------------
+
+    @Test
+    @DisplayName("getOrCreate: existing row in another workspace → rejected, no insert")
+    void getOrCreateCrossWorkspaceRejected() {
+        // An existing conversation owned by workspace A; a caller from workspace B
+        // resolving the same id must be refused rather than silently writing into A.
+        when(conversationMapper.selectOne(any()))
+                .thenReturn(conv(ALICE_CONV, "alice", WS_TENANT_A));
+
+        assertThatThrownBy(() ->
+                service.getOrCreateConversation(ALICE_CONV, 1L, "alice", WS_TENANT_B))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("工作区");
+        verify(conversationMapper, never()).insert(any(ConversationEntity.class));
+    }
+
+    @Test
+    @DisplayName("getOrCreate: existing row in the same workspace → returned, no throw")
+    void getOrCreateSameWorkspaceReturns() {
+        when(conversationMapper.selectOne(any()))
+                .thenReturn(conv(ALICE_CONV, "alice", WS_TENANT_A));
+
+        ConversationEntity got =
+                service.getOrCreateConversation(ALICE_CONV, 1L, "alice", WS_TENANT_A);
+
+        assertThat(got.getConversationId()).isEqualTo(ALICE_CONV);
+        verify(conversationMapper, never()).insert(any(ConversationEntity.class));
     }
 
     private static ConversationEntity conv(String conversationId, String username, Long workspaceId) {

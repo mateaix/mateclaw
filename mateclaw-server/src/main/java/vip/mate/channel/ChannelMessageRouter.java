@@ -268,7 +268,7 @@ public class ChannelMessageRouter {
         }
         channelEntity = fresh;
 
-        String conversationId = buildConversationId(message);
+        String conversationId = buildConversationId(message, channelEntity.getId());
         if (handleMagicCommand(message, adapter, channelEntity, conversationId)) {
             return;
         }
@@ -468,7 +468,7 @@ public class ChannelMessageRouter {
                     continue; // 超时，重新检查 shutdown 标志
                 }
 
-                String conversationId = buildConversationId(entry.message());
+                String conversationId = buildConversationId(entry.message(), entry.channelEntity().getId());
                 ReentrantLock lock = sessionLocks.computeIfAbsent(conversationId, k -> new ReentrantLock());
 
                 lock.lock();
@@ -1487,7 +1487,7 @@ public class ChannelMessageRouter {
             return Flux.error(new IllegalStateException("Channel has no associated agent"));
         }
 
-        String conversationId = buildConversationId(message);
+        String conversationId = buildConversationId(message, channelEntity.getId());
         String username = message.getSenderName() != null ? message.getSenderName() : message.getSenderId();
 
         conversationService.getOrCreateConversation(conversationId, agentId, username, channelEntity.getWorkspaceId());
@@ -1604,9 +1604,26 @@ public class ChannelMessageRouter {
      * 格式：{channelType}:{chatId 或 senderId}
      * 格式采用 {channelType}:{identifier} 命名规则
      */
-    private String buildConversationId(ChannelMessage message) {
+    /**
+     * Build the conversation id for an inbound channel message.
+     *
+     * <p>The id is scoped by {@code channelId} so the same sender reaching two
+     * different workspaces' same-type channels (e.g. two separate wecom channels)
+     * no longer collapses into one shared conversation row. {@code channelId} is
+     * the {@code ChannelEntity} primary key, which binds to exactly one workspace.
+     *
+     * <p>Format: {@code {channelType}:{channelId}:{chatId|senderId}}. When
+     * {@code channelId} is null (defensive; the routed channel row always has an
+     * id) the legacy {@code {channelType}:{identifier}} form is used so nothing
+     * NPEs — those ids remain workspace-ambiguous but that path is not reachable
+     * for a persisted channel.
+     */
+    private String buildConversationId(ChannelMessage message, Long channelId) {
         String identifier = message.getChatId() != null ? message.getChatId() : message.getSenderId();
-        return message.getChannelType() + ":" + identifier;
+        if (channelId == null) {
+            return message.getChannelType() + ":" + identifier;
+        }
+        return message.getChannelType() + ":" + channelId + ":" + identifier;
     }
 
     /**
