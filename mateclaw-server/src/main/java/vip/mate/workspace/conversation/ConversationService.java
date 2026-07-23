@@ -363,7 +363,7 @@ public class ConversationService {
     public ConversationEntity getOrCreateWebchatConversation(String conversationId, Long agentId,
                                                              String username, Long workspaceId,
                                                              String sessionId) {
-        return getOrCreateWebchatConversation(conversationId, agentId, username, workspaceId, sessionId, null);
+        return getOrCreateWebchatConversation(conversationId, agentId, username, workspaceId, sessionId, null, null);
     }
 
     /**
@@ -381,6 +381,22 @@ public class ConversationService {
     public ConversationEntity getOrCreateWebchatConversation(String conversationId, Long agentId,
                                                              String username, Long workspaceId,
                                                              String sessionId, String title) {
+        return getOrCreateWebchatConversation(conversationId, agentId, username, workspaceId, sessionId, title, null);
+    }
+
+    /**
+     * WebChat get-or-create that also persists the owning {@code channelId} on
+     * insert (see V171, #558), so /sessions can filter by channel exactly
+     * instead of matching the collision-prone conversationId prefix.
+     * <p>
+     * {@code channelId} is written only when the row is first created; an
+     * existing row is left as-is (its channel, or lack of one for pre-fix
+     * rows, is never retroactively rewritten here).
+     */
+    @Transactional
+    public ConversationEntity getOrCreateWebchatConversation(String conversationId, Long agentId,
+                                                             String username, Long workspaceId,
+                                                             String sessionId, String title, Long channelId) {
         boolean existed = conversationMapper.selectOne(new LambdaQueryWrapper<ConversationEntity>()
                 .eq(ConversationEntity::getConversationId, conversationId)) != null;
         ConversationEntity conv = getOrCreateConversation(conversationId, agentId, username, workspaceId);
@@ -392,6 +408,10 @@ public class ConversationService {
             }
             if (title != null && !title.isBlank()) {
                 conv.setTitle(title.trim());
+                dirty = true;
+            }
+            if (channelId != null && conv.getChannelId() == null) {
+                conv.setChannelId(channelId);
                 dirty = true;
             }
             if (dirty) {
@@ -415,6 +435,25 @@ public class ConversationService {
         return conversationMapper.selectList(new LambdaQueryWrapper<ConversationEntity>()
                 .eq(ConversationEntity::getUsername, username)
                 .isNull(ConversationEntity::getParentConversationId)
+                .orderByDesc(ConversationEntity::getPinned)
+                .orderByDesc(ConversationEntity::getLastActiveTime));
+    }
+
+    /**
+     * Channel-scoped variant of {@link #listWebchatConversations(String)} (#558).
+     * Returns rows for this visitor whose {@code channel_id} matches exactly,
+     * <em>plus</em> pre-fix rows where {@code channel_id IS NULL} (which could
+     * not be reconstructed). The caller must still apply a legacy-prefix
+     * {@code startsWith} filter in-memory on those NULL rows, since their
+     * channel can no longer be determined and they are inherently shared across
+     * channels that collided under the old key8 derivation.
+     */
+    public List<ConversationEntity> listWebchatConversations(String username, Long channelId) {
+        return conversationMapper.selectList(new LambdaQueryWrapper<ConversationEntity>()
+                .eq(ConversationEntity::getUsername, username)
+                .isNull(ConversationEntity::getParentConversationId)
+                .and(w -> w.eq(ConversationEntity::getChannelId, channelId)
+                        .or().isNull(ConversationEntity::getChannelId))
                 .orderByDesc(ConversationEntity::getPinned)
                 .orderByDesc(ConversationEntity::getLastActiveTime));
     }

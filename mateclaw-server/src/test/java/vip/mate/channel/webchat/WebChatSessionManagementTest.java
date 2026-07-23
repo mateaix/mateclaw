@@ -61,13 +61,13 @@ class WebChatSessionManagementTest {
         String owner = WebChatController.webchatUsername(VISITOR);
         // default thread (no sessionId)
         conversationService.getOrCreateWebchatConversation(
-                WebChatController.deriveConversationId(CHANNEL_ID, VISITOR, null), null, owner, 1L, null);
+                WebChatController.deriveConversationId(CHANNEL_ID, VISITOR, null), null, owner, 1L, null, null, CHANNEL_ID);
         // short sessioned thread
         conversationService.getOrCreateWebchatConversation(
-                WebChatController.deriveConversationId(CHANNEL_ID, VISITOR, "s1"), null, owner, 1L, "s1");
+                WebChatController.deriveConversationId(CHANNEL_ID, VISITOR, "s1"), null, owner, 1L, "s1", null, CHANNEL_ID);
         // long sessioned thread → conversationId hashes
         conversationService.getOrCreateWebchatConversation(
-                WebChatController.deriveConversationId(CHANNEL_ID, VISITOR, LONG_SESSION), null, owner, 1L, LONG_SESSION);
+                WebChatController.deriveConversationId(CHANNEL_ID, VISITOR, LONG_SESSION), null, owner, 1L, LONG_SESSION, null, CHANNEL_ID);
 
         token = WebChatController.computeVisitorToken(SECRET, CHANNEL_ID, VISITOR);
     }

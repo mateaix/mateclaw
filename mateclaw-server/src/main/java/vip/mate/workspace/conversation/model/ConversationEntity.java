@@ -80,6 +80,17 @@ public class ConversationEntity {
     private String webchatSessionId;
 
     /**
+     * WebChat channel that owns this conversation (see V171 migration, #558).
+     * Lets /sessions filter by channel exactly instead of matching the
+     * conversationId prefix, which collided across channels (all generated
+     * apiKeys share the 8-char slice "mc_webch"). Set on creation by webchat
+     * endpoints; NULL for non-webchat rows and for pre-fix rows whose channel
+     * can no longer be reconstructed (those remain visible across channels
+     * until backfilled).
+     */
+    private Long channelId;
+
+    /**
      * Per-conversation progress notebook JSON (see V100 migration).
      * <p>
      * Map of {@code stepKey -> {label, status, note, updatedAt}}, written by

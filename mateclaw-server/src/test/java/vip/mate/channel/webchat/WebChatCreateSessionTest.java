@@ -157,7 +157,7 @@ class WebChatCreateSessionTest {
         for (int i = 1; i <= 5; i++) {
             conversationService.getOrCreateWebchatConversation(
                     WebChatController.deriveConversationId(CHANNEL_ID, "visitorE", "seed" + i),
-                    null, owner, 1L, "seed" + i);
+                    null, owner, 1L, "seed" + i, null, CHANNEL_ID);
         }
 
         R<Map<String, Object>> r = controller.createSession(API_KEY, req("visitorE", "s-new", null));

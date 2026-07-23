@@ -189,7 +189,8 @@ public class WebChatController {
                 var webAgent = agentService.getAgent(resolvedAgentId);
                 Long webWsId = webAgent != null ? webAgent.getWorkspaceId() : 1L;
                 var conv = conversationService.getOrCreateWebchatConversation(
-                        conversationId, resolvedAgentId, webchatUsername(visitorId), webWsId, effectiveSessionId);
+                        conversationId, resolvedAgentId, webchatUsername(visitorId), webWsId,
+                        effectiveSessionId, null, channel.getId());
 
                 // 保存用户消息（含访客本轮引用的附件）。附件元数据一律服务端按 fileId 回查，
                 // 不信客户端传入；path 用于 Agent 侧工具读取，对外消息视图会被剥离。
@@ -645,7 +646,7 @@ public class WebChatController {
         }
 
         ConversationEntity conv = conversationService.getOrCreateWebchatConversation(
-                conversationId, agentId, owner, channel.getWorkspaceId(), sessionId, title);
+                conversationId, agentId, owner, channel.getWorkspaceId(), sessionId, title, channel.getId());
         audit(channel, visitorId, "webchat.create-session", conversationId,
                 "{\"sessionId\":\"" + sessionId + "\",\"idempotent\":false}");
         return R.ok(buildCreateSessionResponse(conv, sessionId, channel.getId(), visitorId));
@@ -892,20 +893,30 @@ public class WebChatController {
         String base = deriveConversationId(channelId, visitorId, null);
         String legacyBase = legacyConversationId(apiKey, visitorId, null);
         String channelPrefix = "webchat:" + channelId + ":";
-        // Backward compat (#558): pre-fix conversations were keyed by the apiKey's first
-        // 8 chars (always "mc_webch" for generated keys), which collided across channels.
-        // Keep matching that legacy prefix so existing sessions stay visible; they remain
-        // shared across channels (already-collided rows cannot be split retroactively).
-        String legacyPrefix = "webchat:" + apiKey.substring(0, Math.min(8, apiKey.length())) + ":";
         String owner = webchatUsername(visitorId);
-        // Query is scoped to this visitor's own rows only (no system rows), so
-        // listing a visitor's threads doesn't load every IM/cron conversation.
-        // The channel prefix is matched in-memory with a literal startsWith so a
-        // '_' / '%' in the api key's first 8 chars can't act as a LIKE wildcard.
-        return conversationService.listWebchatConversations(owner).stream()
-                .filter(c -> c.getConversationId() != null
-                        && (c.getConversationId().startsWith(channelPrefix)
-                            || c.getConversationId().startsWith(legacyPrefix)))
+        // Channel isolation (#558): the DB query returns rows whose channel_id
+        // matches exactly (fully isolated) PLUS rows where channel_id IS NULL
+        // (pre-fix rows whose channel could not be reconstructed). The NULL rows
+        // are inherently shared across channels that collided under the old key8
+        // derivation and cannot be split retroactively, so they are kept visible
+        // by a literal startsWith against this visitor's own legacy base — they
+        // don't leak the *new* (channel-scoped) rows, which the DB already gated.
+        return conversationService.listWebchatConversations(owner, channelId).stream()
+                .filter(c -> {
+                    if (c.getConversationId() == null) {
+                        return false;
+                    }
+                    // channel_id present → already channel-scoped by the query; accept.
+                    if (c.getChannelId() != null) {
+                        return true;
+                    }
+                    // pre-fix row (channel_id NULL): accept only if it belongs to this
+                    // visitor's namespace under either the current or legacy derivation.
+                    return c.getConversationId().startsWith(channelPrefix)
+                            || c.getConversationId().startsWith(legacyBase + ":")
+                            || c.getConversationId().equals(legacyBase)
+                            || c.getConversationId().equals(base);
+                })
                 .filter(c -> includeArchived
                         || c.getArchived() == null
                         || c.getArchived() == 0)

@@ -161,7 +161,7 @@ class WebChatSchemaFieldsTest {
         for (int i = 1; i <= 5; i++) {
             String cid = WebChatController.deriveConversationId(CHANNEL_ID, "visitorQuota", "arch" + i);
             conversationService.getOrCreateWebchatConversation(
-                    cid, AGENT_ID, owner, 1L, "arch" + i);
+                    cid, AGENT_ID, owner, 1L, "arch" + i, null, CHANNEL_ID);
             jdbc.update("UPDATE mate_conversation SET archived = 1 WHERE conversation_id = ?", cid);
         }
 
