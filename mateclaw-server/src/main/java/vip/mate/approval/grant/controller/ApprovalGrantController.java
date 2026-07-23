@@ -11,6 +11,7 @@ import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 import vip.mate.approval.grant.entity.ApprovalGrant;
 import vip.mate.approval.grant.entity.ApprovalResolutionLog;
+import vip.mate.agent.repository.AgentMapper;
 import vip.mate.approval.grant.repository.ApprovalGrantMapper;
 import vip.mate.approval.grant.repository.ApprovalResolutionLogMapper;
 import vip.mate.approval.grant.service.ApprovalGrantService;
@@ -55,6 +56,7 @@ public class ApprovalGrantController {
     private static final long DEFAULT_WORKSPACE_ID = 1L;
 
     private final ApprovalGrantService grantService;
+    private final AgentMapper agentMapper;
     private final ApprovalGrantMapper grantMapper;
     private final ApprovalResolutionLogMapper resolutionMapper;
     private final AuthService authService;
@@ -295,6 +297,7 @@ public class ApprovalGrantController {
                 }
             }
             case ApprovalGrant.ScopeType.AGENT -> {
+                requireExistingAgent(body.scopeId);
                 if (toolNull) {
                     requireAdminPlusPassword(isAdmin, body.password, actorId);
                 } else if (!isAdmin) {
@@ -304,6 +307,15 @@ public class ApprovalGrantController {
                 }
             }
             case ApprovalGrant.ScopeType.WORKSPACE -> {
+                // WORKSPACE-scope matching requires scope_id == the invocation's
+                // workspaceId AND the grant row's workspace_id (tenant column) to
+                // equal that same workspace — a scopeId pointing anywhere else can
+                // never fire. Reject the dead configuration outright.
+                if (!String.valueOf(workspaceId).equals(body.scopeId)) {
+                    throw new MateClawException("err.approval.workspace_scope_mismatch", 400,
+                            "WORKSPACE-scope scopeId must equal the current workspace id ("
+                                    + workspaceId + "); a cross-workspace grant can never match");
+                }
                 workspaceService.requirePermission(workspaceId, actorId, "admin");
                 if (toolNull) {
                     requireAdminPlusPassword(true, body.password, actorId);
@@ -311,6 +323,24 @@ public class ApprovalGrantController {
             }
             default -> throw new MateClawException("err.approval.invalid_scope", 400,
                     "unknown scope_type: " + scope);
+        }
+    }
+
+    /**
+     * AGENT-scope scopeId must reference an existing agent — a workspace or
+     * conversation id pasted here compiles into a grant that never matches.
+     */
+    private void requireExistingAgent(String scopeId) {
+        Long agentId;
+        try {
+            agentId = Long.parseLong(scopeId);
+        } catch (NumberFormatException e) {
+            throw new MateClawException("err.approval.agent_not_found", 400,
+                    "AGENT-scope scopeId must be a numeric agent id: " + scopeId);
+        }
+        if (agentMapper.selectById(agentId) == null) {
+            throw new MateClawException("err.approval.agent_not_found", 400,
+                    "AGENT-scope scopeId does not reference an existing agent: " + scopeId);
         }
     }
 

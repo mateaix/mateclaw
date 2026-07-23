@@ -4516,7 +4516,7 @@ export default {
         severityMedium: '放行低/中危命中',
         severityHigh: '放行低/中/高危命中',
         scopeIdPickAgent: '选择智能体…',
-        scopeIdWorkspaceHint: '选择策略生效的工作区（必须与会话实际所属工作区一致）。',
+        scopeIdWorkspaceHint: '固定为当前工作区。如需为其他工作区创建策略，请先在控制台切换工作区。',
         scopeIdAgentHint: '选择智能体后，该智能体在本工作区的所有会话均适用。',
         scopeIdUserHint: '只能为当前登录用户创建 USER 范围策略。',
         scopeIdConversationHint: '填写会话 ID，可在审计日志的"会话"列查看（如 wecom:xxx）。',

@@ -10,6 +10,8 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
+import vip.mate.agent.model.AgentEntity;
+import vip.mate.agent.repository.AgentMapper;
 import vip.mate.approval.grant.entity.ApprovalGrant;
 import vip.mate.approval.grant.repository.ApprovalGrantMapper;
 import vip.mate.approval.grant.repository.ApprovalResolutionLogMapper;
@@ -51,8 +53,10 @@ class ApprovalGrantControllerTest {
     private static final long WORKSPACE_ID = 100L;
     private static final long MEMBER_ID = 1001L;
     private static final long ADMIN_ID = 2002L;
+    private static final long AGENT_ID = 3003L;
 
     @Mock ApprovalGrantService grantService;
+    @Mock AgentMapper agentMapper;
     @Mock ApprovalGrantMapper grantMapper;
     @Mock ApprovalResolutionLogMapper resolutionMapper;
     @Mock AuthService authService;
@@ -79,6 +83,12 @@ class ApprovalGrantControllerTest {
         // flag the unused one. Using lenient here keeps setUp shared.
         lenient().when(authService.findByUsername("member-user")).thenReturn(member);
         lenient().when(authService.findByUsername("admin-user")).thenReturn(admin);
+
+        // AGENT-scope creation now verifies the target agent exists; most tests
+        // use AGENT_ID as a valid reference. Lenient: non-AGENT tests never hit it.
+        AgentEntity agent = new AgentEntity();
+        agent.setId(AGENT_ID);
+        lenient().when(agentMapper.selectById(AGENT_ID)).thenReturn(agent);
     }
 
     @Nested
@@ -118,7 +128,7 @@ class ApprovalGrantControllerTest {
 
         @Test
         void agent_scope_explicit_tool_requires_admin() {
-            ApprovalGrantController.CreateGrantRequest body = baseBody("AGENT", "agent-1", "read_file");
+            ApprovalGrantController.CreateGrantRequest body = baseBody("AGENT", String.valueOf(AGENT_ID), "read_file");
             doThrow(new MateClawException("err.workspace.insufficient_permission", 403, "admin required"))
                     .when(workspaceService).requirePermission(WORKSPACE_ID, MEMBER_ID, "admin");
 
@@ -128,7 +138,7 @@ class ApprovalGrantControllerTest {
 
         @Test
         void agent_scope_null_tool_requires_admin_plus_password() {
-            ApprovalGrantController.CreateGrantRequest body = baseBody("AGENT", "agent-1", null);
+            ApprovalGrantController.CreateGrantRequest body = baseBody("AGENT", String.valueOf(AGENT_ID), null);
             // admin true; missing password → 403
             when(workspaceService.hasPermission(WORKSPACE_ID, ADMIN_ID, "admin")).thenReturn(true);
             body.password = null;
@@ -140,7 +150,7 @@ class ApprovalGrantControllerTest {
 
         @Test
         void agent_scope_null_tool_admin_with_password_passes() {
-            ApprovalGrantController.CreateGrantRequest body = baseBody("AGENT", "agent-1", null);
+            ApprovalGrantController.CreateGrantRequest body = baseBody("AGENT", String.valueOf(AGENT_ID), null);
             body.password = "correct-password";
             when(workspaceService.hasPermission(WORKSPACE_ID, ADMIN_ID, "admin")).thenReturn(true);
             // verifyCurrentUserPassword passes silently when correct.
@@ -187,8 +197,44 @@ class ApprovalGrantControllerTest {
         }
 
         @Test
+        void workspace_scope_id_must_match_current_workspace() {
+            // A WORKSPACE-scope grant whose scopeId is a different workspace can
+            // never match at runtime (tenant column + scope match both fail) —
+            // rejected at creation as a dead configuration.
+            ApprovalGrantController.CreateGrantRequest body = baseBody("WORKSPACE",
+                    "2079860736482390017", "read_file");
+
+            assertThatThrownBy(() -> controller.create(body, WORKSPACE_ID, adminAuth))
+                    .isInstanceOf(MateClawException.class)
+                    .hasMessageContaining("must equal the current workspace id");
+            verify(grantMapper, never()).insert(any(ApprovalGrant.class));
+        }
+
+        @Test
+        void agent_scope_nonexistent_agent_is_rejected() {
+            ApprovalGrantController.CreateGrantRequest body = baseBody("AGENT", "424242", "read_file");
+            when(agentMapper.selectById(424242L)).thenReturn(null);
+
+            assertThatThrownBy(() -> controller.create(body, WORKSPACE_ID, adminAuth))
+                    .isInstanceOf(MateClawException.class)
+                    .hasMessageContaining("does not reference an existing agent");
+            verify(grantMapper, never()).insert(any(ApprovalGrant.class));
+        }
+
+        @Test
+        void agent_scope_non_numeric_id_is_rejected() {
+            // e.g. a conversation id or workspace name pasted into the AGENT scope.
+            ApprovalGrantController.CreateGrantRequest body = baseBody("AGENT", "wecom:xxx", "read_file");
+
+            assertThatThrownBy(() -> controller.create(body, WORKSPACE_ID, adminAuth))
+                    .isInstanceOf(MateClawException.class)
+                    .hasMessageContaining("must be a numeric agent id");
+            verify(grantMapper, never()).insert(any(ApprovalGrant.class));
+        }
+
+        @Test
         void until_conversation_end_requires_conversation_scope() {
-            ApprovalGrantController.CreateGrantRequest body = baseBody("AGENT", "agent-1", "read_file");
+            ApprovalGrantController.CreateGrantRequest body = baseBody("AGENT", String.valueOf(AGENT_ID), "read_file");
             body.grantKind = "UNTIL_CONVERSATION_END";
 
             assertThatThrownBy(() -> controller.create(body, WORKSPACE_ID, memberAuth))

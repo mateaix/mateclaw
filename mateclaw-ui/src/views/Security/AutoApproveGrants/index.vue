@@ -207,20 +207,16 @@
                 <label>{{ t('approval.grant.form.scopeId') }} <span class="required">*</span></label>
                 <!-- Scope-typed pickers: free-text snowflake input made it far too
                      easy to paste the wrong kind of id (e.g. a workspace id into an
-                     AGENT-scope grant), producing a grant that never matches. -->
-                <select
+                     AGENT-scope grant), producing a grant that never matches.
+                     WORKSPACE is locked to the current workspace — the backend
+                     rejects any other id as a dead configuration. -->
+                <input
                   v-if="form.scopeType === 'WORKSPACE'"
-                  v-model="form.scopeId"
+                  :value="currentWorkspaceLabel"
+                  type="text"
                   class="form-input"
-                >
-                  <option
-                    v-for="ws in workspaceStore.workspaces"
-                    :key="String(ws.id)"
-                    :value="String(ws.id)"
-                  >
-                    {{ ws.name }} (#{{ ws.id }})
-                  </option>
-                </select>
+                  disabled
+                />
                 <select
                   v-else-if="form.scopeType === 'AGENT'"
                   v-model="form.scopeId"

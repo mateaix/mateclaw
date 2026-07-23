@@ -4424,7 +4424,7 @@ export default {
         severityMedium: 'auto-approve LOW/MEDIUM findings',
         severityHigh: 'auto-approve LOW/MEDIUM/HIGH findings',
         scopeIdPickAgent: 'Pick an agent…',
-        scopeIdWorkspaceHint: 'Pick the workspace this grant applies to (must be the workspace the conversation actually belongs to).',
+        scopeIdWorkspaceHint: 'Fixed to the current workspace. To create a grant for another workspace, switch workspaces in the console first.',
         scopeIdAgentHint: 'Applies to every conversation of the selected agent within this workspace.',
         scopeIdUserHint: 'USER-scope grants can only target the currently logged-in user.',
         scopeIdConversationHint: 'Conversation id, as shown in the audit log "session" column (e.g. wecom:xxx).',
