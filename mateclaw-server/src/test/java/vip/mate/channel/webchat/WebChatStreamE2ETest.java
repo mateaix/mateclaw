@@ -242,7 +242,7 @@ class WebChatStreamE2ETest {
                 .contains("\"sessionId\":null");
 
         // Concatenated assistant reply persisted exactly once.
-        String cid = WebChatController.deriveConversationId(API_KEY, visitorId, null);
+        String cid = WebChatController.deriveConversationId(CHANNEL_ID, visitorId, null);
         assertThat(countUserMessages(cid)).isEqualTo(1);
         assertThat(countAssistantMessages(cid)).isEqualTo(1);
         assertThat(lastAssistantContent(cid)).isEqualTo("Hello world!");
@@ -278,7 +278,7 @@ class WebChatStreamE2ETest {
         assertThat(byName.get("meta")).hasSize(1);
 
         // Persisted assistant message: only the concatenated content (no thinking).
-        String cid = WebChatController.deriveConversationId(API_KEY, visitorId, null);
+        String cid = WebChatController.deriveConversationId(CHANNEL_ID, visitorId, null);
         assertThat(lastAssistantContent(cid)).isEqualTo("Final answer.");
 
         // Usage attribution lands on the row.
@@ -303,9 +303,10 @@ class WebChatStreamE2ETest {
         assertThat(err.name).isEqualTo("error");
         assertThat(err.data).contains("Invalid API Key");
 
-        // No conversation was created → no rows anywhere.
+        // No conversation was created → no rows anywhere. The bogus key never
+        // resolves a channel, so the channelId passed here is irrelevant.
         assertThat(countAssistantMessages(
-                WebChatController.deriveConversationId("bogus-key-not-registered", "vBad", null))).isZero();
+                WebChatController.deriveConversationId(-1L, "vBad", null))).isZero();
     }
 
     @Test
@@ -358,7 +359,7 @@ class WebChatStreamE2ETest {
         assertThat(meta.data)
                 .contains("\"sessionId\":\"" + sessionId + "\"")
                 .contains("\"conversationId\":\"" +
-                        WebChatController.deriveConversationId(API_KEY, visitorId, sessionId) + "\"");
+                        WebChatController.deriveConversationId(CHANNEL_ID, visitorId, sessionId) + "\"");
     }
 
     @Test
