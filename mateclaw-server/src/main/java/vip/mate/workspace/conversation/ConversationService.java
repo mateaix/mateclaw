@@ -758,6 +758,24 @@ public class ConversationService {
     }
 
     /**
+     * Clear a conversation's pinned model so it falls back to the agent /
+     * global default. Counterpart of {@link #updateConversationModel}, which
+     * deliberately treats blank input as "no override supplied" — resetting
+     * therefore needs its own explicit entry point. The null-write goes
+     * through an update wrapper because {@code updateById} skips null fields.
+     */
+    @Transactional
+    public void clearConversationModel(String conversationId) {
+        if (conversationId == null || conversationId.isBlank()) {
+            return;
+        }
+        conversationMapper.update(null, new LambdaUpdateWrapper<ConversationEntity>()
+                .eq(ConversationEntity::getConversationId, conversationId)
+                .set(ConversationEntity::getModelProvider, null)
+                .set(ConversationEntity::getModelName, null));
+    }
+
+    /**
      * Persist an assistant placeholder marker only when the last message is a
      * user turn (i.e., the assistant never got to reply). Used by the admin
      * force-recycle path so a torn-down turn leaves a visible "已被用户中止"

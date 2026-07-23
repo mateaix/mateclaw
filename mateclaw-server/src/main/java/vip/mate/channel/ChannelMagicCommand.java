@@ -21,7 +21,7 @@ import java.util.Optional;
 final class ChannelMagicCommand {
 
     /** Platform-level command kinds, dispatched by {@link ChannelMessageRouter}. */
-    enum Type { CLEAR, NEW, HELP, STATUS, STOP }
+    enum Type { CLEAR, NEW, HELP, STATUS, STOP, MODEL }
 
     /** A recognized command plus its raw (possibly empty) argument string. */
     record Parsed(Type type, String args) {
@@ -85,6 +85,7 @@ final class ChannelMagicCommand {
                 /new — 开启新会话（别名：新会话）
                 /stop — 停止当前进行中的任务（别名：停止）
                 /status — 查看当前会话状态（别名：状态）
+                /model — 查看可用模型；/model <名称> 切换本会话模型；/model reset 恢复默认
                 /help — 显示本帮助（别名：帮助）""";
     }
 
@@ -101,12 +102,23 @@ final class ChannelMagicCommand {
                 "status", "状态");
         register(aliases, Type.STOP,
                 "stop", "停止");
+        // Slash-only: "model" / "模型" are common standalone words in normal
+        // prompts ("模型是什么？"), so the bare form must never be a command.
+        registerSlashOnly(aliases, Type.MODEL,
+                "model", "模型");
         return aliases;
     }
 
     private static void register(Map<String, Type> aliases, Type type, String... names) {
         for (String name : names) {
             aliases.put(name, type);
+            aliases.put("/" + name, type);
+        }
+    }
+
+    /** Register only the "/"-prefixed form — for aliases whose bare word is ordinary prose. */
+    private static void registerSlashOnly(Map<String, Type> aliases, Type type, String... names) {
+        for (String name : names) {
             aliases.put("/" + name, type);
         }
     }
