@@ -12,6 +12,9 @@
 
         WORKSPACE-scope matches against {workspaceScopeId} — pre-converted to a string on the
         Java side (`String.valueOf(workspaceId)`), so the SQL itself avoids CAST(... AS VARCHAR/CHAR).
+
+        NOTE: findFirstMatchingIgnoringSeverity below is this query minus the severity
+        comparison — edits to the shared clauses must be applied to BOTH.
     -->
     <select id="findFirstMatching"
             resultType="vip.mate.approval.grant.entity.ApprovalGrant">
@@ -35,6 +38,51 @@
                    WHEN 'LOW'    THEN 1
                    ELSE 0
                END
+           AND (tool_name IS NULL OR tool_name = #{toolName})
+           AND (
+                 rule_id IS NULL
+                 <if test="candidateRuleIds != null and !candidateRuleIds.isEmpty()">
+                     OR rule_id IN
+                     <foreach collection="candidateRuleIds" item="rid" open="(" close=")" separator=",">
+                         #{rid}
+                     </foreach>
+                 </if>
+               )
+           AND (
+                    (scope_type = 'CONVERSATION' AND scope_id = #{conversationId})
+                 OR (scope_type = 'AGENT'        AND scope_id = #{agentId})
+                 OR (scope_type = 'USER'         AND scope_id = #{userId})
+                 OR (scope_type = 'WORKSPACE'    AND scope_id = #{workspaceScopeId})
+               )
+         ORDER BY
+                CASE scope_type
+                    WHEN 'CONVERSATION' THEN 1
+                    WHEN 'AGENT'        THEN 2
+                    WHEN 'USER'         THEN 3
+                    WHEN 'WORKSPACE'    THEN 4
+                END,
+                CASE WHEN rule_id   IS NOT NULL THEN 0 ELSE 1 END,
+                CASE WHEN tool_name IS NOT NULL THEN 0 ELSE 1 END
+         LIMIT 1
+    </select>
+
+    <!--
+        Diagnostic twin of findFirstMatching used ONLY on the miss path: identical
+        WHERE clauses and ordering EXCEPT the severity-ceiling comparison is dropped.
+        A row here while findFirstMatching returned none means a grant exists but its
+        max_severity ceiling is below the evaluation's severity (SEVERITY_CEILING);
+        no row means genuinely NO_GRANT. Keep the two <select> bodies in sync — any
+        drift in the shared clauses misclassifies the denial reason
+        (locked by ApprovalGrantResolverTest).
+    -->
+    <select id="findFirstMatchingIgnoringSeverity"
+            resultType="vip.mate.approval.grant.entity.ApprovalGrant">
+        SELECT *
+          FROM mate_approval_grant
+         WHERE workspace_id = #{workspaceId}
+           AND revoked = 0
+           AND deleted = 0
+           AND (expire_at IS NULL OR expire_at &gt; CURRENT_TIMESTAMP)
            AND (tool_name IS NULL OR tool_name = #{toolName})
            AND (
                  rule_id IS NULL

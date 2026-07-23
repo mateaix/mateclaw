@@ -27,6 +27,14 @@ public class ToolGuardAuditLogEntity {
     private String pendingId;
     private String replayPayloadHash;
 
+    /**
+     * Auto-approve resolution outcome for NEEDS_APPROVAL invocations:
+     * AUTO_GRANT / HARD_BLOCK / FORCE_HUMAN:&lt;pattern&gt; / SEVERITY_CRITICAL /
+     * SEVERITY_CEILING:&lt;ceiling&gt;&lt;&lt;actual&gt; / UNKNOWN_WORKSPACE / NO_GRANT.
+     * NULL when the invocation never reached the auto-grant decision layer.
+     */
+    private String autoApproveOutcome;
+
     @TableField(fill = FieldFill.INSERT)
     private LocalDateTime createTime;
 

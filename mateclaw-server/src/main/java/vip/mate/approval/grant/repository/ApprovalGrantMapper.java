@@ -50,6 +50,21 @@ public interface ApprovalGrantMapper extends BaseMapper<ApprovalGrant> {
             @Param("evalSeverity") String evalSeverity);
 
     /**
+     * Diagnostic twin of {@link #findFirstMatching}: identical matching except the
+     * severity-ceiling comparison is dropped. Called only when {@code findFirstMatching}
+     * returned no row, to distinguish "a grant exists but its ceiling is below this
+     * invocation's severity" (SEVERITY_CEILING) from "no grant matches at all" (NO_GRANT).
+     */
+    ApprovalGrant findFirstMatchingIgnoringSeverity(
+            @Param("workspaceId") Long workspaceId,
+            @Param("userId") String userId,
+            @Param("agentId") String agentId,
+            @Param("conversationId") String conversationId,
+            @Param("workspaceScopeId") String workspaceScopeId,
+            @Param("toolName") String toolName,
+            @Param("candidateRuleIds") List<String> candidateRuleIds);
+
+    /**
      * Soft-revokes every active {@code UNTIL_CONVERSATION_END} grant attached to the given
      * conversation. Called by {@code ConversationLifecycleListener} on
      * {@code ConversationDeletedEvent} (PR-2).

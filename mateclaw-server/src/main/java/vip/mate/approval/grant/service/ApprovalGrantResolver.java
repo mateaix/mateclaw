@@ -114,6 +114,21 @@ public class ApprovalGrantResolver {
                 evalSeverity);
 
         if (matched == null) {
+            // Miss-path diagnosis: re-run the same match without the severity
+            // ceiling. A hit here means a grant exists but its ceiling is below
+            // this invocation's severity — the single most common misconfiguration
+            // (form default LOW vs HIGH findings). Only executed on the miss path,
+            // so the hot path stays one query.
+            ApprovalGrant ceilingBlocked = grantMapper.findFirstMatchingIgnoringSeverity(
+                    ctx.workspaceId(),
+                    ctx.userId(), ctx.agentId(), ctx.conversationId(),
+                    workspaceScopeId,
+                    ctx.toolName(),
+                    candidateRuleIds);
+            if (ceilingBlocked != null) {
+                return AutoApproveResult.requiresHuman(
+                        "SEVERITY_CEILING:" + ceilingBlocked.getMaxSeverity() + "<" + evalSeverity);
+            }
             return AutoApproveResult.requiresHuman("NO_GRANT");
         }
 

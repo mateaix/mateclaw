@@ -202,7 +202,46 @@ class ApprovalGrantResolverTest {
 
         assertThat(r.isRequiresHuman()).isTrue();
         assertThat(r.reason()).isEqualTo("NO_GRANT");
+        // Miss path runs the severity-free diagnostic exactly once before concluding NO_GRANT.
+        verify(grantMapper).findFirstMatchingIgnoringSeverity(
+                anyLong(), any(), any(), any(), any(), any(), anyList());
         verify(resolutionMapper, never()).insert(any(ApprovalResolutionLog.class));
+    }
+
+    @Test
+    void ceiling_blocked_grant_classifies_as_severity_ceiling() {
+        ToolInvocationContext ctx = ctxWithArgs("touch /tmp/x");
+        when(grantMapper.findFirstMatching(
+                anyLong(), any(), any(), any(), any(), any(), anyList(), any()))
+                .thenReturn(null);
+        ApprovalGrant lowCeiling = new ApprovalGrant();
+        lowCeiling.setId(7L);
+        lowCeiling.setMaxSeverity("LOW");
+        when(grantMapper.findFirstMatchingIgnoringSeverity(
+                anyLong(), any(), any(), any(), any(), any(), anyList()))
+                .thenReturn(lowCeiling);
+
+        var r = resolver.tryAutoApprove(ctx, evaluationWith(GuardSeverity.HIGH, "shell.exec"));
+
+        assertThat(r.isRequiresHuman()).isTrue();
+        assertThat(r.reason()).isEqualTo("SEVERITY_CEILING:LOW<HIGH");
+        verify(resolutionMapper, never()).insert(any(ApprovalResolutionLog.class));
+    }
+
+    @Test
+    void diagnostic_query_is_skipped_when_primary_query_matches() {
+        ToolInvocationContext ctx = ctxWithArgs("touch /tmp/x");
+        ApprovalGrant grant = new ApprovalGrant();
+        grant.setId(1L);
+        grant.setMaxSeverity("HIGH");
+        when(grantMapper.findFirstMatching(
+                anyLong(), any(), any(), any(), any(), any(), anyList(), any()))
+                .thenReturn(grant);
+
+        resolver.tryAutoApprove(ctx, evaluationWith(GuardSeverity.MEDIUM, "shell.exec"));
+
+        verify(grantMapper, never()).findFirstMatchingIgnoringSeverity(
+                anyLong(), any(), any(), any(), any(), any(), anyList());
     }
 
     @Test

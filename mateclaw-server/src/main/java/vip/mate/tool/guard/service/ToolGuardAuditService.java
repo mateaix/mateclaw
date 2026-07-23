@@ -43,6 +43,18 @@ public class ToolGuardAuditService {
      */
     @Async
     public void record(ToolInvocationContext context, GuardEvaluation evaluation, String pendingId) {
+        record(context, evaluation, pendingId, null);
+    }
+
+    /**
+     * 记录审计日志并附带自动批准决策结果。
+     * <p>
+     * {@code autoApproveOutcome} 为 NEEDS_APPROVAL 调用经过 auto-grant 决策层后的
+     * 结果码（AUTO_GRANT / SEVERITY_CEILING:… / NO_GRANT 等），未经过该层时为 null。
+     */
+    @Async
+    public void record(ToolInvocationContext context, GuardEvaluation evaluation,
+                       String pendingId, String autoApproveOutcome) {
         try {
             // 审计开关检查
             if (!configService.isAuditEnabled()) {
@@ -67,6 +79,7 @@ public class ToolGuardAuditService {
             entity.setDecision(evaluation.decision().name());
             entity.setMaxSeverity(evaluation.maxSeverity() != null ? evaluation.maxSeverity().name() : null);
             entity.setPendingId(pendingId);
+            entity.setAutoApproveOutcome(autoApproveOutcome);
 
             if (evaluation.hasFindings()) {
                 entity.setFindingsJson(serializeFindings(evaluation));
