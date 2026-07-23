@@ -262,7 +262,8 @@ web_search("[main technique] + [application domain] site:arxiv.org")
 web_search("[baseline method] comparison ICML NeurIPS 2024")
 
 # Via browser_use (for a specific paper page):
-browser_use("navigate to https://arxiv.org/abs/2303.17651 and extract the abstract")
+browser_use(action="open", url="https://arxiv.org/abs/2303.17651")
+browser_use(action="snapshot")
 ```
 
 Additional search queries to try:
@@ -2133,7 +2134,7 @@ Compose this skill with other the agent skills for specific phases:
 | **arxiv** | Phase 1 (Literature Review): searching arXiv, generating BibTeX, finding related papers via Semantic Scholar | `load_skill(skillName="arxiv")` |
 | **subagent-driven-development** | Phase 5 (Drafting): parallel section writing with 2-stage review (spec compliance then quality) | `load_skill(skillName="subagent-driven-development")` |
 | **plan** | Phase 0 (Setup): creating structured plans before execution. Writes to `.mateclaw/plans/` | `load_skill(skillName="plan")` |
-| **qmd** | Phase 1 (Literature): searching local knowledge bases (notes, transcripts, docs) via hybrid BM25+vector search | Install: `skill_manage("install", "qmd")` |
+| **qmd** | Phase 1 (Literature): searching local knowledge bases (notes, transcripts, docs) via hybrid BM25+vector search | Install from the skill marketplace (ask the user), then `load_skill(skillName="qmd")` |
 | **diagramming** | Phase 4-5: creating Excalidraw-based figures and architecture diagrams | `load_skill(skillName="diagramming")` |
 | **data-science** | Phase 4 (Analysis): Jupyter live kernel for interactive analysis and visualization | `load_skill(skillName="data-science")` |
 
