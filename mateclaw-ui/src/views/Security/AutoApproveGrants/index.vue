@@ -181,6 +181,14 @@
               <el-icon :size="16"><WarningFilled /></el-icon>
               <span>{{ t('approval.grant.createWorkspaceWarning') }}</span>
             </div>
+            <!-- The grant is tenant-bound to the console's current workspace and
+                 only matches conversations that actually live in it — IM-channel
+                 conversations follow the channel's workspace binding, not the
+                 console selection. Spelling this out up front prevents the
+                 "configured but never fires" dead-grant trap. -->
+            <div class="info-banner">
+              {{ t('approval.grant.form.workspaceHint', { name: currentWorkspaceLabel }) }}
+            </div>
             <div class="form-grid">
               <div class="form-group">
                 <label>{{ t('approval.grant.form.scopeType') }} <span class="required">*</span></label>
@@ -197,14 +205,51 @@
               </div>
               <div class="form-group">
                 <label>{{ t('approval.grant.form.scopeId') }} <span class="required">*</span></label>
+                <!-- Scope-typed pickers: free-text snowflake input made it far too
+                     easy to paste the wrong kind of id (e.g. a workspace id into an
+                     AGENT-scope grant), producing a grant that never matches. -->
+                <select
+                  v-if="form.scopeType === 'WORKSPACE'"
+                  v-model="form.scopeId"
+                  class="form-input"
+                >
+                  <option
+                    v-for="ws in workspaceStore.workspaces"
+                    :key="String(ws.id)"
+                    :value="String(ws.id)"
+                  >
+                    {{ ws.name }} (#{{ ws.id }})
+                  </option>
+                </select>
+                <select
+                  v-else-if="form.scopeType === 'AGENT'"
+                  v-model="form.scopeId"
+                  class="form-input"
+                >
+                  <option value="" disabled>{{ t('approval.grant.form.scopeIdPickAgent') }}</option>
+                  <option
+                    v-for="a in agentStore.agents"
+                    :key="String(a.id)"
+                    :value="String(a.id)"
+                  >
+                    {{ a.name }} (#{{ a.id }})
+                  </option>
+                </select>
                 <input
+                  v-else-if="form.scopeType === 'USER'"
+                  :value="form.scopeId"
+                  type="text"
+                  class="form-input"
+                  disabled
+                />
+                <input
+                  v-else
                   v-model.trim="form.scopeId"
                   type="text"
-                  inputmode="numeric"
-                  pattern="\d*"
-                  placeholder="snowflake id"
-                  class="form-input"
+                  class="form-input mono"
+                  :placeholder="t('approval.grant.form.scopeIdConversationPlaceholder')"
                 />
+                <p v-if="scopeIdHint" class="field-hint">{{ scopeIdHint }}</p>
               </div>
               <div class="form-group">
                 <label>{{ t('approval.grant.form.toolName') }}</label>
@@ -226,10 +271,11 @@
               <div class="form-group">
                 <label>{{ t('approval.grant.form.maxSeverity') }}</label>
                 <select v-model="form.maxSeverity" class="form-input">
-                  <option value="LOW">LOW</option>
-                  <option value="MEDIUM">MEDIUM</option>
-                  <option value="HIGH">HIGH</option>
+                  <option value="LOW">LOW — {{ t('approval.grant.form.severityLow') }}</option>
+                  <option value="MEDIUM">MEDIUM — {{ t('approval.grant.form.severityMedium') }}</option>
+                  <option value="HIGH">HIGH — {{ t('approval.grant.form.severityHigh') }}</option>
                 </select>
+                <p class="field-hint">{{ t('approval.grant.form.severityHint') }}</p>
               </div>
               <div class="form-group">
                 <label>{{ t('approval.grant.form.grantKind') }}</label>
@@ -293,7 +339,7 @@
 
 <script setup lang="ts">
 import { ElMessage } from 'element-plus/es/components/message/index'
-import { ref, computed, onMounted, reactive } from 'vue'
+import { ref, computed, onMounted, reactive, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   Delete,
@@ -305,6 +351,8 @@ import {
   WarningFilled,
 } from '@element-plus/icons-vue'
 import { approvalApi } from '@/api'
+import { useWorkspaceStore } from '@/stores/useWorkspaceStore'
+import { useAgentStore } from '@/stores/useAgentStore'
 import McPagination from '@/components/common/McPagination.vue'
 import { mcConfirm } from '@/components/common/useConfirm'
 import type {
@@ -316,6 +364,9 @@ import type {
 } from '@/types'
 
 const { t } = useI18n()
+
+const workspaceStore = useWorkspaceStore()
+const agentStore = useAgentStore()
 
 const rows = ref<ApprovalGrant[]>([])
 const total = ref(0)
@@ -362,6 +413,44 @@ function emptyForm(): FormState {
 const requiresPassword = computed(() => {
   const noTool = !form.toolName
   return noTool && (form.scopeType === 'WORKSPACE' || form.scopeType === 'AGENT')
+})
+
+const currentWorkspaceLabel = computed(() => {
+  const ws = workspaceStore.currentWorkspace
+  return ws ? `${ws.name} (#${ws.id})` : String(workspaceStore.currentWorkspaceId ?? '')
+})
+
+const scopeIdHint = computed(() => {
+  switch (form.scopeType) {
+    case 'WORKSPACE': return t('approval.grant.form.scopeIdWorkspaceHint')
+    case 'AGENT': return t('approval.grant.form.scopeIdAgentHint')
+    case 'USER': return t('approval.grant.form.scopeIdUserHint')
+    case 'CONVERSATION': return t('approval.grant.form.scopeIdConversationHint')
+    default: return ''
+  }
+})
+
+/**
+ * Prefill scopeId whenever the scope type changes: WORKSPACE defaults to the
+ * console's current workspace, USER is locked to the requesting user (the
+ * backend rejects anything else), AGENT/CONVERSATION start empty for an
+ * explicit pick.
+ */
+function prefillScopeId() {
+  switch (form.scopeType) {
+    case 'WORKSPACE':
+      form.scopeId = String(workspaceStore.currentWorkspaceId ?? '')
+      break
+    case 'USER':
+      form.scopeId = localStorage.getItem('userId') || ''
+      break
+    default:
+      form.scopeId = ''
+  }
+}
+
+watch(() => form.scopeType, () => {
+  if (dialogOpen.value) prefillScopeId()
 })
 
 function onPageChange(p: number) {
@@ -425,6 +514,10 @@ function openCreateDialog(workspaceWide: boolean) {
     dialogWorkspaceWide.value = false
   }
   dialogOpen.value = true
+  prefillScopeId()
+  // Lazy-load picker data sources; both are cheap and cached in their stores.
+  if (!workspaceStore.workspaces.length) workspaceStore.fetchWorkspaces()
+  if (!agentStore.agents.length) agentStore.fetchAgents()
 }
 
 async function submitCreate() {
@@ -782,6 +875,27 @@ onMounted(loadGrants)
   line-height: 1.5;
 }
 .danger-banner .el-icon { flex-shrink: 0; margin-top: 1px; }
+
+/* Neutral info banner — states which workspace the grant will be created in.
+   Deliberately calmer than .danger-banner: informational, not a warning. */
+.info-banner {
+  padding: 10px 14px;
+  margin-bottom: 16px;
+  background: var(--mc-surface-tertiary, #f1f5f9);
+  border: 1px solid var(--mc-border-light, #e5e7eb);
+  border-radius: 8px;
+  color: var(--mc-text-secondary, #475569);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+/* Per-field helper line under a control (scope-id semantics, severity ceiling). */
+.field-hint {
+  margin: 2px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--mc-text-tertiary, #94a3b8);
+}
 
 /* Form grid layout — two columns on wide modal, one column when narrow.
    form-group--full breaks across both columns (note, password). */
