@@ -124,19 +124,33 @@ class WebChatVisitorTokenTest {
 
     @Test
     void deriveConversationId_staysWithin64_forLongInputs() {
-        String id = WebChatController.deriveConversationId("apikey1234567890", "v".repeat(120), "s".repeat(64));
+        String id = WebChatController.deriveConversationId(9147001L, "v".repeat(120), "s".repeat(64));
         assertTrue(id.length() <= 64, "conversationId must fit VARCHAR(64), got " + id.length());
         // a legitimate 64-char sessionId alone already overflows the old scheme
-        String id2 = WebChatController.deriveConversationId("apikey1234567890", "alice", "s".repeat(64));
+        String id2 = WebChatController.deriveConversationId(9147001L, "alice", "s".repeat(64));
         assertTrue(id2.length() <= 64, "conversationId must fit VARCHAR(64), got " + id2.length());
     }
 
     @Test
     void deriveConversationId_unchanged_forShortInputs() {
-        assertEquals("webchat:apikey12:alice:s1",
-                WebChatController.deriveConversationId("apikey1234567890", "alice", "s1"));
-        assertEquals("webchat:apikey12:alice",
-                WebChatController.deriveConversationId("apikey1234567890", "alice", null));
+        assertEquals("webchat:9147001:alice:s1",
+                WebChatController.deriveConversationId(9147001L, "alice", "s1"));
+        assertEquals("webchat:9147001:alice",
+                WebChatController.deriveConversationId(9147001L, "alice", null));
+    }
+
+    // ===== #558: channel isolation — the channelId token must drive the prefix =====
+
+    @Test
+    void deriveConversationId_isChannelScoped_notApiKeyScoped() {
+        // The #558 bug: two channels whose apiKeys share a prefix (all generated keys
+        // start with "mc_webchat_") derived the SAME conversationId for one visitor,
+        // so sessions collided across channels. The channelId token must differ.
+        String chanA = WebChatController.deriveConversationId(1L, "alice", "s1");
+        String chanB = WebChatController.deriveConversationId(2L, "alice", "s1");
+        assertNotEquals(chanA, chanB, "different channels must derive different ids");
+        assertEquals("webchat:1:alice:s1", chanA);
+        assertEquals("webchat:2:alice:s1", chanB);
     }
 
     @Test
