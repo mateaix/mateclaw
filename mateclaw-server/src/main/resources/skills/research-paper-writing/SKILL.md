@@ -2160,24 +2160,24 @@ Compose this skill with other the agent skills for specific phases:
 
 **Experiment monitoring** (most common):
 ```
-terminal("ps aux | grep <pattern>")
-→ terminal("tail -30 <logfile>")
-→ terminal("ls results/")
-→ execute_code("analyze results JSON, compute metrics")
-→ terminal("git add -A && git commit -m '<descriptive message>' && git push")
-→ send_message("Experiment complete: <summary>")
+execute_shell_command("ps aux | grep <pattern>")
+→ execute_shell_command("tail -30 <logfile>")
+→ execute_shell_command("ls results/")
+→ execute_code(language="python", code="import json, glob
+for f in glob.glob('results/*.json'): ...")
+→ execute_shell_command("git add -A && git commit -m '<descriptive message>' && git push")
 ```
 
 **Parallel section drafting** (using delegation):
 ```
-delegate_task("Draft the Methods section based on these experiment scripts and configs. 
-  Include: pseudocode, all hyperparameters, architectural details sufficient for 
+delegateToAgent(agentName="<section drafter agent>", task="Draft the Methods section based on these experiment scripts and configs.
+  Include: pseudocode, all hyperparameters, architectural details sufficient for
   reproduction. Write in LaTeX using the neurips2025 template conventions.")
 
-delegate_task("Draft the Related Work section. Use web_search and web_extract to 
+delegateToAgent(agentName="<section drafter agent>", task="Draft the Related Work section. Use web_search to
   find papers. Verify every citation via Semantic Scholar. Group by methodology.")
 
-delegate_task("Draft the Experiments section. Read all result files in results/. 
+delegateToAgent(agentName="<section drafter agent>", task="Draft the Experiments section. Read all result files in results/.
   State which claim each experiment supports. Include error bars and significance.")
 ```
 
@@ -2185,7 +2185,8 @@ Each delegate runs as a **fresh subagent** with no shared context — provide al
 
 **Citation verification** (using execute_code):
 ```python
-# In execute_code:
+# Pass this as the code= argument to:
+# execute_code(language="python", code=...)
 from semanticscholar import SemanticScholar
 import requests
 
