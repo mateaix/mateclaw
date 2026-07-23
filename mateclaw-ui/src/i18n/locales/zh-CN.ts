@@ -1735,6 +1735,16 @@ export default {
       },
       noLogs: '暂无审计记录',
       expandFindings: '展开详情',
+      outcome: {
+        AUTO_GRANT: '已自动放行',
+        HARD_BLOCK: '安全地板阻断',
+        FORCE_HUMAN: '高危模式，强制人审',
+        SEVERITY_CRITICAL: '未自动放行：CRITICAL 永远人审',
+        SEVERITY_CEILING: '未自动放行：策略严重度上限低于本次命中（{ceiling} < {actual}）',
+        UNKNOWN_WORKSPACE: '未自动放行：无法确定会话所属工作区',
+        NO_GRANT: '未自动放行：无匹配的自动批准策略',
+        createGrant: '去创建策略',
+      },
     },
     severity: {
       CRITICAL: '严重',

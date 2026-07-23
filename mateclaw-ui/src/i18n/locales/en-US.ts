@@ -1861,6 +1861,16 @@ export default {
       },
       noLogs: 'No audit logs yet',
       expandFindings: 'Expand Details',
+      outcome: {
+        AUTO_GRANT: 'Auto-approved',
+        HARD_BLOCK: 'Blocked by safety floor',
+        FORCE_HUMAN: 'Dangerous pattern, human approval forced',
+        SEVERITY_CRITICAL: 'Not auto-approved: CRITICAL always requires a human',
+        SEVERITY_CEILING: 'Not auto-approved: grant ceiling below this finding ({ceiling} < {actual})',
+        UNKNOWN_WORKSPACE: 'Not auto-approved: conversation workspace unknown',
+        NO_GRANT: 'Not auto-approved: no matching grant',
+        createGrant: 'Create a grant',
+      },
     },
     severity: {
       CRITICAL: 'Critical',

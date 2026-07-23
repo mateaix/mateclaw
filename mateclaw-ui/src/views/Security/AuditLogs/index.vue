@@ -110,6 +110,17 @@
                 <span class="decision-badge" :class="'decision-' + log.decision?.toLowerCase()">
                   {{ t('security.decision.' + log.decision) || log.decision }}
                 </span>
+                <!-- Auto-approve resolution outcome: why this NEEDS_APPROVAL call
+                     was (not) auto-approved. NULL on rows predating the column
+                     or on decisions that never reach the auto-grant layer. -->
+                <div
+                  v-if="log.autoApproveOutcome"
+                  class="outcome-chip"
+                  :class="outcomeClass(log.autoApproveOutcome)"
+                  :title="log.autoApproveOutcome"
+                >
+                  {{ outcomeText(log.autoApproveOutcome) }}
+                </div>
               </td>
               <td>
                 <span v-if="log.maxSeverity" class="severity-badge" :class="'severity-' + log.maxSeverity?.toLowerCase()">
@@ -119,7 +130,7 @@
               <td class="cell-conv">{{ truncateConvId(log.conversationId) }}</td>
               <td>
                 <button
-                  v-if="log.findingsJson"
+                  v-if="log.findingsJson || log.autoApproveOutcome"
                   class="action-btn"
                   @click="toggleExpand(log.id)"
                   :title="t('security.audit.expandFindings')"
@@ -144,6 +155,14 @@
                     <span class="finding-category">{{ finding.category }}</span>
                     <span class="finding-title">{{ finding.title }}</span>
                     <span v-if="finding.remediation" class="finding-remediation">{{ finding.remediation }}</span>
+                  </div>
+                  <!-- Fixable misses (no grant, or a grant with a too-low ceiling)
+                       get a one-click jump to the grant form, prefilled with this
+                       row's tool and actual severity. -->
+                  <div v-if="canCreateGrantFrom(log)" class="outcome-actions">
+                    <button class="btn-secondary btn-sm" @click="goCreateGrant(log)">
+                      {{ t('security.audit.outcome.createGrant') }} →
+                    </button>
                   </div>
                 </div>
               </td>
@@ -174,11 +193,13 @@
 <script setup lang="ts">
 import { ref, reactive, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useRouter } from 'vue-router'
 import { securityApi } from '@/api'
 import { parseFindings, formatTime, truncateConvId } from '../composables/helpers'
 import type { AuditStats } from '@/types'
 
 const { t } = useI18n()
+const router = useRouter()
 
 const auditLogs = ref<any[]>([])
 const auditStats = reactive<AuditStats>({ total: 0, blocked: 0, needsApproval: 0, allowed: 0 })
@@ -242,6 +263,55 @@ async function loadAuditStats() {
   } catch {
     // ignore
   }
+}
+
+/**
+ * Splits an auto_approve_outcome code into an i18n key plus params.
+ * SEVERITY_CEILING carries detail as "SEVERITY_CEILING:LOW<HIGH";
+ * FORCE_HUMAN carries the floor pattern as "FORCE_HUMAN:pattern".
+ */
+function parseOutcome(oc: string): { key: string; params: Record<string, string> } {
+  if (oc.startsWith('SEVERITY_CEILING:')) {
+    const [ceiling, actual] = oc.slice('SEVERITY_CEILING:'.length).split('<')
+    return { key: 'SEVERITY_CEILING', params: { ceiling: ceiling || '?', actual: actual || '?' } }
+  }
+  if (oc.startsWith('FORCE_HUMAN')) {
+    return { key: 'FORCE_HUMAN', params: {} }
+  }
+  return { key: oc, params: {} }
+}
+
+function outcomeText(oc: string): string {
+  const { key, params } = parseOutcome(oc)
+  const i18nKey = `security.audit.outcome.${key}`
+  const txt = t(i18nKey, params)
+  // vue-i18n echoes the key back when no message exists — fall back to the raw code.
+  return txt === i18nKey ? oc : txt
+}
+
+function outcomeClass(oc: string): string {
+  const { key } = parseOutcome(oc)
+  if (key === 'AUTO_GRANT') return 'outcome-granted'
+  if (key === 'HARD_BLOCK') return 'outcome-blocked'
+  return 'outcome-denied'
+}
+
+/** Only misses fixable by creating a grant get the shortcut. */
+function canCreateGrantFrom(log: any): boolean {
+  if (!log.autoApproveOutcome) return false
+  const { key } = parseOutcome(log.autoApproveOutcome)
+  return key === 'SEVERITY_CEILING' || key === 'NO_GRANT'
+}
+
+function goCreateGrant(log: any) {
+  router.push({
+    name: 'SecurityAutoApprove',
+    query: {
+      create: '1',
+      tool: log.toolName || '',
+      severity: log.maxSeverity || '',
+    },
+  })
 }
 
 function toggleExpand(id: number) {
@@ -437,6 +507,25 @@ onMounted(async () => {
 
 .finding-title { color: var(--mc-text-primary); }
 .finding-remediation { color: var(--mc-text-tertiary); font-style: italic; }
+
+/* Auto-approve outcome chip — sits under the decision badge. Three tones:
+   granted (auto-approved), denied (fell back to human), blocked (safety floor). */
+.outcome-chip {
+  display: inline-block;
+  margin-top: 4px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 1.6;
+  white-space: nowrap;
+}
+.outcome-granted { background: rgba(16, 185, 129, 0.12); color: #10b981; }
+.outcome-denied  { background: rgba(245, 158, 11, 0.12); color: #b45309; }
+.outcome-blocked { background: rgba(239, 68, 68, 0.12); color: #ef4444; }
+
+.outcome-actions {
+  margin-top: 8px;
+}
 
 .pagination {
   display: flex;

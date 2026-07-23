@@ -341,6 +341,7 @@
 import { ElMessage } from 'element-plus/es/components/message/index'
 import { ref, computed, onMounted, reactive, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useRoute, useRouter } from 'vue-router'
 import {
   Delete,
   Lock,
@@ -364,6 +365,8 @@ import type {
 } from '@/types'
 
 const { t } = useI18n()
+const route = useRoute()
+const router = useRouter()
 
 const workspaceStore = useWorkspaceStore()
 const agentStore = useAgentStore()
@@ -603,7 +606,34 @@ function formatDate(s: string | null): string {
   return d.toLocaleString()
 }
 
-onMounted(loadGrants)
+onMounted(() => {
+  loadGrants()
+  applyCreateQuery()
+})
+
+/**
+ * Entry from the audit-log page's "create grant" shortcut:
+ * /security/auto-approve?create=1&tool=<name>&severity=<LOW|MEDIUM|HIGH>
+ * opens the create dialog prefilled with the missed invocation's tool and
+ * actual severity (WORKSPACE scope, current workspace). The query is
+ * consumed once and stripped so refresh/back doesn't re-open the dialog.
+ */
+function applyCreateQuery() {
+  if (route.query.create !== '1') return
+  const tool = typeof route.query.tool === 'string' ? route.query.tool : ''
+  const severity = typeof route.query.severity === 'string' ? route.query.severity : ''
+  openCreateDialog(false)
+  form.scopeType = 'WORKSPACE'
+  prefillScopeId()
+  form.toolName = tool
+  if (severity === 'LOW' || severity === 'MEDIUM' || severity === 'HIGH') {
+    form.maxSeverity = severity
+  } else if (severity === 'CRITICAL') {
+    // CRITICAL is never auto-approvable; HIGH is the closest configurable ceiling.
+    form.maxSeverity = 'HIGH'
+  }
+  router.replace({ query: {} })
+}
 </script>
 
 <style scoped>
