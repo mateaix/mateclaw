@@ -79,7 +79,7 @@ class WebChatApprovalInteractionTest {
 
     private String seedPending(String visitorId, String sessionId) {
         controller.createSession(API_KEY, req(visitorId, sessionId));
-        String cid = WebChatController.deriveConversationId(API_KEY, visitorId, sessionId);
+        String cid = WebChatController.deriveConversationId(CHANNEL_ID, visitorId, sessionId);
         // The actor stored on the approval is the webchat username, mirroring
         // how chatStream sets it via webchatUsername(visitorId).
         String actor = "webchat:" + API_KEY.substring(0, 8) + ":" + visitorId;
@@ -94,7 +94,7 @@ class WebChatApprovalInteractionTest {
     @DisplayName("deny resolves a pending approval and broadcasts tool_approval_resolved")
     void denyResolvesPending() {
         String pendingId = seedPending("visitorA", "s1");
-        String cid = WebChatController.deriveConversationId(API_KEY, "visitorA", "s1");
+        String cid = WebChatController.deriveConversationId(CHANNEL_ID, "visitorA", "s1");
 
         // Register the stream so the broadcast has a live subscriber state.
         streamTracker.register(cid);
@@ -173,7 +173,7 @@ class WebChatApprovalInteractionTest {
         assertThat(r.getCode()).isEqualTo(404);
 
         // The victim's approval is untouched.
-        String cidVictim = WebChatController.deriveConversationId(API_KEY, "victimX", "s1");
+        String cidVictim = WebChatController.deriveConversationId(CHANNEL_ID, "victimX", "s1");
         var stillPending = approvalService.getPending(pendingIdVictim);
         assertThat(stillPending).as("victim's approval must not be resolved by attacker").isPresent();
         assertThat(stillPending.get().getStatus()).isEqualTo("pending");
@@ -196,7 +196,7 @@ class WebChatApprovalInteractionTest {
     @DisplayName("stop denies pending approvals on the conversation (approval sweep)")
     void stopSweepsPendingApprovals() {
         seedPending("visitorF", "s1");
-        String cid = WebChatController.deriveConversationId(API_KEY, "visitorF", "s1");
+        String cid = WebChatController.deriveConversationId(CHANNEL_ID, "visitorF", "s1");
 
         // A pending approval exists before stop.
         assertThat(approvalService.findPendingByConversation(cid)).isNotNull();
