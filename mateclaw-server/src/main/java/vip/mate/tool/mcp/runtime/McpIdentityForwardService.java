@@ -133,6 +133,13 @@ public class McpIdentityForwardService {
      * to {@link ResolvedIdentity#NONE} (fail-closed). The ThreadLocal
      * {@link ToolExecutionContext} username is consulted only inside the web
      * branch and only when no immutable user id is present.
+     *
+     * <p>The {@code trust} prefix / claim is an external contract consumed by
+     * remote REST backends to decide on-behalf-of trust. It is deliberately
+     * distinct from MateClaw's internal identity namespaces (memory owner key
+     * {@code <channel>:<requesterId>}, conversation username {@code webchat:<vid>},
+     * audit actor {@code webchat:<channelId>:<vid>}) — see the "Identity
+     * namespaces" section of docs mcp.md for the mapping and correlation rule.
      */
     ResolvedIdentity classify(ToolContext ctx) {
         ChatOrigin origin = ChatOrigin.from(ctx);

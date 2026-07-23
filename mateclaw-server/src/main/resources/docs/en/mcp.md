@@ -390,11 +390,17 @@ user; its environment is fixed at spawn and STDIO has no per-request header
 channel like HTTP. So per-user identity **cannot travel via env** — it must ride
 in-band with each tool call.
 
-MateClaw can inject the **authenticated username** into the MCP **`_meta`**
-field of every tool call for a chosen server, so the server can call its
-downstream REST backend on behalf of that user. `_meta` is the caller-controlled
-channel on `tools/call` (not model-controlled), which is cleaner than injecting
-into the arguments JSON.
+MateClaw can inject a **typed caller identity** into the MCP **`_meta`** field
+of every tool call for a chosen server, so the server can call its downstream
+REST backend on behalf of that caller. `_meta` is the caller-controlled channel
+on `tools/call` (not model-controlled), which is cleaner than injecting into the
+arguments JSON.
+
+The identity is **not always an authenticated account**: a web-console login is
+authenticated, while webchat visitors and IM senders are external/anonymous
+identifiers. The injected value carries a **trust level** (see Data contract
+below), and the MCP server and its REST backend must treat each level
+differently.
 
 ### Enable (opt-in, per server)
 
@@ -412,15 +418,29 @@ mateclaw:
 
 ### Data contract
 
-When enabled, MateClaw injects the reserved key **`mateclaw_user`** (value =
-authenticated username) into the MCP **`_meta`** field of each tool call (the
-caller-controlled channel on `tools/call`). It is injected by trusted server
-code, **never by the LLM** — `_meta` is not a model-controlled argument, so the
-model cannot spoof identity. When there is no authenticated user, nothing is
-injected (identity is never fabricated).
+When enabled, MateClaw injects the reserved key **`mateclaw_user`** into the
+MCP **`_meta`** field of each tool call (the caller-controlled channel on
+`tools/call`), with the value formatted as **`<trust>:<subject>`**. It is
+injected by trusted server code, **never by the LLM** — `_meta` is not a
+model-controlled argument, so the model cannot spoof identity.
 
-The MCP server reads the key from `_meta`, then calls REST with it plus its own
-backend API key (e.g. an `X-On-Behalf-Of` header):
+The trust level is typed from the request's source channel:
+
+| trust | Source | subject | How the backend should treat it |
+|---|---|---|---|
+| `authenticated` | Web-console login (JWT/PAT) | Immutable numeric user id (preferred), else username | MateClaw authenticated this account — safe for on-behalf-of |
+| `anonymous` | Webchat visitor / third-party `endUserId` | Visitor / end-user id | **No MateClaw account backs it** — treat as unauthenticated; decide whether/how to serve |
+| `external` | IM sender (feishu / wecom / dingtalk…) | Platform sender id | Same as `anonymous` — an external platform identifier, not a MateClaw identity |
+
+**Nothing is injected (fail-closed) when**: the call is cron/system-triggered,
+the channel is unknown (channelType absent), an anonymous channel has no visitor
+id, or token mode is on but no signing key is configured. If `mateclaw_user` is
+absent, the backend should reject or serve identity-less — **never** treat
+"no identity" as a default user.
+
+The MCP server reads the key from `_meta`, splits `<trust>:<subject>`, then
+calls REST with it plus its own backend API key (e.g. an `X-On-Behalf-Of`
+header):
 
 ```python
 # FastMCP example: MCP server as a Python CLI script (STDIO)
@@ -440,10 +460,15 @@ def query_orders(keyword: str, ctx: Context) -> str:
     user = getattr(raw_meta, "mateclaw_user", None) if raw_meta else None
     if not user:
         raise ValueError("missing injected identity")   # reject identity-less calls
+    trust, _, subject = user.partition(":")             # "<trust>:<subject>"
     headers = {
         "Authorization": f"ApiKey {API_KEY}",            # service identity
-        "X-On-Behalf-Of": user,                          # the acting user
+        "X-On-Behalf-Of": subject,                       # the acting user
+        "X-On-Behalf-Trust": trust,                      # authenticated / anonymous / external
     }
+    # Only authenticated is a MateClaw account; anonymous (webchat visitor) /
+    # external (IM sender) are external identifiers — REST must treat them as
+    # unauthenticated.
     r = httpx.get(f"{REST_BASE}/orders", params={"q": keyword}, headers=headers, timeout=30)
     r.raise_for_status()
     return r.text
@@ -454,9 +479,11 @@ if __name__ == "__main__":
 
 ### Two trust models
 
-**① Plaintext (default)**: injects the plaintext username. Fits a trusted
-network where the backend authenticates the MCP service by API key and treats
-the forwarded user as on-behalf-of. The backend trusts the raw string.
+**① Plaintext (default)**: injects the plaintext `<trust>:<subject>`. Fits a
+trusted network where the backend authenticates the MCP service by API key.
+The backend trusts the raw string — but should still parse the `trust` prefix
+first: only `authenticated` warrants on-behalf-of; treat `anonymous`/`external`
+as unauthenticated.
 
 **② Signed token (recommended across a trust boundary)**: injects a short-lived
 **RS256 JWT** that MateClaw signs with a private key (the `_meta` key becomes
@@ -488,15 +515,25 @@ openssl pkey -in mcp-idfwd-private.pem -pubout -out mcp-idfwd-public.pem
 # private-key-pem takes the private key body (PEM headers optional; stripped on parse)
 ```
 
-Token claims: `iss`, `sub`=user, `aud`=this server, `iat`, `exp` (short), `jti`.
+Token claims: `iss`, `sub`, `aud`=this server, `iat`, `exp` (short), `jti`,
+plus two identity claims: **`trust`** (`authenticated`/`anonymous`/`external`)
+and **`channel_type`** (source channel: `web`/`api`/`feishu`/`wecom`/…).
 `aud` + short `exp` bound replay to tens of seconds and to one backend. **When
 token mode is on but no key is configured, it fails closed** (no token minted,
 nothing injected — the backend rejects) rather than silently downgrading to
 plaintext.
 
-> `sub` carries the MateClaw user identifier (`ChatOrigin.requesterId`). If your
-> backend authorizes on an immutable numeric id, resolve username→id before
-> minting (kept decoupled from the user store here).
+> **The meaning of `sub` varies with trust**: for `authenticated` it is the
+> MateClaw user's immutable numeric id (falling back to username when no id
+> exists); for `anonymous`/`external` it is the visitor / IM sender id —
+> **not** a MateClaw account.
+>
+> ⚠️ **A valid signature ≠ an authenticated user.** The signature only proves
+> "MateClaw minted this assertion", and MateClaw mints assertions for visitor
+> channels too (`trust=anonymous`). Backends **must check the `trust` claim**:
+> only `authenticated` may be authorized on-behalf-of as an account. Equating
+> "signature valid" with "MateClaw-authenticated user" would grant webchat
+> visitors a trust level they should not have.
 
 The MCP server (Python) only forwards — it does not verify (reads the token
 from `_meta`):
@@ -527,8 +564,14 @@ claims = jwt.decode(
     issuer="mateclaw", audience="https://api.internal",
 )
 user = claims["sub"]            # trusted only after signature verification
-# claims["sub"] = user id, claims["trust"] = authenticated/anonymous/external
-# → per-user authorization; invalid/expired → 401
+trust = claims.get("trust", "anonymous")
+channel = claims.get("channel_type")     # web / api / feishu / wecom / ...
+if trust != "authenticated":
+    # anonymous (webchat visitor) / external (IM sender): not a MateClaw
+    # account — downgrade to unauthenticated: refuse on-behalf-of, or serve
+    # in a limited way per your policy.
+    raise PermissionError(f"untrusted identity type: {trust} ({channel})")
+# → per-user authorization for authenticated only; invalid/expired → 401
 ```
 
 > Public key distribution: REST backends can fetch the public key via the JWKS
@@ -539,6 +582,45 @@ user = claims["sub"]            # trusted only after signature verification
 > Relationship to the API key: you can keep the API key as service/channel auth
 > ("this MCP service may talk to the backend") plus the JWT as the user
 > assertion — two clean layers — or let the JWT carry both.
+
+### Migration note (identity moved from args to `_meta` — breaking change)
+
+**No compatibility window.** Earlier versions injected identity into the tool
+arguments (`args["__mateclaw_user__"]` / `args["__mateclaw_token__"]`); it now
+travels only in `_meta` (`mateclaw_user` / `mateclaw_token`) — **args no longer
+carry identity**. An MCP server that still reads identity from args will
+silently stop receiving it after upgrading.
+
+Server-side migration checklist:
+
+1. **Move the read**: read `_meta` instead of the tool args. The correct
+   FastMCP pattern is `ctx.request_context.meta` +
+   `getattr(raw_meta, "mateclaw_user", None)` — ⚠️ `ctx.meta` does not exist
+   and meta is a Pydantic model, not a dict: `ctx.meta.get(...)` crashes with
+   AttributeError (earlier doc examples were wrong; corrected).
+2. **Parse the trust prefix** (plaintext mode): the value is
+   `<trust>:<subject>`; authorize by trust level.
+3. **Check the trust claim** (token mode): see the verification example above —
+   do not equate "signature valid" with "authenticated user".
+
+### Identity namespaces
+
+MateClaw uses **different prefixed formats** for the same visitor/sender across
+subsystems (deliberately separate concerns):
+
+| Concern | Format | Webchat visitor example | Where it lands |
+|---|---|---|---|
+| Memory isolation | `<channel>:<requesterId>` (`user:<username>` for web) | `api:visitor-xyz` | owner_key (memories / facts / workspace files) |
+| Conversation attribution | `webchat:<visitorId>` | `webchat:visitor-xyz` | conversation username |
+| Audit | `webchat:<channelId>:<visitorId>` | `webchat:42:visitor-xyz` | audit event actor |
+| MCP forwarding | `<trust>:<subject>` | `anonymous:visitor-xyz` | not persisted (outbound `_meta` / JWT) |
+
+**Correlation rule**: all four formats embed the same bare `visitorId` — strip
+the prefix to join across tables/systems. The MCP forwarding format is an
+**external contract** (remote backends use it to decide trust level); its
+prefix denotes trust, not namespace, so it is not unified with the internal
+formats — when you receive `anonymous:<vid>`, the `<vid>` is the same visitor
+MateClaw identifies in its memory/conversation stores.
 
 ---
 
