@@ -20,6 +20,13 @@ import vip.mate.agent.context.ChatOrigin;
  * any real user's PERSONAL bucket (which would otherwise be a black hole that
  * nobody can read) — such writes are expected to be TEAM-scoped instead.
  *
+ * <p>This owner key is one of several per-visitor identity namespaces MateClaw
+ * uses: conversation attribution uses {@code webchat:<visitorId>}, audit uses
+ * {@code webchat:<channelId>:<visitorId>}, and MCP on-behalf-of forwarding uses
+ * {@code <trust>:<subject>}. They are deliberately separate concerns — see the
+ * "Identity namespaces" section of docs mcp.md for the mapping and correlation
+ * rule. Do not introduce a new prefix format without updating that table.
+ *
  * @author MateClaw Team
  */
 @Component

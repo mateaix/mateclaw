@@ -1665,6 +1665,10 @@ public class WebChatController {
     /**
      * 由 visitorId 派生 username（mate_conversation.username，VARCHAR(64)）。
      * 同样在超长时折叠为哈希，避免 username 溢出列宽。
+     *
+     * <p>访客身份命名空间之一：记忆隔离用 {@code api:<visitorId>}，审计用
+     * {@code webchat:<channelId>:<visitorId>}，MCP 透传用 {@code <trust>:<visitorId>}。
+     * 各格式的用途与关联规则见 docs mcp.md「身份命名空间」节；新增格式前务必同步该表。
      */
     static String webchatUsername(String visitorId) {
         String u = "webchat:" + visitorId;

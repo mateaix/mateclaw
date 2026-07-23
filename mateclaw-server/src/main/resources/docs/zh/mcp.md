@@ -383,7 +383,9 @@ API 响应里 `headers_json` 和 `env_json` 的值自动**脱敏**。`args_json`
 
 STDIO MCP server 是**每个配置一个共享子进程**，所有用户共用；env 在子进程启动时一次性注入、之后不可变，STDIO 也没有 HTTP 那种 per-request header 通道。所以**不能用 env 传 per-user 身份**——身份必须随每次工具调用在带内传递。
 
-MateClaw 支持把**认证用户名**注入到每次工具调用的参数里，让 MCP server 代表该用户调用底层 REST 后端。
+MateClaw 支持把**带类型的调用方身份**注入到每次工具调用的 MCP **`_meta`** 字段里，让 MCP server 代表该用户调用底层 REST 后端。`_meta` 是 MCP 协议里 `tools/call` 上调用方控制的通道（不受模型控制），比塞进参数 JSON 更干净。
+
+身份**不总是认证账号**：web 控制台登录是认证身份，而 webchat 访客、IM 发送者只是外部/匿名标识。注入值带**信任级别**（见下「数据契约」），MCP server 与其 REST 后端必须按级别区别对待。
 
 ### 开启（opt-in，按 server）
 
@@ -400,27 +402,46 @@ mateclaw:
 
 ### 数据契约
 
-开启后，MateClaw 在调用该 server 的每个工具时，往参数 JSON 里注入保留字段 **`__mateclaw_user__`**（值=认证用户名）。该值由受信服务端注入、**不经 LLM**；若 LLM 伪造了同名字段会被覆盖，因此模型无法冒充身份。无认证用户时不注入（不伪造身份）。
+开启后，MateClaw 在调用该 server 的每个工具时，把保留字段 **`mateclaw_user`** 注入到 MCP 请求的 **`_meta`** 字段（`tools/call` 上调用方控制的通道），值的格式为 **`<trust>:<subject>`**。该值由受信服务端注入、**不经 LLM**——`_meta` 不是模型控制的参数，模型无法冒充身份。
 
-MCP server 侧读出该字段、剥掉，再连同自己持有的后端 API Key 一起调 REST（如 `X-On-Behalf-Of` header）：
+信任级别（`trust`）按请求来源渠道定型：
+
+| trust | 来源 | subject | 后端应如何对待 |
+|---|---|---|---|
+| `authenticated` | web 控制台登录（JWT/PAT） | 不可变数字用户 id（优先），无则用户名 | MateClaw 已认证该账号，可放心 on-behalf-of |
+| `anonymous` | webchat 访客 / 第三方 `endUserId` | 访客 / 终端用户 id | **无 MateClaw 账号背书**，按未认证处理，自行决定是否/如何服务 |
+| `external` | IM 发送者（feishu / wecom / dingtalk…） | 平台发送者 id | 同 `anonymous`——外部平台标识，非 MateClaw 身份 |
+
+**不注入（fail-closed）的情形**：cron / system 触发、渠道未知（channelType 缺失）、匿名渠道但无访客 id、token 模式但未配私钥。收不到 `mateclaw_user` 时，后端应拒绝或按无身份处理——**绝不**要把"没有身份"当成默认用户。
+
+MCP server 侧从 `_meta` 读出该字段，解析 `<trust>:<subject>`，再连同自己持有的后端 API Key 一起调 REST（如 `X-On-Behalf-Of` header）：
 
 ```python
 # FastMCP 示例：MCP server 用 Python 命令行脚本（STDIO）
 import os, httpx
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import FastMCP, Context
 
 mcp = FastMCP("my-internal-api")
 REST_BASE = os.environ["REST_BASE"]          # 后端地址
 API_KEY = os.environ["BACKEND_API_KEY"]      # 服务级 API Key（认证 MCP 服务本身）
 
 @mcp.tool()
-def query_orders(keyword: str, __mateclaw_user__: str | None = None) -> str:
-    if not __mateclaw_user__:
+def query_orders(keyword: str, ctx: Context) -> str:
+    # 身份在 _meta 里，不在 args —— 从 MCP context 读。
+    # FastMCP 的 Context 通过 request_context.meta 暴露 _meta（一个
+    # Pydantic 模型，extra="allow"）；用 getattr 读，不是 dict 的 .get()。
+    raw_meta = ctx.request_context.meta
+    user = getattr(raw_meta, "mateclaw_user", None) if raw_meta else None
+    if not user:
         raise ValueError("missing injected identity")   # 拒绝无身份调用
+    trust, _, subject = user.partition(":")             # "<trust>:<subject>"
     headers = {
         "Authorization": f"ApiKey {API_KEY}",            # 服务身份
-        "X-On-Behalf-Of": __mateclaw_user__,             # 代表的用户
+        "X-On-Behalf-Of": subject,                       # 代表的用户
+        "X-On-Behalf-Trust": trust,                      # authenticated / anonymous / external
     }
+    # 只有 authenticated 才是 MateClaw 认证账号；anonymous（webchat 访客）/
+    # external（IM 发送者）只是外部标识，REST 后端须按未认证身份自行裁量。
     r = httpx.get(f"{REST_BASE}/orders", params={"q": keyword}, headers=headers, timeout=30)
     r.raise_for_status()
     return r.text
@@ -429,13 +450,11 @@ if __name__ == "__main__":
     mcp.run()   # STDIO
 ```
 
-> 工具的入参 schema 若是 `additionalProperties: false`，记得像上面那样把 `__mateclaw_user__` 声明为可选参数，否则严格校验会拒绝。
-
 ### 两种信任模型
 
-**① 明文（默认）**：注入明文用户名。适合 REST 在内网、且后端用 API Key 认证 MCP 服务、把转发用户当 on-behalf-of 的场景。后端裸信这个字符串。
+**① 明文（默认）**：注入明文 `<trust>:<subject>`。适合 REST 在内网、且后端用 API Key 认证 MCP 服务的场景。后端裸信这个字符串——但仍应先解析 `trust` 前缀：仅 `authenticated` 可做 on-behalf-of，`anonymous`/`external` 按未认证处理。
 
-**② 签名 token（推荐用于跨信任边界）**：注入一个 MateClaw 用私钥现签的**短时 RS256 JWT**（保留字段换成 **`__mateclaw_token__`**），REST 后端用**公钥验签**——它信任的是签名，而非 MCP 服务/Python/传输。
+**② 签名 token（推荐用于跨信任边界）**：注入一个 MateClaw 用私钥现签的**短时 RS256 JWT**（`_meta` 里字段换成 **`mateclaw_token`**），REST 后端用**公钥验签**——它信任的是签名，而非 MCP 服务/Python/传输。
 
 ```yaml
 mateclaw:
@@ -461,34 +480,74 @@ openssl pkey -in mcp-idfwd-private.pem -pubout -out mcp-idfwd-public.pem
 # private-key-pem 用私钥内容（带不带 PEM 头都行，解析时会剥掉）
 ```
 
-token 的 claims：`iss`、`sub`=用户、`aud`=该 server、`iat`、`exp`（短）、`jti`。`aud`+短 `exp` 把重放限制在几十秒内、且只对这一个后端。**token 模式开启但没配私钥时 fail-closed**（不签、不注入，后端自然拒绝），不会偷偷退回明文。
+token 的 claims：`iss`、`sub`、`aud`=该 server、`iat`、`exp`（短）、`jti`，外加两个身份声明：**`trust`**（`authenticated`/`anonymous`/`external`）与 **`channel_type`**（来源渠道：`web`/`api`/`feishu`/`wecom`/…）。`aud`+短 `exp` 把重放限制在几十秒内、且只对这一个后端。**token 模式开启但没配私钥时 fail-closed**（不签、不注入，后端自然拒绝），不会偷偷退回明文。
 
-> `sub` 携带的是 MateClaw 用户标识（`ChatOrigin.requesterId`）。若后端按不可变数字 id 鉴权，可在签发前把用户名解析成 id（本层刻意不耦合用户存储）。
+> **`sub` 的含义随 trust 变化**：`authenticated` 时是 MateClaw 用户的不可变数字 id（无 id 时退回用户名）；`anonymous`/`external` 时是访客 / IM 发送者 id——**不是** MateClaw 账号。
+>
+> ⚠️ **验签通过 ≠ 认证用户。** 签名只证明"MateClaw 签发了这个断言"，而 MateClaw 对访客渠道也会签发（`trust=anonymous`）。后端**必须检查 `trust` claim**：仅 `authenticated` 可按账号授权 on-behalf-of；把"签名有效"等同于"是 MateClaw 认证用户"会让 webchat 访客获得不该有的信任级。
 
-MCP server（Python）只透传、不验签：
+MCP server（Python）只透传、不验签（从 `_meta` 读 token）：
 
 ```python
 @mcp.tool()
-def query_orders(keyword: str, __mateclaw_token__: str | None = None) -> str:
-    if not __mateclaw_token__:
+def query_orders(keyword: str, ctx: Context) -> str:
+    raw_meta = ctx.request_context.meta
+    token = getattr(raw_meta, "mateclaw_token", None) if raw_meta else None
+    if not token:
         raise ValueError("missing identity token")
-    headers = {"Authorization": f"Bearer {__mateclaw_token__}"}   # 直接透传给 REST
+    headers = {"Authorization": f"Bearer {token}"}   # 直接透传给 REST
     return httpx.get(f"{REST_BASE}/orders", params={"q": keyword}, headers=headers, timeout=30).text
 ```
 
-REST 后端验签（伪代码）：
+REST 后端验签：从 MateClaw 的 JWKS 端点拉公钥验签。
 
 ```python
 import jwt  # PyJWT
-claims = jwt.decode(token, public_key_pem, algorithms=["RS256"],
-                    issuer="mateclaw", audience="https://api.internal")
+from jwt import PyJWKClient
+
+# 从 MateClaw 的 JWKS 端点获取公钥
+jwks_client = PyJWKClient("http://mateclaw-host:18088/api/v1/mcp/.well-known/jwks.json")
+signing_key = jwks_client.get_signing_key_from_jwt(token)
+claims = jwt.decode(
+    token, signing_key.key, algorithms=["RS256"],
+    issuer="mateclaw", audience="https://api.internal",
+)
 user = claims["sub"]            # 验签通过才相信
-# → 按 user 做 per-user 授权；验签失败/过期 → 401
+trust = claims.get("trust", "anonymous")
+channel = claims.get("channel_type")     # web / api / feishu / wecom / ...
+if trust != "authenticated":
+    # anonymous（webchat 访客）/ external（IM 发送者）：非 MateClaw 账号，
+    # 降级为未认证身份——拒绝 on-behalf-of，或按业务规则有限服务。
+    raise PermissionError(f"untrusted identity type: {trust} ({channel})")
+# → 仅 authenticated 按 user 做 per-user 授权；验签失败/过期 → 401
 ```
 
-> 公钥分发：当前由运维把上面生成的公钥配到 REST 侧（带外）。后续可加一个 JWKS 端点自动分发+轮换。
+> 公钥分发：REST 后端可通过 JWKS 端点自动获取公钥：`GET /api/v1/mcp/.well-known/jwks.json`。返回标准 JWKS 格式。后端用 PyJWT / java-jwt 等库从 JWKS URL 获取公钥验签，无需带外配置。
 >
 > 与 API Key 的关系：可保留 API Key 作"服务/通道认证"（这台 MCP 服务被允许跟后端说话）+ JWT 作"用户断言"，双层更清晰；也可让 JWT 一肩挑。
+
+### 迁移说明（身份从 args 迁移到 `_meta`，破坏性变更）
+
+**无兼容期。** 早期版本把身份注入工具参数（`args["__mateclaw_user__"]` / `args["__mateclaw_token__"]`）；现在只注入 `_meta`（`mateclaw_user` / `mateclaw_token`），**args 不再携带身份**。仍从 args 读身份的 MCP server 升级后会静默收不到身份。
+
+server 侧迁移 checklist：
+
+1. **改读取位置**：从 tool args 改读 `_meta`。FastMCP 的正确读法是 `ctx.request_context.meta` + `getattr(raw_meta, "mateclaw_user", None)`——⚠️ `ctx.meta` 不存在、meta 是 Pydantic 模型而非 dict，`ctx.meta.get(...)` 会 AttributeError 崩溃（早期文档示例有误，已修正）。
+2. **解析 trust 前缀**（明文模式）：值为 `<trust>:<subject>`，按 trust 分级授权。
+3. **检查 trust claim**（token 模式）：见上方验签示例，勿把"验签通过"当成"认证用户"。
+
+### 身份命名空间
+
+MateClaw 内部对同一访客/发送者在不同子系统使用**不同的前缀格式**（用途不同，刻意分立）：
+
+| 用途 | 格式 | webchat 访客示例 | 落地 |
+|---|---|---|---|
+| 记忆隔离 | `<channel>:<requesterId>`（web 为 `user:<用户名>`） | `api:visitor-xyz` | owner_key（记忆 / 事实 / 工作区文件） |
+| 会话归属 | `webchat:<visitorId>` | `webchat:visitor-xyz` | 会话 username |
+| 审计 | `webchat:<channelId>:<visitorId>` | `webchat:42:visitor-xyz` | 审计事件 actor |
+| MCP 透传 | `<trust>:<subject>` | `anonymous:visitor-xyz` | 不落库（出站 `_meta` / JWT） |
+
+**关联规则**：四种格式都内含同一个裸 `visitorId`，剥掉前缀即可跨表/跨系统 join。MCP 透传格式是**对外契约**（远端后端据此判定信任级），前缀语义是信任级别而非命名空间，因此不与内部格式统一——拿到 `anonymous:<vid>` 时，`<vid>` 与 MateClaw 侧记忆/会话里标识的是同一个访客。
 
 ---
 

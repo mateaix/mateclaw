@@ -9,11 +9,18 @@ import vip.mate.tool.builtin.ToolExecutionContext;
 
 import java.security.KeyFactory;
 import java.security.PrivateKey;
+import java.security.interfaces.RSAPrivateCrtKey;
+import java.security.interfaces.RSAPublicKey;
 import java.security.spec.PKCS8EncodedKeySpec;
+import java.security.spec.RSAPublicKeySpec;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Base64;
+import java.util.Collections;
 import java.util.Date;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -40,12 +47,19 @@ import java.util.UUID;
  *
  * <p>Two transport modes carry the typed identity, per {@link McpIdentityForwardProperties}:
  * <ul>
- *   <li><b>plaintext</b> — injects {@code <trust>:<subject>} under {@link McpIdentityForwardProperties#USER_ARG}.</li>
- *   <li><b>token</b> — injects an RS256 JWT under {@link McpIdentityForwardProperties#TOKEN_ARG}
+ *   <li><b>plaintext</b> — injects {@code <trust>:<subject>} under
+ *       {@link McpIdentityForwardProperties#META_USER_KEY} in the MCP {@code _meta} field.</li>
+ *   <li><b>token</b> — injects an RS256 JWT under
+ *       {@link McpIdentityForwardProperties#META_TOKEN_KEY} in {@code _meta},
  *       with {@code sub}, {@code trust}, {@code channel_type}, {@code aud}, short {@code exp}.
- *       The REST backend verifies the signature with the matching public key, so it
- *       need not trust the MCP service or the transport.</li>
+ *       The REST backend verifies the signature with the matching public key (available
+ *       via the JWKS endpoint), so it need not trust the MCP service or the transport.</li>
  * </ul>
+ *
+ * <p>Identity travels in {@code _meta} (the caller-controlled channel on {@code tools/call}),
+ * not in {@code arguments} (the model-controlled channel). This is semantically cleaner and
+ * removes spoof risk entirely: the model cannot author {@code _meta}, so no overwrite guard
+ * is needed.
  *
  * <p>Fail-closed: when token mode is enabled but the signing key is missing or
  * unparseable, nothing is injected (the call goes out without identity and the
@@ -76,9 +90,18 @@ public class McpIdentityForwardService {
      * PEM content last handed to the parser. Lets the cache self-heal when the
      * operator fixes the config (or a config reload pushes a new key) without an
      * app restart: if the PEM changed since the last attempt we retry instead of
-     * sticking with a permanent null. {@code null} = never attempted.
+     * sticking with a permanent null.
      */
     private volatile String lastAttemptedPem;
+
+    /**
+     * Whether a parse has been attempted at all. Distinct from
+     * {@link #lastAttemptedPem} because a blank/null PEM sets
+     * {@code lastAttemptedPem = null}, which would otherwise make the fast-path
+     * guard {@code lastAttemptedPem != null} re-enter on every call and
+     * re-log the ERROR indefinitely (log-spam on a misconfigured system).
+     */
+    private volatile boolean parseAttempted;
 
     public McpIdentityForwardService(McpIdentityForwardProperties properties) {
         this.properties = properties;
@@ -91,9 +114,6 @@ public class McpIdentityForwardService {
     public String audienceFor(Long serverId, String serverName) {
         return properties.audienceFor(serverId, serverName);
     }
-
-    /** The (key, value) to merge into the call arguments, or empty to inject nothing. */
-    public record Injection(String key, String value) {}
 
     /** A typed identity resolved from the request origin. Empty = inject nothing. */
     record ResolvedIdentity(String subject, String trust, String channelType) {
@@ -113,6 +133,13 @@ public class McpIdentityForwardService {
      * to {@link ResolvedIdentity#NONE} (fail-closed). The ThreadLocal
      * {@link ToolExecutionContext} username is consulted only inside the web
      * branch and only when no immutable user id is present.
+     *
+     * <p>The {@code trust} prefix / claim is an external contract consumed by
+     * remote REST backends to decide on-behalf-of trust. It is deliberately
+     * distinct from MateClaw's internal identity namespaces (memory owner key
+     * {@code <channel>:<requesterId>}, conversation username {@code webchat:<vid>},
+     * audit actor {@code webchat:<channelId>:<vid>}) — see the "Identity
+     * namespaces" section of docs mcp.md for the mapping and correlation rule.
      */
     ResolvedIdentity classify(ToolContext ctx) {
         ChatOrigin origin = ChatOrigin.from(ctx);
@@ -155,26 +182,85 @@ public class McpIdentityForwardService {
     }
 
     /**
-     * Resolve the identity injection for a call. Empty when the origin carries
-     * no usable identity (cron / system / anonymous-without-id), or when token
-     * mode is enabled but the key is unavailable (fail-closed).
+     * Resolve the identity injection for a call, as an {@code _meta} key→value map.
+     * Empty when the origin carries no usable identity (cron / system /
+     * anonymous-without-id), or when token mode is enabled but the key is
+     * unavailable (fail-closed). The returned map is merged into the
+     * {@code tools/call} {@code _meta} field by the calling wrapper.
+     *
+     * @since #459 follow-up: identity moved from args to {@code _meta}.
      */
-    public Optional<Injection> resolve(ToolContext ctx, String audience) {
+    public Map<String, String> resolveMeta(ToolContext ctx, String audience) {
         ResolvedIdentity id = classify(ctx);
         if (!id.present()) {
-            return Optional.empty();
+            return Collections.emptyMap();
         }
         if (!properties.getToken().isEnabled()) {
             // Plaintext: prefix the value with the trust level so the backend
             // can tell authenticated from anonymous/external without a JWT.
-            return Optional.of(new Injection(McpIdentityForwardProperties.USER_ARG,
-                    id.trust() + ":" + id.subject()));
+            return Map.of(McpIdentityForwardProperties.META_USER_KEY,
+                    id.trust() + ":" + id.subject());
         }
         String jwt = mint(id, audience);
         if (jwt == null) {
-            return Optional.empty();   // fail-closed: token mode but no key
+            return Collections.emptyMap();   // fail-closed: token mode but no key
         }
-        return Optional.of(new Injection(McpIdentityForwardProperties.TOKEN_ARG, jwt));
+        return Map.of(McpIdentityForwardProperties.META_TOKEN_KEY, jwt);
+    }
+
+    /**
+     * Build the JWKS (JSON Web Key Set) for the signing key's public half, so
+     * REST backends can fetch the public key from a well-known URL instead of
+     * out-of-band config. Returns an empty list when the key is unavailable
+     * (token mode disabled or key not yet loaded).
+     *
+     * <p>The public key is derived from the private key's CRT params (modulus +
+     * public exponent) — no separate {@code publicKeyPem} config is needed.
+     * Requires the private key to be in CRT form, which PKCS#8 RSA keys
+     * generated by standard tooling (openssl, KeyPairGenerator) always are.
+     *
+     * @since #459 follow-up: JWKS endpoint for public key distribution.
+     */
+    public List<Map<String, Object>> publicKeyJwks() {
+        PrivateKey sk = signingKey();
+        if (!(sk instanceof RSAPrivateCrtKey rsaPriv)) {
+            if (sk != null) {
+                log.warn("[McpIdentity] signing key is not CRT-form ({}); "
+                        + "JWKS endpoint cannot derive the public key — token verification at backends will fail",
+                        sk.getClass().getName());
+            }
+            return Collections.emptyList();
+        }
+        RSAPublicKeySpec pubSpec = new RSAPublicKeySpec(rsaPriv.getModulus(), rsaPriv.getPublicExponent());
+        try {
+            RSAPublicKey pub = (RSAPublicKey) KeyFactory.getInstance("RSA").generatePublic(pubSpec);
+            Map<String, Object> jwk = new LinkedHashMap<>();
+            jwk.put("kty", "RSA");
+            jwk.put("use", "sig");
+            jwk.put("alg", "RS256");
+            jwk.put("kid", properties.getToken().getKeyId());
+            jwk.put("n", base64UrlEncode(pub.getModulus()));
+            jwk.put("e", base64UrlEncode(pub.getPublicExponent()));
+            return List.of(jwk);
+        } catch (Exception e) {
+            log.warn("[McpIdentity] failed to derive public key for JWKS: {}", e.getMessage());
+            return Collections.emptyList();
+        }
+    }
+
+    /**
+     * Base64url-encode a positive BigInteger per RFC 7518 §6.3 — the unsigned
+     * big-endian integer, WITHOUT the two's-complement sign byte that
+     * {@link BigInteger#toByteArray()} prepends for positive numbers whose high
+     * bit is set (which is every RSA modulus generated by standard tooling).
+     * Leaving it in would produce a 256× larger modulus to strict parsers.
+     */
+    private static String base64UrlEncode(java.math.BigInteger value) {
+        byte[] bytes = value.toByteArray();
+        if (bytes.length > 1 && bytes[0] == 0x00) {
+            bytes = java.util.Arrays.copyOfRange(bytes, 1, bytes.length);
+        }
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
     }
 
     /** Mint a short-lived RS256 JWT, or {@code null} if the key is unavailable. */
@@ -220,7 +306,10 @@ public class McpIdentityForwardService {
         // Skip only while the PEM is unchanged since the last attempt — that
         // avoids re-parsing (and re-logging) on every call. A changed PEM clears
         // the way for a fresh parse, which is the self-healing path.
-        if (lastAttemptedPem != null && lastAttemptedPem.equals(pem)) {
+        // parseAttempted guards the blank/null case: a null PEM sets
+        // lastAttemptedPem=null, so lastAttemptedPem!=null alone would re-enter
+        // on every call and spam the log.
+        if (parseAttempted && java.util.Objects.equals(lastAttemptedPem, pem)) {
             return null;
         }
         synchronized (this) {
@@ -229,9 +318,10 @@ public class McpIdentityForwardService {
             }
             // Re-check under the lock: another thread may have just attempted
             // the same (unchanged) PEM.
-            if (lastAttemptedPem != null && lastAttemptedPem.equals(pem)) {
+            if (parseAttempted && java.util.Objects.equals(lastAttemptedPem, pem)) {
                 return null;
             }
+            parseAttempted = true;
             lastAttemptedPem = pem;
             if (pem == null || pem.isBlank()) {
                 log.error("[McpIdentity] token mode enabled but mateclaw.mcp.identity-forward.token.private-key-pem is empty; "
