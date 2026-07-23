@@ -1764,7 +1764,7 @@ public class NodeStreamingChatHelper {
             List<AssistantMessage.ToolCall> calls = am.getToolCalls();
             for (int j = 0; j < calls.size(); j++) {
                 AssistantMessage.ToolCall tc = calls.get(j);
-                String safe = sanitizeToolCallArguments(tc.name(), tc.arguments());
+                String safe = sanitizeToolCallArguments(tc.name(), tc.arguments(), false);
                 if (!safe.equals(tc.arguments())) {
                     if (fixedCalls == null) fixedCalls = new ArrayList<>(calls);
                     fixedCalls.set(j, new AssistantMessage.ToolCall(tc.id(), tc.type(), tc.name(), safe));
@@ -2403,13 +2403,14 @@ public class NodeStreamingChatHelper {
                     acc.id,
                     acc.type != null ? acc.type : "function",
                     acc.name,
-                    sanitizeToolCallArguments(acc.name, acc.arguments.toString())));
+                    sanitizeToolCallArguments(acc.name, acc.arguments.toString(), true)));
         }
         return result;
     }
 
     /**
-     * Ensure {@code function.arguments} is always a well-formed JSON string.
+     * Ensure {@code function.arguments} is well-formed JSON before it is replayed
+     * to a provider in a follow-up request.
      * <p>
      * Some providers (e.g. aliyun-codingplan) reject the entire follow-up
      * request with HTTP 400 when the assistant message in history carries a
@@ -2421,23 +2422,53 @@ public class NodeStreamingChatHelper {
      *   <li>The upstream stream is truncated mid-token, leaving a partial
      *       JSON fragment like {@code "{\"a\":"}.</li>
      * </ul>
-     * Both cases are normalized to {@code "{}"} so the chat-completions
-     * round-trip stays valid. Tool execution downstream still re-validates
-     * arguments and surfaces a per-tool error if the empty payload is wrong
-     * for that tool.
+     *
+     * <p>The two call sites pass different {@code aggregationPoint} values:
+     * <ul>
+     *   <li><b>Outbound chokepoint</b> ({@code aggregationPoint=false},
+     *       {@link #normalizeToolCallArguments}): every assistant tool call
+     *       replayed from history is harmonized to an empty JSON object when
+     *       missing/invalid, so the chat-completions round-trip stays valid.</li>
+     *   <li><b>Stream aggregation</b> ({@code aggregationPoint=true},
+     *       {@link #buildFinalToolCalls}): the current turn's freshly
+     *       accumulated calls. Blank arguments still become an empty JSON object
+     *       (but now logged — a blank payload was previously invisible), while a
+     *       truncated/invalid fragment is passed through <em>verbatim</em> so the
+     *       tool executor's JSON pre-validation detects the truncation and returns
+     *       the model a "shorten and retry" guidance instead of a generic per-tool
+     *       "missing argument" error. History stays protected because the outbound
+     *       chokepoint re-normalizes the persisted fragment on the next send.</li>
+     * </ul>
      */
-    private static String sanitizeToolCallArguments(String toolName, String arguments) {
+    private static String sanitizeToolCallArguments(String toolName, String arguments, boolean aggregationPoint) {
         if (arguments == null || arguments.isBlank()) {
+            if (aggregationPoint) {
+                log.warn("Tool '{}' tool-call arguments are null/blank right after stream "
+                                + "aggregation; normalizing to an empty JSON object. Either the "
+                                + "model emitted an empty argument payload or every argument chunk "
+                                + "was lost before aggregation.",
+                        toolName);
+            }
             return "{}";
         }
         try {
             TOOL_ARG_JSON_MAPPER.readTree(arguments);
             return arguments;
         } catch (Exception e) {
-            log.warn("Tool '{}' arguments are not valid JSON after stream aggregation "
-                            + "(len={}, head={}); replacing with empty object so the "
-                            + "follow-up chat-completions request stays well-formed. "
-                            + "Parse error: {}",
+            if (aggregationPoint) {
+                log.warn("Tool '{}' arguments are not valid JSON after stream aggregation "
+                                + "(len={}, head={}); passing the raw fragment through so the tool "
+                                + "executor's truncation detection can tell the model to shorten and "
+                                + "retry. Parse error: {}",
+                        toolName,
+                        arguments.length(),
+                        arguments.substring(0, Math.min(80, arguments.length())),
+                        e.getMessage());
+                return arguments;
+            }
+            log.warn("Tool '{}' arguments are not valid JSON (len={}, head={}); replacing with "
+                            + "empty object so the follow-up chat-completions request stays "
+                            + "well-formed. Parse error: {}",
                     toolName,
                     arguments.length(),
                     arguments.substring(0, Math.min(80, arguments.length())),

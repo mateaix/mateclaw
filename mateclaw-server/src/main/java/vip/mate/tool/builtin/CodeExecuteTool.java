@@ -72,9 +72,14 @@ public class CodeExecuteTool {
         Use this to act on a skill whose SKILL.md describes steps but ships no runnable script:
         read the instructions, write the code they describe, and run it here.
 
+        IMPORTANT: You MUST pass the complete source code in the "code" parameter.
+        Never call this tool with "code" missing or empty — it fails with
+        "No code supplied". Do not describe the code in natural language; write the
+        actual code and put its full text in "code".
+
         Parameters:
         - language: one of "python", "bash", "node"
-        - code: the full source code to run
+        - code: REQUIRED — the full source code to run (never omit or leave empty)
         - skillName: optional. When set, the code runs inside that skill's directory
                      (so it can read the skill's reference/template files by relative path)
                      and the skill's stored secrets are injected as environment variables.
@@ -95,7 +100,7 @@ public class CodeExecuteTool {
         String language,
 
         @JsonProperty(required = true)
-        @JsonPropertyDescription("The full source code to run")
+        @JsonPropertyDescription("REQUIRED. The full source code to run — never omit or leave empty.")
         String code,
 
         @JsonProperty(required = false)
