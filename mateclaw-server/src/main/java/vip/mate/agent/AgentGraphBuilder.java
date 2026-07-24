@@ -60,6 +60,7 @@ import vip.mate.tool.guard.service.ToolGuardService;
 import vip.mate.workspace.conversation.ConversationService;
 import vip.mate.approval.ApprovalWorkflowService;
 import vip.mate.channel.web.ChatStreamTracker;
+import vip.mate.team.service.TeamContextBuilder;
 import vip.mate.wiki.service.WikiContextService;
 
 import java.lang.reflect.Field;
@@ -101,6 +102,7 @@ public class AgentGraphBuilder {
             "${mate.agent.markdown-normalize-enabled:true}")
     private boolean markdownNormalizeEnabled;
     private final ConversationService conversationService;
+    private final TeamContextBuilder teamContextBuilder;
     private final ModelConfigService modelConfigService;
     private final ModelProviderService modelProviderService;
     private final ModelContextWindowResolver contextWindowResolver;
@@ -1751,7 +1753,12 @@ public class AgentGraphBuilder {
         Integer wikiBudgetTokens = memoryBudgetTokens == Integer.MAX_VALUE ? null : memoryBudgetTokens;
         String wikiContext = wikiContextService.buildWikiContext(entity.getId(), wikiBudgetTokens);
 
-        return basePrompt + ABOUT_YOU_BLOCK + toolGuidance + searchGuidance + wikiContext;
+        // Team context (role-specific board playbook, or a negative notice for
+        // agents outside any team). Baked here so it shares the prompt-cache
+        // prefix; TeamChangedEvent evicts the cached agent on composition changes.
+        String teamContext = teamContextBuilder.buildTeamContext(entity.getId());
+
+        return basePrompt + ABOUT_YOU_BLOCK + toolGuidance + searchGuidance + wikiContext + teamContext;
     }
 
     /**

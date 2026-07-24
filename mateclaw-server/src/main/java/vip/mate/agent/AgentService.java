@@ -21,6 +21,7 @@ import vip.mate.memory.MemoryProperties;
 import vip.mate.memory.lifecycle.MemoryLifecycleMediator;
 import vip.mate.memory.lifecycle.TurnContext;
 import vip.mate.memory.service.MemoryRecallTracker;
+import vip.mate.team.event.TeamChangedEvent;
 import vip.mate.workspace.conversation.model.ConversationEntity;
 import vip.mate.workspace.conversation.repository.ConversationMapper;
 
@@ -236,6 +237,18 @@ public class AgentService {
     public void onWorkspaceFileChanged(vip.mate.workspace.document.event.WorkspaceFileChangedEvent event) {
         if (event.agentId() != null) {
             agentInstances.remove(event.agentId());
+        }
+    }
+
+    /**
+     * Invalidate cached agents whenever their team's composition or settings
+     * change. The team context block is baked into the system prompt at build
+     * time, so membership edits would otherwise stay invisible until restart.
+     */
+    @EventListener
+    public void onTeamChanged(TeamChangedEvent event) {
+        if (event.agentIds() != null) {
+            event.agentIds().forEach(agentInstances::remove);
         }
     }
 
