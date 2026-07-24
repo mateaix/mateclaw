@@ -274,12 +274,24 @@ public class SkillService {
     }
 
     /**
-     * 按名称查找技能（RFC-023：SkillManageTool 重名检查用）
+     * 按名称查找技能（全局，跨所有工作区）。仅用于内置技能同步等全局语义场景；
+     * 工作区相关的重名检查请用 {@link #findByName(String, Long)}。
      */
     public SkillEntity findByName(String name) {
         return skillMapper.selectOne(new LambdaQueryWrapper<SkillEntity>()
                 .eq(SkillEntity::getName, name)
                 .last("LIMIT 1"));
+    }
+
+    /**
+     * 按名称在指定工作区内查找技能（含 builtin 全局可见）。用于工作区隔离的
+     * 重名/存在性检查，避免跨工作区错误命中别的工作区的同名技能。
+     */
+    public SkillEntity findByName(String name, Long workspaceId) {
+        LambdaQueryWrapper<SkillEntity> wrapper = new LambdaQueryWrapper<SkillEntity>()
+                .eq(SkillEntity::getName, name);
+        applyWorkspaceScope(wrapper, workspaceId);
+        return skillMapper.selectOne(wrapper.last("LIMIT 1"));
     }
 
     /**
@@ -323,9 +335,12 @@ public class SkillService {
             throw new MateClawException("err.skill.name_required", "技能名称不能为空");
         }
 
-        // 检查名称唯一性
-        Long count = skillMapper.selectCount(new LambdaQueryWrapper<SkillEntity>()
-                .eq(SkillEntity::getName, skill.getName()));
+        // 名称唯一性按工作区隔离：同名技能只要不在同一工作区（且都不是 builtin）即可共存。
+        // 撞 builtin 名仍视为冲突（builtin 全局可见）。
+        LambdaQueryWrapper<SkillEntity> dupCheck = new LambdaQueryWrapper<SkillEntity>()
+                .eq(SkillEntity::getName, skill.getName());
+        applyWorkspaceScope(dupCheck, skill.getWorkspaceId());
+        Long count = skillMapper.selectCount(dupCheck);
         if (count > 0) {
             throw new MateClawException("err.skill.name_exists", "技能名称已存在: " + skill.getName());
         }

@@ -95,8 +95,9 @@ public class SkillSynthesisService {
         }
         name = name.strip().toLowerCase().replaceAll("[^a-z0-9._-]", "-");
 
-        // 去重
-        SkillEntity existing = skillService.findByName(name);
+        // 去重（按工作区隔离：只与本工作区 + builtin 的同名技能避让，
+        // 不同工作区的同名技能不应互相影响命名）
+        SkillEntity existing = skillService.findByName(name, workspaceId);
         if (existing != null) {
             name = name + "-" + (System.currentTimeMillis() % 10000);
         }

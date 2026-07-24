@@ -82,7 +82,10 @@ public class SkillInstaller {
      * {@code SkillService.hardDeleteSkill} via {@code DELETE /skills/{id}}.
      */
     public void uninstall(String skillName, Long workspaceId) {
-        List<SkillEntity> skills = skillService.listSkills();
+        // Scope the lookup to this workspace (+ builtin) so a same-named skill in
+        // another workspace is never picked up (which would wrongly 403 below even
+        // though the current workspace has its own skill to uninstall).
+        List<SkillEntity> skills = skillService.listSkills(workspaceId);
         SkillEntity target = skills.stream()
                 .filter(s -> s.getName().equals(skillName))
                 .findFirst()
@@ -147,8 +150,9 @@ public class SkillInstaller {
                 return CompletableFuture.completedFuture(null);
             }
 
-            // 3. 检查是否已存在
-            boolean exists = skillService.listSkills().stream()
+            // 3. 检查是否已存在（按工作区隔离：只在本工作区 + builtin 范围内查重，
+            //    不同工作区的同名技能可以各自独立安装）
+            boolean exists = skillService.listSkills(request.getWorkspaceId()).stream()
                     .anyMatch(s -> s.getName().equals(skillName));
             if (exists && !Boolean.TRUE.equals(request.getOverwrite())) {
                 task.markFailed("Skill '" + skillName + "' already exists. Set overwrite=true to replace.");
@@ -218,7 +222,8 @@ public class SkillInstaller {
             throw new vip.mate.exception.MateClawException("err.skill.name_required", "Cannot determine skill name from bundle");
         }
 
-        boolean exists = skillService.listSkills().stream()
+        // Workspace-scoped dedup: same-named skills in different workspaces coexist.
+        boolean exists = skillService.listSkills(workspaceId).stream()
                 .anyMatch(s -> s.getName().equals(skillName));
         if (exists && !overwrite) {
             throw new vip.mate.exception.MateClawException("err.skill.name_exists",
@@ -263,7 +268,9 @@ public class SkillInstaller {
                                        boolean enable, Long workspaceId) {
         SkillEntity skillEntity;
         if (exists) {
-            skillEntity = skillService.listSkills().stream()
+            // Locate the row to update within THIS workspace (+ builtin), so a
+            // reinstall never grabs a same-named skill owned by another workspace.
+            skillEntity = skillService.listSkills(workspaceId).stream()
                     .filter(s -> s.getName().equals(skillName))
                     .findFirst().orElseThrow();
             skillEntity.setSkillContent(bundle.content());
