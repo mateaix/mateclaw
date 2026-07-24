@@ -203,6 +203,19 @@ public class SkillRuntimeService {
     }
 
     /**
+     * Workspace-scoped view of the active skills: builtin + global (virtual)
+     * skills plus only the skills owned by {@code workspaceId}. Reads the same
+     * process-global cache and filters at read time (no per-workspace cache),
+     * so an agent in one workspace never sees another workspace's same-named
+     * skill. Used by the agent runtime execution path.
+     */
+    public List<ResolvedSkill> getActiveSkills(Long workspaceId) {
+        return getActiveSkills().stream()
+            .filter(s -> matchesWorkspace(s, workspaceId))
+            .collect(Collectors.toList());
+    }
+
+    /**
      * 刷新 active skills 缓存
      * 进入 active set 的 skill 必须同时满足：
      * 1. enabled == true
@@ -324,6 +337,20 @@ public class SkillRuntimeService {
     public ResolvedSkill findActiveSkill(String name) {
         return getActiveSkills().stream()
             .filter(s -> s.getName().equals(name))
+            .findFirst()
+            .orElse(null);
+    }
+
+    /**
+     * Workspace-scoped {@link #findActiveSkill(String)}: resolves {@code name}
+     * only among skills visible to {@code workspaceId} (builtin + global +
+     * that workspace's own), so a same-named skill in another workspace is
+     * never returned to an agent's load / read / execute path.
+     */
+    public ResolvedSkill findActiveSkill(String name, Long workspaceId) {
+        return getActiveSkills().stream()
+            .filter(s -> s.getName().equals(name))
+            .filter(s -> matchesWorkspace(s, workspaceId))
             .findFirst()
             .orElse(null);
     }
@@ -739,9 +766,20 @@ public class SkillRuntimeService {
      * visible only inside its owning workspace.
      */
     static boolean matchesWorkspace(ResolvedSkill skill, long agentWorkspaceId) {
+        return matchesWorkspace(skill, Long.valueOf(agentWorkspaceId));
+    }
+
+    /**
+     * Nullable-workspace variant used by the execution-side overloads: a
+     * {@code null} execution workspace (unresolved) sees only builtin and
+     * global ({@code null}-workspace, e.g. MCP virtual) skills — never another
+     * workspace's owned skills, so an unresolved context can never escalate
+     * into another tenant's skills.
+     */
+    public static boolean matchesWorkspace(ResolvedSkill skill, Long workspaceId) {
         if (skill.isBuiltin()) return true;
         Long skillWs = skill.getWorkspaceId();
         if (skillWs == null) return true;
-        return skillWs == agentWorkspaceId;
+        return workspaceId != null && skillWs.equals(workspaceId);
     }
 }
