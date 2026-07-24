@@ -25,7 +25,7 @@ class CodeExecuteToolArtifactTest {
     @Test
     @DisplayName("formatResult embeds links so extraction yields the clean filename, not '\"[name'")
     void formatResultExtractsCleanFilename() {
-        CodeExecuteTool tool = new CodeExecuteTool(null, null, null, null, null);
+        CodeExecuteTool tool = new CodeExecuteTool(null, null, null, null, null, null);
         var result = vip.mate.skill.runtime.SkillScriptExecutionService.ScriptResult.error(0, "");
         String out = tool.formatResult(result, List.of(
                 "[report.csv](http://localhost:18088/api/v1/files/generated/abc-123)",
@@ -43,7 +43,7 @@ class CodeExecuteToolArtifactTest {
     @Test
     @DisplayName("No artifacts → no generatedFiles field")
     void noArtifactsNoField() {
-        CodeExecuteTool tool = new CodeExecuteTool(null, null, null, null, null);
+        CodeExecuteTool tool = new CodeExecuteTool(null, null, null, null, null, null);
         var result = vip.mate.skill.runtime.SkillScriptExecutionService.ScriptResult.error(0, "ok");
         String out = tool.formatResult(result, List.of());
         assertEquals(false, out.contains("generatedFiles"), out);

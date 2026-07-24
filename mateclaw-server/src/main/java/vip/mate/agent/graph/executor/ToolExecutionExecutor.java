@@ -594,7 +594,7 @@ public class ToolExecutionExecutor {
                             toolCall.id(), toolName, redirect.response()));
                     continue;
                 }
-                String msg = skillAwareNotFoundMessage(toolName);
+                String msg = skillAwareNotFoundMessage(toolName, safeOrigin);
                 log.warn("[ToolExecutor] {}", msg);
                 events.add(GraphEventPublisher.toolComplete(toolCall.id(), toolName, msg, false));
                 allResponses.add(new ToolResponseMessage.ToolResponse(
@@ -684,7 +684,7 @@ public class ToolExecutionExecutor {
                 return new ToolResponseMessage.ToolResponse(
                         toolCall.id(), toolName, redirect.response());
             }
-            String msg = skillAwareNotFoundMessage(toolName);
+            String msg = skillAwareNotFoundMessage(toolName, replayOriginForRedirect);
             log.warn("[ToolExecutor] Pre-approved {}", msg);
             events.add(GraphEventPublisher.toolComplete(toolCall.id(), toolName, msg, false));
             return new ToolResponseMessage.ToolResponse(toolCall.id(), toolName, msg);
@@ -1276,10 +1276,34 @@ public class ToolExecutionExecutor {
         return Map.copyOf(result);
     }
 
-    private String skillAwareNotFoundMessage(String toolName) {
+    /**
+     * Best-effort conversation workspace from a {@link ChatOrigin}, with a
+     * {@code WorkspaceLookupCache} fallback for paths (e.g. approval replay)
+     * that carry a conversationId but no workspaceId. A {@code null} result
+     * makes the skill lookup scope to builtin/global only — never another
+     * workspace's skill.
+     */
+    private Long resolveWorkspaceId(ChatOrigin origin) {
+        if (origin == null) return null;
+        if (origin.workspaceId() != null) return origin.workspaceId();
+        return workspaceIdForConversation(origin.conversationId());
+    }
+
+    /**
+     * Resolve a conversation's owning workspace via the lookup cache, or
+     * {@code null} when unavailable. Exposed so sibling graph nodes (e.g.
+     * {@code ActionNode}) that only hold a conversationId can scope skill
+     * resolution to the right workspace without their own cache dependency.
+     */
+    public Long workspaceIdForConversation(String conversationId) {
+        return (workspaceLookupCache != null && conversationId != null)
+                ? workspaceLookupCache.resolveByConversation(conversationId) : null;
+    }
+
+    private String skillAwareNotFoundMessage(String toolName, ChatOrigin origin) {
         if (skillRuntimeService != null && toolName != null && !toolName.isBlank()) {
             try {
-                boolean isSkill = skillRuntimeService.getActiveSkills().stream()
+                boolean isSkill = skillRuntimeService.getActiveSkills(resolveWorkspaceId(origin)).stream()
                         .anyMatch(s -> s.getName() != null && s.getName().equalsIgnoreCase(toolName));
                 if (isSkill) {
                     return String.format(
@@ -1398,7 +1422,9 @@ public class ToolExecutionExecutor {
     private SkillRedirect tryAutoRedirectSkillCall(String toolName, String originalArgs, ChatOrigin origin) {
         if (skillRuntimeService == null || toolName == null || toolName.isBlank()) return null;
         try {
-            boolean isSkill = skillRuntimeService.getActiveSkills().stream()
+            // Scope to the conversation's workspace so an agent is never redirected
+            // into (and handed the SKILL.md content of) another workspace's skill.
+            boolean isSkill = skillRuntimeService.getActiveSkills(resolveWorkspaceId(origin)).stream()
                     .anyMatch(s -> s.getName() != null && s.getName().equalsIgnoreCase(toolName));
             if (!isSkill) return null;
         } catch (Exception e) {

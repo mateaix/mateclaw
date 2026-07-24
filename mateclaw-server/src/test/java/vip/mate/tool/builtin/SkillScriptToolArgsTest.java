@@ -26,7 +26,7 @@ class SkillScriptToolArgsTest {
 
     /** Unused collaborators are null — {@code normalizeArgs} only needs the mapper. */
     private final SkillScriptTool tool =
-            new SkillScriptTool(null, null, null, null, objectMapper);
+            new SkillScriptTool(null, null, null, null, null, objectMapper);
 
     @Test
     @DisplayName("null / blank args yield no argument list")

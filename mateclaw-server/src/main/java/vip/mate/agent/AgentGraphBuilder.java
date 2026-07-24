@@ -1784,7 +1784,7 @@ public class AgentGraphBuilder {
             boolean anyHasConstraints = false;
             for (String skillName : loaded) {
                 try {
-                    vip.mate.skill.runtime.model.ResolvedSkill skill = skillRuntimeService.findActiveSkill(skillName);
+                    vip.mate.skill.runtime.model.ResolvedSkill skill = skillRuntimeService.findActiveSkill(skillName, workspaceId);
                     if (skill != null && skill.getManifest() != null) {
                         List<String> constraints = skill.getManifest().getConstraints();
                         if (constraints != null && !constraints.isEmpty()) {

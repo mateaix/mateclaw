@@ -213,7 +213,8 @@ public class ActionNode implements NodeAction {
         }
         for (String skillName : skillNames) {
             try {
-                vip.mate.skill.runtime.model.ResolvedSkill skill = skillRuntimeService.findActiveSkill(skillName);
+                vip.mate.skill.runtime.model.ResolvedSkill skill = skillRuntimeService.findActiveSkill(
+                        skillName, executor.workspaceIdForConversation(conversationId));
                 if (skill == null || skill.getManifest() == null) {
                     continue;
                 }

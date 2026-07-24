@@ -13,6 +13,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Component;
+import vip.mate.agent.context.AgentWorkspaceResolver;
 import vip.mate.agent.context.ChatOrigin;
 import vip.mate.llm.routing.AgentBindingResolver;
 import vip.mate.skill.runtime.SkillFileAccessPolicy;
@@ -38,6 +39,7 @@ import java.util.Set;
 public class SkillScriptTool {
 
     private final SkillRuntimeService runtimeService;
+    private final AgentWorkspaceResolver workspaceResolver;
     private final SkillFileAccessPolicy accessPolicy;
     private final SkillScriptExecutionService executionService;
     private final SkillSecretService skillSecretService;
@@ -84,8 +86,8 @@ public class SkillScriptTool {
     ) {
         log.info("Executing skill script: skill={}, script={}, args={}", skillName, scriptPath, args);
 
-        // Look up active skill.
-        ResolvedSkill skill = runtimeService.findActiveSkill(skillName);
+        // Look up active skill within the conversation's workspace (+ builtin/global).
+        ResolvedSkill skill = runtimeService.findActiveSkill(skillName, workspaceResolver.resolve(ChatOrigin.from(ctx)));
         if (skill == null) {
             return formatError("Skill '" + skillName + "' not found or not enabled");
         }

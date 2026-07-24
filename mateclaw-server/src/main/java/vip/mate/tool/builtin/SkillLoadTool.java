@@ -9,6 +9,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Component;
+import vip.mate.agent.context.AgentWorkspaceResolver;
 import vip.mate.agent.context.ChatOrigin;
 import vip.mate.llm.routing.AgentBindingResolver;
 import vip.mate.skill.runtime.SkillRuntimeService;
@@ -37,6 +38,7 @@ public class SkillLoadTool {
 
     private final SkillRuntimeService runtimeService;
     private final SkillFileTool skillFileTool;
+    private final AgentWorkspaceResolver workspaceResolver;
 
     @Lazy
     @Autowired
@@ -69,13 +71,16 @@ public class SkillLoadTool {
         if (skillName == null || skillName.isBlank()) {
             return "Error: skillName is required. Call listAvailableSkills() to see loadable skills.";
         }
-        ResolvedSkill skill = runtimeService.findActiveSkill(skillName);
+        ChatOrigin origin = ChatOrigin.from(ctx);
+        // Resolve only within the conversation's workspace (+ builtin/global), so
+        // an agent can never load another workspace's same-named skill.
+        ResolvedSkill skill = runtimeService.findActiveSkill(skillName, workspaceResolver.resolve(origin));
         if (skill == null) {
             log.info("load_skill: skill '{}' not found or not enabled", skillName);
             return "Error: Skill '" + skillName + "' not found or not enabled. "
                     + "Call listAvailableSkills(keyword=\"" + skillName + "\") to find the correct name.";
         }
-        Long agentId = ChatOrigin.from(ctx).agentId();
+        Long agentId = origin.agentId();
         if (agentId != null) {
             Set<Long> boundSkillIds = agentBindingResolver.getBoundSkillIds(agentId);
             if (boundSkillIds != null && (skill.getId() == null || !boundSkillIds.contains(skill.getId()))) {

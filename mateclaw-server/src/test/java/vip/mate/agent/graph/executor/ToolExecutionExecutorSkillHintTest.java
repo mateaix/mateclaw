@@ -13,6 +13,7 @@ import vip.mate.tool.guard.ToolGuardResult;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
 /**
@@ -36,7 +37,7 @@ class ToolExecutionExecutorSkillHintTest {
             when(s.getName()).thenReturn(name);
             return s;
         }).toList();
-        when(svc.getActiveSkills()).thenReturn(skills);
+        when(svc.getActiveSkills(any())).thenReturn(skills);
         return svc;
     }
 

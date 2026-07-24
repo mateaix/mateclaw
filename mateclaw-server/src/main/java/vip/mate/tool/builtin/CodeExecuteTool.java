@@ -13,6 +13,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Component;
+import vip.mate.agent.context.AgentWorkspaceResolver;
 import vip.mate.agent.context.ChatOrigin;
 import vip.mate.llm.routing.AgentBindingResolver;
 import vip.mate.skill.runtime.SkillRuntimeService;
@@ -57,6 +58,7 @@ import java.util.Set;
 public class CodeExecuteTool {
 
     private final SkillRuntimeService runtimeService;
+    private final AgentWorkspaceResolver workspaceResolver;
     private final SkillScriptExecutionService executionService;
     private final SkillSecretService skillSecretService;
     private final ObjectMapper objectMapper;
@@ -119,8 +121,9 @@ public class CodeExecuteTool {
         Map<String, String> envVars = Collections.emptyMap();
 
         if (skillName != null && !skillName.isBlank()) {
-            // Skill-scoped run: validate binding + resolve the skill directory.
-            ResolvedSkill skill = runtimeService.findActiveSkill(skillName);
+            // Skill-scoped run: validate binding + resolve the skill directory,
+            // scoped to the conversation's workspace (+ builtin/global).
+            ResolvedSkill skill = runtimeService.findActiveSkill(skillName, workspaceResolver.resolve(ChatOrigin.from(ctx)));
             if (skill == null) {
                 return formatError("Skill '" + skillName + "' not found or not enabled");
             }

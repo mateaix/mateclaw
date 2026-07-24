@@ -10,6 +10,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Component;
+import vip.mate.agent.context.AgentWorkspaceResolver;
 import vip.mate.agent.context.ChatOrigin;
 import vip.mate.agent.context.TokenEstimator;
 import vip.mate.llm.routing.AgentBindingResolver;
@@ -42,6 +43,7 @@ public class SkillFileTool {
     private final SkillRuntimeService runtimeService;
     private final SkillFileAccessPolicy accessPolicy;
     private final SkillUsageService usageService;
+    private final AgentWorkspaceResolver workspaceResolver;
 
     @Lazy
     @Autowired
@@ -84,7 +86,7 @@ public class SkillFileTool {
         log.info("Reading skill file: skill={}, path={}", skillName, filePath);
 
         // 查找 active skill
-        ResolvedSkill skill = runtimeService.findActiveSkill(skillName);
+        ResolvedSkill skill = runtimeService.findActiveSkill(skillName, workspaceResolver.resolve(ChatOrigin.from(ctx)));
         if (skill == null) {
             return "Error: Skill '" + skillName + "' not found or not enabled";
         }
@@ -245,7 +247,7 @@ public class SkillFileTool {
     ) {
         log.info("Listing skill files: skill={}", skillName);
 
-        ResolvedSkill skill = runtimeService.findActiveSkill(skillName);
+        ResolvedSkill skill = runtimeService.findActiveSkill(skillName, workspaceResolver.resolve(ChatOrigin.from(ctx)));
         if (skill == null) {
             return "Error: Skill '" + skillName + "' not found or not enabled";
         }
@@ -341,7 +343,7 @@ public class SkillFileTool {
         // entries — no need to thread the (package-private) recommended
         // comparator back through here.
         List<ResolvedSkill> activeSkills = SkillCatalogSorter.sortResolved(
-                runtimeService.getActiveSkills().stream()
+                runtimeService.getActiveSkills(workspaceResolver.resolve(ChatOrigin.from(ctx))).stream()
                         .filter(s -> SkillCatalogSorter.sourceMatches(s, source))
                         .filter(s -> SkillCatalogSorter.runtimeMatches(s, status))
                         .filter(s -> boundSkillIds == null

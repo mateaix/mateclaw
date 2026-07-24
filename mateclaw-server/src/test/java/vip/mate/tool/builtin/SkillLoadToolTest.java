@@ -2,6 +2,7 @@ package vip.mate.tool.builtin;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import vip.mate.agent.context.AgentWorkspaceResolver;
 import vip.mate.skill.runtime.SkillRuntimeService;
 import vip.mate.skill.runtime.model.ResolvedSkill;
 
@@ -26,7 +27,8 @@ class SkillLoadToolTest {
     void blankSkillNameRejected() {
         SkillRuntimeService runtime = mock(SkillRuntimeService.class);
         SkillFileTool fileTool = mock(SkillFileTool.class);
-        SkillLoadTool tool = new SkillLoadTool(runtime, fileTool);
+        AgentWorkspaceResolver workspaceResolver = mock(AgentWorkspaceResolver.class);
+        SkillLoadTool tool = new SkillLoadTool(runtime, fileTool, workspaceResolver);
 
         String out = tool.loadSkill("  ", null, null);
 
@@ -40,8 +42,10 @@ class SkillLoadToolTest {
     void unknownSkillReturnsError() {
         SkillRuntimeService runtime = mock(SkillRuntimeService.class);
         SkillFileTool fileTool = mock(SkillFileTool.class);
-        when(runtime.findActiveSkill("nope")).thenReturn(null);
-        SkillLoadTool tool = new SkillLoadTool(runtime, fileTool);
+        AgentWorkspaceResolver workspaceResolver = mock(AgentWorkspaceResolver.class);
+        when(workspaceResolver.resolve(any())).thenReturn(1L);
+        when(runtime.findActiveSkill(eq("nope"), any())).thenReturn(null);
+        SkillLoadTool tool = new SkillLoadTool(runtime, fileTool, workspaceResolver);
 
         String out = tool.loadSkill("nope", null, null);
 
@@ -55,10 +59,12 @@ class SkillLoadToolTest {
     void loadsSkillMdByDefault() {
         SkillRuntimeService runtime = mock(SkillRuntimeService.class);
         SkillFileTool fileTool = mock(SkillFileTool.class);
-        when(runtime.findActiveSkill("foo")).thenReturn(skill("foo"));
+        AgentWorkspaceResolver workspaceResolver = mock(AgentWorkspaceResolver.class);
+        when(workspaceResolver.resolve(any())).thenReturn(1L);
+        when(runtime.findActiveSkill(eq("foo"), any())).thenReturn(skill("foo"));
         when(fileTool.readSkillFile(eq("foo"), eq("SKILL.md"), isNull(), isNull(), any()))
                 .thenReturn("SKILL CONTENT");
-        SkillLoadTool tool = new SkillLoadTool(runtime, fileTool);
+        SkillLoadTool tool = new SkillLoadTool(runtime, fileTool, workspaceResolver);
 
         String out = tool.loadSkill("foo", null, null);
 
@@ -71,10 +77,12 @@ class SkillLoadToolTest {
     void loadsExplicitSubFile() {
         SkillRuntimeService runtime = mock(SkillRuntimeService.class);
         SkillFileTool fileTool = mock(SkillFileTool.class);
-        when(runtime.findActiveSkill("foo")).thenReturn(skill("foo"));
+        AgentWorkspaceResolver workspaceResolver = mock(AgentWorkspaceResolver.class);
+        when(workspaceResolver.resolve(any())).thenReturn(1L);
+        when(runtime.findActiveSkill(eq("foo"), any())).thenReturn(skill("foo"));
         when(fileTool.readSkillFile(eq("foo"), eq("references/api.md"), isNull(), isNull(), any()))
                 .thenReturn("REF CONTENT");
-        SkillLoadTool tool = new SkillLoadTool(runtime, fileTool);
+        SkillLoadTool tool = new SkillLoadTool(runtime, fileTool, workspaceResolver);
 
         String out = tool.loadSkill("foo", "references/api.md", null);
 
