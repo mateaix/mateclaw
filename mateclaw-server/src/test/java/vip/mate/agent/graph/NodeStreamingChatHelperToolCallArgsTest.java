@@ -78,11 +78,15 @@ class NodeStreamingChatHelperToolCallArgsTest {
     }
 
     @Test
-    @DisplayName("Truncated/invalid JSON arguments normalized to '{}'")
-    void truncatedJsonArguments_replacedWithEmptyJsonObject() {
+    @DisplayName("Truncated/invalid JSON arguments pass through raw at aggregation")
+    void truncatedJsonArguments_passedThroughAtAggregation() {
         // Simulates a stream cut mid-token: model emitted '{"q":"hel' and stopped.
+        // At the aggregation point the fragment is passed through verbatim (not
+        // replaced with '{}') so the tool executor's JSON pre-validation can detect
+        // the truncation and return the model a "shorten and retry" guidance.
+        String truncated = "{\"q\":\"hel";
         AssistantMessage.ToolCall tc = new AssistantMessage.ToolCall(
-                "id-truncated", "function", "search", "{\"q\":\"hel");
+                "id-truncated", "function", "search", truncated);
         AssistantMessage msg = AssistantMessage.builder()
                 .content("")
                 .toolCalls(List.of(tc))
@@ -94,9 +98,10 @@ class NodeStreamingChatHelperToolCallArgsTest {
 
         assertTrue(result.hasToolCalls(), "tool call must survive");
         assertEquals(1, result.toolCalls().size());
-        assertEquals("{}", result.toolCalls().get(0).arguments(),
-                "invalid JSON arguments must be replaced with '{}' so the follow-up "
-                        + "request stays well-formed");
+        assertEquals(truncated, result.toolCalls().get(0).arguments(),
+                "a truncated fragment must reach the executor raw so its truncation "
+                        + "detection fires; the outbound chokepoint still normalizes it "
+                        + "to '{}' before the next provider request");
     }
 
     @Test
@@ -144,6 +149,31 @@ class NodeStreamingChatHelperToolCallArgsTest {
         assertEquals("mcp_excel_import", out.getToolCalls().get(0).name(),
                 "tool name must be preserved");
         assertEquals("id-hist", out.getToolCalls().get(0).id(),
+                "tool call id must be preserved so the tool_call pairing holds");
+    }
+
+    @Test
+    @DisplayName("Prompt-history tool call with truncated arguments normalized before send")
+    void promptHistory_truncatedArguments_normalized() {
+        // A truncated fragment that survived aggregation (passed through raw so the
+        // executor could detect it) is persisted into history. On the next send the
+        // outbound chokepoint must still normalize it to '{}' so strict providers
+        // (aliyun-codingplan, ...) accept the follow-up request.
+        AssistantMessage.ToolCall tc = new AssistantMessage.ToolCall(
+                "id-hist-trunc", "function", "search", "{\"q\":\"hel");
+        AssistantMessage historyMsg = AssistantMessage.builder()
+                .content("calling tool")
+                .toolCalls(List.of(tc))
+                .build();
+        Prompt prompt = new Prompt(List.of(new UserMessage("hi"), historyMsg));
+
+        Prompt normalized = NodeStreamingChatHelper.normalizeToolCallArguments(prompt);
+
+        AssistantMessage out = (AssistantMessage) normalized.getInstructions().get(1);
+        assertEquals(1, out.getToolCalls().size());
+        assertEquals("{}", out.getToolCalls().get(0).arguments(),
+                "replayed truncated arguments must be normalized to '{}' at the chokepoint");
+        assertEquals("id-hist-trunc", out.getToolCalls().get(0).id(),
                 "tool call id must be preserved so the tool_call pairing holds");
     }
 

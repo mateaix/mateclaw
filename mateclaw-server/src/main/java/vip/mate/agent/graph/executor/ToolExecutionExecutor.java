@@ -538,7 +538,15 @@ public class ToolExecutionExecutor {
                 } catch (Exception jsonEx) {
                     log.warn("[ToolExecutor] Tool {} arguments invalid/truncated JSON (len={}): {}",
                             toolName, arguments.length(), jsonEx.getMessage());
-                    String truncationError = normalizeToolExecutionError(jsonEx);
+                    // This guard wraps only readTree(arguments), so ANY exception reaching
+                    // here is a JSON parse failure: the arguments were truncated mid-token
+                    // (Jackson: "Unexpected end-of-input") or otherwise malformed (e.g.
+                    // {"a":} → "Unexpected character"). Return the truncation guidance
+                    // unconditionally instead of pattern-matching the parser message — the
+                    // message phrasing varies with the malformation kind, but the remedy is
+                    // always the same (re-emit the call). normalizeToolExecutionError still
+                    // pattern-matches for genuine tool-execution errors at the other sites.
+                    String truncationError = TRUNCATED_ARGS_GUIDANCE;
                     events.add(GraphEventPublisher.toolComplete(toolCall.id(), toolName, truncationError, false));
                     allResponses.add(new ToolResponseMessage.ToolResponse(
                             toolCall.id(), toolName, truncationError));
@@ -1174,7 +1182,27 @@ public class ToolExecutionExecutor {
         return memoryOnly ? "reading_memory" : "executing_tool";
     }
 
-    private String normalizeToolExecutionError(Exception e) {
+    /**
+     * Guidance returned to the model when its tool_call arguments JSON was
+     * truncated or malformed mid-stream. The remedy always comes from the model
+     * (re-emit a shorter / split call), so the message tells it exactly that —
+     * without it, models tend to fall back to narrating the result as
+     * final_answer text. Shared by the JSON pre-validation gate in
+     * {@link #execute} (which returns this unconditionally — that gate only
+     * fires for parse failures) and by {@link #normalizeToolExecutionError}
+     * (which pattern-matches genuine tool-execution errors, which have many
+     * other causes).
+     */
+    static final String TRUNCATED_ARGS_GUIDANCE =
+            "Tool execution failed: your tool_call arguments JSON was truncated mid-stream "
+                    + "(very likely you hit max_tokens while emitting a long content field). "
+                    + "Action required: re-call the SAME tool now in your next response, but "
+                    + "(1) make the content field shorter, OR (2) split the work into multiple "
+                    + "sequential tool calls (e.g. write the doc in 2-3 chunks via separate calls). "
+                    + "Do NOT describe the result as text — you must call the tool again to actually "
+                    + "produce the output.";
+
+    static String normalizeToolExecutionError(Exception e) {
         String message = e != null && e.getMessage() != null ? e.getMessage() : "Unknown error";
         String lower = message.toLowerCase(Locale.ROOT);
 
@@ -1187,16 +1215,8 @@ public class ToolExecutionExecutor {
             // streaming a large `content` field (e.g. renderDocx with 7000+ char
             // markdown body). The fix MUST come from the model: re-emit the same
             // tool call with smaller content per call, OR split the work across
-            // multiple sequential tool calls. We tell the LLM directly so the
-            // next reasoning iteration knows what to do — without this, models
-            // tend to fall back to narrating the result as final_answer text.
-            return "Tool execution failed: your tool_call arguments JSON was truncated mid-stream "
-                    + "(very likely you hit max_tokens while emitting a long content field). "
-                    + "Action required: re-call the SAME tool now in your next response, but "
-                    + "(1) make the content field shorter, OR (2) split the work into multiple "
-                    + "sequential tool calls (e.g. write the doc in 2-3 chunks via separate calls). "
-                    + "Do NOT describe the result as text — you must call the tool again to actually "
-                    + "produce the output.";
+            // multiple sequential tool calls.
+            return TRUNCATED_ARGS_GUIDANCE;
         }
 
         if (lower.contains("access denied") && lower.contains("path outside allowed directories")) {
