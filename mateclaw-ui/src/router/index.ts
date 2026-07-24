@@ -48,6 +48,12 @@ const router = createRouter({
           meta: { title: 'Create Agent', requiredCapability: 'manage:agents' },
         },
         {
+          path: 'teams',
+          name: 'Teams',
+          component: () => import('@/views/Teams.vue'),
+          meta: { title: 'Teams', requiredCapability: 'manage:agents' },
+        },
+        {
           // Live runtime view folded into the Agents page as a sub-view.
           // Kept as a redirect so old links / bookmarks still resolve.
           path: 'backstage',
