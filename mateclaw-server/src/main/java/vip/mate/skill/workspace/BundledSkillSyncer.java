@@ -63,6 +63,9 @@ public class BundledSkillSyncer {
     private static final Pattern VERSION_PATTERN =
             Pattern.compile("^version:\\s*[\"']?([^\"'\\s]+)[\"']?", Pattern.MULTILINE);
 
+    /** Builtin/bundled skills are global and materialized under the default workspace. */
+    private static final Long BUILTIN_WORKSPACE_ID = 1L;
+
     private final SkillWorkspaceProperties properties;
     private final SkillWorkspaceManager workspaceManager;
     private final SkillBundleMaterializer bundleMaterializer;
@@ -109,7 +112,8 @@ public class BundledSkillSyncer {
      */
     private boolean syncOne(ResourcePatternResolver resolver, String bundledPath,
                              String skillName, Resource manifest) {
-        Path targetDir = workspaceManager.resolveConventionPath(skillName);
+        // Builtin/bundled skills are global and seeded into workspace 1.
+        Path targetDir = workspaceManager.resolveConventionPath(skillName, BUILTIN_WORKSPACE_ID);
         boolean firstInstall = !Files.exists(targetDir);
 
         SkillBundleSource source = new ClasspathBundleSource(resolver,
@@ -133,7 +137,7 @@ public class BundledSkillSyncer {
                         skillName, missing);
             }
             // Archive (never overwrite in place) so local edits stay recoverable.
-            workspaceManager.archiveWorkspace(skillName);
+            workspaceManager.archiveWorkspace(skillName, BUILTIN_WORKSPACE_ID);
         }
 
         copyBundle(source, targetDir);

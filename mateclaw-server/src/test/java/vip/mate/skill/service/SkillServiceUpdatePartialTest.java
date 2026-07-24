@@ -17,6 +17,7 @@ import java.nio.file.Path;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
@@ -67,6 +68,7 @@ class SkillServiceUpdatePartialTest {
 
         SkillEntity existing = new SkillEntity();
         existing.setId(101L);
+        existing.setWorkspaceId(1L);
         existing.setName("docx");
         existing.setDescription("placeholder");
         existing.setSkillType("dynamic");
@@ -86,8 +88,8 @@ class SkillServiceUpdatePartialTest {
         Path tempRoot = Files.createTempDirectory("skill-svc-test");
         Path skillDir = tempRoot.resolve("docx");
         Files.createDirectories(skillDir);
-        when(workspaceManager.conventionWorkspaceExists("docx")).thenReturn(true);
-        when(workspaceManager.resolveConventionPath("docx")).thenReturn(skillDir);
+        when(workspaceManager.conventionWorkspaceExists("docx", 1L)).thenReturn(true);
+        when(workspaceManager.resolveConventionPath("docx", 1L)).thenReturn(skillDir);
 
         // What the controller deserializes from the partial PUT body:
         // only id + skillContent + sourceCode.
@@ -121,7 +123,7 @@ class SkillServiceUpdatePartialTest {
                 "skill_content from the partial PUT must be applied");
 
         // Workspace sync runs — using the merged name, not the partial null.
-        verify(workspaceManager).conventionWorkspaceExists("docx");
+        verify(workspaceManager).conventionWorkspaceExists("docx", 1L);
 
         // Best-effort cleanup of the temp workspace.
         Files.deleteIfExists(skillDir.resolve("SKILL.md"));
@@ -152,7 +154,7 @@ class SkillServiceUpdatePartialTest {
         existing.setBuiltin(false);
         existing.setSkillContent("---\nname: notes\n---\n# previously authored body\n");
         when(mapper.selectById(202L)).thenReturn(existing);
-        when(workspaceManager.conventionWorkspaceExists(anyString())).thenReturn(false);
+        when(workspaceManager.conventionWorkspaceExists(anyString(), any())).thenReturn(false);
 
         // Identity edit: nameZh / description only — skill_content is
         // never touched and must survive.

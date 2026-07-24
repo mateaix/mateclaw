@@ -6,6 +6,8 @@ import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
+import vip.mate.skill.model.SkillEntity;
+import vip.mate.skill.service.SkillService;
 
 import java.util.List;
 
@@ -37,11 +39,19 @@ public class SkillWorkspaceBootstrapRunner implements ApplicationRunner {
     private final SkillWorkspaceManager workspaceManager;
     private final BundledSkillSyncer bundledSkillSyncer;
     private final SkillFileSyncer skillFileSyncer;
+    private final SkillService skillService;
 
     @Override
     public void run(ApplicationArguments args) {
         var root = workspaceManager.getWorkspaceRoot();
         log.info("Skill workspace root ready: {}", root);
+
+        // Step 0 — one-time layout migration BEFORE any sync: move legacy flat
+        // {root}/{name} dirs into their workspace-scoped {root}/{workspaceId}/{name}
+        // location. Must run before skillFileSyncer.syncAll(), else the syncer
+        // would materialize DB content at the new scoped path first and leave the
+        // old flat dir (and any on-disk-only files it holds) orphaned.
+        migrateLegacyLayout();
 
         List<String> synced = bundledSkillSyncer.sync();
         if (!synced.isEmpty()) {
@@ -56,5 +66,26 @@ public class SkillWorkspaceBootstrapRunner implements ApplicationRunner {
                 report.skillsConsidered(), report.filesMaterialized(),
                 report.filesAlreadyCurrent(),
                 report.skillsBackfilled(), report.filesBackfilledFromDisk());
+    }
+
+    /**
+     * Walk every persisted skill and migrate its legacy flat workspace directory
+     * into the workspace-scoped layout. Idempotent — once migrated, subsequent
+     * starts find nothing to move.
+     */
+    private void migrateLegacyLayout() {
+        List<SkillEntity> skills = skillService.listSkills();
+        int moved = 0;
+        for (SkillEntity skill : skills) {
+            if (skill.getName() == null) {
+                continue;
+            }
+            if (workspaceManager.migrateLegacyFlatDir(skill.getName(), skill.getWorkspaceId())) {
+                moved++;
+            }
+        }
+        if (moved > 0) {
+            log.info("Migrated {} legacy skill workspace dir(s) to the workspace-scoped layout", moved);
+        }
     }
 }

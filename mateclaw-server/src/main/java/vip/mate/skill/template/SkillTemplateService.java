@@ -106,7 +106,7 @@ public class SkillTemplateService {
         //    classpath:{bundlePath}/** — scripts, references, fonts, etc.
         //    Top-level SKILL.md in the bundle is skipped automatically so
         //    the rendered manifest from step 2 stays authoritative.
-        overlayBundle(template, created.getName());
+        overlayBundle(template, created.getName(), created.getWorkspaceId());
 
         // 5. Persist any `secret` field values into mate_skill_secret so
         //    the runtime can decrypt + inject them as env vars at exec
@@ -138,13 +138,13 @@ public class SkillTemplateService {
         }
     }
 
-    private void overlayBundle(SkillTemplate template, String skillName) {
+    private void overlayBundle(SkillTemplate template, String skillName, Long workspaceId) {
         String bundlePath = template.getBundlePath();
         if (bundlePath == null || bundlePath.isBlank()) {
             return;
         }
         SkillBundleSource source = new ClasspathBundleSource(resourceResolver, bundlePath);
-        Path workspaceDir = workspaceManager.resolveConventionPath(skillName);
+        Path workspaceDir = workspaceManager.resolveConventionPath(skillName, workspaceId);
         try {
             SkillBundleMaterializer.Result result = bundleMaterializer.materialize(
                     source, workspaceDir, MaterializeOptions.templateOverlay());

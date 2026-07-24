@@ -70,7 +70,7 @@ class SkillFileSyncerTest {
 
         var report = syncer.syncAll();
 
-        Path workspace = tmp.resolve("demo");
+        Path workspace = tmp.resolve("1").resolve("demo");
         assertEquals("print('a')\n", Files.readString(workspace.resolve("scripts/run.py")));
         assertEquals("hello", Files.readString(workspace.resolve("references/notes.md")));
         assertEquals(2, report.filesMaterialized());
@@ -84,7 +84,7 @@ class SkillFileSyncerTest {
         SkillEntity skill = newSkill(10L, "demo");
         when(skillService.listSkills()).thenReturn(List.of(skill));
 
-        Path workspace = tmp.resolve("demo");
+        Path workspace = tmp.resolve("1").resolve("demo");
         Files.createDirectories(workspace.resolve("scripts"));
         Files.writeString(workspace.resolve("scripts/run.py"), "stable");
 
@@ -104,7 +104,7 @@ class SkillFileSyncerTest {
         SkillEntity skill = newSkill(10L, "demo");
         when(skillService.listSkills()).thenReturn(List.of(skill));
 
-        Path workspace = tmp.resolve("demo");
+        Path workspace = tmp.resolve("1").resolve("demo");
         Files.createDirectories(workspace.resolve("scripts"));
         Files.createDirectories(workspace.resolve("references"));
         Files.writeString(workspace.resolve("scripts/run.py"), "legacy");
@@ -152,6 +152,8 @@ class SkillFileSyncerTest {
         SkillEntity s = new SkillEntity();
         s.setId(id);
         s.setName(name);
+        // Workspace-scoped FS layout: the syncer resolves {root}/{workspaceId}/{name}.
+        s.setWorkspaceId(1L);
         return s;
     }
 

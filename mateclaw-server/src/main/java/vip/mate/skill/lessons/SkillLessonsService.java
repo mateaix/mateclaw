@@ -205,7 +205,7 @@ public class SkillLessonsService {
     private Path resolveWorkspace(ResolvedSkill resolved) {
         if (resolved == null || resolved.getName() == null) return null;
         if (resolved.getSkillDir() != null) return resolved.getSkillDir();
-        Path convention = workspaceManager.resolveConventionPath(resolved.getName());
+        Path convention = workspaceManager.resolveConventionPath(resolved.getName(), resolved.getWorkspaceId());
         return Files.exists(convention) && Files.isDirectory(convention) ? convention : null;
     }
 

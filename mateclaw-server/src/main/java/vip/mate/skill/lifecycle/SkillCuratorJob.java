@@ -269,7 +269,7 @@ public class SkillCuratorJob {
         List<SkillEntity> archived = skillMapper.selectList(new LambdaQueryWrapper<SkillEntity>()
                 .eq(SkillEntity::getLifecycleState, "archived"));
         for (SkillEntity skill : archived) {
-            if (skill.getName() == null || !workspaceManager.conventionWorkspaceExists(skill.getName())) {
+            if (skill.getName() == null || !workspaceManager.conventionWorkspaceExists(skill.getName(), skill.getWorkspaceId())) {
                 continue;
             }
             report.reconciliation("skill '" + skill.getName() + "' (id=" + skill.getId()

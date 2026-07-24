@@ -210,7 +210,7 @@ public class SkillManageTool {
 
             // 同步到 workspace 文件系统
             try {
-                workspaceManager.exportToWorkspace(name, content);
+                workspaceManager.exportToWorkspace(name, content, skill.getWorkspaceId());
             } catch (Exception e) {
                 log.warn("[SkillManage] Workspace export failed for '{}': {}", name, e.getMessage());
             }
@@ -254,7 +254,7 @@ public class SkillManageTool {
             skillService.updateSkill(existing);
 
             try {
-                workspaceManager.exportToWorkspace(name, content);
+                workspaceManager.exportToWorkspace(name, content, existing.getWorkspaceId());
             } catch (Exception e) {
                 log.warn("[SkillManage] Workspace export failed for '{}': {}", name, e.getMessage());
             }
@@ -335,7 +335,7 @@ public class SkillManageTool {
             skillService.updateSkill(existing);
 
             try {
-                workspaceManager.exportToWorkspace(name, patchedContent);
+                workspaceManager.exportToWorkspace(name, patchedContent, existing.getWorkspaceId());
             } catch (Exception e) {
                 log.warn("[SkillManage] Workspace export failed for '{}': {}", name, e.getMessage());
             }
@@ -385,7 +385,7 @@ public class SkillManageTool {
         }
 
         try {
-            workspaceManager.writeWorkspaceFile(name, filePath, content);
+            workspaceManager.writeWorkspaceFile(name, filePath, content, existing.getWorkspaceId());
         } catch (IllegalArgumentException e) {
             return "Error: " + e.getMessage()
                     + " (paths must start with references/, scripts/ or templates/, and may not contain '..').";

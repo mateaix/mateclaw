@@ -361,7 +361,7 @@ public class SkillService {
 
         // 自动初始化工作区目录
         if (workspaceProperties.isAutoInit() && !hasExplicitSkillDir(skill)) {
-            workspaceManager.initWorkspace(skill.getName(), skill.getSkillContent());
+            workspaceManager.initWorkspace(skill.getName(), skill.getSkillContent(), skill.getWorkspaceId());
         }
 
         // 刷新 runtime cache
@@ -514,7 +514,7 @@ public class SkillService {
         eventPublisher.publishEvent(new SkillRemovedEvent(id, skill.getName()));
 
         if ("archive".equals(workspaceProperties.getDeletePolicy())) {
-            workspaceManager.archiveWorkspace(skill.getName());
+            workspaceManager.archiveWorkspace(skill.getName(), skill.getWorkspaceId());
         }
         // RFC-090 review #3 — refresh won't deregister wrappers for a
         // soft-deleted row (it only resolves rows still in
@@ -562,7 +562,7 @@ public class SkillService {
             log.warn("Failed to purge secrets for skill {}: {}", skill.getName(), e.getMessage());
         }
 
-        workspaceManager.purgeWorkspace(skill.getName());
+        workspaceManager.purgeWorkspace(skill.getName(), skill.getWorkspaceId());
 
         // RFC-090 review #3 — same explicit deregister as uninstall.
         if (runtimeService != null) {
@@ -786,8 +786,8 @@ public class SkillService {
         if (skill.getSkillContent() == null || skill.getSkillContent().isBlank()) {
             return;
         }
-        if (workspaceManager.conventionWorkspaceExists(skill.getName())) {
-            Path workspaceDir = workspaceManager.resolveConventionPath(skill.getName());
+        if (workspaceManager.conventionWorkspaceExists(skill.getName(), skill.getWorkspaceId())) {
+            Path workspaceDir = workspaceManager.resolveConventionPath(skill.getName(), skill.getWorkspaceId());
             Path skillMd = workspaceDir.resolve("SKILL.md");
             try {
                 Files.writeString(skillMd, skill.getSkillContent());

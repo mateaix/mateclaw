@@ -47,18 +47,34 @@ public class SkillWorkspaceManager {
     }
 
     /**
-     * Resolve the conventional skill workspace path: {@code {root}/{sanitizedName}}.
+     * Resolve the conventional skill workspace path:
+     * {@code {root}/{workspaceId}/{sanitizedName}}.
      * <p>
-     * Deterministic in {@code skillName} alone (no filesystem-state dependency). The
-     * non-ASCII collision fixed in #254 comes from {@link #sanitizeNameForFs} preserving
-     * Unicode letters/digits, so distinct names already map to distinct directories. No
-     * {@code -hash} suffix is appended: skill names are charset-constrained, so two names
-     * sanitizing to the same string is not a real case, and keeping the bare name avoids
-     * changing the path scheme for every existing skill (which would orphan already-created
-     * workspaces with no migration).
+     * Scoping the path by {@code workspaceId} keeps same-named skills in different
+     * workspaces on disjoint disk directories, so they no longer share a workspace
+     * directory, overwrite each other, or cross script execution between tenants.
+     * A {@code null} workspaceId falls back to workspace {@code 1} (the default
+     * workspace) — this is a defensive fallback only; real call sites must pass the
+     * skill's true owning workspace.
+     * <p>
+     * Deterministic in {@code (skillName, workspaceId)} alone (no filesystem-state
+     * dependency). The non-ASCII collision fixed in #254 comes from
+     * {@link #sanitizeNameForFs} preserving Unicode letters/digits, so distinct names
+     * already map to distinct directories. No {@code -hash} suffix is appended: skill
+     * names are charset-constrained, so two names sanitizing to the same string is not
+     * a real case.
      */
-    public Path resolveConventionPath(String skillName) {
-        return getWorkspaceRoot().resolve(sanitizeNameForFs(skillName));
+    public Path resolveConventionPath(String skillName, Long workspaceId) {
+        return workspaceScopedRoot(workspaceId).resolve(sanitizeNameForFs(skillName));
+    }
+
+    /**
+     * Per-workspace root: {@code {root}/{workspaceId}}. A {@code null} workspaceId
+     * maps to workspace {@code 1} so a missing scope never resolves to the bare root
+     * (which would reintroduce the cross-workspace collision this scheme prevents).
+     */
+    private Path workspaceScopedRoot(Long workspaceId) {
+        return getWorkspaceRoot().resolve(String.valueOf(workspaceId == null ? 1L : workspaceId));
     }
 
     /**
@@ -87,7 +103,7 @@ public class SkillWorkspaceManager {
      *   <li>null（无目录，回退数据库）</li>
      * </ol>
      */
-    public Path resolveEffectivePath(String skillName, String configuredDir) {
+    public Path resolveEffectivePath(String skillName, String configuredDir, Long workspaceId) {
         // 1. 显式配置
         if (configuredDir != null && !configuredDir.isBlank()) {
             Path explicit = Paths.get(configuredDir);
@@ -96,7 +112,7 @@ public class SkillWorkspaceManager {
             }
         }
         // 2. 约定路径
-        Path convention = resolveConventionPath(skillName);
+        Path convention = resolveConventionPath(skillName, workspaceId);
         if (Files.exists(convention) && Files.isDirectory(convention)) {
             return convention;
         }
@@ -107,9 +123,51 @@ public class SkillWorkspaceManager {
     /**
      * 检查约定路径的 workspace 是否存在
      */
-    public boolean conventionWorkspaceExists(String skillName) {
-        Path convention = resolveConventionPath(skillName);
+    public boolean conventionWorkspaceExists(String skillName, Long workspaceId) {
+        Path convention = resolveConventionPath(skillName, workspaceId);
         return Files.exists(convention) && Files.isDirectory(convention);
+    }
+
+    /**
+     * One-time layout migration: the legacy scheme stored every skill flat at
+     * {@code {root}/{name}}; the workspace-scoped scheme stores it at
+     * {@code {root}/{workspaceId}/{name}}. Move a pre-existing flat directory
+     * into its scoped location so the skill's scripts/references survive the
+     * scheme change instead of being silently orphaned (the runtime would
+     * otherwise fall back to DB content and lose on-disk-only files).
+     *
+     * <p>Idempotent and safe to run on every startup:
+     * <ul>
+     *   <li>no-op if the flat directory is absent (already migrated, or new install);</li>
+     *   <li>no-op if the scoped target already exists (never overwrites);</li>
+     *   <li>skips anything without a top-level {@code SKILL.md} so a workspace-scoped
+     *       root like {@code {root}/1} (whose children are skills, not a skill itself)
+     *       is never mistaken for a legacy flat skill directory.</li>
+     * </ul>
+     *
+     * @return {@code true} only when a move actually happened.
+     */
+    public boolean migrateLegacyFlatDir(String skillName, Long workspaceId) {
+        Path legacy = getWorkspaceRoot().resolve(sanitizeNameForFs(skillName));
+        Path scoped = resolveConventionPath(skillName, workspaceId);
+        if (legacy.equals(scoped)) {
+            return false; // scoped always adds a {workspaceId} segment; defensive only
+        }
+        if (!Files.isDirectory(legacy) || !Files.exists(legacy.resolve("SKILL.md"))) {
+            return false; // absent, or not a real flat skill workspace
+        }
+        if (Files.exists(scoped)) {
+            return false; // already migrated / target present — never overwrite
+        }
+        try {
+            Files.createDirectories(scoped.getParent());
+            Files.move(legacy, scoped, StandardCopyOption.ATOMIC_MOVE);
+            log.info("Migrated legacy skill workspace {} -> {}", legacy, scoped);
+            return true;
+        } catch (IOException e) {
+            log.warn("Failed to migrate legacy skill workspace {} -> {}: {}", legacy, scoped, e.getMessage());
+            return false;
+        }
     }
 
     // ==================== 生命周期操作 ====================
@@ -121,8 +179,8 @@ public class SkillWorkspaceManager {
      * @param initialContent SKILL.md 初始内容（可为 null）
      * @return 创建的工作区路径
      */
-    public Path initWorkspace(String skillName, String initialContent) {
-        return initWorkspace(skillName, initialContent, false);
+    public Path initWorkspace(String skillName, String initialContent, Long workspaceId) {
+        return initWorkspace(skillName, initialContent, false, workspaceId);
     }
 
     /**
@@ -134,8 +192,8 @@ public class SkillWorkspaceManager {
      *                       false 时仅在 SKILL.md 不存在时写入（用于首次创建）
      * @return 创建的工作区路径
      */
-    public Path initWorkspace(String skillName, String initialContent, boolean overwrite) {
-        Path workspaceDir = resolveConventionPath(skillName);
+    public Path initWorkspace(String skillName, String initialContent, boolean overwrite, Long workspaceId) {
+        Path workspaceDir = resolveConventionPath(skillName, workspaceId);
         try {
             Files.createDirectories(workspaceDir);
             Files.createDirectories(workspaceDir.resolve("references"));
@@ -170,8 +228,8 @@ public class SkillWorkspaceManager {
      * by hard-delete only; uninstall still calls
      * {@link #archiveWorkspace} so users can recover by re-installing.
      */
-    public void purgeWorkspace(String skillName) {
-        Path workspaceDir = resolveConventionPath(skillName);
+    public void purgeWorkspace(String skillName, Long workspaceId) {
+        Path workspaceDir = resolveConventionPath(skillName, workspaceId);
         if (!Files.exists(workspaceDir)) return;
         try {
             // Walk and delete bottom-up so non-empty dirs go away too.
@@ -218,7 +276,8 @@ public class SkillWorkspaceManager {
     }
 
     /**
-     * Move {@code {root}/{name}/} to {@code {root}/.archived/{name}-{ts}/}.
+     * Move {@code {root}/{workspaceId}/{name}/} to
+     * {@code {root}/{workspaceId}/.archived/{name}-{ts}/}.
      *
      * <p>Returns {@link ArchiveResult#MISSING} when the workspace doesn't
      * exist — callers may treat this as a successful no-op since the runtime
@@ -228,14 +287,14 @@ public class SkillWorkspaceManager {
      * {@link ArchiveResult#MOVED} on success, having already published
      * {@link SkillWorkspaceEvent.Type#ARCHIVED}.
      */
-    public ArchiveResult archiveWorkspace(String skillName) {
-        Path workspaceDir = resolveConventionPath(skillName);
+    public ArchiveResult archiveWorkspace(String skillName, Long workspaceId) {
+        Path workspaceDir = resolveConventionPath(skillName, workspaceId);
         if (!Files.exists(workspaceDir)) {
             return ArchiveResult.MISSING;
         }
 
         try {
-            Path archiveRoot = getWorkspaceRoot().resolve(".archived");
+            Path archiveRoot = workspaceScopedRoot(workspaceId).resolve(".archived");
             Files.createDirectories(archiveRoot);
 
             String archiveName = sanitizeName(skillName) + "-" + LocalDateTime.now().format(ARCHIVE_TS);
@@ -261,13 +320,13 @@ public class SkillWorkspaceManager {
      * {@link RestoreResult#FAILED} when an archive directory exists but the
      * move-back fails.
      */
-    public RestoreResult restoreWorkspace(String skillName) {
-        Path target = resolveConventionPath(skillName);
+    public RestoreResult restoreWorkspace(String skillName, Long workspaceId) {
+        Path target = resolveConventionPath(skillName, workspaceId);
         if (Files.exists(target)) {
             log.warn("restoreWorkspace skipped: target {} already exists", target);
             return RestoreResult.MISSING;
         }
-        Path archiveRoot = getWorkspaceRoot().resolve(".archived");
+        Path archiveRoot = workspaceScopedRoot(workspaceId).resolve(".archived");
         if (!Files.exists(archiveRoot)) {
             return RestoreResult.MISSING;
         }
@@ -313,9 +372,9 @@ public class SkillWorkspaceManager {
     /**
      * 将数据库 skill 内容导出到工作区目录
      */
-    public Path exportToWorkspace(String skillName, String skillContent) {
+    public Path exportToWorkspace(String skillName, String skillContent, Long workspaceId) {
         // 始终覆写 SKILL.md（initWorkspace 内部已写入），无需再做一次冗余 IO
-        Path workspaceDir = initWorkspace(skillName, skillContent, true);
+        Path workspaceDir = initWorkspace(skillName, skillContent, true, workspaceId);
         if (workspaceDir != null) {
             log.info("Exported skill '{}' to workspace: {}", skillName, workspaceDir);
             eventPublisher.publishEvent(new SkillWorkspaceEvent(skillName, SkillWorkspaceEvent.Type.EXPORTED, workspaceDir));
@@ -338,8 +397,8 @@ public class SkillWorkspaceManager {
      * @param content      文件内容
      * @throws IllegalArgumentException 如果路径不安全
      */
-    public void writeWorkspaceFile(String skillName, String relativePath, String content) {
-        Path workspaceDir = resolveConventionPath(skillName);
+    public void writeWorkspaceFile(String skillName, String relativePath, String content, Long workspaceId) {
+        Path workspaceDir = resolveConventionPath(skillName, workspaceId);
 
         // 路径安全校验
         Path safePath = validateWritePath(workspaceDir, relativePath);
@@ -363,8 +422,8 @@ public class SkillWorkspaceManager {
      *
      * @throws IllegalArgumentException 如果路径不安全
      */
-    public void deleteWorkspaceFile(String skillName, String relativePath) {
-        Path workspaceDir = resolveConventionPath(skillName);
+    public void deleteWorkspaceFile(String skillName, String relativePath, Long workspaceId) {
+        Path workspaceDir = resolveConventionPath(skillName, workspaceId);
         Path safePath = validateWritePath(workspaceDir, relativePath);
         if (safePath == null) {
             throw new IllegalArgumentException("Unsafe file path rejected: " + relativePath);
@@ -394,8 +453,8 @@ public class SkillWorkspaceManager {
      * 清空 skill 工作区中的 references/ 和 scripts/ 目录内容（保留目录本身）
      * 用于 overwrite 安装前清除旧版本残留文件
      */
-    public void cleanWorkspaceDataDirs(String skillName) {
-        Path workspaceDir = resolveConventionPath(skillName);
+    public void cleanWorkspaceDataDirs(String skillName, Long workspaceId) {
+        Path workspaceDir = resolveConventionPath(skillName, workspaceId);
         cleanDirectoryContents(workspaceDir.resolve("references"));
         cleanDirectoryContents(workspaceDir.resolve("scripts"));
     }
@@ -439,8 +498,9 @@ public class SkillWorkspaceManager {
     public ApplyBundleResult applyBundleFiles(String skillName,
                                               Map<String, String> references,
                                               Map<String, String> scripts,
-                                              boolean force) {
-        Path workspaceDir = resolveConventionPath(skillName);
+                                              boolean force,
+                                              Long workspaceId) {
+        Path workspaceDir = resolveConventionPath(skillName, workspaceId);
         try {
             Files.createDirectories(workspaceDir.resolve("references"));
             Files.createDirectories(workspaceDir.resolve("scripts"));
@@ -448,8 +508,8 @@ public class SkillWorkspaceManager {
             log.warn("Failed to ensure data dirs for skill '{}': {}", skillName, e.getMessage());
         }
 
-        int refsWritten = applyBucket(skillName, "references/", references);
-        int scriptsWritten = applyBucket(skillName, "scripts/", scripts);
+        int refsWritten = applyBucket(skillName, "references/", references, workspaceId);
+        int scriptsWritten = applyBucket(skillName, "scripts/", scripts, workspaceId);
 
         var refsPrune = pruneBucket(workspaceDir.resolve("references"),
                 normalizeKeys(references), force, skillName, "references");
@@ -462,14 +522,14 @@ public class SkillWorkspaceManager {
         );
     }
 
-    private int applyBucket(String skillName, String bucketPrefix, Map<String, String> entries) {
+    private int applyBucket(String skillName, String bucketPrefix, Map<String, String> entries, Long workspaceId) {
         if (entries == null || entries.isEmpty()) return 0;
         int written = 0;
         for (var e : entries.entrySet()) {
             String key = e.getKey();
             String relative = key.startsWith(bucketPrefix) ? key : (bucketPrefix + key);
             try {
-                writeWorkspaceFile(skillName, relative, e.getValue());
+                writeWorkspaceFile(skillName, relative, e.getValue(), workspaceId);
                 written++;
             } catch (RuntimeException ex) {
                 log.warn("Failed to write {} for skill '{}': {}", relative, skillName, ex.getMessage());
@@ -618,8 +678,8 @@ public class SkillWorkspaceManager {
     /**
      * 获取 skill 工作区信息
      */
-    public Map<String, Object> getWorkspaceInfo(String skillName) {
-        Path workspaceDir = resolveConventionPath(skillName);
+    public Map<String, Object> getWorkspaceInfo(String skillName, Long workspaceId) {
+        Path workspaceDir = resolveConventionPath(skillName, workspaceId);
         Map<String, Object> info = new LinkedHashMap<>();
         info.put("skillName", skillName);
         info.put("conventionPath", workspaceDir.toString());

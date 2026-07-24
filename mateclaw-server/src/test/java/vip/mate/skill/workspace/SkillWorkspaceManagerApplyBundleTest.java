@@ -36,20 +36,21 @@ class SkillWorkspaceManagerApplyBundleTest {
         props.setRoot(tmp.toString());
         ApplicationEventPublisher publisher = mock(ApplicationEventPublisher.class);
         manager = new SkillWorkspaceManager(props, publisher);
-        manager.initWorkspace(skill, "---\nname: demo\n---\nbody\n");
+        manager.initWorkspace(skill, "---\nname: demo\n---\nbody\n", 1L);
     }
 
     @Test
     @DisplayName("write-then-prune: new files added, removed files pruned")
     void writeThenPruneNormalCase() throws IOException {
-        Path scripts = tmp.resolve(skill).resolve("scripts");
+        Path scripts = tmp.resolve("1").resolve(skill).resolve("scripts");
         Files.writeString(scripts.resolve("old.py"), "old");
         Files.writeString(scripts.resolve("keep.py"), "v1");
 
         var result = manager.applyBundleFiles(skill,
                 Map.of(),
                 Map.of("keep.py", "v2", "new.py", "fresh"),
-                false);
+                false,
+                1L);
 
         assertEquals(2, result.scriptsWritten());
         assertEquals(1, result.scriptsPruned(), "old.py should be pruned");
@@ -62,14 +63,15 @@ class SkillWorkspaceManagerApplyBundleTest {
     @Test
     @DisplayName("empty-bundle guard: existing scripts preserved when new bundle has none")
     void emptyBundleGuardPreservesExistingScripts() throws IOException {
-        Path scripts = tmp.resolve(skill).resolve("scripts");
+        Path scripts = tmp.resolve("1").resolve(skill).resolve("scripts");
         Files.writeString(scripts.resolve("run.py"), "important");
         Files.writeString(scripts.resolve("helper.py"), "more important");
 
         var result = manager.applyBundleFiles(skill,
                 Map.of("notes.md", "ref"),
                 Map.of(), // empty scripts — simulates the issue #104 extractor bug
-                false);
+                false,
+                1L);
 
         assertEquals(0, result.scriptsWritten());
         assertEquals(0, result.scriptsPruned());
@@ -83,13 +85,14 @@ class SkillWorkspaceManagerApplyBundleTest {
     @Test
     @DisplayName("force=true bypasses empty-bundle guard and prunes everything")
     void forceFlagPrunesEvenWhenBundleEmpty() throws IOException {
-        Path scripts = tmp.resolve(skill).resolve("scripts");
+        Path scripts = tmp.resolve("1").resolve(skill).resolve("scripts");
         Files.writeString(scripts.resolve("doomed.py"), "x");
 
         var result = manager.applyBundleFiles(skill,
                 Map.of(),
                 Map.of(),
-                true);
+                true,
+                1L);
 
         assertFalse(result.scriptsPreservedDueToEmptyBundle());
         assertEquals(1, result.scriptsPruned());
@@ -99,15 +102,16 @@ class SkillWorkspaceManagerApplyBundleTest {
     @Test
     @DisplayName("references and scripts buckets prune independently")
     void bucketsAreIndependent() throws IOException {
-        Path scripts = tmp.resolve(skill).resolve("scripts");
-        Path references = tmp.resolve(skill).resolve("references");
+        Path scripts = tmp.resolve("1").resolve(skill).resolve("scripts");
+        Path references = tmp.resolve("1").resolve(skill).resolve("references");
         Files.writeString(scripts.resolve("run.py"), "stay-on-disk");
         Files.writeString(references.resolve("notes.md"), "stale-ref");
 
         var result = manager.applyBundleFiles(skill,
                 Map.of("notes.md", "fresh-ref"),
                 Map.of(), // empty scripts → preserved
-                false);
+                false,
+                1L);
 
         assertTrue(result.scriptsPreservedDueToEmptyBundle());
         assertFalse(result.referencesPreservedDueToEmptyBundle());

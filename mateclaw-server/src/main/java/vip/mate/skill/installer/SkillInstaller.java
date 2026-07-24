@@ -161,10 +161,10 @@ public class SkillInstaller {
             }
 
             // 4. Materialize SKILL.md (overwrite on reinstall, keep on first create).
-            workspaceManager.initWorkspace(skillName, bundle.content(), exists);
+            workspaceManager.initWorkspace(skillName, bundle.content(), exists, request.getWorkspaceId());
 
             if (task.isCancelRequested()) {
-                workspaceManager.archiveWorkspace(skillName);
+                workspaceManager.archiveWorkspace(skillName, request.getWorkspaceId());
                 task.markCancelled();
                 return CompletableFuture.completedFuture(null);
             }
@@ -182,12 +182,12 @@ public class SkillInstaller {
             //    Empty-bundle guard protects both sides from a malformed bundle
             //    silently wiping pre-existing scripts/references.
             boolean force = Boolean.TRUE.equals(request.getForcePrune());
-            persistBundleFiles(skillEntity, bundle, force, "url");
+            persistBundleFiles(skillEntity, bundle, force, "url", request.getWorkspaceId());
 
             // 7. Publish event for runtime refresh / sibling-node materialization.
             eventPublisher.publishEvent(new SkillWorkspaceEvent(
                     skillName, SkillWorkspaceEvent.Type.INSTALLED,
-                    workspaceManager.resolveConventionPath(skillName)));
+                    workspaceManager.resolveConventionPath(skillName, request.getWorkspaceId())));
 
             task.markCompleted(InstallResult.builder()
                     .name(skillName)
@@ -226,17 +226,17 @@ public class SkillInstaller {
         }
 
         // Materialize SKILL.md (always overwrite on reinstall path).
-        workspaceManager.initWorkspace(skillName, bundle.content(), exists);
+        workspaceManager.initWorkspace(skillName, bundle.content(), exists, workspaceId);
 
         // Register/update skill row first so we have an id to anchor the file rows.
         SkillEntity skillEntity = upsertSkillRow(bundle, skillName, exists, enable, workspaceId);
 
         // DB-canonical, FS-cache. Empty-bundle guard on both sides.
-        persistBundleFiles(skillEntity, bundle, false, "zip");
+        persistBundleFiles(skillEntity, bundle, false, "zip", workspaceId);
 
         eventPublisher.publishEvent(new SkillWorkspaceEvent(
                 skillName, SkillWorkspaceEvent.Type.INSTALLED,
-                workspaceManager.resolveConventionPath(skillName)));
+                workspaceManager.resolveConventionPath(skillName, workspaceId)));
 
         int filesCount = (bundle.references() != null ? bundle.references().size() : 0)
                 + (bundle.scripts() != null ? bundle.scripts().size() : 0) + 1;
@@ -296,7 +296,8 @@ public class SkillInstaller {
      * same prefixed-key map. Logs a single combined summary so multi-instance
      * deployments can see what each node persisted vs preserved.
      */
-    private void persistBundleFiles(SkillEntity skillEntity, SkillBundle bundle, boolean force, String origin) {
+    private void persistBundleFiles(SkillEntity skillEntity, SkillBundle bundle, boolean force, String origin,
+                                    Long workspaceId) {
         Map<String, String> combined = new LinkedHashMap<>();
         if (bundle.references() != null) {
             for (var e : bundle.references().entrySet()) {
@@ -313,7 +314,7 @@ public class SkillInstaller {
 
         var dbApply = skillFileService.applyBundleFiles(skillEntity.getId(), combined, force);
         var fsApply = workspaceManager.applyBundleFiles(skillEntity.getName(),
-                bundle.references(), bundle.scripts(), force);
+                bundle.references(), bundle.scripts(), force, workspaceId);
 
         log.info("Persisted bundle for '{}' ({}): db(write={}, prune={}, preservedScripts={}, preservedRefs={}) " +
                         "fs(refs write={}, prune={}, preserved={} | scripts write={}, prune={}, preserved={})",

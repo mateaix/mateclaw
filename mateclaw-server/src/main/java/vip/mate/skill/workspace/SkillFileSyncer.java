@@ -102,7 +102,7 @@ public class SkillFileSyncer {
      * are restored.
      */
     public PerSkillReport syncOne(SkillEntity skill) {
-        Path workspaceDir = workspaceManager.resolveConventionPath(skill.getName());
+        Path workspaceDir = workspaceManager.resolveConventionPath(skill.getName(), skill.getWorkspaceId());
         List<SkillFileEntity> dbFiles = skillFileService.listBySkillId(skill.getId());
 
         boolean didBackfill = false;

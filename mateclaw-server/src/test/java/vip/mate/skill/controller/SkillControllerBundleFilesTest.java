@@ -54,6 +54,7 @@ class SkillControllerBundleFilesTest {
     private SkillEntity skill(boolean builtin) {
         SkillEntity s = new SkillEntity();
         s.setId(SID);
+        s.setWorkspaceId(1L);
         s.setName("demo-skill");
         s.setBuiltin(builtin);
         return s;
@@ -131,7 +132,7 @@ class SkillControllerBundleFilesTest {
 
         assertThat(resp.getData()).containsEntry("path", "templates/report.html");
         verify(fileService).upsertFile(SID, "templates/report.html", "<html/>");
-        verify(workspaceManager).writeWorkspaceFile("demo-skill", "templates/report.html", "<html/>");
+        verify(workspaceManager).writeWorkspaceFile("demo-skill", "templates/report.html", "<html/>", 1L);
         verify(runtimeService).rescanSingle(any(SkillEntity.class));
     }
 
@@ -170,7 +171,7 @@ class SkillControllerBundleFilesTest {
         R<Map<String, Object>> resp = controller.deleteBundleFile(SID, "scripts/run.py", null);
 
         assertThat(resp.getData()).containsEntry("removed", true);
-        verify(workspaceManager).deleteWorkspaceFile("demo-skill", "scripts/run.py");
+        verify(workspaceManager).deleteWorkspaceFile("demo-skill", "scripts/run.py", 1L);
         verify(runtimeService).rescanSingle(any(SkillEntity.class));
     }
 

@@ -48,7 +48,7 @@ class SkillLessonsServiceTest {
         workspaceManager = mock(SkillWorkspaceManager.class);
         publishedEvents = new ArrayList<>();
         publisher = event -> publishedEvents.add(event);
-        when(workspaceManager.resolveConventionPath(anyString()))
+        when(workspaceManager.resolveConventionPath(anyString(), any()))
                 .thenAnswer(inv -> tempDir.resolve(inv.getArgument(0, String.class)));
         service = new SkillLessonsService(workspaceManager, publisher);
     }
@@ -141,7 +141,7 @@ class SkillLessonsServiceTest {
     void noWorkspaceNoOp() {
         ResolvedSkill skill = ResolvedSkill.builder().id(1L).name("nope").build();
         // Force a non-existent convention path so resolveWorkspace returns null.
-        when(workspaceManager.resolveConventionPath("nope"))
+        when(workspaceManager.resolveConventionPath("nope", null))
                 .thenReturn(tempDir.resolve("does-not-exist"));
         String id = service.recordLesson(skill, null, null, "won't write", 50);
         assertNull(id);

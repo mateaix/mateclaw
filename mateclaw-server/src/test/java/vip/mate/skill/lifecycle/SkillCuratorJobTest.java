@@ -78,6 +78,7 @@ class SkillCuratorJobTest {
     private SkillEntity candidate(long id, String state, LocalDateTime lastActivity) {
         SkillEntity s = new SkillEntity();
         s.setId(id);
+        s.setWorkspaceId(1L);
         s.setName("skill-" + id);
         s.setSkillType("dynamic");
         s.setBuiltin(false);
@@ -205,7 +206,7 @@ class SkillCuratorJobTest {
         SkillEntity orphan = candidate(9L, "archived", now.minusDays(100));
         // 1st selectList = reconcile (archived rows); 2nd = loadCandidates.
         when(skillMapper.selectList(any())).thenReturn(List.of(orphan), List.of());
-        when(workspaceManager.conventionWorkspaceExists("skill-9")).thenReturn(true);
+        when(workspaceManager.conventionWorkspaceExists("skill-9", 1L)).thenReturn(true);
 
         job.run();
 

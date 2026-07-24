@@ -71,6 +71,7 @@ class SkillLifecycleServiceTest {
     private SkillEntity skill(String type, String state, LocalDateTime lastActivity) {
         SkillEntity s = new SkillEntity();
         s.setId(1L);
+        s.setWorkspaceId(1L);
         s.setName("demo-skill");
         s.setSkillType(type);
         s.setBuiltin(false);
@@ -175,7 +176,7 @@ class SkillLifecycleServiceTest {
     @Test
     void restoreMovesWorkspaceBackAndFlipsTheRow() {
         when(skillMapper.selectById(1L)).thenReturn(archivedSkill());
-        when(workspaceManager.restoreWorkspace("demo-skill"))
+        when(workspaceManager.restoreWorkspace("demo-skill", 1L))
                 .thenReturn(SkillWorkspaceManager.RestoreResult.MOVED);
 
         service.restore(1L);
@@ -187,7 +188,7 @@ class SkillLifecycleServiceTest {
     @Test
     void restoreDbOnlySkillFlipsRowWithoutWorkspace() {
         when(skillMapper.selectById(1L)).thenReturn(archivedSkill());
-        when(workspaceManager.restoreWorkspace("demo-skill"))
+        when(workspaceManager.restoreWorkspace("demo-skill", 1L))
                 .thenReturn(SkillWorkspaceManager.RestoreResult.MISSING);
 
         service.restore(1L);
@@ -200,7 +201,7 @@ class SkillLifecycleServiceTest {
         SkillEntity s = archivedSkill();
         s.setSkillContent("   ");
         when(skillMapper.selectById(1L)).thenReturn(s);
-        when(workspaceManager.restoreWorkspace("demo-skill"))
+        when(workspaceManager.restoreWorkspace("demo-skill", 1L))
                 .thenReturn(SkillWorkspaceManager.RestoreResult.MISSING);
 
         assertThrows(MateClawException.class, () -> service.restore(1L));
@@ -210,7 +211,7 @@ class SkillLifecycleServiceTest {
     @Test
     void restoreRejectsWhenWorkspaceMoveBackFails() {
         when(skillMapper.selectById(1L)).thenReturn(archivedSkill());
-        when(workspaceManager.restoreWorkspace("demo-skill"))
+        when(workspaceManager.restoreWorkspace("demo-skill", 1L))
                 .thenReturn(SkillWorkspaceManager.RestoreResult.FAILED);
 
         assertThrows(MateClawException.class, () -> service.restore(1L));
@@ -234,7 +235,7 @@ class SkillLifecycleServiceTest {
     @Test
     void archiveDefersWhenWorkspaceMoveFails() {
         SkillEntity s = skill("dynamic", "stale", now.minusDays(100));
-        when(workspaceManager.archiveWorkspace(anyString()))
+        when(workspaceManager.archiveWorkspace(anyString(), any()))
                 .thenReturn(SkillWorkspaceManager.ArchiveResult.FAILED);
 
         boolean applied = service.apply(s, LifecycleTransition.TO_ARCHIVED, now);
@@ -246,7 +247,7 @@ class SkillLifecycleServiceTest {
     @Test
     void archiveCommitsForDbOnlySkillWithNoWorkspace() {
         SkillEntity s = skill("dynamic", "stale", now.minusDays(100));
-        when(workspaceManager.archiveWorkspace(anyString()))
+        when(workspaceManager.archiveWorkspace(anyString(), any()))
                 .thenReturn(SkillWorkspaceManager.ArchiveResult.MISSING);
         when(skillMapper.update(any(), any())).thenReturn(1);
 
@@ -260,13 +261,13 @@ class SkillLifecycleServiceTest {
     @Test
     void archiveCompensatesWorkspaceWhenDbWriteTouchesNoRows() {
         SkillEntity s = skill("dynamic", "stale", now.minusDays(100));
-        when(workspaceManager.archiveWorkspace(anyString()))
+        when(workspaceManager.archiveWorkspace(anyString(), any()))
                 .thenReturn(SkillWorkspaceManager.ArchiveResult.MOVED);
         when(skillMapper.update(any(), any())).thenReturn(0);
 
         boolean applied = service.apply(s, LifecycleTransition.TO_ARCHIVED, now);
 
         assertFalse(applied);
-        verify(workspaceManager).restoreWorkspace("demo-skill");
+        verify(workspaceManager).restoreWorkspace("demo-skill", 1L);
     }
 }

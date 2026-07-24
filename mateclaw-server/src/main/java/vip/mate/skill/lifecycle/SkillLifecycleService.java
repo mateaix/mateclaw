@@ -166,7 +166,7 @@ public class SkillLifecycleService {
                     "Skill is not archived: " + skill.getName());
         }
 
-        SkillWorkspaceManager.RestoreResult fs = workspaceManager.restoreWorkspace(skill.getName());
+        SkillWorkspaceManager.RestoreResult fs = workspaceManager.restoreWorkspace(skill.getName(), skill.getWorkspaceId());
         switch (fs) {
             case MOVED -> { /* normal path */ }
             case MISSING -> {
@@ -266,7 +266,7 @@ public class SkillLifecycleService {
         // FAILED defers the whole transition.
         SkillWorkspaceManager.ArchiveResult fsResult = SkillWorkspaceManager.ArchiveResult.MISSING;
         if ("archive".equals(workspaceProperties.getDeletePolicy())) {
-            fsResult = workspaceManager.archiveWorkspace(skill.getName());
+            fsResult = workspaceManager.archiveWorkspace(skill.getName(), skill.getWorkspaceId());
         }
         if (fsResult == SkillWorkspaceManager.ArchiveResult.FAILED) {
             log.warn("Skill '{}' workspace archive failed; deferring DB transition", skill.getName());
@@ -288,7 +288,7 @@ public class SkillLifecycleService {
         if (rows == 0) {
             log.warn("Skill '{}' DB archive update touched 0 rows; compensating workspace", skill.getName());
             if (fsResult == SkillWorkspaceManager.ArchiveResult.MOVED) {
-                workspaceManager.restoreWorkspace(skill.getName());
+                workspaceManager.restoreWorkspace(skill.getName(), skill.getWorkspaceId());
             }
             return false;
         }

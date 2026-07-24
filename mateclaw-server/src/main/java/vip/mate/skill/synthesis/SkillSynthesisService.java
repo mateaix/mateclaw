@@ -127,7 +127,7 @@ public class SkillSynthesisService {
             skillService.createSkill(skill);
 
             try {
-                workspaceManager.exportToWorkspace(name, skillMd);
+                workspaceManager.exportToWorkspace(name, skillMd, workspaceId);
             } catch (Exception e) {
                 log.warn("[SkillSynthesis] Workspace export failed for '{}': {}", name, e.getMessage());
             }

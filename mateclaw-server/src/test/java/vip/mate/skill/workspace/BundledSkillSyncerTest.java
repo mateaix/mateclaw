@@ -83,7 +83,7 @@ class BundledSkillSyncerTest {
     @Test
     @DisplayName("Sync self-heals a workspace missing scripts/ despite unchanged version")
     void syncForcesDiskCopyWhenScriptsDirMissing() throws IOException {
-        Path pptxDir = tmp.resolve("pptx");
+        Path pptxDir = tmp.resolve("1").resolve("pptx");
         Files.createDirectories(pptxDir);
         // Same SKILL.md as the bundle (identical version) but no scripts/
         // directory — the state left behind by a build that shipped without
@@ -104,7 +104,7 @@ class BundledSkillSyncerTest {
         assertTrue(synced.contains("pptx"), "Should re-sync when scripts directory is missing");
         assertTrue(Files.isDirectory(pptxDir.resolve("scripts")), "scripts directory should now be on disk");
         verify(skillFileService, atLeastOnce()).applyBundleFiles(eq(100L), anyMap(), eq(false));
-        try (var archived = Files.list(tmp.resolve(".archived"))) {
+        try (var archived = Files.list(tmp.resolve("1").resolve(".archived"))) {
             assertTrue(archived.anyMatch(p -> p.getFileName().toString().startsWith("pptx-")),
                     "old workspace should be archived, not overwritten in place");
         }

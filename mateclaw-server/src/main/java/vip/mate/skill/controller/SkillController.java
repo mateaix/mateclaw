@@ -432,7 +432,7 @@ public class SkillController {
 
         SkillFileEntity row = skillFileService.upsertFile(id, normalized, content);
         try {
-            workspaceManager.writeWorkspaceFile(skill.getName(), normalized, content);
+            workspaceManager.writeWorkspaceFile(skill.getName(), normalized, content, skill.getWorkspaceId());
         } catch (Exception e) {
             // Canonical store is updated; the syncer heals the cache later.
         }
@@ -464,7 +464,7 @@ public class SkillController {
         }
         boolean removed = skillFileService.deleteFile(id, normalized);
         try {
-            workspaceManager.deleteWorkspaceFile(skill.getName(), normalized);
+            workspaceManager.deleteWorkspaceFile(skill.getName(), normalized, skill.getWorkspaceId());
         } catch (Exception e) {
             // Cache cleanup is best-effort; the canonical row is gone.
         }
@@ -956,7 +956,7 @@ public class SkillController {
             @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
         SkillEntity skill = skillService.getSkill(id);
         verifyResourceWorkspace(skill, workspaceId);
-        var path = workspaceManager.exportToWorkspace(skill.getName(), skill.getSkillContent());
+        var path = workspaceManager.exportToWorkspace(skill.getName(), skill.getSkillContent(), skill.getWorkspaceId());
         if (path == null) {
             return R.ok(Map.of("success", false, "message", "Failed to export workspace"));
         }
@@ -970,7 +970,7 @@ public class SkillController {
             @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
         SkillEntity skill = skillService.getSkill(id);
         verifyResourceWorkspace(skill, workspaceId);
-        return R.ok(workspaceManager.getWorkspaceInfo(skill.getName()));
+        return R.ok(workspaceManager.getWorkspaceInfo(skill.getName(), skill.getWorkspaceId()));
     }
 
     // ==================== Skill lifecycle & curator ====================

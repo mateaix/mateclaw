@@ -149,7 +149,7 @@ public class SkillPackageResolver {
             resolved = resolveFromDirectory(entity, skillDir, configuredDir, "directory");
         } else {
             // 2. 约定路径 {workspace-root}/{skillName}/
-            Path conventionPath = workspaceManager.resolveConventionPath(entity.getName());
+            Path conventionPath = workspaceManager.resolveConventionPath(entity.getName(), entity.getWorkspaceId());
             if (Files.exists(conventionPath) && Files.isDirectory(conventionPath)) {
                 resolved = resolveFromDirectory(entity, conventionPath, conventionPath.toString(), "convention");
             } else {
@@ -213,7 +213,7 @@ public class SkillPackageResolver {
             }
         }
 
-        Path convention = workspaceManager.resolveConventionPath(entity.getName());
+        Path convention = workspaceManager.resolveConventionPath(entity.getName(), entity.getWorkspaceId());
         if (!Files.exists(convention) || !Files.isDirectory(convention)) return false;
         SkillContentReconciler.Outcome outcome = contentReconciler.reconcile(entity, convention);
         return outcome.action() == SkillContentReconciler.Action.INGESTED_TO_DB
