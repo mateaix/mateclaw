@@ -6,23 +6,23 @@ KEY (id)
 VALUES (1, 'admin', '$2a$10$7JB720yubVSZvUI0rEqK/.VqGOZTH.ulu33dHOiBE8ByOhJIrdAu2', 'MateClaw Admin', 'admin', TRUE, NOW(), NOW(), 0);
 
 -- Default digital employee: General Assistant (ReAct mode)
-MERGE INTO mate_agent (id, name, description, agent_type, system_prompt, model_name, max_iterations, enabled, icon, tags, create_time, update_time, deleted)
+MERGE INTO mate_agent (id, workspace_id, name, description, agent_type, system_prompt, model_name, max_iterations, enabled, icon, tags, create_time, update_time, deleted)
 KEY (id)
-VALUES (1000000001, 'General Assistant', 'All-purpose helper for day-to-day questions, data analysis, and tool calling', 'react',
+VALUES (1000000001, 0, 'General Assistant', 'All-purpose helper for day-to-day questions, data analysis, and tool calling', 'react',
         'You are MateClaw''s General Assistant. You can help users answer questions, analyze data, and call tools to get things done. Please respond professionally and in a friendly manner.',
         NULL, 100, TRUE, 'pi:robot-face-happy', 'default,assistant', NOW(), NOW(), 0);
 
 -- Default digital employee: Task Planner (Plan-Execute mode)
-MERGE INTO mate_agent (id, name, description, agent_type, system_prompt, model_name, max_iterations, enabled, icon, tags, create_time, update_time, deleted)
+MERGE INTO mate_agent (id, workspace_id, name, description, agent_type, system_prompt, model_name, max_iterations, enabled, icon, tags, create_time, update_time, deleted)
 KEY (id)
-VALUES (1000000002, 'Task Planner', 'Breaks complex goals into executable steps and drives them forward to completion', 'plan_execute',
+VALUES (1000000002, 0, 'Task Planner', 'Breaks complex goals into executable steps and drives them forward to completion', 'plan_execute',
         'You are a professional Task Planner. You excel at breaking complex goals into executable steps and completing them systematically.',
         NULL, 100, TRUE, 'pi:clipboard-note', 'planning,task', NOW(), NOW(), 0);
 
 -- Default digital employee: Reasoning Analyst (explicit reasoning loops + tool calling)
-MERGE INTO mate_agent (id, name, description, agent_type, system_prompt, model_name, max_iterations, enabled, icon, tags, create_time, update_time, deleted)
+MERGE INTO mate_agent (id, workspace_id, name, description, agent_type, system_prompt, model_name, max_iterations, enabled, icon, tags, create_time, update_time, deleted)
 KEY (id)
-VALUES (1000000003, 'Reasoning Analyst', 'Thinks step by step with visible reasoning, ideal for problems that need thorough deliberation', 'react',
+VALUES (1000000003, 0, 'Reasoning Analyst', 'Thinks step by step with visible reasoning, ideal for problems that need thorough deliberation', 'react',
         'You are a Reasoning Analyst, an assistant that excels at deep reasoning. When facing a problem, first think through it step by step with a clear reasoning trace, then call tools or give the answer. Please respond professionally and in a friendly manner.',
         NULL, 100, TRUE, 'pi:cpu', 'react,reasoning,tools', NOW(), NOW(), 0);
 
@@ -1912,9 +1912,9 @@ VALUES (1000000630, 'WechatArticleExtractTool', 'WeChat Article Extract', 'Fetch
 MERGE INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
 KEY (id)
 VALUES (1000000631, 'GzhPublishTool', 'WeChat OA Publish', 'Publish a generated image-text article to a WeChat Official Account: action=draft uploads the cover and creates a 草稿箱 draft (recommended); action=publish free-publishes for verified accounts and requires explicit confirmation. Needs weixinoa.app_id/app_secret in system settings.', 'builtin', 'gzhPublishTool', '📤', TRUE, TRUE, NOW(), NOW(), 0);
-MERGE INTO mate_agent (id, name, description, agent_type, system_prompt, model_name, max_iterations, enabled, icon, tags, create_time, update_time, deleted)
+MERGE INTO mate_agent (id, workspace_id, name, description, agent_type, system_prompt, model_name, max_iterations, enabled, icon, tags, create_time, update_time, deleted)
 KEY (id)
-VALUES (1000000640, 'Content Studio', 'End-to-end 公众号 & 小红书 image-text creation: research, write, illustrate, de-AI, layout, and publish to draft.', 'react', 'You are MateClaw''s Content Studio — a specialist that creates WeChat Official Account (公众号) and Xiaohongshu (小红书) image-text posts end to end.
+VALUES (1000000640, 0, 'Content Studio', 'End-to-end 公众号 & 小红书 image-text creation: research, write, illustrate, de-AI, layout, and publish to draft.', 'react', 'You are MateClaw''s Content Studio — a specialist that creates WeChat Official Account (公众号) and Xiaohongshu (小红书) image-text posts end to end.
 
 Workflow (7 stages):
 1) Topic — use the topic_interests memory + web_search(freshness=week) to find angles.

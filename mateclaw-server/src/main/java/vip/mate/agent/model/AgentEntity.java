@@ -154,4 +154,15 @@ public class AgentEntity {
     private LocalDateTime updateTime;
 
     private Integer deleted;
+
+    /**
+     * 是否为全局共享预置 Agent（{@code workspace_id == 0}）。
+     *
+     * <p>全局预置由产品统一维护、对所有工作区只读可见，故任何用户态写路径
+     * （更新/删除/改绑定）都应拒绝作用于这类记录。常量定义见
+     * {@code WorkspaceService.GLOBAL_WORKSPACE_ID}；此处用字面量避免实体反向依赖服务层。
+     */
+    public boolean isGlobalPreset() {
+        return workspaceId != null && workspaceId == 0L;
+    }
 }
