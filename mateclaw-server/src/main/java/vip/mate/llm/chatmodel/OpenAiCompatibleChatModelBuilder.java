@@ -32,7 +32,9 @@ import vip.mate.llm.service.ModelProviderService;
 
 import java.net.http.HttpClient;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Set;
 import java.util.regex.Pattern;
 
 /**
@@ -100,6 +102,50 @@ public class OpenAiCompatibleChatModelBuilder implements ChatModelBuilder {
     }
 
     // ==================== chat options ====================
+
+    /**
+     * Top-level {@code generateKwargs} keys with dedicated typed handling elsewhere
+     * in {@link #buildOpenAiOptions} / {@link #buildOpenAiApi} (both camelCase and
+     * snake_case spellings), plus the {@code chatOptions} nesting wrapper itself
+     * (its contents are already consumed via {@link ProviderGenerateKwargs}).
+     * Centralized here so the passthrough logic below and the known-key extraction
+     * above can't drift out of sync. Anything else at the top level of
+     * generateKwargs is forwarded verbatim into {@code extraBody} — see
+     * {@link #collectPassthroughExtraBody}.
+     */
+    static final Set<String> RESERVED_GENERATE_KWARGS_KEYS = Set.of(
+            "temperature",
+            "maxTokens", "max_tokens",
+            "maxCompletionTokens", "max_completion_tokens",
+            "topP", "top_p",
+            "reasoningEffort", "reasoning_effort",
+            "enableSearch", "enable_search",
+            "searchStrategy", "search_strategy",
+            "headers",
+            "completionsPath", "completions_path",
+            "chatOptions", "chat_options"
+    );
+
+    /**
+     * Collect top-level {@code generateKwargs} entries not covered by
+     * {@link #RESERVED_GENERATE_KWARGS_KEYS} so they still reach the outbound
+     * request body via {@code extraBody} (e.g. vLLM's {@code chat_template_kwargs}
+     * to disable Qwen thinking mode). Scoped to top-level keys only — unrecognized
+     * keys nested inside {@code chatOptions} are an explicit non-goal and are not
+     * forwarded.
+     */
+    private static Map<String, Object> collectPassthroughExtraBody(Map<String, Object> kwargs) {
+        if (kwargs == null || kwargs.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, Object> passthrough = new LinkedHashMap<>();
+        kwargs.forEach((key, value) -> {
+            if (key != null && !RESERVED_GENERATE_KWARGS_KEYS.contains(key)) {
+                passthrough.put(key, value);
+            }
+        });
+        return passthrough;
+    }
 
     OpenAiChatOptions buildOpenAiOptions(ModelConfigEntity runtimeModel, ModelProviderEntity provider) {
         OpenAiChatOptions.Builder builder = OpenAiChatOptions.builder();
@@ -183,6 +229,19 @@ public class OpenAiCompatibleChatModelBuilder implements ChatModelBuilder {
         // Leaving it null keeps Spring AI from serializing the field; each node controls it
         // when tools are present.
         options.setStreamUsage(true);
+
+        // Forward unrecognized top-level generateKwargs keys as-is via extraBody (e.g. vLLM's
+        // chat_template_kwargs). Get-then-merge rather than overwrite, in case a future addition
+        // to buildOpenAiOptions ever sets extraBody above this point.
+        Map<String, Object> passthroughExtraBody = collectPassthroughExtraBody(kwargs);
+        if (!passthroughExtraBody.isEmpty()) {
+            Map<String, Object> existingExtraBody = options.getExtraBody();
+            Map<String, Object> mergedExtraBody = (existingExtraBody == null)
+                    ? new LinkedHashMap<>()
+                    : new LinkedHashMap<>(existingExtraBody);
+            mergedExtraBody.putAll(passthroughExtraBody);
+            options.setExtraBody(mergedExtraBody);
+        }
         return options;
     }
 
