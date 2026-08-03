@@ -992,7 +992,7 @@ export default {
       protocolAnthropic: 'Anthropic (Messages API)',
       protocolGemini: 'Gemini Native',
       protocolDashScope: 'DashScope Native',
-      advancedHint: 'Use this for generation options such as temperature, max_tokens, and top_p.',
+      advancedHint: 'Use this for generation options such as temperature, max_tokens, top_p, reasoning effort, enable_search/search_strategy, headers, and completions_path. Any other top-level key you add here is forwarded as-is into the outbound request body — for example, { "chat_template_kwargs": { "enable_thinking": false } } disables thinking mode on vLLM-served Qwen models. Keys nested inside a "chatOptions" object are not forwarded this way.',
       requireApiKeyHint: 'Turn this off for internal or local OpenAI-compatible services that do not require auth. Connection tests will omit the Authorization header.',
       fallbackPriorityHint: 'Pool try-order (lower wins): 0 = excluded, 1 = first in line, 2 = second, and so on. Providers sharing the same value are tried in alphabetical order of their ID.',
       fallbackBadge: 'Preferred #{priority}',

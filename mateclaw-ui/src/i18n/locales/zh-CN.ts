@@ -854,7 +854,7 @@ export default {
       protocolAnthropic: 'Anthropic（Messages API）',
       protocolGemini: 'Gemini 原生',
       protocolDashScope: 'DashScope 原生',
-      advancedHint: '用于补充 temperature、max_tokens、top_p 等生成参数。',
+      advancedHint: '用于补充 temperature、max_tokens、top_p、reasoning effort、enable_search/search_strategy、headers、completions_path 等生成参数。除此之外的顶层 key 会原样透传到发往模型服务商的请求体中，例如 { "chat_template_kwargs": { "enable_thinking": false } } 可用于关闭 vLLM 部署的 Qwen 模型的思考模式。注意：嵌套在 "chatOptions" 对象内部的 key 不会被这样透传。',
       requireApiKeyHint: '公司内部或本地 OpenAI 兼容服务如果不需要鉴权，可以关闭此项；测试连接时将不会发送 Authorization 头。',
       fallbackPriorityHint: '池内尝试顺序（数字越小越先）：0 = 不参与；1 = 第一顺位；2 = 第二顺位，依此类推。多个提供商共用同一数字时按 ID 字典序。',
       fallbackBadge: '偏好 #{priority}',
