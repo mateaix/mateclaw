@@ -12,6 +12,7 @@ import org.springframework.util.StringUtils;
 import org.springframework.web.client.RestClient;
 import vip.mate.exception.MateClawException;
 import vip.mate.llm.chatmodel.OpenAiModelsPath;
+import vip.mate.llm.chatmodel.ProviderGenerateKwargs;
 import vip.mate.llm.model.*;
 import vip.mate.llm.oauth.OpenAIOAuthService;
 
@@ -656,16 +657,10 @@ public class ModelDiscoveryService {
             throw new MateClawException("err.llm.base_url_missing", "Base URL 未配置");
         }
 
-        Map<String, Object> requestBody = Map.of(
-                "model", modelId,
-                "messages", List.of(Map.of("role", "user", "content", "请回复：连接正常")),
-                "max_tokens", 10,
-                "temperature", 0
-        );
-
         // 从 generateKwargs 读取 completionsPath（智谱等用 /chat/completions 而非 /v1/chat/completions）
         Map<String, Object> kwargs = modelProviderService.readProviderGenerateKwargs(provider);
         String completionsPath = resolveCompletionsPath(baseUrl, kwargs);
+        Map<String, Object> requestBody = buildTestPromptRequestBody(modelId, kwargs);
 
         RestClient.RequestHeadersSpec<?> spec = openAiCompatibleClientBuilder()
                 .baseUrl(baseUrl)
@@ -682,6 +677,26 @@ public class ModelDiscoveryService {
 
         String body = spec.retrieve().body(String.class);
         return extractOpenAiChatContent(body);
+    }
+
+    /**
+     * Build the smoke-test request body for the OpenAI-compatible test-prompt path.
+     * The core fields (model/messages/max_tokens/temperature) are fixed by design —
+     * this is a minimal-token connectivity probe, not a real chat turn — but any
+     * unrecognized top-level {@code generateKwargs} key (e.g. vLLM's
+     * {@code chat_template_kwargs} used to disable Qwen thinking mode) is forwarded
+     * verbatim, same as the runtime chat path in
+     * {@code OpenAiCompatibleChatModelBuilder#buildOpenAiOptions}. Passthrough is
+     * merged first so the fixed probe fields always win if a key ever collides.
+     * Package-private for unit tests.
+     */
+    static Map<String, Object> buildTestPromptRequestBody(String modelId, Map<String, Object> kwargs) {
+        Map<String, Object> requestBody = new LinkedHashMap<>(ProviderGenerateKwargs.collectPassthroughExtraBody(kwargs));
+        requestBody.put("model", modelId);
+        requestBody.put("messages", List.of(Map.of("role", "user", "content", "请回复：连接正常")));
+        requestBody.put("max_tokens", 10);
+        requestBody.put("temperature", 0);
+        return requestBody;
     }
 
     /**

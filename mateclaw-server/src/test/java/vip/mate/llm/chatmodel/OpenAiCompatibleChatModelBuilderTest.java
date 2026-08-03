@@ -32,8 +32,8 @@ import static org.mockito.Mockito.when;
 /**
  * Regression coverage for {@link OpenAiCompatibleChatModelBuilder#buildOpenAiOptions}
  * forwarding unrecognized top-level {@code generateKwargs} keys into
- * {@link OpenAiChatOptions#getExtraBody()} (RESERVED_GENERATE_KWARGS_KEYS /
- * collectPassthroughExtraBody).
+ * {@link OpenAiChatOptions#getExtraBody()} via
+ * {@link ProviderGenerateKwargs#collectPassthroughExtraBody}.
  *
  * <p>Locks in the fix: previously, an admin-configured key like vLLM's
  * {@code chat_template_kwargs} (used to disable Qwen thinking mode) was silently
