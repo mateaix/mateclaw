@@ -247,6 +247,7 @@ public class ChatController {
             AtomicBoolean approvalEmitterDone = new AtomicBoolean(false);
 
             sseExecutor.execute(() -> {
+                long streamStart = System.currentTimeMillis();
                 AgentStreamAccumulator accumulator = newAccumulator();
                 AtomicBoolean finalized = new AtomicBoolean(false);
                 try {
@@ -724,6 +725,9 @@ public class ChatController {
                             } catch (Exception e) {
                                 log.warn("SSE complete error: {}", e.getMessage());
                             } finally {
+                                long duration = System.currentTimeMillis() - streamStart;
+                                log.info("[Web Chat End] ConversationId: {} | Replay: false | Streaming: true | Status: {} | Overall Latency: {}ms",
+                                        conversationId, persistStatus, duration);
                                 streamTracker.clearInterruptState(conversationId);
                                 ChatStreamTracker.CompletionResult cr = streamTracker.completeAndConsumeIfLast(conversationId);
                                 if (cr.allDone()) {
@@ -1099,6 +1103,7 @@ public class ChatController {
             @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId,
             Authentication auth) {
 
+        long requestStart = System.currentTimeMillis();
         String username = auth != null ? auth.getName() : null;
         if (username == null) {
             return R.fail(401, "未登录，请先登录");
@@ -1118,6 +1123,8 @@ public class ChatController {
                 result.runtimeModel(), result.runtimeProvider());
         completionPublisher.publish(agentId, request.getConversationId(), request.getMessage(), response, "web",
                 memoryOwnerResolver.resolve(webOrigin));
+        long overall = System.currentTimeMillis() - requestStart;
+        log.info("[Web Chat End] ConversationId: {} | Replay: false | Streaming: false | Overall Latency: {}ms", request.getConversationId(), overall);
         return R.ok(response);
     }
 
