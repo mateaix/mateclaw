@@ -365,6 +365,13 @@
                     <!-- Emit method parameter names so Spring MVC can bind
                          @PathVariable/@RequestParam without explicit names. -->
                     <parameters>true</parameters>
+                    <annotationProcessorPaths>
+                        <path>
+                            <groupId>org.projectlombok</groupId>
+                            <artifactId>lombok</artifactId>
+                            <version>1.18.46</version>
+                        </path>
+                    </annotationProcessorPaths>
                 </configuration>
             </plugin>
             <!-- Resolve the ${revision} CI-friendly version into installed and
