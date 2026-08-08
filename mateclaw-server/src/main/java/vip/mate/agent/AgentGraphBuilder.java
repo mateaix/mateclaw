@@ -647,6 +647,15 @@ public class AgentGraphBuilder {
                         contextWindowResolver.noteContextLimitError(
                                 primaryModelConfig.getProvider(),
                                 primaryModelConfig.getModelName(), errorMessage));
+                // Issue #585: drive the streaming inter-frame idle timeout from
+                // the per-model read-timeout knob so a stalled provider can't
+                // hang the body Flux after the response headers arrive. Only
+                // override when the model explicitly sets a value — otherwise
+                // the helper keeps its 180s default.
+                Integer perModelTimeout = primaryModelConfig.getRequestTimeoutSeconds();
+                if (perModelTimeout != null) {
+                    streamingHelper.setStreamIdleTimeoutSec(perModelTimeout);
+                }
             }
             ToolExecutionExecutor executor = new ToolExecutionExecutor(
                     toolSet, toolGuardService, approvalService, streamTracker,
@@ -951,6 +960,15 @@ public class AgentGraphBuilder {
                         contextWindowResolver.noteContextLimitError(
                                 primaryModelConfig.getProvider(),
                                 primaryModelConfig.getModelName(), errorMessage));
+                // Issue #585: drive the streaming inter-frame idle timeout from
+                // the per-model read-timeout knob so a stalled provider can't
+                // hang the body Flux after the response headers arrive. Only
+                // override when the model explicitly sets a value — otherwise
+                // the helper keeps its 180s default.
+                Integer perModelTimeout = primaryModelConfig.getRequestTimeoutSeconds();
+                if (perModelTimeout != null) {
+                    streamingHelper.setStreamIdleTimeoutSec(perModelTimeout);
+                }
             }
             ToolExecutionExecutor executor = new ToolExecutionExecutor(
                     toolSet, toolGuardService, approvalService, streamTracker,

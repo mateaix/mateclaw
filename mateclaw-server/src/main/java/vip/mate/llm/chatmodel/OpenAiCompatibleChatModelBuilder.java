@@ -438,9 +438,19 @@ public class OpenAiCompatibleChatModelBuilder implements ChatModelBuilder {
 
     /**
      * Apply equivalent timeouts to the WebClient backing OpenAI-compatible
-     * STREAMING calls. Without this the streaming path uses a default WebClient
-     * with neither connect nor read timeout, so a stalled provider can hang the
-     * call indefinitely while the failover chain idles (no exception thrown).
+     * STREAMING calls.
+     *
+     * <p><b>Scope caveat (issue #585):</b> {@code setReadTimeout} maps to the
+     * JDK HttpClient's request timeout, which only protects up to the
+     * <em>response headers</em>. Once the headers arrive the clock stops, so
+     * this timeout does <b>not</b> prevent a provider that returns 200 + a
+     * first SSE frame and then goes silent from hanging the body Flux. The
+     * body-level gap is closed by a reactor inter-frame idle timeout applied
+     * at the streaming chokepoint ({@code NodeStreamingChatHelper}, driven by
+     * {@link HttpTimeouts#DEFAULT_STREAM_IDLE_TIMEOUT}) — that is what actually
+     * surfaces a stalled provider to the error path / failover chain. Both
+     * layers are needed: this one catches a provider that never sends headers
+     * at all, the reactor one catches a provider that sends headers then stalls.
      *
      * <p>Uses {@link org.springframework.http.client.reactive.JdkClientHttpConnector}
      * with the same {@link HttpClient} so the dependency surface stays clean

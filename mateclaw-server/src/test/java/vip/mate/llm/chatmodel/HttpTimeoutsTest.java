@@ -68,4 +68,37 @@ class HttpTimeoutsTest {
     void defaultMatchesLegacy() {
         assertEquals(Duration.ofSeconds(180), HttpTimeouts.DEFAULT_READ_TIMEOUT);
     }
+
+    // ===== Streaming inter-frame idle timeout (issue #585) =====
+
+    @Test
+    @DisplayName("default stream idle timeout is 180s, aligned with the read timeout")
+    void defaultStreamIdleTimeout() {
+        assertEquals(Duration.ofSeconds(180), HttpTimeouts.DEFAULT_STREAM_IDLE_TIMEOUT);
+    }
+
+    @Test
+    @DisplayName("null override → default 180s stream idle timeout")
+    void streamIdleNullFallsBack() {
+        assertEquals(Duration.ofSeconds(180),
+                HttpTimeouts.resolveStreamIdleTimeout(null));
+    }
+
+    @Test
+    @DisplayName("zero / negative override → default 180s (treated as unset)")
+    void streamIdleZeroOrNegativeFallsBack() {
+        assertEquals(Duration.ofSeconds(180),
+                HttpTimeouts.resolveStreamIdleTimeout(0));
+        assertEquals(Duration.ofSeconds(180),
+                HttpTimeouts.resolveStreamIdleTimeout(-5));
+    }
+
+    @Test
+    @DisplayName("positive override → exact seconds (per-model knob governs body idle too)")
+    void streamIdlePositiveHonored() {
+        assertEquals(Duration.ofSeconds(60),
+                HttpTimeouts.resolveStreamIdleTimeout(60));
+        assertEquals(Duration.ofSeconds(300),
+                HttpTimeouts.resolveStreamIdleTimeout(300));
+    }
 }

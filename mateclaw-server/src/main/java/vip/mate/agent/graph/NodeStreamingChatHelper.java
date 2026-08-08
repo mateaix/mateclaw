@@ -17,7 +17,9 @@ import vip.mate.llm.chatmodel.ReasoningContentCache;
 import vip.mate.llm.chatmodel.ThinkingLevelHolder;
 
 import reactor.core.Disposable;
+import reactor.core.publisher.Flux;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
@@ -91,6 +93,26 @@ public class NodeStreamingChatHelper {
      * tests) — every provider then counts as in-pool (fail-open).
      */
     private final vip.mate.llm.failover.AvailableProviderPool providerPool;
+
+    /**
+     * Inter-frame idle timeout (seconds) applied to every streaming LLM call.
+     * The JDK HttpClient request timeout (which {@code setReadTimeout} maps to)
+     * only protects up to the response headers; once they arrive the clock
+     * stops, so a provider that returns 200 + a first SSE frame then goes
+     * silent hangs the body Flux forever — no exception, so health tracking /
+     * failover never engage (issue #585). A reactor {@code .timeout()} on the
+     * delta Flux fills that gap: total silence for this long propagates a
+     * {@code TimeoutException} down the existing error path (classifyError
+     * buckets it as a retryable SERVER_ERROR).
+     * <p>
+     * Defaults to {@link vip.mate.llm.chatmodel.HttpTimeouts#DEFAULT_STREAM_IDLE_TIMEOUT}
+     * (180s). {@code 0} or negative disables it (for tests / opt-out).
+     * Production wiring sets it from {@code ModelConfigEntity.requestTimeoutSeconds}
+     * so a single per-model knob governs both the connect-level read timeout
+     * and the body-level idle timeout.
+     */
+    private long streamIdleTimeoutSec =
+            vip.mate.llm.chatmodel.HttpTimeouts.DEFAULT_STREAM_IDLE_TIMEOUT.toSeconds();
 
     public NodeStreamingChatHelper(ChatStreamTracker streamTracker) {
         this(streamTracker, List.of(), null, null, null, null);
@@ -443,6 +465,17 @@ public class NodeStreamingChatHelper {
         this.backoffBaseMs = backoffBaseMs;
         this.backoffCapMs = backoffCapMs;
         this.maxTotalDurationMs = maxTotalDurationMs;
+    }
+
+    /**
+     * Override the streaming inter-frame idle timeout (seconds). Wired from
+     * {@code ModelConfigEntity.requestTimeoutSeconds} by AgentGraphBuilder so a
+     * single per-model knob governs both the connect-level read timeout and
+     * the body-level idle timeout. {@code 0} or negative disables the idle
+     * timeout (used by tests / opt-out). See {@link #streamIdleTimeoutSec}.
+     */
+    public void setStreamIdleTimeoutSec(long seconds) {
+        this.streamIdleTimeoutSec = seconds;
     }
 
     private static final ObjectMapper TOOL_ARG_JSON_MAPPER = new ObjectMapper();
@@ -1220,7 +1253,26 @@ public class NodeStreamingChatHelper {
 
         CountDownLatch latch = new CountDownLatch(1);
 
-        Disposable subscription = chatModel.stream(prompt)
+        // Issue #585: inter-frame idle timeout on the streaming body Flux.
+        // The JDK HttpClient request timeout (which setReadTimeout maps to)
+        // only protects up to the response headers; once they arrive the
+        // clock stops, so a provider that returns 200 + a first frame then
+        // goes silent hangs the body forever. This reactor timeout measures
+        // the gap between successive stream elements, so total silence for
+        // streamIdleTimeoutSec propagates an error down the existing path.
+        // The fallback Flux carries a descriptive message so classifyError's
+        // "timeout" pattern matches it (vanilla TimeoutException.getMessage()
+        // is null) and the health tracker / failover chain engage.
+        Flux<org.springframework.ai.chat.model.ChatResponse> streamWithIdleGuard =
+                streamIdleTimeoutSec > 0
+                        ? chatModel.stream(prompt).timeout(
+                                Duration.ofSeconds(streamIdleTimeoutSec),
+                                Flux.error(new java.util.concurrent.TimeoutException(
+                                        "LLM stream idle timeout after " + streamIdleTimeoutSec
+                                                + "s with no delta — provider half-open or stalled")))
+                        : chatModel.stream(prompt);
+
+        Disposable subscription = streamWithIdleGuard
                 .doOnNext(chatResponse -> {
                     if (chatResponse == null || chatResponse.getResults() == null || chatResponse.getResults().isEmpty()) {
                         return;
