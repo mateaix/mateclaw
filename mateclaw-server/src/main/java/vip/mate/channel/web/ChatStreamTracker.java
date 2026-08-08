@@ -1623,6 +1623,11 @@ public class ChatStreamTracker {
                 }
                 // 先清理资源再移除
                 stopHeartbeat(entry.getKey());
+                // Close subscriber SSE connections so an evicted run does not
+                // leave clients hanging in silence until their own emitter
+                // timeout (issue #586). Aligns the eviction path with the
+                // close-out sequence forceRecycle() uses.
+                closeSubscribers(entry.getKey());
                 Disposable d = state.disposable;
                 if (d != null && !d.isDisposed()) {
                     d.dispose();
@@ -1779,6 +1784,42 @@ public class ChatStreamTracker {
             ));
         }
         return out;
+    }
+
+    /**
+     * Close every live subscriber's SSE connection for this run.
+     * <p>
+     * For the WebChat channel (issue #586), {@code done}/{@code error} is the
+     * logical end of the stream and downstream integrators reading the SSE
+     * stream by standard semantics ("read until the server closes") must see
+     * the connection actually close — otherwise a 5-second answer holds a
+     * backend connection pool slot for the full 10-minute SseEmitter timeout.
+     * The in-house web channel does NOT call this (it keeps the emitter open
+     * for reconnect + buffer replay of late {@code async_task_*} events); the
+     * close-on-done policy is channel-scoped, not global.
+     * <p>
+     * Also the shared closing sequence invoked by {@link #cleanupStaleRuns()}
+     * on eviction so a forcibly-reclaimed run does not leave subscribers
+     * hanging in silence until their own timeout fires.
+     * <p>
+     * Idempotent: safe to call when no run exists or subscribers are already
+     * empty. Each {@code em.complete()} is wrapped so one dead subscriber
+     * cannot abort the loop before later subscribers are closed.
+     */
+    public void closeSubscribers(String conversationId) {
+        RunState state = runs.get(conversationId);
+        if (state == null) return;
+        synchronized (state.lock) {
+            for (SseEmitter em : state.subscribers) {
+                try {
+                    em.complete();
+                } catch (Exception ignored) {
+                    // A subscriber that is already closed/errored must not
+                    // prevent the rest from being closed.
+                }
+            }
+            state.subscribers.clear();
+        }
     }
 
     /**
