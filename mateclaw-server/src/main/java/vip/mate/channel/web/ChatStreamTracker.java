@@ -226,6 +226,18 @@ public class ChatStreamTracker {
          */
         volatile long lastEventAt = System.currentTimeMillis();
 
+        /**
+         * Wall-clock millis at which the subscriber list last became empty
+         * while the run was still alive (not done). Null when there is at
+         * least one subscriber, or when the run already finished via the
+         * normal {@code done} path. Drives the orphan-grace eviction in
+         * {@link ChatStreamTracker#cleanupStaleRuns()} (issue #587): a run
+         * whose only subscriber disconnected is invisible to its owner and
+         * unreachable (webchat has no re-attach endpoint), so it is torn down
+         * after a grace period instead of burning tokens until the idle sweep.
+         */
+        volatile Long subscribersZeroSince;
+
         /** Bound agent identifier; null while not yet resolved. */
         volatile Long agentId;
 
@@ -973,6 +985,10 @@ public class ChatStreamTracker {
             // Without this, async_task_completed fired after `done` would be silently
             // dropped, leaving the chat UI stuck on the "正在生成中" placeholder.
             state.subscribers.add(emitter);
+            // A (re-)attached subscriber clears the orphan clock — the run is
+            // visible to its owner again, so the grace-period eviction in
+            // cleanupStaleRuns() should not fire (issue #587).
+            state.subscribersZeroSince = null;
 
             // Deliver MCP progress snapshots on reconnect (progress events skip buffer replay)
             sendProgressSnapshots(conversationId, emitter);
@@ -1096,6 +1112,14 @@ public class ChatStreamTracker {
         }
         synchronized (state.lock) {
             state.subscribers.remove(emitter);
+            // When the last subscriber leaves and the run is still alive, arm
+            // the orphan clock — see RunState.subscribersZeroSince. The run
+            // is now invisible to its owner and (for webchat) unreachable, so
+            // cleanupStaleRuns will reclaim it after the grace window unless a
+            // fresh subscriber re-attaches (which clears the clock in attach()).
+            if (state.subscribers.isEmpty() && !state.done && state.subscribersZeroSince == null) {
+                state.subscribersZeroSince = System.currentTimeMillis();
+            }
         }
         log.debug("Emitter detached from stream: {} (remaining={})",
                 conversationId, state.subscribers.size());
@@ -1539,6 +1563,24 @@ public class ChatStreamTracker {
     private int idleTimeoutMinutes = 30;
 
     /**
+     * Grace period (seconds) before an orphaned run is reclaimed. A run is
+     * "orphaned" when its subscriber list has been empty since some instant
+     * (the only SSE client disconnected) while the agent Flux is still
+     * running — invisible to its owner and, for the WebChat channel,
+     * unreachable (no re-attach endpoint). The default 2 minutes tolerates a
+     * network blip + a client-side regenerate retry; once it elapses with no
+     * subscriber returning, the run is disposed and its partial assistant
+     * content is flushed via {@code emergencySaveCallback} (issue #587).
+     * <p>
+     * Note: a run that keeps producing events but has no subscribers is NOT
+     * considered stuck — {@code lastEventAt} keeps it out of the idle bucket.
+     * The orphan bucket specifically catches "alive but nobody's watching",
+     * which the idle watchdog cannot see.
+     */
+    @org.springframework.beans.factory.annotation.Value("${mateclaw.webchat.orphan-grace-sec:120}")
+    private int orphanGraceSeconds = 120;
+
+    /**
      * Test hook — backdates the {@code lastEventAt} timestamp on an
      * existing RunState so {@link #cleanupStaleRuns()} can be exercised
      * deterministically without sleeping for minutes. Package-private on
@@ -1567,16 +1609,32 @@ public class ChatStreamTracker {
         this.idleTimeoutMinutes = minutes;
     }
 
+    /** Test hook — backdate the orphan clock on an existing run. */
+    void backdateOrphanForTesting(String conversationId, long subscribersZeroSince) {
+        RunState state = runs.get(conversationId);
+        if (state != null) {
+            state.subscribersZeroSince = subscribersZeroSince;
+        }
+    }
+
+    /** Test hook — override the orphan grace in pure-unit tests that bypass Spring. */
+    void setOrphanGraceSecondsForTesting(int seconds) {
+        this.orphanGraceSeconds = seconds;
+    }
+
     /**
      * 定期清理过期的 RunState，防止内存泄漏。
      * - 已完成超过 {@link #DONE_RETENTION_MS} 的 → 移除
      * - 自 {@link RunState#lastEventAt} 算起静默超过
      *   {@link #idleTimeoutMinutes} 分钟的 → 强制移除（视为卡死）
+     * - 订阅者清零超过 {@link #orphanGraceSeconds} 且仍在运行的孤儿 →
+     *   移除（webchat 无重连端点，运行对调用方不可见不可达，见 #587）
      */
     @org.springframework.scheduling.annotation.Scheduled(fixedRate = 600_000)
     public void cleanupStaleRuns() {
         long now = System.currentTimeMillis();
         long idleThresholdMs = (long) idleTimeoutMinutes * 60_000L;
+        long orphanGraceMs = (long) orphanGraceSeconds * 1000L;
         int evicted = 0;
 
         var iterator = runs.entrySet().iterator();
@@ -1585,6 +1643,16 @@ public class ChatStreamTracker {
             RunState state = entry.getValue();
             long age = now - state.createdAt;
             long idleMs = now - state.lastEventAt;
+            Long orphanSince = state.subscribersZeroSince;
+            long orphanMs = orphanSince != null ? now - orphanSince : -1L;
+            // Subscriber count under the lock so the orphan decision is
+            // consistent with the subscriber list (subscribersZeroSince is
+            // normally null whenever a subscriber is present, but a concurrent
+            // attach/detach could race the read — guard against that here).
+            int subCount;
+            synchronized (state.lock) {
+                subCount = state.subscribers.size();
+            }
 
             boolean shouldEvict = false;
             String reason = null;
@@ -1592,6 +1660,16 @@ public class ChatStreamTracker {
             if (state.done && age > DONE_RETENTION_MS) {
                 shouldEvict = true;
                 reason = "completed and expired";
+            } else if (!state.done && subCount == 0 && orphanSince != null && orphanMs > orphanGraceMs) {
+                // Orphan: subscriber list empty longer than the grace window
+                // while the agent Flux is still running. Invisible + (for
+                // webchat) unreachable, so reclaim it instead of letting it
+                // burn tokens until the idle sweep (issue #587). A run that's
+                // actively producing events is NOT exempt — the whole point is
+                // nobody is watching those events.
+                shouldEvict = true;
+                reason = "orphaned: no subscribers for " + (orphanMs / 1000)
+                        + "s (grace " + orphanGraceSeconds + "s); run still active";
             } else if (idleMs > idleThresholdMs) {
                 shouldEvict = true;
                 reason = "idle for " + (idleMs / 1000) + "s (threshold "

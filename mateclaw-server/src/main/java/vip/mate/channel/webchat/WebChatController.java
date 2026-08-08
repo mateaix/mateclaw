@@ -308,6 +308,11 @@ public class WebChatController {
                 // HTTP call keeps running — token burn + side-effect tools still fire.
                 // Mirrors ChatController#chatStream line 495.
                 streamTracker.setDisposable(conversationId, disposable);
+                // Wire the emergency save so an orphaned run (only subscriber
+                // gone) is flushed as an "interrupted" assistant message when
+                // the grace-period eviction reclaims it — otherwise the visitor
+                // would see only their own user message (issue #587).
+                registerEmergencySave(conversationId, assistantReply, usage, modelInfo);
 
             } catch (Exception e) {
                 log.error("[WebChat] Error: {}", e.getMessage(), e);
@@ -1358,6 +1363,7 @@ public class WebChatController {
                         })
                         .subscribe();
                 streamTracker.setDisposable(conversationId, disposable);
+                registerEmergencySave(conversationId, assistantReply, usage, modelInfo);
             } catch (Exception e) {
                 log.error("[WebChat] approve failed for {}: {}", conversationId, e.getMessage());
                 try {
@@ -1621,6 +1627,53 @@ public class WebChatController {
             }
         }
         return parts;
+    }
+
+    /**
+     * Register an emergency-save callback that flushes the partial assistant
+     * reply accumulated so far as an {@code interrupted} message. Wired on
+     * both {@code /stream} and {@code /sessions/approve} so that when a run is
+     * reclaimed while its only subscriber is gone (orphan-grace eviction,
+     * shutdown, admin force-recycle), the visitor can still retrieve the
+     * partial answer via {@code /sessions/messages} instead of seeing only the
+     * user message (issue #587). Mirrors ChatController#emergencySaveAccumulator.
+     *
+     * @param conversationId target conversation
+     * @param assistantReply live accumulator appended to in doOnNext
+     * @param usage          [prompt, completion, cacheRead, cacheWrite, reasoning]
+     * @param modelInfo      [runtimeModel, runtimeProvider]
+     */
+    private void registerEmergencySave(String conversationId, StringBuilder assistantReply,
+                                       int[] usage, String[] modelInfo) {
+        streamTracker.setEmergencySaveCallback(conversationId, () -> {
+            try {
+                String reply = assistantReply.toString();
+                if (reply.isBlank()) {
+                    log.debug("[WebChat] Emergency save skipped (empty reply): {}", conversationId);
+                    return;
+                }
+                // usage length varies by call site (chatStream = 5 tokens,
+                // approve replay = 2); read defensively so the save never
+                // throws ArrayIndexOutOfBoundsException.
+                int prompt = usage.length > 0 ? usage[0] : 0;
+                int completion = usage.length > 1 ? usage[1] : 0;
+                int cacheRead = usage.length > 2 ? usage[2] : 0;
+                int cacheWrite = usage.length > 3 ? usage[3] : 0;
+                int reasoning = usage.length > 4 ? usage[4] : 0;
+                String runtimeModel = modelInfo.length > 0 ? modelInfo[0] : null;
+                String runtimeProvider = modelInfo.length > 1 ? modelInfo[1] : null;
+                conversationService.saveMessage(
+                        conversationId, "assistant", reply, List.of(),
+                        "interrupted",
+                        prompt, completion, cacheRead, cacheWrite, reasoning,
+                        runtimeModel, runtimeProvider, null);
+                log.info("[WebChat] Emergency-saved partial assistant reply: " +
+                                "conversationId={}, textLen={}",
+                        conversationId, reply.length());
+            } catch (Exception e) {
+                log.warn("[WebChat] Emergency save failed for {}: {}", conversationId, e.getMessage());
+            }
+        });
     }
 
     // ==================== 内部方法 ====================
