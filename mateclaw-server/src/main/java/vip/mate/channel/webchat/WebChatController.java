@@ -196,14 +196,23 @@ public class WebChatController {
             streamTracker.detach(conversationId, emitter);
         });
         emitter.onTimeout(() -> {
-            log.debug("[WebChat] SSE timeout: {}", conversationId);
+            // INFO: a timeout means the stream went idle past the SseEmitter
+            // budget, which is a key signal when diagnosing stream stalls.
+            log.info("[WebChat] SSE timeout (stream went idle past the emitter budget): {}", conversationId);
             streamTracker.detach(conversationId, emitter);
             // Explicitly complete after timeout so the servlet container does
             // not rethrow AsyncRequestTimeoutException.
             emitter.complete();
         });
         emitter.onError(e -> {
-            log.debug("[WebChat] SSE error: {} - {}", conversationId, e.getMessage());
+            // INFO only for non-benign causes; a client simply closing the tab
+            // (broken pipe / connection reset) is routine and stays DEBUG so it
+            // doesn't flood production logs.
+            if (isClientDisconnect(e)) {
+                log.debug("[WebChat] SSE client disconnected: {} - {}", conversationId, e.getMessage());
+            } else {
+                log.info("[WebChat] SSE error: {} - {}", conversationId, e.getMessage());
+            }
             streamTracker.detach(conversationId, emitter);
         });
 
@@ -1262,12 +1271,16 @@ public class WebChatController {
             streamTracker.detach(conversationId, emitter);
         });
         emitter.onTimeout(() -> {
-            log.debug("[WebChat] approve SSE timeout: {}", conversationId);
+            log.info("[WebChat] approve SSE timeout (stream went idle past the emitter budget): {}", conversationId);
             streamTracker.detach(conversationId, emitter);
             emitter.complete();
         });
         emitter.onError(e -> {
-            log.debug("[WebChat] approve SSE error: {} - {}", conversationId, e.getMessage());
+            if (isClientDisconnect(e)) {
+                log.debug("[WebChat] approve SSE client disconnected: {} - {}", conversationId, e.getMessage());
+            } else {
+                log.info("[WebChat] approve SSE error: {} - {}", conversationId, e.getMessage());
+            }
             streamTracker.detach(conversationId, emitter);
         });
 
@@ -1415,6 +1428,22 @@ public class WebChatController {
         } catch (NumberFormatException e) {
             return null;
         }
+    }
+
+    /**
+     * True when the SSE error is a routine client-side disconnect (closed tab,
+     * network drop) rather than a server-side failure. Used to keep the
+     * lifecycle log noise down: a visitor closing the tab is expected and
+     * stays DEBUG; anything else is worth an INFO line for production triage.
+     * Mirrors ChatController#isClientDisconnect.
+     */
+    private static boolean isClientDisconnect(Throwable e) {
+        if (e instanceof IOException) return true;
+        String msg = e.getMessage();
+        if (msg == null) return false;
+        String lower = msg.toLowerCase();
+        return lower.contains("broken pipe") || lower.contains("connection reset")
+                || lower.contains("client abort") || lower.contains("closed");
     }
 
     /**
