@@ -111,8 +111,20 @@ public class McpIdentityForwardProperties {
      * Audience claim for a server's minted tokens: an explicit mapping (by name
      * or id) when configured, otherwise the server name (or id as string). Lets
      * the backend reject a token minted for a different server.
+     *
+     * @throws IllegalArgumentException when both {@code serverId} and
+     *         {@code serverName} are {@code null} — there is no defensible
+     *         audience for an unidentified server, and silently returning the
+     *         literal string {@code "null"} would let two distinct null/null
+     *         servers share one audience (defeating per-server isolation).
+     *         Callers reachable from the production wrap path always have at
+     *         least one of the two.
      */
     public String audienceFor(Long serverId, String serverName) {
+        if (serverId == null && (serverName == null || serverName.isBlank())) {
+            throw new IllegalArgumentException(
+                    "audienceFor requires a serverId or serverName; both were null/blank");
+        }
         Map<String, String> aud = token.getAudiences();
         if (serverName != null && aud.containsKey(serverName)) {
             return aud.get(serverName);
