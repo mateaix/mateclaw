@@ -172,13 +172,11 @@ public class WebChatController {
 
         log.info("[WebChat] Stream: agentId={}, conversationId={}, visitor={}", agentId, conversationId, visitorId);
 
-        // 注册 emitter 回调。
-        // SSE 连接断开（超时/错误/客户端关闭）只代表「这个订阅者走了」，并不代表运行结束——
-        // 这里用 detach() 而非 complete()：complete() 会提前把 RunState 标记为 done，导致
-        // (1) 管理端 Live 视图误显示已完成而 agent 仍在烧 token；(2) broadcast() 对 done
-        // 状态的普通事件直接丢弃，后续 content delta 进不了 replay buffer；(3) agent 真正
-        // 结束时 doOnComplete 再次 complete() 触发 activeFluxCount 重复递减。对齐站内 web
-        // 渠道 ChatController.registerEmitterCallbacks 的语义——运行状态不该被订阅者断开被动。
+        // Register emitter callbacks. An SSE disconnect means this subscriber
+        // left, not that the agent run finished. Use detach() instead of
+        // complete(); complete() would prematurely mark the RunState done,
+        // drop later content deltas from the replay buffer, and double-count
+        // completion when the agent Flux actually finishes.
         emitter.onCompletion(() -> {
             log.debug("[WebChat] SSE completed: {}", conversationId);
             streamTracker.detach(conversationId, emitter);
@@ -186,7 +184,8 @@ public class WebChatController {
         emitter.onTimeout(() -> {
             log.debug("[WebChat] SSE timeout: {}", conversationId);
             streamTracker.detach(conversationId, emitter);
-            // 超时后显式 complete，防止 servlet 容器再抛 AsyncRequestTimeoutException。
+            // Explicitly complete after timeout so the servlet container does
+            // not rethrow AsyncRequestTimeoutException.
             emitter.complete();
         });
         emitter.onError(e -> {
