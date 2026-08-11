@@ -6,6 +6,9 @@ import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.ai.chat.model.ChatResponse;
+import org.springframework.ai.chat.model.Generation;
+import org.springframework.ai.chat.metadata.ChatGenerationMetadata;
 import org.springframework.ai.chat.prompt.Prompt;
 import reactor.core.publisher.Flux;
 import vip.mate.channel.web.ChatStreamTracker;
@@ -18,9 +21,9 @@ import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.assertj.core.api.Assertions.assertThat;
 
 import java.time.Duration;
 
@@ -103,9 +106,9 @@ class NodeStreamingChatHelperStreamIdleTimeoutTest {
         // turned off — guards against the .timeout() wiring accidentally
         // short-circuiting the happy path.
         ChatModel m = mock(ChatModel.class);
-        var gen = new org.springframework.ai.chat.model.Generation(
-                new AssistantMessage("ok"), org.springframework.ai.chat.metadata.ChatGenerationMetadata.NULL);
-        var resp = mock(org.springframework.ai.chat.model.ChatResponse.class);
+        var gen = new Generation(
+                new AssistantMessage("ok"), ChatGenerationMetadata.NULL);
+        var resp = mock(ChatResponse.class);
         when(resp.getResults()).thenReturn(List.of(gen));
         when(resp.getResult()).thenReturn(gen);
         when(resp.getMetadata()).thenReturn(null);
@@ -116,6 +119,6 @@ class NodeStreamingChatHelperStreamIdleTimeoutTest {
         var result = assertTimeoutPreemptively(Duration.ofSeconds(20), () ->
                 helper.streamCall(m, smallPrompt(), "conv-ok", "reasoning"));
 
-        org.assertj.core.api.Assertions.assertThat(result.text()).contains("ok");
+        assertThat(result.text()).contains("ok");
     }
 }

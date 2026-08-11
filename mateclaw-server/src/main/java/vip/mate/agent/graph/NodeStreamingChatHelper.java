@@ -31,6 +31,7 @@ import java.util.concurrent.CancellationException;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -1263,11 +1264,11 @@ public class NodeStreamingChatHelper {
         // The fallback Flux carries a descriptive message so classifyError's
         // "timeout" pattern matches it (vanilla TimeoutException.getMessage()
         // is null) and the health tracker / failover chain engage.
-        Flux<org.springframework.ai.chat.model.ChatResponse> streamWithIdleGuard =
+        Flux<ChatResponse> streamWithIdleGuard =
                 streamIdleTimeoutSec > 0
                         ? chatModel.stream(prompt).timeout(
                                 Duration.ofSeconds(streamIdleTimeoutSec),
-                                Flux.error(new java.util.concurrent.TimeoutException(
+                                Flux.error(new TimeoutException(
                                         "LLM stream idle timeout after " + streamIdleTimeoutSec
                                                 + "s with no delta — provider half-open or stalled")))
                         : chatModel.stream(prompt);
