@@ -36,6 +36,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import vip.mate.config.GraphObservationProperties;
 import vip.mate.config.ReasoningRetentionProperties;
 import vip.mate.exception.MateClawException;
+import vip.mate.llm.chatmodel.HttpTimeouts;
 import vip.mate.llm.chatmodel.OpenAiCompatibleChatModelBuilder;
 import vip.mate.llm.chatmodel.ReasoningEffortResolver;
 import vip.mate.llm.model.ModelConfigEntity;
@@ -660,16 +661,9 @@ public class AgentGraphBuilder {
                         contextWindowResolver.noteContextLimitError(
                                 primaryModelConfig.getProvider(),
                                 primaryModelConfig.getModelName(), errorMessage));
-                // Issue #585: drive the streaming inter-frame idle timeout from
-                // the per-model read-timeout knob so a stalled provider can't
-                // hang the body Flux after the response headers arrive. Only
-                // override when the model explicitly sets a value — otherwise
-                // the helper keeps its 180s default.
-                Integer perModelTimeout = primaryModelConfig.getRequestTimeoutSeconds();
-                if (perModelTimeout != null) {
-                    streamingHelper.setStreamIdleTimeoutSec(perModelTimeout);
-                }
             }
+            streamingHelper.setStreamIdleTimeoutSec(
+                    resolveStreamIdleTimeoutSeconds(primaryModelConfig));
             ToolExecutionExecutor executor = new ToolExecutionExecutor(
                     toolSet, toolGuardService, approvalService, streamTracker,
                     toolTimeoutProperties, toolResultStorage, toolConcurrencyRegistry,
@@ -943,6 +937,13 @@ public class AgentGraphBuilder {
         return perSegment * (1 + vip.mate.goal.config.GoalProperties.MAX_HARD_CONTINUATIONS_CEILING) + 100;
     }
 
+    static long resolveStreamIdleTimeoutSeconds(ModelConfigEntity modelConfig) {
+        Integer override = modelConfig != null
+                ? modelConfig.getRequestTimeoutSeconds()
+                : null;
+        return HttpTimeouts.resolveStreamIdleTimeout(override).toSeconds();
+    }
+
     CompiledGraph buildReActGraph(AgentToolSet toolSet, ChatModel chatModel, int maxIterations, String reasoningEffort) {
         return buildReActGraph(toolSet, chatModel, maxIterations, reasoningEffort, null, null);
     }
@@ -983,16 +984,9 @@ public class AgentGraphBuilder {
                         contextWindowResolver.noteContextLimitError(
                                 primaryModelConfig.getProvider(),
                                 primaryModelConfig.getModelName(), errorMessage));
-                // Issue #585: drive the streaming inter-frame idle timeout from
-                // the per-model read-timeout knob so a stalled provider can't
-                // hang the body Flux after the response headers arrive. Only
-                // override when the model explicitly sets a value — otherwise
-                // the helper keeps its 180s default.
-                Integer perModelTimeout = primaryModelConfig.getRequestTimeoutSeconds();
-                if (perModelTimeout != null) {
-                    streamingHelper.setStreamIdleTimeoutSec(perModelTimeout);
-                }
             }
+            streamingHelper.setStreamIdleTimeoutSec(
+                    resolveStreamIdleTimeoutSeconds(primaryModelConfig));
             ToolExecutionExecutor executor = new ToolExecutionExecutor(
                     toolSet, toolGuardService, approvalService, streamTracker,
                     toolTimeoutProperties, toolResultStorage, toolConcurrencyRegistry,
