@@ -5,6 +5,14 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
+import java.lang.reflect.Field;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Proxy;
+import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -28,6 +36,38 @@ class ChatStreamTrackerDetachSemanticsTest {
 
     private ChatStreamTracker newTracker() {
         return new ChatStreamTracker(new ObjectMapper());
+    }
+
+    @SuppressWarnings("unchecked")
+    private void pauseHeartbeatCancellation(ChatStreamTracker tracker,
+                                            String conversationId,
+                                            CountDownLatch cancellationStarted,
+                                            CountDownLatch releaseCancellation) throws Exception {
+        Field runsField = ChatStreamTracker.class.getDeclaredField("runs");
+        runsField.setAccessible(true);
+        Map<String, ChatStreamTracker.RunState> runs =
+                (Map<String, ChatStreamTracker.RunState>) runsField.get(tracker);
+        ChatStreamTracker.RunState state = runs.get(conversationId);
+        ScheduledFuture<?> original = state.heartbeatFuture;
+        ScheduledFuture<?> blocking = (ScheduledFuture<?>) Proxy.newProxyInstance(
+                ScheduledFuture.class.getClassLoader(),
+                new Class<?>[]{ScheduledFuture.class},
+                (proxy, method, args) -> {
+                    if ("cancel".equals(method.getName())) {
+                        cancellationStarted.countDown();
+                        if (!releaseCancellation.await(2, TimeUnit.SECONDS)) {
+                            throw new AssertionError("heartbeat cancellation release timed out");
+                        }
+                    }
+                    try {
+                        return method.invoke(original, args);
+                    } catch (InvocationTargetException e) {
+                        throw e.getCause();
+                    }
+                });
+        synchronized (state.lock) {
+            state.heartbeatFuture = blocking;
+        }
     }
 
     @Test
@@ -107,5 +147,55 @@ class ChatStreamTrackerDetachSemanticsTest {
         // run still alive
         assertTrue(tracker.isRunning("present"));
         assertEquals(0, tracker.getAllSnapshot().getFirst().subscriberCount());
+    }
+
+    @Test
+    @DisplayName("complete preserves a heartbeat started by a post-done attach")
+    void completeDoesNotCancelPostDoneAttachHeartbeat() throws Exception {
+        ChatStreamTracker tracker = newTracker();
+        String cid = "complete-heartbeat-handoff";
+        tracker.register(cid);
+        tracker.incrementFlux(cid);
+        CountDownLatch cancellationStarted = new CountDownLatch(1);
+        CountDownLatch releaseCancellation = new CountDownLatch(1);
+        pauseHeartbeatCancellation(tracker, cid, cancellationStarted, releaseCancellation);
+
+        CompletableFuture<Boolean> completion =
+                CompletableFuture.supplyAsync(() -> tracker.complete(cid));
+        try {
+            assertTrue(cancellationStarted.await(1, TimeUnit.SECONDS));
+            assertTrue(tracker.attach(cid, new SseEmitter()));
+        } finally {
+            releaseCancellation.countDown();
+        }
+
+        assertTrue(completion.get(2, TimeUnit.SECONDS));
+        assertTrue(tracker.hasHeartbeatForTesting(cid),
+                "completion must cancel only the heartbeat detached before post-done attach");
+    }
+
+    @Test
+    @DisplayName("queue-draining completion preserves a heartbeat started by a post-done attach")
+    void queueDrainDoesNotCancelPostDoneAttachHeartbeat() throws Exception {
+        ChatStreamTracker tracker = newTracker();
+        String cid = "queue-drain-heartbeat-handoff";
+        tracker.register(cid);
+        tracker.incrementFlux(cid);
+        CountDownLatch cancellationStarted = new CountDownLatch(1);
+        CountDownLatch releaseCancellation = new CountDownLatch(1);
+        pauseHeartbeatCancellation(tracker, cid, cancellationStarted, releaseCancellation);
+
+        CompletableFuture<ChatStreamTracker.CompletionResult> completion =
+                CompletableFuture.supplyAsync(() -> tracker.completeAndConsumeIfLast(cid));
+        try {
+            assertTrue(cancellationStarted.await(1, TimeUnit.SECONDS));
+            assertTrue(tracker.attach(cid, new SseEmitter()));
+        } finally {
+            releaseCancellation.countDown();
+        }
+
+        assertTrue(completion.get(2, TimeUnit.SECONDS).allDone());
+        assertTrue(tracker.hasHeartbeatForTesting(cid),
+                "queue drain must cancel only the heartbeat detached before post-done attach");
     }
 }

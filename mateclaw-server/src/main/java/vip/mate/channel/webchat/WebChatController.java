@@ -46,6 +46,8 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import reactor.core.Disposable;
@@ -186,6 +188,9 @@ public class WebChatController {
 
         log.info("[WebChat] Stream: agentId={}, conversationId={}, visitor={}", agentId, conversationId, visitorId);
 
+        AtomicReference<ChatStreamTracker.RunHandle> runHandleRef = new AtomicReference<>();
+        AtomicBoolean disconnected = new AtomicBoolean();
+
         // Register emitter callbacks. An SSE disconnect means this subscriber
         // left, not that the agent run finished. Use detach() instead of
         // complete(); complete() would prematurely mark the RunState done,
@@ -193,13 +198,15 @@ public class WebChatController {
         // completion when the agent Flux actually finishes.
         emitter.onCompletion(() -> {
             log.debug("[WebChat] SSE completed: {}", conversationId);
-            streamTracker.detach(conversationId, emitter);
+            disconnected.set(true);
+            streamTracker.detach(runHandleRef.get(), emitter);
         });
         emitter.onTimeout(() -> {
             // INFO: a timeout means the stream went idle past the SseEmitter
             // budget, which is a key signal when diagnosing stream stalls.
             log.info("[WebChat] SSE timeout (stream went idle past the emitter budget): {}", conversationId);
-            streamTracker.detach(conversationId, emitter);
+            disconnected.set(true);
+            streamTracker.detach(runHandleRef.get(), emitter);
             // Explicitly complete after timeout so the servlet container does
             // not rethrow AsyncRequestTimeoutException.
             emitter.complete();
@@ -213,7 +220,8 @@ public class WebChatController {
             } else {
                 log.info("[WebChat] SSE error: {} - {}", conversationId, e.getMessage());
             }
-            streamTracker.detach(conversationId, emitter);
+            disconnected.set(true);
+            streamTracker.detach(runHandleRef.get(), emitter);
         });
 
         sseExecutor.execute(() -> {
@@ -234,13 +242,17 @@ public class WebChatController {
                 }
 
                 // 初始化 SSE 流跟踪
-                streamTracker.register(conversationId);
-                streamTracker.attach(conversationId, emitter);
+                ChatStreamTracker.RunHandle runHandle = streamTracker.register(conversationId);
+                runHandleRef.set(runHandle);
+                streamTracker.attach(runHandle, emitter);
+                if (disconnected.get()) {
+                    streamTracker.detach(runHandle, emitter);
+                }
 
                 // Echo the effective session so the caller can persist it (especially when
                 // sessionId was omitted) and address the same thread on subsequent calls. The
                 // visitorToken must be stored by the caller and sent back on list/messages/delete.
-                streamTracker.broadcast(conversationId, "meta",
+                streamTracker.broadcast(runHandle, "meta",
                         "{\"sessionId\":" + escapeJson(effectiveSessionId)
                                 + ",\"conversationId\":" + escapeJson(conversationId)
                                 + ",\"visitorToken\":" + escapeJson(visitorToken) + "}");
@@ -285,18 +297,19 @@ public class WebChatController {
                             // indicator (phase), tool execution badges (tool_start/end),
                             // plan-execute checklist (plan). See docs/zh/webchat.md.
                             if (delta.isEvent()) {
-                                forwardVisitorEvent(conversationId, delta.eventType(), delta.eventData());
+                                forwardVisitorEvent(runHandle, conversationId,
+                                        delta.eventType(), delta.eventData());
                             }
                             if (delta.content() != null && !delta.content().isEmpty()) {
                                 assistantReply.append(delta.content());
                                 if (!delta.persistenceOnly()) {
-                                    streamTracker.broadcast(conversationId, "content_delta",
+                                    streamTracker.broadcast(runHandle, "content_delta",
                                             "{\"text\":" + escapeJson(delta.content()) + "}");
                                 }
                             }
                             if (delta.thinking() != null && !delta.thinking().isEmpty()
                                     && !delta.persistenceOnly()) {
-                                streamTracker.broadcast(conversationId, "thinking_delta",
+                                streamTracker.broadcast(runHandle, "thinking_delta",
                                         "{\"text\":" + escapeJson(delta.thinking()) + "}");
                             }
                         })
@@ -314,7 +327,7 @@ public class WebChatController {
                                 log.warn("[WebChat] Failed to persist assistant reply / publish event: {}",
                                         persistErr.getMessage());
                             }
-                            streamTracker.broadcast(conversationId, "done", "{\"status\":\"completed\"}");
+                            streamTracker.broadcast(runHandle, "done", "{\"status\":\"completed\"}");
                             // WebChat is a pure-backend SSE channel with no re-attach
                             // endpoint: for third-party integrators reading until the
                             // server closes, `done` IS the end of the stream. Close the
@@ -322,15 +335,15 @@ public class WebChatController {
                             // a downstream connection-pool slot for the full SseEmitter
                             // timeout (issue #586). The in-house web channel does NOT
                             // do this — it keeps emitters open for reconnect + replay.
-                            streamTracker.closeSubscribers(conversationId);
-                            streamTracker.complete(conversationId);
+                            streamTracker.closeSubscribers(runHandle);
+                            streamTracker.complete(runHandle);
                         })
                         .doOnError(e -> {
                             log.error("[WebChat] Stream error: {}", e.getMessage());
-                            streamTracker.broadcast(conversationId, "error",
+                            streamTracker.broadcast(runHandle, "error",
                                     "{\"message\":" + escapeJson(e.getMessage()) + "}");
-                            streamTracker.closeSubscribers(conversationId);
-                            streamTracker.complete(conversationId);
+                            streamTracker.closeSubscribers(runHandle);
+                            streamTracker.complete(runHandle);
                         })
                         .subscribe();
                 // Bind the subscription's Disposable so requestStop() (invoked by
@@ -338,12 +351,12 @@ public class WebChatController {
                 // the LLM stream. Without this, stopRequested is set but the underlying
                 // HTTP call keeps running — token burn + side-effect tools still fire.
                 // Mirrors ChatController#chatStream line 495.
-                streamTracker.setDisposable(conversationId, disposable);
+                streamTracker.setDisposable(runHandle, disposable);
                 // Wire the emergency save so an orphaned run (only subscriber
                 // gone) is flushed as an "interrupted" assistant message when
                 // the grace-period eviction reclaims it — otherwise the visitor
                 // would see only their own user message (issue #587).
-                registerEmergencySave(conversationId, assistantReply, usage, modelInfo);
+                registerEmergencySave(runHandle, conversationId, assistantReply, usage, modelInfo);
 
             } catch (Exception e) {
                 log.error("[WebChat] Error: {}", e.getMessage(), e);
@@ -1266,13 +1279,18 @@ public class WebChatController {
             return emitter;
         }
 
+        AtomicReference<ChatStreamTracker.RunHandle> runHandleRef = new AtomicReference<>();
+        AtomicBoolean disconnected = new AtomicBoolean();
+
         emitter.onCompletion(() -> {
             log.debug("[WebChat] approve SSE completed: {}", conversationId);
-            streamTracker.detach(conversationId, emitter);
+            disconnected.set(true);
+            streamTracker.detach(runHandleRef.get(), emitter);
         });
         emitter.onTimeout(() -> {
             log.info("[WebChat] approve SSE timeout (stream went idle past the emitter budget): {}", conversationId);
-            streamTracker.detach(conversationId, emitter);
+            disconnected.set(true);
+            streamTracker.detach(runHandleRef.get(), emitter);
             emitter.complete();
         });
         emitter.onError(e -> {
@@ -1281,7 +1299,8 @@ public class WebChatController {
             } else {
                 log.info("[WebChat] approve SSE error: {} - {}", conversationId, e.getMessage());
             }
-            streamTracker.detach(conversationId, emitter);
+            disconnected.set(true);
+            streamTracker.detach(runHandleRef.get(), emitter);
         });
 
         String actor = webchatUsername(visitorId);
@@ -1292,24 +1311,28 @@ public class WebChatController {
             // resolveAndConsume left the already-resolved / error paths
             // broadcasting into a subscriber-less tracker, so the SSE hung
             // to the 10-min timeout (review #415).
-            streamTracker.register(conversationId);
-            streamTracker.attach(conversationId, emitter);
+            ChatStreamTracker.RunHandle runHandle = streamTracker.register(conversationId);
+            runHandleRef.set(runHandle);
+            streamTracker.attach(runHandle, emitter);
+            if (disconnected.get()) {
+                streamTracker.detach(runHandle, emitter);
+            }
             try {
                 // Atomically consume the approval (DB + metadata + memory, single tx).
                 ResolveOutcome consumed = approvalService.resolveAndConsume(pendingId, actor);
                 if (consumed.consumedSnapshot() == null) {
                     // already resolved / not found — emit a terminal done so the
                     // SDK's stream listener closes cleanly instead of hanging.
-                    broadcastApprovalResolved(conversationId, consumed);
-                    streamTracker.broadcast(conversationId, "done",
+                    broadcastApprovalResolved(runHandle, conversationId, consumed);
+                    streamTracker.broadcast(runHandle, "done",
                             "{\"status\":\"already_resolved\"}");
-                    streamTracker.closeSubscribers(conversationId);
+                    streamTracker.closeSubscribers(runHandle);
                     return;
                 }
 
                 // Notify the SDK the approval flipped (clears the banner) before
                 // replay output starts streaming.
-                broadcastApprovalResolved(conversationId, consumed);
+                broadcastApprovalResolved(runHandle, conversationId, consumed);
 
                 PendingApproval snapshot = consumed.consumedSnapshot();
                 Long replayAgentId = snapshot.getAgentId() != null
@@ -1317,9 +1340,9 @@ public class WebChatController {
                 if (replayAgentId == null) {
                     log.warn("[WebChat] approve: no agentId on consumed approval {}, cannot replay",
                             pendingId);
-                    streamTracker.broadcast(conversationId, "done",
+                    streamTracker.broadcast(runHandle, "done",
                             "{\"status\":\"error\",\"message\":\"No agent bound to approval\"}");
-                    streamTracker.closeSubscribers(conversationId);
+                    streamTracker.closeSubscribers(runHandle);
                     return;
                 }
 
@@ -1342,7 +1365,7 @@ public class WebChatController {
                 final int[] usage = {0, 0};
                 final String[] modelInfo = {null, null};
 
-                streamTracker.broadcast(conversationId, "message_start",
+                streamTracker.broadcast(runHandle, "message_start",
                         "{\"role\":\"assistant\"}");
 
                 Disposable disposable = agentService.chatWithReplayStream(
@@ -1362,18 +1385,19 @@ public class WebChatController {
                                 if (provider != null) modelInfo[1] = provider.toString();
                             }
                             if (delta.isEvent()) {
-                                forwardVisitorEvent(conversationId, delta.eventType(), delta.eventData());
+                                forwardVisitorEvent(runHandle, conversationId,
+                                        delta.eventType(), delta.eventData());
                             }
                             if (delta.content() != null && !delta.content().isEmpty()) {
                                 assistantReply.append(delta.content());
                                 if (!delta.persistenceOnly()) {
-                                    streamTracker.broadcast(conversationId, "content_delta",
+                                    streamTracker.broadcast(runHandle, "content_delta",
                                             "{\"text\":" + escapeJson(delta.content()) + "}");
                                 }
                             }
                             if (delta.thinking() != null && !delta.thinking().isEmpty()
                                     && !delta.persistenceOnly()) {
-                                streamTracker.broadcast(conversationId, "thinking_delta",
+                                streamTracker.broadcast(runHandle, "thinking_delta",
                                         "{\"text\":" + escapeJson(delta.thinking()) + "}");
                             }
                         })
@@ -1388,31 +1412,31 @@ public class WebChatController {
                             } catch (Exception persistErr) {
                                 log.warn("[WebChat] approve replay persist failed: {}", persistErr.getMessage());
                             }
-                            streamTracker.broadcast(conversationId, "done",
+                            streamTracker.broadcast(runHandle, "done",
                                     "{\"status\":\"completed\"}");
                             // Close the WebChat SSE connection on the logical end of
                             // the replay stream — same rationale as /stream (issue #586).
-                            streamTracker.closeSubscribers(conversationId);
-                            streamTracker.complete(conversationId);
+                            streamTracker.closeSubscribers(runHandle);
+                            streamTracker.complete(runHandle);
                         })
                         .doOnError(e -> {
                             log.error("[WebChat] approve replay stream error: {}", e.getMessage());
-                            streamTracker.broadcast(conversationId, "error",
+                            streamTracker.broadcast(runHandle, "error",
                                     "{\"message\":" + escapeJson(e.getMessage()) + "}");
-                            streamTracker.closeSubscribers(conversationId);
-                            streamTracker.complete(conversationId);
+                            streamTracker.closeSubscribers(runHandle);
+                            streamTracker.complete(runHandle);
                         })
                         .subscribe();
-                streamTracker.setDisposable(conversationId, disposable);
-                registerEmergencySave(conversationId, assistantReply, usage, modelInfo);
+                streamTracker.setDisposable(runHandle, disposable);
+                registerEmergencySave(runHandle, conversationId, assistantReply, usage, modelInfo);
             } catch (Exception e) {
                 log.error("[WebChat] approve failed for {}: {}", conversationId, e.getMessage());
                 try {
-                    streamTracker.broadcast(conversationId, "error",
+                    streamTracker.broadcast(runHandle, "error",
                             "{\"message\":" + escapeJson(e.getMessage()) + "}");
                 } catch (Exception ignored) {}
-                streamTracker.closeSubscribers(conversationId);
-                streamTracker.complete(conversationId);
+                streamTracker.closeSubscribers(runHandle);
+                streamTracker.complete(runHandle);
             }
         });
         audit(channel, visitorId, "webchat.approve-approval", conversationId,
@@ -1454,14 +1478,30 @@ public class WebChatController {
     private void broadcastApprovalResolved(String conversationId, ResolveOutcome outcome) {
         try {
             streamTracker.broadcast(conversationId, "tool_approval_resolved",
-                    objectMapper.writeValueAsString(Map.of(
-                            "pendingId", outcome.pendingId(),
-                            "decision", outcome.decision() != null ? outcome.decision() : "",
-                            "toolName", outcome.toolName() != null ? outcome.toolName() : "")));
+                    approvalResolvedJson(outcome));
         } catch (Exception e) {
             log.debug("[WebChat] approval_resolved broadcast failed for {}: {}",
                     outcome.pendingId(), e.getMessage());
         }
+    }
+
+    private void broadcastApprovalResolved(ChatStreamTracker.RunHandle runHandle,
+                                            String conversationId,
+                                            ResolveOutcome outcome) {
+        try {
+            streamTracker.broadcast(runHandle, "tool_approval_resolved",
+                    approvalResolvedJson(outcome));
+        } catch (Exception e) {
+            log.debug("[WebChat] approval_resolved broadcast failed for {} in {}: {}",
+                    outcome.pendingId(), conversationId, e.getMessage());
+        }
+    }
+
+    private String approvalResolvedJson(ResolveOutcome outcome) throws IOException {
+        return objectMapper.writeValueAsString(Map.of(
+                "pendingId", outcome.pendingId(),
+                "decision", outcome.decision() != null ? outcome.decision() : "",
+                "toolName", outcome.toolName() != null ? outcome.toolName() : ""));
     }
 
     /**
@@ -1701,9 +1741,10 @@ public class WebChatController {
      * @param usage          [prompt, completion, cacheRead, cacheWrite, reasoning]
      * @param modelInfo      [runtimeModel, runtimeProvider]
      */
-    private void registerEmergencySave(String conversationId, StringBuilder assistantReply,
+    private void registerEmergencySave(ChatStreamTracker.RunHandle runHandle,
+                                       String conversationId, StringBuilder assistantReply,
                                        int[] usage, String[] modelInfo) {
-        streamTracker.setEmergencySaveCallback(conversationId, () -> {
+        streamTracker.setEmergencySaveCallback(runHandle, () -> {
             try {
                 String reply = assistantReply.toString();
                 if (reply.isBlank()) {
@@ -1968,7 +2009,10 @@ public class WebChatController {
      * <p>Backward compat: visitors / SDKs that don't know these event types
      * silently ignore them per the SSE spec.
      */
-    private void forwardVisitorEvent(String conversationId, String eventType, Map<String, Object> data) {
+    private void forwardVisitorEvent(ChatStreamTracker.RunHandle runHandle,
+                                     String conversationId,
+                                     String eventType,
+                                     Map<String, Object> data) {
         if (eventType == null || data == null) return;
         Map<String, Object> payload;
         String sseName;
@@ -2011,7 +2055,7 @@ public class WebChatController {
         }
         try {
             String json = objectMapper.writeValueAsString(payload);
-            streamTracker.broadcast(conversationId, sseName, json);
+            streamTracker.broadcast(runHandle, sseName, json);
         } catch (Exception e) {
             log.debug("[WebChat] Failed to serialize visitor event {} for {}: {}",
                     eventType, conversationId, e.getMessage());

@@ -5,6 +5,10 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -133,5 +137,34 @@ class ChatStreamTrackerCloseSubscribersTest {
         assertTrue(isCompleted(live),
                 "the live subscriber must still be closed even though a dead " +
                         "subscriber threw on complete()");
+    }
+
+    @Test
+    @DisplayName("Emitter completion runs outside the RunState lock")
+    void closeSubscribersCompletesOutsideStateLock() {
+        ChatStreamTracker tracker = newTracker();
+        String cid = "close-outside-lock";
+        ChatStreamTracker.RunHandle handle = tracker.register(cid);
+        AtomicBoolean concurrentAttachSucceeded = new AtomicBoolean();
+
+        SseEmitter emitter = new SseEmitter() {
+            @Override
+            public void complete() {
+                CompletableFuture<Boolean> attach = CompletableFuture.supplyAsync(
+                        () -> tracker.attach(handle, new SseEmitter()));
+                try {
+                    concurrentAttachSucceeded.set(attach.get(1, TimeUnit.SECONDS));
+                } catch (Exception ignored) {
+                    concurrentAttachSucceeded.set(false);
+                }
+                super.complete();
+            }
+        };
+        assertTrue(tracker.attach(handle, emitter));
+
+        tracker.closeSubscribers(handle);
+
+        assertTrue(concurrentAttachSucceeded.get(),
+                "complete() must not run while closeSubscribers owns the state lock");
     }
 }
