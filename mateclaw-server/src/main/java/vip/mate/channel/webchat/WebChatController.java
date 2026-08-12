@@ -1362,7 +1362,7 @@ public class WebChatController {
                 // tool here can mislead the LLM on fallthrough).
                 String replayPrompt = "继续执行已批准的工具调用。";
                 StringBuilder assistantReply = new StringBuilder();
-                final int[] usage = {0, 0};
+                final int[] usage = {0, 0, 0, 0, 0};
                 final String[] modelInfo = {null, null};
 
                 streamTracker.broadcast(runHandle, "message_start",

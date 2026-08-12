@@ -3,6 +3,7 @@ package vip.mate.channel.webchat;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
@@ -78,7 +79,7 @@ class WebChatApprovalInteractionTest {
         AgentEntity agent = new AgentEntity();
         agent.setId(AGENT_ID);
         agent.setWorkspaceId(1L);
-        org.mockito.Mockito.when(agentService.getAgent(AGENT_ID)).thenReturn(agent);
+        Mockito.when(agentService.getAgent(AGENT_ID)).thenReturn(agent);
     }
 
     private WebChatCreateSessionRequest req(String visitorId, String sessionId) {
@@ -243,7 +244,7 @@ class WebChatApprovalInteractionTest {
         String sessionId = "s1";
         String pendingId = seedPending(visitorId, sessionId);
         String cid = WebChatController.deriveConversationId(API_KEY, visitorId, sessionId);
-        org.mockito.Mockito.when(agentService.chatWithReplayStream(
+        Mockito.when(agentService.chatWithReplayStream(
                         eq(AGENT_ID), anyString(), eq(cid), anyString(), anyString(), any()))
                 .thenReturn(Flux.never());
 
@@ -264,5 +265,51 @@ class WebChatApprovalInteractionTest {
         assertThat(streamTracker.streamExistsOnThisNode(cid))
                 .as("an approval disconnect observed before registration must arm orphan cleanup")
                 .isFalse();
+    }
+
+    @Test
+    @DisplayName("approval replay persists full usage metadata from _usage_final")
+    void approvalReplayPersistsFullUsageMetadata() throws Exception {
+        String visitorId = "visitor-usage-final";
+        String sessionId = "s1";
+        String pendingId = seedPending(visitorId, sessionId);
+        String cid = WebChatController.deriveConversationId(API_KEY, visitorId, sessionId);
+        Mockito.when(agentService.chatWithReplayStream(
+                        eq(AGENT_ID), anyString(), eq(cid), anyString(), anyString(), any()))
+                .thenReturn(Flux.just(
+                        AgentService.StreamDelta.event("_usage_final", Map.of(
+                                "promptTokens", 11,
+                                "completionTokens", 7,
+                                "cacheReadTokens", 3,
+                                "cacheWriteTokens", 2,
+                                "reasoningTokens", 5,
+                                "runtimeModelName", "mock-replay-model",
+                                "runtimeProviderId", "mock-provider")),
+                        new AgentService.StreamDelta("approved reply", null)));
+
+        WebChatDisconnectTestSupport.QueuedExecutorService queued =
+                new WebChatDisconnectTestSupport.QueuedExecutorService();
+        ExecutorService original = WebChatDisconnectTestSupport.swapExecutor(controller, queued);
+        try {
+            controller.approveSession(API_KEY, tokenFor(visitorId), visitorId, sessionId, pendingId);
+            queued.runNext();
+        } finally {
+            WebChatDisconnectTestSupport.swapExecutor(controller, original);
+        }
+
+        Map<String, Object> row = jdbc.queryForMap(
+                "SELECT content, prompt_tokens, completion_tokens, cache_read_tokens, " +
+                        "cache_write_tokens, reasoning_tokens, runtime_model, runtime_provider " +
+                        "FROM mate_message WHERE conversation_id = ? AND role = 'assistant' " +
+                        "ORDER BY create_time DESC LIMIT 1",
+                cid);
+        assertThat(row.get("CONTENT")).isEqualTo("approved reply");
+        assertThat(((Number) row.get("PROMPT_TOKENS")).intValue()).isEqualTo(11);
+        assertThat(((Number) row.get("COMPLETION_TOKENS")).intValue()).isEqualTo(7);
+        assertThat(((Number) row.get("CACHE_READ_TOKENS")).intValue()).isEqualTo(3);
+        assertThat(((Number) row.get("CACHE_WRITE_TOKENS")).intValue()).isEqualTo(2);
+        assertThat(((Number) row.get("REASONING_TOKENS")).intValue()).isEqualTo(5);
+        assertThat(row.get("RUNTIME_MODEL")).isEqualTo("mock-replay-model");
+        assertThat(row.get("RUNTIME_PROVIDER")).isEqualTo("mock-provider");
     }
 }

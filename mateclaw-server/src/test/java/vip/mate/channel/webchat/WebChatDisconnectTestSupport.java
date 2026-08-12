@@ -5,6 +5,7 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.lang.reflect.Field;
 import java.util.ArrayDeque;
+import java.util.List;
 import java.util.Queue;
 import java.util.concurrent.AbstractExecutorService;
 import java.util.concurrent.ExecutorService;
@@ -40,9 +41,9 @@ final class WebChatDisconnectTestSupport {
         }
 
         @Override
-        public java.util.List<Runnable> shutdownNow() {
+        public List<Runnable> shutdownNow() {
             shutdown = true;
-            var remaining = java.util.List.copyOf(tasks);
+            var remaining = List.copyOf(tasks);
             tasks.clear();
             return remaining;
         }
