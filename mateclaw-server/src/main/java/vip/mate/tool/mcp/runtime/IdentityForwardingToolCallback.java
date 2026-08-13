@@ -1,41 +1,47 @@
 package vip.mate.tool.mcp.runtime;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ObjectNode;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.definition.ToolDefinition;
 import org.springframework.ai.tool.metadata.ToolMetadata;
 
+import java.util.Map;
+
 /**
- * Wraps an MCP {@link ToolCallback} for a trusted server (opt-in via
- * {@link McpIdentityForwardProperties}) and injects the caller's identity into
- * the call arguments, so the STDIO MCP server can forward it on-behalf-of to its
- * downstream REST backend.
+ * Marks an MCP {@link ToolCallback} as belonging to a trusted server (opt-in via
+ * {@link McpIdentityForwardProperties}) so that the outer
+ * {@link ProgressAwareMcpToolCallback} knows to route the call through the
+ * direct {@code tools/call} path and inject the caller's identity into
+ * {@code _meta}.
  *
- * <p>What gets injected is decided by {@link McpIdentityForwardService}: either
- * the plaintext username (under {@code __mateclaw_user__}) or a short-lived
- * signed JWT (under {@code __mateclaw_token__}).
+ * <p>Identity is <b>not</b> injected here anymore — it used to be merged into the
+ * tool arguments JSON, but has moved to the MCP {@code _meta} field (the
+ * caller-controlled channel) per the #459 follow-up. {@code _meta} is authored
+ * by MateClaw, never by the model, so the anti-spoof property holds without an
+ * explicit overwrite guard.
  *
- * <p>STDIO has no per-request header channel and the subprocess is shared by all
- * users, so identity must ride <em>in-band, per call</em>. The identity is
- * derived from the trusted server-side {@link ToolContext}, never from the model
- * — any LLM-supplied value of the reserved key is overwritten, so the model
- * cannot spoof identity.
+ * <p>This wrapper now serves two roles:
+ * <ol>
+ *   <li>A <b>type marker</b> — {@code ProgressAwareMcpToolCallback} checks
+ *       {@code delegate instanceof IdentityForwardingToolCallback} to decide
+ *       whether to build a {@code CallToolRequest} with identity in
+ *       {@code _meta}.</li>
+ *   <li>An <b>identity provider</b> — {@link #metaInjection(ToolContext)}
+ *       resolves the {@code _meta} key→value map from
+ *       {@link McpIdentityForwardService}, which the progress wrapper merges
+ *       into the request.</li>
+ * </ol>
  *
  * <p>The wrapper is transparent in every other respect: tool definition,
- * metadata, schema, and (when there is no identity to inject) the call itself are
- * forwarded verbatim. It sits <em>inside</em> {@link PrefixedNameToolCallback}
- * so name prefixing and return-direct detection still see the raw delegate.
+ * metadata, schema, and the call itself are forwarded verbatim. It sits
+ * <em>inside</em> {@link ProgressAwareMcpToolCallback} which sits inside
+ * {@link PrefixedNameToolCallback}.
  *
  * @author MateClaw Team
  */
 @Slf4j
 public final class IdentityForwardingToolCallback implements ToolCallback {
-
-    private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private final ToolCallback delegate;
     private final McpIdentityForwardService identityService;
@@ -64,12 +70,18 @@ public final class IdentityForwardingToolCallback implements ToolCallback {
 
     @Override
     public String call(String toolInput) {
-        return delegate.call(inject(toolInput, null));
+        // No args injection — identity travels in _meta, set by the progress
+        // wrapper when it builds the CallToolRequest. This plain delegate path
+        // is only reached when the progress wrapper is absent (non-MCP tools or
+        // a test), in which case there is no _meta channel and identity is
+        // silently dropped — acceptable because identity-forward is only armed
+        // for MCP servers that always go through the progress wrapper.
+        return delegate.call(toolInput);
     }
 
     @Override
     public String call(String toolInput, ToolContext toolContext) {
-        return delegate.call(inject(toolInput, toolContext), toolContext);
+        return delegate.call(toolInput, toolContext);
     }
 
     /** Exposed for diagnostic / wrapping detection. */
@@ -78,40 +90,15 @@ public final class IdentityForwardingToolCallback implements ToolCallback {
     }
 
     /**
-     * Inject identity claim into the toolInput JSON.
-     * Package-private so {@link ProgressAwareMcpToolCallback} can apply identity
-     * forwarding before calling mcpClient directly (progress path).
+     * Resolve the identity to inject into the {@code tools/call} {@code _meta}
+     * field for this call. Returns an empty map when the origin carries no
+     * usable identity (cron / system / anonymous-without-id) or when token mode
+     * is enabled but the key is unavailable (fail-closed).
+     *
+     * <p>Package-private so {@link ProgressAwareMcpToolCallback} can merge the
+     * result into the {@code _meta} map alongside the progress token.
      */
-    String inject(String toolInput, ToolContext toolContext) {
-        return identityService.resolve(toolContext, audience)
-                .map(i -> withClaim(toolInput, i.key(), i.value()))
-                .orElse(toolInput);
-    }
-
-    /**
-     * Merge {@code (key, value)} into the JSON arguments, overwriting any value
-     * the model supplied for that key. Returns the input unchanged when the
-     * arguments are not a JSON object (nothing to merge into) or are malformed
-     * (let the call surface the error rather than mask it by rewriting).
-     */
-    static String withClaim(String toolInput, String key, String value) {
-        try {
-            ObjectNode node;
-            if (toolInput == null || toolInput.isBlank()) {
-                node = MAPPER.createObjectNode();
-            } else {
-                JsonNode parsed = MAPPER.readTree(toolInput);
-                if (!parsed.isObject()) {
-                    log.warn("[McpIdentity] tool input is not a JSON object; forwarding without identity");
-                    return toolInput;
-                }
-                node = (ObjectNode) parsed;
-            }
-            node.put(key, value);
-            return MAPPER.writeValueAsString(node);
-        } catch (Exception e) {
-            log.warn("[McpIdentity] failed to inject identity into tool input: {}", e.getMessage());
-            return toolInput;
-        }
+    Map<String, String> metaInjection(ToolContext toolContext) {
+        return identityService.resolveMeta(toolContext, audience);
     }
 }
