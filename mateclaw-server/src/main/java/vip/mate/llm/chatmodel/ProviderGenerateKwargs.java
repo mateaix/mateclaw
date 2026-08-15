@@ -46,6 +46,7 @@ public final class ProviderGenerateKwargs {
             "headers",
             "customHeaders", "custom_headers",
             "completionsPath", "completions_path",
+            "modelsPath", "models_path",
             "chatOptions", "chat_options"
     );
 

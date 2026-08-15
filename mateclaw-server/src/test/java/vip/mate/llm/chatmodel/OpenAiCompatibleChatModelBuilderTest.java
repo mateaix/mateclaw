@@ -111,6 +111,23 @@ class OpenAiCompatibleChatModelBuilderTest {
     }
 
     @Test
+    @DisplayName("Known provider-discovery key (modelsPath) is reserved and never forwarded into extraBody")
+    void knownKey_modelsPath_notForwardedToExtraBody() {
+        Map<String, Object> kwargs = new LinkedHashMap<>();
+        kwargs.put("modelsPath", "/openai/v1/models");
+        kwargs.put("chat_template_kwargs", Map.of("enable_thinking", false));
+        when(modelProviderService.readProviderGenerateKwargs(provider)).thenReturn(kwargs);
+
+        OpenAiChatOptions options = builder.buildOpenAiOptions(model("gpt-4-turbo"), provider);
+
+        assertNotNull(options.getExtraBody());
+        assertFalse(options.getExtraBody().containsKey("modelsPath"),
+                "modelsPath is consumed by OpenAiModelsPath and must not leak into chat completion request bodies");
+        assertTrue(options.getExtraBody().containsKey("chat_template_kwargs"),
+                "unrecognized passthrough keys must still be forwarded");
+    }
+
+    @Test
     @DisplayName("Empty generateKwargs: no exception, extraBody stays empty/null (pre-existing behavior preserved)")
     void emptyGenerateKwargs_noExceptionNoExtraBody() {
         when(modelProviderService.readProviderGenerateKwargs(provider)).thenReturn(Map.of());

@@ -73,6 +73,21 @@ class ModelDiscoveryServiceTestPromptTest {
     }
 
     @Test
+    @DisplayName("modelsPath is reserved (consumed by model discovery) and must not leak into the JSON body")
+    void modelsPath_doesNotLeakIntoRequestBody() {
+        Map<String, Object> kwargs = new LinkedHashMap<>();
+        kwargs.put("modelsPath", "/openai/v1/models");
+        kwargs.put("chat_template_kwargs", Map.of("enable_thinking", false));
+
+        Map<String, Object> requestBody = ModelDiscoveryService.buildTestPromptRequestBody("qwen3-32b", kwargs);
+
+        assertFalse(requestBody.containsKey("modelsPath"),
+                "modelsPath configures the list-models endpoint and is not a chat completion body field");
+        assertTrue(requestBody.containsKey("chat_template_kwargs"),
+                "unrecognized passthrough keys must still be forwarded");
+    }
+
+    @Test
     @DisplayName("Empty or null generateKwargs: request body contains only the fixed probe fields")
     void emptyOrNullGenerateKwargs_onlyFixedFields() {
         Map<String, Object> requestBody = ModelDiscoveryService.buildTestPromptRequestBody("gpt-4-turbo", Map.of());
