@@ -1,19 +1,45 @@
 ---
-title: Agent Teams — one lead, a crew of digital employees, one shared task board
-description: MateClaw agent teams let a lead employee break a complex goal into tasks, dispatch them to team members in parallel, with dependencies, approvals, deliverables and full observability on a shared board.
+title: Team Runs — from one team request to a complete, deliverable execution
+description: A MateClaw Team Run links the lead, task DAG, worker executions, final synthesis, and deliverables under one runId and one shared view across Chat, Agents, and Teams.
 head:
   - - meta
     - name: keywords
       content: agent teams,task board,kanban,multi-agent collaboration,dispatch,deliverables,MateClaw
 ---
 
-# Agent Teams (2.0.0+)
+# Team Runs and Agent Teams (2.1.0+)
 
 > **Before: one employee with sub-tasks. Now: a team around a shared task board.**
 
 Sub-agent delegation (`delegateToAgent`) solves "one person temporarily calls a helper": synchronous, one-to-one, black-box. But real complex delivery looks like a project: **break down tasks, declare dependencies, run in parallel, gate on approvals, archive deliverables, and see who is doing what at any time**.
 
 Agent Teams bring that project machinery into MateClaw: you create a **team**, assign one **lead** employee and several **members**; tell the lead a goal, it breaks the goal into tasks on a **shared task board**; the dispatch engine hands tasks to members and runs them **in parallel**; settled results are announced back to the lead, which reviews, re-dispatches, and drives the whole thing to done. You watch it all from the Teams page — or drop tasks onto the board yourself.
+
+2.1.0 adds the first-class **Team Run** above individual tasks: one user request maps to one run, and one `runId` links the objective, task DAG, worker conversations, events, final synthesis, and deliverables. Instead of a sidebar full of “subtask” conversations, you get one outcome-first work record with progressive drill-down.
+
+## The unified Team Run experience in 2.1.0
+
+| Surface | Responsibility | Default view |
+|---------|----------------|--------------|
+| **Chat** | Delivery | One stable run card with shared status/progress, final summary, deliverables, failures or approvals; task detail expands on demand |
+| **Agents · Live** | Live observation | Workers sharing a `runId` are grouped with task, phase, tool, duration, and exception state; ordinary runs remain independent |
+| **Teams** | History and governance | Run history and detail, task evidence, approvals, cancellation, and worker records instead of a flat wall of historical tasks |
+
+The server owns the Team Run projection and state machine:
+
+```text
+planning → running → awaiting_review → finalizing → completed
+                                      ↘ partial / failed
+planning / running / awaiting_review → cancelled
+```
+
+- **One identity per job**: events, routes, logs, tasks, and final messages carry `runId`.
+- **Outcome first**: intermediate task settlement updates progress instead of manufacturing one user-facing final answer per task.
+- **Worker governance**: `team_worker` conversations stay out of the normal sidebar; deep links open a read-only execution record with a path back to the Team Run.
+- **Refresh-safe**: every surface consumes `TeamRunView`, so title, progress, status, summary, and files cannot drift through client-side inference.
+- **Historical compatibility**: 2.0 tasks without `runId` remain readable but are never guessed into an incorrect aggregate.
+
+The run protocol is `start_run → create* → seal_run`: the lead creates a run, creates tasks explicitly under it, and seals it before dispatch. The originating message participates in idempotency, preventing reconnects or duplicate submissions from creating a second copy.
 
 ---
 
@@ -122,6 +148,10 @@ The admin API lives under `/api/v1/teams`:
 
 | Endpoint | Description |
 |------|------|
+| `GET /api/v1/team-runs/{runId}` | Read the complete run projection |
+| `GET /api/v1/teams/{teamId}/runs` · `GET …/runs/page` | List / cursor-page team run history |
+| `GET /api/v1/conversations/{conversationId}/team-runs` · `GET …/team-runs/page` | List / cursor-page runs in a parent conversation |
+| `POST /api/v1/team-runs/{runId}/cancel` | Cancel a run and its non-terminal tasks |
 | `GET / POST /api/v1/teams` | List / create teams |
 | `GET / PUT / DELETE /api/v1/teams/{id}` | Team detail / update / delete |
 | `POST /api/v1/teams/{id}/members` · `DELETE …/members/{agentId}` | Membership |
@@ -135,7 +165,7 @@ The admin API lives under `/api/v1/teams`:
 
 Every validation failure returns a **readable error** — never a bare 500.
 
-Data lives in five tables: `mate_agent_team`, `mate_agent_team_member`, `mate_team_task`, `mate_team_task_comment`, `mate_team_task_event`.
+The original five team tables are joined by `mate_team_run`; `mate_team_task.run_id` and worker-conversation indexes connect tasks, runs, and execution records. Snowflake ids cross the JSON boundary as strings.
 
 ---
 

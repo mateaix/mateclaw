@@ -10,7 +10,11 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 @ConfigurationProperties(prefix = "mateclaw.context.probe")
 public class ContextProbeProperties {
 
-    /** Master switch. When false, {@code resolveMaxInputTokens} only honors explicit config. */
+    /**
+     * Master switch for probe traffic and error-text reconciliation. When
+     * false, {@code resolveMaxInputTokens} honors explicit config and the
+     * built-in window table only — no request ever leaves the process.
+     */
     private boolean enabled = true;
 
     /** Per-request read timeout. Probing must never hold up chat startup. */

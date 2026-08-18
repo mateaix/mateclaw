@@ -24,7 +24,7 @@ public class Model3dFileDownloader {
 
     public Path download(String modelUrl, String conversationId, String taskId,
                           String preferredExtension) throws IOException {
-        Path dir = uploadLocationResolver.resolveConversationDir(conversationId);
+        Path dir = uploadLocationResolver.resolveWriteDir(conversationId);
         Files.createDirectories(dir);
 
         String ext = guessExtension(modelUrl, preferredExtension);

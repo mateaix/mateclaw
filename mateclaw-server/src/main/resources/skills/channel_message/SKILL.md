@@ -1,10 +1,11 @@
 ---
 name: channel_message
-version: "1.3.0"
-description: "当需要主动向用户、会话或渠道单向推送消息时使用。适用于任务完成通知、定时提醒、异步结果回推等场景。"
+version: "2.0.0"
+description: "当需要主动向某个渠道会话单向推送消息时使用（企业微信、钉钉、飞书、Telegram、Discord、QQ、Slack 等）。适用于任务完成通知、定时提醒告警、异步结果回推等场景。先用 list_channel_sessions 查询目标会话，再用 send_channel_message 发送。"
 dependencies:
   tools:
-    - execute_shell_command
+    - list_channel_sessions
+    - send_channel_message
 ---
 
 # 渠道消息推送
@@ -20,97 +21,67 @@ dependencies:
 - 将后台任务结果推送回指定会话
 
 ### 不应使用
-- 当前对话中的正常回复（直接回复即可）
+- 当前对话中的正常回复（直接回复即可，不要重复推送）
 - 需要等待用户回复的双向交互
 - 目标渠道或会话不明确时（先询问用户）
 
 ## 支持渠道
 
-`console`、`dingtalk`、`feishu`、`telegram`、`discord`、`qq`、`slack`
+`wecom`（企业微信）、`dingtalk`、`feishu`、`telegram`、`discord`、`qq`、`slack`、`weixin`
+
+> 注意：只有机器人**收到过消息**的会话才能主动推送——平台的推送句柄是在收到入站消息时记录的。如果目标会话不在列表里，需要先让对方在该会话中给机器人发一条消息。
 
 ## 工作流程
 
 ### 第一步：查询目标会话
 
-**macOS / Linux：**
 ```
-execute_shell_command(
-  command="mateclaw chats list --agent-id <agentId> --channel <channel>"
-)
+list_channel_sessions(channelType="wecom")
 ```
 
-**Windows：**
-```
-execute_shell_command(
-  command="mateclaw.exe chats list --agent-id <agentId> --channel <channel>"
-)
-```
-
-从返回结果中获取 `user_id` 和 `session_id`。有多个会话时，优先选 `updated_at` 最近的。
+- `channelType` 可选，不传则列出当前工作区所有可推送会话
+- 返回每个会话的 `conversation_id`、渠道名称、用户名、最后活跃时间
+- 有多个候选会话时，优先选**最后活跃时间最近**的
 
 ### 第二步：发送消息
 
-**macOS / Linux：**
 ```
-execute_shell_command(
-  command="mateclaw channels send --agent-id <agentId> --channel <channel> --target-user <userId> --target-session <sessionId> --text \"消息内容\""
+send_channel_message(
+  conversationId="wecom:xxxx",
+  message="✅ 数据分析已完成，结果已保存到 report.xlsx"
 )
 ```
 
-**Windows（PowerShell）：**
-```
-execute_shell_command(
-  command="mateclaw.exe channels send --agent-id <agentId> --channel <channel> --target-user <userId> --target-session <sessionId> --text '消息内容'"
-)
-```
-
-### 必填参数一览
-
-| 参数 | 说明 |
-|------|------|
-| `--agent-id` | 当前 Agent 的 ID |
-| `--channel` | 目标渠道名称（见支持渠道列表） |
-| `--target-user` | 目标用户 ID（从 `chats list` 获取） |
-| `--target-session` | 目标会话 ID（从 `chats list` 获取） |
-| `--text` | 消息内容 |
+- `conversationId` 必须来自 `list_channel_sessions` 的返回结果，**不要凭空猜测**
+- `message` 为消息正文（纯文本 / Markdown，取决于渠道能力），超过 4096 字符会被截断
 
 ## 常见场景示例
 
-### 任务完成通知
+### 温度告警推送到企业微信
 
 ```
-execute_shell_command(
-  command="mateclaw chats list --agent-id task-bot --channel dingtalk"
-)
-# 从结果中取 user_id / session_id，然后：
-execute_shell_command(
-  command="mateclaw channels send --agent-id task-bot --channel dingtalk --target-user alice --target-session alice_dt_001 --text \"✅ 数据分析已完成，结果已保存到 report.xlsx\""
-)
-```
-
-### 按用户筛选会话
-
-```
-execute_shell_command(
-  command="mateclaw chats list --agent-id notify-bot --user-id alice"
+list_channel_sessions(channelType="wecom")
+# 从结果中选目标会话，例如 conversation_id 为 wecom:DeBaDe 的会话，然后：
+send_channel_message(
+  conversationId="wecom:DeBaDe",
+  message="【温度告警】中控测试会议室 当前温度 29.3℃，已超过 28℃，请及时处理"
 )
 ```
 
-## mateclaw CLI 未安装时的降级处理
+### 任务完成通知到钉钉
 
-若 `mateclaw` 命令不可用：
-
-1. 检测：
 ```
-execute_shell_command(command="which mateclaw || where mateclaw")
+list_channel_sessions(channelType="dingtalk")
+send_channel_message(
+  conversationId="dingtalk:sw:xxxx",
+  message="✅ 周报生成完成，已写入知识库"
+)
 ```
-
-2. 如果未安装，告知用户：
-> mateclaw CLI 未找到，无法主动推送消息。请确认 MateClaw 已正确安装并将 CLI 加入 PATH。安装后重试。
 
 ## 常见错误
 
-- **缺少必填参数**：5 个参数（agent-id、channel、target-user、target-session、text）缺一不可
-- **没有先查 session 就发送**：不要猜 target-user 和 target-session，必须先查
+- **没有先查会话就发送**：`conversationId` 必须先通过 `list_channel_sessions` 获取
 - **把正常对话回复当成推送**：当前会话直接回复不需要用本技能
-- **期望收到回复**：`channels send` 是单向推送，不返回用户回复
+- **期望收到回复**：`send_channel_message` 是单向推送，不返回用户回复
+- **目标会话不存在**：说明机器人从未在该会话收到过消息，请先让用户在目标会话里给机器人发一条消息
+- **渠道未启用 / 不支持主动推送**：按报错提示先在渠道管理中启用对应渠道

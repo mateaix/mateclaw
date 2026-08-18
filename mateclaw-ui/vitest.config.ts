@@ -1,4 +1,5 @@
 import { defineConfig } from 'vitest/config'
+import vue from '@vitejs/plugin-vue'
 import path from 'node:path'
 
 // Two test conventions coexist in this repo:
@@ -9,6 +10,7 @@ import path from 'node:path'
 // Scope vitest to `src/**` so it never picks up the node:test files (which
 // don't export describe/it/expect and would otherwise fail discovery).
 export default defineConfig({
+  plugins: [vue()],
   test: {
     include: ['src/**/*.{test,spec}.{ts,tsx}'],
     environment: 'happy-dom',

@@ -1,8 +1,8 @@
 package vip.mate.system.service;
 
+import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
-import org.apache.ibatis.session.Configuration;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -56,8 +56,14 @@ class SystemSettingWorkspaceStorageRootTest {
 
     @BeforeAll
     static void initTableInfo() {
+        // MybatisConfiguration, not the plain MyBatis Configuration: the column
+        // cache TableInfoHelper installs is static and JVM-wide, and a plain
+        // Configuration maps properties to camelCase columns (settingKey rather
+        // than setting_key). Seeding it that way poisons every later query on
+        // this entity in the same surefire fork, including ones issued through
+        // a Spring context.
         TableInfoHelper.initTableInfo(
-                new MapperBuilderAssistant(new Configuration(), ""),
+                new MapperBuilderAssistant(new MybatisConfiguration(), ""),
                 SystemSettingEntity.class);
     }
 

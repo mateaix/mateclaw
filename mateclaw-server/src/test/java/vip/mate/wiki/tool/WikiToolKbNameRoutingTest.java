@@ -51,6 +51,7 @@ import static org.mockito.Mockito.when;
 class WikiToolKbNameRoutingTest {
 
     private static final Long AGENT = 7L;
+    private static final String AGENT_PARAM = String.valueOf(AGENT);
     private static final long PRIMARY_KB = 100L;
     private static final long OTHER_KB = 200L;
     private static final long DUP_BOUND_KB = 300L;
@@ -109,7 +110,7 @@ class WikiToolKbNameRoutingTest {
         wirePages();
         when(kbService.resolvePrimaryKb(AGENT)).thenReturn(kb(PRIMARY_KB, "Primary", AGENT));
 
-        String json = tool.wiki_list_pages(AGENT, null, null, null);
+        String json = tool.wiki_list_pages(AGENT_PARAM, null, null, null);
         JSONObject obj = JSONUtil.parseObj(json);
 
         JSONArray pages = obj.getJSONArray("pages");
@@ -126,7 +127,7 @@ class WikiToolKbNameRoutingTest {
         when(kbService.resolvePrimaryKb(AGENT)).thenReturn(kb(PRIMARY_KB, "Primary", AGENT));
         when(kbService.findAllByName(AGENT, "Other")).thenReturn(List.of(kb(OTHER_KB, "Other", null)));
 
-        String json = tool.wiki_list_pages(AGENT, null, "Other", null);
+        String json = tool.wiki_list_pages(AGENT_PARAM, null, "Other", null);
         JSONObject obj = JSONUtil.parseObj(json);
 
         JSONArray pages = obj.getJSONArray("pages");
@@ -141,7 +142,7 @@ class WikiToolKbNameRoutingTest {
         when(kbService.resolvePrimaryKb(AGENT)).thenReturn(kb(PRIMARY_KB, "Primary", AGENT));
         when(kbService.findVisibleById(AGENT, OTHER_KB)).thenReturn(kb(OTHER_KB, "Other", null));
 
-        String json = tool.wiki_list_pages(AGENT, null, null, OTHER_KB);
+        String json = tool.wiki_list_pages(AGENT_PARAM, null, null, String.valueOf(OTHER_KB));
         JSONObject obj = JSONUtil.parseObj(json);
 
         assertThat(obj.getJSONArray("pages").getJSONObject(0).getStr("slug"))
@@ -156,7 +157,7 @@ class WikiToolKbNameRoutingTest {
         // Deliberately do NOT stub findAllByName — if the tool consulted
         // kbName at all (or fell back to primary), the call would NPE.
 
-        String json = tool.wiki_list_pages(AGENT, null, "anything", OTHER_KB);
+        String json = tool.wiki_list_pages(AGENT_PARAM, null, "anything", String.valueOf(OTHER_KB));
         JSONObject obj = JSONUtil.parseObj(json);
         assertThat(obj.getJSONArray("pages").getJSONObject(0).getStr("slug"))
                 .isEqualTo("other-only-slug");
@@ -171,7 +172,7 @@ class WikiToolKbNameRoutingTest {
         // Primary still mockable; the routing must NOT silently fall through.
         when(kbService.resolvePrimaryKb(AGENT)).thenReturn(kb(PRIMARY_KB, "Primary", AGENT));
 
-        String json = tool.wiki_list_pages(AGENT, null, "Bogus", null);
+        String json = tool.wiki_list_pages(AGENT_PARAM, null, "Bogus", null);
         JSONObject obj = JSONUtil.parseObj(json);
 
         assertThat(obj.getStr("error"))
@@ -188,7 +189,7 @@ class WikiToolKbNameRoutingTest {
                 kb(DUP_SHARED_KB, "Docs", null)));
         when(kbService.resolvePrimaryKb(AGENT)).thenReturn(kb(PRIMARY_KB, "Primary", AGENT));
 
-        String json = tool.wiki_list_pages(AGENT, null, "Docs", null);
+        String json = tool.wiki_list_pages(AGENT_PARAM, null, "Docs", null);
         JSONObject obj = JSONUtil.parseObj(json);
 
         // Error must be ambiguity-flavoured so the LLM knows to retry with kbId.
@@ -217,7 +218,7 @@ class WikiToolKbNameRoutingTest {
         // would return null and surface a spurious "kbId=0 not visible" error,
         // which is exactly the production regression this test prevents.
 
-        String json = tool.wiki_list_pages(AGENT, null, null, 0L);
+        String json = tool.wiki_list_pages(AGENT_PARAM, null, null, "0");
         JSONObject obj = JSONUtil.parseObj(json);
 
         assertThat(obj.getStr("error"))
@@ -234,7 +235,7 @@ class WikiToolKbNameRoutingTest {
         when(kbService.findVisibleById(AGENT, 99999L)).thenReturn(null);
         when(kbService.resolvePrimaryKb(AGENT)).thenReturn(kb(PRIMARY_KB, "Primary", AGENT));
 
-        String json = tool.wiki_list_pages(AGENT, null, null, 99999L);
+        String json = tool.wiki_list_pages(AGENT_PARAM, null, null, "99999");
         JSONObject obj = JSONUtil.parseObj(json);
 
         assertThat(obj.getStr("error"))
@@ -248,7 +249,7 @@ class WikiToolKbNameRoutingTest {
     void noResolvableKbReturnsLegacyError() {
         when(kbService.resolvePrimaryKb(AGENT)).thenReturn(null);
 
-        String json = tool.wiki_list_pages(AGENT, null, null, null);
+        String json = tool.wiki_list_pages(AGENT_PARAM, null, null, null);
         JSONObject obj = JSONUtil.parseObj(json);
 
         assertThat(obj.getStr("error")).contains("No wiki knowledge base found");
@@ -264,7 +265,7 @@ class WikiToolKbNameRoutingTest {
                 kb(PRIMARY_KB, "Primary", AGENT)));
         when(kbService.resolvePrimaryKb(AGENT)).thenReturn(kb(PRIMARY_KB, "Primary", AGENT));
 
-        String json = tool.wiki_list_kbs(AGENT);
+        String json = tool.wiki_list_kbs(AGENT_PARAM);
         JSONObject obj = JSONUtil.parseObj(json);
 
         assertThat(obj.getInt("kbCount")).isEqualTo(2);

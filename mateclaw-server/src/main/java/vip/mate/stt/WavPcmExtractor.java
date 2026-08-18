@@ -6,21 +6,18 @@ import java.nio.ByteOrder;
 /**
  * Strip the RIFF/WAVE header off a WAV blob to expose raw PCM samples.
  *
- * <p>DashScope's realtime ASR expects the {@code parameters.format = "pcm"}
- * input as **bare 16-bit signed little-endian PCM**, not WAV. The frontend
- * (see {@code mateclaw-ui/src/utils/wavEncoder.ts}) emits a 16 kHz mono
- * 16-bit WAV with the canonical 44-byte header — this helper unwraps it.
- *
- * <p>Why not just send the WAV: DashScope rejects with "format mismatch"
- * because the first 44 bytes look like garbage when interpreted as PCM
- * samples — they're the RIFF magic + format chunk metadata.
+ * <p>Used for pre-flight audio diagnostics: the web recorder (see
+ * {@code mateclaw-ui/src/utils/wavEncoder.ts}) emits a 16 kHz mono 16-bit
+ * WAV with the canonical 44-byte header, and unwrapping it lets STT
+ * providers run a peak/RMS silence check on the raw samples before paying
+ * for a recognition call — "mic captured nothing" then surfaces as a
+ * precise local error instead of an empty transcript.
  *
  * <p>Limitations: handles only the canonical 44-byte WAV layout produced by
  * MateClaw's WavRecorder. WAVs with extra chunks (LIST, JUNK, …) before the
- * data chunk would need a chunk-walking parser. We don't currently accept
- * arbitrary uploads, so the tighter scope is fine; if this changes,
- * extend {@link #extract} to scan for the {@code "data"} chunk header
- * instead of assuming offset 36.
+ * data chunk would need a chunk-walking parser. Callers should gate on
+ * {@link #isCanonicalWav} and skip the diagnostics for anything else,
+ * rather than treating non-WAV input as an error.
  */
 public final class WavPcmExtractor {
 
@@ -31,6 +28,23 @@ public final class WavPcmExtractor {
     private static final int OFFSET_SAMPLE_RATE = 24;
 
     private WavPcmExtractor() {}
+
+    /**
+     * True only for the 44-byte PCM16/mono layout produced by MateClaw's web
+     * recorder. Stereo WAVs and files with extra chunks are still valid audio,
+     * but callers must send them directly to STT instead of applying the
+     * mono-specific sample math in this helper.
+     */
+    public static boolean isCanonicalWav(byte[] bytes) {
+        return bytes != null && bytes.length >= CANONICAL_HEADER_BYTES
+                && bytes[0] == 'R' && bytes[1] == 'I' && bytes[2] == 'F' && bytes[3] == 'F'
+                && bytes[8] == 'W' && bytes[9] == 'A' && bytes[10] == 'V' && bytes[11] == 'E'
+                && bytes[12] == 'f' && bytes[13] == 'm' && bytes[14] == 't' && bytes[15] == ' '
+                && unsignedShort(bytes, 20) == 1
+                && unsignedShort(bytes, 22) == 1
+                && unsignedShort(bytes, 34) == 16
+                && bytes[36] == 'd' && bytes[37] == 'a' && bytes[38] == 't' && bytes[39] == 'a';
+    }
 
     /**
      * Extract raw PCM bytes from a WAV blob. Throws when the input is too short
@@ -64,6 +78,10 @@ public final class WavPcmExtractor {
         return ByteBuffer.wrap(wavBytes, OFFSET_SAMPLE_RATE, 4)
                 .order(ByteOrder.LITTLE_ENDIAN)
                 .getInt();
+    }
+
+    private static int unsignedShort(byte[] bytes, int offset) {
+        return (bytes[offset] & 0xFF) | ((bytes[offset + 1] & 0xFF) << 8);
     }
 
 }

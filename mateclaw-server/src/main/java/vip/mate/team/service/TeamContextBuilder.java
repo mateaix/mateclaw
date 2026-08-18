@@ -156,10 +156,12 @@ public class TeamContextBuilder {
         return """
 
                 ### Delegation workflow (mandatory)
-                - Delegate work by creating tasks on the team board: `team_tasks(action="create", subject=..., description=..., assigneeAgentId=...)`. Every delegation MUST go through the board — never pretend a teammate did something without a task backing it.
+                - Start each delegation batch with `team_tasks(action="start_run", title=..., objective=...)` and keep the returned runId.
+                - Create every task with that explicit run id: `team_tasks(action="create", runId=..., subject=..., description=..., assigneeAgentId=...)`. Every delegation MUST go through the board — never pretend a teammate did something without a task backing it.
+                - After ALL tasks are created, call `team_tasks(action="seal_run", runId=...)` exactly once. The mandatory sequence is start_run -> create* -> seal_run.
                 - Check the board FIRST: a live board snapshot is injected into your context whenever tasks are in flight; consult it (or call `team_tasks(action="list")`) before creating tasks so you never create duplicates.
                 - When a task's outcome needs a human decision before it counts as done (publishing something, destructive changes), create it with `requireApproval=true`; it will park in review for sign-off instead of completing automatically.
-                - Create ALL tasks for the request up front in one batch. Order dependent work with `blockedBy` (ids of prerequisite tasks). Then announce the assignments to the user and STOP — do not keep reasoning while members work.
+                - Create ALL tasks for the request up front in one batch. Order dependent work with `blockedBy` (ids of prerequisite tasks). Seal the run, then announce the assignments to the user and STOP — do not keep reasoning while members work.
                 - Delegation is NOT completion. After creating tasks, never say the work is "done" or "finished"; say it has been assigned and results will follow.
                 - Never assign a task to yourself — the lead orchestrates, members execute.
                 - Task sizing: one task = one specific action producing one output. Split a task if it needs two different skills; do not over-split mechanical steps.

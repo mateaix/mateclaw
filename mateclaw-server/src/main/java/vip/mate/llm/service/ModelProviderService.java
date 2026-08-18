@@ -16,7 +16,9 @@ import vip.mate.llm.failover.ProviderHealthTracker;
 import vip.mate.llm.failover.ProviderInitProbe;
 import vip.mate.llm.failover.ProviderRequirements;
 import vip.mate.llm.model.*;
+import vip.mate.llm.probe.ModelContextWindowResolver;
 import vip.mate.llm.repository.ModelProviderMapper;
+import vip.mate.config.ConversationWindowProperties;
 
 import org.springframework.ai.chat.model.ChatModel;
 
@@ -60,6 +62,10 @@ public class ModelProviderService {
      * defers Spring's wiring decision past construction.
      */
     private final ObjectProvider<ProviderInitProbe> providerInitProbeProvider;
+    /** Supplies the window a model would budget against when none is configured. */
+    private final ModelContextWindowResolver contextWindowResolver;
+    /** Global fallback window, shown in the UI when nothing more specific applies. */
+    private final ConversationWindowProperties conversationWindowProperties;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     /** Plugin-registered ChatModel instances: providerId -> ChatModel */
@@ -99,6 +105,21 @@ public class ModelProviderService {
      *  "Add Provider" drawer where the user opts into a hidden built-in. */
     public List<ProviderInfoDTO> listCatalog() {
         return listProvidersInternal(false);
+    }
+
+    /**
+     * Enabled providers that are actually usable, reduced to id + display name.
+     * <p>
+     * Feeds the agent's preferred-provider picker, which workspace members may
+     * edit. They cannot read the full provider list (it carries connection
+     * settings), so this projection is what makes the choices visible without
+     * widening that exposure.
+     */
+    public List<ProviderOptionDTO> listProviderOptions() {
+        return listProviders().stream()
+                .filter(p -> Boolean.TRUE.equals(p.getConfigured()))
+                .map(p -> new ProviderOptionDTO(p.getId(), p.getName()))
+                .toList();
     }
 
     private List<ProviderInfoDTO> listProvidersInternal(boolean enabledOnly) {
@@ -218,6 +239,41 @@ public class ModelProviderService {
         getProvider(providerId);
         modelConfigService.removeModelFromProvider(providerId, modelId);
         return toProviderInfo(getProvider(providerId), modelConfigService.listModelsByProvider(providerId));
+    }
+
+    /**
+     * Set (or clear, with a null / non-positive value) the per-model input
+     * window. Applies to built-in models too — the shipped catalog cannot know
+     * every vendor's window, so operators need to correct it without editing
+     * the database by hand.
+     */
+    public ProviderInfoDTO updateModelContextWindow(String providerId, String modelId, Integer maxInputTokens) {
+        getProvider(providerId);
+        modelConfigService.updateModelContextWindow(providerId, modelId, maxInputTokens);
+        return toProviderInfo(getProvider(providerId), modelConfigService.listModelsByProvider(providerId));
+    }
+
+    /**
+     * Fill the three window fields the model-management UI reads. Uses the
+     * probe-free resolution path so listing providers never issues a request.
+     */
+    private void applyContextWindow(ModelInfoDTO info, ModelProviderEntity provider, ModelConfigEntity model) {
+        Integer configured = (model.getMaxInputTokens() != null && model.getMaxInputTokens() > 0)
+                ? model.getMaxInputTokens() : null;
+        info.setMaxInputTokens(configured);
+        if (configured != null) {
+            info.setEffectiveMaxInputTokens(configured);
+            info.setMaxInputTokensSource("configured");
+            return;
+        }
+        Integer resolved = contextWindowResolver.resolveWithoutProbing(provider, model);
+        if (resolved != null) {
+            info.setEffectiveMaxInputTokens(resolved);
+            info.setMaxInputTokensSource("catalog");
+            return;
+        }
+        info.setEffectiveMaxInputTokens(conversationWindowProperties.getDefaultMaxInputTokens());
+        info.setMaxInputTokensSource("default");
     }
 
     public ModelProviderEntity getProviderConfig(String providerId) {
@@ -440,6 +496,7 @@ public class ModelProviderService {
                 // RFC-049 PR-1-UI: ModelInfoDTO(id, name) derives supportsReasoningEffort
                 // from id via ModelFamily — no extra wiring needed here.
                 ModelInfoDTO info = new ModelInfoDTO(model.getModelName(), model.getName());
+                applyContextWindow(info, provider, model);
                 if (Boolean.TRUE.equals(model.getBuiltin())) {
                     builtinModels.add(info);
                 } else {

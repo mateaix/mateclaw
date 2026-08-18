@@ -256,10 +256,17 @@ public class AnthropicChatModelBuilder implements ChatModelBuilder {
 
     /**
      * Streaming counterpart of {@link #applyHttpTimeouts(RestClient.Builder)}.
-     * Without this, Spring AI's AnthropicApi would back its streaming chat
-     * call by a default WebClient with neither connect nor read timeout — a
-     * stalled provider could hang the agent thread indefinitely while the
-     * failover chain idles (no exception = no signal).
+     *
+     * <p><b>Scope caveat (issue #585):</b> {@code setReadTimeout} maps to the
+     * JDK HttpClient's request timeout, which only protects up to the
+     * <em>response headers</em>. Once the headers arrive the clock stops, so a
+     * provider that returns 200 + a first SSE frame and then goes silent is
+     * <b>not</b> caught here — the body Flux would hang indefinitely. The
+     * body-level gap is closed by a reactor inter-frame idle timeout applied
+     * at the streaming chokepoint ({@code NodeStreamingChatHelper}, driven by
+     * {@link vip.mate.llm.chatmodel.HttpTimeouts#DEFAULT_STREAM_IDLE_TIMEOUT}).
+     * This WebClient timeout still catches the "provider never sends headers"
+     * case (connection accepted, no response), so both layers are kept.
      * <p>
      * Uses the same JDK HttpClient + JdkClientHttpConnector path, so the
      * dependency surface doesn't pull in reactor-netty (excluded by this

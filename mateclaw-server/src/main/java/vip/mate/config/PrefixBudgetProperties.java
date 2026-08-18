@@ -51,9 +51,17 @@ public class PrefixBudgetProperties {
      * Fraction of the effective window the advertised tool schemas may
      * occupy. When the core tool set estimates above this, the least
      * recently used demotable tools are auto-moved to the extension catalog
-     * (recoverable via {@code enable_tool}) until the set fits.
+     * (recoverable via {@code tool_call}) until the set fits.
      */
     private double toolSchemaRatio = 0.25;
+
+    /**
+     * Absolute ceiling for schemas advertised on every model request. The
+     * ratio alone is ineffective for very large declared context windows
+     * (for example 25% of 1M tokens), which allowed tens of thousands of
+     * fixed schema tokens to survive every round.
+     */
+    private int toolSchemaMaxTokens = 12000;
 
     /** Relative shares of the injection budget. Normalized at plan time. */
     private Shares shares = new Shares();

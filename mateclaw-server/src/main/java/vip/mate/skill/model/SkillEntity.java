@@ -111,6 +111,22 @@ public class SkillEntity {
     private String sourceConversationId;
 
     /**
+     * Authorship as a curation policy flag: {@code user} (requested by a
+     * person in a foreground conversation or via the admin UI — off-limits to
+     * autonomous curation), {@code agent} (written by the reflection
+     * reviewer), or {@code routine} (written by routine mining).
+     *
+     * <p>Distinct from {@link #sourceConversationId}, which only records
+     * <em>where</em> a skill came from. Both a user-requested skill and an
+     * autonomously-authored one carry a conversation id, so that field alone
+     * cannot tell the curator which skills it may age out.
+     *
+     * @see SkillOrigin
+     */
+    @TableField(value = "origin", updateStrategy = FieldStrategy.ALWAYS)
+    private String origin;
+
+    /**
      * RFC-023：安全扫描状态。
      * NULL = 旧数据或手动创建（不受扫描约束），PASSED = 扫描通过，FAILED = 扫描拦截。
      * listEnabledSkills 过滤条件：NULL 或 PASSED 才加载。
@@ -146,6 +162,22 @@ public class SkillEntity {
      * join. {@code null} falls back to {@code createTime} as the anchor.
      */
     private LocalDateTime lastActivityAt;
+
+    /**
+     * When autonomous curation first saw this skill as a candidate.
+     *
+     * <p>Distinct from {@link #createTime}: a skill can exist for a long time
+     * before it falls under curation at all — widening the curator scope pulls
+     * a whole library in at once. Anchoring the idle clock on creation would
+     * have such a skill enter curation already looking long-idle and archive it
+     * on the very first sweep, so the moment curation began watching is
+     * recorded separately.
+     *
+     * <p>{@code null} means no sweep has seen it yet; the next one stamps it
+     * and defers judgement for a full cycle.
+     */
+    @TableField(value = "curator_seen_at", updateStrategy = FieldStrategy.ALWAYS)
+    private LocalDateTime curatorSeenAt;
 
     /** Wall-clock time the skill entered the archived state. */
     private LocalDateTime archivedAt;

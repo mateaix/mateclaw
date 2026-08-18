@@ -14,8 +14,10 @@
 |---------|--------|----------|
 | `default` | H2 文件 `./data/mateclaw` | 不用做什么 |
 | `mysql` | MySQL 8.0+ | `spring.profiles.active=mysql` 或环境变量 |
+| `postgres` | PostgreSQL 16+ | `SPRING_PROFILES_ACTIVE=postgres` |
+| `kingbase` | KingbaseES | `SPRING_PROFILES_ACTIVE=kingbase`（需按需驱动） |
 
-Docker 部署自动激活 `mysql`。桌面版用 `default`。
+公开 Docker Compose 自动激活 `postgres`。桌面版使用 `default`；`mysql` profile 继续支持已有或自管部署。
 
 ---
 
@@ -44,7 +46,7 @@ spring:
       enabled: true              # /h2-console 可访问（生产环境关掉）
 ```
 
-### 数据库 —— MySQL（生产）
+### 数据库 —— MySQL（支持的自管部署）
 
 ```yaml
 spring:
@@ -53,7 +55,7 @@ spring:
   datasource:
     url: jdbc:mysql://localhost:3306/mateclaw?useSSL=false&serverTimezone=UTC
     username: root
-    password: ${MYSQL_ROOT_PASSWORD}
+    password: ${DB_PASSWORD}
     driver-class-name: com.mysql.cj.jdbc.Driver
 ```
 
@@ -63,7 +65,7 @@ spring:
 **模型配置 100% 通过 UI 管理。** 不要在 `application.yml` 里放 `spring.ai.*` 块——每个供应商、每个 key、每个模型配置都住在 `设置 → 模型` 里，底层存在 `mate_model_provider` 和 `mate_model_config` 表。
 :::
 
-**LLM API Key 不读取环境变量**——`DASHSCOPE_API_KEY` / `OPENAI_API_KEY` 等都不再起作用。新装的实例启动时数据库里没有供应商，登录后到「设置 → 模型 → 添加供应商」加你的第一个供应商即可。完整参考在 [模型配置](./models)。
+**模型供应商、Key 与模型记录以数据库配置为准。** 新装实例登录后到「设置 → 模型 → 添加供应商」添加第一个供应商。`DASHSCOPE_API_KEY` 仍可作为 DashScope 自动配置的兼容回退，但不替代管理界面的供应商配置；不要假设其他供应商会读取同名环境变量。完整参考在 [模型配置](./models)。
 
 ### 虚拟线程（JDK 21）
 
@@ -215,8 +217,8 @@ mate:
 
 ## 环境变量
 
-::: warning LLM Key 不读环境变量
-DashScope / OpenAI / Anthropic / DeepSeek / Kimi 等供应商的 API Key **不通过环境变量配置**——容器零 Key 也能起来，登录后到「设置 → 模型 → 添加供应商」里加。
+::: warning LLM Key 以管理界面为准
+供应商、Key 和模型记录以「设置 → 模型」里的数据库配置为主。`DASHSCOPE_API_KEY` 仅保留为 DashScope 自动配置的兼容回退；不要假设其他供应商会读取同名环境变量。
 :::
 
 | 变量 | 必填 | 用途 |
@@ -225,8 +227,10 @@ DashScope / OpenAI / Anthropic / DeepSeek / Kimi 等供应商的 API Key **不�
 | `TAVILY_API_KEY` | — | Tavily 搜索 key（同上） |
 | `JWT_SECRET` | — | JWT 签名密钥（生产推荐） |
 | `MATECLAW_CORS_ALLOWED_ORIGINS` | — | CORS 白名单（生产推荐） |
-| `DB_PASSWORD` / `DB_ROOT_PASSWORD` | Docker | MySQL 业务库 / root 密码 |
-| `SPRING_PROFILES_ACTIVE` | — | 生产设为 `mysql` |
+| `DB_PASSWORD` / `DB_ADMIN_PASSWORD` | Docker | PostgreSQL 应用账号 / 引导管理员密码（必须不同） |
+| `DB_USERNAME` / `DB_ADMIN_USERNAME` | — | PostgreSQL 应用账号 / 引导管理员账号 |
+| `DB_HOST` / `DB_PORT` / `DB_NAME` | — | 数据库地址、端口与库名 |
+| `SPRING_PROFILES_ACTIVE` | — | Docker Compose 自动设为 `postgres`；自管部署也可用 `mysql` / `kingbase` |
 
 ### 怎么设
 
@@ -247,7 +251,7 @@ $env:JWT_SECRET = "your-production-secret-at-least-32-chars"
 
 ```properties
 DB_PASSWORD=secure-password-here
-DB_ROOT_PASSWORD=different-secure-password-here
+DB_ADMIN_PASSWORD=different-secure-password-here
 JWT_SECRET=your-production-secret-at-least-32-chars
 ```
 
@@ -290,7 +294,7 @@ CREATE DATABASE mateclaw CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
 ```bash
 export SPRING_PROFILES_ACTIVE=mysql
-export MYSQL_ROOT_PASSWORD=your-password
+export DB_PASSWORD=your-password
 mvn spring-boot:run
 ```
 

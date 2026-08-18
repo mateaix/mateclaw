@@ -13,11 +13,10 @@ import java.util.Map;
  * the multipart Content-Type from the extension we pass. Hence this
  * helper picks an extension that matches the actual bytes.
  *
- * <p>Previous bug (pre-fix): both providers hardcoded {@code "audio.ogg"}
- * as the default filename even when the upstream content was WebM/Opus,
- * which DashScope's HTTP path then tried to decode as Ogg and 400'd.
- * That bug + DashScope's HTTP STT are both gone now (DashScope went to
- * WebSocket); this class survives because Whisper still cares.
+ * <p>Previous bug (pre-fix): providers hardcoded {@code "audio.ogg"} as the
+ * default filename even when upstream content was WebM/Opus. The helper now
+ * serves both multipart filenames (Whisper-compatible endpoints) and MIME-
+ * qualified data URLs (Qwen3-ASR).
  */
 public final class AudioMimeTypes {
 
@@ -68,6 +67,26 @@ public final class AudioMimeTypes {
         }
         String extension = extensionForContentType(contentType);
         return "audio." + (extension != null ? extension : DEFAULT_EXTENSION);
+    }
+
+    /**
+     * Resolve the MIME type that describes the actual encoded bytes.
+     *
+     * <p>Data-URL based APIs (notably Qwen3-ASR) inspect the media type in
+     * {@code data:audio/wav;base64,...}. Sending an empty media type can make
+     * the service mis-detect or truncate otherwise valid audio while still
+     * returning HTTP 200, so callers must never emit {@code data:;base64,...}.
+     */
+    public static String resolveContentType(String fileName, String contentType) {
+        String extension = extensionForContentType(contentType);
+        if (extension != null) {
+            return EXTENSION_TO_CONTENT_TYPE.get(extension);
+        }
+        String resolvedFileName = resolveFileName(fileName, null);
+        String fileExtension = extensionOf(resolvedFileName);
+        return fileExtension != null
+                ? EXTENSION_TO_CONTENT_TYPE.get(fileExtension)
+                : EXTENSION_TO_CONTENT_TYPE.get(DEFAULT_EXTENSION);
     }
 
     /** Extract the lower-cased extension (without the dot), or null. Package-private for tests. */

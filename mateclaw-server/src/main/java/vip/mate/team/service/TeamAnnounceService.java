@@ -1,5 +1,6 @@
 package vip.mate.team.service;
 
+import cn.hutool.json.JSONObject;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -14,19 +15,23 @@ import vip.mate.team.model.TeamTaskStatus;
 import vip.mate.workspace.conversation.ConversationService;
 
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Delivers settled task results back to the team lead. Results arriving close
- * together are debounced per lead conversation and merged into ONE combined
- * announcement, so parallel members finishing near-simultaneously wake the
- * lead once instead of once per task.
+ * together are debounced per lead conversation and run and merged into ONE
+ * combined announcement, so parallel members in the same run wake the lead
+ * once instead of once per task. Different runs never share a batch.
  *
  * Delivery is guaranteed, not opportunistic: when the lead is mid-turn the
  * announcement is NOT injected into the running turn (an in-turn notification
@@ -73,11 +78,34 @@ public class TeamAnnounceService {
     private final ChatStreamTracker streamTracker;
     private final ConversationService conversationService;
 
-    /** Pending items per lead conversation; the first item arms the drain timer. */
-    private final Map<String, List<AnnounceItem>> pending = new ConcurrentHashMap<>();
+    /** Pending items stay isolated by run while lead wake turns serialize by conversation. */
+    private final Map<BatchKey, PendingBatch> pending = new ConcurrentHashMap<>();
+    private final Set<String> drainOwners = ConcurrentHashMap.newKeySet();
+    private final AtomicLong batchSequence = new AtomicLong();
 
-    record AnnounceItem(Long teamId, Integer taskNumber, String subject, String status,
+    record BatchKey(String conversationId, Long runId) {
+    }
+
+    record AnnounceItem(Long taskId, Long teamId, Integer taskNumber, String subject, String status,
                         String memberName, String detail) {
+    }
+
+    private static final class PendingBatch {
+        private final long sequence;
+        private final List<AnnounceItem> items;
+        private long readyAtMillis;
+        private int retries;
+
+        private PendingBatch(long sequence) {
+            this(sequence, new ArrayList<>(), 0, 0);
+        }
+
+        private PendingBatch(long sequence, List<AnnounceItem> items, long readyAtMillis, int retries) {
+            this.sequence = sequence;
+            this.items = items;
+            this.readyAtMillis = readyAtMillis;
+            this.retries = retries;
+        }
     }
 
     /**
@@ -99,93 +127,167 @@ public class TeamAnnounceService {
                 detailWithFiles.append("\n- ").append(file.name()).append(" → ").append(file.url());
             }
         }
-        AnnounceItem item = new AnnounceItem(task.getTeamId(), task.getTaskNumber(),
+        AnnounceItem item = new AnnounceItem(task.getId(), task.getTeamId(), task.getTaskNumber(),
                 task.getSubject(), task.getStatus(),
                 agentName(task.getAssigneeAgentId()),
                 detailWithFiles.toString());
 
-        String key = task.getLeadConversationId();
-        List<AnnounceItem> drainNow = null;
+        BatchKey key = new BatchKey(task.getLeadConversationId(), task.getRunId());
+        boolean drainNow = false;
         synchronized (pending) {
-            List<AnnounceItem> queue = pending.computeIfAbsent(key, k -> new ArrayList<>());
-            queue.add(item);
-            if (queue.size() >= MAX_BATCH) {
-                drainNow = pending.remove(key);
-            } else if (queue.size() == 1) {
+            PendingBatch batch = pending.computeIfAbsent(key,
+                    ignored -> new PendingBatch(batchSequence.incrementAndGet()));
+            batch.items.add(item);
+            if (batch.items.size() >= MAX_BATCH) {
+                drainNow = true;
+            } else if (batch.items.size() == 1) {
                 DEBOUNCE_SCHEDULER.schedule(() -> drain(key), DEBOUNCE_MILLIS, TimeUnit.MILLISECONDS);
             }
         }
-        if (drainNow != null) {
-            deliver(key, drainNow);
+        if (drainNow) {
+            drain(key);
         }
     }
 
-    /** Timer callback: take whatever accumulated and deliver it. */
-    void drain(String leadConversationId) {
-        List<AnnounceItem> items;
+    /** Acquire the conversation turn, then take and deliver one run-isolated batch. */
+    void drain(BatchKey key) {
+        String conversationId = key.conversationId();
+        if (!drainOwners.add(conversationId)) {
+            return;
+        }
+        PendingBatch batch;
         synchronized (pending) {
-            items = pending.remove(leadConversationId);
-        }
-        if (items != null && !items.isEmpty()) {
-            deliver(leadConversationId, items);
-        }
-    }
-
-    void deliver(String leadConversationId, List<AnnounceItem> items) {
-        deliver(leadConversationId, items, 0);
-    }
-
-    private void deliver(String leadConversationId, List<AnnounceItem> items, int busyRetries) {
-        Long teamId = items.get(0).teamId();
-        AgentTeamEntity team = teamService.getTeam(teamId);
-        if (team == null) {
-            log.warn("Announce dropped: team {} vanished", teamId);
-            return;
-        }
-        if (runningConversations.isActive(leadConversationId) && busyRetries < MAX_BUSY_RETRIES) {
-            // Lead is mid-turn. Late tasks settling meanwhile join this batch
-            // via the pending map, so re-queue and re-arm instead of injecting
-            // into the running turn (which can drop the message on turn end).
-            List<AnnounceItem> merged = items;
-            synchronized (pending) {
-                List<AnnounceItem> late = pending.remove(leadConversationId);
-                if (late != null) {
-                    merged = new ArrayList<>(items);
-                    merged.addAll(late);
-                }
+            batch = pending.get(key);
+            if (batch != null && batch.readyAtMillis <= System.currentTimeMillis()) {
+                pending.remove(key);
+            } else {
+                batch = null;
             }
-            List<AnnounceItem> retryItems = merged;
-            DEBOUNCE_SCHEDULER.schedule(() -> deliver(leadConversationId, retryItems, busyRetries + 1),
-                    BUSY_RETRY_MILLIS, TimeUnit.MILLISECONDS);
+        }
+        if (batch == null) {
+            releaseAndScheduleNext(conversationId);
             return;
         }
-        String message = buildAnnouncement(items);
-        ANNOUNCE_EXECUTOR.submit(() -> wakeLead(team, leadConversationId, message, items.size()));
+        PendingBatch ownedBatch = batch;
+        try {
+            ANNOUNCE_EXECUTOR.submit(() -> deliverOwned(key, ownedBatch));
+        } catch (RuntimeException e) {
+            requeue(key, ownedBatch);
+            releaseAndScheduleNext(conversationId);
+            throw e;
+        }
+    }
+
+    private void deliverOwned(BatchKey key, PendingBatch batch) {
+        try {
+            List<AnnounceItem> items = batch.items;
+            Long teamId = items.get(0).teamId();
+            AgentTeamEntity team = teamService.getTeam(teamId);
+            if (team == null) {
+                log.warn("Announce dropped: team {} vanished", teamId);
+                return;
+            }
+            if (runningConversations.isActive(key.conversationId()) && batch.retries < MAX_BUSY_RETRIES) {
+                batch.retries++;
+                batch.readyAtMillis = System.currentTimeMillis() + BUSY_RETRY_MILLIS;
+                requeue(key, batch);
+                return;
+            }
+            wakeLead(team, key, buildAnnouncement(items), List.copyOf(items));
+        } catch (Exception e) {
+            batch.retries++;
+            batch.readyAtMillis = System.currentTimeMillis() + BUSY_RETRY_MILLIS;
+            requeue(key, batch);
+            log.warn("Lead wake-up failed for conversation {} run {}: {}",
+                    key.conversationId(), key.runId(), e.getMessage());
+        } finally {
+            releaseAndScheduleNext(key.conversationId());
+        }
+    }
+
+    private void requeue(BatchKey key, PendingBatch batch) {
+        synchronized (pending) {
+            PendingBatch late = pending.remove(key);
+            if (late != null) {
+                batch.items.addAll(late.items);
+            }
+            pending.put(key, batch);
+        }
+    }
+
+    private void releaseAndScheduleNext(String conversationId) {
+        drainOwners.remove(conversationId);
+        BatchKey nextKey;
+        long delay;
+        synchronized (pending) {
+            Map.Entry<BatchKey, PendingBatch> next = pending.entrySet().stream()
+                    .filter(entry -> conversationId.equals(entry.getKey().conversationId()))
+                    .min(Comparator.comparingLong(entry -> entry.getValue().sequence))
+                    .orElse(null);
+            if (next == null) {
+                return;
+            }
+            nextKey = next.getKey();
+            delay = Math.max(0, next.getValue().readyAtMillis - System.currentTimeMillis());
+        }
+        DEBOUNCE_SCHEDULER.schedule(() -> drain(nextKey), delay, TimeUnit.MILLISECONDS);
     }
 
     /** Start a fresh lead turn carrying the merged results; its reply reaches the user. */
-    private void wakeLead(AgentTeamEntity team, String leadConversationId,
-                          String message, int taskCount) {
-        try {
+    private void wakeLead(AgentTeamEntity team, BatchKey key,
+                          String message, List<AnnounceItem> items) {
+        String leadConversationId = key.conversationId();
+            List<String> taskIds = items.stream().map(item -> String.valueOf(item.taskId())).toList();
+            Map<String, Object> startPayload = new HashMap<>();
+            startPayload.put("teamId", String.valueOf(team.getId()));
+            startPayload.put("tasks", items.size());
+            if (taskIds.size() == 1) {
+                startPayload.put("taskId", taskIds.get(0));
+            } else {
+                startPayload.put("taskIds", taskIds);
+            }
+            if (key.runId() != null) {
+                startPayload.put("runId", String.valueOf(key.runId()));
+            }
             streamTracker.broadcastObject(leadConversationId, "team_announce_start",
-                    Map.of("teamId", String.valueOf(team.getId()), "tasks", taskCount));
+                    startPayload);
             // Persist the announce turn: message persistence is the caller's
             // contract, and without it the lead's synthesized reply would
             // vanish from the conversation history on the next reload.
-            conversationService.saveMessage(leadConversationId, "user", message);
+            // Role stays "user" (the agent context pipeline resolves the
+            // current turn's input from the last user row); the metadata type
+            // marks it as an internal orchestration note so the chat UI can
+            // render a compact system strip instead of a user bubble.
+            conversationService.saveMessage(leadConversationId, "user", message, null, "completed",
+                    0, 0, null, null,
+                    announceMetadata("team_announce", key, taskIds));
             AgentService.ChatResult result = agentService.chatWithUsage(
                     team.getLeadAgentId(), message, leadConversationId);
             String reply = result == null ? null : result.content();
             if (reply != null && !reply.isBlank()) {
-                conversationService.saveMessage(leadConversationId, "assistant", reply);
+                conversationService.saveMessage(leadConversationId, "assistant", reply, null, "completed",
+                        0, 0, null, null,
+                        announceMetadata("team_announce_reply", key, taskIds));
             }
-            streamTracker.broadcastObject(leadConversationId, "team_announce_reply",
-                    Map.of("teamId", String.valueOf(team.getId()),
-                            "content", reply == null ? "" : reply));
-            log.info("Team {} lead woken with {} task result(s)", team.getId(), taskCount);
-        } catch (Exception e) {
-            log.warn("Team {} lead wake-up failed: {}", team.getId(), e.getMessage());
+            Map<String, Object> replyPayload = new HashMap<>(startPayload);
+            replyPayload.put("content", reply == null ? "" : reply);
+            streamTracker.broadcastObject(leadConversationId, "team_announce_reply", replyPayload);
+        log.info("Team {} lead woken with {} task result(s)", team.getId(), items.size());
+    }
+
+    private String announceMetadata(String type, BatchKey key, List<String> taskIds) {
+        JSONObject metadata = new JSONObject()
+                .set("type", type)
+                .set("taskCount", taskIds.size());
+        if (taskIds.size() == 1) {
+            metadata.set("taskId", taskIds.get(0));
+        } else {
+            metadata.set("taskIds", taskIds);
         }
+        if (key.runId() != null) {
+            metadata.set("runId", String.valueOf(key.runId()));
+        }
+        return metadata.toString();
     }
 
     /** Merged announcement text; single- and multi-result variants. */

@@ -60,15 +60,14 @@ public class WorkspaceMemoryTool {
             返回结构化 JSON，包括文件名、是否启用为系统提示词、更新时间和大小。
             """)
     public String list_workspace_memory_files(
-            @ToolParam(description = "当前 Agent 的 ID") Long agentId,
+            @ToolParam(description = "当前 Agent 的 ID。必须作为字符串传入，避免大整数精度丢失") String agentId,
             @ToolParam(description = "可选：按文件名前缀过滤，例如 memory/ 或 MEM", required = false) String filenamePrefix,
             ToolContext toolContext) {
 
-        if (agentId == null) {
-            return error("agentId 不能为空");
-        }
+        Long parsedAgentId = parseAgentIdOrNull(agentId);
+        if (parsedAgentId == null) return error("agentId 不能为空");
 
-        List<WorkspaceFileEntity> files = workspaceFileService.listVisibleFiles(agentId, readOwner(toolContext)).stream()
+        List<WorkspaceFileEntity> files = workspaceFileService.listVisibleFiles(parsedAgentId, readOwner(toolContext)).stream()
                 .filter(file -> filenamePrefix == null || filenamePrefix.isBlank()
                         || (file.getFilename() != null && file.getFilename().startsWith(filenamePrefix)))
                 .sorted(Comparator
@@ -87,7 +86,7 @@ public class WorkspaceMemoryTool {
         }
 
         JSONObject result = new JSONObject();
-        result.set("agentId", agentId);
+        result.set("agentId", String.valueOf(agentId));
         result.set("count", files.size());
         result.set("files", items);
         return JSONUtil.toJsonPrettyStr(result);
@@ -99,26 +98,27 @@ public class WorkspaceMemoryTool {
             返回结构化 JSON，包括文件名、是否启用、内容和字节数。
             """)
     public String read_workspace_memory_file(
-            @ToolParam(description = "当前 Agent 的 ID") Long agentId,
+            @ToolParam(description = "当前 Agent 的 ID。必须作为字符串传入，避免大整数精度丢失") String agentId,
             @ToolParam(description = "工作区文件名，例如 MEMORY.md、PROFILE.md、memory/2026-03-31.md") String filename,
             ToolContext toolContext) {
 
-        String validation = validate(agentId, filename);
+        Long parsedAgentId = parseAgentIdOrNull(agentId);
+        String validation = validate(parsedAgentId, filename);
         if (validation != null) {
             return error(validation);
         }
 
-        WorkspaceFileEntity file = workspaceFileService.getVisibleFile(agentId, filename, readOwner(toolContext));
+        WorkspaceFileEntity file = workspaceFileService.getVisibleFile(parsedAgentId, filename, readOwner(toolContext));
         if (file == null) {
             return error("工作区文件不存在: " + filename);
         }
 
         // 追踪主动检索信号（比被动注入更强的"真实需要"指标）
         String content = file.getContent() != null ? file.getContent() : "";
-        memoryRecallTracker.trackActiveRetrieval(agentId, filename, content);
+        memoryRecallTracker.trackActiveRetrieval(parsedAgentId, filename, content);
 
         JSONObject result = new JSONObject();
-        result.set("agentId", agentId);
+        result.set("agentId", String.valueOf(agentId));
         result.set("filename", file.getFilename());
         result.set("enabled", Boolean.TRUE.equals(file.getEnabled()));
         result.set("fileSize", file.getFileSize());
@@ -139,22 +139,23 @@ public class WorkspaceMemoryTool {
             不会出现在管理页的共享文件列表）；TEAM 表示所有使用该 Agent 的用户共享的文件。向用户说明写入结果时请如实区分。
             """)
     public String write_workspace_memory_file(
-            @ToolParam(description = "当前 Agent 的 ID") Long agentId,
+            @ToolParam(description = "当前 Agent 的 ID。必须作为字符串传入，避免大整数精度丢失") String agentId,
             @ToolParam(description = "工作区文件名，例如 MEMORY.md、PROFILE.md、memory/2026-03-31.md") String filename,
             @ToolParam(description = "要写入的完整 Markdown 内容") String content,
             ToolContext toolContext) {
 
-        String validation = validate(agentId, filename);
+        Long parsedAgentId = parseAgentIdOrNull(agentId);
+        String validation = validate(parsedAgentId, filename);
         if (validation != null) {
             return error(validation);
         }
 
         String ownerKey = writeOwner(toolContext);
-        WorkspaceFileEntity before = workspaceFileService.getVisibleFile(agentId, filename, ownerKey);
-        WorkspaceFileEntity saved = workspaceFileService.saveVisibleFile(agentId, filename, content != null ? content : "", ownerKey);
+        WorkspaceFileEntity before = workspaceFileService.getVisibleFile(parsedAgentId, filename, ownerKey);
+        WorkspaceFileEntity saved = workspaceFileService.saveVisibleFile(parsedAgentId, filename, content != null ? content : "", ownerKey);
 
         JSONObject result = new JSONObject();
-        result.set("agentId", agentId);
+        result.set("agentId", String.valueOf(agentId));
         result.set("filename", saved.getFilename());
         result.set("created", before == null);
         result.set("overwritten", before != null);
@@ -175,14 +176,15 @@ public class WorkspaceMemoryTool {
             默认只替换第一处匹配，replaceAll=true 时替换全部。
             """)
     public String edit_workspace_memory_file(
-            @ToolParam(description = "当前 Agent 的 ID") Long agentId,
+            @ToolParam(description = "当前 Agent 的 ID。必须作为字符串传入，避免大整数精度丢失") String agentId,
             @ToolParam(description = "工作区文件名，例如 MEMORY.md、PROFILE.md、memory/2026-03-31.md") String filename,
             @ToolParam(description = "要查找的原始文本，要求精确匹配") String oldText,
             @ToolParam(description = "替换后的新文本") String newText,
             @ToolParam(description = "是否替换全部匹配项，默认 false", required = false) Boolean replaceAll,
             ToolContext toolContext) {
 
-        String validation = validate(agentId, filename);
+        Long parsedAgentId = parseAgentIdOrNull(agentId);
+        String validation = validate(parsedAgentId, filename);
         if (validation != null) {
             return error(validation);
         }
@@ -197,7 +199,7 @@ public class WorkspaceMemoryTool {
         }
 
         String ownerKey = writeOwner(toolContext);
-        WorkspaceFileEntity existing = workspaceFileService.getVisibleFile(agentId, filename, ownerKey);
+        WorkspaceFileEntity existing = workspaceFileService.getVisibleFile(parsedAgentId, filename, ownerKey);
         if (existing == null) {
             return error("工作区文件不存在: " + filename);
         }
@@ -219,10 +221,10 @@ public class WorkspaceMemoryTool {
             replacements = 1;
         }
 
-        WorkspaceFileEntity saved = workspaceFileService.saveVisibleFile(agentId, filename, updated, ownerKey);
+        WorkspaceFileEntity saved = workspaceFileService.saveVisibleFile(parsedAgentId, filename, updated, ownerKey);
 
         JSONObject result = new JSONObject();
-        result.set("agentId", agentId);
+        result.set("agentId", String.valueOf(agentId));
         result.set("filename", filename);
         result.set("replacements", replacements);
         result.set("replaceAll", replaceAllFlag);
@@ -241,16 +243,15 @@ public class WorkspaceMemoryTool {
             many memory entries. Returns ranked hits with filename, line number, and snippet \
             (matched terms wrapped in [[...]]).""")
     public String search_workspace_memory(
-            @ToolParam(description = "当前 Agent 的 ID") Long agentId,
+            @ToolParam(description = "当前 Agent 的 ID。必须作为字符串传入，避免大整数精度丢失") String agentId,
             @ToolParam(description = "关键词或短语，2-64 字符") String query,
             @ToolParam(description = "搜索范围：all（全部）/ memory（MEMORY.md 与 memory/）/ profile / persona，默认 all",
                     required = false) String scope,
             @ToolParam(description = "返回的最大命中数，默认 10，上限 30", required = false) Integer limit,
             ToolContext toolContext) {
 
-        if (agentId == null) {
-            return error("agentId 不能为空");
-        }
+        Long parsedAgentId = parseAgentIdOrNull(agentId);
+        if (parsedAgentId == null) return error("agentId 不能为空");
         if (query == null || query.isBlank()) {
             return error("query 不能为空");
         }
@@ -269,7 +270,7 @@ public class WorkspaceMemoryTool {
         // plus this owner's PERSONAL memory only.
         String ownerKey = readOwner(toolContext);
         List<MemorySearchHit> hits = workspaceFileService.searchSnippets(
-                agentId, trimmed, prefixes, effectiveLimit, ownerKey);
+                parsedAgentId, trimmed, prefixes, effectiveLimit, ownerKey);
 
         // Treat each unique file in the results as an active retrieval signal —
         // boosts that file's weight in the dream-consolidation ranker the same
@@ -279,9 +280,9 @@ public class WorkspaceMemoryTool {
             if (retrieved.add(hit.filename())) {
                 // Read the same visible row the hit came from (the owner's
                 // PERSONAL row when present) so PERSONAL hits track correctly.
-                WorkspaceFileEntity file = workspaceFileService.getVisibleFile(agentId, hit.filename(), ownerKey);
+                WorkspaceFileEntity file = workspaceFileService.getVisibleFile(parsedAgentId, hit.filename(), ownerKey);
                 if (file != null && file.getContent() != null) {
-                    memoryRecallTracker.trackActiveRetrieval(agentId, hit.filename(), file.getContent());
+                    memoryRecallTracker.trackActiveRetrieval(parsedAgentId, hit.filename(), file.getContent());
                 }
             }
         }
@@ -296,7 +297,7 @@ public class WorkspaceMemoryTool {
             hitsJson.add(h);
         }
         JSONObject result = new JSONObject();
-        result.set("agentId", agentId);
+        result.set("agentId", String.valueOf(agentId));
         result.set("query", trimmed);
         result.set("scope", scope == null || scope.isBlank() ? "all" : scope);
         result.set("totalHits", hits.size());
@@ -349,6 +350,18 @@ public class WorkspaceMemoryTool {
             return "仅支持 Markdown 工作区文件";
         }
         return null;
+    }
+
+    private Long parseAgentIdOrNull(String agentId) {
+        String trimmed = agentId != null ? agentId.trim() : "";
+        if (trimmed.isEmpty()) {
+            return null;
+        }
+        try {
+            return Long.parseLong(trimmed);
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("agentId 必须是数字字符串");
+        }
     }
 
     private int countOccurrences(String text, String target) {

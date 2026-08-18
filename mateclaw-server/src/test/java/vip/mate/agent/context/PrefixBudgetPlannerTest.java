@@ -71,6 +71,8 @@ class PrefixBudgetPlannerTest {
     void toolSchemaBudget() {
         PrefixBudgetPlan plan = planner.plan(16384, 0, 0);
         assertEquals((int) (16384 * 0.25), plan.toolSchemaBudgetTokens());
+        assertEquals(12000, planner.plan(1_000_000, 0, 0).toolSchemaBudgetTokens(),
+                "large declared windows must not disable progressive disclosure");
         properties.setEnabled(false);
         assertEquals(Integer.MAX_VALUE, planner.plan(16384, 0, 0).toolSchemaBudgetTokens());
     }

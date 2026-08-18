@@ -25,29 +25,35 @@ class SegmentSupersedeDetectorTest {
         assertThat(segments.get(0))
                 .containsEntry("superseded", true)
                 .containsEntry("supersededBySegmentId", "ct-1")
-                .containsEntry("supersededReason", "tool_result_replaced_model_claim");
+                .containsEntry("supersededReason", SegmentSupersedeDetector.REASON_PRE_TOOL_CONTENT_REPLACED);
     }
 
     @Test
-    @DisplayName("does not mark legitimate preamble before a render tool")
-    void leavesLegitimatePreambleAlone() {
+    @DisplayName("marks stale status answer emitted before this turn's status query ran")
+    void marksStaleStatusAnswer() {
+        List<Map<String, Object>> segments = segments(
+                thinking("th-0"),
+                content("ct-0", "中控测试会议室当前无人。人数 0，电池 0%。查询时间 2026-07-31 17:23。"),
+                tool("tc-0", "getCurrentTime", true),
+                tool("tc-1", "executeCode", true),
+                content("ct-1", "中控测试会议室当前无人。人数 0，电池 0%。查询时间 2026-08-04 11:02。"));
+
+        SegmentSupersedeDetector.markSuperseded(segments);
+
+        assertThat(segments.get(1))
+                .containsEntry("superseded", true)
+                .containsEntry("supersededBySegmentId", "ct-1")
+                .containsEntry("supersededReason", SegmentSupersedeDetector.REASON_PRE_TOOL_CONTENT_REPLACED);
+        assertThat(segments.get(4)).doesNotContainKey("superseded");
+    }
+
+    @Test
+    @DisplayName("marks pre-tool preamble narration once the grounded answer exists")
+    void marksPreamble() {
         List<Map<String, Object>> segments = segments(
                 content("ct-0", "我听懂了，需要生成 PDF。让我立即执行这个操作："),
                 tool("tc-0", "renderPdf", true),
                 content("ct-1", "PDF 已成功生成！\n\n下载链接: /api/v1/files/generated/e5fc9697-9d5a-4b20-a26d-89b623c8db9b"));
-
-        SegmentSupersedeDetector.markSuperseded(segments);
-
-        assertThat(segments.get(0)).doesNotContainKey("superseded");
-    }
-
-    @Test
-    @DisplayName("marks pre-tool forged write byte count when replaced by real write result")
-    void marksForgedWriteSuccess() {
-        List<Map<String, Object>> segments = segments(
-                content("ct-0", "文件已成功写入！\n\n写入字节数：45 字节"),
-                tool("tc-0", "write_file", true),
-                content("ct-1", "文件已成功写入！\n\n写入字节数：43 字节"));
 
         SegmentSupersedeDetector.markSuperseded(segments);
 
@@ -57,8 +63,8 @@ class SegmentSupersedeDetectorTest {
     }
 
     @Test
-    @DisplayName("does not mark pre-tool success when the tool failed")
-    void leavesFailedToolClaimVisible() {
+    @DisplayName("marks pre-tool forged success even when the tool failed — the failure explanation supersedes it")
+    void marksForgedClaimWhenToolFailed() {
         List<Map<String, Object>> segments = segments(
                 content("ct-0", "PPTX 文件已成功生成！\n\n下载链接: /api/v1/files/generated/c8e2f4a1-9b3d-4f8c-a5e7-d9f6b2c1a3e4"),
                 tool("tc-0", "renderPptx", false),
@@ -66,38 +72,29 @@ class SegmentSupersedeDetectorTest {
 
         SegmentSupersedeDetector.markSuperseded(segments);
 
-        assertThat(segments.get(0)).doesNotContainKey("superseded");
+        assertThat(segments.get(0))
+                .containsEntry("superseded", true)
+                .containsEntry("supersededBySegmentId", "ct-1");
     }
 
     @Test
-    @DisplayName("v1 does not mark when the post-tool content is a general summary")
-    void leavesSummaryFollowupAlone() {
-        List<Map<String, Object>> segments = segments(
-                content("ct-0", "文件内容已成功替换！\n\n替换次数：1 处"),
-                tool("tc-0", "edit_file", true),
-                content("ct-1", "所有文档生成和文件操作任务已完成。"));
-
-        SegmentSupersedeDetector.markSuperseded(segments);
-
-        assertThat(segments.get(0)).doesNotContainKey("superseded");
-    }
-
-    @Test
-    @DisplayName("does not cross another tool boundary looking for a replacement")
-    void doesNotCrossToolBoundary() {
+    @DisplayName("crosses chained tool boundaries to find the grounded replacement")
+    void crossesToolBoundaries() {
         List<Map<String, Object>> segments = segments(
                 content("ct-0", "XLSX 文件已成功生成！\n\n下载链接: /api/v1/files/generated/8c3d4a9f-2e1b-4f5a-b6c7-d8e9f0a1b2c3"),
                 tool("tc-0", "renderXlsx", true),
                 tool("tc-1", "renderDocx", true),
-                content("ct-1", "XLSX 文件已成功生成！\n\n下载链接: /api/v1/files/generated/f98d7fd0-3cda-4510-b056-5bd3c8343e19"));
+                content("ct-1", "两个文件均已生成。"));
 
         SegmentSupersedeDetector.markSuperseded(segments);
 
-        assertThat(segments.get(0)).doesNotContainKey("superseded");
+        assertThat(segments.get(0))
+                .containsEntry("superseded", true)
+                .containsEntry("supersededBySegmentId", "ct-1");
     }
 
     @Test
-    @DisplayName("does not mark an actual post-tool result as a later pre-tool prediction")
+    @DisplayName("never marks content that directly follows a tool result — it is grounded and may carry real links")
     void doesNotMarkPostToolResult() {
         List<Map<String, Object>> segments = segments(
                 tool("tc-0", "renderDocx", true),
@@ -108,6 +105,35 @@ class SegmentSupersedeDetectorTest {
         SegmentSupersedeDetector.markSuperseded(segments);
 
         assertThat(segments.get(1)).doesNotContainKey("superseded");
+        assertThat(segments.get(3)).doesNotContainKey("superseded");
+    }
+
+    @Test
+    @DisplayName("leaves pre-tool content visible when the run produced no post-tool answer")
+    void leavesContentWhenNoPostToolAnswer() {
+        List<Map<String, Object>> segments = segments(
+                content("ct-0", "我先查询会议室状态。"),
+                tool("tc-0", "executeCode", true),
+                thinking("th-0"));
+
+        SegmentSupersedeDetector.markSuperseded(segments);
+
+        assertThat(segments.get(0)).doesNotContainKey("superseded");
+    }
+
+    @Test
+    @DisplayName("does not treat a completion that closed without tool calls as pre-tool narration")
+    void doesNotMarkAnswerBeforeLaterContent() {
+        List<Map<String, Object>> segments = segments(
+                content("ct-0", "第一部分答案。"),
+                content("ct-1", "第二部分答案。"),
+                tool("tc-0", "write_file", true),
+                content("ct-2", "文件已保存。"));
+
+        SegmentSupersedeDetector.markSuperseded(segments);
+
+        assertThat(segments.get(0)).doesNotContainKey("superseded");
+        assertThat(segments.get(1)).containsEntry("superseded", true);
     }
 
     @SafeVarargs
@@ -118,6 +144,12 @@ class SegmentSupersedeDetectorTest {
     private static Map<String, Object> content(String id, String text) {
         Map<String, Object> segment = base(id, "content");
         segment.put("text", text);
+        return segment;
+    }
+
+    private static Map<String, Object> thinking(String id) {
+        Map<String, Object> segment = base(id, "thinking");
+        segment.put("thinkingText", "…");
         return segment;
     }
 

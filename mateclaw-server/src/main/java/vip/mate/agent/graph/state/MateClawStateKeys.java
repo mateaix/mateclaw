@@ -184,6 +184,18 @@ public final class MateClawStateKeys {
     /** Source references observed from successful tool results during this run. */
     public static final String SOURCE_EVIDENCE_LEDGER = "source_evidence_ledger";
 
+    /** Authoritative terminal tool receipts accumulated during the current graph run. */
+    public static final String ACTION_EXECUTION_LEDGER = "action_execution_ledger";
+
+    /** True when structured runtime context says this turn must perform an executable action. */
+    public static final String ACTION_COMPLETION_REQUIRED = "action_completion_required";
+
+    /** Number of completion-gate continuations consumed in the current run. */
+    public static final String ACTION_COMPLETION_RETRY_COUNT = "action_completion_retry_count";
+
+    /** One-shot edge signal routing a rejected final candidate back to ReasoningNode. */
+    public static final String CONTINUE_REASONING = "continue_reasoning";
+
     // ===== Persistent goal — cross-turn objective lock-in =====
 
     /**

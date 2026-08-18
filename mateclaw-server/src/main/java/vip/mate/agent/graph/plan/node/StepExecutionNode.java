@@ -605,6 +605,10 @@ public class StepExecutionNode implements NodeAction {
             return PlanStateAccessor.output()
                     .currentStepResult(shortError)
                     .currentPhase("plan_aborted")
+                    // Terminal failures still need a canonical assistant body.
+                    // CURRENT_STEP_RESULT no longer enters mate_message.content;
+                    // FINAL_SUMMARY is the single persistence/broadcast channel.
+                    .finalSummary(shortError)
                     .contentStreamed(false)
                     .addStepUsage(state, stepPromptTokens, stepCompletionTokens,
                             stepCacheReadTokens, stepCacheWriteTokens, stepReasoningTokens)

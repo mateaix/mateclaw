@@ -55,6 +55,18 @@ class ReasoningDispatcherTest {
     }
 
     @Test
+    @DisplayName("动作完成门控请求续跑时回到 reasoning")
+    void shouldContinueReasoningWhenCompletionGateRejectsCandidate() throws Exception {
+        OverAllState state = new OverAllState(Map.of(
+                CONTINUE_REASONING, true,
+                NEEDS_TOOL_CALL, false,
+                CURRENT_ITERATION, 0,
+                MAX_ITERATIONS, 10
+        ));
+        assertEquals(REASONING_NODE, dispatcher.apply(state));
+    }
+
+    @Test
     @DisplayName("迭代超限时路由到 limit_exceeded")
     void shouldRouteToLimitExceededWhenOverLimit() throws Exception {
         OverAllState state = new OverAllState(Map.of(

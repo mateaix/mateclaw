@@ -3,6 +3,7 @@ package vip.mate.agent.context;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.model.ToolContext;
+import vip.mate.tool.builtin.ToolExecutionContext;
 
 import java.util.Map;
 
@@ -47,6 +48,20 @@ class ChatOriginTest {
         assertEquals(base.channelId(), enriched.channelId(), "channelId must be preserved");
         assertEquals(base.channelTarget(), enriched.channelTarget(),
                 "channelTarget must be preserved");
+    }
+
+    @Test
+    void originMessageId_isExplicitAndPreservedByWithersAndToolContext() {
+        ChatOrigin origin = ChatOrigin.web("conv-1", "user", 5L, null)
+                .withOriginMessageId(99L);
+
+        assertNull(ChatOrigin.EMPTY.originMessageId());
+        assertEquals(99L, origin.withAgent(7L).originMessageId());
+        assertEquals(99L, origin.withWorkspace(6L, "/ws").originMessageId());
+        assertEquals(99L, origin.withConversationId("conv-2").originMessageId());
+        assertEquals(99L, origin.withBaseUrl("https://example.test").originMessageId());
+        assertEquals(99L, origin.withSender("Alice", "web", null).originMessageId());
+        assertEquals(99L, ToolExecutionContext.originMessageId(origin.toToolContext()));
     }
 
     @Test

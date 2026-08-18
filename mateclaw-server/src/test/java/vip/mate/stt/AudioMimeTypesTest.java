@@ -15,6 +15,21 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 class AudioMimeTypesTest {
 
     @Test
+    @DisplayName("resolveContentType prefers a known content type and strips codec parameters")
+    void resolveContentType_prefersContentType() {
+        assertEquals("audio/webm", AudioMimeTypes.resolveContentType("clip.wav", "audio/webm; codecs=opus"));
+        assertEquals("audio/mpeg", AudioMimeTypes.resolveContentType(null, "audio/mpeg"));
+    }
+
+    @Test
+    @DisplayName("resolveContentType infers from filename and safely defaults to WAV")
+    void resolveContentType_filenameAndFallback() {
+        assertEquals("audio/ogg", AudioMimeTypes.resolveContentType("note.ogg", null));
+        assertEquals("audio/wav", AudioMimeTypes.resolveContentType("blob.bin", null));
+        assertEquals("audio/wav", AudioMimeTypes.resolveContentType(null, null));
+    }
+
+    @Test
     @DisplayName("resolveFileName: trusts a caller filename with a known extension")
     void resolveFileName_trustsKnownExtension() {
         assertEquals("clip.mp3", AudioMimeTypes.resolveFileName("clip.mp3", null));

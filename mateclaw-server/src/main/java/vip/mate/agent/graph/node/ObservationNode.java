@@ -41,7 +41,7 @@ public class ObservationNode implements NodeAction {
      * set in {@code DefaultToolDisclosureService.ALWAYS_CORE}.
      */
     private static final java.util.Set<String> DISCLOSURE_TOOLS =
-            java.util.Set.of("load_skill", "enable_tool");
+            java.util.Set.of("load_skill", "enable_tool", "tool_search", "tool_describe");
 
     /** Per-run cap on iteration refunds — keeps a load-skill-only model from looping forever. */
     private static final int MAX_ITERATION_REFUNDS_PER_RUN = 3;

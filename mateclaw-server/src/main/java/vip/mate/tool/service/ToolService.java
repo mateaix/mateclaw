@@ -47,6 +47,7 @@ public class ToolService {
             tool.setEnabled(true);
         }
         toolMapper.insert(tool);
+        toolRegistry.invalidateEnabledToolSetCache("tool-created:" + tool.getName());
         return enrichRuntimeNames(tool);
     }
 
@@ -55,9 +56,11 @@ public class ToolService {
         if (Boolean.TRUE.equals(existing.getBuiltin())) {
             existing.setEnabled(tool.getEnabled());
             toolMapper.updateById(existing);
+            toolRegistry.invalidateEnabledToolSetCache("builtin-tool-updated:" + existing.getName());
             return enrichRuntimeNames(existing);
         }
         toolMapper.updateById(tool);
+        toolRegistry.invalidateEnabledToolSetCache("tool-updated:" + tool.getName());
         return enrichRuntimeNames(tool);
     }
 
@@ -67,12 +70,14 @@ public class ToolService {
             throw new MateClawException("err.tool.builtin_readonly", "内置工具不可删除");
         }
         toolMapper.deleteById(id);
+        toolRegistry.invalidateEnabledToolSetCache("tool-deleted:" + tool.getName());
     }
 
     public ToolEntity toggleTool(Long id, boolean enabled) {
         ToolEntity tool = getTool(id);
         tool.setEnabled(enabled);
         toolMapper.updateById(tool);
+        toolRegistry.invalidateEnabledToolSetCache("tool-toggled:" + tool.getName());
         return enrichRuntimeNames(tool);
     }
 

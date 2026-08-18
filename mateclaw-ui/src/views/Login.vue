@@ -81,7 +81,10 @@
         </div>
       </div>
 
-      <p class="login-hint" v-html="t('login.hint')"></p>
+      <i18n-t v-if="defaultCredentials" keypath="login.hint" tag="p" class="login-hint">
+        <template #username><code>{{ defaultCredentials.username }}</code></template>
+        <template #password><code>{{ defaultCredentials.password }}</code></template>
+      </i18n-t>
     </div>
   </div>
 </template>
@@ -99,6 +102,10 @@ interface SsoProvider { id: string; displayName: string }
 const router = useRouter()
 const route = useRoute()
 const { t } = useI18n()
+// Default credentials are a local-development convenience, not production UI.
+const defaultCredentials = import.meta.env.DEV
+  ? { username: 'admin', password: 'admin123' }
+  : null
 const workspaceStore = useWorkspaceStore()
 const systemSettingsStore = useSystemSettingsStore()
 const loading = ref(false)

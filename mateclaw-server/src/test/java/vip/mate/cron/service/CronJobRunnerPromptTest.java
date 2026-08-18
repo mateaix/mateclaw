@@ -25,8 +25,12 @@ class CronJobRunnerPromptTest {
                 "every scheduled run must carry the execution-context note");
         assertTrue(prompt.contains("隔离执行"),
                 "the note must tell the model this run has no prior history");
-        assertFalse(prompt.contains("投递回原渠道"),
-                "web-origin runs have no channel — the delivery clause must be omitted");
+        assertFalse(prompt.contains("自动投递回本任务绑定的渠道会话"),
+                "web-origin runs have no channel — the auto-delivery clause must be omitted");
+        assertTrue(prompt.contains("本任务未绑定渠道"),
+                "non-channel runs must state that nothing is auto-delivered");
+        assertTrue(prompt.contains("send_channel_message"),
+                "non-channel runs must point at the channel-message tool for explicit sends");
         assertTrue(prompt.contains(CronJobRunner.CRON_SILENT_MARKER),
                 "the no-op sentinel instruction must always be present");
         assertTrue(prompt.endsWith(input),
@@ -46,17 +50,19 @@ class CronJobRunnerPromptTest {
         String prompt = CronJobRunner.buildCronPrompt("提醒喝水", channelOrigin);
 
         assertTrue(prompt.contains("[定时任务执行说明]"));
-        assertTrue(prompt.contains("投递回原渠道"),
+        assertTrue(prompt.contains("自动投递回本任务绑定的渠道会话"),
                 "channel-bound runs must keep the framework-delivery clause");
-        assertTrue(prompt.contains("不要尝试调用 CLI"),
-                "the channel clause must forbid CLI / send-tool hallucination");
+        assertTrue(prompt.contains("不要再用工具把同样的结果重复发送"),
+                "the channel clause must forbid duplicate self-delivery to the bound conversation");
+        assertTrue(prompt.contains("send_channel_message"),
+                "cross-conversation sends must be routed through the channel-message tool");
     }
 
     @Test
     void nullOrigin_stillProducesContextNote() {
         String prompt = CronJobRunner.buildCronPrompt("hello", null);
         assertTrue(prompt.contains("[定时任务执行说明]"));
-        assertFalse(prompt.contains("投递回原渠道"));
+        assertFalse(prompt.contains("自动投递回本任务绑定的渠道会话"));
         assertTrue(prompt.endsWith("hello"));
     }
 }

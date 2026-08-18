@@ -554,10 +554,10 @@ Unmatched paths redirect to `/chat`.
 
 ```bash
 cd mateclaw-ui
-pnpm install
-pnpm dev          # Port 5173, proxies /api to :18088
-pnpm build        # vue-tsc + vite build into ../mateclaw-server/.../static
-pnpm lint         # ESLint
+npm install
+npm run dev       # Port 5173, proxies /api to :18088
+npm run build     # vue-tsc + vite build into ../mateclaw-server/.../static
+npm run lint      # ESLint
 ```
 
 Build artifacts embed in the Spring Boot JAR.

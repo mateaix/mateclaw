@@ -78,6 +78,8 @@
             :active-label="activeModelLabel"
             :saving="modelSaving"
             :show-all-states="true"
+            :can-configure="canConfigureModels"
+            :empty-hint="modelSelectorEmptyHint"
             @select="selectModel"
             @navigate-fix="onModelSelectorFix"
           />
@@ -102,6 +104,15 @@
         </div>
       </div>
 
+      <TeamWorkerBanner
+        v-if="workerRunContext"
+        :run-id="workerRunContext.runId"
+        :task-id="workerRunContext.taskId"
+        :team-id="workerRunContext.teamId"
+        :lead-conversation-id="workerRunContext.leadConversationId"
+        @navigate="router.push($event)"
+      />
+
       <!-- 使用组件化的 MessageList -->
       <MessageList
         ref="messageListRef"
@@ -112,6 +123,12 @@
         :title="blockingPrompt ? modelPromptText.title : $t('app.title')"
         :subtitle="blockingPrompt ? modelPromptText.desc : $t('chat.subtitle')"
         :suggestions="blockingPrompt ? [] : suggestions"
+        :team-runs="teamRuns"
+        :expanded-team-run-id="teamRunRouteQuery.teamRunId || null"
+        :selected-team-task-id="teamRunRouteQuery.taskId || null"
+        :team-runs-has-more="Boolean(teamRunsNextCursor)"
+        :team-runs-loading-more="teamRunsLoadingMore"
+        :readonly="workerConversationReadOnly"
         @regenerate="handleRegenerate"
         @rewind="handleRewind"
         @suggestion-click="sendSuggestion"
@@ -119,6 +136,8 @@
         @approve="handleApprove"
         @approve-always="handleApproveAlways"
         @deny="handleDeny"
+        @team-run-navigate="router.push($event)"
+        @team-runs-load-more="loadMoreTeamRuns"
       >
         <!-- Issue #81 v2 R2: blocking-only popup. Recoverable cases use the
              non-blocking <RecoverableModelBanner> below instead. -->
@@ -222,7 +241,7 @@
         ref="chatInputRef"
         v-model="inputText"
         :loading="isGenerating && !hasPendingApproval"
-        :disabled="blockingPrompt || !currentAgent"
+        :disabled="blockingPrompt || !currentAgent || workerConversationReadOnly"
         :skills-enabled="!!currentAgent && !currentAgent.skillsDisabled"
         :placeholder="$t('chat.messagePlaceholder')"
         :hint="currentRuntimeModel"
@@ -286,13 +305,24 @@ import { copyToClipboard } from '@/utils/clipboard'
 import { useFileDrop } from '@/composables/useFileDrop'
 import { useIsMobile, useMediaQuery, BREAKPOINTS } from '@/composables/useBreakpoint'
 import { useChat } from '@/composables/chat/useChat'
+import { useTeamRuns } from '@/composables/chat/useTeamRuns'
+import { useWorkerConversationGuard } from '@/composables/chat/useWorkerConversationGuard'
+import { parseTeamMessageMetadata } from '@/composables/chat/messageMetadata'
 import RunOverviewPanel from '@/components/chat/RunOverviewPanel.vue'
 import { reconstructErrorInfo } from '@/types/chatError'
 import { reconcileMessages, extractMessages } from '@/utils/messageReconcile'
-import type { Conversation, Agent, ModelConfig, ProviderInfo, ActiveModelsInfo, ChatAttachment, MessageContentPart, Message, ToolCallMeta, StreamPhase } from '@/types'
+import {
+  buildChatRouteQuery,
+  readLegacyWorkerRouteContext,
+  readTeamRunRouteQuery,
+  resolveConversationAgentSelection,
+  resolveRouteHydrationQuery,
+} from '@/utils/chatRouteHydration'
+import type { Conversation, Agent, ModelConfig, ProviderInfo, ActiveModelsInfo, ChatAttachment, MessageContentPart, Message, ToolCallMeta } from '@/types'
 
 // 导入组件化组件
 import MessageList from '@/components/chat/MessageList.vue'
+import TeamWorkerBanner from '@/components/chat/TeamWorkerBanner.vue'
 import RecoverableModelBanner from '@/components/chat/RecoverableModelBanner.vue'
 import SkillIcon from '@/components/common/SkillIcon.vue'
 import ConversationSidebar from '@/components/chat/ConversationSidebar.vue'
@@ -309,6 +339,7 @@ import { useKatexRenderer } from '@/composables/useKatexRenderer'
 import { useMermaidRenderer, handleMermaidDownload } from '@/composables/useMermaidRenderer'
 import { useGoalStore } from '@/stores/useGoalStore'
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore'
+import { buildViewerModelProviders } from '@/utils/viewerModelProviders'
 import GoalSetInlinePrompt from '@/components/goal/GoalSetInlinePrompt.vue'
 import GoalSystemLine from '@/components/goal/GoalSystemLine.vue'
 
@@ -392,14 +423,12 @@ const recoverablePrompt = ref(false)
 const recoverableDismissed = ref(false)
 const defaultModel = ref<ModelConfig | null>(null)
 const providers = ref<ProviderInfo[]>([])
-// True when /models 403s for a viewer-level user. Provider config (API keys,
-// base URLs, liveness) is admin-only, so viewers chat without it; the prompt
-// flags fall back to "trust the active model" in that branch.
+// True when a viewer uses the credential-free provider projection. Provider
+// config (API keys, base URLs, liveness) is admin-only, so viewers can switch
+// models but prompt flags must still trust the active model's runtime state.
 const providersUnavailable = ref(false)
-// Mirror of /models/enabled (viewer-accessible). Used to resolve the display
-// name of the active model when providers is empty for viewer-level users —
-// otherwise the model selector trigger would show its 配置模型 fallback even
-// though there IS an active model.
+// Mirror of /models/enabled (viewer-accessible). It supplies the model half of
+// the safe picker projection and resolves the active label during hydration.
 const enabledModels = ref<ModelConfig[]>([])
 // The model the CURRENT conversation uses. Per-conversation — switching it
 // never leaks into other conversations (see selectModel / applyConversationModel).
@@ -628,6 +657,7 @@ function reconcileCurrentConversation() {
 const { isDragging, onDragEnter, onDragLeave, onDrop } = useFileDrop(processDroppedItems)
 
 async function processDroppedItems(e: DragEvent) {
+  if (workerConversationReadOnly.value) return
   const dtFiles = Array.from(e.dataTransfer?.files || [])
   const items = Array.from(e.dataTransfer?.items || [])
 
@@ -669,6 +699,7 @@ async function processDroppedItems(e: DragEvent) {
 }
 
 function handleDirectoryAttach(dirFiles: File[]) {
+  if (workerConversationReadOnly.value) return
   if (!currentConversationId.value) {
     newConversation()
   }
@@ -781,6 +812,44 @@ const {
   },
 })
 
+const teamRunRouteQuery = computed(() => readTeamRunRouteQuery(route.query))
+const metadataWorkerRunId = computed(() => {
+  for (let index = messages.value.length - 1; index >= 0; index -= 1) {
+    const metadata = parseTeamMessageMetadata(messages.value[index])
+    if (metadata.runId && metadata.taskId) return metadata.runId
+  }
+  return undefined
+})
+const linkedTeamRunId = computed(() => teamRunRouteQuery.value.teamRunId ?? metadataWorkerRunId.value)
+const {
+  runs: teamRuns,
+  nextCursor: teamRunsNextCursor,
+  loadingMore: teamRunsLoadingMore,
+  loadMore: loadMoreTeamRuns,
+} = useTeamRuns(currentConversationId, { linkedRunId: linkedTeamRunId })
+const currentConversationKind = computed(() => conversations.value
+  .find(conversation => conversation.conversationId === currentConversationId.value)?.conversationKind)
+const workerRouteHint = computed(() => Boolean(
+  teamRunRouteQuery.value.teamRunId
+  || teamRunRouteQuery.value.taskId
+  || currentConversationKind.value === 'team_worker'))
+const workerGuard = useWorkerConversationGuard({
+  conversationId: currentConversationId,
+  workerHint: workerRouteHint,
+  load: async (conversationId) => {
+    if (isEphemeralConversation(conversationId)) return null
+    const query = teamRunRouteQuery.value
+    const response = await conversationApi.getTeamWorkerContext(conversationId, {
+      runId: query.teamRunId,
+      taskId: query.taskId,
+    })
+    return response.data ?? null
+  },
+})
+const workerRunContext = computed(() => workerGuard.context.value
+  ?? readLegacyWorkerRouteContext(currentConversationId.value, route.query))
+const workerConversationReadOnly = computed(() => workerGuard.readOnly.value)
+
 // ============ 连接状态 ============
 const connectionStatusClass = computed(() => {
   if (isGenerating.value) return 'status-streaming'
@@ -831,7 +900,7 @@ const currentRuntimeModel = computed(() => {
     const all = provider ? [...(provider.models || []), ...(provider.extraModels || [])] : []
     const hit = all.find((m) => m.id === modelName || m.name === modelName)
     if (hit) return `${hit.name || hit.id} (${hit.id})`
-    // Viewer-level users get an empty providers list — resolve via /models/enabled.
+    // During initial hydration the safe provider projection may not be ready yet.
     const em = enabledModels.value.find(
       (m) => m.provider === providerId && (m.modelName === modelName || m.name === modelName)
     )
@@ -879,10 +948,9 @@ const activeModelLabel = computed(() => {
   if (!activeModelValue.value) return ''
   const match = eligibleModels.value.find(m => m.value === activeModelValue.value)
   if (match?.label) return match.label
-  // Viewer-level users have an empty providers list (admin-only endpoint), so
-  // eligibleModels is empty even when there IS an active model. Fall back to
-  // the viewer-readable /models/enabled list to resolve a display name —
-  // otherwise the trigger button would read "配置模型" forever.
+  // Fall back to the viewer-readable /models/enabled list while the safe
+  // provider projection is still hydrating, so the trigger never flashes the
+  // "配置模型" placeholder for an already active model.
   const providerId = activeModels.value?.activeLlm?.providerId
   const modelName = activeModels.value?.activeLlm?.model
   if (!providerId || !modelName) return ''
@@ -1175,6 +1243,9 @@ async function pollActivity() {
           // 2. 再接入流，让后续 content_delta 实时累积到 assistant 气泡。
           await refreshCurrentConversationMessages(cid)
           if (currentConversationId.value !== cid || isGenerating.value) return
+          // Match selectConversation's behavior: a stale scroll-escape from an
+          // earlier upward scroll must not suppress follow-scroll on reconnect.
+          messageListRef.value?.resetScrollLock()
           await reconnectStream(cid)
         } else if (!hasLocalOnlyFailedTail()) {
           // 不在跑：从 DB 对齐消息（新 user 消息 / 刚落库 assistant 会合并进来）。
@@ -1295,8 +1366,12 @@ watch([selectedAgentId, currentConversationId], () => {
 // avatar ring listens on goalStore.activeGoalByConv[cid]; without this
 // fetch the ring would only appear after an SSE event mutated the store.
 const goalStore = useGoalStore()
-const workspaceStoreForGoal = useWorkspaceStore()
-const currentWorkspaceId = computed(() => workspaceStoreForGoal.currentWorkspaceId ?? '1')
+const workspaceStore = useWorkspaceStore()
+const currentWorkspaceId = computed(() => workspaceStore.currentWorkspaceId ?? '1')
+const canConfigureModels = computed(() => workspaceStore.isGlobalAdmin)
+const modelSelectorEmptyHint = computed(() => canConfigureModels.value
+  ? undefined
+  : t('chat.noModelsAvailableContactAdmin'))
 watch(currentConversationId, async (cid) => {
   // Skip un-persisted conversations: a brand-new empty chat has no goal yet
   // and the lookup would only 403 (Not the owner). The ring is hydrated by the
@@ -1472,13 +1547,18 @@ async function loadAgents() {
 async function loadModelState() {
   // /default + /active + /enabled are viewer-accessible and required to chat.
   // /models (provider list) is admin-only because it returns API keys + base
-  // URLs; viewers degrade to "trust the active model, skip the liveness
-  // banner" and resolve the label via /enabled instead.
+  // URLs. Viewers join /models/options with /models/enabled for the selector,
+  // but still skip the liveness banner because neither safe response exposes
+  // runtime diagnostics.
   try {
-    const [defaultRes, activeRes, enabledRes]: any = await Promise.all([
+    const providerOptionsRequest = workspaceStore.isGlobalAdmin
+      ? Promise.resolve({ data: [] })
+      : modelApi.listProviderOptions()
+    const [defaultRes, activeRes, enabledRes, providerOptionsRes]: any = await Promise.all([
       modelApi.getDefault(),
       modelApi.getActive(),
       modelApi.listEnabled(),
+      providerOptionsRequest,
     ])
     defaultModel.value = defaultRes.data || null
     const ga = activeRes.data?.activeLlm
@@ -1492,6 +1572,17 @@ async function loadModelState() {
       activeModels.value = { activeLlm: { ...globalDefaultModel.value } }
     }
     enabledModels.value = enabledRes.data || []
+    if (!workspaceStore.isGlobalAdmin) {
+      providers.value = buildViewerModelProviders(
+        providerOptionsRes.data || [],
+        enabledModels.value,
+      )
+      // The safe projection intentionally has no liveness diagnostics. Trust
+      // the active model and let the runtime report a real call failure.
+      providersUnavailable.value = true
+      recomputePromptFlags()
+      return
+    }
   } catch (e) {
     mcToast.error(t('chat.loadModelFailed'))
     blockingPrompt.value = true
@@ -1594,24 +1685,12 @@ async function refreshCurrentConversationMessages(conversationId: string) {
 }
 
 async function hydrateStateFromRoute() {
-  let agentId = route.query.agentId ? String(route.query.agentId) : ''
-  let conversationId = String(route.query.conversationId || '')
-
-  // The URL can outlive its workspace: switching workspaces remounts this view
-  // (via the router-view key) but keeps the query string, so agentId /
-  // conversationId may still point at entities of the previous workspace. An
-  // agentId missing from the workspace-scoped agent list is such a leftover —
-  // drop it so the default-select below picks a real employee instead of the
-  // picker rendering the unresolvable raw id.
-  if (agentId && agents.value.length > 0 && !agents.value.some(a => String(a.id) === agentId)) {
-    agentId = ''
-    // Only follow the paired conversationId when it resolves locally (e.g. a
-    // Sessions-page jump within this workspace); otherwise it is equally stale
-    // and would attach the fallback agent to a foreign conversation.
-    if (!conversations.value.some(conv => conv.conversationId === conversationId)) {
-      conversationId = ''
-    }
-  }
+  const { agentId, conversationId } = resolveRouteHydrationQuery({
+    routeAgentId: route.query.agentId ? String(route.query.agentId) : '',
+    routeConversationId: String(route.query.conversationId || ''),
+    agents: agents.value,
+    conversations: conversations.value,
+  })
 
   if (agentId && agentId !== String(selectedAgentId.value)) {
     selectedAgentId.value = agentId
@@ -1620,7 +1699,7 @@ async function hydrateStateFromRoute() {
   if (conversationId && conversationId !== currentConversationId.value) {
     const matchedConversation = conversations.value.find(conv => conv.conversationId === conversationId)
     if (matchedConversation) {
-      await selectConversation(matchedConversation)
+      await selectConversation(matchedConversation, agentId)
     } else {
       // 会话不在已加载列表中（可能来自 Sessions 页面跳转），尝试加载消息
       currentConversationId.value = conversationId
@@ -1651,13 +1730,15 @@ async function hydrateStateFromRoute() {
 }
 
 function syncRouteState() {
-  const query: Record<string, string> = {}
-  if (selectedAgentId.value) query.agentId = String(selectedAgentId.value)
-  if (currentConversationId.value) query.conversationId = currentConversationId.value
+  const query = buildChatRouteQuery({
+    currentQuery: route.query,
+    agentId: selectedAgentId.value ? String(selectedAgentId.value) : undefined,
+    conversationId: currentConversationId.value || undefined,
+  })
   router.replace({ path: '/chat', query })
 }
 
-async function selectConversation(conv: Conversation) {
+async function selectConversation(conv: Conversation, routeAgentId = '') {
   if (isMobile.value) convPanelOpen.value = false
   // 切换到不同会话：只清理本地 UI/SSE（resetForNewConversation 会 stream.disconnect + 清变量），
   // 但不 POST /chat/{A}/stop —— 让 A 的后台 agent run 跑到完成。
@@ -1670,7 +1751,11 @@ async function selectConversation(conv: Conversation) {
     messageListRef.value?.resetScrollLock()
   }
   currentConversationId.value = conv.conversationId
-  selectedAgentId.value = conv.agentId || selectedAgentId.value
+  selectedAgentId.value = resolveConversationAgentSelection({
+    routeAgentId,
+    conversationAgentId: conv.agentId,
+    currentAgentId: selectedAgentId.value,
+  })
   // Opening another conversation: its pin (or the agent/global fallback) is
   // authoritative, so clear the previous conversation's manual-pick guard.
   userPickedModel.value = false
@@ -1903,7 +1988,10 @@ async function handleSendMessage(content: string) {
   // 允许在等待审批时发送审批命令
   const isApprovalCommand = /^\/(approve|deny)$/i.test(content.trim())
 
-  if ((!content && pendingAttachments.value.length === 0) || !selectedAgentId.value || blockingPrompt.value) return
+  if ((!content && pendingAttachments.value.length === 0)
+      || !selectedAgentId.value
+      || blockingPrompt.value
+      || workerConversationReadOnly.value) return
   // 不再阻止运行中发送 — useChat 会自动走 interrupt/queue 路径
 
   // 拦截 /approve 和 /deny 命令 —— 通过 SSE 流发送（和普通消息相同通道）
@@ -2011,7 +2099,8 @@ function handleStopStream() {
 }
 
 async function handleRegenerate(message: Message) {
-  if (isGenerating.value || !currentConversationId.value || !selectedAgentId.value) return
+  if (workerConversationReadOnly.value
+    || isGenerating.value || !currentConversationId.value || !selectedAgentId.value) return
   const idx = messages.value.indexOf(message)
   if (idx >= 0) {
     // The server drops the trailing assistant block and reuses the persisted
@@ -2035,7 +2124,7 @@ async function handleRegenerate(message: Message) {
 }
 
 async function handleRewind(message: Message) {
-  if (isGenerating.value || !currentConversationId.value) return
+  if (workerConversationReadOnly.value || isGenerating.value || !currentConversationId.value) return
   const idx = messages.value.indexOf(message)
   if (idx < 0) return
   const count = messages.value.length - idx
@@ -2163,6 +2252,7 @@ function resetStreamingState() {
 
 // ============ 附件处理 ============
 async function handleFileSelect(files: File[]) {
+  if (workerConversationReadOnly.value) return
   if (!currentConversationId.value) {
     newConversation()
   }

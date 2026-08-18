@@ -102,13 +102,14 @@ public class CronJobRunner {
         String conversationId = conversationResolver.resolve(job);
 
         // T1 — short tx
-        CronJobRunEntity run;
+        CronJobLifecycleService.StartResult started;
         try {
-            run = lifecycle.startRun(job, userMessage, triggerType, conversationId);
+            started = lifecycle.startRun(job, userMessage, triggerType, conversationId);
         } catch (Exception e) {
             log.error("[CronRunner] T1 startRun failed for job {}: {}", job.getId(), e.getMessage(), e);
             return;
         }
+        CronJobRunEntity run = started.run();
 
         // task_type='reminder' — pure notification, no LLM call. The user
         // (or the create_reminder tool on their behalf) supplied the exact
@@ -141,7 +142,8 @@ public class CronJobRunner {
         AgentService.ChatResult chatResult;
         AssistantMessage result;
         try {
-            ChatOrigin origin = originFactory.from(job, conversationId);
+            ChatOrigin origin = originFactory.from(
+                    job, conversationId, started.originMessageId());
             chatResult = runAgent(job, userMessage, origin, conversationId);
             result = new AssistantMessage(chatResult.content());
         } catch (Exception e) {
@@ -282,8 +284,14 @@ public class CronJobRunner {
      *       conversation history is in scope, so the model must not assume
      *       earlier context;</li>
      *   <li>(channel-bound runs only) delivery back to the originating
-     *       channel is framework-handled, so the model must not invent
-     *       CLI / shell / "send to WeChat" tool calls to deliver the result;</li>
+     *       channel is framework-handled, so the model must not re-send the
+     *       final result to that same channel itself; pushing to a
+     *       <em>different</em> conversation, when the task explicitly asks
+     *       for it, goes through the {@code send_channel_message} tool;</li>
+     *   <li>(non-channel-bound runs) nothing is auto-delivered to any IM
+     *       channel — if the task instructions require notifying a channel
+     *       conversation, the model should use {@code list_channel_sessions}
+     *       + {@code send_channel_message};</li>
      *   <li>when there is genuinely nothing to do or report, the model
      *       should reply with exactly {@link #CRON_SILENT_MARKER} and nothing
      *       else, which suppresses delivery for this run.</li>
@@ -298,8 +306,15 @@ public class CronJobRunner {
         sb.append("- 请把下面的「任务指令」当作一个完整、独立的任务来执行；")
           .append("本次为隔离执行，没有此前的对话历史，不要假设存在上下文。\n");
         if (channelBound) {
-            sb.append("- 执行结果会由系统自动投递回原渠道，你只需直接给出最终结果内容，")
-              .append("不要尝试调用 CLI / shell / \"发送到微信\"等工具自行投递。\n");
+            sb.append("- 执行结果会由系统自动投递回本任务绑定的渠道会话，你只需直接给出最终结果内容，")
+              .append("不要再用工具把同样的结果重复发送到该会话；")
+              .append("仅当任务指令明确要求把消息发送到其它渠道会话时，")
+              .append("才先用 list_channel_sessions 查询目标会话，再用 send_channel_message 发送。\n");
+        } else {
+            sb.append("- 本任务未绑定渠道，执行结果只会写入任务会话，不会自动推送到任何 IM 渠道；")
+              .append("如任务指令要求把消息发送到某个渠道会话（如企业微信 / 飞书 / 钉钉），")
+              .append("请先用 list_channel_sessions 工具查询可用会话，")
+              .append("再用 send_channel_message 工具发送，不要尝试调用 CLI / shell 自行投递。\n");
         }
         sb.append("- 如果确认本次确实无需执行、也没有新内容可汇报，")
           .append("请仅回复 \"").append(CRON_SILENT_MARKER).append("\"，不要附加任何其它文字。\n\n");

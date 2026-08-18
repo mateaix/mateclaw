@@ -97,9 +97,35 @@
             :key="model.id"
             class="model-list-item"
           >
-            <div>
+            <div class="model-list-main">
               <div class="model-list-name">{{ model.name }}</div>
               <div class="model-list-id">{{ model.id }}</div>
+              <!-- Context window: what history compaction budgets against, and
+                   what the chat context chip reports. Editable because the
+                   shipped window table cannot know every vendor's model. -->
+              <div v-if="editingWindowId !== model.id" class="model-window">
+                <span class="model-window-label">{{ t('settings.model.contextWindow.label') }}</span>
+                <span class="model-window-value">{{ formatWindow(model.effectiveMaxInputTokens) }}</span>
+                <span class="model-window-source">{{ windowSourceLabel(model.maxInputTokensSource) }}</span>
+                <button class="model-window-edit" type="button" @click="startEditWindow(model)">
+                  {{ t('settings.model.contextWindow.edit') }}
+                </button>
+              </div>
+              <div v-else class="model-window-form">
+                <input
+                  v-model.number="windowInput"
+                  class="form-input model-window-input"
+                  type="number"
+                  min="1024"
+                  step="1024"
+                  :placeholder="t('settings.model.contextWindow.placeholder')"
+                  @keyup.enter="saveWindow(model)"
+                />
+                <button class="card-btn test-btn" type="button" @click="saveWindow(model)">{{ t('common.save') }}</button>
+                <button class="card-btn test-btn" type="button" @click="clearWindow(model)">{{ t('common.clear') }}</button>
+                <button class="card-btn test-btn" type="button" @click="cancelEditWindow">{{ t('common.cancel') }}</button>
+                <div class="model-window-hint">{{ t('settings.model.contextWindow.hint') }}</div>
+              </div>
               <div v-if="modelTestResults[model.id]" class="model-test-result" :class="modelTestResults[model.id].success ? 'success' : 'error'">
                 <span v-if="modelTestResults[model.id].success">
                   {{ t('settings.model.discovery.modelOk') }} · {{ t('settings.model.discovery.latency', { ms: modelTestResults[model.id].latencyMs }) }}
@@ -160,11 +186,16 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { mcToast } from '@/composables/useMcToast'
 import type { DiscoverResult, ProviderInfo, ProviderModelInfo, TestResult } from '@/types'
 
 const { t } = useI18n()
+
+/** Matches the server-side bounds in ModelConfigService. */
+const MIN_WINDOW = 1024
+const MAX_WINDOW = 20_000_000
 
 const props = defineProps<{
   show: boolean
@@ -190,7 +221,7 @@ const discoveredUnavailable = computed(() => {
   return all.filter(m => m && m.probeOk === false)
 })
 
-defineEmits<{
+const emit = defineEmits<{
   close: []
   discover: []
   toggleSelectAll: []
@@ -200,7 +231,68 @@ defineEmits<{
   setActive: [model: ProviderModelInfo]
   removeModel: [model: ProviderModelInfo]
   addModel: []
+  updateContextWindow: [model: ProviderModelInfo, maxInputTokens: number | null]
 }>()
+
+// Inline context-window editor. One row at a time; the value is a plain
+// integer, not an id, so v-model.number is safe here.
+const editingWindowId = ref<string | null>(null)
+const windowInput = ref<number | null>(null)
+
+watch(() => props.show, open => {
+  if (!open) cancelEditWindow()
+})
+
+function startEditWindow(model: ProviderModelInfo) {
+  editingWindowId.value = model.id
+  windowInput.value = model.maxInputTokens ?? null
+}
+
+function cancelEditWindow() {
+  editingWindowId.value = null
+  windowInput.value = null
+}
+
+function saveWindow(model: ProviderModelInfo) {
+  const raw = windowInput.value
+  // Empty input means "no override" — same as pressing Clear.
+  if (raw === null || raw === undefined || (typeof raw === 'string' && raw === '')) {
+    clearWindow(model)
+    return
+  }
+  const value = Math.trunc(Number(raw))
+  if (!Number.isFinite(value) || value < MIN_WINDOW || value > MAX_WINDOW) {
+    mcToast.error(t('settings.model.contextWindow.invalid'))
+    return
+  }
+  emit('updateContextWindow', model, value)
+  cancelEditWindow()
+}
+
+function clearWindow(model: ProviderModelInfo) {
+  emit('updateContextWindow', model, null)
+  cancelEditWindow()
+}
+
+/** 128000 → "128K", 1000000 → "1M". */
+function formatWindow(tokens?: number | null) {
+  if (!tokens || tokens <= 0) return '—'
+  if (tokens >= 1_000_000) {
+    const m = tokens / 1_000_000
+    return (Number.isInteger(m) ? m : m.toFixed(1)) + 'M'
+  }
+  if (tokens >= 1000) {
+    const k = tokens / 1000
+    return (Number.isInteger(k) ? k : k.toFixed(1)) + 'K'
+  }
+  return String(tokens)
+}
+
+function windowSourceLabel(source?: string) {
+  if (source === 'configured') return t('settings.model.contextWindow.sourceConfigured')
+  if (source === 'catalog') return t('settings.model.contextWindow.sourceCatalog')
+  return t('settings.model.contextWindow.sourceDefault')
+}
 </script>
 
 <style scoped>
@@ -292,6 +384,17 @@ defineEmits<{
 .model-list-name { font-weight: 600; color: var(--mc-text-primary); }
 .model-list-id { font-size: 12px; color: var(--mc-text-secondary); }
 .model-list-actions { display: flex; align-items: center; gap: 8px; }
+.model-list-main { min-width: 0; flex: 1; }
+.model-window { display: flex; align-items: center; gap: 6px; margin-top: 4px; font-size: 12px; color: var(--mc-text-secondary); flex-wrap: wrap; }
+.model-window-label { color: var(--mc-text-tertiary); }
+.model-window-value { font-weight: 600; color: var(--mc-text-primary); }
+.model-window-source { color: var(--mc-text-tertiary); }
+.model-window-edit { background: none; border: none; padding: 0; font-size: 12px; color: var(--mc-primary); cursor: pointer; }
+.model-window-edit:hover { text-decoration: underline; }
+.model-window-form { display: flex; align-items: center; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+/* Specific enough to beat the shared .form-input width:100% below. */
+.model-window-form .model-window-input { width: 150px; padding: 5px 8px; font-size: 12px; }
+.model-window-hint { flex-basis: 100%; font-size: 11px; color: var(--mc-text-tertiary); line-height: 1.5; }
 .model-add-box { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--mc-border-light); }
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 .form-label { display: block; font-size: 13px; color: var(--mc-text-secondary); margin-bottom: 6px; }

@@ -14,6 +14,7 @@ import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 
 import jakarta.servlet.http.HttpServletResponse;
+import jakarta.servlet.DispatcherType;
 import vip.mate.kbopen.auth.KbOpenApiAuthFilter;
 
 /**
@@ -79,6 +80,10 @@ public class SecurityConfig {
             )
             .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> {
+                // REQUEST dispatches are authenticated below. Async SSE error/completion
+                // redispatches can run after the response is committed and no longer carry
+                // the JWT; challenging them produces a second AccessDeniedException.
+                auth.dispatcherTypeMatchers(DispatcherType.ASYNC, DispatcherType.ERROR).permitAll();
                 // GET /settings/language stays anonymous (first-paint i18n). PUT
                 // requires login + admin (see @RequireGlobalAdmin on the controller).
                 auth.requestMatchers(HttpMethod.GET, "/api/v1/settings/language").permitAll()

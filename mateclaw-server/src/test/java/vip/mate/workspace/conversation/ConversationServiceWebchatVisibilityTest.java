@@ -139,6 +139,40 @@ class ConversationServiceWebchatVisibilityTest {
                 .doesNotContain("webchat:%");
     }
 
+    @Test
+    @DisplayName("ordinary list excludes typed and legacy team-worker rows in SQL while retaining null kinds")
+    void ordinaryListAppliesWorkerConversationGuardInSql() {
+        when(authService.findByUsername("admin")).thenReturn(user("admin"));
+        ArgumentCaptor<LambdaQueryWrapper<ConversationEntity>> captor =
+                ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        when(conversationMapper.selectList(captor.capture())).thenReturn(List.of());
+
+        service.listConversations("admin", 1L, true);
+
+        String sql = captor.getValue().getTargetSql().toLowerCase();
+        assertThat(sql).contains("conversation_kind is null");
+        assertThat(sql).contains("conversation_kind <>");
+        assertThat(captor.getValue().getParamNameValuePairs().values())
+                .contains("team_worker", "team-task-%");
+    }
+
+    @Test
+    @DisplayName("ordinary page applies the same worker conversation SQL guard")
+    void ordinaryPageAppliesWorkerConversationGuardInSql() {
+        when(authService.findByUsername("admin")).thenReturn(user("admin"));
+        ArgumentCaptor<LambdaQueryWrapper<ConversationEntity>> captor =
+                ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        when(conversationMapper.selectPage(any(Page.class), captor.capture())).thenReturn(new Page<>());
+
+        service.pageConversations("admin", 1L, 1, 20, null);
+
+        String sql = captor.getValue().getTargetSql().toLowerCase();
+        assertThat(sql).contains("conversation_kind is null");
+        assertThat(sql).contains("conversation_kind <>");
+        assertThat(captor.getValue().getParamNameValuePairs().values())
+                .contains("team_worker", "team-task-%");
+    }
+
     // ------------------------------------------------------------------
     // Malformed conversationId guard — rows whose id ends in ":" (e.g. an
     // empty-visitorId webchat thread) are filtered out of every admin list

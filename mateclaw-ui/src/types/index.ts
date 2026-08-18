@@ -88,6 +88,7 @@ export interface Conversation {
   status?: 'active' | 'closed'
   streamStatus?: 'idle' | 'running'
   source?: string
+  conversationKind?: 'primary' | 'team_worker' | 'scheduled'
   pinned?: number
   /** Provider id of the model this conversation is pinned to (per-conversation model). */
   modelProvider?: string
@@ -208,6 +209,12 @@ export interface MessageSegment {
   id: string
   type: 'thinking' | 'tool_call' | 'content' | 'phase' | 'approval' | 'plan'
   status: 'running' | 'completed' | 'error'
+  /**
+   * Producer-assigned emission index, monotonic within a turn. Present on
+   * persisted segments; absent on live ones, which are already appended in
+   * event order. Renderers sort by it instead of relocating segments by type.
+   */
+  seq?: number
   /** type=thinking */
   thinkingText?: string
   /** type=tool_call */
@@ -250,6 +257,9 @@ export interface MessageSegment {
   delegationAsync?: boolean
   /** 时间戳 */
   timestamp?: number
+  /** Wall-clock end of the segment (set when status flips to completed); with
+   *  timestamp it yields the real duration for history replays. */
+  endTimestamp?: number
   /**
    * Iteration index this segment belongs to (0-based). Set by iteration_start —
    * lets MessageBubble group thinking/tool/content segments per iteration so
@@ -262,6 +272,14 @@ export interface MessageSegment {
   repetitionWarning?: 'char_pattern' | 'sentence_repetition'
   /** Number of trailing characters dropped when the repetition guard fired. */
   truncatedChars?: number
+  /**
+   * Producer-assigned content semantics from the backend agent graph:
+   * 'pre_tool_narration' (provisional — text emitted alongside tool calls
+   * before any observation this turn), 'grounded_narration', or
+   * 'final_answer'. Delivered live via the segment_kind SSE event and
+   * persisted in metadata.segments; absent on legacy messages.
+   */
+  kind?: string
   /** Backend marked this model-predicted tool result as replaced by a later actual tool result. */
   superseded?: boolean
   /** Segment ID that replaced this pre-tool prediction. */
@@ -284,6 +302,16 @@ export interface GeneratedFile {
 }
 
 export interface MessageMetadata {
+  /** Internal note discriminator, e.g. 'compression_summary' | 'team_announce' | 'team_announce_reply' */
+  type?: string
+  /** type=team_announce: number of settled team tasks carried by this note */
+  taskCount?: number
+  /** Team orchestration ids remain strings to preserve Snowflake precision. */
+  runId?: string
+  taskId?: string
+  originMessageId?: string
+  teamId?: string
+  leadConversationId?: string
   currentPhase?: string
   toolCalls?: ToolCallMeta[]
   plan?: PlanMeta
@@ -623,6 +651,8 @@ export const CHANNEL_FIELD_DEFS: Record<string, ChannelFieldDef[]> = {
     { key: 'enable_nickname_cache', label: '昵称获取', placeholder: '', type: 'switch', defaultValue: true, tooltip: '通过联系人 API 获取用户真实昵称（需要 contact:user.base:readonly 权限）' },
     { key: 'enable_quoted_context', label: '引用消息上下文', placeholder: '', type: 'switch', defaultValue: true, tooltip: '用户引用某条消息回复时，自动拉取被引用消息内容注入到 prompt，agent 才能理解"解释一下"这种缺主语的引用' },
     { key: 'media_download_enabled', label: '媒体下载', placeholder: '', type: 'switch', defaultValue: false, tooltip: '下载消息中的图片和文件到本地（保存至 ~/.mateclaw/media/feishu/）' },
+    { key: 'card_streaming_enabled', label: '流式卡片', placeholder: '', type: 'switch', defaultValue: true, tooltip: '使用 CardKit 实时更新回复；需要 cardkit:card:write 权限' },
+    { key: 'stream_progress', label: '执行轨迹', placeholder: '', type: 'switch', defaultValue: true, tooltip: '在流式卡片中展示思考状态、计划步骤、工具进度与阶段旁白；原始思考和工具名称仍受下方过滤开关控制' },
   ],
   telegram: [
     { key: 'bot_token', label: 'Bot Token', placeholder: '123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11', required: true, sensitive: true, type: 'password', tooltip: '从 @BotFather 获取的 Bot Token' },
@@ -812,6 +842,11 @@ export interface SystemSettings {
   language: 'zh-CN' | 'en-US'
   streamEnabled: boolean
   debugMode: boolean
+  // Whether chat renders the model's reasoning ("thinking") blocks; default true
+  showThinking: boolean
+  // Whether chat renders every iteration's reasoning or only the span that
+  // produced the answer; default true. Only meaningful while showThinking is on.
+  thinkingFull: boolean
   // Default workspace storage root; '' = use the server-side default
   workspaceStorageRoot?: string
   // 搜索服务配置
@@ -879,6 +914,12 @@ export interface ProviderModelInfo {
    * toggle should gate on.
    */
   supportsThinking?: boolean
+  /** Explicit input window in tokens; null/undefined when the operator set none. */
+  maxInputTokens?: number | null
+  /** Window budgeting would use right now: configured, built-in table, or global default. */
+  effectiveMaxInputTokens?: number | null
+  /** Where `effectiveMaxInputTokens` comes from. */
+  maxInputTokensSource?: 'configured' | 'catalog' | 'default'
 }
 
 /**
@@ -1079,9 +1120,19 @@ export interface CronJob {
   // channelId / deliveryConfig: round-trippable on create/update.
   // lastDeliveryStatus / lastDeliveryError: read-only, populated by
   // selectListWithDeliveryStatus / selectByIdWithDeliveryStatus on the backend.
-  channelId?: number | null
+  // Runtime is always a string (global Long→String serialization); keep the
+  // union so pre-existing number literals in callers still type-check.
+  channelId?: string | number | null
   channelName?: string | null
-  deliveryConfig?: { targetId?: string | null; threadId?: string | null; accountId?: string | null } | null
+  deliveryConfig?: {
+    targetId?: string | null
+    threadId?: string | null
+    accountId?: string | null
+    /** IM senderId of the delivery target user — used for session matching. */
+    userId?: string | null
+    /** True = run the job but don't push the result to the channel. */
+    suppressAgentReply?: boolean | null
+  } | null
   lastDeliveryStatus?: 'NONE' | 'PENDING' | 'DELIVERED' | 'NOT_DELIVERED'
   lastDeliveryError?: string | null
 }

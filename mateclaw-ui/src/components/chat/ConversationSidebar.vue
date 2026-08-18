@@ -199,6 +199,7 @@ import { mcToast } from '@/composables/useMcToast'
 import { mcConfirm } from '@/components/common/useConfirm'
 import type { Conversation, Agent } from '@/types'
 import { useGoalStore } from '@/stores/useGoalStore'
+import { isSidebarConversation } from '@/utils/conversationGovernance'
 
 const goalStore = useGoalStore()
 /** Sidebar marker: a 6 px dot next to the conv title when that conv
@@ -237,12 +238,13 @@ function onAgentChange(value: string | number | null) {
 // ==================== Agent filter ====================
 // Narrow the list down to a single agent's conversations.
 const convAgentFilter = ref('')
+const sidebarConversations = computed(() => props.conversations.filter(isSidebarConversation))
 
 // Distinct agents present in the conversation list — drives the filter
 // dropdown. Hidden when fewer than two agents have conversations.
 const agentFilterOptions = computed(() => {
   const seen = new Map<string, string>()
-  for (const conv of props.conversations) {
+  for (const conv of sidebarConversations.value) {
     if (conv.agentId == null || conv.agentId === '') continue
     const id = String(conv.agentId)
     if (!seen.has(id)) seen.set(id, conv.agentName || id)
@@ -270,7 +272,7 @@ const groupedConversations = computed(() => {
   ]
 
   const agentFilter = convAgentFilter.value
-  for (const conv of props.conversations) {
+  for (const conv of sidebarConversations.value) {
     if (agentFilter && String(conv.agentId ?? '') !== agentFilter) continue
     if ((conv.conversationId && conv.conversationId.startsWith('tasks_')) || conv.pinned) {
       pinned.push(conv)

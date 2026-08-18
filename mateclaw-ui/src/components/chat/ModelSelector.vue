@@ -89,7 +89,12 @@
                    pre-opened via ?addProvider=1. -->
               <template v-if="query.trim() === '' && groups.length === 0">
                 {{ emptyHint || $t('chat.noProvidersConfigured') }}
-                <RouterLink class="model-empty__cta" to="/settings/models?addProvider=1" @click="open = false">
+                <RouterLink
+                  v-if="canConfigure !== false"
+                  class="model-empty__cta"
+                  to="/settings/models?addProvider=1"
+                  @click="open = false"
+                >
                   {{ $t('chat.goConfigure') }}
                 </RouterLink>
               </template>
@@ -106,11 +111,8 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, type CSSProperties } from 'vue'
-import { useI18n } from 'vue-i18n'
 import { RouterLink } from 'vue-router'
 import type { ProviderInfo } from '@/types'
-
-const { t } = useI18n()
 
 interface ModelItem {
   value: string
@@ -136,6 +138,8 @@ const props = defineProps<{
   showAllStates?: boolean
   /** Optional override for the empty-state text. */
   emptyHint?: string
+  /** Whether this user may open the system-level provider configuration UI. */
+  canConfigure?: boolean
 }>()
 
 const emit = defineEmits<{

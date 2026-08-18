@@ -276,7 +276,9 @@ Segment 的结构是渐进展示的底层。它也让**数据库成为单一事�
 4. **最近的若干轮**——尽可能装进 token 预算
 5. **当前用户消息**——永远在最后
 
-当总量超过 `defaultMaxInputTokens × compactTriggerRatio`（默认 128000 × 0.75 = 96000），系统会让 LLM 把早期轮次总结一下，把结果缓存 30 分钟，送出去的是压缩版。如果 LLM 依然报 `context_length_exceeded`，会触发紧急截断：不调 LLM，直接丢掉更早的消息，保留最近两轮。
+这里的窗口取自模型自身的上下文长度：优先用模型配置里的 `maxInputTokens`，其次是本地推理服务探测到的窗口，再次是内置的常见模型窗口表（DeepSeek V4、Gemini、Claude、Kimi K2 等），都拿不到才回落全局默认 `defaultMaxInputTokens`。
+
+当总量超过 `窗口 × compactTriggerRatio`（全局默认 128000 × 0.75 = 96000），系统会让 LLM 把早期轮次总结一下，把结果缓存 30 分钟，送出去的是压缩版。如果 LLM 依然报 `context_length_exceeded`，会触发紧急截断：不调 LLM，直接丢掉更早的消息，保留最近两轮。
 
 更多细节，以及"为什么把摘要注入成 `UserMessage` 而不是 `SystemMessage`"的安全设计理由，在 [记忆系统](./memory) 里。
 
@@ -381,6 +383,25 @@ curl http://localhost:18088/api/v1/conversations/conv-abc123/messages \
 curl -X DELETE http://localhost:18088/api/v1/conversations/conv-abc123 \
   -H "Authorization: Bearer YOUR_JWT_TOKEN"
 ```
+
+---
+
+## 思考过程与线性轨迹（2.1.0+）
+
+2.1.0 把思考从“一个模糊的大段”变成按执行顺序排列的 segment：
+
+- 模型流中的 `<think>` 在生成时实时提取，与最终答案分开；
+- ReAct 每轮推理保留在它真正发生的位置，工具调用和观察不会与下一轮错序；
+- 每段记录 wall-clock 起止时间，界面显示真实耗时与阶段脉冲；
+- 管理员可在系统设置中用「显示思考」控制是否渲染，用「显示全部轮次」控制显示全部还是只显示产出答案的轮次；
+- `mate.agent.reasoning.retention=all|terminal` 控制服务端保存全部轮次还是最终轮次；
+- 会话所有者可请求 `GET /api/v1/conversations/{conversationId}/trajectory`，把用户消息、reasoning、tool call、observation 和 final answer 导出为按执行顺序排列的纯文本。耗时来自 segment 起止时间并显示在 UI 中，当前纯文本导出不附带耗时字段。
+
+工具执行前的阶段性叙述在真实结果到达后会标记为 `superseded`。当前聊天界面直接显示这些内容，trajectory 则用 `content superseded="true"` 明确标记并保留。Team Run 的中间通报会合并进运行卡片，不再重复形成多条最终答复。
+
+### 会话批量删除
+
+Sessions 页一次可选择最多 200 个会话批量删除。服务端会对每个 id 去重、校验所有权，并只删除当前用户有权操作的会话。`team_worker` 不进入普通侧栏，因此不会出现在侧栏批量选择中。
 
 ---
 

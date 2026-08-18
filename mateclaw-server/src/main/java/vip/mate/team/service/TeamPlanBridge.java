@@ -6,6 +6,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
 import vip.mate.agent.model.AgentEntity;
 import vip.mate.agent.repository.AgentMapper;
 import vip.mate.planning.model.PlanEntity;
@@ -15,6 +16,9 @@ import vip.mate.team.model.AgentTeamEntity;
 import vip.mate.team.model.AgentTeamMemberEntity;
 import vip.mate.team.model.TeamRole;
 import vip.mate.team.model.TeamTaskCreateCommand;
+import vip.mate.team.model.TeamRunCreateCommand;
+import vip.mate.team.model.TeamRunEntity;
+import vip.mate.team.model.TeamRunStatus;
 import vip.mate.team.model.TeamTaskEntity;
 import vip.mate.team.model.TeamTaskStatus;
 
@@ -22,7 +26,10 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.Optional;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Bridges the Plan-Execute graph onto the team task board. When a plan's
@@ -47,9 +54,14 @@ public class TeamPlanBridge {
 
     /** Task subject cap; the full step text rides in the description. */
     static final int SUBJECT_MAX_CHARS = 120;
+    private static final Pattern CHECKPOINT_TAG = Pattern.compile("(?i)(?:^|\\b)(R\\d{3})(?:\\b|/)");
+    private static final Pattern DELIVERABLE_REQUEST = Pattern.compile(
+            "(?i)(交付物|生成.{0,8}(文件|文档)|文档成稿|报告成稿|"
+                    + "docx|xlsx|pptx|pdf|deliverable|document|spreadsheet|presentation)");
 
     private final TeamService teamService;
     private final TeamTaskService taskService;
+    private final TeamRunService runService;
     private final PlanningService planningService;
     private final AgentMapper agentMapper;
     private final ApplicationEventPublisher eventPublisher;
@@ -110,6 +122,29 @@ public class TeamPlanBridge {
         return ids;
     }
 
+    /**
+     * Detect enabled workspace agents explicitly named by the user but absent
+     * from this team. Silently substituting another member violates the
+     * requested roster and makes team runs look successful when a participant
+     * never took part.
+     */
+    public List<String> namedAgentsOutsideRoster(AgentTeamEntity team, String goal,
+                                                  List<AgentEntity> workspaceAgents) {
+        if (goal == null || goal.isBlank() || workspaceAgents == null || workspaceAgents.isEmpty()) {
+            return List.of();
+        }
+        Set<Long> memberIds = teamService.listMembers(team.getId()).stream()
+                .map(AgentTeamMemberEntity::getAgentId)
+                .collect(java.util.stream.Collectors.toSet());
+        return workspaceAgents.stream()
+                .filter(agent -> agent.getId() != null && !memberIds.contains(agent.getId()))
+                .filter(agent -> agent.getName() != null && !agent.getName().isBlank())
+                .filter(agent -> goal.contains(agent.getName()))
+                .map(AgentEntity::getName)
+                .distinct()
+                .toList();
+    }
+
     // ==================== hand-off ====================
 
     /**
@@ -121,9 +156,30 @@ public class TeamPlanBridge {
      *                 referencing an earlier step); the caller guarantees
      *                 validity via its sequential-chain fallback
      */
+    @Transactional
     public String delegatePlan(AgentTeamEntity team, Long planId, String goal,
                                List<String> steps, List<List<Integer>> stepDeps,
                                List<Long> memberIds, String leadConversationId) {
+        TeamRunEntity run = runService.startRun(TeamRunCreateCommand.builder()
+                .teamId(team.getId())
+                .workspaceId(team.getWorkspaceId())
+                .leadAgentId(team.getLeadAgentId())
+                .leadConversationId(leadConversationId)
+                .originMessageId(-Math.abs(planId))
+                .title(goal)
+                .objective(goal)
+                .metadata(new JSONObject().set("planId", String.valueOf(planId)).toString())
+                .build());
+        List<TeamTaskEntity> existing = taskService.listTasksByRun(run.getId());
+        if (!existing.isEmpty()) {
+            if (TeamRunStatus.PLANNING.equals(run.getStatus())) {
+                sealAndPublish(team, planId, run);
+            }
+            return buildAnnouncement(existing, stepDeps);
+        }
+        if (!TeamRunStatus.PLANNING.equals(run.getStatus())) {
+            throw new IllegalStateException("sealed team run has no tasks: " + run.getId());
+        }
         List<TeamTaskEntity> created = new ArrayList<>();
         for (int i = 0; i < steps.size(); i++) {
             String step = steps.get(i);
@@ -133,6 +189,7 @@ public class TeamPlanBridge {
             }
             TeamTaskEntity task = taskService.createTask(TeamTaskCreateCommand.builder()
                     .teamId(team.getId())
+                    .runId(run.getId())
                     .subject(subjectOf(step))
                     .description(step + "\n\n[Plan context]\nOverall request: " + goal)
                     .assigneeAgentId(memberIds.get(i))
@@ -143,15 +200,24 @@ public class TeamPlanBridge {
                     .metadata(new JSONObject()
                             .set("planId", String.valueOf(planId))
                             .set("stepIndex", i)
+                            .set("deliverableRequired", DELIVERABLE_REQUEST.matcher(step).find())
                             .toString())
                     .build());
             created.add(task);
         }
-        planningService.markPlanDelegated(planId);
-        eventPublisher.publishEvent(new TeamTasksDelegatedEvent(team.getId()));
+        sealAndPublish(team, planId, run);
         log.info("Plan {} delegated to team {} board as {} task(s)", planId, team.getId(),
                 created.size());
         return buildAnnouncement(created, stepDeps);
+    }
+
+    private void sealAndPublish(AgentTeamEntity team, Long planId, TeamRunEntity run) {
+        TeamRunService.SealResult seal = runService.sealRunWithResult(
+                run.getId(), team.getWorkspaceId());
+        planningService.markPlanDelegated(planId);
+        if (seal.transitioned()) {
+            eventPublisher.publishEvent(new TeamTasksDelegatedEvent(team.getId()));
+        }
     }
 
     // ==================== resume gate ====================
@@ -179,8 +245,28 @@ public class TeamPlanBridge {
      * progress snapshot.
      */
     public ParkedPlanState checkParkedPlan(String conversationId) {
+        return checkParkedPlan(conversationId, null);
+    }
+
+    /**
+     * Variant that can honor a user's compact checkpoint response contract.
+     * Normal status questions retain the detailed board snapshot.
+     */
+    public ParkedPlanState checkParkedPlan(String conversationId, String currentMessage) {
+        String checkpointTag = checkpointTagOf(currentMessage);
         PlanEntity plan = planningService.findDelegatedPlan(conversationId);
         if (plan == null) {
+            if (checkpointTag != null) {
+                Optional<TeamRunEntity> latest = runService.findLatestConversationRun(conversationId);
+                if (latest.isPresent()) {
+                    List<TeamTaskEntity> tasks = taskService.listTasksByRun(latest.get().getId());
+                    if (!tasks.isEmpty()) {
+                        recordCheckpointEvidence(latest.get().getTeamId(), tasks, checkpointTag);
+                        tasks = taskService.listTasksByRun(latest.get().getId());
+                        return new InFlight(buildCheckpointText(tasks, checkpointTag));
+                    }
+                }
+            }
             return new None();
         }
         Optional<AgentTeamEntity> teamOpt = leadTeam(parseAgentId(plan.getAgentId()));
@@ -200,10 +286,42 @@ public class TeamPlanBridge {
         List<String> steps = planningService.getSubPlans(plan.getId()).stream()
                 .map(sub -> sub.getDescription())
                 .toList();
-        if (!allTerminal) {
-            return new InFlight(buildProgressText(tasks));
+        if (checkpointTag != null) {
+            recordCheckpointEvidence(teamOpt.get().getId(), tasks, checkpointTag);
+            tasks = taskService.listTasksByPlan(teamOpt.get().getId(), plan.getId());
+            return new InFlight(buildCheckpointText(tasks, checkpointTag));
         }
-        return new Settled(plan.getId(), plan.getGoal(), steps, settle(plan.getId(), tasks));
+        if (!allTerminal) {
+            return new InFlight(buildProgressText(tasks, currentMessage));
+        }
+        List<String> results = settle(plan.getId(), tasks);
+        finalizeRunWithFallback(teamOpt.get().getWorkspaceId(), tasks, results);
+        return new Settled(plan.getId(), plan.getGoal(), steps, results);
+    }
+
+    /**
+     * The lead wake-up is the completion boundary for a delegated run. Do not
+     * leave the run in FINALIZING when the later LLM summary call fails.
+     */
+    private void finalizeRunWithFallback(Long workspaceId, List<TeamTaskEntity> tasks,
+                                         List<String> results) {
+        Long runId = tasks.stream()
+                .map(TeamTaskEntity::getRunId)
+                .filter(id -> id != null)
+                .findFirst()
+                .orElse(null);
+        if (runId == null) {
+            return;
+        }
+        String fallback = "执行摘要（汇总模型不可用，以下为步骤原始结果）：\n"
+                + String.join("\n", results);
+        try {
+            runService.markFinalized(runId, workspaceId, fallback);
+        } catch (IllegalStateException error) {
+            // A concurrent projector may still be moving the run to FINALIZING.
+            // The next lead wake-up can retry; never wedge the conversation here.
+            log.warn("Unable to finalize settled team run {}: {}", runId, error.getMessage());
+        }
     }
 
     /** Sync the sub-plan mirror from terminal tasks and render step results. */
@@ -252,7 +370,11 @@ public class TeamPlanBridge {
         return sb.toString();
     }
 
-    private String buildProgressText(List<TeamTaskEntity> tasks) {
+    private String buildProgressText(List<TeamTaskEntity> tasks, String currentMessage) {
+        String checkpointTag = checkpointTagOf(currentMessage);
+        if (checkpointTag != null) {
+            return buildCheckpointText(tasks, checkpointTag);
+        }
         StringBuilder sb = new StringBuilder("计划仍在团队任务板上执行中：\n");
         for (TeamTaskEntity task : tasks) {
             sb.append("- #").append(task.getTaskNumber()).append(' ')
@@ -270,6 +392,82 @@ public class TeamPlanBridge {
         }
         sb.append("全部完成后我会汇总；如需调整可在团队任务板上操作。");
         return sb.toString();
+    }
+
+    private String buildCheckpointText(List<TeamTaskEntity> tasks, String checkpointTag) {
+        long completed = tasks.stream()
+                .filter(task -> TeamTaskStatus.COMPLETED.equals(task.getStatus()))
+                .count();
+        boolean allTerminal = tasks.stream().allMatch(task -> TeamTaskStatus.isTerminal(task.getStatus()));
+        TeamTaskEntity focus = tasks.stream()
+                .filter(task -> !TeamTaskStatus.isTerminal(task.getStatus()))
+                .findFirst()
+                .orElse(tasks.get(tasks.size() - 1));
+        StringBuilder compact = new StringBuilder(checkpointTag)
+                .append(allTerminal ? "｜已完成 " : "｜执行中 ")
+                .append(completed).append('/').append(tasks.size())
+                .append("｜#").append(focus.getTaskNumber()).append(' ')
+                .append(focus.getStatus());
+        if (focus.getProgressPercent() != null) {
+            compact.append(' ').append(focus.getProgressPercent()).append('%');
+        }
+        if ("R100".equalsIgnoreCase(checkpointTag)) {
+            compact.append("（已完成第100轮检查点）");
+        }
+        compact.append("｜证据 [checkpoint:").append(checkpointTag).append("] acknowledged");
+        return compact.toString();
+    }
+
+    private void recordCheckpointEvidence(Long teamId, List<TeamTaskEntity> tasks,
+                                          String checkpointTag) {
+        TeamTaskEntity tracker = tasks.stream()
+                .filter(task -> taskService.checkpointTerminalTag(task) != null)
+                .findFirst()
+                .orElseGet(() -> tasks.stream()
+                        .filter(this::isCheckpointTracker)
+                        .findFirst()
+                        .orElseGet(() -> taskService.findCheckpointTracker(teamId)
+                                .orElse(tasks.get(tasks.size() - 1))));
+        String content = "[checkpoint:" + checkpointTag + "] acknowledged";
+        taskService.addCommentOnce(tracker.getId(), TeamTaskService.AUTHOR_SYSTEM,
+                "team-plan-bridge", TeamTaskService.COMMENT_NOTE, content);
+        String terminalTag = taskService.checkpointTerminalTag(tracker);
+        if (terminalTag != null && TeamTaskStatus.IN_PROGRESS.equals(tracker.getStatus())) {
+            int current = Integer.parseInt(checkpointTag.substring(1));
+            int terminal = Integer.parseInt(terminalTag.substring(1));
+            int percent = terminal <= 0 ? 1
+                    : Math.min(99, Math.max(1, current * 100 / terminal));
+            if (checkpointTag.equalsIgnoreCase(terminalTag)) {
+                taskService.completeTask(tracker.getId(), null,
+                        "Checkpoint tracking completed at " + checkpointTag);
+                eventPublisher.publishEvent(new TeamTasksDelegatedEvent(teamId));
+            } else {
+                taskService.updateProgress(tracker.getId(), null, percent,
+                        checkpointTag + "/" + terminalTag + " acknowledged");
+            }
+        }
+    }
+
+    private boolean isCheckpointTracker(TeamTaskEntity task) {
+        if (taskService.checkpointTerminalTag(task) != null) {
+            return true;
+        }
+        String text = task.getSubject() == null ? "" : task.getSubject();
+        String lower = text.toLowerCase();
+        return text.contains("检查点") || text.contains("共享跟踪")
+                || lower.contains("checkpoint") || lower.contains("r001-r100");
+    }
+
+    static String checkpointTagOf(String message) {
+        if (message == null || message.isBlank()) {
+            return null;
+        }
+        String lower = message.toLowerCase();
+        if (!message.contains("检查点") && !lower.contains("checkpoint")) {
+            return null;
+        }
+        Matcher matcher = CHECKPOINT_TAG.matcher(message);
+        return matcher.find() ? matcher.group(1).toUpperCase() : null;
     }
 
     // ==================== helpers ====================

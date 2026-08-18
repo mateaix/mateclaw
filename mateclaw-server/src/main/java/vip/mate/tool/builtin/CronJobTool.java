@@ -10,7 +10,9 @@ import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Component;
 import vip.mate.agent.context.ChatOrigin;
 import vip.mate.cron.model.CronJobDTO;
+import vip.mate.cron.model.DeliveryConfig;
 import vip.mate.cron.service.CronJobService;
+import vip.mate.tool.ConcurrencyUnsafe;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -25,7 +27,7 @@ import java.util.Map;
  * from natural language (e.g. "every day at 9am" → "0 9 * * *").
  *
  * @author MateClaw Team
- * @see vip.mate.cron.service.CronJobService
+ * @see CronJobService
  */
 @Slf4j
 @Component
@@ -42,7 +44,7 @@ public class CronJobTool {
      */
     private final ObjectMapper objectMapper;
 
-    @vip.mate.tool.ConcurrencyUnsafe("cron job creation persists to mate_cron_job; concurrent creates can race on name")
+    @ConcurrencyUnsafe("cron job creation persists to mate_cron_job; concurrent creates can race on name")
     @Tool(description = "Create a scheduled task that asks the agent to do something at a specific time — "
             + "the trigger message is sent to the LLM, which can use tools (search, weather, etc.) to produce the answer. "
             + "Use this for queries like 'every morning give me a weather report' or 'daily news summary'. "
@@ -119,7 +121,7 @@ public class CronJobTool {
         }
     }
 
-    @vip.mate.tool.ConcurrencyUnsafe("reminder creation persists to mate_cron_job; concurrent creates can race on name")
+    @ConcurrencyUnsafe("reminder creation persists to mate_cron_job; concurrent creates can race on name")
     @Tool(description = "Create a scheduled REMINDER. The reminder text is delivered to the user verbatim at the "
             + "scheduled time — no LLM call, no rephrasing, no token cost. "
             + "Use this when the user wants a notification with specific content (e.g. 'remind me at 3pm to leave for the meeting' → "
@@ -211,21 +213,22 @@ public class CronJobTool {
         }
     }
 
-    @vip.mate.tool.ConcurrencyUnsafe("toggles row state in mate_cron_job; serialize to keep enabled/disabled deterministic")
+    @ConcurrencyUnsafe("toggles row state in mate_cron_job; serialize to keep enabled/disabled deterministic")
     @Tool(description = "Enable or disable a scheduled task by its job ID. "
             + "Use list_cron_jobs first to find the job ID.")
     public String toggle_cron_job(
-            @ToolParam(description = "Job ID (number)") Long jobId,
+            @ToolParam(description = "Job ID. Must be passed as a string to preserve large integer precision") String jobId,
             @ToolParam(description = "true to enable, false to disable") Boolean enabled,
             @Nullable ToolContext ctx) {
         try {
+            Long parsedJobId = parseJobId(jobId);
             // RFC-083: scope toggle to the originating workspace.
             Long workspaceId = workspaceFromContext(ctx);
-            cronJobService.toggle(jobId, enabled, workspaceId);
-            CronJobDTO updated = cronJobService.getById(jobId, workspaceId);
+            cronJobService.toggle(parsedJobId, enabled, workspaceId);
+            CronJobDTO updated = cronJobService.getById(parsedJobId, workspaceId);
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("success", true);
-            result.put("jobId", jobId);
+            result.put("jobId", parsedJobId);
             result.put("name", updated.getName());
             result.put("enabled", updated.getEnabled());
             result.put("nextRunTime", updated.getNextRunTime() != null ? updated.getNextRunTime().toString() : "");
@@ -236,18 +239,19 @@ public class CronJobTool {
         }
     }
 
-    @vip.mate.tool.ConcurrencyUnsafe("destructive — removes row from mate_cron_job")
+    @ConcurrencyUnsafe("destructive — removes row from mate_cron_job")
     @Tool(description = "Delete a scheduled task by its job ID. This action requires user approval. "
             + "Use list_cron_jobs first to find the job ID.")
     public String delete_cron_job(
-            @ToolParam(description = "Job ID (number) to delete") Long jobId,
+            @ToolParam(description = "Job ID to delete. Must be passed as a string to preserve large integer precision") String jobId,
             @Nullable ToolContext ctx) {
         try {
+            Long parsedJobId = parseJobId(jobId);
             // RFC-083: scope delete to the originating workspace.
             Long workspaceId = workspaceFromContext(ctx);
-            CronJobDTO job = cronJobService.getById(jobId, workspaceId);
+            CronJobDTO job = cronJobService.getById(parsedJobId, workspaceId);
             String jobName = job.getName();
-            cronJobService.delete(jobId, workspaceId);
+            cronJobService.delete(parsedJobId, workspaceId);
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("success", true);
             result.put("deleted", jobName);
@@ -263,6 +267,18 @@ public class CronJobTool {
         result.put("success", false);
         result.put("error", message);
         return writeJson(result);
+    }
+
+    private Long parseJobId(String jobId) {
+        String trimmed = jobId != null ? jobId.trim() : "";
+        if (trimmed.isEmpty()) {
+            throw new IllegalArgumentException("jobId is required");
+        }
+        try {
+            return Long.parseLong(trimmed);
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("jobId must be a numeric string");
+        }
     }
 
     /**
@@ -306,7 +322,7 @@ public class CronJobTool {
             // store it as session.targetId, which never equals the cron's own
             // chatId/senderId-derived targetId — the senderId match is the
             // stable common key.
-            dto.setDeliveryConfig(vip.mate.cron.model.DeliveryConfig.from(
+            dto.setDeliveryConfig(DeliveryConfig.from(
                     origin.channelTarget(), origin.requesterId()));
         }
     }

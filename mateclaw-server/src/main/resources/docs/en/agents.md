@@ -38,31 +38,26 @@ You can have many employees. Each one is specialized. You give them different jo
 | **Max iterations** | How many reasoning loops are allowed before forced convergence |
 | **Enabled flag** | Off switch |
 
-Notice what's *not* here: the model. A single global default model (set in `Settings → Models`) is used for every agent at runtime. The `model_name` field on the agent row is a legacy artifact — it's ignored. This is intentional: swapping models across your whole deployment is one click, not thirty.
+Models resolve in this order: **conversation pin → agent model override → global default**. A conversation may temporarily pin an enabled provider/model, and an agent may select its own primary model; a blank agent choice inherits the global default. If a pin is later disabled or removed, runtime falls back to the agent override or global default instead of failing the conversation. Each agent can also maintain an ordered provider/model failover preference chain.
 
 ---
 
 ## Templates: hire a coworker who already knows the job
 
-You don't start from scratch. `Digital Employees → New` opens a two-tier template picker.
+You do not have to start from scratch. `Digital Employees → New` opens a picker populated from the server's `classpath:templates/*.json`; you can also skip templates and continue to the blank form.
 
-### 5 career templates (recommended)
+### 6 built-in templates (recommended)
 
 Each one ships with a role, goal, backstory, the right toolset, a pixel-art avatar, and a color that belongs to the role. **Open one, it works:**
 
-- **Product Researcher** — competitive scans, market tracking, interview synthesis
-- **Customer Support** — catch every question, look it up in the KB, escalate what they can't resolve
-- **Knowledge Curator** — feed scattered material into the LLM Wiki, maintain bidirectional links, periodic consolidation
+- **General Assistant** — search, writing, analysis, and everyday work
+- **Product Assistant** — clarify users, scenarios, and requirements before shaping product decisions
+- **Research Analyst** — decompose complex research with web search and Wiki context
+- **Customer Support** — empathize, search available knowledge, solve or escalate
 - **Data Analyst** — query datasources, run SQL, build charts, write conclusions
-- **Executive Assistant** — calendar, email drafts, cross-tool coordination
+- **Code Reviewer** — inspect code, identify issues, and recommend improvements
 
-### Generic templates (blank or half-finished)
-
-- **General Assistant** — the default chat employee
-- **Research / Code / Writing / Knowledge Curator / Data Analyst** — semi-finished, organized by purpose
-- **Custom** — fully blank, if you know exactly what you want
-
-Pick one, give them a name, adjust the role and goal, save. **Working coworker in under a minute.** Every field is editable after creation.
+Selecting a template creates the corresponding agent immediately; skipping opens the fully editable custom form. Name, role, goal, model, skills, tools, and knowledge-base scope remain editable after creation.
 
 ---
 
@@ -235,7 +230,7 @@ Not every question deserves deep reasoning, but some do. MateClaw lets you turn 
 
 `Digital Employees → New`:
 
-1. Pick a template (one of the 5 career templates, a generic template, or Custom)
+1. Pick a built-in template, or start from a custom configuration
 2. Name them, choose an avatar (pixel-art library, or upload your own)
 3. Write a one-sentence **Role**, a one-sentence **Goal**, a few-sentence **Backstory**
 4. Write a one-line **employee-card tagline** — the self-introduction shown on the card

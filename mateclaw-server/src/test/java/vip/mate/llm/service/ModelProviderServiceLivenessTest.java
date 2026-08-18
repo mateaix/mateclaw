@@ -15,6 +15,9 @@ import vip.mate.llm.model.Liveness;
 import vip.mate.llm.model.ModelConfigEntity;
 import vip.mate.llm.model.ModelProviderEntity;
 import vip.mate.llm.model.ProviderInfoDTO;
+import vip.mate.config.ConversationWindowProperties;
+import vip.mate.llm.probe.ContextProbeProperties;
+import vip.mate.llm.probe.ModelContextWindowResolver;
 import vip.mate.llm.repository.ModelProviderMapper;
 
 import java.util.List;
@@ -63,7 +66,9 @@ class ModelProviderServiceLivenessTest {
         when(initProbeProvider.getIfAvailable()).thenReturn(initProbe);
 
         service = new ModelProviderService(providerMapper, modelConfigService, eventPublisher,
-                claudeCodeOAuthProvider, pool, healthTracker, initProbeProvider);
+                claudeCodeOAuthProvider, pool, healthTracker, initProbeProvider,
+                new ModelContextWindowResolver(List.of(), new ContextProbeProperties()),
+                new ConversationWindowProperties());
     }
 
     @Test

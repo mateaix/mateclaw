@@ -87,4 +87,8 @@ public final class ToolExecutionContext {
         }
         return WORKSPACE_BASE_PATH.get();
     }
+
+    public static Long originMessageId(@Nullable ToolContext ctx) {
+        return ctx == null ? null : ChatOrigin.from(ctx).originMessageId();
+    }
 }

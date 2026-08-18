@@ -94,6 +94,10 @@ public final class PlanStateAccessor {
         return state.value(FINAL_SUMMARY_THINKING, "");
     }
 
+    public String planThinking() {
+        return state.value(PLAN_THINKING, "");
+    }
+
     public String currentStepThinking() {
         return state.value(CURRENT_STEP_THINKING, "");
     }
@@ -223,6 +227,10 @@ public final class PlanStateAccessor {
         // ---- Thinking ----
         public OutputBuilder finalSummaryThinking(String thinking) {
             return put(FINAL_SUMMARY_THINKING, thinking);
+        }
+
+        public OutputBuilder planThinking(String thinking) {
+            return put(PLAN_THINKING, thinking);
         }
 
         public OutputBuilder currentStepThinking(String thinking) {

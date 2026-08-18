@@ -8,6 +8,21 @@ public class SystemSettingsDTO {
     private String language;
     private Boolean streamEnabled;
     private Boolean debugMode;
+    /**
+     * Whether the chat UI renders the model's reasoning ("thinking") blocks.
+     * Default true. Independent from debugMode (which gates tool-call
+     * internals and other diagnostics) and from the per-request thinking
+     * level (which controls whether the model thinks at all).
+     */
+    private Boolean showThinking;
+    /**
+     * Whether the chat UI renders every iteration's reasoning, or only the span
+     * that produced the answer. Default true. A tool-heavy turn persists one
+     * reasoning span per iteration — all of them is what makes a run
+     * reviewable, one of them is what keeps the bubble readable. Only takes
+     * effect while {@link #showThinking} is on.
+     */
+    private Boolean thinkingFull;
     private Boolean stateGraphEnabled;
 
     /**

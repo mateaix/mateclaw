@@ -1,5 +1,6 @@
 package vip.mate.skill.lifecycle;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
@@ -9,6 +10,7 @@ import org.springframework.stereotype.Service;
 import vip.mate.audit.service.AuditEventService;
 import vip.mate.exception.MateClawException;
 import vip.mate.skill.model.SkillEntity;
+import vip.mate.skill.model.SkillOrigin;
 import vip.mate.skill.repository.SkillMapper;
 import vip.mate.skill.runtime.SkillRuntimeService;
 import vip.mate.skill.workspace.SkillWorkspaceManager;
@@ -16,6 +18,8 @@ import vip.mate.skill.workspace.SkillWorkspaceProperties;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -68,12 +72,43 @@ public class SkillLifecycleService {
 
     // ==================== Pure decision functions ====================
 
-    /** Activity anchor: last recorded activity, falling back to creation time. */
-    public LocalDateTime anchor(SkillEntity skill) {
+    /**
+     * Activity anchor, in order of preference: real recorded activity, then
+     * the moment curation first saw the skill, then creation time.
+     *
+     * <p>The middle term is what keeps a newly-eligible skill from being
+     * judged on time it spent outside curation entirely. Creation time stays
+     * as the final fallback so rows predating the column, and bare entities
+     * built in tests, behave exactly as before.
+     *
+     * <p>Single source of truth: the run report renders idle days from this
+     * same method, so a report can never disagree with the decision it
+     * describes.
+     */
+    public static LocalDateTime anchor(SkillEntity skill) {
         if (skill.getLastActivityAt() != null) {
             return skill.getLastActivityAt();
         }
+        if (skill.getCuratorSeenAt() != null) {
+            return skill.getCuratorSeenAt();
+        }
         return skill.getCreateTime();
+    }
+
+    /**
+     * Whether no sweep has observed this skill yet, so judging it now would
+     * apply the idle thresholds to time it spent outside curation.
+     */
+    public static boolean isUnobserved(SkillEntity skill) {
+        return skill.getCuratorSeenAt() == null && skill.getLastActivityAt() == null;
+    }
+
+    /** Stamp the observation anchor, starting the skill's idle clock now. */
+    public void markObserved(SkillEntity skill, LocalDateTime now) {
+        skillMapper.update(null, new LambdaUpdateWrapper<SkillEntity>()
+                .eq(SkillEntity::getId, skill.getId())
+                .set(SkillEntity::getCuratorSeenAt, now));
+        skill.setCuratorSeenAt(now);
     }
 
     /** Skills the curator must never touch (filtered out before the state machine). */
@@ -106,6 +141,12 @@ public class SkillLifecycleService {
      */
     public LifecycleTransition planTransition(SkillEntity skill, LocalDateTime now) {
         if (isExempt(skill)) {
+            return LifecycleTransition.NONE;
+        }
+        // Never observed: the thresholds would be measured against time this
+        // skill spent outside curation. Defer for a full cycle instead; the
+        // sweep stamps the observation anchor so the next pass has a real one.
+        if (isUnobserved(skill)) {
             return LifecycleTransition.NONE;
         }
         LocalDateTime anchor = anchor(skill);
@@ -206,6 +247,125 @@ public class SkillLifecycleService {
                 .set(SkillEntity::getPinned, pinned));
         recordAudit(pinned ? "PIN" : "UNPIN", skill, Map.of("pinned", pinned));
         return skillMapper.selectById(id);
+    }
+
+    /**
+     * Hand a skill over to autonomous curation, or take it back.
+     *
+     * <p>Adoption deliberately does <em>not</em> buy a fresh idle window. An
+     * operator hands over a skill knowing it is already idle, so the
+     * observation anchor is set to creation time — the same anchor the skill
+     * would have had if it had been curator-managed all along. Handing over a
+     * library you stopped using therefore ages it out, which is the point of
+     * handing it over. This is the deliberate difference from the implicit
+     * first-sight seeding, where a skill arrives in scope through no decision
+     * of the operator's and must not be judged on time spent outside it.
+     *
+     * <p>Releasing restores user ownership, so adoption is reversible.
+     *
+     * @param adopt {@code true} to hand over, {@code false} to take back
+     * @throws MateClawException when the skill does not exist, or when it is
+     *                           builtin (never curatable in the first place)
+     */
+    public SkillEntity setAdopted(Long id, boolean adopt) {
+        return setAdopted(id, adopt, 1L);
+    }
+
+    public SkillEntity setAdopted(Long id, boolean adopt, Long workspaceId) {
+        SkillEntity skill = skillMapper.selectById(id);
+        if (skill == null || !normalizeWorkspaceId(workspaceId).equals(skill.getWorkspaceId())) {
+            throw new MateClawException("err.skill.not_found", 404, "Skill not found: " + id);
+        }
+        if (isExempt(skill)) {
+            throw new MateClawException("err.skill.not_adoptable", 400,
+                    "Skill '" + skill.getName() + "' is exempt from curation (builtin, pinned, "
+                            + "protected prefix, or a virtual mcp/acp skill)");
+        }
+        LambdaUpdateWrapper<SkillEntity> update = new LambdaUpdateWrapper<SkillEntity>()
+                .eq(SkillEntity::getId, id)
+                .eq(SkillEntity::getWorkspaceId, normalizeWorkspaceId(workspaceId))
+                .set(SkillEntity::getOrigin,
+                        adopt ? SkillOrigin.AGENT.code() : SkillOrigin.USER.code());
+        if (adopt) {
+            // No fresh window: anchor where an always-managed skill would be.
+            update.set(SkillEntity::getCuratorSeenAt, skill.getCreateTime());
+        }
+        skillMapper.update(null, update);
+        recordAudit(adopt ? "ADOPT" : "RELEASE", skill,
+                Map.of("origin", adopt ? SkillOrigin.AGENT.code() : SkillOrigin.USER.code()));
+        return skillMapper.selectById(id);
+    }
+
+    /**
+     * Skills outside autonomous curation, with the reason each one is out.
+     *
+     * <p>Without this a large library can look fully curated while most of it
+     * is invisible to the sweep, and the only lever was widening the scope for
+     * everything at once.
+     */
+    public List<Map<String, Object>> listUnmanaged() {
+        return listUnmanaged(1L);
+    }
+
+    public List<Map<String, Object>> listUnmanaged(Long workspaceId) {
+        return roster(false, workspaceId);
+    }
+
+    /**
+     * Skills currently under autonomous curation — the set an operator can
+     * hand back. Without it adoption would be one-way from the UI.
+     */
+    public List<Map<String, Object>> listManaged() {
+        return listManaged(1L);
+    }
+
+    public List<Map<String, Object>> listManaged(Long workspaceId) {
+        return roster(true, workspaceId);
+    }
+
+    /**
+     * Shared roster projection. {@code managed} selects skills the curator may
+     * touch ({@code origin} agent/routine) or the complement; exempt skills are
+     * dropped from both sides because they are not curatable either way, so
+     * offering adopt or release on them would be a lie.
+     */
+    private List<Map<String, Object>> roster(boolean managed, Long workspaceId) {
+        LambdaQueryWrapper<SkillEntity> q = new LambdaQueryWrapper<SkillEntity>()
+                .eq(SkillEntity::getBuiltin, false)
+                .eq(SkillEntity::getWorkspaceId, normalizeWorkspaceId(workspaceId));
+        if (managed) {
+            q.in(SkillEntity::getOrigin, SkillOrigin.curatorManagedCodes());
+        } else {
+            q.and(w -> w.isNull(SkillEntity::getOrigin)
+                    .or().eq(SkillEntity::getOrigin, SkillOrigin.USER.code()));
+        }
+        List<SkillEntity> rows = skillMapper.selectList(q);
+        LocalDateTime now = LocalDateTime.now();
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (SkillEntity skill : rows) {
+            if (isExempt(skill)) {
+                continue;
+            }
+            LocalDateTime anchor = anchor(skill);
+            Map<String, Object> row = new LinkedHashMap<>();
+            // Snowflake id as a string: 19 digits exceed JS Number precision.
+            row.put("id", String.valueOf(skill.getId()));
+            row.put("name", skill.getName());
+            row.put("description", skill.getDescription());
+            row.put("lifecycleState", skill.getLifecycleState());
+            row.put("origin", skill.getOrigin());
+            row.put("reason", managed
+                    ? skill.getOrigin()
+                    : (skill.getOrigin() == null ? "predates-provenance" : "user-authored"));
+            row.put("unobserved", isUnobserved(skill));
+            row.put("daysIdle", anchor == null ? null : Duration.between(anchor, now).toDays());
+            out.add(row);
+        }
+        return out;
+    }
+
+    private static Long normalizeWorkspaceId(Long workspaceId) {
+        return workspaceId != null && workspaceId > 0 ? workspaceId : 1L;
     }
 
     /**
@@ -324,6 +484,6 @@ public class SkillLifecycleService {
             json = String.valueOf(detail);
         }
         auditEventService.record(action, "SKILL",
-                String.valueOf(skill.getId()), skill.getName(), json);
+                String.valueOf(skill.getId()), skill.getName(), json, skill.getWorkspaceId());
     }
 }

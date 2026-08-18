@@ -1,8 +1,12 @@
 package vip.mate.cron.repository;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import com.baomidou.mybatisplus.extension.handlers.JacksonTypeHandler;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Result;
+import org.apache.ibatis.annotations.ResultMap;
+import org.apache.ibatis.annotations.Results;
 import org.apache.ibatis.annotations.Select;
 import vip.mate.cron.model.CronJobEntity;
 
@@ -31,6 +35,18 @@ public interface CronJobMapper extends BaseMapper<CronJobEntity> {
      * <p>Filters out logically-deleted rows and orders by create_time DESC
      * to mirror the existing {@code list()} ordering.
      */
+    // Shared result map for every hand-written query in this mapper. The
+    // typeHandler declared on CronJobEntity.deliveryConfig only reaches the
+    // result map MyBatis Plus generates for the injected BaseMapper methods;
+    // annotation-driven statements build their own, and auto-mapping finds no
+    // handler for the DeliveryConfig record, so MyBatis silently skips the
+    // column (default AutoMappingUnknownColumnBehavior.NONE) and every job
+    // read through these queries came back with a null deliveryConfig.
+    // Restating the handler here fixes it — the other columns still auto-map.
+    @Results(id = "cronJobResultMap", value = {
+            @Result(column = "delivery_config", property = "deliveryConfig",
+                    typeHandler = JacksonTypeHandler.class)
+    })
     @Select("""
             SELECT j.*,
                    (SELECT r.delivery_status FROM mate_cron_job_run r
@@ -51,6 +67,7 @@ public interface CronJobMapper extends BaseMapper<CronJobEntity> {
      * (cross-workspace access returns null → caller throws not_found, matching
      * the "deleted" shape so workspace existence isn't enumerable).
      */
+    @ResultMap("cronJobResultMap")
     @Select("""
             SELECT j.*,
                    (SELECT r.delivery_status FROM mate_cron_job_run r
@@ -70,6 +87,7 @@ public interface CronJobMapper extends BaseMapper<CronJobEntity> {
      * toggle / runNow). Skips the delivery-status subquery — those paths
      * don't need it and pay for the correlated lookup otherwise.
      */
+    @ResultMap("cronJobResultMap")
     @Select("SELECT * FROM mate_cron_job WHERE id = #{id} AND deleted = 0 AND workspace_id = #{workspaceId}")
     CronJobEntity selectByIdAndWorkspace(@Param("id") Long id,
                                          @Param("workspaceId") Long workspaceId);

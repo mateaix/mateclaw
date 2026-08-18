@@ -666,6 +666,9 @@ const feishuRequiredPermissions = computed(() => {
     { scope: 'im:message', desc: t('channels.feishu.perm.message'), reason: t('channels.feishu.perm.messageReason') },
     { scope: 'im:message.receive_v1', desc: t('channels.feishu.perm.receive'), reason: t('channels.feishu.perm.receiveReason') },
   ]
+  if (channelConfig.value?.card_streaming_enabled !== false) {
+    perms.push({ scope: 'cardkit:card:write', desc: t('channels.feishu.perm.cardkit'), reason: t('channels.feishu.perm.cardkitReason') })
+  }
   if (channelConfig.value?.connection_mode === 'websocket') {
     perms.push({ scope: 'im:resource', desc: t('channels.feishu.perm.resource'), reason: t('channels.feishu.perm.resourceReason') })
   }

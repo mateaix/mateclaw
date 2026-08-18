@@ -48,6 +48,12 @@ class ModelContextWindowResolverTest {
         return provider;
     }
 
+    private static ModelProviderEntity cloudProvider(String id) {
+        ModelProviderEntity provider = provider(id);
+        provider.setBaseUrl("https://api.deepseek.com");
+        return provider;
+    }
+
     private static ModelConfigEntity model(String name, Integer maxInputTokens) {
         ModelConfigEntity model = new ModelConfigEntity();
         model.setModelName(name);
@@ -131,5 +137,57 @@ class ModelContextWindowResolverTest {
                 new ModelContextWindowResolver(List.of(), properties);
         resolver.noteContextLimitError("p", "m", "connection refused");
         assertNull(resolver.resolveMaxInputTokens(provider("p"), model("m", null)));
+    }
+
+    @Test
+    @DisplayName("cloud model with no config falls back to the built-in window table")
+    void catalogFillsCloudModels() {
+        ModelContextWindowResolver resolver =
+                new ModelContextWindowResolver(List.of(), properties);
+        assertEquals(1_000_000,
+                resolver.resolveMaxInputTokens(cloudProvider("deepseek"), model("deepseek-v4-pro", null)));
+        assertEquals(128_000,
+                resolver.resolveMaxInputTokens(cloudProvider("deepseek"), model("deepseek-chat", 0)));
+    }
+
+    @Test
+    @DisplayName("catalog applies with probing disabled — it costs no request")
+    void catalogWorksWhenProbingDisabled() {
+        properties.setEnabled(false);
+        ModelContextWindowResolver resolver =
+                new ModelContextWindowResolver(List.of(fixedProbe(16384)), properties);
+        assertEquals(1_000_000,
+                resolver.resolveMaxInputTokens(cloudProvider("deepseek"), model("deepseek-v4-flash", null)));
+        assertEquals(0, probeCalls.get());
+    }
+
+    @Test
+    @DisplayName("self-hosted endpoints skip the table — only the real server knows its window")
+    void catalogSkippedForLocalEndpoints() {
+        ModelProviderEntity local = provider("lmstudio");
+        local.setBaseUrl("http://127.0.0.1:1234");
+        ModelContextWindowResolver resolver =
+                new ModelContextWindowResolver(List.of(), properties);
+        assertNull(resolver.resolveMaxInputTokens(local, model("deepseek-v4-pro", null)));
+        assertNull(resolver.resolveMaxInputTokens(provider("ollama"), model("deepseek-r1:latest", null)));
+    }
+
+    @Test
+    @DisplayName("a limit parsed from a provider error outranks the table")
+    void errorTextOutranksCatalog() {
+        ModelContextWindowResolver resolver =
+                new ModelContextWindowResolver(List.of(), properties);
+        resolver.noteContextLimitError("deepseek", "deepseek-v4-pro",
+                "This model's maximum context length is 65536 tokens");
+        assertEquals(65536,
+                resolver.resolveMaxInputTokens(cloudProvider("deepseek"), model("deepseek-v4-pro", null)));
+    }
+
+    @Test
+    @DisplayName("an unknown model stays on the caller's global default")
+    void unknownModelStaysNull() {
+        ModelContextWindowResolver resolver =
+                new ModelContextWindowResolver(List.of(), properties);
+        assertNull(resolver.resolveMaxInputTokens(cloudProvider("acme"), model("acme-llm-1", null)));
     }
 }

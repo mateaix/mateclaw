@@ -509,6 +509,15 @@ INSERT INTO mate_tool (id, name, display_name, description, tool_type, bean_name
 VALUES (1000000027, 'LocalShellTool', '本地命令执行', '通过桌面隧道在用户本机执行 Shell 命令（非服务器）。每次执行需用户在桌面端原生审批。', 'builtin', 'localShellTool', '🖥', TRUE, TRUE, NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, display_name=EXCLUDED.display_name, description=EXCLUDED.description, tool_type=EXCLUDED.tool_type, bean_name=EXCLUDED.bean_name, icon=EXCLUDED.icon, enabled=EXCLUDED.enabled, builtin=EXCLUDED.builtin, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
+-- 内置工具：渠道消息推送
+INSERT INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
+VALUES (1000000028, 'ChannelMessageTool', '渠道消息推送', '主动向 IM 渠道会话推送消息。list_channel_sessions 查询可推送的会话，send_channel_message 单向推送消息，用于告警通知、定时任务结果回推等场景。', 'builtin', 'channelMessageTool', '📤', TRUE, TRUE, NOW(), NOW(), 0)
+ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, display_name=EXCLUDED.display_name, description=EXCLUDED.description, tool_type=EXCLUDED.tool_type, bean_name=EXCLUDED.bean_name, icon=EXCLUDED.icon, enabled=EXCLUDED.enabled, builtin=EXCLUDED.builtin, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
+
+INSERT INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
+VALUES (1000000029, 'OfficeCliTool', 'OfficeCLI 高级文档', '通过可选的 iOfficeAI/OfficeCLI 二进制检查、校验、复制编辑、模板合并和渲染 DOCX/XLSX/PPTX；所有修改均为副本写入并返回生成文件链接。', 'builtin', 'officeCliTool', '🏢', TRUE, TRUE, NOW(), NOW(), 0)
+ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, display_name=EXCLUDED.display_name, description=EXCLUDED.description, tool_type=EXCLUDED.tool_type, bean_name=EXCLUDED.bean_name, icon=EXCLUDED.icon, enabled=EXCLUDED.enabled, builtin=EXCLUDED.builtin, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
+
 -- 内置工具：编辑文件（默认启用，危险操作由 ToolGuard 审批控制）
 INSERT INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
 VALUES (1000000006, 'EditFileTool', '编辑文件', '通过查找替换编辑文件内容，精确匹配 old_text 并替换为 new_text。每次执行需要用户审批确认。', 'builtin', 'editFileTool', '✏️', TRUE, TRUE, NOW(), NOW(), 0)
@@ -691,7 +700,11 @@ INSERT INTO mate_skill (id, name, description, skill_type, icon, version, author
 VALUES (1000000019, 'multi_agent_collaboration', '当任务需要多个 Agent 的专业能力协同完成时，编排多 Agent 并行或串行协作，整合各方结果。', 'builtin', '🤝', '1.4.0', 'MateClaw', '{"upstream":"mateclaw","entryFile":"SKILL.md"}', TRUE, TRUE, 'multi-agent,collaboration,orchestration,parallel', NOW(), NOW(), 0)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, description=EXCLUDED.description, skill_type=EXCLUDED.skill_type, icon=EXCLUDED.icon, version=EXCLUDED.version, author=EXCLUDED.author, config_json=EXCLUDED.config_json, enabled=EXCLUDED.enabled, builtin=EXCLUDED.builtin, tags=EXCLUDED.tags, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
 
--- RFC-042 §2.2 — bilingual display names for the 19 builtin skills.
+INSERT INTO mate_skill (id, name, description, skill_type, icon, version, author, config_json, enabled, builtin, tags, create_time, update_time, deleted)
+VALUES (1000000020, 'officecli', '使用可选的 iOfficeAI/OfficeCLI 对已有 DOCX/XLSX/PPTX 进行检查、校验、复制编辑、模板合并和视觉渲染。', 'builtin', '🏢', '1.0.0', 'MateClaw', '{"upstream":"mateclaw","entryFile":"SKILL.md"}', TRUE, TRUE, 'office,officecli,docx,xlsx,pptx,render,validate', NOW(), NOW(), 0)
+ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, description=EXCLUDED.description, skill_type=EXCLUDED.skill_type, icon=EXCLUDED.icon, version=EXCLUDED.version, author=EXCLUDED.author, config_json=EXCLUDED.config_json, enabled=EXCLUDED.enabled, builtin=EXCLUDED.builtin, tags=EXCLUDED.tags, update_time=EXCLUDED.update_time, deleted=EXCLUDED.deleted;
+
+-- RFC-042 §2.2 — bilingual display names for the 20 builtin skills.
 -- Identical across all four data-*.sql files because name_zh / name_en are
 -- permanent attributes, not locale-conditional. The UI picks which one to
 -- show based on the active i18n locale and falls back to name when null.
@@ -702,6 +715,7 @@ UPDATE mate_skill SET name_zh = '邮件管理',       name_en = 'Email (Himalaya
 UPDATE mate_skill SET name_zh = '新闻查询',       name_en = 'News'                     WHERE name = 'news';
 UPDATE mate_skill SET name_zh = 'PDF 处理',       name_en = 'PDF'                      WHERE name = 'pdf';
 UPDATE mate_skill SET name_zh = 'Word 文档',      name_en = 'Word Document'            WHERE name = 'docx';
+UPDATE mate_skill SET name_zh = 'OfficeCLI 高级文档', name_en = 'OfficeCLI Advanced Documents' WHERE name = 'officecli';
 UPDATE mate_skill SET name_zh = 'PPT 演示',       name_en = 'PowerPoint'               WHERE name = 'pptx';
 UPDATE mate_skill SET name_zh = 'Excel 表格',     name_en = 'Excel'                    WHERE name = 'xlsx';
 UPDATE mate_skill SET name_zh = '可见浏览器',     name_en = 'Visible Browser'          WHERE name = 'browser_visible';

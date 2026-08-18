@@ -77,6 +77,13 @@ export function useProviderDiscovery(deps: ListDeps) {
     await deps.refreshCurrentProvider(deps.currentProvider.value.id)
   }
 
+  /** Set (number) or clear (null) the model's explicit input context window. */
+  async function updateModelContextWindow(model: ProviderModelInfo, maxInputTokens: number | null) {
+    if (!deps.currentProvider.value) return
+    await modelApi.updateModelContextWindow(deps.currentProvider.value.id, model.id, maxInputTokens)
+    await deps.refreshCurrentProvider(deps.currentProvider.value.id)
+  }
+
   function toggleSelectAll() {
     if (!discoverResult.value) return
     if (allNewSelected.value) {
@@ -175,6 +182,7 @@ export function useProviderDiscovery(deps: ListDeps) {
     isExtraModel,
     addProviderModel,
     removeProviderModel,
+    updateModelContextWindow,
     toggleSelectAll,
     handleDiscoverModels,
     handleApplyModels,

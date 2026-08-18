@@ -29,6 +29,10 @@ public class CronChatOriginFactory {
     private final AgentMapper agentMapper;
 
     public ChatOrigin from(CronJobEntity job, String conversationId) {
+        return from(job, conversationId, null);
+    }
+
+    public ChatOrigin from(CronJobEntity job, String conversationId, Long originMessageId) {
         AgentEntity agent = job.getAgentId() != null ? agentMapper.selectById(job.getAgentId()) : null;
         Long workspaceId = agent != null && agent.getWorkspaceId() != null ? agent.getWorkspaceId() : 1L;
 
@@ -36,6 +40,6 @@ public class CronChatOriginFactory {
         ChannelTarget target = dc != null ? dc.toChannelTarget() : null;
 
         return ChatOrigin.cron(conversationId, workspaceId, /* workspaceBasePath */ null,
-                job.getChannelId(), target);
+                job.getChannelId(), target).withOriginMessageId(originMessageId);
     }
 }

@@ -15,6 +15,7 @@ import java.time.LocalDateTime;
  */
 public record SkillCuratorRunCompletedEvent(
         String runId,
+        Long workspaceId,
         int markedStale,
         int archived,
         int reactivated,

@@ -1,5 +1,6 @@
 package vip.mate.stt.transport;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -58,5 +59,23 @@ class OpenAiCompatibleSttTransportTest {
         OpenAiCompatibleSttTransport t = new OpenAiCompatibleSttTransport(null);
         assertEquals("openai_compatible_audio", t.apiMode());
         assertEquals(OpenAiCompatibleSttTransport.API_MODE, t.apiMode());
+    }
+
+    @Test
+    @DisplayName("extractErrorMessage reads OpenAI-nested, FastAPI-detail and plain-message shapes")
+    void extractErrorMessageShapes() {
+        OpenAiCompatibleSttTransport t = new OpenAiCompatibleSttTransport(new ObjectMapper());
+        // OpenAI / Groq / Ollama / LM Studio shape.
+        assertEquals("model 'whisper-large-v2' not found",
+                t.extractErrorMessage("{\"error\":{\"message\":\"model 'whisper-large-v2' not found\",\"type\":\"not_found_error\"}}"));
+        // FastAPI-based self-hosted servers.
+        assertEquals("Not Found", t.extractErrorMessage("{\"detail\":\"Not Found\"}"));
+        // Plain message shims.
+        assertEquals("boom", t.extractErrorMessage("{\"message\":\"boom\"}"));
+        // Non-JSON / empty → "" so the caller falls back to a body snippet.
+        assertEquals("", t.extractErrorMessage("<html>gateway error</html>"));
+        assertEquals("", t.extractErrorMessage("{}"));
+        assertEquals("", t.extractErrorMessage(null));
+        assertEquals("", t.extractErrorMessage("  "));
     }
 }

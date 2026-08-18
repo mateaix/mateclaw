@@ -41,6 +41,27 @@ public class ModelInfoDTO {
      */
     private boolean supportsThinking;
 
+    /**
+     * Explicit per-model input window from {@code mate_model_config}; null when
+     * the operator has not set one (stored as 0). This is what the management
+     * UI's input binds to — an empty field means "let the server decide".
+     */
+    private Integer maxInputTokens;
+
+    /**
+     * The window context budgeting would use if a turn ran right now, computed
+     * without any probe traffic: explicit config, else the built-in window
+     * table, else the global default. Display only.
+     */
+    private Integer effectiveMaxInputTokens;
+
+    /**
+     * Where {@link #effectiveMaxInputTokens} came from — {@code configured},
+     * {@code catalog} or {@code default} — so the UI can say why a number is
+     * what it is instead of presenting a guess as configuration.
+     */
+    private String maxInputTokensSource;
+
     public ModelInfoDTO(String id, String name) {
         this.id = id;
         this.name = name;

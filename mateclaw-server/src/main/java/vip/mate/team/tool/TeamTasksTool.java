@@ -11,6 +11,8 @@ import vip.mate.agent.model.AgentEntity;
 import vip.mate.agent.repository.AgentMapper;
 import vip.mate.team.model.AgentTeamEntity;
 import vip.mate.team.model.TeamTaskCommentEntity;
+import vip.mate.team.model.TeamRunCreateCommand;
+import vip.mate.team.model.TeamRunEntity;
 import vip.mate.team.model.TeamTaskCreateCommand;
 import vip.mate.team.model.TeamTaskEntity;
 import vip.mate.team.model.TeamTaskEventEntity;
@@ -18,6 +20,7 @@ import vip.mate.team.model.TeamTaskStatus;
 import vip.mate.team.service.TeamDispatchService;
 import vip.mate.team.service.TeamEventChannel;
 import vip.mate.team.service.TeamService;
+import vip.mate.team.service.TeamRunService;
 import vip.mate.team.service.TeamTaskService;
 import vip.mate.tool.builtin.ToolExecutionContext;
 import vip.mate.workspace.conversation.ConversationService;
@@ -47,6 +50,7 @@ public class TeamTasksTool {
 
     private final TeamService teamService;
     private final TeamTaskService taskService;
+    private final TeamRunService runService;
     private final TeamDispatchService dispatchService;
     private final TeamEventChannel eventChannel;
     private final ConversationService conversationService;
@@ -54,9 +58,11 @@ public class TeamTasksTool {
 
     @Tool(description = "Operate your team's shared task board. Actions: "
             + "'list' all tasks; 'get' one task with comments (taskId); "
-            + "'create' a task (lead only; subject, description, assigneeAgentId required, "
+            + "'start_run' (lead only; objective required, optional title) returns a runId; "
+            + "'create' stages a task (lead only; runId, subject, description, assigneeAgentId required, "
             + "optional blockedBy comma-separated prerequisite task ids, priority, higher first, "
             + "requireApproval=true to park the finished task for human sign-off); "
+            + "'seal_run' (lead only; runId) seals the batch and starts dispatch; "
             + "'complete' a task with its result summary (taskId, result); "
             + "'progress' to report execution progress (taskId, percent 0-100, step); "
             + "'comment' to leave a note, or type='blocker' when you are stuck and need the lead "
@@ -66,10 +72,16 @@ public class TeamTasksTool {
             + "'retry' a failed/stale task back to pending (lead only; taskId). "
             + "Only usable when you belong to an agent team.")
     public String team_tasks(
-            @ToolParam(description = "One of: list, get, create, complete, progress, comment, attach, cancel, retry")
+            @ToolParam(description = "One of: start_run, create, seal_run, list, get, complete, progress, comment, attach, cancel, retry")
             String action,
-            @ToolParam(description = "Task id (string form is fine) — required by every action except list/create", required = false)
+            @ToolParam(description = "Task id (string form is fine) — required by get/complete/progress/comment/attach/cancel/retry", required = false)
             String taskId,
+            @ToolParam(description = "create/seal_run: explicit team run id", required = false)
+            String runId,
+            @ToolParam(description = "start_run: concise run title", required = false)
+            String title,
+            @ToolParam(description = "start_run: objective for the delegated work", required = false)
+            String objective,
             @ToolParam(description = "create: short task title", required = false)
             String subject,
             @ToolParam(description = "create: full task instructions; include every input the member needs — members do not see this conversation", required = false)
@@ -106,7 +118,11 @@ public class TeamTasksTool {
         if (conversation == null || conversation.getAgentId() == null) {
             return "Error: cannot resolve the calling agent for this conversation.";
         }
+        if (conversation.getWorkspaceId() == null) {
+            return "Error: workspaceId is missing from conversation context.";
+        }
         Long agentId = conversation.getAgentId();
+        Long workspaceId = conversation.getWorkspaceId();
         Optional<AgentTeamEntity> teamOpt = teamService.getTeamForAgent(agentId);
         if (teamOpt.isEmpty()) {
             return "Error: you are not part of any agent team; team_tasks is unavailable.";
@@ -116,10 +132,14 @@ public class TeamTasksTool {
 
         try {
             return switch (action == null ? "" : action) {
+                case "start_run" -> startRun(team, agentId, isLead, workspaceId,
+                        conversationId, title, objective, ctx);
                 case "list" -> renderBoard(team);
                 case "get" -> renderDetail(team, parseId(taskId, "taskId"));
-                case "create" -> createTask(team, agentId, isLead, subject, description,
-                        assigneeAgentId, blockedBy, priority, requireApproval, conversationId);
+                case "create" -> createTask(team, agentId, isLead, workspaceId, runId,
+                        subject, description, assigneeAgentId, blockedBy, priority,
+                        requireApproval, conversationId);
+                case "seal_run" -> sealRun(team, isLead, workspaceId, conversationId, runId);
                 case "complete" -> completeTask(team, agentId, parseId(taskId, "taskId"), result);
                 case "progress" -> progress(team, agentId, parseId(taskId, "taskId"), percent, step);
                 case "comment" -> comment(team, agentId, parseId(taskId, "taskId"), type, text);
@@ -127,7 +147,8 @@ public class TeamTasksTool {
                 case "cancel" -> cancel(team, agentId, isLead, parseId(taskId, "taskId"), text);
                 case "retry" -> retry(team, agentId, isLead, parseId(taskId, "taskId"));
                 default -> "Error: unknown action '" + action
-                        + "'. Use one of: list, get, create, complete, progress, comment, attach, cancel, retry.";
+                        + "'. Use one of: start_run, create, seal_run, list, get, complete, progress, "
+                        + "comment, attach, cancel, retry.";
             };
         } catch (IllegalArgumentException | IllegalStateException e) {
             return "Error: " + e.getMessage();
@@ -140,7 +161,26 @@ public class TeamTasksTool {
 
     // ==================== actions ====================
 
+    private String startRun(AgentTeamEntity team, Long agentId, boolean isLead,
+                            Long workspaceId, String conversationId, String title,
+                            String objective, @Nullable ToolContext ctx) {
+        if (!isLead) {
+            return "Error: only the team lead can start runs.";
+        }
+        TeamRunEntity run = runService.startRun(TeamRunCreateCommand.builder()
+                .teamId(team.getId())
+                .workspaceId(workspaceId)
+                .leadAgentId(agentId)
+                .leadConversationId(conversationId)
+                .originMessageId(ToolExecutionContext.originMessageId(ctx))
+                .title(title)
+                .objective(objective)
+                .build());
+        return String.valueOf(run.getId());
+    }
+
     private String createTask(AgentTeamEntity team, Long agentId, boolean isLead,
+                              Long workspaceId, String runId,
                               String subject, String description, String assigneeAgentId,
                               String blockedBy, Integer priority, Boolean requireApproval,
                               String conversationId) {
@@ -148,8 +188,11 @@ public class TeamTasksTool {
             return "Error: only the team lead can create tasks. Report blockers or ask the "
                     + "lead via a comment on your current task instead.";
         }
+        Long parsedRunId = parseId(runId, "runId");
+        requireRun(team, workspaceId, conversationId, parsedRunId);
         TeamTaskEntity task = taskService.createTask(TeamTaskCreateCommand.builder()
                 .teamId(team.getId())
+                .runId(parsedRunId)
                 .subject(subject)
                 .description(description)
                 .assigneeAgentId(parseId(assigneeAgentId, "assigneeAgentId"))
@@ -160,15 +203,27 @@ public class TeamTasksTool {
                 .leadConversationId(conversationId)
                 .build());
         eventChannel.publishTaskEvent(task, "team_task_created", Map.of());
-        if (TeamTaskStatus.PENDING.equals(task.getStatus())) {
-            dispatchService.requestDispatch(team.getId());
-        }
         return "✓ Created task #" + task.getTaskNumber() + " (id: " + task.getId()
                 + ") \"" + task.getSubject() + "\" assigned to " + agentName(task.getAssigneeAgentId())
                 + ". Status: " + task.getStatus()
                 + (TeamTaskStatus.BLOCKED.equals(task.getStatus())
                         ? " (starts automatically once its prerequisites finish)." : ".")
-                + " Members are dispatched automatically — do not wait in this turn.";
+                + " Seal the run after all tasks are staged.";
+    }
+
+    private String sealRun(AgentTeamEntity team, boolean isLead, Long workspaceId,
+                           String conversationId, String runId) {
+        if (!isLead) {
+            return "Error: only the team lead can seal runs.";
+        }
+        Long parsedRunId = parseId(runId, "runId");
+        requireRun(team, workspaceId, conversationId, parsedRunId);
+        TeamRunService.SealResult result = runService.sealRunWithResult(parsedRunId, workspaceId);
+        if (result.transitioned()) {
+            dispatchService.requestDispatch(team.getId());
+            return "✓ Team run " + parsedRunId + " sealed; dispatch started.";
+        }
+        return "Team run " + parsedRunId + " was already sealed; dispatch unchanged.";
     }
 
     private String completeTask(AgentTeamEntity team, Long agentId, Long taskId, String result) {
@@ -331,6 +386,17 @@ public class TeamTasksTool {
             throw new IllegalArgumentException("task " + taskId + " not found on this team's board");
         }
         return task;
+    }
+
+    private TeamRunEntity requireRun(AgentTeamEntity team, Long workspaceId,
+                                     String conversationId, Long runId) {
+        TeamRunEntity run = runService.requireRun(runId, workspaceId);
+        if (!team.getId().equals(run.getTeamId())
+                || !conversationId.equals(run.getLeadConversationId())) {
+            throw new IllegalArgumentException(
+                    "runId does not belong to this team and lead conversation: " + runId);
+        }
+        return run;
     }
 
     private String agentName(Long agentId) {

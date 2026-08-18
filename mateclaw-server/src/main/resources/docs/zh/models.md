@@ -509,6 +509,19 @@ LLM API Key **不再读取环境变量**——`DASHSCOPE_API_KEY` / `OPENAI_API_
 
 ---
 
+## 单模型上下文窗口（2.1.0+）
+
+MateClaw 不再把所有模型统一当作 128K。运行时预算解析顺序是：**管理员覆盖值 → 本地模型实时探测或供应商超限反馈的短期缓存 → 内置模型目录 → 原有全局默认值**。模型列表为了避免 I/O，只显示覆盖值或目录值；未知模型仍由调用方使用全局默认。这会直接影响系统提示词、记忆、Wiki、历史消息与工具 schema 的预算分配。
+
+- 已知模型（含 GLM-5V-Turbo、Kimi coding alias 等）自动使用目录窗口；
+- 自定义/私有模型可在模型管理页填写准确的最大输入 token；
+- API 使用 `PUT /api/v1/models/{providerId}/models/context-window`，请求体为 `modelId` 和 `maxInputTokens`；空值或非正数会清除覆盖；
+- 工作空间成员读取 provider 绑定选项时只得到 id/显示名，不暴露 key、base URL 等连接配置。
+
+OpenAI 兼容链路同时保留工具 JSON Schema 中的 `integer` / `number`。`generateKwargs` 只把顶层非保留键原样透传到请求体；temperature、token 上限、`topP`、`reasoningEffort`、搜索、headers 与 path 等保留键由统一读取器处理。未知的嵌套 `chatOptions` 键不会透传，`reasoningEffort` 仅发送给明确支持的模型族。
+
+---
+
 ## 下一步
 
 - [配置说明](./config)——完整配置参考

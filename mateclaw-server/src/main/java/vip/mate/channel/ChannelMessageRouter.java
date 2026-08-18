@@ -827,7 +827,8 @@ public class ChannelMessageRouter {
             // through unchanged (chatId is null).
             List<MessageContentPart> parts = message.getContentParts();
             String attributedContent = applyGroupTag(message, message.getContent());
-            conversationService.saveMessage(conversationId, "user", attributedContent, parts);
+            MessageEntity savedUser = conversationService.saveMessage(
+                    conversationId, "user", attributedContent, parts);
 
             // 构建 prompt（语音输入时注入场景提示词）
             String promptText = buildPromptFromParts(message.getContent(), parts, message.getInputMode());
@@ -853,7 +854,8 @@ public class ChannelMessageRouter {
                 // so cron jobs created during this conversation inherit the
                 // channel binding (Issue #25 root path).
                 ChatOrigin chatOrigin = chatOriginFactory.from(
-                        channelEntity, message, conversationId, /* workspaceBasePath */ null);
+                        channelEntity, message, conversationId, /* workspaceBasePath */ null)
+                        .withOriginMessageId(savedUser == null ? null : savedUser.getId());
 
                 if (adapter instanceof StreamingChannelAdapter streamingAdapter) {
                     savedAssistantId = processWithStreaming(message, streamingAdapter, conversationId, agentId, promptText, channelEntity, chatOrigin);
@@ -884,30 +886,47 @@ public class ChannelMessageRouter {
                     // and IM channels still need the text for the outgoing reply),
                     // segmentOnly narration excluded (issue #120).
                     AgentStreamAccumulator accumulator = newAccumulator();
+                    // Narration lifecycle: relayed messages on this path are
+                    // permanent (IM messages cannot be retracted), so per-stage
+                    // narration publishes one behind through the shared tracker —
+                    // a pre-tool rehearsal (possibly a fabricated result table)
+                    // is dropped once later content supersedes it instead of
+                    // reaching the user verbatim.
+                    final ProvisionalContentTracker narrationTracker =
+                            new ProvisionalContentTracker(channelType);
                     agentService.chatStructuredStream(agentId, promptText, conversationId,
                                     message.getSenderId(), chatOrigin)
                             .doOnNext(delta -> {
                                 accumulator.accept(delta, conversationId);
-                                if (!delta.isEvent() && delta.segmentOnly()) {
+                                if (delta.isEvent()) {
+                                    if ("tool_call_completed".equals(delta.eventType())) {
+                                        narrationTracker.onToolObservation();
+                                    }
+                                    return;
+                                }
+                                if (delta.segmentOnly()) {
                                     // Per-stage narration ("Let me look that up…"), emitted as
-                                    // one complete delta per agent loop iteration. Relay it
-                                    // immediately as its own outgoing message so the user sees
-                                    // progress mid-run.
+                                    // one complete delta per agent loop iteration, each becoming
+                                    // its own outgoing message so the user sees progress mid-run.
                                     String narration = delta.content() != null ? delta.content().trim() : "";
                                     if (relayNarration && !narration.isEmpty() && replyTarget != null) {
-                                        try {
-                                            adapter.renderAndSend(replyTarget, narration);
-                                        } catch (Exception sendErr) {
-                                            // A failed progress send must not abort the agent
-                                            // run — the final reply still goes out below.
-                                            log.warn("[{}] Narration relay failed (non-fatal): {}",
-                                                    channelType, sendErr.getMessage());
+                                        String publishable = narrationTracker.stageNarration(narration, delta.kind());
+                                        if (publishable != null) {
+                                            relayNarrationSafely(adapter, replyTarget, publishable);
                                         }
                                     }
                                 }
                             })
                             .blockLast(Duration.ofMinutes(10));
                     String reply = accumulator.getContent();
+                    // The last narration was held back until the answer was
+                    // known: superseded → dropped, otherwise it still goes out
+                    // (before the final reply) unless it duplicates it.
+                    String heldNarration = narrationTracker.settle(!reply.isBlank());
+                    if (heldNarration != null && replyTarget != null
+                            && !heldNarration.equals(reply.trim())) {
+                        relayNarrationSafely(adapter, replyTarget, heldNarration);
+                    }
 
                     // The IM sync path bypasses FinalAnswerNode, so hallucinated
                     // /api/v1/files/generated/{id} URLs (LLM wrote a fake link
@@ -1291,6 +1310,19 @@ public class ChannelMessageRouter {
     }
 
     /**
+     * Send a progress narration as its own outgoing message. A failed send
+     * must not abort the agent run — the final reply still goes out.
+     */
+    private void relayNarrationSafely(ChannelAdapter adapter, String replyTarget, String narration) {
+        try {
+            adapter.renderAndSend(replyTarget, narration);
+        } catch (Exception sendErr) {
+            log.warn("[{}] Narration relay failed (non-fatal): {}",
+                    adapter.getChannelType(), sendErr.getMessage());
+        }
+    }
+
+    /**
      * 流式处理路径（渠道无关）
      * <p>
      * 事件流与渲染分离：
@@ -1566,14 +1598,16 @@ public class ChannelMessageRouter {
         // Mirror processMessage's group attribution for the streaming path
         // (Web channel today; future streaming IM channels inherit it).
         String attributedContent = applyGroupTag(message, message.getContent());
-        conversationService.saveMessage(conversationId, "user", attributedContent, parts);
+        MessageEntity savedUser = conversationService.saveMessage(
+                conversationId, "user", attributedContent, parts);
 
         String promptText = buildPromptFromParts(message.getContent(), parts, message.getInputMode());
         promptText = applyGroupTag(message, promptText);
         // RFC-063r §2.5: forward ChatOrigin so tools created during this
         // streaming conversation inherit channel binding.
         ChatOrigin origin = chatOriginFactory.from(
-                channelEntity, message, conversationId, /* workspaceBasePath */ null);
+                channelEntity, message, conversationId, /* workspaceBasePath */ null)
+                .withOriginMessageId(savedUser == null ? null : savedUser.getId());
         return agentService.chatStream(agentId, promptText, conversationId, origin);
     }
 
@@ -1913,11 +1947,11 @@ public class ChannelMessageRouter {
      */
     private Path resolveVoiceReplyAudio(String conversationId, String fileName) {
         if (chatUploadLocationResolver != null) {
-            for (Path dir : chatUploadLocationResolver.resolveCandidateConversationDirs(conversationId)) {
-                Path candidate = dir.resolve(fileName);
-                if (Files.exists(candidate)) {
-                    return candidate;
-                }
+            // Probes every candidate root and both layouts (flat + date
+            // sub-directories), so TTS files written under a per-day dir resolve.
+            Path found = chatUploadLocationResolver.resolveExistingFile(conversationId, fileName);
+            if (found != null) {
+                return found;
             }
         }
         // Fallback to the legacy default dir when the resolver is absent

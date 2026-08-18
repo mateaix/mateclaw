@@ -78,6 +78,9 @@ pom.xml.versionsBackup
 # mateclaw static build output (do not commit)
 mateclaw-server/src/main/resources/static/
 
+# Maven must not materialize an unresolved property as a literal directory.
+**/${project.build.directory}/
+
 # mateclaw local runtime data (H2 DB, logs, etc. - do not commit)
 mateclaw-server/data/
 /data/

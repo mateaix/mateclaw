@@ -48,6 +48,9 @@ class SkillControllerBundleFilesTest {
         controller = new SkillController(
                 skillService, runtimeService, null, workspaceManager, null, fileSyncer,
                 null, null, null, null, null, null, null, null, null, null, null,
+                /* skillSnapshotService */ null,
+                /* skillRoutineService */ null,
+                /* skillRoutineMiner */ null,
                 fileService);
     }
 

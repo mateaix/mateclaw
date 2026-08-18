@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import vip.mate.agent.AgentService;
 import vip.mate.agent.GraphEventPublisher;
+import vip.mate.channel.ProvisionalContentTracker;
 import vip.mate.workspace.conversation.model.MessageContentPart;
 
 import java.util.ArrayList;
@@ -192,25 +193,41 @@ public final class AgentStreamAccumulator {
             }
             // segments: 追加到当前 running content segment，或创建新的
             var seg = findLastRunning("content");
-            if (seg != null) {
-                seg.put("text", seg.getOrDefault("text", "") + delta.content());
-            } else {
+            if (seg == null) {
                 finalizeRunningSegments("thinking");
-                var s = newSegment("content");
-                s.put("text", delta.content());
-                segments.add(s);
+                seg = newSegment("content");
+                seg.put("text", delta.content());
+                segments.add(seg);
+            } else {
+                seg.put("text", seg.getOrDefault("text", "") + delta.content());
+            }
+            // Producer-assigned content semantics (first writer wins — a
+            // segment never legitimately changes kind mid-flight). Absent on
+            // deltas from producers that predate the tag; consumers fall back
+            // to structural detection for such segments.
+            if (delta.kind() != null && !seg.containsKey("kind")) {
+                seg.put("kind", delta.kind().wireName());
             }
         }
 
         // thinking_delta
         if (delta.thinking() != null && !delta.thinking().isBlank()) {
+            var seg = findLastRunning("thinking");
+            // No running thinking segment means this delta opens a new reasoning
+            // span (a fresh iteration, after a tool call closed the previous one).
+            // The flat `thinking` field concatenates every span of the turn, so
+            // without a break the spans glue into one run-on paragraph — spans
+            // are separate thoughts and read as such only when kept apart.
+            boolean opensNewSpan = seg == null;
             if (!delta.segmentOnly()) {
+                if (opensNewSpan && thinking.length() > 0) {
+                    thinking.append("\n\n");
+                }
                 thinking.append(delta.thinking());
             }
             if (!delta.persistenceOnly()) {
                 sink.broadcast(conversationId, "thinking_delta", Map.of("delta", delta.thinking()));
             }
-            var seg = findLastRunning("thinking");
             if (seg != null) {
                 seg.put("thinkingText", seg.getOrDefault("thinkingText", "") + delta.thinking());
             } else {
@@ -343,6 +360,7 @@ public final class AgentStreamAccumulator {
                             && toolName.equals(seg.get("toolName")));
                 if (matches) {
                     seg.put("status", "completed");
+                    seg.put("endTimestamp", System.currentTimeMillis());
                     seg.put("toolResult", data.getOrDefault("result", ""));
                     seg.put("toolSuccess", data.getOrDefault("success", true));
                     break;
@@ -385,9 +403,19 @@ public final class AgentStreamAccumulator {
 
     private Map<String, Object> newSegment(String type) {
         Map<String, Object> seg = new LinkedHashMap<>();
-        seg.put("id", type.substring(0, 2) + "-" + segCounter++);
+        int seq = segCounter++;
+        seg.put("id", type.substring(0, 2) + "-" + seq);
         seg.put("type", type);
+        // Monotonic emission index. Renderers order the timeline by this
+        // rather than inferring a position from the segment's type: array
+        // order can be perturbed on the way to the UI (dedup, fallback
+        // injection, live/persisted merges), and type-based relocation
+        // moves a span away from the point it was actually produced at.
+        seg.put("seq", seq);
         seg.put("status", "running");
+        // Wall-clock bounds let history replays show the real per-segment
+        // duration (e.g. "thought for 12s") instead of estimating from length.
+        seg.put("timestamp", System.currentTimeMillis());
         return seg;
     }
 
@@ -404,6 +432,7 @@ public final class AgentStreamAccumulator {
         for (var seg : segments) {
             if ("running".equals(seg.get("status")) && typeSet.contains(seg.get("type"))) {
                 seg.put("status", "completed");
+                seg.put("endTimestamp", System.currentTimeMillis());
             }
         }
     }
@@ -447,9 +476,16 @@ public final class AgentStreamAccumulator {
         return parts;
     }
 
-    private void finalizeToolCalls() {
+    private void interruptUnfinishedToolCalls() {
         for (Map<String, Object> tc : toolCalls) {
-            if ("running".equals(tc.get("status"))) tc.put("status", "completed");
+            if ("running".equals(tc.get("status"))) tc.put("status", "interrupted");
+        }
+        for (Map<String, Object> segment : segments) {
+            if ("tool_call".equals(segment.get("type"))
+                    && "running".equals(segment.get("status"))) {
+                segment.put("status", "interrupted");
+                segment.put("endTimestamp", System.currentTimeMillis());
+            }
         }
     }
 
@@ -458,9 +494,16 @@ public final class AgentStreamAccumulator {
      * toolCalls 保留兼容旧 UI，segments 是按事件顺序的完整时间线。
      */
     public synchronized String toMetadataJson() {
-        finalizeToolCalls();
-        finalizeRunningSegments("thinking", "content", "tool_call");
-        SegmentSupersedeDetector.markSuperseded(segments);
+        interruptUnfinishedToolCalls();
+        finalizeRunningSegments("thinking", "content");
+        // Producer-tagged timelines use the kind-driven authority; untagged
+        // ones (pre-tag producers, replayed legacy turns) keep the structural
+        // scan as fallback.
+        if (ProvisionalContentTracker.hasKindTags(segments)) {
+            ProvisionalContentTracker.markSuperseded(segments, "web");
+        } else {
+            SegmentSupersedeDetector.markSuperseded(segments);
+        }
         try {
             Map<String, Object> metadata = new LinkedHashMap<>();
             if (!toolCalls.isEmpty()) {

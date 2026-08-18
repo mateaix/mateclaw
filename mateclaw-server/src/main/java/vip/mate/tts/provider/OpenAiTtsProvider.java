@@ -11,6 +11,7 @@ import vip.mate.llm.service.ModelProviderService;
 import vip.mate.system.model.SystemSettingsDTO;
 import vip.mate.tts.TtsProvider;
 import vip.mate.tts.TtsRequest;
+import vip.mate.tts.TtsResponseDiagnostics;
 import vip.mate.tts.TtsResult;
 
 import java.util.List;
@@ -112,7 +113,8 @@ public class OpenAiTtsProvider implements TtsProvider {
             } else {
                 String errBody = response.body();
                 log.warn("[OpenAI TTS] Failed: HTTP {} - {}", response.getStatus(), errBody);
-                return TtsResult.failure("OpenAI TTS 失败: HTTP " + response.getStatus());
+                return TtsResult.failure(TtsResponseDiagnostics.failureMessage(
+                        "OpenAI TTS", url, response.getStatus(), errBody));
             }
         } catch (Exception e) {
             log.error("[OpenAI TTS] Error: {}", e.getMessage(), e);

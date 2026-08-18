@@ -41,6 +41,11 @@ public class ReasoningDispatcher implements EdgeAction {
             return LIMIT_EXCEEDED_NODE;
         }
 
+        if (accessor.continueReasoning()) {
+            log.info("[ReasoningDispatcher] Completion gate requested another reasoning pass");
+            return REASONING_NODE;
+        }
+
         // 2. 可直接回答 → finalAnswerNode
         //    覆盖以下场景：
         //    - LLM 正常产出最终回答 (needsToolCall=false, finalAnswer 非空)

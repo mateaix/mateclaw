@@ -120,15 +120,19 @@ public class WebChatFileService {
 
         String storedName = UUID.randomUUID() + "_" + safeName;
         Path uploadRoot = uploadLocationResolver.resolveUploadRoot(conversationId).normalize();
-        // Sanitize the id for the path segment (IM ids like "wecom:XXXX" carry a
-        // ':' illegal on Windows); reads use the same sanitization.
-        Path dir = uploadRoot.resolve(ChatUploadLocationResolver.sanitizeSegment(conversationId)).normalize();
+        // resolveWriteDir sanitizes the id for the path segment (IM ids like
+        // "wecom:XXXX" carry a ':' illegal on Windows) and appends the per-day
+        // sub-directory when date folders are enabled.
+        Path dir = uploadLocationResolver.resolveWriteDir(conversationId).normalize();
         if (!dir.startsWith(uploadRoot)) {
             // conversationId is server-derived, so this should never happen; fail closed if it does.
             throw new UploadRejectedException("Invalid conversation");
         }
         Files.createDirectories(dir);
-        enforceConversationQuota(dir, file.getSize());
+        // Quota counts the whole conversation tree (flat files + date subdirs),
+        // not just today's write dir.
+        enforceConversationQuota(
+                uploadLocationResolver.resolveConversationDir(conversationId).normalize(), file.getSize());
         Path target = dir.resolve(storedName);
         file.transferTo(target.toAbsolutePath());
 
@@ -169,19 +173,10 @@ public class WebChatFileService {
      * {@code startsWith} guard. Returns empty if missing or escaping the dir.
      */
     public Optional<Path> resolve(String conversationId, String storedName) {
-        if (storedName == null || storedName.isBlank()) {
-            return Optional.empty();
-        }
-        // Check every candidate root (workspace-scoped dir + legacy default dir)
-        // so files written before the workspace-aware relocation still resolve.
-        for (Path base : uploadLocationResolver.resolveCandidateConversationDirs(conversationId)) {
-            Path normBase = base.normalize();
-            Path file = normBase.resolve(storedName).normalize();
-            if (file.startsWith(normBase) && Files.exists(file) && Files.isRegularFile(file)) {
-                return Optional.of(file);
-            }
-        }
-        return Optional.empty();
+        // resolveExistingFile checks every candidate root (workspace-scoped dir
+        // + legacy default dir) and both layouts (flat + date sub-directories),
+        // guarding each candidate against traversal.
+        return Optional.ofNullable(uploadLocationResolver.resolveExistingFile(conversationId, storedName));
     }
 
     /** Map a content type to the MessageContentPart type the agent/UI understands. */
@@ -216,19 +211,23 @@ public class WebChatFileService {
     }
 
     /**
-     * Bound a conversation's disk footprint: reject when the dir already holds
-     * the max file count, or when adding {@code incomingSize} would push the
-     * total over the cap. Cheap dir scan (these dirs hold at most a few dozen
-     * files); pairs with the staging TTL sweep that reclaims unreferenced files.
+     * Bound a conversation's disk footprint: reject when the conversation tree
+     * already holds the max file count, or when adding {@code incomingSize}
+     * would push the total over the cap. Walks the tree so files under date
+     * sub-directories are counted; cheap scan (these dirs hold at most a few
+     * dozen files), pairs with the staging TTL sweep that reclaims
+     * unreferenced files.
      */
-    private void enforceConversationQuota(Path dir, long incomingSize) throws IOException {
+    private void enforceConversationQuota(Path conversationDir, long incomingSize) throws IOException {
         int count = 0;
         long total = 0;
-        try (Stream<Path> files = Files.list(dir)) {
-            for (Path p : (Iterable<Path>) files::iterator) {
-                if (Files.isRegularFile(p)) {
-                    count++;
-                    total += Files.size(p);
+        if (Files.isDirectory(conversationDir)) {
+            try (Stream<Path> files = Files.walk(conversationDir)) {
+                for (Path p : (Iterable<Path>) files::iterator) {
+                    if (Files.isRegularFile(p)) {
+                        count++;
+                        total += Files.size(p);
+                    }
                 }
             }
         }

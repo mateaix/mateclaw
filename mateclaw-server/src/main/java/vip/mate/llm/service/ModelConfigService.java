@@ -22,6 +22,11 @@ import org.springframework.context.ApplicationEventPublisher;
 @RequiredArgsConstructor
 public class ModelConfigService {
 
+    /** Below this a "window" is a typo, not a model — even 4k-era models exceed it. */
+    private static final int MIN_CONTEXT_WINDOW = 1024;
+    /** Above this the value is a typo too; the largest published windows are ~10M. */
+    private static final int MAX_CONTEXT_WINDOW = 20_000_000;
+
     private final ModelConfigMapper modelConfigMapper;
     private final ApplicationEventPublisher eventPublisher;
     private final ModelCapabilityService modelCapabilityService;
@@ -294,6 +299,33 @@ public class ModelConfigService {
         modelConfigMapper.insert(entity);
         ensureDefaultExists();
         publishConfigChanged("provider-model-added");
+        return entity;
+    }
+
+    /**
+     * Persist an explicit input-context window for one model. {@code null} or a
+     * non-positive value clears the override (stored as 0), handing budgeting
+     * back to the built-in window table / global default.
+     *
+     * @throws MateClawException when the model is unknown or the value is
+     *                           outside the range a real model could have
+     */
+    public ModelConfigEntity updateModelContextWindow(String providerId, String modelId, Integer maxInputTokens) {
+        ModelConfigEntity entity = modelConfigMapper.selectOne(new LambdaQueryWrapper<ModelConfigEntity>()
+                .eq(ModelConfigEntity::getProvider, providerId)
+                .eq(ModelConfigEntity::getModelName, modelId)
+                .last("LIMIT 1"));
+        if (entity == null) {
+            throw new MateClawException("err.llm.model_not_found", "模型不存在: " + modelId);
+        }
+        int value = (maxInputTokens == null || maxInputTokens <= 0) ? 0 : maxInputTokens;
+        if (value > 0 && (value < MIN_CONTEXT_WINDOW || value > MAX_CONTEXT_WINDOW)) {
+            throw new MateClawException("err.llm.context_window_out_of_range",
+                    "上下文窗口需要在 " + MIN_CONTEXT_WINDOW + " ~ " + MAX_CONTEXT_WINDOW + " tokens 之间");
+        }
+        entity.setMaxInputTokens(value);
+        modelConfigMapper.updateById(entity);
+        publishConfigChanged("model-context-window-updated");
         return entity;
     }
 

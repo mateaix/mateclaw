@@ -58,7 +58,10 @@ class SkillControllerLifecycleTest {
         controller = new SkillController(
                 skillService, null, null, null, null, null, null, null, null, null, null,
                 agentBindingService, null, null,
-                skillLifecycleService, skillCuratorJob, skillCuratorReportStore, null);
+                skillLifecycleService, skillCuratorJob, skillCuratorReportStore,
+                /* skillSnapshotService */ null,
+                /* skillRoutineService */ null,
+                /* skillRoutineMiner */ null, null);
     }
 
     private SkillEntity skill(String state, boolean builtin) {
@@ -151,45 +154,45 @@ class SkillControllerLifecycleTest {
 
     @Test
     void curatorDryRunDelegatesToJob() {
-        when(skillCuratorJob.dryRunNow())
+        when(skillCuratorJob.dryRunNow(1L))
                 .thenReturn(SkillCuratorReport.builder().runAt(LocalDateTime.now()).build());
-        controller.curatorDryRun();
-        verify(skillCuratorJob).dryRunNow();
+        controller.curatorDryRun(1L);
+        verify(skillCuratorJob).dryRunNow(1L);
     }
 
     @Test
     void curatorActivateFlipsTheFlag() {
-        when(skillCuratorJob.status()).thenReturn(Map.of());
-        controller.curatorActivate(true);
-        verify(skillCuratorJob).activate(true);
+        when(skillCuratorJob.status(1L)).thenReturn(Map.of());
+        controller.curatorActivate(true, 1L);
+        verify(skillCuratorJob).activate(1L, true);
     }
 
     @Test
     void curatorPauseAndResumeToggleTheJob() {
-        when(skillCuratorJob.status()).thenReturn(Map.of());
-        controller.curatorPause();
-        verify(skillCuratorJob).setPaused(true);
-        controller.curatorResume();
-        verify(skillCuratorJob).setPaused(false);
+        when(skillCuratorJob.status(1L)).thenReturn(Map.of());
+        controller.curatorPause(1L);
+        verify(skillCuratorJob).setPaused(1L, true);
+        controller.curatorResume(1L);
+        verify(skillCuratorJob).setPaused(1L, false);
     }
 
     @Test
     void curatorReportsListsRunIds() {
-        when(skillCuratorReportStore.listRunIds(20)).thenReturn(List.of("20260519-020000"));
-        R<List<String>> r = controller.curatorReports();
+        when(skillCuratorReportStore.listRunIds(1L, 20)).thenReturn(List.of("20260519-020000"));
+        R<List<String>> r = controller.curatorReports(1L);
         assertEquals(1, r.getData().size());
     }
 
     @Test
     void curatorReportReadsAKnownRun() {
-        when(skillCuratorReportStore.readRun("20260519-020000")).thenReturn(Map.of("runId", "20260519-020000"));
-        R<Object> r = controller.curatorReport("20260519-020000");
+        when(skillCuratorReportStore.readRun(1L, "20260519-020000")).thenReturn(Map.of("runId", "20260519-020000"));
+        R<Object> r = controller.curatorReport("20260519-020000", 1L);
         assertEquals(200, r.getCode());
     }
 
     @Test
     void curatorReportThrowsForUnknownRun() {
-        when(skillCuratorReportStore.readRun("nope")).thenReturn(null);
-        assertThrows(MateClawException.class, () -> controller.curatorReport("nope"));
+        when(skillCuratorReportStore.readRun(1L, "nope")).thenReturn(null);
+        assertThrows(MateClawException.class, () -> controller.curatorReport("nope", 1L));
     }
 }

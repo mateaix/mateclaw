@@ -494,7 +494,7 @@ curl "http://localhost:18088/api/v1/audit/events?from=2026-04-01&to=2026-04-11&a
 | **关掉 H2 console** | 生产环境 `spring.h2.console.enabled=false` |
 | **防火墙** | 只开放对外端口 |
 | **限流** | 在反向代理层配置 |
-| **MySQL，不是 H2** | 生产用独立的 MySQL 8 实例 |
+| **生产数据库，不用 H2** | 推荐按公开 Docker 栈使用 PostgreSQL 16；也支持独立 MySQL 8 或 KingbaseES |
 
 ### Nginx 反向代理示例
 

@@ -3,11 +3,17 @@ package vip.mate.channel.webchat;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.TestPropertySource;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+import reactor.core.publisher.Flux;
 import vip.mate.MateClawApplication;
+import vip.mate.agent.AgentService;
+import vip.mate.agent.model.AgentEntity;
 import vip.mate.approval.ApprovalWorkflowService;
 import vip.mate.approval.PendingApproval;
 import vip.mate.channel.web.ChatStreamTracker;
@@ -15,8 +21,12 @@ import vip.mate.channel.webchat.WebChatController.WebChatCreateSessionRequest;
 import vip.mate.common.result.R;
 
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 
 /**
  * Verifies ISSUE #413 P1: the WebChat (API-Key) channel can now resolve tool
@@ -36,7 +46,8 @@ import static org.assertj.core.api.Assertions.assertThat;
         "spring.datasource.url=jdbc:h2:mem:webchat_approve_${random.uuid};MODE=MySQL;DATABASE_TO_LOWER=TRUE;CASE_INSENSITIVE_IDENTIFIERS=TRUE;DB_CLOSE_DELAY=-1",
         "spring.ai.dashscope.api-key=test-key",
         "spring.main.web-application-type=none",
-        "mateclaw.jwt.secret=webchat-it-secret-0123456789"
+        "mateclaw.jwt.secret=webchat-it-secret-0123456789",
+        "mateclaw.webchat.orphan-grace-sec=-1"
 })
 class WebChatApprovalInteractionTest {
 
@@ -49,6 +60,7 @@ class WebChatApprovalInteractionTest {
     @Autowired private ApprovalWorkflowService approvalService;
     @Autowired private ChatStreamTracker streamTracker;
     @Autowired private JdbcTemplate jdbc;
+    @MockBean private AgentService agentService;
 
     @BeforeEach
     void setUp() {
@@ -64,6 +76,10 @@ class WebChatApprovalInteractionTest {
                         "workspace_id, create_time, update_time, deleted) " +
                         "VALUES (?, 'wc', 'webchat', ?, ?, TRUE, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 0)",
                 CHANNEL_ID, AGENT_ID, "{\"api_key\":\"" + API_KEY + "\"}");
+        AgentEntity agent = new AgentEntity();
+        agent.setId(AGENT_ID);
+        agent.setWorkspaceId(1L);
+        Mockito.when(agentService.getAgent(AGENT_ID)).thenReturn(agent);
     }
 
     private WebChatCreateSessionRequest req(String visitorId, String sessionId) {
@@ -219,5 +235,81 @@ class WebChatApprovalInteractionTest {
                 API_KEY, tokenFor("visitorG"), "visitorG", "s1");
         assertThat(r.getCode()).isEqualTo(200);
         assertThat(r.getData().get("stopped")).isEqualTo(Boolean.FALSE);
+    }
+
+    @Test
+    @DisplayName("disconnect before approval worker registration arms orphan cleanup")
+    void disconnectBeforeApprovalWorkerRegistrationIsNotLost() throws Exception {
+        String visitorId = "visitor-pre-register-disconnect";
+        String sessionId = "s1";
+        String pendingId = seedPending(visitorId, sessionId);
+        String cid = WebChatController.deriveConversationId(API_KEY, visitorId, sessionId);
+        Mockito.when(agentService.chatWithReplayStream(
+                        eq(AGENT_ID), anyString(), eq(cid), anyString(), anyString(), any()))
+                .thenReturn(Flux.never());
+
+        WebChatDisconnectTestSupport.QueuedExecutorService queued =
+                new WebChatDisconnectTestSupport.QueuedExecutorService();
+        ExecutorService original = WebChatDisconnectTestSupport.swapExecutor(controller, queued);
+        try {
+            SseEmitter emitter = controller.approveSession(
+                    API_KEY, tokenFor(visitorId), visitorId, sessionId, pendingId);
+            WebChatDisconnectTestSupport.fireCompletion(emitter);
+            queued.runNext();
+        } finally {
+            WebChatDisconnectTestSupport.swapExecutor(controller, original);
+        }
+
+        streamTracker.cleanupStaleRuns();
+
+        assertThat(streamTracker.streamExistsOnThisNode(cid))
+                .as("an approval disconnect observed before registration must arm orphan cleanup")
+                .isFalse();
+    }
+
+    @Test
+    @DisplayName("approval replay persists full usage metadata from _usage_final")
+    void approvalReplayPersistsFullUsageMetadata() throws Exception {
+        String visitorId = "visitor-usage-final";
+        String sessionId = "s1";
+        String pendingId = seedPending(visitorId, sessionId);
+        String cid = WebChatController.deriveConversationId(API_KEY, visitorId, sessionId);
+        Mockito.when(agentService.chatWithReplayStream(
+                        eq(AGENT_ID), anyString(), eq(cid), anyString(), anyString(), any()))
+                .thenReturn(Flux.just(
+                        AgentService.StreamDelta.event("_usage_final", Map.of(
+                                "promptTokens", 11,
+                                "completionTokens", 7,
+                                "cacheReadTokens", 3,
+                                "cacheWriteTokens", 2,
+                                "reasoningTokens", 5,
+                                "runtimeModelName", "mock-replay-model",
+                                "runtimeProviderId", "mock-provider")),
+                        new AgentService.StreamDelta("approved reply", null)));
+
+        WebChatDisconnectTestSupport.QueuedExecutorService queued =
+                new WebChatDisconnectTestSupport.QueuedExecutorService();
+        ExecutorService original = WebChatDisconnectTestSupport.swapExecutor(controller, queued);
+        try {
+            controller.approveSession(API_KEY, tokenFor(visitorId), visitorId, sessionId, pendingId);
+            queued.runNext();
+        } finally {
+            WebChatDisconnectTestSupport.swapExecutor(controller, original);
+        }
+
+        Map<String, Object> row = jdbc.queryForMap(
+                "SELECT content, prompt_tokens, completion_tokens, cache_read_tokens, " +
+                        "cache_write_tokens, reasoning_tokens, runtime_model, runtime_provider " +
+                        "FROM mate_message WHERE conversation_id = ? AND role = 'assistant' " +
+                        "ORDER BY create_time DESC LIMIT 1",
+                cid);
+        assertThat(row.get("CONTENT")).isEqualTo("approved reply");
+        assertThat(((Number) row.get("PROMPT_TOKENS")).intValue()).isEqualTo(11);
+        assertThat(((Number) row.get("COMPLETION_TOKENS")).intValue()).isEqualTo(7);
+        assertThat(((Number) row.get("CACHE_READ_TOKENS")).intValue()).isEqualTo(3);
+        assertThat(((Number) row.get("CACHE_WRITE_TOKENS")).intValue()).isEqualTo(2);
+        assertThat(((Number) row.get("REASONING_TOKENS")).intValue()).isEqualTo(5);
+        assertThat(row.get("RUNTIME_MODEL")).isEqualTo("mock-replay-model");
+        assertThat(row.get("RUNTIME_PROVIDER")).isEqualTo("mock-provider");
     }
 }

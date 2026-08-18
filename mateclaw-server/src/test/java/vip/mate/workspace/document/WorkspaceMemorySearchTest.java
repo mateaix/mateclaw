@@ -68,6 +68,22 @@ class WorkspaceMemorySearchTest {
         org.mockito.Mockito.verify(eventPublisher).publishEvent(captor.capture());
         assertThat(captor.getValue().agentId()).isEqualTo(1000000001L);
         assertThat(captor.getValue().filename()).isEqualTo("MEMORY.md");
+        assertThat(captor.getValue().affectsSystemPrompt()).isTrue();
+    }
+
+    @Test
+    @DisplayName("saveMemoryFile publishes a non-system-prompt change event")
+    void saveMemoryFilePublishesNonInvalidatingChangeEvent() {
+        when(fileMapper.selectOne(any(), org.mockito.ArgumentMatchers.anyBoolean())).thenReturn(null);
+
+        service.saveMemoryFile(1000000001L, "memory/2026-08-14.md", "## 今日\n- 临时笔记", "web:admin");
+
+        ArgumentCaptor<vip.mate.workspace.document.event.WorkspaceFileChangedEvent> captor =
+                ArgumentCaptor.forClass(vip.mate.workspace.document.event.WorkspaceFileChangedEvent.class);
+        org.mockito.Mockito.verify(eventPublisher).publishEvent(captor.capture());
+        assertThat(captor.getValue().agentId()).isEqualTo(1000000001L);
+        assertThat(captor.getValue().filename()).isEqualTo("memory/2026-08-14.md");
+        assertThat(captor.getValue().affectsSystemPrompt()).isFalse();
     }
 
     // ---------- tokenize ----------

@@ -470,6 +470,15 @@ MERGE INTO mate_tool (id, name, display_name, description, tool_type, bean_name,
 KEY (id)
 VALUES (1000000027, 'LocalShellTool', 'Local Shell', 'Execute shell commands on the user''s local desktop machine via the desktop tunnel. Requires native user approval.', 'builtin', 'localShellTool', '🖥', TRUE, TRUE, NOW(), NOW(), 0);
 
+-- Builtin tool: channel message push
+MERGE INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
+KEY (id)
+VALUES (1000000028, 'ChannelMessageTool', 'Channel Message Push', 'Proactively push messages to IM channel conversations. list_channel_sessions discovers pushable conversations; send_channel_message performs a one-way push — for alerts, reminders, and async task results.', 'builtin', 'channelMessageTool', '📤', TRUE, TRUE, NOW(), NOW(), 0);
+
+MERGE INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
+KEY (id)
+VALUES (1000000029, 'OfficeCliTool', 'OfficeCLI Advanced Documents', 'Inspect, validate, copy-edit, merge, and render DOCX/XLSX/PPTX through the optional iOfficeAI/OfficeCLI binary. Mutations are copy-on-write and return generated-file links.', 'builtin', 'officeCliTool', '🏢', TRUE, TRUE, NOW(), NOW(), 0);
+
 -- Built-in tool: Edit File (enabled by default, dangerous ops controlled by ToolGuard)
 MERGE INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
 KEY (id)
@@ -702,7 +711,11 @@ MERGE INTO mate_skill (id, name, description, skill_type, icon, version, author,
 KEY (id)
 VALUES (1000000019, 'multi_agent_collaboration', 'When a task requires the professional capabilities of multiple Agents, orchestrate parallel or serial multi-agent collaboration and integrate results.', 'builtin', '🤝', '1.4.0', 'MateClaw', '{"upstream":"mateclaw","entryFile":"SKILL.md"}', TRUE, TRUE, 'multi-agent,collaboration,orchestration,parallel', NOW(), NOW(), 0);
 
--- RFC-042 §2.2 — bilingual display names for the 19 builtin skills.
+MERGE INTO mate_skill (id, name, description, skill_type, icon, version, author, config_json, enabled, builtin, tags, create_time, update_time, deleted)
+KEY (id)
+VALUES (1000000020, 'officecli', 'Use optional iOfficeAI/OfficeCLI for advanced inspection, validation, copy editing, template merge, and visual rendering of existing DOCX/XLSX/PPTX files.', 'builtin', '🏢', '1.0.0', 'MateClaw', '{"upstream":"mateclaw","entryFile":"SKILL.md"}', TRUE, TRUE, 'office,officecli,docx,xlsx,pptx,render,validate', NOW(), NOW(), 0);
+
+-- RFC-042 §2.2 — bilingual display names for the 20 builtin skills.
 -- Identical across all four data-*.sql files because name_zh / name_en are
 -- permanent attributes, not locale-conditional. The UI picks which one to
 -- show based on the active i18n locale and falls back to `name` when null.
@@ -713,6 +726,7 @@ UPDATE mate_skill SET name_zh = '邮件管理',       name_en = 'Email (Himalaya
 UPDATE mate_skill SET name_zh = '新闻查询',       name_en = 'News'                     WHERE name = 'news';
 UPDATE mate_skill SET name_zh = 'PDF 处理',       name_en = 'PDF'                      WHERE name = 'pdf';
 UPDATE mate_skill SET name_zh = 'Word 文档',      name_en = 'Word Document'            WHERE name = 'docx';
+UPDATE mate_skill SET name_zh = 'OfficeCLI 高级文档', name_en = 'OfficeCLI Advanced Documents' WHERE name = 'officecli';
 UPDATE mate_skill SET name_zh = 'PPT 演示',       name_en = 'PowerPoint'               WHERE name = 'pptx';
 UPDATE mate_skill SET name_zh = 'Excel 表格',     name_en = 'Excel'                    WHERE name = 'xlsx';
 UPDATE mate_skill SET name_zh = '可见浏览器',     name_en = 'Visible Browser'          WHERE name = 'browser_visible';

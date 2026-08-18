@@ -14,6 +14,11 @@ import vip.mate.llm.failover.ProviderInitProbe;
 import vip.mate.llm.model.CreateCustomProviderRequest;
 import vip.mate.llm.model.ModelProviderEntity;
 import vip.mate.llm.model.ProviderConfigRequest;
+import java.util.List;
+
+import vip.mate.config.ConversationWindowProperties;
+import vip.mate.llm.probe.ContextProbeProperties;
+import vip.mate.llm.probe.ModelContextWindowResolver;
 import vip.mate.llm.repository.ModelProviderMapper;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -67,7 +72,9 @@ class ModelProviderServiceCustomProviderTest {
         when(initProbeProvider.getIfAvailable()).thenReturn(initProbe);
 
         service = new ModelProviderService(providerMapper, modelConfigService, eventPublisher,
-                claudeCodeOAuthProvider, pool, healthTracker, initProbeProvider);
+                claudeCodeOAuthProvider, pool, healthTracker, initProbeProvider,
+                new ModelContextWindowResolver(List.of(), new ContextProbeProperties()),
+                new ConversationWindowProperties());
     }
 
     // ==================== create-side guard ====================

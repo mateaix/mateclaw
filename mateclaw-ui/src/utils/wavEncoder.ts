@@ -2,11 +2,10 @@
  * Browser-side recorder that captures microphone audio via the Web Audio API
  * and encodes it directly to a 16-bit PCM WAV blob.
  *
- * <p>Why this exists: MediaRecorder produces WebM/Opus, which DashScope
- * Paraformer rejects (it accepts wav/mp3/m4a/flac/aac/amr/ogg-Vorbis only).
- * OpenAI Whisper claims WebM support but is finicky with the codecs string
- * MediaRecorder picks. WAV is the lowest common denominator that every STT
- * provider accepts without server-side transcoding.
+ * <p>Why this exists: MediaRecorder output and codec strings vary by browser.
+ * A canonical PCM WAV is the lowest common denominator that every STT
+ * provider accepts without server-side transcoding, and its samples can be
+ * inspected locally for silence and duration before an API call.
  *
  * <p>Trade-off: WAV files are ~10x larger than Opus. For typical
  * conversational STT (5-30s clips at 16 kHz / 16-bit / mono) that's
@@ -54,6 +53,12 @@ export interface WavRecording {
 export class WavRecorder {
     private audioContext: AudioContext | null = null;
     private mediaStream: MediaStream | null = null;
+    /** Deduplicates warm-up/start getUserMedia calls so they cannot overwrite each other's stream. */
+    private mediaStreamPromise: Promise<MediaStream> | null = null;
+    /** Lets stop() wait for a permission/start sequence that has not finished yet. */
+    private starting: Promise<void> | null = null;
+    /** Warm-up recorders are disposable; a released instance must never retain a late stream. */
+    private released = false;
     private source: MediaStreamAudioSourceNode | null = null;
     private processor: ScriptProcessorNode | null = null;
     /** Silent sink node — keeps the processor graph alive without echoing through speakers. */
@@ -73,8 +78,8 @@ export class WavRecorder {
      * <p>Safe to call multiple times. Subsequent calls return immediately.
      */
     async warmUp(): Promise<void> {
-        if (this.mediaStream) return;
-        this.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        if (this.released) throw new DOMException('Recorder has been released', 'InvalidStateError');
+        await this.ensureMediaStream();
     }
 
     /**
@@ -82,7 +87,20 @@ export class WavRecorder {
      * Already-started recorders are idempotent — calling start twice is a no-op.
      */
     async start(): Promise<void> {
+        if (this.starting) return this.starting;
         if (this.audioContext) return;
+        if (this.released) throw new DOMException('Recorder has been released', 'InvalidStateError');
+
+        const pending = this.startInternal();
+        this.starting = pending;
+        try {
+            await pending;
+        } finally {
+            if (this.starting === pending) this.starting = null;
+        }
+    }
+
+    private async startInternal(): Promise<void> {
 
         // sampleRate hint: browsers honour it on Chrome/Edge but Safari may
         // ignore it and run at the device default. We resample manually in
@@ -90,45 +108,57 @@ export class WavRecorder {
         const ctx = new AudioContext();
         this.audioContext = ctx;
         this.inputSampleRate = ctx.sampleRate;
-        // Reuse the warmed-up stream when present so we skip the permission
-        // dialog on the press-and-hold path.
-        if (!this.mediaStream) {
-            this.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        try {
+            // Reuse the warmed-up stream when present so we skip the permission
+            // dialog on the press-and-hold path.
+            const mediaStream = await this.ensureMediaStream();
+            // Modern Chromium AudioContexts created from a user gesture may still
+            // arrive suspended if mic permission was prompted asynchronously.
+            // Force-resume so onaudioprocess actually fires.
+            if (ctx.state === 'suspended') {
+                await ctx.resume();
+            }
+            this.source = ctx.createMediaStreamSource(mediaStream);
+            this.processor = ctx.createScriptProcessor(4096, 1, 1);
+            this.processor.onaudioprocess = (e) => {
+                const channel = e.inputBuffer.getChannelData(0);
+                // Defensive copy — the underlying buffer is reused on the next callback.
+                this.chunks.push(new Float32Array(channel));
+            };
+            // Wire source → processor → silent gain → destination. The gain=0
+            // node muzzles the echo through the speakers but keeps the chain
+            // attached to destination, which Chrome requires to fire
+            // onaudioprocess. Connecting processor directly to destination
+            // would echo the mic input back through speakers (feedback) AND
+            // some browsers stop calling onaudioprocess if they decide the
+            // chain "produces no audible output" — the explicit GainNode
+            // makes that decision unambiguous.
+            const silentSink = ctx.createGain();
+            silentSink.gain.value = 0;
+            this.silentSink = silentSink;
+            this.source.connect(this.processor);
+            this.processor.connect(silentSink);
+            silentSink.connect(ctx.destination);
+            this.startTimeMs = Date.now();
+            // Diagnostic — paste from devtools console when the recording silently
+            // produces 0 bytes. Includes sample rate so we can confirm Safari
+            // is at 44.1kHz vs Chrome's 48kHz.
+            console.debug('[WavRecorder] started',
+                    'sampleRate=', ctx.sampleRate,
+                    'state=', ctx.state);
+        } catch (error) {
+            this.processor?.disconnect();
+            this.source?.disconnect();
+            this.silentSink?.disconnect();
+            this.mediaStream?.getTracks().forEach((track) => track.stop());
+            await ctx.close().catch(() => {});
+            this.audioContext = null;
+            this.mediaStream = null;
+            this.source = null;
+            this.processor = null;
+            this.silentSink = null;
+            throw error;
         }
-        // Modern Chromium AudioContexts created from a user gesture may still
-        // arrive suspended if mic permission was prompted asynchronously.
-        // Force-resume so onaudioprocess actually fires.
-        if (ctx.state === 'suspended') {
-            await ctx.resume();
-        }
-        this.source = ctx.createMediaStreamSource(this.mediaStream);
-        this.processor = ctx.createScriptProcessor(4096, 1, 1);
-        this.processor.onaudioprocess = (e) => {
-            const channel = e.inputBuffer.getChannelData(0);
-            // Defensive copy — the underlying buffer is reused on the next callback.
-            this.chunks.push(new Float32Array(channel));
-        };
-        // Wire source → processor → silent gain → destination. The gain=0
-        // node muzzles the echo through the speakers but keeps the chain
-        // attached to destination, which Chrome requires to fire
-        // onaudioprocess. Connecting processor directly to destination
-        // would echo the mic input back through speakers (feedback) AND
-        // some browsers stop calling onaudioprocess if they decide the
-        // chain "produces no audible output" — the explicit GainNode
-        // makes that decision unambiguous.
-        const silentSink = ctx.createGain();
-        silentSink.gain.value = 0;
-        this.silentSink = silentSink;
-        this.source.connect(this.processor);
-        this.processor.connect(silentSink);
-        silentSink.connect(ctx.destination);
-        this.startTimeMs = Date.now();
-        // Diagnostic — paste from devtools console when the recording silently
-        // produces 0 bytes. Includes sample rate so we can confirm Safari
-        // is at 44.1kHz vs Chrome's 48kHz.
-        console.debug('[WavRecorder] started',
-                'sampleRate=', ctx.sampleRate,
-                'state=', ctx.state);
     }
 
     /**
@@ -136,6 +166,14 @@ export class WavRecorder {
      * Returns null when nothing was captured (e.g. start failed silently).
      */
     async stop(): Promise<WavRecording | null> {
+        const pendingStart = this.starting;
+        if (pendingStart) {
+            try {
+                await pendingStart;
+            } catch {
+                return null;
+            }
+        }
         if (!this.audioContext) return null;
 
         const durationSeconds = Math.round((Date.now() - this.startTimeMs)) / 1000;
@@ -149,6 +187,8 @@ export class WavRecorder {
         await this.audioContext.close();
         this.audioContext = null;
         this.mediaStream = null;
+        this.mediaStreamPromise = null;
+        this.released = true;
         this.source = null;
         this.processor = null;
         this.silentSink = null;
@@ -169,7 +209,7 @@ export class WavRecorder {
         }
         const merged = mergeFloat32(collected);
         // Resample to 16 kHz if we captured at a higher rate (Safari often runs
-        // the AudioContext at 44.1 kHz). 16 kHz is what Whisper / Paraformer
+        // the AudioContext at 44.1 kHz). 16 kHz is what speech recognizers
         // expect, and shrinks the WAV by ~3x at no quality cost for speech.
         const resampled = sampleRate === TARGET_SAMPLE_RATE
             ? merged
@@ -188,9 +228,43 @@ export class WavRecorder {
      * Pair with {@link warmUp} on modal close.
      */
     releaseWarmUp(): void {
+        this.released = true;
         if (this.audioContext) return;  // active recording owns the stream
         this.mediaStream?.getTracks().forEach((t) => t.stop());
         this.mediaStream = null;
+        // getUserMedia may resolve after the component was unmounted. Stop
+        // that late stream immediately instead of leaving the mic indicator on.
+        this.mediaStreamPromise?.then((stream) => {
+            stream.getTracks().forEach((track) => track.stop());
+        }).catch(() => {});
+        this.mediaStreamPromise = null;
+    }
+
+    /** Acquire one stable mono speech stream shared by warm-up and recording start. */
+    private async ensureMediaStream(): Promise<MediaStream> {
+        if (this.mediaStream?.getAudioTracks().some((track) => track.readyState === 'live')) {
+            return this.mediaStream;
+        }
+        if (!this.mediaStreamPromise) {
+            this.mediaStreamPromise = navigator.mediaDevices.getUserMedia({
+                audio: {
+                    channelCount: 1,
+                    echoCancellation: true,
+                    noiseSuppression: true,
+                    autoGainControl: true,
+                },
+            }).then((stream) => {
+                if (this.released) {
+                    stream.getTracks().forEach((track) => track.stop());
+                    throw new DOMException('Recorder was released while requesting microphone access', 'AbortError');
+                }
+                this.mediaStream = stream;
+                return stream;
+            }).finally(() => {
+                this.mediaStreamPromise = null;
+            });
+        }
+        return this.mediaStreamPromise;
     }
 }
 
@@ -212,8 +286,8 @@ function mergeFloat32(chunks: Float32Array[]): Float32Array {
 
 /**
  * Decimating linear-interpolation resampler. Adequate for 16 kHz speech —
- * the accuracy gap vs polyphase resampling is inaudible to Whisper /
- * Paraformer at the input sample rates we see in practice (44.1k → 16k).
+ * the accuracy gap vs polyphase resampling is immaterial to speech
+ * recognizers at the input sample rates we see in practice (44.1k → 16k).
  */
 function downsample(samples: Float32Array, fromRate: number, toRate: number): Float32Array {
     if (fromRate === toRate) return samples;

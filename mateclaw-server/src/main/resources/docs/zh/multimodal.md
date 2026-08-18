@@ -106,7 +106,7 @@ Google 的图像生成走 **Nano Banana Pro**（`gemini-3-pro-image-preview`）�
 
 ### 语音识别（STT）—— 两个供应商
 
-- **DashScope Paraformer**——中文优先，低延迟
+- **DashScope Qwen3-ASR Flash**——支持多语种，强化中文及方言识别
 - **OpenAI Whisper**——多语言行业基准
 
 在聊天输入框按住麦克风图标讲话，松手转文本。识别结果可以在发送前再改一遍。
@@ -178,7 +178,7 @@ Agent 调用它们和调用任何其他工具一样。工具层负责供应商�
 - **视频**——短视频 demo、社交内容、产品动画。追求质量用 Runway，中文场景用 MiniMax，想本地云就 DashScope。
 - **音乐**——背景音乐、Demo 音效、创意尝试。目前两家，后面还会扩。
 - **TTS**——无障碍朗读、有声书式阅读、多语言内容。中文用 CosyVoice，英语要多样化就 OpenAI。
-- **STT**——语音输入、会议转写、口述工作流。中文用 Paraformer，其他语言用 Whisper。
+- **STT**——语音输入、会议转写、口述工作流。中文及多语种录音可使用 Qwen3-ASR，也可接入 Whisper 兼容端点。
 
 ---
 

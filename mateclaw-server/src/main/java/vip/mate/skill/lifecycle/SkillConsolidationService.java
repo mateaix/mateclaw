@@ -12,15 +12,22 @@ import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.stereotype.Service;
 import vip.mate.agent.AgentGraphBuilder;
+import vip.mate.agent.binding.service.AgentBindingService;
 import vip.mate.agent.context.ChatOrigin;
 import vip.mate.agent.prompt.PromptLoader;
+import vip.mate.common.text.SecretRedactor;
 import vip.mate.llm.model.ModelConfigEntity;
 import vip.mate.llm.service.ModelConfigService;
 import vip.mate.skill.model.SkillEntity;
+import vip.mate.skill.model.SkillOrigin;
 import vip.mate.skill.service.SkillService;
+import vip.mate.skill.runtime.SkillRuntimeService;
+import vip.mate.skill.workspace.SkillWorkspaceManager;
 import vip.mate.tool.builtin.SkillManageTool;
 
 import java.time.LocalDateTime;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -52,8 +59,10 @@ public class SkillConsolidationService {
     private final AgentGraphBuilder agentGraphBuilder;
     private final SkillLifecycleProperties properties;
     private final ObjectMapper objectMapper;
-
-    private static final int CATALOG_BODY_TRUNCATE_CHARS = 1500;
+    private final SkillWorkspaceManager workspaceManager;
+    private final SkillConsolidationTransactionRunner transactionRunner;
+    private final SkillRuntimeService runtimeService;
+    private final AgentBindingService agentBindingService;
 
     /**
      * Run a consolidation pass over the given candidate skills, recording
@@ -62,10 +71,21 @@ public class SkillConsolidationService {
      */
     public void consolidate(List<SkillEntity> candidates, LocalDateTime now,
                             boolean dryRun, SkillCuratorReport.Builder report) {
-        if (!properties.isConsolidate()) {
+        Long workspaceId = candidates == null ? 1L : candidates.stream()
+                .map(SkillEntity::getWorkspaceId)
+                .filter(java.util.Objects::nonNull)
+                .findFirst().orElse(1L);
+        consolidate(candidates, now, dryRun, report, workspaceId);
+    }
+
+    public void consolidate(List<SkillEntity> candidates, LocalDateTime now,
+                            boolean dryRun, SkillCuratorReport.Builder report,
+                            Long workspaceId) {
+        if (workspaceId == null || workspaceId <= 0 || candidates == null) {
             return;
         }
         List<SkillEntity> withContent = candidates.stream()
+                .filter(s -> workspaceId.equals(s.getWorkspaceId()))
                 .filter(s -> s.getSkillContent() != null && !s.getSkillContent().isBlank())
                 .toList();
         if (withContent.size() < properties.getConsolidateMinSkills()) {
@@ -88,14 +108,24 @@ public class SkillConsolidationService {
             if (applied >= properties.getConsolidateMaxGroupsPerRun()) {
                 break;
             }
-            if (applyGroup(group, byName, now, dryRun, report)) {
-                applied++;
+            try {
+                if (transactionRunner.execute(
+                        () -> applyGroup(group, byName, now, dryRun, report, workspaceId))) {
+                    applied++;
+                }
+            } catch (RuntimeException e) {
+                // applyGroup has already compensated its filesystem work. The
+                // transaction runner returns only after the DB rollback, so now
+                // rebuild caches/wrappers from the committed state.
+                runtimeService.refreshActiveSkills();
+                throw e;
             }
         }
     }
 
     private boolean applyGroup(JsonNode group, Map<String, SkillEntity> byName,
-                               LocalDateTime now, boolean dryRun, SkillCuratorReport.Builder report) {
+                               LocalDateTime now, boolean dryRun, SkillCuratorReport.Builder report,
+                               Long workspaceId) {
         String umbrellaName = group.path("umbrella_name").asText("").strip().toLowerCase();
         String umbrellaContent = group.path("umbrella_content").asText(null);
         String reason = group.path("reason").asText("");
@@ -112,8 +142,10 @@ public class SkillConsolidationService {
                 absorb.add(nm);
             }
         }
-        SkillEntity existingUmbrella = skillService.findByName(umbrellaName);
+        SkillEntity existingUmbrella = skillService.findByName(umbrellaName, workspaceId);
         boolean willCreate = existingUmbrella == null;
+        Path previousWorkspace = workspaceManager.resolveEffectivePath(umbrellaName, null, workspaceId);
+        String previousWorkspaceContent = readWorkspaceContent(previousWorkspace);
         // A real merge must touch at least two distinct skills: a brand-new
         // umbrella needs >=2 absorbed; reusing an existing skill as the
         // umbrella needs >=1 absorbed (the umbrella itself is the second).
@@ -129,6 +161,13 @@ public class SkillConsolidationService {
             return true;
         }
 
+        // The reviewer call may take seconds. Re-read every victim inside the
+        // group transaction before any write so a concurrent pin, release,
+        // workspace move, archive, or agent binding cancels the whole plan.
+        for (String nm : absorb) {
+            requireStillEligible(byName.get(nm), workspaceId);
+        }
+
         // Stamp the umbrella with a source conversation from one absorbed skill
         // so it stays curator-eligible under the AGENT_CREATED scope.
         String lineageConv = absorb.stream()
@@ -136,10 +175,11 @@ public class SkillConsolidationService {
                 .map(SkillEntity::getSourceConversationId)
                 .filter(c -> c != null && !c.isBlank())
                 .findFirst().orElse(null);
-        ToolContext ctx = toolContext(lineageConv);
+        ToolContext ctx = toolContext(lineageConv, workspaceId);
 
         String act = willCreate ? "create" : "edit";
-        String result = skillManageTool.skill_manage(act, umbrellaName, umbrellaContent, null, null, null, ctx);
+        String result = skillManageTool.skillManageAs(SkillOrigin.AGENT, act, umbrellaName,
+                umbrellaContent, null, null, null, ctx);
         boolean umbrellaOk = result != null
                 && !result.startsWith("Error") && !result.startsWith("Security scan BLOCKED");
         if (!umbrellaOk) {
@@ -148,17 +188,46 @@ public class SkillConsolidationService {
         }
 
         // Archive the absorbed narrow skills (recoverable, never deleted).
-        for (String nm : absorb) {
-            SkillEntity victim = byName.get(nm);
-            if (victim == null) {
-                continue;
-            }
-            try {
-                lifecycleService.applyManual(victim, LifecycleTransition.TO_ARCHIVED, now,
+        // Compensate filesystem moves before propagating a failure so the
+        // surrounding transaction can roll back the database half as well.
+        List<SkillEntity> archived = new ArrayList<>();
+        try {
+            for (String nm : absorb) {
+                SkillEntity victim = byName.get(nm);
+                if (victim == null) {
+                    continue;
+                }
+                SkillEntity freshVictim = requireStillEligible(victim, workspaceId);
+                boolean ok = lifecycleService.applyManual(freshVictim, LifecycleTransition.TO_ARCHIVED, now,
                         "consolidated into " + umbrellaName);
-            } catch (Exception e) {
-                log.warn("[SkillConsolidate] Failed to archive absorbed skill '{}': {}", nm, e.getMessage());
+                if (!ok) {
+                    throw new IllegalStateException("Failed to archive absorbed skill '" + nm + "'");
+                }
+                archived.add(freshVictim);
             }
+        } catch (Exception e) {
+            for (int i = archived.size() - 1; i >= 0; i--) {
+                SkillEntity victim = archived.get(i);
+                if (workspaceManager.restoreWorkspace(victim.getName(), workspaceId)
+                        == SkillWorkspaceManager.RestoreResult.FAILED) {
+                    log.error("[SkillConsolidate] Filesystem compensation failed for '{}'", victim.getName());
+                }
+            }
+            if (willCreate) {
+                if (previousWorkspace == null) {
+                    workspaceManager.purgeWorkspace(umbrellaName, workspaceId);
+                } else if (previousWorkspaceContent != null) {
+                    workspaceManager.exportToWorkspace(umbrellaName, previousWorkspaceContent, workspaceId);
+                } else {
+                    log.error("[SkillConsolidate] Refusing to purge pre-existing workspace for '{}' during compensation",
+                            umbrellaName);
+                }
+            } else if (existingUmbrella.getSkillContent() != null) {
+                workspaceManager.exportToWorkspace(umbrellaName,
+                        existingUmbrella.getSkillContent(), workspaceId);
+            }
+            throw e instanceof RuntimeException runtime ? runtime
+                    : new IllegalStateException("Consolidation compensation failed", e);
         }
 
         log.info("[SkillConsolidate] {} umbrella '{}' absorbing {} — {}", act, umbrellaName, absorb, reason);
@@ -167,11 +236,34 @@ public class SkillConsolidationService {
         return true;
     }
 
+    private SkillEntity requireStillEligible(SkillEntity planned, Long workspaceId) {
+        if (planned == null || planned.getId() == null) {
+            throw new IllegalStateException("Consolidation victim is no longer available");
+        }
+        SkillEntity fresh = skillService.getSkill(planned.getId());
+        boolean wrongWorkspace = fresh == null || !workspaceId.equals(fresh.getWorkspaceId());
+        boolean noLongerManaged = "AGENT_CREATED".equals(properties.getScope())
+                && (fresh == null || !SkillOrigin.curatorManagedCodes().contains(fresh.getOrigin()));
+        if (wrongWorkspace || noLongerManaged || lifecycleService.isExempt(fresh)
+                || "archived".equals(fresh.getLifecycleState())
+                || !agentBindingService.enabledAgentsBoundToSkill(fresh.getId()).isEmpty()) {
+            throw new IllegalStateException("Skill '" + planned.getName()
+                    + "' changed while consolidation was being reviewed");
+        }
+        return fresh;
+    }
+
     private JsonNode askReviewer(List<SkillEntity> skills) {
         try {
+            String catalog = buildCatalog(skills, properties.getConsolidateCatalogCharBudget());
+            if (catalog == null) {
+                log.info("[SkillConsolidate] Skipping reviewer: complete catalog exceeds {} chars",
+                        properties.getConsolidateCatalogCharBudget());
+                return null;
+            }
             String systemPrompt = PromptLoader.loadPrompt("skill/consolidate-system");
             String userPrompt = PromptLoader.loadPrompt("skill/consolidate-user")
-                    .replace("{skills}", buildCatalog(skills, properties.getConsolidateCatalogCharBudget()));
+                    .replace("{skills}", catalog);
             ChatModel chatModel = buildChatModel();
             Prompt prompt = new Prompt(List.of(
                     new SystemMessage(systemPrompt),
@@ -188,23 +280,34 @@ public class SkillConsolidationService {
         }
     }
 
+    private static String readWorkspaceContent(Path workspace) {
+        if (workspace == null) {
+            return null;
+        }
+        try {
+            Path skillMd = workspace.resolve("SKILL.md");
+            return Files.isRegularFile(skillMd) ? Files.readString(skillMd) : null;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     private String buildCatalog(List<SkillEntity> skills, int charBudget) {
         StringBuilder sb = new StringBuilder();
         for (SkillEntity skill : skills) {
             String entry = "### " + skill.getName() + "\n"
                     + (skill.getDescription() == null ? "" : skill.getDescription().strip() + "\n")
-                    + truncate(skill.getSkillContent(), CATALOG_BODY_TRUNCATE_CHARS) + "\n\n";
+                    + SecretRedactor.redact(skill.getSkillContent()) + "\n\n";
             if (sb.length() + entry.length() > charBudget) {
-                sb.append("... (catalog truncated)\n");
-                break;
+                return null;
             }
             sb.append(entry);
         }
         return sb.toString().strip();
     }
 
-    private ToolContext toolContext(String sourceConversationId) {
-        ChatOrigin origin = new ChatOrigin(null, sourceConversationId, "", null, null,
+    private ToolContext toolContext(String sourceConversationId, Long workspaceId) {
+        ChatOrigin origin = new ChatOrigin(null, sourceConversationId, "", workspaceId, null,
                 null, null, false, null, null, null, null, null);
         return new ToolContext(Map.of(ChatOrigin.CTX_KEY, origin));
     }
@@ -246,10 +349,4 @@ public class SkillConsolidationService {
         }
     }
 
-    private static String truncate(String s, int maxLen) {
-        if (s == null) {
-            return "";
-        }
-        return s.length() <= maxLen ? s : s.substring(0, maxLen) + "... [truncated]";
-    }
 }

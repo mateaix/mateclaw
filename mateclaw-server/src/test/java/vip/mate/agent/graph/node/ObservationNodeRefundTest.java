@@ -76,6 +76,20 @@ class ObservationNodeRefundTest {
     }
 
     @Test
+    @DisplayName("退还迭代的轮次仍然递增观察计数（内容分类只能读观察计数，不能读迭代预算）")
+    void refundedRound_stillAdvancesObservationCount() throws Exception {
+        // The invariant StateGraphReActAgent.streamedContentDelta relies on: a
+        // refunded round did real observation work even though it was not
+        // charged an iteration. Classifying content by CURRENT_ITERATION here
+        // tagged the NEXT round's grounded narration as pre-tool rehearsal, and
+        // renderers collapsed it. TOOL_CALL_COUNT is never refunded or reset.
+        Map<String, Object> out = node().apply(state(0, 0, List.of(result("load_skill"))));
+
+        assertEquals(0, out.get(CURRENT_ITERATION), "iteration budget stays put — the round was refunded");
+        assertEquals(1, out.get(TOOL_CALL_COUNT), "the observation still happened and must be counted");
+    }
+
+    @Test
     @DisplayName("退还次数达上限后不再退还")
     void refundCapReached_consumesIteration() throws Exception {
         // cap is 3; refundCount already 3 -> charged normally

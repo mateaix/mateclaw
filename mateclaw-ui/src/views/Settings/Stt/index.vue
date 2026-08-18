@@ -28,7 +28,7 @@
           <select v-model="settings.sttProvider" class="form-input" :disabled="!settings.sttEnabled">
             <option value="auto">{{ t('settings.sttProviderOptions.auto') }}</option>
             <option value="openai">OpenAI Whisper</option>
-            <option value="dashscope">DashScope (Paraformer Realtime)</option>
+            <option value="dashscope">DashScope (Qwen3-ASR Flash)</option>
           </select>
         </div>
       </div>
@@ -99,7 +99,7 @@
       </div>
       <div class="provider-section">
         <div class="provider-header">
-          <span class="provider-name">DashScope (Paraformer Realtime)</span>
+          <span class="provider-name">DashScope (Qwen3-ASR Flash)</span>
           <span class="provider-tag">{{ t('settings.sttProviderTags.reuseLlmKey') }}</span>
         </div>
         <div class="settings-card"><div class="setting-item"><div class="setting-info"><div class="setting-hint">{{ t('settings.hints.dashscopeSttInfo') }}</div></div></div></div>

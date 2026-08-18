@@ -65,6 +65,13 @@ public class FeishuStreamingCardManager {
     static final long THROTTLE_INTERVAL_MS = 500;
 
     /**
+     * Hard per-card operation spacing. Feishu allows at most 10 CardKit
+     * operations/second for one card; 120ms leaves a little clock/network
+     * jitter headroom while still letting phase transitions feel immediate.
+     */
+    static final long PLATFORM_MIN_INTERVAL_MS = 120;
+
+    /**
      * Markdown element id baked into the initial streaming card.
      * Content-update calls reference this id. Public so tests can assert.
      */
@@ -90,6 +97,13 @@ public class FeishuStreamingCardManager {
 
     /** Terminal-state CAS guard — at most one of {finishCard, failCard} wins per session. */
     enum Status { STREAMING, FINISHED, FAILED }
+
+    /** Result of the two independently fallible terminal CardKit operations. */
+    public record FinishResult(boolean finalContentUpdated, boolean streamingClosed) {
+        public boolean success() {
+            return finalContentUpdated && streamingClosed;
+        }
+    }
 
     /**
      * One in-flight streaming card. State is mutated by a single Reactor
@@ -178,8 +192,8 @@ public class FeishuStreamingCardManager {
     }
 
     /**
-     * Append delta text to the running session. May flush immediately
-     * (force) or wait for the next throttle window.
+     * Append delta text to the running session. A forced update bypasses the
+     * normal 500ms UX throttle but still respects the platform hard limit.
      *
      * <p>No-op when {@code sessionKey} is unknown or the session has
      * already reached a terminal status — keeps the caller's
@@ -195,11 +209,22 @@ public class FeishuStreamingCardManager {
                 session.accumulated.append(contentDelta);
             }
         }
-        long now = currentTimeMs();
-        if (!forceFlush && now - session.lastFlushMs < THROTTLE_INTERVAL_MS) {
-            return;
-        }
-        flush(session, now);
+        flushWithPolicy(session, forceFlush);
+    }
+
+    /**
+     * Replace the streaming element with a full progress snapshot.
+     *
+     * <p>CardKit's content API expects the complete current text on every
+     * update. Agent progress is not append-only ("thinking" becomes "calling
+     * a tool", then "replying"), so treating snapshots as deltas duplicates
+     * the entire trace on every refresh.
+     */
+    public boolean updateContent(String sessionKey, String fullContent, boolean forceFlush) {
+        CardSession session = activeSessions.get(sessionKey);
+        if (session == null || !session.isStreaming()) return false;
+        replaceAccumulated(session, fullContent != null ? fullContent : "");
+        return flushWithPolicy(session, forceFlush);
     }
 
     /**
@@ -207,20 +232,24 @@ public class FeishuStreamingCardManager {
      * a second call is a no-op. After return, the sessionKey is no
      * longer known to the manager.
      */
-    public void finishCard(String sessionKey, String finalContent) {
+    public FinishResult finishCard(String sessionKey, String finalContent) {
         CardSession session = activeSessions.get(sessionKey);
-        if (session == null) return;
+        if (session == null) return new FinishResult(false, false);
         if (!session.status.compareAndSet(Status.STREAMING, Status.FINISHED)) {
-            return;
+            return new FinishResult(false, false);
         }
+        boolean contentUpdated = false;
+        boolean streamingClosed = false;
         try {
             replaceAccumulated(session, finalContent != null ? finalContent : "");
-            flush(session, currentTimeMs());
-            closeStreaming(session);
+            contentUpdated = flushWithRetry(session);
+            streamingClosed = closeStreamingWithRetry(session, summaryFor(finalContent));
+            return new FinishResult(contentUpdated, streamingClosed);
         } finally {
             activeSessions.remove(sessionKey);
-            log.info("[feishu-stream] Card finished: sessionKey={}, contentLen={}",
-                    sessionKey, finalContent == null ? 0 : finalContent.length());
+            log.info("[feishu-stream] Card finished: sessionKey={}, contentLen={}, contentUpdated={}, closed={}",
+                    sessionKey, finalContent == null ? 0 : finalContent.length(),
+                    contentUpdated, streamingClosed);
         }
     }
 
@@ -229,12 +258,14 @@ public class FeishuStreamingCardManager {
      * suffix; the card is closed so the typing animation stops.
      * Idempotent.
      */
-    public void failCard(String sessionKey, String errorMessage) {
+    public FinishResult failCard(String sessionKey, String errorMessage) {
         CardSession session = activeSessions.get(sessionKey);
-        if (session == null) return;
+        if (session == null) return new FinishResult(false, false);
         if (!session.status.compareAndSet(Status.STREAMING, Status.FAILED)) {
-            return;
+            return new FinishResult(false, false);
         }
+        boolean contentUpdated = false;
+        boolean streamingClosed = false;
         try {
             String tail;
             synchronized (session) {
@@ -246,11 +277,13 @@ public class FeishuStreamingCardManager {
                 session.accumulated.setLength(0);
                 session.accumulated.append(tail);
             }
-            flush(session, currentTimeMs());
-            closeStreaming(session);
+            contentUpdated = flushWithRetry(session);
+            streamingClosed = closeStreamingWithRetry(session, "⚠️ 处理失败");
+            return new FinishResult(contentUpdated, streamingClosed);
         } finally {
             activeSessions.remove(sessionKey);
-            log.warn("[feishu-stream] Card failed: sessionKey={}, error={}", sessionKey, errorMessage);
+            log.warn("[feishu-stream] Card failed: sessionKey={}, contentUpdated={}, closed={}, error={}",
+                    sessionKey, contentUpdated, streamingClosed, errorMessage);
         }
     }
 
@@ -272,7 +305,26 @@ public class FeishuStreamingCardManager {
     // Internal — flush + SDK seams
     // ------------------------------------------------------------------
 
-    private void flush(CardSession session, long now) {
+    private boolean flushWithPolicy(CardSession session, boolean forceFlush) {
+        long now = currentTimeMs();
+        long elapsed = now - session.lastFlushMs;
+        if (!forceFlush && elapsed < THROTTLE_INTERVAL_MS) {
+            return true; // latest snapshot is queued in session.accumulated
+        }
+        if (forceFlush && elapsed < PLATFORM_MIN_INTERVAL_MS) {
+            if (!pauseBeforeFlush(PLATFORM_MIN_INTERVAL_MS - elapsed)) return false;
+            now = currentTimeMs();
+        }
+        return flush(session, now);
+    }
+
+    /** One retry is enough to cover a transient rate-limit/network blip. */
+    private boolean flushWithRetry(CardSession session) {
+        if (flushWithPolicy(session, true)) return true;
+        return flushWithPolicy(session, true);
+    }
+
+    private boolean flush(CardSession session, long now) {
         String snapshot;
         synchronized (session) {
             snapshot = session.accumulated.toString();
@@ -281,27 +333,45 @@ public class FeishuStreamingCardManager {
         try {
             Client client = clientFactory.client(session.channelId);
             sdkPushElementContent(client, session.cardId, STREAM_ELEMENT_ID, snapshot, seq);
-            session.lastFlushMs = now;
+            return true;
         } catch (Exception e) {
             log.warn("[feishu-stream] flush failed: sessionKey={}, seq={}, err={}",
                     session.sessionKey, seq, e.getMessage());
+            return false;
+        } finally {
+            // Failed requests count against platform rate limits too.
+            session.lastFlushMs = now;
         }
     }
 
-    private void closeStreaming(CardSession session) {
+    private boolean closeStreamingWithRetry(CardSession session, String summary) {
+        if (closeStreaming(session, summary)) return true;
+        return closeStreaming(session, summary);
+    }
+
+    private boolean closeStreaming(CardSession session, String summary) {
+        long elapsed = currentTimeMs() - session.lastFlushMs;
+        if (elapsed < PLATFORM_MIN_INTERVAL_MS
+                && !pauseBeforeFlush(PLATFORM_MIN_INTERVAL_MS - elapsed)) {
+            return false;
+        }
         int seq = session.sequence.incrementAndGet();
         try {
             Client client = clientFactory.client(session.channelId);
-            sdkCloseStreamingMode(client, session.cardId, seq);
+            sdkCloseStreamingMode(client, session.cardId, seq, summary);
+            return true;
         } catch (Exception e) {
             log.warn("[feishu-stream] closeStreaming failed: sessionKey={}, err={}",
                     session.sessionKey, e.getMessage());
+            return false;
+        } finally {
+            session.lastFlushMs = currentTimeMs();
         }
     }
 
     private void tryCloseStreamingSilently(Client client, String cardId) {
         try {
-            sdkCloseStreamingMode(client, cardId, 1);
+            sdkCloseStreamingMode(client, cardId, 1, "⚠️ 卡片发送失败");
         } catch (Exception ignore) {
             // best-effort — already in an error path
         }
@@ -312,6 +382,31 @@ public class FeishuStreamingCardManager {
             session.accumulated.setLength(0);
             session.accumulated.append(content);
         }
+    }
+
+    private boolean pauseBeforeFlush(long millis) {
+        if (millis <= 0) return true;
+        try {
+            sleepMillis(millis);
+            return true;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
+    }
+
+    /** Test seam for advancing a fake clock without real sleeping. */
+    protected void sleepMillis(long millis) throws InterruptedException {
+        Thread.sleep(millis);
+    }
+
+    static String summaryFor(String content) {
+        String preview = content == null ? "" : content
+                .replaceAll("[`*_>#~-]+", " ")
+                .replaceAll("\\s+", " ")
+                .trim();
+        if (preview.isEmpty()) return "✅ 已完成";
+        return preview.length() <= 80 ? preview : preview.substring(0, 77) + "...";
     }
 
     // ------------------------------------------------------------------
@@ -373,15 +468,18 @@ public class FeishuStreamingCardManager {
                 .build();
         ContentCardElementResp resp = client.cardkit().v1().cardElement().content(req);
         if (!resp.success()) {
-            log.warn("[feishu-stream] cardElement.content failed: cardId={}, seq={}, code={}, msg={}",
-                    abbrev(cardId), sequence, resp.getCode(), resp.getMsg());
+            throw new IllegalStateException("cardElement.content failed: cardId=" + abbrev(cardId)
+                    + ", seq=" + sequence + ", code=" + resp.getCode() + ", msg=" + resp.getMsg());
         }
     }
 
     /** Flip streaming_mode=false so the receiving UI stops the typing animation. */
-    protected void sdkCloseStreamingMode(Client client, String cardId, int sequence) throws Exception {
+    protected void sdkCloseStreamingMode(Client client, String cardId, int sequence,
+                                          String summary) throws Exception {
         Map<String, Object> settings = Map.of(
-                "config", Map.of("streaming_mode", false)
+                "config", Map.of(
+                        "streaming_mode", false,
+                        "summary", Map.of("content", summaryFor(summary)))
         );
         SettingsCardReq req = SettingsCardReq.newBuilder()
                 .cardId(cardId)
@@ -393,8 +491,8 @@ public class FeishuStreamingCardManager {
                 .build();
         SettingsCardResp resp = client.cardkit().v1().card().settings(req);
         if (!resp.success()) {
-            log.warn("[feishu-stream] card.settings (close) failed: cardId={}, code={}, msg={}",
-                    abbrev(cardId), resp.getCode(), resp.getMsg());
+            throw new IllegalStateException("card.settings failed: cardId=" + abbrev(cardId)
+                    + ", code=" + resp.getCode() + ", msg=" + resp.getMsg());
         }
     }
 

@@ -24,10 +24,34 @@
 
     <!-- 会话列表 -->
     <div class="sessions-table-wrap">
+      <div v-if="selectedSessionIds.length > 0" class="selection-toolbar" role="status">
+        <span>{{ t('sessions.selectedCount', { count: selectedSessionIds.length }) }}</span>
+        <div class="selection-actions">
+          <button class="selection-clear" :disabled="batchDeleting" @click="clearSelection">
+            {{ t('sessions.clearSelection') }}
+          </button>
+          <button class="selection-delete" :disabled="batchDeleting" @click="batchDeleteSessions">
+            <span v-if="batchDeleting" class="selection-spinner" aria-hidden="true"></span>
+            {{ batchDeleting ? t('sessions.deleting') : t('sessions.batchDelete') }}
+          </button>
+        </div>
+      </div>
       <div class="sessions-table-scroll">
       <table class="sessions-table">
         <thead>
           <tr>
+            <th class="selection-cell">
+              <input
+                type="checkbox"
+                class="session-checkbox"
+                :checked="allVisibleSelected"
+                :indeterminate="someVisibleSelected"
+                :disabled="sessions.length === 0 || batchDeleting"
+                :aria-label="t('sessions.selectAll')"
+                :title="allVisibleSelected ? t('sessions.deselectAll') : t('sessions.selectAll')"
+                @change="toggleSelectAll"
+              />
+            </th>
             <th>{{ t('sessions.columns.session') }}</th>
             <th>{{ t('sessions.columns.source') }}</th>
             <th>{{ t('sessions.columns.agent') }}</th>
@@ -39,7 +63,22 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="session in sessions" :key="session.conversationId" class="session-row">
+          <tr
+            v-for="session in sessions"
+            :key="session.conversationId"
+            class="session-row"
+            :class="{ 'is-selected': isSelected(session.conversationId) }"
+          >
+            <td class="selection-cell">
+              <input
+                type="checkbox"
+                class="session-checkbox"
+                :checked="isSelected(session.conversationId)"
+                :disabled="batchDeleting"
+                :aria-label="t('sessions.selectSession', { title: session.title || session.conversationId })"
+                @change="toggleSessionSelection(session.conversationId)"
+              />
+            </td>
             <td>
               <div class="session-info">
                 <div class="session-title">{{ session.title }}</div>
@@ -107,7 +146,7 @@
             </td>
           </tr>
           <tr v-if="sessions.length === 0">
-            <td colspan="8" class="empty-row">
+            <td colspan="9" class="empty-row">
               <div class="empty-state">
                 <div class="empty-icon-ring">
                   <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
@@ -144,7 +183,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { mcToast } from '@/composables/useMcToast'
@@ -163,6 +202,14 @@ const searchText = ref('')
 const currentPage = ref(1)
 const pageSize = ref(20)
 const total = ref(0)
+const selectedSessionIds = ref<string[]>([])
+const batchDeleting = ref(false)
+
+const visibleSessionIds = computed(() => sessions.value.map(session => session.conversationId))
+const allVisibleSelected = computed(() => visibleSessionIds.value.length > 0
+  && visibleSessionIds.value.every(id => selectedSessionIds.value.includes(id)))
+const someVisibleSelected = computed(() => !allVisibleSelected.value
+  && visibleSessionIds.value.some(id => selectedSessionIds.value.includes(id)))
 
 // Per-conversation model selection state (closes #183). Loaded once on mount,
 // not per-row, because providers don't change during a session-list view.
@@ -207,6 +254,7 @@ async function loadSessions() {
     const body = res.data || {}
     sessions.value = body.records || []
     total.value = Number(body.total) || 0
+    clearSelection()
   } catch (e: any) { mcToast.error(t('sessions.loadFailed')) }
 }
 
@@ -234,8 +282,60 @@ async function deleteSession(conversationId: string) {
   if (!ok) return
   try {
     await conversationApi.delete(conversationId)
-    await loadSessions()
+    await reloadAfterDelete(1)
   } catch (e: any) { mcToast.error(t('sessions.deleteFailed')) }
+}
+
+function isSelected(conversationId: string) {
+  return selectedSessionIds.value.includes(conversationId)
+}
+
+function toggleSessionSelection(conversationId: string) {
+  selectedSessionIds.value = isSelected(conversationId)
+    ? selectedSessionIds.value.filter(id => id !== conversationId)
+    : [...selectedSessionIds.value, conversationId]
+}
+
+function toggleSelectAll() {
+  selectedSessionIds.value = allVisibleSelected.value ? [] : [...visibleSessionIds.value]
+}
+
+function clearSelection() {
+  selectedSessionIds.value = []
+}
+
+async function reloadAfterDelete(deletedCount: number) {
+  const remainingTotal = Math.max(0, total.value - deletedCount)
+  const lastPage = Math.max(1, Math.ceil(remainingTotal / pageSize.value))
+  if (currentPage.value > lastPage) currentPage.value = lastPage
+  await loadSessions()
+}
+
+async function batchDeleteSessions() {
+  const ids = [...selectedSessionIds.value]
+  if (ids.length === 0 || batchDeleting.value) return
+  const ok = await mcConfirm({
+    title: t('sessions.batchDeleteTitle'),
+    message: t('sessions.batchDeleteConfirm', { count: ids.length }),
+    tone: 'danger',
+  })
+  if (!ok) return
+
+  batchDeleting.value = true
+  try {
+    const res: any = await conversationApi.batchDelete(ids)
+    const deleted = Number(res.data) || 0
+    if (deleted === ids.length) {
+      mcToast.success(t('sessions.batchDeleteSuccess', { count: deleted }))
+    } else {
+      mcToast.warning(t('sessions.batchDeletePartial', { deleted, total: ids.length }))
+    }
+    await reloadAfterDelete(deleted)
+  } catch (e: any) {
+    mcToast.error(e?.message || t('sessions.batchDeleteFailed'))
+  } finally {
+    batchDeleting.value = false
+  }
 }
 
 // ==================== Model selection (#183) ====================
@@ -442,6 +542,53 @@ function formatTime(time?: string) {
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
 }
+.selection-toolbar {
+  min-height: 52px;
+  padding: 9px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  color: var(--mc-text-secondary);
+  font-size: 13px;
+  font-weight: 600;
+  background: var(--mc-primary-bg);
+  border-bottom: 1px solid var(--mc-border);
+}
+.selection-actions { display: flex; align-items: center; gap: 8px; }
+.selection-clear,
+.selection-delete {
+  min-height: 32px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--mc-border);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.selection-clear { color: var(--mc-text-secondary); background: var(--mc-bg-elevated); }
+.selection-clear:hover:not(:disabled) { color: var(--mc-primary); border-color: var(--mc-primary); }
+.selection-delete {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--mc-text-inverse);
+  background: var(--mc-danger);
+  border-color: var(--mc-danger);
+}
+.selection-delete:hover:not(:disabled) { background: var(--mc-danger-hover); border-color: var(--mc-danger-hover); }
+.selection-clear:disabled,
+.selection-delete:disabled { opacity: 0.6; cursor: not-allowed; }
+.selection-spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: selection-spin 0.7s linear infinite;
+}
+@keyframes selection-spin { to { transform: rotate(360deg); } }
 /* Inner scroller takes the horizontal overflow so the outer wrap can keep
    `overflow: hidden` — that's what makes the rounded corners actually clip
    the th background instead of letting it bleed into the top corners. */
@@ -451,7 +598,17 @@ function formatTime(time?: string) {
    if they truly need to (session title / id is the only multi-line cell). */
 .sessions-table th,
 .sessions-table td { white-space: nowrap; }
-.sessions-table td:first-child { white-space: normal; }
+.sessions-table td:nth-child(2) { white-space: normal; }
+.selection-cell { width: 44px; padding-left: 18px !important; padding-right: 4px !important; }
+.session-checkbox {
+  width: 16px;
+  height: 16px;
+  display: block;
+  margin: 0;
+  accent-color: var(--mc-primary);
+  cursor: pointer;
+}
+.session-checkbox:disabled { cursor: not-allowed; opacity: 0.55; }
 .sessions-table th {
   padding: 14px 18px;
   text-align: left;
@@ -465,6 +622,7 @@ function formatTime(time?: string) {
 }
 .session-row { border-bottom: 1px solid var(--mc-border-light); transition: background 0.12s; }
 .session-row:hover { background: var(--mc-bg-muted); }
+.session-row.is-selected { background: var(--mc-primary-bg); }
 .session-row:last-child { border-bottom: none; }
 .sessions-table td { padding: 16px 18px; font-size: 14px; color: var(--mc-text-primary); }
 .session-title { font-weight: 600; color: var(--mc-text-primary); margin-bottom: 3px; letter-spacing: -0.005em; }

@@ -254,7 +254,11 @@ public class AgentBindingService implements AgentBindingResolver {
      * silently undoes a user's explicit skill picks.
      */
     public Set<Long> skillIdsBoundToEnabledAgents() {
-        Set<Long> enabledAgentIds = enabledAgentIds();
+        return skillIdsBoundToEnabledAgents(null);
+    }
+
+    public Set<Long> skillIdsBoundToEnabledAgents(Long workspaceId) {
+        Set<Long> enabledAgentIds = enabledAgentIds(workspaceId);
         if (enabledAgentIds.isEmpty()) {
             return Set.of();
         }
@@ -273,7 +277,11 @@ public class AgentBindingService implements AgentBindingResolver {
      * archival candidates regardless of bindings.
      */
     public List<BlockedByBindingRow> blockedByBindingCandidates(LocalDateTime now) {
-        Set<Long> enabledAgentIds = enabledAgentIds();
+        return blockedByBindingCandidates(now, null);
+    }
+
+    public List<BlockedByBindingRow> blockedByBindingCandidates(LocalDateTime now, Long workspaceId) {
+        Set<Long> enabledAgentIds = enabledAgentIds(workspaceId);
         if (enabledAgentIds.isEmpty()) {
             return List.of();
         }
@@ -290,6 +298,9 @@ public class AgentBindingService implements AgentBindingResolver {
         }
         List<BlockedByBindingRow> rows = new ArrayList<>();
         for (SkillEntity skill : skillMapper.selectBatchIds(bySkill.keySet())) {
+            if (workspaceId != null && !workspaceId.equals(skill.getWorkspaceId())) {
+                continue;
+            }
             if (Boolean.TRUE.equals(skill.getBuiltin()) || Boolean.TRUE.equals(skill.getPinned())) {
                 continue;
             }
@@ -334,9 +345,17 @@ public class AgentBindingService implements AgentBindingResolver {
 
     /** Ids of every currently-enabled agent. */
     private Set<Long> enabledAgentIds() {
-        return agentMapper.selectList(new LambdaQueryWrapper<AgentEntity>()
-                        .eq(AgentEntity::getEnabled, true)
-                        .select(AgentEntity::getId))
+        return enabledAgentIds(null);
+    }
+
+    private Set<Long> enabledAgentIds(Long workspaceId) {
+        LambdaQueryWrapper<AgentEntity> query = new LambdaQueryWrapper<AgentEntity>()
+                .eq(AgentEntity::getEnabled, true);
+        if (workspaceId != null) {
+            query.eq(AgentEntity::getWorkspaceId, workspaceId);
+        }
+        query.select(AgentEntity::getId);
+        return agentMapper.selectList(query)
                 .stream()
                 .map(AgentEntity::getId)
                 .collect(Collectors.toSet());
@@ -672,6 +691,12 @@ public class AgentBindingService implements AgentBindingResolver {
             // extension-tier tool for the rest of the conversation. Must be
             // agent-wide so the model can always surface hidden tools.
             "enable_tool",
+            // Stable Hermes-style bridges. They must survive every explicit
+            // allowlist because they are the only way to discover, inspect
+            // and invoke schemas that were deferred by the hard budget.
+            "tool_search",
+            "tool_describe",
+            "tool_call",
             // Skill discovery / dispatch — skills are docs, not callables;
             // these helpers let the LLM read SKILL.md / run scripts.
             "load_skill",

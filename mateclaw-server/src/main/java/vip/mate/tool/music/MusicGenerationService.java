@@ -191,7 +191,7 @@ public class MusicGenerationService {
 
     private PersistedAudio persistAudio(String conversationId, String taskId,
                                          MusicGenerationResult result) throws IOException {
-        Path dir = uploadLocationResolver.resolveConversationDir(conversationId);
+        Path dir = uploadLocationResolver.resolveWriteDir(conversationId);
         Files.createDirectories(dir);
         String fileName = "music_" + taskId + "." + result.getFormat();
         Path filePath = dir.resolve(fileName);

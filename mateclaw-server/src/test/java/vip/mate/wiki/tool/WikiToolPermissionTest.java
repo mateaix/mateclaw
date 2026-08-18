@@ -33,6 +33,7 @@ import static org.mockito.Mockito.when;
 class WikiToolPermissionTest {
 
     private static final long AGENT = 11L;
+    private static final String AGENT_PARAM = String.valueOf(AGENT);
     private static final long KB = 7L;
 
     private record Harness(WikiTool tool, WikiPageService pageService,
@@ -90,7 +91,7 @@ class WikiToolPermissionTest {
         Harness h = harness(List.of(row("*", 0, 0, 0, 0, "deny")));
         when(h.pageService().getBySlug(KB, "secret")).thenReturn(page("secret", "analysis"));
 
-        String out = h.tool().wiki_read_page(AGENT, "secret", null, null, null, KB);
+        String out = h.tool().wiki_read_page(AGENT_PARAM, "secret", null, null, null, String.valueOf(KB));
 
         assertTrue(out.contains("Page not found"), out);
     }
@@ -100,7 +101,7 @@ class WikiToolPermissionTest {
         Harness h = harness(List.of(row("*", 1, 0, 0, 0, "deny")));
         when(h.pageService().getBySlug(KB, "ok")).thenReturn(page("ok", "concept"));
 
-        String out = h.tool().wiki_read_page(AGENT, "ok", null, null, null, KB);
+        String out = h.tool().wiki_read_page(AGENT_PARAM, "ok", null, null, null, String.valueOf(KB));
 
         assertTrue(out.contains("\"content\""), out);
         assertFalse(out.contains("Page not found"), out);
@@ -112,7 +113,7 @@ class WikiToolPermissionTest {
         Harness h = harness(List.of(row("concept", 1, 0, 0, 0, "deny")));
         when(h.pageService().getBySlug(KB, "p")).thenReturn(page("p", "concept"));
 
-        String out = h.tool().wiki_delete_page(AGENT, "p", null, KB);
+        String out = h.tool().wiki_delete_page(AGENT_PARAM, "p", null, String.valueOf(KB));
 
         assertTrue(out.contains("Not permitted"), out);
         verify(h.pageService(), never()).delete(anyLong(), any());
@@ -123,7 +124,7 @@ class WikiToolPermissionTest {
         Harness h = harness(List.of(row("concept", 1, 0, 0, 1, "approval_required")));
         when(h.pageService().getBySlug(KB, "p")).thenReturn(page("p", "concept"));
 
-        String out = h.tool().wiki_delete_page(AGENT, "p", null, KB);
+        String out = h.tool().wiki_delete_page(AGENT_PARAM, "p", null, String.valueOf(KB));
 
         assertTrue(out.contains("Approval required"), out);
         verify(h.pageService(), never()).delete(anyLong(), any());
@@ -134,7 +135,7 @@ class WikiToolPermissionTest {
         Harness h = harness(List.of(row("concept", 1, 1, 1, 1, "allow")));
         when(h.pageService().getBySlug(KB, "p")).thenReturn(page("p", "concept"));
 
-        String out = h.tool().wiki_delete_page(AGENT, "p", null, KB);
+        String out = h.tool().wiki_delete_page(AGENT_PARAM, "p", null, String.valueOf(KB));
 
         assertTrue(out.contains("\"ok\":true"), out);
         verify(h.pageService(), times(1)).delete(eq(KB), eq("p"));
@@ -145,7 +146,7 @@ class WikiToolPermissionTest {
         // a row exists for 'episode' only → KB is gated, wildcard create not granted
         Harness h = harness(List.of(row("episode", 1, 1, 1, 1, "allow")));
 
-        String out = h.tool().wiki_create_page(AGENT, "New Page", "content here", null, KB);
+        String out = h.tool().wiki_create_page(AGENT_PARAM, "New Page", "content here", null, String.valueOf(KB));
 
         assertTrue(out.contains("Not permitted"), out);
         verify(h.pageService(), never()).createPage(anyLong(), any(), any(), any(), any(), any());
@@ -161,7 +162,7 @@ class WikiToolPermissionTest {
         updated.setVersion(2);
         when(h.pageService().updatePageManually(eq(KB), eq("p"), any(), any())).thenReturn(updated);
 
-        String out = h.tool().wiki_update_page(AGENT, "p", "new body", null, null, KB);
+        String out = h.tool().wiki_update_page(AGENT_PARAM, "p", "new body", null, null, String.valueOf(KB));
 
         assertTrue(out.contains("\"ok\":true"), out);
         assertTrue(out.contains("updated in place"), out);
@@ -177,7 +178,7 @@ class WikiToolPermissionTest {
         Harness h = harness(List.of(row("concept", 1, 1, 0, 0, "allow")));
         when(h.pageService().getBySlug(KB, "p")).thenReturn(page("p", "concept"));
 
-        String out = h.tool().wiki_update_page(AGENT, "p", "new body", null, null, KB);
+        String out = h.tool().wiki_update_page(AGENT_PARAM, "p", "new body", null, null, String.valueOf(KB));
 
         assertTrue(out.contains("Not permitted"), out);
         verify(h.pageService(), never()).updatePageManually(anyLong(), any(), any(), any());
@@ -188,7 +189,7 @@ class WikiToolPermissionTest {
         Harness h = harness(List.of(row("*", 1, 1, 1, 1, "allow")));
         when(h.pageService().getBySlug(KB, "ghost")).thenReturn(null);
 
-        String out = h.tool().wiki_update_page(AGENT, "ghost", "body", null, null, KB);
+        String out = h.tool().wiki_update_page(AGENT_PARAM, "ghost", "body", null, null, String.valueOf(KB));
 
         assertTrue(out.contains("Page not found"), out);
         verify(h.pageService(), never()).updatePageManually(anyLong(), any(), any(), any());
@@ -212,7 +213,7 @@ class WikiToolPermissionTest {
         WikiPageEntity staleHidden = stalePage("classified", "secret", "{\"reason\":\"x\"}");
         when(h.pageService().listByKbId(KB)).thenReturn(List.of(fresh, staleOk, staleHidden));
 
-        String out = h.tool().wiki_stale_pages(AGENT, null, KB);
+        String out = h.tool().wiki_stale_pages(AGENT_PARAM, null, String.valueOf(KB));
 
         assertTrue(out.contains("\"staleCount\":1"), out);
         assertTrue(out.contains("aged"), out);
@@ -225,7 +226,7 @@ class WikiToolPermissionTest {
         Harness h = harness(List.of());
         when(h.pageService().listByKbId(KB)).thenReturn(List.of(page("a", "concept"), page("b", "episode")));
 
-        String out = h.tool().wiki_stale_pages(AGENT, null, KB);
+        String out = h.tool().wiki_stale_pages(AGENT_PARAM, null, String.valueOf(KB));
 
         assertTrue(out.contains("\"staleCount\":0"), out);
     }

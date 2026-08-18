@@ -18,6 +18,8 @@ public class TeamTaskCreateCommand {
 
     private Long teamId;
 
+    private Long runId;
+
     private String subject;
 
     private String description;

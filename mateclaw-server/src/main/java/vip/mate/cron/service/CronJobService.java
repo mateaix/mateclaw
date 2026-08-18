@@ -353,6 +353,13 @@ public class CronJobService implements ApplicationRunner {
         existing.setTaskType(dto.getTaskType());
         existing.setTriggerMessage(dto.getTriggerMessage());
         existing.setRequestBody(dto.getRequestBody());
+        // The edit form always submits the full delivery binding (channel +
+        // target + suppress flag), so the request is authoritative for both
+        // fields — including a null pair, which means "unbind this job from
+        // its channel". FieldStrategy.ALWAYS on the entity lets the null
+        // through to the UPDATE.
+        existing.setChannelId(dto.getChannelId());
+        existing.setDeliveryConfig(dto.getDeliveryConfig());
         if (dto.getEnabled() != null) {
             existing.setEnabled(dto.getEnabled());
         }

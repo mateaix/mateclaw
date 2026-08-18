@@ -9,7 +9,9 @@ import java.util.Set;
 /**
  * Splits an agent's tool set into the subset advertised to the LLM up front
  * ({@code core} + already-enabled extensions) and the {@code extension} catalog
- * that stays behind {@code enable_tool} until the model activates it.
+ * that stays behind a stable progressive bridge. The model can invoke a
+ * deferred tool in the same action round through {@code tool_call}; legacy
+ * sessions may still activate one through {@code enable_tool}.
  *
  * <p>Tier is resolved per source: builtin / channel atomic tools from
  * {@code mate_tool.disclosure_tier}, MCP tools from their owning
@@ -46,8 +48,8 @@ public interface ToolDisclosureService {
     /**
      * Decide which core-tier tools to auto-demote so the advertised tool
      * schemas fit {@code budgetTokens} (estimated). Ranking: never-used tools
-     * first, then least recently used; meta-tools and explicitly configured
-     * core tools are never demoted. Empty when the set already fits, when
+     * first, then least recently used; recovery/bridge meta-tools are never
+     * demoted. Empty when the set already fits, when
      * {@code budgetTokens} is null, or in legacy disclosure mode.
      */
     default Set<String> computeAutoDemotions(AgentToolSet baseSet, Integer budgetTokens) {
@@ -63,7 +65,7 @@ public interface ToolDisclosureService {
 
     /**
      * Budget-aware variant: auto-demoted tools are listed in the catalog too,
-     * so the model can discover and {@code enable_tool} them back.
+     * so the model can discover and invoke them through {@code tool_call}.
      */
     default String renderExtensionCatalog(AgentToolSet baseSet, Integer maxInputTokens,
                                           Set<String> autoDemoted) {

@@ -554,10 +554,10 @@ fetch('/api/v1/chat/stream', {
 
 ```bash
 cd mateclaw-ui
-pnpm install
-pnpm dev          # 5173 端口，把 /api proxy 到 18088
-pnpm build        # vue-tsc + vite build，产物进 ../mateclaw-server/.../static
-pnpm lint         # ESLint
+npm install
+npm run dev       # 5173 端口，把 /api proxy 到 18088
+npm run build     # vue-tsc + vite build，产物进 ../mateclaw-server/.../static
+npm run lint      # ESLint
 ```
 
 构建产物嵌入 Spring Boot JAR。

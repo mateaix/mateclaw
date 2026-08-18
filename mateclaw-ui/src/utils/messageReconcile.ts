@@ -199,9 +199,17 @@ export function reconcileMessages(local: Message[], fetched: Message[]): Message
   // 收集未被 id 匹配过的本地 assistant（通常是流式产生的 client-uuid placeholder），
   // 供 fetched 端新 assistant"认领"它们的 timeline，避免两条并排。
   const unclaimedLocalAssistants: Message[] = []
+  // Optimistic user bubbles carry a client temp id; the DB copy comes back
+  // with a Snowflake id, so id-matching never pairs them. Without claiming,
+  // the temp copy survives to the tail-preserve loop below and the question
+  // renders twice (once from DB, once appended after the answer).
+  const unclaimedLocalUsers: Message[] = []
   for (const lm of local) {
-    if (lm.role === 'assistant' && isClientId(lm.id)) {
+    if (!isClientId(lm.id)) continue
+    if (lm.role === 'assistant') {
       unclaimedLocalAssistants.push(lm)
+    } else if (lm.role === 'user') {
+      unclaimedLocalUsers.push(lm)
     }
   }
 
@@ -228,6 +236,17 @@ export function reconcileMessages(local: Message[], fetched: Message[]): Message
       const claimed = unclaimedLocalAssistants.shift()!
       matchedLocalIds.add(String(claimed.id))
       result.push(mergeAssistantMessages(claimed, fm))
+    } else if (fm.role === 'user') {
+      // 认领内容相同的本地乐观 user 消息（按内容匹配，重复文本时先到先领），
+      // 使其不会落入尾部保留循环造成问题气泡重复。
+      const idx = unclaimedLocalUsers.findIndex(
+        u => (u.content || '') === (fm.content || '')
+      )
+      if (idx >= 0) {
+        matchedLocalIds.add(String(unclaimedLocalUsers[idx].id))
+        unclaimedLocalUsers.splice(idx, 1)
+      }
+      result.push(fm)
     } else {
       result.push(fm)
     }

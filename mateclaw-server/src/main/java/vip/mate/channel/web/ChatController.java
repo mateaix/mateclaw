@@ -25,6 +25,7 @@ import vip.mate.approval.PendingApproval;
 import vip.mate.approval.ResolveOutcome;
 import vip.mate.memory.event.ConversationCompletionPublisher;
 import vip.mate.workspace.conversation.ConversationService;
+import vip.mate.workspace.conversation.MessageMetadataJson;
 import vip.mate.workspace.conversation.model.MessageContentPart;
 import vip.mate.workspace.conversation.model.MessageEntity;
 
@@ -189,6 +190,14 @@ public class ChatController {
                     return emitter;
                 }
             }
+        }
+
+        // Worker conversations are immutable evidence from the web UI. Keep this
+        // guard at the user entry point so internal dispatch can still persist its
+        // user/assistant execution transcript through ConversationService.
+        if (!conversationService.isUserMessageAllowed(conversationId)) {
+            sendErrorDoneAndComplete(emitter, "执行任务会话为只读，不能发送新消息");
+            return emitter;
         }
 
         // ---- 审批命令拦截：/approve、/deny 走 SSE 流式 replay ----
@@ -580,10 +589,15 @@ public class ChatController {
                         ? regenerateSeed.parts()
                         : normalizeRequestParts(request);
                 String promptText = buildPromptText(message, requestParts);
+                Long originMessageId;
                 if (regenerateSeed == null) {
                     // Regenerate reuses the already-persisted seed user row —
                     // inserting again would duplicate it (issue #547).
-                    conversationService.saveMessage(conversationId, "user", message, requestParts);
+                    MessageEntity savedUser = conversationService
+                            .saveMessage(conversationId, "user", message, requestParts);
+                    originMessageId = savedUser == null ? null : savedUser.getId();
+                } else {
+                    originMessageId = regenerateSeed.seedMessageId();
                 }
                 conversationService.updateStreamStatus(conversationId, "running");
 
@@ -601,7 +615,8 @@ public class ChatController {
                 // is enriched with workspaceBasePath in StateGraph buildInitialState).
                 vip.mate.agent.context.ChatOrigin webOrigin =
                         memoryOrigin(conversationId, username, requesterUserIdOf(auth), workspaceId, request.getEndUserId())
-                                .withBaseUrl(requestBaseUrl);
+                                .withBaseUrl(requestBaseUrl)
+                                .withOriginMessageId(originMessageId);
                 Disposable disposable = agentService.chatStructuredStream(agentId, promptText, conversationId, username, request.getThinkingLevel(), webOrigin)
                         .doOnNext(delta -> {
                             if (emitterDone.get()) return;
@@ -1012,6 +1027,10 @@ public class ChatController {
             return R.fail(403, "无权操作该会话");
         }
         boolean stopped = streamTracker.requestStop(conversationId);
+        // Acknowledge only after the cancellation path had a chance to drain
+        // and persist its partial assistant message. Bound the wait so a
+        // genuinely non-cooperative third-party tool cannot pin the HTTP call.
+        boolean terminationConfirmed = !stopped || streamTracker.awaitTermination(conversationId, 2000L);
 
         // Sweep ghost approvals — workflow.denyAllByConversation owns DB + metadata + memory
         // atomically; we only need to broadcast SSE events on the resulting outcomes.
@@ -1030,6 +1049,7 @@ public class ChatController {
                 conversationId, username, stopped, denied.size(), messagesRewritten);
         return R.ok(Map.of(
                 "stopped", stopped,
+                "terminationConfirmed", terminationConfirmed,
                 "ghostPendingsCleared", denied.size(),
                 "messagesRewritten", messagesRewritten
         ));
@@ -1104,13 +1124,16 @@ public class ChatController {
             return R.fail(401, "未登录，请先登录");
         }
         conversationService.getOrCreateConversation(request.getConversationId(), agentId, username, workspaceId);
-        conversationService.saveMessage(request.getConversationId(), "user", request.getMessage(), request.getContentParts());
+        MessageEntity savedUser = conversationService.saveMessage(
+                request.getConversationId(), "user", request.getMessage(), request.getContentParts());
 
         String promptText = buildPromptText(request.getMessage(), request.getContentParts());
         // Carry the web origin so per-owner memory recall (read) and the
         // post-conversation memory write below agree on the same owner key.
         vip.mate.agent.context.ChatOrigin webOrigin =
-                memoryOrigin(request.getConversationId(), username, requesterUserIdOf(auth), workspaceId, request.getEndUserId());
+                memoryOrigin(request.getConversationId(), username, requesterUserIdOf(auth), workspaceId,
+                        request.getEndUserId()).withOriginMessageId(
+                                savedUser == null ? null : savedUser.getId());
         AgentService.ChatResult result = agentService.chatWithUsage(agentId, promptText, request.getConversationId(), webOrigin);
         String response = result.content();
         conversationService.saveMessage(request.getConversationId(), "assistant", response, null, "completed",
@@ -1144,12 +1167,12 @@ public class ChatController {
         String safeFilename = Path.of(originalFilename).getFileName().toString().replaceAll("[^a-zA-Z0-9._-]", "_");
         String storedName = System.currentTimeMillis() + "_" + safeFilename;
         Path uploadRoot = uploadLocationResolver.resolveUploadRoot(conversationId);
-        // Sanitize the id before using it as a path segment — IM-channel ids like
-        // "wecom:XXXX" carry a ':' that is illegal in a Windows filename and would
-        // throw InvalidPathException here. Reads use the same sanitization.
-        Path conversationDir = uploadRoot.resolve(ChatUploadLocationResolver.sanitizeSegment(conversationId));
-        Files.createDirectories(conversationDir);
-        Path target = conversationDir.resolve(storedName);
+        // resolveWriteDir sanitizes the id (IM-channel ids like "wecom:XXXX"
+        // carry a ':' illegal on Windows) and appends the per-day sub-directory
+        // when date folders are enabled. Reads probe both layouts.
+        Path writeDir = uploadLocationResolver.resolveWriteDir(conversationId);
+        Files.createDirectories(writeDir);
+        Path target = writeDir.resolve(storedName);
         file.transferTo(target);
 
         log.info("Chat attachment uploaded: conversationId={}, user={}, file={}", conversationId, username, target);
@@ -1160,7 +1183,7 @@ public class ChatController {
         response.setStoredName(storedName);
         response.setUrl("/api/v1/chat/files/" + conversationId + "/" + storedName);
         // 用 root 相对路径，避免暴露服务端绝对路径（uploadRoot 现在恒为绝对路径）。
-        response.setPath(toRelativeUploadPath(uploadRoot, conversationId, storedName));
+        response.setPath(toRelativeUploadPath(uploadRoot, target));
         response.setSize(file.getSize());
         response.setContentType(file.getContentType());
         return R.ok(response);
@@ -1248,18 +1271,12 @@ public class ChatController {
     /**
      * Resolve an uploaded attachment to its on-disk path, probing every
      * candidate conversation dir (workspace-scoped + legacy default, sanitized +
-     * raw id) with a per-candidate path-traversal guard. Returns {@code null}
-     * when no candidate holds the file.
+     * raw id) and both layouts (flat + date sub-directories) with a
+     * path-traversal guard. Returns {@code null} when no candidate holds the
+     * file.
      */
     private Path resolveUploadedFile(String conversationId, String storedName) {
-        for (Path conversationDir : uploadLocationResolver.resolveCandidateConversationDirs(conversationId)) {
-            Path normDir = conversationDir.normalize();
-            Path candidate = normDir.resolve(storedName).normalize();
-            if (Files.exists(candidate) && candidate.startsWith(normDir)) {
-                return candidate;
-            }
-        }
-        return null;
+        return uploadLocationResolver.resolveExistingFile(conversationId, storedName);
     }
 
     /**
@@ -1422,9 +1439,11 @@ public class ChatController {
         // 持久化排队的用户消息（含 contentParts；幂等：如果 /interrupt 已提前持久化则跳过）。
         // 这里持久化是为了确保 user 消息在 assistant 消息（doOnError/doOnCancel 已写入）之后落库，
         // 让 listMessages ORDER BY create_time ASC 后顺序正确：Q1 → Asst1 → Q2 → Asst2。
+        Long queuedOriginMessageId = null;
         if (queuedMessage != null && !queuedMessage.isBlank() && !preConsumedInput.persisted()) {
-            conversationService.saveMessage(conversationId, "user", queuedMessage,
+            MessageEntity savedUser = conversationService.saveMessage(conversationId, "user", queuedMessage,
                     preConsumedInput.contentParts(), "queued");
+            queuedOriginMessageId = savedUser == null ? null : savedUser.getId();
         }
 
         // 广播 queued_input_started 事件
@@ -1449,7 +1468,8 @@ public class ChatController {
         // turn keeps a consistent (null-channel) binding.
         vip.mate.agent.context.ChatOrigin queuedOrigin =
                 vip.mate.agent.context.ChatOrigin.web(conversationId, requesterId, null, null)
-                        .withBaseUrl(baseUrl);
+                        .withBaseUrl(baseUrl)
+                        .withOriginMessageId(queuedOriginMessageId);
         Disposable disposable = agentService.chatStructuredStream(agentId, queuedMessage, conversationId, requesterId, null, queuedOrigin)
                 .doOnNext(delta -> {
                     if (emitterDone.get()) return;
@@ -1662,8 +1682,7 @@ public class ChatController {
      * upload sub-directory name is preserved (e.g. {@code chat-uploads/...}), and
      * separators are normalized to {@code /} so the value is stable across OSes.
      */
-    static String toRelativeUploadPath(Path uploadRoot, String conversationId, String storedName) {
-        Path target = uploadRoot.resolve(ChatUploadLocationResolver.sanitizeSegment(conversationId)).resolve(storedName);
+    static String toRelativeUploadPath(Path uploadRoot, Path target) {
         Path base = uploadRoot.getParent();
         Path relative = base != null ? base.relativize(target) : target;
         return relative.toString().replace('\\', '/');
@@ -1714,7 +1733,12 @@ public class ChatController {
             String rawMetadata = savedAssistant.getMetadata();
             if (rawMetadata != null && !rawMetadata.isBlank()) {
                 try {
-                    Map<String, Object> parsed = objectMapper.readValue(rawMetadata,
+                    // Without the unwrap this readValue throws on the H2 profile
+                    // and the catch below swallows it, so the superseded markers
+                    // never ride the done payload and every client waits for a
+                    // reload instead — a degradation with no symptom in the log.
+                    Map<String, Object> parsed = objectMapper.readValue(
+                            MessageMetadataJson.normalize(rawMetadata),
                             new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {});
                     Object segs = parsed.get("segments");
                     if (segs instanceof java.util.List<?> list && !list.isEmpty()) {

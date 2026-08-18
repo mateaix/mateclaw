@@ -11,7 +11,9 @@ import vip.mate.workspace.conversation.repository.ConversationMapper;
 import vip.mate.workspace.core.config.ChatUploadProperties;
 import vip.mate.workspace.core.model.WorkspaceEntity;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.LocalDate;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -263,5 +265,129 @@ class ChatUploadLocationResolverTest {
         List<Path> dirs = r.resolveCandidateConversationDirs("plainconv");
 
         assertThat(dirs).containsExactly(tempDir.toAbsolutePath().normalize().resolve("plainconv"));
+    }
+
+    // ==================== date folders ====================
+
+    private ChatUploadLocationResolver resolver(Path defaultDir, boolean dateFolders) {
+        ChatUploadProperties props = new ChatUploadProperties();
+        props.setBaseDir(defaultDir.toAbsolutePath().toString());
+        props.setDateFolders(dateFolders);
+        return new ChatUploadLocationResolver(conversationMapper, workspaceService, props, agentService);
+    }
+
+    @Test
+    @DisplayName("resolveWriteDir: date folders on → {convDir}/{yyyy-MM-dd}")
+    void writeDirAppendsDateSegmentWhenEnabled() {
+        stubConversation("c-date", null, null);
+        when(workspaceService.getById(anyLong())).thenReturn(workspace(1L, null));
+
+        ChatUploadLocationResolver r = resolver(tempDir, true);
+        Path dir = r.resolveWriteDir("c-date");
+
+        assertThat(dir).isEqualTo(tempDir.toAbsolutePath().normalize()
+                .resolve("c-date")
+                .resolve(LocalDate.now().toString()));
+    }
+
+    @Test
+    @DisplayName("resolveWriteDir: date folders off → flat conversation dir")
+    void writeDirIsFlatWhenDisabled() {
+        stubConversation("c-flat", null, null);
+        when(workspaceService.getById(anyLong())).thenReturn(workspace(1L, null));
+
+        ChatUploadLocationResolver r = resolver(tempDir, false);
+        Path dir = r.resolveWriteDir("c-flat");
+
+        assertThat(dir).isEqualTo(tempDir.toAbsolutePath().normalize().resolve("c-flat"));
+    }
+
+    @Test
+    @DisplayName("dateScanDirs: flat dir first, then date subdirs newest-first; non-date subdirs ignored")
+    void dateScanDirsOrderedNewestFirst() throws Exception {
+        Path convDir = tempDir.resolve("c-scan");
+        Files.createDirectories(convDir.resolve("2026-07-25"));
+        Files.createDirectories(convDir.resolve("2026-07-26"));
+        Files.createDirectories(convDir.resolve("preview"));
+
+        List<Path> dirs = ChatUploadLocationResolver.dateScanDirs(convDir);
+
+        assertThat(dirs).containsExactly(
+                convDir,
+                convDir.resolve("2026-07-26"),
+                convDir.resolve("2026-07-25"));
+    }
+
+    @Test
+    @DisplayName("findInConversationDir: resolves flat legacy files and date-subdir files")
+    void findInConversationDirProbesBothLayouts() throws Exception {
+        Path convDir = tempDir.resolve("c-find");
+        Files.createDirectories(convDir.resolve("2026-07-26"));
+        Files.writeString(convDir.resolve("flat.txt"), "legacy");
+        Files.writeString(convDir.resolve("2026-07-26").resolve("dated.txt"), "new");
+
+        assertThat(ChatUploadLocationResolver.findInConversationDir(convDir, "flat.txt"))
+                .isEqualTo(convDir.resolve("flat.txt"));
+        assertThat(ChatUploadLocationResolver.findInConversationDir(convDir, "dated.txt"))
+                .isEqualTo(convDir.resolve("2026-07-26").resolve("dated.txt"));
+        assertThat(ChatUploadLocationResolver.findInConversationDir(convDir, "missing.txt"))
+                .isNull();
+    }
+
+    @Test
+    @DisplayName("findInConversationDir: traversal escaping the conversation dir is rejected")
+    void findInConversationDirRejectsTraversal() throws Exception {
+        Path convDir = tempDir.resolve("c-guard");
+        Files.createDirectories(convDir);
+        Files.writeString(tempDir.resolve("outside.txt"), "secret");
+
+        assertThat(ChatUploadLocationResolver.findInConversationDir(convDir, "../outside.txt"))
+                .isNull();
+    }
+
+    @Test
+    @DisplayName("findInConversationDir: a date-subdir probe cannot climb back into the conversation root")
+    void findInConversationDirRejectsClimbOutOfDateDir() throws Exception {
+        Path convDir = tempDir.resolve("c-climb");
+        Files.createDirectories(convDir.resolve("2026-07-26"));
+        Files.writeString(convDir.resolve("flat.txt"), "legacy");
+
+        assertThat(ChatUploadLocationResolver.findInConversationDir(convDir, "2026-07-26/../flat.txt"))
+                .isNull();
+    }
+
+    @Test
+    @DisplayName("findInConversationDir: rooted or multi-segment stored names are rejected outright")
+    void findInConversationDirRejectsNonBareNames() throws Exception {
+        Path convDir = tempDir.resolve("c-bare");
+        Files.createDirectories(convDir.resolve("2026-07-26"));
+        Files.writeString(convDir.resolve("flat.txt"), "legacy");
+
+        // Rooted names matter on Windows, where Path.resolve drops the base for
+        // a rooted argument; rejecting them keeps the guard platform-agnostic.
+        assertThat(ChatUploadLocationResolver.findInConversationDir(
+                convDir, tempDir.toAbsolutePath() + "/flat.txt")).isNull();
+        assertThat(ChatUploadLocationResolver.findInConversationDir(convDir, "2026-07-26/flat.txt"))
+                .isNull();
+        assertThat(ChatUploadLocationResolver.findInConversationDir(convDir, "..")).isNull();
+        // The bare name still resolves.
+        assertThat(ChatUploadLocationResolver.findInConversationDir(convDir, "flat.txt"))
+                .isEqualTo(convDir.resolve("flat.txt"));
+    }
+
+    @Test
+    @DisplayName("resolveExistingFile: end-to-end lookup across candidate dirs and layouts")
+    void resolveExistingFileFindsDatedFile() throws Exception {
+        stubConversation("c-e2e", null, null);
+        when(workspaceService.getById(anyLong())).thenReturn(workspace(1L, null));
+
+        ChatUploadLocationResolver r = resolver(tempDir, true);
+        Path writeDir = r.resolveWriteDir("c-e2e");
+        Files.createDirectories(writeDir);
+        Files.writeString(writeDir.resolve("1777_a.png"), "img");
+
+        assertThat(r.resolveExistingFile("c-e2e", "1777_a.png"))
+                .isEqualTo(writeDir.resolve("1777_a.png"));
+        assertThat(r.resolveExistingFile("c-e2e", "nope.png")).isNull();
     }
 }

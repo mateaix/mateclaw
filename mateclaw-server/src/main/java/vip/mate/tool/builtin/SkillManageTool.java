@@ -6,10 +6,13 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.annotation.Tool;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Component;
 import vip.mate.agent.context.ChatOrigin;
+import vip.mate.skill.event.SkillAuthoredEvent;
 import vip.mate.skill.model.SkillEntity;
+import vip.mate.skill.model.SkillOrigin;
 import vip.mate.skill.runtime.SkillRuntimeService;
 import vip.mate.skill.runtime.SkillSecurityService;
 import vip.mate.skill.runtime.SkillValidationResult;
@@ -44,11 +47,19 @@ public class SkillManageTool {
     private final SkillSecurityService securityService;
     private final SkillWorkspaceManager workspaceManager;
     private final SkillRuntimeService runtimeService;
+    private final ApplicationEventPublisher eventPublisher;
 
     /** Skill 名称格式：小写字母/数字/连字符/下划线/点，首字符必须是字母或数字 */
     private static final Pattern NAME_PATTERN = Pattern.compile("^[a-z0-9][a-z0-9._-]{0,63}$");
     /** Skill 内容最大长度（~25K tokens） */
     private static final int MAX_CONTENT_CHARS = 100_000;
+    private static final Pattern AUTONOMOUS_UNSAFE_INSTRUCTION = Pattern.compile(
+            "(?is)(ignore\\s+(?:all\\s+)?(?:previous|prior)\\s+instructions|system\\s+prompt|"
+                    + "bypass\\s+(?:the\\s+)?(?:approval|guard|security)|disable\\s+(?:the\\s+)?(?:guard|approval|security)|"
+                    + "(?:read|collect|dump|upload|send|exfiltrat\\w*)[^\\n]{0,100}(?:credential|secret|token|password|private key|environment variable)|"
+                    + "curl[^\\n]{0,120}(?:--data|-d\\s|--upload|-T\\s)|rm\\s+-r?f\\s+/|/dev/tcp/|nc\\s+-e)");
+    private static final Pattern SECRET_PATTERN = Pattern.compile(
+            "(?i)(bearer\\s+[a-z0-9._~+/-]{12,}|(?:api[_-]?key|password|passwd|secret|token)\\s*[:=]\\s*[^\\s,;]{6,}|sk-[a-z0-9_-]{12,})");
 
     @vip.mate.tool.ConcurrencyUnsafe("create/edit/patch/delete on the shared skill registry; concurrent ops on the same skill name race")
     @Tool(description = """
@@ -140,6 +151,27 @@ public class SkillManageTool {
             // skill with the agent's owning workspace.
             @Nullable ToolContext toolContext
     ) {
+        // A tool call is by definition a live conversation turn, so anything
+        // arriving here was asked for by a person. Autonomous callers use
+        // skillManageAs() and declare their own origin.
+        return skillManageAs(SkillOrigin.USER, action, name, content, oldText, newText, filePath, toolContext);
+    }
+
+    /**
+     * Same pipeline as {@link #skill_manage}, with the authorship stamp made
+     * explicit for callers that are not a user-facing turn — the reflection
+     * reviewer and the routine promoter.
+     *
+     * <p>Not exposed to the model: origin is a trust boundary, and a value the
+     * model could set would be worth nothing. Routing autonomous writes through
+     * the same method keeps them subject to the identical security scan, name
+     * validation, builtin guard, and workspace export.
+     *
+     * @param skillOrigin authorship to stamp on a newly created skill
+     */
+    public String skillManageAs(SkillOrigin skillOrigin, String action, String name, String content,
+                                String oldText, String newText, String filePath,
+                                @Nullable ToolContext toolContext) {
         if (action == null || action.isBlank()) {
             return "Error: action is required (create | edit | patch | delete)";
         }
@@ -157,28 +189,39 @@ public class SkillManageTool {
         Long workspaceId = origin.workspaceId();
         String sourceConversationId = origin.conversationId();
 
+        // Agent-authored mutations must always carry a trusted workspace.
+        // Falling back to workspace 1 here would turn a missing origin into a
+        // cross-tenant write primitive.
+        if (workspaceId == null || workspaceId <= 0) {
+            return "Error: workspace context is required for skill mutations";
+        }
+
         return switch (action.strip().toLowerCase()) {
-            case "create"     -> doCreate(normalizedName, content, workspaceId, sourceConversationId);
-            case "edit"       -> doEdit(normalizedName, content);
-            case "patch"      -> doPatch(normalizedName, oldText, newText);
-            case "write_file" -> doWriteFile(normalizedName, filePath, content);
-            case "delete"     -> doDelete(normalizedName);
+            case "create"     -> doCreate(normalizedName, content, workspaceId, sourceConversationId,
+                                          origin.agentId(), skillOrigin);
+            case "edit"       -> doEdit(normalizedName, content, workspaceId, skillOrigin);
+            case "patch"      -> doPatch(normalizedName, oldText, newText, workspaceId, skillOrigin);
+            case "write_file" -> doWriteFile(normalizedName, filePath, content, workspaceId, skillOrigin);
+            case "delete"     -> doDelete(normalizedName, workspaceId);
             default -> "Error: unknown action '" + action + "'. Use: create | edit | patch | write_file | delete";
         };
     }
 
     // ==================== Create ====================
 
-    private String doCreate(String name, String content, Long workspaceId, String sourceConversationId) {
+    private String doCreate(String name, String content, Long workspaceId, String sourceConversationId,
+                            Long agentId, SkillOrigin skillOrigin) {
         if (content == null || content.isBlank()) {
             return "Error: content is required for create action. Provide full SKILL.md content.";
         }
         if (content.length() > MAX_CONTENT_CHARS) {
             return "Error: content too large (" + content.length() + " chars, max " + MAX_CONTENT_CHARS + ")";
         }
+        String autonomousError = runAutonomousPolicy(content, skillOrigin);
+        if (autonomousError != null) return autonomousError;
 
         // 检查重名
-        SkillEntity existing = skillService.findByName(name);
+        SkillEntity existing = skillService.findByName(name, workspaceId);
         if (existing != null) {
             return "Error: skill '" + name + "' already exists. Use action='edit' to update or action='patch' for small fixes.";
         }
@@ -205,6 +248,10 @@ public class SkillManageTool {
             if (sourceConversationId != null && !sourceConversationId.isBlank()) {
                 skill.setSourceConversationId(sourceConversationId);
             }
+            // Authorship decides whether autonomous curation may later age or
+            // rewrite this skill. Stamped here because this is the only point
+            // that still knows whether a user was present.
+            skill.setOrigin((skillOrigin == null ? SkillOrigin.USER : skillOrigin).code());
 
             skillService.createSkill(skill);
 
@@ -213,6 +260,17 @@ public class SkillManageTool {
                 workspaceManager.exportToWorkspace(name, content, skill.getWorkspaceId());
             } catch (Exception e) {
                 log.warn("[SkillManage] Workspace export failed for '{}': {}", name, e.getMessage());
+            }
+
+            // Announce authorship so the agent layer can make the skill
+            // reachable from the authoring agent's own catalog. Best-effort:
+            // the skill is already persisted, so a listener failure must not
+            // turn a successful create into an error for the model.
+            try {
+                eventPublisher.publishEvent(new SkillAuthoredEvent(
+                        skill.getId(), name, agentId, sourceConversationId, skill.getWorkspaceId()));
+            } catch (Exception e) {
+                log.warn("[SkillManage] SkillAuthoredEvent publish failed for '{}': {}", name, e.getMessage());
             }
 
             log.info("[SkillManage] Agent created skill: name={}, contentLen={}", name, content.length());
@@ -226,15 +284,17 @@ public class SkillManageTool {
 
     // ==================== Edit (full rewrite) ====================
 
-    private String doEdit(String name, String content) {
+    private String doEdit(String name, String content, Long workspaceId, SkillOrigin skillOrigin) {
         if (content == null || content.isBlank()) {
             return "Error: content is required for edit action. Provide full replacement SKILL.md content.";
         }
         if (content.length() > MAX_CONTENT_CHARS) {
             return "Error: content too large (" + content.length() + " chars, max " + MAX_CONTENT_CHARS + ")";
         }
+        String autonomousError = runAutonomousPolicy(content, skillOrigin);
+        if (autonomousError != null) return autonomousError;
 
-        SkillEntity existing = skillService.findByName(name);
+        SkillEntity existing = skillService.findByName(name, workspaceId);
         if (existing == null) {
             return "Error: skill '" + name + "' not found. Use action='create' to create it.";
         }
@@ -271,7 +331,8 @@ public class SkillManageTool {
 
     // ==================== Patch (find-and-replace) ====================
 
-    private String doPatch(String name, String oldText, String newText) {
+    private String doPatch(String name, String oldText, String newText, Long workspaceId,
+                           SkillOrigin skillOrigin) {
         if (oldText == null || oldText.isBlank()) {
             return "Error: oldText is required for patch action.";
         }
@@ -279,7 +340,7 @@ public class SkillManageTool {
             return "Error: newText is required for patch action (use empty string to delete a section).";
         }
 
-        SkillEntity existing = skillService.findByName(name);
+        SkillEntity existing = skillService.findByName(name, workspaceId);
         if (existing == null) {
             return "Error: skill '" + name + "' not found.";
         }
@@ -292,36 +353,26 @@ public class SkillManageTool {
             return "Error: skill '" + name + "' has no content to patch.";
         }
 
-        // 精确匹配
-        String patchedContent;
-        if (currentContent.contains(oldText)) {
-            patchedContent = currentContent.replace(oldText, newText);
-        } else {
-            // 宽松匹配：归一化空白后重试
-            String normalizedCurrent = normalizeWhitespace(currentContent);
-            String normalizedOld = normalizeWhitespace(oldText);
-            if (normalizedCurrent.contains(normalizedOld)) {
-                // 找到原始位置（用归一化版本定位，然后在原文中做替换）
-                int normIdx = normalizedCurrent.indexOf(normalizedOld);
-                // 回映射到原始文本（近似：找最近的原始位置）
-                int approxStart = findApproximatePosition(currentContent, oldText);
-                if (approxStart >= 0) {
-                    int approxEnd = approxStart + oldText.length();
-                    patchedContent = currentContent.substring(0, approxStart) + newText
-                            + currentContent.substring(Math.min(approxEnd, currentContent.length()));
-                } else {
-                    return "Error: could not locate oldText in skill content (fuzzy match found but position mapping failed). "
-                            + "Try using action='edit' with full content instead.";
-                }
-            } else {
-                return "Error: oldText not found in skill '" + name + "'. Check for whitespace differences. "
-                        + "Tip: use action='edit' to replace entire content if patch is too tricky.";
-            }
+        // Autonomous patches must be exact and unambiguous. The previous
+        // whitespace-normalized offset mapping could delete unrelated bytes
+        // because normalized and original lengths differ; String#replace also
+        // changed every repeated occurrence when the reviewer saw only one.
+        int first = currentContent.indexOf(oldText);
+        if (first < 0) {
+            return "Error: oldText not found exactly in skill '" + name + "'.";
         }
+        if (currentContent.indexOf(oldText, first + oldText.length()) >= 0) {
+            return "Error: oldText occurs more than once in skill '" + name
+                    + "'; provide a larger unique context block.";
+        }
+        String patchedContent = currentContent.substring(0, first) + newText
+                + currentContent.substring(first + oldText.length());
 
         if (patchedContent.length() > MAX_CONTENT_CHARS) {
             return "Error: patched content too large (" + patchedContent.length() + " chars, max " + MAX_CONTENT_CHARS + ")";
         }
+        String autonomousError = runAutonomousPolicy(patchedContent, skillOrigin);
+        if (autonomousError != null) return autonomousError;
 
         // 安全扫描
         String scanError = runSecurityScan(patchedContent, name);
@@ -359,7 +410,8 @@ public class SkillManageTool {
      * content is security-scanned just like SKILL.md so an agent can't drop a
      * dangerous script alongside an otherwise-clean skill.
      */
-    private String doWriteFile(String name, String filePath, String content) {
+    private String doWriteFile(String name, String filePath, String content, Long workspaceId,
+                               SkillOrigin skillOrigin) {
         if (filePath == null || filePath.isBlank()) {
             return "Error: filePath is required for write_file (e.g. 'references/api.md', 'scripts/run.sh' or 'templates/report.html').";
         }
@@ -369,8 +421,10 @@ public class SkillManageTool {
         if (content.length() > MAX_CONTENT_CHARS) {
             return "Error: content too large (" + content.length() + " chars, max " + MAX_CONTENT_CHARS + ")";
         }
+        String autonomousError = runAutonomousPolicy(content, skillOrigin);
+        if (autonomousError != null) return autonomousError;
 
-        SkillEntity existing = skillService.findByName(name);
+        SkillEntity existing = skillService.findByName(name, workspaceId);
         if (existing == null) {
             return "Error: skill '" + name + "' not found. Create it first with action='create'.";
         }
@@ -412,8 +466,8 @@ public class SkillManageTool {
 
     // ==================== Delete ====================
 
-    private String doDelete(String name) {
-        SkillEntity existing = skillService.findByName(name);
+    private String doDelete(String name, Long workspaceId) {
+        SkillEntity existing = skillService.findByName(name, workspaceId);
         if (existing == null) {
             return "Error: skill '" + name + "' not found.";
         }
@@ -470,6 +524,19 @@ public class SkillManageTool {
         }
     }
 
+    private String runAutonomousPolicy(String content, SkillOrigin origin) {
+        if (origin == null || origin == SkillOrigin.USER || content == null) {
+            return null;
+        }
+        if (SECRET_PATTERN.matcher(content).find()) {
+            return "Error: autonomous skill content may not persist credentials or secrets";
+        }
+        if (AUTONOMOUS_UNSAFE_INSTRUCTION.matcher(content).find()) {
+            return "Error: autonomous skill content violates the persistent-instruction policy";
+        }
+        return null;
+    }
+
     /**
      * Synchronously re-run the resolver pipeline for the modified skill so
      * the active-skills cache and any manifest-projected columns are
@@ -522,21 +589,4 @@ public class SkillManageTool {
         return null;
     }
 
-    /** 空白归一化（连续空白 → 单空格，trim） */
-    private String normalizeWhitespace(String text) {
-        return text.replaceAll("\\s+", " ").strip();
-    }
-
-    /** 近似定位 oldText 在 content 中的位置（容忍空白差异） */
-    private int findApproximatePosition(String content, String oldText) {
-        // 按行首几个非空白词匹配
-        String[] lines = oldText.split("\n");
-        if (lines.length == 0) return -1;
-        String firstLine = lines[0].strip();
-        if (firstLine.isBlank() && lines.length > 1) firstLine = lines[1].strip();
-        if (firstLine.isBlank()) return -1;
-        // 取前 30 字符作为锚点
-        String anchor = firstLine.substring(0, Math.min(30, firstLine.length()));
-        return content.indexOf(anchor);
-    }
 }

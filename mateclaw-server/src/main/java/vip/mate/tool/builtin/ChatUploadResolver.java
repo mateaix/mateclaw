@@ -8,6 +8,7 @@ import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.attribute.FileTime;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -128,35 +129,86 @@ public final class ChatUploadResolver {
         if (!Files.isDirectory(uploadDir)) {
             return null;
         }
-        String basename;
-        try {
-            Path requested = Paths.get(rawPath).getFileName();
-            basename = requested != null ? requested.toString() : null;
-        } catch (Exception e) {
-            return null;
-        }
+        String basename = basenameOf(rawPath);
         if (basename == null || basename.isBlank()) {
             return null;
         }
 
-        Path direct = uploadDir.resolve(basename);
-        if (Files.isRegularFile(direct)) {
-            return direct;
-        }
+        // Attachments may live flat in the conversation dir (legacy layout /
+        // date-folders off) or under a yyyy-MM-dd sub-directory; scan both.
+        List<Path> scanDirs = ChatUploadLocationResolver.dateScanDirs(uploadDir);
 
-        // Stored as "{millis}_{safeFilename}" where safeFilename replaces non-ASCII
-        // characters with underscores; match by sanitized basename suffix.
-        String safeBasename = basename.replaceAll("[^a-zA-Z0-9._-]", "_");
-        String suffix = "_" + safeBasename;
-        try (var stream = Files.list(uploadDir)) {
-            return stream
-                    .filter(Files::isRegularFile)
-                    .filter(p -> p.getFileName().toString().endsWith(suffix))
-                    .findFirst()
-                    .orElse(null);
-        } catch (IOException e) {
-            log.warn("[ChatUploadResolver] Failed to scan chat-upload dir {}: {}", uploadDir, e.getMessage());
+        // An exact stored-name match is unambiguous, so it wins wherever it sits.
+        for (Path scanDir : scanDirs) {
+            Path direct = scanDir.resolve(basename);
+            if (Files.isRegularFile(direct)) {
+                return direct;
+            }
+        }
+        return newestSuffixMatch(scanDirs, basename);
+    }
+
+    /**
+     * Last segment of a model-supplied path. The separator is not the running
+     * OS's: a model asked about an attachment routinely answers with a
+     * hallucinated {@code /app/report.pdf} or {@code C:\Users\me\report.pdf}
+     * regardless of the server platform, and on Linux a backslash is a legal
+     * file-name character, so {@code Path.getFileName()} alone would hand back
+     * the whole Windows-style string. Split on both separators.
+     */
+    private static String basenameOf(String rawPath) {
+        String candidate;
+        try {
+            Path requested = Paths.get(rawPath).getFileName();
+            candidate = requested != null ? requested.toString() : null;
+        } catch (Exception e) {
             return null;
         }
+        if (candidate == null) {
+            return null;
+        }
+        int backslash = candidate.lastIndexOf('\\');
+        return backslash >= 0 ? candidate.substring(backslash + 1) : candidate;
+    }
+
+    /**
+     * Fallback for when the model passes the original filename instead of the
+     * stored name: attachments are stored as {@code {millis}_{safeFilename}}
+     * with non-ASCII characters replaced by underscores, so match by sanitized
+     * basename suffix. The most recently modified match across every scan dir
+     * wins — re-uploading the same filename must resolve to today's copy, not
+     * to a same-named one left in the flat dir or an earlier day's dir.
+     * <p>
+     * Equal timestamps are broken by file name so the pick stays deterministic
+     * on filesystems with coarse modification-time resolution (HFS+ stores
+     * whole seconds, FAT two): stored names are {@code {millis}_{name}}, so the
+     * lexicographically greater name is the later write.
+     */
+    private static Path newestSuffixMatch(List<Path> scanDirs, String basename) {
+        String suffix = "_" + basename.replaceAll("[^a-zA-Z0-9._-]", "_");
+        Path newest = null;
+        FileTime newestTime = null;
+        for (Path scanDir : scanDirs) {
+            if (!Files.isDirectory(scanDir)) {
+                continue;
+            }
+            try (var stream = Files.list(scanDir)) {
+                for (Path p : (Iterable<Path>) stream.filter(Files::isRegularFile)
+                        .filter(f -> f.getFileName().toString().endsWith(suffix))::iterator) {
+                    FileTime modified = Files.getLastModifiedTime(p);
+                    int cmp = (newestTime == null) ? 1 : modified.compareTo(newestTime);
+                    if (cmp == 0) {
+                        cmp = p.getFileName().toString().compareTo(newest.getFileName().toString());
+                    }
+                    if (cmp > 0) {
+                        newest = p;
+                        newestTime = modified;
+                    }
+                }
+            } catch (IOException e) {
+                log.warn("[ChatUploadResolver] Failed to scan chat-upload dir {}: {}", scanDir, e.getMessage());
+            }
+        }
+        return newest;
     }
 }

@@ -9,12 +9,15 @@ import vip.mate.skill.workspace.SkillWorkspaceManager;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.StandardCopyOption;
 import java.util.Comparator;
 import java.util.List;
 import java.util.regex.Pattern;
 
 /**
- * Persists lifecycle sweep reports to {@code {workspace-root}/.curator/}.
+ * Persists lifecycle sweep reports to
+ * {@code {workspace-root}/{workspaceId}/.curator/}.
  * Each run gets a {@code {runId}/} directory holding {@code run.json} (the
  * structured record) and {@code REPORT.md} (a human-readable render); a
  * {@code latest} symlink points at the newest run.
@@ -29,14 +32,16 @@ public class SkillCuratorReportStore {
     /** Number of run directories kept on disk; older ones are pruned. */
     private static final int KEEP_RUNS = 50;
 
-    /** Run ids are {@code yyyyMMdd-HHmmss} — validated before any path resolve. */
-    private static final Pattern RUN_ID = Pattern.compile("\\d{8}-\\d{6}");
+    /** Accept current collision-resistant ids and legacy second-resolution ids. */
+    private static final Pattern RUN_ID = Pattern.compile(
+            "\\d{8}-\\d{6}(?:-\\d{3}-[a-f0-9]{8})?");
 
     private final SkillWorkspaceManager workspaceManager;
     private final ObjectMapper objectMapper;
 
-    private Path curatorRoot() {
-        return workspaceManager.getWorkspaceRoot().resolve(".curator");
+    private Path curatorRoot(Long workspaceId) {
+        long scoped = workspaceId != null && workspaceId > 0 ? workspaceId : 1L;
+        return workspaceManager.getWorkspaceRoot().resolve(String.valueOf(scoped)).resolve(".curator");
     }
 
     /**
@@ -44,15 +49,27 @@ public class SkillCuratorReportStore {
      * symlink. The report's {@code path} is populated on success.
      */
     public SkillCuratorReport write(SkillCuratorReport report) {
-        Path runDir = curatorRoot().resolve(report.getRunId());
+        return write(report, 1L);
+    }
+
+    public SkillCuratorReport write(SkillCuratorReport report, Long workspaceId) {
+        Path root = curatorRoot(workspaceId);
+        Path runDir = root.resolve(report.getRunId());
         try {
+            // Serialize before touching the target directory; a mapper/config
+            // failure must not leave a corrupt run that later looks valid.
+            byte[] runJson = objectMapper.writerWithDefaultPrettyPrinter().writeValueAsBytes(report);
+            String markdown = renderMarkdown(report);
             Files.createDirectories(runDir);
-            objectMapper.writerWithDefaultPrettyPrinter()
-                    .writeValue(runDir.resolve("run.json").toFile(), report);
-            Files.writeString(runDir.resolve("REPORT.md"), renderMarkdown(report));
+            Path jsonTmp = runDir.resolve("run.json.tmp");
+            Path markdownTmp = runDir.resolve("REPORT.md.tmp");
+            Files.write(jsonTmp, runJson);
+            Files.writeString(markdownTmp, markdown);
+            replaceAtomically(jsonTmp, runDir.resolve("run.json"));
+            replaceAtomically(markdownTmp, runDir.resolve("REPORT.md"));
             report.setPath(runDir);
-            updateLatest(runDir);
-            pruneOld();
+            updateLatest(root, runDir);
+            pruneOld(workspaceId);
         } catch (IOException e) {
             log.warn("Failed to write curator report {}: {}", report.getRunId(), e.getMessage());
         }
@@ -61,7 +78,11 @@ public class SkillCuratorReportStore {
 
     /** Most recent run ids, newest first, capped at {@code limit}. */
     public List<String> listRunIds(int limit) {
-        Path root = curatorRoot();
+        return listRunIds(1L, limit);
+    }
+
+    public List<String> listRunIds(Long workspaceId, int limit) {
+        Path root = curatorRoot(workspaceId);
         if (!Files.isDirectory(root)) {
             return List.of();
         }
@@ -81,7 +102,11 @@ public class SkillCuratorReportStore {
 
     /** Newest run id, or {@code null} when no run has been recorded yet. */
     public String latestRunId() {
-        List<String> ids = listRunIds(1);
+        return latestRunId(1L);
+    }
+
+    public String latestRunId(Long workspaceId) {
+        List<String> ids = listRunIds(workspaceId, 1);
         return ids.isEmpty() ? null : ids.get(0);
     }
 
@@ -91,10 +116,14 @@ public class SkillCuratorReportStore {
      * before being resolved as a path component.
      */
     public Object readRun(String runId) {
+        return readRun(1L, runId);
+    }
+
+    public Object readRun(Long workspaceId, String runId) {
         if (runId == null || !RUN_ID.matcher(runId).matches()) {
             return null;
         }
-        Path runJson = curatorRoot().resolve(runId).resolve("run.json");
+        Path runJson = curatorRoot(workspaceId).resolve(runId).resolve("run.json");
         if (!Files.isRegularFile(runJson)) {
             return null;
         }
@@ -106,8 +135,8 @@ public class SkillCuratorReportStore {
         }
     }
 
-    private void updateLatest(Path runDir) {
-        Path latest = curatorRoot().resolve("latest");
+    private void updateLatest(Path root, Path runDir) {
+        Path latest = root.resolve("latest");
         try {
             Files.deleteIfExists(latest);
             Files.createSymbolicLink(latest, runDir.getFileName());
@@ -118,13 +147,22 @@ public class SkillCuratorReportStore {
         }
     }
 
-    private void pruneOld() {
-        List<String> ids = listRunIds(Integer.MAX_VALUE);
+    private static void replaceAtomically(Path source, Path target) throws IOException {
+        try {
+            Files.move(source, target,
+                    StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        } catch (AtomicMoveNotSupportedException e) {
+            Files.move(source, target, StandardCopyOption.REPLACE_EXISTING);
+        }
+    }
+
+    private void pruneOld(Long workspaceId) {
+        List<String> ids = listRunIds(workspaceId, Integer.MAX_VALUE);
         if (ids.size() <= KEEP_RUNS) {
             return;
         }
         for (String old : ids.subList(KEEP_RUNS, ids.size())) {
-            deleteRecursively(curatorRoot().resolve(old));
+            deleteRecursively(curatorRoot(workspaceId).resolve(old));
         }
     }
 

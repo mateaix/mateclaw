@@ -14,8 +14,10 @@ Deep-dive topics have their own pages — Tool Guard rules in [Security & Approv
 |---------|----------|--------------|
 | `default` | H2 file at `./data/mateclaw` | No action needed |
 | `mysql` | MySQL 8.0+ | `spring.profiles.active=mysql` or `SPRING_PROFILES_ACTIVE=mysql` |
+| `postgres` | PostgreSQL 16+ | `SPRING_PROFILES_ACTIVE=postgres` |
+| `kingbase` | KingbaseES | `SPRING_PROFILES_ACTIVE=kingbase` (opt-in driver required) |
 
-Docker deployments activate `mysql` automatically. Desktop builds use `default`.
+The public Docker Compose stack activates `postgres`. Desktop builds use `default`; the `mysql` profile remains supported for existing or self-managed deployments.
 
 ---
 
@@ -44,7 +46,7 @@ spring:
       enabled: true              # Available at /h2-console (disable in production)
 ```
 
-### Database — MySQL (production)
+### Database — MySQL (supported self-managed deployment)
 
 ```yaml
 spring:
@@ -53,7 +55,7 @@ spring:
   datasource:
     url: jdbc:mysql://localhost:3306/mateclaw?useSSL=false&serverTimezone=UTC
     username: root
-    password: ${MYSQL_ROOT_PASSWORD}
+    password: ${DB_PASSWORD}
     driver-class-name: com.mysql.cj.jdbc.Driver
 ```
 
@@ -63,7 +65,7 @@ spring:
 **Model configuration is 100% UI-driven.** Don't put `spring.ai.*` blocks in `application.yml` — every provider, key, and model config lives in `Settings → Models`, backed by the `mate_model_provider` and `mate_model_config` tables.
 :::
 
-**LLM API keys are not read from environment variables** — `DASHSCOPE_API_KEY` / `OPENAI_API_KEY` / etc. have no effect. A fresh install starts with no providers configured; log in and add your first one under `Settings → Models → Add Provider`. Full reference in [Models](./models).
+**Provider, key, and model rows in the database are the primary configuration.** On a fresh install, log in and add the first provider under `Settings → Models → Add Provider`. `DASHSCOPE_API_KEY` remains a compatibility fallback for DashScope auto-configuration, but it does not replace the provider row; do not assume equivalent environment variables are read for other providers. Full reference in [Models](./models).
 
 ### Virtual threads (JDK 21)
 
@@ -215,8 +217,8 @@ Details in [Multimodal](./multimodal).
 
 ## Environment variables
 
-::: warning LLM keys are not read from env
-DashScope / OpenAI / Anthropic / DeepSeek / Kimi and other provider API keys are **not configured via environment variables**. The container starts with zero LLM keys; after login, add your first provider under `Settings → Models → Add Provider`.
+::: warning Manage LLM keys in the console
+Provider, key, and model rows in `Settings → Models` are primary. `DASHSCOPE_API_KEY` remains only as a compatibility fallback for DashScope auto-configuration; do not assume equivalent environment variables are read for other providers.
 :::
 
 | Variable | Required | Purpose |
@@ -225,8 +227,10 @@ DashScope / OpenAI / Anthropic / DeepSeek / Kimi and other provider API keys are
 | `TAVILY_API_KEY` | — | Tavily search key (same as above) |
 | `JWT_SECRET` | — | JWT signing secret (recommended in production) |
 | `MATECLAW_CORS_ALLOWED_ORIGINS` | — | CORS allowlist (recommended in production) |
-| `DB_PASSWORD` / `DB_ROOT_PASSWORD` | Docker | MySQL app user / root password |
-| `SPRING_PROFILES_ACTIVE` | — | Set to `mysql` for production |
+| `DB_PASSWORD` / `DB_ADMIN_PASSWORD` | Docker | PostgreSQL application / bootstrap-admin passwords (must differ) |
+| `DB_USERNAME` / `DB_ADMIN_USERNAME` | — | PostgreSQL application / bootstrap-admin usernames |
+| `DB_HOST` / `DB_PORT` / `DB_NAME` | — | Database address, port, and name |
+| `SPRING_PROFILES_ACTIVE` | — | Docker Compose sets `postgres`; self-managed deployments may use `mysql` / `kingbase` |
 
 ### Setting them
 
@@ -247,7 +251,7 @@ $env:JWT_SECRET = "your-production-secret-at-least-32-chars"
 
 ```properties
 DB_PASSWORD=secure-password-here
-DB_ROOT_PASSWORD=different-secure-password-here
+DB_ADMIN_PASSWORD=different-secure-password-here
 JWT_SECRET=your-production-secret-at-least-32-chars
 ```
 
@@ -290,7 +294,7 @@ CREATE DATABASE mateclaw CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
 ```bash
 export SPRING_PROFILES_ACTIVE=mysql
-export MYSQL_ROOT_PASSWORD=your-password
+export DB_PASSWORD=your-password
 mvn spring-boot:run
 ```
 

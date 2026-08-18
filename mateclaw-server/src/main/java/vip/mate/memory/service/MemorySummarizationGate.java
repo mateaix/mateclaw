@@ -1,5 +1,6 @@
 package vip.mate.memory.service;
 
+import vip.mate.workspace.conversation.MessageMetadataJson;
 import vip.mate.workspace.conversation.model.MessageEntity;
 
 import java.util.List;
@@ -105,7 +106,12 @@ final class MemorySummarizationGate {
         if (metadata == null || metadata.isBlank()) {
             return "";
         }
-        Matcher matcher = FINISH_REASON.matcher(metadata);
+        // The pattern matches `"finishReason":"x"`, which the escaped form
+        // (`\"finishReason\":\"x\"`) does not contain — the gate would then see
+        // no reason at all and promote incomplete / stopped / errored turns
+        // into long-term memory, the exact guess-from-text behaviour the
+        // structured field exists to avoid.
+        Matcher matcher = FINISH_REASON.matcher(MessageMetadataJson.normalize(metadata));
         if (!matcher.find()) {
             return "";
         }

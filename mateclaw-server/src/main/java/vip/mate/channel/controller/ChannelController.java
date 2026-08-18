@@ -8,7 +8,9 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.*;
 import vip.mate.channel.ChannelManager;
+import vip.mate.channel.ChannelSessionStore;
 import vip.mate.channel.model.ChannelEntity;
+import vip.mate.channel.model.ChannelSessionEntity;
 import vip.mate.channel.service.ChannelService;
 import vip.mate.channel.verifier.ChannelVerifierRegistry;
 import vip.mate.channel.verifier.VerificationRequest;
@@ -18,7 +20,9 @@ import vip.mate.common.result.R;
 import vip.mate.exception.MateClawException;
 import vip.mate.workspace.core.annotation.RequireWorkspaceRole;
 
+import java.time.LocalDateTime;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 
@@ -39,6 +43,7 @@ public class ChannelController {
 
     private final ChannelService channelService;
     private final ChannelManager channelManager;
+    private final ChannelSessionStore channelSessionStore;
     private final AuditEventService auditEventService;
     private final ChannelVerifierRegistry verifierRegistry;
     private final ObjectMapper objectMapper;
@@ -173,6 +178,32 @@ public class ChannelController {
         }
         auditEventService.record(enabled ? "ENABLE" : "DISABLE", "CHANNEL", String.valueOf(id), channel.getName(), null);
         return R.ok(channel);
+    }
+
+    @RequireWorkspaceRole("admin")
+    @Operation(summary = "获取渠道的会话列表（可作为主动推送 / 定时任务投递目标）")
+    @GetMapping("/{id}/sessions")
+    public R<List<ChannelSessionSummary>> sessions(@PathVariable Long id,
+                                                   @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        ChannelEntity channel = channelService.getChannel(id);
+        verifyResourceWorkspace(channel.getWorkspaceId(), workspaceId);
+        return R.ok(channelSessionStore.listByChannelId(id).stream()
+                .sorted(Comparator.comparing(ChannelSessionEntity::getLastActiveTime,
+                        Comparator.nullsLast(Comparator.reverseOrder())))
+                .map(ChannelSessionSummary::from)
+                .toList());
+    }
+
+    /**
+     * Slim projection of {@code mate_channel_session} for target pickers —
+     * exposes only what the UI needs to render and bind a delivery target.
+     */
+    public record ChannelSessionSummary(String conversationId, String channelType, String targetId,
+                                        String senderId, String senderName, LocalDateTime lastActiveTime) {
+        static ChannelSessionSummary from(ChannelSessionEntity s) {
+            return new ChannelSessionSummary(s.getConversationId(), s.getChannelType(), s.getTargetId(),
+                    s.getSenderId(), s.getSenderName(), s.getLastActiveTime());
+        }
     }
 
     @RequireWorkspaceRole("admin")

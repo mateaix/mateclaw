@@ -78,7 +78,7 @@ RUN mvn -pl mateclaw-server -am package -Dmaven.test.skip=true -q ${MAVEN_FLAGS}
 # bump the Java dependency, bump this tag in lockstep — Microsoft rebuilds each
 # tag with the matching driver, so mismatched versions cause the java driver to
 # re-download browsers at runtime (defeating the whole point of this image).
-FROM mcr.microsoft.com/playwright:v1.59.0-noble
+FROM mcr.microsoft.com/playwright:v1.62.0-noble
 WORKDIR /app
 
 # JDK 21 is NOT part of the base image (it ships Node for the JS driver).

@@ -1,10 +1,23 @@
 import { describe, expect, it } from 'vitest'
-import { buildGeneratedFileNameMap, linkifyGeneratedFileUrls } from '../generatedFileLinks'
+import { buildGeneratedFileNameMap, isSafeFileUrl, linkifyGeneratedFileUrls } from '../generatedFileLinks'
 
 const FILES = [
   { name: '智能体技术培训_红色版.pptx', url: 'http://localhost:55793/api/v1/files/generated/ac38623b-7ed8-41f5-a80a-1e6761240ae0' },
   { name: 'report.docx', url: '/api/v1/files/generated/11111111-2222-3333-4444-555555555555' },
 ]
+
+describe('isSafeFileUrl', () => {
+  it('accepts only http(s) URLs and non-protocol-relative absolute paths', () => {
+    expect(isSafeFileUrl('https://example.com/report.pdf')).toBe(true)
+    expect(isSafeFileUrl('http://localhost/api/v1/files/generated/abc')).toBe(true)
+    expect(isSafeFileUrl('/api/v1/files/generated/abc')).toBe(true)
+    expect(isSafeFileUrl('//evil.example/payload')).toBe(false)
+    expect(isSafeFileUrl('javascript:alert(1)')).toBe(false)
+    expect(isSafeFileUrl('data:text/html,unsafe')).toBe(false)
+    expect(isSafeFileUrl('file:///tmp/private')).toBe(false)
+    expect(isSafeFileUrl('downloads/report.pdf')).toBe(false)
+  })
+})
 
 describe('buildGeneratedFileNameMap', () => {
   it('maps ids from absolute and relative urls', () => {

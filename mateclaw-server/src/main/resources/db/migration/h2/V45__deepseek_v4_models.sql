@@ -3,10 +3,10 @@
 -- from data-{en,zh,mysql-en,mysql-zh}.sql; this migration covers operators
 -- already on V44.
 --
--- Reference: openclaw extensions/deepseek/models.ts:28-81 — V4 supports
--- reasoning_effort + thinking control. NULL temperature/top_p marks the model
--- as thinking-managed (DeepSeekV4ThinkingDecorator handles the per-request
--- thinking field injection).
+-- V4 supports reasoning_effort together with thinking control. NULL
+-- temperature/top_p marks the model as thinking-managed
+-- (DeepSeekV4ThinkingDecorator handles the per-request thinking field
+-- injection).
 
 MERGE INTO mate_model_config (id, name, provider, model_name, description, temperature, max_tokens, top_p, builtin, enabled, is_default, create_time, update_time, deleted)
 KEY (id)

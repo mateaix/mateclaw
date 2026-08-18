@@ -4,6 +4,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
+import vip.mate.common.text.Shingles;
 import vip.mate.memory.event.MemoryWriteEvent;
 import vip.mate.workspace.document.WorkspaceFileService;
 import vip.mate.workspace.document.model.WorkspaceFileEntity;
@@ -62,9 +63,6 @@ public class StructuredMemoryService {
      * this" — personal project memory is authoritative over reference articles.
      */
     public static final String PROJECT_RECALLED_MARKER = "includes the user's current project";
-
-    /** Latin word tokens of length >= 2 used for relevance shingling. */
-    private static final Pattern WORD_RE = Pattern.compile("[a-z0-9]{2,}");
 
     /** Captures the ISO update date from an entry's metadata line ("> ... | Updated: YYYY-MM-DD"). */
     private static final Pattern UPDATED_RE = Pattern.compile("Updated:\\s*(\\d{4}-\\d{2}-\\d{2})");
@@ -469,30 +467,13 @@ public class StructuredMemoryService {
     }
 
     /**
-     * Produce a language-agnostic shingle set: Latin word tokens (length &gt;= 2)
-     * plus CJK character bigrams (single CJK characters when isolated). This lets
-     * relevance scoring work without a word segmenter on space-free CJK text.
+     * Language-agnostic shingle set (Latin word tokens + CJK character
+     * bigrams). Delegates to {@link Shingles} so relevance scoring here and
+     * recurrence detection in routine mining share one definition of
+     * "these two texts say the same thing".
      */
     private static Set<String> shingles(String text) {
-        Set<String> out = new HashSet<>();
-
-        Matcher m = WORD_RE.matcher(text);
-        while (m.find()) {
-            out.add(m.group());
-        }
-
-        for (String run : text.replaceAll("[^\\p{IsHan}]", " ").split("\\s+")) {
-            if (run.isEmpty()) continue;
-            if (run.length() == 1) {
-                out.add(run);
-            } else {
-                for (int i = 0; i + 2 <= run.length(); i++) {
-                    out.add(run.substring(i, i + 2));
-                }
-            }
-        }
-
-        return out;
+        return Shingles.of(text);
     }
 
     private String toFilename(String type) {

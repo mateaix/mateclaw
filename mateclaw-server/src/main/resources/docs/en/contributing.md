@@ -32,8 +32,8 @@ Model configuration is **UI-driven** — no need to set `DASHSCOPE_API_KEY` as a
 
 ```bash
 cd mateclaw-ui
-pnpm install
-pnpm dev
+npm install
+npm run dev
 ```
 
 Frontend on port 5173, proxies `/api` to the backend.
@@ -252,14 +252,14 @@ mvn test -Dtest=StateGraphReActAgentTest#testChat  # Single method
 
 ```bash
 cd mateclaw-ui
-pnpm build          # vue-tsc type check + vite build
-pnpm lint           # ESLint with auto-fix
+npm run build       # vue-tsc type check + vite build
+npm run lint        # ESLint with auto-fix
 ```
 
 ### Manual test checklist
 
 - [ ] Backend starts without errors
-- [ ] Frontend builds without type errors (`pnpm build`)
+- [ ] Frontend builds without type errors (`npm run build`)
 - [ ] Login works with default credentials
 - [ ] Model configured via UI
 - [ ] Chat streams a response back
@@ -277,7 +277,7 @@ The docs live in `docs/`. Pick the relevant page and update both `docs/en/` and 
 
 ```bash
 cd docs
-pnpm build
+npm run build
 ```
 
 Build must succeed with zero errors before you open the PR.

@@ -9,10 +9,13 @@ import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.TestPropertySource;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import reactor.core.publisher.Flux;
 import vip.mate.MateClawApplication;
 import vip.mate.agent.AgentService;
 import vip.mate.agent.model.AgentEntity;
+import vip.mate.channel.web.ChatStreamTracker;
+import vip.mate.channel.webchat.WebChatController.WebChatRequest;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -28,6 +31,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -75,6 +79,7 @@ import static org.mockito.ArgumentMatchers.isNull;
         "spring.datasource.url=jdbc:h2:mem:webchat_stream_e2e_${random.uuid};MODE=MySQL;DATABASE_TO_LOWER=TRUE;CASE_INSENSITIVE_IDENTIFIERS=TRUE;DB_CLOSE_DELAY=-1",
         "spring.ai.dashscope.api-key=test-key",
         "mateclaw.jwt.secret=webchat-it-secret-0123456789",
+        "mateclaw.webchat.orphan-grace-sec=-1",
         "mateclaw.feature-flag.refresh-ms=999999"
 })
 class WebChatStreamE2ETest {
@@ -87,6 +92,8 @@ class WebChatStreamE2ETest {
 
     @LocalServerPort private int port;
     @Autowired private JdbcTemplate jdbc;
+    @Autowired private WebChatController controller;
+    @Autowired private ChatStreamTracker streamTracker;
 
     /** Replaced with a Mockito mock; tests stub the two methods /stream calls. */
     @MockBean private AgentService agentService;
@@ -246,6 +253,38 @@ class WebChatStreamE2ETest {
         assertThat(countUserMessages(cid)).isEqualTo(1);
         assertThat(countAssistantMessages(cid)).isEqualTo(1);
         assertThat(lastAssistantContent(cid)).isEqualTo("Hello world!");
+    }
+
+    @Test
+    @DisplayName("disconnect before chat worker registration arms orphan cleanup")
+    void disconnectBeforeChatWorkerRegistrationIsNotLost() throws Exception {
+        org.mockito.Mockito.when(agentService.chatStructuredStream(
+                        eq(AGENT_ID), anyString(), anyString(), anyString(), isNull(), any()))
+                .thenReturn(Flux.never());
+        String visitorId = "vE2E-pre-register-disconnect";
+        String sessionId = "pre-register";
+        String cid = WebChatController.deriveConversationId(API_KEY, visitorId, sessionId);
+        WebChatRequest request = new WebChatRequest();
+        request.setMessage("keep running");
+        request.setVisitorId(visitorId);
+        request.setSessionId(sessionId);
+
+        WebChatDisconnectTestSupport.QueuedExecutorService queued =
+                new WebChatDisconnectTestSupport.QueuedExecutorService();
+        ExecutorService original = WebChatDisconnectTestSupport.swapExecutor(controller, queued);
+        try {
+            SseEmitter emitter = controller.chatStream(API_KEY, request);
+            WebChatDisconnectTestSupport.fireCompletion(emitter);
+            queued.runNext();
+        } finally {
+            WebChatDisconnectTestSupport.swapExecutor(controller, original);
+        }
+
+        streamTracker.cleanupStaleRuns();
+
+        assertThat(streamTracker.streamExistsOnThisNode(cid))
+                .as("a disconnect observed before registration must arm exact-run orphan cleanup")
+                .isFalse();
     }
 
     @Test

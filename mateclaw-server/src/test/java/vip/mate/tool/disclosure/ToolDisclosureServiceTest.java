@@ -10,10 +10,9 @@ import vip.mate.agent.AgentToolSet;
 import vip.mate.agent.context.TokenEstimator;
 import vip.mate.tool.ToolRegistry;
 import vip.mate.tool.mcp.model.McpServerEntity;
+import vip.mate.tool.mcp.runtime.McpToolNameResolver;
 import vip.mate.tool.mcp.service.McpServerService;
-import vip.mate.tool.model.AvailableToolDTO;
 import vip.mate.tool.model.ToolEntity;
-import vip.mate.tool.service.AvailableToolService;
 import vip.mate.tool.service.ToolService;
 
 import java.util.ArrayList;
@@ -47,15 +46,14 @@ class ToolDisclosureServiceTest {
         public String image_generate() { return ""; }
     }
 
-    /** Global tool set the bridge resolves DB class/bean names against. */
-    private static AgentToolSet globalSet() {
-        Object t1 = new Tools();
-        Object t2 = new ImageGenerateTool();
-        List<org.springframework.ai.tool.ToolCallback> cbs = new ArrayList<>();
-        cbs.addAll(List.of(ToolCallbacks.from(t1)));
-        cbs.addAll(List.of(ToolCallbacks.from(t2)));
-        Map<Object, String> beanNames = Map.of(t1, "tools", t2, "imageGenerateTool");
-        return AgentToolSet.fromCallbacks(List.of(t1, t2), cbs, beanNames::get);
+    private static Map<String, Set<String>> globalFunctionIndex() {
+        return Map.of(
+                "Tools", Set.of("image_generate", "my_core_tool"),
+                "tools", Set.of("image_generate", "my_core_tool"),
+                "ImageGenerateTool", Set.of("image_generate"),
+                "imageGenerateTool", Set.of("image_generate"),
+                "image_generate", Set.of("image_generate"),
+                "my_core_tool", Set.of("my_core_tool"));
     }
 
     private static ToolEntity toolRow(String name, String type, String tier) {
@@ -71,39 +69,37 @@ class ToolDisclosureServiceTest {
         s.setId(id);
         s.setName(name);
         s.setDisclosureTier(tier);
+        s.setToolsCacheJson("[{\"name\":\"create_issue\",\"description\":\"create issue\"}]");
         return s;
     }
 
-    private static AvailableToolDTO mcpDto(String name, Long serverId) {
-        return AvailableToolDTO.builder().source("mcp").providerId(serverId).name(name).build();
-    }
-
     private DefaultToolDisclosureService service(List<ToolEntity> tools,
-                                                List<McpServerEntity> servers,
-                                                List<AvailableToolDTO> available) {
+                                                List<McpServerEntity> servers) {
         ToolService ts = mock(ToolService.class);
         McpServerService ms = mock(McpServerService.class);
-        AvailableToolService as = mock(AvailableToolService.class);
         ToolRegistry tr = mock(ToolRegistry.class);
         lenient().when(ts.listTools()).thenReturn(tools);
+        lenient().when(ms.listEnabled()).thenReturn(servers);
         lenient().when(ms.listAll()).thenReturn(servers);
-        lenient().when(as.listAvailable()).thenReturn(available);
-        lenient().when(tr.getEnabledToolSet()).thenReturn(globalSet());
-        return new DefaultToolDisclosureService(ts, ms, as, tr, new ToolUsageRecencyTracker());
+        lenient().when(tr.enabledToolBeanFunctionNameIndex()).thenReturn(globalFunctionIndex());
+        return new DefaultToolDisclosureService(ts, ms, tr, new ToolUsageRecencyTracker());
     }
 
     @Test
-    @DisplayName("meta-tools enable_tool / load_skill are always core")
+    @DisplayName("skill and progressive bridge meta-tools are always core")
     void metaToolsAlwaysCore() {
-        var svc = service(List.of(toolRow("enable_tool", "builtin", "extension")), List.of(), List.of());
+        var svc = service(List.of(toolRow("enable_tool", "builtin", "extension")), List.of());
         assertEquals(DisclosureTier.CORE, svc.resolveTierByName("enable_tool"));
         assertEquals(DisclosureTier.CORE, svc.resolveTierByName("load_skill"));
+        assertEquals(DisclosureTier.CORE, svc.resolveTierByName("tool_search"));
+        assertEquals(DisclosureTier.CORE, svc.resolveTierByName("tool_describe"));
+        assertEquals(DisclosureTier.CORE, svc.resolveTierByName("tool_call"));
     }
 
     @Test
     @DisplayName("generative tools default to extension even without a DB row")
     void generativeDefaultsExtension() {
-        var svc = service(List.of(), List.of(), List.of());
+        var svc = service(List.of(), List.of());
         assertEquals(DisclosureTier.EXTENSION, svc.resolveTierByName("image_generate"));
         assertEquals(DisclosureTier.EXTENSION, svc.resolveTierByName("browser_use"));
     }
@@ -111,14 +107,14 @@ class ToolDisclosureServiceTest {
     @Test
     @DisplayName("unknown tools default to core (conservative)")
     void unknownDefaultsCore() {
-        var svc = service(List.of(), List.of(), List.of());
+        var svc = service(List.of(), List.of());
         assertEquals(DisclosureTier.CORE, svc.resolveTierByName("memory_recall"));
     }
 
     @Test
     @DisplayName("mate_tool.disclosure_tier overrides the code default")
     void dbRowOverrides() {
-        var svc = service(List.of(toolRow("my_core_tool", "builtin", "extension")), List.of(), List.of());
+        var svc = service(List.of(toolRow("my_core_tool", "builtin", "extension")), List.of());
         assertEquals(DisclosureTier.EXTENSION, svc.resolveTierByName("my_core_tool"));
     }
 
@@ -126,25 +122,24 @@ class ToolDisclosureServiceTest {
     @DisplayName("DB tier stored by Java class name bridges to the runtime function name")
     void dbTierBridgesClassNameToFunctionName() {
         // mate_tool.name = class name; resolveTier is queried by function name.
-        var hidden = service(List.of(toolRow("ImageGenerateTool", "builtin", "extension")), List.of(), List.of());
+        var hidden = service(List.of(toolRow("ImageGenerateTool", "builtin", "extension")), List.of());
         assertEquals(DisclosureTier.EXTENSION, hidden.resolveTierByName("image_generate"));
 
         // Admin un-hides it by setting the row to core; the DB value must win over
         // the code-level extension default.
-        var unhidden = service(List.of(toolRow("ImageGenerateTool", "builtin", "core")), List.of(), List.of());
+        var unhidden = service(List.of(toolRow("ImageGenerateTool", "builtin", "core")), List.of());
         assertEquals(DisclosureTier.CORE, unhidden.resolveTierByName("image_generate"));
     }
 
     @Test
     @DisplayName("MCP tool tier follows its owning server")
     void mcpFollowsServer() {
-        var extSvc = service(List.of(), List.of(server(7L, "github", "extension")),
-                List.of(mcpDto("mcp_github_create_issue", 7L)));
-        assertEquals(DisclosureTier.EXTENSION, extSvc.resolveTierByName("mcp_github_create_issue"));
+        String toolName = McpToolNameResolver.prefixedName(7L, "create_issue");
+        var extSvc = service(List.of(), List.of(server(7L, "github", "extension")));
+        assertEquals(DisclosureTier.EXTENSION, extSvc.resolveTierByName(toolName));
 
-        var coreSvc = service(List.of(), List.of(server(7L, "github", "core")),
-                List.of(mcpDto("mcp_github_create_issue", 7L)));
-        assertEquals(DisclosureTier.CORE, coreSvc.resolveTierByName("mcp_github_create_issue"));
+        var coreSvc = service(List.of(), List.of(server(7L, "github", "core")));
+        assertEquals(DisclosureTier.CORE, coreSvc.resolveTierByName(toolName));
     }
 
     @Test
@@ -152,16 +147,16 @@ class ToolDisclosureServiceTest {
     void mcpDefaultsExtensionWhenServerTierUnset() {
         // Move 5: MCP tools default to EXTENSION so they don't flood the
         // CORE tool list. Pre-Move-4 this returned CORE.
-        var svc = service(List.of(), List.of(server(7L, "github", null)),
-                List.of(mcpDto("mcp_github_create_issue", 7L)));
-        assertEquals(DisclosureTier.EXTENSION, svc.resolveTierByName("mcp_github_create_issue"),
+        String toolName = McpToolNameResolver.prefixedName(7L, "create_issue");
+        var svc = service(List.of(), List.of(server(7L, "github", null)));
+        assertEquals(DisclosureTier.EXTENSION, svc.resolveTierByName(toolName),
                 "Move 5: MCP tools with no explicit tier must default to EXTENSION");
     }
 
     @Test
     @DisplayName("split partitions into active (core + enabled) and the full extension catalog")
     void splitPartitions() {
-        var svc = service(List.of(), List.of(), List.of());
+        var svc = service(List.of(), List.of());
         AgentToolSet set = AgentToolSet.fromCallbacks(List.of(new Tools()),
                 List.of(ToolCallbacks.from(new Tools())));
 
@@ -178,7 +173,7 @@ class ToolDisclosureServiceTest {
     @Test
     @DisplayName("legacy mode advertises everything and renders no catalog")
     void legacyMode() {
-        var svc = service(List.of(), List.of(), List.of());
+        var svc = service(List.of(), List.of());
         ReflectionTestUtils.setField(svc, "disclosureMode", "legacy");
         AgentToolSet set = AgentToolSet.fromCallbacks(List.of(new Tools()),
                 List.of(ToolCallbacks.from(new Tools())));
@@ -193,13 +188,13 @@ class ToolDisclosureServiceTest {
     @Test
     @DisplayName("renderExtensionCatalog lists extension tools under a heading")
     void rendersCatalog() {
-        var svc = service(List.of(), List.of(), List.of());
+        var svc = service(List.of(), List.of());
         AgentToolSet set = AgentToolSet.fromCallbacks(List.of(new Tools()),
                 List.of(ToolCallbacks.from(new Tools())));
         String catalog = svc.renderExtensionCatalog(set, 8192);
         assertTrue(catalog.contains("## Extension Tools"));
         assertTrue(catalog.contains("image_generate"));
-        assertTrue(catalog.contains("enable_tool"));
+        assertTrue(catalog.contains("tool_call"));
         assertFalse(catalog.contains("my_core_tool"), "core tools must not appear in the extension catalog");
     }
 
@@ -229,7 +224,7 @@ class ToolDisclosureServiceTest {
     @Test
     @DisplayName("no demotion when the core schemas fit the budget, or when budget is absent")
     void noDemotionWhenBudgetFits() {
-        var svc = service(List.of(), List.of(), List.of());
+        var svc = service(List.of(), List.of());
         AgentToolSet set = manyCoreSet();
         assertTrue(svc.computeAutoDemotions(set, Integer.MAX_VALUE).isEmpty());
         assertTrue(svc.computeAutoDemotions(set, null).isEmpty());
@@ -239,7 +234,7 @@ class ToolDisclosureServiceTest {
     @Test
     @DisplayName("tiny budget demotes every demotable tool, alphabetical when nothing was ever used")
     void tinyBudgetDemotesAll() {
-        var svc = service(List.of(), List.of(), List.of());
+        var svc = service(List.of(), List.of());
         var demoted = svc.computeAutoDemotions(manyCoreSet(), 1);
         assertEquals(Set.of("tool_a", "tool_b", "tool_c"), demoted);
     }
@@ -247,7 +242,7 @@ class ToolDisclosureServiceTest {
     @Test
     @DisplayName("budget one tool short demotes exactly the first never-used candidate")
     void partialDemotionTakesFirstCandidate()  {
-        var svc = service(List.of(), List.of(), List.of());
+        var svc = service(List.of(), List.of());
         AgentToolSet set = manyCoreSet();
         int coreTokens = TokenEstimator.estimateToolsTokens(svc.split(set, Set.of()).activeCallbacks());
         var demoted = svc.computeAutoDemotions(set, coreTokens - 1);
@@ -261,13 +256,12 @@ class ToolDisclosureServiceTest {
         tracker.recordUse("tool_a");
         ToolService ts = mock(ToolService.class);
         McpServerService ms = mock(McpServerService.class);
-        AvailableToolService as = mock(AvailableToolService.class);
         ToolRegistry tr = mock(ToolRegistry.class);
         lenient().when(ts.listTools()).thenReturn(List.of());
+        lenient().when(ms.listEnabled()).thenReturn(List.of());
         lenient().when(ms.listAll()).thenReturn(List.of());
-        lenient().when(as.listAvailable()).thenReturn(List.of());
-        lenient().when(tr.getEnabledToolSet()).thenReturn(globalSet());
-        var svc = new DefaultToolDisclosureService(ts, ms, as, tr, tracker);
+        lenient().when(tr.enabledToolBeanFunctionNameIndex()).thenReturn(globalFunctionIndex());
+        var svc = new DefaultToolDisclosureService(ts, ms, tr, tracker);
 
         AgentToolSet set = manyCoreSet();
         int coreTokens = TokenEstimator.estimateToolsTokens(svc.split(set, Set.of()).activeCallbacks());
@@ -278,21 +272,21 @@ class ToolDisclosureServiceTest {
     }
 
     @Test
-    @DisplayName("explicit core DB row and meta-tools are never demoted")
-    void explicitCoreProtected() {
-        var svc = service(List.of(toolRow("tool_a", "builtin", "core")), List.of(), List.of());
+    @DisplayName("hard schema ceiling may demote explicit core rows")
+    void explicitCoreStillFitsHardCeiling() {
+        var svc = service(List.of(toolRow("tool_a", "builtin", "core")), List.of());
         var demoted = svc.computeAutoDemotions(manyCoreSet(), 1);
-        assertEquals(Set.of("tool_b", "tool_c"), demoted);
+        assertEquals(Set.of("tool_a", "tool_b", "tool_c"), demoted);
     }
 
     @Test
     @DisplayName("auto-demoted tools behave as extension in split and can be enabled back")
     void splitHonorsAutoDemotions() {
-        var svc = service(List.of(), List.of(), List.of());
+        var svc = service(List.of(), List.of());
         AgentToolSet set = manyCoreSet();
 
         var split = svc.split(set, Set.of(), Set.of("tool_b"));
-        assertEquals(List.of("tool_a", "tool_c"), names(split.activeCallbacks()));
+        assertEquals(Set.of("tool_a", "tool_c"), Set.copyOf(names(split.activeCallbacks())));
         assertEquals(List.of("tool_b"), names(split.extensionCatalog()));
 
         var enabledBack = svc.split(set, Set.of("tool_b"), Set.of("tool_b"));
@@ -302,9 +296,10 @@ class ToolDisclosureServiceTest {
     @Test
     @DisplayName("catalog rendering lists auto-demoted tools for discoverability")
     void catalogListsAutoDemoted() {
-        var svc = service(List.of(), List.of(), List.of());
+        var svc = service(List.of(), List.of());
         String catalog = svc.renderExtensionCatalog(manyCoreSet(), 8192, Set.of("tool_b"));
         assertTrue(catalog.contains("tool_b"));
+        assertTrue(catalog.contains("tool_call"));
         assertFalse(catalog.contains("| `tool_a`"), "non-demoted core tools stay out of the catalog");
     }
 }

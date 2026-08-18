@@ -280,6 +280,42 @@
             </div>
           </template>
 
+          <!-- Delivery binding: push the final run result to an IM channel
+               conversation. Writes the existing channelId + deliveryConfig
+               contract; empty channel = result stays in the task conversation. -->
+          <template v-if="form.taskType !== 'wiki_process'">
+            <div class="form-group">
+              <label class="form-label">{{ t('cronJobs.fields.deliveryChannel') }}</label>
+              <select v-model="form.channelIdStr" class="form-input" @change="onChannelChange">
+                <option value="">{{ t('cronJobs.fields.deliveryChannelNone') }}</option>
+                <option v-for="c in deliveryChannels" :key="String(c.id)" :value="String(c.id)">
+                  {{ c.name }} ({{ c.channelType }})
+                </option>
+              </select>
+              <p class="form-hint">{{ t('cronJobs.fields.deliveryChannelHint') }}</p>
+            </div>
+            <div v-if="form.channelIdStr" class="form-group">
+              <label class="form-label">{{ t('cronJobs.fields.targetSession') }} *</label>
+              <select v-model="form.targetConversationId" class="form-input">
+                <option value="" disabled>{{ t('cronJobs.fields.targetSessionPlaceholder') }}</option>
+                <option v-for="s in channelSessions" :key="s.conversationId" :value="s.conversationId">
+                  {{ sessionLabel(s) }}
+                </option>
+              </select>
+              <p v-if="sessionsLoaded && channelSessions.length === 0" class="form-hint">
+                {{ t('cronJobs.fields.targetSessionEmpty') }}
+              </p>
+            </div>
+            <div v-if="form.channelIdStr" class="form-group">
+              <label class="form-label">{{ t('cronJobs.fields.deliveryMode') }}</label>
+              <select v-model="form.deliveryMode" class="form-input">
+                <option value="deliver">{{ t('cronJobs.deliveryModes.deliver') }}</option>
+                <option value="silent">{{ t('cronJobs.deliveryModes.silent') }}</option>
+              </select>
+              <p class="form-hint">{{ t('cronJobs.fields.deliveryModeHint') }}</p>
+            </div>
+          </template>
+
           <div class="form-group">
             <label class="form-label">{{ t('cronJobs.fields.cronExpression') }} *</label>
             <CronExpressionField v-model="form.cronExpression" />
@@ -318,7 +354,7 @@ import { mcToast } from '@/composables/useMcToast'
 import { mcConfirm } from '@/components/common/useConfirm'
 import { useCronJobStore } from '@/stores/useCronJobStore'
 import { useAgentStore } from '@/stores/useAgentStore'
-import { wikiApi } from '@/api/index'
+import { wikiApi, channelApi } from '@/api/index'
 import type { CronJob } from '@/types/index'
 import CronExpressionField from '@/components/common/CronExpressionField.vue'
 
@@ -326,6 +362,26 @@ interface WikiKbOption {
   id: number | string
   name: string
 }
+
+interface ChannelOption {
+  id: number | string
+  name: string
+  channelType: string
+  enabled?: boolean
+}
+
+interface ChannelSessionOption {
+  conversationId: string
+  channelType: string
+  targetId: string
+  senderId?: string | null
+  senderName?: string | null
+  lastActiveTime?: string | null
+}
+
+// Web-family channels have no proactive-push transport, so they are not
+// offered as cron delivery targets.
+const NON_PUSHABLE_CHANNEL_TYPES = new Set(['web', 'webchat'])
 
 const { t } = useI18n()
 const store = useCronJobStore()
@@ -341,6 +397,13 @@ const editing = ref<CronJob | null>(null)
 const detailJob = ref<CronJob | null>(null)
 const wikiKbs = ref<WikiKbOption[]>([])
 const wikiKbsLoaded = ref(false)
+const channels = ref<ChannelOption[]>([])
+const channelsLoaded = ref(false)
+const channelSessions = ref<ChannelSessionOption[]>([])
+const sessionsLoaded = ref(false)
+
+const deliveryChannels = computed(() =>
+  channels.value.filter((c) => c.enabled !== false && !NON_PUSHABLE_CHANNEL_TYPES.has(c.channelType)))
 
 // Weekday keys for the table's human-readable cron rendering.
 const dayKeys = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']
@@ -352,7 +415,13 @@ const timezones = [
   'Australia/Sydney',
 ]
 
-const defaultForm = (): Partial<CronJob> & { wikiKbId?: number | string; wikiForce?: boolean } => ({
+const defaultForm = (): Partial<CronJob> & {
+  wikiKbId?: number | string
+  wikiForce?: boolean
+  channelIdStr: string
+  targetConversationId: string
+  deliveryMode: 'deliver' | 'silent'
+} => ({
   name: '',
   cronExpression: '0 9 * * *',
   timezone: 'Asia/Shanghai',
@@ -363,6 +432,12 @@ const defaultForm = (): Partial<CronJob> & { wikiKbId?: number | string; wikiFor
   enabled: true,
   wikiKbId: '',
   wikiForce: false,
+  // Delivery helpers (form-only, translated to channelId + deliveryConfig on
+  // save). channelIdStr stays a string end-to-end — Snowflake ids must never
+  // pass through Number.
+  channelIdStr: '',
+  targetConversationId: '',
+  deliveryMode: 'deliver',
 })
 const form = ref<any>(defaultForm())
 
@@ -376,8 +451,59 @@ const canSave = computed(() => {
   if (form.value.taskType === 'wiki_process'
     && (form.value.wikiKbId == null || form.value.wikiKbId === '')) return false
   if (!form.value.cronExpression?.trim()) return false
+  // A bound delivery channel needs a target conversation, unless we're
+  // editing a job that already carries a target on the same channel (the
+  // original session may have aged out of the picker).
+  if (form.value.taskType !== 'wiki_process' && form.value.channelIdStr
+    && !form.value.targetConversationId && !editingKeepsTarget()) return false
   return true
 })
+
+/** True when the edited job already has a delivery target on the currently selected channel. */
+function editingKeepsTarget(): boolean {
+  return !!(editing.value
+    && String(editing.value.channelId ?? '') === form.value.channelIdStr
+    && editing.value.deliveryConfig?.targetId)
+}
+
+async function loadChannels() {
+  if (channelsLoaded.value) return
+  try {
+    const res: any = await channelApi.list()
+    channels.value = (res?.data || []) as ChannelOption[]
+  } catch {
+    channels.value = []
+  } finally {
+    channelsLoaded.value = true
+  }
+}
+
+async function loadSessions(channelId: string) {
+  sessionsLoaded.value = false
+  channelSessions.value = []
+  if (!channelId) {
+    sessionsLoaded.value = true
+    return
+  }
+  try {
+    const res: any = await channelApi.listSessions(channelId)
+    channelSessions.value = (res?.data || []) as ChannelSessionOption[]
+  } catch {
+    channelSessions.value = []
+  } finally {
+    sessionsLoaded.value = true
+  }
+}
+
+function onChannelChange() {
+  form.value.targetConversationId = ''
+  loadSessions(form.value.channelIdStr)
+}
+
+function sessionLabel(s: ChannelSessionOption): string {
+  const who = s.senderName || s.senderId || s.targetId
+  return who ? `${who} · ${s.conversationId}` : s.conversationId
+}
 
 async function loadWikiKbs() {
   if (wikiKbsLoaded.value) return
@@ -429,6 +555,9 @@ watch(() => store.jobs.length, (n) => emit('count', n), { immediate: true })
 function openCreateModal() {
   editing.value = null
   form.value = defaultForm()
+  channelSessions.value = []
+  sessionsLoaded.value = false
+  loadChannels()
   showModal.value = true
 }
 
@@ -438,6 +567,25 @@ function openEditModal(job: CronJob) {
   if (job.taskType === 'wiki_process') {
     applyWikiProcessForm(form.value, job.requestBody)
     loadWikiKbs()
+  }
+  loadChannels()
+  // Rehydrate the delivery helpers from the persisted binding. IDs stay
+  // strings end-to-end (Snowflake precision).
+  form.value.channelIdStr = job.channelId != null ? String(job.channelId) : ''
+  form.value.deliveryMode = job.deliveryConfig?.suppressAgentReply ? 'silent' : 'deliver'
+  form.value.targetConversationId = ''
+  if (form.value.channelIdStr) {
+    loadSessions(form.value.channelIdStr).then(() => {
+      // Preselect the session that matches the stored delivery target; when
+      // it aged out of the store, the picker stays empty but saving keeps
+      // the original target (see buildDeliveryPatch).
+      const match = channelSessions.value.find(
+        (s) => s.targetId === job.deliveryConfig?.targetId)
+      if (match) form.value.targetConversationId = match.conversationId
+    })
+  } else {
+    channelSessions.value = []
+    sessionsLoaded.value = false
   }
   showModal.value = true
 }
@@ -483,13 +631,18 @@ function closeDetailModal() {
 }
 
 function buildSavePayload() {
-  // Strip the form-only wiki helpers and substitute them with the canonical
-  // JSON request_body the backend expects for wiki_process. For every other
-  // task type the payload is forwarded as-is.
-  const { wikiKbId, wikiForce, ...rest } = form.value
+  // Strip the form-only helpers (wiki + delivery) and substitute them with
+  // the canonical fields the backend expects. For every other field the
+  // payload is forwarded as-is.
+  const {
+    wikiKbId, wikiForce,
+    channelIdStr: _channelIdStr, targetConversationId: _targetConversationId, deliveryMode: _deliveryMode,
+    ...rest
+  } = form.value
   if (form.value.taskType === 'wiki_process') {
     return {
       ...rest,
+      ...buildDeliveryPatch(),
       // Drop agent binding — server defaults to a 0 sentinel for system tasks.
       agentId: undefined,
       triggerMessage: '',
@@ -501,7 +654,33 @@ function buildSavePayload() {
       }),
     }
   }
-  return rest
+  return { ...rest, ...buildDeliveryPatch() }
+}
+
+/**
+ * Translate the delivery helper fields into the persisted channelId +
+ * deliveryConfig contract. The channelId is sent as a string — the backend's
+ * Long coercion accepts textual IDs and Number() would truncate Snowflakes.
+ */
+function buildDeliveryPatch(): { channelId: string | null; deliveryConfig: CronJob['deliveryConfig'] } {
+  if (form.value.taskType === 'wiki_process' || !form.value.channelIdStr) {
+    return { channelId: null, deliveryConfig: null }
+  }
+  const prev = editing.value?.deliveryConfig
+  const sameChannel = !!editing.value
+    && String(editing.value.channelId ?? '') === form.value.channelIdStr
+  const session = channelSessions.value.find(
+    (s) => s.conversationId === form.value.targetConversationId)
+  return {
+    channelId: form.value.channelIdStr,
+    deliveryConfig: {
+      targetId: session?.targetId ?? (sameChannel ? prev?.targetId ?? null : null),
+      userId: session ? session.senderId ?? null : (sameChannel ? prev?.userId ?? null : null),
+      threadId: sameChannel ? prev?.threadId ?? null : null,
+      accountId: sameChannel ? prev?.accountId ?? null : null,
+      suppressAgentReply: form.value.deliveryMode === 'silent',
+    },
+  }
 }
 
 async function saveJob() {

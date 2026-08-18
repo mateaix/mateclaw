@@ -501,7 +501,7 @@ public class PlanGenerationNode implements NodeAction {
         // triage LLM classifies the wake-up text. Mirrors the approval-replay
         // pattern: park in the DB, resume from the DB.
         if (teamPlanBridge != null) {
-            TeamPlanBridge.ParkedPlanState parked = teamPlanBridge.checkParkedPlan(conversationId);
+            TeamPlanBridge.ParkedPlanState parked = teamPlanBridge.checkParkedPlan(conversationId, persistGoal);
             if (parked instanceof TeamPlanBridge.Settled settled) {
                 log.info("[PlanGeneration] Delegated plan {} settled ({} results) — routing to summary",
                         settled.planId(), settled.completedResults().size());
@@ -520,7 +520,7 @@ public class PlanGenerationNode implements NodeAction {
                         .build();
             }
             if (parked instanceof TeamPlanBridge.InFlight inFlight) {
-                log.info("[PlanGeneration] Delegated plan still in flight — answering with progress");
+                log.info("[PlanGeneration] Answering from delegated team state without triage LLM");
                 if (streamingHelper != null) {
                     streamingHelper.broadcastContent(conversationId, inFlight.progressText());
                 }
@@ -590,6 +590,26 @@ public class PlanGenerationNode implements NodeAction {
                         : teamPlanBridge.leadTeam(numericAgentId).orElse(null);
             }
             if (leadTeam != null) {
+                List<String> missingNamedMembers = teamPlanBridge.namedAgentsOutsideRoster(
+                        leadTeam, persistGoal,
+                        listDelegatableAgents(chatOrigin.workspaceId(), agentId));
+                if (!missingNamedMembers.isEmpty()) {
+                    String answer = "团队成员校验未通过：当前团队不包含「"
+                            + String.join("、", missingNamedMembers)
+                            + "」。请先将缺失的 Agent 加入团队后重试，或明确允许使用现有成员替代。";
+                    if (streamingHelper != null) {
+                        streamingHelper.broadcastContent(conversationId, answer);
+                    }
+                    log.info("[PlanGeneration] Team {} missing explicitly requested agents: {}",
+                            leadTeam.getId(), missingNamedMembers);
+                    return PlanStateAccessor.output()
+                            .needsPlanning(false)
+                            .directAnswer(answer)
+                            .currentPhase("direct_answer")
+                            .contentStreamed(true)
+                            .events(events)
+                            .build();
+                }
                 String memberLines = teamPlanBridge.roster(leadTeam).stream()
                         .map(a -> "- " + a.getName()
                                 + (StringUtils.hasText(a.getDescription()) ? "：" + a.getDescription() : ""))
@@ -601,7 +621,9 @@ public class PlanGenerationNode implements NodeAction {
                                 + "1. 在 step_agents 数组为每个步骤填写一名成员名称（与 steps 同序、等长，不允许留空）。\n"
                                 + "2. 在 step_deps 数组标注每个步骤的前置步骤序号（1 起始，逗号分隔；无前置填空字符串）。"
                                 + "相互独立的步骤请不要标注前置，以便并行执行。\n"
-                                + "3. 每个步骤描述必须自包含——执行成员看不到本对话，把所需的输入与要求写进步骤里。"));
+                                + "3. 每个步骤描述必须自包含——执行成员看不到本对话，把所需的输入与要求写进步骤里。\n"
+                                + "4. 若用户要求编号轮次、检查点区间或连续跟踪，必须包含一个专门的共享跟踪步骤，"
+                                + "明确区间、证据格式和完成条件；不要只把轮次要求埋在普通交付步骤中。"));
             } else {
                 List<AgentEntity> delegatable = listDelegatableAgents(chatOrigin.workspaceId(), agentId);
                 if (!delegatable.isEmpty()) {
@@ -664,7 +686,8 @@ public class PlanGenerationNode implements NodeAction {
 
             String llmResponse = result.text();
             log.info("[PlanGeneration] Triage completed in {}ms", triageMs);
-            log.debug("[PlanGeneration] LLM response: {}", llmResponse);
+            log.debug("[PlanGeneration] LLM response received ({} chars)",
+                    llmResponse == null ? 0 : llmResponse.length());
 
             // D-6: emit triage perf summary
             events.add(GraphEventPublisher.perfSummary("triage", Map.of(
@@ -673,7 +696,17 @@ public class PlanGenerationNode implements NodeAction {
                     "completion_tokens", result.completionTokens()
             )));
 
-            TriageResult triage = converter.convert(llmResponse);
+            TriageResult triage;
+            if (!StringUtils.hasText(llmResponse)) {
+                // An upstream model can occasionally finish without content.
+                // Treat it as a recoverable single-step route, not a parser
+                // exception (and therefore not a false backend ERROR).
+                log.warn("[PlanGeneration] Triage returned empty content; using single-step fallback");
+                triage = new TriageResult(true, null, "single_step",
+                        List.of(persistGoal), null, null);
+            } else {
+                triage = converter.convert(llmResponse);
+            }
             boolean needsPlanning = triage != null && triage.needsPlanning();
 
             if (!needsPlanning) {
@@ -699,7 +732,8 @@ public class PlanGenerationNode implements NodeAction {
                             .planValid(true)
                             .currentStepIndex(0)
                             .currentPhase("plan_generated")
-                            .thinkingStreamed(!result.thinking().isEmpty())
+                            .planThinking(result.thinking())
+                        .thinkingStreamed(!result.thinking().isEmpty())
                             .mergeUsage(state, result)
                             .events(events)
                             .build();
@@ -714,6 +748,7 @@ public class PlanGenerationNode implements NodeAction {
                         .directAnswer(directAnswer)
                         .currentPhase("direct_answer")
                         .contentStreamed(true)
+                        .planThinking(result.thinking())
                         .thinkingStreamed(!result.thinking().isEmpty())
                         .mergeUsage(state, result)
                         .events(events)
@@ -755,7 +790,8 @@ public class PlanGenerationNode implements NodeAction {
                             .directAnswer(announcement)
                             .currentPhase("direct_answer")
                             .contentStreamed(true)
-                            .thinkingStreamed(!result.thinking().isEmpty())
+                            .planThinking(result.thinking())
+                        .thinkingStreamed(!result.thinking().isEmpty())
                             .mergeUsage(state, result)
                             .events(events)
                             .build();
@@ -799,7 +835,8 @@ public class PlanGenerationNode implements NodeAction {
                     .currentStepIndex(0)
                     .currentPhase("plan_generated")
                     .contentStreamed(true)
-                    .thinkingStreamed(!result.thinking().isEmpty())
+                    .planThinking(result.thinking())
+                        .thinkingStreamed(!result.thinking().isEmpty())
                     .mergeUsage(state, result)
                     .events(events);
             if (autoGoal != null) {

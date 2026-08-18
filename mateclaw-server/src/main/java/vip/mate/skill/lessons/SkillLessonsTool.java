@@ -42,11 +42,17 @@ public class SkillLessonsTool {
     public String record_lesson(
             @ToolParam(description = "skill 的 slug（即 SKILL.md frontmatter 里的 name）") String skillName,
             @ToolParam(description = "要记录的经验内容") String lesson,
-            @ToolParam(description = "可选：当前 Agent 的 ID", required = false) Long agentId,
+            @ToolParam(description = "可选：当前 Agent 的 ID。传入时必须使用字符串，避免大整数精度丢失", required = false) String agentId,
             @ToolParam(description = "可选：当前对话 ID", required = false) String conversationId) {
 
         if (skillName == null || skillName.isBlank()) return error("skillName 不能为空");
         if (lesson == null || lesson.isBlank()) return error("lesson 不能为空");
+        Long parsedAgentId;
+        try {
+            parsedAgentId = parseOptionalAgentId(agentId);
+        } catch (IllegalArgumentException e) {
+            return error(e.getMessage());
+        }
 
         ResolvedSkill resolved = skillRuntimeService.resolveAllSkillsStatus().stream()
                 .filter(s -> s != null && skillName.equals(s.getName()))
@@ -69,7 +75,7 @@ public class SkillLessonsTool {
         int max = manifest != null && manifest.getSelfEvolution() != null
                 ? manifest.getSelfEvolution().getLessonsMaxEntries() : 0;
 
-        String lessonId = lessonsService.recordLesson(resolved, agentId, conversationId,
+        String lessonId = lessonsService.recordLesson(resolved, parsedAgentId, conversationId,
                 lesson, max);
         if (lessonId == null) {
             return error("Lesson 记录失败：skill 可能仅存在于数据库（无 workspace 目录）。");
@@ -81,6 +87,18 @@ public class SkillLessonsTool {
         result.set("lessonId", lessonId);
         result.set("message", "Lesson 已记录，下次加载该 skill 时会自动注入到 system prompt。");
         return JSONUtil.toJsonPrettyStr(result);
+    }
+
+    private static Long parseOptionalAgentId(String agentId) {
+        String trimmed = agentId != null ? agentId.trim() : "";
+        if (trimmed.isEmpty()) {
+            return null;
+        }
+        try {
+            return Long.parseLong(trimmed);
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("agentId 必须是数字字符串");
+        }
     }
 
     private static String error(String msg) {

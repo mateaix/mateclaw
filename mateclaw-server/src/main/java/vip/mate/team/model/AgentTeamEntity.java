@@ -23,6 +23,9 @@ public class AgentTeamEntity {
 
     private String description;
 
+    /** Owning workspace. Team data is never shared across workspaces. */
+    private Long workspaceId;
+
     /** Agent that orchestrates this team; exactly one per team. */
     private Long leadAgentId;
 

@@ -180,6 +180,14 @@ public class AgentToolSet {
     }
 
     /**
+     * Every runtime identifier this set can resolve: function names plus any
+     * Spring bean / Java class aliases captured when the set was built.
+     */
+    public Set<String> allNames() {
+        return aliasIndex.keySet();
+    }
+
+    /**
      * 获取原始的 @Tool Bean 列表
      */
     public List<Object> toolBeans() {

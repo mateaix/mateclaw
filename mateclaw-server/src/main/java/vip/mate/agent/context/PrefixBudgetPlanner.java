@@ -87,7 +87,8 @@ public class PrefixBudgetPlanner {
                 (int) (injectionBudget * shares.getSkill() / sum),
                 (int) (injectionBudget * shares.getExtensionCatalog() / sum),
                 (int) (injectionBudget * shares.getLedger() / sum),
-                (int) (effectiveMax * properties.getToolSchemaRatio()));
+                Math.min((int) (effectiveMax * properties.getToolSchemaRatio()),
+                        Math.max(1, properties.getToolSchemaMaxTokens())));
 
         if (profile != PrefixBudgetPlan.Profile.NORMAL) {
             log.info("[PrefixBudget] 窗口 {} tokens 进入 {} 档:注入预算 {} tokens"

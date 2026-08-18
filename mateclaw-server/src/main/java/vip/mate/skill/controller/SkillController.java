@@ -34,9 +34,13 @@ import vip.mate.exception.MateClawException;
 import vip.mate.skill.lifecycle.ConfirmRequiredException;
 import vip.mate.skill.lifecycle.LifecycleTransition;
 import vip.mate.skill.lifecycle.SkillCuratorJob;
+import vip.mate.skill.lifecycle.SkillSnapshotService;
+import vip.mate.skill.routine.SkillRoutineMiner;
+import vip.mate.skill.routine.SkillRoutineService;
 import vip.mate.skill.lifecycle.SkillCuratorReport;
 import vip.mate.skill.lifecycle.SkillCuratorReportStore;
 import vip.mate.skill.lifecycle.SkillLifecycleService;
+import vip.mate.skill.lifecycle.model.SkillSnapshotEntity;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -76,6 +80,9 @@ public class SkillController {
     private final SkillLifecycleService skillLifecycleService;
     private final SkillCuratorJob skillCuratorJob;
     private final SkillCuratorReportStore skillCuratorReportStore;
+    private final SkillSnapshotService skillSnapshotService;
+    private final SkillRoutineService skillRoutineService;
+    private final SkillRoutineMiner skillRoutineMiner;
     private final SkillFileService skillFileService;
 
     @Operation(summary = "获取技能分页列表（RFC-042 §2.1）")
@@ -1037,63 +1044,245 @@ public class SkillController {
     @Operation(summary = "立即运行一次 curator 预览（dry-run）")
     @PostMapping("/curator/dry-run")
     @RequireWorkspaceRole("admin")
-    public R<SkillCuratorReport> curatorDryRun() {
-        return R.ok(skillCuratorJob.dryRunNow());
+    public R<SkillCuratorReport> curatorDryRun(
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        return R.ok(skillCuratorJob.dryRunNow(workspaceId));
     }
 
     @Operation(summary = "激活/取消激活 curator（真正归档 vs 仅预览）")
     @PostMapping("/curator/activate")
     @RequireWorkspaceRole("admin")
     public R<Map<String, Object>> curatorActivate(
-            @RequestParam(defaultValue = "true") boolean activate) {
-        skillCuratorJob.activate(activate);
-        return R.ok(skillCuratorJob.status());
+            @RequestParam(defaultValue = "true") boolean activate,
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        skillCuratorJob.activate(workspaceId, activate);
+        return R.ok(skillCuratorJob.status(workspaceId));
     }
 
     @Operation(summary = "暂停 curator 定时扫描")
     @PostMapping("/curator/pause")
     @RequireWorkspaceRole("admin")
-    public R<Map<String, Object>> curatorPause() {
-        skillCuratorJob.setPaused(true);
-        return R.ok(skillCuratorJob.status());
+    public R<Map<String, Object>> curatorPause(
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        skillCuratorJob.setPaused(workspaceId, true);
+        return R.ok(skillCuratorJob.status(workspaceId));
     }
 
     @Operation(summary = "恢复 curator 定时扫描")
     @PostMapping("/curator/resume")
     @RequireWorkspaceRole("admin")
-    public R<Map<String, Object>> curatorResume() {
-        skillCuratorJob.setPaused(false);
-        return R.ok(skillCuratorJob.status());
+    public R<Map<String, Object>> curatorResume(
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        skillCuratorJob.setPaused(workspaceId, false);
+        return R.ok(skillCuratorJob.status(workspaceId));
     }
 
     @Operation(summary = "开启/关闭 curator 合并去重 pass")
     @PostMapping("/curator/consolidate")
     @RequireWorkspaceRole("admin")
     public R<Map<String, Object>> curatorConsolidate(
-            @RequestParam(defaultValue = "true") boolean enabled) {
-        skillCuratorJob.setConsolidate(enabled);
-        return R.ok(skillCuratorJob.status());
+            @RequestParam(defaultValue = "true") boolean enabled,
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        skillCuratorJob.setConsolidate(workspaceId, enabled);
+        return R.ok(skillCuratorJob.status(workspaceId));
     }
 
     @Operation(summary = "curator 控制面状态")
     @GetMapping("/curator/status")
     @RequireWorkspaceRole("member")
-    public R<Map<String, Object>> curatorStatus() {
-        return R.ok(skillCuratorJob.status());
+    public R<Map<String, Object>> curatorStatus(
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        return R.ok(skillCuratorJob.status(workspaceId));
+    }
+
+    // ==================== Routine mining ====================
+
+    @Operation(summary = "列出挖掘到的高频请求（例行事项）候选")
+    @GetMapping("/routines")
+    @RequireWorkspaceRole("member")
+    public R<Map<String, Object>> routineList(
+            @RequestParam(required = false) String status,
+            @RequestParam(required = false, defaultValue = "50") int limit,
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("items", skillRoutineService.list(status, limit, workspaceId));
+        out.put("gates", skillRoutineService.gates());
+        return R.ok(out);
+    }
+
+    @Operation(summary = "立即运行一次例行事项挖掘")
+    @PostMapping("/routines/mine")
+    @RequireWorkspaceRole("admin")
+    public R<Map<String, Object>> routineMine(
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("refreshed", skillRoutineMiner.mine(workspaceId));
+        return R.ok(out);
+    }
+
+    @Operation(summary = "忽略某个例行事项候选（后续挖掘不再重开）")
+    @PostMapping("/routines/{id}/dismiss")
+    @RequireWorkspaceRole("admin")
+    public R<Map<String, Object>> routineDismiss(@PathVariable String id,
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        return R.ok(skillRoutineService.dismiss(parseRoutineId(id), workspaceId));
+    }
+
+    @Operation(summary = "重新观察一个已忽略的例行事项候选")
+    @PostMapping("/routines/{id}/reopen")
+    @RequireWorkspaceRole("admin")
+    public R<Map<String, Object>> routineReopen(@PathVariable String id,
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        return R.ok(skillRoutineService.reopen(parseRoutineId(id), workspaceId));
+    }
+
+    @Operation(summary = "立即把例行事项候选合成为技能（跳过频次门槛）")
+    @PostMapping("/routines/{id}/promote")
+    @RequireWorkspaceRole("admin")
+    public R<Map<String, Object>> routinePromote(@PathVariable String id,
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        try {
+            return R.ok(skillRoutineService.promoteNow(parseRoutineId(id), workspaceId));
+        } catch (IllegalStateException e) {
+            throw new MateClawException("err.skill.routine_already_promoted", 409, e.getMessage());
+        }
+    }
+
+    /**
+     * Path variables stay strings end-to-end (19-digit snowflake ids lose
+     * precision as JS numbers); parse once here so a bad id is a clean 400.
+     */
+    private long parseRoutineId(String id) {
+        try {
+            return Long.parseLong(id == null ? "" : id.strip());
+        } catch (NumberFormatException e) {
+            throw new MateClawException("err.skill.routine_not_found", 400, "Invalid routine id: " + id);
+        }
+    }
+
+    @Operation(summary = "列出未纳入自治治理的技能")
+    @GetMapping("/curator/unmanaged")
+    @RequireWorkspaceRole("member")
+    public R<List<Map<String, Object>>> curatorUnmanaged(
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        return R.ok(skillLifecycleService.listUnmanaged(workspaceId));
+    }
+
+    @Operation(summary = "列出已纳入自治治理的技能")
+    @GetMapping("/curator/managed")
+    @RequireWorkspaceRole("member")
+    public R<List<Map<String, Object>>> curatorManaged(
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        return R.ok(skillLifecycleService.listManaged(workspaceId));
+    }
+
+    @Operation(summary = "将技能移交给自治治理（不重置闲置时钟）")
+    @PostMapping("/curator/adopt")
+    @RequireWorkspaceRole("admin")
+    public R<Map<String, Object>> curatorAdopt(@RequestBody List<String> skillIds,
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        return R.ok(setAdoptedBulk(skillIds, true, workspaceId));
+    }
+
+    @Operation(summary = "撤销移交，技能归还用户所有")
+    @PostMapping("/curator/release")
+    @RequireWorkspaceRole("admin")
+    public R<Map<String, Object>> curatorRelease(@RequestBody List<String> skillIds,
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        return R.ok(setAdoptedBulk(skillIds, false, workspaceId));
+    }
+
+    /**
+     * Apply adopt/release across a batch, reporting per-skill outcomes rather
+     * than failing the whole call on one bad id — a partial batch that silently
+     * rolled back would leave the operator unsure which skills moved.
+     */
+    private Map<String, Object> setAdoptedBulk(List<String> skillIds, boolean adopt, Long workspaceId) {
+        List<String> changed = new ArrayList<>();
+        List<Map<String, Object>> rejected = new ArrayList<>();
+        for (String raw : skillIds == null ? List.<String>of() : skillIds) {
+            // Ids stay strings end-to-end; parse once here so a malformed one
+            // is a reported rejection rather than a framework-level failure.
+            try {
+                skillLifecycleService.setAdopted(
+                        Long.parseLong(String.valueOf(raw).strip()), adopt, workspaceId);
+                changed.add(String.valueOf(raw));
+            } catch (Exception e) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("id", String.valueOf(raw));
+                row.put("message", e.getMessage());
+                rejected.add(row);
+            }
+        }
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("changed", changed);
+        out.put("rejected", rejected);
+        return out;
+    }
+
+    @Operation(summary = "列出技能库还原点")
+    @GetMapping("/curator/snapshots")
+    @RequireWorkspaceRole("member")
+    public R<List<Map<String, Object>>> curatorSnapshots(
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        return R.ok(skillSnapshotService.list(workspaceId, 20));
+    }
+
+    @Operation(summary = "手动捕获一个技能库还原点")
+    @PostMapping("/curator/snapshots")
+    @RequireWorkspaceRole("admin")
+    public R<Map<String, Object>> curatorSnapshotCapture(
+            @RequestParam(required = false) String reason,
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        SkillSnapshotEntity snapshot = skillSnapshotService.capture(
+                reason == null || reason.isBlank() ? "manual" : reason, workspaceId);
+        if (snapshot == null) {
+            throw new MateClawException("err.skill.snapshot_unavailable", 400,
+                    "Snapshot not captured — backups are disabled or there are no skills to capture");
+        }
+        Map<String, Object> out = new LinkedHashMap<>();
+        // Snowflake id as a string: 19 digits exceed JS Number precision.
+        out.put("id", String.valueOf(snapshot.getId()));
+        out.put("reason", snapshot.getReason());
+        out.put("skillCount", snapshot.getSkillCount());
+        return R.ok(out);
+    }
+
+    @Operation(summary = "将技能库回滚到指定还原点")
+    @PostMapping("/curator/snapshots/{snapshotId}/restore")
+    @RequireWorkspaceRole("admin")
+    public R<Map<String, Object>> curatorSnapshotRestore(@PathVariable String snapshotId,
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        // Path variable stays a String end-to-end; parsing happens once here so
+        // a malformed id is a 400 rather than a framework-level failure.
+        long id;
+        try {
+            id = Long.parseLong(snapshotId.strip());
+        } catch (NumberFormatException e) {
+            throw new MateClawException("err.skill.snapshot_not_found", 400,
+                    "Invalid snapshot id: " + snapshotId);
+        }
+        try {
+            return R.ok(skillSnapshotService.restore(id, workspaceId));
+        } catch (IllegalArgumentException e) {
+            throw new MateClawException("err.skill.snapshot_not_found", 404, e.getMessage());
+        }
     }
 
     @Operation(summary = "列出最近的 curator 运行报告")
     @GetMapping("/curator/reports")
     @RequireWorkspaceRole("member")
-    public R<List<String>> curatorReports() {
-        return R.ok(skillCuratorReportStore.listRunIds(20));
+    public R<List<String>> curatorReports(
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        return R.ok(skillCuratorReportStore.listRunIds(workspaceId, 20));
     }
 
     @Operation(summary = "读取某次 curator 运行报告")
     @GetMapping("/curator/reports/{runId}")
     @RequireWorkspaceRole("member")
-    public R<Object> curatorReport(@PathVariable String runId) {
-        Object report = skillCuratorReportStore.readRun(runId);
+    public R<Object> curatorReport(@PathVariable String runId,
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        Object report = skillCuratorReportStore.readRun(workspaceId, runId);
         if (report == null) {
             throw new MateClawException("err.skill.curator_report_not_found", 404,
                     "Curator report not found: " + runId);

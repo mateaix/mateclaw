@@ -100,7 +100,7 @@ class ChatControllerPreviewRouteTest {
         when(conversationService.isConversationOwner(eq(CONV), anyString())).thenReturn(true);
         when(officePreviewService.isConvertible(STORED)).thenReturn(true);
         when(officePreviewService.isAvailable()).thenReturn(true);
-        when(uploadLocationResolver.resolveCandidateConversationDirs(CONV)).thenReturn(List.of());
+        when(uploadLocationResolver.resolveExistingFile(CONV, STORED)).thenReturn(null);
         mockMvc.perform(MockMvcRequestBuilders.get(URL).principal(admin()))
                 .andExpect(status().isNotFound());
     }
@@ -115,7 +115,7 @@ class ChatControllerPreviewRouteTest {
             when(conversationService.isConversationOwner(eq(CONV), anyString())).thenReturn(true);
             when(officePreviewService.isConvertible(STORED)).thenReturn(true);
             when(officePreviewService.isAvailable()).thenReturn(true);
-            when(uploadLocationResolver.resolveCandidateConversationDirs(CONV)).thenReturn(List.of(dir));
+            when(uploadLocationResolver.resolveExistingFile(CONV, STORED)).thenReturn(src);
             byte[] pdf = "%PDF-1.4 fake".getBytes();
             when(officePreviewService.renderPdf(any(Path.class))).thenReturn(pdf);
 

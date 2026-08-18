@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { prettyPrintJsonForDisplay } from './jsonViewFormat'
 
 /**
  * Lightweight, dependency-free JSON viewer with syntax highlighting.
@@ -40,7 +41,7 @@ const parsed = computed(() => {
   const s = (props.raw || '').trim()
   if (!s) return { empty: true, isJson: false, html: '' }
   try {
-    const pretty = JSON.stringify(JSON.parse(s), null, 2)
+    const pretty = prettyPrintJsonForDisplay(s)
     return { empty: false, isJson: true, html: highlight(pretty) }
   } catch {
     return { empty: false, isJson: false, html: escapeHtml(props.raw || '') }

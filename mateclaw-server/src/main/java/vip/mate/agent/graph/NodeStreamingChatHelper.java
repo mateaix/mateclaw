@@ -14,9 +14,12 @@ import org.springframework.web.reactive.function.client.WebClientResponseExcepti
 import vip.mate.channel.web.ChatStreamTracker;
 import vip.mate.llm.chatmodel.AssistantThinkingRelay;
 import vip.mate.llm.chatmodel.ReasoningContentCache;
+import vip.mate.llm.chatmodel.ThinkingLevelHolder;
 
 import reactor.core.Disposable;
+import reactor.core.publisher.Flux;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
@@ -28,6 +31,7 @@ import java.util.concurrent.CancellationException;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -90,6 +94,26 @@ public class NodeStreamingChatHelper {
      * tests) — every provider then counts as in-pool (fail-open).
      */
     private final vip.mate.llm.failover.AvailableProviderPool providerPool;
+
+    /**
+     * Inter-frame idle timeout (seconds) applied to every streaming LLM call.
+     * The JDK HttpClient request timeout (which {@code setReadTimeout} maps to)
+     * only protects up to the response headers; once they arrive the clock
+     * stops, so a provider that returns 200 + a first SSE frame then goes
+     * silent hangs the body Flux forever — no exception, so health tracking /
+     * failover never engage (issue #585). A reactor {@code .timeout()} on the
+     * delta Flux fills that gap: total silence for this long propagates a
+     * {@code TimeoutException} down the existing error path (classifyError
+     * buckets it as a retryable SERVER_ERROR).
+     * <p>
+     * Defaults to {@link vip.mate.llm.chatmodel.HttpTimeouts#DEFAULT_STREAM_IDLE_TIMEOUT}
+     * (180s). {@code 0} or negative disables it (for tests / opt-out).
+     * Production wiring sets it from {@code ModelConfigEntity.requestTimeoutSeconds}
+     * so a single per-model knob governs both the connect-level read timeout
+     * and the body-level idle timeout.
+     */
+    private long streamIdleTimeoutSec =
+            vip.mate.llm.chatmodel.HttpTimeouts.DEFAULT_STREAM_IDLE_TIMEOUT.toSeconds();
 
     public NodeStreamingChatHelper(ChatStreamTracker streamTracker) {
         this(streamTracker, List.of(), null, null, null, null);
@@ -384,6 +408,7 @@ public class NodeStreamingChatHelper {
     // retry (e.g., proxy timeout returns HTTP 200 with empty body). Keep
     // the cap low — if it truly takes 4+ attempts, the provider is sick.
     static final int MAX_RETRIES_EMPTY_RESPONSE = 3;
+    static final long EMPTY_RESPONSE_BACKOFF_MS = 250;
     // UNKNOWN: conservative retry cap. Defensive: retry what we can't
     // classify, but with a smaller budget than SERVER_ERROR (5 vs 10) to
     // avoid masking truly fatal errors. MAX_TOTAL_DURATION_MS is the
@@ -442,6 +467,17 @@ public class NodeStreamingChatHelper {
         this.backoffBaseMs = backoffBaseMs;
         this.backoffCapMs = backoffCapMs;
         this.maxTotalDurationMs = maxTotalDurationMs;
+    }
+
+    /**
+     * Override the streaming inter-frame idle timeout (seconds). Wired from
+     * {@code ModelConfigEntity.requestTimeoutSeconds} by AgentGraphBuilder so a
+     * single per-model knob governs both the connect-level read timeout and
+     * the body-level idle timeout. {@code 0} or negative disables the idle
+     * timeout (used by tests / opt-out). See {@link #streamIdleTimeoutSec}.
+     */
+    public void setStreamIdleTimeoutSec(long seconds) {
+        this.streamIdleTimeoutSec = seconds;
     }
 
     private static final ObjectMapper TOOL_ARG_JSON_MAPPER = new ObjectMapper();
@@ -853,6 +889,7 @@ public class NodeStreamingChatHelper {
                 if (errType == ErrorType.EMPTY_RESPONSE && attempt < errType.retryBudget()) {
                     log.warn("[{}] Primary returned empty response (attempt {}/{}), retrying same model...",
                             phase, attempt + 1, errType.retryBudget() + 1);
+                    retryType.set(ErrorType.EMPTY_RESPONSE);
                     continue;
                 }
                 // Generic routing — driven entirely by the ErrorType policy
@@ -1073,6 +1110,7 @@ public class NodeStreamingChatHelper {
                                             AtomicReference<Long> retryHintRef) {
         if (attempt > 0) {
             boolean overloaded = retryTypeRef.get() == ErrorType.OVERLOADED;
+            boolean emptyResponse = retryTypeRef.get() == ErrorType.EMPTY_RESPONSE;
             Long hintedMs = retryHintRef.get();
             long delay;
             if (hintedMs != null && hintedMs > 0) {
@@ -1083,6 +1121,8 @@ public class NodeStreamingChatHelper {
                 // in lockstep at the stated instant.
                 delay = Math.min(hintedMs, HINTED_BACKOFF_CAP_MS)
                         + ThreadLocalRandom.current().nextLong(0, 1_000);
+            } else if (emptyResponse) {
+                delay = EMPTY_RESPONSE_BACKOFF_MS;
             } else if (overloaded) {
                 // Saturated provider: recovery periods run tens of seconds, so
                 // the generic 3s-based exponential would burn attempts before
@@ -1100,7 +1140,7 @@ public class NodeStreamingChatHelper {
             log.warn("[{}] Retry attempt {}/{} after {}ms (prev type={}) for conversation {}",
                     phase, attempt, MAX_RETRIES, delay, retryTypeRef.get(), conversationId);
             // 广播给前端：用户可见的重试倒计时
-            if (broadcast) {
+            if (broadcast && !emptyResponse) {
                 String cause = overloaded ? "模型服务繁忙" : "请求频率受限";
                 broadcastDelta(conversationId, "warning",
                         buildDeltaJson("⏱️ " + cause + "，等待 " + (delay / 1000) + " 秒后重试（第 " + attempt + "/" + MAX_RETRIES + " 次）..."));
@@ -1182,9 +1222,63 @@ public class NodeStreamingChatHelper {
             ));
         }
 
+        // Inline <think> tag extraction: models without structured reasoning
+        // stream their reasoning inside <think>...</think> in the content
+        // channel. Split those spans off live so the stream the user watches
+        // matches what persistence later stores (raw tags used to leak into
+        // content_delta and only disappear after a reload).
+        ThinkTagStreamExtractor thinkExtractor = new ThinkTagStreamExtractor();
+
+        // Shared handling for a thinking delta, regardless of origin
+        // (structured reasoningContent metadata or inline-tag extraction).
+        Consumer<String> onThinkingDelta = thinkingDelta -> {
+            // First-token signaling fires for thinking too — UI
+            // shows "thinking" activity before any content streams.
+            if (broadcast && streamTracker != null
+                    && firstTokenSignaled.compareAndSet(false, true)) {
+                streamTracker.markFirstTokenReceived(conversationId);
+            }
+            // First thinking delta opens the thinking phase. We
+            // emit the start lazily (on first delta) rather than
+            // before subscription so models that never produce
+            // thinking don't ghost-pair an empty segment.
+            if (broadcast && thinkingAccum.length() == 0
+                    && thinkingStartEmitted.compareAndSet(false, true)) {
+                streamTracker.broadcastObject(conversationId, "thinking_start", Map.of(
+                        "phase", phase != null ? phase : "",
+                        "timestamp", System.currentTimeMillis()
+                ));
+            }
+            thinkingAccum.append(thinkingDelta);
+            // thinkingLevel=off 时不广播 thinking（模型仍可能产生，但前端不展示）
+            boolean suppressThinking = "off".equalsIgnoreCase(ThinkingLevelHolder.get());
+            if (broadcast && !suppressThinking) {
+                broadcastDelta(conversationId, "thinking_delta", thinkingDelta);
+            }
+        };
+
         CountDownLatch latch = new CountDownLatch(1);
 
-        Disposable subscription = chatModel.stream(prompt)
+        // Issue #585: inter-frame idle timeout on the streaming body Flux.
+        // The JDK HttpClient request timeout (which setReadTimeout maps to)
+        // only protects up to the response headers; once they arrive the
+        // clock stops, so a provider that returns 200 + a first frame then
+        // goes silent hangs the body forever. This reactor timeout measures
+        // the gap between successive stream elements, so total silence for
+        // streamIdleTimeoutSec propagates an error down the existing path.
+        // The fallback Flux carries a descriptive message so classifyError's
+        // "timeout" pattern matches it (vanilla TimeoutException.getMessage()
+        // is null) and the health tracker / failover chain engage.
+        Flux<ChatResponse> streamWithIdleGuard =
+                streamIdleTimeoutSec > 0
+                        ? chatModel.stream(prompt).timeout(
+                                Duration.ofSeconds(streamIdleTimeoutSec),
+                                Flux.error(new TimeoutException(
+                                        "LLM stream idle timeout after " + streamIdleTimeoutSec
+                                                + "s with no delta — provider half-open or stalled")))
+                        : chatModel.stream(prompt);
+
+        Disposable subscription = streamWithIdleGuard
                 .doOnNext(chatResponse -> {
                     if (chatResponse == null || chatResponse.getResults() == null || chatResponse.getResults().isEmpty()) {
                         return;
@@ -1198,8 +1292,29 @@ public class NodeStreamingChatHelper {
                         return;
                     }
 
-                    // 1. 提取 content delta
-                    String contentDelta = msg.getText();
+                    // 1. 拆分本 chunk 的通道：出现结构化 reasoningContent 即关闭
+                    //    内联标签提取（此类模型不会再用 <think> 包裹思考，正文里的
+                    //    字面标签是真实内容）。
+                    String nativeThinking = extractReasoningContent(msg);
+                    if (nativeThinking != null && !nativeThinking.isEmpty()) {
+                        thinkExtractor.disable();
+                    }
+                    String rawContent = msg.getText();
+                    String contentDelta = rawContent;
+                    String tagThinking = null;
+                    if (rawContent != null && !rawContent.isEmpty()) {
+                        var split = thinkExtractor.feed(rawContent);
+                        contentDelta = split.content();
+                        tagThinking = split.thinking();
+                    }
+
+                    // 2. 标签提取的 thinking 先处理：形如 "…</think>answer" 的
+                    //    chunk 里思考先于正文出现。
+                    if (tagThinking != null && !tagThinking.isEmpty()) {
+                        onThinkingDelta.accept(tagThinking);
+                    }
+
+                    // 3. content delta（已剥离 <think> 内文本）
                     if (contentDelta != null && !contentDelta.isEmpty()) {
                         // First content delta closes the thinking phase if one
                         // was open, and arms first-token heartbeat relaxation.
@@ -1220,43 +1335,19 @@ public class NodeStreamingChatHelper {
                         }
                     }
 
-                    // 2. 提取 thinking delta. Do not cancel the stream for
+                    // 4. 结构化 thinking delta. Do not cancel the stream for
                     // repeated thinking phrases: some models emit repetitive
                     // internal planning while still making valid tool progress.
-                    String thinkingDelta = extractReasoningContent(msg);
-                    if (thinkingDelta != null && !thinkingDelta.isEmpty()) {
-                        // First-token signaling fires for thinking too — UI
-                        // shows "thinking" activity before any content streams.
-                        if (broadcast && streamTracker != null
-                                && firstTokenSignaled.compareAndSet(false, true)) {
-                            streamTracker.markFirstTokenReceived(conversationId);
-                        }
-                        // First thinking delta opens the thinking phase. We
-                        // emit the start lazily (on first delta) rather than
-                        // before subscription so models that never produce
-                        // thinking don't ghost-pair an empty segment.
-                        if (broadcast && thinkingAccum.length() == 0
-                                && thinkingStartEmitted.compareAndSet(false, true)) {
-                            streamTracker.broadcastObject(conversationId, "thinking_start", Map.of(
-                                    "phase", phase != null ? phase : "",
-                                    "timestamp", System.currentTimeMillis()
-                            ));
-                        }
-                        thinkingAccum.append(thinkingDelta);
-                        // thinkingLevel=off 时不广播 thinking（模型仍可能产生，但前端不展示）
-                        boolean suppressThinking = "off".equalsIgnoreCase(
-                                vip.mate.llm.chatmodel.ThinkingLevelHolder.get());
-                        if (broadcast && !suppressThinking) {
-                            broadcastDelta(conversationId, "thinking_delta", thinkingDelta);
-                        }
+                    if (nativeThinking != null && !nativeThinking.isEmpty()) {
+                        onThinkingDelta.accept(nativeThinking);
                     }
 
-                    // 3. 累积 tool calls（处理分片）
+                    // 5. 累积 tool calls（处理分片）
                     if (msg.hasToolCalls()) {
                         accumulateToolCalls(msg.getToolCalls(), toolCallAccumulators);
                     }
 
-                    // 4. Thinking-only no-progress guard. MUST run after both
+                    // 6. Thinking-only no-progress guard. MUST run after both
                     // content delta and tool call accumulation, otherwise a
                     // chunk that carries thinking AND a tool_call together
                     // (some Anthropic / DeepSeek-thinking responses do this)
@@ -1281,7 +1372,7 @@ public class NodeStreamingChatHelper {
                         return;
                     }
 
-                    // 5. Content-repetition guard. Some reasoning-mode models
+                    // 7. Content-repetition guard. Some reasoning-mode models
                     // (qwen3.6, deepseek-r1) get stuck in a "Wait, I should X
                     // → 写答案 → Wait, I should Y → 写同一份答案 → ..." loop
                     // and emit the same final-answer paragraph dozens of times
@@ -1311,7 +1402,7 @@ public class NodeStreamingChatHelper {
                         }
                     }
 
-                    // 4. 提取 token usage（通常最后一个 chunk 携带完整 usage）
+                    // 8. 提取 token usage（通常最后一个 chunk 携带完整 usage）
                     if (chatResponse.getMetadata() != null && chatResponse.getMetadata().getUsage() != null) {
                         var usage = chatResponse.getMetadata().getUsage();
                         if (usage.getPromptTokens() != null && usage.getPromptTokens() > 0) {
@@ -1375,6 +1466,7 @@ public class NodeStreamingChatHelper {
                                         "returning stopped partial result: conversationId={}",
                                 phase, contentAccum.length(), thinkingAccum.length(),
                                 toolCallAccumulators.size(), conversationId);
+                        drainThinkExtractor(thinkExtractor, contentAccum, thinkingAccum);
                         return assembleStoppedResult(contentAccum, thinkingAccum, toolCallAccumulators,
                                 promptTokens.get(), completionTokens.get(),
                                 cacheReadTokens.get(), cacheWriteTokens.get(),
@@ -1395,6 +1487,11 @@ public class NodeStreamingChatHelper {
             Thread.currentThread().interrupt();
             return buildErrorResult("LLM 调用被中断", conversationId, phase);
         }
+
+        // Stream is over (complete, error, or disposed by a guard) — drain the
+        // extractor's held-back tail so the accumulators are complete before
+        // any assembly or emptiness check below.
+        drainThinkExtractor(thinkExtractor, contentAccum, thinkingAccum);
 
         Throwable error = errorRef.get();
         if (error != null) {
@@ -1496,7 +1593,10 @@ public class NodeStreamingChatHelper {
                 && thinkingAccum.length() == 0
                 && toolCallAccumulators.isEmpty()) {
             log.warn("[{}] LLM returned empty response (no content, no thinking, no tool calls) — marking as EMPTY_RESPONSE for fallback", phase);
-            return buildErrorResultWithType("LLM 返回空响应", conversationId, phase, ErrorType.EMPTY_RESPONSE);
+            // The outer policy owns retry/failover. Keep transient empty
+            // attempts out of the user-visible error stream, and leave text
+            // blank so callers can apply a deterministic final fallback.
+            return buildEmptyResponseResult();
         }
 
         String truncationReason = truncatedByThinkingCap ? "thinking_only_no_content"
@@ -1820,6 +1920,12 @@ public class NodeStreamingChatHelper {
         AssistantMessage errorMessage = new AssistantMessage("[错误] " + errorMsg);
         return new StreamResult("[错误] " + errorMsg, "", errorMessage,
                 List.of(), false, 0, 0, false, errorMsg, errorType);
+    }
+
+    private StreamResult buildEmptyResponseResult() {
+        return new StreamResult("", "", new AssistantMessage(""),
+                List.of(), false, 0, 0, false,
+                "LLM 返回空响应", ErrorType.EMPTY_RESPONSE);
     }
 
     /** 构建 error 事件的 JSON payload */
@@ -2454,6 +2560,19 @@ public class NodeStreamingChatHelper {
     }
 
     // ==================== <think> 标签 fallback 解析 ====================
+
+    /** Flush the streaming extractor's held-back tail into the accumulators. */
+    private static void drainThinkExtractor(ThinkTagStreamExtractor extractor,
+                                            StringBuilder contentAccum,
+                                            StringBuilder thinkingAccum) {
+        var rest = extractor.flush();
+        if (!rest.content().isEmpty()) {
+            contentAccum.append(rest.content());
+        }
+        if (!rest.thinking().isEmpty()) {
+            thinkingAccum.append(rest.thinking());
+        }
+    }
 
     private record ThinkExtracted(String thinking, String content) {}
 

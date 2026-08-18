@@ -11,7 +11,9 @@ import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.tool.ToolCallback;
 import vip.mate.agent.AgentToolSet;
+import vip.mate.agent.GraphEventPublisher;
 import vip.mate.agent.graph.NodeStreamingChatHelper;
+import vip.mate.agent.graph.state.ActionExecutionLedger;
 import vip.mate.agent.graph.state.SourceEvidenceLedger;
 import vip.mate.channel.web.ChatStreamTracker;
 
@@ -101,6 +103,60 @@ class ReasoningNodeOutputTest {
         assertControlFlagsCleared(output, "normalFinalAnswer");
         assertLlmCallCountWritten(output, "normalFinalAnswer");
         assertEquals("回答内容", output.get(FINAL_ANSWER));
+    }
+
+    @Test
+    @DisplayName("action-required text-only candidate requests one reasoning continuation")
+    void actionRequiredTextOnly_continuesOnce() throws Exception {
+        NodeStreamingChatHelper.StreamResult result = new NodeStreamingChatHelper.StreamResult(
+                "预约成功", "", new AssistantMessage("预约成功"),
+                List.of(), false, 100, 50);
+        when(streamingHelper.streamCall(any(), any(), anyString(), anyString())).thenReturn(result);
+
+        Map<String, Object> state = baseStateMap();
+        state.put(ACTION_COMPLETION_REQUIRED, true);
+        Map<String, Object> output = createNode().apply(new OverAllState(state));
+
+        assertEquals(true, output.get(CONTINUE_REASONING));
+        assertEquals(1, output.get(ACTION_COMPLETION_RETRY_COUNT));
+        assertEquals("", output.get(FINAL_ANSWER));
+        assertEquals(2, ((List<?>) output.get(MESSAGES)).size());
+    }
+
+    @Test
+    @DisplayName("action-required text-only candidate becomes unverified after bounded continuation")
+    void actionRequiredTextOnly_retryExhausted() throws Exception {
+        NodeStreamingChatHelper.StreamResult result = new NodeStreamingChatHelper.StreamResult(
+                "预约成功", "", new AssistantMessage("预约成功"),
+                List.of(), false, 100, 50);
+        when(streamingHelper.streamCall(any(), any(), anyString(), anyString())).thenReturn(result);
+
+        Map<String, Object> state = baseStateMap();
+        state.put(ACTION_COMPLETION_REQUIRED, true);
+        state.put(ACTION_COMPLETION_RETRY_COUNT, 1);
+        Map<String, Object> output = createNode().apply(new OverAllState(state));
+
+        assertEquals(false, output.get(CONTINUE_REASONING));
+        assertEquals("action_unverified", output.get(FINISH_REASON));
+        assertTrue(((String) output.get(FINAL_ANSWER)).contains("未观察到实际"));
+    }
+
+    @Test
+    @DisplayName("failed action receipt overrides a model success claim")
+    void failedActionReceipt_blocksSuccessClaim() throws Exception {
+        NodeStreamingChatHelper.StreamResult result = new NodeStreamingChatHelper.StreamResult(
+                "预约成功", "", new AssistantMessage("预约成功"),
+                List.of(), false, 100, 50);
+        when(streamingHelper.streamCall(any(), any(), anyString(), anyString())).thenReturn(result);
+
+        Map<String, Object> state = baseStateMap();
+        state.put(ACTION_COMPLETION_REQUIRED, true);
+        state.put(ACTION_EXECUTION_LEDGER, ActionExecutionLedger.fromEvents(List.of(
+                GraphEventPublisher.toolComplete("call-1", "schedule_meeting", "HTTP 500", false))));
+        Map<String, Object> output = createNode().apply(new OverAllState(state));
+
+        assertEquals("action_failed", output.get(FINISH_REASON));
+        assertTrue(((String) output.get(FINAL_ANSWER)).contains("执行失败"));
     }
 
     @Test
@@ -235,5 +291,18 @@ class ReasoningNodeOutputTest {
         assertLlmCallCountWritten(output, "stoppedWithPartial");
         assertEquals("stopped", output.get(FINISH_REASON));
         assertEquals("部分内容", output.get(FINAL_ANSWER));
+    }
+
+    private Map<String, Object> baseStateMap() {
+        Map<String, Object> state = new HashMap<>();
+        state.put(CONVERSATION_ID, "test-conv");
+        state.put(SYSTEM_PROMPT, "you are a helper");
+        state.put(USER_MESSAGE, "book the meeting");
+        state.put(MESSAGES, List.of());
+        state.put(CURRENT_ITERATION, 0);
+        state.put(MAX_ITERATIONS, 10);
+        state.put(LLM_CALL_COUNT, 0);
+        state.put(FORCED_TOOL_CALL, "");
+        return state;
     }
 }

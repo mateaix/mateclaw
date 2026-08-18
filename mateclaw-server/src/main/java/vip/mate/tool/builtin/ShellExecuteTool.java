@@ -90,6 +90,7 @@ public class ShellExecuteTool {
 
         Path stdoutFile = null;
         Path stderrFile = null;
+        Process process = null;
 
         try {
             // 处理命令中的嵌入换行符（LLM 生成的 JSON 解码后可能包含真实换行）
@@ -113,7 +114,7 @@ public class ShellExecuteTool {
             pb.redirectError(stderrFile.toFile());
 
             long runStart = System.currentTimeMillis();
-            Process process = pb.start();
+            process = pb.start();
 
             boolean completed = process.waitFor(timeout, TimeUnit.SECONDS);
 
@@ -146,6 +147,20 @@ public class ShellExecuteTool {
                 }
             }
 
+        } catch (InterruptedException e) {
+            // A conversation Stop interrupts the active tool thread. Kill the
+            // subprocess tree before returning control; otherwise the Flux is
+            // gone but the shell command keeps running in the background.
+            if (process != null && process.isAlive()) {
+                killProcessTree(process);
+            }
+            Thread.currentThread().interrupt();
+            log.info("[ShellExecute] Command interrupted by cancellation");
+            result.set("exitCode", -1);
+            result.set("stdout", "");
+            result.set("stderr", "Command cancelled by user");
+            result.set("timedOut", false);
+            result.set("cancelled", true);
         } catch (Exception e) {
             log.error("[ShellExecute] Command execution failed: {}", e.getMessage(), e);
             result.set("exitCode", -1);

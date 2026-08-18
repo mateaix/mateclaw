@@ -2,7 +2,10 @@
 <configuration scan="true" scanPeriod="30 seconds">
 
     <!-- ======================== 属性定义 ======================== -->
-    <property name="LOG_HOME" value="./logs"/>
+    <!-- Override with MATECLAW_LOG_HOME so IDE, CLI and packaged launches
+         converge on one explicit directory instead of silently writing to
+         different cwd-relative locations. -->
+    <property name="LOG_HOME" value="${MATECLAW_LOG_HOME:-./logs}"/>
     <property name="APP_NAME" value="mateclaw"/>
     <!-- 保留天数 -->
     <property name="MAX_HISTORY" value="30"/>
@@ -101,9 +104,6 @@
     <!-- Spring AI -->
     <logger name="org.springframework.ai" level="INFO"/>
 
-    <!-- MyBatis SQL 日志（通过 SLF4J，替代 StdOutImpl） -->
-    <logger name="vip.mate.**.mapper" level="DEBUG"/>
-
     <!-- Spring 框架 -->
     <logger name="org.springframework" level="WARN"/>
     <logger name="org.springframework.web" level="INFO"/>
@@ -113,6 +113,10 @@
     <logger name="org.apache.http" level="WARN"/>
     <logger name="com.zaxxer.hikari" level="INFO"/>
     <logger name="io.netty" level="WARN"/>
+
+    <!-- Tool discovery runs for every fresh agent instance; per-bean DEBUG
+         lines obscure the actual graph and task lifecycle signals. -->
+    <logger name="vip.mate.tool.ToolRegistry" level="INFO"/>
 
     <!-- 飞书 SDK：确保事件处理异常不被过滤（SDK 内部 HandlerNotFoundException 等） -->
     <logger name="com.lark.oapi" level="WARN"/>

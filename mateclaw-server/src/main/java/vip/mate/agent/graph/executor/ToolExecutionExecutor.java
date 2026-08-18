@@ -7,6 +7,7 @@ import org.springframework.ai.chat.messages.ToolResponseMessage;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.ToolCallback;
 import vip.mate.tool.builtin.ToolExecutionContext;
+import vip.mate.tool.builtin.ProgressiveToolBridgeTool;
 import vip.mate.tool.disclosure.ToolUsageRecencyTracker;
 import vip.mate.tool.mcp.runtime.McpProgressContext;
 import vip.mate.tool.mcp.runtime.McpToolNameResolver;
@@ -513,6 +514,30 @@ public class ToolExecutionExecutor {
 
         for (int i = 0; i < effectiveCalls.size(); i++) {
             AssistantMessage.ToolCall toolCall = effectiveCalls.get(i);
+            // Keep the provider-facing response name paired with the function
+            // name emitted by the model. The execution name may be rewritten
+            // below (tool_call -> real target), but Gemini pairs a
+            // functionResponse by name rather than OpenAI's call_id alone.
+            String responseName = toolCall.name();
+            // Hermes-style deferred tool proxy: unwrap tool_call before any
+            // policy decision so guard, approval, audit, concurrency and UI
+            // all operate on the real tool. The executor's callback map is
+            // already scoped to this agent, making it the final authority for
+            // whether the requested target may be invoked.
+            if (ProgressiveToolBridgeTool.CALL.equals(resolveToolName(toolCall.name()))) {
+                BridgeUnwrap unwrap = unwrapBridgeCall(toolCall);
+                if (unwrap.error() != null) {
+                    events.add(GraphEventPublisher.toolStart(
+                            toolCall.id(), ProgressiveToolBridgeTool.CALL, toolCall.arguments()));
+                    events.add(GraphEventPublisher.toolComplete(
+                            toolCall.id(), ProgressiveToolBridgeTool.CALL, unwrap.error(), false));
+                    allResponses.add(new ToolResponseMessage.ToolResponse(
+                            toolCall.id(), responseName, unwrap.error()));
+                    continue;
+                }
+                toolCall = unwrap.toolCall();
+                log.info("[ToolExecutor] Progressive bridge unwrapped tool_call -> {}", toolCall.name());
+            }
             // Resolve LLM-emitted name to canonical BEFORE guard / lookup so a
             // mangled name (Read_File, web_search_tool, BrowserUseTool) can't
             // bypass guard rules keyed on the canonical name.
@@ -545,7 +570,7 @@ public class ToolExecutionExecutor {
                     }
                     events.add(GraphEventPublisher.toolComplete(toolCall.id(), toolName, msg, false));
                     allResponses.add(new org.springframework.ai.chat.messages.ToolResponseMessage.ToolResponse(
-                            toolCall.id(), toolName, msg));
+                            toolCall.id(), responseName, msg));
                     continue;
                 }
             }
@@ -560,7 +585,7 @@ public class ToolExecutionExecutor {
                     String truncationError = normalizeToolExecutionError(jsonEx);
                     events.add(GraphEventPublisher.toolComplete(toolCall.id(), toolName, truncationError, false));
                     allResponses.add(new ToolResponseMessage.ToolResponse(
-                            toolCall.id(), toolName, truncationError));
+                            toolCall.id(), responseName, truncationError));
                     continue;
                 }
             }
@@ -572,13 +597,13 @@ public class ToolExecutionExecutor {
 
                 if (decision.blocked) {
                     allResponses.add(new ToolResponseMessage.ToolResponse(
-                            toolCall.id(), toolName, decision.response));
+                            toolCall.id(), responseName, decision.response));
                     continue;
                 }
                 if (decision.needsApproval) {
                     // Barrier: 当前工具创建审批，后续工具不执行
                     allResponses.add(new ToolResponseMessage.ToolResponse(
-                            toolCall.id(), toolName, decision.response));
+                            toolCall.id(), responseName, decision.response));
                     // 标记后续工具为等待审批
                     for (int j = i + 1; j < effectiveCalls.size(); j++) {
                         AssistantMessage.ToolCall remaining = effectiveCalls.get(j);
@@ -597,7 +622,7 @@ public class ToolExecutionExecutor {
             if (toolName.startsWith("$")) {
                 log.info("[ToolExecutor] Skipping provider builtin tool: {}", toolName);
                 allResponses.add(new ToolResponseMessage.ToolResponse(
-                        toolCall.id(), toolName, "Provider builtin tool executed server-side"));
+                        toolCall.id(), responseName, "Provider builtin tool executed server-side"));
                 continue;
             }
             ToolCallback callback = toolCallbackMap.get(toolName);
@@ -610,20 +635,20 @@ public class ToolExecutionExecutor {
                     events.add(GraphEventPublisher.toolComplete(
                             toolCall.id(), toolName, redirect.response(), true));
                     allResponses.add(new ToolResponseMessage.ToolResponse(
-                            toolCall.id(), toolName, redirect.response()));
+                            toolCall.id(), responseName, redirect.response()));
                     continue;
                 }
                 String msg = skillAwareNotFoundMessage(toolName, safeOrigin);
                 log.warn("[ToolExecutor] {}", msg);
                 events.add(GraphEventPublisher.toolComplete(toolCall.id(), toolName, msg, false));
                 allResponses.add(new ToolResponseMessage.ToolResponse(
-                        toolCall.id(), toolName, msg));
+                        toolCall.id(), responseName, msg));
                 continue;
             }
 
             // 4. 分类: concurrencySafe
             boolean safe = isConcurrencySafe(toolName);
-            preparedCalls.add(new PreparedToolCall(toolCall, callback, arguments, safe, allResponses.size(),
+            preparedCalls.add(new PreparedToolCall(toolCall, responseName, callback, arguments, safe, allResponses.size(),
                     conversationId, requesterId, workspaceBasePath, safeOrigin, rawEvidenceRef));
             // 占位，Phase 2 填充
             allResponses.add(null);
@@ -709,7 +734,12 @@ public class ToolExecutionExecutor {
             return new ToolResponseMessage.ToolResponse(toolCall.id(), toolName, msg);
         }
 
+        Thread executionThread = Thread.currentThread();
+        Runnable removeCancellationHook = streamTracker != null
+                ? streamTracker.registerCancellationHook(conversationId, executionThread::interrupt)
+                : () -> { };
         try {
+            throwIfStopRequested(conversationId);
             log.info("[ToolExecutor] Executing pre-approved tool: {}", toolName);
             // RFC-063r §2.5: forward ToolContext so the pre-approved tool can
             // still observe the originating ChatOrigin (channel/workspace).
@@ -719,7 +749,8 @@ public class ToolExecutionExecutor {
             ChatOrigin replayOrigin = ChatOrigin.EMPTY
                     .withConversationId(conversationId)
                     .withWorkspace(null, workspaceBasePath);
-            String result = callback.call(callArguments, replayOrigin.toToolContext());
+            String result = callback.call(callArguments, toolContextWithScopedCatalog(replayOrigin));
+            throwIfStopRequested(conversationId);
             int rawLen = result != null ? result.length() : 0;
 
             // RFC-052: pre-approved tool may itself be returnDirect — in that
@@ -754,6 +785,8 @@ public class ToolExecutionExecutor {
             // leaving the broadcast tool-result panel unchanged.
             return new ToolResponseMessage.ToolResponse(
                     toolCall.id(), toolName, withProductCardDirective(toolName, result != null ? result : ""));
+        } catch (CancellationException e) {
+            throw e;
         } catch (Exception e) {
             log.error("[ToolExecutor] Pre-approved tool {} failed: {}", toolName, e.getMessage());
             String safeError = isReturnDirect(callback)
@@ -761,6 +794,11 @@ public class ToolExecutionExecutor {
                     : "Tool execution failed: " + e.getMessage();
             events.add(GraphEventPublisher.toolComplete(toolCall.id(), toolName, safeError, false));
             return new ToolResponseMessage.ToolResponse(toolCall.id(), toolName, safeError);
+        } finally {
+            removeCancellationHook.run();
+            if (streamTracker != null && streamTracker.isStopRequested(conversationId)) {
+                Thread.interrupted();
+            }
         }
     }
 
@@ -801,6 +839,7 @@ public class ToolExecutionExecutor {
         List<List<PreparedToolCall>> batches = buildExecutionBatches(preparedCalls);
 
         for (List<PreparedToolCall> batch : batches) {
+            throwIfStopRequested(preparedCalls.isEmpty() ? null : preparedCalls.get(0).conversationId);
             if (batch.size() == 1) {
                 // 单个工具（safe 或 unsafe），直接执行
                 PreparedToolCall pc = batch.get(0);
@@ -868,18 +907,31 @@ public class ToolExecutionExecutor {
         // 等待所有并行工具完成，按原始顺序填入结果
         for (var entry : futures.entrySet()) {
             try {
+                String conversationId = batch.isEmpty() ? null : batch.get(0).conversationId;
+                if (streamTracker != null && streamTracker.isStopRequested(conversationId)) {
+                    futures.values().forEach(future -> future.cancel(true));
+                    throw new CancellationException("Stream stopped by user during tool execution");
+                }
                 // 按工具名查找配置的超时时间
                 PreparedToolCall matchedPc = batch.stream()
                         .filter(p -> p.resultIndex == entry.getKey()).findFirst().orElse(null);
                 long timeoutMs = getToolTimeoutMs(matchedPc != null ? matchedPc.toolCall.name() : null);
                 ToolResponseMessage.ToolResponse response = entry.getValue().get(timeoutMs, TimeUnit.MILLISECONDS);
                 allResponses.set(entry.getKey(), response);
+            } catch (CancellationException e) {
+                futures.values().forEach(future -> future.cancel(true));
+                throw e;
             } catch (Exception e) {
+                String conversationId = batch.isEmpty() ? null : batch.get(0).conversationId;
+                if (streamTracker != null && streamTracker.isStopRequested(conversationId)) {
+                    futures.values().forEach(future -> future.cancel(true));
+                    throw new CancellationException("Stream stopped by user during tool execution");
+                }
                 // 超时或异常 — 填入错误响应
                 PreparedToolCall pc = batch.stream()
                         .filter(p -> p.resultIndex == entry.getKey())
                         .findFirst().orElse(null);
-                String toolName = pc != null ? pc.toolCall.name() : "unknown";
+                String toolName = pc != null ? pc.responseName : "unknown";
                 String toolId = pc != null ? pc.toolCall.id() : "";
                 log.error("[ToolExecutor] Parallel tool {} failed: {}", toolName, e.getMessage());
                 allResponses.set(entry.getKey(), new ToolResponseMessage.ToolResponse(
@@ -895,7 +947,12 @@ public class ToolExecutionExecutor {
                                                                 List<GraphEventPublisher.GraphEvent> events,
                                                                 List<DirectToolOutput> directOutputs) {
         String toolName = pc.toolCall.name();
+        Thread executionThread = Thread.currentThread();
+        Runnable removeCancellationHook = streamTracker != null
+                ? streamTracker.registerCancellationHook(pc.conversationId, executionThread::interrupt)
+                : () -> { };
         try {
+            throwIfStopRequested(pc.conversationId);
             if (streamTracker != null) {
                 streamTracker.updateRunningTool(pc.conversationId, toolName);
                 streamTracker.broadcastObject(pc.conversationId, GraphEventPublisher.EVENT_TOOL_START,
@@ -917,7 +974,7 @@ public class ToolExecutionExecutor {
                 runtimeOrigin = runtimeOrigin
                         .withConversationId(pc.conversationId)
                         .withWorkspace(runtimeOrigin.workspaceId(), pc.workspaceBasePath);
-                ToolContext toolContext = runtimeOrigin.toToolContext();
+                ToolContext toolContext = toolContextWithScopedCatalog(runtimeOrigin);
 
                 // MCP progress: generate progressToken and inject into ToolContext
                 // so ProgressAwareMcpToolCallback can include it in tools/call _meta.
@@ -931,6 +988,7 @@ public class ToolExecutionExecutor {
                 }
 
                 result = pc.callback.call(pc.arguments, toolContext);
+                throwIfStopRequested(pc.conversationId);
             } finally {
                 if (progressToken != null) {
                     progressContext.remove(progressToken);
@@ -968,7 +1026,7 @@ public class ToolExecutionExecutor {
                 // any subsequent LLM round (the graph won't take a next round —
                 // see ObservationDispatcher RETURN_DIRECT_TRIGGERED branch).
                 return new ToolResponseMessage.ToolResponse(
-                        pc.toolCall.id(), toolName, DIRECT_TOOL_PLACEHOLDER);
+                        pc.toolCall.id(), pc.responseName, DIRECT_TOOL_PLACEHOLDER);
             }
 
             // Capture SourceEvidenceLedger from the RAW result, before truncate/
@@ -1008,7 +1066,13 @@ public class ToolExecutionExecutor {
             // Append the card-rendering directive to the LLM-facing response only,
             // leaving the broadcast tool-result panel unchanged.
             return new ToolResponseMessage.ToolResponse(
-                    pc.toolCall.id(), toolName, withProductCardDirective(toolName, result != null ? result : ""));
+                    pc.toolCall.id(), pc.responseName,
+                    withProductCardDirective(toolName, result != null ? result : ""));
+        } catch (CancellationException e) {
+            if (streamTracker != null) {
+                streamTracker.updateRunningTool(pc.conversationId, null);
+            }
+            throw e;
         } catch (Exception e) {
             log.error("[ToolExecutor] Tool {} execution failed: {}", toolName, e.getMessage(), e);
             // RFC-052: for returnDirect tools, even the error message is
@@ -1026,7 +1090,21 @@ public class ToolExecutionExecutor {
                 streamTracker.updateRunningTool(pc.conversationId, null);
             }
             return new ToolResponseMessage.ToolResponse(
-                    pc.toolCall.id(), toolName, reportedError);
+                    pc.toolCall.id(), pc.responseName, reportedError);
+        } finally {
+            removeCancellationHook.run();
+            // Virtual-thread workers are not reused, but single/unsafe calls
+            // can execute on a Reactor worker. Do not leak Stop's interrupt bit
+            // into unrelated work scheduled on that carrier.
+            if (streamTracker != null && streamTracker.isStopRequested(pc.conversationId)) {
+                Thread.interrupted();
+            }
+        }
+    }
+
+    private void throwIfStopRequested(String conversationId) {
+        if (streamTracker != null && streamTracker.isStopRequested(conversationId)) {
+            throw new CancellationException("Stream stopped by user during tool execution");
         }
     }
 
@@ -1462,7 +1540,7 @@ public class ToolExecutionExecutor {
                 + "\",\"filePath\":\"SKILL.md\"}";
         String skillMd;
         try {
-            ToolContext ctx = (origin != null ? origin : ChatOrigin.EMPTY).toToolContext();
+            ToolContext ctx = toolContextWithScopedCatalog(origin != null ? origin : ChatOrigin.EMPTY);
             skillMd = readSkillFile.call(redirectArgs, ctx);
         } catch (Exception e) {
             log.warn("[ToolExecutor] Auto-redirect readSkillFile failed for '{}': {}", toolName, e.getMessage());
@@ -1487,10 +1565,104 @@ public class ToolExecutionExecutor {
         return s.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
+    /**
+     * Parse and validate a progressive {@code tool_call} envelope. Validation
+     * happens before guard execution and never invokes a callback. In
+     * particular, required-argument probing mirrors Hermes: an incomplete
+     * call returns the target schema immediately instead of spending another
+     * round on a guaranteed callback failure.
+     */
+    private BridgeUnwrap unwrapBridgeCall(AssistantMessage.ToolCall bridgeCall) {
+        try {
+            var envelope = OBJECT_MAPPER.readTree(bridgeCall.arguments());
+            String requestedName = textField(envelope, "toolName", "name");
+            if (requestedName == null || requestedName.isBlank()) {
+                return BridgeUnwrap.error("Error: tool_call requires an exact toolName.");
+            }
+            String targetName = resolveToolName(requestedName);
+            if (ProgressiveToolBridgeTool.BRIDGE_NAMES.contains(targetName)) {
+                return BridgeUnwrap.error("Error: tool_call cannot invoke a progressive bridge recursively.");
+            }
+            ToolCallback target = toolCallbackMap.get(targetName);
+            if (target == null) {
+                return BridgeUnwrap.error("Error: Tool '" + requestedName
+                        + "' is not available to this agent. Use tool_search for scoped results.");
+            }
+
+            var argsNode = envelope != null && envelope.has("arguments")
+                    ? envelope.get("arguments")
+                    : envelope != null ? envelope.get("args") : null;
+            String targetArguments;
+            if (argsNode == null || argsNode.isNull()) {
+                targetArguments = "{}";
+            } else if (argsNode.isTextual()) {
+                targetArguments = argsNode.asText();
+                // A textual envelope is accepted for weaker models, but it
+                // must itself contain valid JSON before proceeding.
+                OBJECT_MAPPER.readTree(targetArguments);
+            } else {
+                targetArguments = OBJECT_MAPPER.writeValueAsString(argsNode);
+            }
+
+            String missing = missingRequiredArguments(target, targetArguments);
+            if (missing != null) {
+                return BridgeUnwrap.error("Error: Missing required arguments for '" + targetName
+                        + "': " + missing + ". Full input schema: "
+                        + target.getToolDefinition().inputSchema());
+            }
+            return BridgeUnwrap.success(new AssistantMessage.ToolCall(
+                    bridgeCall.id(), bridgeCall.type(), targetName, targetArguments));
+        } catch (Exception e) {
+            return BridgeUnwrap.error("Error: invalid tool_call envelope: " + normalizeToolExecutionError(e));
+        }
+    }
+
+    private static String textField(com.fasterxml.jackson.databind.JsonNode node, String... names) {
+        if (node == null) return null;
+        for (String name : names) {
+            var value = node.get(name);
+            if (value != null && value.isTextual()) return value.asText();
+        }
+        return null;
+    }
+
+    private static String missingRequiredArguments(ToolCallback callback, String arguments) {
+        try {
+            var schema = OBJECT_MAPPER.readTree(callback.getToolDefinition().inputSchema());
+            var required = schema.get("required");
+            if (required == null || !required.isArray() || required.isEmpty()) return null;
+            var actual = OBJECT_MAPPER.readTree(arguments);
+            List<String> missing = new ArrayList<>();
+            for (var name : required) {
+                if (actual == null || !actual.has(name.asText()) || actual.get(name.asText()).isNull()) {
+                    missing.add(name.asText());
+                }
+            }
+            return missing.isEmpty() ? null : String.join(", ", missing);
+        } catch (Exception ignored) {
+            // Bad third-party schemas should not make an otherwise valid tool
+            // unreachable; the callback remains the source of truth.
+            return null;
+        }
+    }
+
+    /**
+     * Carries the executor's immutable, agent-scoped callback snapshot into
+     * catalog bridge calls. This makes tool_search/tool_describe observe the
+     * exact same authority set that tool_call validates against.
+     */
+    private ToolContext toolContextWithScopedCatalog(ChatOrigin origin) {
+        ToolContext base = (origin != null ? origin : ChatOrigin.EMPTY).toToolContext();
+        Map<String, Object> context = new HashMap<>(base.getContext());
+        context.put(ProgressiveToolBridgeTool.SCOPED_TOOL_CALLBACKS_CONTEXT_KEY, toolCallbackMap);
+        return new ToolContext(context);
+    }
+
     // ==================== 内部数据类 ====================
 
     private record PreparedToolCall(
             AssistantMessage.ToolCall toolCall,
+            String responseName,
             ToolCallback callback,
             String arguments,
             boolean concurrencySafe,
@@ -1519,6 +1691,16 @@ public class ToolExecutionExecutor {
              */
             java.util.concurrent.atomic.AtomicReference<SourceEvidenceLedger> rawEvidenceCollector
     ) {}
+
+    private record BridgeUnwrap(AssistantMessage.ToolCall toolCall, String error) {
+        static BridgeUnwrap success(AssistantMessage.ToolCall call) {
+            return new BridgeUnwrap(call, null);
+        }
+
+        static BridgeUnwrap error(String message) {
+            return new BridgeUnwrap(null, message);
+        }
+    }
 
     private record ApprovalBarrier(String pendingId, String toolName) {}
 

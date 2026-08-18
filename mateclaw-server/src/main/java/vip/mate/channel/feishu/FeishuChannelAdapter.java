@@ -12,6 +12,7 @@ import vip.mate.channel.ChannelMessage;
 import vip.mate.workspace.core.service.ChatUploadLocationResolver;
 import vip.mate.channel.ChannelMessageRouter;
 import vip.mate.channel.ExponentialBackoff;
+import vip.mate.channel.ProvisionalContentTracker;
 import vip.mate.channel.StreamingChannelAdapter;
 import vip.mate.channel.media.GeneratedFileScrubber;
 import vip.mate.channel.media.MediaSource;
@@ -67,6 +68,10 @@ import java.util.concurrent.TimeUnit;
  * - card_format: 卡片格式化模式 "auto"（默认）| "always" | "never"
  *               auto: 根据内容自动检测；always: 全部包卡片；never: 全部纯文本（降级/调试用）
  * - card_header: Markdown 卡片 header 文案，默认 "AI 助手"；设为空串可隐藏 header
+ * - card_streaming_enabled: 是否启用 CardKit 流式卡片（默认 true）
+ * - stream_progress: 是否在流式卡片中展示执行轨迹（默认 true）
+ * - filter_thinking: 是否隐藏原始思考文本（默认 true；状态与阶段轨迹仍展示）
+ * - filter_tool_messages: 是否隐藏工具名称与逐项状态（默认 true；仍展示汇总数量）
  * - require_mention: 群聊中是否需要 @机器人 才响应（默认 false）
  *               true: 仅当消息中 @了机器人才处理；通过飞书 mentions 字段精确判断，无需配置 botPrefix
  *
@@ -239,19 +244,6 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
      * {@link #chatUploadsRoot} field applies.
      */
     vip.mate.workspace.core.service.ChatUploadLocationResolver chatUploadLocationResolver;
-
-    /**
-     * Resolve the upload root for a conversation, preferring the wired resolver
-     * (workspace/agent-aware) and falling back to the legacy field. Read paths
-     * should use {@link #candidateChatUploadRoots(String)} to probe both the
-     * workspace-scoped root and the legacy root.
-     */
-    private java.nio.file.Path chatUploadRootFor(String conversationId) {
-        if (chatUploadLocationResolver != null) {
-            return chatUploadLocationResolver.resolveUploadRoot(conversationId);
-        }
-        return chatUploadsRoot;
-    }
 
     /**
      * Ordered candidate upload roots for a conversation: workspace-scoped first
@@ -1791,11 +1783,13 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
                     : maybeDownloadResource(messageId, fileKey, type, fileName);
             if (dl == null) return null;
 
-            // Save under the workspace/agent-aware upload root ({convId}/ subdir).
-            // Sanitize the id for the path segment — IM ids like "feishu:xxx"
+            // Save under the workspace/agent-aware upload root ({convId}/ subdir,
+            // plus the per-day sub-directory when date folders are enabled).
+            // The id is sanitized for the path segment — IM ids like "feishu:xxx"
             // carry a ':' that is illegal in a Windows filename.
-            Path uploadDir = chatUploadRootFor(conversationId)
-                    .resolve(ChatUploadLocationResolver.sanitizeSegment(conversationId));
+            Path uploadDir = (chatUploadLocationResolver != null)
+                    ? chatUploadLocationResolver.resolveWriteDir(conversationId)
+                    : chatUploadsRoot.resolve(ChatUploadLocationResolver.sanitizeSegment(conversationId));
             Files.createDirectories(uploadDir);
             String rawName = (dl.fileName() != null && !dl.fileName().isBlank())
                     ? dl.fileName() : fileKey;
@@ -1889,7 +1883,11 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
         long cutoff = System.currentTimeMillis() - RECENT_FILE_TTL_MINUTES * 60_000L;
         List<RecentFileEntry> merged = new java.util.ArrayList<>();
         for (Path dir : candidateChatUploadDirs(conversationId)) {
-            merged.addAll(loadRecentFilesFromDisk(dir, cutoff));
+            // Scan the flat conversation dir plus each yyyy-MM-dd sub-directory
+            // so staged copies written under either layout are recovered.
+            for (Path scanDir : ChatUploadLocationResolver.dateScanDirs(dir)) {
+                merged.addAll(loadRecentFilesFromDisk(scanDir, cutoff));
+            }
         }
         return merged;
     }
@@ -2603,29 +2601,70 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
         }
 
         StringBuilder accumulator = new StringBuilder();
+        boolean progressEnabled = getConfigBoolean("stream_progress", true);
+        FeishuProgressRenderer progress = progressEnabled
+                ? new FeishuProgressRenderer(
+                        System.currentTimeMillis(),
+                        !getConfigBoolean("filter_thinking", true),
+                        !getConfigBoolean("filter_tool_messages", true))
+                : null;
+        ProvisionalContentTracker narrationTracker = progressEnabled
+                ? new ProvisionalContentTracker("feishu") : null;
         try {
             stream.doOnNext(delta -> {
-                        // segmentOnly narration is skipped: appending every
-                        // ReAct iteration's "我来查一下…" into the card text is
-                        // what makes the answer read as if it were sent twice.
-                        if (StreamingChannelAdapter.contributesToFinalContent(delta)) {
-                            accumulator.append(delta.content());
-                            streamingCardManager.appendContent(sessionKey, delta.content(), false);
+                        if (!progressEnabled) {
+                            // Legacy answer-only card mode.
+                            if (StreamingChannelAdapter.contributesToFinalContent(delta)) {
+                                accumulator.append(delta.content());
+                                streamingCardManager.appendContent(sessionKey, delta.content(), false);
+                            }
+                            return;
                         }
+
+                        boolean forceFlush = false;
+                        if (delta.isEvent()) {
+                            if ("tool_call_completed".equals(delta.eventType())) {
+                                narrationTracker.onToolObservation();
+                            }
+                            forceFlush = progress.onEvent(delta.eventType(), delta.eventData());
+                        } else if (delta.segmentOnly()) {
+                            String narration = delta.content() != null ? delta.content().trim() : "";
+                            if (!narration.isEmpty()) {
+                                String publishable = narrationTracker.stageNarration(narration, delta.kind());
+                                if (publishable != null) progress.commitNarration(publishable);
+                                progress.onPendingNarration(narration);
+                                forceFlush = true;
+                            }
+                        } else {
+                            if (delta.thinking() != null) progress.onThinkingDelta(delta.thinking());
+                            if (delta.content() != null) {
+                                accumulator.append(delta.content());
+                                progress.onContentDelta(delta.content());
+                            }
+                        }
+                        streamingCardManager.updateContent(sessionKey, progress.snapshot(), forceFlush);
                     })
                     .doOnError(err -> {
                         log.error("[feishu-stream] stream error: sessionKey={}, err={}",
                                 sessionKey, err.getMessage());
-                        streamingCardManager.failCard(sessionKey, err.getMessage());
                     })
                     .blockLast(Duration.ofMinutes(5));
 
             String finalContent = accumulator.toString();
-            // Card streaming never touches renderAndSend, so the channel's
-            // message-filter config has to be applied here — otherwise
-            // filter_thinking / filter_tool_messages are inert on this path.
+            // Card streaming never touches renderAndSend, so apply the same
+            // outbound filters before the final card snapshot is assembled.
             String cardContent = filterOutboundContent(finalContent);
             if (cardContent.isBlank()) {
+                cardContent = "";
+            }
+            if (progressEnabled) {
+                String heldNarration = narrationTracker.settle(!cardContent.isBlank());
+                if (heldNarration != null && !sameOutboundText(heldNarration, cardContent)) {
+                    progress.commitNarration(heldNarration);
+                }
+                progress.clearPendingNarration();
+                cardContent = progress.completedSnapshot(cardContent);
+            } else if (cardContent.isBlank()) {
                 cardContent = "（无回复内容）";
             }
             // Strip any /api/v1/files/generated/{id} URLs out of the card
@@ -2636,15 +2675,34 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
             // actual file. Cache-miss URLs fall back to the user-facing
             // retry hint that GeneratedFileScrubber emits.
             String renderedContent = scrubAndSendAttachments(receiveId, cardContent);
-            streamingCardManager.finishCard(sessionKey, renderedContent);
+            FeishuStreamingCardManager.FinishResult finishResult =
+                    streamingCardManager.finishCard(sessionKey, renderedContent);
+            if (!finishResult.success()) {
+                // The card was delivered but either its terminal content or
+                // streaming-mode close was rejected. A regular message is the
+                // only reliable fallback after both CardKit attempts fail.
+                log.warn("[feishu-stream] Card finalization incomplete (contentUpdated={}, closed={}); "
+                                + "falling back to regular message: sessionKey={}",
+                        finishResult.finalContentUpdated(), finishResult.streamingClosed(), sessionKey);
+                sendMessage(receiveId, renderedContent);
+            }
+            if (!finishResult.streamingClosed()) {
+                log.warn("[feishu-stream] Card streaming mode could not be closed after retry: sessionKey={}",
+                        sessionKey);
+            }
             log.info("[feishu-stream] Card streaming completed: sessionKey={}, contentLen={}",
                     sessionKey, renderedContent.length());
-            return finalContent.isBlank() ? cardContent : finalContent;
+            // Execution-trace text is channel presentation only. Never return
+            // it to the router as assistant content or it will pollute the
+            // next turn's LLM history. Preserve the legacy empty placeholder
+            // only when progress rendering was explicitly disabled.
+            return progressEnabled
+                    ? finalContent
+                    : (finalContent.isBlank() ? cardContent : finalContent);
 
         } catch (Exception e) {
             log.error("[feishu-stream] Card streaming failed: sessionKey={}, err={}",
                     sessionKey, e.getMessage(), e);
-            streamingCardManager.failCard(sessionKey, e.getMessage());
 
             // Tag returned content with the "[错误] " prefix so
             // ChannelMessageRouter.isErrorReply flips status='error' on the
@@ -2654,11 +2712,30 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
             // as a valid assistant turn and re-trigger the same 400.
             String partial = accumulator.toString();
             String errorPrefix = "[错误] Feishu CardKit streaming failed: " + e.getMessage();
+            FeishuStreamingCardManager.FinishResult failureResult =
+                    streamingCardManager.failCard(sessionKey, e.getMessage());
+            if (!failureResult.success()) {
+                String fallbackError = partial.isBlank()
+                        ? "⚠️ 处理失败：" + e.getMessage()
+                        : partial + "\n\n⚠️ 处理失败：" + e.getMessage();
+                log.warn("[feishu-stream] Error card finalization incomplete; sending regular fallback: "
+                                + "sessionKey={}, contentUpdated={}, closed={}",
+                        sessionKey, failureResult.finalContentUpdated(), failureResult.streamingClosed());
+                sendMessage(receiveId, fallbackError);
+            }
             if (!partial.isBlank()) {
                 return errorPrefix + "\n\n（已生成的部分内容，已忽略）\n" + partial;
             }
             throw new RuntimeException(errorPrefix, e);
         }
+    }
+
+    /** Compare text after the same outbound filters the receiver sees. */
+    private boolean sameOutboundText(String a, String b) {
+        if (a == null || b == null) return false;
+        String left = filterOutboundContent(a).trim();
+        String right = filterOutboundContent(b).trim();
+        return !left.isEmpty() && left.equals(right);
     }
 
     /**

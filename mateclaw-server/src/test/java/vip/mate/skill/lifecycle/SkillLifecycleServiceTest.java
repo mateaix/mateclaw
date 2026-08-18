@@ -1,4 +1,7 @@
 package vip.mate.skill.lifecycle;
+import vip.mate.skill.model.SkillOrigin;
+import org.mockito.ArgumentCaptor;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -6,6 +9,7 @@ import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.apache.ibatis.session.Configuration;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
@@ -21,6 +25,7 @@ import vip.mate.skill.workspace.SkillWorkspaceProperties;
 import java.time.LocalDateTime;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -80,6 +85,149 @@ class SkillLifecycleServiceTest {
         s.setLastActivityAt(lastActivity);
         s.setCreateTime(lastActivity);
         return s;
+    }
+
+    // ==================== adopt / release ====================
+
+    @Test
+    @DisplayName("adopting anchors to creation time — it does not buy a fresh window")
+    void adoptDoesNotResetTheIdleClock() {
+        // The operator hands over a skill knowing it is idle; granting it a new
+        // 90-day lease would defeat the reason they handed it over.
+        SkillEntity s = unobserved(now.minusDays(400));
+        s.setOrigin(null);
+        when(skillMapper.selectById(1L)).thenReturn(s);
+
+        service.setAdopted(1L, true);
+
+        ArgumentCaptor<LambdaUpdateWrapper<SkillEntity>> cap = updateCaptor();
+        verify(skillMapper).update(eq(null), cap.capture());
+        String sql = cap.getValue().getSqlSet();
+        assertTrue(sql.contains("origin"), sql);
+        assertTrue(sql.contains("curator_seen_at"), sql);
+
+        // With the anchor at creation time the skill ages immediately.
+        s.setCuratorSeenAt(s.getCreateTime());
+        assertEquals(LifecycleTransition.TO_ARCHIVED, service.planTransition(s, now));
+    }
+
+    @Test
+    @DisplayName("lifecycle audit records the owning workspace explicitly")
+    void auditIsWorkspaceScoped() {
+        SkillEntity s = skill("dynamic", "active", now);
+        when(skillMapper.selectById(1L)).thenReturn(s);
+
+        service.setPinned(1L, true);
+
+        verify(auditEventService).record(eq("PIN"), eq("SKILL"), eq("1"),
+                eq("demo-skill"), anyString(), eq(1L));
+    }
+
+    @Test
+    @DisplayName("releasing hands ownership back and leaves the clock alone")
+    void releaseRestoresUserOwnership() {
+        SkillEntity s = skill("dynamic", "active", now.minusDays(10));
+        s.setOrigin(SkillOrigin.AGENT.code());
+        when(skillMapper.selectById(1L)).thenReturn(s);
+
+        service.setAdopted(1L, false);
+
+        ArgumentCaptor<LambdaUpdateWrapper<SkillEntity>> cap = updateCaptor();
+        verify(skillMapper).update(eq(null), cap.capture());
+        String sql = cap.getValue().getSqlSet();
+        assertTrue(sql.contains("origin"), sql);
+        assertFalse(sql.contains("curator_seen_at"), "release must not touch the clock: " + sql);
+    }
+
+    @Test
+    @DisplayName("an exempt skill cannot be adopted")
+    void exemptSkillIsNotAdoptable() {
+        SkillEntity builtin = skill("builtin", "active", now.minusDays(10));
+        builtin.setBuiltin(true);
+        when(skillMapper.selectById(1L)).thenReturn(builtin);
+
+        assertThrows(MateClawException.class, () -> service.setAdopted(1L, true));
+        verify(skillMapper, never()).update(any(), any());
+    }
+
+    @Test
+    @DisplayName("adopting a missing skill is a 404, not a silent no-op")
+    void adoptMissingSkillThrows() {
+        when(skillMapper.selectById(404L)).thenReturn(null);
+        assertThrows(MateClawException.class, () -> service.setAdopted(404L, true));
+    }
+
+    @Test
+    @DisplayName("a workspace cannot adopt another workspace's skill by id")
+    void adoptRejectsForeignWorkspaceSkill() {
+        SkillEntity foreign = skill("dynamic", "active", now.minusDays(10));
+        foreign.setWorkspaceId(2L);
+        when(skillMapper.selectById(1L)).thenReturn(foreign);
+
+        assertThrows(MateClawException.class, () -> service.setAdopted(1L, true, 7L));
+
+        verify(skillMapper, never()).update(any(), any());
+    }
+
+    @SuppressWarnings("unchecked")
+    private ArgumentCaptor<LambdaUpdateWrapper<SkillEntity>> updateCaptor() {
+        return ArgumentCaptor.forClass((Class<LambdaUpdateWrapper<SkillEntity>>) (Class<?>) LambdaUpdateWrapper.class);
+    }
+
+    // ==================== observation anchor ====================
+
+    /** A skill curation has never seen: no activity, no observation stamp. */
+    private SkillEntity unobserved(LocalDateTime createdAt) {
+        SkillEntity s = skill("dynamic", "active", null);
+        s.setCreateTime(createdAt);
+        return s;
+    }
+
+    @Test
+    @DisplayName("a never-observed skill is deferred however old it is")
+    void unobservedSkillIsDeferred() {
+        // Widening the curator scope pulls in skills created years ago. Judging
+        // them on creation time would archive the whole batch on the first sweep.
+        SkillEntity s = unobserved(now.minusDays(900));
+        assertTrue(SkillLifecycleService.isUnobserved(s));
+        assertEquals(LifecycleTransition.NONE, service.planTransition(s, now));
+    }
+
+    @Test
+    @DisplayName("once observed, the idle clock runs from the observation, not creation")
+    void observationAnchorReplacesCreationTime() {
+        SkillEntity s = unobserved(now.minusDays(900));
+        s.setCuratorSeenAt(now.minusDays(2));
+
+        assertFalse(SkillLifecycleService.isUnobserved(s));
+        assertEquals(now.minusDays(2), SkillLifecycleService.anchor(s));
+        assertEquals(LifecycleTransition.NONE, service.planTransition(s, now));
+    }
+
+    @Test
+    @DisplayName("an observed skill ages normally once the threshold passes")
+    void observedSkillStillAges() {
+        SkillEntity s = unobserved(now.minusDays(900));
+        s.setCuratorSeenAt(now.minusDays(95));
+
+        assertEquals(LifecycleTransition.TO_ARCHIVED, service.planTransition(s, now));
+    }
+
+    @Test
+    @DisplayName("real activity outranks the observation stamp")
+    void activityOutranksObservation() {
+        SkillEntity s = skill("dynamic", "active", now.minusDays(1));
+        s.setCuratorSeenAt(now.minusDays(400));
+
+        assertEquals(now.minusDays(1), SkillLifecycleService.anchor(s));
+        assertEquals(LifecycleTransition.NONE, service.planTransition(s, now));
+    }
+
+    @Test
+    @DisplayName("creation time remains the fallback for rows predating the column")
+    void creationTimeRemainsFallback() {
+        SkillEntity s = skill("dynamic", "active", now.minusDays(95));
+        assertEquals(now.minusDays(95), SkillLifecycleService.anchor(s));
     }
 
     // ==================== planTransition ====================

@@ -113,7 +113,9 @@ spring:
 mybatis-plus:
   configuration:
     map-underscore-to-camel-case: true
-    log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
+    # SQL parameter values can contain prompts/model thinking. Keep them out of
+    # logs by default; operators may explicitly opt in for short-lived diagnosis.
+    log-impl: ${MATECLAW_MYBATIS_LOG_IMPL:org.apache.ibatis.logging.nologging.NoLoggingImpl}
 
 # SpringDoc OpenAPI
 # 注意：/swagger-ui*、/v3/api-docs*、/webjars/** 落在 SecurityConfig 的
@@ -174,12 +176,16 @@ mateclaw:
     enabled: true
   tools:
     disclosure:
-      # progressive: extension-tier tools are hidden behind the extension-tools
-      #   catalog until the model calls enable_tool. By default that's the heavy
-      #   generative / browser tools; MCP servers default to core (visible) and
-      #   an admin can move a noisy one to extension per server.
+      # progressive: deferred schemas stay behind tool_search/tool_describe and
+      #   execute through tool_call in the same action round. enable_tool remains
+      #   available only for backwards compatibility with older conversations.
       # legacy: advertise every bound tool up front (pre-disclosure behavior).
       mode: ${MATECLAW_TOOLS_DISCLOSURE_MODE:progressive}
+  context:
+    prefix-budget:
+      # Ratio remains useful for small contexts; this hard ceiling is what keeps
+      # a provider-declared 1M window from advertising ~30k schema tokens forever.
+      tool-schema-max-tokens: ${MATECLAW_TOOL_SCHEMA_MAX_TOKENS:12000}
   workspace:
     sandbox:
       # Global fallback filesystem boundary for file/shell tools. When a
@@ -198,7 +204,80 @@ mateclaw:
       # instead; reads and cleanup still check this default dir so legacy uploads
       # remain resolvable. Defaults to the legacy location for zero-config parity.
       base-dir: ${MATECLAW_CHAT_UPLOAD_BASE_DIR:data/chat-uploads}
+      # Organize new attachments/generated media into per-day sub-directories:
+      # {convDir}/yyyy-MM-dd/{storedName}. Serving URLs stay flat and reads
+      # probe both layouts, so this can be toggled at any time; files written
+      # under the previous layout remain resolvable either way. The day is the
+      # server's local date (a UTC container groups by UTC days).
+      date-folders: ${MATECLAW_CHAT_UPLOAD_DATE_FOLDERS:true}
   skill:
+    reflection:
+      # Out-of-band skill reflection: after a conversation reaches the cadence
+      # below, an async reviewer reads the recent window and creates or
+      # improves skills through the same skill_manage pipeline the agent uses.
+      # Runs off the request thread, so it never consumes the live turn's
+      # context window.
+      # Explicit opt-in: transcript/catalog content may be sent to the selected
+      # model provider. auto-apply is a second, independent mutation gate.
+      enabled: ${MATECLAW_SKILL_REFLECTION_ENABLED:false}
+      auto-apply: ${MATECLAW_SKILL_REFLECTION_AUTO_APPLY:false}
+      # Review once this many new messages have accumulated since the last
+      # attempt. 0 disables the cadence gate entirely.
+      review-turn-interval: ${MATECLAW_SKILL_REFLECTION_TURN_INTERVAL:8}
+      # Substance floor — a window with fewer assistant turns than this rarely
+      # contains a reusable workflow, so the review is skipped before any LLM
+      # call is made.
+      min-assistant-turns: ${MATECLAW_SKILL_REFLECTION_MIN_ASSISTANT_TURNS:2}
+      # Most recent messages handed to the reviewer.
+      max-messages: ${MATECLAW_SKILL_REFLECTION_MAX_MESSAGES:24}
+      # Per-conversation cooldown between reviews, in minutes. Applies on top
+      # of the cadence gate, so a busy conversation reviews at most this often.
+      cooldown-minutes: ${MATECLAW_SKILL_REFLECTION_COOLDOWN_MINUTES:30}
+      # Hard cap on create/edit/patch actions applied by a single review.
+      max-actions-per-run: ${MATECLAW_SKILL_REFLECTION_MAX_ACTIONS:3}
+      # Character budget for the existing-skill catalog shown to the reviewer.
+      # Skill bodies are truncated to fit; the reviewer is told not to target
+      # truncated text with a patch.
+      catalog-char-budget: ${MATECLAW_SKILL_REFLECTION_CATALOG_BUDGET:8000}
+      # Reviewer model id. Empty follows the system default model.
+      model-id: ${MATECLAW_SKILL_REFLECTION_MODEL_ID:}
+    routine:
+      # Routine mining: a nightly cross-session pass that clusters the opening
+      # request of recent conversations and promotes the ones the user makes
+      # habitually into class-level skills. Recurrence is invisible to the
+      # per-conversation reflection reviewer above — inside one window a weekly
+      # request is indistinguishable from a one-off — so this pass supplies the
+      # cross-session evidence that reviewer structurally cannot see.
+      # Explicit opt-in because mining persists conversation-derived patterns
+      # and promotion sends evidence to the selected model provider.
+      enabled: ${MATECLAW_SKILL_ROUTINE_ENABLED:false}
+      cron: ${MATECLAW_SKILL_ROUTINE_CRON:0 0 3 * * *}
+      # How far back each sweep looks. A routine the user stops doing decays
+      # out of this window on its own.
+      lookback-days: ${MATECLAW_SKILL_ROUTINE_LOOKBACK_DAYS:30}
+      # Shingle-similarity above which two openers count as the same request.
+      # Tuned toward precision — a false merge invents a routine the user does
+      # not have, which is worse than missing one until the next sweep.
+      similarity-threshold: ${MATECLAW_SKILL_ROUTINE_SIMILARITY:0.62}
+      # Promotion gate. Both must hold: occurrences proves repetition, distinct
+      # days proves habit rather than one afternoon of retries.
+      min-occurrences: ${MATECLAW_SKILL_ROUTINE_MIN_OCCURRENCES:3}
+      min-distinct-days: ${MATECLAW_SKILL_ROUTINE_MIN_DISTINCT_DAYS:3}
+      # Shortest opener worth clustering, and the prefix length fed to the
+      # shingler.
+      min-opener-chars: ${MATECLAW_SKILL_ROUTINE_MIN_OPENER_CHARS:8}
+      max-opener-chars: ${MATECLAW_SKILL_ROUTINE_MAX_OPENER_CHARS:400}
+      # Conversation ids retained per candidate as promotion evidence.
+      max-samples-per-candidate: ${MATECLAW_SKILL_ROUTINE_MAX_SAMPLES:8}
+      # Candidates promoted per sweep, bounding LLM cost per run.
+      max-promotions-per-run: ${MATECLAW_SKILL_ROUTINE_MAX_PROMOTIONS:2}
+      # Conversations scanned per sweep, bounding query and memory cost.
+      max-conversations-per-run: ${MATECLAW_SKILL_ROUTINE_MAX_CONVERSATIONS:1000}
+      # Transcript shaping for the synthesis prompt.
+      transcript-messages-per-sample: ${MATECLAW_SKILL_ROUTINE_TRANSCRIPT_MESSAGES:12}
+      transcript-truncate-chars: ${MATECLAW_SKILL_ROUTINE_TRANSCRIPT_TRUNCATE:800}
+      # Synthesis model id. Empty follows the system default model.
+      model-id: ${MATECLAW_SKILL_ROUTINE_MODEL_ID:}
     upload:
       # Size caps for skill bundle ZIPs (upload endpoint and marketplace
       # install). The archive is buffered in memory during extraction, so
@@ -225,10 +304,19 @@ mateclaw:
       cron: "0 0 2 * * *"         # daily 02:00 — staggered away from wiki / backup jobs
       stale-after-days: 30
       archive-after-days: 90
+      # AGENT_CREATED scopes the sweep to skills written autonomously
+      # (origin=agent|routine). Skills a user asked for in a conversation are
+      # stamped origin=user and are never aged out under this scope.
       scope: AGENT_CREATED         # AGENT_CREATED | ALL_DYNAMIC | OFF
       protect-prefixes:
         - "sys-"
         - "ops-"
+      # Restore point captured before every mutating sweep. The sweep archives
+      # skills and, with consolidation on, rewrites their bodies — unattended
+      # and overnight, so a bad pass is usually noticed long after it ran.
+      # Disabling this makes those changes one-way.
+      backup-enabled: ${MATECLAW_SKILL_CURATOR_BACKUP_ENABLED:true}
+      backup-keep: ${MATECLAW_SKILL_CURATOR_BACKUP_KEEP:5}
     hub:
       base-url: https://clawhub.ai
       search-path: /api/v1/search
@@ -303,6 +391,13 @@ mate:
     # ---, table pipe alignment) before persistence / channel delivery. Set to
     # false to pass model output through verbatim.
     markdown-normalize-enabled: true
+    reasoning:
+      # How much of a turn's reasoning reaches the message record.
+      #   all      — every iteration's reasoning, kept where it happened. The
+      #              reasoning behind each tool call is what a replay needs.
+      #   terminal — only the iteration that produced the final answer. Smaller
+      #              rows, but a long tool loop persists as a bare conclusion.
+      retention: all
     graph:
       observation:
         # 与 GraphObservationProperties.java 默认值对齐，参考 openclaw token-budget 设计

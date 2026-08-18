@@ -25,6 +25,12 @@ public enum FinishReason {
     /** 最终回答引用了未被工具结果验证的源码事实 */
     EVIDENCE_INSUFFICIENT("evidence_insufficient"),
 
+    /** An executable action was required but no substantive tool call was observed. */
+    ACTION_UNVERIFIED("action_unverified"),
+
+    /** Substantive action tools ran, but none completed successfully. */
+    ACTION_FAILED("action_failed"),
+
     /** 用户主动停止 */
     STOPPED("stopped"),
 

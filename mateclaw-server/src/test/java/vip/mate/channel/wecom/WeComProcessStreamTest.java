@@ -154,7 +154,7 @@ class WeComProcessStreamTest {
     }
 
     @Test
-    @DisplayName("stage narrations roll the bubble: each stage finishes its own bubble, final answer excludes them")
+    @DisplayName("post-tool narrations roll the bubble; the pre-tool opener is dropped, final answer excludes both")
     void stageNarrationsRollBubbles() throws Exception {
         TestableAdapter adapter = newAdapter("{\"progress_interval_ms\": 0}");
         seedReplyContext(adapter, "alice", "req-1", "stream-1");
@@ -176,16 +176,72 @@ class WeComProcessStreamTest {
         List<Map<String, Object>> streamBodies = streamBodies(adapter.drainFrames());
         List<Map<String, Object>> finished = streamBodies.stream()
                 .filter(s -> Boolean.TRUE.equals(s.get("finish"))).toList();
-        // Three finished bubbles in chronological order: narration #1,
-        // narration #2, final answer — each on its own stream id.
-        assertEquals(3, finished.size(), "each stage plus the final answer closes one bubble");
-        assertTrue(String.valueOf(finished.get(0).get("content")).contains("我先查一下当前时间"));
-        assertTrue(String.valueOf(finished.get(1).get("content")).contains("再查会议室"));
-        assertTrue(String.valueOf(finished.get(2).get("content")).contains("已预约"));
-        assertEquals(3, finished.stream().map(s -> s.get("id")).distinct().count(),
+        // Two finished bubbles: the observation-grounded narration #2 and the
+        // final answer. Narration #1 ran before any tool observation and tools
+        // ran after it — a pre-tool rehearsal never becomes a permanent bubble
+        // (it stays visible only transiently in the live progress snapshot).
+        assertEquals(2, finished.size(),
+                "grounded narration + final answer close one bubble each; the rehearsal closes none");
+        assertTrue(finished.stream().noneMatch(
+                        s -> String.valueOf(s.get("content")).contains("我先查一下当前时间")),
+                "the pre-tool rehearsal must not finalize a bubble of its own");
+        assertTrue(String.valueOf(finished.get(0).get("content")).contains("再查会议室"));
+        assertTrue(String.valueOf(finished.get(1).get("content")).contains("已预约"));
+        assertEquals(2, finished.stream().map(s -> s.get("id")).distinct().count(),
                 "each finished bubble must ride its own stream id");
-        // The first narration finalizes the original placeholder stream.
+        // The first published narration finalizes the original placeholder stream.
         assertEquals("stream-1", finished.get(0).get("id"));
+    }
+
+    @Test
+    @DisplayName("a pre-tool rehearsal pending at stream end is dropped once a grounded answer exists")
+    void preToolRehearsalDroppedForGroundedAnswer() throws Exception {
+        TestableAdapter adapter = newAdapter("{\"progress_interval_ms\": 0}");
+        seedReplyContext(adapter, "alice", "req-1", "stream-1");
+
+        // The model writes a full predicted result (fabricated numbers) before
+        // its first tool call; the real observation then produces the answer.
+        Flux<StreamDelta> stream = Flux.just(
+                StreamDelta.segmentOnly("环境监测结果：温度 29.0°C，湿度 63.0%。需要进一步操作吗？", null),
+                StreamDelta.event("tool_call_started",
+                        Map.of("toolCallId", "c1", "toolName", "query_env")),
+                StreamDelta.event("tool_call_completed",
+                        Map.of("toolCallId", "c1", "toolName", "query_env", "success", true)),
+                new StreamDelta("接口返回为空，所有会议室均无环境数据。", null));
+
+        String result = adapter.processStream(stream, inbound("alice"), "wecom:alice");
+
+        assertEquals("接口返回为空，所有会议室均无环境数据。", result);
+        List<Map<String, Object>> finished = streamBodies(adapter.drainFrames()).stream()
+                .filter(s -> Boolean.TRUE.equals(s.get("finish"))).toList();
+        assertEquals(1, finished.size(), "only the grounded answer may close a bubble");
+        String content = String.valueOf(finished.get(0).get("content"));
+        assertTrue(content.contains("接口返回为空"));
+        assertFalse(content.contains("29.0"), "the fabricated rehearsal must never reach the user: " + content);
+    }
+
+    @Test
+    @DisplayName("a pre-tool narration is still published when the turn produced no answer at all")
+    void preToolNarrationKeptWhenNoAnswer() throws Exception {
+        TestableAdapter adapter = newAdapter("{\"progress_interval_ms\": 0}");
+        seedReplyContext(adapter, "alice", "req-1", "stream-1");
+
+        // No content after the tool ran — the narration is everything the user
+        // gets (approval park / stop / empty answer). With no replacement
+        // content it is not superseded, so it must still close the bubble.
+        Flux<StreamDelta> stream = Flux.just(
+                StreamDelta.segmentOnly("我先调用工具查询状态：", null),
+                StreamDelta.event("tool_call_started",
+                        Map.of("toolCallId", "c1", "toolName", "query_env")),
+                StreamDelta.event("tool_call_completed",
+                        Map.of("toolCallId", "c1", "toolName", "query_env", "success", true)));
+
+        assertEquals("", adapter.processStream(stream, inbound("alice"), "wecom:alice"));
+
+        List<Map<String, Object>> finished = streamBodies(adapter.drainFrames()).stream()
+                .filter(s -> Boolean.TRUE.equals(s.get("finish"))).toList();
+        assertEquals(1, finished.size(), "the narration must close the bubble when nothing else can");
+        assertTrue(String.valueOf(finished.get(0).get("content")).contains("我先调用工具查询状态"));
     }
 
     @Test

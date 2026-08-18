@@ -1,0 +1,6 @@
+<script setup lang="ts">
+import { computed } from 'vue'; import { useI18n } from 'vue-i18n'; import type { TeamRun } from '@/api'; import { useMarkdownRenderer } from '@/composables/useMarkdownRenderer'; import TeamRunReadingSurface from './TeamRunReadingSurface.vue'
+const props = defineProps<{ run: TeamRun; preview?: boolean }>(); const { t } = useI18n(); const { renderMarkdown } = useMarkdownRenderer(); const html = computed(() => renderMarkdown(props.run.finalSummary || ''))
+</script>
+<template><TeamRunReadingSurface data-team-run-outcome class="run-outcome"><header><h3>{{ t('teamRuns.outcome') }}</h3><span v-if="run.outcomeQuality">{{ t(`teamRuns.quality.${run.outcomeQuality}`) }}</span></header><div v-if="run.finalSummary" class="markdown-body compact-markdown" :class="{ 'is-preview': preview }" v-html="html" /><p v-else>{{ t('teamRuns.noSummary') }}</p></TeamRunReadingSurface></template>
+<style scoped>.run-outcome header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:6px}.run-outcome h3{margin:0;font-size:13px}.run-outcome header span{font-size:11px;color:var(--mc-text-tertiary)}.is-preview{display:-webkit-box;overflow:hidden;-webkit-box-orient:vertical;-webkit-line-clamp:4}</style>

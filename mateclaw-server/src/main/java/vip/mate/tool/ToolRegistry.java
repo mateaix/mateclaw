@@ -4,7 +4,9 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.tool.annotation.Tool;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.ApplicationContext;
+import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
 import vip.mate.tool.model.ToolEntity;
 import vip.mate.tool.repository.ToolMapper;
@@ -20,9 +22,11 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
@@ -48,6 +52,9 @@ public class ToolRegistry {
     /** Plugin-registered tool entries with lazy availability checks */
     private final CopyOnWriteArrayList<PluginToolEntry> pluginTools = new CopyOnWriteArrayList<>();
 
+    private final Object enabledToolSetLock = new Object();
+    private volatile AgentToolSet enabledToolSetCache;
+
     /** A tool entry registered by a plugin */
     public record PluginToolEntry(ToolCallback callback, Supplier<Boolean> availabilityCheck) {}
 
@@ -57,6 +64,7 @@ public class ToolRegistry {
      */
     public void registerPluginTool(ToolCallback callback, Supplier<Boolean> availabilityCheck) {
         pluginTools.add(new PluginToolEntry(callback, availabilityCheck != null ? availabilityCheck : () -> true));
+        invalidateEnabledToolSetCache("plugin-tool-registered:" + callback.getToolDefinition().name());
         log.info("Plugin tool registered: {}", callback.getToolDefinition().name());
     }
 
@@ -65,7 +73,35 @@ public class ToolRegistry {
      */
     public void unregisterPluginTool(String toolName) {
         pluginTools.removeIf(entry -> entry.callback().getToolDefinition().name().equals(toolName));
+        invalidateEnabledToolSetCache("plugin-tool-unregistered:" + toolName);
         log.info("Plugin tool unregistered: {}", toolName);
+    }
+
+    public void invalidateEnabledToolSetCache(String reason) {
+        enabledToolSetCache = null;
+        log.debug("Enabled AgentToolSet cache invalidated: {}", reason);
+    }
+
+    @EventListener(ApplicationReadyEvent.class)
+    public void prewarmEnabledToolSetCache() {
+        CompletableFuture.runAsync(() -> {
+            try {
+                getEnabledToolSet();
+            } catch (Exception e) {
+                log.debug("Enabled AgentToolSet prewarm skipped: {}", e.getMessage());
+            }
+        });
+    }
+
+    @EventListener
+    public void onMcpServerChanged(vip.mate.tool.mcp.event.McpServerChangedEvent event) {
+        invalidateEnabledToolSetCache("mcp-server-changed:" + event.reason());
+        prewarmEnabledToolSetCache();
+    }
+
+    @EventListener
+    public void onMcpConnectionLost(vip.mate.tool.mcp.event.McpConnectionLostEvent event) {
+        invalidateEnabledToolSetCache("mcp-connection-lost:" + event.serverId());
     }
 
     /**
@@ -156,6 +192,66 @@ public class ToolRegistry {
     }
 
     /**
+     * Resolve aliases for currently enabled built-in {@code @Tool} beans without
+     * touching {@link ToolCallbackProvider}s. This is intentionally narrower than
+     * {@link #getEnabledToolSet()}: disclosure-tier snapshots only need to bridge
+     * {@code mate_tool.name}/{@code bean_name} onto built-in function names, and
+     * calling providers here would synchronously enumerate MCP tools on the chat
+     * hot path.
+     */
+    public Set<String> enabledToolBeanFunctionNamesFor(Set<String> aliases) {
+        if (aliases == null || aliases.isEmpty()) {
+            return Set.of();
+        }
+        Map<String, Set<String>> index = enabledToolBeanFunctionNameIndex();
+        LinkedHashSet<String> out = new LinkedHashSet<>();
+        for (String alias : aliases) {
+            Set<String> hits = index.get(alias);
+            if (hits != null) {
+                out.addAll(hits);
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Build {@code alias -> @Tool function names} for enabled built-in tool beans.
+     * The aliases mirror {@link AgentToolSet}: function name, Spring bean name,
+     * and Java simple class name. Provider/MCP callbacks are deliberately absent.
+     */
+    public Map<String, Set<String>> enabledToolBeanFunctionNameIndex() {
+        LinkedHashMap<String, Object> beansByName = getEnabledToolBeansByName();
+        Map<String, Set<String>> index = new LinkedHashMap<>();
+        for (Map.Entry<String, Object> entry : beansByName.entrySet()) {
+            String beanName = entry.getKey();
+            Object bean = entry.getValue();
+            ToolCallback[] callbacks = ToolCallbacks.from(bean);
+            LinkedHashSet<String> functionNames = new LinkedHashSet<>();
+            for (ToolCallback cb : callbacks) {
+                if (cb != null && cb.getToolDefinition() != null) {
+                    functionNames.add(cb.getToolDefinition().name());
+                }
+            }
+            if (functionNames.isEmpty()) {
+                continue;
+            }
+            putAlias(index, beanName, functionNames);
+            putAlias(index, bean.getClass().getSimpleName(), functionNames);
+            for (String functionName : functionNames) {
+                putAlias(index, functionName, Set.of(functionName));
+            }
+        }
+        return index;
+    }
+
+    private static void putAlias(Map<String, Set<String>> index, String alias, Set<String> functionNames) {
+        if (alias == null || alias.isBlank() || functionNames == null || functionNames.isEmpty()) {
+            return;
+        }
+        index.computeIfAbsent(alias, ignored -> new LinkedHashSet<>()).addAll(functionNames);
+    }
+
+    /**
      * 获取统一的 AgentToolSet（包含 @Tool Bean + ToolCallbackProvider）
      * <p>
      * 同时收集：
@@ -163,6 +259,22 @@ public class ToolRegistry {
      * 2. 当前容器中所有 ToolCallbackProvider（MCP server 等）
      */
     public AgentToolSet getEnabledToolSet() {
+        AgentToolSet cached = enabledToolSetCache;
+        if (cached != null) {
+            return cached;
+        }
+        synchronized (enabledToolSetLock) {
+            cached = enabledToolSetCache;
+            if (cached != null) {
+                return cached;
+            }
+            AgentToolSet built = buildEnabledToolSet();
+            enabledToolSetCache = built;
+            return built;
+        }
+    }
+
+    private AgentToolSet buildEnabledToolSet() {
         // Build both the bean list and the identity-based name lookup in one pass — the
         // latter lets AgentToolSet's alias index resolve a saved binding like
         // "BrowserUseTool" or "browserUseTool" back to the same callback as "browser_use".
@@ -238,51 +350,7 @@ public class ToolRegistry {
      * accept whichever convention a skill happens to declare.
      */
     public Set<String> availableFunctionNames() {
-        Set<String> names = new java.util.HashSet<>();
-
-        Set<String> disabledBeanNames = toolMapper.selectList(
-                new LambdaQueryWrapper<ToolEntity>()
-                        .eq(ToolEntity::getEnabled, false)
-                        .isNotNull(ToolEntity::getBeanName)
-        ).stream().map(ToolEntity::getBeanName).collect(Collectors.toSet());
-
-        // 1. @Tool beans — register both the bean name and every function name exposed.
-        Map<String, Object> beans = applicationContext.getBeansWithAnnotation(Component.class);
-        for (Map.Entry<String, Object> entry : beans.entrySet()) {
-            String beanName = entry.getKey();
-            Object bean = entry.getValue();
-            if (disabledBeanNames.contains(beanName)) continue;
-            boolean hasToolMethod = java.util.Arrays.stream(bean.getClass().getMethods())
-                    .anyMatch(m -> m.isAnnotationPresent(Tool.class));
-            if (!hasToolMethod) continue;
-            names.add(beanName);
-            for (ToolCallback cb : ToolCallbacks.from(bean)) {
-                names.add(cb.getToolDefinition().name());
-            }
-        }
-
-        // 2. MCP providers — only function names exist here.
-        Map<String, ToolCallbackProvider> providers = applicationContext.getBeansOfType(ToolCallbackProvider.class);
-        for (ToolCallbackProvider provider : providers.values()) {
-            ToolCallback[] cbs = provider.getToolCallbacks();
-            if (cbs == null) continue;
-            for (ToolCallback cb : cbs) {
-                names.add(cb.getToolDefinition().name());
-            }
-        }
-
-        // 3. Plugin-registered tools — evaluate availability lazily so disabled plugins drop out.
-        for (PluginToolEntry entry : pluginTools) {
-            try {
-                if (Boolean.TRUE.equals(entry.availabilityCheck().get())) {
-                    names.add(entry.callback().getToolDefinition().name());
-                }
-            } catch (Exception ignored) {
-                // Unreachable plugin tools don't contribute to the set.
-            }
-        }
-
-        return names;
+        return getEnabledToolSet().allNames();
     }
 
     /**

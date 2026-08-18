@@ -46,6 +46,18 @@ public class ModelConfigController {
         return R.ok(modelProviderService.listProviders());
     }
 
+    /**
+     * Provider id + display name only. {@link #list()} stays admin-only because
+     * it carries connection settings; binding an agent to a preferred provider
+     * is a member action, so members need to read the choices from here.
+     */
+    @Operation(summary = "获取 Provider 选项（仅 id/名称，不含连接配置）")
+    @GetMapping("/options")
+    @RequireWorkspaceRole("viewer")
+    public R<List<ProviderOptionDTO>> options() {
+        return R.ok(modelProviderService.listProviderOptions());
+    }
+
     @Operation(summary = "RFC-074: 获取 Provider 全量目录（含未启用），供 Add Provider 抽屉使用")
     @GetMapping("/catalog")
     @RequireGlobalAdmin
@@ -162,6 +174,15 @@ public class ModelConfigController {
     public R<ProviderInfoDTO> removeProviderModel(@PathVariable String providerId,
                                                   @RequestParam String modelId) {
         return R.ok(modelProviderService.removeModel(providerId, modelId));
+    }
+
+    @Operation(summary = "设置模型上下文窗口")
+    @PutMapping("/{providerId}/models/context-window")
+    @RequireGlobalAdmin
+    public R<ProviderInfoDTO> updateModelContextWindow(@PathVariable String providerId,
+                                                       @RequestBody UpdateModelContextWindowRequest request) {
+        return R.ok(modelProviderService.updateModelContextWindow(
+                providerId, request.getModelId(), request.getMaxInputTokens()));
     }
 
     @Operation(summary = "获取模型详情")

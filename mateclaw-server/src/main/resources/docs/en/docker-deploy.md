@@ -98,7 +98,7 @@ Then comment out the `searxng` service block in `docker-compose.yml`. Make sure 
 
 ### What the image actually contains
 
-The backend runtime stage (`mateclaw-server/Dockerfile` stage 3) is based on `mcr.microsoft.com/playwright:v1.52.0-noble` (Ubuntu Noble 24.04, glibc) and installs on top of it:
+The backend runtime stage (`mateclaw-server/Dockerfile` stage 3) is based on `mcr.microsoft.com/playwright:v1.62.0-noble` (Ubuntu Noble 24.04, glibc) and installs on top of it:
 
 - `openjdk-21-jre-headless` — runs the Spring Boot JAR
 - `fonts-noto-cjk` — Chinese/Japanese/Korean rendering in screenshots

@@ -337,7 +337,7 @@ Mounted at `/api/v1/conversations`, `@Tag("会话管理")`. Isolated per logged-
 
 Key `MessageVO` fields: `id`, `role`, `content`, `toolName`, `status`, `metadata` (object, contains toolCalls etc.), `promptTokens` / `completionTokens`, `runtimeModel` / `runtimeProvider`, `contentParts`, `createTime`.
 
-**Per-conversation ops**: `PUT .../title` (rename), `PUT .../pin` (`{pinned:bool}`), `PUT .../model` (switch model `{modelProvider, modelName}`), `DELETE .../messages` (clear messages, keep the conversation), `DELETE .../{conversationId}` (delete conversation), `POST /batch-delete` (`{conversationIds: [...]}`), `GET .../status` (stream status `{streamStatus}`).
+**Per-conversation ops**: `PUT .../title` (rename), `PUT .../pin` (`{pinned:bool}`), `PUT .../model` (switch model `{modelProvider, modelName}`), `DELETE .../messages` (clear messages, keep the conversation), `DELETE .../{conversationId}` (delete conversation), `POST /batch-delete` (`{conversationIds: [...]}`, at most 200 unique ids), `GET .../status` (stream status `{streamStatus}`), and `GET .../trajectory` (plain-text export in segment emission order).
 
 > Every op first checks `isConversationOwner(conversationId, username)`; non-owners get 403.
 
@@ -350,6 +350,7 @@ Mounted at `/api/v1/models`, `@Tag("模型配置管理")`. `GET /` and `GET /cat
 - `GET /api/v1/models/default` — global default model (`R<ModelConfigEntity>`).
 - `GET /api/v1/models/active` — current active model `{activeLlm: {provider, modelName}}`.
 - `PUT /api/v1/models/active` — set the active model.
+- `PUT /api/v1/models/{providerId}/models/context-window` — a global admin sets one `modelId`'s `maxInputTokens`; null or non-positive clears the override.
 
 ### Audit events (pagination example)
 
@@ -440,6 +441,20 @@ Total routes extracted: 406.
 | `PUT` | `/api/v1/conversations/{conversationId}/pin` | `Set Pinned` |
 | `GET` | `/api/v1/conversations/{conversationId}/status` | `Get Stream Status` |
 | `PUT` | `/api/v1/conversations/{conversationId}/title` | `Rename` |
+| `GET` | `/api/v1/conversations/{conversationId}/trajectory` | `Export plain-text trajectory (conversation owner)` |
+
+### Team Runs (2.1.0+)
+
+| Method | Path | Purpose / handler |
+|---|---|---|
+| `GET` | `/api/v1/team-runs/{runId}` | `Get one Team Run (viewer+)` |
+| `POST` | `/api/v1/team-runs/{runId}/cancel` | `Cancel the run, optional {reason} (admin)` |
+| `GET` | `/api/v1/teams/{teamId}/runs` | `List team runs, optional activeOnly (viewer+)` |
+| `GET` | `/api/v1/teams/{teamId}/runs/page` | `Cursor/limit page of team runs, optional activeOnly (viewer+)` |
+| `GET` | `/api/v1/conversations/{conversationId}/team-runs` | `List runs linked to a lead conversation (viewer+)` |
+| `GET` | `/api/v1/conversations/{conversationId}/team-runs/page` | `Cursor/limit page of conversation runs (viewer+)` |
+
+Every endpoint scopes reads/writes to the current workspace (`X-Workspace-Id`, default workspace 1 when omitted); consumers should keep Snowflake ids as strings.
 
 ### Agents
 
@@ -628,6 +643,7 @@ Total routes extracted: 406.
 | `POST` | `/api/v1/models/{providerId}/disable` | `Disable Provider` |
 | `POST` | `/api/v1/models/{providerId}/discover` | `Discover Models` |
 | `POST` | `/api/v1/models/{providerId}/discover/apply` | `Apply Discovered Models` |
+| `PUT` | `/api/v1/models/{providerId}/models/context-window` | `Set/clear one model's maximum input tokens (global admin)` |
 | `POST` | `/api/v1/models/{providerId}/enable` | `Enable Provider` |
 | `DELETE` | `/api/v1/models/{providerId}/models` | `Remove Provider Model` |
 | `POST` | `/api/v1/models/{providerId}/models` | `Add Provider Model` |
@@ -711,6 +727,19 @@ Total routes extracted: 406.
 | `GET` | `/api/v1/skills/curator/reports/{runId}` | `Curator Report` |
 | `POST` | `/api/v1/skills/curator/resume` | `Curator Resume` |
 | `GET` | `/api/v1/skills/curator/status` | `Curator Status` |
+| `POST` | `/api/v1/skills/curator/consolidate` | `Enable/disable the curator consolidation pass` |
+| `GET` | `/api/v1/skills/curator/managed` | `List skills under autonomous curation` |
+| `GET` | `/api/v1/skills/curator/unmanaged` | `List skills outside autonomous curation` |
+| `POST` | `/api/v1/skills/curator/adopt` | `Bulk handover to curation; body is a string-id array` |
+| `POST` | `/api/v1/skills/curator/release` | `Bulk return to user ownership; body is a string-id array` |
+| `GET` | `/api/v1/skills/curator/snapshots` | `List recent workspace restore points` |
+| `POST` | `/api/v1/skills/curator/snapshots` | `Capture a restore point; optional reason` |
+| `POST` | `/api/v1/skills/curator/snapshots/{snapshotId}/restore` | `Restore the skill library to a restore point` |
+| `GET` | `/api/v1/skills/routines` | `List recurring-request candidates` |
+| `POST` | `/api/v1/skills/routines/mine` | `Run recurring-request mining now` |
+| `POST` | `/api/v1/skills/routines/{id}/dismiss` | `Dismiss a candidate` |
+| `POST` | `/api/v1/skills/routines/{id}/reopen` | `Reopen a candidate` |
+| `POST` | `/api/v1/skills/routines/{id}/promote` | `Promote now, bypassing frequency gates` |
 | `GET` | `/api/v1/skills/enabled` | `List Enabled` |
 | `POST` | `/api/v1/skills/install/cancel/{taskId}` | `Cancel` |
 | `GET` | `/api/v1/skills/install/hub/search` | `Search Hub` |

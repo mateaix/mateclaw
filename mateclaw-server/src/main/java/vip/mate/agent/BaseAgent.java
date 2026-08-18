@@ -21,6 +21,7 @@ import vip.mate.llm.routing.model.MultimodalRoutingDecision;
 import vip.mate.llm.service.ModelCapabilityService;
 import org.springframework.ai.chat.messages.ToolResponseMessage;
 import vip.mate.workspace.conversation.ConversationService;
+import vip.mate.workspace.conversation.MessageMetadataJson;
 import vip.mate.workspace.conversation.model.MessageContentPart;
 import vip.mate.workspace.conversation.model.MessageEntity;
 
@@ -811,8 +812,15 @@ public abstract class BaseAgent {
         if (msg == null) return List.of();
         String metadata = msg.getMetadata();
         if (metadata == null || metadata.isEmpty()) return List.of();
-        if (!metadata.contains("\"directToolNames\"")) return List.of();
-        java.util.regex.Matcher arrayMatcher = DIRECT_TOOL_NAMES_ARRAY.matcher(metadata);
+        // Guard on the bare key, not on `"directToolNames"`: the escaped form
+        // reads \"directToolNames\", where the quotes are no longer adjacent to
+        // the name, so a quoted guard exits early on every H2-backed row and the
+        // badge silently disappears. Bare-key matching holds for both forms and
+        // keeps the common case (no such key) allocation-free; the exact match
+        // then runs against normalized JSON.
+        if (!metadata.contains("directToolNames")) return List.of();
+        java.util.regex.Matcher arrayMatcher =
+                DIRECT_TOOL_NAMES_ARRAY.matcher(MessageMetadataJson.normalize(metadata));
         if (!arrayMatcher.find()) return List.of();
         String inner = arrayMatcher.group(1);
         java.util.regex.Matcher nameMatcher = DIRECT_TOOL_NAMES_INNER.matcher(inner);
@@ -887,7 +895,13 @@ public abstract class BaseAgent {
         }
         return switch (message.getRole()) {
             case "assistant" -> new AssistantMessage(renderedContent);
-            case "system" -> new SystemMessage(renderedContent);
+            case "system" -> isCompressionSummary(message)
+                    // Compression boundaries are persisted as system rows so
+                    // the loader can find the latest boundary cheaply. They
+                    // are still model-generated history context, not durable
+                    // instructions, so replay them at user priority.
+                    ? new UserMessage(renderedContent)
+                    : new SystemMessage(renderedContent);
             // History user messages: text only. Re-injecting Media on every replay
             // accumulates attachments across turns — many providers cap at 1 video
             // per request (e.g. Zhipu GLM-5V returns code 1210). The current turn

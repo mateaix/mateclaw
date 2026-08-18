@@ -695,7 +695,7 @@ public class WeixinChannelAdapter extends AbstractChannelAdapter {
         }
 
         Path uploadDir = (chatUploadLocationResolver != null)
-                ? chatUploadLocationResolver.resolveConversationDir(conversationId)
+                ? chatUploadLocationResolver.resolveWriteDir(conversationId)
                 : Path.of("data", "chat-uploads", ChatUploadLocationResolver.sanitizeSegment(conversationId));
         return InboundMediaDownloader.download(
                         () -> client.downloadMedia("", aesKey, encryptQueryParam),

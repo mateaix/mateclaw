@@ -27,6 +27,10 @@ public class CuratorRunNotifier {
     private final ObjectMapper objectMapper;
 
     public void onRunComplete(SkillCuratorReport report) {
+        onRunComplete(report, null);
+    }
+
+    public void onRunComplete(SkillCuratorReport report, Long workspaceId) {
         // (1) Durable audit trail — always recorded.
         try {
             String detail = objectMapper.writeValueAsString(Map.of(
@@ -35,7 +39,11 @@ public class CuratorRunNotifier {
                     "reactivated", report.reactivated(),
                     "dryRun", report.isDryRun(),
                     "reportPath", String.valueOf(report.getPath())));
-            auditEventService.record("CURATOR_RUN", "SKILL", report.getRunId(), null, detail);
+            if (workspaceId == null) {
+                auditEventService.record("CURATOR_RUN", "SKILL", report.getRunId(), null, detail);
+            } else {
+                auditEventService.record("CURATOR_RUN", "SKILL", report.getRunId(), null, detail, workspaceId);
+            }
         } catch (Exception e) {
             log.debug("Failed to record curator run audit event: {}", e.getMessage());
         }
@@ -43,7 +51,7 @@ public class CuratorRunNotifier {
         // (2) Application event — no listener is required; if none exists
         // the event is simply discarded.
         eventPublisher.publishEvent(new SkillCuratorRunCompletedEvent(
-                report.getRunId(), report.markedStale(), report.archived(),
+                report.getRunId(), workspaceId, report.markedStale(), report.archived(),
                 report.reactivated(), report.isDryRun(), report.getPath(), report.getRunAt()));
     }
 }

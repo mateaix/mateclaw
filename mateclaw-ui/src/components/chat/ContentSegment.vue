@@ -32,7 +32,7 @@ const { html: renderedContent } = useStreamingMarkdown(
 
 <template>
   <div class="seg-content">
-    <div class="markdown-body" v-html="renderedContent"></div>
+    <div class="markdown-body compact-markdown" v-html="renderedContent"></div>
     <TypingCursor v-if="isRunning && showCursor" />
   </div>
 </template>

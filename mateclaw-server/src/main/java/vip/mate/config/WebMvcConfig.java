@@ -17,7 +17,8 @@ import vip.mate.kbopen.auth.KbScopeInterceptor;
  */
 @Configuration
 @RequiredArgsConstructor
-@EnableConfigurationProperties({GraphObservationProperties.class, ConversationWindowProperties.class, ToolTimeoutProperties.class})
+@EnableConfigurationProperties({GraphObservationProperties.class, ConversationWindowProperties.class, ToolTimeoutProperties.class,
+        ReasoningRetentionProperties.class})
 public class WebMvcConfig implements WebMvcConfigurer {
 
     private final WorkspaceAccessInterceptor workspaceAccessInterceptor;

@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -31,7 +32,7 @@ import static org.mockito.Mockito.when;
  * <p>Behaviour pinned:
  * <ul>
  *   <li>throttle window suppresses sub-window flushes; forceFlush
- *       bypasses it; finishCard always flushes</li>
+ *       bypasses the UX throttle but retains the platform hard limit</li>
  *   <li>session is removed from {@code activeSessions} on terminal
  *       transition; subsequent appends are no-ops</li>
  *   <li>finish vs fail is a CAS-guarded one-shot — second terminal
@@ -46,13 +47,15 @@ class FeishuStreamingCardManagerTest {
     /** Recording SDK seam — captures each call so the test can replay them. */
     private static final class RecordingManager extends FeishuStreamingCardManager {
         record ContentCall(String cardId, String elementId, String content, int sequence) {}
-        record CloseCall(String cardId, int sequence) {}
+        record CloseCall(String cardId, int sequence, String summary) {}
 
         final List<ContentCall> contentCalls = new java.util.concurrent.CopyOnWriteArrayList<>();
         final List<CloseCall> closeCalls = new java.util.concurrent.CopyOnWriteArrayList<>();
         final AtomicLong fakeNowMs = new AtomicLong(0);
         final AtomicReference<String> nextCardId = new AtomicReference<>("card_abc");
         final AtomicReference<String> nextMessageId = new AtomicReference<>("msg_abc");
+        final AtomicInteger contentFailuresRemaining = new AtomicInteger();
+        final AtomicInteger closeFailuresRemaining = new AtomicInteger();
 
         RecordingManager(FeishuClientFactory factory, ObjectMapper objectMapper) {
             super(factory, objectMapper);
@@ -69,11 +72,22 @@ class FeishuStreamingCardManagerTest {
 
         @Override protected void sdkPushElementContent(Client client, String cardId, String elementId,
                                                         String content, int sequence) {
+            if (contentFailuresRemaining.getAndUpdate(n -> Math.max(0, n - 1)) > 0) {
+                throw new IllegalStateException("simulated content failure");
+            }
             contentCalls.add(new ContentCall(cardId, elementId, content, sequence));
         }
 
-        @Override protected void sdkCloseStreamingMode(Client client, String cardId, int sequence) {
-            closeCalls.add(new CloseCall(cardId, sequence));
+        @Override protected void sdkCloseStreamingMode(Client client, String cardId, int sequence,
+                                                        String summary) {
+            if (closeFailuresRemaining.getAndUpdate(n -> Math.max(0, n - 1)) > 0) {
+                throw new IllegalStateException("simulated close failure");
+            }
+            closeCalls.add(new CloseCall(cardId, sequence, summary));
+        }
+
+        @Override protected void sleepMillis(long millis) {
+            fakeNowMs.addAndGet(millis);
         }
     }
 
@@ -165,6 +179,22 @@ class FeishuStreamingCardManagerTest {
     }
 
     @Test
+    @DisplayName("full progress snapshots replace rather than append the previous card text")
+    void updateContentReplacesSnapshot() {
+        manager.fakeNowMs.set(0L);
+        String key = manager.createAndDeliver(7L, "open_id", "ou_abc", null);
+
+        manager.updateContent(key, "💭 思考中", true);
+        manager.fakeNowMs.set(50L);
+        manager.updateContent(key, "🔧 正在执行工具", true);
+
+        assertEquals(2, manager.contentCalls.size());
+        assertEquals("💭 思考中", manager.contentCalls.get(0).content());
+        assertEquals("🔧 正在执行工具", manager.contentCalls.get(1).content(),
+                "status transitions must not duplicate the preceding snapshot");
+    }
+
+    @Test
     @DisplayName("finishCard emits final content + close, in monotonic sequence order, then removes session")
     void finishCardClosesAndUnregisters() {
         manager.fakeNowMs.set(0L);
@@ -173,7 +203,8 @@ class FeishuStreamingCardManagerTest {
         manager.appendContent(key, "Hello, ", true);   // seq 1
         manager.fakeNowMs.set(600L);
         manager.appendContent(key, "world", false);    // seq 2
-        manager.finishCard(key, "Hello, world!");      // seq 3 (content) + seq 4 (close)
+        FeishuStreamingCardManager.FinishResult result =
+                manager.finishCard(key, "Hello, world!"); // seq 3 (content) + seq 4 (close)
 
         assertEquals(3, manager.contentCalls.size());
         assertEquals("Hello, world!", manager.contentCalls.get(2).content());
@@ -183,7 +214,43 @@ class FeishuStreamingCardManagerTest {
         assertEquals(3, manager.contentCalls.get(2).sequence());
         assertEquals(1, manager.closeCalls.size());
         assertEquals(4, manager.closeCalls.get(0).sequence());
+        assertEquals("Hello, world!", manager.closeCalls.get(0).summary());
+        assertTrue(result.success());
         assertEquals(0, manager.activeSessionCount());
+    }
+
+    @Test
+    @DisplayName("terminal content failure is retried and reported to the adapter")
+    void finishReportsContentFailureAfterRetry() {
+        String key = manager.createAndDeliver(7L, "open_id", "ou_abc", null);
+        manager.contentFailuresRemaining.set(2);
+
+        FeishuStreamingCardManager.FinishResult result = manager.finishCard(key, "answer");
+
+        assertFalse(result.finalContentUpdated());
+        assertTrue(result.streamingClosed(), "the card should still leave streaming mode");
+        assertEquals(0, manager.activeSessionCount());
+    }
+
+    @Test
+    @DisplayName("close failure is retried and remains observable after both attempts fail")
+    void finishReportsCloseFailureAfterRetry() {
+        String key = manager.createAndDeliver(7L, "open_id", "ou_abc", null);
+        manager.closeFailuresRemaining.set(2);
+
+        FeishuStreamingCardManager.FinishResult result = manager.finishCard(key, "answer");
+
+        assertTrue(result.finalContentUpdated());
+        assertFalse(result.streamingClosed());
+        assertEquals(0, manager.activeSessionCount());
+    }
+
+    @Test
+    @DisplayName("summary strips markdown, collapses whitespace, and stays within preview limit")
+    void summaryIsSuitableForChatPreview() {
+        assertEquals("标题 内容", FeishuStreamingCardManager.summaryFor("## 标题\n\n**内容**"));
+        assertEquals("✅ 已完成", FeishuStreamingCardManager.summaryFor("  "));
+        assertEquals(80, FeishuStreamingCardManager.summaryFor("x".repeat(120)).length());
     }
 
     @Test

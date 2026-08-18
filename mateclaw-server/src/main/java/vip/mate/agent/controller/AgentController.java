@@ -27,6 +27,9 @@ import vip.mate.common.result.R;
 import vip.mate.exception.MateClawException;
 import vip.mate.workspace.core.annotation.RequireWorkspaceRole;
 import vip.mate.workspace.core.service.WorkspaceService;
+import vip.mate.agent.context.ChatOrigin;
+import vip.mate.workspace.conversation.ConversationService;
+import vip.mate.workspace.conversation.model.MessageEntity;
 
 import java.io.IOException;
 import java.util.List;
@@ -47,6 +50,7 @@ import java.util.concurrent.Executors;
 public class AgentController {
 
     private final AgentService agentService;
+    private final ConversationService conversationService;
     private final AuditEventService auditEventService;
     private final AuthService authService;
     private final WorkspaceService workspaceService;
@@ -211,12 +215,13 @@ public class AgentController {
         AgentEntity agent = agentService.getAgent(id);
         verifyResourceWorkspace(agent != null ? agent.getWorkspaceId() : null, workspaceId);
         verifyAgentEnabled(agent);
+        ChatOrigin origin = persistOrigin(agent, id, message, conversationId, workspaceId);
 
         // RFC-058 PR-1: Utf8SseEmitter 显式 charset=UTF-8，防止中文 SSE 乱码
         SseEmitter emitter = new Utf8SseEmitter(5 * 60 * 1000L);
         sseExecutor.execute(() -> {
             try {
-                agentService.chatStream(id, message, conversationId)
+                agentService.chatStream(id, message, conversationId, origin)
                         .doOnNext(chunk -> {
                             try {
                                 emitter.send(SseEmitter.event().name("message").data(chunk));
@@ -251,7 +256,9 @@ public class AgentController {
         AgentEntity agent = agentService.getAgent(id);
         verifyResourceWorkspace(agent != null ? agent.getWorkspaceId() : null, workspaceId);
         verifyAgentEnabled(agent);
-        return R.ok(agentService.chat(id, request.getMessage(), request.getConversationId()));
+        ChatOrigin origin = persistOrigin(agent, id, request.getMessage(),
+                request.getConversationId(), workspaceId);
+        return R.ok(agentService.chat(id, request.getMessage(), request.getConversationId(), origin));
     }
 
     @Operation(summary = "执行复杂任务（Plan-Execute）")
@@ -264,7 +271,21 @@ public class AgentController {
         AgentEntity agent = agentService.getAgent(id);
         verifyResourceWorkspace(agent != null ? agent.getWorkspaceId() : null, workspaceId);
         verifyAgentEnabled(agent);
-        return R.ok(agentService.execute(id, request.getMessage(), request.getConversationId()));
+        ChatOrigin origin = persistOrigin(agent, id, request.getMessage(),
+                request.getConversationId(), workspaceId);
+        return R.ok(agentService.execute(id, request.getMessage(), request.getConversationId(), origin));
+    }
+
+    private ChatOrigin persistOrigin(AgentEntity agent, Long agentId, String message,
+                                     String conversationId, Long requestedWorkspaceId) {
+        Long resolvedWorkspaceId = agent != null && agent.getWorkspaceId() != null
+                ? agent.getWorkspaceId()
+                : requestedWorkspaceId != null ? requestedWorkspaceId : 1L;
+        MessageEntity savedUser = conversationService.saveMessage(
+                conversationId, "user", message);
+        return ChatOrigin.web(conversationId, "anonymous", resolvedWorkspaceId, null)
+                .withAgent(agentId)
+                .withOriginMessageId(savedUser == null ? null : savedUser.getId());
     }
 
     @Operation(summary = "获取Agent运行状态")

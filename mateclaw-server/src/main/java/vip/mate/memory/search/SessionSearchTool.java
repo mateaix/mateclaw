@@ -38,7 +38,7 @@ public class SessionSearchTool {
             注意：只会搜索已完成的会话，不会返回当前正在运行中的其他会话内容。
             """)
     public String session_search(
-            @ToolParam(description = "当前 Agent 的 ID") Long agentId,
+            @ToolParam(description = "当前 Agent 的 ID。必须作为字符串传入，避免大整数精度丢失") String agentId,
             @ToolParam(description = "搜索模式：recent 或 search") String mode,
             @ToolParam(description = "搜索关键词（mode=search 时必填）", required = false) String query,
             @ToolParam(description = "返回结果数量上限，默认 10", required = false) Integer limit,
@@ -64,13 +64,14 @@ public class SessionSearchTool {
         int effectiveLimit = limit != null && limit > 0 ? limit : 10;
 
         try {
+            Long parsedAgentId = parseAgentId(agentId);
             if ("recent".equalsIgnoreCase(mode.trim())) {
-                return handleRecent(agentId, currentConversationId, effectiveLimit);
+                return handleRecent(parsedAgentId, currentConversationId, effectiveLimit);
             } else if ("search".equalsIgnoreCase(mode.trim())) {
                 if (query == null || query.isBlank()) {
                     return error("mode=search 时 query 不能为空");
                 }
-                return handleSearch(agentId, currentConversationId, query, effectiveLimit);
+                return handleSearch(parsedAgentId, currentConversationId, query, effectiveLimit);
             } else {
                 return error("无效的 mode: " + mode + "，请使用 recent 或 search");
             }
@@ -116,5 +117,17 @@ public class SessionSearchTool {
         result.set("error", true);
         result.set("message", message);
         return JSONUtil.toJsonPrettyStr(result);
+    }
+
+    private Long parseAgentId(String agentId) {
+        String trimmed = agentId != null ? agentId.trim() : "";
+        if (trimmed.isEmpty()) {
+            throw new IllegalArgumentException("agentId 不能为空");
+        }
+        try {
+            return Long.parseLong(trimmed);
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("agentId 必须是数字字符串");
+        }
     }
 }

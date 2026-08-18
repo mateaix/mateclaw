@@ -65,7 +65,7 @@ const props = defineProps<{
   conversationId?: string
 }>()
 
-const emit = defineEmits<{
+defineEmits<{
   close: []
 }>()
 
@@ -83,6 +83,8 @@ const transcript = ref<Array<{ role: 'user' | 'assistant'; text: string }>>([])
 
 let ws: WebSocket | null = null
 let recorder: WavRecorder | null = null
+/** In-flight recorder start; release can arrive while getUserMedia is still resolving. */
+let recorderStartPromise: Promise<void> | null = null
 /**
  * Persistent warmed-up recorder kept alive for the modal's lifetime so the
  * press-and-hold gesture doesn't race a first-time mic permission dialog.
@@ -243,19 +245,24 @@ async function startListening() {
     retryConnection()
     return
   }
-  if (state.value !== 'idle') return
+  // Keep the gesture idempotent while getUserMedia/AudioContext start is in
+  // flight. Touch browsers can synthesize a second mouse event for the same
+  // press; without this guard it replaces the active recorder mid-start.
+  if (state.value !== 'idle' || recorderStartPromise || recorder) return
 
   try {
     // Web Audio API + manual WAV encode (utils/wavEncoder.ts) — replaces
-    // MediaRecorder/WebM. DashScope Paraformer rejects webm; WAV is the
-    // lowest common denominator every STT provider accepts.
+    // MediaRecorder/WebM. A canonical WAV gives every STT provider an
+    // unambiguous format and lets the backend run PCM quality diagnostics.
     //
     // Reuse the warmed-up recorder so we skip the permission dialog if
     // it was successfully acquired in onMounted. If warm-up failed (or
     // is still pending), fall back to a fresh recorder.
     recorder = warmRecorder ?? new WavRecorder()
     warmRecorder = null  // ownership transferred for the duration of recording
-    await recorder.start()
+    const startPromise = recorder.start()
+    recorderStartPromise = startPromise
+    await startPromise
     state.value = 'listening'
     console.debug('[TalkMode] listening started')
   } catch (err) {
@@ -263,6 +270,8 @@ async function startListening() {
     mcToast.error(t('talk.micError'))
     state.value = 'idle'
     recorder = null
+  } finally {
+    recorderStartPromise = null
   }
 }
 
@@ -274,7 +283,18 @@ async function stopListening() {
     if (state.value === 'listening') state.value = 'idle'
     return
   }
-  const result = await recorder.stop()
+  const activeRecorder = recorder
+  const pendingStart = recorderStartPromise
+  if (pendingStart) {
+    try {
+      await pendingStart
+    } catch {
+      // startListening owns the user-facing error and recorder cleanup.
+      return
+    }
+  }
+  if (recorder !== activeRecorder) return
+  const result = await activeRecorder.stop()
   recorder = null
   // Re-warm for the next press so subsequent PTTs also skip permission.
   warmRecorder = new WavRecorder()

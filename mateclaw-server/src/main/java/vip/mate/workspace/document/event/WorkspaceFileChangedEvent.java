@@ -3,14 +3,17 @@ package vip.mate.workspace.document.event;
 /**
  * Published whenever an agent's workspace file is created, updated, or deleted.
  * <p>
- * Workspace files (AGENTS.md, SOUL.md, PROFILE.md, MEMORY.md, structured/*.md)
- * are baked into the agent's system prompt when its runtime instance is built.
- * Listeners use this to invalidate the cached agent instance so memory edits
- * (tool writes, consolidation, cleanup) take effect on the next turn instead of
- * only after an agent config change or restart.
+ * Shared workspace files (AGENTS.md, SOUL.md, PROFILE.md, MEMORY.md, ...)
+ * are baked into the cached agent system prompt. Owner-scoped PERSONAL memory
+ * rows are injected per turn instead, so they should not evict the agent cache.
  *
- * @param agentId  the affected agent
- * @param filename the workspace file that changed
+ * @param agentId             the affected agent
+ * @param filename            the workspace file that changed
+ * @param affectsSystemPrompt whether cached agent instances must be rebuilt
  */
-public record WorkspaceFileChangedEvent(Long agentId, String filename) {
+public record WorkspaceFileChangedEvent(Long agentId, String filename, boolean affectsSystemPrompt) {
+
+    public WorkspaceFileChangedEvent(Long agentId, String filename) {
+        this(agentId, filename, true);
+    }
 }

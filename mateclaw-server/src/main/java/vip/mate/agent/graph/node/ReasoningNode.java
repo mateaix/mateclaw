@@ -30,6 +30,7 @@ import vip.mate.agent.graph.state.FinishReason;
 import vip.mate.agent.graph.state.MateClawStateAccessor;
 import vip.mate.agent.graph.state.MateClawStateKeys;
 import vip.mate.agent.graph.state.SourceEvidenceLedger;
+import vip.mate.agent.graph.guard.ActionCompletionPolicy;
 
 import vip.mate.channel.web.ChatStreamTracker;
 import vip.mate.team.service.TeamContextBuilder;
@@ -59,7 +60,7 @@ public class ReasoningNode implements NodeAction {
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     private static MateClawStateAccessor.OutputBuilder reasonOutput() {
-        return MateClawStateAccessor.output();
+        return MateClawStateAccessor.output().continueReasoning(false);
     }
 
     /**
@@ -138,9 +139,8 @@ public class ReasoningNode implements NodeAction {
 
     /** Continuation nudge appended to the prompt when the model returns an empty turn. */
     private static final String EMPTY_COMPLETION_NUDGE =
-            "Your previous turn was empty. If the task is not yet complete, continue now "
-            + "with the next concrete step — call a tool or write the next part. If every "
-            + "required step is already done, output the final answer to the user now.";
+            "上一轮回复为空。如果任务尚未完成,请现在继续执行下一个具体步骤:"
+            + "调用工具或写出下一部分。如果所有必要步骤都已完成,请立即输出面向用户的最终答复。";
 
     /**
      * Continuation nudge for the most common premature-stop pattern: an empty
@@ -257,8 +257,8 @@ public class ReasoningNode implements NodeAction {
             + "\"调研 10 个模型\"、\"逐节起草报告\"、\"批量生成 N 份文档\"、\n"
             + "\"依次调用 N 个 API\"、\"对每个文件执行同一操作\"等。\n\n"
             + "**必须做的事**：\n"
-            + "1. **第一轮回复就用并行 tool_calls 批量注册全部子目标为 `pending`**\n"
-            + "   一条回复里 N 个 `progress_update` 同时发出（不要串行）。\n"
+            + "1. **第一轮回复就用并行 tool_calls 批量注册子目标为 `pending`**\n"
+            + "   每批最多 16 个 `progress_update`；超过 16 个时分批注册，避免超过执行器上限。\n"
             + "   例：要调研 10 个模型，第一轮就发 10 个 `progress_update(stepKey=\"model_xxx\", status=\"pending\")`。\n"
             + "2. **每开始一个子目标**前发 `progress_update(同 stepKey, status=\"in_progress\")`。\n"
             + "3. **每完成一个子目标**后立即发 `progress_update(同 stepKey, status=\"done\")`。\n"
@@ -273,6 +273,30 @@ public class ReasoningNode implements NodeAction {
             + "  · ledger snapshot 永远显示初始状态，对你毫无帮助\n\n"
             + "**例外**：单一问题、简单问答、不可拆解的请求 — 不需要用。\n";
 
+    /**
+     * Staleness guard appended to every ReasoningNode system prompt. Conversation
+     * history can carry earlier rounds of the same status query verbatim (people
+     * count, device state, quotes, timestamps); models pattern-match those rounds
+     * and answer from the stale snapshot before this turn's tools have run —
+     * sometimes while claiming they already re-queried. Static text so the
+     * prompt-cache prefix stays stable; the current time it refers to is injected
+     * per turn by the runtime context block.
+     */
+    private static final String STALE_CONTEXT_GUARD = "\n\n"
+            + "## 历史状态数据过期规则（强制）\n\n"
+            + "- 会话历史中出现的一切状态类数据（在线人数、设备/传感器状态、电量、温度、库存、行情、"
+            + "查询时间戳等）都只是当时的快照，一律视为已过期，禁止在本轮回答中直接引用或改写后引用。\n"
+            + "- 状态类问题必须先在本轮调用工具取得最新观察结果，等结果返回后再输出结论；"
+            + "工具结果返回之前，不得输出含具体数值或结论的正文，只允许一句简短的过程说明（如\"正在查询…\"）。\n"
+            + "- 最终回答中引用的状态数值与查询时间必须来自本轮工具返回，时间基准以运行时上下文注入的当前时间为准。\n"
+            + "- 注意：\"历史里查过\"不等于\"本轮已查\"。宣称已重新查询但未在本轮实际发出对应 tool_call，视为违规。\n";
+
+    private static final String LANGUAGE_CONSISTENCY_GUARD = "\n\n"
+            + "## 语言一致性（强制）\n\n"
+            + "- 用户使用中文时,所有可见思考、过程说明、最终答复都必须使用简体中文。\n"
+            + "- 不要用英文书写可见思考或推理过程;代码、工具名、参数名、API 字段和专有名词可以保留原文。\n"
+            + "- 如果工具结果或历史内容是英文,你可以阅读它,但面向用户展示的解释和推理必须翻译/转述为用户语言。\n";
+
     private static final String GROUNDED_CONTRACT = "\n\n"
             + "## 回答来源约束（强制规则）\n\n"
             + "**核心原则**：你的回答必须完全基于工具返回的信息（证据），不得使用内部知识编造内容。\n\n"
@@ -286,8 +310,8 @@ public class ReasoningNode implements NodeAction {
             + "5. **内容忠实**：必须准确反映证据内容，不得歪曲、编造或过度推断。\n\n"
             + "**违规后果**：未按规则引用来源或使用未验证的信息将导致回答被拒绝。\n";
 
-    private static String buildGroundedSystemPrompt(String basePrompt, boolean groundingEnforced) {
-        String prompt = basePrompt + TOOL_USE_ENFORCEMENT;
+    static String buildGroundedSystemPrompt(String basePrompt, boolean groundingEnforced) {
+        String prompt = basePrompt + TOOL_USE_ENFORCEMENT + STALE_CONTEXT_GUARD + LANGUAGE_CONSISTENCY_GUARD;
         return groundingEnforced ? prompt + GROUNDED_CONTRACT : prompt;
     }
 
@@ -1143,6 +1167,57 @@ public class ReasoningNode implements NodeAction {
                     .build();
         } else {
             String content = result.text();
+            ActionCompletionPolicy.Decision completionDecision = ActionCompletionPolicy.evaluate(
+                    accessor.actionCompletionRequired(), accessor.actionCompletionRetryCount(),
+                    accessor.actionExecutionLedger());
+            if (completionDecision == ActionCompletionPolicy.Decision.RETRY) {
+                log.warn("[ReasoningNode] Rejecting text-only action completion; continuing once");
+                UserMessage continuation = new UserMessage("""
+                        [Runtime completion gate]
+                        This turn requires a real tool-backed action, but no substantive tool call was observed.
+                        Continue now by emitting the required tool call. Do not claim success or only describe the call.
+                        """);
+                return reasonOutput()
+                        .continueReasoning(true)
+                        .actionCompletionRetryCount(accessor.actionCompletionRetryCount() + 1)
+                        .needsToolCall(false)
+                        .shouldSummarize(false)
+                        .finalAnswer("")
+                        .clearFinishReason()
+                        .messages(List.of((Message) result.assistantMessage(), continuation))
+                        .currentPhase("reasoning")
+                        .streamedContent(content != null ? content : "")
+                        .streamedThinking(result.thinking())
+                        .contentStreamed(true)
+                        .thinkingStreamed(!result.thinking().isEmpty())
+                        .llmCallCount(nextLlmCallCount)
+                        .mergeUsage(state, result)
+                        .events(buildEvents(phaseEvent, iterStartEvent))
+                        .build();
+            }
+            if (completionDecision == ActionCompletionPolicy.Decision.UNVERIFIED
+                    || completionDecision == ActionCompletionPolicy.Decision.FAILED) {
+                boolean failed = completionDecision == ActionCompletionPolicy.Decision.FAILED;
+                String guardedAnswer = failed
+                        ? "动作工具执行失败，未确认操作成功。请检查工具返回的错误后重试。"
+                        : "未观察到实际的动作工具调用，因此没有执行或确认该操作。请重试。";
+                log.warn("[ReasoningNode] Blocking unsupported action completion: {}", completionDecision);
+                return reasonOutput()
+                        .needsToolCall(false)
+                        .shouldSummarize(false)
+                        .finalAnswer(guardedAnswer)
+                        .finalThinking(result.thinking())
+                        .messages(List.of((Message) result.assistantMessage()))
+                        .currentPhase("reasoning")
+                        .streamedContent("")
+                        .finishReason(failed ? FinishReason.ACTION_FAILED : FinishReason.ACTION_UNVERIFIED)
+                        .contentStreamed(false)
+                        .thinkingStreamed(!result.thinking().isEmpty())
+                        .llmCallCount(nextLlmCallCount)
+                        .mergeUsage(state, result)
+                        .events(buildEvents(phaseEvent, iterStartEvent))
+                        .build();
+            }
             log.info("[ReasoningNode] LLM produced final answer ({} chars)", content != null ? content.length() : 0);
             pushPhase(conversationId, "drafting_answer", Map.of(
                     "iteration", accessor.iterationCount(),

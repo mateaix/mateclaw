@@ -5,15 +5,18 @@ import cn.hutool.json.JSONArray;
 import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
 import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
+import com.google.gson.Gson;
 import com.microsoft.playwright.Browser;
 import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.CDPSession;
+import com.microsoft.playwright.ConsoleMessage;
 import com.microsoft.playwright.ElementHandle;
+import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.Playwright;
 import com.microsoft.playwright.PlaywrightException;
 import com.microsoft.playwright.options.LoadState;
+import com.microsoft.playwright.options.WaitForSelectorState;
 import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.model.ToolContext;
@@ -23,7 +26,11 @@ import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Component;
 import vip.mate.tool.browser.BrowserDiagnosticsService;
 import vip.mate.tool.browser.BrowserLauncher;
+import vip.mate.tool.browser.BrowserNavigationGuard;
 import vip.mate.tool.browser.BrowserPrivacyGuard;
+import vip.mate.tool.browser.BrowserRefState;
+import vip.mate.tool.browser.BrowserSessionGate;
+import vip.mate.tool.browser.BrowserWaitCondition;
 import vip.mate.common.net.SsrfProperties;
 import vip.mate.tool.browser.PageSnapshotScript;
 import vip.mate.tool.browser.UrlSafetyChecker;
@@ -32,6 +39,7 @@ import java.net.Socket;
 import java.nio.file.Paths;
 import java.util.Base64;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.*;
 import java.util.regex.Pattern;
 
@@ -47,6 +55,7 @@ public class BrowserUseTool {
     private static final long IDLE_TIMEOUT_MINUTES = 30;
     private static final int CDP_SCAN_PORT_MIN = 9000;
     private static final int CDP_SCAN_PORT_MAX = 10000;
+    private static final Gson GSON = new Gson();
 
     /**
      * Legacy visible-text extractor kept as a fallback: {@link #doSnapshot}
@@ -146,7 +155,7 @@ public class BrowserUseTool {
         if (reason == null) {
             return null;
         }
-        String conversationId = ToolExecutionContext.conversationId(currentToolContext);
+        String conversationId = ToolExecutionContext.conversationId(currentToolContext.get());
         privacyGuard.audit(conversationId, action, session.page.url(), reason);
         log.info("[BrowserUse] Privacy guard blocked action={} on {}", action, session.page.url());
         return error(reason);
@@ -163,13 +172,12 @@ public class BrowserUseTool {
     private final ConcurrentHashMap<String, BrowserSession> sessions = new ConcurrentHashMap<>();
 
     /**
-     * RFC-063r §2.5 transition: ToolContext for the current invocation, set
-     * at the @Tool entry point and read by {@link #broadcastBrowserEvent}.
-     * Tool calls are serialized per ToolExecutionExecutor instance so this
-     * volatile field is safe; the field is read-only inside the action
-     * handlers.
+     * Invocation context is thread-local. The shared Playwright driver is
+     * guarded globally because Playwright Java permits multi-threaded callers
+     * only when no two threads invoke its objects at the same time.
      */
-    private volatile ToolContext currentToolContext;
+    private final ThreadLocal<ToolContext> currentToolContext = new ThreadLocal<>();
+    private final BrowserSessionGate sessionGate = new BrowserSessionGate(1);
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
         Thread t = new Thread(r, "browser-idle-watchdog");
         t.setDaemon(true);
@@ -179,7 +187,7 @@ public class BrowserUseTool {
     @Tool(description = """
         Control a browser (Playwright with multi-strategy launch: system Chrome/Edge channel, explicit path, bundled, or external CDP).
         Default is headless. Use headed=true with action=start for a visible window.
-        Typical flow: start → open(url) → snapshot → click/type → stop.
+        Typical flow: start → open(url) → snapshot → click/type → current_surface or wait_for → stop.
         If start fails, run action=diagnose for a full report of what's missing and how to fix it.
 
         SCOPE — use this tool ONLY for tasks that require driving a real browser:
@@ -199,6 +207,8 @@ public class BrowserUseTool {
           `selector` scopes to a subtree — USE IT when the page is large to avoid truncation
           (`truncated:true` is flagged with a hint).
         - screenshot: Take a screenshot. Optional path to save file; returns base64 if no path.
+        - current_surface: Return current URL/title/document readiness, recent console/page errors, and ref validity.
+        - wait_for: Wait for condition=selector|text|url|load_state. Use selector/text/value plus optional timeoutSeconds.
         - click: Click an element. Pass ref=<eN> from a snapshot (preferred) or a CSS selector.
         - type: Type text into an element. Pass ref=<eN> (preferred) or selector, plus text.
         - hover: Hover over an element (reveals menus/tooltips). Pass ref=<eN> or selector.
@@ -211,26 +221,23 @@ public class BrowserUseTool {
         - diagnose: Run a self-check — reports which launch strategies are available and what to install if none are.
         """)
     public String browser_use(
-            @ToolParam(description = "Action: start|stop|open|snapshot|screenshot|click|type|hover|select|eval|connect_cdp|list_cdp_targets|navigate_back|diagnose") String action,
+            @ToolParam(description = "Action: start|stop|open|snapshot|screenshot|current_surface|wait_for|click|type|hover|select|eval|connect_cdp|list_cdp_targets|navigate_back|diagnose") String action,
             @ToolParam(description = "URL to navigate to (for open), or CDP base URL (for connect_cdp, e.g. http://localhost:9222)", required = false) String url,
             @ToolParam(description = "CSS selector. Alternative to ref for click/type/hover/select. OPTIONAL for snapshot: pass to scope to a subtree when previous snapshot returned truncated:true.", required = false) String selector,
             @ToolParam(description = "Element reference from a snapshot (e.g. 'e4'). PREFERRED for click/type/hover/select — takes priority over selector. Re-snapshot if it reports stale.", required = false) String ref,
             @ToolParam(description = "Text to type (for action=type)", required = false) String text,
             @ToolParam(description = "Option value or visible label to choose (for action=select)", required = false) String value,
+            @ToolParam(description = "Wait condition for action=wait_for: selector|text|url|load_state", required = false) String condition,
+            @ToolParam(description = "Timeout seconds for action=wait_for; capped by mateclaw.browser.default-timeout-seconds", required = false) Integer timeoutSeconds,
             @ToolParam(description = "JavaScript code to execute (for action=eval). Top-level await is allowed; add `return` to return a value when the snippet uses await.", required = false) String code,
             @ToolParam(description = "CDP method for action=cdp (e.g. 'Page.navigate', 'Input.dispatchMouseEvent'). Must be in the allowlist.", required = false) String method,
-            @ToolParam(description = "JSON object of params for action=cdp (e.g. {\"url\":\"https://example.com\"})", required = false) String params,
+            @ToolParam(description = "Structured params object for action=cdp (e.g. {\"url\":\"https://example.com\"})", required = false) Map<String, Object> params,
             @ToolParam(description = "File path to save screenshot (for action=screenshot)", required = false) String path,
             @ToolParam(description = "Launch visible browser window (for action=start, default false)", required = false) Boolean headed,
             @ToolParam(description = "Single CDP port to scan (for action=list_cdp_targets)", required = false) Integer cdpPort,
             // RFC-063r §2.5: hidden from LLM by JsonSchemaGenerator.
             @Nullable ToolContext ctx
     ) {
-        // The conversationId resolution lives in broadcastBrowserEvent below;
-        // capture the ctx into a field so the helper can read it without
-        // passing it down every action handler. Race-free because tool calls
-        // are serialized per executor.
-        this.currentToolContext = ctx;
         if (action == null || action.isBlank()) {
             return error("action is required");
         }
@@ -241,34 +248,49 @@ public class BrowserUseTool {
         String conversationId = ToolExecutionContext.conversationId(ctx);
         String sessionKey = (conversationId != null && !conversationId.isBlank())
                 ? conversationId : "default";
+        // Closing the per-conversation session aborts Playwright's native
+        // wait/navigation even when a Java thread interrupt alone is not
+        // observed by the driver transport.
+        Runnable removeCancellationHook = streamTracker != null && conversationId != null
+                ? streamTracker.registerCancellationHook(conversationId, () -> doStop(sessionKey))
+                : () -> { };
         log.info("[BrowserUse] action={}, session={}, url={}, selector={}, headed={}, cdpPort={}",
                 action, sessionKey, url, selector, headed, cdpPort);
 
-        try {
-            return switch (action.toLowerCase().trim()) {
-                case "start" -> doStart(sessionKey, Boolean.TRUE.equals(headed));
-                case "stop" -> doStop(sessionKey);
-                case "open" -> doOpen(sessionKey, url);
-                case "snapshot" -> doSnapshot(sessionKey, selector);
-                case "screenshot" -> doScreenshot(sessionKey, path);
-                case "click" -> doClick(sessionKey, ref, selector);
-                case "type" -> doType(sessionKey, ref, selector, text);
-                case "hover" -> doHover(sessionKey, ref, selector);
-                case "select" -> doSelect(sessionKey, ref, selector, value);
-                case "eval" -> doEval(sessionKey, code);
-                case "cdp" -> doCdp(sessionKey, method, params);
-                case "connect_cdp" -> doConnectCdp(sessionKey, url);
-                case "list_cdp_targets" -> doListCdpTargets(cdpPort);
-                case "navigate_back" -> doNavigateBack(sessionKey);
-                case "diagnose" -> doDiagnose();
-                default -> error("Unknown action: " + action + ". Supported: start, stop, open, snapshot, screenshot, click, type, hover, select, eval, cdp, connect_cdp, list_cdp_targets, navigate_back, diagnose");
-            };
-        } catch (PlaywrightException e) {
-            log.error("[BrowserUse] Playwright error: {}", e.getMessage());
-            return error("Browser error: " + e.getMessage());
-        } catch (Exception e) {
-            log.error("[BrowserUse] Unexpected error: {}", e.getMessage(), e);
-            return error("Unexpected error: " + e.getMessage());
+        try (BrowserSessionGate.Lease ignored = sessionGate.enter(sessionKey)) {
+            currentToolContext.set(ctx);
+            try {
+                return switch (action.toLowerCase().trim()) {
+                    case "start" -> doStart(sessionKey, Boolean.TRUE.equals(headed));
+                    case "stop" -> doStop(sessionKey);
+                    case "open" -> doOpen(sessionKey, url);
+                    case "snapshot" -> doSnapshot(sessionKey, selector);
+                    case "screenshot" -> doScreenshot(sessionKey, path);
+                    case "current_surface" -> doCurrentSurface(sessionKey);
+                    case "wait_for" -> doWaitFor(sessionKey, condition, selector, text, value, timeoutSeconds);
+                    case "click" -> doClick(sessionKey, ref, selector);
+                    case "type" -> doType(sessionKey, ref, selector, text);
+                    case "hover" -> doHover(sessionKey, ref, selector);
+                    case "select" -> doSelect(sessionKey, ref, selector, value);
+                    case "eval" -> doEval(sessionKey, code);
+                    case "cdp" -> doCdp(sessionKey, method, params);
+                    case "connect_cdp" -> doConnectCdp(sessionKey, url);
+                    case "list_cdp_targets" -> doListCdpTargets(cdpPort);
+                    case "navigate_back" -> doNavigateBack(sessionKey);
+                    case "diagnose" -> doDiagnose();
+                    default -> error("Unknown action: " + action + ". Supported: start, stop, open, snapshot, screenshot, current_surface, wait_for, click, type, hover, select, eval, cdp, connect_cdp, list_cdp_targets, navigate_back, diagnose");
+                };
+            } catch (PlaywrightException e) {
+                log.error("[BrowserUse] Playwright error: {}", e.getMessage());
+                return error("Browser error: " + e.getMessage());
+            } catch (Exception e) {
+                log.error("[BrowserUse] Unexpected error: {}", e.getMessage(), e);
+                return error("Unexpected error: " + e.getMessage());
+            } finally {
+                currentToolContext.remove();
+            }
+        } finally {
+            removeCancellationHook.run();
         }
     }
 
@@ -320,7 +342,7 @@ public class BrowserUseTool {
      */
     private void broadcastBrowserEvent(String action, boolean success, String url, String title,
                                         String screenshot, long durationMs) {
-        String conversationId = ToolExecutionContext.conversationId(currentToolContext);
+        String conversationId = ToolExecutionContext.conversationId(currentToolContext.get());
         if (conversationId == null || streamTracker == null) {
             return;
         }
@@ -597,6 +619,7 @@ public class BrowserUseTool {
 
         String title = session.page.title();
         String url = session.page.url();
+        session.refState.reconcileUrl(url);
 
         log.info("[BrowserUse] Navigated back to: {} ({})", url, title);
 
@@ -661,7 +684,9 @@ public class BrowserUseTool {
             String jsResult = (String) root.evaluate(PageSnapshotScript.SNAPSHOT_JS, opts);
             PageSnapshotScript.Result snap = PageSnapshotScript.Result.fromJson(jsResult);
 
-            int generation = session.nextSnapshotGeneration(snap.refs());
+            String snapshotUrl = page.url();
+            int generation = session.nextSnapshotGeneration(snapshotUrl, snap.refs(), snap.refInfos());
+            result.set("url", snapshotUrl);
 
             result.set("snapshotMode", "accessibility-tree");
             result.set("generation", generation);
@@ -679,6 +704,7 @@ public class BrowserUseTool {
                 result.set("scopedTo", selector);
             }
             result.set("refCount", snap.refs().size());
+            result.set("nativeAriaSnapshot", clippedNativeAriaSnapshot(page));
             result.set("content", snap.tree());
             return JSONUtil.toJsonPrettyStr(result);
         } catch (PlaywrightException e) {
@@ -750,6 +776,136 @@ public class BrowserUseTool {
         }
     }
 
+    private String doCurrentSurface(String sessionKey) {
+        BrowserSession session = requireSession(sessionKey);
+        if (session == null) {
+            return error("No browser running. Use action=start first.");
+        }
+        String blocked = guardReadOrNull(session, "current_surface");
+        if (blocked != null) {
+            return blocked;
+        }
+        session.touch();
+        return JSONUtil.toJsonPrettyStr(surfaceResult(session));
+    }
+
+    private String doWaitFor(String sessionKey, String condition, String selector, String text,
+                             String value, Integer timeoutSeconds) {
+        BrowserSession session = requireSession(sessionKey);
+        if (session == null) {
+            return error("No browser running. Use action=start first.");
+        }
+        String blocked = guardReadOrNull(session, "wait_for");
+        if (blocked != null) {
+            return blocked;
+        }
+        BrowserWaitCondition wait;
+        try {
+            wait = BrowserWaitCondition.parse(condition, selector, text, value, timeoutSeconds,
+                    launcher.properties().getDefaultTimeoutSeconds());
+        } catch (IllegalArgumentException e) {
+            return error(e.getMessage());
+        }
+
+        session.touch();
+        Page page = session.page;
+        switch (wait.kind()) {
+            case SELECTOR -> page.waitForSelector(wait.target(),
+                    new Page.WaitForSelectorOptions()
+                            .setState(WaitForSelectorState.VISIBLE)
+                            .setStrict(false)
+                            .setTimeout(wait.timeoutMillis()));
+            case TEXT -> page.getByText(wait.target()).first().waitFor(
+                    new Locator.WaitForOptions()
+                            .setState(WaitForSelectorState.VISIBLE)
+                            .setTimeout(wait.timeoutMillis()));
+            case URL -> page.waitForURL(wait.target(),
+                    new Page.WaitForURLOptions().setTimeout(wait.timeoutMillis()));
+            case LOAD_STATE -> page.waitForLoadState(loadState(wait.target()),
+                    new Page.WaitForLoadStateOptions().setTimeout(wait.timeoutMillis()));
+        }
+        JSONObject result = surfaceResult(session);
+        result.set("waitedFor", wait.kind().name().toLowerCase());
+        result.set("waitTarget", wait.target());
+        result.set("timeoutMillis", wait.timeoutMillis());
+        return JSONUtil.toJsonPrettyStr(result);
+    }
+
+    private JSONObject surfaceResult(BrowserSession session) {
+        Page page = session.page;
+        session.refState.reconcileUrl(page.url());
+        JSONObject result = new JSONObject();
+        result.set("ok", true);
+        result.set("currentUrl", page.url());
+        result.set("currentTitle", page.title());
+        result.set("readyState", safeReadyState(page));
+        result.set("snapshotGeneration", session.refState.snapshotGeneration());
+        result.set("refStatus", session.refState.status().name().toLowerCase());
+        result.set("refsValid", session.refState.refsValid());
+        result.set("refCount", session.refState.refCount());
+        result.set("navigationEpoch", session.refState.navigationEpoch());
+        result.set("snapshotNavigationEpoch", session.refState.snapshotNavigationEpoch());
+        result.set("snapshotUrl", session.refState.snapshotUrl());
+        JSONArray console = new JSONArray();
+        try {
+            List<ConsoleMessage> messages = page.consoleMessages();
+            int start = Math.max(0, messages.size() - 5);
+            for (ConsoleMessage message : messages.subList(start, messages.size())) {
+                JSONObject item = new JSONObject();
+                item.set("type", message.type());
+                item.set("text", message.text());
+                item.set("timestamp", message.timestamp());
+                console.add(item);
+            }
+        } catch (Exception e) {
+            log.debug("[BrowserUse] consoleMessages unavailable: {}", e.getMessage());
+        }
+        result.set("recentConsoleMessages", console);
+        JSONArray errors = new JSONArray();
+        try {
+            List<String> pageErrors = page.pageErrors();
+            int start = Math.max(0, pageErrors.size() - 5);
+            for (String pageError : pageErrors.subList(start, pageErrors.size())) {
+                errors.add(pageError);
+            }
+        } catch (Exception e) {
+            log.debug("[BrowserUse] pageErrors unavailable: {}", e.getMessage());
+        }
+        result.set("recentPageErrors", errors);
+        return result;
+    }
+
+    private static String safeReadyState(Page page) {
+        try {
+            Object ready = page.evaluate("document.readyState");
+            return ready != null ? ready.toString() : "unknown";
+        } catch (Exception e) {
+            return "unknown";
+        }
+    }
+
+    private static String clippedNativeAriaSnapshot(Page page) {
+        try {
+            String snapshot = page.ariaSnapshot();
+            if (snapshot == null) {
+                return "";
+            }
+            return snapshot.length() > 4000 ? snapshot.substring(0, 4000) + "\n... [truncated]" : snapshot;
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    private static LoadState loadState(String state) {
+        return switch (state.trim().toLowerCase()) {
+            case "load" -> LoadState.LOAD;
+            case "domcontentloaded", "dom_content_loaded" -> LoadState.DOMCONTENTLOADED;
+            case "networkidle", "network_idle" -> LoadState.NETWORKIDLE;
+            default -> throw new IllegalArgumentException("Unknown load state: " + state
+                    + ". Supported: load, domcontentloaded, networkidle");
+        };
+    }
+
     /** Result of resolving a click/type/hover/select target: a selector, or an error to return. */
     private record TargetResolution(String selector, String label, String error) {
         static TargetResolution ok(String selector, String label) {
@@ -769,18 +925,40 @@ public class BrowserUseTool {
     private TargetResolution resolveTarget(BrowserSession session, String ref, String selector) {
         if (ref != null && !ref.isBlank()) {
             String r = ref.trim();
-            if (!session.currentRefs.contains(r)) {
+            if (!session.refState.contains(r)) {
                 return TargetResolution.fail("ref '" + r + "' is not part of the current snapshot"
-                        + " (generation " + session.snapshotGeneration + "). The page likely changed,"
+                        + " (generation " + session.refState.snapshotGeneration() + "). The page likely changed,"
                         + " or you have not snapshotted since it did. Call action=snapshot first,"
                         + " then use a ref from that fresh result.");
             }
-            return TargetResolution.ok(PageSnapshotScript.selectorForRef(r), r);
+            String refSelector = PageSnapshotScript.selectorForRef(r);
+            PageSnapshotScript.RefFingerprint expected = session.refState.fingerprint(r);
+            if (expected != null) {
+                ElementHandle element = session.page.querySelector(refSelector);
+                if (element == null) {
+                    session.invalidateRefs();
+                    return TargetResolution.fail("ref '" + r + "' no longer exists on the page."
+                            + " Call action=snapshot again before acting.");
+                }
+                PageSnapshotScript.RefFingerprint actual = liveFingerprint(element, r);
+                if (!expected.sameCoreIdentity(actual)) {
+                    session.invalidateRefs();
+                    return TargetResolution.fail("ref '" + r + "' now points to a different element."
+                            + " Expected " + expected.role() + " '" + expected.name() + "', got "
+                            + actual.role() + " '" + actual.name() + "'. Call action=snapshot again.");
+                }
+            }
+            return TargetResolution.ok(refSelector, r);
         }
         if (selector != null && !selector.isBlank()) {
             return TargetResolution.ok(selector, selector);
         }
         return TargetResolution.fail("Either ref (from a snapshot, e.g. ref='e4') or a CSS selector is required.");
+    }
+
+    private static PageSnapshotScript.RefFingerprint liveFingerprint(ElementHandle element, String ref) {
+        String json = (String) element.evaluate(PageSnapshotScript.REF_FINGERPRINT_JS, ref);
+        return PageSnapshotScript.RefFingerprint.fromJson(JSONUtil.parseObj(json));
     }
 
     private String doClick(String sessionKey, String ref, String selector) {
@@ -797,6 +975,7 @@ public class BrowserUseTool {
         Page page = session.page;
 
         String before = page.url();
+        String beforeTitle = page.title();
         page.click(t.selector());
         page.waitForLoadState(LoadState.DOMCONTENTLOADED);
 
@@ -804,9 +983,7 @@ public class BrowserUseTool {
         String url = page.url();
         // A navigation invalidates the snapshot references; a same-page click
         // (toggle, expand) keeps them so the model can act on more refs.
-        if (!url.equals(before)) {
-            session.invalidateRefs();
-        }
+        session.refState.reconcileUrl(url);
 
         log.info("[BrowserUse] Clicked: {} (page now: {})", t.label(), url);
         broadcastBrowserEvent("click", true, url, title, null, 0);
@@ -816,6 +993,9 @@ public class BrowserUseTool {
         result.set("target", t.label());
         result.set("currentUrl", url);
         result.set("currentTitle", title);
+        result.set("urlChanged", !url.equals(before));
+        result.set("titleChanged", !title.equals(beforeTitle));
+        result.set("refsValid", session.refState.refsValid());
         if (!url.equals(before)) {
             result.set("navigated", true);
             result.set("hint", "The page navigated — previous @eN refs are stale. Re-snapshot before acting.");
@@ -838,14 +1018,24 @@ public class BrowserUseTool {
         }
 
         session.touch();
+        String before = session.page.url();
+        String beforeTitle = session.page.title();
         session.page.fill(t.selector(), text);
+        String url = session.page.url();
+        String title = session.page.title();
+        session.refState.reconcileUrl(url);
 
         log.info("[BrowserUse] Typed into: {} ({} chars)", t.label(), text.length());
-        broadcastBrowserEvent("type", true, null, null, null, 0);
+        broadcastBrowserEvent("type", true, url, title, null, 0);
 
         JSONObject result = new JSONObject();
         result.set("ok", true);
         result.set("target", t.label());
+        result.set("currentUrl", url);
+        result.set("currentTitle", title);
+        result.set("urlChanged", !url.equals(before));
+        result.set("titleChanged", !title.equals(beforeTitle));
+        result.set("refsValid", session.refState.refsValid());
         result.set("textLength", text.length());
         result.set("message", "Typed " + text.length() + " characters into " + t.label());
         return JSONUtil.toJsonPrettyStr(result);
@@ -862,14 +1052,24 @@ public class BrowserUseTool {
         }
 
         session.touch();
+        String before = session.page.url();
+        String beforeTitle = session.page.title();
         session.page.hover(t.selector());
+        String url = session.page.url();
+        String title = session.page.title();
+        session.refState.reconcileUrl(url);
 
         log.info("[BrowserUse] Hovered: {}", t.label());
-        broadcastBrowserEvent("hover", true, null, null, null, 0);
+        broadcastBrowserEvent("hover", true, url, title, null, 0);
 
         JSONObject result = new JSONObject();
         result.set("ok", true);
         result.set("target", t.label());
+        result.set("currentUrl", url);
+        result.set("currentTitle", title);
+        result.set("urlChanged", !url.equals(before));
+        result.set("titleChanged", !title.equals(beforeTitle));
+        result.set("refsValid", session.refState.refsValid());
         result.set("message", "Hovered element: " + t.label()
                 + ". Re-snapshot to capture any menu/tooltip it revealed.");
         return JSONUtil.toJsonPrettyStr(result);
@@ -889,16 +1089,26 @@ public class BrowserUseTool {
         }
 
         session.touch();
+        String before = session.page.url();
+        String beforeTitle = session.page.title();
         // Playwright matches by option value, label, or visible text, so a
         // human-readable value from the model works without extra hints.
         List<String> chosen = session.page.selectOption(t.selector(), value);
+        String url = session.page.url();
+        String title = session.page.title();
+        session.refState.reconcileUrl(url);
 
         log.info("[BrowserUse] Selected {} in {} -> {}", value, t.label(), chosen);
-        broadcastBrowserEvent("select", true, null, null, null, 0);
+        broadcastBrowserEvent("select", true, url, title, null, 0);
 
         JSONObject result = new JSONObject();
         result.set("ok", true);
         result.set("target", t.label());
+        result.set("currentUrl", url);
+        result.set("currentTitle", title);
+        result.set("urlChanged", !url.equals(before));
+        result.set("titleChanged", !title.equals(beforeTitle));
+        result.set("refsValid", session.refState.refsValid());
         result.set("selected", chosen);
         result.set("message", chosen.isEmpty()
                 ? "No option matched '" + value + "'. Re-snapshot and check the option labels."
@@ -933,6 +1143,16 @@ public class BrowserUseTool {
         if (blocked != null) {
             return blocked;
         }
+        if (launcher.properties().isSsrfCheckEnabled()) {
+            try {
+                BrowserNavigationGuard.checkEval(code,
+                        ssrfProperties.getSsrfAllowlist(),
+                        launcher.properties().isAllowPrivateNetwork());
+            } catch (SecurityException se) {
+                log.warn("[BrowserUse] Eval navigation guard rejected script: {}", se.getMessage());
+                return error(se.getMessage());
+            }
+        }
 
         session.touch();
         Page page = session.page;
@@ -961,6 +1181,7 @@ public class BrowserUseTool {
             }
         }
         String resultStr = evalResult != null ? evalResult.toString() : "null";
+        session.refState.reconcileUrl(page.url());
 
         if (resultStr.length() > 10_000) {
             resultStr = resultStr.substring(0, 10_000) + "\n... [truncated]";
@@ -971,6 +1192,8 @@ public class BrowserUseTool {
         JSONObject result = new JSONObject();
         result.set("ok", true);
         result.set("result", resultStr);
+        result.set("currentUrl", page.url());
+        result.set("refsValid", session.refState.refsValid());
         return JSONUtil.toJsonPrettyStr(result);
     }
 
@@ -1013,7 +1236,7 @@ public class BrowserUseTool {
         return false;
     }
 
-    private String doCdp(String sessionKey, String method, String paramsJson) {
+    private String doCdp(String sessionKey, String method, Map<String, Object> params) {
         if (!launcher.properties().getCdp().isEnabled()) {
             return error("action=cdp is disabled (mateclaw.browser.cdp.enabled=false).");
         }
@@ -1034,18 +1257,22 @@ public class BrowserUseTool {
             String reason = privacyGuard.blockReason(session.isUserManagedBrowser(),
                     session.page.url(), "cdp:" + m);
             if (reason != null) {
-                privacyGuard.audit(ToolExecutionContext.conversationId(currentToolContext),
+                privacyGuard.audit(ToolExecutionContext.conversationId(currentToolContext.get()),
                         "cdp:" + m, session.page.url(), reason);
                 return error(reason);
             }
         }
 
-        JsonObject parsed = null;
-        if (paramsJson != null && !paramsJson.isBlank()) {
+        JsonObject parsed = params == null ? null : GSON.toJsonTree(params).getAsJsonObject();
+        if (launcher.properties().isSsrfCheckEnabled()) {
             try {
-                parsed = JsonParser.parseString(paramsJson).getAsJsonObject();
-            } catch (RuntimeException e) {
-                return error("params must be a JSON object: " + e.getMessage());
+                BrowserNavigationGuard.checkCdp(m, parsed,
+                        ssrfProperties.getSsrfAllowlist(),
+                        launcher.properties().isAllowPrivateNetwork());
+            } catch (SecurityException se) {
+                log.warn("[BrowserUse] CDP navigation guard rejected method={} params={}: {}",
+                        m, params, se.getMessage());
+                return error(se.getMessage());
             }
         }
 
@@ -1058,6 +1285,7 @@ public class BrowserUseTool {
             if (m.startsWith("Page.navigate") || m.equals("Page.navigateToHistoryEntry")) {
                 session.invalidateRefs();
             }
+            session.refState.reconcileUrl(session.page.url());
             String out = res != null ? res.toString() : "{}";
             if (out.length() > 10_000) {
                 out = out.substring(0, 10_000) + "\n... [truncated]";
@@ -1140,7 +1368,13 @@ public class BrowserUseTool {
             long idleMinutes = (System.currentTimeMillis() - s.lastActivity) / 60_000;
             if (idleMinutes >= IDLE_TIMEOUT_MINUTES) {
                 log.info("[BrowserUse] Idle timeout ({}min), stopping session: {}", idleMinutes, sessionKey);
-                doStop(sessionKey);
+                try (BrowserSessionGate.Lease ignored = sessionGate.enter(sessionKey)) {
+                    BrowserSession current = sessions.get(sessionKey);
+                    if (current != null && System.currentTimeMillis() - current.lastActivity
+                            >= TimeUnit.MINUTES.toMillis(IDLE_TIMEOUT_MINUTES)) {
+                        doStop(sessionKey);
+                    }
+                }
             }
         }, IDLE_TIMEOUT_MINUTES, 5, TimeUnit.MINUTES);
 
@@ -1219,23 +1453,19 @@ public class BrowserUseTool {
         volatile ScheduledFuture<?> idleWatchdog;
 
         /**
-         * Monotonic snapshot generation. Each {@code action=snapshot} bumps it and
-         * replaces {@link #currentRefs} with the references assigned that pass.
-         * A click/type by a reference not in {@link #currentRefs} is reported as
-         * stale, prompting the caller to re-snapshot. Safe as plain volatile
-         * because tool calls are serialized per executor.
+         * Snapshot reference lifecycle, including navigation epochs and the
+         * fingerprints assigned by the latest snapshot.
          */
-        volatile int snapshotGeneration;
-        volatile java.util.Set<String> currentRefs = java.util.Set.of();
+        final BrowserRefState refState = new BrowserRefState();
 
-        int nextSnapshotGeneration(java.util.List<String> refs) {
-            this.currentRefs = java.util.Set.copyOf(refs);
-            return ++this.snapshotGeneration;
+        int nextSnapshotGeneration(String url, java.util.List<String> refs,
+                                   Map<String, PageSnapshotScript.RefFingerprint> refInfos) {
+            return refState.recordSnapshot(url, refs, refInfos);
         }
 
         /** Drop all references — the DOM they pointed at is gone (navigation). */
         void invalidateRefs() {
-            this.currentRefs = java.util.Set.of();
+            refState.invalidate();
         }
 
         /**
@@ -1259,6 +1489,12 @@ public class BrowserUseTool {
             this.userDataDir = userDataDir;
             this.ownedProcess = ownedProcess;
             this.lastActivity = System.currentTimeMillis();
+            this.refState.reconcileUrl(page.url());
+            page.onFrameNavigated(frame -> {
+                if (frame == page.mainFrame()) {
+                    refState.onMainFrameNavigated(frame.url());
+                }
+            });
         }
 
         void touch() {

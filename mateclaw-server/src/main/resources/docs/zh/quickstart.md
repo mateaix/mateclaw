@@ -78,7 +78,7 @@ Docker 和源码启动在 [配置说明](./config) 和 [贡献指南](./contribu
 ## 其他部署方式
 
 - **Docker**——`cp .env.example .env` 填好密码，`docker compose up -d --build`。完整的前置要求、Maven 镜像选择（中国 / 美国）、浏览器工具自检、升级流程看 [Docker 部署](./docker-deploy)。
-- **从源码跑**——`mateclaw-server/` 里 `mvn spring-boot:run`，`mateclaw-ui/` 里 `pnpm dev`。细节在 [贡献指南](./contributing)。
+- **从源码跑**——`mateclaw-server/` 里 `mvn spring-boot:run`，`mateclaw-ui/` 里 `npm run dev`。细节在 [贡献指南](./contributing)。
 - **桌面端内部**——打包、签名、自动更新。看 [桌面应用](./desktop)。
 
 ---

@@ -523,6 +523,15 @@ INSERT INTO mate_tool (id, name, display_name, description, tool_type, bean_name
 VALUES (1000000027, 'LocalShellTool', 'Local Shell', 'Execute shell commands on the user''s local desktop machine via the desktop tunnel. Requires native user approval.', 'builtin', 'localShellTool', '🖥', TRUE, TRUE, NOW(), NOW(), 0)
 ON DUPLICATE KEY UPDATE name=VALUES(name), display_name=VALUES(display_name), description=VALUES(description), tool_type=VALUES(tool_type), bean_name=VALUES(bean_name), icon=VALUES(icon), enabled=VALUES(enabled), builtin=VALUES(builtin), update_time=VALUES(update_time), deleted=VALUES(deleted);
 
+-- Builtin tool: channel message push
+INSERT INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
+VALUES (1000000028, 'ChannelMessageTool', 'Channel Message Push', 'Proactively push messages to IM channel conversations. list_channel_sessions discovers pushable conversations; send_channel_message performs a one-way push — for alerts, reminders, and async task results.', 'builtin', 'channelMessageTool', '📤', TRUE, TRUE, NOW(), NOW(), 0)
+ON DUPLICATE KEY UPDATE name=VALUES(name), display_name=VALUES(display_name), description=VALUES(description), tool_type=VALUES(tool_type), bean_name=VALUES(bean_name), icon=VALUES(icon), enabled=VALUES(enabled), builtin=VALUES(builtin), update_time=VALUES(update_time), deleted=VALUES(deleted);
+
+INSERT INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
+VALUES (1000000029, 'OfficeCliTool', 'OfficeCLI Advanced Documents', 'Inspect, validate, copy-edit, merge, and render DOCX/XLSX/PPTX through the optional iOfficeAI/OfficeCLI binary. Mutations are copy-on-write and return generated-file links.', 'builtin', 'officeCliTool', '🏢', TRUE, TRUE, NOW(), NOW(), 0)
+ON DUPLICATE KEY UPDATE name=VALUES(name), display_name=VALUES(display_name), description=VALUES(description), tool_type=VALUES(tool_type), bean_name=VALUES(bean_name), icon=VALUES(icon), enabled=VALUES(enabled), builtin=VALUES(builtin), update_time=VALUES(update_time), deleted=VALUES(deleted);
+
 -- Built-in tool: Edit File (enabled by default, dangerous ops controlled by ToolGuard)
 INSERT INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
 VALUES (1000000006, 'EditFileTool', 'Edit File', 'Edit file content via find-and-replace. Matches old_text exactly and replaces with new_text. Requires user approval.', 'builtin', 'editFileTool', '✏️', TRUE, TRUE, NOW(), NOW(), 0)
@@ -752,7 +761,11 @@ INSERT INTO mate_skill (id, name, description, skill_type, icon, version, author
 VALUES (1000000019, 'multi_agent_collaboration', 'When a task requires the professional capabilities of multiple Agents, orchestrate parallel or serial multi-agent collaboration and integrate results.', 'builtin', '🤝', '1.4.0', 'MateClaw', '{"upstream":"mateclaw","entryFile":"SKILL.md"}', TRUE, TRUE, 'multi-agent,collaboration,orchestration,parallel', NOW(), NOW(), 0)
 ON DUPLICATE KEY UPDATE name=VALUES(name), description=VALUES(description), skill_type=VALUES(skill_type), icon=VALUES(icon), version=VALUES(version), author=VALUES(author), config_json=VALUES(config_json), enabled=VALUES(enabled), builtin=VALUES(builtin), tags=VALUES(tags), update_time=VALUES(update_time), deleted=VALUES(deleted);
 
--- RFC-042 §2.2 — bilingual display names for the 19 builtin skills.
+INSERT INTO mate_skill (id, name, description, skill_type, icon, version, author, config_json, enabled, builtin, tags, create_time, update_time, deleted)
+VALUES (1000000020, 'officecli', 'Use optional iOfficeAI/OfficeCLI for advanced inspection, validation, copy editing, template merge, and visual rendering of existing DOCX/XLSX/PPTX files.', 'builtin', '🏢', '1.0.0', 'MateClaw', '{"upstream":"mateclaw","entryFile":"SKILL.md"}', TRUE, TRUE, 'office,officecli,docx,xlsx,pptx,render,validate', NOW(), NOW(), 0)
+ON DUPLICATE KEY UPDATE name=VALUES(name), description=VALUES(description), skill_type=VALUES(skill_type), icon=VALUES(icon), version=VALUES(version), author=VALUES(author), config_json=VALUES(config_json), enabled=VALUES(enabled), builtin=VALUES(builtin), tags=VALUES(tags), update_time=VALUES(update_time), deleted=VALUES(deleted);
+
+-- RFC-042 §2.2 — bilingual display names for the 20 builtin skills.
 -- Identical across all four data-*.sql files because name_zh / name_en are
 -- permanent attributes, not locale-conditional. The UI picks which one to
 -- show based on the active i18n locale and falls back to `name` when null.
@@ -763,6 +776,7 @@ UPDATE mate_skill SET name_zh = '邮件管理',       name_en = 'Email (Himalaya
 UPDATE mate_skill SET name_zh = '新闻查询',       name_en = 'News'                     WHERE name = 'news';
 UPDATE mate_skill SET name_zh = 'PDF 处理',       name_en = 'PDF'                      WHERE name = 'pdf';
 UPDATE mate_skill SET name_zh = 'Word 文档',      name_en = 'Word Document'            WHERE name = 'docx';
+UPDATE mate_skill SET name_zh = 'OfficeCLI 高级文档', name_en = 'OfficeCLI Advanced Documents' WHERE name = 'officecli';
 UPDATE mate_skill SET name_zh = 'PPT 演示',       name_en = 'PowerPoint'               WHERE name = 'pptx';
 UPDATE mate_skill SET name_zh = 'Excel 表格',     name_en = 'Excel'                    WHERE name = 'xlsx';
 UPDATE mate_skill SET name_zh = '可见浏览器',     name_en = 'Visible Browser'          WHERE name = 'browser_visible';

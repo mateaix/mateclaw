@@ -1,19 +1,45 @@
 ---
-title: 团队协作 — 一个 Lead 带一群数字员工，在共享任务板上并行干活
-description: MateClaw 的 Agent 团队让一个 Lead 员工把复杂目标拆成任务、派给团队成员并行执行，任务板负责依赖、审批、交付物与全程可观测。
+title: Team Run — 从一次团队请求到可追踪、可交付的完整运行
+description: MateClaw Team Run 用一个 runId 串起 Lead、任务 DAG、成员执行、最终汇总与交付物，并在 Chat、Agents、Teams 三个页面提供统一视图。
 head:
   - - meta
     - name: keywords
       content: Agent团队,任务板,看板,多Agent协作,派发,交付物,团队协作,MateClaw
 ---
 
-# 团队协作（2.0.0+）
+# Team Run 与团队协作（2.1.0+）
 
 > **以前是"一个员工带子任务"。现在是"一个团队围着一块任务板"。**
 
 子员工委派（`delegateToAgent`）解决的是"一个人临时叫帮手"：同步等结果、一对一、过程黑盒。但真实的复杂交付不长这样——它长得像一个项目：**拆任务、标依赖、并行推进、卡点审批、交付物归档、随时能看谁在干什么**。
 
 团队协作把这套项目机制搬进 MateClaw：你建一个**团队**，指定一个 **Lead** 员工、若干**成员**员工；对 Lead 说一句目标，它把目标拆成任务落到**共享任务板**上；派发引擎把任务自动分给成员**并行执行**；成员完成后结果自动通报回 Lead，由它汇总、补派、直到整件事干完。你全程在 Teams 页旁观——或者直接往板上投任务。
+
+2.1.0 在任务之上增加一等对象 **Team Run**：一条用户请求只对应一轮运行，一个 `runId` 串起原始目标、任务 DAG、成员子会话、事件、最终汇总与交付物。你看到的不再是一堆叫“子任务”的会话，而是一份结果优先、可以下钻的完整工作记录。
+
+## 2.1.0 的统一 Team Run 体验
+
+| 页面 | 职责 | 默认看到什么 |
+|------|------|--------------|
+| **Chat** | 成果交付面 | 一张稳定的运行卡片：统一状态与进度、最终摘要、交付物、失败或待审批事项；任务过程按需展开 |
+| **Agents · Live** | 实时观察面 | 同一 `runId` 下的成员按运行分组，显示当前任务、phase、工具、耗时和异常；普通非团队运行保持独立 |
+| **Teams** | 历史与治理面 | 团队运行历史、运行详情、任务证据、审批、取消与成员执行记录，不再把所有历史任务平铺成主视图 |
+
+Team Run 状态由服务端统一投影：
+
+```text
+planning → running → awaiting_review → finalizing → completed
+                                      ↘ partial / failed
+planning / running / awaiting_review → cancelled
+```
+
+- **一事一身份**：SSE 事件、页面路由、日志、任务和最终消息都携带 `runId`；
+- **成果优先**：中间任务完成只更新运行进度，不为每个任务制造一条面向用户的最终回复；
+- **子会话治理**：`team_worker` 会话不进入普通会话侧栏；深链接仍可打开，但以只读执行记录呈现并提供返回 Team Run 的入口；
+- **刷新可恢复**：页面只消费后端 `TeamRunView`，标题、状态、进度、摘要和文件不会因前端重算而漂移；
+- **历史兼容**：2.0.0 创建、没有 `runId` 的任务继续可查，但不会按时间窗口被错误拼成一次运行。
+
+运行协议固定为 `start_run → create* → seal_run`：Lead 先建立运行，再创建显式归属该运行的任务，最后封板开始派发。来源消息参与幂等约束，重连或重复提交不会再造出第二轮相同运行。
 
 ---
 
@@ -122,6 +148,10 @@ Lead 不限定 Agent 类型。**ReAct 型 Lead** 用 `team_tasks` 逐条建任�
 
 | 端点 | 说明 |
 |------|------|
+| `GET /api/v1/team-runs/{runId}` | 读取完整运行投影 |
+| `GET /api/v1/teams/{teamId}/runs` · `GET …/runs/page` | 列出 / 按游标读取团队运行历史 |
+| `GET /api/v1/conversations/{conversationId}/team-runs` · `GET …/team-runs/page` | 列出 / 按游标读取父对话中的 Team Run |
+| `POST /api/v1/team-runs/{runId}/cancel` | 取消运行及其未终态任务 |
 | `GET / POST /api/v1/teams` | 列出 / 创建团队 |
 | `GET / PUT / DELETE /api/v1/teams/{id}` | 团队详情 / 更新 / 删除 |
 | `POST /api/v1/teams/{id}/members` · `DELETE …/members/{agentId}` | 成员增删 |
@@ -135,7 +165,7 @@ Lead 不限定 Agent 类型。**ReAct 型 Lead** 用 `team_tasks` 逐条建任�
 
 所有校验失败都以**可读错误**返回——不是裸 500。
 
-数据落五张表：`mate_agent_team`、`mate_agent_team_member`、`mate_team_task`、`mate_team_task_comment`、`mate_team_task_event`。
+数据在原有五张团队表之上新增 `mate_team_run`，`mate_team_task.run_id` 与成员会话索引负责把任务、运行和执行记录关联起来。所有 Snowflake id 在 JSON 边界按字符串返回。
 
 ---
 

@@ -1,5 +1,8 @@
 package vip.mate.tool.disclosure;
 
+import cn.hutool.json.JSONArray;
+import cn.hutool.json.JSONObject;
+import cn.hutool.json.JSONUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.tool.ToolCallback;
@@ -9,10 +12,9 @@ import vip.mate.agent.AgentToolSet;
 import vip.mate.agent.context.TokenEstimator;
 import vip.mate.tool.ToolRegistry;
 import vip.mate.tool.mcp.model.McpServerEntity;
+import vip.mate.tool.mcp.runtime.McpHashCollisionDetector;
 import vip.mate.tool.mcp.service.McpServerService;
-import vip.mate.tool.model.AvailableToolDTO;
 import vip.mate.tool.model.ToolEntity;
-import vip.mate.tool.service.AvailableToolService;
 import vip.mate.tool.service.ToolService;
 
 import java.util.ArrayList;
@@ -38,10 +40,11 @@ public class DefaultToolDisclosureService implements ToolDisclosureService {
 
     /**
      * Meta-tools that must always stay core: hiding them would make progressive
-     * disclosure unrecoverable (the model could never call {@code enable_tool}
-     * to surface anything, nor {@code load_skill} to read a skill).
+     * disclosure unrecoverable (the model could neither search/call a deferred
+     * tool nor load a skill).
      */
-    private static final Set<String> ALWAYS_CORE = Set.of("enable_tool", "load_skill");
+    private static final Set<String> ALWAYS_CORE = Set.of(
+            "enable_tool", "load_skill", "tool_search", "tool_describe", "tool_call");
 
     /**
      * Code-level extension defaults for builtin tools that may not yet have a
@@ -53,7 +56,6 @@ public class DefaultToolDisclosureService implements ToolDisclosureService {
 
     private final ToolService toolService;
     private final McpServerService mcpServerService;
-    private final AvailableToolService availableToolService;
     private final ToolRegistry toolRegistry;
     private final ToolUsageRecencyTracker usageRecencyTracker;
 
@@ -137,8 +139,9 @@ public class DefaultToolDisclosureService implements ToolDisclosureService {
     /**
      * {@inheritDoc}
      *
-     * <p>Protection set: {@link #ALWAYS_CORE} meta-tools and builtin tools
-     * with an explicit {@code disclosure_tier = core} row. MCP tools default
+     * <p>Protection set: only the {@link #ALWAYS_CORE} recovery/bridge tools.
+     * An explicit {@code disclosure_tier = core} remains a preference, but it
+     * cannot override the hard per-request schema ceiling. MCP tools default
      * to EXTENSION (Move 5) so they only enter the CORE list when an operator
      * explicitly sets {@code disclosure_tier = core} on the server — in that
      * case they are still demotable, since MCP schemas are typically the
@@ -171,7 +174,7 @@ public class DefaultToolDisclosureService implements ToolDisclosureService {
         }
         if (!demoted.isEmpty()) {
             log.info("[ToolDisclosure] 工具 schema 估算 {} tokens 超出预算 {}——已将 {} 个最少使用的工具"
-                            + "降级到扩展目录(enable_tool 可找回): {}",
+                            + "降级到渐进目录(tool_call 可当轮调用): {}",
                     coreTokens, budgetTokens, demoted.size(), demoted);
         }
         return demoted;
@@ -181,8 +184,7 @@ public class DefaultToolDisclosureService implements ToolDisclosureService {
         if (toolName == null || ALWAYS_CORE.contains(toolName)) {
             return false;
         }
-        // An explicit core row is an operator decision — never override it.
-        return snap.builtinTierByName.get(toolName) != DisclosureTier.CORE;
+        return true;
     }
 
     /** Never-used tools demote first, then least recently used; name-tiebreak keeps builds deterministic. */
@@ -216,9 +218,9 @@ public class DefaultToolDisclosureService implements ToolDisclosureService {
 
         StringBuilder sb = new StringBuilder();
         sb.append("\n\n## Extension Tools\n");
-        sb.append("These tools are not directly callable yet. To use one, first call ");
-        sb.append("`enable_tool(toolName=\"<name>\")`, then issue the real tool call in your next response. ");
-        sb.append("Activation lasts for the rest of this conversation. Only enable a tool when the task needs it.\n\n");
+        sb.append("Full schemas are hidden until needed. If the exact name is known, call ");
+        sb.append("`tool_call(toolName=\"<name>\", arguments={...})` to execute it in this same round. ");
+        sb.append("Use `tool_search` to discover by capability and `tool_describe` only when arguments are unclear.\n\n");
         sb.append("| Tool | Source | Description |\n");
         sb.append("|------|--------|-------------|\n");
         int shown = 0;
@@ -276,15 +278,15 @@ public class DefaultToolDisclosureService implements ToolDisclosureService {
     private Snapshot buildSnapshot() {
         // resolveTier() queries by the runtime function name (cb.getToolDefinition().name()),
         // but mate_tool stores the Java class name (e.g. "ImageGenerateTool") and bean name
-        // (e.g. "imageGenerateTool"). Bridge both onto the function name(s) via the global
-        // tool set's alias index so a persisted tier actually reaches the runtime split.
+        // (e.g. "imageGenerateTool"). Bridge both onto the function name(s) via a built-in
+        // alias index so a persisted tier actually reaches the runtime split. Do not call
+        // ToolRegistry.getEnabledToolSet() here: it synchronously enumerates MCP providers.
         Map<String, DisclosureTier> builtinTierByName = new LinkedHashMap<>();
-        AgentToolSet globalSet = null;
+        Map<String, Set<String>> builtinFunctionIndex = Map.of();
         try {
-            globalSet = toolRegistry.getEnabledToolSet();
+            builtinFunctionIndex = toolRegistry.enabledToolBeanFunctionNameIndex();
         } catch (Exception e) {
-            log.warn("ToolDisclosureService: global tool set unavailable, tier name bridge disabled: {}",
-                    e.getMessage());
+            log.warn("ToolDisclosureService: built-in tier name bridge unavailable: {}", e.getMessage());
         }
         try {
             for (ToolEntity t : toolService.listTools()) {
@@ -295,13 +297,17 @@ public class DefaultToolDisclosureService implements ToolDisclosureService {
                 // Key by the raw stored name too — harmless, and covers rows that already
                 // store a function name.
                 builtinTierByName.put(t.getName(), tier);
-                if (globalSet != null) {
-                    Set<String> aliases = new LinkedHashSet<>();
-                    aliases.add(t.getName());
-                    if (t.getBeanName() != null && !t.getBeanName().isBlank()) {
-                        aliases.add(t.getBeanName());
+                Set<String> aliases = new LinkedHashSet<>();
+                aliases.add(t.getName());
+                if (t.getBeanName() != null && !t.getBeanName().isBlank()) {
+                    aliases.add(t.getBeanName());
+                }
+                for (String alias : aliases) {
+                    Set<String> functionNames = builtinFunctionIndex.get(alias);
+                    if (functionNames == null) {
+                        continue;
                     }
-                    for (String functionName : globalSet.functionNamesFor(aliases)) {
+                    for (String functionName : functionNames) {
                         builtinTierByName.put(functionName, tier);
                     }
                 }
@@ -313,9 +319,13 @@ public class DefaultToolDisclosureService implements ToolDisclosureService {
 
         Map<String, Long> mcpToolToServerId = new LinkedHashMap<>();
         try {
-            for (AvailableToolDTO d : availableToolService.listAvailable()) {
-                if ("mcp".equals(d.getSource()) && d.getName() != null && d.getProviderId() != null) {
-                    mcpToolToServerId.put(d.getName(), d.getProviderId());
+            for (McpServerEntity server : mcpServerService.listEnabled()) {
+                if (server == null || server.getId() == null || server.getToolsCacheJson() == null
+                        || server.getToolsCacheJson().isBlank()) {
+                    continue;
+                }
+                for (String toolName : cachedMcpToolNames(server)) {
+                    mcpToolToServerId.put(toolName, server.getId());
                 }
             }
         } catch (Exception e) {
@@ -343,6 +353,33 @@ public class DefaultToolDisclosureService implements ToolDisclosureService {
 
         return new Snapshot(builtinTierByName, mcpToolToServerId, serverTierById, serverNameById,
                 System.currentTimeMillis());
+    }
+
+    private List<String> cachedMcpToolNames(McpServerEntity server) {
+        try {
+            JSONArray arr = JSONUtil.parseArray(server.getToolsCacheJson());
+            List<String> rawNames = new ArrayList<>(arr.size());
+            for (Object o : arr) {
+                if (!(o instanceof JSONObject jo)) {
+                    continue;
+                }
+                String name = jo.getStr("name");
+                if (name != null && !name.isBlank()) {
+                    rawNames.add(name);
+                }
+            }
+            if (rawNames.isEmpty()) {
+                return List.of();
+            }
+            return McpHashCollisionDetector.classify(server.getId(), rawNames).stream()
+                    .filter(McpHashCollisionDetector.Decision::bindable)
+                    .map(McpHashCollisionDetector.Decision::prefixedName)
+                    .toList();
+        } catch (Exception e) {
+            log.debug("ToolDisclosureService: failed to parse MCP tools cache for server {}: {}",
+                    server.getId(), e.getMessage());
+            return List.of();
+        }
     }
 
     private record Snapshot(Map<String, DisclosureTier> builtinTierByName,

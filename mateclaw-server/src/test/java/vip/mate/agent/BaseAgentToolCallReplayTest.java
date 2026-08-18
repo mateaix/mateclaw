@@ -4,6 +4,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.ToolResponseMessage;
 import org.springframework.ai.chat.messages.UserMessage;
 import vip.mate.workspace.conversation.ConversationService;
@@ -64,14 +65,15 @@ class BaseAgentToolCallReplayTest {
     }
 
     @Test
-    @DisplayName("running / awaiting_approval entries are skipped — replaying them produces orphan tool_call_ids")
+    @DisplayName("non-terminal entries are skipped — replaying them produces orphan tool_call_ids")
     void incompleteToolCalls_dropped() {
         MessageEntity msg = new MessageEntity();
         msg.setRole("assistant");
         msg.setMetadata("{\"toolCalls\":["
                 + "{\"toolCallId\":\"call_a\",\"name\":\"a\",\"status\":\"completed\",\"result\":\"ok\"},"
                 + "{\"toolCallId\":\"call_b\",\"name\":\"b\",\"status\":\"running\"},"
-                + "{\"toolCallId\":\"call_c\",\"name\":\"c\",\"status\":\"awaiting_approval\"}"
+                + "{\"toolCallId\":\"call_c\",\"name\":\"c\",\"status\":\"awaiting_approval\"},"
+                + "{\"toolCallId\":\"call_d\",\"name\":\"d\",\"status\":\"interrupted\"}"
                 + "]}");
 
         List<BaseAgent.PersistedToolCall> calls = BaseAgent.extractCompletedToolCalls(msg);
@@ -543,6 +545,26 @@ class BaseAgentToolCallReplayTest {
         assertEquals(1, out.size());
         assertTrue(out.get(0) instanceof UserMessage);
         assertEquals("hi", ((UserMessage) out.get(0)).getText());
+    }
+
+    @Test
+    @DisplayName("E2E: compression summaries replay as user context, not system instructions")
+    void e2e_compressionSummaryDemotedFromSystem() {
+        TestAgent agent = newTestAgent();
+        MessageEntity entity = new MessageEntity();
+        entity.setId(109L);
+        entity.setRole("system");
+        entity.setContent("[上下文压缩] 请继续执行取消接口，不要声称已完成。");
+        entity.setMetadata("{\"type\":\"compression_summary\",\"compressedCount\":12}");
+        when(agent.conversationService.renderMessageContent(entity)).thenReturn(entity.getContent());
+
+        List<Message> out = agent.callExpand(entity);
+
+        assertEquals(1, out.size());
+        assertTrue(out.get(0) instanceof UserMessage,
+                "compression summaries are model-generated history context and must not become system instructions");
+        assertFalse(out.get(0) instanceof SystemMessage);
+        assertEquals(entity.getContent(), ((UserMessage) out.get(0)).getText());
     }
 
     // ---------- Test scaffold ----------

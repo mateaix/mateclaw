@@ -51,7 +51,7 @@
                   <polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
                 </svg>
               </button>
-              <button class="icon-btn" @click="fetchFiles" :title="t('common.reset')">
+              <button class="icon-btn" @click="refreshFilesAndSelection" :title="t('common.reset')">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
                 </svg>
@@ -385,6 +385,7 @@ const originalContent = ref('')
 const saving = ref(false)
 // 'off' = editor only, 'split' = side-by-side, 'preview' = preview only
 const previewMode = ref<'off' | 'split' | 'preview'>('off')
+let fileLoadRequestId = 0
 
 // 新建文件
 const showNewFileDialog = ref(false)
@@ -479,6 +480,7 @@ onMounted(async () => {
 
 watch(selectedAgentId, () => {
   if (selectedAgentId.value) {
+    fileLoadRequestId += 1
     selectedFile.value = null
     fileContent.value = ''
     originalContent.value = ''
@@ -508,6 +510,32 @@ async function fetchFiles() {
     files.value = res.data || []
   } catch {
     mcToast.error(t('agentContext.loadFailed'))
+  }
+}
+
+async function refreshFilesAndSelection() {
+  await fetchFiles()
+  if (!selectedFile.value) return
+
+  if (isPersonalSelected.value) {
+    await fetchPersonalFiles()
+    const latestPersonal = personalFiles.value.find(file =>
+      file.filename === selectedFile.value?.filename
+      && file.ownerKey === selectedFile.value?.ownerKey)
+    if (latestPersonal) {
+      await onPersonalFileClick(latestPersonal)
+    }
+    return
+  }
+
+  const latest = files.value.find(file => file.filename === selectedFile.value?.filename)
+  if (latest) {
+    await onFileClick(latest)
+  } else {
+    fileLoadRequestId += 1
+    selectedFile.value = null
+    fileContent.value = ''
+    originalContent.value = ''
   }
 }
 
@@ -556,9 +584,17 @@ function handlePreviewClick(e: MouseEvent) {
 }
 
 async function onFileClick(file: WorkspaceFile) {
+  const requestId = ++fileLoadRequestId
+  const agentId = selectedAgentId.value
   selectedFile.value = file
   try {
-    const res: any = await agentContextApi.getFile(selectedAgentId.value, file.filename)
+    const res: any = await agentContextApi.getFile(agentId, file.filename)
+    if (
+      requestId !== fileLoadRequestId
+      || selectedAgentId.value !== agentId
+      || selectedFile.value?.filename !== file.filename
+      || isPersonalSelected.value
+    ) return
     const data = res.data
     fileContent.value = data?.content || ''
     originalContent.value = fileContent.value
@@ -568,12 +604,21 @@ async function onFileClick(file: WorkspaceFile) {
 }
 
 async function onPersonalFileClick(file: WorkspaceFile) {
+  const requestId = ++fileLoadRequestId
+  const agentId = selectedAgentId.value
   selectedFile.value = file
   // Read-only view — markdown preview is the most useful default
   previewMode.value = 'preview'
   try {
     const res: any = await agentContextApi.getPersonalFile(
-      selectedAgentId.value, file.filename, file.ownerKey || '')
+      agentId, file.filename, file.ownerKey || '')
+    if (
+      requestId !== fileLoadRequestId
+      || selectedAgentId.value !== agentId
+      || selectedFile.value?.filename !== file.filename
+      || selectedFile.value?.ownerKey !== file.ownerKey
+      || !isPersonalSelected.value
+    ) return
     fileContent.value = res.data?.content || ''
     originalContent.value = fileContent.value
   } catch {
@@ -631,6 +676,7 @@ async function confirmDeleteFile() {
   try {
     await agentContextApi.deleteFile(selectedAgentId.value, name)
     mcToast.success(t('agentContext.deleteSuccess'))
+    fileLoadRequestId += 1
     selectedFile.value = null
     fileContent.value = ''
     originalContent.value = ''

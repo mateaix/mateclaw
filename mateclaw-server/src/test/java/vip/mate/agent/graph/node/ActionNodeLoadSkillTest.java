@@ -3,8 +3,11 @@ package vip.mate.agent.graph.node;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.messages.AssistantMessage;
+import vip.mate.skill.manifest.SkillManifest;
+import vip.mate.skill.runtime.model.ResolvedSkill;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -91,5 +94,33 @@ class ActionNodeLoadSkillTest {
         assertTrue(ActionNode.extractEnabledToolNames(null).isEmpty());
         assertTrue(ActionNode.extractEnabledToolNames(
                 List.of(call("load_skill", "{\"skillName\":\"pdf\"}"))).isEmpty());
+    }
+
+    @Test
+    @DisplayName("executable skill manifests require action completion")
+    void executableManifestRequiresActionCompletion() {
+        assertTrue(ActionNode.manifestRequiresActionCompletion(
+                SkillManifest.builder().type("mcp").build()));
+        assertTrue(ActionNode.manifestRequiresActionCompletion(
+                SkillManifest.builder().allowedTools(List.of("schedule_meeting")).build()));
+    }
+
+    @Test
+    @DisplayName("prompt-only skill manifests do not require an action")
+    void promptManifestDoesNotRequireActionCompletion() {
+        assertTrue(!ActionNode.manifestRequiresActionCompletion(
+                SkillManifest.builder().type("prompt").build()));
+        assertTrue(!ActionNode.manifestRequiresActionCompletion(null));
+    }
+
+    @Test
+    @DisplayName("legacy executable skill is detected from its resolved script tree")
+    void legacySkillWithScriptsRequiresActionCompletion() {
+        ResolvedSkill skill = ResolvedSkill.builder()
+                .name("tencent-meeting-mcp")
+                .scripts(Map.of("tencent_meeting.py", Map.of("type", "file")))
+                .build();
+
+        assertTrue(ActionNode.resolvedSkillRequiresActionCompletion(skill));
     }
 }

@@ -216,6 +216,22 @@ public final class MateClawStateAccessor {
         return state.<SourceEvidenceLedger>value(SOURCE_EVIDENCE_LEDGER).orElse(SourceEvidenceLedger.empty());
     }
 
+    public ActionExecutionLedger actionExecutionLedger() {
+        return state.<ActionExecutionLedger>value(ACTION_EXECUTION_LEDGER).orElse(ActionExecutionLedger.empty());
+    }
+
+    public boolean actionCompletionRequired() {
+        return state.value(ACTION_COMPLETION_REQUIRED, false);
+    }
+
+    public int actionCompletionRetryCount() {
+        return state.value(ACTION_COMPLETION_RETRY_COUNT, 0);
+    }
+
+    public boolean continueReasoning() {
+        return state.value(CONTINUE_REASONING, false);
+    }
+
     // ===== 审批重放 =====
 
     public String forcedToolCall() {
@@ -521,6 +537,22 @@ public final class MateClawStateAccessor {
 
         public OutputBuilder sourceEvidenceLedger(SourceEvidenceLedger ledger) {
             return put(SOURCE_EVIDENCE_LEDGER, ledger);
+        }
+
+        public OutputBuilder actionExecutionLedger(ActionExecutionLedger ledger) {
+            return put(ACTION_EXECUTION_LEDGER, ledger);
+        }
+
+        public OutputBuilder actionCompletionRequired(boolean required) {
+            return put(ACTION_COMPLETION_REQUIRED, required);
+        }
+
+        public OutputBuilder actionCompletionRetryCount(int count) {
+            return put(ACTION_COMPLETION_RETRY_COUNT, count);
+        }
+
+        public OutputBuilder continueReasoning(boolean shouldContinue) {
+            return put(CONTINUE_REASONING, shouldContinue);
         }
 
         // ---- 审批重放 ----

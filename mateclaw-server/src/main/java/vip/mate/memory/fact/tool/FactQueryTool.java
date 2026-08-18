@@ -27,12 +27,13 @@ public class FactQueryTool {
 
     @Tool(description = "Probe facts about an entity. Returns relevant facts where the entity appears as subject or object.")
     public String fact_probe(
-            @ToolParam(description = "Agent ID") Long agentId,
+            @ToolParam(description = "Agent ID. Must be passed as a string to preserve large integer precision") String agentId,
             @ToolParam(description = "Entity name to search for") String entity) {
         if (!properties.getFact().isProjectionEnabled()) {
             return "Fact projection is disabled.";
         }
-        List<FactEntity> facts = queryService.probe(agentId, entity);
+        Long parsedAgentId = parseAgentId(agentId);
+        List<FactEntity> facts = queryService.probe(parsedAgentId, entity);
         if (facts.isEmpty()) return "No facts found for entity: " + entity;
 
         // Bump use count
@@ -45,11 +46,12 @@ public class FactQueryTool {
 
     @Tool(description = "List unresolved fact contradictions detected during Dream consolidation.")
     public String fact_list_contradictions(
-            @ToolParam(description = "Agent ID") Long agentId) {
+            @ToolParam(description = "Agent ID. Must be passed as a string to preserve large integer precision") String agentId) {
         if (!properties.getFact().isProjectionEnabled()) {
             return "Fact projection is disabled.";
         }
-        List<FactContradictionEntity> contradictions = queryService.listContradictions(agentId);
+        Long parsedAgentId = parseAgentId(agentId);
+        List<FactContradictionEntity> contradictions = queryService.listContradictions(parsedAgentId);
         if (contradictions.isEmpty()) return "No unresolved contradictions.";
 
         return contradictions.stream()
@@ -57,5 +59,17 @@ public class FactQueryTool {
                         c.getId(), c.getFactAId(), c.getFactBId(),
                         c.getDescription() != null ? c.getDescription() : ""))
                 .collect(Collectors.joining("\n"));
+    }
+
+    private static Long parseAgentId(String agentId) {
+        String trimmed = agentId != null ? agentId.trim() : "";
+        if (trimmed.isEmpty()) {
+            throw new IllegalArgumentException("agentId is required");
+        }
+        try {
+            return Long.parseLong(trimmed);
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("agentId must be a numeric string");
+        }
     }
 }

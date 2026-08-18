@@ -52,7 +52,7 @@ class DatasourceToolPostgresqlViewDiscoveryTest {
         DatasourceTool tool = new DatasourceTool(service, connectionManager, JsonMapper.builder().build());
 
         // When the agent asks MateClaw to discover available relations.
-        String output = tool.query_datasource("list_tables", 1L, null);
+        String output = tool.query_datasource("list_tables", "1", null);
 
         // Then the metadata query must include views and return the discovered view.
         ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);

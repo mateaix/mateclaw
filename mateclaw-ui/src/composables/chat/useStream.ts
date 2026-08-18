@@ -27,6 +27,9 @@ export type SSEEventType =
   | 'tool_approval_resolved'
   // 恢复/警告事件
   | 'warning'
+  // Producer-assigned content semantics of the span that just closed its
+  // completion (pre_tool_narration / grounded_narration / final_answer)
+  | 'segment_kind'
   // Interrupt + Queue 事件
   | 'heartbeat'
   | 'turn_interrupt_requested'
@@ -127,6 +130,12 @@ export interface UseStreamReturn {
   disconnect: () => void
   /** 中止请求 */
   abort: () => void
+  /**
+   * Atomically clear seen-event-id dedup and the Last-Event-ID echo. Call
+   * before a reconnect that rebuilds from an empty placeholder and needs the
+   * server's full buffer replay accepted.
+   */
+  resetDedup: () => void
   /** 注册事件处理器 */
   on: (event: SSEEventType, handler: (data: any) => void) => () => void
   /** 注册所有事件处理器 */
@@ -471,6 +480,19 @@ export function useStream(options: UseStreamOptions): UseStreamReturn {
     }
   }
 
+  /**
+   * Atomically clear ALL dedup state (seen event ids + Last-Event-ID echo).
+   * Call before a reconnect that rebuilds the transcript from an empty
+   * placeholder and therefore wants the server's FULL buffer replay.
+   * The two halves must reset together: clearing only lastEventId makes the
+   * server replay everything while seenEventIds silently drops everything —
+   * the "blank transcript after switching into a running conversation" bug.
+   */
+  const resetDedup = () => {
+    seenEventIds.clear()
+    lastEventId.value = null
+  }
+
   // 断开连接
   const disconnect = () => {
     if (streamTimeoutTimer) {
@@ -517,6 +539,7 @@ export function useStream(options: UseStreamOptions): UseStreamReturn {
     connect,
     disconnect,
     abort,
+    resetDedup,
     on,
     onEvent,
   }

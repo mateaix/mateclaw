@@ -23,7 +23,7 @@
 
     <properties>
         <!-- MateClaw release version shared by all Maven modules. -->
-        <revision>2.0.0</revision>
+        <revision>2.1.0</revision>
 
         <!-- Java -->
         <java.version>21</java.version>
@@ -51,7 +51,7 @@
 
         <!-- Browser automation and WebSocket runtime -->
         <zxing.version>3.5.4</zxing.version>
-        <playwright.version>1.59.0</playwright.version>
+        <playwright.version>1.62.0</playwright.version>
         <tyrus.version>2.2.2</tyrus.version>
 
         <!-- Document, wiki, and rendering toolchain -->

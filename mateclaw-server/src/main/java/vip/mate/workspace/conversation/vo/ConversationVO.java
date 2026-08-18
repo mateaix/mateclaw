@@ -45,6 +45,9 @@ public class ConversationVO extends ConversationEntity {
      */
     private String source;
 
+    /** Stable product classification; independent from the display title. */
+    private String conversationKind;
+
     /**
      * 工厂方法：从实体构建 VO，补充 agentName/agentIcon/status
      *
@@ -65,6 +68,8 @@ public class ConversationVO extends ConversationEntity {
         vo.setLastMessage(entity.getLastMessage());
         vo.setLastActiveTime(entity.getLastActiveTime());
         vo.setWorkspaceId(entity.getWorkspaceId());
+        vo.setParentConversationId(entity.getParentConversationId());
+        vo.setConversationKind(extractConversationKind(entity));
         vo.setPinned(entity.getPinned() != null ? entity.getPinned() : 0);
         vo.setArchived(entity.getArchived() != null ? entity.getArchived() : 0);
         vo.setModelProvider(entity.getModelProvider());
@@ -88,6 +93,21 @@ public class ConversationVO extends ConversationEntity {
         // 从 conversationId 提取消息来源
         vo.setSource(extractSource(entity.getConversationId()));
         return vo;
+    }
+
+    private static String extractConversationKind(ConversationEntity entity) {
+        String id = entity.getConversationId();
+        if ("team_worker".equals(entity.getConversationKind())) {
+            return "team_worker";
+        }
+        if (id != null && id.startsWith("team-task-")) {
+            return "team_worker";
+        }
+        if ("cron".equals(extractSource(id))) {
+            return "scheduled";
+        }
+        return entity.getConversationKind() == null || entity.getConversationKind().isBlank()
+                ? "primary" : entity.getConversationKind();
     }
 
     private static String extractSource(String conversationId) {

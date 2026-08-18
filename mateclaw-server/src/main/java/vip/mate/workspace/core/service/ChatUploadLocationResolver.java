@@ -17,14 +17,19 @@ import vip.mate.workspace.core.model.WorkspaceEntity;
 import vip.mate.workspace.conversation.model.ConversationEntity;
 import vip.mate.workspace.conversation.repository.ConversationMapper;
 
+import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Duration;
+import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 /**
  * Resolves the on-disk root directory where a conversation's chat attachments
@@ -50,6 +55,13 @@ import java.util.Set;
  * resolvable and cleanable. Writes always target a single root returned by
  * {@link #resolveUploadRoot(String)}.
  *
+ * <h3>Date folders</h3>
+ * When {@link ChatUploadProperties#isDateFolders()} is on (default), writes go
+ * through {@link #resolveWriteDir(String)} which appends a {@code yyyy-MM-dd}
+ * level under the conversation dir. Serving URLs stay flat; read paths probe
+ * both layouts via {@link #findInConversationDir(Path, String)} /
+ * {@link #dateScanDirs(Path)}.
+ *
  * <p>The {@code conversationId → ConversationEntity} lookup is cached for 5
  * minutes (the mapping is immutable once a conversation exists), matching the
  * TTL of the existing {@code WorkspaceLookupCache} on the tool-call hot path.
@@ -62,6 +74,14 @@ public class ChatUploadLocationResolver {
 
     /** Sub-directory appended under a configured base path. */
     public static final String UPLOAD_SUBDIR = "chat-uploads";
+
+    /**
+     * Shape of the per-day sub-directory name inserted under a conversation dir
+     * when {@link ChatUploadProperties#isDateFolders()} is on. Anchored so read
+     * paths can distinguish date levels from ordinary sub-directories (e.g. the
+     * office-preview cache dir) when probing.
+     */
+    private static final Pattern DATE_DIR = Pattern.compile("\\d{4}-\\d{2}-\\d{2}");
 
     /**
      * Turn a business conversation id into a filesystem-safe path segment.
@@ -87,11 +107,109 @@ public class ChatUploadLocationResolver {
     }
 
     /**
-     * The single conversation attachment directory (write target):
-     * {@code {uploadRoot}/{sanitizeSegment(conversationId)}/}.
+     * The conversation's attachment root directory:
+     * {@code {uploadRoot}/{sanitizeSegment(conversationId)}/}. This is the
+     * <em>root</em> of the conversation's files — writers must go through
+     * {@link #resolveWriteDir(String)} instead, which appends the per-day
+     * sub-directory when date folders are enabled.
      */
     public Path resolveConversationDir(String conversationId) {
         return resolveUploadRoot(conversationId).resolve(sanitizeSegment(conversationId));
+    }
+
+    /**
+     * The directory new attachments and generated media must be written into:
+     * {@code {conversationDir}/yyyy-MM-dd/} when date folders are enabled, else
+     * the flat {@code {conversationDir}/}. The directory is not created here —
+     * callers keep their existing {@code Files.createDirectories(dir)}.
+     */
+    public Path resolveWriteDir(String conversationId) {
+        Path conversationDir = resolveConversationDir(conversationId);
+        return properties.isDateFolders()
+                ? conversationDir.resolve(LocalDate.now().toString())
+                : conversationDir;
+    }
+
+    /**
+     * Directories a read path must scan to see every file of a conversation
+     * dir: the flat dir itself first (legacy layout + date-folders-off writes),
+     * then each {@code yyyy-MM-dd} sub-directory, newest first. Static so the
+     * tool-side resolver (no Spring context) can share the exact probing rule.
+     *
+     * @param conversationDir a single conversation attachment root
+     * @return ordered scan list; just {@code [conversationDir]} when it has no
+     *         date sub-directories (or doesn't exist)
+     */
+    public static List<Path> dateScanDirs(Path conversationDir) {
+        List<Path> dirs = new ArrayList<>();
+        dirs.add(conversationDir);
+        if (!Files.isDirectory(conversationDir)) {
+            return dirs;
+        }
+        try (var stream = Files.list(conversationDir)) {
+            stream.filter(Files::isDirectory)
+                    .filter(p -> DATE_DIR.matcher(p.getFileName().toString()).matches())
+                    .sorted(Comparator.comparing((Path p) -> p.getFileName().toString()).reversed())
+                    .forEach(dirs::add);
+        } catch (IOException e) {
+            log.warn("[ChatUpload] Failed to list date sub-directories of {}: {}",
+                    conversationDir, e.getMessage());
+        }
+        return dirs;
+    }
+
+    /**
+     * Traversal-guarded lookup of a stored file under one conversation dir,
+     * probing the flat layout first and then each date sub-directory (newest
+     * first). {@code storedName} must be a bare file name — every write path
+     * produces one, and anything carrying a path separator, a root, or
+     * {@code ..} is rejected outright rather than normalized, so no probe can
+     * leave the scan dir it was resolved against. The root check matters on
+     * Windows: {@code Path.resolve} discards the base for a rooted argument, so
+     * a drive-relative name like {@code C:evil.txt} would otherwise escape (it
+     * is not {@code isAbsolute()}). The {@code startsWith} assertion after
+     * resolution keeps the guarantee platform-independent. Returns {@code null}
+     * when absent or rejected.
+     */
+    public static Path findInConversationDir(Path conversationDir, String storedName) {
+        if (storedName == null || storedName.isBlank()) {
+            return null;
+        }
+        Path fileName;
+        try {
+            fileName = Paths.get(storedName);
+        } catch (InvalidPathException e) {
+            // Illegal on this filesystem (e.g. '*' or ':' on Windows) — no
+            // stored file could carry that name here.
+            return null;
+        }
+        if (fileName.getRoot() != null || fileName.getNameCount() != 1 || "..".equals(storedName)) {
+            return null;
+        }
+        Path normDir = conversationDir.normalize();
+        for (Path scanDir : dateScanDirs(normDir)) {
+            Path candidate = scanDir.resolve(fileName);
+            if (candidate.startsWith(scanDir) && Files.isRegularFile(candidate)) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Resolve a stored file across every candidate conversation dir
+     * (workspace-scoped + legacy default, sanitized + raw id) and both layouts
+     * (flat + date sub-directories). The single entry point for serving /
+     * download paths; returns {@code null} when no candidate holds the file.
+     */
+    public Path resolveExistingFile(String conversationId, String storedName) {
+        for (Path conversationDir : resolveCandidateConversationDirs(conversationId)) {
+            Path found = findInConversationDir(conversationDir, storedName);
+            if (found != null) {
+                return found;
+            }
+        }
+        return null;
     }
 
     /**

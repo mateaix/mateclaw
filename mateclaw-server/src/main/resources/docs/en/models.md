@@ -508,6 +508,19 @@ If you're on DashScope, here's the rough shape of the lineup:
 
 ---
 
+## Per-model context windows (2.1.0+)
+
+MateClaw no longer treats every model as a global 128K window. Runtime resolution follows **operator override → live local-model probe or provider limit-error cache → built-in model catalog → the existing global fallback**. To avoid I/O, model-list rendering shows only override or catalog values; unknown models still use the caller's global default. The result budgets system prompts, memory, Wiki context, history, and tool schemas.
+
+- known models, including GLM-5V-Turbo and Kimi coding aliases, use catalogued windows;
+- custom/private models can declare an accurate maximum input-token count in model management;
+- the API is `PUT /api/v1/models/{providerId}/models/context-window` with `modelId` and `maxInputTokens`; null or non-positive clears the override;
+- workspace members reading provider binding choices receive only id/display name, never keys or connection settings.
+
+The OpenAI-compatible path also preserves `integer` / `number` in tool JSON Schemas. Only non-reserved top-level `generateKwargs` entries pass through to the request body; temperature, token limits, `topP`, `reasoningEffort`, search, headers, and path keys use one consistent reserved-key reader. Unknown nested `chatOptions` keys are not forwarded, and `reasoningEffort` is sent only to explicitly supported model families.
+
+---
+
 ## Next
 
 - [Configuration](./config) — full config reference

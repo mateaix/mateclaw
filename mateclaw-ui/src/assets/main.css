@@ -39,6 +39,12 @@
   --mc-bg-elevated: #ffffff;
   --mc-bg-sunken: #ebe3db;
   --mc-bg-muted: #f1e8df;
+  /* Hover wash for icon buttons and list rows. Consumers write
+     `background: var(--mc-bg-hover)` with no literal fallback, and an
+     undefined custom property makes the whole declaration compute to the
+     property's initial value — transparent — so a missing definition here
+     silently erases the element's background instead of leaving it alone. */
+  --mc-bg-hover: #ebe3db;
   --mc-surface-strong: #fdfaf6;
   --mc-surface-overlay: rgba(255, 255, 255, 0.72);
   --mc-panel-top: rgba(255, 255, 255, 0.94);
@@ -166,6 +172,7 @@ html.dark {
   --mc-bg-elevated: #221a16;
   --mc-bg-sunken: #2a211c;
   --mc-bg-muted: #201813;
+  --mc-bg-hover: #2a211c;
   --mc-surface-strong: #2a201a;
   --mc-surface-overlay: rgba(34, 26, 22, 0.78);
   --mc-panel-top: rgba(36, 28, 24, 0.96);
@@ -1000,6 +1007,40 @@ html.dark .hljs-deletion { color: #e06c75; background: rgba(224, 108, 117, 0.1);
 
 .markdown-body p { margin: 8px 0; }
 .markdown-body ul, .markdown-body ol { padding-left: 1.5rem; margin: 8px 0; }
+
+/* Compact layout for assistant delivery/results. These rules are global on
+   purpose: the rendered Markdown is injected with v-html, so component-scoped
+   selectors cannot reliably win against the shared document typography. */
+.markdown-body.compact-markdown {
+  line-height: 1.5;
+}
+.markdown-body.compact-markdown p {
+  margin: 0 0 6px !important;
+}
+.markdown-body.compact-markdown p:empty,
+.markdown-body.compact-markdown p:has(br:only-child) {
+  display: none;
+}
+.markdown-body.compact-markdown h1,
+.markdown-body.compact-markdown h2,
+.markdown-body.compact-markdown h3,
+.markdown-body.compact-markdown h4,
+.markdown-body.compact-markdown h5,
+.markdown-body.compact-markdown h6 {
+  margin: 12px 0 6px !important;
+  line-height: 1.35;
+}
+.markdown-body.compact-markdown ul,
+.markdown-body.compact-markdown ol {
+  margin: 6px 0 !important;
+}
+.markdown-body.compact-markdown li {
+  margin: 2px 0;
+  line-height: 1.5;
+}
+.markdown-body.compact-markdown li > p {
+  margin: 0 !important;
+}
 .markdown-body table {
   border-collapse: collapse;
   /* display:block + overflow-x:auto turns a wide table into its own horizontal

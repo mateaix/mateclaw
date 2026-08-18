@@ -494,7 +494,7 @@ Scan reports live in `Settings → Security & Approval → Skill Scans`.
 | **Disable H2 console** | `spring.h2.console.enabled=false` in production |
 | **Firewall** | Only expose the public port |
 | **Rate limiting** | Configure at the reverse proxy level |
-| **MySQL, not H2** | Use a dedicated MySQL 8 instance for production |
+| **Production database, not H2** | Follow the public Docker stack with PostgreSQL 16, or use a dedicated MySQL 8 / KingbaseES instance |
 
 ### Nginx reverse proxy example
 

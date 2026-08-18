@@ -25,11 +25,14 @@ import static org.mockito.Mockito.*;
 /**
  * Sync-path narration routing for non-streaming IM adapters.
  *
- * <p>Per-iteration narration deltas ({@code segmentOnly}) must be relayed as
- * standalone messages the moment they arrive and stay out of the accumulated
- * final reply — otherwise multiple iterations glue into a wall of text and
- * the persisted assistant message pollutes the next turn's LLM history with
- * unanswered stated intents (issue #120).
+ * <p>Per-iteration narration deltas ({@code segmentOnly}) are relayed as
+ * standalone messages and stay out of the accumulated final reply — otherwise
+ * multiple iterations glue into a wall of text and the persisted assistant
+ * message pollutes the next turn's LLM history with unanswered stated intents
+ * (issue #120). Publishing lags one narration behind through the shared
+ * provisional-content tracker: messages on this path are permanent, so a
+ * pre-tool rehearsal (possibly a fabricated result table) must be dropped
+ * once later content supersedes it instead of reaching the user verbatim.
  */
 class ChannelMessageRouterNarrationTest {
 
@@ -98,6 +101,61 @@ class ChannelMessageRouterNarrationTest {
         verify(f.adapter).renderAndSend("reply-1", "今天晴。");
         f.verifyPersistedAssistantContent("今天晴。");
         f.verifyNoProcessingError();
+    }
+
+    @Test
+    @DisplayName("kind-tagged pre-tool rehearsal is dropped once a grounded answer exists")
+    void preToolRehearsalDroppedForGroundedAnswer() throws Exception {
+        Fixture f = new Fixture();
+        String rehearsal = "环境监测结果：温度 29.0°C，湿度 63.0%。";
+        f.streamReturns(
+                StreamDelta.segmentOnly(rehearsal, null, vip.mate.agent.ContentKind.PRE_TOOL_NARRATION),
+                StreamDelta.event("tool_call_completed",
+                        java.util.Map.of("toolCallId", "t1", "toolName", "envQuery",
+                                "result", "data={}", "success", true)),
+                StreamDelta.persistOnly("接口返回为空，所有会议室均无环境数据。", null));
+
+        f.process("各会议室的环境情况");
+
+        verify(f.adapter, never()).renderAndSend("reply-1", rehearsal);
+        verify(f.adapter).renderAndSend("reply-1", "接口返回为空，所有会议室均无环境数据。");
+        f.verifyPersistedAssistantContent("接口返回为空，所有会议室均无环境数据。");
+        f.verifyNoProcessingError();
+    }
+
+    @Test
+    @DisplayName("kind-tagged pre-tool narration still goes out when the turn produced no answer")
+    void preToolNarrationKeptWhenNoAnswer() throws Exception {
+        Fixture f = new Fixture();
+        f.streamReturns(
+                StreamDelta.segmentOnly("我先调用工具查询状态：", null,
+                        vip.mate.agent.ContentKind.PRE_TOOL_NARRATION),
+                StreamDelta.event("tool_call_completed",
+                        java.util.Map.of("toolCallId", "t1", "toolName", "q",
+                                "result", "x", "success", true)));
+
+        f.process("查一下状态");
+
+        verify(f.adapter).renderAndSend("reply-1", "我先调用工具查询状态：");
+    }
+
+    @Test
+    @DisplayName("untagged narration is dropped when a tool ran after it and later content followed")
+    void untaggedNarrationDroppedAfterObservation() throws Exception {
+        Fixture f = new Fixture();
+        f.streamReturns(
+                StreamDelta.segmentOnly("我先查一下天气", null),
+                StreamDelta.event("tool_call_completed",
+                        java.util.Map.of("toolCallId", "t1", "toolName", "weather",
+                                "result", "晴", "success", true)),
+                StreamDelta.segmentOnly("查到了，整理结果", null),
+                StreamDelta.persistOnly("今天晴。", null));
+
+        f.process("帮我查天气");
+
+        verify(f.adapter, never()).renderAndSend("reply-1", "我先查一下天气");
+        verify(f.adapter).renderAndSend("reply-1", "查到了，整理结果");
+        verify(f.adapter).renderAndSend("reply-1", "今天晴。");
     }
 
     @Test

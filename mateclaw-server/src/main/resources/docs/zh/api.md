@@ -337,7 +337,7 @@ curl -X POST http://localhost:18088/api/v1/agents \
 
 `MessageVO` 关键字段：`id`、`role`、`content`、`toolName`、`status`、`metadata`（对象，含 toolCalls 等）、`promptTokens` / `completionTokens`、`runtimeModel` / `runtimeProvider`、`contentParts`、`createTime`。
 
-**会话级操作**：`PUT .../title`（重命名）、`PUT .../pin`（置顶 `{pinned:bool}`）、`PUT .../model`（切换模型 `{modelProvider, modelName}`）、`DELETE .../messages`（清空消息保留会话）、`DELETE .../{conversationId}`（删除会话）、`POST /batch-delete`（`{conversationIds: [...]}`）、`GET .../status`（查流状态 `{streamStatus}`）。
+**会话级操作**：`PUT .../title`（重命名）、`PUT .../pin`（置顶 `{pinned:bool}`）、`PUT .../model`（切换模型 `{modelProvider, modelName}`）、`DELETE .../messages`（清空消息保留会话）、`DELETE .../{conversationId}`（删除会话）、`POST /batch-delete`（`{conversationIds: [...]}`，去重后最多 200 个）、`GET .../status`（查流状态 `{streamStatus}`）、`GET .../trajectory`（按 segment 发射顺序导出纯文本轨迹）。
 
 > 所有操作都先校验 `isConversationOwner(conversationId, username)`，非归属者返回 403。
 
@@ -350,6 +350,7 @@ curl -X POST http://localhost:18088/api/v1/agents \
 - `GET /api/v1/models/default` — 全局默认模型（`R<ModelConfigEntity>`）。
 - `GET /api/v1/models/active` — 当前激活模型 `{activeLlm: {provider, modelName}}`。
 - `PUT /api/v1/models/active` — 设置激活模型。
+- `PUT /api/v1/models/{providerId}/models/context-window` — global admin 设置某个 `modelId` 的 `maxInputTokens`；传 `null` 或非正数清除覆盖。
 
 ### 审计事件（分页示范）
 
@@ -440,6 +441,20 @@ curl -X PUT "http://localhost:18088/api/v1/auth/users/1/password?oldPassword=adm
 | `PUT` | `/api/v1/conversations/{conversationId}/pin` | `置顶或取消置顶会话` |
 | `GET` | `/api/v1/conversations/{conversationId}/status` | `获取会话流状态` |
 | `PUT` | `/api/v1/conversations/{conversationId}/title` | `重命名会话` |
+| `GET` | `/api/v1/conversations/{conversationId}/trajectory` | `导出会话轨迹（纯文本，会话所有者）` |
+
+### Team Runs（2.1.0+）
+
+| 方法 | 路径 | 用途 / handler |
+|---|---|---|
+| `GET` | `/api/v1/team-runs/{runId}` | `读取一个 Team Run（viewer+）` |
+| `POST` | `/api/v1/team-runs/{runId}/cancel` | `取消整轮运行，可选 {reason}（admin）` |
+| `GET` | `/api/v1/teams/{teamId}/runs` | `列出团队运行，可选 activeOnly（viewer+）` |
+| `GET` | `/api/v1/teams/{teamId}/runs/page` | `按 cursor / limit 分页列出团队运行，可选 activeOnly（viewer+）` |
+| `GET` | `/api/v1/conversations/{conversationId}/team-runs` | `列出 Lead 会话关联运行（viewer+）` |
+| `GET` | `/api/v1/conversations/{conversationId}/team-runs/page` | `按 cursor / limit 分页列出会话运行（viewer+）` |
+
+所有接口都按当前工作空间校验（`X-Workspace-Id` 省略时沿用默认工作空间 1）；Snowflake id 在前端/API 消费侧应按字符串处理。
 
 ### Agent
 
@@ -628,6 +643,7 @@ curl -X PUT "http://localhost:18088/api/v1/auth/users/1/password?oldPassword=adm
 | `POST` | `/api/v1/models/{providerId}/disable` | `禁用 Provider（如其下模型为当前默认会自动切换）` |
 | `POST` | `/api/v1/models/{providerId}/discover` | `发现远端模型` |
 | `POST` | `/api/v1/models/{providerId}/discover/apply` | `批量添加发现的模型` |
+| `PUT` | `/api/v1/models/{providerId}/models/context-window` | `设置/清除单模型最大输入 token（global admin）` |
 | `POST` | `/api/v1/models/{providerId}/enable` | `启用 Provider` |
 | `DELETE` | `/api/v1/models/{providerId}/models` | `从 Provider 删除模型` |
 | `POST` | `/api/v1/models/{providerId}/models` | `向 Provider 添加模型` |
@@ -711,6 +727,19 @@ curl -X PUT "http://localhost:18088/api/v1/auth/users/1/password?oldPassword=adm
 | `GET` | `/api/v1/skills/curator/reports/{runId}` | `读取某次 curator 运行报告` |
 | `POST` | `/api/v1/skills/curator/resume` | `恢复 curator 定时扫描` |
 | `GET` | `/api/v1/skills/curator/status` | `curator 控制面状态` |
+| `POST` | `/api/v1/skills/curator/consolidate` | `开启/关闭 curator 合并去重 pass` |
+| `GET` | `/api/v1/skills/curator/managed` | `列出已纳入自治治理的技能` |
+| `GET` | `/api/v1/skills/curator/unmanaged` | `列出未纳入自治治理的技能` |
+| `POST` | `/api/v1/skills/curator/adopt` | `批量把技能移交自治治理；请求体为字符串 id 数组` |
+| `POST` | `/api/v1/skills/curator/release` | `批量把技能归还用户所有；请求体为字符串 id 数组` |
+| `GET` | `/api/v1/skills/curator/snapshots` | `列出当前工作空间最近的还原点` |
+| `POST` | `/api/v1/skills/curator/snapshots` | `手动捕获还原点，可选 reason` |
+| `POST` | `/api/v1/skills/curator/snapshots/{snapshotId}/restore` | `回滚技能库到还原点` |
+| `GET` | `/api/v1/skills/routines` | `列出高频请求候选` |
+| `POST` | `/api/v1/skills/routines/mine` | `立即运行一次重复请求挖掘` |
+| `POST` | `/api/v1/skills/routines/{id}/dismiss` | `忽略候选` |
+| `POST` | `/api/v1/skills/routines/{id}/reopen` | `重新观察候选` |
+| `POST` | `/api/v1/skills/routines/{id}/promote` | `立即晋升候选，跳过频次门槛` |
 | `GET` | `/api/v1/skills/enabled` | `获取已启用技能列表` |
 | `POST` | `/api/v1/skills/install/cancel/{taskId}` | `取消安装任务` |
 | `GET` | `/api/v1/skills/install/hub/search` | `搜索 ClawHub 市场` |

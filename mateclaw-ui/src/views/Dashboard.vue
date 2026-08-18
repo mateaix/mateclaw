@@ -223,6 +223,7 @@ const recentRuns = ref<any[]>([])
 const trendData = ref<any[]>([])
 const chartRef = ref<HTMLElement | null>(null)
 let chartInstance: echarts.ECharts | null = null
+let chartResizeObserver: ResizeObserver | null = null
 
 const todayStats = reactive({
   conversations: 0,
@@ -313,12 +314,21 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
-  chartInstance?.dispose()
+  disposeChart()
 })
+
+function disposeChart() {
+  chartResizeObserver?.disconnect()
+  chartResizeObserver = null
+  if (chartInstance && !chartInstance.isDisposed()) {
+    chartInstance.dispose()
+  }
+  chartInstance = null
+}
 
 function renderChart() {
   if (!chartRef.value) return
-  chartInstance = echarts.init(chartRef.value)
+  chartInstance = echarts.getInstanceByDom(chartRef.value) || echarts.init(chartRef.value)
 
   const dates = trendData.value.map((d: any) => d.date?.slice(5) || '') // MM-DD
   const messages = trendData.value.map((d: any) => d.messages || 0)
@@ -385,8 +395,14 @@ function renderChart() {
   })
 
   // Responsive resize
-  const ro = new ResizeObserver(() => chartInstance?.resize())
-  ro.observe(chartRef.value!)
+  if (!chartResizeObserver) {
+    chartResizeObserver = new ResizeObserver(() => {
+      if (chartInstance && !chartInstance.isDisposed()) {
+        chartInstance.resize()
+      }
+    })
+    chartResizeObserver.observe(chartRef.value)
+  }
 }
 
 watch(locale, () => {

@@ -17,6 +17,19 @@ export interface GeneratedFileRef {
   url?: string
 }
 
+/** Accept only browser-safe external URLs or absolute same-origin paths. */
+export function isSafeFileUrl(value: unknown): value is string {
+  if (typeof value !== 'string' || !value || /[\u0000-\u001f\u007f]/.test(value)) return false
+  if (value.startsWith('/')) return !value.startsWith('//')
+  if (!/^https?:\/\//i.test(value)) return false
+  try {
+    const url = new URL(value)
+    return (url.protocol === 'http:' || url.protocol === 'https:') && !!url.hostname
+  } catch {
+    return false
+  }
+}
+
 /** Build an id → display-name map from `metadata.generatedFiles`. */
 export function buildGeneratedFileNameMap(files: unknown): Map<string, string> {
   const names = new Map<string, string>()

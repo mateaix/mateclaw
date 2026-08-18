@@ -276,7 +276,9 @@ Every turn, MateClaw builds the prompt that actually goes to the LLM. Roughly:
 4. **Recent turns** — as many as fit in the token budget
 5. **Current user message** — always last
 
-When the total exceeds `defaultMaxInputTokens × compactTriggerRatio` (default 128000 × 0.75 = 96000), the system calls the LLM to summarize earlier turns, caches the result for 30 minutes, and sends a compact version. If the LLM still returns a `context_length_exceeded` error, emergency trimming kicks in: discard older messages without calling the LLM, keep the last two turns.
+The window comes from the model itself: the model config's `maxInputTokens` first, then a window probed from a local inference server, then the built-in table of known model windows (DeepSeek V4, Gemini, Claude, Kimi K2, …). Only when all three come up empty does it fall back to the global `defaultMaxInputTokens`.
+
+When the total exceeds `window × compactTriggerRatio` (global default 128000 × 0.75 = 96000), the system calls the LLM to summarize earlier turns, caches the result for 30 minutes, and sends a compact version. If the LLM still returns a `context_length_exceeded` error, emergency trimming kicks in: discard older messages without calling the LLM, keep the last two turns.
 
 More detail, plus the security rationale for injecting summaries as `UserMessage` rather than `SystemMessage`, is in [Memory](./memory).
 
@@ -381,6 +383,25 @@ curl http://localhost:18088/api/v1/conversations/conv-abc123/messages \
 curl -X DELETE http://localhost:18088/api/v1/conversations/conv-abc123 \
   -H "Authorization: Bearer YOUR_JWT_TOKEN"
 ```
+
+---
+
+## Thinking visibility and linear trajectories (2.1.0+)
+
+2.1.0 turns thinking from one ambiguous block into segments ordered by execution:
+
+- inline `<think>` content is extracted live and kept separate from the final answer;
+- each ReAct iteration stays where it occurred, so tool calls and observations do not drift into the next round;
+- wall-clock start/end times produce real duration and phase feedback;
+- Workspace admins use “Show thinking” to control rendering and “Show all iterations” to switch between every round and only the answer-producing round;
+- `mate.agent.reasoning.retention=all|terminal` controls server-side persistence;
+- a conversation owner can request `GET /api/v1/conversations/{conversationId}/trajectory` for a plain-text export of user input, reasoning, tool calls, observations, and the final answer in execution order. Durations come from segment bounds and appear in the UI; the current text export does not include them.
+
+Provisional narration before a tool call becomes `superseded` when real output arrives. The current chat UI renders it inline, while trajectory output preserves it with `content superseded="true"`. Intermediate Team Run announcements fold into the run card instead of becoming repeated final replies.
+
+### Batch conversation deletion
+
+Sessions can batch-delete up to 200 selected conversations. The server deduplicates ids, checks ownership per item, and deletes only conversations the current user may operate. `team_worker` conversations stay out of the normal sidebar, so they do not appear in sidebar batch selection.
 
 ---
 

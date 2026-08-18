@@ -8,17 +8,18 @@ import java.nio.ByteOrder;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Pinned behaviour for the WAV → raw-PCM helper.
  *
- * <p>Why this matters: DashScope's realtime ASR rejects bare WAV with
- * "format mismatch" because the first 44 bytes look like garbage when
- * interpreted as PCM. {@link WavPcmExtractor} is the chokepoint that
- * converts the frontend's WAV blob to the bytes DashScope actually wants.
- * Wrong header offset → silent garbage transcripts; wrong sample-rate read
- * → audibly distorted.
+ * <p>Why this matters: the peak/RMS silence pre-check reads raw samples off
+ * the frontend's WAV blob before any recognition call is made. A wrong
+ * header offset would feed header bytes into the PCM math and misreport
+ * silence vs signal; a wrong sample-rate read would break any consumer
+ * that needs the true capture rate.
  */
 class WavPcmExtractorTest {
 
@@ -47,6 +48,19 @@ class WavPcmExtractorTest {
     void extract_rejectsTooShort() {
         assertThrows(IllegalArgumentException.class, () -> WavPcmExtractor.extract(new byte[10]));
         assertThrows(IllegalArgumentException.class, () -> WavPcmExtractor.extract(null));
+    }
+
+    @Test
+    @DisplayName("isCanonicalWav accepts PCM16 mono and rejects non-canonical WAV layouts")
+    void isCanonicalWav_gates() {
+        assertTrue(WavPcmExtractor.isCanonicalWav(buildWav(16_000, 16, new byte[8])));
+        byte[] stereo = buildWav(16_000, 16, new byte[8]);
+        ByteBuffer.wrap(stereo).order(ByteOrder.LITTLE_ENDIAN).putShort(22, (short) 2);
+        assertFalse(WavPcmExtractor.isCanonicalWav(stereo));
+        assertFalse(WavPcmExtractor.isCanonicalWav(buildWav(16_000, 24, new byte[8])));
+        assertFalse(WavPcmExtractor.isCanonicalWav(new byte[64]));       // no magic
+        assertFalse(WavPcmExtractor.isCanonicalWav(new byte[10]));       // too short
+        assertFalse(WavPcmExtractor.isCanonicalWav(null));
     }
 
     @Test

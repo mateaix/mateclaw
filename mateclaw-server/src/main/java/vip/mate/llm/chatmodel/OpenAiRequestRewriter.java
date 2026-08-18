@@ -5,6 +5,7 @@ import org.springframework.ai.openai.api.OpenAiApi;
 import vip.mate.llm.model.ModelFamily;
 import vip.mate.llm.model.ModelProviderEntity;
 
+import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -22,12 +23,96 @@ import java.util.Map;
  * <p>The rewrites exist because OpenAI-compatible providers diverge in ways
  * Spring AI's {@code OpenAiChatOptions} cannot express — reasoning-content
  * replay contracts, reasoning-effort acceptance, strict tool-choice validation,
- * video media encoding, and Kimi's built-in web search tool.
+ * JSON Schema number preservation, video media encoding, and Kimi's built-in
+ * web search tool.
  */
 @Slf4j
 final class OpenAiRequestRewriter {
 
     private OpenAiRequestRewriter() {}
+
+    // ==================== tool schema number preservation ====================
+
+    /**
+     * Keep integral JSON Schema values numeric on the OpenAI wire.
+     *
+     * <p>Spring AI parses every tool's schema string into a nested {@link Map}.
+     * Values beyond {@link Integer#MAX_VALUE} consequently become {@link Long}s.
+     * MateClaw's application-wide Jackson configuration intentionally serializes
+     * {@code Long} as strings to protect Snowflake IDs from JavaScript precision
+     * loss, but that policy must not leak into protocol metadata: providers reject
+     * schemas such as {@code "maximum":"9007199254740991"} because JSON Schema
+     * requires {@code maximum} to be a number.
+     *
+     * <p>Replace Long values inside tool parameter schemas with numerically
+     * equivalent {@link BigInteger}s. Jackson still emits those as JSON numbers,
+     * while the global Long-to-string policy remains intact for application DTOs.
+     */
+    static OpenAiApi.ChatCompletionRequest preserveToolSchemaNumbers(
+            OpenAiApi.ChatCompletionRequest request) {
+        if (request.tools() == null || request.tools().isEmpty()) {
+            return request;
+        }
+
+        boolean changed = false;
+        List<OpenAiApi.FunctionTool> tools = new ArrayList<>(request.tools().size());
+        for (OpenAiApi.FunctionTool tool : request.tools()) {
+            if (tool == null || tool.getFunction() == null
+                    || tool.getFunction().getParameters() == null) {
+                tools.add(tool);
+                continue;
+            }
+
+            Object normalized = preserveSchemaNumber(tool.getFunction().getParameters());
+            if (normalized == tool.getFunction().getParameters()) {
+                tools.add(tool);
+                continue;
+            }
+
+            OpenAiApi.FunctionTool.Function original = tool.getFunction();
+            @SuppressWarnings("unchecked")
+            Map<String, Object> parameters = (Map<String, Object>) normalized;
+            OpenAiApi.FunctionTool.Function function = new OpenAiApi.FunctionTool.Function(
+                    original.getDescription(), original.getName(), parameters, original.getStrict());
+            tools.add(new OpenAiApi.FunctionTool(tool.getType(), function));
+            changed = true;
+        }
+
+        return changed ? rebuildWithTools(request, tools) : request;
+    }
+
+    private static Object preserveSchemaNumber(Object value) {
+        if (value instanceof Long number) {
+            return BigInteger.valueOf(number);
+        }
+        if (value instanceof Map<?, ?> map) {
+            Map<Object, Object> copy = null;
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                Object normalized = preserveSchemaNumber(entry.getValue());
+                if (normalized != entry.getValue()) {
+                    if (copy == null) {
+                        copy = new LinkedHashMap<>(map);
+                    }
+                    copy.put(entry.getKey(), normalized);
+                }
+            }
+            return copy != null ? copy : value;
+        }
+        if (value instanceof List<?> list) {
+            List<Object> copy = null;
+            for (int i = 0; i < list.size(); i++) {
+                Object normalized = preserveSchemaNumber(list.get(i));
+                if (normalized != list.get(i)) {
+                    if (copy == null) {
+                        copy = new ArrayList<>(list);
+                    }
+                    copy.set(i, normalized);
+                }
+            }
+            return copy != null ? copy : value;
+        }
+        return value;
+    }
 
     // ==================== reasoning_content patching ====================
 
@@ -299,6 +384,44 @@ final class OpenAiRequestRewriter {
                 request.toolChoice(),
                 request.parallelToolCalls(),
                 newUser,
+                request.reasoningEffort(),
+                request.webSearchOptions(),
+                request.verbosity(),
+                request.promptCacheKey(),
+                request.safetyIdentifier(),
+                request.extraBody()
+        );
+    }
+
+    private static OpenAiApi.ChatCompletionRequest rebuildWithTools(
+            OpenAiApi.ChatCompletionRequest request, List<OpenAiApi.FunctionTool> tools) {
+        return new OpenAiApi.ChatCompletionRequest(
+                request.messages(),
+                request.model(),
+                request.store(),
+                request.metadata(),
+                request.frequencyPenalty(),
+                request.logitBias(),
+                request.logprobs(),
+                request.topLogprobs(),
+                request.maxTokens(),
+                request.maxCompletionTokens(),
+                request.n(),
+                request.outputModalities(),
+                request.audioParameters(),
+                request.presencePenalty(),
+                request.responseFormat(),
+                request.seed(),
+                request.serviceTier(),
+                request.stop(),
+                request.stream(),
+                request.streamOptions(),
+                request.temperature(),
+                request.topP(),
+                tools,
+                request.toolChoice(),
+                request.parallelToolCalls(),
+                request.user(),
                 request.reasoningEffort(),
                 request.webSearchOptions(),
                 request.verbosity(),

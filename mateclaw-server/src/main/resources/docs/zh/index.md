@@ -4,7 +4,7 @@ layout: home
 hero:
   name: MateClaw
   text: 公司允许部署的那一个 AI。
-  tagline: 别的 AI 助手是给一个人用的。MateClaw 是给一个团队用的——多用户工作空间、敏感操作走审批、完整审计日志、生产级健康监控。一个 JAR 包跑在自己机器上，数据不出门。
+  tagline: 别的 AI 助手是给一个人用的。MateClaw 是给一个团队用的——多用户工作空间、敏感操作走审批、完整审计日志、生产级健康监控。一个 JAR 包自部署，持久化数据与外发集成边界由你掌控。
   image:
     src: /logo.png
     alt: MateClaw
@@ -22,10 +22,10 @@ hero:
 features:
   - icon: 🧑‍💼
     title: 数字员工，不是聊天机器人
-    details: 你雇佣同事，不是开聊天框。每位有角色 / 目标 / 背景故事、像素艺术头像、专属配色——5 个职业模板开箱可用。ReAct + Plan-and-Execute 双模式，员工之间并行委派。
+    details: 你雇佣同事，不是开聊天框。每位有角色 / 目标 / 背景故事、像素艺术头像与专属配色——6 个内置模板开箱可用。ReAct + Plan-and-Execute 双模式，员工之间并行委派。
   - icon: 🤝
     title: 团队，不是单打独斗
-    details: 建一个团队：Lead 把目标拆成任务落到共享任务板，成员并行执行，依赖自动编排、前置结果自动传递、结果自动通报汇总。执行租约、取消即中断、审批卡点、交付物与任务时间线——2.0.0 起，一支队伍围着一块看板干活。
+    details: 一次团队请求对应一个 Team Run：目标、任务 DAG、成员执行、最终汇总与交付物统一追踪。Chat 交付成果、Agents 观察实时运行、Teams 管理历史与审批——2.1.0 起，一轮协作就是一份完整工作记录。
   - icon: 🧩
     title: 技能是骨架，不是插件
     details: 一份 SKILL.md + 一份 LESSONS.md（用得越多越聪明）。8 个起步模板，向导 5 步出包，安装前自动 Pre-flight 检查。MCP / ACP 双桥接，连 Claude Code、Codex 都能进来当员工。

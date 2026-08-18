@@ -12,6 +12,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.ai.tool.ToolCallback;
 import org.springframework.retry.support.RetryTemplate;
 import org.springframework.stereotype.Component;
 import vip.mate.agent.graph.StateGraphReActAgent;
@@ -31,9 +32,13 @@ import vip.mate.agent.graph.plan.state.PlanStateKeys;
 import vip.mate.agent.graph.state.MateClawStateKeys;
 import vip.mate.agent.binding.service.AgentBindingService;
 import vip.mate.agent.model.AgentEntity;
+import org.springframework.beans.factory.annotation.Autowired;
 import vip.mate.config.GraphObservationProperties;
+import vip.mate.config.ReasoningRetentionProperties;
 import vip.mate.exception.MateClawException;
+import vip.mate.llm.chatmodel.HttpTimeouts;
 import vip.mate.llm.chatmodel.OpenAiCompatibleChatModelBuilder;
+import vip.mate.llm.chatmodel.ProviderGenerateKwargs;
 import vip.mate.llm.chatmodel.ReasoningEffortResolver;
 import vip.mate.llm.model.ModelConfigEntity;
 import vip.mate.llm.model.ModelFamily;
@@ -169,9 +174,22 @@ public class AgentGraphBuilder {
      */
     private vip.mate.audit.service.AuditEventService auditEventService;
 
-    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    @Autowired(required = false)
     public void setAuditEventService(vip.mate.audit.service.AuditEventService s) {
         this.auditEventService = s;
+    }
+
+    /**
+     * Reasoning retention policy for ReAct turns. Setter injection so the
+     * {@code @RequiredArgsConstructor} signature stays stable for the unit
+     * constructions across the test suite; null in those, where the agent's own
+     * default (keep every iteration) applies.
+     */
+    private ReasoningRetentionProperties reasoningRetentionProperties;
+
+    @Autowired(required = false)
+    public void setReasoningRetentionProperties(ReasoningRetentionProperties p) {
+        this.reasoningRetentionProperties = p;
     }
 
     /**
@@ -386,7 +404,7 @@ public class AgentGraphBuilder {
         if (protocol == ModelProtocol.DASHSCOPE_NATIVE) {
             builtinSearchEnabled = dashScopeBuilder.isBuiltinSearchEnabled(runtimeModel, provider);
         } else if (OpenAiCompatibleChatModelBuilder.isKimiProvider(provider)
-                && Boolean.TRUE.equals(providerKwargs.get("enableSearch"))) {
+                && Boolean.TRUE.equals(ProviderGenerateKwargs.findOptionValue(providerKwargs, "enableSearch"))) {
             builtinSearchEnabled = true;
         }
         if (builtinSearchEnabled) {
@@ -438,24 +456,19 @@ public class AgentGraphBuilder {
         SkillCatalogRenderer skillCatalogRenderer = buildSkillCatalogRenderer(
                 entity, boundTools, effectiveMaxInputTokens);
 
-        // Extension-tool catalog — only for ReAct. The dynamic tool split runs
-        // in ReasoningNode; Plan-Execute keeps advertising every tool (it has no
-        // action node to record enable_tool), so baking the catalog there would
-        // describe an enable_tool flow that can never take effect.
-        // Auto-demotion is likewise ReAct-only: hiding a tool from Plan-Execute
-        // would remove it with no enable_tool path to recover it.
-        boolean isPlanExecute = "plan_execute".equals(entity.getAgentType());
+        // Progressive tool catalog is shared by both agent types. ReAct applies
+        // the split in ReasoningNode; Plan-Execute receives a separate advertised
+        // set for StepExecutionNode while its executor retains the full scoped
+        // set, so tool_call can recover a deferred tool in the same action round.
         Set<String> autoDemotedTools = Set.of();
-        if (!isPlanExecute) {
-            if (prefixBudgetPlan.enabled()) {
-                autoDemotedTools = toolDisclosureService.computeAutoDemotions(
-                        toolSet, prefixBudgetPlan.toolSchemaBudgetTokens());
-            }
-            String extensionCatalog = toolDisclosureService.renderExtensionCatalog(
-                    toolSet, effectiveMaxInputTokens, autoDemotedTools);
-            if (extensionCatalog != null && !extensionCatalog.isBlank()) {
-                enhancedPrompt = enhancedPrompt + extensionCatalog;
-            }
+        if (prefixBudgetPlan.enabled()) {
+            autoDemotedTools = toolDisclosureService.computeAutoDemotions(
+                    toolSet, prefixBudgetPlan.toolSchemaBudgetTokens());
+        }
+        String extensionCatalog = toolDisclosureService.renderExtensionCatalog(
+                toolSet, effectiveMaxInputTokens, autoDemotedTools);
+        if (extensionCatalog != null && !extensionCatalog.isBlank()) {
+            enhancedPrompt = enhancedPrompt + extensionCatalog;
         }
 
         // 当前仅支持 DashScope 和 OpenAI-compatible，其他协议直接拒绝
@@ -467,7 +480,8 @@ public class AgentGraphBuilder {
         BaseAgent agent;
         boolean toolCallingEnabled;
         if ("plan_execute".equals(entity.getAgentType())) {
-            agent = buildPlanExecuteAgent(toolSet, runtimeModel, maxIter, entity.getId(), skillCatalogRenderer);
+            agent = buildPlanExecuteAgent(toolSet, runtimeModel, maxIter, entity.getId(),
+                    skillCatalogRenderer, autoDemotedTools);
             toolCallingEnabled = true;
             log.info("Built StateGraph Plan-Execute agent: {} (maxIterations={}, tools={}, protocol={})",
                     entity.getName(), maxIter, toolSet.size(), protocol.getId());
@@ -571,8 +585,12 @@ public class AgentGraphBuilder {
         String reasoningEffort = resolveReasoningEffortForModel(runtimeModel);
         CompiledGraph compiledGraph = buildReActGraph(toolSet, chatModel, maxIter, reasoningEffort,
                 runtimeModel, agentId, skillCatalogRenderer, prefixBudgetPlan, autoDemotedTools);
-        return new StateGraphReActAgent(chatClient, conversationService, compiledGraph,
+        StateGraphReActAgent agent = new StateGraphReActAgent(chatClient, conversationService, compiledGraph,
                 chatModel, conversationWindowManager, toolSet);
+        if (reasoningRetentionProperties != null) {
+            agent.setPersistEveryIterationReasoning(reasoningRetentionProperties.persistsEveryIteration());
+        }
+        return agent;
     }
 
     StateGraphPlanExecuteAgent buildPlanExecuteAgent(AgentToolSet toolSet, ModelConfigEntity runtimeModel, int maxIter) {
@@ -587,11 +605,19 @@ public class AgentGraphBuilder {
     StateGraphPlanExecuteAgent buildPlanExecuteAgent(AgentToolSet toolSet, ModelConfigEntity runtimeModel,
                                                      int maxIter, Long agentId,
                                                      SkillCatalogRenderer skillCatalogRenderer) {
+        return buildPlanExecuteAgent(toolSet, runtimeModel, maxIter, agentId,
+                skillCatalogRenderer, Set.of());
+    }
+
+    StateGraphPlanExecuteAgent buildPlanExecuteAgent(AgentToolSet toolSet, ModelConfigEntity runtimeModel,
+                                                     int maxIter, Long agentId,
+                                                     SkillCatalogRenderer skillCatalogRenderer,
+                                                     Set<String> autoDemotedTools) {
         ChatModel chatModel = buildRuntimeChatModel(runtimeModel);
         ChatClient chatClient = ChatClient.create(chatModel);
         String reasoningEffort = resolveReasoningEffortForModel(runtimeModel);
         CompiledGraph graph = buildPlanExecuteGraph(toolSet, chatModel, maxIter, reasoningEffort,
-                runtimeModel, agentId, skillCatalogRenderer);
+                runtimeModel, agentId, skillCatalogRenderer, autoDemotedTools);
         return new StateGraphPlanExecuteAgent(chatClient, conversationService, graph, planningService,
                 chatModel, conversationWindowManager, toolSet);
     }
@@ -615,6 +641,14 @@ public class AgentGraphBuilder {
     CompiledGraph buildPlanExecuteGraph(AgentToolSet toolSet, ChatModel chatModel, int maxIterations,
                                          String reasoningEffort, ModelConfigEntity primaryModelConfig,
                                          Long agentId, SkillCatalogRenderer skillCatalogRenderer) {
+        return buildPlanExecuteGraph(toolSet, chatModel, maxIterations, reasoningEffort,
+                primaryModelConfig, agentId, skillCatalogRenderer, Set.of());
+    }
+
+    CompiledGraph buildPlanExecuteGraph(AgentToolSet toolSet, ChatModel chatModel, int maxIterations,
+                                         String reasoningEffort, ModelConfigEntity primaryModelConfig,
+                                         Long agentId, SkillCatalogRenderer skillCatalogRenderer,
+                                         Set<String> autoDemotedTools) {
         try {
             List<vip.mate.llm.failover.FallbackEntry> fallbackChain = buildFallbackChain(primaryModelConfig, agentId);
             NodeStreamingChatHelper streamingHelper = new NodeStreamingChatHelper(
@@ -629,6 +663,8 @@ public class AgentGraphBuilder {
                                 primaryModelConfig.getProvider(),
                                 primaryModelConfig.getModelName(), errorMessage));
             }
+            streamingHelper.setStreamIdleTimeoutSec(
+                    resolveStreamIdleTimeoutSeconds(primaryModelConfig));
             ToolExecutionExecutor executor = new ToolExecutionExecutor(
                     toolSet, toolGuardService, approvalService, streamTracker,
                     toolTimeoutProperties, toolResultStorage, toolConcurrencyRegistry,
@@ -648,7 +684,13 @@ public class AgentGraphBuilder {
             // Team hand-off: a lead-of-team plan agent parks multi-step plans on
             // the team task board instead of the serial delegation pipeline.
             planGenerationNode.setTeamPlanBridge(teamPlanBridge);
-            StepExecutionNode stepExecutionNode = new StepExecutionNode(chatModel, toolSet, executor, planningService, streamTracker, reasoningEffort, streamingHelper, conversationWindowManager, skillCatalogRenderer);
+            List<ToolCallback> advertisedCallbacks = toolDisclosureService
+                    .split(toolSet, Set.of(), autoDemotedTools).activeCallbacks();
+            AgentToolSet advertisedToolSet = AgentToolSet.fromCallbacks(
+                    toolSet.toolBeans(), advertisedCallbacks);
+            StepExecutionNode stepExecutionNode = new StepExecutionNode(chatModel, advertisedToolSet,
+                    executor, planningService, streamTracker, reasoningEffort, streamingHelper,
+                    conversationWindowManager, skillCatalogRenderer);
             // Per-step delegation: route a step assigned to a specialist agent
             // through DelegateAgentTool (null when delegation deps aren't wired).
             stepExecutionNode.setDelegateAgentTool(delegateAgentTool);
@@ -683,6 +725,7 @@ public class AgentGraphBuilder {
                     // Thinking 键
                     .addStrategy(PlanStateKeys.FINAL_SUMMARY_THINKING, KeyStrategy.REPLACE)
                     .addStrategy(PlanStateKeys.CURRENT_STEP_THINKING, KeyStrategy.REPLACE)
+                    .addStrategy(PlanStateKeys.PLAN_THINKING, KeyStrategy.REPLACE)
                     // 流式防重键
                     .addStrategy(MateClawStateKeys.CONTENT_STREAMED, KeyStrategy.REPLACE)
                     .addStrategy(MateClawStateKeys.THINKING_STREAMED, KeyStrategy.REPLACE)
@@ -729,6 +772,10 @@ public class AgentGraphBuilder {
                     // 丢这个键，evidence_insufficient 检查会"静默地不生效" ——
                     // StateKeyRegistrationCoverageTest 专门兜这条。
                     .addStrategy(MateClawStateKeys.SOURCE_EVIDENCE_LEDGER, KeyStrategy.REPLACE)
+                    .addStrategy(MateClawStateKeys.ACTION_EXECUTION_LEDGER, KeyStrategy.REPLACE)
+                    .addStrategy(MateClawStateKeys.ACTION_COMPLETION_REQUIRED, KeyStrategy.REPLACE)
+                    .addStrategy(MateClawStateKeys.ACTION_COMPLETION_RETRY_COUNT, KeyStrategy.REPLACE)
+                    .addStrategy(MateClawStateKeys.CONTINUE_REASONING, KeyStrategy.REPLACE)
                     // Multimodal sidecar routing decision for the current turn.
                     .addStrategy(MateClawStateKeys.ROUTING_DECISION, KeyStrategy.REPLACE)
                     // RFC 48 — persistent goal state keys must be registered in
@@ -891,6 +938,13 @@ public class AgentGraphBuilder {
         return perSegment * (1 + vip.mate.goal.config.GoalProperties.MAX_HARD_CONTINUATIONS_CEILING) + 100;
     }
 
+    static long resolveStreamIdleTimeoutSeconds(ModelConfigEntity modelConfig) {
+        Integer override = modelConfig != null
+                ? modelConfig.getRequestTimeoutSeconds()
+                : null;
+        return HttpTimeouts.resolveStreamIdleTimeout(override).toSeconds();
+    }
+
     CompiledGraph buildReActGraph(AgentToolSet toolSet, ChatModel chatModel, int maxIterations, String reasoningEffort) {
         return buildReActGraph(toolSet, chatModel, maxIterations, reasoningEffort, null, null);
     }
@@ -932,6 +986,8 @@ public class AgentGraphBuilder {
                                 primaryModelConfig.getProvider(),
                                 primaryModelConfig.getModelName(), errorMessage));
             }
+            streamingHelper.setStreamIdleTimeoutSec(
+                    resolveStreamIdleTimeoutSeconds(primaryModelConfig));
             ToolExecutionExecutor executor = new ToolExecutionExecutor(
                     toolSet, toolGuardService, approvalService, streamTracker,
                     toolTimeoutProperties, toolResultStorage, toolConcurrencyRegistry,
@@ -1069,6 +1125,10 @@ public class AgentGraphBuilder {
                     // 丢这个键，evidence_insufficient 检查会"静默地不生效" ——
                     // StateKeyRegistrationCoverageTest 专门兜这条。
                     .addStrategy(MateClawStateKeys.SOURCE_EVIDENCE_LEDGER, KeyStrategy.REPLACE)
+                    .addStrategy(MateClawStateKeys.ACTION_EXECUTION_LEDGER, KeyStrategy.REPLACE)
+                    .addStrategy(MateClawStateKeys.ACTION_COMPLETION_REQUIRED, KeyStrategy.REPLACE)
+                    .addStrategy(MateClawStateKeys.ACTION_COMPLETION_RETRY_COUNT, KeyStrategy.REPLACE)
+                    .addStrategy(MateClawStateKeys.CONTINUE_REASONING, KeyStrategy.REPLACE)
                     // Multimodal sidecar routing decision for the current turn.
                     .addStrategy(MateClawStateKeys.ROUTING_DECISION, KeyStrategy.REPLACE)
                     // RFC 48 — persistent goal state keys must be registered in
@@ -1121,7 +1181,8 @@ public class AgentGraphBuilder {
                     .addEdge(StateGraph.START, MateClawStateKeys.REASONING_NODE)
                     .addConditionalEdges(MateClawStateKeys.REASONING_NODE,
                             AsyncEdgeAction.edge_async(new ReasoningDispatcher()),
-                            Map.of(MateClawStateKeys.ACTION_NODE, MateClawStateKeys.ACTION_NODE,
+                            Map.of(MateClawStateKeys.REASONING_NODE, MateClawStateKeys.REASONING_NODE,
+                                    MateClawStateKeys.ACTION_NODE, MateClawStateKeys.ACTION_NODE,
                                     MateClawStateKeys.SUMMARIZING_NODE, MateClawStateKeys.SUMMARIZING_NODE,
                                     MateClawStateKeys.FINAL_ANSWER_NODE, MateClawStateKeys.FINAL_ANSWER_NODE,
                                     MateClawStateKeys.LIMIT_EXCEEDED_NODE, MateClawStateKeys.LIMIT_EXCEEDED_NODE))
@@ -1682,7 +1743,7 @@ public class AgentGraphBuilder {
                 - `<serverId>` is a numeric ID identifying which MCP server the tool belongs to.
                 - Tools from DIFFERENT servers have DIFFERENT serverId prefixes, even if they have the same raw name (e.g. `search` on server A vs server B) — they are DIFFERENT tools and are NOT interchangeable.
                 - Each MCP tool's description starts with `[MCP server: <name>]` so you can identify the source server by its human-readable name.
-                - MCP tools are listed in the Extension Tools catalog by default. Use `enable_tool(toolName="<exact-name>")` to activate the one you need before calling it.
+                - MCP tools are listed in the Extension Tools catalog by default. Call `tool_call(toolName="<exact-name>", arguments={...})` to execute one in the same action round; use `tool_search` first only when the exact name is unknown.
                 - Always call tools by the EXACT name shown in the tool list. Do NOT reconstruct a tool name by swapping the slug into a serverId you remember from a previous successful call — that produces a non-existent tool name and the call will fail.
                 - If a tool call returns "Tool not found" with candidate suggestions, pick the correct one from the candidates verbatim.
 
@@ -1716,7 +1777,7 @@ public class AgentGraphBuilder {
 
                 ## ProgressLedger Discipline (mandatory)
                 The `## 当前任务进度` block injected near the top of every turn is the **authoritative record** of what you have done and what remains. Treat it as ground truth, not as a scratchpad you may ignore.
-                - **On starting any multi-step task** (≥3 tool calls expected), call `progress_update` in a parallel tool_calls batch to register every pending step BEFORE doing the work. Do not wait until "later" — context compression can trim earlier turns and you will lose track.
+                - **On starting any multi-step task** (≥3 tool calls expected), call `progress_update` in parallel batches of at most 16 calls to register every pending step BEFORE doing the work. Split larger ledgers across turns so the executor cap never drops entries.
                 - **After each completed sub-step**, immediately call `progress_update` to flip its status to `done`. "Immediately" means in the same tool_calls batch that returns the result, not after the next reasoning turn.
                 - **Never re-execute a step the ledger shows as `done`** unless you can articulate why the prior result is stale.
                 - **🔒 固定约束 entries** (pinned from skill manifests) are non-negotiable. They survive context compression for a reason — re-read them every turn and make sure your planned action still satisfies them.

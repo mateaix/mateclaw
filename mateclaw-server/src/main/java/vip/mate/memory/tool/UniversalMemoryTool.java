@@ -55,32 +55,32 @@ public class UniversalMemoryTool {
             如果你需要记录的是结构化条目，优先用 remember_structured。
             """)
     public String remember(
-            @ToolParam(description = "当前 Agent 的 ID") Long agentId,
+            @ToolParam(description = "当前 Agent 的 ID。必须作为字符串传入，避免大整数精度丢失") String agentId,
             @ToolParam(description = "要记住的内容（自由形式）") String content,
             @ToolParam(description = "可选：来源上下文（skill 名 / conversation id）", required = false) String source,
             ToolContext toolContext) {
 
-        if (agentId == null) return error("agentId 不能为空");
         if (content == null || content.isBlank()) return error("content 不能为空");
 
         try {
+            Long parsedAgentId = parseAgentId(agentId);
             // Write to the requester's PERSONAL MEMORY.md when per-owner isolation
             // is active; otherwise the shared file (so the note is not stranded
             // in an un-read PERSONAL row).
             String ownerKey = memoryProperties.isLifecycleMediatorEnabled()
                     ? memoryOwnerResolver.resolve(ChatOrigin.from(toolContext))
                     : null;
-            WorkspaceFileEntity existing = workspaceFileService.getVisibleFile(agentId, MEMORY_FILENAME, ownerKey);
+            WorkspaceFileEntity existing = workspaceFileService.getVisibleFile(parsedAgentId, MEMORY_FILENAME, ownerKey);
             String existingContent = existing != null && existing.getContent() != null
                     ? existing.getContent() : "";
             String updated = appendLesson(existingContent, content, source);
-            workspaceFileService.saveVisibleFile(agentId, MEMORY_FILENAME, updated, ownerKey);
+            workspaceFileService.saveVisibleFile(parsedAgentId, MEMORY_FILENAME, updated, ownerKey);
 
             // RFC-090 §14.3 — universal remember() targets MEMORY.md (the
             // canonical file), so this IS a MemoryWriteEvent. Skill-local
             // lessons go through SkillLessonWrittenEvent instead and do
             // NOT touch this path.
-            eventPublisher.publishEvent(new MemoryWriteEvent(agentId, MEMORY_FILENAME,
+            eventPublisher.publishEvent(new MemoryWriteEvent(parsedAgentId, MEMORY_FILENAME,
                     "remember", content));
 
             JSONObject result = new JSONObject();
@@ -140,6 +140,18 @@ public class UniversalMemoryTool {
         // Match a line starting with "## " (any heading level >= 2).
         int idx = content.indexOf("\n## ", from);
         return idx < 0 ? -1 : idx + 1; // position of '#' itself
+    }
+
+    private static Long parseAgentId(String agentId) {
+        String trimmed = agentId != null ? agentId.trim() : "";
+        if (trimmed.isEmpty()) {
+            throw new IllegalArgumentException("agentId 不能为空");
+        }
+        try {
+            return Long.parseLong(trimmed);
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("agentId 必须是数字字符串");
+        }
     }
 
     private static String error(String msg) {

@@ -676,6 +676,24 @@ See [Content Studio](./content-studio) for the full pipeline, publish chain, and
 
 ---
 
+## Closed skill-evolution loop (2.1.0+)
+
+2.1.0 expands LESSONS.md learning into an inspectable, reversible improvement chain:
+
+1. **Reflection** proposes a precise patch or new-skill candidate from a completed conversation.
+2. **Routine mining** clusters recent conversations' opening user requests per employee; it does not mine a full execution trace. The default window is 30 days, with at least three occurrences across three distinct days. Once enabled, the nightly job automatically promotes qualified candidates (two per sweep by default); admins may promote early, dismiss, or reopen.
+3. **Automatic binding** only handles a new skill with a source employee, and adds a row only when that employee already uses an explicit, non-empty skill allowlist. Inherit-all needs no binding, while an explicit no-skills choice is never overwritten.
+4. **Curator** organizes stale, archived, and overlapping skills per workspace. It starts preview-only and mutates only after admin activation; consolidation is separately enabled, with umbrella creation and source archiving transactional.
+5. **Adopt / release** transfers governance: adopt hands a user skill to autonomous curation, while release returns it to user ownership. It is not a record of which employee uses the skill.
+6. **Snapshots** create a restore point before every activated mutating sweep and again before restore; five are retained per workspace by default.
+7. **Origin** distinguishes built-in, user, agent, and routine, while also serving as curator policy. Manual handover intentionally changes the user / agent state.
+
+The secure default is **observe before allowing automatic writes**: reflection and routine mining are disabled until explicitly enabled. Reflection's `enabled` switch controls whether transcript/catalog data reaches the reviewer model, while `auto-apply` separately controls mutations; with auto-apply off nothing is written, but there is no persisted human-approval queue. Transcripts and skill bodies are treated as untrusted data; automatic writes allow only create or a unique-context patch. Full replacement, secret exfiltration, approval bypasses, and cross-workspace reads/writes fail closed.
+
+`Settings → Skill Curator` shows workspace state, routine candidates, recent reports, origin, managed/unmanaged skills, and restore points. Curator, routine, snapshot, adopt, and release operations all require the current workspace context.
+
+---
+
 ## Next
 
 - [Tools](./tools) — tools that skills can use

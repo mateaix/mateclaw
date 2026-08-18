@@ -1,14 +1,18 @@
 package vip.mate.tool.builtin;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.fasterxml.jackson.databind.ser.std.ToStringSerializer;
 import com.fasterxml.jackson.databind.module.SimpleModule;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.ai.support.ToolCallbacks;
+import org.springframework.ai.tool.ToolCallback;
 import vip.mate.datasource.model.DatasourceEntity;
 import vip.mate.datasource.service.DatasourceConnectionManager;
 import vip.mate.datasource.service.DatasourceService;
+import vip.mate.datasource.service.SqlValidationService;
 
 import java.util.List;
 
@@ -55,5 +59,37 @@ class DatasourceToolIdPrecisionTest {
                 "id must appear as a quoted string so its 19 digits survive the round-trip; got: " + out);
         assertFalse(out.contains(": " + bigId) || out.contains(":" + bigId),
                 "id must NOT appear as a bare JSON number (precision-lossy across double/JS Number)");
+    }
+
+    @Test
+    @DisplayName("datasource tools publish datasourceId as a string parameter so LLM tool calls preserve precision")
+    void datasourceIdSchemasAreString() throws Exception {
+        DatasourceTool datasourceTool = new DatasourceTool(
+                mock(DatasourceService.class),
+                mock(DatasourceConnectionManager.class),
+                idSafeMapper());
+        SqlQueryTool sqlQueryTool = new SqlQueryTool(
+                mock(DatasourceService.class),
+                mock(DatasourceConnectionManager.class),
+                mock(SqlValidationService.class));
+
+        assertDatasourceIdIsString(datasourceTool, "query_datasource");
+        assertDatasourceIdIsString(sqlQueryTool, "execute_sql");
+    }
+
+    private static void assertDatasourceIdIsString(Object tool, String name) throws Exception {
+        JsonNode root = idSafeMapper().readTree(callback(tool, name).getToolDefinition().inputSchema());
+
+        assertTrue("string".equals(root.at("/properties/datasourceId/type").asText()),
+                name + " datasourceId must be a string schema");
+    }
+
+    private static ToolCallback callback(Object tool, String name) {
+        for (ToolCallback callback : ToolCallbacks.from(tool)) {
+            if (name.equals(callback.getToolDefinition().name())) {
+                return callback;
+            }
+        }
+        throw new AssertionError("Missing tool callback: " + name);
     }
 }

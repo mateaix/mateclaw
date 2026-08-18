@@ -49,35 +49,56 @@
           </button>
         </div>
 
-        <template v-for="(msg, index) in messages" :key="msg.id || index">
+        <template v-for="item in timelineItems" :key="item.key">
+          <div v-if="item.type === 'team-run'" class="team-run-timeline-item">
+            <TeamRunCard
+              :run="item.run"
+              :expanded="expandedTeamRunId === item.run.id"
+              :selected-task-id="selectedTeamTaskId"
+              @toggle="$emit('team-run-toggle', item.run.id, $event)"
+              @select-task="$emit('team-run-select-task', $event)"
+              @cancel="$emit('team-run-cancel', $event)"
+              @navigate="$emit('team-run-navigate', $event)"
+            />
+          </div>
           <!-- 压缩摘要消息特殊渲染 -->
           <CompressionSummary
-            v-if="isCompressionSummary(msg)"
-            :message="msg"
+            v-else-if="isCompressionSummary(item.message)"
+            :message="item.message"
           />
           <!-- Cron-run 头部分隔卡（system 消息且以 📋 开头）—— 在
                tasks_<wsId> / IM 镜像会话里把"这是哪个 cron 跑的"清晰标出来。
                LLM 历史读取时会跳过 system 消息，所以不污染下次提示词。 -->
-          <div v-else-if="isCronHeader(msg)" class="cron-divider">
+          <div v-else-if="isCronHeader(item.message)" class="cron-divider">
             <div class="cron-divider__line"></div>
-            <span class="cron-divider__label">{{ msg.content }}</span>
+            <span class="cron-divider__label">{{ item.message.content }}</span>
             <div class="cron-divider__line"></div>
           </div>
+          <!-- Team task settlement note — user-role for the context pipeline,
+               but rendered as a collapsed system strip instead of a user
+               bubble so orchestration bookkeeping doesn't flood the chat. -->
+          <TeamAnnouncePanel v-else-if="isTeamAnnounce(item.message)" :message="item.message" />
           <!-- 普通消息气泡 -->
           <MessageBubble
             v-else
-            :message="msg"
-            :is-last="index === messages.length - 1"
+            :message="item.message"
+            :is-last="item.messageIndex === messages.length - 1"
             :assistant-icon="assistantIcon"
             :user-icon="userIcon"
-            :show-cursor="showCursorForMessage(msg)"
-            @regenerate="$emit('regenerate', msg)"
-            @rewind="$emit('rewind', msg)"
-            @toggle-thinking="(expanded) => $emit('toggle-thinking', msg, expanded)"
+            :show-cursor="showCursorForMessage(item.message)"
+            :readonly="readonly"
+            @regenerate="$emit('regenerate', item.message)"
+            @rewind="$emit('rewind', item.message)"
+            @toggle-thinking="(expanded) => $emit('toggle-thinking', item.message, expanded)"
             @approve="(pendingId) => $emit('approve', pendingId)"
             @deny="(pendingId) => $emit('deny', pendingId)"
           />
         </template>
+        <div v-if="teamRunsHasMore" class="team-runs-more">
+          <button data-chat-team-runs-load-more type="button" :disabled="teamRunsLoadingMore" @click="$emit('team-runs-load-more')">
+            {{ teamRunsLoadingMore ? t('teamRuns.loadingMore') : t('teamRuns.loadMore') }}
+          </button>
+        </div>
       </template>
 
       <!-- 加载指示器：只在无消息时显示（有消息时由输入框显示停止按钮） -->
@@ -120,7 +141,13 @@ import { ArrowDown, ChatDotRound, DataLine, EditPen, Monitor, Right } from '@ele
 const { t } = useI18n()
 import MessageBubble from './MessageBubble.vue'
 import CompressionSummary from './CompressionSummary.vue'
+import TeamAnnouncePanel from './TeamAnnouncePanel.vue'
+import TeamRunCard from '@/components/team-run/TeamRunCard.vue'
 import { useStickToBottom } from '@/composables/chat/useStickToBottom'
+import { parseTeamMessageMetadata } from '@/composables/chat/messageMetadata'
+import { assembleTeamRunTimeline, type TeamRunTimelineItem } from '@/composables/chat/teamRunTimeline'
+import type { TeamRun, TeamRunTask } from '@/api'
+import type { TeamRunRoute } from '@/components/team-run/teamRunPresentation'
 import type { Message } from '@/types'
 
 interface Props {
@@ -144,6 +171,13 @@ interface Props {
   hasMore?: boolean
   /** 是否正在加载更早消息 */
   loadingOlder?: boolean
+  /** Canonical run projections. Omit to preserve the legacy message-only view. */
+  teamRuns?: TeamRun[]
+  expandedTeamRunId?: string | null
+  selectedTeamTaskId?: string | null
+  teamRunsHasMore?: boolean
+  teamRunsLoadingMore?: boolean
+  readonly?: boolean
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -156,6 +190,9 @@ const props = withDefaults(defineProps<Props>(), {
   autoScroll: true,
   hasMore: false,
   loadingOlder: false,
+  teamRunsHasMore: false,
+  teamRunsLoadingMore: false,
+  readonly: false,
 })
 
 const emit = defineEmits<{
@@ -167,7 +204,22 @@ const emit = defineEmits<{
   approve: [pendingId: string]
   deny: [pendingId: string]
   'load-more': []
+  'team-run-toggle': [runId: string, expanded: boolean]
+  'team-run-select-task': [task: TeamRunTask]
+  'team-run-cancel': [runId: string]
+  'team-run-navigate': [route: TeamRunRoute]
+  'team-runs-load-more': []
 }>()
+
+const timelineItems = computed<TeamRunTimelineItem[]>(() => {
+  if (props.teamRuns !== undefined) return assembleTeamRunTimeline(props.messages, props.teamRuns)
+  return props.messages.map((message, messageIndex) => ({
+    type: 'message' as const,
+    key: `message:${String(message.id ?? messageIndex)}`,
+    message,
+    messageIndex,
+  }))
+})
 
 // 判断消息是否为压缩摘要
 const isCompressionSummary = (msg: Message) => {
@@ -185,6 +237,13 @@ const isCompressionSummary = (msg: Message) => {
 // labeled divider so users browsing tasks_<wsId> can distinguish runs.
 const isCronHeader = (msg: Message) => {
   return msg.role === 'system' && typeof msg.content === 'string' && msg.content.startsWith('📋 ')
+}
+
+// Team task settlement note. New rows carry metadata.type = 'team_announce';
+// the content-prefix fallback catches rows persisted before that marker existed.
+const isTeamAnnounce = (msg: Message) => {
+  if (msg.role !== 'user') return false
+  return parseTeamMessageMetadata(msg).isTeamAnnounce
 }
 
 // 智能滚动
@@ -323,6 +382,12 @@ onUnmounted(() => {
   min-width: 0;
   max-width: 100%;
 }
+
+.team-run-timeline-item {
+  width: min(760px, calc(100% - 32px));
+  margin: 8px auto;
+}
+.team-runs-more{display:flex;justify-content:center;padding:8px 0 14px}.team-runs-more button{min-height:32px;padding:5px 12px;border:1px solid var(--mc-border);border-radius:6px;background:var(--mc-bg-elevated);color:#16795a;cursor:pointer}.team-runs-more button:disabled{cursor:wait;opacity:.65}
 
 /* ==================== 空状态 / 欢迎屏 ==================== */
 .empty-state {

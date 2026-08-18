@@ -56,6 +56,9 @@ class SkillControllerListEnabledTest {
                 /* skillLifecycleService */ null,
                 /* skillCuratorJob */ null,
                 /* skillCuratorReportStore */ null,
+                /* skillSnapshotService */ null,
+                /* skillRoutineService */ null,
+                /* skillRoutineMiner */ null,
                 /* skillFileService */ null);
         // listSkills() supplies realSkillNames() for shadow base — default
         // to empty so each test can override.

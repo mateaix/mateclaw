@@ -52,4 +52,19 @@ class CuratorRunNotifierTest {
                 eq(report.getRunId()), isNull(), anyString());
         verify(eventPublisher).publishEvent(any(SkillCuratorRunCompletedEvent.class));
     }
+
+    @Test
+    void explicitWorkspaceIsPersistedInScheduledAudit() {
+        SkillCuratorReport report = SkillCuratorReport.builder()
+                .runAt(LocalDateTime.now())
+                .build();
+
+        notifier.onRunComplete(report, 7L);
+
+        verify(auditEventService).record(eq("CURATOR_RUN"), eq("SKILL"),
+                eq(report.getRunId()), isNull(), anyString(), eq(7L));
+        verify(eventPublisher).publishEvent(org.mockito.ArgumentMatchers.<Object>argThat(event ->
+                event instanceof SkillCuratorRunCompletedEvent completed
+                        && Long.valueOf(7L).equals(completed.workspaceId())));
+    }
 }

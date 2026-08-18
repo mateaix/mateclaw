@@ -1,11 +1,14 @@
 package vip.mate.tool.builtin;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.fasterxml.jackson.databind.module.SimpleModule;
 import com.fasterxml.jackson.databind.ser.std.ToStringSerializer;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.ai.support.ToolCallbacks;
+import org.springframework.ai.tool.ToolCallback;
 import vip.mate.cron.model.CronJobDTO;
 import vip.mate.cron.service.CronJobService;
 
@@ -51,5 +54,30 @@ class CronJobToolIdPrecisionTest {
                 "jobId must appear as a quoted string so its 19 digits survive; got: " + out);
         assertFalse(out.contains(": " + bigId) || out.contains(":" + bigId),
                 "jobId must NOT appear as a bare JSON number");
+    }
+
+    @Test
+    @DisplayName("cron mutating tools publish jobId as a string parameter so LLM tool calls preserve precision")
+    void cronJobIdSchemasAreString() throws Exception {
+        CronJobTool tool = new CronJobTool(mock(CronJobService.class), idSafeMapper());
+
+        assertJobIdIsString(tool, "toggle_cron_job");
+        assertJobIdIsString(tool, "delete_cron_job");
+    }
+
+    private static void assertJobIdIsString(Object tool, String name) throws Exception {
+        JsonNode root = idSafeMapper().readTree(callback(tool, name).getToolDefinition().inputSchema());
+
+        assertTrue("string".equals(root.at("/properties/jobId/type").asText()),
+                name + " jobId must be a string schema");
+    }
+
+    private static ToolCallback callback(Object tool, String name) {
+        for (ToolCallback callback : ToolCallbacks.from(tool)) {
+            if (name.equals(callback.getToolDefinition().name())) {
+                return callback;
+            }
+        }
+        throw new AssertionError("Missing tool callback: " + name);
     }
 }

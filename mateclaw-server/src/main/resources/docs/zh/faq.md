@@ -288,7 +288,7 @@ UI 里用 `工具 → MCP 服务`。三种传输模式：stdio、streamable_http
 cp ./data/mateclaw.mv.db ./backup/mateclaw-$(date +%Y%m%d).mv.db
 ```
 
-**MySQL（生产）：**
+**MySQL（受支持的自管部署）：**
 
 ```bash
 mysqldump -u root -p mateclaw > mateclaw-backup-$(date +%Y%m%d).sql
@@ -297,7 +297,7 @@ mysqldump -u root -p mateclaw > mateclaw-backup-$(date +%Y%m%d).sql
 **Docker：**
 
 ```bash
-docker exec mateclaw-mysql mysqldump -u root -p${MYSQL_ROOT_PASSWORD} mateclaw > backup.sql
+docker compose exec -T postgres sh -c 'pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB"' > backup.sql
 ```
 
 **桌面端**数据在每个用户目录下：
@@ -332,19 +332,19 @@ docker exec mateclaw-mysql mysqldump -u root -p${MYSQL_ROOT_PASSWORD} mateclaw >
 
 ```bash
 docker compose logs mateclaw-server
-docker compose logs mateclaw-mysql
+docker compose logs postgres
 ```
 
 常见：
 
-- MySQL 还没就绪
-- 端口冲突（18080、3306）
-- 缺 `.env`——从 `.env.example` 拷一份
+- PostgreSQL 还没就绪
+- 对外端口 18080 冲突
+- 缺 `.env` 或未填写必需的 `DB_PASSWORD` / `DB_ADMIN_PASSWORD`
 
 ### 怎么在 Docker 里访问数据库？
 
 ```bash
-docker exec -it mateclaw-mysql mysql -u root -p mateclaw
+docker compose exec postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
 ```
 
 ---
@@ -397,7 +397,7 @@ curl -N -X POST 'http://localhost:18088/api/v1/chat/stream' \
 
 ```bash
 cd mateclaw-ui
-pnpm build
+npm run build
 ls ../mateclaw-server/src/main/resources/static/
 # 应该包含 index.html 和资源文件
 ```

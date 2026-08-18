@@ -11,6 +11,7 @@ import vip.mate.llm.service.ModelProviderService;
 import vip.mate.system.model.SystemSettingsDTO;
 import vip.mate.tts.TtsProvider;
 import vip.mate.tts.TtsRequest;
+import vip.mate.tts.TtsResponseDiagnostics;
 import vip.mate.tts.TtsResult;
 
 import java.util.List;
@@ -101,7 +102,8 @@ public class DashScopeTtsProvider implements TtsProvider {
                 body.put("speed", request.getSpeed());
             }
 
-            HttpResponse response = HttpRequest.post(BASE_URL + "/audio/speech")
+            String endpoint = BASE_URL + "/audio/speech";
+            HttpResponse response = HttpRequest.post(endpoint)
                     .header("Authorization", "Bearer " + apiKey)
                     .header("Content-Type", "application/json")
                     .body(body.toString())
@@ -115,7 +117,8 @@ public class DashScopeTtsProvider implements TtsProvider {
             } else {
                 String errBody = response.body();
                 log.warn("[DashScope TTS] Failed: HTTP {} - {}", response.getStatus(), errBody);
-                return TtsResult.failure("DashScope TTS 失败: HTTP " + response.getStatus());
+                return TtsResult.failure(TtsResponseDiagnostics.failureMessage(
+                        "DashScope TTS", endpoint, response.getStatus(), errBody));
             }
         } catch (Exception e) {
             log.error("[DashScope TTS] Error: {}", e.getMessage(), e);

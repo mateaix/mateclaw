@@ -22,6 +22,8 @@ public class TeamTaskEntity {
 
     private Long teamId;
 
+    private Long runId;
+
     /** Human-readable sequential number, unique within the team. */
     private Integer taskNumber;
 

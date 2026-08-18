@@ -64,7 +64,12 @@ public class CronJobEntity {
      * RFC-063r §2.9: originating channel binding. Null when this job was
      * created from the web (no proactive delivery target). The single
      * indexed column lets ops query "all jobs delivering to channel X".
+     *
+     * <p>{@code FieldStrategy.ALWAYS} so clearing the binding from the edit
+     * form actually writes NULL — the default NOT_NULL strategy drops the
+     * column from the UPDATE and the old channel silently survives.
      */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private Long channelId;
 
     /**
@@ -72,7 +77,7 @@ public class CronJobEntity {
      * persisted as JSON via MyBatis Plus JacksonTypeHandler so future fields
      * don't require schema migrations.
      */
-    @TableField(typeHandler = JacksonTypeHandler.class)
+    @TableField(typeHandler = JacksonTypeHandler.class, updateStrategy = FieldStrategy.ALWAYS)
     private DeliveryConfig deliveryConfig;
 
     @TableField(fill = FieldFill.INSERT)

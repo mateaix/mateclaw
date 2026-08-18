@@ -8,6 +8,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.UUID;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -26,13 +27,14 @@ import java.util.Optional;
 @Getter
 public class SkillCuratorReport {
 
-    private static final DateTimeFormatter RUN_ID = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
+    private static final DateTimeFormatter RUN_ID = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss-SSS");
 
     private final String runId;
     private final LocalDateTime runAt;
     private final boolean dryRun;
     private final Config config;
     private final int scanned;
+    private final int newlyObserved;
     private final Counts planned;
     private final Counts applied;
     private final List<TransitionRow> transitions;
@@ -46,10 +48,12 @@ public class SkillCuratorReport {
 
     private SkillCuratorReport(Builder b) {
         this.runAt = b.runAt != null ? b.runAt : LocalDateTime.now();
-        this.runId = this.runAt.format(RUN_ID);
+        this.runId = this.runAt.format(RUN_ID) + "-"
+                + UUID.randomUUID().toString().replace("-", "").substring(0, 8);
         this.dryRun = b.dryRun;
         this.config = new Config(b.staleAfterDays, b.archiveAfterDays, b.scope);
         this.scanned = b.scanned;
+        this.newlyObserved = b.newlyObserved;
         this.planned = new Counts(b.plannedStale, b.plannedArchived, b.plannedReactivated);
         this.applied = new Counts(b.appliedStale, b.appliedArchived, b.appliedReactivated);
         this.transitions = List.copyOf(b.transitions);
@@ -60,6 +64,16 @@ public class SkillCuratorReport {
 
     public void setPath(Path path) {
         this.path = path;
+    }
+
+    /**
+     * Candidates seen by curation for the first time this run. They are
+     * deferred rather than judged, so an operator reading a first sweep
+     * after widening the scope can tell "nothing was archived because it is
+     * all brand new to the curator" from "nothing needed archiving".
+     */
+    public int newlyObserved() {
+        return newlyObserved;
     }
 
     /** Applied count of skills marked stale (0 for a dry-run). */
@@ -104,6 +118,7 @@ public class SkillCuratorReport {
         private int archiveAfterDays;
         private String scope;
         private int scanned;
+        private int newlyObserved;
         private int plannedStale, plannedArchived, plannedReactivated;
         private int appliedStale, appliedArchived, appliedReactivated;
         private final List<TransitionRow> transitions = new ArrayList<>();
@@ -128,6 +143,11 @@ public class SkillCuratorReport {
             return this;
         }
 
+        public Builder newlyObserved(int newlyObserved) {
+            this.newlyObserved = newlyObserved;
+            return this;
+        }
+
         public Builder scanned(int scanned) {
             this.scanned = scanned;
             return this;
@@ -138,8 +158,9 @@ public class SkillCuratorReport {
             if (t == null || t == LifecycleTransition.NONE) {
                 return this;
             }
-            LocalDateTime anchor = skill.getLastActivityAt() != null
-                    ? skill.getLastActivityAt() : skill.getCreateTime();
+            // Shared with the decision path — a report that computed idle days
+            // its own way could contradict the transition it is describing.
+            LocalDateTime anchor = SkillLifecycleService.anchor(skill);
             long days = anchor == null || runAt == null ? 0L : Duration.between(anchor, runAt).toDays();
             String from = Optional.ofNullable(skill.getLifecycleState()).orElse("active");
             String to = switch (t) {

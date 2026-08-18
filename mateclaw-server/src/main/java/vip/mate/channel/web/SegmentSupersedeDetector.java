@@ -1,24 +1,28 @@
 package vip.mate.channel.web;
 
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
-import java.util.regex.Pattern;
 
 /**
- * Marks model-predicted tool results that are replaced by the actual post-tool
- * answer segment.
+ * Marks assistant content emitted <em>before</em> its tool calls ran as superseded
+ * by the post-tool content that follows.
+ *
+ * <p>The rule is purely structural — no text inspection. A content segment that
+ * (a) does not directly follow a tool result and (b) is followed by a tool call
+ * before any other content segment was produced in the same model completion as
+ * those tool calls. Whatever it says — process narration, a predicted result, or
+ * an answer copied from stale conversation history — it is not grounded in this
+ * turn's observations. When any content segment exists after that tool call
+ * (the answer written with the actual results in hand), the pre-tool segment is
+ * marked superseded so renderers collapse it in favor of the grounded answer.
+ *
+ * <p>Content that directly follows a tool result is never marked: it was written
+ * after observing real output and may carry standalone value (e.g. a download
+ * link for an intermediate artifact in a multi-file run).
  */
 final class SegmentSupersedeDetector {
 
-    static final String REASON_TOOL_RESULT_REPLACED_MODEL_CLAIM = "tool_result_replaced_model_claim";
-
-    private static final Pattern GENERATED_FILE_URL =
-            Pattern.compile("(?:https?://[^/\\s)\\]]+)?/api/v1/files/generated/[A-Za-z0-9-]+");
-    private static final Pattern BYTE_COUNT =
-            Pattern.compile("\\d+\\s*字节");
-    private static final Pattern REPLACEMENT_COUNT =
-            Pattern.compile("\\d+\\s*处");
+    static final String REASON_PRE_TOOL_CONTENT_REPLACED = "pre_tool_content_replaced_by_post_tool_answer";
 
     private SegmentSupersedeDetector() {
     }
@@ -35,22 +39,18 @@ final class SegmentSupersedeDetector {
                 continue;
             }
 
-            Claim predictedClaim = parseClaim(String.valueOf(candidate.getOrDefault("text", "")));
-            if (predictedClaim == null) {
-                continue;
-            }
-
             int toolIndex = nextToolIndexBeforeContent(segments, i + 1);
             if (toolIndex < 0) {
                 continue;
             }
-            Map<String, Object> tool = segments.get(toolIndex);
-            if (Boolean.FALSE.equals(tool.get("toolSuccess"))
-                    || !toolMatchesClaim(String.valueOf(tool.getOrDefault("toolName", "")), predictedClaim)) {
-                continue;
-            }
 
-            int replacementIndex = nextMatchingContentIndex(segments, toolIndex + 1, predictedClaim);
+            // The replacement is the first content segment written after the tool
+            // ran — grounded in its observation. Later tool calls may sit in
+            // between (parallel or chained calls from the same completion), so the
+            // scan crosses tool boundaries. Tool success is irrelevant: on failure
+            // the post-tool content carries the authoritative failure explanation,
+            // which supersedes an optimistic pre-tool claim all the same.
+            int replacementIndex = nextContentIndex(segments, toolIndex + 1);
             if (replacementIndex < 0) {
                 continue;
             }
@@ -58,10 +58,16 @@ final class SegmentSupersedeDetector {
             Map<String, Object> replacement = segments.get(replacementIndex);
             candidate.put("superseded", true);
             candidate.put("supersededBySegmentId", String.valueOf(replacement.getOrDefault("id", "")));
-            candidate.put("supersededReason", REASON_TOOL_RESULT_REPLACED_MODEL_CLAIM);
+            candidate.put("supersededReason", REASON_PRE_TOOL_CONTENT_REPLACED);
         }
     }
 
+    /**
+     * Index of the next tool_call segment after {@code start}, or -1 when a
+     * content segment appears first — a following content segment means the
+     * candidate closed its completion without issuing tool calls, so it is not
+     * pre-tool narration.
+     */
     private static int nextToolIndexBeforeContent(List<Map<String, Object>> segments, int start) {
         for (int i = start; i < segments.size(); i++) {
             Map<String, Object> segment = segments.get(i);
@@ -75,6 +81,7 @@ final class SegmentSupersedeDetector {
         return -1;
     }
 
+    /** Whether the nearest preceding non-thinking segment is a tool call. */
     private static boolean followsToolResult(List<Map<String, Object>> segments, int index) {
         for (int i = index - 1; i >= 0; i--) {
             Map<String, Object> segment = segments.get(i);
@@ -88,17 +95,10 @@ final class SegmentSupersedeDetector {
         return false;
     }
 
-    private static int nextMatchingContentIndex(List<Map<String, Object>> segments, int start, Claim predictedClaim) {
+    /** First content segment at or after {@code start}, crossing tool boundaries; -1 when none. */
+    private static int nextContentIndex(List<Map<String, Object>> segments, int start) {
         for (int i = start; i < segments.size(); i++) {
-            Map<String, Object> segment = segments.get(i);
-            if (isToolCall(segment)) {
-                return -1;
-            }
-            if (!isContent(segment)) {
-                continue;
-            }
-            Claim actualClaim = parseClaim(String.valueOf(segment.getOrDefault("text", "")));
-            if (predictedClaim.sameKind(actualClaim)) {
+            if (isContent(segments.get(i))) {
                 return i;
             }
         }
@@ -111,42 +111,5 @@ final class SegmentSupersedeDetector {
 
     private static boolean isToolCall(Map<String, Object> segment) {
         return segment != null && "tool_call".equals(segment.get("type"));
-    }
-
-    private static Claim parseClaim(String text) {
-        if (text == null || text.isBlank()) {
-            return null;
-        }
-        String upper = text.toUpperCase(Locale.ROOT);
-        if ((upper.contains("成功生成") || text.contains("已生成")) && GENERATED_FILE_URL.matcher(text).find()) {
-            for (String format : List.of("PDF", "DOCX", "PPTX", "XLSX")) {
-                if (upper.contains(format)) {
-                    return new Claim("render", format);
-                }
-            }
-        }
-        if (text.contains("成功写入") && BYTE_COUNT.matcher(text).find()) {
-            return new Claim("write", "");
-        }
-        if (text.contains("成功替换") && REPLACEMENT_COUNT.matcher(text).find()) {
-            return new Claim("edit", "");
-        }
-        return null;
-    }
-
-    private static boolean toolMatchesClaim(String toolName, Claim claim) {
-        String normalized = toolName == null ? "" : toolName.toLowerCase(Locale.ROOT);
-        return switch (claim.type) {
-            case "render" -> normalized.contains("render" + claim.detail.toLowerCase(Locale.ROOT));
-            case "write" -> "write_file".equals(normalized);
-            case "edit" -> "edit_file".equals(normalized);
-            default -> false;
-        };
-    }
-
-    private record Claim(String type, String detail) {
-        boolean sameKind(Claim other) {
-            return other != null && type.equals(other.type) && detail.equals(other.detail);
-        }
     }
 }

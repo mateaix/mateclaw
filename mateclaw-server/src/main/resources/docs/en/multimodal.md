@@ -106,7 +106,7 @@ Click the speaker icon on any assistant message to read it aloud. The voice is w
 
 ### Speech-to-text (STT) — two providers
 
-- **DashScope Paraformer** — Chinese-first, low latency
+- **DashScope Qwen3-ASR Flash** — multilingual transcription with strong Chinese and dialect support
 - **OpenAI Whisper** — the standard multilingual benchmark
 
 Hold the mic button in the chat input to speak. Release to transcribe. Edit the result before sending if you want to.
@@ -178,7 +178,7 @@ It works the way you'd expect: the image appears inside the same bubble where th
 - **Video** — short-form demos, social content, product animations. Runway for quality, MiniMax for Chinese scenarios, DashScope for cloud-local.
 - **Music** — background tracks, demo jingles, creative exploration. Two providers today; expect the surface to evolve.
 - **TTS** — accessibility, audiobook-style reading, multilingual content. CosyVoice for Chinese, OpenAI for English variety.
-- **STT** — voice-first input, meeting transcription, dictation workflows. Paraformer for Chinese, Whisper for everything else.
+- **STT** — voice-first input, meeting transcription, dictation workflows. Qwen3-ASR for Chinese and multilingual recordings, Whisper-compatible endpoints as an alternative.
 
 ---
 

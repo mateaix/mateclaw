@@ -130,7 +130,7 @@ The employee turns **outward and finishes a whole job** — from a one-sentence 
 
 Full story: [v1.8.0 release notes](./releases/1.8.0.md).
 
-### v2.0 — It leads a team ✅ Released (2026-07-26)
+### v2.0 — It leads a team ✅ Released (2026-07-31)
 
 From "one person who gets things done" to "a team that collaborates" — **Agent Teams** become a standing roster around a shared task board.
 
@@ -143,13 +143,26 @@ From "one person who gets things done" to "a team that collaborates" — **Agent
 
 Full story: [v2.0.0 release notes](./releases/2.0.0.md); user guide: [Agent Teams](./teams).
 
+### v2.1 — It turns team work into a governable run ✅ Released (2026-08-15)
+
+2.0 built teams and their task board. 2.1 joins the three chains exposed by continuous use: **one identity for a team request, a replayable trajectory for execution, and provenance plus recovery for every skill improvement**.
+
+- **Unified Team Runs**: one `runId` links request, task DAG, worker execution, final synthesis, and deliverables; Chat delivers, Agents observes, and Teams governs the same projection
+- **Outcome-first delivery**: worker conversations leave the normal sidebar, intermediate announcements fold in, and summaries, files, exceptions, and approvals lead while detail drills down progressively
+- **Closed skill-evolution loop**: reflection + cross-session recurring-request mining + promotion + constrained auto-binding + curator governance handover + snapshot/restore; reflection/routine default off, curator stays preview-only before activation, and changes remain workspace-scoped and reversible
+- **Replayable reasoning and execution**: every thinking round, wall-clock duration, tool/observation order, superseded narration, and linear trajectory export
+- **Capabilities reach real operations**: proactive channel messages, targeted Cron delivery, model-level context windows, progressive tool bridge, and action-completion policy
+- Broad hardening across browser automation, WebChat/SSE, Feishu progress, Qwen3-ASR, file layout, and 64-bit id precision
+
+Full story: [v2.1.0 release notes](./releases/2.1.0.md); guides: [Team Runs](./teams) and [Skills](./skills).
+
 ---
 
 ## Next: Agent Loop & Team follow-through
 
 > "Great things in business are never done by one person. They're done by a team of people."
 
-Look back along the line: v1.2 gave employees an identity, v1.3 made flows orchestratable, v1.4 made employees follow goals and spin up delegation trees, v1.7 made long tasks visible, and **v2.0 made teams a standing roster**.
+Look back along the line: v1.2 gave employees an identity, v1.3 made flows orchestratable, v1.4 made employees follow goals and spin up delegation trees, v1.7 made long tasks visible, v2.0 made teams a standing roster, and **v2.1 made every round deliverable, learnable, and governable**.
 
 One "stop" remains: **employees are reactive.** Goal auto-followup only lives **within a single run**; cron and triggers can wake an employee up, but every wake-up is an isolated response. No employee is truly **on duty** — continuously watching its area of responsibility and deciding for itself when to act.
 
@@ -225,6 +238,7 @@ A leader on a loop, members summoned on demand — that's a **self-running digit
 | **v1.7** | It's ready for production | Approval paths closed + Run Overview & cost visibility + context/token budgeting + open API/Deep Research + desktop remote/LAN + operational export | ✅ Released |
 | **v1.8** | It does a whole job | Content Studio — one sentence to a publishable 公众号 / 小红书 post + browser ref interaction | ✅ Released |
 | **v2.0** | **It leads a team** | **Agent Teams + a shared task board — the lead decomposes and dispatches, members run in parallel, deliverables and full observability** | ✅ Released |
+| **v2.1** | **It turns collaboration into a run** | **Unified Team Runs + closed skill evolution + replayable reasoning trajectories + proactive channel delivery** | ✅ Released |
 | **Next** | **It's on duty** | **Agent Loop resident cycles + team follow-through (peer review / team goals / group binding / retrospectives) = a department that runs itself** | 📋 Planned |
 
 ---
@@ -237,7 +251,7 @@ We're building it because we believe one thing:
 
 **AI shouldn't be a chat box on a webpage. It should be your second brain.**
 
-It lives in your DingTalk, your Feishu, your Telegram. It's read every document you have. It remembers what you said three months ago. It uses your company's internal tools. It consolidates memory while you sleep. It runs an entire business flow on your behalf. **Soon it will lead a standing team, stay on duty, and watch over the things you can't get to.**
+It lives in your DingTalk, your Feishu, your Telegram. It's read every document you have. It remembers what you said three months ago. It uses your company's internal tools. It consolidates memory while you sleep. It runs an entire business flow on your behalf. **It can now deliver one complete round of team work and learn from it; next, that team stays on duty and watches over the things you can't get to.**
 
 Someday, you'll forget it's a program.
 

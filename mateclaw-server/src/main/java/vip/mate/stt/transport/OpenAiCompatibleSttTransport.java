@@ -9,6 +9,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 import vip.mate.stt.AudioMimeTypes;
 import vip.mate.stt.SttRequest;
+import vip.mate.stt.SttResponseDiagnostics;
 import vip.mate.stt.SttResult;
 import vip.mate.stt.SttTransport;
 import vip.mate.stt.SttTransportConfig;
@@ -80,18 +81,61 @@ public class OpenAiCompatibleSttTransport implements SttTransport {
             }
 
             HttpResponse response = http.execute();
+            String responseBody = response.body();
             if (response.getStatus() == 200) {
-                JsonNode result = objectMapper.readTree(response.body());
+                if (!SttResponseDiagnostics.looksLikeJson(responseBody)) {
+                    // A 200 with an HTML/non-JSON body means the URL answered
+                    // with a web page instead of the transcription API —
+                    // usually a wrong base URL or an intercepting proxy.
+                    // Report that precisely rather than letting Jackson throw
+                    // an opaque parse error.
+                    String contentType = response.header("Content-Type");
+                    log.warn("[OpenAI-compat STT] HTTP 200 with non-JSON body from {} (Content-Type: {}) — {}",
+                            url, contentType, SttResponseDiagnostics.snippet(responseBody));
+                    return SttResult.failure("STT 端点返回了非 JSON 响应（HTTP 200，Content-Type: "
+                            + contentType + "，端点: " + url
+                            + "）—— 请确认 base URL 指向 OpenAI 兼容的语音转写服务，且请求未被代理或网关拦截。响应片段: "
+                            + SttResponseDiagnostics.snippet(responseBody));
+                }
+                JsonNode result = objectMapper.readTree(responseBody);
                 String text = result.path("text").asText("");
                 log.info("[OpenAI-compat STT] Transcribed {} chars (model={}, baseUrl={})",
                         text.length(), model, baseUrl);
                 return SttResult.success(text);
             }
-            log.warn("[OpenAI-compat STT] Failed: HTTP {} - {}", response.getStatus(), response.body());
-            return SttResult.failure("STT 失败: HTTP " + response.getStatus());
+            String error = extractErrorMessage(responseBody);
+            if (error.isEmpty()) {
+                error = SttResponseDiagnostics.snippet(responseBody);
+            }
+            log.warn("[OpenAI-compat STT] Failed: HTTP {} from {} - {}",
+                    response.getStatus(), url, SttResponseDiagnostics.snippet(responseBody));
+            return SttResult.failure("STT 失败: HTTP " + response.getStatus()
+                    + " — " + error + "（端点: " + url + "）");
         } catch (Exception e) {
             log.error("[OpenAI-compat STT] Error: {}", e.getMessage(), e);
             return SttResult.failure("STT 异常: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Pull a human-readable message out of an error body. OpenAI-shaped
+     * services (OpenAI, Groq, SiliconFlow, Ollama, LM Studio) nest it as
+     * {@code {"error":{"message":...}}}; FastAPI-based self-hosted servers
+     * use top-level {@code {"detail":...}}; some shims use plain
+     * {@code {"message":...}}. Returns "" when nothing usable is found —
+     * the caller then falls back to a raw body snippet.
+     */
+    String extractErrorMessage(String body) {
+        if (body == null || body.isBlank()) return "";
+        try {
+            JsonNode root = objectMapper.readTree(body);
+            String nested = root.path("error").path("message").asText("");
+            if (!nested.isEmpty()) return nested;
+            String detail = root.path("detail").asText("");
+            if (!detail.isEmpty()) return detail;
+            return root.path("message").asText("");
+        } catch (Exception e) {
+            return "";
         }
     }
 

@@ -168,6 +168,7 @@ public class SkillScriptExecutionService {
 
         Path stdoutFile = null;
         Path stderrFile = null;
+        Process process = null;
 
         try {
             // 构建命令（结构化参数，避免 shell 注入）
@@ -242,7 +243,7 @@ public class SkillScriptExecutionService {
             }
             injectPipMirrorEnv(pb);
 
-            Process process = pb.start();
+            process = pb.start();
 
             boolean finished = process.waitFor(timeoutSeconds, TimeUnit.SECONDS);
             if (!finished) {
@@ -259,6 +260,16 @@ public class SkillScriptExecutionService {
             String stderr = readFileTruncated(stderrFile, MAX_OUTPUT_BYTES);
             return new ScriptResult(exitCode, stdout, stderr);
 
+        } catch (InterruptedException e) {
+            // Stop must terminate the OS process as well as the Java wait.
+            // Without this, cancelling the outer chat stream leaves skill
+            // scripts running until their normal timeout.
+            if (process != null && process.isAlive()) {
+                killProcess(process);
+            }
+            Thread.currentThread().interrupt();
+            log.info("Skill script interrupted by conversation cancellation: {}", scriptPath);
+            return ScriptResult.error(-1, "Execution cancelled by user");
         } catch (Exception e) {
             log.error("Failed to execute script {}: {}", scriptPath, e.getMessage());
             return ScriptResult.error(-1, "Execution error: " + e.getMessage());

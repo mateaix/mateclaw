@@ -295,8 +295,12 @@ Tool-guard approval flows arrive as a card with **Approve / Deny** buttons. Tapp
 Replies stream char-by-char into a **single card** instead of waiting for the whole answer before sending.
 
 - `card_streaming_enabled` (default `true`)
-- The first token appears immediately; subsequent updates are throttled at 500ms
+- The first token appears immediately; regular text updates coalesce at 500ms, while phase transitions refresh preferentially behind a 120ms platform safety limit
+- `stream_progress` (default `true`) keeps thinking status, plan steps, tool progress, and stage narration in the same card; completion retains a bounded execution trace above the final answer
+- Set `filter_thinking=false` to show raw model thinking; by default only status and stage progress are shown
+- Set `filter_tool_messages=false` to show tool names and per-tool results; by default only the tool count is shown
 - On CardKit failure it falls back to accumulate-then-send
+- Final update and close operations retry once; if they still fail, a regular Feishu message carries the answer
 
 #### Inbound voice transcription
 
@@ -354,6 +358,7 @@ curl -X POST http://localhost:18088/api/v1/channels \
       "card_format": "auto",
       "card_header": "AI 助手",
       "card_streaming_enabled": true,
+      "stream_progress": true,
       "media_download_enabled": true,
       "enable_done_reaction": true,
       "require_mention": false
@@ -689,6 +694,20 @@ The worst part of long tasks in IM is the "message dropped into a void" feeling.
 - **Conversation ids are channel-scoped (2.0.0).** Conversation id generation now encodes the channel identity — two same-type channels created in different workspaces keep separate conversations even for the same external user, so two workspaces' chats can never bleed into one conversation row.
 - **Credentials are encrypted at rest** in `mate_channel`.
 - **China networks** often need `http_proxy` configured for Telegram and Discord.
+
+---
+
+## Proactive push and targeted Cron delivery (2.1.0+)
+
+An employee can proactively notify an IM conversation when the task explicitly asks for it:
+
+1. call `list_channel_sessions` to list recent pushable conversations in the current workspace;
+2. select the exact returned `conversation_id`;
+3. call `send_channel_message` for a one-way text/Markdown notification.
+
+The adapters that currently implement proactive send are QQ, Telegram, WeChat, Slack, Discord, Feishu, DingTalk, and WeCom. The bot must first have received at least one message in that conversation so a verified platform delivery handle exists, and the channel must be running. Guessed ids and cross-workspace targets are rejected; messages are capped at 4096 characters. Ordinary replies still use the current conversation.
+
+Cron edits now retain both delivery channel and target, so changing a schedule or prompt cannot silently lose the destination. This fits scheduled reports, alerts, and asynchronous completion notifications.
 
 ---
 

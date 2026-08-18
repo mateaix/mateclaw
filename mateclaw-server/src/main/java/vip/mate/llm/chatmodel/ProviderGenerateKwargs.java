@@ -3,20 +3,72 @@ package vip.mate.llm.chatmodel;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.util.StringUtils;
 
+import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Reads typed values out of a provider's {@code generateKwargs} map.
  *
  * <p>A lookup tries the camelCase key first, then a snake_case fallback, and also
- * descends into a nested {@code chatOptions} map — so an admin may specify an
- * option under any of those shapes. Shared by the OpenAI-compatible chat model
- * builder and the reasoning-effort resolver.
+ * descends into a nested {@code chatOptions} / {@code chat_options} map — so an
+ * admin may specify an option under any of those shapes. Shared by the OpenAI-compatible chat model
+ * builder, the reasoning-effort resolver, and the provider test-prompt path
+ * ({@code ModelDiscoveryService}) so every outbound request built from
+ * {@code generateKwargs} treats unrecognized keys the same way.
  */
 @Slf4j
 public final class ProviderGenerateKwargs {
 
     private ProviderGenerateKwargs() {}
+
+    /**
+     * Top-level {@code generateKwargs} keys with dedicated typed handling elsewhere
+     * (both camelCase and snake_case spellings), plus the {@code chatOptions} nesting
+     * wrappers themselves (their contents are already consumed via {@link #findOptionValue}).
+     * Centralized here so passthrough logic and known-key extraction across callers
+     * can't drift out of sync. Anything else at the top level of generateKwargs is
+     * forwarded verbatim — see {@link #collectPassthroughExtraBody}.
+     *
+     * <p>{@code headers} / {@code customHeaders} are both reserved even though they're
+     * consumed by different callers ({@code OpenAiCompatibleChatModelBuilder} and
+     * {@code ModelDiscoveryService} respectively) — both are injected as real HTTP
+     * headers, never as JSON body fields, so neither belongs in a passthrough body.
+     */
+    public static final Set<String> RESERVED_GENERATE_KWARGS_KEYS = Set.of(
+            "temperature",
+            "maxTokens", "max_tokens",
+            "maxCompletionTokens", "max_completion_tokens",
+            "topP", "top_p",
+            "reasoningEffort", "reasoning_effort",
+            "enableSearch", "enable_search",
+            "searchStrategy", "search_strategy",
+            "headers",
+            "customHeaders", "custom_headers",
+            "completionsPath", "completions_path",
+            "modelsPath", "models_path",
+            "chatOptions", "chat_options"
+    );
+
+    /**
+     * Collect top-level {@code generateKwargs} entries not covered by
+     * {@link #RESERVED_GENERATE_KWARGS_KEYS} so they still reach the outbound
+     * request body (e.g. vLLM's {@code chat_template_kwargs} to disable Qwen
+     * thinking mode). Scoped to top-level keys only — unrecognized keys nested
+     * inside {@code chatOptions} are an explicit non-goal and are not forwarded.
+     */
+    public static Map<String, Object> collectPassthroughExtraBody(Map<String, Object> kwargs) {
+        if (kwargs == null || kwargs.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, Object> passthrough = new LinkedHashMap<>();
+        kwargs.forEach((key, value) -> {
+            if (key != null && !RESERVED_GENERATE_KWARGS_KEYS.contains(key)) {
+                passthrough.put(key, value);
+            }
+        });
+        return passthrough;
+    }
 
     /**
      * Find a raw option value by key, trying the camelCase form then a
@@ -43,6 +95,9 @@ public final class ProviderGenerateKwargs {
             return kwargs.get(key);
         }
         Object chatOptions = kwargs.get("chatOptions");
+        if (!(chatOptions instanceof Map<?, ?>)) {
+            chatOptions = kwargs.get("chat_options");
+        }
         if (chatOptions instanceof Map<?, ?> optionsMap) {
             return ((Map<String, Object>) optionsMap).get(key);
         }

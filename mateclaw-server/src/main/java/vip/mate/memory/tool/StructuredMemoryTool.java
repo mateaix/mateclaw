@@ -60,7 +60,7 @@ public class StructuredMemoryTool {
             key 用 snake_case 标识符，例如 preferred_language, no_mock_db
             """)
     public String remember_structured(
-            @ToolParam(description = "当前 Agent 的 ID") Long agentId,
+            @ToolParam(description = "当前 Agent 的 ID。必须作为字符串传入，避免大整数精度丢失") String agentId,
             @ToolParam(description = "记忆类型：user / feedback / project / reference") String type,
             @ToolParam(description = "条目标识符（snake_case），例如 preferred_language") String key,
             @ToolParam(description = "条目内容") String content,
@@ -71,7 +71,8 @@ public class StructuredMemoryTool {
         }
 
         try {
-            structuredMemoryService.remember(agentId, type.trim().toLowerCase(),
+            Long parsedAgentId = parseAgentId(agentId);
+            structuredMemoryService.remember(parsedAgentId, type.trim().toLowerCase(),
                     key.trim(), content.trim(), "agent", writeOwner(toolContext));
 
             JSONObject result = new JSONObject();
@@ -94,7 +95,7 @@ public class StructuredMemoryTool {
             type 为空时搜索所有类型。
             """)
     public String recall_structured(
-            @ToolParam(description = "当前 Agent 的 ID") Long agentId,
+            @ToolParam(description = "当前 Agent 的 ID。必须作为字符串传入，避免大整数精度丢失") String agentId,
             @ToolParam(description = "记忆类型过滤（可选）：user / feedback / project / reference", required = false) String type,
             @ToolParam(description = "搜索关键词（可选），匹配 key 和内容", required = false) String keyword,
             ToolContext toolContext) {
@@ -104,14 +105,15 @@ public class StructuredMemoryTool {
         }
 
         try {
+            Long parsedAgentId = parseAgentId(agentId);
             List<Map<String, String>> results = structuredMemoryService.recall(
-                    agentId,
+                    parsedAgentId,
                     type != null && !type.isBlank() ? type.trim().toLowerCase() : null,
                     keyword,
                     readOwner(toolContext));
 
             JSONObject result = new JSONObject();
-            result.set("agentId", agentId);
+            result.set("agentId", String.valueOf(agentId));
             result.set("count", results.size());
             result.set("entries", results);
             return JSONUtil.toJsonPrettyStr(result);
@@ -128,7 +130,7 @@ public class StructuredMemoryTool {
             需要指定类型和 key。
             """)
     public String forget_structured(
-            @ToolParam(description = "当前 Agent 的 ID") Long agentId,
+            @ToolParam(description = "当前 Agent 的 ID。必须作为字符串传入，避免大整数精度丢失") String agentId,
             @ToolParam(description = "记忆类型：user / feedback / project / reference") String type,
             @ToolParam(description = "要删除的条目标识符") String key,
             ToolContext toolContext) {
@@ -138,7 +140,8 @@ public class StructuredMemoryTool {
         }
 
         try {
-            boolean removed = structuredMemoryService.forget(agentId,
+            Long parsedAgentId = parseAgentId(agentId);
+            boolean removed = structuredMemoryService.forget(parsedAgentId,
                     type.trim().toLowerCase(), key.trim(), writeOwner(toolContext));
 
             JSONObject result = new JSONObject();
@@ -158,5 +161,17 @@ public class StructuredMemoryTool {
         result.set("error", true);
         result.set("message", message);
         return JSONUtil.toJsonPrettyStr(result);
+    }
+
+    private Long parseAgentId(String agentId) {
+        String trimmed = agentId != null ? agentId.trim() : "";
+        if (trimmed.isEmpty()) {
+            throw new IllegalArgumentException("agentId 不能为空");
+        }
+        try {
+            return Long.parseLong(trimmed);
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("agentId 必须是数字字符串");
+        }
     }
 }

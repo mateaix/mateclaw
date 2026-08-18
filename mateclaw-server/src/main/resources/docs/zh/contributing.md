@@ -32,8 +32,8 @@ mvn spring-boot:run
 
 ```bash
 cd mateclaw-ui
-pnpm install
-pnpm dev
+npm install
+npm run dev
 ```
 
 前端在 5173 端口，把 `/api` proxy 到后端。
@@ -251,14 +251,14 @@ mvn test -Dtest=StateGraphReActAgentTest#testChat  # 单个方法
 
 ```bash
 cd mateclaw-ui
-pnpm build          # vue-tsc 类型检查 + vite build
-pnpm lint           # ESLint 自动修复
+npm run build       # vue-tsc 类型检查 + vite build
+npm run lint        # ESLint 自动修复
 ```
 
 ### 手动测试清单
 
 - [ ] 后端启动无错
-- [ ] 前端编译无类型错误（`pnpm build`）
+- [ ] 前端编译无类型错误（`npm run build`）
 - [ ] 用默认凭证能登录
 - [ ] 模型在 UI 里配好了
 - [ ] 对话能流式返回
@@ -276,7 +276,7 @@ PR 改了用户面行为——新功能、重命名的端点、改过的配置 k
 
 ```bash
 cd docs
-pnpm build
+npm run build
 ```
 
 **PR 开出来之前 build 必须零错误通过。**

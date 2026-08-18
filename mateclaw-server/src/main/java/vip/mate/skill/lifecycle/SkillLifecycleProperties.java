@@ -1,7 +1,10 @@
 package vip.mate.skill.lifecycle;
 
 import lombok.Data;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.validation.annotation.Validated;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -13,6 +16,7 @@ import java.util.List;
  * @author MateClaw Team
  */
 @Data
+@Validated
 @ConfigurationProperties(prefix = "mateclaw.skill.curator")
 public class SkillLifecycleProperties {
 
@@ -23,9 +27,13 @@ public class SkillLifecycleProperties {
     private String cron = "0 0 2 * * *";
 
     /** Days of inactivity after which an active skill becomes {@code stale}. */
+    @Min(1)
+    @Max(36_500)
     private int staleAfterDays = 30;
 
     /** Days of inactivity after which a stale skill becomes {@code archived}. */
+    @Min(1)
+    @Max(36_500)
     private int archiveAfterDays = 90;
 
     /**
@@ -51,14 +59,30 @@ public class SkillLifecycleProperties {
     private boolean consolidate = false;
 
     /** Minimum candidate skills present before a consolidation pass runs. */
+    @Min(2)
+    @Max(10_000)
     private int consolidateMinSkills = 4;
 
     /** Hard cap on merge groups applied in a single consolidation pass. */
+    @Min(1)
+    @Max(100)
     private int consolidateMaxGroupsPerRun = 2;
 
     /** Character budget for the catalog handed to the consolidation reviewer. */
+    @Min(1_000)
+    @Max(2_000_000)
     private int consolidateCatalogCharBudget = 12000;
 
     /** Consolidation model ID ({@code null} = follow the system default model). */
     private String consolidateModelId;
+
+    /**
+     * Whether a restore point is captured before each mutating sweep. Gates
+     * both the automatic pre-sweep capture and the manual one, so there is no
+     * configuration in which a mutating run silently skips its snapshot.
+     */
+    private boolean backupEnabled = true;
+
+    /** Restore points retained; older ones are pruned after each capture. */
+    private int backupKeep = 5;
 }

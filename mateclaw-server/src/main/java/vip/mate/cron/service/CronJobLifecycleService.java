@@ -17,6 +17,7 @@ import vip.mate.dashboard.repository.CronJobRunMapper;
 import vip.mate.i18n.I18nService;
 import vip.mate.memory.event.ConversationCompletionPublisher;
 import vip.mate.workspace.conversation.ConversationService;
+import vip.mate.workspace.conversation.model.MessageEntity;
 
 import java.time.LocalDateTime;
 
@@ -45,6 +46,9 @@ import java.time.LocalDateTime;
 @RequiredArgsConstructor
 public class CronJobLifecycleService {
 
+    public record StartResult(CronJobRunEntity run, Long originMessageId) {
+    }
+
     private final CronJobRunMapper runMapper;
     private final ConversationService conversationService;
     private final ConversationCompletionPublisher completionPublisher;
@@ -60,8 +64,8 @@ public class CronJobLifecycleService {
      * @param triggerType {@code scheduled} (cron tick) or {@code manual} (runNow)
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public CronJobRunEntity startRun(CronJobEntity job, String userMessage, String triggerType,
-                                     String conversationId) {
+    public StartResult startRun(CronJobEntity job, String userMessage, String triggerType,
+                                String conversationId) {
         CronJobRunEntity run = new CronJobRunEntity();
         run.setCronJobId(job.getId());
         run.setConversationId(conversationId);
@@ -90,10 +94,13 @@ public class CronJobLifecycleService {
         // Persist the user message before the LLM call so history reads
         // see a coherent (user → assistant) ordering even if the agent
         // throws mid-run.
+        Long originMessageId = null;
         if (userMessage != null && !userMessage.isBlank()) {
-            conversationService.saveMessage(conversationId, "user", userMessage);
+            MessageEntity savedUser = conversationService.saveMessage(
+                    conversationId, "user", userMessage);
+            originMessageId = savedUser == null ? null : savedUser.getId();
         }
-        return run;
+        return new StartResult(run, originMessageId);
     }
 
     /**

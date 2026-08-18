@@ -87,6 +87,15 @@ class SkillCuratorReportTest {
     void runIdIsDerivedFromRunTimestamp() {
         LocalDateTime fixed = LocalDateTime.of(2026, 5, 19, 2, 0, 0);
         SkillCuratorReport report = SkillCuratorReport.builder().runAt(fixed).build();
-        assertEquals("20260519-020000", report.getRunId());
+        assertTrue(report.getRunId().matches("20260519-020000-000-[a-f0-9]{8}"), report.getRunId());
+    }
+
+    @Test
+    void reportsCreatedAtTheSameInstantStillHaveDistinctIds() {
+        LocalDateTime fixed = LocalDateTime.of(2026, 5, 19, 2, 0, 0);
+        SkillCuratorReport first = SkillCuratorReport.builder().runAt(fixed).build();
+        SkillCuratorReport second = SkillCuratorReport.builder().runAt(fixed).build();
+
+        org.junit.jupiter.api.Assertions.assertNotEquals(first.getRunId(), second.getRunId());
     }
 }

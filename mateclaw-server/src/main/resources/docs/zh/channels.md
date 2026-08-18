@@ -295,8 +295,12 @@ JSON 卡片 payload 上限约 32 KB，超出后自动降级为纯文本。
 回复逐字刷新进**同一张卡片**，而不是等整段生成完再发。
 
 - `card_streaming_enabled`（默认 `true`）
-- 首 token 立即出现，之后按 500ms 节流刷新
+- 首 token 立即出现；普通文本按 500ms 合并刷新，阶段切换遵守 120ms 平台硬限流后优先刷新
+- `stream_progress`（默认 `true`）：同一卡片会展示思考状态、计划步骤、工具进度和阶段旁白，完成后保留一份有界执行轨迹并追加最终回答
+- `filter_thinking=false` 时展示模型原始思考文本；默认仅展示状态与阶段轨迹，不暴露原始思考
+- `filter_tool_messages=false` 时展示工具名称和逐项结果；默认只展示工具执行数量
 - CardKit 调用失败时自动回退到"先攒齐再一次性发出"
+- 最终更新和关闭操作会自动重试一次；仍失败则通过普通飞书消息兜底
 
 #### 入站语音转写
 
@@ -354,6 +358,7 @@ curl -X POST http://localhost:18088/api/v1/channels \
       "card_format": "auto",
       "card_header": "AI 助手",
       "card_streaming_enabled": true,
+      "stream_progress": true,
       "media_download_enabled": true,
       "enable_done_reaction": true,
       "require_mention": false
@@ -689,6 +694,20 @@ IM 渠道（企业微信、微信、钉钉）都支持语音输入。语音识�
 - **会话 id 按渠道隔离（2.0.0）。** 会话 id 的生成编入了渠道标识——不同工作空间各自新建的同类型渠道，即使面对同一个外部用户，也各有各的会话，不会再把两个工作空间的对话串进同一条会话里。
 - **凭证在 `mate_channel` 里加密存储。**
 - **国内网络**大概率需要配 `http_proxy` 来访问 Telegram 和 Discord。
+
+---
+
+## 主动推送与 Cron 定向投递（2.1.0+）
+
+数字员工可以在任务明确要求通知时主动向 IM 会话推送：
+
+1. 调用 `list_channel_sessions`，按最近活跃时间列出当前工作空间可推送的会话；
+2. 从返回值选择准确的 `conversation_id`；
+3. 调用 `send_channel_message` 发送单向文本/Markdown 通知。
+
+当前实现主动发送的适配器是 QQ、Telegram、微信、Slack、Discord、飞书、钉钉和企业微信。机器人必须先在该会话收到过至少一条消息，平台投递句柄才可信；渠道必须启用并支持主动发送。工具不会接受猜测的 id，跨工作空间目标会被拒绝，消息最长 4096 字符。普通回复仍走当前对话，不需要主动推送工具。
+
+Cron 编辑器会持久保存 delivery channel 和 target；修改表达式或提示词后，投递位置不会丢失。适合定时报告、告警和异步任务完成通知。
 
 ---
 

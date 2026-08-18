@@ -56,6 +56,15 @@ public final class PlanStateKeys {
     /** 当前步骤的完整 thinking */
     public static final String CURRENT_STEP_THINKING = "current_step_thinking";
 
+    /**
+     * 规划阶段的完整 thinking —— 决定整个计划长什么样的那次推理。
+     * <p>
+     * It is the most consequential reasoning of the turn and the only one that
+     * exists when the steps are dispatched elsewhere instead of executed in
+     * this run, which is when the step / summary spans never happen at all.
+     */
+    public static final String PLAN_THINKING = "plan_thinking";
+
     // ===== 节点名称 =====
     public static final String PLAN_GENERATION_NODE = "plan_generation";
     public static final String STEP_EXECUTION_NODE = "step_execution";

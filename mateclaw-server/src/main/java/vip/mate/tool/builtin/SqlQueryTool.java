@@ -47,16 +47,17 @@ public class SqlQueryTool {
             如果数据适合可视化，会自动附带一个 echarts 图表配置代码块，前端会自动渲染为交互式图表。
             """)
     public String execute_sql(
-            @ToolParam(description = "目标数据源 ID") Long datasourceId,
+            @ToolParam(description = "目标数据源 ID。必须作为字符串传入，避免大整数精度丢失") String datasourceId,
             @ToolParam(description = "要执行的 SQL 查询（仅允许 SELECT）") String sql) {
 
         try {
+            Long parsedDatasourceId = parseDatasourceId(datasourceId);
             // 1. 验证并规范化 SQL
             String safeSql = sqlValidationService.validateAndNormalize(sql);
-            log.info("执行 SQL 查询 [数据源 {}]: {}", datasourceId, safeSql);
+            log.info("执行 SQL 查询 [数据源 {}]: {}", parsedDatasourceId, safeSql);
 
             // 2. 获取数据源连接
-            DatasourceEntity entity = datasourceService.getDecrypted(datasourceId);
+            DatasourceEntity entity = datasourceService.getDecrypted(parsedDatasourceId);
 
             // 3. 执行查询
             long startTime = System.currentTimeMillis();
@@ -76,6 +77,18 @@ public class SqlQueryTool {
             result.set("error", e.getMessage());
             result.set("sql", sql);
             return result.toStringPretty();
+        }
+    }
+
+    private Long parseDatasourceId(String datasourceId) {
+        String trimmed = datasourceId != null ? datasourceId.trim() : "";
+        if (trimmed.isEmpty()) {
+            throw new IllegalArgumentException("datasourceId is required");
+        }
+        try {
+            return Long.parseLong(trimmed);
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("datasourceId must be a numeric string");
         }
     }
 

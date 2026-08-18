@@ -92,7 +92,7 @@ public class DashScopeChatModelBuilder implements ChatModelBuilder {
             return Boolean.TRUE.equals(runtimeModel.getEnableSearch());
         }
         Map<String, Object> kwargs = modelProviderService.readProviderGenerateKwargs(provider);
-        Object kwargsSearch = kwargs.get("enableSearch");
+        Object kwargsSearch = ProviderGenerateKwargs.findOptionValue(kwargs, "enableSearch");
         if (kwargsSearch != null) {
             return Boolean.TRUE.equals(kwargsSearch);
         }
@@ -145,7 +145,7 @@ public class DashScopeChatModelBuilder implements ChatModelBuilder {
             builder.withEnableSearch(true);
             String strategy = runtimeModel.getSearchStrategy();
             if (!StringUtils.hasText(strategy)) {
-                strategy = (String) kwargs.get("searchStrategy");
+                strategy = (String) ProviderGenerateKwargs.findOptionValue(kwargs, "searchStrategy");
             }
             if (StringUtils.hasText(strategy)) {
                 builder.withSearchOptions(DashScopeApiSpec.SearchOptions.builder()

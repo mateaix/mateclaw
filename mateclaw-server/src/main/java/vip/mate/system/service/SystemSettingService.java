@@ -32,6 +32,8 @@ public class SystemSettingService {
     private static final String LANGUAGE_KEY = "language";
     private static final String STREAM_ENABLED_KEY = "streamEnabled";
     private static final String DEBUG_MODE_KEY = "debugMode";
+    private static final String SHOW_THINKING_KEY = "showThinking";
+    private static final String THINKING_FULL_KEY = "thinkingFull";
     private static final String STATEGRAPH_ENABLED_KEY = "stateGraphEnabled";
 
     // 搜索服务配置 keys
@@ -164,6 +166,8 @@ public class SystemSettingService {
         dto.setLanguage(getValue(LANGUAGE_KEY, "zh-CN"));
         dto.setStreamEnabled(Boolean.parseBoolean(getValue(STREAM_ENABLED_KEY, "true")));
         dto.setDebugMode(Boolean.parseBoolean(getValue(DEBUG_MODE_KEY, "false")));
+        dto.setShowThinking(Boolean.parseBoolean(getValue(SHOW_THINKING_KEY, "true")));
+        dto.setThinkingFull(Boolean.parseBoolean(getValue(THINKING_FULL_KEY, "true")));
         dto.setStateGraphEnabled(Boolean.parseBoolean(getValue(STATEGRAPH_ENABLED_KEY, "false")));
 
         // 搜索服务配置
@@ -314,10 +318,31 @@ public class SystemSettingService {
     }
 
     public SystemSettingsDTO saveSettings(SystemSettingsDTO dto) {
-        saveValue(LANGUAGE_KEY, dto.getLanguage(), "当前界面语言");
-        saveValue(STREAM_ENABLED_KEY, String.valueOf(Boolean.TRUE.equals(dto.getStreamEnabled())), "是否开启流式响应");
-        saveValue(DEBUG_MODE_KEY, String.valueOf(Boolean.TRUE.equals(dto.getDebugMode())), "是否开启调试模式");
-        saveValue(STATEGRAPH_ENABLED_KEY, String.valueOf(Boolean.TRUE.equals(dto.getStateGraphEnabled())), "启用 StateGraph 架构的 ReAct Agent");
+        // All of these are null-guarded: the bulk PUT /settings is shared by
+        // every settings page (System, Music, Video, Image, Stt, Tts, Model3D),
+        // each sending a partial payload. An unconditional write coerces the
+        // absent fields (null) to false/blank and silently resets them — that
+        // is how streamEnabled kept flipping off (killing live thinking and
+        // content streaming) whenever an unrelated settings page was saved.
+        if (dto.getLanguage() != null) {
+            saveValue(LANGUAGE_KEY, dto.getLanguage(), "当前界面语言");
+        }
+        if (dto.getStreamEnabled() != null) {
+            saveValue(STREAM_ENABLED_KEY, String.valueOf(dto.getStreamEnabled()), "是否开启流式响应");
+        }
+        if (dto.getDebugMode() != null) {
+            saveValue(DEBUG_MODE_KEY, String.valueOf(dto.getDebugMode()), "是否开启调试模式");
+        }
+        if (dto.getShowThinking() != null) {
+            saveValue(SHOW_THINKING_KEY, String.valueOf(dto.getShowThinking()), "聊天界面是否展示模型思考过程");
+        }
+        if (dto.getThinkingFull() != null) {
+            saveValue(THINKING_FULL_KEY, String.valueOf(dto.getThinkingFull()),
+                    "聊天界面是否展示每一轮的思考，而非只展示得出答案的那一轮");
+        }
+        if (dto.getStateGraphEnabled() != null) {
+            saveValue(STATEGRAPH_ENABLED_KEY, String.valueOf(dto.getStateGraphEnabled()), "启用 StateGraph 架构的 ReAct Agent");
+        }
 
         // 搜索服务配置
         if (dto.getSearchEnabled() != null) {

@@ -61,7 +61,7 @@ public class DatasourceTool {
             """)
     public String query_datasource(
             @ToolParam(description = "动作：list_datasources / list_tables / describe_table") String action,
-            @ToolParam(description = "数据源 ID（list_tables 和 describe_table 时必填）", required = false) Long datasourceId,
+            @ToolParam(description = "数据源 ID（list_tables 和 describe_table 时必填）。必须作为字符串传入，避免大整数精度丢失", required = false) String datasourceId,
             @ToolParam(description = "表名（describe_table 时必填）", required = false) String tableName) {
 
         try {
@@ -207,5 +207,25 @@ public class DatasourceTool {
 
     private String error(String message) {
         return JSONUtil.toJsonStr(new JSONObject().set("error", message));
+    }
+
+    private Long parseDatasourceId(String datasourceId, String action) {
+        String trimmed = datasourceId != null ? datasourceId.trim() : "";
+        if (trimmed.isEmpty()) {
+            throw new IllegalArgumentException(action + " 需要 datasourceId 参数");
+        }
+        try {
+            return Long.parseLong(trimmed);
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("datasourceId 必须是数字字符串");
+        }
+    }
+
+    private String listTables(String datasourceId) throws SQLException {
+        return listTables(parseDatasourceId(datasourceId, "list_tables"));
+    }
+
+    private String describeTable(String datasourceId, String tableName) throws SQLException {
+        return describeTable(parseDatasourceId(datasourceId, "describe_table"), tableName);
     }
 }
