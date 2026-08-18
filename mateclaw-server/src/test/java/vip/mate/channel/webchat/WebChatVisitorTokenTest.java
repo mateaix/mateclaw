@@ -120,23 +120,28 @@ class WebChatVisitorTokenTest {
         assertFalse(WebChatController.verifyVisitorTokenSignature(SECRET, CHANNEL, VISITOR, tampered));
     }
 
-    // ============ conversationId / username 边界（避免溢出 VARCHAR(64) → /stream 500）============
+    // ============ conversationId / username 边界（conversation_id 已拓宽为 VARCHAR(128)，#558）============
 
     @Test
-    void deriveConversationId_staysWithin64_forLongInputs() {
-        String id = WebChatController.deriveConversationId("apikey1234567890", "v".repeat(120), "s".repeat(64));
-        assertTrue(id.length() <= 64, "conversationId must fit VARCHAR(64), got " + id.length());
-        // a legitimate 64-char sessionId alone already overflows the old scheme
-        String id2 = WebChatController.deriveConversationId("apikey1234567890", "alice", "s".repeat(64));
-        assertTrue(id2.length() <= 64, "conversationId must fit VARCHAR(64), got " + id2.length());
+    void deriveConversationId_fits128_forLongInputs() {
+        // V171 widened conversation_id to VARCHAR(128); the new channel-scoped format
+        // webchat:<channelId>:<visitor>[:<session>] no longer hashes, so a long
+        // visitor+session must still fit 128.
+        String id = WebChatController.deriveConversationId(9147001L, "v".repeat(60), "s".repeat(50));
+        assertTrue(id.length() <= 128, "conversationId must fit VARCHAR(128), got " + id.length());
     }
 
     @Test
-    void deriveConversationId_unchanged_forShortInputs() {
-        assertEquals("webchat:apikey12:alice:s1",
-                WebChatController.deriveConversationId("apikey1234567890", "alice", "s1"));
-        assertEquals("webchat:apikey12:alice",
-                WebChatController.deriveConversationId("apikey1234567890", "alice", null));
+    void deriveConversationId_format_and_channelScoping() {
+        assertEquals("webchat:9147001:alice:s1",
+                WebChatController.deriveConversationId(9147001L, "alice", "s1"));
+        assertEquals("webchat:9147001:alice",
+                WebChatController.deriveConversationId(9147001L, "alice", null));
+        // The #558 bug: two channels sharing an apiKey prefix derived the SAME id.
+        // The channelId token must differ.
+        assertNotEquals(
+                WebChatController.deriveConversationId(1L, "alice", "s1"),
+                WebChatController.deriveConversationId(2L, "alice", "s1"));
     }
 
     @Test
