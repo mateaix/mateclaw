@@ -173,6 +173,7 @@ public class AgentBindingService implements AgentBindingResolver {
     }
 
     public AgentSkillBinding bindSkill(Long agentId, Long skillId) {
+        requireNotGlobalPreset(agentId);
         requireSameWorkspace(agentId, skillId);
         // Adding any skill binding is a concrete commitment — the operator
         // wants this skill on the agent, which contradicts an opt-out flag.
@@ -197,6 +198,7 @@ public class AgentBindingService implements AgentBindingResolver {
     }
 
     public void unbindSkill(Long agentId, Long skillId) {
+        requireNotGlobalPreset(agentId);
         skillBindingMapper.delete(
                 new LambdaQueryWrapper<AgentSkillBinding>()
                         .eq(AgentSkillBinding::getAgentId, agentId)
@@ -214,6 +216,7 @@ public class AgentBindingService implements AgentBindingResolver {
      * touch the flag — the caller (UI toggle) owns that bit.
      */
     public void setSkillBindings(Long agentId, List<Long> skillIds) {
+        requireNotGlobalPreset(agentId);
         // Validate every incoming skill BEFORE touching the binding rows;
         // a half-applied save (old bindings dropped, new set rejected
         // mid-loop) would leave the agent silently un-bound from skills it
@@ -436,6 +439,25 @@ public class AgentBindingService implements AgentBindingResolver {
                     "Skill " + skillId + " (workspace=" + skillWs
                             + ") cannot be bound to Agent " + agentId
                             + " (workspace=" + agentWs + ")");
+        }
+    }
+
+    /**
+     * 拒绝对全局共享预置 Agent（{@code workspace_id = 0}）的任何绑定变更。
+     *
+     * <p>预置的工具/技能/KB 绑定由产品统一维护（单一事实源），对所有工作区只读；
+     * 允许用户改动会污染每个工作区看到的预置能力。镜像 {@link #requireSameWorkspace}
+     * 的 {@code requireX} 约定，在每个绑定 mutator 顶部调用。注意：系统级清理
+     * （技能/MCP 删除监听器）不走此守卫——悬空绑定清理对全局预置仍应执行。
+     */
+    private void requireNotGlobalPreset(Long agentId) {
+        if (agentId == null) {
+            return;
+        }
+        AgentEntity agent = agentMapper.selectById(agentId);
+        if (agent != null && agent.isGlobalPreset()) {
+            throw new MateClawException("err.agent.global_preset_readonly", 403,
+                    "全局预置 Agent 由系统维护，不可修改或删除: " + agent.getName());
         }
     }
 
@@ -823,6 +845,7 @@ public class AgentBindingService implements AgentBindingResolver {
     }
 
     public AgentToolBinding bindTool(Long agentId, String toolName) {
+        requireNotGlobalPreset(agentId);
         // Mirror of bindSkill: writing any tool row clears the opt-out flag
         // so the binding state cannot contradict the agent-level toggle.
         clearToolsDisabledFlag(agentId);
@@ -844,6 +867,7 @@ public class AgentBindingService implements AgentBindingResolver {
     }
 
     public void unbindTool(Long agentId, String toolName) {
+        requireNotGlobalPreset(agentId);
         toolBindingMapper.delete(
                 new LambdaQueryWrapper<AgentToolBinding>()
                         .eq(AgentToolBinding::getAgentId, agentId)
@@ -870,6 +894,7 @@ public class AgentBindingService implements AgentBindingResolver {
      * </ul>
      */
     public void setToolBindings(Long agentId, List<String> toolNames) {
+        requireNotGlobalPreset(agentId);
         validateNewToolBindings(agentId, toolNames);
 
         // Side effect parallel to setSkillBindings: a non-empty save is an
@@ -977,6 +1002,7 @@ public class AgentBindingService implements AgentBindingResolver {
      * preferred-model chain. Empty / null list clears all preferences.
      */
     public void setProviderModelPreferences(Long agentId, List<ProviderModelRef> refs) {
+        requireNotGlobalPreset(agentId);
         providerPreferenceMapper.delete(
                 new LambdaQueryWrapper<AgentProviderPreference>()
                         .eq(AgentProviderPreference::getAgentId, agentId));
@@ -1047,6 +1073,7 @@ public class AgentBindingService implements AgentBindingResolver {
      * from another tenancy is refused (403).
      */
     public void setKbBindings(Long agentId, List<Long> kbIds) {
+        requireNotGlobalPreset(agentId);
         // De-dup defensively: the unique index is (agent_id, kb_id, deleted),
         // so two identical ids in the incoming list would collide on insert.
         Set<Long> distinct = new LinkedHashSet<>();
